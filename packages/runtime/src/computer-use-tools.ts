@@ -443,7 +443,9 @@ const computerWireParams = z
     start_coordinate: coordinate.optional().describe('Required only for left_click_drag.'),
     text: text
       .optional()
-      .describe('Required for select_text, secondary_action, press_key, type, key, and hold_key. For press_key use a key name such as Return, Escape, Tab, or Space.'),
+      .describe(
+        'Required for select_text, secondary_action, press_key, type, key, and hold_key. For press_key use a key name such as Return, Escape, Tab, or Space.',
+      ),
     scroll_direction: z
       .enum(['up', 'down', 'left', 'right'])
       .optional()

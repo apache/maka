@@ -550,7 +550,9 @@ async function run() {
       .filter(
         (action) =>
           action.success === true &&
-          !['list_apps', 'observe', 'screenshot', 'cursor_position', 'zoom', 'wait'].includes(action.type),
+          !['list_apps', 'observe', 'screenshot', 'cursor_position', 'zoom', 'wait'].includes(
+            action.type,
+          ),
       )
       .map((action) => action.toolCallId)
       .filter((toolCallId) => typeof toolCallId === 'string');
@@ -716,7 +718,8 @@ async function handleRunFailure(error) {
 
 function requiredDispatchPathPassed(scenario, traces) {
   const mutationActions = scenario.allowedActions.filter(
-    (action) => !['list_apps', 'observe', 'screenshot', 'cursor_position', 'zoom', 'wait'].includes(action),
+    (action) =>
+      !['list_apps', 'observe', 'screenshot', 'cursor_position', 'zoom', 'wait'].includes(action),
   );
   if (mutationActions.length === 0) return true;
   return traces.some(

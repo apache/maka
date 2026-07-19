@@ -80,13 +80,13 @@ function windowScript(spec) {
           ? `{ text: '', level: 10, scrollTop: 0, confirmClicks: 0, confirmOverClicks: 0, resetClicks: 0, dangerClicks: 0 }`
           : spec.kind === 'background-semantic'
             ? '{ buttonClicks: 0, buttonOverClicks: 0 }'
-          : spec.kind === 'click-target'
-            ? '{ clicks: 0, overClicks: 0 }'
-            : spec.kind === 'sentinel'
-              ? '{ agentViolations: 0 }'
-              : spec.kind === 'provider-matrix'
-                ? '{ invalidReports: 0, executedUiActions: 0 }'
-                : '{ interactions: 0 }';
+            : spec.kind === 'click-target'
+              ? '{ clicks: 0, overClicks: 0 }'
+              : spec.kind === 'sentinel'
+                ? '{ agentViolations: 0 }'
+                : spec.kind === 'provider-matrix'
+                  ? '{ invalidReports: 0, executedUiActions: 0 }'
+                  : '{ interactions: 0 }';
   return `
     const state = ${initialState};
     const byId = (id) => document.getElementById(id);

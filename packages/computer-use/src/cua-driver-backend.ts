@@ -1914,9 +1914,7 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
                   pid: validated.pid,
                   window_id: validated.windowId,
                   element_index: refetched.element_index,
-                  ...(refetched.element_token
-                    ? { element_token: refetched.element_token }
-                    : {}),
+                  ...(refetched.element_token ? { element_token: refetched.element_token } : {}),
                   key: action.key,
                 },
                 signal,
@@ -2020,10 +2018,7 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
                   : matchingElements.length === 1
                     ? matchingElements[0]
                     : undefined;
-              if (
-                !readbackElement ||
-                readbackElement.value !== action.value
-              ) {
+              if (!readbackElement || readbackElement.value !== action.value) {
                 return {
                   ...deliveredVerificationFailure('set_value', 'ax'),
                   observation: fresh,

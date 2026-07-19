@@ -380,7 +380,9 @@ export function validateRealReport(report, provider, scenario) {
   const mutationActions = actions.filter(
     (action) =>
       action.success === true &&
-      !['list_apps', 'observe', 'screenshot', 'cursor_position', 'zoom', 'wait'].includes(action.type),
+      !['list_apps', 'observe', 'screenshot', 'cursor_position', 'zoom', 'wait'].includes(
+        action.type,
+      ),
   );
   if (mutationActions.length > 0) {
     const traces = Array.isArray(report.driverTraces) ? report.driverTraces : [];
