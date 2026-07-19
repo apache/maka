@@ -1,4 +1,5 @@
 import { _electron as electron, chromium } from '@playwright/test';
+import electronBinary from 'electron';
 import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
@@ -216,7 +217,7 @@ export function actionRecords(events) {
         sanitizeCuActionRecord({
           action: start.args,
           toolCallId: event.toolUseId,
-          sourceObservationId: start.args?.observation_id,
+          sourceObservationId: start.args?.observation_id ?? start.args?.observationId,
           resultObservationId: target?.observationId,
           targetPid: target?.pid,
           targetWindowId: target?.windowId,
@@ -422,7 +423,6 @@ async function run() {
   const workspace = join(userData, 'workspaces', 'default');
   const tracePath = join(userData, 'computer-use-trace.jsonl');
   const fixturePort = await reservePort();
-  const electronBinary = join(repoRoot, 'node_modules', '.bin', 'electron');
   let fixture;
   let desktop;
   let fixtureBrowser;
@@ -550,7 +550,7 @@ async function run() {
       .filter(
         (action) =>
           action.success === true &&
-          !['list_apps', 'observe', 'screenshot', 'cursor_position', 'wait'].includes(action.type),
+          !['list_apps', 'observe', 'screenshot', 'cursor_position', 'zoom', 'wait'].includes(action.type),
       )
       .map((action) => action.toolCallId)
       .filter((toolCallId) => typeof toolCallId === 'string');
@@ -716,7 +716,7 @@ async function handleRunFailure(error) {
 
 function requiredDispatchPathPassed(scenario, traces) {
   const mutationActions = scenario.allowedActions.filter(
-    (action) => !['list_apps', 'observe', 'screenshot', 'cursor_position', 'wait'].includes(action),
+    (action) => !['list_apps', 'observe', 'screenshot', 'cursor_position', 'zoom', 'wait'].includes(action),
   );
   if (mutationActions.length === 0) return true;
   return traces.some(
@@ -773,8 +773,8 @@ export function bindActionTargets(actions, traces, fixtureIdentity) {
       typeof action.sourceObservationId === 'string'
         ? observationTargets.get(action.sourceObservationId)
         : undefined;
-    const directObservationTarget =
-      (action.type === 'observe' || action.type === 'screenshot') &&
+    const directResultTarget =
+      ['observe', 'screenshot', 'zoom'].includes(action.type) &&
       Number.isInteger(action.targetPid) &&
       Number.isInteger(action.targetWindowId)
         ? { pid: action.targetPid, windowId: action.targetWindowId }
@@ -783,7 +783,7 @@ export function bindActionTargets(actions, traces, fixtureIdentity) {
       ? { pid: dispatch.pid, windowId: dispatch.windowId }
       : sourceTarget
         ? sourceTarget
-        : directObservationTarget;
+        : directResultTarget;
     return {
       ...action,
       targetOwned: target ? fixtureOwnsTarget(fixtureIdentity, target.pid, target.windowId) : false,

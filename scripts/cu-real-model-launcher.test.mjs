@@ -28,6 +28,8 @@ const main = (
 ).join('\n');
 
 test('real-model launcher uses an isolated profile and the production Desktop IPC path', () => {
+  assert.match(launcher, /import electronBinary from 'electron'/);
+  assert.doesNotMatch(launcher, /node_modules', '\\.bin', 'electron'/);
   assert.match(launcher, /mkdtemp\(join\(tmpdir\(\), 'maka-cu-real-model-'\)\)/);
   assert.match(launcher, /MAKA_CU_REAL_MODEL_E2E: '1'/);
   assert.doesNotMatch(launcher, /MAKA_E2E:\s*'1'/);
@@ -197,6 +199,46 @@ test('screenshot without observation_id still contributes PID/window ownership e
   assert.equal(screenshot.targetWindowId, 7);
   assert.equal(screenshot.targetOwned, true);
   assert.equal(allActionTargetsOwned([screenshot]), true);
+});
+
+test('zoom inherits ownership from camelCase observation projection and fresh result target', () => {
+  const records = actionRecords([
+    {
+      type: 'tool_start',
+      toolName: 'maka_computer',
+      toolUseId: 'zoom-1',
+      args: {
+        action: 'zoom',
+        observationId: 'owned-observation',
+      },
+    },
+    {
+      type: 'tool_result',
+      toolUseId: 'zoom-1',
+      content: {
+        kind: 'text',
+        text: [
+          'computer.zoom ok via coordinate-background',
+          'Fresh observation: ' +
+            JSON.stringify({
+              observation_id: 'fresh-observation',
+              pid: 4242,
+              window_id: 7,
+            }),
+        ].join('\n'),
+      },
+      durationMs: 20,
+      isError: false,
+    },
+  ]);
+  const [zoom] = bindActionTargets(records, [], {
+    instances: [{ pid: 4242, windowIds: [7] }],
+  });
+
+  assert.equal(records[0].sourceObservationId, 'owned-observation');
+  assert.equal(zoom.targetOwned, true);
+  assert.equal(zoom.targetPid, 4242);
+  assert.equal(zoom.targetWindowId, 7);
 });
 
 test('policy rejection remains canonical action-attempt evidence', () => {

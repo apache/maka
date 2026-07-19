@@ -79,6 +79,13 @@ test('layer action budgets increase deliberately', () => {
     'observe',
     'click_element',
   ]);
+  assert.deepEqual(getCuE2eScenario('l1-background-zoom').allowedActions, ['observe', 'zoom']);
+  assert.deepEqual(getCuE2eScenario('l2-background-semantic').allowedActions, [
+    'observe',
+    'set_value',
+    'press_key',
+    'click_element',
+  ]);
 
   const multi = getCuE2eScenario('l2-multi-control');
   assert.ok(multi.allowedActions.includes('scroll'));
@@ -89,6 +96,17 @@ test('layer action budgets increase deliberately', () => {
   assert.ok(!occlusion.allowedActions.includes('left_click'));
   assert.equal(occlusion.realRunEnabled, true);
   assert.equal(getCuE2eScenario('l3-two-window').realRunEnabled, false);
+});
+
+test('background semantic scenarios cover covered capture and exact-token mutations', () => {
+  const zoom = getCuE2eScenario('l1-background-zoom');
+  const semantic = getCuE2eScenario('l2-background-semantic');
+  assert.equal(zoom.fixtureSetup.layout, 'overlap');
+  assert.equal(semantic.fixtureSetup.layout, 'overlap');
+  assert.equal(zoom.realRunEnabled, true);
+  assert.equal(semantic.realRunEnabled, true);
+  assert.equal(semantic.minimumActionCounts.press_key, 1);
+  assert.equal(semantic.expectedState.find((entry) => entry.path === 'checked')?.equals, true);
 });
 
 test('L3 isolates two-window, stale, and occlusion hazards', () => {

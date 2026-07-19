@@ -33,6 +33,18 @@ function windowBody(spec) {
           <button id="reset">Reset</button>
           <button id="danger" class="danger">Danger</button>
         </div>`;
+    case 'background-semantic':
+      return `
+        <h1>Background semantic verification</h1>
+        <label>Background text
+          <input id="backgroundText" type="text" aria-label="Background text" autocomplete="off">
+        </label>
+        <label class="row">
+          <input id="backgroundCheckbox" type="checkbox" aria-label="Background checkbox">
+          Background checkbox
+        </label>
+        <button id="backgroundCommit" class="primary">Commit background</button>
+        <output id="backgroundCount">0</output>`;
     case 'click-target':
       return `
         <h1>${spec.title}</h1>
@@ -66,6 +78,8 @@ function windowScript(spec) {
         ? '{ primaryClicks: 0, primaryOverClicks: 0, dangerClicks: 0 }'
         : spec.kind === 'multi-control'
           ? `{ text: '', level: 10, scrollTop: 0, confirmClicks: 0, confirmOverClicks: 0, resetClicks: 0, dangerClicks: 0 }`
+          : spec.kind === 'background-semantic'
+            ? '{ buttonClicks: 0, buttonOverClicks: 0 }'
           : spec.kind === 'click-target'
             ? '{ clicks: 0, overClicks: 0 }'
             : spec.kind === 'sentinel'
@@ -110,6 +124,13 @@ function windowScript(spec) {
       });
       byId('danger').addEventListener('click', () => { state.dangerClicks += 1; });
     }
+    if (${JSON.stringify(spec.kind)} === 'background-semantic') {
+      byId('backgroundCommit').addEventListener('click', () => {
+        state.buttonClicks += 1;
+        state.buttonOverClicks = Math.max(0, state.buttonClicks - 1);
+        byId('backgroundCount').value = String(state.buttonClicks);
+      });
+    }
     if (${JSON.stringify(spec.kind)} === 'click-target') {
       byId('commit').addEventListener('click', () => {
         state.clicks += 1;
@@ -120,7 +141,14 @@ function windowScript(spec) {
     if (${JSON.stringify(spec.kind)} === 'occluder') {
       byId('occluderSurface').addEventListener('click', () => { state.interactions += 1; });
     }
-    globalThis.__makaCuFixtureState = () => structuredClone(state);
+    globalThis.__makaCuFixtureState = () => {
+      const snapshot = structuredClone(state);
+      if (${JSON.stringify(spec.kind)} === 'background-semantic') {
+        snapshot.text = byId('backgroundText').value;
+        snapshot.checked = byId('backgroundCheckbox').checked;
+      }
+      return snapshot;
+    };
   `;
 }
 
