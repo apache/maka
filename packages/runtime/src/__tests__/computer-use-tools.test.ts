@@ -435,6 +435,55 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     assert.deepEqual(point, { x: 300, y: 200 });
   });
 
+  test('semantic presentation targets the observed element center', async () => {
+    let point: { x: number; y: number } | undefined;
+    const backend = fakeBackend() as CuDispatchBackend & {
+      observeApp: NonNullable<CuDispatchBackend['observeApp']>;
+      runSemantic: NonNullable<CuDispatchBackend['runSemantic']>;
+    };
+    backend.observeApp = async () =>
+      observation({
+        windowBounds: { x: 100, y: 50, width: 400, height: 300 },
+        sourceBoundsPx: { x: 0, y: 0, width: 800, height: 600 },
+        elements: [
+          {
+            elementId: '5',
+            role: 'AXButton',
+            label: 'Continue',
+            frame: { x: 260, y: 155, width: 80, height: 30 },
+          },
+        ],
+      });
+    backend.runSemantic = async () => ({
+      outcome: { ok: true, tier: 'ax', verified: true },
+      resolvedScreenPoint: { x: 300, y: 170 },
+      observation: observation({ observationId: 'backend-obs-2' }),
+    });
+    const [tool] = buildComputerUseTools({
+      backend,
+      overlay: {
+        onActionBegin(_action, context) {
+          point = context.presentationScreenPoint;
+        },
+      },
+    });
+    const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
+      text: string;
+    };
+    const observationId = JSON.parse(observed.text).observation_id as string;
+
+    await tool.impl(
+      {
+        action: 'click_element',
+        observation_id: observationId,
+        element_id: '5',
+      } as never,
+      ctx(),
+    );
+
+    assert.deepEqual(point, { x: 300, y: 170 });
+  });
+
   test('discarded dispatch result cancels presentation instead of showing success', async () => {
     const ended: Array<boolean | undefined> = [];
     let tools: ReturnType<typeof buildComputerUseTools>;

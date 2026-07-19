@@ -953,6 +953,37 @@ export function buildComputerUseTools(deps: {
               : undefined;
     const elementId =
       semanticAction && 'elementId' in semanticAction ? semanticAction.elementId : undefined;
+    const element = elementId ? record.elements?.get(elementId) : undefined;
+    const elementSourceCoordinate = (() => {
+      const frame = element?.frame;
+      const bounds = active?.target.bounds;
+      const sourceBounds = active?.target.sourceBoundsPx;
+      if (
+        !frame ||
+        !bounds ||
+        !sourceBounds ||
+        bounds.width <= 0 ||
+        bounds.height <= 0 ||
+        sourceBounds.width <= 0 ||
+        sourceBounds.height <= 0
+      ) {
+        return undefined;
+      }
+      const centerX = frame.x + frame.width / 2;
+      const centerY = frame.y + frame.height / 2;
+      if (
+        centerX < bounds.x ||
+        centerX > bounds.x + bounds.width ||
+        centerY < bounds.y ||
+        centerY > bounds.y + bounds.height
+      ) {
+        return undefined;
+      }
+      return {
+        x: ((centerX - bounds.x) / bounds.width) * sourceBounds.width,
+        y: ((centerY - bounds.y) / bounds.height) * sourceBounds.height,
+      };
+    })();
     const fingerprint = semanticAction
       ? fingerprintCuaSemanticAction(action.type, elementId, semanticValue)
       : fingerprintCuaAction(action as CuAction);
@@ -968,6 +999,7 @@ export function buildComputerUseTools(deps: {
           type: semanticAction.type,
           elementId,
           value: semanticValue,
+          sourceCoordinate: elementSourceCoordinate,
         })
       : bindCuaActionToObservation(active, action as CuAction);
     if (!bound) return { rejection: 'target_missing' };

@@ -150,13 +150,22 @@ export function fingerprintCuaSemanticAction(
 
 export function bindCuaSemanticActionToObservation(
   observation: CuaObservation,
-  input: { type: string; elementId?: string; value?: string },
+  input: { type: string; elementId?: string; value?: string; sourceCoordinate?: CuPoint },
 ): CuaBoundAction {
   return bindCuaAction(
     observation,
     fingerprintCuaSemanticAction(input.type, input.elementId, input.value),
     observation.target,
-    input.elementId ? { elementId: input.elementId } : {},
+    {
+      ...(input.elementId ? { elementId: input.elementId } : {}),
+      ...(input.sourceCoordinate
+        ? {
+            sourceCoordinate: input.sourceCoordinate,
+            windowCoordinate: input.sourceCoordinate,
+            coordinateSpace: 'window-screenshot-local' as const,
+          }
+        : {}),
+    },
   );
 }
 
