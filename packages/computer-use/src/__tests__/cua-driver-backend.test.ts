@@ -76,6 +76,7 @@ function boundCoordinateAction(
     bounds?: { x: number; y: number; width: number; height: number };
     sourceBoundsPx?: { x: number; y: number; width: number; height: number };
     coordinate?: { x: number; y: number };
+    startCoordinate?: { x: number; y: number };
     zIndex?: number;
     page?: ComputerUsePageIdentity;
   } = {},
@@ -85,6 +86,7 @@ function boundCoordinateAction(
   const bounds = input.bounds ?? { x: 100, y: 100, width: 600, height: 400 };
   const sourceBoundsPx = input.sourceBoundsPx ?? { x: 0, y: 0, width: 1200, height: 800 };
   const coordinate = input.coordinate ?? { x: 400, y: 200 };
+  const startCoordinate = input.startCoordinate;
   return {
     frameId: 'frame-coordinate',
     epoch: 0,
@@ -101,6 +103,12 @@ function boundCoordinateAction(
       contentFingerprint: 'test-content-fingerprint',
       ...(input.page ? { page: input.page } : {}),
     },
+    ...(startCoordinate
+      ? {
+          sourceStartCoordinate: startCoordinate,
+          windowStartCoordinate: startCoordinate,
+        }
+      : {}),
     sourceCoordinate: coordinate,
     windowCoordinate: coordinate,
     coordinateSpace: 'window-screenshot-local',
@@ -751,6 +759,7 @@ describe('cua-driver backend', () => {
     assert.ok(result?.observation?.observationId);
     assert.notEqual(result?.observation?.observationId, observation!.observationId);
     assert.equal(result?.observation?.windowId, 77);
+    assert.deepEqual(result?.resolvedScreenPoint, { x: 350, y: 210 });
 
     const click = toolCall(await readRecords(logPath), 'click');
     assert.equal(click?.pid, 4242);
@@ -774,7 +783,7 @@ describe('cua-driver backend', () => {
     }
   });
 
-  it('refuses semantic input while physical user input is active', async () => {
+  it('allows AX semantic input while physical user input is active', async () => {
     const { backend, logPath } = makeBackend({
       axRole: 'AXButton',
       physicalInputRecentlyActive: () => true,
@@ -802,9 +811,59 @@ describe('cua-driver backend', () => {
       signal,
       context,
     );
-    assert.equal(result.outcome.ok, false);
-    if (!result.outcome.ok) assert.equal(result.outcome.error, 'user_intervened');
-    assert.equal(toolCalls(await readRecords(logPath), 'click').length, 0);
+    assert.equal(result.outcome.ok, true);
+    assert.equal(toolCalls(await readRecords(logPath), 'click').length, 1);
+  });
+
+  it('press_key uses the freshly refetched exact element token in the background', async () => {
+    const traces: CuaDriverTraceEvent[] = [];
+    const { backend, logPath } = makeBackend({
+      axRole: 'AXButton',
+      axLabel: 'Commit',
+      physicalInputRecentlyActive: () => true,
+      onTrace: (event) => traces.push(event),
+    });
+    const signal = new AbortController().signal;
+    const context = {
+      sessionId: 'press-session',
+      turnId: 'press-turn',
+      toolCallId: 'press-key',
+    };
+    const observation = await backend.observeApp!(
+      { app: 'Fixture Window', includeScreenshot: false },
+      signal,
+      context,
+    );
+    const result = await backend.runSemantic!(
+      {
+        type: 'press_key',
+        observationId: observation.observationId,
+        elementId: '7',
+        key: 'Return',
+        elementIdentity: observation.elements[0]!.identity,
+      },
+      signal,
+      { ...context, boundAction: boundElementAction(observation, '7') },
+    );
+
+    assert.equal(result.outcome.ok, true);
+    assert.deepEqual(result.resolvedScreenPoint, { x: 350, y: 210 });
+    const call = toolCall(await readRecords(logPath), 'press_key');
+    assert.equal(call?.pid, 4242);
+    assert.equal(call?.window_id, 77);
+    assert.equal(call?.element_index, 7);
+    assert.equal(call?.element_token, 'snapshot:7');
+    assert.equal(call?.key, 'Return');
+    assert.equal(
+      traces.some(
+        (event) =>
+          event.type === 'dispatch' &&
+          event.toolCallId === 'press-key' &&
+          event.actionType === 'press_key' &&
+          event.address === 'ax',
+      ),
+      true,
+    );
   });
 
   it('refetches a unique labeled element when the ephemeral token changes', async () => {
@@ -1403,7 +1462,7 @@ describe('cua-driver backend', () => {
     assert.equal(toolCalls(await readRecords(logPath), 'click').length, 0);
   });
 
-  it('rejects an observed semantic element occluded by another window', async () => {
+  it('allows observed AX semantic actions behind another foreground window', async () => {
     const { backend, logPath } = makeBackend({
       axRole: 'AXButton',
       axLabel: 'Continue',
@@ -1430,9 +1489,12 @@ describe('cua-driver backend', () => {
       { ...context, boundAction: boundElementAction(observation, '7') },
     );
 
-    assert.equal(result.outcome.ok, false);
-    if (!result.outcome.ok) assert.equal(result.outcome.error, 'target_occluded');
-    assert.equal(toolCalls(await readRecords(logPath), 'click').length, 0);
+    assert.equal(result.outcome.ok, true);
+    const click = toolCall(await readRecords(logPath), 'click');
+    assert.equal(click?.pid, 4242);
+    assert.equal(click?.window_id, 77);
+    assert.equal(click?.element_index, 7);
+    assert.equal(click?.element_token, 'snapshot:7');
   });
 
   it('allows semantic actions on a visible background window', async () => {
@@ -1701,6 +1763,47 @@ describe('cua-driver backend', () => {
       address: 'ax',
     });
     assert.doesNotMatch(JSON.stringify(traces), /Private field label|private value/);
+  });
+
+  it('fails set_value as outcome_unknown when fresh AX readback does not match', async () => {
+    const { backend } = makeBackend({
+      axRole: 'AXTextField',
+      axLabel: 'Fixture field',
+      nativeReadbackValue: 'stale value',
+    });
+    const signal = new AbortController().signal;
+    const context = {
+      sessionId: 'readback-session',
+      turnId: 'readback-turn',
+      toolCallId: 'native-set-value-readback',
+    };
+    const observed = await backend.observeApp!(
+      { app: 'Fixture Window', includeScreenshot: false },
+      signal,
+      context,
+    );
+
+    const result = await backend.runSemantic!(
+      {
+        type: 'set_value',
+        observationId: observed.observationId,
+        elementId: '7',
+        value: 'requested value',
+        elementIdentity: observed.elements[0]!.identity,
+      },
+      signal,
+      {
+        ...context,
+        boundAction: boundElementAction(observed, '7'),
+      },
+    );
+
+    assert.equal(result.outcome.ok, false);
+    if (!result.outcome.ok) {
+      assert.equal(result.outcome.error, 'outcome_unknown');
+      assert.equal(result.outcome.evidence?.path, 'ax');
+    }
+    assert.equal(result.observation?.elements[0]?.value, 'stale value');
   });
 
   it('fails closed when the physical-input guard cannot be read', async () => {
@@ -2037,6 +2140,26 @@ describe('cua-driver backend', () => {
     assert.equal(zoom!.y1, 200);
     assert.equal(zoom!.x2, 600);
     assert.equal(zoom!.y2, 400);
+  });
+
+  it('bound zoom captures an occluded background window without z-order rejection', async () => {
+    const { backend, logPath } = makeBackend({ semanticOccluded: true });
+    const res = await backend.run(
+      { type: 'zoom', region: { x1: 400, y1: 200, x2: 800, y2: 600 } } as CuAction,
+      new AbortController().signal,
+      {
+        ...DEFAULT_RUN_CONTEXT,
+        boundAction: boundCoordinateAction({
+          startCoordinate: { x: 400, y: 200 },
+          coordinate: { x: 800, y: 600 },
+        }),
+      },
+    );
+
+    assert.equal(res.outcome.ok, true);
+    const zoom = toolCall(await readRecords(logPath), 'zoom');
+    assert.equal(zoom?.pid, 4242);
+    assert.equal(zoom?.window_id, 77);
   });
 
   it('zoom spanning windows fails closed and never calls cua-driver zoom', async () => {

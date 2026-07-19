@@ -151,7 +151,9 @@ export type CuSemanticAction =
   | {
       type: 'press_key';
       observationId: string;
+      elementId: string;
       key: string;
+      elementIdentity?: CuObservedElement['identity'];
     };
 
 export interface CuRunContext {
@@ -274,6 +276,7 @@ const computerParams = z.discriminatedUnion('action', [
     .object({
       action: z.literal('press_key'),
       observation_id: z.string().min(1).max(256),
+      element_id: z.string().min(1).max(256),
       text,
     })
     .strict(),
@@ -393,7 +396,7 @@ const computerWireParams = z
         ...CU_ACTION_TYPES,
       ] as [string, ...string[]])
       .describe(
-        'Operation to perform. Required fields by action: observe/screenshot require app or window_id; click_element requires observation_id and element_id; set_value requires observation_id, element_id, and value; select_text/secondary_action require observation_id, element_id, and text; press_key requires observation_id and text; coordinate actions require observation_id plus their coordinate fields.',
+        'Operation to perform. Required fields by action: observe/screenshot require app or window_id; click_element requires observation_id and element_id; set_value requires observation_id, element_id, and value; select_text/secondary_action/press_key require observation_id, element_id, and text; coordinate actions require observation_id plus their coordinate fields.',
       ),
     app: z
       .string()
@@ -427,7 +430,7 @@ const computerWireParams = z
       .max(256)
       .optional()
       .describe(
-        'Required for click_element, set_value, select_text, and secondary_action. Copy the exact element_id from the same observation_id.',
+        'Required for click_element, set_value, select_text, secondary_action, and press_key. Copy the exact element_id from the same observation_id.',
       ),
     value: text
       .optional()
@@ -440,7 +443,7 @@ const computerWireParams = z
     start_coordinate: coordinate.optional().describe('Required only for left_click_drag.'),
     text: text
       .optional()
-      .describe('Required for select_text, secondary_action, press_key, type, key, and hold_key.'),
+      .describe('Required for select_text, secondary_action, press_key, type, key, and hold_key. For press_key use a key name such as Return, Escape, Tab, or Space.'),
     scroll_direction: z
       .enum(['up', 'down', 'left', 'right'])
       .optional()
@@ -1505,7 +1508,9 @@ export function buildComputerUseTools(deps: {
                           : {
                               type: 'press_key' as const,
                               observationId: input.observation_id,
+                              elementId: input.element_id,
                               key: input.text,
+                              elementIdentity: record.elements?.get(input.element_id)?.identity,
                             }),
                     };
             const binding = claimBoundAction(record, input.observation_id, modelAction);
@@ -1516,18 +1521,20 @@ export function buildComputerUseTools(deps: {
               observationId: record.backendObservationId,
             };
             const summaryAction: CuAction =
-              semanticAction.type === 'click_element'
+              semanticAction.type === 'click_element' ||
+              semanticAction.type === 'set_value' ||
+              semanticAction.type === 'select_text' ||
+              semanticAction.type === 'secondary_action'
                 ? {
                     type: 'left_click',
                     coordinate: binding.sourceCoordinate ?? { x: 0, y: 0 },
                   }
                 : semanticAction.type === 'press_key'
-                  ? { type: 'key', text: semanticAction.key }
-                  : semanticAction.type === 'set_value'
-                    ? { type: 'type', text: semanticAction.value }
-                    : semanticAction.type === 'select_text'
-                      ? { type: 'type', text: semanticAction.text }
-                      : { type: 'key', text: semanticAction.action };
+                  ? {
+                      type: 'mouse_move',
+                      coordinate: binding.sourceCoordinate ?? { x: 0, y: 0 },
+                    }
+                  : { type: 'key', text: '' };
             let result: CuRunResult | undefined;
             let consumeFailure: ComputerToolResult | undefined;
             let presentation: Awaited<ReturnType<typeof runWithPresentation>> | undefined;

@@ -1139,7 +1139,7 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     assert.match(result.text, /verified=false/);
   });
 
-  test('press_key binds the observation window without requiring an element id', async () => {
+  test('press_key binds the exact observed element and forwards its identity', async () => {
     const seen: Array<{ action: unknown; context: CuRunContext }> = [];
     const backend = fakeBackend() as CuDispatchBackend & {
       observeApp: NonNullable<CuDispatchBackend['observeApp']>;
@@ -1163,6 +1163,7 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
       {
         action: 'press_key',
         observation_id: observationId,
+        element_id: '5',
         text: 'ENTER',
       } as never,
       ctx(),
@@ -1171,11 +1172,34 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     assert.deepEqual(seen[0]?.action, {
       type: 'press_key',
       observationId: 'backend-obs-1',
+      elementId: '5',
       key: 'ENTER',
+      elementIdentity: {
+        token: 'button-token',
+        role: 'AXButton',
+        label: 'Continue',
+      },
     });
-    assert.equal(seen[0]?.context.boundAction?.elementId, undefined);
+    assert.equal(seen[0]?.context.boundAction?.elementId, '5');
     assert.equal(seen[0]?.context.boundAction?.target?.windowId, 7);
     assert.match(result.text, /Fresh observation/);
+  });
+
+  test('press_key requires an element id from the referenced observation', async () => {
+    const [tool] = buildComputerUseTools({ backend: fakeBackend() });
+    await assert.rejects(
+      Promise.resolve(
+        tool.impl(
+          {
+            action: 'press_key',
+            observation_id: 'frame-1',
+            text: 'Return',
+          } as never,
+          ctx(),
+        ),
+      ),
+      /element_id/,
+    );
   });
 
   test('select_text forwards the identity hint for unique semantic refetch', async () => {

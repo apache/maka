@@ -1070,88 +1070,6 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
     });
   }
 
-  async function validateSemanticElementVisibility(
-    window: CuaResolvedWindow,
-    element: NonNullable<ReturnType<typeof normalizeCuaSnapshotElement>>,
-    signal: AbortSignal,
-  ): Promise<CuRunResult | undefined> {
-    const point = {
-      x: element.frame.x + element.frame.w / 2,
-      y: element.frame.y + element.frame.h / 2,
-    };
-    if (
-      point.x < window.bounds.x ||
-      point.x >= window.bounds.x + window.bounds.width ||
-      point.y < window.bounds.y ||
-      point.y >= window.bounds.y + window.bounds.height
-    ) {
-      return {
-        outcome: {
-          ok: false,
-          error: 'target_changed',
-          message: 'semantic element moved outside the observed target window',
-        },
-      };
-    }
-    const winner = (await listWindowRecords(signal))
-      .flatMap((candidate) => {
-        if (
-          candidate.layer !== 0 ||
-          candidate.is_on_screen === false ||
-          typeof candidate.pid !== 'number' ||
-          typeof candidate.window_id !== 'number' ||
-          !candidate.bounds ||
-          typeof candidate.bounds !== 'object'
-        )
-          return [];
-        const bounds = candidate.bounds as Record<string, unknown>;
-        if (
-          typeof bounds.x !== 'number' ||
-          typeof bounds.y !== 'number' ||
-          typeof bounds.width !== 'number' ||
-          typeof bounds.height !== 'number'
-        )
-          return [];
-        const inside =
-          point.x >= bounds.x &&
-          point.x < bounds.x + bounds.width &&
-          point.y >= bounds.y &&
-          point.y < bounds.y + bounds.height;
-        return inside
-          ? [
-              {
-                pid: candidate.pid,
-                windowId: candidate.window_id,
-                zIndex: Number(candidate.z_index) || 0,
-              },
-            ]
-          : [];
-      })
-      .sort((left, right) => right.zIndex - left.zIndex)[0];
-    if (!winner || winner.pid !== window.pid || winner.windowId !== window.windowId) {
-      trace({
-        type: 'occlusion',
-        expectedPid: window.pid,
-        expectedWindowId: window.windowId,
-        ...(winner
-          ? {
-              winnerPid: winner.pid,
-              winnerWindowId: winner.windowId,
-              winnerZIndex: winner.zIndex,
-            }
-          : {}),
-      });
-      return {
-        outcome: {
-          ok: false,
-          error: 'target_occluded',
-          message: 'another window now owns the semantic element position',
-        },
-      };
-    }
-    return undefined;
-  }
-
   async function validateStoredWindow(
     observation: StoredObservation,
     bound: CuaBoundAction | undefined,
@@ -1295,6 +1213,7 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
     bound: CuaBoundAction | undefined,
     signal: AbortSignal,
     start = false,
+    requireVisible = true,
   ): Promise<CuaResolvedWindow | CuRunResult | undefined> {
     if (!bound?.target) return undefined;
     if (!bound.target.contentFingerprint) {
@@ -1366,6 +1285,12 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
         },
       };
     }
+    if (!requireVisible) {
+      return {
+        ...validated,
+        screenPoint: point.screenPoint,
+      };
+    }
     const windows = await listWindowRecords(signal);
     const winner = windows
       .flatMap((window) => {
@@ -1434,14 +1359,15 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
     fallback: { x: number; y: number },
     signal: AbortSignal,
     start = false,
+    requireVisible = true,
   ): Promise<CuaResolvedWindow | CuRunResult | undefined> {
-    if (bound) return validateBoundCoordinate(bound, signal, start);
+    if (bound) return validateBoundCoordinate(bound, signal, start, requireVisible);
     return resolveWindowAt(fallback.x, fallback.y, signal);
   }
 
   async function refetchSemanticElement(
     observation: StoredObservation,
-    action: Exclude<CuSemanticAction, { type: 'press_key' }>,
+    action: CuSemanticAction,
     signal: AbortSignal,
   ): Promise<NonNullable<ReturnType<typeof normalizeCuaSnapshotElement>> | CuRunResult> {
     const state = await actionClient.callTool(
@@ -1574,8 +1500,6 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
         evidence: { path: 'ax', effect: 'confirmed' },
       };
     }
-    const intervention = await physicalInputFailure();
-    if (intervention) return intervention.outcome;
     const setResult = await actionClient.callTool(
       'set_value',
       {
@@ -1683,8 +1607,6 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
         evidence: { path: 'cdp', effect: 'confirmed' },
       };
     }
-    const intervention = await physicalInputFailure();
-    if (intervention) return intervention.outcome;
     const result = await actionClient.callTool(
       'page',
       {
@@ -1780,8 +1702,6 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
       };
     }
 
-    const intervention = await physicalInputFailure();
-    if (intervention) return { handled: true, outcome: intervention.outcome };
     trace({
       type: 'dispatch',
       toolCallId,
@@ -1973,16 +1893,30 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
             );
             if ('outcome' in validated) return validated;
             if (action.type === 'press_key') {
-              if (opts.allowCompatibilityInputDispatch !== true) {
-                return compatibilityInputBlocked(action.type);
-              }
-              const intervention = await physicalInputFailure();
-              if (intervention) return intervention;
+              const refetched = await refetchSemanticElement(observation, action, signal);
+              if ('outcome' in refetched) return refetched;
+              const resolvedScreenPoint = {
+                x: refetched.frame.x + refetched.frame.w / 2,
+                y: refetched.frame.y + refetched.frame.h / 2,
+              };
+              trace({
+                type: 'dispatch',
+                toolCallId: context.toolCallId,
+                actionType: action.type,
+                tool: 'press_key',
+                pid: validated.pid,
+                windowId: validated.windowId,
+                address: 'ax',
+              });
               const result = await actionClient.callTool(
                 'press_key',
                 {
                   pid: validated.pid,
                   window_id: validated.windowId,
+                  element_index: refetched.element_index,
+                  ...(refetched.element_token
+                    ? { element_token: refetched.element_token }
+                    : {}),
                   key: action.key,
                 },
                 signal,
@@ -1998,6 +1932,7 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
               return {
                 outcome,
                 observation: fresh,
+                resolvedScreenPoint,
                 ...(fresh.screenshot ? { screenshot: fresh.screenshot } : {}),
               };
             }
@@ -2012,20 +1947,21 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
             }
             const refetched = await refetchSemanticElement(observation, action, signal);
             if ('outcome' in refetched) return refetched;
-            const visibilityFailure = await validateSemanticElementVisibility(
-              validated,
-              refetched,
-              signal,
-            );
-            if (visibilityFailure) return visibilityFailure;
+            const resolvedScreenPoint = {
+              x: refetched.frame.x + refetched.frame.w / 2,
+              y: refetched.frame.y + refetched.frame.h / 2,
+            };
+            // AX element actions address a freshly refetched element inside an
+            // already-validated app/window. They do not hit-test screen pixels,
+            // so another foreground window must not block background AXPress or
+            // AXValue dispatch. Coordinate actions retain the z-order check in
+            // validateBoundCoordinate.
             const args = {
               pid: validated.pid,
               window_id: validated.windowId,
               element_index: refetched.element_index,
               ...(refetched.element_token ? { element_token: refetched.element_token } : {}),
             };
-            const intervention = await physicalInputFailure();
-            if (intervention) return intervention;
             trace({
               type: 'dispatch',
               toolCallId: context.toolCallId,
@@ -2062,9 +1998,55 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
             } catch {
               return deliveredVerificationFailure(action.type, 'ax');
             }
+            if (action.type === 'set_value') {
+              const exactIndexElement = fresh.elements.find(
+                (candidate) => candidate.elementId === String(refetched.element_index),
+              );
+              const matchingElements = fresh.elements.filter(
+                (candidate) =>
+                  candidate.role === refetched.role &&
+                  candidate.label === refetched.label &&
+                  candidate.frame !== undefined &&
+                  candidate.frame.x === refetched.frame.x &&
+                  candidate.frame.y === refetched.frame.y &&
+                  candidate.frame.width === refetched.frame.w &&
+                  candidate.frame.height === refetched.frame.h,
+              );
+              const readbackElement =
+                exactIndexElement &&
+                exactIndexElement.role === refetched.role &&
+                exactIndexElement.label === refetched.label
+                  ? exactIndexElement
+                  : matchingElements.length === 1
+                    ? matchingElements[0]
+                    : undefined;
+              if (
+                !readbackElement ||
+                readbackElement.value !== action.value
+              ) {
+                return {
+                  ...deliveredVerificationFailure('set_value', 'ax'),
+                  observation: fresh,
+                  resolvedScreenPoint,
+                  ...(fresh.screenshot ? { screenshot: fresh.screenshot } : {}),
+                };
+              }
+              return {
+                outcome: {
+                  ok: true,
+                  tier: 'ax',
+                  verified: true,
+                  evidence: { path: 'ax', effect: 'confirmed' },
+                },
+                observation: fresh,
+                resolvedScreenPoint,
+                ...(fresh.screenshot ? { screenshot: fresh.screenshot } : {}),
+              };
+            }
             return {
               outcome,
               observation: fresh,
+              resolvedScreenPoint,
               ...(fresh.screenshot ? { screenshot: fresh.screenshot } : {}),
             };
           },
@@ -2485,12 +2467,15 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
                   { x: x1, y: y1 },
                   signal,
                   true,
+                  false,
                 );
                 if (topLeft && 'outcome' in topLeft) return topLeft;
                 const bottomRight = await coordinateTarget(
                   context.boundAction,
                   { x: x2, y: y2 },
                   signal,
+                  false,
+                  false,
                 );
                 if (bottomRight && 'outcome' in bottomRight) return bottomRight;
                 if (!topLeft || !bottomRight) {
