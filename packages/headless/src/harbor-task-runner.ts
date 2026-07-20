@@ -25,9 +25,8 @@ import {
   type TaskRunInput,
   type TaskRunOutput,
   type TaskRunner,
-  type HarborVerifierAttempt,
-  type HarborVerifierOutcome,
 } from './fixed-prompt-controller.js';
+import type { HarborVerifierAttempt, HarborVerifierOutcome } from './fixed-prompt-wal-types.js';
 import {
   HARBOR_ORACLE_EXECUTION_POLICY,
   HARBOR_ORACLE_MAX_ATTEMPTS,

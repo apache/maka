@@ -5,7 +5,7 @@ import type {
   RsiPredictedFixOutcome,
   RsiRiskTaskOutcome,
   RsiRootCauseSignalMatch,
-} from './fixed-prompt-controller.js';
+} from './fixed-prompt-wal-types.js';
 import type { PromptAcceptanceResult } from './prompt-acceptance-policy.js';
 import type { RsiRoundAnalysis, RsiTaskOutcome, RsiTaskTransition } from './rsi-round-analysis.js';
 
@@ -13,7 +13,7 @@ export type {
   RsiPredictedFixOutcome,
   RsiRiskTaskOutcome,
   RsiRootCauseSignalMatch,
-} from './fixed-prompt-controller.js';
+} from './fixed-prompt-wal-types.js';
 
 export interface RsiControllerAttribution {
   runId: string;

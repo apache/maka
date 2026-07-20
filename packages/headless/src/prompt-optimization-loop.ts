@@ -4,19 +4,21 @@ import { isDeepStrictEqual } from 'node:util';
 import type { Config } from './contracts.js';
 import {
   appendFixedPromptWalEvent,
-  FIXED_PROMPT_WAL_SCHEMA_VERSION,
   runFixedPromptController,
   hashSystemPrompt,
   readFixedPromptWal,
   writeFixedPromptResultsTsv,
   type FixedPromptControllerResult,
   type FixedPromptTask,
+  type TaskRunner,
+} from './fixed-prompt-controller.js';
+import {
+  FIXED_PROMPT_WAL_SCHEMA_VERSION,
   type FixedPromptTaskCompletedEvent,
   type FixedPromptTaskWalEvent,
-  type TaskRunner,
   type PromptCandidateRewardHackScan,
   type RsiControllerAttributionEvent,
-} from './fixed-prompt-controller.js';
+} from './fixed-prompt-wal-types.js';
 import {
   extractTrajectoryDigest,
   runPromptCandidateRound,

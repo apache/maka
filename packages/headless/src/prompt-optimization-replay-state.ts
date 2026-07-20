@@ -8,7 +8,7 @@ import type {
   FixedPromptWalEvent,
   PromptCandidateCommittedEvent,
   PromptCandidateDecisionEvent,
-} from './fixed-prompt-controller.js';
+} from './fixed-prompt-wal-types.js';
 import { hashCandidateRationale, hashHeldInTaskSet } from './prompt-candidate-loop.js';
 
 const execFileAsync = promisify(execFile);
