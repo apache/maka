@@ -83,6 +83,10 @@ const ALLOW = new Map([
     'apps/desktop/src/main/config-file-watcher.ts',
     'Watcher startup failure and runtime error diagnostics; non-fatal, no secrets.',
   ],
+  [
+    'apps/desktop/src/main/shell-env.ts',
+    'login-shell env resolution diagnostics at startup (PATH-entry count, shell stderr snippet, capture failure reason); non-fatal, no secrets.',
+  ],
   ['scripts/check-console.mjs', 'this script — explicit allow.'],
   [
     'apps/desktop/src/main/automation-wiring.ts',
