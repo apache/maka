@@ -87,6 +87,7 @@ import { createDailyReviewArchiveStore } from './daily-review-archive-store.js';
 import { resolveDefaultPermissionMode } from './permission-mode-default.js';
 import { resolveE2eFixture, seedE2eFixture } from './e2e-fixture.js';
 import { resolveBuildInfo } from './build-info.js';
+import { resolveShellEnv } from './shell-env.js';
 import { OpenGatewayService } from './open-gateway.js';
 import { LocalMemoryService } from './local-memory-service.js';
 import { createAttachmentApprovalRegistry } from './attachment-approval.js';
@@ -178,6 +179,14 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
+
+// Resolve the user's login-shell environment (PATH, etc.) before any stores,
+// tools, or child processes are created. On macOS, apps launched from
+// Finder/Dock inherit a minimal PATH that lacks /opt/homebrew/bin, ~/.local/bin,
+// etc. This spawns the user's login shell once and merges its env — the same
+// approach VS Code uses. Skipped on Windows, when MAKA_SKIP_SHELL_ENV=1, and
+// when launched from a terminal (TERM/COLORTERM set).
+await resolveShellEnv();
 
 // PR-VISUAL-SMOKE-HEADLESS: resolve the fixture defensively. An unknown
 // scenario (e.g. a stale build, or a typo'd MAKA_E2E_FIXTURE) throws
