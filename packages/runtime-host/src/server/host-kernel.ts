@@ -32,6 +32,7 @@ import {
   type OperationResidency,
   type OperationHandlerMap,
 } from './operation-dispatcher.js';
+import type { SessionContinuityService } from './session-continuity-service.js';
 
 const DEFAULT_IDLE_GRACE_MS = 30_000;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 5_000;
@@ -63,6 +64,7 @@ export interface RuntimeHostCompositionContext {
 
 export interface RuntimeHostComposition {
   readonly handlers: DomainOperationHandlerMap;
+  readonly continuity?: SessionContinuityService;
   recover(): Promise<void>;
   close(): Promise<void>;
 }
@@ -239,6 +241,7 @@ export class RuntimeHostKernel {
           principal: 'local_os_user',
         },
         resolveHandlers: () => this.#operationHandlers,
+        resolveContinuity: () => this.#composition?.continuity,
         beginOperation: (request) => this.#beginOperation(request),
         onTeardown: releaseConnection,
       });

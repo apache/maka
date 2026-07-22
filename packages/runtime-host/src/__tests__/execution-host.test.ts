@@ -31,11 +31,14 @@ import {
 import {
   connectRuntimeHost,
   RuntimeHostOperationError,
+  RuntimeHostSubscriptionError,
   type RuntimeHostConnection,
+  type RuntimeHostSessionSubscription,
 } from '../client/index.js';
 import {
   decodeHostFrame,
   RUNTIME_HOST_PROTOCOL_VERSION,
+  type SubscriptionFrame,
   type TurnMessageSubmitInput,
   type TurnSnapshot,
 } from '../protocol/index.js';
@@ -177,6 +180,101 @@ test('two Clients share one execution after the starting Client disconnects', as
   });
 });
 
+test('subscribed Clients share one canonical queue and ordered root handoff', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const host = await fixture.startHost();
+    const desktop = await connectClient(fixture.root, 'desktop');
+    const tui = await connectClient(fixture.root, 'tui');
+    const desktopSubscription = await desktop.openSessionSubscription({
+      sessionId: fixture.sessionId,
+    });
+    const tuiSubscription = await tui.openSessionSubscription({ sessionId: fixture.sessionId });
+    const desktopProbe = new SubscriptionProbe(desktopSubscription);
+    const tuiProbe = new SubscriptionProbe(tuiSubscription);
+    for (const subscription of [desktopSubscription, tuiSubscription]) {
+      assert.equal(subscription.hostEpoch, host.hostEpoch);
+      assert.equal(subscription.snapshot.rootTurn, null);
+      assert.equal(subscription.snapshot.projectionRevision, 1);
+      assert.equal(subscription.snapshot.queue.hostEpoch, host.hostEpoch);
+    }
+
+    const firstTurnId = randomUUID();
+    const started = await desktop.startTurn({
+      sessionId: fixture.sessionId,
+      turnId: firstTurnId,
+      content: { text: `continuity root ${'x'.repeat(540)}` },
+    });
+    for (const probe of [desktopProbe, tuiProbe]) {
+      const liveDelta = await probe.waitFor(
+        (frame) =>
+          frame.kind === 'subscription.session_delta' && frame.delta.turnId === firstTurnId,
+        'continuity did not publish the live assistant delta',
+      );
+      assert.equal(liveDelta.kind, 'subscription.session_delta');
+      if (liveDelta.kind === 'subscription.session_delta') {
+        assert.equal(liveDelta.delta.runId, started.runId);
+      }
+    }
+
+    const followupId = randomUUID();
+    const followupContent = { text: 'continue after the first root completes' };
+    const queued = await tui.request('turn.message.submit', {
+      originHostEpoch: host.hostEpoch,
+      sessionId: fixture.sessionId,
+      messageId: followupId,
+      content: followupContent,
+      placement: 'next_turn',
+    });
+    assert.equal(queued.disposition, 'followup');
+    for (const probe of [desktopProbe, tuiProbe]) {
+      const queueProjection = await probe.waitFor(
+        (frame) =>
+          frame.kind === 'subscription.session_projection' &&
+          frame.snapshot.queue.followup.some((entry) => entry.messageId === followupId),
+        'continuity did not publish the accepted follow-up',
+      );
+      assert.equal(queueProjection.kind, 'subscription.session_projection');
+    }
+
+    await desktop.close();
+    await desktopProbe.waitForFailure('connection_closed');
+    assert.equal((await tui.status()).connections, 1);
+    const terminal = await tuiProbe.waitFor(
+      (frame) =>
+        frame.kind === 'subscription.session_projection' &&
+        frame.snapshot.rootTurn?.turnId === firstTurnId &&
+        frame.snapshot.rootTurn.status === 'completed',
+      'continuity did not publish the terminal root cut',
+    );
+    assert.equal(terminal.kind, 'subscription.session_projection');
+    const successor = await tuiProbe.waitFor(
+      (frame) =>
+        frame.kind === 'subscription.session_projection' &&
+        frame.snapshot.rootTurn !== null &&
+        frame.snapshot.rootTurn.turnId !== firstTurnId,
+      'continuity did not publish the successor root',
+    );
+    assert.equal(successor.kind, 'subscription.session_projection');
+    if (successor.kind !== 'subscription.session_projection' || !successor.snapshot.rootTurn) {
+      return;
+    }
+    assert.equal(successor.snapshot.rootTurn.sessionId, fixture.sessionId);
+    assert.ok(tuiProbe.indexOf(terminal) < tuiProbe.indexOf(successor));
+    await tuiSubscription.close();
+    await tuiProbe.done;
+    await waitForTerminalTurn(tui, fixture.sessionId, successor.snapshot.rootTurn.turnId);
+    await tui.close();
+    await fixture.stopHost(host);
+
+    const chain = await fixture.readAdmissionChain();
+    assert.deepEqual(
+      chain.map((admission) => admission.turnId),
+      [firstTurnId, successor.snapshot.rootTurn.turnId],
+    );
+    assert.deepEqual(chain[1]?.normalizedInput, followupContent);
+  });
+});
+
 test('concurrent root admission for one Session has a single winner', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
@@ -259,23 +357,45 @@ test('a killed Host is recovered exactly once before its successor becomes ready
   await withExecutionRoot(async (fixture) => {
     const firstHost = await fixture.startHost();
     const first = await connectClient(fixture.root, 'desktop');
+    const firstSubscription = await first.openSessionSubscription({
+      sessionId: fixture.sessionId,
+    });
+    const firstProbe = new SubscriptionProbe(firstSubscription);
     const turnId = randomUUID();
     const started = await first.startTurn({
       sessionId: fixture.sessionId,
       turnId,
       content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
     });
+    await firstProbe.waitFor(
+      (frame) =>
+        frame.kind === 'subscription.session_projection' &&
+        frame.snapshot.rootTurn?.runId === started.runId &&
+        frame.snapshot.rootTurn.status !== 'admitted',
+      'first Host did not publish the active root projection',
+    );
 
     await fixture.killHost(firstHost);
     await first.closed;
+    await firstProbe.waitForFailure('connection_closed');
     const secondHost = await fixture.startHost();
     const second = await connectClient(fixture.root, 'tui');
+    const recoveredSubscription = await second.openSessionSubscription({
+      sessionId: fixture.sessionId,
+    });
     const recovered = await second.queryTurn({
       sessionId: fixture.sessionId,
       turnId,
     });
     assert.equal(recovered.status, 'failed');
     if (recovered.status === 'failed') assert.equal(recovered.failureClass, 'app_restarted');
+    assert.notEqual(recoveredSubscription.hostEpoch, firstSubscription.hostEpoch);
+    assert.equal(recoveredSubscription.snapshot.projectionRevision, 1);
+    assert.deepEqual(recoveredSubscription.snapshot.rootTurn, recovered);
+    assert.equal(recoveredSubscription.snapshot.queue.hostEpoch, recoveredSubscription.hostEpoch);
+    assert.deepEqual(recoveredSubscription.snapshot.queue.steering, []);
+    assert.deepEqual(recoveredSubscription.snapshot.queue.followup, []);
+    await recoveredSubscription.close();
     await second.close();
     await fixture.stopHost(secondHost);
 
@@ -1621,6 +1741,53 @@ async function waitForTurn(
       if (!(error instanceof RuntimeHostOperationError) || error.code !== 'not_found') throw error;
       if (Date.now() >= deadline) throw new Error('Turn admission was not observed');
       await sleep(20);
+    }
+  }
+}
+
+class SubscriptionProbe {
+  readonly frames: SubscriptionFrame[] = [];
+  readonly done: Promise<void>;
+  #failure: unknown;
+  #settled = false;
+
+  constructor(subscription: RuntimeHostSessionSubscription) {
+    this.done = this.#consume(subscription);
+  }
+
+  async waitFor(
+    predicate: (frame: SubscriptionFrame) => boolean,
+    message: string,
+  ): Promise<SubscriptionFrame> {
+    const deadline = Date.now() + PROCESS_TIMEOUT_MS;
+    while (true) {
+      const frame = this.frames.find(predicate);
+      if (frame) return frame;
+      if (this.#failure) throw this.#failure;
+      if (this.#settled) throw new Error(`${message}: subscription closed`);
+      if (Date.now() >= deadline) throw new Error(message);
+      await sleep(10);
+    }
+  }
+
+  async waitForFailure(reason: RuntimeHostSubscriptionError['reason']): Promise<void> {
+    const deadline = Date.now() + PROCESS_TIMEOUT_MS;
+    while (!this.#failure && !this.#settled && Date.now() < deadline) await sleep(10);
+    assert.ok(this.#failure instanceof RuntimeHostSubscriptionError);
+    assert.equal(this.#failure.reason, reason);
+  }
+
+  indexOf(frame: SubscriptionFrame): number {
+    return this.frames.indexOf(frame);
+  }
+
+  async #consume(subscription: RuntimeHostSessionSubscription): Promise<void> {
+    try {
+      for await (const frame of subscription) this.frames.push(frame);
+    } catch (error) {
+      this.#failure = error;
+    } finally {
+      this.#settled = true;
     }
   }
 }

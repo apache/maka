@@ -33,6 +33,7 @@ const allowedServerExternalImports = new Set([
   '@maka/runtime',
   '@maka/storage/execution-stores',
   '@maka/storage/runtime-policy-stores',
+  'node:async_hooks',
 ]);
 const allowedExternalImports = {
   client: allowedHostExternalImports,
@@ -132,6 +133,7 @@ test('the production Candidate dependency graph remains non-serving', () => {
     'server/execution-composition.ts',
     'server/root-turn-coordinator.ts',
     'server/runtime-policy-coordinator.ts',
+    'server/session-continuity-coordinator.ts',
   ]);
   const violations: string[] = [];
   for (const path of reached) {
@@ -158,6 +160,7 @@ test('the public server entrypoint does not expose the test execution compositio
     'server/execution-candidate.ts',
     'server/execution-composition.ts',
     'server/root-turn-coordinator.ts',
+    'server/session-continuity-coordinator.ts',
   ]);
   assert.deepEqual(
     reachableModules(serverEntrypoint, publicEntrypoints)

@@ -9,6 +9,7 @@ import {
   type OperationSpec,
 } from './operation-spec.js';
 import { RUNTIME_POLICY_OPERATION_SPECS } from './runtime-policy.js';
+import { SESSION_CONTINUITY_OPERATION_SPECS } from './session-continuity.js';
 import { TURN_OPERATION_SPECS } from './turn.js';
 
 export type { HostLifecycleState, HostStatusInput, HostStatusResult } from './host-status.js';
@@ -51,9 +52,14 @@ const CORE_OPERATION_SPECS = composeOperationSpecMaps(
   RUNTIME_POLICY_OPERATION_SPECS,
 );
 
-export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
+const CORE_AND_MESSAGE_OPERATION_SPECS = composeOperationSpecMaps(
   CORE_OPERATION_SPECS,
   MESSAGE_OPERATION_SPECS,
+);
+
+export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
+  CORE_AND_MESSAGE_OPERATION_SPECS,
+  SESSION_CONTINUITY_OPERATION_SPECS,
 );
 
 export type OperationSpecMap = typeof HOST_OPERATION_SPECS;

@@ -51,6 +51,45 @@ test('idle submit starts exactly one root Turn and retry identity is connection-
   assert.equal(fixture.liveResidencies(), 0);
 });
 
+test('invalidates the canonical projection after each observable queue mutation', async () => {
+  const changedSessions: string[] = [];
+  const fixture = createFixture((sessionId) => changedSessions.push(sessionId));
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const owner = fixture.coordinator.bindRun(ROOT);
+
+  assert.equal((await submit(fixture, 'steering-1', 'first', 'current_turn')).ok, true);
+  const [lease] = owner.pull();
+  assert.ok(lease);
+  owner.ack([lease.id]);
+  owner.release();
+  fixture.coordinator.completeIdle(fixture.coordinator.beginTerminalTransition(ROOT));
+
+  assert.deepEqual(
+    changedSessions,
+    Array.from({ length: 4 }, () => ROOT.sessionId),
+  );
+  await fixture.coordinator.close();
+});
+
+test('binds the exact reserved Run after a pre-bind stop fence', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  assert.equal((await submit(fixture, 'queued-before-bind', 'discard me', 'next_turn')).ok, true);
+
+  const fence = fixture.coordinator.commitStopFence(ROOT);
+  assert.equal(fence.retracted.length, 1);
+  assert.deepEqual(fixture.coordinator.projection(ROOT.sessionId).followup, []);
+  assert.equal(fixture.liveResidencies(), 0);
+
+  const owner = fixture.coordinator.bindRun(ROOT);
+  assert.deepEqual(owner.pull(), []);
+  owner.release();
+  const batch = fixture.coordinator.beginTerminalTransition(ROOT);
+  assert.deepEqual(batch.sources, []);
+  fixture.coordinator.completeIdle(batch);
+  await fixture.coordinator.close();
+});
+
 test('queue projection capacity is rejected before mutation or residency acquisition', async () => {
   const fixture = createFixture();
   fixture.coordinator.reserveRootTurn(ROOT);
@@ -1098,7 +1137,7 @@ test('canonical retry omits redundant display text and empty ordered refs', asyn
   fixture.coordinator.completeIdle(batch);
 });
 
-function createFixture() {
+function createFixture(onProjectionChanged?: (sessionId: string) => void) {
   let nextId = 1;
   let liveResidencies = 0;
   let startCalls = 0;
@@ -1215,6 +1254,7 @@ function createFixture() {
     requestDrain: () => {
       drainRequests += 1;
     },
+    ...(onProjectionChanged ? { onProjectionChanged } : {}),
     createId: () => `id-${nextId++}`,
   };
   coordinator = new HostMessageCoordinator(options);

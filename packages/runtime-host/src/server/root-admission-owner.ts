@@ -13,6 +13,15 @@ import type {
 } from '@maka/storage/execution-stores';
 
 type OwnedAdmitRootTurnInput = Omit<AdmitRootTurnInput, 'previousRootTurnId'>;
+type Immutable<T> = T extends (...args: never[]) => unknown
+  ? T
+  : T extends readonly (infer Item)[]
+    ? readonly Immutable<Item>[]
+    : T extends object
+      ? { readonly [Key in keyof T]: Immutable<T[Key]> }
+      : T;
+
+export type ValidatedRootTurnAdmission = Immutable<RootTurnAdmission>;
 
 export class RootAdmissionOwner {
   readonly #admissionsBySession = new Map<string, Map<string, RootTurnAdmission>>();
@@ -20,6 +29,10 @@ export class RootAdmissionOwner {
   readonly #poisonedSessions = new Set<string>();
 
   constructor(private readonly store: RootTurnAdmissionStore) {}
+
+  latestAdmission(sessionId: string): ValidatedRootTurnAdmission | undefined {
+    return this.#tips.get(sessionId);
+  }
 
   assertKnownAdmission(admission: RootTurnAdmission): void {
     const known = this.#admissionsBySession.get(admission.sessionId)?.get(admission.turnId);

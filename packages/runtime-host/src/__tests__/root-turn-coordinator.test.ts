@@ -22,11 +22,13 @@ import {
   type RootTurnAdmissionStore,
 } from '@maka/storage/execution-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
+import { CanonicalSessionProjectionReader } from '../server/canonical-session-projection.js';
 import type { RuntimeHostResidency } from '../server/host-kernel.js';
 import { type HostMessageRootPort, HostMessageCoordinator } from '../server/message-coordinator.js';
 import { RootAdmissionOwner } from '../server/root-admission-owner.js';
 import { RootTurnCoordinator } from '../server/root-turn-coordinator.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
+import { SessionContinuityCoordinator } from '../server/session-continuity-coordinator.js';
 
 const HOLD_EXTERNAL_PROMPT = 'hold external root before follow-up';
 
@@ -56,11 +58,14 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     await rootAdmissionOwner.recoverSession(parent.id);
     const acquireResidency = (): RuntimeHostResidency => ({ release() {} });
     let coordinator: RootTurnCoordinator | undefined;
+    let continuity: SessionContinuityCoordinator | undefined;
+    let drainRequested = false;
     const rootPort: HostMessageRootPort = {
       readSessionHeader: (sessionId) =>
         requireCoordinator(coordinator).readSessionHeader(sessionId),
       readRootState: (sessionId) => requireCoordinator(coordinator).readRootState(sessionId),
-      startFromMessage: (input) => requireCoordinator(coordinator).startFromMessage(input),
+      startFromMessage: (input, admission) =>
+        requireCoordinator(coordinator).startFromMessage(input, admission),
       claimStop: (input, commitQueueFence) =>
         requireCoordinator(coordinator).claimStop(input, commitQueueFence),
     };
@@ -78,7 +83,25 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       receipts: stores.messageReceiptStore,
       sessionAdmission,
       acquireResidency,
+      requestDrain: () => {
+        drainRequested = true;
+      },
+      onProjectionChanged: (sessionId) =>
+        requireContinuity(continuity).enqueueCanonicalRefresh(sessionId),
     });
+    const canonicalProjection = new CanonicalSessionProjectionReader({
+      stores,
+      rootAdmissions: rootAdmissionOwner,
+      messages,
+    });
+    continuity = new SessionContinuityCoordinator(
+      hostEpoch,
+      (sessionId) => canonicalProjection.read(sessionId),
+      sessionAdmission,
+      () => {
+        drainRequested = true;
+      },
+    );
     const authority: RuntimeHostedRootAuthority = {
       bindRun: (identity) => messages.bindRun(identity),
       executeRoot: (input) => requireCoordinator(coordinator).executeRoot(input),
@@ -104,13 +127,13 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       now: Date.now,
       messageAuthority: authority,
     });
-    let drainRequested = false;
     coordinator = new RootTurnCoordinator(
       manager,
       stores,
       sessionAdmission,
       rootAdmissionOwner,
       messages,
+      continuity,
       acquireResidency,
       () => {
         drainRequested = true;
@@ -416,6 +439,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     });
     await coordinator.close();
     await messages.close();
+    continuity.close();
   } finally {
     await owner.close();
     await rm(base, { recursive: true, force: true });
@@ -670,11 +694,13 @@ test('shutdown re-scans a successor created by an in-flight terminal handoff', {
     };
     const sessionAdmission = new SessionAdmissionGate();
     let coordinator: RootTurnCoordinator | undefined;
+    let continuity: SessionContinuityCoordinator | undefined;
     const rootPort: HostMessageRootPort = {
       readSessionHeader: (sessionId) =>
         requireCoordinator(coordinator).readSessionHeader(sessionId),
       readRootState: (sessionId) => requireCoordinator(coordinator).readRootState(sessionId),
-      startFromMessage: (input) => requireCoordinator(coordinator).startFromMessage(input),
+      startFromMessage: (input, admission) =>
+        requireCoordinator(coordinator).startFromMessage(input, admission),
       claimStop: (input, commitQueueFence) =>
         requireCoordinator(coordinator).claimStop(input, commitQueueFence),
     };
@@ -692,7 +718,19 @@ test('shutdown re-scans a successor created by an in-flight terminal handoff', {
       receipts: stores.messageReceiptStore,
       sessionAdmission,
       acquireResidency,
+      onProjectionChanged: (sessionId) =>
+        requireContinuity(continuity).enqueueCanonicalRefresh(sessionId),
     });
+    const canonicalProjection = new CanonicalSessionProjectionReader({
+      stores,
+      rootAdmissions: rootAdmissionOwner,
+      messages,
+    });
+    continuity = new SessionContinuityCoordinator(
+      hostEpoch,
+      (sessionId) => canonicalProjection.read(sessionId),
+      sessionAdmission,
+    );
     const backends = new BackendRegistry();
     backends.register('fake', (context) => new FakeBackend(context));
     const manager = new SessionManager({
@@ -711,6 +749,7 @@ test('shutdown re-scans a successor created by an in-flight terminal handoff', {
       sessionAdmission,
       rootAdmissionOwner,
       messages,
+      continuity,
       acquireResidency,
       () => {
         drainRequested = true;
@@ -746,6 +785,7 @@ test('shutdown re-scans a successor created by an in-flight terminal handoff', {
     releaseFollowupAdmission.resolve();
     await closing;
     await messages.close();
+    continuity.close();
 
     assert.deepEqual(coordinator.readRootState(session.id), { kind: 'idle' });
     assert.equal(liveResidencies, 0);
@@ -807,10 +847,12 @@ async function createFailureFixture(options: {
   };
   let drainRequested = false;
   let coordinator: RootTurnCoordinator | undefined;
+  let continuity: SessionContinuityCoordinator | undefined;
   const rootPort: HostMessageRootPort = {
     readSessionHeader: (sessionId) => requireCoordinator(coordinator).readSessionHeader(sessionId),
     readRootState: (sessionId) => requireCoordinator(coordinator).readRootState(sessionId),
-    startFromMessage: (input) => requireCoordinator(coordinator).startFromMessage(input),
+    startFromMessage: (input, admission) =>
+      requireCoordinator(coordinator).startFromMessage(input, admission),
     claimStop: (input, commitQueueFence) =>
       requireCoordinator(coordinator).claimStop(input, commitQueueFence),
   };
@@ -832,7 +874,20 @@ async function createFailureFixture(options: {
     sessionAdmission,
     acquireResidency,
     requestDrain,
+    onProjectionChanged: (sessionId) =>
+      requireContinuity(continuity).enqueueCanonicalRefresh(sessionId),
   });
+  const canonicalProjection = new CanonicalSessionProjectionReader({
+    stores,
+    rootAdmissions: rootAdmissionOwner,
+    messages,
+  });
+  continuity = new SessionContinuityCoordinator(
+    hostEpoch,
+    (sessionId) => canonicalProjection.read(sessionId),
+    sessionAdmission,
+    requestDrain,
+  );
   const backends = new BackendRegistry();
   options.registerBackend(backends);
   const manager = new SessionManager({
@@ -850,6 +905,7 @@ async function createFailureFixture(options: {
     sessionAdmission,
     rootAdmissionOwner,
     messages,
+    continuity,
     acquireResidency,
     requestDrain,
   );
@@ -864,6 +920,7 @@ async function createFailureFixture(options: {
     liveResidencies: () => liveResidencies,
     drainRequested: () => drainRequested,
     dispose: async () => {
+      continuity.close();
       await owner.close();
       await rm(base, { recursive: true, force: true });
     },
@@ -873,6 +930,13 @@ async function createFailureFixture(options: {
 function requireCoordinator(coordinator: RootTurnCoordinator | undefined): RootTurnCoordinator {
   if (!coordinator) throw new Error('RootTurnCoordinator is not composed');
   return coordinator;
+}
+
+function requireContinuity(
+  continuity: SessionContinuityCoordinator | undefined,
+): SessionContinuityCoordinator {
+  if (!continuity) throw new Error('Continuity coordinator is not bound');
+  return continuity;
 }
 
 function operationContext(hostEpoch: string, acquireResidency: () => RuntimeHostResidency) {

@@ -3,6 +3,11 @@ import { requireCount, requireId, requireRecord, requireString } from './codec.j
 import { invalidProtocolFrame, RuntimeHostProtocolError } from './errors.js';
 import { requireHostLifecycleState } from './host-status.js';
 import {
+  decodeSubscriptionFrame,
+  isSubscriptionFrameKind,
+  type SubscriptionFrame,
+} from './session-continuity.js';
+import {
   decodeRequestFrame,
   decodeResponseFrame,
   type HostLifecycleState,
@@ -13,6 +18,7 @@ import {
 export { RuntimeHostProtocolError } from './errors.js';
 export * from './message.js';
 export * from './operations.js';
+export * from './session-continuity.js';
 
 export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
@@ -58,7 +64,7 @@ export interface HostDraining {
 export type HostHandshakeResult = HostAccepted | HostIncompatible | HostDraining;
 
 export type ClientFrame = ClientHello | RequestFrame;
-export type HostFrame = HostHandshakeResult | ResponseFrame;
+export type HostFrame = HostHandshakeResult | ResponseFrame | SubscriptionFrame;
 
 export interface HostRegistration {
   kind: 'maka-runtime-host';
@@ -137,8 +143,12 @@ export function decodeHostFrame(value: unknown): HostFrame {
     } satisfies HostIncompatible;
   }
   if (frame.kind === 'draining') {
-    return { kind: 'draining', hostEpoch: requireId(frame.hostEpoch, 'hostEpoch') };
+    return {
+      kind: 'draining',
+      hostEpoch: requireId(frame.hostEpoch, 'hostEpoch'),
+    };
   }
+  if (isSubscriptionFrameKind(frame.kind)) return decodeSubscriptionFrame(frame);
   return decodeResponseFrame(frame);
 }
 

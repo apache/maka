@@ -310,6 +310,7 @@ test('connection reset while operation admission is pending does not execute the
       principal: 'local_os_user',
     },
     resolveHandlers: () => handlers,
+    resolveContinuity: () => undefined,
     beginOperation: async () => {
       admissionEntered.resolve();
       await releaseAdmission.promise;
@@ -657,6 +658,7 @@ async function openHalfClosedDispatchedSession(
         };
       }),
     }),
+    resolveContinuity: () => undefined,
     beginOperation: async () => ({
       acquireResidency: () => ({ release() {} }),
       seal() {},
@@ -727,6 +729,13 @@ function createHandlers(queryTurn: TurnQueryHandler): RuntimeHostComposition['ha
       message: 'not available in this test composition',
     },
   };
+  const subscriptionUnavailable = {
+    ok: false,
+    error: {
+      code: 'operation_unavailable',
+      message: 'not available in this test composition',
+    },
+  } as const;
   return {
     ...createUnavailableDomainOperationHandlers(),
     'turn.start': async (input) => ({
@@ -741,6 +750,8 @@ function createHandlers(queryTurn: TurnQueryHandler): RuntimeHostComposition['ha
     'turn.message.submit': async () => unavailable,
     'queue.retract': async () => unavailable,
     'turn.interrupt': async () => unavailable,
+    'subscription.open': async () => subscriptionUnavailable,
+    'subscription.close': async () => subscriptionUnavailable,
   };
 }
 

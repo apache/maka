@@ -40,7 +40,7 @@ import {
 } from '../protocol/index.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
 import type { MessageOperationHandlerMap } from './operation-dispatcher.js';
-import { SessionAdmissionGate } from './session-admission-gate.js';
+import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
 
 type MessageOperationErrorCode =
   | 'host_draining'
@@ -82,7 +82,10 @@ export interface HostMessageStopClaim {
 export interface HostMessageRootPort {
   readSessionHeader(sessionId: string): Promise<HostMessageSessionHeader | null>;
   readRootState(sessionId: string): Promise<HostMessageRootState> | HostMessageRootState;
-  startFromMessage(input: HostMessageStartInput): Promise<{ readonly turnId: string }>;
+  startFromMessage(
+    input: HostMessageStartInput,
+    admission: SessionAdmissionLease,
+  ): Promise<{ readonly turnId: string }>;
   claimStop(
     input: Omit<TurnInterruptInput, 'originHostEpoch' | 'interruptId'>,
     commitQueueFence: () => QueueFenceResult,
@@ -109,6 +112,7 @@ export interface HostMessageCoordinatorOptions {
   readonly sessionAdmission: SessionAdmissionGate;
   readonly acquireResidency: () => RuntimeHostResidency;
   readonly requestDrain?: () => void;
+  readonly onProjectionChanged?: (sessionId: string) => void;
   readonly createId?: () => string;
 }
 
@@ -157,6 +161,7 @@ interface TerminalTransition {
 }
 
 interface SessionState {
+  readonly sessionId: string;
   revision: number;
   generation: number;
   phase: 'open' | 'closed';
@@ -208,6 +213,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   readonly #sessionAdmission: SessionAdmissionGate;
   readonly #acquireResidency: () => RuntimeHostResidency;
   readonly #requestDrain: () => void;
+  readonly #onProjectionChanged: (sessionId: string) => void;
   readonly #createId: () => string;
   readonly #sessions = new Map<string, SessionState>();
   readonly #pendingSubmits = new Map<string, PendingSubmit>();
@@ -226,6 +232,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     this.#sessionAdmission = options.sessionAdmission;
     this.#acquireResidency = options.acquireResidency;
     this.#requestDrain = options.requestDrain ?? (() => undefined);
+    this.#onProjectionChanged = options.onProjectionChanged ?? (() => undefined);
     this.#createId = options.createId ?? randomUUID;
   }
 
@@ -427,7 +434,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     input: TurnMessageSubmitInput,
     payload: CanonicalSubmitPayload,
   ): Promise<MessageOutcome<TurnMessageSubmitResult>> {
-    return this.#sessionAdmission.run(input.sessionId, async () => {
+    return this.#sessionAdmission.run(input.sessionId, async (admission) => {
       if (this.#failStopped) {
         return failure('host_draining', 'Runtime Host message authority has failed');
       }
@@ -483,11 +490,14 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
           placement: input.placement,
           disposition: 'turn_started',
         };
-        const started = await this.#root.startFromMessage({
-          sessionId: input.sessionId,
-          content: payload.content,
-          sourceMessage,
-        });
+        const started = await this.#root.startFromMessage(
+          {
+            sessionId: input.sessionId,
+            content: payload.content,
+            sourceMessage,
+          },
+          admission,
+        );
         if (!isEntityId(started.turnId)) {
           throw new RuntimeMessageAuthorityInvariantError('Started Turn identity is not encodable');
         }
@@ -576,7 +586,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       };
       if (disposition === 'steering') state.steering.push(entry);
       else state.followup.push(entry);
-      state.revision = result.queueRevision;
+      this.#mutated(state);
       try {
         await this.#commitReceipt('submit', input.sessionId, input.messageId, payload, result);
       } catch (error) {
@@ -1112,6 +1122,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     let state = this.#sessions.get(sessionId);
     if (!state) {
       state = {
+        sessionId,
         revision: 0,
         generation: 0,
         phase: 'open',
@@ -1134,6 +1145,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
 
   #mutated(state: SessionState): void {
     state.revision += 1;
+    this.#onProjectionChanged(state.sessionId);
   }
 
   #maybeReclaim(sessionId: string, state: SessionState): void {

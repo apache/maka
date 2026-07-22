@@ -13,6 +13,10 @@ import {
 } from './operation-dispatcher.js';
 import { BoundedSerialOutboundWriter } from './serial-outbound-writer.js';
 import { RuntimeHostTransportError } from '../transport/framed-transport.js';
+import type {
+  SessionContinuityConnection,
+  SessionContinuityService,
+} from './session-continuity-service.js';
 
 const MAX_IN_FLIGHT_REQUESTS = 64;
 
@@ -28,6 +32,7 @@ export interface RuntimeHostConnectionSessionOptions {
   transport: FramedTransport;
   connection: AcceptedConnectionContext;
   resolveHandlers(): OperationHandlerMap;
+  resolveContinuity(): SessionContinuityService | undefined;
   beginOperation(frame: RequestFrame): Promise<ConnectionOperationLease | HostOperationErrorCode>;
   onTeardown(): void;
 }
@@ -36,6 +41,9 @@ export class RuntimeHostConnectionSession {
   readonly #options: RuntimeHostConnectionSessionOptions;
   readonly #writer: BoundedSerialOutboundWriter;
   readonly #requests = new Map<string, Promise<void>>();
+  #continuityService: SessionContinuityService | undefined;
+  #continuity: SessionContinuityConnection | undefined;
+  #inputClosed = false;
   #closed = false;
 
   constructor(options: RuntimeHostConnectionSessionOptions) {
@@ -61,6 +69,8 @@ export class RuntimeHostConnectionSession {
   }
 
   async #closeAfterDispatchedReplies(): Promise<void> {
+    this.#inputClosed = true;
+    this.#detachContinuity();
     const outcome = await Promise.race([
       Promise.allSettled([...this.#requests.values()]).then(() => 'drained' as const),
       this.#options.transport.closed.then(() => 'closed' as const),
@@ -117,20 +127,66 @@ export class RuntimeHostConnectionSession {
 
     try {
       if (this.#closed) return;
+      const continuity =
+        frame.operation === 'subscription.open' || frame.operation === 'subscription.close'
+          ? this.#ensureContinuity()
+          : undefined;
       const response = await dispatchOperation(frame, this.#options.resolveHandlers(), {
         ...this.#options.connection,
         acquireResidency: () => admission.acquireResidency(),
       });
       admission.seal();
-      await this.#writer.enqueue(response).flushed;
+      const receipt = this.#writer.enqueue(response);
+      const openedSubscriptionId =
+        response.ok && response.operation === 'subscription.open'
+          ? response.result.subscriptionId
+          : undefined;
+      if (openedSubscriptionId) continuity?.activate(openedSubscriptionId);
+      try {
+        await receipt.flushed;
+      } catch (error) {
+        if (openedSubscriptionId) continuity?.abort(openedSubscriptionId);
+        throw error;
+      }
     } finally {
       admission.finish();
     }
   }
 
+  #ensureContinuity(): SessionContinuityConnection | undefined {
+    if (this.#closed || this.#inputClosed) return;
+    const service = this.#options.resolveContinuity();
+    if (!service) return;
+    if (this.#continuityService && this.#continuityService !== service) {
+      throw new Error('Runtime Host continuity service changed within one connection');
+    }
+    if (!this.#continuity) {
+      this.#continuityService = service;
+      this.#continuity = service.attachConnection(this.#options.connection.connectionId, {
+        send: (frame) => {
+          try {
+            return this.#writer.enqueue(frame).flushed;
+          } catch (error) {
+            return Promise.reject(error);
+          }
+        },
+        close: () => this.#teardown(),
+      });
+    }
+    return this.#continuity;
+  }
+
+  #detachContinuity(): void {
+    this.#continuity?.close();
+    this.#continuity = undefined;
+    this.#continuityService = undefined;
+  }
+
   #teardown(): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.#inputClosed = true;
+    this.#detachContinuity();
     this.#writer.close();
     this.#options.transport.destroy();
     this.#options.onTeardown();

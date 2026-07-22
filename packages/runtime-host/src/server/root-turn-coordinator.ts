@@ -6,6 +6,7 @@ import {
   messageContentsEqual,
   normalizeMessageContent,
   type MessageContent,
+  type SessionEvent,
 } from '@maka/core/events';
 import {
   isDeepResearchSession,
@@ -46,7 +47,11 @@ import {
 } from './message-coordinator.js';
 import type { ConnectionContext, TurnOperationHandlerMap } from './operation-dispatcher.js';
 import { RootAdmissionOwner } from './root-admission-owner.js';
-import { SessionAdmissionGate } from './session-admission-gate.js';
+import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
+import {
+  type RuntimeSessionTransientEvent,
+  SessionContinuityCoordinator,
+} from './session-continuity-coordinator.js';
 
 interface ActiveRootTurn {
   turnId: string;
@@ -104,6 +109,7 @@ export class RootTurnCoordinator {
     private readonly sessionAdmission: SessionAdmissionGate,
     private readonly rootAdmissionOwner: RootAdmissionOwner,
     private readonly messages: HostMessageCoordinator,
+    private readonly continuity: SessionContinuityCoordinator,
     private readonly acquireRecoveryResidency: () => RuntimeHostResidency,
     private readonly requestHostDrain: () => void,
   ) {
@@ -278,8 +284,8 @@ export class RootTurnCoordinator {
         turnId: admission.turnId,
         content: normalizeMessageContent(admission.normalizedInput),
       };
-      const disposition = await this.sessionAdmission.run(sessionId, () =>
-        this.prepareAdmittedTurn(input, admission, this.acquireRecoveryResidency),
+      const disposition = await this.sessionAdmission.run(sessionId, (lease) =>
+        this.prepareAdmittedTurn(input, admission, this.acquireRecoveryResidency, lease),
       );
       const outcome = await this.resolveStartDisposition(input, disposition);
       if (!outcome.ok) {
@@ -338,7 +344,7 @@ export class RootTurnCoordinator {
         ...input,
         content: normalizeMessageContent(input.content),
       };
-      const disposition = await this.sessionAdmission.run(input.sessionId, async () => {
+      const disposition = await this.sessionAdmission.run(input.sessionId, async (lease) => {
         const existing = await this.stores.agentRunStore.readRootTurnAdmission(
           input.sessionId,
           input.turnId,
@@ -360,6 +366,7 @@ export class RootTurnCoordinator {
             canonicalInput,
             existing,
             this.acquireRecoveryResidency,
+            lease,
             undefined,
             canonicalInput,
           );
@@ -402,6 +409,7 @@ export class RootTurnCoordinator {
           canonicalInput,
           admitted.admission,
           this.acquireRecoveryResidency,
+          lease,
           undefined,
           canonicalInput,
         );
@@ -473,7 +481,10 @@ export class RootTurnCoordinator {
     });
   }
 
-  startFromMessage(input: HostMessageStartInput): Promise<{ readonly turnId: string }> {
+  startFromMessage(
+    input: HostMessageStartInput,
+    admissionLease: SessionAdmissionLease,
+  ): Promise<{ readonly turnId: string }> {
     return this.runCommand(async () => {
       const content = normalizeMessageContent(input.content);
       if (
@@ -510,6 +521,7 @@ export class RootTurnCoordinator {
         { sessionId: input.sessionId, turnId, content },
         admitted.admission,
         this.acquireRecoveryResidency,
+        admissionLease,
       );
       if (disposition.kind !== 'await_start') {
         throw new RuntimeMessageAuthorityInvariantError(
@@ -556,7 +568,7 @@ export class RootTurnCoordinator {
         ...input,
         content: normalizeMessageContent(input.content),
       };
-      const disposition = await this.sessionAdmission.run(input.sessionId, async () => {
+      const disposition = await this.sessionAdmission.run(input.sessionId, async (lease) => {
         const existing = await this.stores.agentRunStore.readRootTurnAdmission(
           input.sessionId,
           input.turnId,
@@ -576,7 +588,12 @@ export class RootTurnCoordinator {
               operationConflict('Turn identity was already admitted with a different payload'),
             );
           }
-          return this.prepareAdmittedTurn(canonicalInput, existing, context.acquireResidency);
+          return this.prepareAdmittedTurn(
+            canonicalInput,
+            existing,
+            context.acquireResidency,
+            lease,
+          );
         }
 
         let header: SessionHeader;
@@ -627,6 +644,7 @@ export class RootTurnCoordinator {
           canonicalInput,
           admission.admission,
           context.acquireResidency,
+          lease,
         );
       });
       return this.resolveStartDisposition(canonicalInput, disposition);
@@ -715,6 +733,7 @@ export class RootTurnCoordinator {
     input: TurnStartInput,
     admission: RootTurnAdmission,
     acquireResidency: () => RuntimeHostResidency,
+    admissionLease: SessionAdmissionLease,
     replacing?: ActiveRootTurn,
     execution?: RuntimeHostedRootExecutionInput,
   ): Promise<TurnStartDisposition> {
@@ -759,9 +778,18 @@ export class RootTurnCoordinator {
 
     const residency = acquireResidency();
     const messageIdentity = { sessionId: input.sessionId, turnId: input.turnId, runId };
+    let messageReserved = false;
     try {
       this.messages.reserveRootTurn(messageIdentity);
+      messageReserved = true;
+      await this.continuity.holdTerminalPublication(
+        input.sessionId,
+        input.turnId,
+        runId,
+        admissionLease,
+      );
     } catch (error) {
+      if (messageReserved) this.messages.abandonRootReservation(messageIdentity);
       residency.release();
       throw error;
     }
@@ -826,6 +854,7 @@ export class RootTurnCoordinator {
             runId: active.runId,
             userMessageId: active.userMessageId,
             onRunStarted: async () => {
+              await this.continuity.refreshCanonical(input.sessionId);
               started.resolve();
               await active.execution?.onReady?.();
             },
@@ -837,10 +866,11 @@ export class RootTurnCoordinator {
               runId: active.runId,
               userMessageId: active.userMessageId ?? undefined,
               durability: 'required',
-              onRunStarted: (startedRunId) => {
+              onRunStarted: async (startedRunId) => {
                 if (startedRunId !== active.runId) {
                   throw new Error('Runtime started a different Run than the admitted identity');
                 }
+                await this.continuity.refreshCanonical(input.sessionId);
                 started.resolve();
               },
             },
@@ -853,7 +883,9 @@ export class RootTurnCoordinator {
             // Presentation observers do not participate in execution authority.
           }
         }
-        // The Host must consume the complete stream so Runtime finalization can commit.
+        if (isRuntimeSessionTransientEvent(event)) {
+          await this.continuity.acceptRuntimeEvent(input.sessionId, active.runId, event);
+        }
       }
       const snapshot = await this.readCanonicalSnapshot(
         input.sessionId,
@@ -918,7 +950,7 @@ export class RootTurnCoordinator {
   }
 
   private completeTerminalTransition(sessionId: string, active: ActiveRootTurn): Promise<void> {
-    return this.sessionAdmission.run(sessionId, async () => {
+    return this.sessionAdmission.run(sessionId, async (lease) => {
       if (this.#activeBySession.get(sessionId) !== active) {
         throw new RuntimeMessageAuthorityInvariantError(
           'Terminal root Turn no longer owns the Session',
@@ -926,19 +958,26 @@ export class RootTurnCoordinator {
       }
       const identity = { sessionId, turnId: active.turnId, runId: active.runId };
       const batch = this.messages.beginTerminalTransition(identity);
+      await this.continuity.publishTerminalProjection(
+        sessionId,
+        active.turnId,
+        active.runId,
+        lease,
+      );
       if (batch.sources.length === 0) {
         this.messages.completeIdle(batch);
         active.messageTransitionCommitted = true;
         this.#activeBySession.delete(sessionId);
         return;
       }
-      await this.startFollowupBatch(batch, active);
+      await this.startFollowupBatch(batch, active, lease);
     });
   }
 
   private async startFollowupBatch(
     batch: RootFollowupBatch,
     previous: ActiveRootTurn,
+    admissionLease: SessionAdmissionLease,
   ): Promise<void> {
     const turnId = randomUUID();
     const admitted = await this.rootAdmissionOwner.admitRootTurn({
@@ -977,6 +1016,7 @@ export class RootTurnCoordinator {
       },
       admitted.admission,
       this.acquireRecoveryResidency,
+      admissionLease,
       previous,
     );
     if (disposition.kind !== 'await_start') {
@@ -1230,6 +1270,19 @@ function isTerminalSnapshot(snapshot: TurnSnapshot): boolean {
     snapshot.status === 'completed' ||
     snapshot.status === 'failed' ||
     snapshot.status === 'cancelled'
+  );
+}
+
+function isRuntimeSessionTransientEvent(
+  event: SessionEvent,
+): event is RuntimeSessionTransientEvent {
+  return (
+    event.type === 'text_delta' ||
+    event.type === 'thinking_delta' ||
+    event.type === 'tool_start' ||
+    event.type === 'tool_output_delta' ||
+    event.type === 'tool_progress' ||
+    event.type === 'tool_result'
   );
 }
 
