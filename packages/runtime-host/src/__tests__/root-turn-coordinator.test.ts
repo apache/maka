@@ -162,6 +162,8 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
         }
       | undefined;
     let initialEventCount = 0;
+    const childSink = new RecordingContinuitySink();
+    let closeChildContinuity: (() => void) | undefined;
     const child = await manager.spawnChildSession(parent.id, {
       spawnedBy: {
         parentRunId: parentStarted.result.runId,
@@ -170,8 +172,19 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       },
       agentProfile: LOCAL_READ_AGENT_PROFILE,
       prompt: 'initial linked child',
-      onReady: (ready) => {
+      onReady: async (ready) => {
         initialReady = ready;
+        const childConnectionId = 'connection-linked-child';
+        const childContinuity = requireContinuity(continuity);
+        const connection = childContinuity.attachConnection(childConnectionId, childSink);
+        const opened = await childContinuity.handlers['subscription.open'](
+          { sessionId: ready.childSessionId },
+          operationContext(hostEpoch, acquireResidency, childConnectionId),
+        );
+        assert.equal(opened.ok, true);
+        if (!opened.ok) throw new Error('Unable to subscribe to hosted linked child');
+        connection.activate(opened.result.subscriptionId);
+        closeChildContinuity = () => connection.close();
       },
       onEvent: () => {
         initialEventCount += 1;
@@ -186,6 +199,26 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       agentName: child.agentName,
     });
     assert.equal(initialEventCount, child.eventCount);
+    assert.ok(
+      childSink.frames.some(
+        (frame) =>
+          frame.kind === 'subscription.session_delta' &&
+          frame.sessionId === child.childSessionId &&
+          frame.delta.turnId === child.turnId &&
+          frame.delta.runId === child.runId &&
+          frame.delta.kind === 'text' &&
+          frame.delta.text === 'linked child complete',
+      ),
+    );
+    assert.ok(
+      childSink.frames.some(
+        (frame) =>
+          frame.kind === 'subscription.session_projection' &&
+          frame.snapshot.rootTurn?.turnId === child.turnId &&
+          frame.snapshot.rootTurn.runId === child.runId &&
+          frame.snapshot.rootTurn.status === 'completed',
+      ),
+    );
     const initialAdmissions = await stores.agentRunStore.listRootTurnAdmissionsForRecovery(
       child.childSessionId,
     );
@@ -439,6 +472,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     });
     await coordinator.close();
     await messages.close();
+    closeChildContinuity?.();
     continuity.close();
   } finally {
     await owner.close();
