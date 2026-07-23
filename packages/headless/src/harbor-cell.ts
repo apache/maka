@@ -138,6 +138,10 @@ export interface RunHarborCellInput {
   settleAfterMs?: number;
   now?: () => number;
   newId?: () => string;
+  /** Resume one already-materialized session instead of creating a fresh session. */
+  resumeSessionId?: string;
+  /** Optional measurement hook fired once when the first session event is observed. */
+  onFirstSessionEvent?: () => void | Promise<void>;
 }
 
 export interface HarborCellContinuationPolicy {
@@ -354,15 +358,17 @@ export async function runHarborCellWithStorage(
   });
   sessionCapabilities.bind(manager);
 
-  const session = await manager.createSession({
-    cwd: input.cwd,
-    backend: input.config.backend,
-    llmConnectionSlug: config.llmConnectionSlug,
-    model: config.model,
-    ...(config.thinkingLevel ? { thinkingLevel: config.thinkingLevel } : {}),
-    permissionMode: 'execute',
-    name: `harbor-cell:${input.config.id}`,
-  });
+  const session = input.resumeSessionId
+    ? await sessionStore.readHeaderSnapshot(input.resumeSessionId)
+    : await manager.createSession({
+        cwd: input.cwd,
+        backend: input.config.backend,
+        llmConnectionSlug: config.llmConnectionSlug,
+        model: config.model,
+        ...(config.thinkingLevel ? { thinkingLevel: config.thinkingLevel } : {}),
+        permissionMode: 'execute',
+        name: `harbor-cell:${input.config.id}`,
+      });
 
   let deadlineReached = false;
   let settlementError: unknown;
@@ -394,6 +400,7 @@ export async function runHarborCellWithStorage(
   let stepCapHits = 0;
   let attemptedTurnId: string | undefined;
   let attemptedRunId: string | undefined;
+  let firstSessionEventObserved = false;
   try {
     for (let turnIndex = 0; turnIndex < continuationPolicy.maxTurns; turnIndex += 1) {
       if (deadlineReached) break;
@@ -407,6 +414,10 @@ export async function runHarborCellWithStorage(
         { turnId, text: nextText },
         { runId },
       )) {
+        if (!firstSessionEventObserved) {
+          firstSessionEventObserved = true;
+          await input.onFirstSessionEvent?.();
+        }
         if ((event as { type?: string }).type === 'permission_request') {
           const { requestId } = event as { requestId: string };
           await manager.respondToPermission(session.id, {

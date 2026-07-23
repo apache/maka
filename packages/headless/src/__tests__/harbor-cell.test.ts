@@ -1006,6 +1006,30 @@ describe('runHarborCell', () => {
     });
   });
 
+  test('reports the first session event before the fake response completes', async () => {
+    await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
+      const startedAt = performance.now();
+      let firstEventAt: number | undefined;
+      await runHarborCell({
+        config,
+        instruction: 'measure first event',
+        cwd: workspaceDir,
+        outputDir,
+        storageRoot,
+        onFirstSessionEvent: () => {
+          firstEventAt ??= performance.now();
+        },
+      });
+      const completedAt = performance.now();
+
+      assert.ok(firstEventAt !== undefined);
+      assert.ok(
+        completedAt - firstEventAt >= 100,
+        `first=${firstEventAt - startedAt}ms completed=${completedAt - startedAt}ms`,
+      );
+    });
+  });
+
   test('settles the active session before its hard deadline and writes final usage', async () => {
     await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
       const deadline = { settleAfterMs: 1_000 };
