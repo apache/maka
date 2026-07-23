@@ -23,6 +23,33 @@ function validContextEnvValue(key: string): string {
 }
 
 describe('Harbor adapter contract', () => {
+  test('Maka trajectory builder preserves multi-step tool pairing and fails closed to a summary', (t: TestContext) => {
+    const result = spawnSync('python3', ['-c', pythonTrajectoryBuilderScript(repoRoot)], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    });
+    if (result.error && 'code' in result.error && result.error.code === 'ENOENT') {
+      t.skip('python3 is not available');
+      return;
+    }
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /trajectory-builder ok/);
+  });
+
+  test('maka_agent.py emits a Harbor-valid multi-step ATIF trajectory', (t: TestContext) => {
+    const python = harborPython();
+    if (!python) {
+      t.skip('Harbor 0.13.2 python is not available (CI has no harbor)');
+      return;
+    }
+    const result = spawnSync(python, ['-c', pythonTrajectoryHarborContractScript(repoRoot)], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /trajectory-harbor-contract ok/);
+  });
+
   test('run-cell.mjs delegates to the shared env entrypoint', async () => {
     const source = await readRepoFile('packages/headless/harbor/run-cell.mjs');
     const cellSource = await readRepoFile('packages/headless/src/harbor-cell.ts');
@@ -106,6 +133,7 @@ describe('Harbor adapter contract', () => {
       'packages/headless/harbor/maka-improved-prompt-v1.txt',
       'packages/headless/harbor/codex_agent.py',
       'packages/headless/harbor/maka_agent.py',
+      'packages/headless/harbor/maka_trajectory.py',
       'packages/headless/harbor/maka_verifier.py',
       'packages/headless/harbor/run-cell.mjs',
       'packages/headless/harbor/run-host-cell.mjs',
@@ -2127,7 +2155,7 @@ with tempfile.TemporaryDirectory() as tmp:
             "pricingSource": "runtime",
         },
         "steps": 1,
-        "runtimeRefs": {"sessionId": "session-1"},
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
     })
     assert context.n_input_tokens == 10, context.n_input_tokens
     assert context.n_output_tokens == 2, context.n_output_tokens
@@ -2163,7 +2191,7 @@ with tempfile.TemporaryDirectory() as tmp:
             "pricingSource": "runtime",
         },
         "steps": 1,
-        "runtimeRefs": {"sessionId": "session-1"},
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
     })
     expected_cost = (60 / 1_000_000 * 2) + (20 / 1_000_000 * 10) + (40 / 1_000_000 * 0.5)
     assert abs(priced_context.cost_usd - expected_cost) < 1e-12, priced_context.cost_usd
@@ -2190,7 +2218,7 @@ with tempfile.TemporaryDirectory() as tmp:
             "pricingSource": "runtime",
         },
         "steps": 1,
-        "runtimeRefs": {"sessionId": "session-1"},
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
     })
     assert zero_priced_context.cost_usd == 0, zero_priced_context.cost_usd
     assert zero_priced_context.metadata["maka_pricing_source"] == "env", zero_priced_context.metadata
@@ -2215,7 +2243,7 @@ with tempfile.TemporaryDirectory() as tmp:
                 "pricingSource": "runtime",
             },
             "steps": 1,
-            "runtimeRefs": {"sessionId": "session-1"},
+            "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
         })
     except ValueError as exc:
         assert "MAKA_TRIAL_INPUT_USD_PER_1M" in str(exc), str(exc)
@@ -2667,6 +2695,506 @@ with tempfile.TemporaryDirectory() as tmp:
     assert host_process_env["MAKA_HOST_API_KEY_FILE"] == "/host/deepseek-key", host_process_env
     assert host_process_env["MAKA_HARBOR_TOOL_EXECUTOR_URL"] == "http://127.0.0.1:4321", host_process_env
     assert host_process_env["MAKA_HARBOR_TOOL_EXECUTOR_TOKEN"] == "tool-token", host_process_env
+`;
+}
+
+function pythonTrajectoryBuilderScript(root: string): string {
+  return String.raw`
+import json
+import sys
+import tempfile
+from pathlib import Path
+
+root = Path(${JSON.stringify(root)})
+sys.path.insert(0, str(root / "packages" / "headless" / "harbor"))
+
+from maka_trajectory import build_runtime_trajectory, load_runtime_trajectory, redact_text
+
+
+def event(event_id, ts, role, author, content=None, refs=None, status=None, actions=None):
+    value = {
+        "id": event_id,
+        "invocationId": "inv-1",
+        "runId": "run-1",
+        "sessionId": "session-1",
+        "turnId": "turn-1",
+        "ts": ts,
+        "partial": False,
+        "role": role,
+        "author": author,
+    }
+    if content is not None:
+        value["content"] = content
+    if refs is not None:
+        value["refs"] = refs
+    if status is not None:
+        value["status"] = status
+    if actions is not None:
+        value["actions"] = actions
+    return value
+
+
+events = [
+    event("user-1", 1000, "user", "user", {"kind": "text", "text": "Fix the repository", "displayText": "/fix", "attachments": [{"kind": "code", "name": "README.md", "mimeType": "text/markdown", "bytes": 12, "ref": {"kind": "workspace_file", "relativePath": "README.md"}}], "quotes": [{"text": "quoted context"}], "steering": True}),
+    event(
+        "thinking-1",
+        1100,
+        "model",
+        "agent",
+        {"kind": "thinking", "text": "Inspect with Bearer private-bearer-token and AUTH_TOKEN=private-auth-token; JSON {\"Authorization\":\"Basic private-json-basic-token\",\"api_key\":\"private-json-api-key\"}"},
+        {"providerEventId": "step-1"},
+    ),
+    event(
+        "call-1-event",
+        1200,
+        "model",
+        "agent",
+        {
+            "kind": "function_call",
+            "id": "call-1",
+            "name": "Bash",
+            "args": {
+                "command": "curl -H 'Authorization: Basic private-basic-token' -H 'X-API-Key: private-x-api-key' 'https://private-user:private-url-password@example.test?access_token=private-query-token' --api-key private-cli-api-key && psql postgres://private-db-user:private-db-password@example.test/db",
+                "apiKey": "sk-private-api-key",
+                "apikey": "private-compact-api-key",
+                "sessionToken": "private-session-token",
+            },
+        },
+        {"stepId": "step-1", "toolCallId": "call-1"},
+    ),
+    event(
+        "usage-1",
+        1250,
+        "system",
+        "system",
+        actions={"tokenUsage": {"input": 20, "output": 5, "cacheHitInput": 4, "costUsd": 0.01, "runtimeSteps": 1}},
+    ),
+    event(
+        "response-1",
+        1300,
+        "tool",
+        "tool",
+        {"kind": "function_response", "id": "call-1", "name": "Bash", "result": {"stdout": "ok", "accessToken": "private-access-token", "accesstoken": "private-compact-access-token", "idToken": "private-id-token"}},
+        {"toolCallId": "call-1"},
+    ),
+    event(
+        "call-2-event",
+        1400,
+        "model",
+        "agent",
+        {"kind": "function_call", "id": "call-2", "name": "Read", "args": {"path": "README.md"}},
+        {"stepId": "step-2", "toolCallId": "call-2"},
+    ),
+    event(
+        "response-2",
+        1500,
+        "tool",
+        "tool",
+        {"kind": "function_response", "id": "call-2", "name": "Read", "result": "contents", "isError": False},
+        {"toolCallId": "call-2"},
+    ),
+    event(
+        "text-3",
+        1600,
+        "model",
+        "agent",
+        {"kind": "text", "text": "Finished"},
+        {"providerEventId": "step-3"},
+    ),
+    event("terminal", 1700, "system", "system", status="completed", actions={"endInvocation": True}),
+]
+
+runtime_refs = {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"}
+trajectory = build_runtime_trajectory(events, "completed", runtime_refs)
+assert trajectory.artifact_kind == "full", trajectory
+assert trajectory.terminal_status == "completed", trajectory
+assert len(trajectory.steps) == 5, trajectory.steps
+assert [step["source"] for step in trajectory.steps] == ["user", "agent", "agent", "agent", "system"]
+first_action = trajectory.steps[1]
+assert first_action["tool_calls"][0]["tool_call_id"] == "call-1", first_action
+assert first_action["observation"]["results"][0]["source_call_id"] == "call-1", first_action
+assert "metrics" not in first_action, first_action
+second_action = trajectory.steps[2]
+assert second_action["tool_calls"][0]["tool_call_id"] == "call-2", second_action
+assert second_action["observation"]["results"][0]["source_call_id"] == "call-2", second_action
+user_step = trajectory.steps[0]
+assert user_step["extra"]["maka_display_text"] == "/fix", user_step
+assert user_step["extra"]["maka_steering"] is True, user_step
+assert user_step["extra"]["maka_attachments"][0]["ref"]["relativePath"] == "README.md", user_step
+assert user_step["extra"]["maka_quotes"][0]["text"] == "quoted context", user_step
+serialized = json.dumps(trajectory.steps)
+for secret in ("private-bearer-token", "private-basic-token", "private-x-api-key", "private-url-password", "private-query-token", "private-db-password", "private-cli-api-key", "sk-private-api-key", "private-compact-api-key", "private-access-token", "private-compact-access-token", "private-auth-token", "private-session-token", "private-id-token", "private-json-basic-token", "private-json-api-key"):
+    assert secret not in serialized, serialized
+assert "[REDACTED]" in serialized, serialized
+
+quoted = redact_text("prefix {'sessionToken': 'private-quoted-token', 'apikey': 'private-quoted-api-key', 'message': 'keep me'} suffix")
+assert "private-quoted-token" not in quoted, quoted
+assert "private-quoted-api-key" not in quoted, quoted
+assert "'sessionToken': '[REDACTED]'" in quoted, quoted
+assert "'apikey': '[REDACTED]'" in quoted, quoted
+assert "'message': 'keep me'" in quoted, quoted
+raw = redact_text("token=private-token Cookie: session=private-cookie; Path=/ Set-Cookie: sid=private-set-cookie")
+for secret in ("private-token", "private-cookie", "private-set-cookie"):
+    assert secret not in raw, raw
+
+identity_mismatch = build_runtime_trajectory(events, "completed", {
+    "invocationId": "different-invocation",
+    "runId": "run-1",
+    "sessionId": "session-1",
+    "turnId": "turn-1",
+})
+assert identity_mismatch.artifact_kind == "summary", identity_mismatch
+assert identity_mismatch.reason == "terminal_identity_mismatch", identity_mismatch
+
+aborted_events = events[:-1] + [
+    event("terminal-aborted", 1700, "system", "system", status="aborted", actions={"endInvocation": True}),
+]
+aborted = build_runtime_trajectory(aborted_events, "failed", runtime_refs)
+assert aborted.artifact_kind == "full", aborted
+assert aborted.terminal_status == "aborted", aborted
+
+failed_before_completed_terminal = build_runtime_trajectory(events, "failed", runtime_refs)
+assert failed_before_completed_terminal.artifact_kind == "full", failed_before_completed_terminal
+assert failed_before_completed_terminal.terminal_status == "completed", failed_before_completed_terminal
+
+malformed = build_runtime_trajectory([events[0], {}, events[-1]], "completed", runtime_refs)
+assert malformed.artifact_kind == "summary", malformed
+assert malformed.reason == "runtime_event_schema_invalid", malformed
+
+null_content = dict(events[3], content=None)
+malformed_null = build_runtime_trajectory([events[0], null_content, events[-1]], "completed", runtime_refs)
+assert malformed_null.artifact_kind == "summary", malformed_null
+assert malformed_null.reason == "runtime_event_schema_invalid", malformed_null
+
+continued_events = events[:-1] + [
+    event("terminal-first", 1700, "system", "system", status="failed", actions={"endInvocation": True}),
+    event("user-2", 1800, "user", "user", {"kind": "text", "text": "Continue"}),
+    event("text-4", 1900, "model", "agent", {"kind": "text", "text": "Recovered"}, {"providerEventId": "step-4"}),
+    event("terminal-final", 2000, "system", "system", status="completed", actions={"endInvocation": True}),
+]
+continued = build_runtime_trajectory(continued_events, "completed", runtime_refs)
+terminal_steps = [step for step in continued.steps if step["source"] == "system" and "maka_terminal_status" in step.get("extra", {})]
+assert [step["extra"]["maka_terminal_status"] for step in terminal_steps] == ["failed", "completed"], terminal_steps
+assert [step["extra"]["maka_runtime_event_id"] for step in terminal_steps] == ["terminal-first", "terminal-final"], terminal_steps
+
+missing_refs = build_runtime_trajectory(events, "completed")
+assert missing_refs.artifact_kind == "summary", missing_refs
+assert missing_refs.reason == "runtime_refs_incomplete", missing_refs
+
+malformed_refs = dict(runtime_refs, sessionId=123)
+malformed_refs_result = build_runtime_trajectory(events, "completed", malformed_refs)
+assert malformed_refs_result.artifact_kind == "summary", malformed_refs_result
+assert malformed_refs_result.reason == "runtime_refs_incomplete", malformed_refs_result
+
+invalid_quotes_events = json.loads(json.dumps(events))
+invalid_quotes_events[0]["content"]["quotes"] = [{"text": "quoted", "unexpected": True}]
+invalid_quotes = build_runtime_trajectory(invalid_quotes_events, "completed", runtime_refs)
+assert invalid_quotes.artifact_kind == "summary", invalid_quotes
+assert invalid_quotes.reason == "runtime_event_schema_invalid", invalid_quotes
+
+mixed_events = json.loads(json.dumps(events))
+mixed_events[2]["runId"] = "foreign-run"
+mixed = build_runtime_trajectory(mixed_events, "completed", runtime_refs)
+assert mixed.artifact_kind == "summary", mixed
+assert mixed.reason == "runtime_identity_mismatch", mixed
+
+def continued_event(event_id, ts, role, author, content=None, refs=None, status=None, actions=None):
+    value = event(event_id, ts, role, author, content, refs, status, actions)
+    value.update({"invocationId": "inv-2", "runId": "run-2", "turnId": "turn-2"})
+    return value
+
+reused_ids = events[:-1] + [
+    event("terminal-first", 1700, "system", "system", status="failed", actions={"endInvocation": True}),
+    continued_event("call-reused", 1800, "model", "agent", {"kind": "function_call", "id": "call-1", "name": "Bash", "args": {}}, {"stepId": "step-1"}),
+    continued_event("response-reused", 1900, "tool", "tool", {"kind": "function_response", "id": "call-1", "name": "Bash", "result": "ok"}),
+    continued_event("terminal-final", 2000, "system", "system", status="completed", actions={"endInvocation": True}),
+]
+reused = build_runtime_trajectory(reused_ids, "completed", {
+    "invocationId": "inv-2",
+    "runId": "run-2",
+    "sessionId": "session-1",
+    "turnId": "turn-2",
+})
+assert reused.artifact_kind == "full", reused
+assert len([step for step in reused.steps if step.get("tool_calls")]) == 3, reused.steps
+
+correlated_ids = json.loads(json.dumps(events))
+correlated_ids[2]["content"]["id"] = "provider-call-payload-id"
+correlated_ids[2]["refs"]["toolCallId"] = "shared-runtime-correlation"
+correlated_ids[4]["content"]["id"] = "provider-response-payload-id"
+correlated_ids[4]["refs"]["toolCallId"] = "shared-runtime-correlation"
+correlated = build_runtime_trajectory(correlated_ids, "completed", runtime_refs)
+assert correlated.artifact_kind == "full", correlated
+assert correlated.steps[1]["tool_calls"][0]["tool_call_id"] == "shared-runtime-correlation", correlated.steps
+assert correlated.steps[1]["tool_calls"][0]["extra"]["maka_provider_tool_call_id"] == "provider-call-payload-id", correlated.steps
+assert correlated.steps[1]["observation"]["results"][0]["source_call_id"] == "shared-runtime-correlation", correlated.steps
+assert correlated.steps[1]["observation"]["results"][0]["extra"]["maka_provider_tool_response_id"] == "provider-response-payload-id", correlated.steps
+
+unpaired = build_runtime_trajectory([events[0], events[5], events[-1]], "completed", runtime_refs)
+assert unpaired.artifact_kind == "summary", unpaired
+assert unpaired.reason == "tool_response_missing", unpaired
+assert len(unpaired.steps) == 1 and unpaired.steps[0]["extra"]["maka_artifact_kind"] == "summary"
+
+with tempfile.TemporaryDirectory() as tmp:
+    invalid_path = Path(tmp) / "runtime-events.jsonl"
+    invalid_path.write_text('{"id":\n', encoding="utf-8")
+    invalid = load_runtime_trajectory(invalid_path, "failed")
+    assert invalid.artifact_kind == "summary", invalid
+    assert invalid.reason == "runtime_events_invalid_jsonl", invalid
+
+    invalid_path.write_bytes(b'\xff')
+    invalid_utf8 = load_runtime_trajectory(invalid_path, "failed")
+    assert invalid_utf8.artifact_kind == "summary", invalid_utf8
+    assert invalid_utf8.reason == "runtime_events_unreadable", invalid_utf8
+
+print("trajectory-builder ok")
+`;
+}
+
+function pythonTrajectoryHarborContractScript(root: string): string {
+  return String.raw`
+import asyncio
+import json
+import sys
+import tempfile
+from pathlib import Path
+
+root = Path(${JSON.stringify(root)})
+sys.path.insert(0, str(root / "packages" / "headless" / "harbor"))
+
+from harbor.models.agent.context import AgentContext
+from harbor.models.trajectories import Trajectory
+from maka_agent import MakaAgent
+
+
+def event(event_id, ts, role, author, content=None, refs=None, status=None, actions=None):
+    value = {
+        "id": event_id,
+        "invocationId": "inv-1",
+        "runId": "run-1",
+        "sessionId": "session-1",
+        "turnId": "turn-1",
+        "ts": ts,
+        "partial": False,
+        "role": role,
+        "author": author,
+    }
+    if content is not None:
+        value["content"] = content
+    if refs is not None:
+        value["refs"] = refs
+    if status is not None:
+        value["status"] = status
+    if actions is not None:
+        value["actions"] = actions
+    return value
+
+
+events = [
+    event("user", 1000, "user", "user", {"kind": "text", "text": "Solve the task"}),
+    event("call", 1100, "model", "agent", {"kind": "function_call", "id": "tool-1", "name": "Bash", "args": {"command": "echo ok", "password": "private-password"}}, {"stepId": "step-1"}),
+    event("result", 1200, "tool", "tool", {"kind": "function_response", "id": "tool-1", "name": "Bash", "result": {"stdout": "ok"}}, {"toolCallId": "tool-1"}),
+    event("answer", 1300, "model", "agent", {"kind": "text", "text": "Done"}, {"providerEventId": "step-2"}),
+    event("terminal", 1400, "system", "system", status="completed", actions={"endInvocation": True}),
+]
+
+with tempfile.TemporaryDirectory() as tmp:
+    logs_dir = Path(tmp)
+    runtime_path = logs_dir / "runtime-events.jsonl"
+    runtime_path.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+    agent = MakaAgent(logs_dir)
+    context = AgentContext()
+    agent._apply_cell_output(context, {
+        "status": "completed",
+        "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+        "promptHash": "sha256:test",
+        "tokenSummary": {"input": 10, "output": 2, "cachedInput": 3, "costUsd": 0.01},
+        "toolSummary": {"actualToolCalls": 1, "actualToolNames": ["Bash"], "actualToolCallCounts": {"Bash": 1}},
+        "steps": len(events),
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
+    })
+    payload = json.loads((logs_dir / "trajectory.json").read_text(encoding="utf-8"))
+    validated = Trajectory.model_validate(payload)
+    assert validated.extra["maka_artifact_kind"] == "full", validated.extra
+    assert len(validated.steps) == 4, validated.steps
+    assert validated.steps[1].tool_calls[0].tool_call_id == "tool-1", validated.steps[1]
+    assert validated.steps[1].observation.results[0].source_call_id == "tool-1", validated.steps[1]
+    assert validated.final_metrics.total_steps == len(validated.steps), validated.final_metrics
+    assert validated.final_metrics.total_cached_tokens == 3, validated.final_metrics
+    assert "private-password" not in json.dumps(payload), payload
+
+    image_events = [
+        event("image-user", 2000, "user", "user", {"kind": "text", "text": "Inspect the image"}),
+        event("image-call", 2100, "model", "agent", {"kind": "function_call", "id": "image-tool", "name": "Read", "args": {"path": "shot.png"}}, {"stepId": "image-step"}),
+        event("image-result", 2200, "tool", "tool", {"kind": "function_response", "id": "image-tool", "name": "Read", "result": {"kind": "image", "mimeType": "image/png", "ref": {"kind": "session_file", "sessionId": "session-1", "relativePath": "artifact-image"}}}),
+        event("image-answer", 2300, "model", "agent", {"kind": "text", "text": "Image inspected"}, {"providerEventId": "image-answer-step"}),
+        event("image-terminal", 2400, "system", "system", status="completed", actions={"endInvocation": True}),
+    ]
+    runtime_path.write_text("\n".join(json.dumps(event) for event in image_events) + "\n", encoding="utf-8")
+    artifact_root = logs_dir / "maka-storage" / "artifacts"
+    image_path = artifact_root / "session-1" / "artifact-image-shot.png"
+    image_path.parent.mkdir(parents=True)
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\nfixture")
+    metadata_path = artifact_root / "metadata.jsonl"
+    metadata_path.write_text(json.dumps({
+        "id": "artifact-image",
+        "sessionId": "session-1",
+        "turnId": "turn-1",
+        "createdAt": 2200,
+        "name": "shot.png",
+        "kind": "image",
+        "relativePath": "session-1/artifact-image-shot.png",
+        "sizeBytes": image_path.stat().st_size,
+        "mimeType": "image/png",
+        "source": "tool_result",
+        "status": "live",
+    }) + "\n", encoding="utf-8")
+    agent._apply_cell_output(context, {
+        "status": "completed",
+        "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
+    })
+    image_payload = json.loads((logs_dir / "trajectory.json").read_text(encoding="utf-8"))
+    image_validated = Trajectory.model_validate(image_payload)
+    image_content = image_validated.steps[1].observation.results[0].content
+    assert image_validated.extra["maka_artifact_kind"] == "full", image_validated.extra
+    assert image_content[0].type == "image", image_content
+    assert image_content[0].source.media_type == "image/png", image_content
+    assert image_content[0].source.path.startswith("trajectory-assets/"), image_content
+    assert image_content[0].source.path.endswith(".png"), image_content
+    assert (logs_dir / image_content[0].source.path).is_file(), image_content
+
+    image_path.unlink()
+    agent._apply_cell_output(context, {
+        "status": "completed",
+        "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
+    })
+    missing_image_payload = json.loads((logs_dir / "trajectory.json").read_text(encoding="utf-8"))
+    assert missing_image_payload["extra"]["maka_artifact_kind"] == "summary", missing_image_payload
+    assert missing_image_payload["extra"]["maka_summary_reason"] == "image_artifact_unavailable", missing_image_payload
+
+    escaping_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    escaping_metadata["relativePath"] = "../outside.png"
+    metadata_path.write_text(json.dumps(escaping_metadata) + "\n", encoding="utf-8")
+    agent._apply_cell_output(context, {
+        "status": "completed",
+        "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
+    })
+    escaping_payload = json.loads((logs_dir / "trajectory.json").read_text(encoding="utf-8"))
+    assert escaping_payload["extra"]["maka_artifact_kind"] == "summary", escaping_payload
+    assert escaping_payload["extra"]["maka_summary_reason"] == "image_artifact_path_invalid", escaping_payload
+
+    wrong_session_events = json.loads(json.dumps(image_events))
+    wrong_session_events[2]["content"]["result"]["ref"]["sessionId"] = "other-session"
+    runtime_path.write_text("\n".join(json.dumps(event) for event in wrong_session_events) + "\n", encoding="utf-8")
+    agent._apply_cell_output(context, {
+        "status": "completed",
+        "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
+    })
+    wrong_session_payload = json.loads((logs_dir / "trajectory.json").read_text(encoding="utf-8"))
+    assert wrong_session_payload["extra"]["maka_artifact_kind"] == "summary", wrong_session_payload
+    assert wrong_session_payload["extra"]["maka_summary_reason"] == "image_reference_invalid", wrong_session_payload
+
+    runtime_path.unlink()
+    unexpected_path = logs_dir / "unexpected-events.jsonl"
+    unexpected_path.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+    agent._apply_cell_output(context, {
+        "status": "completed",
+        "runtimeEventsPath": str(unexpected_path),
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
+    })
+    summary_payload = json.loads((logs_dir / "trajectory.json").read_text(encoding="utf-8"))
+    assert summary_payload["extra"]["maka_artifact_kind"] == "summary", summary_payload
+    assert summary_payload["extra"]["maka_summary_reason"] == "runtime_events_missing", summary_payload
+
+    download_logs = logs_dir / "downloaded"
+    download_logs.mkdir()
+    download_agent = MakaAgent(download_logs)
+
+    class DownloadEnvironment:
+        async def download_file(self, remote, local):
+            assert remote == "/logs/agent/runtime-events.jsonl", remote
+            Path(local).write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+
+    asyncio.run(download_agent._download_runtime_events(DownloadEnvironment(), {
+        "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+    }))
+    assert (download_logs / "runtime-events.jsonl").is_file()
+
+    downloaded_image_events = events[:2] + [
+        event("downloaded-image", 1200, "tool", "tool", {"kind": "function_response", "id": "tool-1", "name": "Bash", "result": {"kind": "image", "mimeType": "image/png", "ref": {"kind": "session_file", "sessionId": "session-1", "relativePath": "downloaded-image"}}}),
+        events[3],
+        events[4],
+    ]
+    (download_logs / "runtime-events.jsonl").write_text(
+        "\n".join(json.dumps(event) for event in downloaded_image_events) + "\n",
+        encoding="utf-8",
+    )
+    downloaded_relative_path = "session-1/downloaded-image-shot.png"
+    downloaded_metadata = json.dumps({
+        "id": "downloaded-image",
+        "sessionId": "session-1",
+        "turnId": "turn-1",
+        "createdAt": 1200,
+        "name": "shot.png",
+        "kind": "image",
+        "relativePath": downloaded_relative_path,
+        "sizeBytes": 15,
+        "mimeType": "image/png",
+        "source": "tool_result",
+        "status": "live",
+    }) + "\n"
+
+    class ArtifactDownloadEnvironment:
+        async def download_file(self, remote, local):
+            if remote == "/logs/agent/maka-storage/artifacts/metadata.jsonl":
+                Path(local).write_text(downloaded_metadata, encoding="utf-8")
+                return
+            assert remote == f"/logs/agent/maka-storage/artifacts/{downloaded_relative_path}", remote
+            Path(local).write_bytes(b"\x89PNG\r\n\x1a\nfixture")
+
+    asyncio.run(download_agent._download_runtime_artifacts(ArtifactDownloadEnvironment()))
+    assert (download_logs / "maka-storage" / "artifacts" / downloaded_relative_path).is_file()
+
+    task_run_logs = logs_dir / "task-run"
+    task_run_logs.mkdir()
+    task_run_agent = MakaAgent(task_run_logs, extra_env={"MAKA_HARBOR_MODE": "task-run"})
+    task_run_runtime_path = task_run_logs / "runtime-events.jsonl"
+    task_run_runtime_path.write_text(
+        "\n".join(json.dumps(event) for event in image_events) + "\n", encoding="utf-8"
+    )
+    task_run_artifact_root = task_run_logs / "maka-task-run" / "runs" / "artifacts"
+    task_run_image_path = task_run_artifact_root / "session-1" / "task-run-shot.png"
+    task_run_image_path.parent.mkdir(parents=True)
+    task_run_image_path.write_bytes(b"\x89PNG\r\n\x1a\nfixture")
+    (task_run_artifact_root / "metadata.jsonl").parent.mkdir(parents=True, exist_ok=True)
+    (task_run_artifact_root / "metadata.jsonl").write_text(json.dumps({
+        "id": "artifact-image",
+        "sessionId": "session-1",
+        "turnId": "turn-1",
+        "createdAt": 2200,
+        "name": "task-run-shot.png",
+        "kind": "image",
+        "relativePath": "session-1/task-run-shot.png",
+        "sizeBytes": task_run_image_path.stat().st_size,
+        "mimeType": "image/png",
+        "source": "tool_result",
+        "status": "live",
+    }) + "\n", encoding="utf-8")
+    task_run_agent._apply_cell_output(AgentContext(), {
+        "status": "completed",
+        "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
+    })
+    task_run_payload = json.loads((task_run_logs / "trajectory.json").read_text(encoding="utf-8"))
+    assert task_run_payload["extra"]["maka_artifact_kind"] == "full", task_run_payload
+    task_run_content = task_run_payload["steps"][1]["observation"]["results"][0]["content"]
+    assert task_run_content[0]["source"]["media_type"] == "image/png", task_run_content
+
+print("trajectory-harbor-contract ok")
 `;
 }
 

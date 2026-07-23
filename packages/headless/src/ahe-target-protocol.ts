@@ -408,6 +408,7 @@ export const MAKA_AHE_CURRENT_COMPONENTS: readonly MakaAheTargetComponent[] = [
       { path: 'packages/headless/README.md' },
       { path: 'packages/headless/harbor/run-terminal-bench-smoke.mjs' },
       { path: 'packages/headless/harbor/maka_agent.py' },
+      { path: 'packages/headless/harbor/maka_trajectory.py' },
     ],
   },
 ];
