@@ -94,12 +94,20 @@ export function isTerminalRunStatus(status: AgentRunHeader['status']): boolean {
 
 export function statusFromEvent(
   event: SessionEvent,
+  options: { allowInteractionResume?: boolean } = {},
 ): { status: SessionStatus; blockedReason?: SessionBlockedReason } | undefined {
   switch (event.type) {
     case 'permission_request':
       return { status: 'waiting_for_user', blockedReason: 'permission_required' };
+    case 'user_question_request':
+      return { status: 'waiting_for_user' };
     case 'permission_decision_ack':
-      return event.decision === 'allow' ? { status: 'running' } : { status: 'aborted' };
+      if (event.decision === 'deny') return { status: 'aborted' };
+      if (options.allowInteractionResume === false) return undefined;
+      return { status: 'running' };
+    case 'user_question_answer_ack':
+      if (options.allowInteractionResume === false) return undefined;
+      return { status: 'running' };
     case 'error':
       return { status: 'blocked', blockedReason: blockedReasonFromErrorReason(event.reason) };
     case 'abort':

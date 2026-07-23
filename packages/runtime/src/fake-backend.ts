@@ -1,14 +1,26 @@
 import { randomUUID } from 'node:crypto';
 import type { BackendKind, SessionEvent, SessionHeader, StoredMessage } from '@maka/core';
-import type { AgentBackend, BackendSendInput, PermissionDecision } from '@maka/core/backend-types';
+import type {
+  AgentBackend,
+  BackendSendInput,
+  HostedUserQuestionAnswer,
+  HostedUserQuestionSettlement,
+  PermissionDecision,
+} from '@maka/core/backend-types';
 import type { UserQuestionResponse } from '@maka/core/user-question';
+import {
+  RuntimeInteractionInvariantError,
+  type RuntimeUserQuestionClosureReason,
+} from './interaction-authority.js';
 import type { SessionStore } from './session-manager.js';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export const FAKE_ASK_USER_QUESTION_PROMPT = '__e2e_ask_user_question__';
 
 type PendingQuestion = {
+  turnId: string;
   requestId: string;
+  hosted: boolean;
   resolve(response: UserQuestionResponse | null): void;
 };
 
@@ -152,16 +164,17 @@ export class FakeBackend implements AgentBackend {
 
   async stop(): Promise<void> {
     this.stopped = true;
-    this.pendingQuestion?.resolve(null);
-    this.pendingQuestion = undefined;
+    if (this.pendingQuestion && !this.pendingQuestion.hosted) {
+      this.pendingQuestion.resolve(null);
+      this.pendingQuestion = undefined;
+    }
   }
 
   async respondToPermission(_decision: PermissionDecision): Promise<void> {}
 
   async respondToUserQuestion(response: UserQuestionResponse): Promise<void> {
     if (this.pendingQuestion?.requestId !== response.requestId) return;
-    const pending = this.pendingQuestion;
-    this.pendingQuestion = undefined;
+    const pending = this.takePendingQuestion(this.pendingQuestion.turnId, response.requestId);
     pending.resolve(response);
   }
 
@@ -226,8 +239,13 @@ export class FakeBackend implements AgentBackend {
     const responsePromise = new Promise<UserQuestionResponse | null>((resolve) => {
       resolveResponse = resolve;
     });
-    this.pendingQuestion = { requestId, resolve: resolveResponse };
-    yield {
+    this.pendingQuestion = {
+      turnId,
+      requestId,
+      hosted: input.hostedInteraction !== undefined,
+      resolve: resolveResponse,
+    };
+    const request = {
       type: 'user_question_request',
       id: randomUUID(),
       turnId,
@@ -235,7 +253,17 @@ export class FakeBackend implements AgentBackend {
       requestId,
       toolUseId,
       questions,
-    };
+    } satisfies Extract<SessionEvent, { type: 'user_question_request' }>;
+    if (input.hostedInteraction) {
+      const settlement = this.createQuestionSettlement(turnId, requestId);
+      try {
+        await input.hostedInteraction.admitUserQuestionRequest({ request, settlement });
+      } catch (error) {
+        this.takePendingQuestion(turnId, requestId).resolve(null);
+        throw error;
+      }
+    }
+    yield request;
 
     const response = await responsePromise;
     if (this.pendingQuestion?.requestId === requestId) this.pendingQuestion = undefined;
@@ -244,6 +272,15 @@ export class FakeBackend implements AgentBackend {
       yield { type: 'complete', id: randomUUID(), turnId, ts: Date.now(), stopReason: 'user_stop' };
       return;
     }
+
+    yield {
+      type: 'user_question_answer_ack',
+      id: randomUUID(),
+      turnId,
+      ts: Date.now(),
+      requestId,
+      toolUseId,
+    };
 
     const result = {
       answers: questions.map((question, index) => ({
@@ -295,5 +332,38 @@ export class FakeBackend implements AgentBackend {
     });
     yield { type: 'text_complete', id: randomUUID(), turnId, ts: completedAt, messageId, text };
     yield { type: 'complete', id: randomUUID(), turnId, ts: Date.now(), stopReason: 'end_turn' };
+  }
+
+  private createQuestionSettlement(
+    turnId: string,
+    requestId: string,
+  ): HostedUserQuestionSettlement {
+    return Object.freeze({
+      applyAnswer: async (answer: HostedUserQuestionAnswer): Promise<void> => {
+        if (Object.hasOwn(answer, 'requestId')) {
+          throw new RuntimeInteractionInvariantError(
+            `Fake question settlement ${requestId} received a routed answer`,
+          );
+        }
+        this.takePendingQuestion(turnId, requestId).resolve({
+          requestId,
+          answers: [...answer.answers],
+        });
+      },
+      applyClosure: async (_reason: RuntimeUserQuestionClosureReason): Promise<void> => {
+        this.takePendingQuestion(turnId, requestId).resolve(null);
+      },
+    });
+  }
+
+  private takePendingQuestion(turnId: string, requestId: string): PendingQuestion {
+    const pending = this.pendingQuestion;
+    if (!pending || pending.turnId !== turnId || pending.requestId !== requestId) {
+      throw new RuntimeInteractionInvariantError(
+        `Fake question settlement did not exact-take ${requestId} from turn ${turnId}`,
+      );
+    }
+    this.pendingQuestion = undefined;
+    return pending;
   }
 }

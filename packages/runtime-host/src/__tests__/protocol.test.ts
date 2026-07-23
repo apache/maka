@@ -42,7 +42,7 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.throws(() => negotiateProtocol({ min: -1, max: 0 }, { min: 0, max: 0 }), isInvalidFrame);
   });
 
-  test('keeps the experimental protocol at v0 with ready Message authority operations', () => {
+  test('keeps the experimental protocol at v0 with the declared authority operations', () => {
     assert.equal(RUNTIME_HOST_PROTOCOL_VERSION, 0);
     assert.deepEqual(Object.keys(HOST_OPERATION_SPECS).sort(), [
       'connection.catalog.create',
@@ -54,6 +54,8 @@ describe('Runtime Host bootstrap protocol', () => {
       'credential.vault.query',
       'credential.vault.set',
       'host.status',
+      'interaction.answer',
+      'interaction.query',
       'queue.retract',
       'runtime.policy.mutate',
       'runtime.policy.query',
@@ -160,6 +162,22 @@ describe('Runtime Host bootstrap protocol', () => {
         decodeSessionContinuitySnapshot({
           ...continuitySnapshot('epoch-1'),
           interactions: [],
+        }),
+      isInvalidFrame,
+    );
+    const waiting = {
+      ...continuitySnapshot('epoch-1'),
+      rootTurn: {
+        ...continuitySnapshot('epoch-1').rootTurn,
+        status: 'waiting_for_user',
+      },
+    };
+    assert.deepEqual(decodeSessionContinuitySnapshot(waiting), waiting);
+    assert.throws(
+      () =>
+        decodeSessionContinuitySnapshot({
+          ...waiting,
+          rootTurn: { ...waiting.rootTurn, status: 'waiting_permission' },
         }),
       isInvalidFrame,
     );
@@ -1031,5 +1049,6 @@ function continuitySnapshot(hostEpoch: string) {
       steering: [],
       followup: [],
     },
+    interactions: { pending: [] },
   };
 }

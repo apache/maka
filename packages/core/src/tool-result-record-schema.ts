@@ -286,7 +286,7 @@ function isNonShellToolResultContent(value: unknown): value is ToolResultContent
         typeof value.agentName === 'string' &&
         typeof value.turnId === 'string' &&
         isOptionalString(value.runId) &&
-        ['completed', 'failed', 'cancelled', 'running', 'waiting_permission'].includes(
+        ['completed', 'failed', 'cancelled', 'running', 'waiting_for_user'].includes(
           value.status as string,
         ) &&
         isPermissionMode(value.permissionMode) &&

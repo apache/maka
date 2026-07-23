@@ -1047,6 +1047,24 @@ describe('mapSessionEventToRuntimeEvent (pure)', () => {
     });
   });
 
+  test('user_question_answer_ack maps without duplicating the canonical answer', () => {
+    const mapped = mapSessionEventToRuntimeEvent(
+      ev({
+        type: 'user_question_answer_ack',
+        requestId: 'question-1',
+        toolUseId: 'tool-1',
+      }),
+      ctx,
+    );
+
+    assert.equal(mapped.role, 'system');
+    assert.equal(mapped.author, 'user');
+    assert.deepEqual(mapped.actions?.userQuestionAnswerAccepted, {
+      requestId: 'question-1',
+    });
+    assert.equal(mapped.refs?.toolCallId, 'tool-1');
+  });
+
   test('tool_result without a prior tool_start still maps (name falls back to empty)', () => {
     const a = mapSessionEventToRuntimeEvent(
       ev({

@@ -83,6 +83,13 @@ import {
   type RuntimeMessageAuthority,
   type RuntimeMessageRunOwner,
 } from './message-authority.js';
+import {
+  RuntimeInteractionFailStopError,
+  bindRuntimeInteractionRun,
+  type RuntimeInteractionAuthority,
+  type RuntimeInteractionRunBinding,
+  type RuntimeInteractionRunClosureReason,
+} from './interaction-authority.js';
 
 export interface RuntimeKernelLike {
   startTurn(
@@ -190,6 +197,8 @@ export interface RuntimeKernelDeps {
   runBackendActivation?: BackendActivationBoundary;
   /** Hosted composition capability. When present, the Host owns all message queues. */
   messageAuthority?: RuntimeMessageAuthority;
+  /** Hosted composition capability. Omit for embedded interaction ownership. */
+  interactionAuthority?: RuntimeInteractionAuthority;
 }
 
 export interface HistoryCompactCleanupRequest {
@@ -259,6 +268,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
   private readonly pendingContinuationSessions = new Set<string>();
   private readonly steeringBySession = new Map<string, SessionSteeringState>();
   private readonly backendInvalidations = new Map<string, BackendInvalidationState>();
+  private readonly interactionRuns = new Map<AgentRun, RuntimeInteractionRunBinding>();
 
   constructor(private readonly deps: RuntimeKernelDeps) {
     if (deps.runStore && !deps.runtimeEventStore) {
@@ -769,6 +779,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     const sessionEvents = new AsyncEventQueue<SessionEvent>();
     const abortController = new AbortController();
     let flowDone = false;
+    let interactionRun: RuntimeInteractionRunBinding | undefined;
     let messageOwner: RuntimeMessageRunOwner | undefined;
     let messageOwnerReleased = false;
     const releaseMessageOwner = (): void => {
@@ -778,7 +789,18 @@ export class RuntimeKernel implements RuntimeKernelLike {
     };
     let begin: AgentRunBeginResult;
     try {
-      begin = await this.runBackendActivation(() => run.begin());
+      begin = await this.runBackendActivation(async () => {
+        const started = await run.begin();
+        if (this.deps.interactionAuthority) {
+          interactionRun = await bindRuntimeInteractionRun(this.deps.interactionAuthority, {
+            sessionId,
+            turnId: run.turnId,
+            runId: run.runId,
+          });
+          this.registerInteractionRun(run, interactionRun);
+        }
+        return started;
+      });
       if (steering && this.deps.messageAuthority) {
         messageOwner = this.deps.messageAuthority.bindRun({
           sessionId,
@@ -789,15 +811,40 @@ export class RuntimeKernel implements RuntimeKernelLike {
       if (onRunStarted && initialHeader) await onRunStarted(run.runId, initialHeader);
     } catch (error) {
       let failure = error;
+      if (interactionRun) {
+        try {
+          await interactionRun.close(interactionClosureReason(run));
+          await interactionRun.settleLocalClosures();
+          this.releaseInteractionRun(run, interactionRun);
+        } catch (closeError) {
+          failure = new AggregateError(
+            [failure, closeError],
+            'Interaction owner bind cleanup failed',
+          );
+        }
+      }
       try {
         releaseMessageOwner();
       } catch (releaseError) {
-        failure = new AggregateError([error, releaseError], 'Message owner bind cleanup failed');
+        failure = new AggregateError([failure, releaseError], 'Message owner bind cleanup failed');
       }
       await run.recordFailure(failure);
       await run.finalize();
       throw failure;
     }
+
+    let finalizePromise: Promise<void> | undefined;
+    const finalizeRun = (): Promise<void> => {
+      finalizePromise ??= (async () => {
+        if (interactionRun) {
+          await interactionRun.close(interactionClosureReason(run));
+          await interactionRun.settleLocalClosures();
+        }
+        await run.finalize();
+        if (interactionRun) this.releaseInteractionRun(run, interactionRun);
+      })();
+      return finalizePromise;
+    };
 
     // Steering is a top-level-turn affordance only; child agent turns run
     // without a queue. Ownership is established only AFTER run.begin()
@@ -882,10 +929,13 @@ export class RuntimeKernel implements RuntimeKernelLike {
 
     const aiSdkFlow = new AiSdkFlow({
       backend: begin.backend,
+      ...(interactionRun ? { hostedInteraction: interactionRun } : {}),
       drainAfterTerminal: true,
       onSessionEvent: async (sessionEvent, runtimeEvent) => {
+        this.assertInteractionPublication(interactionRun, sessionEvent);
         await run.acceptMappedEvent(sessionEvent, runtimeEvent, {
           requireTerminalWrite: Boolean(this.deps.runtimeEventStore),
+          allowInteractionResume: interactionResumeAllowed(interactionRun, sessionEvent),
         });
         await sessionEvents.push(sessionEvent);
       },
@@ -898,7 +948,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       onFinally: async () => {
         flowDone = true;
         try {
-          await run.finalize();
+          await finalizeRun();
           // Release Runtime access BEFORE the event stream closes. Embedded
           // queues still emit their final steering → followup projection here;
           // a hosted owner is only sealed, then the Host performs that handoff
@@ -948,7 +998,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         async (result) => {
           if (!flowDone) {
             flowDone = true;
-            await run.finalize();
+            await finalizeRun();
             releaseMessageOwner();
             sessionEvents.close();
           }
@@ -968,10 +1018,12 @@ export class RuntimeKernel implements RuntimeKernelLike {
       await runnerResult;
     } finally {
       if (!flowDone) {
+        await interactionRun?.close(interactionClosureReason(run));
         abortController.abort();
         sessionEvents.close();
       }
       await runnerResult.catch(() => undefined);
+      await finalizeRun();
       if (messageOwner) releaseMessageOwner();
       else if (steering) this.releaseSteeringTurn(sessionId, run.turnId);
     }
@@ -987,6 +1039,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     const sessionEvents = new AsyncEventQueue<SessionEvent>();
     const abortController = new AbortController();
     let flowDone = false;
+    let interactionRun: RuntimeInteractionRunBinding | undefined;
     let messageOwner: RuntimeMessageRunOwner | undefined;
     let messageOwnerReleased = false;
     const releaseMessageOwner = (): void => {
@@ -996,9 +1049,20 @@ export class RuntimeKernel implements RuntimeKernelLike {
     };
     let begin: Awaited<ReturnType<AgentRun['beginContinuation']>>;
     try {
-      begin = await this.runBackendActivation(() =>
-        persistContinuationSource ? run.beginContinuation(continuation) : run.beginOperation(),
-      );
+      begin = await this.runBackendActivation(async () => {
+        const started = persistContinuationSource
+          ? await run.beginContinuation(continuation)
+          : await run.beginOperation();
+        if (this.deps.interactionAuthority) {
+          interactionRun = await bindRuntimeInteractionRun(this.deps.interactionAuthority, {
+            sessionId: continuation.sessionId,
+            turnId: run.turnId,
+            runId: run.runId,
+          });
+          this.registerInteractionRun(run, interactionRun);
+        }
+        return started;
+      });
       if (bindHostedRoot && this.deps.messageAuthority) {
         messageOwner = this.deps.messageAuthority.bindRun({
           sessionId: continuation.sessionId,
@@ -1009,22 +1073,50 @@ export class RuntimeKernel implements RuntimeKernelLike {
       await onRunStarted?.();
     } catch (error) {
       let failure = error;
+      if (interactionRun) {
+        try {
+          await interactionRun.close(interactionClosureReason(run));
+          await interactionRun.settleLocalClosures();
+          this.releaseInteractionRun(run, interactionRun);
+        } catch (closeError) {
+          failure = new AggregateError(
+            [failure, closeError],
+            'Interaction owner bind cleanup failed',
+          );
+        }
+      }
       try {
         releaseMessageOwner();
       } catch (releaseError) {
-        failure = new AggregateError([error, releaseError], 'Message owner bind cleanup failed');
+        failure = new AggregateError([failure, releaseError], 'Message owner bind cleanup failed');
       }
       await run.recordFailure(failure);
       await run.finalize();
       throw failure;
     }
 
+    let finalizePromise: Promise<void> | undefined;
+    const finalizeRun = (): Promise<void> => {
+      finalizePromise ??= (async () => {
+        if (interactionRun) {
+          await interactionRun.close(interactionClosureReason(run));
+          await interactionRun.settleLocalClosures();
+        }
+        await run.finalize();
+        if (interactionRun) this.releaseInteractionRun(run, interactionRun);
+      })();
+      return finalizePromise;
+    };
+
     const aiSdkFlow = new AiSdkFlow({
       backend: begin.backend,
+      ...(interactionRun ? { hostedInteraction: interactionRun } : {}),
       drainAfterTerminal: true,
       onSessionEvent: async (sessionEvent, runtimeEvent) => {
+        this.assertInteractionPublication(interactionRun, sessionEvent);
         await run.acceptMappedEvent(sessionEvent, runtimeEvent, {
           requireTerminalWrite: true,
+          allowInteractionResume: interactionResumeAllowed(interactionRun, sessionEvent),
         });
         await sessionEvents.push(sessionEvent);
       },
@@ -1037,7 +1129,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       onFinally: async () => {
         flowDone = true;
         try {
-          await run.finalize();
+          await finalizeRun();
           releaseMessageOwner();
           sessionEvents.close();
         } catch (error) {
@@ -1084,13 +1176,54 @@ export class RuntimeKernel implements RuntimeKernelLike {
       await runnerResult;
     } finally {
       if (!flowDone) {
+        await interactionRun?.close(interactionClosureReason(run));
         abortController.abort();
         sessionEvents.close();
         if (runnerFailure !== undefined) await run.recordFailure(runnerFailure);
-        await run.finalize();
+        await finalizeRun();
       }
       await runnerResult.catch(() => undefined);
+      await finalizeRun();
       releaseMessageOwner();
+    }
+  }
+
+  private registerInteractionRun(run: AgentRun, binding: RuntimeInteractionRunBinding): void {
+    if (
+      binding.sessionId !== run.sessionId ||
+      binding.turnId !== run.turnId ||
+      binding.runId !== run.runId ||
+      this.interactionRuns.has(run)
+    ) {
+      throw new RuntimeInteractionFailStopError(
+        `RuntimeKernel could not register exact Interaction Run ${run.runId}`,
+        new Error('Interaction Run identity or ownership mismatch'),
+      );
+    }
+    this.interactionRuns.set(run, binding);
+  }
+
+  private releaseInteractionRun(run: AgentRun, binding: RuntimeInteractionRunBinding): void {
+    const current = this.interactionRuns.get(run);
+    if (current && current !== binding) {
+      throw new RuntimeInteractionFailStopError(
+        `RuntimeKernel could not release exact Interaction Run ${run.runId}`,
+        new Error('Interaction Run owner changed before release'),
+      );
+    }
+    binding.release();
+    if (current === binding) this.interactionRuns.delete(run);
+  }
+
+  private assertInteractionPublication(
+    binding: RuntimeInteractionRunBinding | undefined,
+    event: SessionEvent,
+  ): void {
+    if (
+      binding &&
+      (event.type === 'permission_request' || event.type === 'user_question_request')
+    ) {
+      binding.assertPendingAdmission(event);
     }
   }
 
@@ -1180,6 +1313,20 @@ export class RuntimeKernel implements RuntimeKernelLike {
     if (operation.targets.size === 0) return;
     this.stopOperations.set(sessionId, operation);
 
+    const stoppedRuns = [
+      ...new Set([...operation.targets.values()].flatMap((target) => [...target.runs])),
+    ];
+    try {
+      await Promise.all(
+        stoppedRuns.map((run) => this.interactionRuns.get(run)?.close('turn_stopped')),
+      );
+    } catch (error) {
+      throw interactionFailStop(
+        `Could not durably close stopped Runs for session ${sessionId}`,
+        error,
+      );
+    }
+
     const undelivered = [...operation.targets.values()].filter((target) => !target.delivered);
     const results = await Promise.allSettled(
       undelivered.map((target) => target.active.backend.stop('user_stop', input.mode)),
@@ -1191,9 +1338,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
     });
     if (stopError !== undefined) throw stopError;
 
-    const stoppedRuns = [
-      ...new Set([...operation.targets.values()].flatMap((target) => [...target.runs])),
-    ];
     if (!operation.statusProjected) {
       await this.updateStatus(sessionId, 'aborted', undefined, operation.ts);
       operation.statusProjected = true;
@@ -2093,6 +2237,29 @@ class AsyncEventQueueClosed extends Error {
 
 function isAsyncEventQueueClosed(error: unknown): boolean {
   return error instanceof AsyncEventQueueClosed;
+}
+
+function interactionResumeAllowed(
+  interactionRun: RuntimeInteractionRunBinding | undefined,
+  event: SessionEvent,
+): boolean {
+  if (
+    !interactionRun ||
+    (event.type !== 'permission_decision_ack' && event.type !== 'user_question_answer_ack')
+  ) {
+    return true;
+  }
+  return interactionRun.canResumeAfterAnswerAck(event);
+}
+
+function interactionClosureReason(run: AgentRun): RuntimeInteractionRunClosureReason {
+  return run.isStopped() ? 'turn_stopped' : 'turn_terminal';
+}
+
+function interactionFailStop(message: string, error: unknown): Error {
+  return error instanceof RuntimeInteractionFailStopError
+    ? error
+    : new RuntimeInteractionFailStopError(message, error);
 }
 
 interface AsyncEventQueueEntry<T> {

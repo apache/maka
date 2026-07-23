@@ -776,6 +776,24 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     expect(out.diagnostics).toEqual([]);
   });
 
+  test('question answer acknowledgements remain non-visible audit facts', () => {
+    const out = projectRuntimeEventsToStoredMessages(
+      [
+        ev({
+          id: 'question-1-answered',
+          role: 'system',
+          author: 'user',
+          actions: { userQuestionAnswerAccepted: { requestId: 'question-1' } },
+          refs: { toolCallId: 'tool-1' },
+        }),
+      ],
+      { runHeaders: [header] },
+    );
+
+    expect(out.messages).toEqual([]);
+    expect(out.diagnostics).toEqual([]);
+  });
+
   test('continuation-start recovery facts are accepted without creating legacy message rows', () => {
     const out = projectRuntimeEventsToStoredMessages(
       [

@@ -322,6 +322,7 @@ function openResult(hostEpoch: string, subscriptionId: string) {
         status: 'running' as const,
       },
       queue: { hostEpoch, queueRevision: 1, steering: [], followup: [] },
+      interactions: { pending: [] },
     },
   };
 }

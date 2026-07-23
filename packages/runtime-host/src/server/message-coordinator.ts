@@ -30,6 +30,7 @@ import {
   type QueueRetractResult,
   type QueuedMessageSnapshot,
   type RetractedMessageSnapshot,
+  type SessionInteractionProjection,
   type SessionMessageQueueProjection,
   type SteeringMessageSnapshot,
   type TurnInterruptInput,
@@ -112,9 +113,18 @@ export interface HostMessageCoordinatorOptions {
   readonly sessionAdmission: SessionAdmissionGate;
   readonly acquireResidency: () => RuntimeHostResidency;
   readonly requestDrain?: () => void;
+  readonly preflightSessionSnapshot: CandidateSnapshotPreflight;
   readonly onProjectionChanged?: (sessionId: string) => void;
   readonly createId?: () => string;
 }
+
+export type CandidateSnapshotPreflight = (
+  sessionId: string,
+  candidate: {
+    readonly queue?: SessionMessageQueueProjection;
+    readonly interactions?: SessionInteractionProjection;
+  },
+) => Promise<boolean> | boolean;
 
 interface LiveEntry {
   readonly entryId: string;
@@ -215,6 +225,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   readonly #requestDrain: () => void;
   readonly #onProjectionChanged: (sessionId: string) => void;
   readonly #createId: () => string;
+  readonly #preflightSessionSnapshot: CandidateSnapshotPreflight;
   readonly #sessions = new Map<string, SessionState>();
   readonly #pendingSubmits = new Map<string, PendingSubmit>();
   readonly #pendingRetracts = new Map<string, PendingRetract>();
@@ -234,6 +245,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     this.#requestDrain = options.requestDrain ?? (() => undefined);
     this.#onProjectionChanged = options.onProjectionChanged ?? (() => undefined);
     this.#createId = options.createId ?? randomUUID;
+    this.#preflightSessionSnapshot = options.preflightSessionSnapshot;
   }
 
   projection(sessionId: string): SessionMessageQueueProjection {
@@ -547,6 +559,10 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       };
       if (!projectionFitsEveryEntryState(candidate)) {
         return failure('session_busy', 'Message queue projection capacity is full');
+      }
+      const worstCaseCandidate = worstCaseQueueProjection(candidate);
+      if (!(await this.#preflightSessionSnapshot(input.sessionId, { queue: worstCaseCandidate }))) {
+        return failure('session_busy', 'Session projection capacity is full');
       }
       if (!interruptResultFits(candidate, rootState)) {
         return failure('session_busy', 'Message queue interrupt result capacity is full');
@@ -1324,12 +1340,20 @@ function queuedEntryCount(state: SessionState): number {
 }
 
 function projectionFitsEveryEntryState(projection: SessionMessageQueueProjection): boolean {
-  const worstCase: SessionMessageQueueProjection = {
+  return fitsEncodedByteLimit(
+    worstCaseQueueProjection(projection),
+    MESSAGE_QUEUE_PROJECTION_MAX_BYTES,
+  );
+}
+
+function worstCaseQueueProjection(
+  projection: SessionMessageQueueProjection,
+): SessionMessageQueueProjection {
+  return {
     ...projection,
     queueRevision: Number.MAX_SAFE_INTEGER,
     steering: projection.steering.map((entry) => ({ ...entry, state: 'in_flight' as const })),
   };
-  return fitsEncodedByteLimit(worstCase, MESSAGE_QUEUE_PROJECTION_MAX_BYTES);
 }
 
 function retractionResultFits(

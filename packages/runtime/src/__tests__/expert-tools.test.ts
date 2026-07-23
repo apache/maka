@@ -189,11 +189,11 @@ describe('expert_dispatch tool', () => {
     assert.equal(task.status, 'in_progress');
   });
 
-  test('settles cancellation, timeout failure, and permission-waiting outcomes through the Task Ledger', async () => {
+  test('settles cancellation, timeout failure, and user-waiting outcomes through the Task Ledger', async () => {
     const cases = [
       { status: 'cancelled', failureClass: 'parent_cancelled' },
       { status: 'failed', failureClass: 'timeout' },
-      { status: 'waiting_permission', failureClass: 'permission_required' },
+      { status: 'waiting_for_user', failureClass: 'permission_required' },
     ] as const;
     for (const { status, failureClass } of cases) {
       const task: Task = {

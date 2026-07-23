@@ -116,11 +116,32 @@ describe('session projection helpers', () => {
       status: 'waiting_for_user',
       blockedReason: 'permission_required',
     });
+    expect(statusFromEvent({ type: 'user_question_request', ts: 1 } as never)).toEqual({
+      status: 'waiting_for_user',
+    });
     expect(
       statusFromEvent({ type: 'permission_decision_ack', ts: 1, decision: 'allow' } as never),
     ).toEqual({
       status: 'running',
     });
+    expect(
+      statusFromEvent({ type: 'permission_decision_ack', ts: 1, decision: 'allow' } as never, {
+        allowInteractionResume: false,
+      }),
+    ).toBeUndefined();
+    expect(
+      statusFromEvent({ type: 'permission_decision_ack', ts: 1, decision: 'deny' } as never, {
+        allowInteractionResume: false,
+      }),
+    ).toEqual({ status: 'aborted' });
+    expect(statusFromEvent({ type: 'user_question_answer_ack', ts: 1 } as never)).toEqual({
+      status: 'running',
+    });
+    expect(
+      statusFromEvent({ type: 'user_question_answer_ack', ts: 1 } as never, {
+        allowInteractionResume: false,
+      }),
+    ).toBeUndefined();
     expect(statusFromEvent({ type: 'error', ts: 1, reason: 'api_key_invalid' } as never)).toEqual({
       status: 'blocked',
       blockedReason: 'NO_REAL_CONNECTION',

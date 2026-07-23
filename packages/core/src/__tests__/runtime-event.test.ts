@@ -316,7 +316,7 @@ describe('RuntimeEvent actions', () => {
     expect(actions.tokenUsage?.input).toBe(10);
   });
 
-  test('permission request/decision are first-class actions', () => {
+  test('permission and user-question interactions are first-class actions', () => {
     const actions: RuntimeEventActions = {
       permissionRequest: {
         kind: 'tool_permission',
@@ -329,9 +329,24 @@ describe('RuntimeEvent actions', () => {
         rememberForTurnAllowed: true,
       },
       permissionDecision: { requestId: 'pr-1', decision: 'deny' },
+      userQuestionAnswerAccepted: { requestId: 'question-1' },
     };
     expect(actions.permissionRequest?.category).toBe('shell_unsafe');
     expect(actions.permissionDecision?.decision).toBe('deny');
+    expect(decodeRuntimeEvent(baseEvent({ actions })).actions?.userQuestionAnswerAccepted).toEqual({
+      requestId: 'question-1',
+    });
+    assert.throws(() =>
+      decodeRuntimeEvent(
+        baseEvent({
+          actions: {
+            userQuestionAnswerAccepted: {
+              requestId: 'x'.repeat(257),
+            },
+          },
+        }),
+      ),
+    );
   });
 
   test('state/artifact deltas accept primitive values', () => {

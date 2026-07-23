@@ -497,6 +497,13 @@ describe('committed stream graph projection', () => {
                 },
               },
             }),
+            runtimeEvent(run, {
+              id: 'question-answer',
+              ts: baseTs + 3,
+              actions: {
+                userQuestionAnswerAccepted: { requestId: 'question-1' },
+              },
+            }),
           ],
         },
       ],
@@ -507,8 +514,10 @@ describe('committed stream graph projection', () => {
       [
         [{ kind: 'attention', reason: 'permission_request' }],
         [{ kind: 'attention', reason: 'user_question_request' }],
+        [],
       ],
     );
+    assert.deepEqual(records[2]?.facets, ['runtime_fact']);
     assert.equal(replayAgentGraphRecords(records).operators.research?.status, 'running');
   });
 

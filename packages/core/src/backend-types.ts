@@ -8,7 +8,15 @@
  * implementation file.
  */
 
-import type { AttachmentRef, MessageContent, QuoteRef, SessionEvent } from './events.js';
+import type {
+  AnyPermissionRequestEvent,
+  AttachmentRef,
+  MessageContent,
+  QuoteRef,
+  SessionEvent,
+  UserQuestionRequestEvent,
+} from './events.js';
+import type { InteractionClosureReason } from './interaction.js';
 import type { RuntimeEvent } from './runtime-event.js';
 import type { StoredMessage, BackendKind } from './session.js';
 import type { PermissionResponse } from './permission.js';
@@ -75,6 +83,63 @@ export interface BackendSendInput {
   ackSteering?: (leaseIds: readonly string[]) => void;
   /** Return undelivered leased steering messages to the queue (see pullSteering). */
   nackSteering?: (leaseIds: readonly string[]) => void;
+  /** Exact hosted-Run Interaction authority. Omitted for embedded execution. */
+  hostedInteraction?: HostedInteractionBridge;
+}
+
+export interface HostedPermissionAnswer {
+  readonly requestId?: never;
+  readonly decision: PermissionResponse['decision'];
+  readonly rememberForTurn?: boolean;
+  readonly reviewer?: PermissionResponse['reviewer'];
+  readonly riskLevel?: PermissionResponse['riskLevel'];
+}
+
+export interface HostedUserQuestionAnswer {
+  readonly requestId?: never;
+  readonly answers: UserQuestionResponse['answers'];
+}
+
+export interface HostedPermissionSettlement {
+  applyAnswer(answer: HostedPermissionAnswer): Promise<void>;
+  applyClosure(reason: InteractionClosureReason): Promise<void>;
+}
+
+export interface HostedUserQuestionSettlement {
+  applyAnswer(answer: HostedUserQuestionAnswer): Promise<void>;
+  applyClosure(reason: Exclude<InteractionClosureReason, 'timed_out'>): Promise<void>;
+}
+
+export type HostedPermissionAdmission =
+  | { readonly state: 'pending' }
+  | { readonly state: 'settled' };
+
+/**
+ * Optional producer capability scoped to one exact hosted Run. Admission must
+ * complete before a backend publishes the request or starts any local winner.
+ */
+export interface HostedInteractionBridge {
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly runId: string;
+
+  admitPermissionRequest(input: {
+    request: AnyPermissionRequestEvent;
+    rememberScopeId?: string;
+    settlement: HostedPermissionSettlement;
+  }): Promise<HostedPermissionAdmission>;
+
+  commitPermissionAnswer(input: {
+    requestId: string;
+    answer: HostedPermissionAnswer;
+  }): Promise<void>;
+
+  commitPermissionTimeout(input: { requestId: string }): Promise<void>;
+
+  admitUserQuestionRequest(input: {
+    request: UserQuestionRequestEvent;
+    settlement: HostedUserQuestionSettlement;
+  }): Promise<void>;
 }
 
 /** One leased steering message: queue identity + canonical user content. */

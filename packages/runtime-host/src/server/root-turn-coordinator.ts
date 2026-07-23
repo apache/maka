@@ -36,6 +36,7 @@ import type {
   TurnStopInput,
 } from '../protocol/index.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
+import type { HostInteractionCoordinator } from './interaction-coordinator.js';
 import {
   type HostMessageRootState,
   type HostMessageSessionHeader,
@@ -52,6 +53,8 @@ import {
   type RuntimeSessionTransientEvent,
   SessionContinuityCoordinator,
 } from './session-continuity-coordinator.js';
+
+type RootTerminalInteractionFence = Pick<HostInteractionCoordinator, 'assertTerminalFence'>;
 
 interface ActiveRootTurn {
   turnId: string;
@@ -108,6 +111,7 @@ export class RootTurnCoordinator {
     stores: ExecutionStoresWriter<'interactive'>,
     private readonly sessionAdmission: SessionAdmissionGate,
     private readonly rootAdmissionOwner: RootAdmissionOwner,
+    private readonly interactions: RootTerminalInteractionFence,
     private readonly messages: HostMessageCoordinator,
     private readonly continuity: SessionContinuityCoordinator,
     private readonly acquireRecoveryResidency: () => RuntimeHostResidency,
@@ -885,7 +889,9 @@ export class RootTurnCoordinator {
         }
         if (isRuntimeSessionTransientEvent(event)) {
           await this.continuity.acceptRuntimeEvent(input.sessionId, active.runId, event);
-        } else if (event.type === 'permission_request') {
+        } else if (isInteractionAnswerAck(event)) {
+          await this.continuity.refreshCanonical(input.sessionId);
+        } else if (event.type === 'permission_request' || event.type === 'user_question_request') {
           this.continuity.enqueueCanonicalRefresh(input.sessionId);
         }
       }
@@ -959,6 +965,7 @@ export class RootTurnCoordinator {
         );
       }
       const identity = { sessionId, turnId: active.turnId, runId: active.runId };
+      await this.interactions.assertTerminalFence(identity, lease);
       const batch = this.messages.beginTerminalTransition(identity);
       await this.continuity.publishTerminalProjection(
         sessionId,
@@ -1286,6 +1293,10 @@ function isRuntimeSessionTransientEvent(
     event.type === 'tool_progress' ||
     event.type === 'tool_result'
   );
+}
+
+function isInteractionAnswerAck(event: SessionEvent): boolean {
+  return event.type === 'permission_decision_ack' || event.type === 'user_question_answer_ack';
 }
 
 function completedStart(outcome: TurnStartOutcome): TurnStartDisposition {

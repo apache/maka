@@ -40,14 +40,14 @@ export function classifyAgentRunRecovery(
   }
 
   if (
-    header.status === 'waiting_permission' ||
+    header.status === 'waiting_for_user' ||
     lastEventType === 'permission_requested' ||
     lastEventType === 'permission_failed'
   ) {
     return failedDecision(
       header,
       'app_restarted',
-      diagnostic('stale_permission_wait', lastEventType, hasCorruptEvent),
+      diagnostic('stale_user_wait', lastEventType, hasCorruptEvent),
     );
   }
 

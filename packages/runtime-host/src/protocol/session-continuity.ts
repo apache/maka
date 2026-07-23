@@ -9,6 +9,10 @@ import {
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import {
+  decodeSessionInteractionProjection,
+  type SessionInteractionProjection,
+} from './interaction.js';
+import {
   decodeSessionMessageQueueProjection,
   type SessionMessageQueueProjection,
 } from './message.js';
@@ -49,6 +53,7 @@ export interface SessionContinuitySnapshot {
   projectionRevision: number;
   rootTurn: TurnSnapshot | null;
   queue: SessionMessageQueueProjection;
+  interactions: SessionInteractionProjection;
 }
 
 export interface SubscriptionOpenInput {
@@ -278,6 +283,7 @@ export function decodeSessionContinuitySnapshot(value: unknown): SessionContinui
     'projectionRevision',
     'rootTurn',
     'queue',
+    'interactions',
   ]);
   if (record.schemaVersion !== SESSION_CONTINUITY_SCHEMA_VERSION) {
     throw invalidProtocolFrame('Unsupported Session continuity snapshot schema');
@@ -287,12 +293,14 @@ export function decodeSessionContinuitySnapshot(value: unknown): SessionContinui
   if (rootTurn !== null && rootTurn.sessionId !== session.sessionId) {
     throw invalidProtocolFrame('Session continuity root Turn belongs to a different Session');
   }
+  const interactions = decodeSessionInteractionProjection(record.interactions, session.sessionId);
   return {
     schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
     session,
     projectionRevision: requirePositiveCount(record.projectionRevision, 'projectionRevision'),
     rootTurn,
     queue: decodeSessionMessageQueueProjection(record.queue),
+    interactions,
   };
 }
 

@@ -11,6 +11,7 @@ import {
   createRuntimeEventStore,
 } from '@maka/storage';
 import { AgentRun } from '../agent-run.js';
+import { buildStatusPatch } from '../session-projection-helpers.js';
 
 test('acks a steering event whose canonical append preceded proof publication failure', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-agent-run-steering-recovery-'));
@@ -91,6 +92,171 @@ test('acks a steering event whose canonical append preceded proof publication fa
   }
 });
 
+test('awaits canonical Run status persistence before accepting an interaction resume', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-agent-run-status-barrier-'));
+  try {
+    const store = createLegacyFileSessionStore(root);
+    const session = await store.create({
+      cwd: '/tmp/cwd',
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const runStore = createAgentRunStore(root);
+    const runtimeEventStore = createRuntimeEventStore(root);
+    const runId = 'run-status-barrier';
+    const turnId = 'turn-status-barrier';
+    await store.updateHeader(session.id, buildStatusPatch('waiting_for_user', 1));
+    await runStore.createRun({
+      ...makeRunHeader(session.id, runId, turnId),
+      status: 'waiting_for_user',
+    });
+    const updateStarted = deferred<void>();
+    const allowUpdate = deferred<void>();
+    const delayedRunStore = {
+      updateRun: async (...args: Parameters<typeof runStore.updateRun>) => {
+        updateStarted.resolve();
+        await allowUpdate.promise;
+        return await runStore.updateRun(...args);
+      },
+      appendEvent: runStore.appendEvent.bind(runStore),
+    } as typeof runStore;
+    const run = new AgentRun({
+      sessionId: session.id,
+      header: session,
+      userInput: { turnId, text: 'resume after answer' },
+      runId,
+      durability: 'required',
+      store,
+      runStore: delayedRunStore,
+      runtimeEventStore,
+      newId: () => 'status-event',
+      now: () => 10,
+      recordSessionMessages: false,
+      hooks: {
+        ensureActive: async () => {
+          throw new Error('ensureActive should not be called');
+        },
+        registerRun: () => {},
+        unregisterRun: () => {},
+        updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
+        updateStatus: async (sessionId, status, blockedReason, ts = 0) => {
+          await store.updateHeader(sessionId, buildStatusPatch(status, ts, blockedReason));
+        },
+        appendTurnState: async () => {},
+      },
+    });
+    let accepted = false;
+    const accepting = run
+      .recordSessionEvent({
+        type: 'user_question_answer_ack',
+        id: 'answer-ack',
+        turnId,
+        ts: 2,
+        requestId: 'question-1',
+        toolUseId: 'tool-1',
+      })
+      .then(() => {
+        accepted = true;
+      });
+
+    await updateStarted.promise;
+    assert.equal(accepted, false);
+    assert.equal((await store.readHeader(session.id)).status, 'waiting_for_user');
+    allowUpdate.resolve();
+    await accepting;
+    assert.equal((await runStore.readRun(session.id, runId))?.status, 'running');
+    assert.equal((await store.readHeader(session.id)).status, 'running');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('required interaction resume bypasses a failed best-effort Run Store latch', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-agent-run-status-latch-'));
+  try {
+    const store = createLegacyFileSessionStore(root);
+    const session = await store.create({
+      cwd: '/tmp/cwd',
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const runStore = createAgentRunStore(root);
+    const runtimeEventStore = createRuntimeEventStore(root);
+    const runId = 'run-status-latch';
+    const turnId = 'turn-status-latch';
+    await store.updateHeader(session.id, buildStatusPatch('waiting_for_user', 1));
+    await runStore.createRun({
+      ...makeRunHeader(session.id, runId, turnId),
+      status: 'waiting_for_user',
+    });
+    let failNextAppend = true;
+    const failingRunStore = {
+      updateRun: runStore.updateRun.bind(runStore),
+      appendEvent: async (...args: Parameters<typeof runStore.appendEvent>) => {
+        if (failNextAppend) {
+          failNextAppend = false;
+          throw new Error('injected trace failure');
+        }
+        return await runStore.appendEvent(...args);
+      },
+    } as typeof runStore;
+    const run = new AgentRun({
+      sessionId: session.id,
+      header: session,
+      userInput: { turnId, text: 'fail closed after trace failure' },
+      runId,
+      durability: 'required',
+      store,
+      runStore: failingRunStore,
+      runtimeEventStore,
+      newId: () => 'status-latch-event',
+      now: () => 10,
+      recordSessionMessages: false,
+      hooks: {
+        ensureActive: async () => {
+          throw new Error('ensureActive should not be called');
+        },
+        registerRun: () => {},
+        unregisterRun: () => {},
+        updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
+        updateStatus: async (sessionId, status, blockedReason, ts = 0) => {
+          await store.updateHeader(sessionId, buildStatusPatch(status, ts, blockedReason));
+        },
+        appendTurnState: async () => {},
+      },
+    });
+    run.recordRunTrace({
+      id: 'trace-that-fails',
+      sessionId: session.id,
+      turnId,
+      ts: 1,
+      phase: 'turn',
+      type: 'turn_started',
+      message: 'trip the best-effort trace latch',
+    });
+    await waitFor(async () =>
+      Boolean((await runStore.readRun(session.id, runId))?.traceWriteError),
+    );
+
+    await run.recordSessionEvent({
+      type: 'user_question_answer_ack',
+      id: 'answer-after-latch',
+      turnId,
+      ts: 2,
+      requestId: 'question-1',
+      toolUseId: 'tool-1',
+    });
+    assert.equal((await runStore.readRun(session.id, runId))?.status, 'running');
+    assert.equal((await store.readHeader(session.id)).status, 'running');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 function makeRunHeader(sessionId: string, runId: string, turnId: string): AgentRunHeader {
   return {
     runId,
@@ -105,4 +271,23 @@ function makeRunHeader(sessionId: string, runId: string, turnId: string): AgentR
     createdAt: 1,
     updatedAt: 1,
   };
+}
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  resolve(value?: T | PromiseLike<T>): void;
+} {
+  let resolve!: (value?: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve as (value?: T | PromiseLike<T>) => void;
+  });
+  return { promise, resolve };
+}
+
+async function waitFor(predicate: () => Promise<boolean>): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (await predicate()) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error('Timed out waiting for asynchronous test condition');
 }

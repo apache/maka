@@ -15,6 +15,7 @@
  */
 
 import { isMessageContent, normalizeMessageContent, type MessageContent } from './events.js';
+import { INTERACTION_ID_MAX_BYTES } from './interaction.js';
 import type { PermissionRequestPayload, PermissionResponse } from './permission.js';
 import type { UserQuestionRequest } from './user-question.js';
 import type {
@@ -243,6 +244,10 @@ export interface RuntimeEventProtocolMarker {
   toolBoundary: ToolBoundaryProtocol;
 }
 
+export interface RuntimeEventUserQuestionAnswerAccepted {
+  requestId: string;
+}
+
 /**
  * Control and side-effect intent carried alongside content. An event may
  * carry content, actions, both, or (rarely) neither — but a terminal
@@ -259,6 +264,8 @@ export interface RuntimeEventActions {
   permissionDecision?: RuntimeEventPermissionDecision;
   /** A bounded in-turn question raised by a tool call. */
   userQuestionRequest?: UserQuestionRequest;
+  /** Audit fact only; the canonical answer remains in InteractionStore. */
+  userQuestionAnswerAccepted?: RuntimeEventUserQuestionAnswerAccepted;
   /** Hand off the invocation to another agent (multi-agent transfer). */
   transferToAgent?: string;
   /** Marks the event that closes the invocation. */
@@ -390,6 +397,7 @@ const RUNTIME_ACTIONS_SHAPE = defineObjectShape<RuntimeEventActions>()(
     'permissionRequest',
     'permissionDecision',
     'userQuestionRequest',
+    'userQuestionAnswerAccepted',
     'transferToAgent',
     'endInvocation',
     'tokenUsage',
@@ -397,6 +405,9 @@ const RUNTIME_ACTIONS_SHAPE = defineObjectShape<RuntimeEventActions>()(
     'runtimeProtocol',
   ],
 );
+const USER_QUESTION_ANSWER_ACCEPTED_SHAPE =
+  defineObjectShape<RuntimeEventUserQuestionAnswerAccepted>()(['requestId'], []);
+const UTF8 = new TextEncoder();
 const RUNTIME_TOOL_DISPATCH_SHAPE = defineObjectShape<RuntimeEventToolDispatch>()(
   [
     'protocol',
@@ -553,11 +564,25 @@ function isRuntimeEventActions(value: unknown): value is RuntimeEventActions {
       isPermissionRequestPayload(value.permissionRequest)) &&
     (value.permissionDecision === undefined || isPermissionResponse(value.permissionDecision)) &&
     (value.userQuestionRequest === undefined || isUserQuestionRequest(value.userQuestionRequest)) &&
+    (value.userQuestionAnswerAccepted === undefined ||
+      isRuntimeEventUserQuestionAnswerAccepted(value.userQuestionAnswerAccepted)) &&
     isOptionalString(value.transferToAgent) &&
     (value.endInvocation === undefined || typeof value.endInvocation === 'boolean') &&
     (value.tokenUsage === undefined || isRuntimeTokenUsage(value.tokenUsage)) &&
     (value.toolDispatch === undefined || isRuntimeToolDispatch(value.toolDispatch)) &&
     (value.runtimeProtocol === undefined || isRuntimeProtocolMarker(value.runtimeProtocol))
+  );
+}
+
+function isRuntimeEventUserQuestionAnswerAccepted(
+  value: unknown,
+): value is RuntimeEventUserQuestionAnswerAccepted {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, USER_QUESTION_ANSWER_ACCEPTED_SHAPE) &&
+    typeof value.requestId === 'string' &&
+    value.requestId.length > 0 &&
+    UTF8.encode(value.requestId).byteLength <= INTERACTION_ID_MAX_BYTES
   );
 }
 

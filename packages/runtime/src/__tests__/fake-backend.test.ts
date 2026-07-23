@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { SessionEvent, SessionHeader, StoredMessage } from '@maka/core';
 import { FAKE_ASK_USER_QUESTION_PROMPT, FakeBackend } from '../fake-backend.js';
+import {
+  bindRuntimeInteractionRun,
+  type RuntimeUserQuestionContinuation,
+} from '../interaction-authority.js';
 import type { SessionStore } from '../session-manager.js';
 
 test('text deltas preserve the exact completed response, including Markdown line breaks', async () => {
@@ -57,6 +61,7 @@ test('AskUserQuestion scenario parks the same turn until one response continues 
 
   const remaining: SessionEvent[] = [];
   for await (const event of { [Symbol.asyncIterator]: () => iterator }) remaining.push(event);
+  assert.equal(remaining[0]?.type, 'user_question_answer_ack');
   assert.equal(remaining.filter((event) => event.type === 'tool_result').length, 1);
   assert.equal(remaining.at(-1)?.type, 'complete');
   const completed = remaining.find((event) => event.type === 'text_complete');
@@ -66,6 +71,72 @@ test('AskUserQuestion scenario parks the same turn until one response continues 
     appended.map((message) => message.type),
     ['tool_call', 'tool_result', 'assistant'],
   );
+});
+
+test('Fake question publication waits for exact hosted admission', async () => {
+  const admissionStarted = deferred<void>();
+  const allowAdmission = deferred<void>();
+  let continuation: RuntimeUserQuestionContinuation | undefined;
+  const binding = await bindRuntimeInteractionRun(
+    {
+      bindRun: (identity) => ({
+        ...identity,
+        acceptPermissionRequest: async () => ({ state: 'pending' }),
+        commitPermissionAnswer: async ({ answer }) => ({
+          kind: 'permission_answer',
+          answer,
+        }),
+        commitPermissionTimeout: async () => ({ kind: 'closure', reason: 'timed_out' }),
+        acceptUserQuestionRequest: async ({ continuation: admitted }) => {
+          continuation = admitted;
+          admissionStarted.resolve();
+          await allowAdmission.promise;
+        },
+        close: async () => {},
+        release: () => {},
+      }),
+    },
+    { sessionId: 'session-1', turnId: 'turn-1', runId: 'run-1' },
+  );
+  const backend = new FakeBackend({
+    sessionId: 'session-1',
+    header: { model: 'fake-model' } as SessionHeader,
+    store: {} as SessionStore,
+    appendMessage: async () => {},
+  });
+  const iterator = backend
+    .send({
+      turnId: 'turn-1',
+      runId: 'run-1',
+      text: FAKE_ASK_USER_QUESTION_PROMPT,
+      context: [],
+      hostedInteraction: binding,
+    })
+    [Symbol.asyncIterator]();
+
+  assert.equal((await iterator.next()).value?.type, 'tool_start');
+  let published = false;
+  const requestEvent = iterator.next().then((result) => {
+    published = true;
+    return result;
+  });
+  await admissionStarted.promise;
+  await Promise.resolve();
+  assert.equal(published, false);
+
+  allowAdmission.resolve();
+  const request = (await requestEvent).value;
+  assert.equal(request?.type, 'user_question_request');
+  if (request?.type !== 'user_question_request') assert.fail('expected hosted fake question');
+  binding.assertPendingAdmission(request);
+  await continuation!.applyAnswer({ answers: ['邀请制', null, '本周'] });
+  for await (const _event of { [Symbol.asyncIterator]: () => iterator }) {
+    // Drain the real Fake question result and terminal path.
+  }
+
+  await binding.close('turn_terminal');
+  await binding.settleLocalClosures();
+  binding.release();
 });
 
 test('pullSteering drains queued messages at step boundaries as steering events', async () => {
@@ -185,3 +256,11 @@ test('a lease is acked only after its event is consumed, and nacked when the con
   assert.deepEqual(acked, []);
   assert.deepEqual(nacked, ['lease-1']);
 });
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}

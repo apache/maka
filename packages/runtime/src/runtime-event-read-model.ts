@@ -170,6 +170,12 @@ export function projectRuntimeEventsToStoredMessages(
       projected = true;
     }
 
+    if (event.actions?.userQuestionAnswerAccepted) {
+      // InteractionStore owns the canonical answer. This Run-local audit fact
+      // intentionally has no legacy chat row.
+      projected = true;
+    }
+
     if (event.actions?.toolDispatch) {
       // Dispatch is a canonical recovery fact with no legacy chat row. It is
       // consumed by RecoveryResolver, but must remain invisible to messages.

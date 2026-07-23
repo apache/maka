@@ -326,6 +326,7 @@ export type SessionEvent =
   | AnyPermissionRequestEvent
   | PermissionDecisionAckEvent
   | UserQuestionRequestEvent
+  | UserQuestionAnswerAckEvent
   | PlanSubmittedEvent
   | TokenUsageEvent
   | SteeringMessageEvent
@@ -585,7 +586,7 @@ export type ToolResultContent =
       agentName: string;
       turnId: string;
       runId?: string;
-      status: 'completed' | 'failed' | 'cancelled' | 'running' | 'waiting_permission';
+      status: 'completed' | 'failed' | 'cancelled' | 'running' | 'waiting_for_user';
       permissionMode: PermissionMode;
       summary: string;
       artifactIds: readonly string[];
@@ -704,6 +705,16 @@ export type AnyPermissionRequestEvent =
 
 export interface UserQuestionRequestEvent extends BaseEvent, UserQuestionRequest {
   type: 'user_question_request';
+}
+
+/**
+ * Echo that the backend accepted a user-question answer.
+ * The canonical answer remains owned by InteractionStore.
+ */
+export interface UserQuestionAnswerAckEvent extends BaseEvent {
+  type: 'user_question_answer_ack';
+  requestId: string;
+  toolUseId: string;
 }
 
 /**

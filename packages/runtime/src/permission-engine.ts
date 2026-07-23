@@ -20,6 +20,7 @@
  *   }
  */
 
+import { createHash } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import {
   classifyToolUse,
@@ -34,6 +35,11 @@ import {
   type ToolPermissionRule,
 } from '@maka/core/permission';
 import type { AnyPermissionRequestEvent, PermissionDecisionAckEvent } from '@maka/core/events';
+import type {
+  HostedInteractionBridge,
+  HostedPermissionAnswer,
+  HostedPermissionSettlement,
+} from '@maka/core/backend-types';
 import {
   DEFAULT_ADDITIONAL_PERMISSION_GRANT_TTL_MS,
   AdditionalPermissionError,
@@ -53,6 +59,13 @@ import {
   type SandboxEscalationProposal,
 } from './sandbox-escalation.js';
 import { TurnScopedAwaitRegistry } from './turn-scoped-await-registry.js';
+import {
+  RuntimeInteractionAdmissionRejectedError,
+  RuntimeInteractionClosedError,
+  RuntimeInteractionFailStopError,
+  RuntimeInteractionInvariantError,
+  type RuntimeInteractionClosureReason,
+} from './interaction-authority.js';
 
 // ============================================================================
 // Per-turn state
@@ -62,6 +75,7 @@ interface TurnState {
   turnId: string;
   /** Tool-intent scopes granted with `rememberForTurn: true` in this turn. */
   remembered: Set<string>;
+  rememberScopeIds: Map<string, string>;
   /** Approved one-shot grants keyed by their bound tool invocation. */
   additionalGrants: Map<string, PendingAdditionalPermissionGrant>;
   /** Approved exact unsandboxed-command grants keyed by tool invocation. */
@@ -76,6 +90,10 @@ interface ParkedPermission {
   category: ToolCategory;
   scopeKey: string;
   rememberForTurnAllowed: boolean;
+  hosted?: {
+    bridge: HostedInteractionBridge;
+    commitStarted: boolean;
+  };
   additionalProposal?: AdditionalPermissionProposal;
   sandboxEscalationProposal?: SandboxEscalationProposal;
 }
@@ -107,6 +125,10 @@ export type EvaluateResult =
       kind: 'prompt';
       category: ToolCategory;
       event: AnyPermissionRequestEvent;
+      /** Stable non-secret identity used for remember-for-turn siblings. */
+      rememberScopeId?: string;
+      /** Exact local settlement owned by PermissionEngine for hosted admission. */
+      settlement?: HostedPermissionSettlement;
       /** Resolves when the user responds via respondToPermission(). */
       parked: Promise<PermissionResponse>;
     };
@@ -116,6 +138,10 @@ export interface EvaluateInput {
   sessionId: string;
   /** Current agent turn id (groups permission state). */
   turnId: string;
+  /** Exact active Run identity when a backend can provide it. */
+  runId?: string;
+  /** Exact hosted Interaction bridge. Omitted for embedded execution. */
+  hostedInteraction?: HostedInteractionBridge;
   /** The SDK's id for the tool invocation. */
   toolUseId: string;
   toolName: string;
@@ -157,6 +183,7 @@ export interface PermissionEngineDeps {
 export class PermissionEngine {
   private readonly turns = new Map<string, TurnState>();
   private readonly parked = new TurnScopedAwaitRegistry<PermissionResponse, ParkedPermission>();
+  private readonly deferredTurnClosures = new Set<string>();
 
   constructor(private readonly deps: PermissionEngineDeps) {}
 
@@ -166,6 +193,7 @@ export class PermissionEngine {
       this.turns.set(turnId, {
         turnId,
         remembered: new Set(),
+        rememberScopeIds: new Map(),
         additionalGrants: new Map(),
         sandboxEscalationGrants: new Map(),
       });
@@ -177,6 +205,11 @@ export class PermissionEngine {
   endTurn(turnId: string, reason: 'completed' | 'aborted' = 'completed'): void {
     const state = this.turns.get(turnId);
     if (!state) return;
+    if (this.parked.entries(turnId).some(([, parked]) => parked.hosted)) {
+      this.deferredTurnClosures.add(turnId);
+      this.finishDeferredTurnClosure(turnId);
+      return;
+    }
     this.parked.endTurn(turnId, (requestId, parked) => {
       const message = `Turn ${turnId} ${reason} before permission request ${requestId} was answered`;
       return parked.additionalProposal
@@ -205,6 +238,17 @@ export class PermissionEngine {
    */
   evaluate(input: EvaluateInput): EvaluateResult {
     const state = this.requireTurn(input.turnId);
+    const hostedInteraction = input.hostedInteraction;
+    if (
+      hostedInteraction &&
+      (hostedInteraction.sessionId !== input.sessionId ||
+        hostedInteraction.turnId !== input.turnId ||
+        (input.runId !== undefined && hostedInteraction.runId !== input.runId))
+    ) {
+      throw new RuntimeInteractionInvariantError(
+        `Permission evaluation has a mismatched hosted Run for turn ${input.turnId}`,
+      );
+    }
     const args = snapshotPermissionArgs(input.args);
 
     const category = classifyToolUse({
@@ -250,7 +294,9 @@ export class PermissionEngine {
       ...(input.executionFacts !== undefined ? { executionFacts: input.executionFacts } : {}),
       ...(input.sandbox !== undefined ? { sandbox: input.sandbox } : {}),
       mode: input.mode,
-      turnRemembered: state.remembered,
+      // Hosted siblings always establish their own request and durable outcome.
+      // The Host may settle a late sibling during admission from its remembered winner.
+      turnRemembered: hostedInteraction ? new Set() : state.remembered,
     });
 
     let additional = input.additionalPermissionProposal;
@@ -433,25 +479,71 @@ export class PermissionEngine {
         : sandboxEscalation
           ? false
           : pre.partialRequest!.rememberForTurnAllowed,
+      ...(hostedInteraction ? { hosted: { bridge: hostedInteraction, commitStarted: false } } : {}),
       ...(additional ? { additionalProposal: additional } : {}),
       ...(sandboxEscalation ? { sandboxEscalationProposal: sandboxEscalation } : {}),
     });
 
-    return { kind: 'prompt', category: pre.category, event, parked };
+    return {
+      kind: 'prompt',
+      category: pre.category,
+      event,
+      ...(event.kind === 'tool_permission' && event.rememberForTurnAllowed
+        ? {
+            rememberScopeId: this.rememberScopeId(state, pre.scopeKey, requestId),
+          }
+        : {}),
+      ...(hostedInteraction
+        ? { settlement: this.createHostedSettlement(input.turnId, requestId) }
+        : {}),
+      parked,
+    };
   }
 
-  /**
-   * Route a user's response to the parked Promise. Idempotent on stray
-   * responses for unknown requestIds (logs and ignores).
-   *
-   * Returns the resolved ParkedRequest (for the caller to write
-   * PermissionDecisionMessage + emit PermissionDecisionAckEvent), or null
-   * if the requestId was unknown.
-   */
-  recordResponse(
+  private createHostedSettlement(turnId: string, requestId: string): HostedPermissionSettlement {
+    return Object.freeze({
+      applyAnswer: async (answer: HostedPermissionAnswer): Promise<void> => {
+        if (Object.hasOwn(answer, 'requestId')) {
+          throw new RuntimeInteractionInvariantError(
+            `Permission settlement ${requestId} received a routed answer`,
+          );
+        }
+        this.settleCommittedResponse(turnId, requestId, answer);
+      },
+      applyClosure: async (reason: RuntimeInteractionClosureReason): Promise<void> => {
+        if (!this.closeRequest(turnId, requestId, reason)) {
+          throw new RuntimeInteractionInvariantError(
+            `Permission closure did not take ${requestId} from turn ${turnId}`,
+          );
+        }
+      },
+    });
+  }
+
+  private settleCommittedResponse(
     turnId: string,
-    response: PermissionResponse,
-  ): { category: ToolCategory; toolUseId: string } | null {
+    requestId: string,
+    answer: HostedPermissionAnswer,
+  ): void {
+    const response: PermissionResponse = {
+      requestId,
+      decision: answer.decision,
+      ...(answer.rememberForTurn !== undefined ? { rememberForTurn: answer.rememberForTurn } : {}),
+      ...(answer.reviewer !== undefined ? { reviewer: answer.reviewer } : {}),
+      ...(answer.riskLevel !== undefined ? { riskLevel: answer.riskLevel } : {}),
+    };
+    this.assertValidResponse(response);
+    const state = this.turns.get(turnId);
+    const parked = this.parked.entries(turnId).find(([id]) => id === requestId)?.[1];
+    if (!state || !parked?.hosted) {
+      throw new RuntimeInteractionInvariantError(
+        `Permission settlement did not exact-take ${requestId} from turn ${turnId}`,
+      );
+    }
+    this.applyResponse(turnId, response, state, parked);
+  }
+
+  private assertValidResponse(response: PermissionResponse): void {
     if (
       !response ||
       typeof response.requestId !== 'string' ||
@@ -466,6 +558,21 @@ export class PermissionEngine {
     ) {
       throw new Error('Invalid permission response');
     }
+  }
+
+  /**
+   * Route a user's response to the parked Promise. Idempotent on stray
+   * responses for unknown requestIds (logs and ignores).
+   *
+   * Returns the resolved ParkedRequest (for the caller to write
+   * PermissionDecisionMessage + emit PermissionDecisionAckEvent), or null
+   * if the requestId was unknown.
+   */
+  recordResponse(
+    turnId: string,
+    response: PermissionResponse,
+  ): { category: ToolCategory; toolUseId: string } | null {
+    this.assertValidResponse(response);
     const state = this.turns.get(turnId);
     if (!state) return null;
     const parked = this.parked
@@ -473,9 +580,51 @@ export class PermissionEngine {
       .find(([requestId]) => requestId === response.requestId)?.[1];
     if (!parked) return null;
 
+    if (parked.hosted) {
+      if (!parked.hosted.commitStarted) {
+        parked.hosted.commitStarted = true;
+        const answer = runtimePermissionAnswer(response);
+        void parked.hosted.bridge
+          .commitPermissionAnswer({
+            requestId: response.requestId,
+            answer,
+          })
+          .catch((error: unknown) => {
+            if (
+              error instanceof RuntimeInteractionAdmissionRejectedError &&
+              error.reason === 'run_closed' &&
+              error.requestId === response.requestId
+            ) {
+              return;
+            }
+            this.rejectRequest(
+              turnId,
+              response.requestId,
+              error instanceof RuntimeInteractionFailStopError ||
+                error instanceof RuntimeInteractionInvariantError
+                ? error
+                : new RuntimeInteractionFailStopError(
+                    `Could not confirm the canonical outcome for permission ${response.requestId}`,
+                    error,
+                  ),
+            );
+          });
+      }
+      return { category: parked.category, toolUseId: parked.toolUseId };
+    }
+
+    return this.applyResponse(turnId, response, state, parked);
+  }
+
+  private applyResponse(
+    turnId: string,
+    response: PermissionResponse,
+    state: TurnState,
+    parked: ParkedPermission,
+  ): { category: ToolCategory; toolUseId: string } {
     if (
       (parked.additionalProposal || parked.sandboxEscalationProposal) &&
-      response.rememberForTurn !== undefined
+      response.rememberForTurn === true
     ) {
       throw new Error('One-shot permission responses cannot use rememberForTurn');
     }
@@ -500,17 +649,19 @@ export class PermissionEngine {
       // tool's own coroutine then emits its own permission_decision_ack, so the
       // UI queue drains without a second click. The current request was already
       // selected explicitly, so the snapshot must not auto-resolve it.
-      for (const [otherId, other] of this.parked.entries(turnId)) {
-        if (
-          otherId !== response.requestId &&
-          other.rememberForTurnAllowed &&
-          other.scopeKey === parked.scopeKey
-        ) {
-          this.parked.resolve(turnId, otherId, {
-            requestId: otherId,
-            decision: 'allow',
-            rememberForTurn: true,
-          });
+      if (!parked.hosted) {
+        for (const [otherId, other] of this.parked.entries(turnId)) {
+          if (
+            otherId !== response.requestId &&
+            other.rememberForTurnAllowed &&
+            other.scopeKey === parked.scopeKey
+          ) {
+            this.parked.resolve(turnId, otherId, {
+              requestId: otherId,
+              decision: 'allow',
+              rememberForTurn: true,
+            });
+          }
         }
       }
     }
@@ -577,6 +728,7 @@ export class PermissionEngine {
           ? response
           : { ...response, rememberForTurn: false };
     this.parked.resolve(turnId, response.requestId, resolvedResponse);
+    this.finishDeferredTurnClosure(turnId);
     return { category: parked.category, toolUseId: parked.toolUseId };
   }
 
@@ -608,8 +760,35 @@ export class PermissionEngine {
           })
         : new Error(reason);
     const parked = this.parked.reject(turnId, requestId, error);
+    this.finishDeferredTurnClosure(turnId);
     if (!parked) return null;
     return { category: parked.category, toolUseId: parked.toolUseId };
+  }
+
+  closeRequest(
+    turnId: string,
+    requestId: string,
+    reason: RuntimeInteractionClosureReason,
+    message = `Permission request ${requestId} closed: ${reason}`,
+  ): { category: ToolCategory; toolUseId: string } | null {
+    if (reason === 'timed_out') return this.expireRequest(turnId, requestId, message);
+    const parked = this.parked.reject(
+      turnId,
+      requestId,
+      new RuntimeInteractionClosedError(requestId, reason),
+    );
+    this.finishDeferredTurnClosure(turnId);
+    return parked ? { category: parked.category, toolUseId: parked.toolUseId } : null;
+  }
+
+  rejectRequest(
+    turnId: string,
+    requestId: string,
+    error: Error,
+  ): { category: ToolCategory; toolUseId: string } | null {
+    const parked = this.parked.reject(turnId, requestId, error);
+    this.finishDeferredTurnClosure(turnId);
+    return parked ? { category: parked.category, toolUseId: parked.toolUseId } : null;
   }
 
   /** Test/debug accessor. */
@@ -720,6 +899,7 @@ export class PermissionEngine {
       state = {
         turnId,
         remembered: new Set(),
+        rememberScopeIds: new Map(),
         additionalGrants: new Map(),
         sandboxEscalationGrants: new Map(),
       };
@@ -728,6 +908,38 @@ export class PermissionEngine {
     }
     return state;
   }
+
+  private finishDeferredTurnClosure(turnId: string): void {
+    if (!this.deferredTurnClosures.has(turnId) || this.parked.pendingCount(turnId) !== 0) return;
+    this.deferredTurnClosures.delete(turnId);
+    this.parked.endTurn(
+      turnId,
+      (requestId) =>
+        new RuntimeInteractionInvariantError(
+          `Hosted permission ${requestId} escaped exact Run closure`,
+        ),
+    );
+    this.turns.delete(turnId);
+  }
+
+  private rememberScopeId(state: TurnState, scopeKey: string, requestId: string): string {
+    const existing = state.rememberScopeIds.get(scopeKey);
+    if (existing) return existing;
+    const id = createHash('sha256').update(requestId, 'utf8').digest('hex');
+    state.rememberScopeIds.set(scopeKey, id);
+    return id;
+  }
+}
+
+function runtimePermissionAnswer(response: PermissionResponse): HostedPermissionAnswer {
+  return {
+    decision: response.decision,
+    ...(response.rememberForTurn !== undefined
+      ? { rememberForTurn: response.rememberForTurn }
+      : {}),
+    ...(response.reviewer !== undefined ? { reviewer: response.reviewer } : {}),
+    ...(response.riskLevel !== undefined ? { riskLevel: response.riskLevel } : {}),
+  };
 }
 
 function snapshotPermissionArgs(value: unknown): unknown {

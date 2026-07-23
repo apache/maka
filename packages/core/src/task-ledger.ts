@@ -94,7 +94,7 @@ export interface TaskLedgerChangedEvent {
 }
 
 export interface TaskAgentOutcome {
-  status: 'completed' | 'failed' | 'cancelled' | 'running' | 'waiting_permission';
+  status: 'completed' | 'failed' | 'cancelled' | 'running' | 'waiting_for_user';
   owner: TaskOwner;
   reason?: string;
 }

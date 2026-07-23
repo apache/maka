@@ -10,6 +10,7 @@ import type {
 import {
   MESSAGE_OPERATION_RESULT_MAX_BYTES,
   MESSAGE_QUEUE_PROJECTION_MAX_BYTES,
+  type SessionMessageQueueProjection,
   type TurnSnapshot,
 } from '../protocol/index.js';
 import {
@@ -100,6 +101,42 @@ test('queue projection capacity is rejected before mutation or residency acquisi
   if (!outcome.ok) assert.equal(outcome.error.code, 'session_busy');
   assert.deepEqual(fixture.coordinator.projection(ROOT.sessionId).steering, []);
   assert.equal(fixture.liveResidencies(), 0);
+  fixture.coordinator.abandonRootReservation(ROOT);
+  await fixture.coordinator.close();
+});
+
+test('full snapshot preflight rejection leaves queue, receipt, residency, and publication unchanged', async () => {
+  let fits = false;
+  let observedQueue: SessionMessageQueueProjection | undefined;
+  const changedSessions: string[] = [];
+  const fixture = createFixture(
+    (sessionId) => changedSessions.push(sessionId),
+    async (_sessionId, candidate) => {
+      observedQueue = candidate.queue;
+      return fits;
+    },
+  );
+  fixture.coordinator.reserveRootTurn(ROOT);
+
+  const rejected = await submit(fixture, 'capacity-candidate', 'small message', 'current_turn');
+  assert.equal(rejected.ok, false);
+  if (!rejected.ok) assert.equal(rejected.error.code, 'session_busy');
+  assert.equal(observedQueue?.queueRevision, Number.MAX_SAFE_INTEGER);
+  assert.equal(observedQueue?.steering[0]?.state, 'in_flight');
+  assert.deepEqual(fixture.coordinator.projection(ROOT.sessionId).steering, []);
+  assert.equal(fixture.liveResidencies(), 0);
+  assert.deepEqual(changedSessions, []);
+
+  fits = true;
+  const accepted = await submit(fixture, 'capacity-candidate', 'small message', 'current_turn');
+  assert.equal(accepted.ok && accepted.result.disposition, 'steering');
+  assert.equal(fixture.liveResidencies(), 1);
+  assert.deepEqual(changedSessions, [ROOT.sessionId]);
+
+  await fixture.coordinator.handlers['queue.retract'](
+    { originHostEpoch: 'epoch-1', sessionId: ROOT.sessionId, retractId: 'cleanup-capacity' },
+    operationContext(),
+  );
   fixture.coordinator.abandonRootReservation(ROOT);
   await fixture.coordinator.close();
 });
@@ -1137,7 +1174,10 @@ test('canonical retry omits redundant display text and empty ordered refs', asyn
   fixture.coordinator.completeIdle(batch);
 });
 
-function createFixture(onProjectionChanged?: (sessionId: string) => void) {
+function createFixture(
+  onProjectionChanged?: (sessionId: string) => void,
+  preflightSessionSnapshot: HostMessageCoordinatorOptions['preflightSessionSnapshot'] = () => true,
+) {
   let nextId = 1;
   let liveResidencies = 0;
   let startCalls = 0;
@@ -1255,6 +1295,7 @@ function createFixture(onProjectionChanged?: (sessionId: string) => void) {
       drainRequests += 1;
     },
     ...(onProjectionChanged ? { onProjectionChanged } : {}),
+    preflightSessionSnapshot,
     createId: () => `id-${nextId++}`,
   };
   coordinator = new HostMessageCoordinator(options);

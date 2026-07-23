@@ -20,7 +20,7 @@ import {
 export const AGENT_RUN_STATUSES = [
   'created',
   'running',
-  'waiting_permission',
+  'waiting_for_user',
   'completed',
   'failed',
   'cancelled',

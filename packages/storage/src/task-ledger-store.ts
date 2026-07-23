@@ -407,11 +407,11 @@ class FileTaskLedgerStore implements TaskLedgerStore {
           } else if (outcome.status === 'cancelled') {
             updated.status = 'cancelled';
             updated.endedAt = now;
-          } else if (outcome.status === 'waiting_permission') {
+          } else if (outcome.status === 'waiting_for_user') {
             updated.status = 'blocked';
             updated.blockedReason = normalizeOutcomeReason(
               outcome.reason,
-              'Child agent is waiting for permission',
+              'Child agent is waiting for user input',
             );
           }
         }

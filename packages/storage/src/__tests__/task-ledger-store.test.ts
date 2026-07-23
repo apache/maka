@@ -1242,4 +1242,28 @@ describe('TaskLedgerStore', () => {
     assert.equal(cancelled?.owner?.runId, 'cancelled-run');
     assert.equal(typeof cancelled?.endedAt, 'number');
   });
+
+  it('records a generic child user wait without inventing a permission reason', async () => {
+    const root = await tempRoot();
+    const store = createTaskLedgerStore(root);
+    const {
+      created: [task],
+    } = await store.create(SESSION_ID, [{ subject: 'needs input' }]);
+    assert.ok(task);
+    const owner = {
+      actor: 'child_agent' as const,
+      agentId: 'local-read',
+      turnId: 'waiting-turn',
+    };
+    await store.claim(SESSION_ID, task.id, owner);
+    await store.settleAgentOutcome(SESSION_ID, task.id, {
+      status: 'waiting_for_user',
+      owner: { ...owner, runId: 'waiting-run' },
+    });
+
+    const waiting = await createTaskLedgerStore(root).get(SESSION_ID, task.id);
+    assert.equal(waiting?.status, 'blocked');
+    assert.equal(waiting?.blockedReason, 'Child agent is waiting for user input');
+    assert.equal(waiting?.owner?.runId, 'waiting-run');
+  });
 });

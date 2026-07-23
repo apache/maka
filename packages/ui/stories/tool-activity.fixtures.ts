@@ -103,7 +103,7 @@ const subagentWaitingResult = {
   kind: 'subagent',
   agentName: 'Explore Helper',
   turnId: 'turn-subagent-waiting',
-  status: 'waiting_permission',
+  status: 'waiting_for_user',
   permissionMode: 'explore',
   summary: 'Waiting for approval before reading the requested path.',
   artifactIds: [],

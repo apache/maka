@@ -120,6 +120,10 @@ import {
   type RuntimeMessageRunIdentity,
 } from './message-authority.js';
 import {
+  RuntimeInteractionInvariantError,
+  type RuntimeInteractionAuthority,
+} from './interaction-authority.js';
+import {
   RuntimeKernel,
   type BackendActivationBoundary,
   type RuntimeKernelLike,
@@ -273,7 +277,7 @@ export interface SpawnChildAgentResult {
   agentName: string;
   turnId: string;
   runId?: string;
-  status: 'completed' | 'failed' | 'cancelled' | 'running' | 'waiting_permission';
+  status: 'completed' | 'failed' | 'cancelled' | 'running' | 'waiting_for_user';
   permissionMode: PermissionMode;
   summary: string;
   artifactIds: string[];
@@ -507,6 +511,8 @@ export interface SessionManagerDeps {
   safeBoundaryResumeEnabled?: boolean;
   /** Hosted composition capability. Omit for the production embedded queue. */
   messageAuthority?: RuntimeMessageAuthority;
+  /** Hosted composition capability. Omit for production embedded interactions. */
+  interactionAuthority?: RuntimeInteractionAuthority;
   onContinuationLifecycleEvent?: (event: RuntimeContinuationLifecycleEvent) => void | Promise<void>;
   generateSessionTitle?: (input: {
     sessionId: string;
@@ -3254,10 +3260,20 @@ export class SessionManager {
   }
 
   async respondToPermission(sessionId: string, response: PermissionResponse): Promise<void> {
+    if (this.deps.interactionAuthority) {
+      throw new RuntimeInteractionInvariantError(
+        'Hosted permission answers must use the captured continuation',
+      );
+    }
     await this.runtimeKernel.respondToPermission(sessionId, response);
   }
 
   async respondToUserQuestion(sessionId: string, response: UserQuestionResponse): Promise<void> {
+    if (this.deps.interactionAuthority) {
+      throw new RuntimeInteractionInvariantError(
+        'Hosted question answers must use the captured continuation',
+      );
+    }
     await this.runtimeKernel.respondToUserQuestion?.(sessionId, response);
   }
 
@@ -3921,7 +3937,7 @@ export function changesBackendConfig(patch: Partial<SessionHeader>): boolean {
 function agentRunStatusForSpawnResult(
   status: AgentRunHeader['status'],
 ): SpawnChildAgentResult['status'] {
-  if (status === 'waiting_permission') return 'waiting_permission';
+  if (status === 'waiting_for_user') return 'waiting_for_user';
   if (status === 'cancelled') return 'cancelled';
   if (status === 'failed') return 'failed';
   if (status === 'running' || status === 'created') return 'running';

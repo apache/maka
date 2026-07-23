@@ -21,7 +21,13 @@ describe('AgentRunStore', () => {
         createdAt: 1,
         updatedAt: 1,
       });
-      const second = makeHeader({ runId: 'run-2', turnId: 'turn-2', createdAt: 2, updatedAt: 2 });
+      const second = makeHeader({
+        runId: 'run-2',
+        turnId: 'turn-2',
+        status: 'waiting_for_user',
+        createdAt: 2,
+        updatedAt: 2,
+      });
 
       await store.createRun(second);
       await store.createRun(first);
@@ -35,6 +41,7 @@ describe('AgentRunStore', () => {
       assert.equal(read.status, 'completed');
       assert.equal(read.completedAt, 10);
       assert.equal(read.invocationId, 'invocation-1');
+      assert.equal((await store.readRun('session-1', 'run-2')).status, 'waiting_for_user');
       assert.deepEqual(
         (await store.listSessionRuns('session-1')).map((run) => run.runId),
         ['run-1', 'run-2'],

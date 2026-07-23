@@ -4,7 +4,6 @@ import type { SessionEvent } from '@maka/core/events';
 import {
   encodeProtocolFrame,
   RUNTIME_HOST_MAX_FRAME_BYTES,
-  SESSION_CONTINUITY_SCHEMA_VERSION,
   SESSION_LIVE_DELTA_MAX_BYTES,
   SESSION_TOOL_NAME_MAX_BYTES,
   type SessionAssistantDelta,
@@ -18,7 +17,10 @@ import {
 } from '../protocol/index.js';
 import type { SessionContinuityOperationHandlerMap } from './operation-dispatcher.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
-import type { CanonicalSessionProjection } from './canonical-session-projection.js';
+import {
+  type CanonicalSessionProjection,
+  createSessionContinuitySnapshot,
+} from './canonical-session-projection.js';
 import type {
   SessionContinuityConnection,
   SessionContinuityFrameSink,
@@ -266,7 +268,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         }
 
         const nextRevision = state.revision + 1;
-        const snapshot = snapshotValue(canonical, nextRevision);
+        const snapshot = createSessionContinuitySnapshot(canonical, nextRevision);
         state.canonical = canonical;
         state.revision = nextRevision;
         delete state.terminalPublicationFence;
@@ -635,21 +637,29 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         return {
           changed: false,
           state,
-          value: snapshotValue(state.canonical, state.revision),
+          value: createSessionContinuitySnapshot(state.canonical, state.revision),
         };
       }
     }
     if (!state) {
+      const value = createSessionContinuitySnapshot(canonical, 1);
       state = { canonical, revision: 1, subscribers: new Map() };
       this.#sessions.set(sessionId, state);
-      return { changed: true, state, value: snapshotValue(canonical, 1) };
+      return { changed: true, state, value };
     }
     const changed = !isDeepStrictEqual(state.canonical, canonical);
     if (changed) {
+      const nextRevision = state.revision + 1;
+      const value = createSessionContinuitySnapshot(canonical, nextRevision);
       state.canonical = canonical;
-      state.revision += 1;
+      state.revision = nextRevision;
+      return { changed, state, value };
     }
-    return { changed, state, value: snapshotValue(state.canonical, state.revision) };
+    return {
+      changed,
+      state,
+      value: createSessionContinuitySnapshot(state.canonical, state.revision),
+    };
   }
 
   #broadcastProjection(state: SessionProjectionState, snapshot: SessionContinuitySnapshot): void {
@@ -693,19 +703,6 @@ function deepFreeze<T>(value: T): T {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
   for (const child of Object.values(value)) deepFreeze(child);
   return Object.freeze(value);
-}
-
-function snapshotValue(
-  canonical: CanonicalSessionProjection,
-  projectionRevision: number,
-): SessionContinuitySnapshot {
-  return immutableClone({
-    schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
-    session: canonical.session,
-    projectionRevision,
-    rootTurn: canonical.rootTurn,
-    queue: canonical.queue,
-  });
 }
 
 function requirePublicationFenceIdentity(

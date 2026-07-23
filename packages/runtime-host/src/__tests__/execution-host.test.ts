@@ -44,6 +44,7 @@ import {
   decodeHostFrame,
   RUNTIME_HOST_PROTOCOL_VERSION,
   TASK_LEDGER_PAGE_MAX_ITEMS,
+  type InteractionPendingSnapshot,
   type SubscriptionFrame,
   type TaskLedgerQueryResult,
   type TaskLedgerRevision,
@@ -242,6 +243,10 @@ test('two Clients share one execution after the starting Client disconnects', as
     const host = await fixture.startHost();
     const first = await connectClient(fixture.root, 'desktop');
     const second = await connectClient(fixture.root, 'tui');
+    const secondSubscription = await second.openSessionSubscription({
+      sessionId: fixture.sessionId,
+    });
+    const secondProbe = new SubscriptionProbe(secondSubscription);
     const turnId = randomUUID();
 
     const started = await first.startTurn({
@@ -261,12 +266,25 @@ test('two Clients share one execution after the starting Client disconnects', as
     );
 
     await first.close();
+    const pending = await waitForPendingInteraction(secondSubscription, secondProbe, started.runId);
+    assert.equal(pending.sessionId, fixture.sessionId);
+    assert.equal(pending.turnId, turnId);
+    assert.equal(pending.runId, started.runId);
+    const questionRequest = pending.request;
+    assert.ok(questionRequest.kind === 'question');
+    assert.deepEqual(
+      await second.request('interaction.query', {
+        sessionId: fixture.sessionId,
+        interactionId: pending.interactionId,
+      }),
+      pending,
+    );
     const observed = await second.queryTurn({
       sessionId: fixture.sessionId,
       turnId,
     });
     assert.equal(observed.runId, started.runId);
-    assert.ok(observed.status === 'running' || observed.status === 'waiting_permission');
+    assert.ok(observed.status === 'running' || observed.status === 'waiting_for_user');
     const stopped = await second.stopTurn(
       {
         sessionId: fixture.sessionId,
@@ -276,6 +294,27 @@ test('two Clients share one execution after the starting Client disconnects', as
       PROCESS_TIMEOUT_MS,
     );
     assert.equal(stopped.status, 'cancelled');
+    const closed = await second.request('interaction.query', {
+      sessionId: fixture.sessionId,
+      interactionId: pending.interactionId,
+    });
+    assert.equal(closed.sessionId, fixture.sessionId);
+    assert.equal(closed.turnId, turnId);
+    assert.equal(closed.runId, started.runId);
+    assert.equal(closed.status, 'closed');
+    assert.equal(closed.outcome.kind, 'closure');
+    if (closed.outcome.kind === 'closure') assert.equal(closed.outcome.reason, 'turn_stopped');
+    await assert.rejects(
+      () =>
+        second.request('interaction.answer', {
+          interactionId: pending.interactionId,
+          answer: {
+            kind: 'question',
+            answers: questionRequest.questions.map(() => null),
+          },
+        }),
+      operationError('already_resolved'),
+    );
 
     const nextTurnId = randomUUID();
     const next = await second.startTurn({
@@ -304,7 +343,7 @@ test('two Clients share one execution after the starting Client disconnects', as
       turnId: nextTurnId,
     });
     assert.equal(nextObserved.runId, next.runId);
-    assert.ok(nextObserved.status === 'running' || nextObserved.status === 'waiting_permission');
+    assert.ok(nextObserved.status === 'running' || nextObserved.status === 'waiting_for_user');
     await second.stopTurn(
       {
         sessionId: fixture.sessionId,
@@ -313,6 +352,8 @@ test('two Clients share one execution after the starting Client disconnects', as
       },
       PROCESS_TIMEOUT_MS,
     );
+    await secondSubscription.close();
+    await secondProbe.done;
     await second.close();
     await fixture.stopHost(host);
 
@@ -325,6 +366,104 @@ test('two Clients share one execution after the starting Client disconnects', as
       assert.equal(ledger.classification.fact.runStatus, 'cancelled');
       assert.notEqual(ledger.classification.fact.failureClass, 'app_restarted');
     }
+  });
+});
+
+test('a disconnected Client leaves a durable Interaction that another Client can answer', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const firstHost = await fixture.startHost();
+    const first = await connectClient(fixture.root, 'desktop');
+    const turnId = randomUUID();
+    const started = await first.startTurn({
+      sessionId: fixture.sessionId,
+      turnId,
+      content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
+    });
+    await first.close();
+
+    const second = await connectClient(fixture.root, 'tui');
+    const subscription = await second.openSessionSubscription({ sessionId: fixture.sessionId });
+    const probe = new SubscriptionProbe(subscription);
+    const pending = await waitForPendingInteraction(subscription, probe, started.runId);
+    assert.equal(pending.sessionId, fixture.sessionId);
+    assert.equal(pending.turnId, turnId);
+    assert.equal(pending.runId, started.runId);
+    assert.equal(pending.status, 'pending');
+    const questionRequest = pending.request;
+    assert.ok(questionRequest.kind === 'question');
+
+    assert.deepEqual(
+      await second.request('interaction.query', {
+        sessionId: fixture.sessionId,
+        interactionId: pending.interactionId,
+      }),
+      pending,
+    );
+    const answer = {
+      kind: 'question' as const,
+      answers: questionRequest.questions.map((question) => question.options[0]?.label ?? null),
+    };
+    const winner = await second.request('interaction.answer', {
+      interactionId: pending.interactionId,
+      answer,
+    });
+    assert.equal(winner.sessionId, fixture.sessionId);
+    assert.equal(winner.turnId, turnId);
+    assert.equal(winner.runId, started.runId);
+    assert.equal(winner.status, 'answered');
+    assert.equal(winner.outcome.kind, 'question_answer');
+    assert.deepEqual(winner.outcome.answers, answer.answers);
+    assert.deepEqual(
+      await second.request('interaction.query', {
+        sessionId: fixture.sessionId,
+        interactionId: pending.interactionId,
+      }),
+      winner,
+    );
+    assert.deepEqual(
+      await second.request('interaction.answer', {
+        interactionId: pending.interactionId,
+        answer,
+      }),
+      winner,
+    );
+    const resumed = await probe.waitFor(
+      (frame) =>
+        frame.kind === 'subscription.session_projection' &&
+        frame.snapshot.session.status === 'running' &&
+        frame.snapshot.rootTurn?.runId === started.runId &&
+        frame.snapshot.rootTurn.status === 'running' &&
+        frame.snapshot.interactions.pending.length === 0,
+      'continuity did not publish the resumed Turn after the question answer',
+    );
+    assert.equal(resumed.kind, 'subscription.session_projection');
+    const completed = await waitForTerminalTurn(second, fixture.sessionId, turnId);
+    assert.equal(completed.runId, started.runId);
+    assert.equal(completed.status, 'completed');
+    await subscription.close();
+    await probe.done;
+    await second.close();
+    await fixture.stopHost(firstHost);
+
+    const secondHost = await fixture.startHost();
+    const observer = await connectClient(fixture.root, 'run');
+    assert.deepEqual(
+      await observer.request('interaction.query', {
+        sessionId: fixture.sessionId,
+        interactionId: pending.interactionId,
+      }),
+      winner,
+    );
+    assert.deepEqual(
+      await observer.request('interaction.answer', {
+        interactionId: pending.interactionId,
+        answer,
+      }),
+      winner,
+    );
+    assert.deepEqual(await observer.queryTurn({ sessionId: fixture.sessionId, turnId }), completed);
+    await observer.close();
+    await fixture.stopHost(secondHost);
   });
 });
 
@@ -522,6 +661,12 @@ test('a killed Host is recovered exactly once before its successor becomes ready
         frame.snapshot.rootTurn.status !== 'admitted',
       'first Host did not publish the active root projection',
     );
+    const pending = await waitForPendingInteraction(firstSubscription, firstProbe, started.runId);
+    assert.equal(pending.sessionId, fixture.sessionId);
+    assert.equal(pending.turnId, turnId);
+    assert.equal(pending.runId, started.runId);
+    const questionRequest = pending.request;
+    assert.ok(questionRequest.kind === 'question');
 
     await fixture.killHost(firstHost);
     await first.closed;
@@ -543,6 +688,27 @@ test('a killed Host is recovered exactly once before its successor becomes ready
     assert.equal(recoveredSubscription.snapshot.queue.hostEpoch, recoveredSubscription.hostEpoch);
     assert.deepEqual(recoveredSubscription.snapshot.queue.steering, []);
     assert.deepEqual(recoveredSubscription.snapshot.queue.followup, []);
+    const closed = await second.request('interaction.query', {
+      sessionId: fixture.sessionId,
+      interactionId: pending.interactionId,
+    });
+    assert.equal(closed.sessionId, fixture.sessionId);
+    assert.equal(closed.turnId, turnId);
+    assert.equal(closed.runId, started.runId);
+    assert.equal(closed.status, 'closed');
+    assert.equal(closed.outcome.kind, 'closure');
+    if (closed.outcome.kind === 'closure') assert.equal(closed.outcome.reason, 'host_restarted');
+    await assert.rejects(
+      () =>
+        second.request('interaction.answer', {
+          interactionId: pending.interactionId,
+          answer: {
+            kind: 'question',
+            answers: questionRequest.questions.map(() => null),
+          },
+        }),
+      operationError('already_resolved'),
+    );
     await recoveredSubscription.close();
     await second.close();
     await fixture.stopHost(secondHost);
@@ -555,6 +721,13 @@ test('a killed Host is recovered exactly once before its successor becomes ready
     });
     assert.deepEqual(stable, recovered);
     assert.equal(stable.runId, started.runId);
+    assert.deepEqual(
+      await third.request('interaction.query', {
+        sessionId: fixture.sessionId,
+        interactionId: pending.interactionId,
+      }),
+      closed,
+    );
     await third.close();
     await fixture.stopHost(thirdHost);
 
@@ -616,7 +789,7 @@ test('a durable admission without a Run resumes before the Host becomes ready', 
       turnId,
     });
     assert.equal(recovered.runId, runId);
-    assert.ok(recovered.status === 'running' || recovered.status === 'waiting_permission');
+    assert.ok(recovered.status === 'running' || recovered.status === 'waiting_for_user');
     await assert.rejects(
       () =>
         client.startTurn({
@@ -2038,6 +2211,29 @@ class SubscriptionProbe {
   }
 }
 
+async function waitForPendingInteraction(
+  subscription: RuntimeHostSessionSubscription,
+  probe: SubscriptionProbe,
+  runId: string,
+): Promise<InteractionPendingSnapshot> {
+  const initial = subscription.snapshot.interactions.pending.find(
+    (interaction) => interaction.runId === runId,
+  );
+  if (initial) return initial;
+  const frame = await probe.waitFor(
+    (candidate) =>
+      candidate.kind === 'subscription.session_projection' &&
+      candidate.snapshot.interactions.pending.some((interaction) => interaction.runId === runId),
+    'subscription did not publish the pending Interaction',
+  );
+  assert.equal(frame.kind, 'subscription.session_projection');
+  const pending = frame.snapshot.interactions.pending.find(
+    (interaction) => interaction.runId === runId,
+  );
+  assert.ok(pending);
+  return pending;
+}
+
 async function waitForTerminalTurn(
   connection: RuntimeHostConnection,
   sessionId: string,
@@ -2066,7 +2262,7 @@ async function waitForRunningTurn(
   const deadline = Date.now() + PROCESS_TIMEOUT_MS;
   while (true) {
     const snapshot = await connection.queryTurn({ sessionId, turnId });
-    if (snapshot.status === 'running' || snapshot.status === 'waiting_permission') return snapshot;
+    if (snapshot.status === 'running' || snapshot.status === 'waiting_for_user') return snapshot;
     if (Date.now() >= deadline) throw new Error('Turn did not become active');
     await sleep(20);
   }

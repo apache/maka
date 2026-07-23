@@ -16,12 +16,22 @@ import {
   decodeCanonicalToolResultContent,
   TOOL_OUTPUT_DELTA_MAX_CHARS,
 } from '@maka/core';
-import type { BackendSendInput, PermissionDecision } from '@maka/core/backend-types';
+import type {
+  BackendSendInput,
+  HostedInteractionBridge,
+  PermissionDecision,
+} from '@maka/core/backend-types';
 import { redactSecrets } from '@maka/core/redaction';
 import { isToolCategory, type ToolCategory } from '@maka/core/permission';
 
 import type { AgentBackend } from '@maka/core/backend-types';
 import type { AppendMessageFn } from './ai-sdk-backend.js';
+import {
+  RuntimeInteractionAdmissionRejectedError,
+  RuntimeInteractionClosedError,
+  RuntimeInteractionFailStopError,
+  RuntimeInteractionInvariantError,
+} from './interaction-authority.js';
 import { PermissionEngine } from './permission-engine.js';
 
 export interface PiAgentBackendInput {
@@ -288,7 +298,7 @@ export class PiAgentBackend implements AgentBackend {
             break;
           }
           case 'permission_request': {
-            yield* this.handlePermissionRequest(turnId, frame);
+            yield* this.handlePermissionRequest(turnId, frame, input.hostedInteraction);
             break;
           }
           case 'error': {
@@ -322,6 +332,7 @@ export class PiAgentBackend implements AgentBackend {
       if (complete) yield complete;
       yield this.completeEvent(turnId, 'end_turn');
     } catch (error) {
+      if (isInteractionControlError(error)) throw error;
       if (this.stopped) {
         await persistAssistant();
         yield this.abortEvent(turnId);
@@ -372,6 +383,7 @@ export class PiAgentBackend implements AgentBackend {
   private async *handlePermissionRequest(
     turnId: string,
     frame: Extract<PiAgentFrame, { type: 'permission_request' }>,
+    hostedInteraction?: HostedInteractionBridge,
   ): AsyncIterable<SessionEvent> {
     const frameArgs = structuredClone(frame.args);
     const canonicalArgs = await this.ensureToolCall(
@@ -390,6 +402,7 @@ export class PiAgentBackend implements AgentBackend {
       ...(frame.categoryHint ? { categoryHint: frame.categoryHint } : {}),
       mode: this.input.header.permissionMode,
       ...(frame.hint ? { hint: redactBoundedText(frame.hint, 240) } : {}),
+      ...(hostedInteraction ? { runId: hostedInteraction.runId, hostedInteraction } : {}),
     });
 
     if (verdict.kind === 'block') {
@@ -402,11 +415,43 @@ export class PiAgentBackend implements AgentBackend {
 
     if (verdict.kind === 'allow') return;
 
-    yield verdict.event;
+    let admissionState: 'pending' | 'settled' | undefined;
+    if (hostedInteraction) {
+      void verdict.parked.catch(() => undefined);
+      const settlement = verdict.settlement;
+      if (!settlement) {
+        throw new RuntimeInteractionInvariantError(
+          `Hosted Pi permission ${verdict.event.requestId} has no PermissionEngine settlement`,
+        );
+      }
+      try {
+        const admission = await hostedInteraction.admitPermissionRequest({
+          request: verdict.event,
+          ...(verdict.rememberScopeId ? { rememberScopeId: verdict.rememberScopeId } : {}),
+          settlement,
+        });
+        admissionState = admission.state;
+      } catch (error) {
+        this.input.permissionEngine.rejectRequest(
+          turnId,
+          verdict.event.requestId,
+          error instanceof Error
+            ? error
+            : new RuntimeInteractionInvariantError(
+                `Pi permission admission failed for ${verdict.event.requestId}`,
+              ),
+        );
+        await verdict.parked.catch(() => undefined);
+        throw error;
+      }
+    }
+
+    if (admissionState !== 'settled') yield verdict.event;
     let response: PermissionDecision;
     try {
       response = await verdict.parked;
     } catch (error) {
+      if (isInteractionControlError(error)) throw error;
       const content: ToolResultContent = {
         kind: 'text',
         text: redactBoundedText(error instanceof Error ? error.message : String(error)),
@@ -564,6 +609,15 @@ export class PiAgentBackend implements AgentBackend {
   ): SessionEvent {
     return { type: 'complete', id: this.newId(), turnId, ts: this.now(), stopReason };
   }
+}
+
+function isInteractionControlError(error: unknown): boolean {
+  return (
+    error instanceof RuntimeInteractionAdmissionRejectedError ||
+    error instanceof RuntimeInteractionClosedError ||
+    error instanceof RuntimeInteractionInvariantError ||
+    error instanceof RuntimeInteractionFailStopError
+  );
 }
 
 function projectPiToolArgs(toolName: string, args: unknown, categoryHint?: ToolCategory): unknown {

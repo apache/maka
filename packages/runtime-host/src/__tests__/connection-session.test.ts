@@ -231,6 +231,7 @@ test('a connection accepted before composition exists resolves ready handlers wi
           ok: true,
           result: runningSnapshot(input.sessionId, input.turnId),
         })),
+        beginDrain() {},
         async recover() {},
         async close() {},
       };
@@ -650,6 +651,7 @@ async function withRuntimeHost(
     idleGraceMs: 10_000,
     compositionFactory: async () => ({
       handlers: createHandlers(queryTurn),
+      beginDrain() {},
       async recover() {},
       async close() {},
     }),
@@ -864,6 +866,13 @@ function createHandlers(queryTurn: TurnQueryHandler): RuntimeHostComposition['ha
       message: 'not available in this test composition',
     },
   };
+  const interactionUnavailable = {
+    ok: false,
+    error: {
+      code: 'operation_unavailable',
+      message: 'not available in this test composition',
+    },
+  } as const;
   return {
     ...createUnavailableDomainOperationHandlers(),
     'turn.start': async (input) => ({
@@ -878,6 +887,8 @@ function createHandlers(queryTurn: TurnQueryHandler): RuntimeHostComposition['ha
     'turn.message.submit': async () => unavailable,
     'queue.retract': async () => unavailable,
     'turn.interrupt': async () => unavailable,
+    'interaction.query': async () => interactionUnavailable,
+    'interaction.answer': async () => interactionUnavailable,
     'subscription.open': async () => subscriptionUnavailable,
     'subscription.close': async () => subscriptionUnavailable,
     'task.ledger.query': async () => taskLedgerUnavailable,
@@ -954,6 +965,7 @@ function canonicalProjection(sessionId: string): CanonicalSessionProjection {
       steering: [],
       followup: [],
     },
+    interactions: { pending: [] },
   };
 }
 

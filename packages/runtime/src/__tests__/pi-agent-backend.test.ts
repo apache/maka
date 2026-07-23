@@ -9,6 +9,12 @@ import { createSessionStore } from '@maka/storage';
 
 import { PermissionEngine } from '../permission-engine.js';
 import {
+  bindRuntimeInteractionRun,
+  RuntimeInteractionFailStopError,
+  type RuntimeInteractionRunOwner,
+  type RuntimePermissionContinuation,
+} from '../interaction-authority.js';
+import {
   PiAgentBackend,
   normalizePiAgentFrame,
   type PiAgentFrame,
@@ -895,6 +901,176 @@ describe('PiAgentBackend skeleton', () => {
     assert.equal(disposed, true);
   });
 
+  test('awaits hosted permission admission before publishing the Pi request', async () => {
+    const admissionStarted = deferred<void>();
+    const allowAdmission = deferred<void>();
+    let continuation: RuntimePermissionContinuation | undefined;
+    const binding = await interactionBinding({
+      acceptPermissionRequest: async ({ continuation: admitted }) => {
+        continuation = admitted;
+        admissionStarted.resolve();
+        await allowAdmission.promise;
+        return { state: 'pending' };
+      },
+    });
+    const backend = new PiAgentBackend({
+      sessionId: 'session-1',
+      header: header({ permissionMode: 'ask' }),
+      appendMessage: async () => {},
+      permissionEngine: new PermissionEngine({ newId: nextId('permission'), now: nextNow(6_100) }),
+      transport: frames([
+        {
+          type: 'permission_request',
+          toolUseId: 'tool-1',
+          toolName: 'Bash',
+          args: { command: 'rm -rf tmp' },
+          categoryHint: 'shell_unsafe',
+        },
+        { type: 'complete' },
+      ]),
+      newId: nextId('id'),
+      now: nextNow(6_200),
+    });
+    const iterator = backend
+      .send({
+        turnId: 'turn-1',
+        runId: 'run-1',
+        text: 'delete temp files',
+        context: [],
+        hostedInteraction: binding,
+      })
+      [Symbol.asyncIterator]();
+
+    let published = false;
+    const firstEvent = iterator.next().then((result) => {
+      published = true;
+      return result;
+    });
+    await admissionStarted.promise;
+    await Promise.resolve();
+    assert.equal(published, false);
+
+    allowAdmission.resolve();
+    const request = (await firstEvent).value;
+    assert.equal(request?.type, 'permission_request');
+    if (request?.type !== 'permission_request') assert.fail('expected Pi permission request');
+    binding.assertPendingAdmission(request);
+    await continuation!.applyAnswer({ decision: 'deny', rememberForTurn: false });
+    for await (const _event of { [Symbol.asyncIterator]: () => iterator }) {
+      // Drain the real Pi decision/result path.
+    }
+
+    await binding.close('turn_terminal');
+    await binding.settleLocalClosures();
+    binding.release();
+  });
+
+  test('rejects the Pi stream when a hosted permission commit fails closed', async () => {
+    const commitFailure = new RuntimeInteractionFailStopError(
+      'Hosted permission commit failed',
+      new Error('durable write failed'),
+    );
+    const binding = await interactionBinding({
+      commitPermissionAnswer: async () => {
+        throw commitFailure;
+      },
+    });
+    const messages: StoredMessage[] = [];
+    const backend = new PiAgentBackend({
+      sessionId: 'session-1',
+      header: header({ permissionMode: 'ask' }),
+      appendMessage: async (message) => {
+        messages.push(message);
+      },
+      permissionEngine: new PermissionEngine({ newId: nextId('permission'), now: nextNow(6_250) }),
+      transport: frames([
+        {
+          type: 'permission_request',
+          toolUseId: 'tool-1',
+          toolName: 'Bash',
+          args: { command: 'rm -rf tmp' },
+          categoryHint: 'shell_unsafe',
+        },
+        { type: 'complete' },
+      ]),
+      newId: nextId('id'),
+      now: nextNow(6_275),
+    });
+    const iterator = backend
+      .send({
+        turnId: 'turn-1',
+        runId: 'run-1',
+        text: 'delete temp files',
+        context: [],
+        hostedInteraction: binding,
+      })
+      [Symbol.asyncIterator]();
+
+    const request = (await iterator.next()).value;
+    assert.equal(request?.type, 'permission_request');
+    if (request?.type !== 'permission_request') assert.fail('expected Pi permission request');
+    binding.assertPendingAdmission(request);
+
+    await backend.respondToPermission({ requestId: request.requestId, decision: 'allow' });
+    await assert.rejects(iterator.next(), (error: unknown) => error === commitFailure);
+    assert.equal(
+      messages.some((message) => message.type === 'tool_result'),
+      false,
+    );
+  });
+
+  test('skips Pi request publication when hosted admission settles a remembered sibling', async () => {
+    const scopes: string[] = [];
+    const binding = await interactionBinding({
+      acceptPermissionRequest: async ({ continuation, rememberScopeId }) => {
+        if (rememberScopeId) scopes.push(rememberScopeId);
+        await continuation.applyAnswer({ decision: 'allow', rememberForTurn: true });
+        return { state: 'settled' };
+      },
+    });
+    const backend = new PiAgentBackend({
+      sessionId: 'session-1',
+      header: header({ permissionMode: 'ask' }),
+      appendMessage: async () => {},
+      permissionEngine: new PermissionEngine({ newId: nextId('permission'), now: nextNow(6_300) }),
+      transport: frames([
+        {
+          type: 'permission_request',
+          toolUseId: 'tool-1',
+          toolName: 'Bash',
+          args: { command: 'rm -rf tmp' },
+          categoryHint: 'shell_unsafe',
+        },
+        { type: 'complete' },
+      ]),
+      newId: nextId('id'),
+      now: nextNow(6_400),
+    });
+
+    const events = await drain(
+      backend.send({
+        turnId: 'turn-1',
+        runId: 'run-1',
+        text: 'delete temp files',
+        context: [],
+        hostedInteraction: binding,
+      }),
+    );
+    assert.equal(
+      events.some((event) => event.type === 'permission_request'),
+      false,
+    );
+    assert.equal(
+      events.some((event) => event.type === 'permission_decision_ack'),
+      true,
+    );
+    assert.equal(scopes.length, 1);
+
+    await binding.close('turn_terminal');
+    await binding.settleLocalClosures();
+    binding.release();
+  });
+
   test('persists partial Pi text before aborting an active stream', async () => {
     const messages: StoredMessage[] = [];
     let releaseTransport!: () => void;
@@ -1022,6 +1198,38 @@ function frames(items: PiAgentFrame[]): PiAgentTransport {
       for (const item of items) yield item;
     },
   };
+}
+
+async function interactionBinding(overrides: Partial<RuntimeInteractionRunOwner>) {
+  return await bindRuntimeInteractionRun(
+    {
+      bindRun: (identity) => ({
+        ...identity,
+        acceptPermissionRequest: async () => ({ state: 'pending' }),
+        commitPermissionAnswer: async ({ continuation, answer }) => {
+          await continuation.applyAnswer(answer);
+          return { kind: 'permission_answer', answer };
+        },
+        commitPermissionTimeout: async ({ continuation }) => {
+          await continuation.applyClosure('timed_out');
+          return { kind: 'closure', reason: 'timed_out' };
+        },
+        acceptUserQuestionRequest: async () => {},
+        close: async () => {},
+        release: () => {},
+        ...overrides,
+      }),
+    },
+    { sessionId: 'session-1', turnId: 'turn-1', runId: 'run-1' },
+  );
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 async function drain(iterable: AsyncIterable<SessionEvent>): Promise<SessionEvent[]> {

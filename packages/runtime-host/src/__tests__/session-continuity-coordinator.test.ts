@@ -62,6 +62,22 @@ test('open is an inactive publication barrier and live sequence starts at nextSe
   coordinator.close();
 });
 
+test('open snapshot includes pending Interactions from the canonical projection', async () => {
+  const pending = pendingInteraction();
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical({ interactions: { pending: [pending] } }),
+    new SessionAdmissionGate(),
+  );
+  const connection = coordinator.attachConnection('connection-1', new RecordingSink());
+
+  const opened = await open(coordinator, 'connection-1');
+  assert.deepEqual(opened.snapshot.interactions, { pending: [pending] });
+
+  connection.abort(opened.subscriptionId);
+  coordinator.close();
+});
+
 test('terminal fence suppresses ordinary refresh until the exact terminal cut publishes', async () => {
   let projection = canonical({
     rootTurn: { sessionId: SESSION_ID, turnId: 'turn-1', runId: 'run-1', status: 'running' },
@@ -345,7 +361,11 @@ function connectionContext(connectionId: string): ConnectionContext {
 }
 
 function canonical(
-  overrides: { lastUsedAt?: number; rootTurn?: CanonicalSessionProjection['rootTurn'] } = {},
+  overrides: {
+    lastUsedAt?: number;
+    rootTurn?: CanonicalSessionProjection['rootTurn'];
+    interactions?: CanonicalSessionProjection['interactions'];
+  } = {},
 ): CanonicalSessionProjection {
   return {
     session: {
@@ -365,6 +385,33 @@ function canonical(
       steering: [],
       followup: [],
     },
+    interactions: overrides.interactions ?? { pending: [] },
+  };
+}
+
+function pendingInteraction() {
+  return {
+    schemaVersion: 1 as const,
+    interactionId: 'interaction-1',
+    sessionId: SESSION_ID,
+    turnId: 'turn-1',
+    runId: 'run-1',
+    revision: 1 as const,
+    request: {
+      kind: 'question' as const,
+      toolUseId: 'tool-1',
+      questions: [
+        {
+          question: 'Continue?',
+          options: [
+            { label: 'Yes', description: 'Continue execution' },
+            { label: 'No', description: 'Stop execution' },
+          ],
+        },
+      ],
+    },
+    status: 'pending' as const,
+    outcome: null,
   };
 }
 

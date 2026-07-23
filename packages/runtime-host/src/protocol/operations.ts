@@ -1,6 +1,7 @@
 import { requireExactRecord, requireId, requireRecord, requireString } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { HOST_STATUS_OPERATION_SPECS } from './host-status.js';
+import { INTERACTION_OPERATION_SPECS } from './interaction.js';
 import { MESSAGE_OPERATION_SPECS } from './message.js';
 import {
   composeOperationSpecMaps,
@@ -63,8 +64,13 @@ const CORE_MESSAGE_AND_TASK_LEDGER_OPERATION_SPECS = composeOperationSpecMaps(
   TASK_LEDGER_OPERATION_SPECS,
 );
 
-export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
+const CORE_MESSAGE_TASK_LEDGER_AND_INTERACTION_OPERATION_SPECS = composeOperationSpecMaps(
   CORE_MESSAGE_AND_TASK_LEDGER_OPERATION_SPECS,
+  INTERACTION_OPERATION_SPECS,
+);
+
+export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
+  CORE_MESSAGE_TASK_LEDGER_AND_INTERACTION_OPERATION_SPECS,
   SESSION_CONTINUITY_OPERATION_SPECS,
 );
 

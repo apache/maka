@@ -87,7 +87,8 @@ export function taxonomyFromResultRecord(record: ResultRecord): AutonomousResult
   if (includesAny(failureText, ['budget', 'limit', 'limits_exceeded', 'max_steps', 'max_tokens'])) {
     return 'budget_exhausted';
   }
-  if (includesAny(failureText, ['blocked', 'waiting_permission'])) return 'blocked';
+  if (includesAny(failureText, ['blocked', 'waiting_for_user', 'waiting_permission']))
+    return 'blocked';
   if (includesAny(failureText, ['policy', 'permission', 'denied'])) return 'policy_denied';
   if (
     includesAny(failureText, [

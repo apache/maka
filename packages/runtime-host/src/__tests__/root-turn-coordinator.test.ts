@@ -13,8 +13,10 @@ import {
   RuntimeHostedRootConflictError,
   SessionManager,
   type RuntimeHostedRootAuthority,
+  type RuntimeInteractionAuthority,
+  type RuntimeInteractionRunClosureReason,
 } from '@maka/runtime';
-import type { AgentBackend, BackendSendInput } from '@maka/core/backend-types';
+import type { AgentBackend, BackendSendInput, PermissionDecision } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
 import type { MakaTool } from '@maka/runtime';
 import {
@@ -25,6 +27,7 @@ import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storag
 import type { SubscriptionFrame } from '../protocol/index.js';
 import { CanonicalSessionProjectionReader } from '../server/canonical-session-projection.js';
 import type { RuntimeHostResidency } from '../server/host-kernel.js';
+import { HostInteractionCoordinator } from '../server/interaction-coordinator.js';
 import { type HostMessageRootPort, HostMessageCoordinator } from '../server/message-coordinator.js';
 import { RootAdmissionOwner } from '../server/root-admission-owner.js';
 import { RootTurnCoordinator } from '../server/root-turn-coordinator.js';
@@ -61,7 +64,9 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     const acquireResidency = (): RuntimeHostResidency => ({ release() {} });
     let coordinator: RootTurnCoordinator | undefined;
     let continuity: SessionContinuityCoordinator | undefined;
+    let canonicalProjection: CanonicalSessionProjectionReader | undefined;
     let drainRequested = false;
+    let stopClosureSignal: ReturnType<typeof deferred<void>> | undefined;
     const rootPort: HostMessageRootPort = {
       readSessionHeader: (sessionId) =>
         requireCoordinator(coordinator).readSessionHeader(sessionId),
@@ -88,22 +93,50 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       requestDrain: () => {
         drainRequested = true;
       },
+      preflightSessionSnapshot: (sessionId, candidate) =>
+        requireCanonicalProjection(canonicalProjection).fitsCandidate(sessionId, candidate),
       onProjectionChanged: (sessionId) =>
         requireContinuity(continuity).enqueueCanonicalRefresh(sessionId),
     });
-    const canonicalProjection = new CanonicalSessionProjectionReader({
+    const canonicalProjectionReader = new CanonicalSessionProjectionReader({
       stores,
       rootAdmissions: rootAdmissionOwner,
       messages,
     });
+    canonicalProjection = canonicalProjectionReader;
     continuity = new SessionContinuityCoordinator(
       hostEpoch,
-      (sessionId) => canonicalProjection.read(sessionId),
+      (sessionId) => canonicalProjectionReader.read(sessionId),
       sessionAdmission,
       () => {
         drainRequested = true;
       },
     );
+    const interactions = new HostInteractionCoordinator({
+      store: stores.interactionStore,
+      sessionAdmission,
+      preflightSessionSnapshot: (sessionId, interactionProjection) =>
+        canonicalProjectionReader.fitsCandidate(sessionId, {
+          interactions: interactionProjection,
+        }),
+      refreshCanonicalContinuity: (sessionId, admission) =>
+        requireContinuity(continuity).refreshCanonical(sessionId, admission),
+      onPoison: () => {
+        drainRequested = true;
+      },
+    });
+    const interactionAuthority: RuntimeInteractionAuthority = {
+      bindRun: (identity) => {
+        const owner = interactions.bindRun(identity);
+        return Object.freeze({
+          ...owner,
+          close: async (reason: RuntimeInteractionRunClosureReason) => {
+            await owner.close(reason);
+            if (reason === 'turn_stopped') stopClosureSignal?.resolve();
+          },
+        });
+      },
+    };
     const authority: RuntimeHostedRootAuthority = {
       bindRun: (identity) => messages.bindRun(identity),
       executeRoot: (input) => requireCoordinator(coordinator).executeRoot(input),
@@ -130,12 +163,14 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       newId: randomUUID,
       now: Date.now,
       messageAuthority: authority,
+      interactionAuthority,
     });
     coordinator = new RootTurnCoordinator(
       manager,
       stores,
       sessionAdmission,
       rootAdmissionOwner,
+      interactions,
       messages,
       continuity,
       acquireResidency,
@@ -166,12 +201,21 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     );
     assert.equal(parentStarted.ok, true);
     if (!parentStarted.ok) return;
-    await waitForContinuityFrame(
+    const waitingFrame = await waitForContinuityFrame(
       parentSink,
       (frame) =>
         frame.kind === 'subscription.session_projection' &&
-        frame.snapshot.session.status === 'waiting_for_user',
+        frame.snapshot.session.status === 'waiting_for_user' &&
+        frame.snapshot.rootTurn?.status === 'waiting_for_user',
+      'pending permission projection',
     );
+    assert.equal(waitingFrame.kind, 'subscription.session_projection');
+    if (waitingFrame.kind !== 'subscription.session_projection') return;
+    const pendingPermission = waitingFrame.snapshot.interactions.pending.find(
+      (interaction) => interaction.request.kind === 'permission',
+    );
+    assert.ok(pendingPermission);
+    if (!pendingPermission) return;
 
     let initialReady:
       | {
@@ -359,6 +403,43 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     assert.deepEqual(retryMessages, []);
     assert.deepEqual(coordinator.readRootState(child.childSessionId), { kind: 'idle' });
 
+    const readyFailure = new Error('linked child onReady failed after stop committed');
+    const callbackAbortController = new AbortController();
+    const stopClosureObserved = deferred<void>();
+    stopClosureSignal = stopClosureObserved;
+    let failedReady:
+      | {
+          childSessionId: string;
+          turnId: string;
+          runId: string;
+          agentId: string;
+          agentName: string;
+        }
+      | undefined;
+    const callbackFailed = await manager.spawnChildSession(parent.id, {
+      spawnedBy: {
+        parentRunId: parentStarted.result.runId,
+        parentTurnId,
+        toolCallId: 'linked-ready-failure',
+      },
+      agentProfile: LOCAL_READ_AGENT_PROFILE,
+      prompt: FAKE_ASK_USER_QUESTION_PROMPT,
+      abortSignal: callbackAbortController.signal,
+      onReady: async (ready) => {
+        failedReady = ready;
+        callbackAbortController.abort();
+        await stopClosureObserved.promise;
+        throw readyFailure;
+      },
+    });
+    stopClosureSignal = undefined;
+    assert.ok(failedReady);
+    assert.equal(callbackFailed.status, 'cancelled');
+    assert.equal(callbackFailed.runId, failedReady.runId);
+    assert.deepEqual(coordinator.readRootState(failedReady.childSessionId), { kind: 'idle' });
+    assert.equal(interactions.isPoisoned(), false);
+    assert.equal(drainRequested, false);
+
     const externalTurnId = randomUUID();
     const external = await coordinator.handlers['turn.start'](
       {
@@ -486,6 +567,26 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     assert.deepEqual(coordinator.readRootState(interrupted.childSessionId), { kind: 'idle' });
     assert.equal(drainRequested, false);
 
+    const answered = await interactions.handlers['interaction.answer'](
+      {
+        interactionId: pendingPermission.interactionId,
+        answer: { kind: 'permission', decision: 'allow', rememberForTurn: false },
+      },
+      operationContext(hostEpoch, acquireResidency),
+    );
+    assert.equal(answered.ok, true);
+    await waitForContinuityFrame(
+      parentSink,
+      (frame) =>
+        frame.kind === 'subscription.session_projection' &&
+        frame.snapshot.projectionRevision > waitingFrame.snapshot.projectionRevision &&
+        frame.snapshot.session.status === 'running' &&
+        frame.snapshot.rootTurn?.runId === parentStarted.result.runId &&
+        frame.snapshot.rootTurn.status === 'running' &&
+        frame.snapshot.interactions.pending.length === 0,
+      'resumed permission projection',
+    );
+
     await coordinator.stopRoot({
       sessionId: parent.id,
       turnId: parentTurnId,
@@ -493,6 +594,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     });
     await coordinator.close();
     await messages.close();
+    await interactions.close();
     parentConnection.close();
     closeChildContinuity?.();
     continuity.close();
@@ -751,6 +853,7 @@ test('shutdown re-scans a successor created by an in-flight terminal handoff', {
     const sessionAdmission = new SessionAdmissionGate();
     let coordinator: RootTurnCoordinator | undefined;
     let continuity: SessionContinuityCoordinator | undefined;
+    let canonicalProjection: CanonicalSessionProjectionReader | undefined;
     const rootPort: HostMessageRootPort = {
       readSessionHeader: (sessionId) =>
         requireCoordinator(coordinator).readSessionHeader(sessionId),
@@ -774,17 +877,20 @@ test('shutdown re-scans a successor created by an in-flight terminal handoff', {
       receipts: stores.messageReceiptStore,
       sessionAdmission,
       acquireResidency,
+      preflightSessionSnapshot: (sessionId, candidate) =>
+        requireCanonicalProjection(canonicalProjection).fitsCandidate(sessionId, candidate),
       onProjectionChanged: (sessionId) =>
         requireContinuity(continuity).enqueueCanonicalRefresh(sessionId),
     });
-    const canonicalProjection = new CanonicalSessionProjectionReader({
+    const canonicalProjectionReader = new CanonicalSessionProjectionReader({
       stores,
       rootAdmissions: rootAdmissionOwner,
       messages,
     });
+    canonicalProjection = canonicalProjectionReader;
     continuity = new SessionContinuityCoordinator(
       hostEpoch,
-      (sessionId) => canonicalProjection.read(sessionId),
+      (sessionId) => canonicalProjectionReader.read(sessionId),
       sessionAdmission,
     );
     const backends = new BackendRegistry();
@@ -804,6 +910,7 @@ test('shutdown re-scans a successor created by an in-flight terminal handoff', {
       stores,
       sessionAdmission,
       rootAdmissionOwner,
+      { assertTerminalFence: async () => undefined },
       messages,
       continuity,
       acquireResidency,
@@ -904,6 +1011,7 @@ async function createFailureFixture(options: {
   let drainRequested = false;
   let coordinator: RootTurnCoordinator | undefined;
   let continuity: SessionContinuityCoordinator | undefined;
+  let canonicalProjection: CanonicalSessionProjectionReader | undefined;
   const rootPort: HostMessageRootPort = {
     readSessionHeader: (sessionId) => requireCoordinator(coordinator).readSessionHeader(sessionId),
     readRootState: (sessionId) => requireCoordinator(coordinator).readRootState(sessionId),
@@ -930,17 +1038,20 @@ async function createFailureFixture(options: {
     sessionAdmission,
     acquireResidency,
     requestDrain,
+    preflightSessionSnapshot: (sessionId, candidate) =>
+      requireCanonicalProjection(canonicalProjection).fitsCandidate(sessionId, candidate),
     onProjectionChanged: (sessionId) =>
       requireContinuity(continuity).enqueueCanonicalRefresh(sessionId),
   });
-  const canonicalProjection = new CanonicalSessionProjectionReader({
+  const canonicalProjectionReader = new CanonicalSessionProjectionReader({
     stores,
     rootAdmissions: rootAdmissionOwner,
     messages,
   });
+  canonicalProjection = canonicalProjectionReader;
   continuity = new SessionContinuityCoordinator(
     hostEpoch,
-    (sessionId) => canonicalProjection.read(sessionId),
+    (sessionId) => canonicalProjectionReader.read(sessionId),
     sessionAdmission,
     requestDrain,
   );
@@ -960,6 +1071,7 @@ async function createFailureFixture(options: {
     stores,
     sessionAdmission,
     rootAdmissionOwner,
+    { assertTerminalFence: async () => undefined },
     messages,
     continuity,
     acquireResidency,
@@ -993,6 +1105,13 @@ function requireContinuity(
 ): SessionContinuityCoordinator {
   if (!continuity) throw new Error('Continuity coordinator is not bound');
   return continuity;
+}
+
+function requireCanonicalProjection(
+  projection: CanonicalSessionProjectionReader | undefined,
+): CanonicalSessionProjectionReader {
+  if (!projection) throw new Error('Canonical projection is not composed');
+  return projection;
 }
 
 function operationContext(
@@ -1129,55 +1248,100 @@ class LinkedChildAuthorityBackend implements AgentBackend {
 class PermissionWaitingBackend implements AgentBackend {
   readonly kind = 'fake' as const;
   private stopped = false;
-  private releaseWait: (() => void) | undefined;
+  private resolveDecision: ((decision: PermissionDecision | null) => void) | undefined;
+  private releaseAfterDecision: (() => void) | undefined;
 
   constructor(readonly sessionId: string) {}
 
   async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
     this.stopped = false;
-    yield {
+    const requestId = randomUUID();
+    const toolUseId = randomUUID();
+    const request = {
       type: 'permission_request',
       id: randomUUID(),
       turnId: input.turnId,
       ts: Date.now(),
       kind: 'tool_permission',
-      requestId: randomUUID(),
-      toolUseId: randomUUID(),
+      requestId,
+      toolUseId,
       toolName: 'Bash',
-      category: 'shell_safe',
-      reason: 'custom',
-      args: {},
+      category: 'shell_unsafe',
+      reason: 'shell_dangerous',
+      args: { command: 'echo hello', cwd: '/repo' },
       rememberForTurnAllowed: true,
+    } satisfies Extract<SessionEvent, { type: 'permission_request' }>;
+    const decisionPromise = new Promise<PermissionDecision | null>((resolve) => {
+      this.resolveDecision = resolve;
+      if (this.stopped) resolve(null);
+    });
+    if (!input.hostedInteraction) {
+      throw new Error('PermissionWaitingBackend requires hosted Interaction authority');
+    }
+    const admission = await input.hostedInteraction.admitPermissionRequest({
+      request,
+      settlement: {
+        applyAnswer: async (answer) => {
+          this.resolveDecision?.({ requestId, ...answer });
+        },
+        applyClosure: async () => {
+          this.resolveDecision?.(null);
+        },
+      },
+    });
+    if (admission.state === 'pending') yield request;
+    const decision = await decisionPromise;
+    this.resolveDecision = undefined;
+    if (!decision || this.stopped) {
+      yield* this.abort(input.turnId);
+      return;
+    }
+    yield {
+      type: 'permission_decision_ack',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      requestId,
+      toolUseId,
+      decision: decision.decision,
+      ...(decision.rememberForTurn !== undefined
+        ? { rememberForTurn: decision.rememberForTurn }
+        : {}),
     };
     await new Promise<void>((resolve) => {
-      this.releaseWait = resolve;
+      this.releaseAfterDecision = resolve;
       if (this.stopped) resolve();
     });
+    yield* this.abort(input.turnId);
+  }
+
+  async stop(): Promise<void> {
+    this.stopped = true;
+    this.resolveDecision?.(null);
+    this.releaseAfterDecision?.();
+  }
+
+  async respondToPermission(): Promise<void> {}
+
+  async dispose(): Promise<void> {
+    await this.stop();
+  }
+
+  private async *abort(turnId: string): AsyncIterable<SessionEvent> {
     yield {
       type: 'abort',
       id: randomUUID(),
-      turnId: input.turnId,
+      turnId,
       ts: Date.now(),
       reason: 'user_stop',
     };
     yield {
       type: 'complete',
       id: randomUUID(),
-      turnId: input.turnId,
+      turnId,
       ts: Date.now(),
       stopReason: 'user_stop',
     };
-  }
-
-  async stop(): Promise<void> {
-    this.stopped = true;
-    this.releaseWait?.();
-  }
-
-  async respondToPermission(): Promise<void> {}
-
-  async dispose(): Promise<void> {
-    this.releaseWait?.();
   }
 }
 
@@ -1223,6 +1387,7 @@ async function completesWithin<T>(
 async function waitForContinuityFrame(
   sink: RecordingContinuitySink,
   predicate: (frame: SubscriptionFrame) => boolean,
+  description = 'Session continuity frame',
 ): Promise<SubscriptionFrame> {
   return completesWithin(
     new Promise((resolve) => {
@@ -1237,6 +1402,6 @@ async function waitForContinuityFrame(
       check();
     }),
     5_000,
-    'Session continuity frame',
+    description,
   );
 }

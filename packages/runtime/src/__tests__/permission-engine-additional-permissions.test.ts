@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import type { HostedInteractionBridge } from '@maka/core/backend-types';
 import type { PermissionResponse } from '@maka/core/permission';
 
 import {
@@ -39,6 +40,18 @@ function createNetworkProposal(input: {
     args: input.args,
     workspaceRoots: ['/workspace'],
   });
+}
+
+function hostedInteraction(turnId = 'turn-1'): HostedInteractionBridge {
+  return {
+    sessionId: 'session-1',
+    turnId,
+    runId: 'run-1',
+    admitPermissionRequest: async () => ({ state: 'pending' }),
+    commitPermissionAnswer: async () => {},
+    commitPermissionTimeout: async () => {},
+    admitUserQuestionRequest: async () => {},
+  };
 }
 
 describe('PermissionEngine one-shot additional permission requests', () => {
@@ -93,6 +106,59 @@ describe('PermissionEngine one-shot additional permission requests', () => {
       assert.equal(verdict.event.alsoApprovesToolExecution, true);
       assert.equal(engine.pendingCount('turn-1'), 1);
     }
+  });
+
+  test('does not expose a remembered tool scope on a hosted one-shot request', async () => {
+    const { engine } = createFixture();
+    const bridge = hostedInteraction();
+    const args = { command: 'curl https://example.test' };
+    const evaluateToolPermission = (toolUseId: string) =>
+      engine.evaluate({
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        runId: 'run-1',
+        hostedInteraction: bridge,
+        toolUseId,
+        toolName: 'Bash',
+        args,
+        mode: 'ask',
+        cwd: '/workspace',
+      });
+
+    const first = evaluateToolPermission('tool-1');
+    assert.equal(first.kind, 'prompt');
+    if (first.kind !== 'prompt') return;
+    assert.equal(first.event.kind, 'tool_permission');
+    assert.ok(first.rememberScopeId);
+    assert.ok(first.settlement);
+    await first.settlement.applyAnswer({ decision: 'allow', rememberForTurn: true });
+    await first.parked;
+
+    const sibling = evaluateToolPermission('tool-2');
+    assert.equal(sibling.kind, 'prompt');
+    if (sibling.kind !== 'prompt') return;
+    assert.equal(sibling.event.kind, 'tool_permission');
+    assert.equal(sibling.rememberScopeId, first.rememberScopeId);
+    assert.ok(sibling.settlement);
+    await sibling.settlement.applyAnswer({ decision: 'deny' });
+    await sibling.parked;
+
+    const oneShot = engine.evaluate({
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      runId: 'run-1',
+      hostedInteraction: bridge,
+      toolUseId: 'tool-3',
+      toolName: 'Bash',
+      args,
+      mode: 'ask',
+      cwd: '/workspace',
+      additionalPermissionProposal: createNetworkProposal({ toolName: 'Bash', args }),
+    });
+    assert.equal(oneShot.kind, 'prompt');
+    if (oneShot.kind !== 'prompt') return;
+    assert.equal(oneShot.event.kind, 'additional_permissions');
+    assert.equal(oneShot.rememberScopeId, undefined);
   });
 
   test('an explicit tool allow does not bypass the additional permission request', () => {

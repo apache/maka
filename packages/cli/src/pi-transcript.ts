@@ -883,7 +883,7 @@ function subagentTranscriptStatus(
     case 'cancelled':
       return 'aborted';
     case 'running':
-    case 'waiting_permission':
+    case 'waiting_for_user':
       return 'running';
   }
 }

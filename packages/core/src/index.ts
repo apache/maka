@@ -15,6 +15,7 @@ export * from './plan.js';
 export * from './agent-graph-control.js';
 export * from './agent-graph-schedule.js';
 export * from './runtime-policy.js';
+export * from './interaction.js';
 
 // events.ts
 export type {
@@ -117,6 +118,7 @@ export type {
   RuntimeEventContentKind,
   RuntimeEventTokenUsage,
   RuntimeEventPermissionDecision,
+  RuntimeEventUserQuestionAnswerAccepted,
   RuntimeEventProtocolMarker,
   RuntimeEventToolDispatch,
   RuntimeEventActions,
