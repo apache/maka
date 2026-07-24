@@ -280,6 +280,67 @@ describe('HostInteractionCoordinator', () => {
     });
   });
 
+  test('admits a bounded generic review for a registered MCP permission request', async () => {
+    await withStore(async ({ store }) => {
+      const coordinator = createCoordinator(store);
+      const owner = coordinator.bindRun(RUN);
+      const request: AnyPermissionRequestEvent = {
+        id: 'event_permission_mcp',
+        type: 'permission_request',
+        turnId: RUN.turnId,
+        ts: 35,
+        kind: 'tool_permission',
+        requestId: 'permission_mcp',
+        toolUseId: 'tool_mcp',
+        toolName: 'mcp__github__create_issue',
+        category: 'network_send',
+        reason: 'network',
+        args: {
+          serverId: 'github',
+          toolName: 'create_issue',
+          arguments: {
+            body: 'x'.repeat(20_000),
+            client_secret: 'mcp-client-secret',
+            owner: 'maka-agent',
+            private_key: 'mcp-private-key',
+            recipient: 'maintainer@example.com',
+            refresh_token: 'mcp-refresh-token',
+            service_account_key: 'mcp-service-account-key',
+            session_token: 'mcp-session-token',
+            ssh_private_key: 'mcp-ssh-private-key',
+          },
+        },
+        rememberForTurnAllowed: true,
+      };
+
+      assert.deepEqual(
+        await owner.acceptPermissionRequest({
+          request,
+          continuation: permissionContinuation(request.requestId, []),
+        }),
+        { state: 'pending' },
+      );
+      const record = await store.readInteraction(request.requestId);
+      assert.equal(record?.request.request.kind, 'permission');
+      if (record?.request.request.kind !== 'permission') return;
+      assert.equal(record.request.request.prompt.review.kind, 'tool');
+      if (record.request.request.prompt.review.kind !== 'tool') return;
+      const durableReview = record.request.request.prompt.review.arguments.text;
+      assert.match(durableReview, /\[redacted\]/);
+      assert.match(durableReview, /"recipient":"maintainer@example\.com"/);
+      assert.match(durableReview, /"serverId":"github"/);
+      assert.match(durableReview, /"toolName":"create_issue"/);
+      assert.doesNotMatch(
+        durableReview,
+        /mcp-client-secret|mcp-private-key|mcp-refresh-token|mcp-service-account-key|mcp-session-token|mcp-ssh-private-key/,
+      );
+
+      await owner.close('turn_terminal');
+      owner.release();
+      await coordinator.close();
+    });
+  });
+
   test('retains the exact live continuation and poisons when async apply rejects', async () => {
     await withStore(async ({ store }) => {
       const poison: RuntimeInteractionFailStopError[] = [];

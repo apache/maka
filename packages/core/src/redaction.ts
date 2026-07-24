@@ -1,10 +1,21 @@
-const SECRET_KEY_VALUE_PATTERNS: RegExp[] = [
-  /((?:"(?:x-api-key|api-key|api_key|apiKey|access_token|accessToken|auth|authorization|token|password|secret)"\s*:\s*"))(?:\\.|[^"\\])*/gi,
-  /\b((?:x-api-key|api-key|api_key|apiKey|access_token|accessToken|token|password|secret)\s*[:=]\s*['"]?)[^\s"'&<>]+/gi,
-];
+const SENSITIVE_KEY_SUFFIXES = new Set([
+  'auth',
+  'authorization',
+  'credential',
+  'credentials',
+  'passwd',
+  'password',
+  'secret',
+  'token',
+]);
+const SENSITIVE_KEY_QUALIFIERS = new Set(['api', 'private', 'secret', 'ssh']);
+
+const QUOTED_SECRET_KEY_VALUE_PATTERN = /((?:"([^"\\]+)"\s*:\s*"))(?:\\.|[^"\\])*/g;
+const ASSIGNED_SECRET_KEY_VALUE_PATTERN = /\b(([A-Za-z][A-Za-z0-9_-]*)\s*[:=]\s*['"]?)[^\s"'&<>]+/g;
+const AUTHORIZATION_HEADER_PATTERN =
+  /\b((?:proxy-)?authorization:\s*(?:bearer|basic|token)\s+)[^\s"'<>]+/gi;
 
 const SECRET_PATTERNS: RegExp[] = [
-  /\b(authorization:\s*(?:bearer|basic|token)\s+)[^\s"'<>]+/gi,
   /\b(sk-(?:ant-)?[a-z0-9_-]{8,})\b/gi,
   /\b(AIza[0-9A-Za-z_-]{20,})\b/g,
   /\b(gh[pousr]_[0-9A-Za-z_]{20,})\b/g,
@@ -15,9 +26,16 @@ const SECRET_PATTERNS: RegExp[] = [
 export function redactSecrets(value: string): string {
   let next = redactSerializedJsonSecrets(value);
   next = redactUrlQuerySecrets(next);
-  for (const pattern of SECRET_KEY_VALUE_PATTERNS) {
-    next = next.replace(pattern, (_match, prefix: string) => `${prefix}[redacted]`);
-  }
+  next = next.replace(QUOTED_SECRET_KEY_VALUE_PATTERN, (match, prefix: string, key: string) =>
+    isSensitiveKey(key) ? `${prefix}[redacted]` : match,
+  );
+  next = next.replace(
+    AUTHORIZATION_HEADER_PATTERN,
+    (_match, prefix: string) => `${prefix}[redacted]`,
+  );
+  next = next.replace(ASSIGNED_SECRET_KEY_VALUE_PATTERN, (match, prefix: string, key: string) =>
+    isAssignmentSensitiveKey(key) ? `${prefix}[redacted]` : match,
+  );
   for (const pattern of SECRET_PATTERNS) {
     next = next.replace(pattern, (_match, prefixOrSecret: string) => {
       if (prefixOrSecret.includes(':') || prefixOrSecret.includes('='))
@@ -81,9 +99,28 @@ function redactUrlQuerySecrets(value: string): string {
 }
 
 function isSensitiveKey(key: string): boolean {
-  return /^(x-api-key|api[_-]?key|key|token|access[_-]?token|auth|authorization|password|secret)$/i.test(
-    key,
-  );
+  const segments = sensitiveKeySegments(key);
+  const suffix = segments.at(-1);
+  if (!suffix) return false;
+  if (suffix !== 'key') return SENSITIVE_KEY_SUFFIXES.has(suffix);
+  if (segments.length === 1) return true;
+  if (SENSITIVE_KEY_QUALIFIERS.has(segments.at(-2) ?? '')) return true;
+  return segments.slice(-3).join('_') === 'service_account_key';
+}
+
+function sensitiveKeySegments(key: string): string[] {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+}
+
+function isAssignmentSensitiveKey(key: string): boolean {
+  if (!isSensitiveKey(key)) return false;
+  const suffix = sensitiveKeySegments(key).at(-1);
+  return suffix !== 'auth' && suffix !== 'authorization';
 }
 
 export function generalizedErrorMessage(error: unknown, fallback = 'Operation failed'): string {

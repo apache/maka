@@ -3,6 +3,7 @@ import { describe, test } from 'node:test';
 
 import {
   INTERACTION_BROWSER_TEXT_PREVIEW_MAX_BYTES,
+  INTERACTION_GENERIC_TOOL_ARGUMENTS_MAX_BYTES,
   INTERACTION_MAX_QUESTIONS,
   InteractionPermissionProjectionError,
   decodeInteractionAnswer,
@@ -63,13 +64,19 @@ describe('Interaction projection', () => {
     const request = structuredClone(toolPermission);
     if (request.kind !== 'tool_permission') throw new Error('Expected tool permission');
     request.args = {
-      command: 'curl -H "Authorization: Bearer super-secret-token" example.test',
+      command:
+        'curl -H "Authorization: Bearer super-secret-token" -H "Proxy-Authorization: Basic proxy-secret" example.test',
     };
     const projected = projectInteractionPermissionRequest(request);
-    assert.match(JSON.stringify(projected), /\[redacted\]/);
-    assert.doesNotMatch(JSON.stringify(projected), /super-secret-token/);
+    assert.equal(projected.prompt.kind, 'tool_permission');
+    assert.equal(projected.prompt.review.kind, 'command');
+    if (projected.prompt.review.kind !== 'command') return;
+    assert.match(projected.prompt.review.command, /Authorization: Bearer \[redacted\]/);
+    assert.match(projected.prompt.review.command, /Proxy-Authorization: Basic \[redacted\]/);
+    assert.doesNotMatch(projected.prompt.review.command, /super-secret-token|proxy-secret/);
     assert.deepEqual(request.args, {
-      command: 'curl -H "Authorization: Bearer super-secret-token" example.test',
+      command:
+        'curl -H "Authorization: Bearer super-secret-token" -H "Proxy-Authorization: Basic proxy-secret" example.test',
     });
   });
 
@@ -265,15 +272,139 @@ describe('Interaction projection', () => {
     );
   });
 
+  test('projects generic registered tools as stable bounded redacted reviews', () => {
+    const mcpArgs = {
+      toolName: 'create_issue',
+      arguments: {
+        body: 'x'.repeat(5000),
+        client_secret: 'mcp-client-secret',
+        issue_key: 'ISSUE-1359',
+        objectKey: 'approval-target',
+        owner: 'maka-agent',
+        private_key: 'mcp-private-key',
+        recipient: 'maintainer@example.com',
+        refresh_token: 'mcp-refresh-token',
+        service_account_key: 'mcp-service-account-key',
+        session_token: 'mcp-session-token',
+        ssh_private_key: 'mcp-ssh-private-key',
+      },
+      serverId: 'github',
+    };
+    const mcp = projectInteractionPermissionRequest({
+      ...toolPermission,
+      toolName: 'mcp__github__create_issue',
+      category: 'network_send',
+      reason: 'network',
+      args: mcpArgs,
+    });
+    assert.equal(mcp.prompt.kind, 'tool_permission');
+    assert.equal(mcp.prompt.review.kind, 'tool');
+    if (mcp.prompt.review.kind !== 'tool') return;
+    assert.equal(mcp.prompt.review.arguments.truncated, true);
+    assert.equal(
+      mcp.prompt.review.arguments.bytes,
+      new TextEncoder().encode(
+        `{"arguments":{"body":"${'x'.repeat(5000)}","client_secret":"mcp-client-secret","issue_key":"ISSUE-1359","objectKey":"approval-target","owner":"maka-agent","private_key":"mcp-private-key","recipient":"maintainer@example.com","refresh_token":"mcp-refresh-token","service_account_key":"mcp-service-account-key","session_token":"mcp-session-token","ssh_private_key":"mcp-ssh-private-key"},"serverId":"github","toolName":"create_issue"}`,
+      ).byteLength,
+    );
+    assert.match(mcp.prompt.review.arguments.text, /"body":"x+\.\.\."/);
+    assert.match(mcp.prompt.review.arguments.text, /"issue_key":"ISSUE-1359"/);
+    assert.match(mcp.prompt.review.arguments.text, /"objectKey":"approval-target"/);
+    assert.match(mcp.prompt.review.arguments.text, /"recipient":"maintainer@example\.com"/);
+    assert.match(mcp.prompt.review.arguments.text, /"client_secret":"\[redacted\]"/);
+    assert.match(mcp.prompt.review.arguments.text, /"private_key":"\[redacted\]"/);
+    assert.match(mcp.prompt.review.arguments.text, /"refresh_token":"\[redacted\]"/);
+    assert.match(mcp.prompt.review.arguments.text, /"service_account_key":"\[redacted\]"/);
+    assert.match(mcp.prompt.review.arguments.text, /"session_token":"\[redacted\]"/);
+    assert.match(mcp.prompt.review.arguments.text, /"ssh_private_key":"\[redacted\]"/);
+    assert.doesNotMatch(
+      mcp.prompt.review.arguments.text,
+      /mcp-client-secret|mcp-private-key|mcp-refresh-token|mcp-service-account-key|mcp-session-token|mcp-ssh-private-key/,
+    );
+    assert.deepEqual(decodeInteractionRequest(mcp), mcp);
+    assert.deepEqual(mcpArgs, {
+      toolName: 'create_issue',
+      arguments: {
+        body: 'x'.repeat(5000),
+        client_secret: 'mcp-client-secret',
+        issue_key: 'ISSUE-1359',
+        objectKey: 'approval-target',
+        owner: 'maka-agent',
+        private_key: 'mcp-private-key',
+        recipient: 'maintainer@example.com',
+        refresh_token: 'mcp-refresh-token',
+        service_account_key: 'mcp-service-account-key',
+        session_token: 'mcp-session-token',
+        ssh_private_key: 'mcp-ssh-private-key',
+      },
+      serverId: 'github',
+    });
+
+    const agent = projectInteractionPermissionRequest({
+      ...toolPermission,
+      toolName: 'agent_spawn',
+      category: 'subagent',
+      reason: 'custom',
+      args: {
+        task: `password=agent-secret ${'界'.repeat(20_000)}`,
+        profile: 'explorer',
+      },
+    });
+    assert.equal(agent.prompt.kind, 'tool_permission');
+    assert.equal(agent.prompt.review.kind, 'tool');
+    if (agent.prompt.review.kind !== 'tool') return;
+    assert.equal(agent.prompt.review.arguments.truncated, true);
+    assert.ok(agent.prompt.review.arguments.bytes > INTERACTION_GENERIC_TOOL_ARGUMENTS_MAX_BYTES);
+    assert.ok(
+      new TextEncoder().encode(agent.prompt.review.arguments.text).byteLength <=
+        INTERACTION_GENERIC_TOOL_ARGUMENTS_MAX_BYTES,
+    );
+    assert.match(agent.prompt.review.arguments.text, /"profile":"explorer"/);
+    assert.doesNotMatch(agent.prompt.review.arguments.text, /agent-secret/);
+    assert.deepEqual(decodeInteractionRequest(agent), agent);
+  });
+
+  test('preserves short generic tool fields and fails closed when they exceed the preview cap', () => {
+    const projected = projectInteractionPermissionRequest({
+      ...toolPermission,
+      toolName: 'mcp__mail__send',
+      category: 'network_send',
+      reason: 'network',
+      args: {
+        recipient: 'maintainer@example.com',
+        serverId: 'mail',
+        toolName: 'send',
+        body: 'x'.repeat(20_000),
+      },
+    });
+    assert.equal(projected.prompt.kind, 'tool_permission');
+    assert.equal(projected.prompt.review.kind, 'tool');
+    if (projected.prompt.review.kind !== 'tool') return;
+    assert.match(projected.prompt.review.arguments.text, /"recipient":"maintainer@example\.com"/);
+    assert.match(projected.prompt.review.arguments.text, /"serverId":"mail"/);
+    assert.match(projected.prompt.review.arguments.text, /"toolName":"send"/);
+    assert.doesNotMatch(
+      projected.prompt.review.arguments.text,
+      /"recipient":""|"serverId":""|"toolName":""/,
+    );
+
+    assert.throws(
+      () =>
+        projectInteractionPermissionRequest({
+          ...toolPermission,
+          toolName: 'mcp__mail__send',
+          category: 'network_send',
+          reason: 'network',
+          args: Object.fromEntries(
+            Array.from({ length: 500 }, (_, index) => [`field${index}`, `short-${index}`]),
+          ),
+        }),
+      (error) => error instanceof InteractionPermissionProjectionError,
+    );
+  });
+
   test('fails closed for unrepresentable requests and malformed known optional fields', () => {
     const invalid: PermissionRequestPayload[] = [
-      {
-        ...toolPermission,
-        toolName: 'UnknownTool',
-        category: 'custom_tool',
-        reason: 'custom',
-        args: { token: 'secret' },
-      },
       { ...toolPermission, args: { command: 'x'.repeat(9000) } },
       { ...toolPermission, args: { command: 'echo ok', cwd: 42 } },
       { ...toolPermission, args: { command: 'echo ok', cwd: undefined } },
@@ -308,7 +439,6 @@ describe('Interaction projection', () => {
         args: { size: { cols: 0, rows: 24 } },
         rememberForTurnAllowed: false,
       },
-      browserPermission('browser_unknown', {}),
       browserPermission('browser_type', {
         ref: '#search',
         text: 'hello',
@@ -335,6 +465,20 @@ describe('Interaction projection', () => {
         (error) => error instanceof InteractionPermissionProjectionError,
       );
     }
+
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    assert.throws(
+      () =>
+        projectInteractionPermissionRequest({
+          ...toolPermission,
+          toolName: 'agent_spawn',
+          category: 'subagent',
+          reason: 'custom',
+          args: cyclic,
+        }),
+      (error) => error instanceof InteractionPermissionProjectionError,
+    );
   });
 
   test('projects bounded questions with exact arity', () => {

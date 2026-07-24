@@ -23,10 +23,14 @@ export const INTERACTION_TOOL_NAME_MAX_BYTES = 256;
 export const INTERACTION_PERMISSION_COMMAND_MAX_BYTES = 8 * 1024;
 export const INTERACTION_PERMISSION_PATH_MAX_BYTES = 4 * 1024;
 export const INTERACTION_PERMISSION_TEXT_MAX_BYTES = 4 * 1024;
+export const INTERACTION_GENERIC_TOOL_ARGUMENTS_MAX_BYTES = 4 * 1024;
 export const INTERACTION_BROWSER_TEXT_PREVIEW_MAX_BYTES = 2 * 1024;
 export const INTERACTION_BROWSER_WAIT_MAX_SECONDS = 120;
 
 const UTF8 = new TextEncoder();
+const GENERIC_TOOL_ARGUMENTS_MAX_DEPTH = 32;
+const GENERIC_TOOL_ARGUMENT_LONG_STRING_BYTES = 512;
+const GENERIC_TOOL_ARGUMENT_STRING_BUDGETS = [512, 256, 128, 64, 32, 16, 8] as const;
 const UNSAFE_REVIEW_CHARACTER =
   /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/gu;
 
@@ -56,6 +60,15 @@ export interface InteractionWebReview {
   readonly kind: 'web';
   readonly targetKind: 'url' | 'query';
   readonly target: string;
+}
+
+export interface InteractionGenericToolReview {
+  readonly kind: 'tool';
+  readonly arguments: {
+    readonly text: string;
+    readonly bytes: number;
+    readonly truncated: boolean;
+  };
 }
 
 export interface InteractionStdinReview {
@@ -128,6 +141,7 @@ export type InteractionToolPermissionReview =
   | InteractionPathReview
   | InteractionSearchReview
   | InteractionWebReview
+  | InteractionGenericToolReview
   | InteractionStdinReview
   | InteractionBrowserReview
   | InteractionComputerUseReview;
@@ -236,6 +250,14 @@ const SEARCH_SHAPE = defineObjectShape<InteractionSearchReview>()(
   ['glob'],
 );
 const WEB_SHAPE = defineObjectShape<InteractionWebReview>()(['kind', 'targetKind', 'target'], []);
+const GENERIC_TOOL_SHAPE = defineObjectShape<InteractionGenericToolReview>()(
+  ['kind', 'arguments'],
+  [],
+);
+const GENERIC_TOOL_ARGUMENTS_SHAPE = defineObjectShape<InteractionGenericToolReview['arguments']>()(
+  ['text', 'bytes', 'truncated'],
+  [],
+);
 const STDIN_SHAPE = defineObjectShape<InteractionStdinReview>()(['kind'], ['ref', 'input', 'size']);
 const STDIN_INPUT_SHAPE = defineObjectShape<NonNullable<InteractionStdinReview['input']>>()(
   ['text', 'bytes', 'truncated'],
@@ -529,8 +551,31 @@ function projectToolReview(
       return projectBrowser(toolName, record);
     default:
       if (category === 'computer_use') return projectComputerUse(record);
-      throw new InteractionPermissionProjectionError();
+      return projectGenericToolReview(record);
   }
+}
+
+function projectGenericToolReview(record: Record<string, unknown>): InteractionGenericToolReview {
+  let serialized: string;
+  let redacted: unknown;
+  try {
+    serialized = JSON.stringify(canonicalizeGenericToolArguments(record, new WeakSet<object>(), 0));
+    redacted = JSON.parse(redactSecrets(serialized));
+  } catch {
+    throw new InteractionPermissionProjectionError();
+  }
+  const bytes = UTF8.encode(serialized).byteLength;
+  for (const stringBudget of GENERIC_TOOL_ARGUMENT_STRING_BUDGETS) {
+    const summary = summarizeGenericToolArguments(redacted, stringBudget);
+    const text = sanitizeText(JSON.stringify(summary.value), true);
+    if (UTF8.encode(text).byteLength <= INTERACTION_GENERIC_TOOL_ARGUMENTS_MAX_BYTES) {
+      return deepFreeze({
+        kind: 'tool',
+        arguments: { text, bytes, truncated: summary.truncated },
+      });
+    }
+  }
+  throw new InteractionPermissionProjectionError();
 }
 
 function projectBrowser(
@@ -781,6 +826,24 @@ function decodeToolReview(value: unknown): InteractionToolPermissionReview {
         targetKind: oneOf(record.targetKind, ['url', 'query'] as const, 'targetKind'),
         target: safeCanonicalString(record.target, 'target', INTERACTION_PERMISSION_TEXT_MAX_BYTES),
       });
+    case 'tool': {
+      exact(record, GENERIC_TOOL_SHAPE, 'generic tool review');
+      const args = plainRecord(record.arguments, 'generic tool arguments');
+      exact(args, GENERIC_TOOL_ARGUMENTS_SHAPE, 'generic tool arguments');
+      return deepFreeze({
+        kind: 'tool',
+        arguments: {
+          text: safeCanonicalText(
+            args.text,
+            'generic tool arguments text',
+            INTERACTION_GENERIC_TOOL_ARGUMENTS_MAX_BYTES,
+            true,
+          ),
+          bytes: nonNegativeInteger(args.bytes, 'generic tool arguments bytes'),
+          truncated: boolean(args.truncated, 'generic tool arguments truncated'),
+        },
+      });
+    }
     case 'stdin':
       return decodeStdin(record);
     case 'browser':
@@ -1029,8 +1092,10 @@ function assertToolSemantics(
     toolName === 'Bash'
       ? ([category, 'command'] as const)
       : (identity[toolName] ??
-        (category === 'computer_use' ? ([category, 'computer_use'] as const) : undefined));
-  if (!expected || category !== expected[0] || review.kind !== expected[1])
+        (category === 'computer_use'
+          ? ([category, 'computer_use'] as const)
+          : ([category, 'tool'] as const)));
+  if (category !== expected[0] || review.kind !== expected[1])
     throw new Error('Permission review does not match tool identity');
   if (review.kind === 'browser') {
     const actionByTool = {
@@ -1172,6 +1237,85 @@ function projectionRecord(value: unknown): Record<string, unknown> {
   } catch {
     throw new InteractionPermissionProjectionError();
   }
+}
+
+function canonicalizeGenericToolArguments(
+  value: unknown,
+  stack: WeakSet<object>,
+  depth: number,
+): unknown {
+  if (depth > GENERIC_TOOL_ARGUMENTS_MAX_DEPTH) throw new Error('Tool arguments are too deep');
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new Error('Tool arguments contain a non-finite number');
+    return value;
+  }
+  if (typeof value !== 'object') throw new Error('Tool arguments must contain JSON data');
+  if (stack.has(value)) throw new Error('Tool arguments are cyclic');
+  stack.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const items = plainArray(value, 'tool arguments array', 0, Number.MAX_SAFE_INTEGER);
+      return items.map((item) => canonicalizeGenericToolArguments(item, stack, depth + 1));
+    }
+    const record = plainRecord(value, 'tool arguments object');
+    return Object.fromEntries(
+      Object.keys(record)
+        .sort()
+        .map((key) => [key, canonicalizeGenericToolArguments(record[key], stack, depth + 1)]),
+    );
+  } finally {
+    stack.delete(value);
+  }
+}
+
+function summarizeGenericToolArguments(
+  value: unknown,
+  stringBudget: number,
+): { readonly value: unknown; readonly truncated: boolean } {
+  if (typeof value === 'string') {
+    if (
+      UTF8.encode(value).byteLength <= GENERIC_TOOL_ARGUMENT_LONG_STRING_BYTES ||
+      value === '[redacted]'
+    ) {
+      return { value, truncated: false };
+    }
+    return {
+      value: `${truncateUtf8(value, Math.max(0, stringBudget - 3))}...`,
+      truncated: true,
+    };
+  }
+  if (Array.isArray(value)) {
+    let truncated = false;
+    const items = value.map((item) => {
+      const summary = summarizeGenericToolArguments(item, stringBudget);
+      truncated ||= summary.truncated;
+      return summary.value;
+    });
+    return { value: items, truncated };
+  }
+  if (value && typeof value === 'object') {
+    let truncated = false;
+    const entries = Object.entries(value).map(([key, item]) => {
+      const summary = summarizeGenericToolArguments(item, stringBudget);
+      truncated ||= summary.truncated;
+      return [key, summary.value] as const;
+    });
+    return { value: Object.fromEntries(entries), truncated };
+  }
+  return { value, truncated: false };
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  let text = '';
+  let bytes = 0;
+  for (const character of value) {
+    const characterBytes = UTF8.encode(character).byteLength;
+    if (bytes + characterBytes > maxBytes) break;
+    text += character;
+    bytes += characterBytes;
+  }
+  return text;
 }
 
 function plainRecord(value: unknown, label: string): Record<string, unknown> {

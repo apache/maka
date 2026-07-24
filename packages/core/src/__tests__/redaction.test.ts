@@ -9,12 +9,14 @@ import {
 describe('redactSecrets', () => {
   test('masks bearer tokens and provider key prefixes', () => {
     const text = redactSecrets(
-      'Authorization: Bearer sk-live-secret-token-value and ghp_abcdefghijklmnopqrstuvwxyz',
+      'Authorization: Bearer sk-live-secret-token-value Proxy-Authorization: Basic opaque-proxy-value and ghp_abcdefghijklmnopqrstuvwxyz',
     );
 
     assert.equal(text.includes('sk-live-secret-token-value'), false);
+    assert.equal(text.includes('opaque-proxy-value'), false);
     assert.equal(text.includes('ghp_abcdefghijklmnopqrstuvwxyz'), false);
     assert.match(text, /Authorization: Bearer \[redacted\]/);
+    assert.match(text, /Proxy-Authorization: Basic \[redacted\]/);
   });
 
   test('masks only sensitive URL query values', () => {
@@ -50,6 +52,61 @@ describe('redactSecrets', () => {
     assert.equal(text.includes('plain-provider-key'), false);
     assert.equal(text.includes('correct-horse-battery-staple'), false);
     assert.equal(text.includes('nested-token-value'), false);
+  });
+
+  test('masks common compound credential keys', () => {
+    const text = redactSecrets(
+      JSON.stringify({
+        client_secret: 'client-value',
+        refreshToken: 'refresh-value',
+        private_key: 'private-value',
+        session_token: 'session-value',
+        service_account_key: 'service-account-value',
+        ssh_key: 'ssh-key-value',
+        ssh_private_key: 'ssh-value',
+        credentials: 'credential-value',
+        cache_key: 'cached-result',
+        idempotencyKey: 'request-deduplication',
+        issue_key: 'ISSUE-1359',
+        keyboard: 'ordinary-keyboard',
+        objectKey: 'approval-target',
+        public_key: 'published-material',
+        tokenCount: 42,
+      }),
+    );
+
+    assert.doesNotMatch(
+      text,
+      /client-value|refresh-value|private-value|session-value|service-account-value|ssh-key-value|ssh-value|credential-value/,
+    );
+    assert.deepEqual(JSON.parse(text), {
+      client_secret: '[redacted]',
+      refreshToken: '[redacted]',
+      private_key: '[redacted]',
+      session_token: '[redacted]',
+      service_account_key: '[redacted]',
+      ssh_key: '[redacted]',
+      ssh_private_key: '[redacted]',
+      credentials: '[redacted]',
+      cache_key: 'cached-result',
+      idempotencyKey: 'request-deduplication',
+      issue_key: 'ISSUE-1359',
+      keyboard: 'ordinary-keyboard',
+      objectKey: 'approval-target',
+      public_key: 'published-material',
+      tokenCount: 42,
+    });
+  });
+
+  test('masks compound credential assignments without changing authorization schemes', () => {
+    const text = redactSecrets(
+      'ssh_private_key=ssh-value sessionToken=session-value service-account-key=service-value Authorization: Basic basic-value Proxy-Authorization: Bearer proxy-value issue_key=ISSUE-1359 objectKey=target',
+    );
+
+    assert.equal(
+      text,
+      'ssh_private_key=[redacted] sessionToken=[redacted] service-account-key=[redacted] Authorization: Basic [redacted] Proxy-Authorization: Bearer [redacted] issue_key=ISSUE-1359 objectKey=target',
+    );
   });
 
   test('masks escaped and non-string sensitive JSON values structurally', () => {
