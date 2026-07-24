@@ -20,19 +20,52 @@ function tool(name: string): MakaTool {
 }
 
 describe('resolveProviderToolSearchCapability', () => {
-  test('anthropic + claude-subscription → anthropic', () => {
+  test('anthropic + claude-subscription with supported model → anthropic', () => {
     assert.equal(
       resolveProviderToolSearchCapability('anthropic', 'claude-sonnet-4-5'),
       'anthropic',
     );
     assert.equal(
-      resolveProviderToolSearchCapability('claude-subscription', 'claude-sonnet-4-5'),
+      resolveProviderToolSearchCapability('claude-subscription', 'claude-opus-4-5'),
+      'anthropic',
+    );
+    assert.equal(
+      resolveProviderToolSearchCapability('anthropic', 'claude-opus-4-5-20250929'),
       'anthropic',
     );
   });
 
-  test('openai → openai', () => {
+  test('anthropic with older model → none (fallback)', () => {
+    assert.equal(
+      resolveProviderToolSearchCapability('anthropic', 'claude-sonnet-4-0'),
+      'none',
+    );
+    assert.equal(
+      resolveProviderToolSearchCapability('anthropic', 'claude-opus-4-0'),
+      'none',
+    );
+    assert.equal(
+      resolveProviderToolSearchCapability('anthropic', 'claude-3-5-sonnet'),
+      'none',
+    );
+    assert.equal(
+      resolveProviderToolSearchCapability('anthropic', 'claude-3-haiku'),
+      'none',
+    );
+  });
+
+  test('openai with supported model (GPT-5.4+) → openai', () => {
     assert.equal(resolveProviderToolSearchCapability('openai', 'gpt-5.4'), 'openai');
+    assert.equal(resolveProviderToolSearchCapability('openai', 'gpt-5.4-mini'), 'openai');
+    assert.equal(resolveProviderToolSearchCapability('openai', 'gpt-6'), 'openai');
+  });
+
+  test('openai with unsupported model (Chat Completions / older GPT-5) → none (fallback)', () => {
+    assert.equal(resolveProviderToolSearchCapability('openai', 'gpt-4o'), 'none');
+    assert.equal(resolveProviderToolSearchCapability('openai', 'gpt-4o-mini'), 'none');
+    assert.equal(resolveProviderToolSearchCapability('openai', 'gpt-5'), 'none');
+    assert.equal(resolveProviderToolSearchCapability('openai', 'gpt-5-mini'), 'none');
+    assert.equal(resolveProviderToolSearchCapability('openai', 'gpt-5.3'), 'none');
   });
 
   test('unknown / openai-compatible / google → none (fallback)', () => {
@@ -140,6 +173,7 @@ describe('lowerToolsForProvider — fallback (capability none)', () => {
     for (const entry of out.tools) {
       assert.equal(entry.deferLoading, undefined);
       assert.equal(entry.namespace, undefined);
+      assert.equal(entry.namespaceDescription, undefined);
     }
   });
 });
@@ -154,12 +188,14 @@ describe('lowerToolsForProvider — anthropic native', () => {
     ],
   });
 
-  test('deferred tools are withheld from activeTools and marked deferLoading', () => {
+  test('deferred tools are kept in activeTools and marked deferLoading', () => {
     const out = lowerToolsForProvider({ tools, policy: pol, capability: 'anthropic' });
     assert.equal(out.mode, 'anthropic');
     assert.deepEqual(out.deferredToolNames, ['mcp__github__create_issue', 'RiveWorkflow']);
-    assert.ok(!out.activeTools.includes('mcp__github__create_issue'), 'MCP tool must be deferred');
-    assert.ok(!out.activeTools.includes('RiveWorkflow'), 'Rive surface member must be deferred');
+    // P1 fix: deferred tools remain in activeTools so the AI SDK `tools` dict
+    // keeps them — `deferLoading` controls visibility, not activeTools.
+    assert.ok(out.activeTools.includes('mcp__github__create_issue'), 'MCP tool must stay in activeTools');
+    assert.ok(out.activeTools.includes('RiveWorkflow'), 'Rive surface member must stay in activeTools');
     assert.ok(out.activeTools.includes('Bash'), 'core Bash stays direct/active');
 
     const mcpEntry = out.tools.find((t) => t.name === 'mcp__github__create_issue');
@@ -167,6 +203,7 @@ describe('lowerToolsForProvider — anthropic native', () => {
     assert.equal(mcpEntry?.namespace, mcpNamespace('github'));
     const bashEntry = out.tools.find((t) => t.name === 'Bash');
     assert.equal(bashEntry?.deferLoading, undefined);
+    assert.equal(bashEntry?.namespace, undefined);
   });
 
   test('a native search tool is added and kept active (BM25 by default)', () => {
@@ -195,18 +232,23 @@ describe('lowerToolsForProvider — openai native', () => {
   const pol = buildToolDiscoveryPolicy({
     productToolNames: ['Bash'],
     deferredSurfaces: [],
-    mcpTools: [{ serverId: 'fs', toolNames: ['mcp__fs__read'] }],
+    mcpTools: [{ serverId: 'fs', serverDescription: 'Filesystem', toolNames: ['mcp__fs__read'] }],
   });
 
-  test('deferred tools carry a namespace; search tool kind is openai', () => {
+  test('deferred tools carry namespace + namespaceDescription; search tool kind is openai', () => {
     const out = lowerToolsForProvider({ tools, policy: pol, capability: 'openai' });
     assert.equal(out.mode, 'openai');
     assert.equal(out.searchTool?.kind, 'openai');
     const fsEntry = out.tools.find((t) => t.name === 'mcp__fs__read');
     assert.equal(fsEntry?.deferLoading, true);
     assert.equal(fsEntry?.namespace, mcpNamespace('fs'));
-    assert.ok(!out.activeTools.includes('mcp__fs__read'));
+    // P2 fix: namespaceDescription must be preserved for the OpenAI adapter to
+    // construct the full `providerOptions.openai.namespace` payload.
+    assert.equal(fsEntry?.namespaceDescription, 'Filesystem');
+    // P1 fix: deferred tools stay in activeTools.
+    assert.ok(out.activeTools.includes('mcp__fs__read'), 'deferred tool stays in activeTools');
     assert.ok(out.activeTools.includes(NATIVE_TOOL_SEARCH_NAME));
+    assert.ok(out.activeTools.includes('Bash'));
   });
 });
 
@@ -236,5 +278,20 @@ describe('lowerToolsForProvider — catalog authority', () => {
     assert.ok(!out.activeTools.includes('invalid'), 'invalid never advertised');
     assert.ok(out.activeTools.includes('Bash'));
     assert.ok(out.activeTools.includes(NATIVE_TOOL_SEARCH_NAME));
+  });
+
+  test('neverAdvertise deferred tool stays in dict but out of activeTools', () => {
+    const out = lowerToolsForProvider({
+      tools: [tool('Bash'), tool('mcp__broken__x')],
+      policy: new Map([
+        ['Bash', { mode: 'direct' }],
+        ['mcp__broken__x', { mode: 'deferred', namespace: 'mcp__broken', namespaceDescription: 'Broken' }],
+      ]),
+      capability: 'anthropic',
+      neverAdvertise: new Set(['mcp__broken__x']),
+    });
+    assert.ok(out.tools.some((t) => t.name === 'mcp__broken__x'), 'broken tool stays dispatchable');
+    assert.ok(!out.activeTools.includes('mcp__broken__x'), 'broken tool never advertised');
+    assert.ok(out.deferredToolNames.includes('mcp__broken__x'), 'broken tool is deferred');
   });
 });

@@ -51,8 +51,9 @@ export type ToolDiscoveryPolicy = ReadonlyMap<string, ToolDiscovery>;
 
 /**
  * Which native Tool Search path a resolved model supports, derived from the
- * `ModelAdapter`-resolved provider runtime adapter kind. `none` means the
- * existing `load_tools` economy is the fallback and the lowerer is a no-op.
+ * `ModelAdapter`-resolved provider runtime adapter kind and model id. `none`
+ * means the existing `load_tools` economy is the fallback and the lowerer is a
+ * no-op.
  */
 export type ProviderToolSearchCapability = 'anthropic' | 'openai' | 'none';
 
@@ -81,6 +82,10 @@ export interface NativeSearchToolDescriptor {
  * `tools` dict takes (name + description + input schema + per-tool
  * `providerOptions`), with the Maka-owned defer/namespace markers that the
  * adapter lowers to provider-native `deferLoading` / `namespace`.
+ *
+ * `namespace` and `namespaceDescription` are carried together so the adapter
+ * can construct the full OpenAI `providerOptions.openai.namespace` payload
+ * (`{ name, description }`) the SDK requires for namespace grouping.
  */
 export interface LoweredToolEntry {
   name: string;
@@ -89,8 +94,10 @@ export interface LoweredToolEntry {
   parameters: unknown;
   /** True when this entry is withheld from the initial model context. */
   deferLoading?: boolean;
-  /** Namespace grouping (OpenAI functions / namespaces). */
+  /** Namespace grouping name (OpenAI functions / namespaces). */
   namespace?: string;
+  /** Human-readable description for the namespace group (OpenAI `description`). */
+  namespaceDescription?: string;
 }
 
 /**
@@ -101,14 +108,22 @@ export interface LoweredToolEntry {
  *   tool, `activeTools` lists every name. Identical to today's full surface;
  *   the existing `ToolAvailabilityRuntime` economy continues to own deferral.
  * - `mode: 'anthropic' | 'openai'` → native: deferred entries carry
- *   `deferLoading` (and `namespace` for OpenAI), are excluded from
- *   `activeTools`, and a `searchTool` is added and kept active.
+ *   `deferLoading` (and `namespace` + `namespaceDescription` for OpenAI), remain
+ *   in `activeTools` so the AI SDK `tools` dict keeps them (the `deferLoading`
+ *   flag hides them from the initial model context), and a `searchTool` is
+ *   added and kept active.
  */
 export interface LoweredProviderToolPayload {
   mode: ProviderToolSearchCapability;
   /** Every provider-visible tool entry (direct + deferred + search tool when native). */
   tools: LoweredToolEntry[];
-  /** Initial model-visible active tool names. Deferred tools are excluded. */
+  /**
+   * Tool names the provider receives. In native mode this includes deferred
+   * tools (kept via the `deferLoading` flag, not omitted) plus the search tool.
+   * AI SDK 7 treats `activeTools` as an allowlist — an omitted tool is stripped
+   * from the `tools` dict entirely — so deferred tools MUST remain listed to
+   * ensure the provider adapter receives their schema + `deferLoading` flag.
+   */
   activeTools: string[];
   /** The native search tool descriptor; undefined in fallback mode. */
   searchTool?: NativeSearchToolDescriptor;
@@ -129,27 +144,63 @@ export const NATIVE_TOOL_SEARCH_DESCRIPTION =
  * Resolve the native Tool Search capability for a resolved model. The adapter
  * kind is the same one `resolveModelRuntime` (`model-runtime.ts`) produces.
  *
- * Model-id gating is intentionally coarse in slice 1: Anthropic native search
- * is exposed on Opus 4.5 / Sonnet 4.5 and later, OpenAI `tool_search` on the
- * Responses API (GPT-5.4+). A follow-up slice tightens this per
- * `lookupModelMetadata` once a capability table exists; until then the
- * capability is provider-level only and the live wiring is gated off by
- * default (see backend flag in a follow-up slice), so a model that lacks the
- * server feature still falls back to `load_tools`.
+ * Model-id gating ensures only models that actually support native Tool Search
+ * take the native path; older models fall back to the deterministic `load_tools`
+ * economy so they never receive a partially deferred catalog they cannot load.
+ *
+ * Anthropic: native Tool Search is exposed on Claude Opus 4.5 / Sonnet 4.5
+ * and later (model ids `claude-opus-4-5*` / `claude-sonnet-4-5*` and above).
+ * OpenAI: `tool_search` requires the Responses API on GPT-5.4 or later
+ * (`gpt-5.4*` and above). Chat Completions models such as `gpt-4o` and older
+ * GPT-5 variants do not support it and fall back to `load_tools`.
  */
 export function resolveProviderToolSearchCapability(
   adapterKind: string,
-  _modelId: string,
+  modelId: string,
 ): ProviderToolSearchCapability {
   switch (adapterKind) {
     case 'anthropic':
     case 'claude-subscription':
-      return 'anthropic';
+      return supportsAnthropicToolSearch(modelId) ? 'anthropic' : 'none';
     case 'openai':
-      return 'openai';
+      return supportsOpenaiToolSearch(modelId) ? 'openai' : 'none';
     default:
       return 'none';
   }
+}
+
+/**
+ * Anthropic native Tool Search is available on Claude Opus 4.5 / Sonnet 4.5
+ * and later. Model ids follow the `claude-{opus|sonnet|haiku}-{major}-{minor}`
+ * convention. The capability is gated on Opus 4.5+ / Sonnet 4.5+.
+ */
+function supportsAnthropicToolSearch(modelId: string): boolean {
+  const id = modelId.toLowerCase().replace(/-\d{8}$/, '').replace(/-\w{2,4}-\d+$/, '');
+  const opusMatch = id.match(/^claude-opus-(\d+)(?:-(\d+))?/);
+  if (opusMatch) {
+    return Number(opusMatch[1]) > 4 || (Number(opusMatch[1]) === 4 && Number(opusMatch[2] ?? 0) >= 5);
+  }
+  const sonnetMatch = id.match(/^claude-sonnet-(\d+)(?:-(\d+))?/);
+  if (sonnetMatch) {
+    return Number(sonnetMatch[1]) > 4 || (Number(sonnetMatch[1]) === 4 && Number(sonnetMatch[2] ?? 0) >= 5);
+  }
+  // Unknown Anthropic model — be conservative, fall back.
+  return false;
+}
+
+/**
+ * OpenAI native Tool Search (`tool_search`) requires the Responses API on
+ * GPT-5.4 or later. Chat Completions models (e.g. `gpt-4o`) and older GPT-5
+ * variants (e.g. `gpt-5`, `gpt-5-mini`) do not support it.
+ */
+function supportsOpenaiToolSearch(modelId: string): boolean {
+  const id = modelId.toLowerCase();
+  const match = id.match(/^gpt-(\d+)(?:\.(\d+))?/);
+  if (!match) return false;
+  const major = Number(match[1]);
+  const minor = Number(match[2] ?? 0);
+  // GPT-5.4+ or GPT-6+
+  return major > 5 || (major === 5 && minor >= 4);
 }
 
 export interface DeferredSurfaceInput {
@@ -261,10 +312,26 @@ export function lowerToolsForProvider(input: {
       description: tool.description,
       parameters: tool.parameters,
       ...(deferred ? { deferLoading: true } : {}),
-      ...(deferred && discovery.mode === 'deferred' ? { namespace: discovery.namespace } : {}),
+      ...(deferred && discovery.mode === 'deferred'
+        ? {
+            namespace: discovery.namespace,
+            namespaceDescription: discovery.namespaceDescription,
+          }
+        : {}),
     });
     if (deferred) {
       deferredToolNames.push(tool.name);
+      // Keep deferred tools in `activeTools`. AI SDK 7 treats `activeTools` as an
+      // allowlist: any tool omitted is stripped from the `tools` dict, so the
+      // provider adapter never receives the deferred schema or its
+      // `deferLoading` flag. The provider's `deferLoading` option keeps the
+      // tool out of the initial model context — `activeTools` membership only
+      // controls whether the schema is *sent* to the provider at all.
+      // `neverAdvertise` tools are the exception: they stay in the dispatch
+      // dict but are never sent to the provider.
+      if (!neverAdvertise.has(tool.name)) {
+        activeTools.push(tool.name);
+      }
     } else if (!neverAdvertise.has(tool.name)) {
       activeTools.push(tool.name);
     }
