@@ -30,6 +30,10 @@ import {
   type StoredInteractionRequest,
 } from '../interaction-store.js';
 import {
+  InteractionLocatorLane,
+  runInteractionStoreOperation,
+} from '../interaction-locator-lane.js';
+import {
   resolveStorageRoot,
   tryAcquireInteractiveRootReader,
   tryAcquireInteractiveRootOwner,
@@ -353,6 +357,74 @@ describe('Interaction Store', () => {
     });
   });
 
+  test('retains a same-locator reservation until its predecessor drains', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-interaction-locator-lane-'));
+    const firstDirectory = join(root, 'first');
+    const otherDirectory = join(root, 'other');
+    const temporary = join(firstDirectory, 'request.json.tmp');
+    const canonical = join(firstDirectory, 'request.json');
+    await mkdir(firstDirectory);
+    await mkdir(otherDirectory);
+    await writeFile(temporary, 'interrupted publication');
+
+    const lane = new InteractionLocatorLane();
+    const firstEntered = deferred<void>();
+    const releaseFirst = deferred<void>();
+    const thirdAuthorized = deferred<void>();
+    let thirdEntered = false;
+    const authorityFailure = new Error('authority failed');
+    let first: Promise<void> | undefined;
+    let third: Promise<string> | undefined;
+    try {
+      first = lane.run('same-locator', runInteractionStoreOperation, async () => {
+        firstEntered.resolve();
+        await releaseFirst.promise;
+        await unlink(temporary);
+        await writeFile(canonical, 'stable');
+      });
+      await firstEntered.promise;
+
+      const rejectAuthority = async <T>(_operation: () => Promise<T>): Promise<T> => {
+        throw authorityFailure;
+      };
+      const failedAuthority = lane.run('same-locator', rejectAuthority, async () => {
+        throw new Error('authority failure must not execute its operation');
+      });
+      await assert.rejects(failedAuthority, authorityFailure);
+
+      third = lane.run(
+        'same-locator',
+        async (operation) => {
+          thirdAuthorized.resolve();
+          return operation();
+        },
+        async () => {
+          thirdEntered = true;
+          await assert.rejects(readFile(temporary), { code: 'ENOENT' });
+          return readFile(canonical, 'utf8');
+        },
+      );
+      await thirdAuthorized.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(thirdEntered, false);
+
+      const other = await lane.run('other-locator', runInteractionStoreOperation, async () => {
+        const path = join(otherDirectory, 'request.json');
+        await writeFile(path, 'independent');
+        return readFile(path, 'utf8');
+      });
+      assert.equal(other, 'independent');
+
+      releaseFirst.resolve();
+      await first;
+      assert.equal(await third, 'stable');
+    } finally {
+      releaseFirst.resolve();
+      await Promise.allSettled([first, third].filter((task) => task !== undefined));
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('rejects dense and sparse documents beyond the stored byte limit', async () => {
     await withStore(async ({ root, store }) => {
       const request = storedQuestion('request_oversized', 100);
@@ -502,4 +574,14 @@ async function withStore(run: (context: StoreContext) => Promise<void>): Promise
     await rm(owner.controlDirectory, { recursive: true, force: true });
     await rm(base, { recursive: true, force: true });
   }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }

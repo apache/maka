@@ -20,6 +20,11 @@ import {
   type StorageRootLease,
 } from './root-authority.js';
 import { readBoundedMarkerFile } from './marker-file.js';
+import {
+  InteractionLocatorLane,
+  runInteractionStoreOperation,
+  type InteractionStoreOperationRunner,
+} from './interaction-locator-lane.js';
 
 const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const REMEMBER_SCOPE_ID = /^[0-9a-f]{64}$/;
@@ -159,7 +164,7 @@ export async function openInteractiveInteractionStoreForRead(
   const facade = Object.freeze({
     kind: 'interactive' as const,
     access: 'read' as const,
-    readInteraction: (requestId: string) => run(() => store.readInteraction(requestId)),
+    readInteraction: (requestId: string) => store.readInteraction(requestId, run),
     listSessionPending: (sessionId: string) => run(() => store.listSessionPending(sessionId)),
     listPending: (filter?: PendingInteractionFilter) => run(() => store.listPending(filter)),
   });
@@ -186,13 +191,12 @@ export async function openInteractiveInteractionStoreForWrite(
     const facade = Object.freeze({
       kind: 'interactive' as const,
       access: 'write' as const,
-      readInteraction: (requestId: string) => run(() => store.readInteraction(requestId)),
+      readInteraction: (requestId: string) => store.readInteraction(requestId, run),
       listSessionPending: (sessionId: string) => run(() => store.listSessionPending(sessionId)),
       listPending: (filter?: PendingInteractionFilter) => run(() => store.listPending(filter)),
-      establishRequest: (input: StoredInteractionRequest) =>
-        run(() => store.establishRequest(input)),
+      establishRequest: (input: StoredInteractionRequest) => store.establishRequest(input, run),
       commitOutcome: (requestId: string, outcome: InteractionCanonicalOutcome) =>
-        run(() => store.commitOutcome(requestId, outcome)),
+        store.commitOutcome(requestId, outcome, run),
     });
     writers.add(facade);
     writersByLease.set(lease, facade);
@@ -210,7 +214,7 @@ class FileInteractionStore {
   private readonly root: string;
   private readonly interactionsRoot: string;
   private readonly sessionPendingRoot: string;
-  private readonly locatorTails = new Map<string, Promise<void>>();
+  private readonly locatorLane = new InteractionLocatorLane();
 
   constructor(
     root: string,
@@ -227,7 +231,7 @@ class FileInteractionStore {
     await assertDirectoryBindings(indexRoot);
     const expectedPending = new Map<string, Set<string>>();
     for (const locator of await this.locators()) {
-      await this.withLocator(locator, async () => {
+      await this.withLocator(locator, runInteractionStoreOperation, async () => {
         const directory = join(this.interactionsRoot, locator);
         for (const entry of await readdir(directory, { withFileTypes: true })) {
           if (entry.isFile() && TEMP_FILE.test(entry.name))
@@ -249,10 +253,11 @@ class FileInteractionStore {
 
   async establishRequest(
     input: StoredInteractionRequest,
+    authorize: InteractionStoreOperationRunner = runInteractionStoreOperation,
   ): Promise<EstablishInteractionRequestResult> {
     const candidate = normalizeRequest(input, 'input');
     const locator = interactionLocator(candidate.requestId);
-    return this.withLocator(locator, async () => {
+    return this.withLocator(locator, authorize, async () => {
       const attempt = await this.publish(
         locator,
         'request.json',
@@ -300,10 +305,11 @@ class FileInteractionStore {
   async commitOutcome(
     requestId: string,
     outcome: InteractionCanonicalOutcome,
+    authorize: InteractionStoreOperationRunner = runInteractionStoreOperation,
   ): Promise<CommitInteractionOutcomeResult> {
     assertId(requestId);
     const locator = interactionLocator(requestId);
-    return this.withLocator(locator, async () => {
+    return this.withLocator(locator, authorize, async () => {
       let record: InteractionRecord | undefined;
       try {
         await this.stabilizeLocatorUnlocked(locator);
@@ -374,9 +380,12 @@ class FileInteractionStore {
     });
   }
 
-  async readInteraction(requestId: string): Promise<InteractionRecord | undefined> {
+  async readInteraction(
+    requestId: string,
+    authorize: InteractionStoreOperationRunner = runInteractionStoreOperation,
+  ): Promise<InteractionRecord | undefined> {
     const locator = interactionLocator(requestId);
-    return this.withLocator(locator, () => this.readLocatorUnlocked(locator, requestId));
+    return this.withLocator(locator, authorize, () => this.readLocatorUnlocked(locator, requestId));
   }
 
   async listSessionPending(sessionId: string): Promise<StoredInteractionRequest[]> {
@@ -386,7 +395,9 @@ class FileInteractionStore {
     }
     const result: StoredInteractionRequest[] = [];
     for (const locator of await this.sessionPendingLocators(canonicalSessionId)) {
-      const record = await this.withLocator(locator, () => this.readLocatorUnlocked(locator));
+      const record = await this.withLocator(locator, runInteractionStoreOperation, () =>
+        this.readLocatorUnlocked(locator),
+      );
       if (record && !record.outcome && record.request.sessionId === canonicalSessionId) {
         result.push(record.request);
       }
@@ -409,7 +420,9 @@ class FileInteractionStore {
   ): Promise<StoredInteractionRequest[]> {
     const result: StoredInteractionRequest[] = [];
     for (const locator of await this.locators()) {
-      const record = await this.withLocator(locator, () => this.readLocatorUnlocked(locator));
+      const record = await this.withLocator(locator, runInteractionStoreOperation, () =>
+        this.readLocatorUnlocked(locator),
+      );
       if (record && !record.outcome && matches(record.request, filter)) result.push(record.request);
     }
     return sortPending(result);
@@ -693,19 +706,12 @@ class FileInteractionStore {
       .sort();
   }
 
-  private async withLocator<T>(locator: string, operation: () => Promise<T>): Promise<T> {
-    const previous = this.locatorTails.get(locator) ?? Promise.resolve();
-    const result = previous.then(operation);
-    const tail = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    this.locatorTails.set(locator, tail);
-    try {
-      return await result;
-    } finally {
-      if (this.locatorTails.get(locator) === tail) this.locatorTails.delete(locator);
-    }
+  private async withLocator<T>(
+    locator: string,
+    authorize: InteractionStoreOperationRunner,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    return this.locatorLane.run(locator, authorize, operation);
   }
 }
 
