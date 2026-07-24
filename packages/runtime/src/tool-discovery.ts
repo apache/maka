@@ -175,12 +175,14 @@ export function resolveProviderToolSearchCapability(
  * convention. The capability is gated on Opus 4.5+ / Sonnet 4.5+.
  */
 function supportsAnthropicToolSearch(modelId: string): boolean {
-  const id = modelId.toLowerCase().replace(/-\d{8}$/, '').replace(/-\w{2,4}-\d+$/, '');
+  const id = modelId
+    .toLowerCase()
+    .replace(/-\d{8}$/, '')
+    .replace(/-\w{2,4}-\d+$/, '');
   const opusMatch = id.match(/^claude-opus-(\d+)(?:-(\d+))?/);
   if (opusMatch) {
     return (
-      Number(opusMatch[1]) > 4 ||
-      (Number(opusMatch[1]) === 4 && Number(opusMatch[2] ?? 0) >= 5)
+      Number(opusMatch[1]) > 4 || (Number(opusMatch[1]) === 4 && Number(opusMatch[2] ?? 0) >= 5)
     );
   }
   const sonnetMatch = id.match(/^claude-sonnet-(\d+)(?:-(\d+))?/);

@@ -36,22 +36,10 @@ describe('resolveProviderToolSearchCapability', () => {
   });
 
   test('anthropic with older model → none (fallback)', () => {
-    assert.equal(
-      resolveProviderToolSearchCapability('anthropic', 'claude-sonnet-4-0'),
-      'none',
-    );
-    assert.equal(
-      resolveProviderToolSearchCapability('anthropic', 'claude-opus-4-0'),
-      'none',
-    );
-    assert.equal(
-      resolveProviderToolSearchCapability('anthropic', 'claude-3-5-sonnet'),
-      'none',
-    );
-    assert.equal(
-      resolveProviderToolSearchCapability('anthropic', 'claude-3-haiku'),
-      'none',
-    );
+    assert.equal(resolveProviderToolSearchCapability('anthropic', 'claude-sonnet-4-0'), 'none');
+    assert.equal(resolveProviderToolSearchCapability('anthropic', 'claude-opus-4-0'), 'none');
+    assert.equal(resolveProviderToolSearchCapability('anthropic', 'claude-3-5-sonnet'), 'none');
+    assert.equal(resolveProviderToolSearchCapability('anthropic', 'claude-3-haiku'), 'none');
   });
 
   test('openai with supported model (GPT-5.4+) → openai', () => {
@@ -299,7 +287,10 @@ describe('lowerToolsForProvider — catalog authority', () => {
       capability: 'anthropic',
       neverAdvertise: new Set(['mcp__broken__x']),
     });
-    assert.ok(out.tools.some((t) => t.name === 'mcp__broken__x'), 'broken tool stays dispatchable');
+    assert.ok(
+      out.tools.some((t) => t.name === 'mcp__broken__x'),
+      'broken tool stays dispatchable',
+    );
     assert.ok(!out.activeTools.includes('mcp__broken__x'), 'broken tool never advertised');
     assert.ok(out.deferredToolNames.includes('mcp__broken__x'), 'broken tool is deferred');
   });
