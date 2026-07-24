@@ -167,7 +167,7 @@ export function storedMessageToRuntimeEvents(
   const out: RuntimeEvent[] = [];
   if (primary) out.push(primary);
 
-  if (message.type === 'assistant' && message.thinking && message.thinking.text.length > 0) {
+  if (message.type === 'assistant' && message.thinking) {
     const d = resolveCtx(ctx, message);
     out.push({
       id: d.newId(),
@@ -184,6 +184,9 @@ export function storedMessageToRuntimeEvents(
         text: message.thinking.text,
         ...(message.thinking.signature !== undefined
           ? { signature: message.thinking.signature }
+          : {}),
+        ...(message.thinking.providerOptions !== undefined
+          ? { providerOptions: structuredClone(message.thinking.providerOptions) }
           : {}),
       },
       refs: { storedMessageId: message.id },

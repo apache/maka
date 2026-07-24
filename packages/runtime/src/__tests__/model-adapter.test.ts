@@ -55,6 +55,33 @@ describe('ModelAdapter stream and error normalization', () => {
     assert.equal(adapter.runtimeEventReplaySupport().signedThinking, true);
   });
 
+  test('supports unsigned-thinking replay on Kimi models using the OpenAI wire', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'kimi-coding-plan',
+        name: 'Kimi Coding Plan',
+        providerType: 'kimi-coding-plan',
+        defaultModel: 'k3',
+        models: [{ id: 'k3', apiProtocol: 'openai-chat' }],
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      apiKey: 'kimi-token',
+      modelId: 'k3',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    assert.deepEqual(adapter.runtimeEventReplaySupport(), {
+      toolCalls: true,
+      toolResults: true,
+      signedThinking: false,
+      unsignedThinking: true,
+    });
+  });
+
   test('translates provider text, reasoning, tool calls, and errors into ModelStreamEvents', () => {
     const adapter = newAdapter();
     type Chunk = Parameters<typeof adapter.translateChunk>[0];
@@ -106,6 +133,24 @@ describe('ModelAdapter stream and error normalization', () => {
     assert.equal(shaped.reason, 'rate_limit');
     assert.equal(shaped.code, '429');
     assert.equal(shaped.message, 'Rate limit exceeded');
+  });
+
+  test('preserves an explicit empty reasoning delta without inventing one for absent text', () => {
+    const adapter = newAdapter();
+    type Chunk = Parameters<typeof adapter.translateChunk>[0];
+
+    assert.deepEqual(adapter.translateChunk({ type: 'reasoning-delta', text: '' } as Chunk), [
+      { kind: 'thinking', text: '' },
+    ]);
+    assert.deepEqual(adapter.translateChunk({ type: 'reasoning-delta' } as Chunk), []);
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'reasoning-delta',
+        text: '',
+        providerMetadata: { anthropic: { signature: 'sig-empty' } },
+      } as Chunk),
+      [{ kind: 'thinking-signature', signature: 'sig-empty' }],
+    );
   });
 
   test('returns a Maka-owned tool call event from one provider step', () => {

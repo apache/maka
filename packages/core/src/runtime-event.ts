@@ -143,6 +143,8 @@ export interface RuntimeEventThinkingContent {
   text: string;
   /** Anthropic signed thinking — MUST be re-sent on replay when present. */
   signature?: string;
+  /** Provider-owned replay metadata that must survive model replay. */
+  providerOptions?: Record<string, unknown>;
 }
 
 export interface RuntimeEventFunctionCallContent {
@@ -384,7 +386,7 @@ const TEXT_CONTENT_SHAPE = defineObjectShape<RuntimeEventTextContent>()(
 );
 const THINKING_CONTENT_SHAPE = defineObjectShape<RuntimeEventThinkingContent>()(
   ['kind', 'text'],
-  ['signature'],
+  ['signature', 'providerOptions'],
 );
 const FUNCTION_CALL_CONTENT_SHAPE = defineObjectShape<RuntimeEventFunctionCallContent>()(
   ['kind', 'id', 'name', 'args'],
@@ -510,7 +512,8 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
       return (
         hasExactShape(value, THINKING_CONTENT_SHAPE) &&
         typeof value.text === 'string' &&
-        isOptionalString(value.signature)
+        isOptionalString(value.signature) &&
+        (value.providerOptions === undefined || isRecord(value.providerOptions))
       );
     case 'function_call':
       return (

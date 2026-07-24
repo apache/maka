@@ -99,6 +99,7 @@ interface PendingThinking {
   messageId: string;
   text: string;
   signature?: string;
+  providerOptions?: Record<string, unknown>;
 }
 
 export function projectRuntimeEventsToStoredMessages(
@@ -542,6 +543,9 @@ function projectThinking(
     messageId,
     text: event.content.text,
     ...(event.content.signature !== undefined ? { signature: event.content.signature } : {}),
+    ...(event.content.providerOptions !== undefined
+      ? { providerOptions: structuredClone(event.content.providerOptions) }
+      : {}),
   };
   // The step's assistant text row lands after its thinking in ledger order, so
   // attach eagerly if it already exists (older ordering), else park by message id
@@ -910,6 +914,9 @@ function attachThinkingToAssistant(
     message.thinking = {
       text: pending.text,
       ...(pending.signature !== undefined ? { signature: pending.signature } : {}),
+      ...(pending.providerOptions !== undefined
+        ? { providerOptions: structuredClone(pending.providerOptions) }
+        : {}),
     };
     return true;
   }

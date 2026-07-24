@@ -132,6 +132,7 @@ import {
 } from './ai-sdk-compaction.js';
 import type { AiSdkCompactionCapabilities } from './ai-sdk-compaction-contract.js';
 import type { ToolArtifactRecorder } from './tool-artifacts.js';
+import { kimiReasoningFieldFromProviderOptions } from './kimi-openai-transport.js';
 import { RunTrace, type RunTraceRecorder } from './run-trace.js';
 import {
   toSandboxRunTraceProjection,
@@ -706,6 +707,8 @@ export class AiSdkBackend implements AgentBackend {
     let currentStepMessageId = this.newId();
     let stepText = '';
     let stepThinking = '';
+    let sawStepThinking = false;
+    let stepThinkingProviderOptions: NonNullable<ModelMessage['providerOptions']> | undefined;
     let stepSignature: string | undefined;
     const startedAt = this.now();
 
@@ -719,7 +722,7 @@ export class AiSdkBackend implements AgentBackend {
     // this step's assistant row. Hoisted to send() scope so both the streaming
     // path and the abort/error handler can flush a partial step.
     const flushStep = async (): Promise<void> => {
-      const hasThinking = stepThinking.length > 0 || stepSignature !== undefined;
+      const hasThinking = sawStepThinking || stepSignature !== undefined;
       if (stepText.length === 0 && !hasThinking) return;
       const stepId = currentStepMessageId;
       const msg: AssistantMessage = {
@@ -734,6 +737,9 @@ export class AiSdkBackend implements AgentBackend {
               thinking: {
                 text: stepThinking,
                 ...(stepSignature !== undefined ? { signature: stepSignature } : {}),
+                ...(stepThinkingProviderOptions !== undefined
+                  ? { providerOptions: stepThinkingProviderOptions }
+                  : {}),
               },
             }
           : {}),
@@ -748,6 +754,9 @@ export class AiSdkBackend implements AgentBackend {
           messageId: stepId,
           text: stepThinking,
           ...(stepSignature !== undefined ? { signature: stepSignature } : {}),
+          ...(stepThinkingProviderOptions !== undefined
+            ? { providerOptions: stepThinkingProviderOptions }
+            : {}),
         } satisfies ThinkingCompleteEvent);
       }
       queue.push({
@@ -760,6 +769,8 @@ export class AiSdkBackend implements AgentBackend {
       } satisfies TextCompleteEvent);
       stepText = '';
       stepThinking = '';
+      sawStepThinking = false;
+      stepThinkingProviderOptions = undefined;
       stepSignature = undefined;
     };
     let tokenUsage: NormalizedAiSdkUsage | undefined;
@@ -1357,7 +1368,11 @@ export class AiSdkBackend implements AgentBackend {
                     text: event.text,
                   } satisfies TextDeltaEvent);
                 } else if (event.kind === 'thinking') {
+                  sawStepThinking = true;
                   stepThinking += event.text;
+                  if (event.providerOptions !== undefined) {
+                    stepThinkingProviderOptions = event.providerOptions;
+                  }
                   queue.push({
                     type: 'thinking_delta',
                     id: this.newId(),
@@ -2337,7 +2352,7 @@ export class AiSdkBackend implements AgentBackend {
     for (const item of plan.items) {
       if (item.kind === 'tool_call' && !support.toolCalls) return false;
       if (item.kind === 'tool_result' && !support.toolResults) return false;
-      if (item.kind === 'thinking' && (!support.signedThinking || !item.signature)) return false;
+      if (item.kind === 'thinking' && item.signature && !support.signedThinking) return false;
     }
     return true;
   }
@@ -2370,11 +2385,28 @@ export class AiSdkBackend implements AgentBackend {
     const reasoningByStep = new Map<string, ThinkingItem>();
     const textByStep = new Map<string, string>();
 
-    const reasoningPart = (item: ThinkingItem) => ({
-      type: 'reasoning' as const,
-      text: item.text,
-      providerOptions: { anthropic: { signature: item.signature } },
-    });
+    const replaySupport = this.modelAdapter.runtimeEventReplaySupport();
+    const reasoningReplay = (item: ThinkingItem) => {
+      if (item.signature) {
+        return replaySupport.signedThinking
+          ? {
+              part: {
+                type: 'reasoning' as const,
+                text: item.text,
+                providerOptions: { anthropic: { signature: item.signature } },
+              },
+            }
+          : undefined;
+      }
+      if (!replaySupport.unsignedThinking) return undefined;
+      const kimiReasoningField = kimiReasoningFieldFromProviderOptions(item.providerOptions);
+      if (!kimiReasoningField) return undefined;
+      return {
+        providerOptions: {
+          openaiCompatible: { [kimiReasoningField]: item.text },
+        } as NonNullable<ModelMessage['providerOptions']>,
+      };
+    };
     // Tool results are emitted only when their tool_call claims them here. A
     // result whose call never appears in the plan (sliced-away call, corrupt
     // ledger) is INTENTIONALLY dropped at the end: a standalone tool message
@@ -2415,7 +2447,8 @@ export class AiSdkBackend implements AgentBackend {
       calls: readonly ToolCallItem[],
     ) => {
       const content: unknown[] = [];
-      if (reasoning) content.push(reasoningPart(reasoning));
+      const replayReasoning = reasoning ? reasoningReplay(reasoning) : undefined;
+      if (replayReasoning?.part) content.push(replayReasoning.part);
       if (text.length > 0) content.push({ type: 'text', text });
       for (const call of calls) {
         content.push({
@@ -2426,7 +2459,15 @@ export class AiSdkBackend implements AgentBackend {
           ...(call.providerOptions !== undefined ? { providerOptions: call.providerOptions } : {}),
         });
       }
-      if (content.length > 0) out.push({ role: 'assistant', content } as ModelMessage);
+      if (content.length > 0 || replayReasoning?.providerOptions) {
+        out.push({
+          role: 'assistant',
+          content,
+          ...(replayReasoning?.providerOptions
+            ? { providerOptions: replayReasoning.providerOptions }
+            : {}),
+        } as ModelMessage);
+      }
       await pushToolResults(calls);
     };
     // Emit tool calls no assistant text closed: a thinking + tool step with no
@@ -2477,7 +2518,16 @@ export class AiSdkBackend implements AgentBackend {
           } else {
             // Legacy standalone reasoning (pure-reasoning turn): emit on its own.
             await flushLooseCalls();
-            out.push({ role: 'assistant', content: [reasoningPart(item)] } as ModelMessage);
+            const replayReasoning = reasoningReplay(item);
+            if (replayReasoning) {
+              out.push({
+                role: 'assistant',
+                content: replayReasoning.part ? [replayReasoning.part] : [],
+                ...(replayReasoning.providerOptions
+                  ? { providerOptions: replayReasoning.providerOptions }
+                  : {}),
+              } as ModelMessage);
+            }
           }
           break;
         case 'text':
@@ -2518,7 +2568,16 @@ export class AiSdkBackend implements AgentBackend {
     }
     // Any reasoning whose closing text never arrived (defensive): emit standalone.
     for (const reasoning of reasoningByStep.values()) {
-      out.push({ role: 'assistant', content: [reasoningPart(reasoning)] } as ModelMessage);
+      const replayReasoning = reasoningReplay(reasoning);
+      if (replayReasoning) {
+        out.push({
+          role: 'assistant',
+          content: replayReasoning.part ? [replayReasoning.part] : [],
+          ...(replayReasoning.providerOptions
+            ? { providerOptions: replayReasoning.providerOptions }
+            : {}),
+        } as ModelMessage);
+      }
     }
     return out;
   }

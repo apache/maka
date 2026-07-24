@@ -66,7 +66,7 @@ const user = (id: string, text: string): UserMessage => ({
 const assistant = (
   id: string,
   text: string,
-  thinking?: { text: string; signature?: string },
+  thinking?: AssistantMessage['thinking'],
 ): AssistantMessage => ({
   type: 'assistant',
   id,
@@ -322,10 +322,20 @@ describe('storedMessageToRuntimeEvents', () => {
     expect(storedMessageToRuntimeEvents(toolCall('tc', 'Read'), ctx)).toEqual([]);
   });
 
-  test('assistant with empty thinking text → single text event only', () => {
-    const out = storedMessageToRuntimeEvents(assistant('a3', 'hi', { text: '' }), ctx);
-    expect(out).toHaveLength(1);
-    expect(out[0]?.content?.kind).toBe('text');
+  test('assistant with explicit empty thinking preserves provider replay metadata', () => {
+    const out = storedMessageToRuntimeEvents(
+      assistant('a3', 'hi', {
+        text: '',
+        providerOptions: { maka: { kimiReasoningField: 'reasoning' } },
+      }),
+      ctx,
+    );
+    expect(out).toHaveLength(2);
+    expect(out[1]?.content).toEqual({
+      kind: 'thinking',
+      text: '',
+      providerOptions: { maka: { kimiReasoningField: 'reasoning' } },
+    });
   });
 });
 
@@ -1064,7 +1074,7 @@ describe('buildModelHistoryFromRuntimeEvents', () => {
     ]);
   });
 
-  test('runtime replay plan skips unsigned thinking instead of flattening or blocking it', () => {
+  test('runtime replay plan preserves unsigned thinking without flattening it into text', () => {
     const events: RuntimeEvent[] = [
       ev({
         role: 'model',
@@ -1076,13 +1086,13 @@ describe('buildModelHistoryFromRuntimeEvents', () => {
 
     const plan = buildRuntimeEventModelReplayPlan(events);
 
-    // Unsigned thinking is skipped from native items and never claims the
-    // 'thinking' semantic kind, but is recorded non-blockingly for observability.
-    expect(plan.diagnostics.map((diagnostic) => diagnostic.code)).toContain(
-      'unsigned_thinking_skipped',
+    expect(plan.diagnostics).toEqual([]);
+    expect(plan.items.map((item) => item.kind)).toEqual(['thinking', 'text']);
+    const thinking = plan.items.find((item) => item.kind === 'thinking');
+    expect(thinking && thinking.kind === 'thinking' ? thinking.signature : undefined).toBe(
+      undefined,
     );
-    expect(plan.items.map((item) => item.kind)).toEqual(['text']);
-    expect(plan.semanticKinds).not.toContain('thinking');
+    expect(plan.semanticKinds).toContain('thinking');
     expect(plan.textMessages).toEqual([{ role: 'assistant', content: 'answer' }]);
   });
 
@@ -1120,13 +1130,17 @@ describe('buildModelHistoryFromRuntimeEvents', () => {
 
     const plan = buildRuntimeEventModelReplayPlan(events);
 
-    // The tool call/result remain native; the unsigned thinking is simply omitted.
+    // The provider-agnostic plan keeps every native semantic item. The target
+    // model adapter decides whether unsigned thinking can be materialized.
     expect(plan.hasProviderNativeSemantics).toBe(true);
-    expect(plan.items.map((item) => item.kind)).toEqual(['text', 'tool_call', 'tool_result']);
-    expect(plan.semanticKinds).not.toContain('thinking');
-    // No blocking diagnostic classes present (only the non-blocking skip note).
+    expect(plan.items.map((item) => item.kind)).toEqual([
+      'text',
+      'thinking',
+      'tool_call',
+      'tool_result',
+    ]);
+    expect(plan.semanticKinds).toContain('thinking');
     const codes = plan.diagnostics.map((diagnostic) => diagnostic.code);
-    expect(codes).toContain('unsigned_thinking_skipped');
     expect(codes).not.toContain('unsupported_role');
     expect(codes).not.toContain('unsupported_content');
     expect(codes).not.toContain('unmatched_tool_result');
@@ -1150,7 +1164,6 @@ describe('buildModelHistoryFromRuntimeEvents', () => {
     expect(thinking && thinking.kind === 'thinking' ? thinking.signature : undefined).toBe('sig-9');
     expect(plan.semanticKinds).toContain('thinking');
     const pureCodes = plan.diagnostics.map((diagnostic) => diagnostic.code);
-    expect(pureCodes).not.toContain('unsigned_thinking_skipped');
     // Boundary: the tool-turn skip must NOT swallow a pure-reasoning turn.
     expect(pureCodes).not.toContain('signed_thinking_in_tool_turn_skipped');
   });

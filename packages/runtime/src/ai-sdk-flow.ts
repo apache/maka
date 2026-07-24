@@ -324,6 +324,9 @@ function mapBackendSessionEvent(
           kind: 'thinking',
           text: event.text,
           ...(event.signature !== undefined ? { signature: event.signature } : {}),
+          ...(event.providerOptions !== undefined
+            ? { providerOptions: structuredClone(event.providerOptions) }
+            : {}),
         },
         refs: { providerEventId: event.messageId },
       };

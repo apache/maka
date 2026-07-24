@@ -74,6 +74,16 @@ describe('buildProviderOptions: thinking level', () => {
     assert.deepEqual(buildProviderOptions(conn('kimi-coding-plan'), 'k3', 'max'), expected);
   });
 
+  test('Kimi K3 sends max reasoning effort through the selected OpenAI-compatible namespace', () => {
+    const connection = {
+      ...conn('kimi-coding-plan'),
+      models: [{ id: 'k3', apiProtocol: 'openai-chat' as const }],
+    };
+    const expected = { kimiCodingPlan: { reasoningEffort: 'max' } };
+    assert.deepEqual(buildProviderOptions(connection, 'k3'), expected);
+    assert.deepEqual(buildProviderOptions(connection, 'k3', 'max'), expected);
+  });
+
   test('openai gpt-5.5 sends reasoningEffort (none for off, max for max); gpt-4o drops level', () => {
     assert.deepEqual(buildProviderOptions(conn('openai'), 'gpt-4o', 'high'), {
       openai: { store: false },
@@ -319,6 +329,37 @@ describe('buildProviderOptions: thinking level', () => {
 });
 
 describe('getAIModel: models.dev registry providers', () => {
+  test('routes the existing Kimi provider through its explicitly selected protocol', () => {
+    const anthropic = getAIModel({
+      connection: conn('kimi-coding-plan'),
+      apiKey: 'test-key',
+      modelId: 'k3',
+    });
+    const openai = getAIModel({
+      connection: {
+        ...conn('kimi-coding-plan'),
+        models: [{ id: 'k3', apiProtocol: 'openai-chat' }],
+      },
+      apiKey: 'test-key',
+      modelId: 'k3',
+    });
+
+    assert.equal(anthropic.provider, 'anthropic.messages');
+    assert.equal(openai.provider, 'kimi-coding-plan.chat');
+    assert.throws(
+      () =>
+        getAIModel({
+          connection: {
+            ...conn('kimi-coding-plan'),
+            models: [{ id: 'k3', apiProtocol: 'openai-responses' }],
+          },
+          apiKey: 'test-key',
+          modelId: 'k3',
+        }),
+      /Kimi Coding Plan.*openai-chat.*anthropic-messages/,
+    );
+  });
+
   test('routes SiliconFlow through the shared OpenAI-compatible adapter without rewriting model ids', () => {
     const model = getAIModel({
       connection: conn('siliconflow'),

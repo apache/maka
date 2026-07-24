@@ -86,7 +86,6 @@ export type RuntimeEventReplayDiagnosticCode =
   | 'terminal_fact_diagnostic_only'
   | 'error_content_diagnostic_only'
   | 'empty_text_skipped'
-  | 'unsigned_thinking_skipped'
   | 'signed_thinking_in_tool_turn_skipped'
   | 'unmatched_tool_result'
   | 'unmatched_tool_call'
@@ -125,6 +124,7 @@ export type RuntimeEventModelReplayItem =
       kind: 'thinking';
       text: string;
       signature?: string;
+      providerOptions?: NonNullable<ModelMessage['providerOptions']>;
       /** Assistant step id; pairs this reasoning with its step's tool calls. */
       stepId?: string;
       eventId: string;
@@ -466,26 +466,9 @@ export function buildRuntimeEventModelReplayPlan(
           );
           continue;
         }
-        if (!event.content.signature) {
-          // Unsigned thinking cannot be replayed provider-native: Anthropic
-          // rejects a thinking block without its signature, and other providers
-          // accept no native thinking at all. Skip it from replay items (and its
-          // semantic kind) rather than block — a non-Anthropic (e.g. GLM) turn
-          // persists thinking for the UI, but must not drag the whole history
-          // down to stored-message projection. The thinking stays in the
-          // read-model; it just never re-enters the model request.
-          diagnostics.push(
-            diagnostic(
-              event,
-              'unsigned_thinking_skipped',
-              'unsigned thinking RuntimeEvent skipped for model replay',
-            ),
-          );
-          continue;
-        }
-        if (event.turnId && unpairedToolTurnIds.has(event.turnId)) {
-          // Signed, but its turn has tool calls with no step id to pair against
-          // (legacy per-turn history) — the end-of-turn reasoning cannot be
+        if (event.content.signature && event.turnId && unpairedToolTurnIds.has(event.turnId)) {
+          // Its turn has tool calls with no step id to pair against (legacy
+          // per-turn history) — the end-of-turn reasoning cannot be
           // reattached to the tool-use assistant message. Keep it in the
           // read-model for the UI; skip it from replay without downgrading the
           // whole history. Per-step history (paired tool calls) is not skipped:
@@ -502,7 +485,14 @@ export function buildRuntimeEventModelReplayPlan(
         items.push({
           kind: 'thinking',
           text: event.content.text,
-          signature: event.content.signature,
+          ...(event.content.signature ? { signature: event.content.signature } : {}),
+          ...(event.content.providerOptions !== undefined
+            ? {
+                providerOptions: event.content.providerOptions as NonNullable<
+                  ModelMessage['providerOptions']
+                >,
+              }
+            : {}),
           ...(event.refs?.providerEventId ? { stepId: event.refs.providerEventId } : {}),
           eventId: event.id,
           ts: event.ts,

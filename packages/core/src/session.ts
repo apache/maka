@@ -601,6 +601,8 @@ export interface AssistantMessage {
     text: string;
     /** Anthropic signed thinking for replay. */
     signature?: string;
+    /** Provider-owned replay metadata that must survive missing-ledger recovery. */
+    providerOptions?: Record<string, unknown>;
   };
   /**
    * First-observed order of visible content inside this assistant step.
@@ -817,7 +819,10 @@ const SYSTEM_NOTE_MESSAGE_SHAPE = defineObjectShape<SystemNoteMessage>()(
   ['turnId', 'data'],
 );
 type AssistantThinking = NonNullable<AssistantMessage['thinking']>;
-const ASSISTANT_THINKING_SHAPE = defineObjectShape<AssistantThinking>()(['text'], ['signature']);
+const ASSISTANT_THINKING_SHAPE = defineObjectShape<AssistantThinking>()(
+  ['text'],
+  ['signature', 'providerOptions'],
+);
 type AutomationOrigin = NonNullable<UserMessage['origin']>;
 const AUTOMATION_ORIGIN_SHAPE = defineObjectShape<AutomationOrigin>()(['kind', 'automationId'], []);
 
@@ -973,7 +978,8 @@ function isAssistantThinking(value: unknown): value is AssistantThinking {
     isRecord(value) &&
     hasExactShape(value, ASSISTANT_THINKING_SHAPE) &&
     typeof value.text === 'string' &&
-    isOptionalString(value.signature)
+    isOptionalString(value.signature) &&
+    (value.providerOptions === undefined || isRecord(value.providerOptions))
   );
 }
 

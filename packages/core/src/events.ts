@@ -135,6 +135,8 @@ export interface ThinkingCompleteEvent extends BaseEvent {
   text: string;
   /** Anthropic signed thinking — MUST be re-sent on replay. */
   signature?: string;
+  /** Provider-owned replay metadata that must survive backend recreation. */
+  providerOptions?: Record<string, unknown>;
 }
 
 export interface ToolStartEvent extends BaseEvent {

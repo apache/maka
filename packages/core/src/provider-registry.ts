@@ -593,7 +593,7 @@ const providerRegistry = {
   },
   'kimi-coding-plan': {
     label: 'Kimi Coding Plan',
-    description: 'Kimi for Coding over Anthropic-compatible protocol.',
+    description: 'Kimi for Coding over selectable Anthropic- or OpenAI-compatible protocol.',
     baseUrl: 'https://api.kimi.com/coding/v1',
     authKind: 'api_key',
     backendKind: 'ai-sdk',

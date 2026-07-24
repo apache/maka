@@ -35,6 +35,12 @@ import {
   providerRetryMetadata,
 } from './provider-error-classification.js';
 import type { ProviderRequestTracker } from './provider-request-telemetry.js';
+import {
+  createKimiOpenAiTransportState,
+  kimiReasoningFieldProviderOptions,
+  restoreKimiEmptyReasoning,
+  type KimiOpenAiTransportState,
+} from './kimi-openai-transport.js';
 
 /**
  * Build an ai-sdk LanguageModel from a single input object.
@@ -48,6 +54,7 @@ export interface ModelFactoryInput {
   connection: LlmConnection;
   apiKey: string;
   modelId: string;
+  kimiOpenAiTransportState?: KimiOpenAiTransportState;
 }
 export type ModelFactory = (input: ModelFactoryInput) => unknown;
 
@@ -110,6 +117,8 @@ interface ProviderMiddlewareStreamInput {
 }
 
 export class ModelAdapter {
+  private readonly kimiOpenAiTransportState = createKimiOpenAiTransportState();
+
   constructor(private readonly input: ModelAdapterInput) {}
 
   runtimeEventReplaySupport(): ModelAdapterRuntimeEventReplaySupport {
@@ -117,6 +126,7 @@ export class ModelAdapter {
       toolCalls: true,
       toolResults: true,
       signedThinking: usesAnthropicMessages(this.input.connection, this.input.modelId),
+      unsignedThinking: usesKimiOpenAiChat(this.input.connection, this.input.modelId),
     };
   }
 
@@ -128,6 +138,9 @@ export class ModelAdapter {
       connection: this.input.connection,
       apiKey: this.input.apiKey,
       modelId: this.input.modelId,
+      ...(usesKimiOpenAiChat(this.input.connection, this.input.modelId)
+        ? { kimiOpenAiTransportState: this.kimiOpenAiTransportState }
+        : {}),
     });
   }
 
@@ -204,11 +217,14 @@ export class ModelAdapter {
    * are normalized to Maka-owned contracts. No AI SDK type escapes this method.
    */
   private toModelStreamResult(sdk: SdkStreamResult): ModelStreamResult {
+    const kimiOpenAiTransportState = usesKimiOpenAiChat(this.input.connection, this.input.modelId)
+      ? this.kimiOpenAiTransportState
+      : undefined;
     const events: AsyncIterable<ModelStreamEvent> = {
       async *[Symbol.asyncIterator]() {
         try {
           for await (const chunk of sdk.stream as AsyncIterable<AiSdkStreamChunk>) {
-            for (const event of translateChunk(chunk)) yield event;
+            for (const event of translateChunk(chunk, kimiOpenAiTransportState)) yield event;
           }
         } catch (error) {
           yield { kind: 'error', failure: normalizeModelFailure(error) };
@@ -276,7 +292,12 @@ export class ModelAdapter {
    * testable through the Maka-owned event contract.
    */
   translateChunk(chunk: AiSdkStreamChunk): ModelStreamEvent[] {
-    return translateChunk(chunk);
+    return translateChunk(
+      chunk,
+      usesKimiOpenAiChat(this.input.connection, this.input.modelId)
+        ? this.kimiOpenAiTransportState
+        : undefined,
+    );
   }
 
   makeErrorEvent(turnId: string, err: unknown): ErrorEvent {
@@ -325,12 +346,16 @@ function selectedModelMaxOutputTokens(
   modelId: string,
   providerOptions: Record<string, unknown> | undefined,
 ): number | undefined {
-  if (!usesAnthropicMessages(connection, modelId)) return undefined;
+  const anthropicMessages = usesAnthropicMessages(connection, modelId);
+  const kimiOpenAiChat = usesKimiOpenAiChat(connection, modelId);
+  if (!anthropicMessages && !kimiOpenAiChat) return undefined;
   const wireOutputLimit =
     connection.models?.find((model) => model.id === modelId)?.maxOutputTokens ??
     lookupModelMetadata(connection.providerType, modelId).maxOutputTokens;
   if (wireOutputLimit === undefined) return undefined;
-  return wireOutputLimit - fixedAnthropicThinkingBudget(providerOptions);
+  return anthropicMessages
+    ? wireOutputLimit - fixedAnthropicThinkingBudget(providerOptions)
+    : wireOutputLimit;
 }
 
 function usesAnthropicMessages(connection: LlmConnection, modelId: string): boolean {
@@ -339,6 +364,13 @@ function usesAnthropicMessages(connection: LlmConnection, modelId: string): bool
     adapter.kind === 'anthropic' ||
     adapter.kind === 'claude-subscription' ||
     (adapter.kind === 'github-copilot' && apiProtocol === 'anthropic-messages')
+  );
+}
+
+function usesKimiOpenAiChat(connection: LlmConnection, modelId: string): boolean {
+  return (
+    connection.providerType === 'kimi-coding-plan' &&
+    resolveModelRuntime(connection, modelId).apiProtocol === 'openai-chat'
   );
 }
 
@@ -357,6 +389,7 @@ export interface ModelAdapterRuntimeEventReplaySupport {
   toolCalls: boolean;
   toolResults: boolean;
   signedThinking: boolean;
+  unsignedThinking: boolean;
 }
 
 /**
@@ -416,7 +449,10 @@ function reasoningSignatureFromChunk(chunk: AiSdkStreamChunk): string | undefine
  * `ModelStreamEvent`s. The sole site that parses SDK chunk names; the backend
  * never sees raw chunks. Pure and side-effect-free.
  */
-function translateChunk(chunk: AiSdkStreamChunk): ModelStreamEvent[] {
+function translateChunk(
+  chunk: AiSdkStreamChunk,
+  kimiOpenAiTransportState?: KimiOpenAiTransportState,
+): ModelStreamEvent[] {
   switch (chunk.type) {
     case 'text-delta': {
       const text = chunk.text ?? chunk.textDelta ?? chunk.delta ?? '';
@@ -424,14 +460,33 @@ function translateChunk(chunk: AiSdkStreamChunk): ModelStreamEvent[] {
     }
     case 'reasoning':
     case 'reasoning-delta': {
-      const text = chunk.text ?? chunk.textDelta ?? chunk.delta ?? '';
+      const text =
+        typeof chunk.text === 'string'
+          ? chunk.text
+          : typeof chunk.textDelta === 'string'
+            ? chunk.textDelta
+            : typeof chunk.delta === 'string'
+              ? chunk.delta
+              : undefined;
       const signature = reasoningSignatureFromChunk(chunk);
       const events: ModelStreamEvent[] = [];
       if (signature) events.push({ kind: 'thinking-signature', signature });
       // The signed reasoning chunk arrives as a standalone delta with empty
-      // text; only emit a `thinking` event when there is actual text so the
-      // signature carrier does not surface as an empty reasoning fragment.
-      if (text) events.push({ kind: 'thinking', text });
+      // text; preserve provider-authored empty reasoning, but do not surface a
+      // signature-only carrier as an additional empty reasoning fragment.
+      if (text !== undefined && (text.length > 0 || signature === undefined)) {
+        events.push({
+          kind: 'thinking',
+          text: restoreKimiEmptyReasoning(text),
+          ...(kimiOpenAiTransportState
+            ? {
+                providerOptions: kimiReasoningFieldProviderOptions(
+                  kimiOpenAiTransportState.reasoningField,
+                ),
+              }
+            : {}),
+        });
+      }
       return events;
     }
     case 'reasoning-end': {

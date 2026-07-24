@@ -414,7 +414,7 @@ export interface ModelRequestMetadata {
  */
 export type ModelStreamEvent =
   | { kind: 'text'; text: string }
-  | { kind: 'thinking'; text: string }
+  | { kind: 'thinking'; text: string; providerOptions?: ProviderOptions }
   | { kind: 'thinking-signature'; signature: string }
   | { kind: 'tool-call'; toolCall: ToolCallPart }
   | { kind: 'step-finish'; usage?: NormalizedUsage; finishReason?: ModelFinishReason }

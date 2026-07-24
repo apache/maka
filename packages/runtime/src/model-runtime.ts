@@ -28,16 +28,44 @@ export function resolveModelRuntime(
       `Unknown provider type "${connection.providerType}"; cannot resolve model runtime.`,
     );
   }
-  const adapter = override ? runtimeAdapterOverride(override.npm) : defaults.runtimeAdapter;
-  const configuredBaseUrl = connection.baseUrl?.trim();
   const apiProtocol = connection.models?.find((model) => model.id === modelId)?.apiProtocol;
+  if (
+    connection.providerType === 'kimi-coding-plan' &&
+    apiProtocol !== undefined &&
+    apiProtocol !== 'anthropic-messages' &&
+    apiProtocol !== 'openai-chat'
+  ) {
+    throw new Error(
+      `Kimi Coding Plan protocol must be openai-chat or anthropic-messages, received ${apiProtocol}`,
+    );
+  }
+  const adapter =
+    connection.providerType === 'kimi-coding-plan' && apiProtocol === 'openai-chat'
+      ? ({
+          kind: 'openai-compatible',
+          name: 'provider',
+          includeUsage: true,
+          passFetch: true,
+        } as const)
+      : override
+        ? runtimeAdapterOverride(override.npm)
+        : defaults.runtimeAdapter;
+  const configuredBaseUrl = connection.baseUrl?.trim();
+  const resolvedBaseUrl = configuredBaseUrl
+    ? effectiveBaseUrl(connection)
+    : (override?.api ?? effectiveBaseUrl(connection));
   return {
     adapter,
-    baseUrl: configuredBaseUrl
-      ? effectiveBaseUrl(connection)
-      : (override?.api ?? effectiveBaseUrl(connection)),
+    baseUrl:
+      connection.providerType === 'kimi-coding-plan' && apiProtocol === 'openai-chat'
+        ? kimiOpenAiBaseUrl(resolvedBaseUrl)
+        : resolvedBaseUrl,
     ...(apiProtocol ? { apiProtocol } : {}),
   };
+}
+
+function kimiOpenAiBaseUrl(baseUrl: string): string {
+  return `${baseUrl.replace(/\/+$/, '').replace(/\/v1$/i, '')}/v1`;
 }
 
 function runtimeAdapterOverride(packageName: string): ProviderRuntimeAdapter {

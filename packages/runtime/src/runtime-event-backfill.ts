@@ -113,7 +113,7 @@ export function backfillRuntimeEventsFromStoredMessages(
           actions: { stateDelta: recoveryState(now, message) },
           refs: { storedMessageId: message.id },
         });
-        if (message.thinking && message.thinking.text.length > 0) {
+        if (message.thinking) {
           events.push({
             ...base,
             id: newId(),
@@ -124,6 +124,9 @@ export function backfillRuntimeEventsFromStoredMessages(
               text: message.thinking.text,
               ...(message.thinking.signature !== undefined
                 ? { signature: message.thinking.signature }
+                : {}),
+              ...(message.thinking.providerOptions !== undefined
+                ? { providerOptions: structuredClone(message.thinking.providerOptions) }
                 : {}),
             },
             actions: { stateDelta: recoveryState(now, message) },

@@ -15,6 +15,10 @@ import { type LlmConnection, type ProviderType } from '@maka/core/llm-connection
 import { openAiAdapterApiProtocol } from '@maka/core/model-metadata';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import { thinkingOptionsForModel, thinkingVariantsForModel } from '@maka/core/model-thinking';
+import {
+  createKimiOpenAiTransport,
+  type KimiOpenAiTransportState,
+} from './kimi-openai-transport.js';
 import { anthropicV1BaseUrl, googleV1BetaBaseUrl } from './provider-urls.js';
 import { resolveModelRuntime } from './model-runtime.js';
 import { claudeSubscriptionHeaders, openAiCodexHeaders } from './subscription-auth.js';
@@ -24,11 +28,12 @@ export interface ModelFactoryInput {
   apiKey: string;
   modelId: string;
   fetch?: typeof globalThis.fetch;
+  kimiOpenAiTransportState?: KimiOpenAiTransportState;
 }
 
 const ANTHROPIC_BETA = 'interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14';
 export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
-  const { connection, apiKey, modelId, fetch } = input;
+  const { connection, apiKey, modelId, fetch, kimiOpenAiTransportState } = input;
   const { adapter, baseUrl: baseURL, apiProtocol } = resolveModelRuntime(connection, modelId);
 
   if (adapter.kind === 'google' && adapter.normalizeBaseUrl === false) {
@@ -112,22 +117,32 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
         );
       }
       const name = adapter.name === 'connection' ? connection.slug : connection.providerType;
+      const kimiTransport =
+        connection.providerType === 'kimi-coding-plan' && apiProtocol === 'openai-chat'
+          ? createKimiOpenAiTransport(fetch ?? globalThis.fetch, kimiOpenAiTransportState)
+          : undefined;
       const model = createOpenAICompatible({
         name,
         apiKey,
         baseURL,
         includeUsage: adapter.includeUsage,
-        ...(adapter.passFetch || fetch ? { fetch } : {}),
+        ...(kimiTransport
+          ? { fetch: kimiTransport.fetch }
+          : adapter.passFetch || fetch
+            ? { fetch }
+            : {}),
+        ...(kimiTransport
+          ? { transformRequestBody: kimiTransport.transformRequestBody }
+          : adapter.replayAssistantReasoningAs
+            ? {
+                transformRequestBody: replayAssistantReasoning(
+                  adapter.replayAssistantReasoningAs,
+                  adapter.replayAssistantReasoningDetails === true,
+                ),
+              }
+            : {}),
         ...(adapter.replayAssistantReasoningDetails
           ? { metadataExtractor: reasoningDetailsMetadataExtractor() }
-          : {}),
-        ...(adapter.replayAssistantReasoningAs
-          ? {
-              transformRequestBody: replayAssistantReasoning(
-                adapter.replayAssistantReasoningAs,
-                adapter.replayAssistantReasoningDetails === true,
-              ),
-            }
           : {}),
       }).chatModel(modelId);
       return adapter.replayAssistantReasoningDetails ? attachReasoningDetails(model) : model;
@@ -292,6 +307,11 @@ export function buildProviderOptions(
   const level = thinkingLevel && variants.includes(thinkingLevel) ? thinkingLevel : undefined;
   switch (connection.providerType) {
     case 'kimi-coding-plan':
+      if (connection.models?.find((model) => model.id === modelId)?.apiProtocol === 'openai-chat') {
+        return {
+          kimiCodingPlan: { reasoningEffort: 'max' },
+        };
+      }
       return {
         anthropic:
           modelId === 'k3'

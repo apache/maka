@@ -812,7 +812,12 @@ describe('projectRuntimeEventsToStoredMessages', () => {
           ts: ts + 5,
           role: 'model',
           author: 'agent',
-          content: { kind: 'thinking', text: 'private reasoning', signature: 'sig-1' },
+          content: {
+            kind: 'thinking',
+            text: 'private reasoning',
+            signature: 'sig-1',
+            providerOptions: { maka: { kimiReasoningField: 'reasoning' } },
+          },
           refs: { storedMessageId: 'legacy-assistant' },
         }),
         ev({
@@ -834,7 +839,11 @@ describe('projectRuntimeEventsToStoredMessages', () => {
         ts: ts + 6,
         text: 'visible answer',
         modelId: 'claude-sonnet-4-5',
-        thinking: { text: 'private reasoning', signature: 'sig-1' },
+        thinking: {
+          text: 'private reasoning',
+          signature: 'sig-1',
+          providerOptions: { maka: { kimiReasoningField: 'reasoning' } },
+        },
       },
     ];
 
