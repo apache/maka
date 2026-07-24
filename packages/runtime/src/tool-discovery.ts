@@ -178,11 +178,17 @@ function supportsAnthropicToolSearch(modelId: string): boolean {
   const id = modelId.toLowerCase().replace(/-\d{8}$/, '').replace(/-\w{2,4}-\d+$/, '');
   const opusMatch = id.match(/^claude-opus-(\d+)(?:-(\d+))?/);
   if (opusMatch) {
-    return Number(opusMatch[1]) > 4 || (Number(opusMatch[1]) === 4 && Number(opusMatch[2] ?? 0) >= 5);
+    return (
+      Number(opusMatch[1]) > 4 ||
+      (Number(opusMatch[1]) === 4 && Number(opusMatch[2] ?? 0) >= 5)
+    );
   }
   const sonnetMatch = id.match(/^claude-sonnet-(\d+)(?:-(\d+))?/);
   if (sonnetMatch) {
-    return Number(sonnetMatch[1]) > 4 || (Number(sonnetMatch[1]) === 4 && Number(sonnetMatch[2] ?? 0) >= 5);
+    return (
+      Number(sonnetMatch[1]) > 4 ||
+      (Number(sonnetMatch[1]) === 4 && Number(sonnetMatch[2] ?? 0) >= 5)
+    );
   }
   // Unknown Anthropic model — be conservative, fall back.
   return false;

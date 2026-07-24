@@ -194,8 +194,14 @@ describe('lowerToolsForProvider — anthropic native', () => {
     assert.deepEqual(out.deferredToolNames, ['mcp__github__create_issue', 'RiveWorkflow']);
     // P1 fix: deferred tools remain in activeTools so the AI SDK `tools` dict
     // keeps them — `deferLoading` controls visibility, not activeTools.
-    assert.ok(out.activeTools.includes('mcp__github__create_issue'), 'MCP tool must stay in activeTools');
-    assert.ok(out.activeTools.includes('RiveWorkflow'), 'Rive surface member must stay in activeTools');
+    assert.ok(
+      out.activeTools.includes('mcp__github__create_issue'),
+      'MCP tool must stay in activeTools',
+    );
+    assert.ok(
+      out.activeTools.includes('RiveWorkflow'),
+      'Rive surface member must stay in activeTools',
+    );
     assert.ok(out.activeTools.includes('Bash'), 'core Bash stays direct/active');
 
     const mcpEntry = out.tools.find((t) => t.name === 'mcp__github__create_issue');
@@ -285,7 +291,10 @@ describe('lowerToolsForProvider — catalog authority', () => {
       tools: [tool('Bash'), tool('mcp__broken__x')],
       policy: new Map([
         ['Bash', { mode: 'direct' }],
-        ['mcp__broken__x', { mode: 'deferred', namespace: 'mcp__broken', namespaceDescription: 'Broken' }],
+        [
+          'mcp__broken__x',
+          { mode: 'deferred', namespace: 'mcp__broken', namespaceDescription: 'Broken' },
+        ],
       ]),
       capability: 'anthropic',
       neverAdvertise: new Set(['mcp__broken__x']),
