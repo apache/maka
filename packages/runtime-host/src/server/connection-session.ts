@@ -170,7 +170,6 @@ export class RuntimeHostConnectionSession {
             return Promise.reject(error);
           }
         },
-        close: () => this.#teardown(),
       });
     }
     return this.#continuity;

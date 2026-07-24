@@ -3,7 +3,6 @@ import type { SessionContinuityOperationHandlerMap } from './operation-dispatche
 
 export interface SessionContinuityFrameSink {
   send(frame: SubscriptionFrame): Promise<void>;
-  close(): void;
 }
 
 export interface SessionContinuityConnection {

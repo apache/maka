@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import { setImmediate as delayImmediate } from 'node:timers/promises';
 import test from 'node:test';
-import type { SubscriptionFrame } from '../protocol/index.js';
+import type { SessionEvent, SessionHeader } from '@maka/core';
+import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
+import { PermissionEngine, PiAgentBackend, type PiAgentTransport } from '@maka/runtime';
+import {
+  decodeHostFrame,
+  encodeProtocolFrame,
+  ProtocolFrameDecoder,
+  RUNTIME_HOST_MAX_FRAME_BYTES,
+  type SubscriptionFrame,
+} from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import {
   type CanonicalSessionProjection,
@@ -126,6 +135,113 @@ test('detached canonical refreshes coalesce before Store I/O', async () => {
   coordinator.close();
 });
 
+test('in-flight canonical refresh observes an invalidation after its first read', async () => {
+  let projection = canonical();
+  let reads = 0;
+  const firstRefreshRead = deferred<CanonicalSessionProjection | null>();
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => {
+      reads += 1;
+      if (reads === 2) return firstRefreshRead.promise;
+      return projection;
+    },
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+
+  const stale = canonical({ lastUsedAt: 2 });
+  coordinator.enqueueCanonicalRefresh(SESSION_ID);
+  await waitFor(() => reads === 2);
+  firstRefreshRead.resolve(stale);
+  projection = canonical({ lastUsedAt: 3 });
+  coordinator.enqueueCanonicalRefresh(SESSION_ID);
+
+  await waitFor(() => reads === 3 && sink.frames.length === 2);
+  assert.deepEqual(
+    sink.frames.map((frame) =>
+      frame.kind === 'subscription.session_projection'
+        ? frame.snapshot.session.lastUsedAt
+        : undefined,
+    ),
+    [2, 3],
+  );
+  coordinator.close();
+});
+
+test('tool output preserves one domain event and one wire frame', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-1', sink);
+  const opened = await open(coordinator, 'connection-1');
+  connection.activate(opened.subscriptionId);
+  let nextId = 0;
+  let now = 1;
+  const source = '界'.repeat(TOOL_OUTPUT_DELTA_MAX_CHARS + 1);
+  const transport = {
+    async *send() {
+      yield {
+        type: 'tool_output_delta' as const,
+        toolUseId: 'tool-1',
+        stream: 'stdout' as const,
+        chunk: source,
+      };
+      yield { type: 'complete' as const };
+    },
+  } satisfies PiAgentTransport;
+  const backend = new PiAgentBackend({
+    sessionId: SESSION_ID,
+    header: piSessionHeader(),
+    appendMessage: async () => undefined,
+    permissionEngine: new PermissionEngine({
+      newId: () => `permission-${++nextId}`,
+      now: () => now++,
+    }),
+    transport,
+    newId: () => `event-${++nextId}`,
+    now: () => now++,
+  });
+  const produced: SessionEvent[] = [];
+  for await (const event of backend.send({ turnId: 'turn-1', text: 'inspect', context: [] })) {
+    produced.push(event);
+  }
+  const outputs = produced.filter(
+    (event): event is Extract<SessionEvent, { type: 'tool_output_delta' }> =>
+      event.type === 'tool_output_delta',
+  );
+  assert.equal(outputs.length, 1);
+  const output = outputs[0];
+  assert.ok(output);
+  assert.ok(output.chunk.length <= TOOL_OUTPUT_DELTA_MAX_CHARS);
+  assert.match(output.chunk, /\n\[内容已截断\]$/);
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', output);
+  await waitFor(() => sink.frames.length === 1);
+
+  const encoded = encodeProtocolFrame(sink.frames[0]!);
+  assert.ok(encoded.byteLength <= RUNTIME_HOST_MAX_FRAME_BYTES);
+  const decodedFrames = new ProtocolFrameDecoder().push(encoded);
+  assert.equal(decodedFrames.length, 1);
+  const decoded = decodeHostFrame(decodedFrames[0]);
+  assert.ok('kind' in decoded);
+  if (!('kind' in decoded)) return;
+  assert.equal(decoded.kind, 'subscription.session_event');
+  if (decoded.kind !== 'subscription.session_event') return;
+  assert.equal(decoded.event.type, 'tool_output_delta');
+  if (decoded.event.type !== 'tool_output_delta') return;
+  assert.equal(decoded.event.id, output.id);
+  assert.equal(decoded.event.seq, output.seq);
+  assert.equal(decoded.event.chunk, output.chunk);
+  coordinator.close();
+});
+
 test('reports a detached canonical publication failure to the Host lifecycle', async () => {
   let reads = 0;
   const observed = deferred<unknown>();
@@ -186,7 +302,6 @@ test('slow subscriber receives a terminal eviction without delaying another subs
   slowConnection.activate(slow.subscriptionId);
   await waitFor(() => slowSink.frames.length === 1 && fastSink.frames.length === 32);
 
-  assert.equal(slowSink.closed, 0);
   assert.deepEqual(slowSink.frames[0], {
     kind: 'subscription.closed',
     hostEpoch: HOST_EPOCH,
@@ -194,7 +309,6 @@ test('slow subscriber receives a terminal eviction without delaying another subs
     sequence: 1,
     reason: 'slow_consumer',
   });
-  assert.equal(fastSink.closed, 0);
   assert.deepEqual(
     fastSink.frames.map((frame) => frame.sequence),
     Array.from({ length: 32 }, (_, index) => index + 1),
@@ -204,14 +318,9 @@ test('slow subscriber receives a terminal eviction without delaying another subs
 
 class RecordingSink implements SessionContinuityFrameSink {
   readonly frames: SubscriptionFrame[] = [];
-  closed = 0;
 
   async send(frame: SubscriptionFrame): Promise<void> {
     this.frames.push(frame);
-  }
-
-  close(): void {
-    this.closed += 1;
   }
 }
 
@@ -256,6 +365,29 @@ function canonical(
       steering: [],
       followup: [],
     },
+  };
+}
+
+function piSessionHeader(): SessionHeader {
+  return {
+    id: SESSION_ID,
+    workspaceRoot: '/tmp/maka',
+    cwd: '/tmp/maka',
+    createdAt: 1,
+    lastUsedAt: 1,
+    name: 'Pi continuity test',
+    titleIsManual: true,
+    isFlagged: false,
+    labels: [],
+    isArchived: false,
+    status: 'active',
+    hasUnread: false,
+    backend: 'pi-agent',
+    llmConnectionSlug: 'pi-agent',
+    connectionLocked: true,
+    model: 'pi-test',
+    permissionMode: 'execute',
+    schemaVersion: 1,
   };
 }
 

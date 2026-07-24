@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import type { BackendKind, SessionEvent, SessionHeader, StoredMessage } from '@maka/core';
+import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
 import { createSessionStore } from '@maka/storage';
 
 import { PermissionEngine } from '../permission-engine.js';
@@ -63,6 +64,39 @@ describe('PiAgentBackend skeleton', () => {
       messages.some((message) => message.type === 'tool_result' && message.toolUseId === 'tool-1'),
       true,
     );
+  });
+
+  test('includes the truncation marker within the Core tool output limit', async () => {
+    const backend = new PiAgentBackend({
+      sessionId: 'session-1',
+      header: header({ permissionMode: 'execute' }),
+      appendMessage: async () => undefined,
+      permissionEngine: new PermissionEngine({ newId: nextId('permission'), now: nextNow(2_500) }),
+      transport: frames([
+        {
+          type: 'tool_output_delta',
+          toolUseId: 'tool-1',
+          stream: 'stdout',
+          chunk: '界'.repeat(TOOL_OUTPUT_DELTA_MAX_CHARS + 1),
+        },
+        { type: 'complete' },
+      ]),
+      newId: nextId('id'),
+      now: nextNow(2_600),
+    });
+
+    const events = await drain(backend.send({ turnId: 'turn-1', text: 'inspect', context: [] }));
+    const outputs = events.filter(
+      (event): event is Extract<SessionEvent, { type: 'tool_output_delta' }> =>
+        event.type === 'tool_output_delta',
+    );
+    assert.equal(outputs.length, 1);
+    const output = outputs[0];
+    assert.ok(output);
+    assert.ok(output.chunk.length <= TOOL_OUTPUT_DELTA_MAX_CHARS);
+    assert.match(output.chunk, /\n\[内容已截断\]$/);
+    assert.match(output.id, /^id-\d+$/);
+    assert.equal(output.seq, 1);
   });
 
   test('normalizes noncanonical tool payloads before strict storage recovery', async () => {

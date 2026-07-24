@@ -14,6 +14,7 @@ import { connectRuntimeHost, type RuntimeHostConnection } from '../client/index.
 import {
   decodeHostFrame,
   RUNTIME_HOST_PROTOCOL_VERSION,
+  type HostFrame,
   type ResponseFrame,
   type TurnSnapshot,
 } from '../protocol/index.js';
@@ -23,6 +24,11 @@ import {
   createUnavailableDomainOperationHandlers,
   type OperationHandlerMap,
 } from '../server/operation-dispatcher.js';
+import { SessionAdmissionGate } from '../server/session-admission-gate.js';
+import {
+  type CanonicalSessionProjection,
+  SessionContinuityCoordinator,
+} from '../server/session-continuity-coordinator.js';
 import {
   BoundedSerialOutboundWriter,
   RuntimeHostOutboundQueueError,
@@ -506,6 +512,121 @@ test('a sixty-fifth in-flight request tears down only the overflowing connection
   );
 });
 
+test('evicting one slow subscription keeps sibling subscriptions and requests usable', async () => {
+  const pair = await openTransportPair();
+  const coordinator = new SessionContinuityCoordinator(
+    'host-epoch',
+    async (sessionId) => canonicalProjection(sessionId),
+    new SessionAdmissionGate(),
+  );
+  const handlers: OperationHandlerMap = {
+    'host.status': async () => ({
+      ok: true,
+      result: {
+        hostEpoch: 'host-epoch',
+        state: 'ready',
+        connections: 1,
+        activeOperations: 1,
+        activeResidencies: 0,
+      },
+    }),
+    ...createHandlers(async (input) => ({
+      ok: true,
+      result: runningSnapshot(input.sessionId, input.turnId),
+    })),
+    ...coordinator.handlers,
+  };
+  const session = new RuntimeHostConnectionSession({
+    transport: pair.serverTransport,
+    connection: {
+      hostEpoch: 'host-epoch',
+      connectionId: 'shared-subscription-connection',
+      surface: 'tui',
+      principal: 'local_os_user',
+    },
+    resolveHandlers: () => handlers,
+    resolveContinuity: () => coordinator,
+    beginOperation: async () => ({
+      acquireResidency: () => ({ release() {} }),
+      seal() {},
+      finish() {},
+    }),
+    onTeardown() {},
+  });
+  const run = session.run();
+  const slow = await openSubscription(pair.clientTransport, 'slow-session', 'open-slow');
+  const sibling = await openSubscription(pair.clientTransport, 'sibling-session', 'open-sibling');
+  const originalWrite = pair.serverTransport.writeEncoded.bind(pair.serverTransport);
+  const writeBlocked = deferred();
+  const releaseWrite = deferred();
+  pair.serverTransport.writeEncoded = async (encoded) => {
+    writeBlocked.resolve();
+    await releaseWrite.promise;
+    return originalWrite(encoded);
+  };
+
+  try {
+    for (let index = 1; index <= 32; index += 1) {
+      await coordinator.acceptRuntimeEvent(
+        'slow-session',
+        'run-slow-session',
+        connectionTextEvent('slow-session', index),
+      );
+    }
+    await withTimeout(writeBlocked.promise, 1_000, 'slow subscription never blocked in-flight');
+    releaseWrite.resolve();
+
+    await coordinator.acceptRuntimeEvent(
+      'sibling-session',
+      'run-sibling-session',
+      connectionTextEvent('sibling-session', 1),
+    );
+    await pair.clientTransport.write({
+      requestId: 'status-after-eviction',
+      operation: 'host.status',
+      input: {},
+    });
+
+    const observed: HostFrame[] = [];
+    while (
+      !observed.some(
+        (frame) =>
+          'kind' in frame &&
+          frame.kind === 'subscription.closed' &&
+          frame.subscriptionId === slow.subscriptionId,
+      ) ||
+      !observed.some(
+        (frame) =>
+          'kind' in frame &&
+          frame.kind === 'subscription.session_delta' &&
+          frame.subscriptionId === sibling.subscriptionId,
+      ) ||
+      !observed.some((frame) => !('kind' in frame) && frame.requestId === 'status-after-eviction')
+    ) {
+      observed.push(decodeHostFrame(await pair.clientTransport.read(1_000)));
+    }
+
+    const slowClosed = observed.find(
+      (frame) =>
+        'kind' in frame &&
+        frame.kind === 'subscription.closed' &&
+        frame.subscriptionId === slow.subscriptionId,
+    );
+    assert.ok(slowClosed && 'kind' in slowClosed);
+    if (slowClosed && 'kind' in slowClosed && slowClosed.kind === 'subscription.closed') {
+      assert.equal(slowClosed.reason, 'slow_consumer');
+      assert.equal(slowClosed.sequence, 2);
+    }
+    assert.equal(pair.serverTransport.socket.destroyed, false);
+  } finally {
+    releaseWrite.resolve();
+    pair.serverTransport.writeEncoded = originalWrite;
+    pair.clientTransport.destroy();
+    await Promise.allSettled([run, pair.close()]);
+    coordinator.close();
+  }
+});
+
 interface RuntimeHostTestFixture {
   connectClient(): Promise<RuntimeHostConnection>;
   endpoint: string;
@@ -788,6 +909,54 @@ function runningSnapshot(sessionId: string, turnId: string): TurnSnapshot {
     turnId,
     runId: `run-${turnId}`,
     status: 'running',
+  };
+}
+
+async function openSubscription(transport: FramedTransport, sessionId: string, requestId: string) {
+  await transport.write({
+    requestId,
+    operation: 'subscription.open',
+    input: { sessionId },
+  });
+  const response = decodeHostFrame(await transport.read(1_000));
+  if ('kind' in response || response.operation !== 'subscription.open' || !response.ok) {
+    throw new Error(`Unable to open ${sessionId} subscription`);
+  }
+  return response.result;
+}
+
+function canonicalProjection(sessionId: string): CanonicalSessionProjection {
+  return {
+    session: {
+      sessionId,
+      status: 'running',
+      createdAt: 1,
+      lastUsedAt: 1,
+      isArchived: false,
+    },
+    rootTurn: {
+      sessionId,
+      turnId: `turn-${sessionId}`,
+      runId: `run-${sessionId}`,
+      status: 'running',
+    },
+    queue: {
+      hostEpoch: 'host-epoch',
+      queueRevision: 0,
+      steering: [],
+      followup: [],
+    },
+  };
+}
+
+function connectionTextEvent(sessionId: string, index: number) {
+  return {
+    type: 'text_delta' as const,
+    id: `event-${sessionId}-${index}`,
+    turnId: `turn-${sessionId}`,
+    ts: index,
+    messageId: `message-${sessionId}`,
+    text: `chunk-${index}`,
   };
 }
 

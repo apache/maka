@@ -1,3 +1,4 @@
+import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
 import {
   assertExactKeys,
   requireCount,
@@ -17,6 +18,9 @@ import { decodeTurnSnapshot, type TurnSnapshot } from './turn.js';
 export const SESSION_CONTINUITY_SCHEMA_VERSION = 1 as const;
 export const SESSION_CONTINUITY_SNAPSHOT_MAX_BYTES = 56 * 1024;
 export const SESSION_LIVE_DELTA_MAX_BYTES = 16 * 1024;
+// Core emits at most 8,192 UTF-16 code units per tool output event. A code unit
+// needs at most three UTF-8 bytes (an astral pair needs four bytes total).
+export const SESSION_TOOL_OUTPUT_DELTA_MAX_BYTES = 3 * TOOL_OUTPUT_DELTA_MAX_CHARS;
 export const SESSION_TOOL_NAME_MAX_BYTES = 256;
 export const SESSION_SUBSCRIPTION_FRAME_MAX_BYTES = 64 * 1024 - 1;
 
@@ -440,7 +444,7 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
       chunk: requireUtf8BoundedString(
         record.chunk,
         'Session tool output chunk',
-        SESSION_LIVE_DELTA_MAX_BYTES,
+        SESSION_TOOL_OUTPUT_DELTA_MAX_BYTES,
       ),
       redacted: record.redacted,
       createdAt: requireCount(record.createdAt, 'Session tool output timestamp'),

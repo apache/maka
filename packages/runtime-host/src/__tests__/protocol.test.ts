@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
+import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
 import {
   decodeClientFrame,
   decodeHostFrame,
@@ -18,6 +19,7 @@ import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
   SESSION_CONTINUITY_SNAPSHOT_MAX_BYTES,
   SESSION_LIVE_DELTA_MAX_BYTES,
+  SESSION_TOOL_OUTPUT_DELTA_MAX_BYTES,
   SESSION_TOOL_NAME_MAX_BYTES,
   TURN_MESSAGE_CONTENT_MAX_BYTES,
   TURN_MESSAGE_TEXT_MAX_BYTES,
@@ -399,6 +401,58 @@ describe('Runtime Host bootstrap protocol', () => {
         }),
       isInvalidFrame,
     );
+  });
+
+  test('encodes maximum legal tool output as one bounded frame without identity loss', () => {
+    const chunks = [
+      ['CJK', '界'.repeat(TOOL_OUTPUT_DELTA_MAX_CHARS)],
+      ['NUL', '\0'.repeat(TOOL_OUTPUT_DELTA_MAX_CHARS)],
+      ['lone surrogate', '\ud800'.repeat(TOOL_OUTPUT_DELTA_MAX_CHARS)],
+    ] as const;
+    for (const [label, chunk] of chunks) {
+      assert.ok(
+        Buffer.byteLength(chunk, 'utf8') <= SESSION_TOOL_OUTPUT_DELTA_MAX_BYTES,
+        `${label} exceeds the tool output raw-byte bound`,
+      );
+      const frame = {
+        kind: 'subscription.session_event' as const,
+        hostEpoch: 'epoch-1',
+        subscriptionId: 'subscription-1',
+        sequence: 1,
+        sessionId: 'session-1',
+        runId: 'run-1',
+        event: {
+          type: 'tool_output_delta' as const,
+          id: `event-${label}`,
+          turnId: 'turn-1',
+          ts: 1,
+          toolUseId: 'tool-1',
+          seq: 23,
+          stream: 'stdout' as const,
+          chunk,
+          redacted: false,
+          createdAt: 2,
+        },
+      };
+
+      const encoded = encodeProtocolFrame(frame);
+      assert.ok(
+        encoded.byteLength <= RUNTIME_HOST_MAX_FRAME_BYTES,
+        `${label} envelope exceeds the protocol frame limit`,
+      );
+      const decodedFrames = new ProtocolFrameDecoder().push(encoded);
+      assert.equal(decodedFrames.length, 1);
+      const decoded = decodeHostFrame(decodedFrames[0]);
+      assert.ok('kind' in decoded);
+      if (!('kind' in decoded)) continue;
+      assert.equal(decoded.kind, 'subscription.session_event');
+      if (decoded.kind !== 'subscription.session_event') continue;
+      assert.equal(decoded.event.type, 'tool_output_delta');
+      if (decoded.event.type !== 'tool_output_delta') continue;
+      assert.equal(decoded.event.id, `event-${label}`);
+      assert.equal(decoded.event.seq, 23);
+      assert.equal(decoded.event.chunk, chunk);
+    }
   });
 
   test('decodes split UTF-8 and multiple newline-delimited frames without an unbounded tail', () => {

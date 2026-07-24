@@ -86,6 +86,11 @@ interface Subscriber {
   terminalQueued: boolean;
 }
 
+interface PendingRefresh {
+  dirty: boolean;
+  inFlight: boolean;
+}
+
 export class SessionContinuityCoordinator implements SessionContinuityService {
   readonly handlers: SessionContinuityOperationHandlerMap = {
     'subscription.open': async (input, context) => {
@@ -108,7 +113,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
   readonly #connections = new Map<string, ConnectionState>();
   readonly #sessions = new Map<string, SessionProjectionState>();
   readonly #subscriptions = new Map<string, Subscriber>();
-  readonly #pendingRefreshes = new Set<string>();
+  readonly #pendingRefreshes = new Map<string, PendingRefresh>();
   readonly #hostEpoch: string;
   readonly #readCanonical: ReadCanonicalSessionProjection;
   #closed = false;
@@ -170,12 +175,27 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
 
   /** Safe for synchronous commit hooks: this only schedules and coalesces lane work. */
   enqueueCanonicalRefresh(sessionId: string): void {
-    if (this.#closed || this.#pendingRefreshes.has(sessionId)) return;
-    this.#pendingRefreshes.add(sessionId);
+    if (this.#closed) return;
+    const pending = this.#pendingRefreshes.get(sessionId);
+    if (pending) {
+      if (pending.inFlight) pending.dirty = true;
+      return;
+    }
+    const refresh: PendingRefresh = { dirty: false, inFlight: false };
+    this.#pendingRefreshes.set(sessionId, refresh);
     void this.sessionAdmission
-      .enqueueDetached(sessionId, (lease) => this.refreshCanonical(sessionId, lease))
+      .enqueueDetached(sessionId, async (lease) => {
+        refresh.inFlight = true;
+        await this.refreshCanonical(sessionId, lease);
+        if (!refresh.dirty) return;
+        refresh.dirty = false;
+        await this.refreshCanonical(sessionId, lease);
+      })
       .then(
-        () => this.#pendingRefreshes.delete(sessionId),
+        () => {
+          this.#pendingRefreshes.delete(sessionId);
+          if (refresh.dirty) this.enqueueCanonicalRefresh(sessionId);
+        },
         (error) => {
           this.#pendingRefreshes.delete(sessionId);
           this.onPublicationFailure(error);
@@ -461,14 +481,10 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
   #evictSlowSubscriber(subscriber: Subscriber): void {
     if (subscriber.phase !== 'open') return;
     subscriber.phase = 'closing';
-    if (subscriber.pumping) {
-      subscriber.sink.close();
-      this.#removeSubscriber(subscriber);
-      return;
-    }
+    const inFlight = subscriber.pumping ? subscriber.queue[0] : undefined;
     subscriber.queue = [];
     subscriber.queuedBytes = 0;
-    subscriber.nextSequence = subscriber.lastFlushedSequence + 1;
+    subscriber.nextSequence = (inFlight?.frame.sequence ?? subscriber.lastFlushedSequence) + 1;
     const frame: SubscriptionFrame = {
       kind: 'subscription.closed',
       hostEpoch: this.#hostEpoch,
@@ -479,8 +495,12 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     subscriber.nextSequence += 1;
     subscriber.terminalQueued = true;
     const encodedBytes = encodeProtocolFrame(frame).byteLength;
+    if (inFlight) {
+      subscriber.queue.push(inFlight);
+      subscriber.queuedBytes += inFlight.encodedBytes;
+    }
     subscriber.queue.push({ frame, encodedBytes });
-    subscriber.queuedBytes = encodedBytes;
+    subscriber.queuedBytes += encodedBytes;
     if (subscriber.activated) this.#pump(subscriber);
   }
 
@@ -747,7 +767,7 @@ function projectToolEvent(
         ...identity,
         seq: event.seq,
         stream: event.stream,
-        chunk: boundedUtf8(event.chunk, SESSION_LIVE_DELTA_MAX_BYTES),
+        chunk: event.chunk,
         redacted: event.redacted,
         createdAt: event.createdAt,
       };

@@ -22,6 +22,7 @@ import {
   type RootTurnAdmissionStore,
 } from '@maka/storage/execution-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
+import type { SubscriptionFrame } from '../protocol/index.js';
 import { CanonicalSessionProjectionReader } from '../server/canonical-session-projection.js';
 import type { RuntimeHostResidency } from '../server/host-kernel.js';
 import { type HostMessageRootPort, HostMessageCoordinator } from '../server/message-coordinator.js';
@@ -29,6 +30,7 @@ import { RootAdmissionOwner } from '../server/root-admission-owner.js';
 import { RootTurnCoordinator } from '../server/root-turn-coordinator.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 import { SessionContinuityCoordinator } from '../server/session-continuity-coordinator.js';
+import type { SessionContinuityFrameSink } from '../server/session-continuity-service.js';
 
 const HOLD_EXTERNAL_PROMPT = 'hold external root before follow-up';
 
@@ -112,7 +114,9 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     const backends = new BackendRegistry();
     const linkedBackends = new Map<string, LinkedChildAuthorityBackend>();
     backends.register('fake', (context) => {
-      if (!context.header.subagentRuntime) return new FakeBackend(context);
+      if (!context.header.subagentRuntime) {
+        return new PermissionWaitingBackend(context.sessionId);
+      }
       const backend = new LinkedChildAuthorityBackend(context.sessionId);
       linkedBackends.set(context.sessionId, backend);
       return backend;
@@ -140,6 +144,17 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       },
     );
 
+    const parentSink = new RecordingContinuitySink();
+    const parentConnectionId = 'connection-waiting-parent';
+    const parentConnection = continuity.attachConnection(parentConnectionId, parentSink);
+    const parentOpened = await continuity.handlers['subscription.open'](
+      { sessionId: parent.id },
+      operationContext(hostEpoch, acquireResidency, parentConnectionId),
+    );
+    assert.equal(parentOpened.ok, true);
+    if (!parentOpened.ok) return;
+    parentConnection.activate(parentOpened.result.subscriptionId);
+
     const parentTurnId = randomUUID();
     const parentStarted = await coordinator.handlers['turn.start'](
       {
@@ -151,6 +166,12 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     );
     assert.equal(parentStarted.ok, true);
     if (!parentStarted.ok) return;
+    await waitForContinuityFrame(
+      parentSink,
+      (frame) =>
+        frame.kind === 'subscription.session_projection' &&
+        frame.snapshot.session.status === 'waiting_for_user',
+    );
 
     let initialReady:
       | {
@@ -472,6 +493,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     });
     await coordinator.close();
     await messages.close();
+    parentConnection.close();
     closeChildContinuity?.();
     continuity.close();
   } finally {
@@ -973,10 +995,14 @@ function requireContinuity(
   return continuity;
 }
 
-function operationContext(hostEpoch: string, acquireResidency: () => RuntimeHostResidency) {
+function operationContext(
+  hostEpoch: string,
+  acquireResidency: () => RuntimeHostResidency,
+  connectionId = 'connection-close-handoff',
+) {
   return {
     hostEpoch,
-    connectionId: 'connection-close-handoff',
+    connectionId,
     surface: 'tui' as const,
     principal: 'local_os_user' as const,
     acquireResidency,
@@ -1100,6 +1126,69 @@ class LinkedChildAuthorityBackend implements AgentBackend {
   }
 }
 
+class PermissionWaitingBackend implements AgentBackend {
+  readonly kind = 'fake' as const;
+  private stopped = false;
+  private releaseWait: (() => void) | undefined;
+
+  constructor(readonly sessionId: string) {}
+
+  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    this.stopped = false;
+    yield {
+      type: 'permission_request',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      kind: 'tool_permission',
+      requestId: randomUUID(),
+      toolUseId: randomUUID(),
+      toolName: 'Bash',
+      category: 'shell_safe',
+      reason: 'custom',
+      args: {},
+      rememberForTurnAllowed: true,
+    };
+    await new Promise<void>((resolve) => {
+      this.releaseWait = resolve;
+      if (this.stopped) resolve();
+    });
+    yield {
+      type: 'abort',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      reason: 'user_stop',
+    };
+    yield {
+      type: 'complete',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      stopReason: 'user_stop',
+    };
+  }
+
+  async stop(): Promise<void> {
+    this.stopped = true;
+    this.releaseWait?.();
+  }
+
+  async respondToPermission(): Promise<void> {}
+
+  async dispose(): Promise<void> {
+    this.releaseWait?.();
+  }
+}
+
+class RecordingContinuitySink implements SessionContinuityFrameSink {
+  readonly frames: SubscriptionFrame[] = [];
+
+  async send(frame: SubscriptionFrame): Promise<void> {
+    this.frames.push(frame);
+  }
+}
+
 function testTool(name: string): MakaTool {
   return {
     name,
@@ -1108,4 +1197,46 @@ function testTool(name: string): MakaTool {
     permissionRequired: false,
     impl: async () => ({ ok: true }),
   };
+}
+
+async function completesWithin<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  description: string,
+): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error(`Timed out waiting for ${description}`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+async function waitForContinuityFrame(
+  sink: RecordingContinuitySink,
+  predicate: (frame: SubscriptionFrame) => boolean,
+): Promise<SubscriptionFrame> {
+  return completesWithin(
+    new Promise((resolve) => {
+      const check = (): void => {
+        const frame = sink.frames.find(predicate);
+        if (frame) {
+          resolve(frame);
+          return;
+        }
+        setImmediate(check);
+      };
+      check();
+    }),
+    5_000,
+    'Session continuity frame',
+  );
 }

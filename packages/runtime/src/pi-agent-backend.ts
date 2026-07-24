@@ -11,7 +11,11 @@ import type {
   ToolResultMessage,
   TokenUsageMessage,
 } from '@maka/core';
-import { computerUseApprovalSummary, decodeCanonicalToolResultContent } from '@maka/core';
+import {
+  computerUseApprovalSummary,
+  decodeCanonicalToolResultContent,
+  TOOL_OUTPUT_DELTA_MAX_CHARS,
+} from '@maka/core';
 import type { BackendSendInput, PermissionDecision } from '@maka/core/backend-types';
 import { redactSecrets } from '@maka/core/redaction';
 import { isToolCategory, type ToolCategory } from '@maka/core/permission';
@@ -685,9 +689,13 @@ function normalizeToolResultContent(content: unknown): ToolResultContent {
   }
 }
 
-function redactBoundedText(text: string, maxChars = 8192): string {
+const TRUNCATED_TEXT_MARKER = '\n[内容已截断]';
+
+function redactBoundedText(text: string, maxChars = TOOL_OUTPUT_DELTA_MAX_CHARS): string {
   const redacted = redactSecrets(text);
-  return redacted.length > maxChars ? `${redacted.slice(0, maxChars)}\n[内容已截断]` : redacted;
+  if (redacted.length <= maxChars) return redacted;
+  const marker = TRUNCATED_TEXT_MARKER.slice(0, maxChars);
+  return `${redacted.slice(0, maxChars - marker.length)}${marker}`;
 }
 
 function redactUnknown(value: unknown): unknown {
