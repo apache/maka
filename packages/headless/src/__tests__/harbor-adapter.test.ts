@@ -2502,6 +2502,31 @@ with tempfile.TemporaryDirectory() as tmp:
         assert "MAKA_MAX_STEPS" not in task_run_env, task_run_env.get("MAKA_MAX_STEPS")
         assert task_run_timeouts[-1] == 7200, task_run_timeouts
 
+        host_repo_root = Path(tmp) / "different-host-repo"
+        relative_task_run_agent = MakaAgent(Path(tmp), extra_env={
+            "MAKA_BACKEND": "fake",
+            "MAKA_HARBOR_MODE": "task-run",
+            "MAKA_HOST_REPO_ROOT": str(host_repo_root),
+            "MAKA_TASK_RUN_OUT_DIR": "relative-task-run",
+        })
+        relative_task_run_agent._resolve_task_workdir = resolve_task_workdir
+        relative_task_run_agent._communicate_streaming = communicate_task_run
+        asyncio.run(
+            relative_task_run_agent._run_task_run_host(
+                "finish the task",
+                host_process_environment,
+                AgentContext(),
+            )
+        )
+        relative_task_run_env = captured_host_process["kwargs"]["env"]
+        expected_task_run_out = host_repo_root / "relative-task-run"
+        expected_storage_root = expected_task_run_out / "runs"
+        assert relative_task_run_env["MAKA_TASK_RUN_OUT_DIR"] == str(expected_task_run_out), relative_task_run_env
+        assert relative_task_run_env["MAKA_OUTPUT_DIR"] == str(expected_task_run_out), relative_task_run_env
+        assert relative_task_run_env["MAKA_STORAGE_ROOT"] == str(expected_storage_root), relative_task_run_env
+        assert relative_task_run_agent._trajectory_artifact_store_root() == expected_storage_root
+        assert captured_host_process["kwargs"]["cwd"] == str(host_repo_root)
+
         runner_env_path = Path(tmp) / "task-run.env"
         runner_env_path.write_text("MAKA_CELL_TIMEOUT_SEC=4321\n", encoding="utf-8")
         original_runner_env = maka_agent_mod._DEFAULT_RUNNER_ENV
@@ -2836,6 +2861,9 @@ assert "'message': 'keep me'" in quoted, quoted
 raw = redact_text("token=private-token Cookie: session=private-cookie; Path=/ Set-Cookie: sid=private-set-cookie")
 for secret in ("private-token", "private-cookie", "private-set-cookie"):
     assert secret not in raw, raw
+spaced = redact_text("token = private-spaced-token --token\t=\tprivate-tabbed-token")
+for secret in ("private-spaced-token", "private-tabbed-token"):
+    assert secret not in spaced, spaced
 
 identity_mismatch = build_runtime_trajectory(events, "completed", {
     "invocationId": "different-invocation",
@@ -2877,6 +2905,20 @@ terminal_steps = [step for step in continued.steps if step["source"] == "system"
 assert [step["extra"]["maka_terminal_status"] for step in terminal_steps] == ["failed", "completed"], terminal_steps
 assert [step["extra"]["maka_runtime_event_id"] for step in terminal_steps] == ["terminal-first", "terminal-final"], terminal_steps
 
+partial_boundary = event("partial-boundary", 1800, "model", "agent")
+partial_boundary.update({"invocationId": "inv-2", "runId": "run-2", "turnId": "turn-2", "partial": True})
+third_user = event("user-third", 1900, "user", "user", {"kind": "text", "text": "Third invocation"})
+third_user.update({"invocationId": "inv-3", "runId": "run-3", "turnId": "turn-3"})
+third_terminal = event("terminal-third", 2000, "system", "system", status="completed", actions={"endInvocation": True})
+third_terminal.update({"invocationId": "inv-3", "runId": "run-3", "turnId": "turn-3"})
+stale_terminal_allowance = build_runtime_trajectory(
+    events[:1] + [continued_events[-4], partial_boundary, third_user, third_terminal],
+    "completed",
+    {"invocationId": "inv-3", "runId": "run-3", "sessionId": "session-1", "turnId": "turn-3"},
+)
+assert stale_terminal_allowance.artifact_kind == "summary", stale_terminal_allowance
+assert stale_terminal_allowance.reason == "runtime_identity_mismatch", stale_terminal_allowance
+
 missing_refs = build_runtime_trajectory(events, "completed")
 assert missing_refs.artifact_kind == "summary", missing_refs
 assert missing_refs.reason == "runtime_refs_incomplete", missing_refs
@@ -2891,6 +2933,18 @@ invalid_quotes_events[0]["content"]["quotes"] = [{"text": "quoted", "unexpected"
 invalid_quotes = build_runtime_trajectory(invalid_quotes_events, "completed", runtime_refs)
 assert invalid_quotes.artifact_kind == "summary", invalid_quotes
 assert invalid_quotes.reason == "runtime_event_schema_invalid", invalid_quotes
+
+invalid_attachment_events = json.loads(json.dumps(events))
+invalid_attachment_events[0]["content"]["attachments"][0]["unexpected"] = True
+invalid_attachment = build_runtime_trajectory(invalid_attachment_events, "completed", runtime_refs)
+assert invalid_attachment.artifact_kind == "summary", invalid_attachment
+assert invalid_attachment.reason == "runtime_event_schema_invalid", invalid_attachment
+
+invalid_attachment_ref_events = json.loads(json.dumps(events))
+invalid_attachment_ref_events[0]["content"]["attachments"][0]["ref"]["unexpected"] = True
+invalid_attachment_ref = build_runtime_trajectory(invalid_attachment_ref_events, "completed", runtime_refs)
+assert invalid_attachment_ref.artifact_kind == "summary", invalid_attachment_ref
+assert invalid_attachment_ref.reason == "runtime_event_schema_invalid", invalid_attachment_ref
 
 mixed_events = json.loads(json.dumps(events))
 mixed_events[2]["runId"] = "foreign-run"

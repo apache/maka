@@ -70,7 +70,7 @@ _SECRET_PATTERNS = (
     re.compile(
         r"(?i)((?:--?(?:api[-_]?key|auth[-_]?token|access[-_]?token|token|cookie|set-cookie|password|secret)"
         r"|(?:api[-_]?key|auth[-_]?token|access[-_]?token|token|cookie|set-cookie|password|secret))"
-        r"(?:\s+|\s*[:=]\s*))(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+        r"(?:\s*[:=]\s*|\s+))(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
     ),
     re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s,;]+"),
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}"),
@@ -311,6 +311,7 @@ def build_runtime_trajectory(
             )
         previous_identity = identity
         if event.get("partial") is True:
+            previous_was_terminal = False
             continue
         status = _terminal_status(event)
         previous_was_terminal = status is not None
@@ -675,7 +676,8 @@ def _is_attachment_ref(value: Any) -> bool:
     if not isinstance(value, dict):
         return False
     if (
-        value.get("kind") not in {"image", "pdf", "doc", "code", "other"}
+        set(value) != {"kind", "name", "mimeType", "bytes", "ref"}
+        or value.get("kind") not in {"image", "pdf", "doc", "code", "other"}
         or not isinstance(value.get("name"), str)
         or not isinstance(value.get("mimeType"), str)
         or isinstance(value.get("bytes"), bool)
@@ -688,15 +690,24 @@ def _is_attachment_ref(value: Any) -> bool:
         return False
     if ref["kind"] == "session_file":
         return (
-            isinstance(ref.get("sessionId"), str)
+            set(ref) == {"kind", "sessionId", "relativePath"}
+            and isinstance(ref.get("sessionId"), str)
             and bool(ref["sessionId"])
             and isinstance(ref.get("relativePath"), str)
             and bool(ref["relativePath"])
         )
     if ref["kind"] == "workspace_file":
-        return isinstance(ref.get("relativePath"), str) and bool(ref["relativePath"])
+        return (
+            set(ref) == {"kind", "relativePath"}
+            and isinstance(ref.get("relativePath"), str)
+            and bool(ref["relativePath"])
+        )
     if ref["kind"] == "external_file":
-        return isinstance(ref.get("absolutePath"), str) and bool(ref["absolutePath"])
+        return (
+            set(ref) == {"kind", "absolutePath"}
+            and isinstance(ref.get("absolutePath"), str)
+            and bool(ref["absolutePath"])
+        )
     return False
 
 

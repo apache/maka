@@ -1006,19 +1006,28 @@ class MakaAgent(BaseInstalledAgent):
         env.update(_load_env_file(_DEFAULT_RUNNER_ENV))
         env.update(getattr(self, "_extra_env", {}) or {})
         _normalize_cli_env(env)
-        env.setdefault("MAKA_REPO_DIR", str(self._host_repo_root()))
+        host_repo_root = self._host_repo_root()
+        if not host_repo_root.is_absolute():
+            host_repo_root = Path(os.path.abspath(host_repo_root))
+        env.setdefault("MAKA_REPO_DIR", str(host_repo_root))
         env.setdefault("MAKA_MODEL", "deepseek-chat")
         env.setdefault("MAKA_TASK_RUN_OUT_DIR", str(self.logs_dir / "maka-task-run"))
         env.setdefault("MAKA_CELL_ARTIFACT_DIR", str(self.logs_dir))
         task_run_out_dir = Path(env["MAKA_TASK_RUN_OUT_DIR"])
         if not task_run_out_dir.is_absolute():
-            task_run_out_dir = task_run_out_dir.resolve()
-            env["MAKA_TASK_RUN_OUT_DIR"] = str(task_run_out_dir)
-        # _normalize_cli_env derives MAKA_OUTPUT_DIR/MAKA_STORAGE_ROOT from
-        # MAKA_TASK_RUN_OUT_DIR; re-apply now that the out dir is finalized.
+            task_run_out_dir = host_repo_root / task_run_out_dir
+        env["MAKA_TASK_RUN_OUT_DIR"] = str(task_run_out_dir)
         env.setdefault("MAKA_OUTPUT_DIR", str(task_run_out_dir))
         env.setdefault("MAKA_STORAGE_ROOT", str(task_run_out_dir / "runs"))
-        self._trajectory_storage_root = Path(env["MAKA_STORAGE_ROOT"])
+        output_dir = Path(env["MAKA_OUTPUT_DIR"])
+        storage_root = Path(env["MAKA_STORAGE_ROOT"])
+        if not output_dir.is_absolute():
+            output_dir = host_repo_root / output_dir
+        if not storage_root.is_absolute():
+            storage_root = host_repo_root / storage_root
+        env["MAKA_OUTPUT_DIR"] = str(output_dir)
+        env["MAKA_STORAGE_ROOT"] = str(storage_root)
+        self._trajectory_storage_root = storage_root
         env["MAKA_CELL_SOFT_TIMEOUT_MS"] = str(self._cell_soft_timeout_ms(env))
 
         task_workdir, workdir_probe = await self._resolve_task_workdir(environment)
@@ -1062,7 +1071,7 @@ class MakaAgent(BaseInstalledAgent):
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *command,
-                    cwd=str(self._host_repo_root()),
+                    cwd=str(host_repo_root),
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
