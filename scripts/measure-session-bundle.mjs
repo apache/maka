@@ -229,7 +229,7 @@ async function main(options) {
       },
       notes: [
         'The archive is a real POSIX tar stream compressed with Node native Zstandard.',
-        'Fresh-process bootstrap extracts the archive, reads the materialized storage, rebases restored paths, constructs the Harbor cell runtime, and records readiness at the first FakeBackend event while still validating clean turn completion.',
+        'Fresh-process bootstrap extracts the archive, reads the materialized storage, rebases restored paths, constructs the Harbor cell runtime, and records local readiness before FakeBackend latency while still validating clean turn completion.',
         'The provider TTFB input and any budget derived from it are assumptions; this command does not measure provider latency.',
       ],
     };
@@ -456,7 +456,7 @@ async function childBootstrap(archivePath) {
           outputDir: join(destination, 'bootstrap-output'),
           storageRoot,
           resumeSessionId: session.id,
-          onFirstSessionEvent: () => {
+          onBootstrapReady: () => {
             process.stdout.write('ready\n');
           },
         },

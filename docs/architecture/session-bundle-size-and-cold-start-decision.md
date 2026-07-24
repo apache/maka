@@ -104,7 +104,7 @@ interface SessionRepository {
 The command separates these phases:
 
 1. archive hydrate: read, Zstandard decompress, tar extraction, digest validation;
-2. fresh-process Maka bootstrap: open stores, materialize the workspace, rebase the restored session paths, create the Harbor cell, and observe the first FakeBackend event; the child still completes and validates the turn after the timing point;
+2. fresh-process Maka bootstrap: open stores, materialize the workspace, rebase the restored session paths, create the Harbor cell, and signal local runtime/session readiness before invoking FakeBackend; the child still completes and validates the turn after the timing point;
 3. provider first-token latency: an explicit external input, not measured by this command.
 
 The operational budget is therefore expressed as two independent budgets:

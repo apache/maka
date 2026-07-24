@@ -1006,26 +1006,27 @@ describe('runHarborCell', () => {
     });
   });
 
-  test('reports the first session event before the fake response completes', async () => {
+  test('reports local bootstrap readiness before fake backend response delay', async () => {
     await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
       const startedAt = performance.now();
-      let firstEventAt: number | undefined;
-      await runHarborCell({
+      let bootstrapReadyAt: number | undefined;
+      const input = {
         config,
-        instruction: 'measure first event',
+        instruction: 'measure local bootstrap',
         cwd: workspaceDir,
         outputDir,
         storageRoot,
-        onFirstSessionEvent: () => {
-          firstEventAt ??= performance.now();
+        onBootstrapReady: () => {
+          bootstrapReadyAt ??= performance.now();
         },
-      });
+      };
+      await runHarborCell(input);
       const completedAt = performance.now();
 
-      assert.ok(firstEventAt !== undefined);
+      assert.ok(bootstrapReadyAt !== undefined);
       assert.ok(
-        completedAt - firstEventAt >= 100,
-        `first=${firstEventAt - startedAt}ms completed=${completedAt - startedAt}ms`,
+        completedAt - bootstrapReadyAt >= 100,
+        `ready=${bootstrapReadyAt - startedAt}ms completed=${completedAt - startedAt}ms`,
       );
     });
   });
