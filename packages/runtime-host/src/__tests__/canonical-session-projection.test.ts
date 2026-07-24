@@ -188,7 +188,7 @@ test('propagates canonical Store read failures during candidate preflight', asyn
       ...stores,
       interactionStore: {
         ...stores.interactionStore,
-        listPending: async () => {
+        listSessionPending: async () => {
           throw readFailure;
         },
       },

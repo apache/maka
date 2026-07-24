@@ -1,7 +1,20 @@
 import assert from 'node:assert/strict';
-import { link, mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import {
+  link,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { describe, test } from 'node:test';
 import {
   projectInteractionQuestionRequest,
@@ -10,6 +23,7 @@ import {
 } from '@maka/core';
 import {
   interactionLocator,
+  openInteractiveInteractionStoreForRead,
   openInteractiveInteractionStoreForWrite,
   STORED_INTERACTION_REQUEST_MAX_BYTES,
   type InteractiveInteractionStoreWriterFacade,
@@ -17,9 +31,12 @@ import {
 } from '../interaction-store.js';
 import {
   resolveStorageRoot,
+  tryAcquireInteractiveRootReader,
   tryAcquireInteractiveRootOwner,
   type InteractiveRootOwner,
 } from '../root-authority.js';
+
+const execFileAsync = promisify(execFile);
 
 describe('Interaction Store', () => {
   test('keeps one immutable winner across concurrent calls on the same lease facade', async () => {
@@ -80,8 +97,221 @@ describe('Interaction Store', () => {
       await store.establishRequest(first);
       await store.establishRequest(second);
       assert.deepEqual(await store.listPending({ turnId: 'turn_2', kind: 'question' }), [second]);
+      assert.deepEqual(
+        await store.listPending({ sessionId: 'session_1', turnId: 'turn_2', kind: 'question' }),
+        [second],
+      );
       await store.commitOutcome(second.requestId, questionOutcome('done', 300));
       assert.deepEqual(await store.listPending(), [first]);
+    });
+  });
+
+  test('lists one Session without reading unrelated canonical history', async () => {
+    await withStore(async ({ root, store }) => {
+      const target = storedQuestion('request_target', 100);
+      await store.establishRequest(target);
+      for (let index = 0; index < 64; index += 1) {
+        await store.establishRequest({
+          ...storedQuestion(`request_unrelated_${index}`, index),
+          sessionId: 'session_unrelated',
+        });
+      }
+      const damagedLocator = interactionLocator('request_unrelated_31');
+      await writeFile(join(root, 'interactions', damagedLocator, 'request.json'), '{broken');
+
+      assert.deepEqual(await store.listSessionPending(target.sessionId), [target]);
+      assert.deepEqual(await store.listPending({ sessionId: target.sessionId }), [target]);
+    });
+  });
+
+  test('recovery repairs missing and stale Session pending markers', async () => {
+    await withStore(async ({ root, owner, store }) => {
+      const pending = storedQuestion('request_pending_recovery', 100);
+      const settled = storedQuestion('request_settled_recovery', 101);
+      await store.establishRequest(pending);
+      await store.establishRequest(settled);
+      await store.commitOutcome(settled.requestId, questionOutcome('done', 200));
+
+      const sessionPending = join(root, 'interactions', 'pending', interactionLocator('session_1'));
+      const missingMarker = join(sessionPending, interactionLocator(pending.requestId));
+      const staleMarker = join(sessionPending, interactionLocator(settled.requestId));
+      await unlink(missingMarker);
+      await writeFile(staleMarker, '');
+      assert.deepEqual(await store.listSessionPending('session_1'), []);
+      await owner.close();
+
+      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const readerOwner = await tryAcquireInteractiveRootReader(capability);
+      assert.ok(readerOwner);
+      if (!readerOwner) return;
+      try {
+        const reader = await openInteractiveInteractionStoreForRead(readerOwner.lease);
+        assert.deepEqual(await reader.listSessionPending('session_1'), [pending]);
+        assert.deepEqual(await reader.listPending({ sessionId: 'session_1' }), [pending]);
+      } finally {
+        await readerOwner.close();
+      }
+
+      const recoveredOwner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(recoveredOwner);
+      if (!recoveredOwner) return;
+      try {
+        const recovered = await openInteractiveInteractionStoreForWrite(recoveredOwner.lease);
+        assert.deepEqual(await recovered.listSessionPending('session_1'), [pending]);
+        assert.equal(await readFile(missingMarker, 'utf8'), '');
+        await assert.rejects(readFile(staleMarker), { code: 'ENOENT' });
+      } finally {
+        await recoveredOwner.close();
+      }
+    });
+  });
+
+  test('rejects symlinked pending index directories without writing outside the root', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-interaction-index-parent-'));
+    const root = join(base, 'root');
+    const outside = join(base, 'outside');
+    await mkdir(root);
+    await mkdir(outside);
+    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    if (!owner) return;
+    try {
+      await mkdir(join(root, 'interactions'));
+      await symlink(outside, join(root, 'interactions', 'pending'), 'dir');
+      await assert.rejects(openInteractiveInteractionStoreForWrite(owner.lease), {
+        code: 'invalid_record',
+      });
+      assert.deepEqual(await readdir(outside), []);
+    } finally {
+      await owner.close();
+      await rm(owner.controlDirectory, { recursive: true, force: true });
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects a symlinked Session index directory without writing outside the root', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    await withStore(async ({ root, store }) => {
+      const outside = await mkdtemp(join(tmpdir(), 'maka-interaction-index-session-'));
+      const request = storedQuestion('request_session_symlink', 100);
+      const sessionDirectory = join(
+        root,
+        'interactions',
+        'pending',
+        interactionLocator(request.sessionId),
+      );
+      try {
+        await symlink(outside, sessionDirectory, 'dir');
+        const result = await store.establishRequest(request);
+        assert.equal(result.status, 'unresolved');
+        if (result.status === 'unresolved') {
+          assert.equal(result.failure.code, 'invalid_record');
+        }
+        assert.deepEqual(await readdir(outside), []);
+      } finally {
+        await rm(outside, { recursive: true, force: true });
+      }
+    });
+  });
+
+  test('rejects a malformed marker during outcome cleanup and recovery', async () => {
+    await withStore(async ({ root, owner, store }) => {
+      const request = storedQuestion('request_malformed_cleanup', 100);
+      await store.establishRequest(request);
+      const marker = join(
+        root,
+        'interactions',
+        'pending',
+        interactionLocator(request.sessionId),
+        interactionLocator(request.requestId),
+      );
+      await writeFile(marker, 'not-empty');
+
+      const committed = await store.commitOutcome(request.requestId, questionOutcome('done', 200));
+      assert.equal(committed.status, 'unresolved');
+      if (committed.status === 'unresolved') {
+        assert.equal(committed.failure.code, 'invalid_record');
+      }
+      assert.equal(await readFile(marker, 'utf8'), 'not-empty');
+      await owner.close();
+
+      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const recoveredOwner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(recoveredOwner);
+      if (!recoveredOwner) return;
+      try {
+        await assert.rejects(openInteractiveInteractionStoreForWrite(recoveredOwner.lease), {
+          code: 'invalid_record',
+        });
+        assert.equal(await readFile(marker, 'utf8'), 'not-empty');
+      } finally {
+        await recoveredOwner.close();
+      }
+    });
+  });
+
+  test('fails a FIFO marker EEXIST retry without blocking', {
+    skip: process.platform === 'win32',
+    timeout: 3_000,
+  }, async () => {
+    await withStore(async ({ root, store }) => {
+      const request = storedQuestion('request_fifo_marker', 100);
+      await store.establishRequest(request);
+      const marker = join(
+        root,
+        'interactions',
+        'pending',
+        interactionLocator(request.sessionId),
+        interactionLocator(request.requestId),
+      );
+      await unlink(marker);
+      await execFileAsync('mkfifo', [marker]);
+
+      const startedAt = Date.now();
+      const retry = await store.establishRequest(request);
+      assert.ok(Date.now() - startedAt < 1_000);
+      assert.equal(retry.status, 'unresolved');
+      if (retry.status === 'unresolved') {
+        assert.equal(retry.failure.code, 'invalid_record');
+      }
+    });
+  });
+
+  test('recovery fails closed on a non-regular expected pending marker', async () => {
+    await withStore(async ({ root, owner, store }) => {
+      const pending = storedQuestion('request_non_regular_marker', 100);
+      await store.establishRequest(pending);
+      const marker = join(
+        root,
+        'interactions',
+        'pending',
+        interactionLocator(pending.sessionId),
+        interactionLocator(pending.requestId),
+      );
+      await unlink(marker);
+      await mkdir(marker);
+      const retry = await store.establishRequest(pending);
+      assert.equal(retry.status, 'unresolved');
+      if (retry.status === 'unresolved') {
+        assert.equal(retry.failure.code, 'invalid_record');
+      }
+      await owner.close();
+
+      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const recoveredOwner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(recoveredOwner);
+      if (!recoveredOwner) return;
+      try {
+        await assert.rejects(openInteractiveInteractionStoreForWrite(recoveredOwner.lease), {
+          code: 'invalid_record',
+        });
+      } finally {
+        await recoveredOwner.close();
+      }
     });
   });
 
