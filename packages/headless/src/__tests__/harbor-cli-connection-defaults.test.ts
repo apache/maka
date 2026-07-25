@@ -452,6 +452,10 @@ describe('resolveHarborRunOptions backend guard', () => {
 
     assert.equal(opts.workdir, '/app');
     assert.equal(opts.sourceWorkspaceDir, '/logs/agent/maka-task-run/host-workspace-source');
+    assert.equal(
+      opts.realBackendIsolation?.submittedSnapshotRoot,
+      '/logs/agent/maka-task-run/submitted-snapshots',
+    );
   });
 
   test('uses the strict cell soft-timeout parser in task-run mode', async () => {

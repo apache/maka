@@ -607,6 +607,9 @@ export function buildHarnessAbManifest({
           ...competitorProfile.config,
           externalSystemPrompt: 'empty',
           profile: competitorProfile.id,
+          ...(benchmarkProfile.executor === 'pier'
+            ? { execution: { placement: 'task-container' } }
+            : {}),
         },
       },
     ],
@@ -891,6 +894,7 @@ async function runLocked({
             }
           : { annotations: [], warnings: [] },
         execution.billingMode,
+        manifest,
       );
     },
     artifacts: (report) => [

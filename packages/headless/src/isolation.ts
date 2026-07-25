@@ -1,5 +1,6 @@
 import type { StorageRef } from '@maka/core';
 import type { ShellPlan } from '@maka/runtime';
+import { isAbsolute } from 'node:path';
 import type { Config, Task } from './contracts.js';
 import type { HeavyTaskEvidenceRecorder } from './heavy-task-evidence.js';
 import type { HeavyTaskModeSelection } from './heavy-task-policy.js';
@@ -180,6 +181,12 @@ export interface ExternalRealBackendIsolation {
    */
   workspaceDir?: string;
   /**
+   * Persistent directory for freezing the agent-visible workspace after the
+   * run. Set only when the controller can read workspaceDir directly; remote
+   * executors such as Harbor HTTP must leave it unset.
+   */
+  submittedSnapshotRoot?: string;
+  /**
    * Optional command executor for callers that want to reuse the built-in
    * headless Bash tool. A caller may omit this when its registered backend is
    * already isolated internally.
@@ -228,6 +235,16 @@ export function validateRealBackendIsolation(isolation: RealBackendIsolation | u
   }
   if (typeof isolation.label !== 'string' || isolation.label.trim().length === 0) {
     throw new Error('realBackendIsolation.label is required');
+  }
+  if (isolation.submittedSnapshotRoot !== undefined) {
+    if (!isolation.workspaceDir || !isAbsolute(isolation.workspaceDir)) {
+      throw new Error(
+        'realBackendIsolation.submittedSnapshotRoot requires an absolute workspaceDir',
+      );
+    }
+    if (!isAbsolute(isolation.submittedSnapshotRoot)) {
+      throw new Error('realBackendIsolation.submittedSnapshotRoot must be absolute');
+    }
   }
 }
 

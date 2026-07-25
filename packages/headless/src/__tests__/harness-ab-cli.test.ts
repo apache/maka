@@ -815,6 +815,9 @@ test('harness A/B resolves the DeepSWE benchmark axis orthogonally to competitor
     isolation: 'harbor-local',
     nodeToolchainFingerprint: MAKA_NODE_TOOLCHAIN_FINGERPRINT,
   });
+  assert.deepEqual(manifest.arms[1].metadata.config.execution, {
+    placement: 'task-container',
+  });
 
   // The Pier executor identity is auditable in the manifest, not only hashed
   // into the toolchain fingerprint.
@@ -836,6 +839,7 @@ test('harness A/B resolves the DeepSWE benchmark axis orthogonally to competitor
   });
   assert.equal(tbenchManifest.metadata.order.seed, 'terminal-bench-2.1:k3:harness-comparison:v1');
   assert.equal('execution' in tbenchManifest.arms[0].metadata.config, false);
+  assert.equal('execution' in tbenchManifest.arms[1].metadata.config, false);
   // No executor key for Harbor benchmarks: the manifest payload (and with it
   // the resume fingerprint) must stay byte-identical to historical runs.
   assert.equal('executor' in tbenchManifest.metadata.benchmark, false);

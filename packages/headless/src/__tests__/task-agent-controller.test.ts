@@ -2384,6 +2384,43 @@ describe('runTaskOnce', () => {
     });
   });
 
+  test('persists the submitted snapshot from an explicitly owned external workspace', async () => {
+    await withDirs(async (fixtureDir, storageRoot) => {
+      const externalWorkspaceDir = await mkdtemp(join(storageRoot, 'external-workspace-'));
+      const submittedSnapshotRoot = join(storageRoot, 'submitted-snapshots');
+      await writeFile(join(fixtureDir, 'check.mjs'), 'fixture copy\n', 'utf8');
+      await writeFile(join(externalWorkspaceDir, 'check.mjs'), 'external copy\n', 'utf8');
+      const task: Task = {
+        id: 'external-workspace-snapshot',
+        instruction: 'modify the external workspace',
+        workspaceDir: fixtureDir,
+        verification: { command: 'true', protectedPaths: [] },
+      };
+
+      const result = await runTaskOnce(fakeConfig, task, {
+        storageRoot,
+        registerBackends: registerProtectedTamperBackend,
+        realBackendIsolation: {
+          kind: 'external',
+          label: 'locally accessible task container',
+          workspaceDir: externalWorkspaceDir,
+          submittedSnapshotRoot,
+        },
+      });
+
+      const snapshot = result.projection.latestScoreResult?.details?.submittedSnapshot as
+        | { snapshotPath?: string; workspaceRoot?: string }
+        | undefined;
+      assert.ok(snapshot?.snapshotPath, 'expected persisted external submitted snapshot');
+      assert.equal(snapshot.workspaceRoot, externalWorkspaceDir);
+      assert.match(snapshot.snapshotPath, new RegExp(`^${submittedSnapshotRoot}`));
+      assert.equal(
+        await readFile(join(snapshot.snapshotPath, 'check.mjs'), 'utf8'),
+        'process.exit(0);\n',
+      );
+    });
+  });
+
   test('maps backend failure and incomplete runtime to terminal failure taxonomy', async () => {
     await withDirs(async (fixtureDir, storageRoot) => {
       await writeFile(join(fixtureDir, 'marker.txt'), 'present', 'utf8');

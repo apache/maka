@@ -431,7 +431,7 @@ export async function resolveHarborRunOptions(
     cellArtifactDir,
     maxSteps,
   });
-  const realBackendIsolation = buildIsolation(isolation, env, workdir);
+  const realBackendIsolation = buildIsolation(isolation, env, workdir, outDir);
   return {
     mode,
     backend,
@@ -613,6 +613,7 @@ function buildIsolation(
   mode: HarborIsolationMode | undefined,
   env: RunHarborCellEnv,
   workdir: string,
+  outDir: string,
 ): RealBackendIsolation | undefined {
   if (!mode || mode === 'none') return undefined;
   if (mode === 'harbor-local') {
@@ -620,6 +621,7 @@ function buildIsolation(
       kind: 'external',
       label: 'Harbor task container',
       workspaceDir: workdir,
+      submittedSnapshotRoot: join(outDir, 'submitted-snapshots'),
       toolExecutor: createHarborCellLocalToolExecutor(env),
     };
   }

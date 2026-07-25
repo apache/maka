@@ -48,12 +48,15 @@ export async function prepareWorkspace(fixtureDir: string): Promise<PreparedWork
 
 export async function freezeSubmittedWorkspace(input: {
   workspaceDir: string;
+  snapshotRoot?: string;
   artifactRefs?: Array<Record<string, unknown>>;
   now?: () => number;
   newId?: () => string;
 }): Promise<ArtifactFreezeResult> {
   const id = input.newId?.() ?? randomUUID();
-  const snapshotPath = await mkdtemp(join(tmpdir(), 'maka-headless-submitted-'));
+  const snapshotRoot = input.snapshotRoot ?? tmpdir();
+  await mkdir(snapshotRoot, { recursive: true });
+  const snapshotPath = await mkdtemp(join(snapshotRoot, 'maka-headless-submitted-'));
   try {
     await cp(await realpath(input.workspaceDir), snapshotPath, { recursive: true });
   } catch (error) {

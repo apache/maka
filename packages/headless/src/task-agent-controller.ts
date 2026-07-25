@@ -644,8 +644,10 @@ export async function runTaskOnceWithStorage(
       startedAt: now(),
     });
     const runnerCompleted = invocation.status === 'completed';
+    const submittedSnapshotRoot = deps.realBackendIsolation?.submittedSnapshotRoot;
     const frozen = await freezeSubmittedWorkspace({
-      workspaceDir: workspace.dir,
+      workspaceDir: submittedSnapshotRoot ? agentWorkspaceDir : workspace.dir,
+      ...(submittedSnapshotRoot ? { snapshotRoot: submittedSnapshotRoot } : {}),
       artifactRefs: runtimeSummary.artifactRefs,
       now,
       newId,
