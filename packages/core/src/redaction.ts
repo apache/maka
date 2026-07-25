@@ -109,7 +109,7 @@ export function generalizedErrorMessage(error: unknown, fallback = 'Operation fa
  * Chinese-locale companion to `generalizedErrorMessage()` (PR110b
  * follow-up). Same classification rules; returns Chinese phrasing
  * instead of English. Used by surfaces that must enforce a
- * Chinese-only error copy contract (Quick Chat, onboarding setup
+ * Chinese-only error copy contract (session start, onboarding setup
  * banners, etc.) — the English version would have leaked through any
  * matched category, breaking the gate.
  *

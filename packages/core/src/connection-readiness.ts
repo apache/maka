@@ -70,7 +70,7 @@ export interface IsConnectionReadyInput {
    * Optional override. When set, the helper validates THIS model
    * against the connection's enabled list. When omitted, it validates
    * `connection.defaultModel`. Same helper covers both the default
-   * send path and a Quick Chat that lets the user pick a temporary
+   * send path and a first-run entry point that lets the user pick a temporary
    * model — no parallel helpers needed.
    */
   requestedModel?: string;

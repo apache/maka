@@ -12,19 +12,11 @@ import {
   buildDeepResearchSystemPromptFragment,
   buildDeepResearchImplementationPrompt,
   isDeepResearchSession,
-  normalizeQuickChatMode,
 } from '../explore-agent.js';
 import type { DeepResearchRun } from '../deep-research-run.js';
 import { PERMISSION_POLICY } from '../permission.js';
 
 describe('deep research session profile', () => {
-  it('normalizes quick-chat mode fail-closed to normal chat', () => {
-    assert.equal(normalizeQuickChatMode('deep_research'), 'deep_research');
-    assert.equal(normalizeQuickChatMode('chat'), 'chat');
-    assert.equal(normalizeQuickChatMode('execute'), 'chat');
-    assert.equal(normalizeQuickChatMode(null), 'chat');
-  });
-
   it('detects the stable session label', () => {
     assert.equal(isDeepResearchSession([DEEP_RESEARCH_SESSION_LABEL]), true);
     assert.equal(isDeepResearchSession(['research']), false);

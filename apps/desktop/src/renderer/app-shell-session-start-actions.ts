@@ -1,4 +1,4 @@
-import type { QuickChatMode, UiLocale } from '@maka/core';
+import type { SessionStartMode, UiLocale } from '@maka/core';
 import { saveGlobalInputHistoryEntry } from '@maka/ui';
 import type { NavSelection } from '@maka/ui';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
@@ -35,7 +35,7 @@ export interface AppShellSessionStartActions {
    * first send; this is for entry points that pick the mode before any
    * text exists, such as the command palette's Deep Research.
    */
-  startModeSession(mode: QuickChatMode): Promise<boolean>;
+  startModeSession(mode: SessionStartMode): Promise<boolean>;
   /** Start a new expert-team session (from the composer "+" menu). */
   handleExpertTeamStart(teamId: string, prompt?: string): Promise<boolean>;
 }
@@ -73,7 +73,7 @@ export function createAppShellSessionStartActions(deps: {
   } = deps;
   const copy = getShellCopy(uiLocale).chatActions;
 
-  async function startModeSession(mode: QuickChatMode): Promise<boolean> {
+  async function startModeSession(mode: SessionStartMode): Promise<boolean> {
     if (sessionStartPendingRef.current) return false;
     const owner = captureComposerImportOwner();
     sessionStartPendingRef.current = true;

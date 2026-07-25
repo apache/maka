@@ -1514,7 +1514,7 @@ export {
 } from './web-search.js';
 
 // explore-agent.ts — read-only deep research session profile.
-export type { QuickChatMode } from './explore-agent.js';
+export type { SessionStartMode } from './explore-agent.js';
 export {
   DEEP_RESEARCH_EVIDENCE_CHECKLIST,
   DEEP_RESEARCH_IMPLEMENTATION_PROMPT_MAX_CHARS,
@@ -1524,12 +1524,9 @@ export {
   DEEP_RESEARCH_SCOPE_OPTIONS,
   DEEP_RESEARCH_STARTER_PROMPTS,
   DEEP_RESEARCH_WORKFLOW_STEPS,
-  QUICK_CHAT_MODES,
   buildDeepResearchSystemPromptFragment,
   buildDeepResearchImplementationPrompt,
   isDeepResearchSession,
-  isQuickChatMode,
-  normalizeQuickChatMode,
 } from './explore-agent.js';
 
 // expert-team.ts — expert-team session labels.

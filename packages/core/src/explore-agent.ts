@@ -8,8 +8,13 @@
 
 import type { DeepResearchRun } from './deep-research-run.js';
 
-export const QUICK_CHAT_MODES = ['chat', 'deep_research'] as const;
-export type QuickChatMode = (typeof QUICK_CHAT_MODES)[number];
+/**
+ * A product intent a caller can open a new session at, distinct from the
+ * ordinary chat that needs no intent at all. Absence is spelled `undefined`,
+ * not a `'chat'` member: a second spelling of "no mode" is a second thing to
+ * keep in agreement.
+ */
+export type SessionStartMode = 'deep_research';
 
 export const DEEP_RESEARCH_SESSION_LABEL = 'mode:deep_research';
 
@@ -126,14 +131,6 @@ export const DEEP_RESEARCH_STARTER_PROMPTS = [
       '请只读审计这个功能的安全边界：权限、token/密钥流、IPC/renderer 暴露、文件路径、隐私模式、日志与 telemetry。输出 blocking 风险和对应 contract test。',
   },
 ] as const;
-
-export function isQuickChatMode(value: unknown): value is QuickChatMode {
-  return typeof value === 'string' && (QUICK_CHAT_MODES as readonly string[]).includes(value);
-}
-
-export function normalizeQuickChatMode(value: unknown): QuickChatMode {
-  return value === 'deep_research' ? 'deep_research' : 'chat';
-}
 
 export function isDeepResearchSession(labels: readonly string[] | undefined): boolean {
   return Array.isArray(labels) && labels.includes(DEEP_RESEARCH_SESSION_LABEL);

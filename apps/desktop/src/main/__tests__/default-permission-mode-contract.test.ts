@@ -44,80 +44,56 @@ describe('default permission mode contract', () => {
     );
   });
 
-  it('main.ts routes every session-creation fallback through the extracted resolver (single authority)', async () => {
-    // The resolver lives in ./permission-mode-default.ts as an injected pure
-    // function so its never-rejects fallback is unit-testable in isolation
-    // (see permission-mode-default.test.ts). main.ts must import it and route
-    // EVERY permission-mode fallback through it by injecting settingsStore.get
-    // — no inline definition and no unguarded inline settings read may remain.
-    // Read main.ts only (not the combined source): the resolver now lives in
-    // ./permission-mode-default.ts, which is part of the combined list, and
-    // its `export async function resolveDefaultPermissionMode` would falsely
-    // trip the no-inline assertion below.
-    const src = await readMainTsSource();
-
-    assert.match(
-      src,
-      /import \{ resolveDefaultPermissionMode \} from '\.\/permission-mode-default\.js';/,
-      'main.ts must import the extracted resolver',
-    );
-    assert.doesNotMatch(
-      src,
-      /async function resolveDefaultPermissionMode/,
-      'the resolver must live in ./permission-mode-default.ts, not inline in main.ts (so its never-rejects fallback is unit-testable)',
-    );
-
-    // sessions:create must inject settingsStore.get into the resolver, proving
-    // it routes through the single authority instead of reading settings
-    // inline. Count across the combined main-process source so the file split
-    // does not weaken the invariant. #1433 merged the third caller
-    // (quickChat:start) into sessions:create and then hoisted the resolution
-    // above the fake/ai-sdk branch, so ONE call site is now the full set — a
-    // new session-creation path that reads settings its own way, or a branch
-    // that re-resolves the default on its own, would push this back over.
+  /**
+   * What the resolution DOES is covered behaviorally in
+   * create-session-input.test.ts — the mode's boundary outranking both the
+   * request and the configured default, the refusal of a directly-requested
+   * `explore`, the never-rejects settings fallback. The only thing left for a
+   * source contract is the one thing behavior cannot show: that no SECOND
+   * place resolves a permission-mode default.
+   */
+  it('exactly one place in the main process resolves a permission-mode default', async () => {
     const combined = await readMainProcessCombinedSource();
-    const routedCalls = combined.match(/resolveDefaultPermissionMode\(\(\) => settingsStore\.get\(\)\)/g) ?? [];
+
+    // Call sites only — the definition in permission-mode-default.ts is
+    // `export async function resolveDefaultPermissionMode(`, excluded by the
+    // absence of a preceding `function `.
+    const callSites = combined.match(/(?<!function )resolveDefaultPermissionMode\(/g) ?? [];
     assert.equal(
-      routedCalls.length,
-      1, // the single hoisted resolution both sessions:create branches share
-      `all session-creation fallbacks must route through resolveDefaultPermissionMode(() => settingsStore.get()) (found ${routedCalls.length}, expected exactly one)`,
+      callSites.length,
+      1, // create-session-input.ts, applied by sessions:create
+      `every permission-mode fallback must route through the one resolver call in create-session-input.ts (found ${callSites.length} call sites, expected exactly one)`,
     );
+
     assert.doesNotMatch(
-      src,
+      combined,
       /\?\? \(await settingsStore\.get\(\)\)\.chatDefaults\.permissionMode/,
       'no unguarded inline settings read may remain as a permission-mode fallback',
     );
-  });
-
-  /**
-   * #1433: Deep Research is a read-only boundary, so it must win over both
-   * the renderer's request and the configured default.
-   */
-  it('a mode-forced boundary outranks the configured default', async () => {
-    const src = await readSessionsIpcSource();
-    assert.match(
-      src,
-      /const permissionMode =\s*modeSeed\?\.permissionMode \?\?\s*input\?\.permissionMode \?\?\s*\(await resolveDefaultPermissionMode/,
-      'the mode seed must be consulted before the renderer request and before the configured default',
+    assert.doesNotMatch(
+      await readMainTsSource(),
+      /async function resolveDefaultPermissionMode/,
+      'the resolver must live in ./permission-mode-default.ts, not inline in main.ts (so its never-rejects fallback is unit-testable)',
     );
   });
 
   /**
-   * #1433: `explore` is a boundary a mode confers, never one a caller may
-   * open a session at — core already names the pickable set
-   * `ChatDefaultPermissionMode`. Without this refusal the seed is only a
-   * default: a renderer could ask for `explore` outright and get it without
-   * the Deep Research label, tools or system prompt that define the mode.
-   * `sessions:setPermissionMode` stays the separate, deliberate path for
-   * moving an EXISTING session (the quote companion relies on it), so the
-   * guard belongs on creation only.
+   * #1433: the derivation is what `quickChat:start` existed for. It has to
+   * stay a pure function the handler applies, not drift back into the
+   * `ipcMain.handle` closure where no test can call it — which is how the
+   * invariants above ended up asserted by regex in the first place.
    */
-  it('sessions:create refuses a directly-requested explore boundary', async () => {
+  it('sessions:create applies the resolution rather than re-deriving it inline', async () => {
     const src = await readSessionsIpcSource();
     assert.match(
       src,
-      /if \(input\?\.permissionMode !== undefined && !isChatDefaultPermissionMode\(input\.permissionMode\)\) \{\s*throw new TypeError/,
-      'a directly-requested permission mode must be validated against the pickable set, so explore can only arrive via the mode seed',
+      /await resolveCreateSessionInput\(input, \{ readSettings: \(\) => settingsStore\.get\(\) \}\)/,
+      'sessions:create must apply the extracted resolution, injecting the settings read',
+    );
+    assert.doesNotMatch(
+      src,
+      /isChatDefaultPermissionMode|DEEP_RESEARCH_SESSION_LABEL/,
+      'the handler must not re-derive a permission boundary or a mode label of its own',
     );
   });
 

@@ -3,12 +3,9 @@ import { basename } from 'node:path';
 import { stat } from 'node:fs/promises';
 import { ipcMain } from 'electron';
 import {
-  DEFAULT_SESSION_NAME,
-  isChatDefaultPermissionMode,
   isCollaborationMode,
   isOrchestrationMode,
   isPermissionMode,
-  normalizeQuickChatMode,
   revisionFamilySessionIds,
   isThinkingLevel,
   sanitizeTaskLedgerTask,
@@ -16,7 +13,7 @@ import {
 } from '@maka/core';
 import type {
   CreateSessionInput,
-  QuickChatMode,
+  SessionStartMode,
   SessionEvent,
   SessionChangedEvent,
   SessionChangedReason,
@@ -34,8 +31,7 @@ import { resolveSessionSend } from './session-send-resolve.js';
 import { resizeImageForAttachment } from './attachment-resize-native.js';
 import { releaseBrowserSession } from './browser/session.js';
 import { sessionReadMessagesFailureMessage } from './session-read-error-copy.js';
-import { resolveDefaultPermissionMode } from './permission-mode-default.js';
-import { sessionModeSeed } from './session-mode-seed.js';
+import { resolveCreateSessionInput } from './create-session-input.js';
 import {
   normalizePermissionResponse,
   normalizeRegenerateTurnInput,
@@ -62,11 +58,11 @@ type E2eFixture = ReturnType<typeof resolveE2eFixture>;
 /**
  * `sessions:create` input. `mode` is the one field that is not a session
  * field: it names a product intent, and main derives the session fields
- * it implies (see `session-mode-seed.ts`). Keeping it here rather than on
+ * it implies (see `create-session-input.ts`). Keeping it here rather than on
  * `CreateSessionInput` leaves the runtime contract free of product
  * vocabulary.
  */
-export type SessionsCreateInput = Partial<CreateSessionInput> & { mode?: QuickChatMode };
+export type SessionsCreateInput = Partial<CreateSessionInput> & { mode?: SessionStartMode };
 
 /** The per-session cleanup subset of the cursor-overlay controller. */
 interface SessionOverlayCleanup {
@@ -225,35 +221,12 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
   ipcMain.handle('sessions:list', (_event, filter?: SessionListFilter) => runtime.listSessions(filter));
   ipcMain.handle('sessions:create', async (_event, input?: SessionsCreateInput) => {
     const cwd = input?.cwd ?? (await currentProjectRoot());
-    // #1433: `mode` is a product intent, not a session field. Main owns what
-    // it means, and when a mode is given the seed defines the session — the
-    // renderer's own requests only fill in what the mode does not speak to.
-    // An unrecognized value normalizes to plain chat.
-    const modeSeed = sessionModeSeed(normalizeQuickChatMode(input?.mode));
-    const collaborationMode = input?.collaborationMode ?? 'agent';
-    if (!isCollaborationMode(collaborationMode)) {
-      throw new TypeError('Invalid collaboration mode.');
-    }
-    const orchestrationMode = input?.orchestrationMode ?? 'default';
-    if (!isOrchestrationMode(orchestrationMode)) {
-      throw new TypeError('Invalid orchestration mode.');
-    }
-    // `explore` is a boundary a mode confers, never one a caller may open a
-    // session at — core already spells that out as `ChatDefaultPermissionMode`
-    // (the modes a user can pick). Refusing it here is what makes the seed the
-    // only way in; `sessions:setPermissionMode` stays the separate, deliberate
-    // path for moving an existing session (the quote companion uses it).
-    if (input?.permissionMode !== undefined && !isChatDefaultPermissionMode(input.permissionMode)) {
-      throw new TypeError('Invalid permission mode.');
-    }
-    const permissionMode =
-      modeSeed?.permissionMode ??
-      input?.permissionMode ??
-      (await resolveDefaultPermissionMode(() => settingsStore.get()));
-    const name = modeSeed?.name ?? input?.name ?? DEFAULT_SESSION_NAME;
-    const labels = modeSeed
-      ? [...new Set([...(input?.labels ?? []), ...modeSeed.labels])]
-      : input?.labels;
+    // #1433: `mode` is a product intent, not a session field. What it implies,
+    // what the renderer may ask for directly, and what the configured default
+    // fills in are all resolved in one pure place (create-session-input.ts),
+    // which is also the only place any of it can be tested.
+    const { permissionMode, collaborationMode, orchestrationMode, name, labels } =
+      await resolveCreateSessionInput(input, { readSettings: () => settingsStore.get() });
     if (input?.backend === 'fake') {
       if (!canCreateFakeSession()) {
         throw new Error('FakeBackend sessions are only available in development.');

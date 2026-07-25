@@ -87,14 +87,14 @@ import type {
   McpServerStatus,
   McpTestResult,
 } from '@maka/core/mcp';
-import type { BotStatus, SkillInvocationResult, WechatBridgeQrCodeResult } from '@maka/runtime';
+import type { BotStatus, WechatBridgeQrCodeResult } from '@maka/runtime';
 import type { BundledSkillCatalogEntry, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry, SkillGovernanceDetails } from '@maka/ui';
 import type { ConfigCategory } from '@maka/storage';
 import type {
   OnboardingMilestone,
   OnboardingMilestoneId,
   OnboardingState,
-  QuickChatMode,
+  SessionStartMode,
 } from '@maka/core';
 
 export interface ExpertTeamMemberSummary {
@@ -173,7 +173,7 @@ export interface MakaBridge {
   };
   sessions: {
     list(filter?: SessionListFilter): Promise<SessionSummary[]>;
-    create(input?: Partial<CreateSessionInput> & { mode?: QuickChatMode }): Promise<SessionSummary>;
+    create(input?: Partial<CreateSessionInput> & { mode?: SessionStartMode }): Promise<SessionSummary>;
     send(
       sessionId: string,
       command:

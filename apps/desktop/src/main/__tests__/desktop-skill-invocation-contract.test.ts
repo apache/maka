@@ -99,7 +99,7 @@ describe('Desktop explicit Skill invocation contract', () => {
     assert.doesNotMatch(
       desktopToolSurface,
       /DEEP_RESEARCH_SESSION_LABEL/,
-      'only session-mode-seed.ts may derive the Deep Research label',
+      'only create-session-input.ts may derive the Deep Research label',
     );
     assert.doesNotMatch(
       main,

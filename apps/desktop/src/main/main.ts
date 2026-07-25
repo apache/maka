@@ -80,7 +80,6 @@ import {
 import { createFileCredentialStore } from './credential-store.js';
 import { bindOnboardingDeps, createOnboardingService } from './onboarding-service.js';
 import { createDailyReviewArchiveStore } from './daily-review-archive-store.js';
-import { resolveDefaultPermissionMode } from './permission-mode-default.js';
 import { resolveE2eFixture, seedE2eFixture } from './e2e-fixture.js';
 import { resolveBuildInfo } from './build-info.js';
 import { OpenGatewayService } from './open-gateway.js';

@@ -105,7 +105,7 @@ import type {
 import type {
   AttachmentRef,
   OnboardingMilestoneId,
-  QuickChatMode,
+  SessionStartMode,
   QuoteRef,
 } from '@maka/core';
 
@@ -142,10 +142,10 @@ const makaBridge = {
     /**
      * The single session-creation channel (#1433). `mode` names a
      * product intent — main derives the permission boundary, name and
-     * labels it implies (`session-mode-seed.ts`); the renderer cannot
+     * labels it implies (`create-session-input.ts`); the renderer cannot
      * reach a boundary like `explore` by asking for it directly.
      */
-    create(input?: Partial<CreateSessionInput> & { mode?: QuickChatMode }): Promise<SessionSummary> {
+    create(input?: Partial<CreateSessionInput> & { mode?: SessionStartMode }): Promise<SessionSummary> {
       return ipcRenderer.invoke('sessions:create', input);
     },
     async send(

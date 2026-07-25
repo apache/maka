@@ -3,7 +3,7 @@ import type {
   DailyReviewSummary,
   LlmConnection,
   PermissionMode,
-  QuickChatMode,
+  SessionStartMode,
   SessionSummary,
   SettingsSection,
   StoredMessage,
@@ -55,7 +55,7 @@ export interface AppShellCommandListOptions {
   closePalette: () => void;
   composerRef: RefBox<ComposerAppendHandle | null>;
   createSession: () => void;
-  startModeSession: (mode: QuickChatMode) => Promise<boolean>;
+  startModeSession: (mode: SessionStartMode) => Promise<boolean>;
   isComposerImportOwnerActive: (owner: ComposerImportOwner) => boolean;
   openHelp: () => void;
   openPlanReminderForm: () => void;
