@@ -381,7 +381,7 @@ describe('createOnboardingService.clearMilestone — strict validation', () => {
   it('clears one milestone and returns a fresh snapshot', async () => {
     let stored: OnboardingMilestone[] = [
       { id: 'first_chat_sent', completedAt: 1 },
-      { id: 'first_run_suggestion_workspace_map', skippedAt: 2 },
+      { id: 'first_model_swap', skippedAt: 2 },
     ];
     const service = createOnboardingService(
       fakeDeps({
@@ -396,7 +396,7 @@ describe('createOnboardingService.clearMilestone — strict validation', () => {
       }),
     );
 
-    const snapshot = await service.clearMilestone('first_run_suggestion_workspace_map');
+    const snapshot = await service.clearMilestone('first_model_swap');
 
     assert.equal(snapshot.state.kind, 'ready_empty');
     assert.deepEqual(snapshot.milestones, [{ id: 'first_chat_sent', completedAt: 1 }]);

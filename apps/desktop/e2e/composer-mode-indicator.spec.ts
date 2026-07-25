@@ -34,9 +34,9 @@ async function enableMode(
 test('Plan and Swarm indicators match composer controls and close directly', async ({
   window: page,
 }) => {
-  const quickChat = page.locator('.maka-composer-textarea');
-  await quickChat.fill('open composer');
-  await quickChat.press('Enter');
+  const firstSend = page.locator('.maka-composer-textarea');
+  await firstSend.fill('open composer');
+  await firstSend.press('Enter');
   await expect(page.getByText(/Fake backend received: open composer/)).toBeVisible();
 
   const permissionTrigger = page.locator(

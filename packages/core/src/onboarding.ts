@@ -206,7 +206,12 @@ function hasHistory(sessions: ReadonlyArray<SessionSummary>): boolean {
 /**
  * Closed enum of milestones the onboarding flow can track. Adding a
  * new milestone requires extending this list AND the matching UI
- * surface that drives it.
+ * surface that drives it. The rule runs both ways: #1433 deleted the
+ * first-run task-suggestion cards, so the four
+ * `first_run_suggestion_*` ids went with them rather than lingering
+ * as a list nothing reads. Removal is safe for already-persisted
+ * settings — `sanitizeOnboardingMilestones()` drops ids outside this
+ * enum instead of rejecting the file.
  *
  * Persisted in `settings.json` (new `onboarding` section, PR110b).
  * Renderer must NEVER persist anything else under a milestone — see
@@ -219,10 +224,6 @@ export const ONBOARDING_MILESTONE_IDS = [
   'first_personalization',
   'first_model_swap',
   'first_artifact_open',
-  'first_run_suggestion_workspace_map',
-  'first_run_suggestion_deep_research',
-  'first_run_suggestion_file_organize',
-  'first_run_suggestion_web_research',
 ] as const;
 
 export type OnboardingMilestoneId = (typeof ONBOARDING_MILESTONE_IDS)[number];

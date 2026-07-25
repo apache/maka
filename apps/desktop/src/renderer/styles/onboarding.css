@@ -69,16 +69,6 @@
   padding-top: clamp(var(--space-3), 2vh, var(--space-6));
 }
 
-/* PR-READY-EMPTY-FOLD-0: mirror PR-FIRSTRUN-FOLD-0 for the ready_empty
-   hero ("今天想让 Maka 帮你做什么？"). The base home-surface rule stacks
-   chatContent clamp(72px,10vh,116px) + onboarding-stack clamp(40px,7vh,76px)
-   and centers vertically, which leaves a 100~190px top void on a tall
-   window. PR #436 flattened only .maka-firstrun and intentionally kept the
-   other states' centered rhythm; ready_empty is the actual landing page
-   once a model is configured, so we give it the same fold-flattening so
-   the hero + quickChat + first-run checklist all sit near the top instead
-   of floating mid-window. min-height:0 lets the stack size to content so
-
 /* PR-FRONTEND-AUDIT-CLEANUP-0 F1 (WAWQAQ msg `dde696a1`): the earlier
    `maka-agents-fade-in var(--duration-base)` block + nth-child delay ladder was
    completely overridden by the `maka-card-enter var(--duration-large)` block below,
@@ -405,9 +395,6 @@
   background: var(--foreground-5, oklch(from var(--foreground) l c h / 0.06));
   color: var(--foreground-secondary);
 }
-
-/* Quick Chat composer (ready_empty branch). Looks similar to the
-   main composer but lives inside the hero card so the first-run
 
 /* @kenji PR110c review: loading slot rendered while the first
    onboarding snapshot resolves. Empty visual — just blocks the

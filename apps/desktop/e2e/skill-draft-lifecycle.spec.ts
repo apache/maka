@@ -9,9 +9,9 @@ async function createStarterSkill(page: Page): Promise<void> {
 }
 
 async function seedEditableTurn(page: Page): Promise<void> {
-  const quickChat = page.locator('.maka-composer-textarea');
-  await quickChat.fill('original message');
-  await quickChat.press('Enter');
+  const firstSend = page.locator('.maka-composer-textarea');
+  await firstSend.fill('original message');
+  await firstSend.press('Enter');
   await expect(page.getByText(/Fake backend received: original message/)).toBeVisible();
 }
 

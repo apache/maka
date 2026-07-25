@@ -73,7 +73,7 @@ const ONBOARDING_COPY_BY_LOCALE: UiCatalog<OnboardingCatalog> = {
       needs_default_connection: [
         { label: '已有可用连接', detail: '至少一个真实模型连接已经通过基础检查。', state: 'done' },
         { label: '设为默认', detail: '选择新会话默认使用的连接，避免发送时猜测。', state: 'active' },
-        { label: '开始对话', detail: '默认连接生效后，首屏会切换到快速输入。', state: 'pending' },
+        { label: '开始对话', detail: '默认连接生效后，这一屏会让位给下方的消息输入框。', state: 'pending' },
       ],
       needs_connection_credentials: [
         { label: '连接已选定', detail: '默认连接已定位，接下来只处理认证。', state: 'done' },
@@ -83,7 +83,7 @@ const ONBOARDING_COPY_BY_LOCALE: UiCatalog<OnboardingCatalog> = {
       needs_default_model: [
         { label: '认证已就绪', detail: '连接已经能访问供应商，下一步是模型选择。', state: 'done' },
         { label: '选择聊天模型', detail: '从实时模型列表里选一个可发送对话的模型。', state: 'active' },
-        { label: '刷新检测', detail: '保存后回到这里刷新，Maka 会切到快速输入。', state: 'pending' },
+        { label: '刷新检测', detail: '保存后回到这里刷新，Maka 会把这一屏换成消息输入框。', state: 'pending' },
       ],
       blocked: [
         { label: '连接测试失败', detail: '现有真实连接都还不能稳定发送。', state: 'warning' },
@@ -154,7 +154,7 @@ const ONBOARDING_COPY_BY_LOCALE: UiCatalog<OnboardingCatalog> = {
       needs_default_connection: [
         { label: 'Connection available', detail: 'At least one real model connection passed its basic checks.', state: 'done' },
         { label: 'Set as default', detail: 'Choose the connection new sessions use by default.', state: 'active' },
-        { label: 'Start a conversation', detail: 'Once saved, this screen switches to Quick Chat.', state: 'pending' },
+        { label: 'Start a conversation', detail: 'Once saved, this screen gives way to the message input below.', state: 'pending' },
       ],
       needs_connection_credentials: [
         { label: 'Connection selected', detail: 'The default connection is known; only authentication remains.', state: 'done' },
@@ -164,7 +164,7 @@ const ONBOARDING_COPY_BY_LOCALE: UiCatalog<OnboardingCatalog> = {
       needs_default_model: [
         { label: 'Authentication ready', detail: 'The provider is reachable; the next step is model selection.', state: 'done' },
         { label: 'Choose a chat model', detail: 'Select a conversation-capable model from the live model list.', state: 'active' },
-        { label: 'Refresh status', detail: 'Save, return here, and Maka will switch to Quick Chat.', state: 'pending' },
+        { label: 'Refresh status', detail: 'Save, return here, and Maka will swap this screen for the message input.', state: 'pending' },
       ],
       blocked: [
         { label: 'Connection tests failed', detail: 'None of the configured connections can send reliably yet.', state: 'warning' },
