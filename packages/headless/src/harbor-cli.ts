@@ -41,6 +41,7 @@ import { taskRunLocator } from './task-run-identity.js';
 import { requireProviderCredentialEnv } from './provider-env.js';
 import { createProviderEnvFetch, type ProviderEnvFetch } from './provider-env-fetch.js';
 import { resolveHeadlessSystemPrompt } from './system-prompts.js';
+import { booleanEnv } from './headless-run-env.js';
 
 type HarborMode = 'cell' | 'task-run';
 type HarborIsolationMode = 'none' | 'harbor-local' | 'harbor-http';
@@ -425,7 +426,9 @@ export async function resolveHarborRunOptions(
     env,
     backend,
     heavyTask: parsed.bools['heavy-task'] || truthyEnv(env.MAKA_HEAVY_TASK_MODE),
-    economyTask: parsed.bools['economy-task'] || truthyEnv(env.MAKA_ECONOMY_TASK_MODE),
+    economyTask: parsed.bools['economy-task']
+      ? true
+      : booleanEnv(env.MAKA_ECONOMY_TASK_MODE, 'MAKA_ECONOMY_TASK_MODE'),
   });
   const realBackendIsolation = buildIsolation(isolation, env, workdir, outDir);
   const providerEnvFetch = backend === 'ai-sdk' ? createProviderEnvFetch(env) : undefined;
@@ -551,9 +554,20 @@ function buildConfig(input: {
   env: RunHarborCellEnv;
   backend: BackendKind;
   heavyTask: boolean;
-  economyTask: boolean;
+  economyTask: boolean | undefined;
 }): Config {
   const thinkingLevel = reasoningEffortFromEnv(input.env.MAKA_REASONING_EFFORT);
+  const economyTaskMode =
+    input.economyTask === undefined
+      ? {}
+      : {
+          economyTaskMode: {
+            enabled: input.economyTask,
+            reason: input.economyTask
+              ? 'maka eval harbor run --economy-task'
+              : 'maka eval harbor run MAKA_ECONOMY_TASK_MODE=false',
+          },
+        };
   if (input.backend === 'fake') {
     return {
       id: input.parsed.flags['config-id'] ?? input.env.MAKA_CONFIG_ID ?? 'harbor-fake',
@@ -564,9 +578,7 @@ function buildConfig(input: {
       ...(input.heavyTask
         ? { heavyTaskMode: { enabled: true, reason: 'maka eval harbor run --heavy-task' } }
         : {}),
-      ...(input.economyTask
-        ? { economyTaskMode: { enabled: true, reason: 'maka eval harbor run --economy-task' } }
-        : {}),
+      ...economyTaskMode,
     };
   }
   if (input.backend !== 'ai-sdk') {
@@ -591,9 +603,7 @@ function buildConfig(input: {
     ...(input.heavyTask
       ? { heavyTaskMode: { enabled: true, reason: 'maka eval harbor run --heavy-task' } }
       : {}),
-    ...(input.economyTask
-      ? { economyTaskMode: { enabled: true, reason: 'maka eval harbor run --economy-task' } }
-      : {}),
+    ...economyTaskMode,
   };
 }
 

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, test, afterEach } from 'node:test';
+import { resolveEconomyTaskMode } from '../economy-task-policy.js';
 import { resolveHarborCellAiSdkEnv } from '../harbor-cell.js';
 import { applyConnectionDefaults, resolveHarborRunOptions } from '../harbor-cli.js';
 
@@ -433,6 +434,23 @@ describe('applyConnectionDefaults', () => {
 });
 
 describe('resolveHarborRunOptions backend guard', () => {
+  test('preserves an explicit economy-task disable over instruction signals', async () => {
+    const opts = await resolveHarborRunOptions(
+      ['--backend', 'fake', '--instruction', 'summarize the log files'],
+      { MAKA_ECONOMY_TASK_MODE: 'false' },
+    );
+
+    const selection = resolveEconomyTaskMode(opts.config, {
+      id: 'economy-signal-task',
+      instruction: opts.instruction,
+      workspaceDir: '/workspace',
+      verification: { command: 'true', protectedPaths: [] },
+    });
+
+    assert.equal(selection.enabled, false);
+    assert.equal(selection.triggerSource, 'config');
+  });
+
   test('wires an explicit environment-proxy fetch into real container backends', async () => {
     const opts = await resolveHarborRunOptions(
       ['--instruction', 'test', '--isolation', 'harbor-local'],
