@@ -1,6 +1,7 @@
 # Maka
 
 [![CI](https://github.com/Maka-Agent/maka-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Maka-Agent/maka-agent/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 [![docs](https://img.shields.io/badge/docs-English-blue?logo=googletranslate&logoColor=white)](./README.md)
 
 ![Maka——你的工作，你的 Agent。](./.github/assets/maka-hero.zh-CN.png)
@@ -225,3 +226,8 @@ npm --workspace @maka/desktop run smoke:real-window
 - [后端架构总览](./ARCHITECTURE.zh-CN.md)
 - [产品设计](./DESIGN.md)
 - [安全政策](./SECURITY.md)
+
+## 开源协议
+
+Maka 使用 [Apache License 2.0](./LICENSE) 开源，归属信息见
+[NOTICE](./NOTICE)。第三方组件仍分别适用其自身的许可证与声明。

@@ -1,6 +1,7 @@
 # Maka
 
 [![CI](https://github.com/Maka-Agent/maka-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Maka-Agent/maka-agent/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 [![docs](https://img.shields.io/badge/docs-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-blue?logo=googletranslate&logoColor=white)](./README.zh-CN.md)
 
 ![Maka — Your work. Your agent.](./.github/assets/maka-hero.en.png)
@@ -227,3 +228,9 @@ Before submitting code, run typecheck, build, and focused tests proportionate to
 - [Backend architecture](./ARCHITECTURE.md)
 - [Product design](./DESIGN.md)
 - [Security policy](./SECURITY.md)
+
+## License
+
+Maka is licensed under the [Apache License 2.0](./LICENSE). See
+[NOTICE](./NOTICE) for attribution information. Third-party components remain
+subject to their respective licenses and notices.

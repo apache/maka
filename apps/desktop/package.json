@@ -2,6 +2,7 @@
   "name": "@maka/desktop",
   "productName": "Maka",
   "version": "0.1.0",
+  "license": "Apache-2.0",
   "private": true,
   "type": "module",
   "main": "dist/main/main.js",
