@@ -94,10 +94,17 @@
     gap: var(--space-3);
   }
 
+/* #1361: `min-width: 0` + a break opportunity on the id. Without them the
+   heading column could not shrink below its widest unbreakable child — the
+   monospace capability id (`office_documents`) — so the readiness Chip on the
+   other end of the space-between row was pushed past the card edge (33px of
+   overflow at the 480px floor). */
+
 .settingsCapabilityHeading {
     display: flex;
     flex-direction: column;
     gap: var(--space-0-5);
+    min-width: 0;
   }
 
 .settingsCapabilityHeading strong {
@@ -109,6 +116,7 @@
     font-family: var(--font-mono);
     font-size: var(--font-size-caption);
     color: var(--muted-foreground);
+    overflow-wrap: anywhere;
   }
 
 .settingsCapabilityDetail {
@@ -126,7 +134,12 @@
 .settingsCapabilityLayers {
     margin: 0;
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    /* #1361: `minmax(150px, 1fr)` is a hard floor — once the content column is
+       narrower than 150px (the 480px window floor leaves ~118px here) the single
+       track still claims 150px and overflows the row. `min(150px, 100%)` keeps
+       the 150px preference while letting the track fall back to the available
+       width. */
+    grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr));
     gap: var(--space-1-5) var(--space-4);
   }
 
@@ -230,12 +243,19 @@
     background: oklch(from var(--info) l c h / 0.10);
   }
 
+/* #1361: `min-width: 0` on the guidance stack and its tracks. A grid item
+   defaults to a `min-content` floor, so the long install command and the
+   action buttons inside propagated their intrinsic width back up and burst the
+   capability row. */
+
 .settingsCapabilityGuidance {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: var(--space-1-5);
     padding: var(--space-2) var(--space-2-5);
     border: var(--border-width-hairline) solid var(--border);
     background: var(--foreground-3);
+    min-width: 0;
   }
 
 .settingsCapabilityGuidance > span {
@@ -254,8 +274,10 @@
 
 .settingsCapabilityGuidanceActions {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: var(--space-2);
     padding-top: var(--space-0-5);
+    min-width: 0;
   }
 
 .settingsCapabilityGuidanceActions code {
@@ -386,10 +408,17 @@
     flex-wrap: wrap;
   }
 
+/* #1361: the heading wraps (`flex-wrap: wrap`), but a long permission name is
+   one unbreakable flex item — "自动化（Apple Events）" overflowed the row by
+   15px at the 480px floor because it could not shrink and had nowhere to break.
+   `min-width: 0` lets it shrink; `overflow-wrap` gives it the break. */
+
 .settingsOsPermissionHeading strong {
     font-size: var(--font-size-heading);
     font-weight: var(--font-weight-semibold);
     color: var(--foreground);
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
 .settingsOsPermissionPurpose {
@@ -398,9 +427,13 @@
     line-height: var(--leading-normal);
   }
 
+/* #1361: `flex-wrap` so the "影响功能" pill and the impact sentence can break
+   onto separate lines instead of overflowing the row together. */
+
 .settingsOsPermissionImpact {
     display: inline-flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: var(--space-1-5);
     font-size: var(--font-size-ui);
     color: var(--foreground-secondary);
@@ -458,7 +491,13 @@
 
 .settingsPermissionSummary {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    /* #1361: was `repeat(4, minmax(0, 1fr))` — see the matching note on
+       `.settingsHealthSummary`. Four hard tracks squeezed each tile to ~41px at
+       the 480px window floor, folding "未知 / 不支持" into a column of single
+       characters. `auto-fit` keeps the four even tracks at full width and drops
+       to two readable columns when narrow. The 96px floor is the wider one of
+       the two summaries because these labels are longer. */
+    grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
     gap: var(--space-2);
   }
 
@@ -471,6 +510,98 @@
   .settingsCapabilityList:not([data-diagnostics-open="true"]) .settingsCapabilityOsPermissions {
     display: none;
   }
+
+/* #1361: at the 480px window floor the fixed Settings navigation leaves a
+   ~190px content column, and neither header's action cluster shrinks (the page
+   header carries a last-read timestamp + re-detect button; the capabilities
+   header carries the diagnostics toggle). On one row they starved the
+   title/subtitle column to a few pixels — stack both instead, matching the
+   Remote Access page's treatment at this breakpoint. */
+@media (max-width: 620px) {
+  .settingsPermissionPage > [data-slot="section-header"],
+  .settingsPermissionSectionHeader {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  /* The row's `auto` actions track wins the width contest against the body's
+     `minmax(0, 1fr)`: at the 480px floor the two grant buttons claimed the
+     whole 86px and squeezed the body column to literally 0px, so exactly the
+     rows that need action ("等待授权" / "已拒绝") hid *which* permission they
+     were about — only an icon and two buttons remained. Give the actions their
+     own row so the body keeps the full column. That also leaves room for the
+     widest status Badge ("当前平台不支持", ~101px intrinsic and
+     `whitespace-nowrap` by primitive contract), which previously overflowed
+     the 86px body by 15px. */
+  .settingsOsPermissionRow {
+    grid-template-columns: 36px minmax(0, 1fr);
+    row-gap: var(--space-2-5);
+  }
+
+  .settingsOsPermissionActions {
+    grid-column: 2 / -1;
+    justify-content: flex-start;
+  }
+
+  /* The action cluster is `shrink-0` by primitive contract, and the last-read
+     timestamp inside it is `whitespace-nowrap` — together ~174px intrinsic,
+     wider than the whole content column. Let the cluster wrap instead. */
+  .settingsPermissionPage > [data-slot="section-header"] [data-slot="section-header-action"],
+  .settingsPermissionSectionHeader [data-slot="section-header-action"] {
+    flex-wrap: wrap;
+  }
+
+  /* Same space-between squeeze as the OS rows: the readiness Chip does not
+     shrink, so it starved the capability name + id column. Stack them. */
+  .settingsCapabilityHeader {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--space-1-5);
+  }
+}
+
+/* Below ~540px the content column no longer fits the body next to the 36px
+   decorative icon: the widest status Badge alone is ~101px intrinsic. The icon
+   is `aria-hidden` chrome, so it yields first — the same trade the Remote
+   Access page makes when it drops the redundant chevron at its narrow
+   breakpoint. Everything textual keeps the full column. */
+@media (max-width: 540px) {
+  .settingsOsPermissionRow {
+    grid-template-columns: minmax(0, 1fr);
+    padding-inline: var(--space-2-5);
+  }
+
+  .settingsOsPermissionIcon {
+    display: none;
+  }
+
+  .settingsOsPermissionActions {
+    grid-column: 1 / -1;
+  }
+
+  .settingsCapabilityRow {
+    padding-inline: var(--space-2-5);
+  }
+}
+
+/* #1361: the OfficeCLI guidance actions are the widest thing on the page —
+   "复制 macOS/Linux 安装命令" is ~193px intrinsic against a ~96px content
+   column at the 480px floor. Button is a fixed-height (`h-8`) `shrink-0`
+   inline-flex, so on its own it neither shrinks nor wraps and the overflow
+   propagated all the way up through the guidance block to the capability list.
+   Allow these two to shrink and grow taller rather than clipping the label —
+   the install command itself keeps its own horizontal scroll (`code` above is
+   deliberately `white-space: nowrap; overflow: auto`). */
+@media (max-width: 620px) {
+  .settingsCapabilityGuidanceActions > div > * {
+    min-width: 0;
+    flex-shrink: 1;
+    height: auto;
+    min-height: 2rem;
+    white-space: normal;
+  }
+}
 
 .settingsPermissionFootnote {
     margin: 0;

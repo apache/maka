@@ -102,6 +102,148 @@ test('open gateway metric values stay contained for long addresses', async ({ wi
   ).toEqual({ contained: true, value: 'http://127.0.0.1:3939' });
 });
 
+/**
+ * #1361 — the Permissions and Health summary strips were fixed 4- and 5-track
+ * grids. At the sanitized window floor (`SAFE_MIN_WIDTH` = 480) that divided the
+ * narrow content column into ~30-40px slivers: the Health tiles ended up with a
+ * 4px content box, so even a single digit overflowed. Same family as the #1304
+ * Open Gateway overflow — #1335 taught StatTile to wrap, but a tile squeezed
+ * below one character wide has nothing left to wrap into.
+ *
+ * Locks the outcome rather than the pixels: tiles fold to fewer, readable
+ * tracks and nothing overflows horizontally.
+ */
+async function openSettings(page: import('@playwright/test').Page) {
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  await page.getByRole('button', { name: '设置' }).click();
+  return page.getByRole('main', { name: '设置内容' });
+}
+
+/** Real track widths, with `auto-fit`'s collapsed 0px tracks filtered out. */
+function summaryGeometry(summary: ReturnType<import('@playwright/test').Page['locator']>) {
+  return summary.evaluate((element) => {
+    const tracks = getComputedStyle(element)
+      .gridTemplateColumns.trim()
+      .split(/\s+/)
+      .map((track) => Number.parseFloat(track))
+      .filter((track) => track > 0);
+    return {
+      trackCount: tracks.length,
+      narrowestTrack: Math.round(Math.min(...tracks)),
+      tileCount: element.querySelectorAll('[data-slot="stat-tile"]').length,
+      valuesContained: Array.from(
+        element.querySelectorAll('[data-slot="stat-tile-value"]'),
+      ).every((value) => value.scrollWidth <= value.clientWidth),
+    };
+  });
+}
+
+test('permission and health summary tiles stay readable at the window floor', async ({ window: page }) => {
+  await page.setViewportSize({ width: 480, height: 900 });
+  const settings = await openSettings(page);
+
+  await settings.getByRole('button', { name: '权限与能力', exact: true }).click();
+  await expect(settings.getByRole('heading', { name: '系统权限' })).toBeVisible();
+
+  const permissionSummary = settings.locator('.settingsPermissionSummary');
+  await expect(permissionSummary).toBeVisible();
+  await expect.poll(async () => {
+    const { trackCount, narrowestTrack, valuesContained } = await summaryGeometry(permissionSummary);
+    return {
+      foldedToFewTracks: trackCount <= 2,
+      tracksStayLegible: narrowestTrack >= 96,
+      valuesContained,
+    };
+  }).toEqual({ foldedToFewTracks: true, tracksStayLegible: true, valuesContained: true });
+
+  // The row's `auto` actions track used to beat the body's `minmax(0, 1fr)` and
+  // squeeze it to literally 0px, so the rows that needed action were the ones
+  // that stopped saying which permission they were about.
+  const permissionBodies = settings.locator('.settingsOsPermissionBody');
+  await expect(permissionBodies.first()).toBeVisible();
+  await expect.poll(
+    () =>
+      permissionBodies.evaluateAll((elements) =>
+        elements.every((element) => element.getBoundingClientRect().width >= 96),
+      ),
+  ).toBe(true);
+
+  await expect.poll(
+    () => settings.evaluate((element) => element.scrollWidth <= element.clientWidth),
+  ).toBe(true);
+
+  await settings.getByRole('button', { name: '健康', exact: true }).click();
+  const healthSummary = settings.locator('.settingsHealthSummary');
+  await expect(healthSummary).toBeVisible();
+  await expect.poll(async () => {
+    const { trackCount, narrowestTrack, valuesContained } = await summaryGeometry(healthSummary);
+    return {
+      foldedToFewTracks: trackCount <= 2,
+      tracksStayLegible: narrowestTrack >= 80,
+      valuesContained,
+    };
+  }).toEqual({ foldedToFewTracks: true, tracksStayLegible: true, valuesContained: true });
+
+  await expect.poll(
+    () => settings.evaluate((element) => element.scrollWidth <= element.clientWidth),
+  ).toBe(true);
+});
+
+test('permission and health summaries keep one track per metric when wide', async ({ window: page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const settings = await openSettings(page);
+
+  // `auto-fit` must not cost the full-width layout: one track per metric.
+  await settings.getByRole('button', { name: '权限与能力', exact: true }).click();
+  await expect(settings.locator('.settingsPermissionSummary')).toBeVisible();
+  await expect.poll(async () => {
+    const { trackCount, tileCount } = await summaryGeometry(
+      settings.locator('.settingsPermissionSummary'),
+    );
+    return { trackCount, tileCount };
+  }).toEqual({ trackCount: 4, tileCount: 4 });
+
+  await settings.getByRole('button', { name: '健康', exact: true }).click();
+  await expect(settings.locator('.settingsHealthSummary')).toBeVisible();
+  await expect.poll(async () => {
+    const { trackCount, tileCount } = await summaryGeometry(
+      settings.locator('.settingsHealthSummary'),
+    );
+    return { trackCount, tileCount };
+  }).toEqual({ trackCount: 5, tileCount: 5 });
+});
+
+test('capability diagnostics stay contained when expanded at the window floor', async ({ window: page }) => {
+  await page.setViewportSize({ width: 480, height: 900 });
+  const settings = await openSettings(page);
+  await settings.getByRole('button', { name: '权限与能力', exact: true }).click();
+
+  await settings.getByRole('button', { name: '展开详情' }).click();
+  const capabilityList = settings.locator('.settingsCapabilityList');
+  await expect(capabilityList).toHaveAttribute('data-diagnostics-open', 'true');
+
+  // The layers grid used to hold a hard `minmax(150px, …)` floor, wider than the
+  // whole content column; the OfficeCLI guidance buttons then pushed the
+  // overflow up through the row. The install command keeps its own scroller.
+  await expect(settings.locator('.settingsCapabilityLayers').first()).toBeVisible();
+  await expect.poll(
+    () =>
+      capabilityList.evaluate((element) => ({
+        listContained: element.scrollWidth <= element.clientWidth,
+        rowsContained: Array.from(element.querySelectorAll('.settingsCapabilityRow')).every(
+          (row) => row.scrollWidth <= row.clientWidth,
+        ),
+        layersContained: Array.from(element.querySelectorAll('.settingsCapabilityLayers')).every(
+          (layers) => layers.scrollWidth <= layers.clientWidth,
+        ),
+      })),
+  ).toEqual({ listContained: true, rowsContained: true, layersContained: true });
+
+  await expect.poll(
+    () => settings.evaluate((element) => element.scrollWidth <= element.clientWidth),
+  ).toBe(true);
+});
+
 test('remote access opens a channel detail from the overview and returns', async ({ window: page }) => {
   await page.getByRole('button', { name: '展开侧边栏' }).click();
   await page.getByRole('button', { name: '设置' }).click();

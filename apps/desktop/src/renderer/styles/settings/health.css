@@ -27,7 +27,15 @@
     margin: 0;
     padding: 0;
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    /* #1361: was `repeat(5, minmax(0, 1fr))`. Five hard tracks kept dividing
+       whatever width they were given, so at the 480px window floor each tile
+       collapsed to ~30px — 4px of content box after padding, which even a
+       single digit overflows. That is the sibling of the #1304 Open Gateway
+       overflow: #1335 taught StatTile to wrap its own text, but a tile squeezed
+       below one character wide has nothing left to wrap into. `auto-fit` still
+       yields five even tracks at full width (only five tiles exist, and 1fr
+       stretches them) while folding to two readable columns when narrow. */
+    grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
     gap: var(--space-2-5);
   }
 
@@ -74,6 +82,51 @@
 .settingsHealthSignalList > li + li {
     border-top: var(--border-width-hairline) solid oklch(from var(--foreground) l c h / 0.06);
   }
+
+/* #1361: at the restored/sanitized 480px window floor (`SAFE_MIN_WIDTH`) the
+   fixed Settings navigation leaves a ~190px content column. The page header's
+   action cluster (read-only badge + last-read timestamp + refresh) never
+   shrinks, so on one row it starved the title/subtitle column down to a few
+   pixels. Stack it instead — same treatment the Remote Access page already
+   applies to its own section headers at this breakpoint. */
+@media (max-width: 620px) {
+  .settingsHealthPage > [data-slot="section-header"] {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  /* The cluster is `shrink-0` by primitive contract and holds three items
+     (read-only badge + nowrap timestamp + refresh), ~239px intrinsic. Stacking
+     the header is not enough on its own — the cluster itself has to wrap. */
+  .settingsHealthPage > [data-slot="section-header"] [data-slot="section-header-action"] {
+    flex-wrap: wrap;
+  }
+
+  /* Blocker badges carry a full sentence ("2 条健康信号会阻塞能力"), ~150px
+     intrinsic — wider than the whole content column at the 480px floor. The row
+     already wraps *between* badges, but that does not help when one badge alone
+     overflows, and `white-space` alone does nothing either: Badge is a
+     `shrink-0` inline-flex with a 22px min-width, so it always takes its
+     max-content width and never feels pressure to wrap. Let these two shrink,
+     then wrap internally.
+
+     Page-level on purpose — Badge's `whitespace-nowrap` + `shrink-0` default is
+     right for the short status labels it normally holds, so the primitive stays
+     as it is. The real oddity is this page putting a sentence in a pill; if the
+     blockers row is ever reworked, prefer a text row over a Badge and this
+     override can go. */
+  .settingsHealthBlockers [data-slot="badge"] {
+    flex-shrink: 1;
+    min-width: 0;
+    /* Badge pins its height (`h-4.5`/`h-5.5`) for single-line pills, so wrapping
+       without releasing that height clips the second line. */
+    height: auto;
+    min-height: 1.125rem; /* Badge's own `sm:h-4.5`, kept as the floor. */
+    padding-block: var(--space-0-5);
+    white-space: normal;
+  }
+}
 
 .settingsHealthFootnote {
     margin: 0;

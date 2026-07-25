@@ -3,7 +3,14 @@ import type { Decorator, Meta, StoryObj } from '@storybook/react-vite';
 import { ToastProvider } from '@maka/ui';
 import type {
   AppSettings,
+  CapabilitySnapshot,
+  CapabilitySnapshotCollection,
+  HealthSignal,
+  HealthSnapshot,
   LlmConnection,
+  OsPermissionSnapshot,
+  OsPermissionState,
+  PermissionSnapshot,
   ProviderType,
   SettingsSection,
   ThemePalette,
@@ -11,7 +18,12 @@ import type {
   UpdateAppSettingsResult,
   UsageStats,
 } from '@maka/core';
-import { createDefaultSettings, DEFAULT_DAILY_REVIEW_CONFIG, mergeSettings } from '@maka/core';
+import {
+  buildHealthSnapshot,
+  createDefaultSettings,
+  DEFAULT_DAILY_REVIEW_CONFIG,
+  mergeSettings,
+} from '@maka/core';
 import { SettingsSurface } from '../../src/renderer/settings/settings-surface';
 import { createUiLocaleUpdateGate } from '../../src/renderer/settings/ui-locale-update-gate';
 import type { ConnectionsBridge } from '../../src/renderer/settings/ProvidersPanel';
@@ -117,6 +129,224 @@ const usageStats: UsageStats = {
   pricing: [{ provider: 'zai-coding-plan', model: 'glm-4.7', inputPerMTokUsd: 0, outputPerMTokUsd: 0 }],
 };
 
+/**
+ * Permission Center / Health Center fixtures.
+ *
+ * These three bridge channels used to answer with empty payloads, which left
+ * both pages unusable as the visual baseline #1303 asks for: `permissions: {}`
+ * crashed the Permission Center outright (the page maps `OS_PERMISSION_IDS`
+ * and main's `buildPermissionSnapshot` always ships a complete record), and an
+ * all-zero health summary rendered five dimmed tiles with nothing under them.
+ *
+ * The fixtures mirror the shape main actually builds, with a deliberately
+ * mixed set of states so tone, wrapping, and the summary grids are all
+ * exercised at once.
+ */
+function makeOsPermission(input: {
+  id: keyof PermissionSnapshot['permissions'];
+  status: OsPermissionState;
+  reason?: string;
+  canRequest?: boolean;
+  canOpenSettings?: boolean;
+}): OsPermissionSnapshot {
+  return {
+    id: input.id,
+    status: input.status,
+    source: 'electron',
+    checkedAt: NOW - 30_000,
+    reason: input.reason,
+    canOpenSettings: input.canOpenSettings ?? input.status !== 'unsupported',
+    canRequest: input.canRequest ?? false,
+  };
+}
+
+const permissionSnapshot: PermissionSnapshot = {
+  checkedAt: NOW - 30_000,
+  platform: STORY_PLATFORM,
+  permissions: {
+    accessibility: makeOsPermission({ id: 'accessibility', status: 'granted' }),
+    screen_recording: makeOsPermission({
+      id: 'screen_recording',
+      status: 'not_determined',
+      canRequest: true,
+    }),
+    microphone: makeOsPermission({
+      id: 'microphone',
+      status: 'denied',
+      reason: '用户在系统设置里拒绝了麦克风访问，语音输入与录音自检都会直接失败。',
+    }),
+    notifications: makeOsPermission({
+      id: 'notifications',
+      status: 'granted',
+      canRequest: true,
+    }),
+    automation: makeOsPermission({
+      id: 'automation',
+      status: 'unsupported',
+      reason: '当前系统版本不暴露自动化授权状态。',
+      canOpenSettings: false,
+    }),
+  },
+};
+
+function makeCapability(input: Partial<CapabilitySnapshot> & Pick<CapabilitySnapshot, 'id' | 'label' | 'readiness'>): CapabilitySnapshot {
+  return {
+    feature: { state: 'enabled', source: 'settings' },
+    configuration: { state: 'present', source: 'settings' },
+    osPermissions: [],
+    actionApproval: { state: 'not_required', source: 'not_applicable' },
+    memoryAcceptance: { state: 'not_applicable', source: 'not_applicable' },
+    runtimeProbe: { state: 'healthy', source: 'runtime_probe', lastCheckedAt: NOW - 60_000 },
+    canRevoke: false,
+    canPause: false,
+    guidance: [],
+    auditEvents: [],
+    updatedAt: NOW - 60_000,
+    ...input,
+  };
+}
+
+const capabilitySnapshot: CapabilitySnapshotCollection = {
+  checkedAt: NOW - 30_000,
+  capabilities: [
+    makeCapability({
+      id: 'computer_use',
+      label: '计算机操作（辅助功能 + 屏幕录制）',
+      readiness: 'degraded',
+      runtimeProbe: {
+        state: 'degraded',
+        source: 'runtime_probe',
+        lastCheckedAt: NOW - 5 * 60_000,
+        reason: 'cua-driver 未响应握手，已回落到只读观察模式。',
+      },
+      osPermissions: [
+        { id: 'accessibility', required: true, status: 'granted' },
+        { id: 'screen_recording', required: true, status: 'not_determined' },
+      ],
+      actionApproval: { state: 'required_per_action', source: 'capability_policy' },
+      guidance: ['前往系统设置授予屏幕录制权限后重新探测。'],
+    }),
+    makeCapability({
+      id: 'voice',
+      label: '语音输入',
+      readiness: 'denied',
+      feature: { state: 'enabled', source: 'settings' },
+      osPermissions: [{ id: 'microphone', required: true, status: 'denied' }],
+      runtimeProbe: { state: 'not_run', source: 'runtime_probe' },
+      guidance: ['麦克风权限已被拒绝，需要在系统设置中重新开启。'],
+    }),
+    makeCapability({
+      id: 'memory_write',
+      label: '记忆写入',
+      readiness: 'enabled',
+      memoryAcceptance: { state: 'accepted', source: 'memory_contract' },
+      auditEvents: ['2026-07-24 10:12 接受了 3 条记忆草稿'],
+    }),
+    makeCapability({
+      id: 'office_documents',
+      label: 'Office 文档处理',
+      readiness: 'not_configured',
+      configuration: {
+        state: 'missing',
+        source: 'runtime',
+        reason: '未检测到 OfficeCLI 可执行文件。',
+      },
+      runtimeProbe: {
+        state: 'not_available',
+        source: 'runtime_probe',
+        reason: 'OfficeCLI 未安装。',
+      },
+      guidance: ['安装 OfficeCLI 后重新探测，或从 Releases 页面下载对应平台的构建产物。'],
+    }),
+  ],
+};
+
+const healthSignals: HealthSignal[] = [
+  {
+    id: 'app:config',
+    label: '应用配置',
+    scope: 'app',
+    layer: 'configuration',
+    status: 'ok',
+    source: 'settings',
+    checkedAt: NOW - 60_000,
+    message: '配置文件可读写，schema 版本为最新。',
+  },
+  {
+    id: 'conn:zai-live',
+    label: 'Z.AI Live',
+    scope: 'llm_connection',
+    layer: 'validation',
+    status: 'ok',
+    source: 'connection_test',
+    checkedAt: NOW - 12 * 60_000,
+    message: '连接测试通过，延迟 210ms。',
+    detail: '验证通过只代表凭据可用，实际可用性仍需运行态探测确认。',
+  },
+  {
+    id: 'conn:openai-review',
+    label: 'OpenAI Review',
+    scope: 'llm_connection',
+    layer: 'validation',
+    status: 'error',
+    source: 'connection_test',
+    checkedAt: NOW - 3 * 60_000,
+    message: '连接测试失败：HTTP 401 invalid_api_key。',
+    detail: '凭据已失效或被吊销，请在「模型」页重新填写 API Key 后再次测试。',
+    blocksSend: true,
+  },
+  {
+    id: 'perm:microphone',
+    label: '麦克风权限',
+    scope: 'capability',
+    layer: 'permission',
+    status: 'warning',
+    source: 'permission_snapshot',
+    checkedAt: NOW - 30_000,
+    message: '麦克风权限已被拒绝。',
+    relatedCapabilityId: 'voice',
+    blocksCapability: true,
+  },
+  {
+    id: 'feature:computer-use',
+    label: '计算机操作',
+    scope: 'capability',
+    layer: 'feature',
+    status: 'info',
+    source: 'capability_snapshot',
+    checkedAt: NOW - 60_000,
+    message: '功能已开启，但仍以逐次审批模式运行。',
+    relatedCapabilityId: 'computer_use',
+  },
+  {
+    id: 'probe:cua-driver',
+    label: 'cua-driver 运行态探测',
+    scope: 'capability',
+    layer: 'runtime_probe',
+    status: 'warning',
+    source: 'runtime_probe',
+    checkedAt: NOW - 5 * 60_000,
+    message: '探测超时，已回落到只读观察模式。',
+    detail: 'cua-driver 未在 3000ms 内完成握手；下一次探测会在功能被调用时自动触发。',
+    relatedCapabilityId: 'computer_use',
+    blocksCapability: true,
+  },
+  {
+    id: 'storage:sessions',
+    label: '会话存储',
+    scope: 'storage',
+    layer: 'storage',
+    status: 'ok',
+    source: 'storage',
+    checkedAt: NOW - 60_000,
+    message: 'SQLite 库可写，WAL 检查点正常。',
+  },
+];
+
+const healthSnapshot: HealthSnapshot = buildHealthSnapshot(NOW - 45_000, healthSignals);
+
+const emptyHealthSnapshot: HealthSnapshot = buildHealthSnapshot(NOW - 45_000, []);
+
 const makaBridge = {
   settings: {
     get: async () => createDefaultSettings(),
@@ -144,11 +374,7 @@ const makaBridge = {
     }),
   },
   health: {
-    getSnapshot: async () => ({
-      checkedAt: NOW,
-      signals: [],
-      summary: { ok: 0, info: 0, warning: 0, error: 0, unknown: 0 },
-    }),
+    getSnapshot: async () => healthSnapshot,
   },
   gateway: {
     status: async () => ({
@@ -163,19 +389,12 @@ const makaBridge = {
     subscribeStatusChanges: () => () => undefined,
   },
   permissions: {
-    getSnapshot: async () => ({
-      checkedAt: NOW,
-      platform: STORY_PLATFORM,
-      permissions: {},
-    }),
+    getSnapshot: async () => permissionSnapshot,
     openSystemSettings: async () => ({ ok: true }),
     requestAccess: async () => ({ ok: true }),
   },
   capabilities: {
-    getSnapshot: async () => ({
-      checkedAt: NOW,
-      capabilities: [],
-    }),
+    getSnapshot: async () => capabilitySnapshot,
   },
   dailyReview: {
     getConfig: async () => DEFAULT_DAILY_REVIEW_CONFIG,
@@ -191,6 +410,13 @@ const makaBridge = {
 } satisfies Record<string, unknown>;
 
 const withSettingsBridge = withScopedMakaBridge(makaBridge);
+
+const withEmptyHealthBridge = withScopedMakaBridge({
+  ...makaBridge,
+  health: {
+    getSnapshot: async () => emptyHealthSnapshot,
+  },
+} satisfies Record<string, unknown>);
 
 type StoryBotStatuses = Awaited<ReturnType<typeof window.maka.settings.bots.listStatuses>>;
 
@@ -522,6 +748,10 @@ export const PermissionCenter: Story = {
 };
 export const HealthCenter: Story = {
   decorators: [withSettingsBridge],
+  render: () => <SettingsStory section="health" />,
+};
+export const HealthCenterEmpty: Story = {
+  decorators: [withEmptyHealthBridge],
   render: () => <SettingsStory section="health" />,
 };
 export const About: Story = {
