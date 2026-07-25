@@ -403,13 +403,15 @@ const makaBridge = {
   },
   quickChat: {
     /**
-     * PR110b: Quick Chat entry. Input is intentionally minimal —
-     * `{ prompt?: string }`. The main process always uses the
-     * derived ready default and never accepts user-supplied
-     * connection/model overrides at this stage (PR110c/d will add
-     * model picker UI).
+     * Open an empty session in a given mode (#1433). Drafting and
+     * sending belong to the one Composer, which creates its own
+     * session on first send; this exists for entry points that must
+     * pick a non-default mode before any text exists, such as the
+     * command palette's Deep Research. The main process always uses
+     * the derived ready default and never accepts user-supplied
+     * connection/model overrides.
      */
-    start(input?: { prompt?: string; mode?: QuickChatMode; skillIds?: string[] }): Promise<QuickChatResult> {
+    start(input?: { mode?: QuickChatMode }): Promise<QuickChatResult> {
       return ipcRenderer.invoke('quickChat:start', input);
     },
   },

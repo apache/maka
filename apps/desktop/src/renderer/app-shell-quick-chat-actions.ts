@@ -3,7 +3,6 @@ import { saveGlobalInputHistoryEntry } from '@maka/ui';
 import type { NavSelection } from '@maka/ui';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
 import { showSessionWorkspaceUnavailableToast } from './session-workspace-errors.js';
-import { showSkillInvocationFeedback } from './skill-invocation-feedback.js';
 
 type ComposerImportOwner = {
   sessionId: string | undefined;
@@ -22,11 +21,13 @@ type ToastApi = {
 };
 
 export interface AppShellQuickChatActions {
-  handleQuickChatSubmit(
-    prompt: string,
-    mode?: QuickChatMode,
-    skillIds?: readonly string[],
-  ): Promise<boolean>;
+  /**
+   * Open an empty session in a non-default mode (#1433). Text and
+   * Skills belong to the Composer, which creates its own session on
+   * first send; this is for entry points that pick the mode before any
+   * text exists, such as the command palette's Deep Research.
+   */
+  handleQuickChatSubmit(mode?: QuickChatMode): Promise<boolean>;
   /** Start a new expert-team session (from the composer "+" menu). */
   handleExpertTeamStart(teamId: string, prompt?: string): Promise<boolean>;
 }
@@ -59,33 +60,19 @@ export function createAppShellQuickChatActions(deps: {
   } = deps;
   const copy = getShellCopy(uiLocale).chatActions;
 
-  async function handleQuickChatSubmit(
-    prompt: string,
-    mode?: QuickChatMode,
-    skillIds?: readonly string[],
-  ): Promise<boolean> {
+  async function handleQuickChatSubmit(mode?: QuickChatMode): Promise<boolean> {
     if (quickChatPendingRef.current) return false;
     const owner = captureComposerImportOwner();
     quickChatPendingRef.current = true;
     setQuickChatPending(true);
     try {
-      const result = await window.maka.quickChat.start({
-        prompt,
-        mode,
-        ...(skillIds && skillIds.length > 0 ? { skillIds: [...skillIds] } : {}),
-      });
+      const result = await window.maka.quickChat.start({ mode });
       if (result.ok) {
-        if (result.skillInvocation && isShellSurfaceOwnerActive(owner)) {
-          showSkillInvocationFeedback(uiLocale, toastApi, result.skillInvocation);
-        }
-        // Save to global input history so the prompt is recallable
-        // from the main Composer via up-arrow navigation.
-        saveGlobalInputHistoryEntry(prompt);
         if (isShellSurfaceOwnerActive(owner)) {
           openSessionInChat(result.sessionId);
         }
         await refreshSessions();
-        if (!prompt.trim() && activeIdRef.current === result.sessionId) {
+        if (activeIdRef.current === result.sessionId) {
           composerRef.current?.focus();
         }
         // Best-effort: mark onboarding completed. Failure must not
@@ -99,12 +86,6 @@ export function createAppShellQuickChatActions(deps: {
         if (isShellSurfaceOwnerActive(owner)) {
           showSessionWorkspaceUnavailableToast(toastApi, uiLocale);
         }
-        return false;
-      } else if (result.reason === 'skill_invocation_failed') {
-        if (isShellSurfaceOwnerActive(owner)) {
-          showSkillInvocationFeedback(uiLocale, toastApi, result.skillInvocation);
-        }
-        await refreshSessions();
         return false;
       } else {
         await refreshSessions();

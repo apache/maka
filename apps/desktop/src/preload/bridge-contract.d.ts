@@ -123,11 +123,10 @@ export type ExpertTeamStartResult =
   | { ok: false; reason: 'send_failed'; message: string };
 
 export type QuickChatResult =
-  | { ok: true; sessionId: string; skillInvocation?: SkillInvocationResult }
+  | { ok: true; sessionId: string }
   | { ok: false; reason: 'setup_required'; state: OnboardingState }
   | { ok: false; reason: 'workspace_unavailable' }
-  | { ok: false; reason: 'skill_invocation_failed'; skillInvocation: SkillInvocationResult }
-  | { ok: false; reason: 'send_failed'; message: string };
+  | { ok: false; reason: 'create_failed'; message: string };
 
 export interface OnboardingSnapshot {
   state: OnboardingState;
@@ -338,7 +337,7 @@ export interface MakaBridge {
     clearMilestone(id: OnboardingMilestoneId): Promise<OnboardingSnapshot>;
   };
   quickChat: {
-    start(input?: { prompt?: string; mode?: QuickChatMode; skillIds?: string[] }): Promise<QuickChatResult>;
+    start(input?: { mode?: QuickChatMode }): Promise<QuickChatResult>;
   };
   expertTeam: {
     list(): Promise<{ teams: ExpertTeamSummary[] }>;

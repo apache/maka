@@ -1212,26 +1212,6 @@ async function handleQuickChatStart(
       });
     },
     emitCreated: (sessionId) => emitSessionsChanged('created', sessionId),
-    ensureCanSend: (sessionId) => ensureSessionCanSend(sessionId),
-    prepareSkillInvocation: (sessionId, text, skillIds) =>
-      prepareDesktopSkillInvocation(sessionId, text, skillIds),
-    removeSession: (sessionId) => runtime.remove(sessionId),
-    sendFirstMessage: async (sessionId, text, displayText) => {
-      // @xuan PR110b: do NOT return the turnId — its lifetime / id
-      // ownership belongs to SessionManager + the eventual
-      // sessions:event stream, not to Quick Chat. The user message
-      // id is generated inside `runtime.sendMessage()`.
-      const turnId = randomUUID();
-      const iterator = runtime.sendMessage(sessionId, {
-        turnId,
-        text,
-        ...(displayText ? { displayText } : {}),
-      });
-      void streamEvents(sessionId, iterator, {
-        turnId,
-        goalBoundary: 'external',
-      });
-    },
   });
 }
 

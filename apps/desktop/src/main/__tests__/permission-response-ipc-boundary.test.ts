@@ -524,7 +524,7 @@ describe('permission response IPC boundary', () => {
       /const owner = captureComposerImportOwner\(\);[\s\S]*quickChatPendingRef\.current = true/,
       'quick chat must capture the current shell surface before async session creation',
     );
-    const quickChat = quickChatHandler[0].match(/if \(result\.ok\) \{[\s\S]*?if \(!prompt\.trim\(\) && activeIdRef\.current === result\.sessionId\) \{/);
+    const quickChat = quickChatHandler[0].match(/if \(result\.ok\) \{[\s\S]*?if \(activeIdRef\.current === result\.sessionId\) \{/);
     assert.ok(quickChat, 'quick chat success branch must exist');
     assert.match(
       quickChat[0],
@@ -544,17 +544,17 @@ describe('permission response IPC boundary', () => {
     assert.match(
       quickChatHandler[0],
       /return true;/,
-      'quick chat must report success so the first-run composer can clear its draft only after a session is created',
+      'quick chat must report success so the caller knows the session exists',
     );
     assert.match(
       quickChatHandler[0],
       /result\.reason === 'setup_required'[\s\S]*?return false;/,
-      'setup failures must return false so the first-run composer keeps the user draft',
+      'setup failures must return false so the caller can route the user to setup',
     );
     assert.match(
       quickChatHandler[0],
       /if \(isShellSurfaceOwnerActive\(owner\)\) \{[\s\S]*toastApi\.error\([\s\S]*copy\.quickChatFailedTitle,[\s\S]*uiLocale === 'zh' \? result\.message : copy\.quickChatFailedFallback,[\s\S]*\);[\s\S]*\}[\s\S]*?return false;/,
-      'send failures must return false and localize the toast while the launching surface is still active',
+      'create failures must return false and localize the toast while the launching surface is still active',
     );
     assert.match(
       quickChatHandler[0],
