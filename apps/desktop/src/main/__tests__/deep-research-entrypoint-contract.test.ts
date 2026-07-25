@@ -24,7 +24,7 @@ describe('deep research command entrypoint contract', () => {
 
     assert.match(
       src,
-      /onStartDeepResearch:\s*async \(\)\s*=>\s*\{[\s\S]*await handleQuickChatSubmit\('deep_research'\);[\s\S]*\}/,
+      /onStartDeepResearch:\s*async \(\)\s*=>\s*\{[\s\S]*await startQuickChatSession\('deep_research'\);[\s\S]*\}/,
       'deep research palette action must open an explore-mode session through the shared Quick Chat path and return the pending promise to the palette',
     );
   });

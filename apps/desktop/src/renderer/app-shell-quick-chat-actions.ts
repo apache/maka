@@ -27,7 +27,7 @@ export interface AppShellQuickChatActions {
    * first send; this is for entry points that pick the mode before any
    * text exists, such as the command palette's Deep Research.
    */
-  handleQuickChatSubmit(mode?: QuickChatMode): Promise<boolean>;
+  startQuickChatSession(mode?: QuickChatMode): Promise<boolean>;
   /** Start a new expert-team session (from the composer "+" menu). */
   handleExpertTeamStart(teamId: string, prompt?: string): Promise<boolean>;
 }
@@ -60,7 +60,7 @@ export function createAppShellQuickChatActions(deps: {
   } = deps;
   const copy = getShellCopy(uiLocale).chatActions;
 
-  async function handleQuickChatSubmit(mode?: QuickChatMode): Promise<boolean> {
+  async function startQuickChatSession(mode?: QuickChatMode): Promise<boolean> {
     if (quickChatPendingRef.current) return false;
     const owner = captureComposerImportOwner();
     quickChatPendingRef.current = true;
@@ -167,5 +167,5 @@ export function createAppShellQuickChatActions(deps: {
     }
   }
 
-  return { handleQuickChatSubmit, handleExpertTeamStart };
+  return { startQuickChatSession, handleExpertTeamStart };
 }

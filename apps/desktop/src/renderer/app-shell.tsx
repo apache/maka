@@ -867,7 +867,7 @@ function AppShellContent({
   const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);
   const [quickChatPending, setQuickChatPending] = useState(false);
   const quickChatPendingRef = useRef(false);
-  const { handleQuickChatSubmit, handleExpertTeamStart } = useStableActions(createAppShellQuickChatActions, {
+  const { startQuickChatSession, handleExpertTeamStart } = useStableActions(createAppShellQuickChatActions, {
     uiLocale,
     activeIdRef,
     captureComposerImportOwner,
@@ -1567,7 +1567,7 @@ function AppShellContent({
     closePalette,
     composerRef,
     createSession,
-    handleQuickChatSubmit,
+    startQuickChatSession,
     isComposerImportOwnerActive,
     openHelp,
     openPlanReminderForm,

@@ -506,9 +506,9 @@ describe('permission response IPC boundary', () => {
       'initial mount should call bootstrapSessions(), not raw refreshSessions(), for boot-only selection',
     );
     const quickChatHandler = renderer.match(
-      /async function handleQuickChatSubmit\([\s\S]*?\): Promise<boolean> \{[\s\S]*?\n  async function handleExpertTeamStart/,
+      /async function startQuickChatSession\([\s\S]*?\): Promise<boolean> \{[\s\S]*?\n  async function handleExpertTeamStart/,
     );
-    assert.ok(quickChatHandler, 'handleQuickChatSubmit() must exist');
+    assert.ok(quickChatHandler, 'startQuickChatSession() must exist');
     assert.match(
       renderer,
       /const quickChatPendingRef = useRef\(false\)/,
@@ -517,7 +517,7 @@ describe('permission response IPC boundary', () => {
     assert.match(
       quickChatHandler[0],
       /if \(quickChatPendingRef\.current\) return false;[\s\S]*?quickChatPendingRef\.current = true/,
-      'quick chat submit must synchronously reject while another start call is in flight',
+      'starting a quick-chat session must synchronously reject while another start call is in flight',
     );
     assert.match(
       quickChatHandler[0],

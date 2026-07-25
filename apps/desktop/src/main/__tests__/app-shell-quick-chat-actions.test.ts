@@ -66,7 +66,7 @@ describe('AppShell quick-entry failure copy', () => {
 
     try {
       const actions = createActions(toasts);
-      assert.equal(await actions.handleQuickChatSubmit('deep_research'), true);
+      assert.equal(await actions.startQuickChatSession('deep_research'), true);
     } finally {
       restoreWindow();
     }
@@ -96,7 +96,7 @@ describe('AppShell quick-entry failure copy', () => {
 
     try {
       const actions = createActions(toasts);
-      assert.equal(await actions.handleQuickChatSubmit(), false);
+      assert.equal(await actions.startQuickChatSession(), false);
       assert.equal(await actions.handleExpertTeamStart('missing'), false);
     } finally {
       restoreWindow();
@@ -118,7 +118,7 @@ describe('AppShell quick-entry failure copy', () => {
 
     try {
       const actions = createActions(toasts);
-      assert.equal(await actions.handleQuickChatSubmit(), false);
+      assert.equal(await actions.startQuickChatSession(), false);
       assert.equal(await actions.handleExpertTeamStart('team'), false);
     } finally {
       restoreWindow();

@@ -60,7 +60,7 @@ function makeOptions(partial: Partial<AppShellCommandListOptions> = {}): AppShel
     closePalette: () => undefined,
     composerRef: { current: null },
     createSession: () => undefined,
-    handleQuickChatSubmit: async () => false,
+    startQuickChatSession: async () => false,
     isComposerImportOwnerActive: () => true,
     openHelp: () => undefined,
     openPlanReminderForm: () => undefined,
