@@ -27,29 +27,42 @@ function readRenderer(relativePath: string): string {
   return readFileSync(join(rendererRoot, relativePath), 'utf8');
 }
 
-describe('onboarding one-time regression — quick chat milestone best-effort', () => {
-  it('setMilestone is called AFTER openSessionInChat and is fire-and-forget with catch', () => {
-    const src = readRenderer('app-shell-session-start-actions.ts');
-    const okBranch = src.match(/if \(result\.ok\) \{[\s\S]*?return true;/)?.[0] ?? '';
-    assert.ok(okBranch, 'must find result.ok branch');
+// #1433: this used to key off `if (result.ok)` — the shape of the deleted
+// `quickChat:start` union. `startModeSession`, the action that replaced quick
+// chat, has no `result.ok` at all, so that single loose regex silently drifted
+// onto `handleExpertTeamStart` and stopped guarding the path it was written
+// for. Both surviving entry points hold the invariant; name each one.
+const MILESTONE_ENTRY_POINTS = [
+  {
+    fn: 'startModeSession',
+    successPath: /const session = await window\.maka\.sessions\.create\([\s\S]*?return true;/,
+  },
+  { fn: 'handleExpertTeamStart', successPath: /if \(result\.ok\) \{[\s\S]*?return true;/ },
+] as const;
 
-    // openSessionInChat must appear before setMilestone in the ok branch.
-    const openIdx = okBranch.indexOf('openSessionInChat');
-    const milestoneIdx = okBranch.indexOf('setMilestone');
-    assert.ok(openIdx >= 0, 'must call openSessionInChat in ok branch');
-    assert.ok(milestoneIdx >= 0, 'must call setMilestone in ok branch');
-    assert.ok(
-      openIdx < milestoneIdx,
-      'openSessionInChat must run BEFORE setMilestone so milestone failure does not block the chat',
-    );
+describe('onboarding one-time regression — session-start milestone best-effort', () => {
+  for (const entry of MILESTONE_ENTRY_POINTS) {
+    it(`${entry.fn} sets the milestone AFTER openSessionInChat, fire-and-forget`, () => {
+      const src = readRenderer('app-shell-session-start-actions.ts');
+      const branch = src.match(entry.successPath)?.[0] ?? '';
+      assert.ok(branch, `must find the success path of ${entry.fn}`);
 
-    // setMilestone must be fire-and-forget (void + .catch).
-    assert.match(
-      okBranch,
-      /void\s+window\.maka\.onboarding\.setMilestone\([^)]+\)\.catch\(\(\)\s*=>\s*\{\}\)/,
-      'setMilestone must be void + .catch(() => {}) so it cannot reject into the outer catch',
-    );
-  });
+      const openIdx = branch.indexOf('openSessionInChat');
+      const milestoneIdx = branch.indexOf('setMilestone');
+      assert.ok(openIdx >= 0, `${entry.fn} must call openSessionInChat on success`);
+      assert.ok(milestoneIdx >= 0, `${entry.fn} must call setMilestone on success`);
+      assert.ok(
+        openIdx < milestoneIdx,
+        'openSessionInChat must run BEFORE setMilestone so milestone failure does not block the chat',
+      );
+
+      assert.match(
+        branch,
+        /void\s+window\.maka\.onboarding\.setMilestone\([^)]+\)\.catch\(\(\)\s*=>\s*\{\}\)/,
+        'setMilestone must be void + .catch(() => {}) so it cannot reject into the outer catch',
+      );
+    });
+  }
 });
 
 describe('onboarding one-time regression — showOnboardingHero sessions gate', () => {

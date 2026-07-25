@@ -48,11 +48,9 @@ const COMPOSER_MAX_HEIGHT = 240;
  * PR-UI-15 (@yuejing 2026-05-22): Composer copy is locale-aware.
  *
  * Audit §3.5 — placeholder + state copy were hardcoded zh and drifted
- * stylistically from the deleted first-run input (which used a
- * long example sentence as the placeholder). Unified style: both
- * surfaces show the same short action-oriented placeholder, and
- * OnboardingHero gets a separate `<small>` example hint below the
- * textarea so first-run users still know what to type.
+ * stylistically from the first-run input that used to sit beside this
+ * one. That second input is gone (#1433), so this placeholder is the
+ * only one a user ever reads: one short, action-oriented line.
  */
 export interface ComposerHandle {
   /** Replace the textarea value and resize, leaving focus on the input. */
