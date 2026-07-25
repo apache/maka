@@ -98,6 +98,65 @@ describe('shell run sandbox denial projection', () => {
   });
 });
 
+describe('PTY flattening for sandbox denial', () => {
+  test('detects denial in PTY scrollback field', () => {
+    const record: ShellRunRecord = {
+      ...failedShellRun(),
+      output: ptyOutput({ scrollback: 'Operation not permitted', screen: '' }),
+      sandboxExecution: { type: 'macos-seatbelt', enforced: true },
+    };
+    assert.equal(terminalContent(record).sandboxDenial?.likely, true);
+  });
+
+  test('detects denial in PTY screen field', () => {
+    const record: ShellRunRecord = {
+      ...failedShellRun(),
+      output: ptyOutput({ scrollback: '', screen: 'sandbox-denied: write' }),
+      sandboxExecution: { type: 'macos-seatbelt', enforced: true },
+    };
+    assert.equal(terminalContent(record).sandboxDenial?.likely, true);
+  });
+
+  test('detects denial in PTY lastAlternateScreen field', () => {
+    const record: ShellRunRecord = {
+      ...failedShellRun(),
+      output: ptyOutput({
+        scrollback: '',
+        screen: '',
+        lastAlternateScreen: 'launching sandbox-exec profile',
+      }),
+      sandboxExecution: { type: 'macos-seatbelt', enforced: true },
+    };
+    assert.equal(terminalContent(record).sandboxDenial?.likely, true);
+  });
+
+  test('does NOT detect denial split across PTY fields (regex cannot cross newline)', () => {
+    // flattenSandboxDenialText joins scrollback + "\n" + screen + "\n" + lastAlt;
+    // the regex branch "sandbox(?:ed)?[^\n]*den(?:y|ied)" uses [^\n]* which cannot
+    // span the newline separator, so "sandbox" in scrollback and "denied" in screen
+    // must NOT be matched together.
+    const record: ShellRunRecord = {
+      ...failedShellRun(),
+      output: ptyOutput({
+        scrollback: 'sandbox setup',
+        screen: 'then denied',
+        lastAlternateScreen: undefined,
+      }),
+      sandboxExecution: { type: 'macos-seatbelt', enforced: true },
+    };
+    assert.equal(terminalContent(record).sandboxDenial, undefined);
+  });
+
+  test('does not flag PTY output when sandbox is not enforced', () => {
+    const record: ShellRunRecord = {
+      ...failedShellRun(),
+      output: ptyOutput({ screen: 'Operation not permitted' }),
+      sandboxExecution: { type: 'macos-seatbelt', enforced: false },
+    };
+    assert.equal(terminalContent(record).sandboxDenial, undefined);
+  });
+});
+
 function failedShellRun(): ShellRunRecord {
   return {
     shellRunId: 'shell-1',

@@ -16,6 +16,7 @@ import { assertAdditionalPermissionProposal } from '../additional-permissions.js
 import { SandboxManager } from '../sandbox/sandbox-manager.js';
 import { LinuxBubblewrapBackend } from '../sandbox/linux-sandbox.js';
 import { MacosSeatbeltBackend } from '../sandbox/macos-seatbelt.js';
+import { SandboxCommandError } from '../sandbox/errors.js';
 import { sandboxEscalationCommandHash } from '../sandbox-escalation.js';
 import type { ShellRunLauncher } from '../shell-tools.js';
 import {
@@ -1234,6 +1235,53 @@ describe('builtin Bash streaming output', () => {
     expect(err?.code).toBe(124);
     expect(err?.stdout).toBe('out-before');
     expect(err?.stderr).toBe('err-before');
+  });
+});
+
+describe('builtin Bash sandbox denial classification', () => {
+  test('throws SandboxCommandError when a sandboxed command emits a denial message', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'maka-bash-sandbox-denial-'));
+    try {
+      const executor = fakeExecutor({
+        exec: async () => ({
+          exitCode: 1,
+          stdout: '',
+          stderr: 'Operation not permitted',
+          timedOut: false,
+          aborted: false,
+        }),
+      });
+      const bash = buildBuiltinTools({
+        executor,
+        permissionProfile: createWorkspaceWritePermissionProfile(),
+        sandboxManager: new SandboxManager([new MacosSeatbeltBackend()]),
+        sandboxPlatform: 'darwin',
+      }).find((candidate) => candidate.name === 'Bash');
+      if (!bash) throw new Error('Bash tool missing');
+
+      let err: unknown = null;
+      try {
+        await bash.impl(
+          { command: 'rm -rf /', timeout_ms: 5_000 },
+          {
+            sessionId: 'session-1',
+            turnId: 'turn-1',
+            cwd,
+            toolCallId: 'tool-1',
+            abortSignal: new AbortController().signal,
+            emitOutput: () => {},
+          },
+        );
+      } catch (e: unknown) {
+        err = e;
+      }
+
+      assert.ok(err instanceof SandboxCommandError, 'expected a SandboxCommandError');
+      assert.equal((err as SandboxCommandError).reason, 'sandbox_denial');
+      assert.equal((err as SandboxCommandError).recoverable, true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 });
 
