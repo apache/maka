@@ -383,9 +383,7 @@ export class SqliteSessionMetadataStore {
       const existingBySource = this.readAgentGraphScheduleUpdateBySourceSync(request.source);
       if (existingBySource) return this.matchAgentGraphScheduleUpdate(existingBySource, request);
       if (this.hasClosedAgentGraphSchedule(request.graphId)) {
-        throw new AgentGraphScheduleUpdateConflictError(
-          'Agent graph schedule is already finished',
-        );
+        throw new AgentGraphScheduleUpdateConflictError('Agent graph schedule is already finished');
       }
       const revision = this.nextAgentGraphScheduleRevision(request.graphId);
       const update: AgentGraphScheduleUpdate = {
