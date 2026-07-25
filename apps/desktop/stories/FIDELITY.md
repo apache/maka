@@ -21,6 +21,18 @@ The annotation is prose on purpose. Its value is that someone traced the path an
 
 A story that mounts the right component inside the wrong wrapper is still unreachable. If the app wraps a surface in a class that owns its height, padding or alignment, the story has to use that wrapper too — otherwise every geometry comparison against the story is measuring the story's own scaffolding.
 
+Import the wrapper rather than retyping its classes. A hand-copied chain drifts the same way a hand-copied convention block does, and it drifts invisibly: `onboarding.stories.tsx` was rewritten once to "the app's chain, class for class", and the rewrite inverted two levels of nesting and dropped a 32px header. Write out only what genuinely cannot be imported, and say in the comment which part that is.
+
+## Derive the fixture, do not assert it
+
+If the runtime computes a field, ask the runtime for it. A story that hardcodes what a classifier would have returned is asserting a fact rather than showing one, and nothing fails when the classifier moves.
+
+`permission-dialog.stories.tsx` spelled out `category` and `reason` for each request. Four of the combinations could not occur: `rm -rf …` classifies as `fs_destructive`, not `shell_unsafe`; `git clean -fdx` is the reverse; WebFetch's reason falls through to `custom`. The stories rendered fine the whole time. They now call `preToolUse`, which also throws when the mode does not prompt at all — an impossible fixture fails where you can see it instead of quietly showing you a screen that does not exist.
+
+## A story that renders nothing is not a story
+
+Components that report by exception return `null` in their healthy state. Three `capability-audit-strip` stories passed all-zero counts and rendered blank panels under confident annotations. "This element is absent from the page" needs no story; delete it and say so where the remaining story explains when the element appears.
+
 ## When the app and a story disagree, one of them is wrong
 
 Fix the story or delete it. Never keep both "the app" and "the story version" of a surface alive; the second one rots silently and takes reviewers with it.
