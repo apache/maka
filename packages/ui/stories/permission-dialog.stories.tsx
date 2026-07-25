@@ -1,6 +1,12 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, fn, userEvent, within } from 'storybook/test';
-import type { PermissionRequestEvent, PermissionResponse, ToolCategory } from '@maka/core';
+import type {
+  PermissionMode,
+  PermissionRequestEvent,
+  PermissionResponse,
+  ToolCategory,
+} from '@maka/core';
+import { preToolUse } from '@maka/core';
 import { PermissionPrompt } from '../src/permission-dialog.js';
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -23,30 +29,56 @@ function PermissionPromptStory(props: Omit<Parameters<typeof PermissionPrompt>[0
 
 const NOW = Date.now();
 
+/**
+ * Build the fixture the way the runtime builds it, by asking the authoritative
+ * classifier (#1433).
+ *
+ * Every request below used to spell out its own `category`, `reason` and
+ * `rememberForTurnAllowed`, and four of them named combinations `preToolUse`
+ * cannot produce: `rm -rf …` reads as `fs_destructive`, not `shell_unsafe`;
+ * `git clean -fdx` reads as `shell_unsafe`, not `fs_destructive`; WebFetch is
+ * `web_read`, whose reason falls through to `custom` because `categoryToReason`
+ * has no `web_read` arm; and `maka_computer` never allows remember-for-turn.
+ * Hand-written fixtures drift silently — a story keeps rendering, it just stops
+ * being the thing it claims to be.
+ *
+ * Only the caller's `mode` is a real input: `custom_tool` prompts in `explore`
+ * and is allowed everywhere else, so a story has to say which session it is in.
+ * If the mode does not actually prompt, this throws where you can see it.
+ */
 function makeRequest(input: {
   requestId: string;
   toolName: string;
-  category: ToolCategory;
-  reason: PermissionRequestEvent['reason'];
   args: unknown;
+  /** The session's permission mode. Defaults to `ask`, the shipped default. */
+  mode?: PermissionMode;
+  /** Trusted runtime hint for custom tools, exactly as the runtime passes it. */
+  categoryHint?: ToolCategory;
   hint?: string;
   ageMs?: number;
-  rememberForTurnAllowed: boolean;
 }): PermissionRequestEvent {
+  const mode = input.mode ?? 'ask';
+  const decision = preToolUse({
+    toolName: input.toolName,
+    args: input.args,
+    mode,
+    turnRemembered: new Set(),
+    ...(input.categoryHint ? { categoryHint: input.categoryHint } : {}),
+  });
+  if (!decision.needsPrompt || !decision.partialRequest) {
+    throw new Error(
+      `${input.toolName} does not prompt in "${mode}" mode — this story shows a prompt the runtime never raises`,
+    );
+  }
   return {
-    kind: 'tool_permission',
+    ...decision.partialRequest,
     id: `evt-${input.requestId}`,
     turnId: `turn-${input.requestId}`,
     type: 'permission_request',
     requestId: input.requestId,
     toolUseId: `${input.requestId}-call`,
-    toolName: input.toolName,
-    category: input.category,
-    reason: input.reason,
-    args: input.args,
     ts: NOW - (input.ageMs ?? 0),
     ...(input.hint ? { hint: input.hint } : {}),
-    rememberForTurnAllowed: input.rememberForTurnAllowed,
   };
 }
 
@@ -74,14 +106,11 @@ const noop = () => undefined;
 const writeStdinRequest = makeRequest({
   requestId: 'req-stdin',
   toolName: 'WriteStdin',
-  category: 'shell_unsafe',
-  reason: 'shell_dangerous',
   args: {
     ref: 'maka://runtime/background-tasks/pty-1',
     input: `password=super-secret ${'diagnostic '.repeat(24)}\u001b[31mrm -rf /tmp/example\r`,
     size: { cols: 120, rows: 40 },
   },
-  rememberForTurnAllowed: false,
 });
 
 function WriteStdinPrompt(props: {
@@ -94,9 +123,10 @@ function WriteStdinPrompt(props: {
   );
 }
 
-// Real path: chat → the agent runs Bash with a destructive command → the prompt takes
-// over the composer slot (chat-composer-region.tsx). This one also carries a hint, which
-// only some requests have.
+// Real path: chat → the agent runs a shell command that is not provably safe → the
+// prompt takes over the composer slot (chat-composer-region.tsx). `shell_unsafe` is the
+// fallback every unrecognized command lands in, so it is the most common shell prompt of
+// all. This one also carries a hint, which only some requests have.
 export const ShellDangerous: Story = {
   render: () => (
     <ComposerSlotBackdrop>
@@ -104,11 +134,8 @@ export const ShellDangerous: Story = {
         request={makeRequest({
           requestId: 'req-shell',
           toolName: 'Bash',
-          category: 'shell_unsafe',
-          reason: 'shell_dangerous',
-          rememberForTurnAllowed: true,
-          args: { command: 'rm -rf node_modules dist && npm ci', timeout_ms: 120000 },
-          hint: '这条命令会删除目录再重装依赖，请确认在正确的项目根目录执行。',
+          args: { command: 'git clean -fdx', timeout_ms: 120000 },
+          hint: '将删除所有未跟踪的文件和目录。',
         })}
         onRespond={noop}
       />
@@ -168,9 +195,6 @@ export const FileWrite: Story = {
         request={makeRequest({
           requestId: 'req-write',
           toolName: 'Write',
-          category: 'file_write',
-          reason: 'file_write',
-          rememberForTurnAllowed: true,
           args: {
             path: 'src/renderer/app-shell.tsx',
             content: `import { AppShell } from "./app-shell";\n\n// ${fileWriteSentinel}\nexport function main() {\n  return <AppShell />;\n}\n`,
@@ -199,9 +223,6 @@ export const FileEdit: Story = {
         request={makeRequest({
           requestId: 'req-edit',
           toolName: 'Edit',
-          category: 'file_write',
-          reason: 'file_write',
-          rememberForTurnAllowed: true,
           args: {
             path: 'packages/ui/src/composer.tsx',
             old_string: 'const placeholder = "给 Maka 发消息…";',
@@ -223,9 +244,6 @@ export const FileEditExpanded: Story = {
         request={makeRequest({
           requestId: 'req-edit-expanded',
           toolName: 'Edit',
-          category: 'file_write',
-          reason: 'file_write',
-          rememberForTurnAllowed: true,
           args: {
             path: 'packages/ui/src/composer.tsx',
             old_string: 'const placeholder = "给 Maka 发消息…";\n'.repeat(18),
@@ -244,8 +262,9 @@ export const FileEditExpanded: Story = {
   },
 };
 
-// Real path: chat → the agent runs a filesystem-destructive shell command (git clean
-// -fdx) → the fs_destructive category of the same prompt.
+// Real path: chat → the agent runs a command matching a filesystem-destructive pattern
+// (`rm -rf`, Remove-Item, …) → the fs_destructive category of the same prompt. The
+// classifier scans every statement segment, so the `&& npm ci` tail does not hide it.
 export const FsDestructive: Story = {
   render: () => (
     <ComposerSlotBackdrop>
@@ -253,11 +272,8 @@ export const FsDestructive: Story = {
         request={makeRequest({
           requestId: 'req-fs',
           toolName: 'Bash',
-          category: 'fs_destructive',
-          reason: 'fs_destructive',
-          rememberForTurnAllowed: true,
-          args: { command: 'git clean -fdx' },
-          hint: '将删除所有未跟踪的文件和目录。',
+          args: { command: 'rm -rf node_modules dist && npm ci' },
+          hint: '这条命令会删除目录再重装依赖，请确认在正确的项目根目录执行。',
         })}
         onRespond={noop}
       />
@@ -274,9 +290,6 @@ export const GitDestructive: Story = {
         request={makeRequest({
           requestId: 'req-git',
           toolName: 'Bash',
-          category: 'git_destructive',
-          reason: 'git_destructive',
-          rememberForTurnAllowed: true,
           args: { command: 'git push --force origin main' },
         })}
         onRespond={noop}
@@ -285,18 +298,17 @@ export const GitDestructive: Story = {
   ),
 };
 
-// Real path: chat → the agent calls WebFetch → the network category, with the URL as the
-// reviewable argument.
-export const Network: Story = {
+// Real path: chat → the agent calls WebFetch (or WebSearch) → the web_read category,
+// with the URL as the reviewable argument. Worth having as its own story because
+// `categoryToReason` has no `web_read` arm: the reason falls through to `custom`, so this
+// prompt renders the generic reason copy rather than a network-specific line.
+export const WebRead: Story = {
   render: () => (
     <ComposerSlotBackdrop>
       <PermissionPromptStory
         request={makeRequest({
           requestId: 'req-net',
           toolName: 'WebFetch',
-          category: 'web_read',
-          reason: 'network',
-          rememberForTurnAllowed: true,
           args: { url: 'https://api.github.com/repos/maka-agent/maka/releases/latest' },
         })}
         onRespond={noop}
@@ -313,9 +325,6 @@ export const Privileged: Story = {
         request={makeRequest({
           requestId: 'req-sudo',
           toolName: 'Bash',
-          category: 'privileged',
-          reason: 'privileged',
-          rememberForTurnAllowed: true,
           args: { command: 'sudo systemctl restart maka-agent' },
         })}
         onRespond={noop}
@@ -332,9 +341,7 @@ export const Browser: Story = {
         request={makeRequest({
           requestId: 'req-browser',
           toolName: 'browser_navigate',
-          category: 'browser',
-          reason: 'browser',
-          rememberForTurnAllowed: true,
+          categoryHint: 'browser',
           args: { url: 'https://example.com', ref: 'main' },
         })}
         onRespond={noop}
@@ -353,9 +360,7 @@ export const ComputerUse: Story = {
         request={makeRequest({
           requestId: 'req-computer-use',
           toolName: 'maka_computer',
-          category: 'computer_use',
-          reason: 'computer_use',
-          rememberForTurnAllowed: true,
+          categoryHint: 'computer_use',
           args: {
             action: 'left_click',
             approvalClass: 'pointer_mutation',
@@ -379,9 +384,7 @@ export const OfficeDocumentEdit: Story = {
         request={makeRequest({
           requestId: 'req-office',
           toolName: 'OfficeDocumentEdit',
-          category: 'file_write',
-          reason: 'file_write',
-          rememberForTurnAllowed: true,
+          categoryHint: 'file_write',
           args: {
             path: 'reports/Q3-roadmap.docx',
             operation: 'replaceText',
@@ -406,9 +409,6 @@ export const StaleRequest: Story = {
         request={makeRequest({
           requestId: 'req-stale',
           toolName: 'Bash',
-          category: 'shell_unsafe',
-          reason: 'shell_dangerous',
-          rememberForTurnAllowed: true,
           args: { command: 'npm run build && npm run test' },
           ageMs: 3 * 60_000,
         })}
@@ -418,29 +418,20 @@ export const StaleRequest: Story = {
   ),
 };
 
-// Real path: the same prompt left past its expiry; the agent has already given up, so
-// the buttons no longer act.
-export const ExpiredRequest: Story = {
-  render: () => (
-    <ComposerSlotBackdrop>
-      <PermissionPromptStory
-        request={makeRequest({
-          requestId: 'req-expired',
-          toolName: 'Write',
-          category: 'file_write',
-          reason: 'file_write',
-          rememberForTurnAllowed: true,
-          args: { path: 'README.md', content: '# Maka' },
-          ageMs: 11 * 60_000,
-        })}
-        onRespond={noop}
-      />
-    </ComposerSlotBackdrop>
-  ),
-};
+// No `expired` story: no user can reach that state. The UI calls a request expired at
+// PERMISSION_REQUEST_EXPIRED_AFTER_MS (10 minutes, permission-request-health.ts), but the
+// runtime cancels the request at DEFAULT_PERMISSION_TIMEOUT_MS (5 minutes,
+// tool-runtime.ts) and the resulting tool_result dequeues the prompt
+// (app-shell-session-events.ts). The prompt is gone five minutes before the UI would
+// call it expired. The story here claimed an 11-minute request, which is exactly the
+// kind of confidently-worded impossibility this convention exists to catch — the
+// mismatch between the two thresholds is a real defect, but it is a product fix, not a
+// story fix, so it does not get a fake screenshot in the meantime.
 
-// Real path: chat → a tool that declares its own permission reason (here MemoryWrite) →
-// the fallback rendering for reasons the UI has no bespoke copy for.
+// Real path: a Deep Research session (permission mode `explore`) → a custom tool that
+// declares its own category → the fallback rendering for reasons the UI has no bespoke
+// copy for. `custom_tool` is `prompt` only under `explore`; every other mode allows it
+// outright, so this prompt is unreachable in an ordinary chat.
 export const CustomReason: Story = {
   render: () => (
     <ComposerSlotBackdrop>
@@ -448,9 +439,8 @@ export const CustomReason: Story = {
         request={makeRequest({
           requestId: 'req-custom',
           toolName: 'MemoryWrite',
-          category: 'custom_tool',
-          reason: 'custom',
-          rememberForTurnAllowed: true,
+          mode: 'explore',
+          categoryHint: 'custom_tool',
           args: { scope: 'project', content: '本仓库使用 pnpm，不要调用 npm install。' },
         })}
         onRespond={noop}
@@ -472,9 +462,6 @@ export const SubmitPending: Story = {
         request={makeRequest({
           requestId: 'req-pending',
           toolName: 'Bash',
-          category: 'shell_unsafe',
-          reason: 'shell_dangerous',
-          rememberForTurnAllowed: true,
           args: { command: 'npm run deploy' },
         })}
         onRespond={() => new Promise<void>(() => undefined)}

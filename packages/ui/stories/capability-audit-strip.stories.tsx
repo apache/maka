@@ -4,6 +4,15 @@ import { CapabilityAuditStrip } from '../src/capability-audit-strip.js';
 
 // Fidelity convention (#1433): every story below names the real app path
 // that reaches it. See apps/desktop/stories/FIDELITY.md.
+//
+// This file had four stories and three of them rendered nothing. The strip
+// reports by exception — `capabilityAuditIssues` returns [] and the component
+// returns null unless a source needs auth or is erroring, or an automation
+// failed or was skipped — and `report()` defaults all four of those counts to
+// 0. So `SkillsFocusHealthy`, `AutomationsFocusHealthy` and `Empty` were blank
+// panels carrying confident "Real path:" sentences that described behavior the
+// component lost when it stopped summarizing healthy state. The app state they
+// named is "this strip is not on the page", which needs no story.
 
 const meta = {
   title: 'Product/Capability Audit Strip',
@@ -44,66 +53,28 @@ function report(input: Partial<CapabilityAuditReport['summary']>): CapabilityAud
   };
 }
 
-function StripFrame(props: { children: React.ReactNode }) {
+/**
+ * The element the strip is a direct child of on both hosts (skills-panel.tsx,
+ * plan-reminder-panel.tsx). Not an approximation of one: the previous frame
+ * here was a `maxWidth: 720; padding: 24` box the app never renders, plus
+ * `data-maka-e2e-fixture`, which pauses every animation and transition
+ * (base.css) — something only the E2E harness does.
+ */
+function ModulePage(props: { children: React.ReactNode }) {
   return (
-    <div
-      data-maka-e2e-fixture="true"
-      style={{
-        background: 'var(--surface-canvas)',
-        padding: 24,
-        width: '100%',
-        maxWidth: 720,
-        margin: '0 auto',
-      }}
-    >
-      {props.children}
-    </div>
+    <main className="maka-main detailPane maka-module-main agents-chat-panel">{props.children}</main>
   );
 }
 
-// Real path: sidebar → 扩展 → 技能 — the strip sits above the skills list (skills-panel.tsx)
-// and summarizes what is installed and enabled.
-export const SkillsFocusHealthy: Story = {
-  render: () => (
-    <StripFrame>
-      <CapabilityAuditStrip
-        report={report({
-          sourceCount: 3,
-          readySourceCount: 3,
-          skillCount: 8,
-          enabledSkillCount: 6,
-          skillsWithDeclaredTools: 5,
-          declaredToolKindCount: 4,
-        })}
-      />
-    </StripFrame>
-  ),
-};
-
-// Real path: sidebar → 定时任务 → 计划提醒 — the same strip above the reminder list
-// (plan-reminder-panel.tsx), so its numbers describe automations instead.
-export const AutomationsFocusHealthy: Story = {
-  render: () => (
-    <StripFrame>
-      <CapabilityAuditStrip
-        report={report({
-          sourceCount: 2,
-          readySourceCount: 2,
-          automationCount: 5,
-          enabledAutomationCount: 4,
-          executableAutomationCount: 4,
-        })}
-      />
-    </StripFrame>
-  ),
-};
-
-// Real path: either of those two pages once something needs attention — a managed skill
-// source needing auth or erroring, or an automation whose last run failed or was
-// skipped.
+// Real path: sidebar → 扩展 → 技能, or sidebar → 定时任务 → 计划提醒, once something
+// needs attention — a managed skill source waiting for auth or erroring, an
+// automation whose last run failed or was skipped. The strip renders exactly one
+// warning line naming what is wrong. With all four of those counts at zero it
+// returns null and the page carries no strip, so that state has no story: it has
+// no pixels.
 export const WithRisks: Story = {
   render: () => (
-    <StripFrame>
+    <ModulePage>
       <CapabilityAuditStrip
         report={report({
           sourceCount: 4,
@@ -121,16 +92,6 @@ export const WithRisks: Story = {
           skippedAutomationCount: 1,
         })}
       />
-    </StripFrame>
-  ),
-};
-
-// Real path: either page on a fresh install, with nothing installed and nothing
-// scheduled.
-export const Empty: Story = {
-  render: () => (
-    <StripFrame>
-      <CapabilityAuditStrip report={report({})} />
-    </StripFrame>
+    </ModulePage>
   ),
 };
