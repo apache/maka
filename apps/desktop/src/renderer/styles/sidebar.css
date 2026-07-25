@@ -11,15 +11,6 @@
   contain: layout paint style;
 }
 
-.maka-session-panel[data-collapsed="true"] {
-  /* Collapsed rail hides the session-list heading (display: none below). A
-     display:none item does NOT participate in grid layout, so reserving a
-     5th row for it drops the footer into the minmax(0, 1fr) track. Keep the
-     4-row layout matching the four participating children
-     (header / nav / list / footer). */
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
-}
-
 .maka-session-panel-header {
   display: grid;
   gap: var(--space-1);
@@ -36,25 +27,6 @@
   );
   box-sizing: border-box;
   -webkit-app-region: drag;
-}
-
-.maka-session-panel[data-collapsed="true"] .maka-session-panel-footer {
-  justify-items: center;
-  padding-inline: var(--space-2);
-}
-
-.maka-session-panel[data-collapsed="true"] .maka-sidebar-settings-button > span {
-  display: none;
-}
-
-.maka-session-panel[data-collapsed="true"] .maka-session-list {
-  border-top: 0;
-}
-.maka-session-panel[data-collapsed="true"] .maka-list-stack,
-.maka-session-panel[data-collapsed="true"] .maka-empty-state {
-  /* Justified: collapsed mode must suppress the shared list / empty-state
-     layout regardless of the primitive's own display utilities. */
-  display: none !important;
 }
 
 .maka-session-list {
@@ -152,25 +124,6 @@
   padding: 0 var(--space-1);
   font-size: var(--font-size-caption);
   font-variant-numeric: tabular-nums;
-}
-
-.maka-session-panel[data-collapsed="true"] .maka-sidebar-modules {
-  padding: var(--space-1) var(--space-1);
-}
-
-.maka-session-panel[data-collapsed="true"] .maka-nav-row {
-  grid-template-columns: 1fr;
-  padding: var(--space-1-5) 0;
-  place-items: center;
-}
-
-.maka-session-panel[data-collapsed="true"] .maka-nav-row span:nth-child(2),
-.maka-session-panel[data-collapsed="true"] .maka-nav-row small {
-  display: none;
-}
-
-.maka-session-panel[data-collapsed="true"] .maka-session-list-toolbar {
-  display: none;
 }
 
 .maka-list-stack {

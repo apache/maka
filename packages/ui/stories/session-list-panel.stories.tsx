@@ -67,7 +67,6 @@ function panelProps(input: {
   activeId?: string;
   streamingSessionIds?: Set<string>;
   staleSessionIds?: Set<string>;
-  sidebarCollapsed?: boolean;
 }): SessionListPanelProps {
   return {
     selection: { section: 'sessions', filter: 'chats' },
@@ -75,7 +74,6 @@ function panelProps(input: {
     ...(input.activeId ? { activeId: input.activeId } : {}),
     ...(input.streamingSessionIds ? { streamingSessionIds: input.streamingSessionIds } : {}),
     ...(input.staleSessionIds ? { staleSessionIds: input.staleSessionIds } : {}),
-    ...(input.sidebarCollapsed ? { sidebarCollapsed: input.sidebarCollapsed } : {}),
     onSelectSession: noop,
     onSelect: noop,
     onOpenSettings: noop,
@@ -339,21 +337,5 @@ export const LongTitlesAndNarrow: Story = {
         staleSessionIds: new Set(['long-title-stale']),
       })} />
     </StoryFrame>
-  ),
-};
-
-// Real path: topbar → collapse the sidebar.
-export const Collapsed: Story = {
-  render: () => (
-    <>
-      <style>{`.agents-sidebar[data-collapsed="true"] { width: 100% !important }`}</style>
-      <StoryFrame width={72}>
-        <SessionListPanel {...panelProps({
-          sessions: coreSessions,
-          activeId: 'session-running',
-          sidebarCollapsed: true,
-        })} />
-      </StoryFrame>
-    </>
   ),
 };

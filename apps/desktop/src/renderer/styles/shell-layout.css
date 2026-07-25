@@ -218,6 +218,10 @@
   transition: none;
 }
 
+.maka-shell-2col:has(> .maka-resize-handle:focus) {
+  transition: none;
+}
+
 .mainColumn {
   min-width: 0;
   min-height: 0;

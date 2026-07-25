@@ -75,11 +75,6 @@ const ALLOWLIST: ImportantAllowance[] = [
     anchor: '@media (prefers-reduced-motion: reduce)',
     reason: 'reduced-motion override',
   },
-  {
-    fileSuffix: 'apps/desktop/src/renderer/styles/sidebar.css',
-    anchor: '.maka-session-panel[data-collapsed="true"] .maka-list-stack',
-    reason: 'shared list/empty-state collapse override',
-  },
 ];
 
 const RETIRED_RING_RESET_BLOCKS = [

@@ -7,6 +7,15 @@ import {
   readRendererContractCss,
 } from './contract-css-helpers.js';
 
+const SESSION_LIST_PANEL_PATH = resolve(
+  CONTRACT_RENDERER_ROOT,
+  '../../../../packages/ui/src/session-list-panel.tsx',
+);
+const SESSION_LIST_STORY_PATH = resolve(
+  CONTRACT_RENDERER_ROOT,
+  '../../../../packages/ui/stories/session-list-panel.stories.tsx',
+);
+
 describe('sidebar structural motion contract', () => {
   it('moves the layout with the drawer tokens while the sidebar content keeps its expanded geometry', async () => {
     const [css, appShell] = await Promise.all([
@@ -82,6 +91,44 @@ describe('sidebar structural motion contract', () => {
       collapsedShellRule,
       /grid-template-columns:\s*0px\s+var\(--maka-resize-handle-width,\s*0px\)\s+minmax\(0,\s*1fr\)/,
       'the collapsed target must preserve all three explicit tracks so Chromium can interpolate the grid instead of falling back to one implicit column',
+    );
+  });
+
+  it('keeps keyboard resizing immediate while the separator owns focus', async () => {
+    const css = await readRendererContractCss();
+    const focusedResizeRule = ruleBody(
+      css,
+      '.maka-shell-2col:has(> .maka-resize-handle:focus)',
+    );
+
+    assert.match(
+      focusedResizeRule,
+      /transition:\s*none/,
+      'keyboard width changes must not inherit the drawer transition while the resize separator is focused',
+    );
+  });
+
+  it('keeps the shell drawer as the only sidebar collapse model', async () => {
+    const [css, panelSource, panelStories] = await Promise.all([
+      readRendererContractCss(),
+      readFile(SESSION_LIST_PANEL_PATH, 'utf8'),
+      readFile(SESSION_LIST_STORY_PATH, 'utf8'),
+    ]);
+
+    assert.doesNotMatch(
+      panelSource,
+      /sidebarCollapsed|data-collapsed/,
+      'SessionListPanel must not retain a second compact-rail collapse state',
+    );
+    assert.doesNotMatch(
+      panelStories,
+      /sidebarCollapsed|data-collapsed/,
+      'primitive stories must not advertise the superseded compact-rail path',
+    );
+    assert.doesNotMatch(
+      css,
+      /\.(?:maka-session-panel|agents-sidebar)\[data-collapsed="true"\]/,
+      'renderer CSS must not retain unreachable compact-rail branches',
     );
   });
 });

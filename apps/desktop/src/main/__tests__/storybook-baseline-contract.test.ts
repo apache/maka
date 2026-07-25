@@ -152,12 +152,16 @@ describe('Storybook baseline contract', () => {
       'ConversationStates',
       'RowActions',
       'LongTitlesAndNarrow',
-      'Collapsed',
     ]) {
       assert.match(src, new RegExp(`export const ${storyName}\\b`));
     }
     assert.doesNotMatch(src, /StatusGroups|statusGroups/);
     assert.doesNotMatch(src, IMPORTS_APP_SHELL, 'Sidebar stories must not import the desktop app shell.');
+
+    const appShellStories = join(REPO_ROOT, 'apps', 'desktop', 'stories', 'app-shell.stories.tsx');
+    const appShellSource = readFileSync(appShellStories, 'utf8');
+    assert.match(appShellSource, /export const CollapsedSidebar\b/);
+    assert.match(appShellSource, /export const SidebarMotion\b/);
   });
 
   it('storyboards ToolActivity result variants before visual polish', () => {

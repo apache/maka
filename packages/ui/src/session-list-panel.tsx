@@ -27,7 +27,6 @@ export function SessionListPanel(props: {
   onOpenSettings(): void;
   onNew(): void;
   rowActions?: SessionRowActions;
-  sidebarCollapsed?: boolean;
 }) {
   const copy = getConversationCopy(useUiLocale()).sessions;
   const {
@@ -40,7 +39,6 @@ export function SessionListPanel(props: {
     <aside
       className="maka-session-panel agents-sidebar"
       aria-label={copy.listAriaLabel}
-      data-collapsed={props.sidebarCollapsed ? 'true' : undefined}
     >
       <header className="maka-session-panel-header">
         <div className="maka-sidebar-drag-strip" />

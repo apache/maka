@@ -285,9 +285,9 @@ export const CollapsedSidebar: Story = {
   render: () => <ComposedShell sidebarCollapsed />,
 };
 
-// Interaction-only companion to the deterministic expanded/collapsed stories.
-// Keeps real transition durations so reviewers can exercise the structural
-// drawer motion without weakening screenshot stability elsewhere.
+// Real path: returning user opens any session → toggle the topbar sidebar
+// control. This interaction-only companion keeps real transition durations
+// without weakening deterministic screenshot states elsewhere.
 export const SidebarMotion: Story = {
   render: () => <ComposedShell motionEnabled />,
 };

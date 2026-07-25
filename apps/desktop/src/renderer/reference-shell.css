@@ -47,10 +47,6 @@
   flex-shrink: 0;
 }
 
-.agents-sidebar[data-collapsed="true"] {
-  width: 0;
-}
-
 .agents-sidebar[data-resizing="true"] {
   box-shadow: none !important;
 }
