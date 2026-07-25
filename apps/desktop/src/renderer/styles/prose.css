@@ -327,6 +327,18 @@
   font-size: var(--font-size-ui);
   line-height: var(--leading-normal);
   white-space: pre;
+  /* THE LITERAL-CODE BOUNDARY. Fenced code renders on a monospace grid, so no
+     prose text shaping may cross into it — the invariant #1431 already locked
+     for ligatures, reached here a second time by an inherited property.
+     `.maka-prose` asks for `text-autospace: normal` (rule 1 of
+     MARKDOWN-PROSE-CJK-MIXED-SPACING-0) and autospace INHERITS, so a code line
+     mixing Chinese comments with Latin identifiers — routine output for a
+     CJK-first product — drifted 1.6px off the grid per boundary until this
+     opted back out. Scoped to the block tier on purpose: the inline pill
+     WANTS autospace on both sides, which is what rule 1 buys.
+     Anything else added to `.maka-prose` that reshapes glyphs belongs here
+     too; MARKDOWN-PROSE-CJK-MIXED-SPACING-0 fails if it is not. */
+  text-autospace: no-autospace;
 }
 .maka-prose .maka-code-block pre code {
   padding: 0;
@@ -336,6 +348,12 @@
      box, so a leftover border paints a rounded outline around every wrapped
      line box inside the pre (clearly visible in dark). */
   border: 0;
+  /* Same leak, second property: `.maka-prose code` (0,1,1) matches `pre > code`
+     as well as the pill, so the pill's `margin-inline` reached block code. A
+     <code> inside `white-space: pre` is ONE inline box spanning every line, so
+     that margin offsets only the FIRST source line — measured in the built app,
+     line 1 started at 36.25px against 33px for the lines below it. */
+  margin: 0;
 }
 
 /* Syntax highlight palette for highlight.js / lowlight class names.
@@ -485,14 +503,14 @@
   white-space: nowrap;
   letter-spacing: var(--tracking-normal);
 }
-/* Body cells DO wrap (only `th` is nowrap above), and a squeezed Chinese cell
-   is where breaking gets ugly: the default breaks anywhere, including inside
-   a two-character word. `auto-phrase` breaks on phrase boundaries instead.
-   Scoped to `td` on purpose — on the nowrap `th` a break rule is inert.
-   MARKDOWN-PROSE-CJK-MIXED-SPACING-0 locks this. */
-.maka-prose td {
-  word-break: auto-phrase;
-}
+/* `word-break: auto-phrase` on `td` was tried here for squeezed Chinese cells
+   and REMOVED: measured inert in Chromium 150. Identical break positions to
+   `normal` under both `lang="zh-CN"` and `lang="en"` (只有 `lang="ja"` changes
+   — the engine's phrase model is Japanese-only), and the renderer is pinned to
+   a static `<html lang="en">` with no runtime update, so it was double-gated.
+   If narrow Chinese cells become a real complaint, the levers that do work in
+   this engine are `line-break: strict` / `word-break: keep-all`, each with its
+   own overflow trade-off to measure. */
 .maka-prose hr {
   margin: var(--space-4) 0;
   border: 0;

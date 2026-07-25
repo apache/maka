@@ -135,12 +135,26 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
         // takes no spacing from CSS (display:block / height / margin /
         // content:"\A" were each measured against the built app; the paragraph
         // stays at exactly 39px), because an inline break box cannot be given
-        // a height. Rendering it as a block span can, so the gap becomes a
-        // styleable tier instead of whatever the line box happened to leave.
-        // Decorative — the line break is already conveyed by the block layout,
-        // so it is aria-hidden rather than an empty element in the a11y tree.
+        // a height. A block span CAN take one, so the gap becomes a styleable
+        // tier instead of whatever the line box happened to leave.
+        //
+        // Both elements ship, in this order, because neither alone is
+        // sufficient. Dropping the <br> costs the `LineBreak` node in the
+        // accessibility tree (measured with CDP Accessibility.getFullAXTree:
+        // <br> yields `LineBreak → StaticText`, the bare span yields only
+        // `StaticText`) — the same trade TABLE-A11Y-SEMANTICS-0 below refuses
+        // for table roles. Dropping the span costs the 6px. Together they take
+        // the paragraph to 45px, keep the AX LineBreak node, and still copy as
+        // a single "\n" (Selection.toString(), measured — nesting the <br>
+        // INSIDE the span instead is what produces a spurious "\n\n").
+        // The span is decorative on its own, hence aria-hidden.
         // MARKDOWN-PROSE-CJK-MIXED-SPACING-0.
-        br: () => <span className="maka-hardbreak" aria-hidden="true" />,
+        br: () => (
+          <>
+            <br />
+            <span className="maka-hardbreak" aria-hidden="true" />
+          </>
+        ),
         // #618 item 5: the horizontal scroller for over-wide tables lives on
         // a wrapper div. Scrolling on the table itself requires
         // `display: block`, which stops the element generating a table box —
