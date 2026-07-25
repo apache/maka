@@ -139,4 +139,12 @@ test('a blocked Skill invocation keeps the complete composer draft', async ({
   await expect(composer).toHaveValue('run it');
   await expect(page.locator('.maka-composer-skill-chip')).toContainText('示例技能');
   await expect(page.locator('.maka-turn')).toHaveCount(0);
+  // #1433: the composer creates the session BEFORE it sends, so a rejected
+  // first send has to remove it again. Otherwise every blocked invocation
+  // leaves a nameless empty session in the sidebar. `quick-chat.ts` used to
+  // carry unit tests for this; when the composer became the only first-send
+  // path, nothing was asserting it any more.
+  await expect
+    .poll(async () => (await page.evaluate(() => window.maka.sessions.list())).length)
+    .toBe(0);
 });
