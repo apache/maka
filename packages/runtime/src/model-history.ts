@@ -282,6 +282,10 @@ export function collectToolActivityTurnIds(events: readonly RuntimeEvent[]): Set
   return ids;
 }
 
+function assistantReplayStepId(event: RuntimeEvent): string | undefined {
+  return event.refs?.providerEventId ?? event.refs?.storedMessageId;
+}
+
 export function buildRuntimeEventModelReplayPlan(
   events: readonly RuntimeEvent[],
   options: BuildRuntimeEventModelReplayPlanOptions = {},
@@ -437,6 +441,7 @@ export function buildRuntimeEventModelReplayPlan(
           continue;
         }
         const steeringReplay = event.content.steering === true && role === 'user';
+        const assistantStepId = role === 'assistant' ? assistantReplayStepId(event) : undefined;
         items.push({
           kind: 'text',
           role,
@@ -447,11 +452,9 @@ export function buildRuntimeEventModelReplayPlan(
             : formatTextWithInlineRefs(event.content),
           ...(steeringReplay ? { steering: { eventId: event.id } } : {}),
           ...(event.content.attachments ? { attachments: event.content.attachments } : {}),
-          // Model text carries its step id (the message id) so the materializer
-          // can close a step and group its reasoning + tool calls.
-          ...(role === 'assistant' && event.refs?.providerEventId
-            ? { stepId: event.refs.providerEventId }
-            : {}),
+          // Live events carry providerEventId; missing-ledger recovery carries
+          // the same assistant message identity as storedMessageId.
+          ...(assistantStepId ? { stepId: assistantStepId } : {}),
           eventId: event.id,
           ts: event.ts,
         });
@@ -482,6 +485,7 @@ export function buildRuntimeEventModelReplayPlan(
           );
           continue;
         }
+        const thinkingStepId = assistantReplayStepId(event);
         items.push({
           kind: 'thinking',
           text: event.content.text,
@@ -493,7 +497,7 @@ export function buildRuntimeEventModelReplayPlan(
                 >,
               }
             : {}),
-          ...(event.refs?.providerEventId ? { stepId: event.refs.providerEventId } : {}),
+          ...(thinkingStepId ? { stepId: thinkingStepId } : {}),
           eventId: event.id,
           ts: event.ts,
         });

@@ -326,6 +326,134 @@ describe('Anthropic-compatible Computer Use product loops', () => {
 });
 
 describe('Kimi OpenAI-compatible product loop', () => {
+  test('reconstructs a recovered reasoning and tool-call step as one assistant message', async () => {
+    const sessionId = 'session-kimi-openai-recovered-tool-step';
+    const previousTurnId = 'turn-kimi-openai-recovered-tool-step-1';
+    const currentTurn = createDurableTurnHarness({
+      sessionId,
+      turnId: 'turn-kimi-openai-recovered-tool-step-2',
+      text: 'Continue after the recovered tool step.',
+    });
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const server = await startJsonServer(async (request, response) => {
+      assert.equal(request.method, 'POST');
+      assert.equal(request.url, '/coding/v1/chat/completions');
+      requestBodies.push(JSON.parse(await readBody(request)) as Record<string, unknown>);
+      respondOpenAiTextStream(response, 'k3', 1, 'reasoning_content', 'next step');
+    });
+    const providerConnection = connection(
+      'kimi-coding-plan',
+      `${server.url}/coding`,
+      'k3',
+      'openai-chat',
+      131_072,
+    );
+    const recovered = backfillRuntimeEventsFromStoredMessages({
+      run: {
+        runId: 'run-kimi-openai-recovered-tool-step',
+        invocationId: 'invocation-kimi-openai-recovered-tool-step',
+        sessionId,
+        turnId: previousTurnId,
+        status: 'completed',
+        backendKind: 'ai-sdk',
+        llmConnectionSlug: providerConnection.slug,
+        modelId: 'k3',
+        cwd: '/tmp/maka',
+        permissionMode: 'ask',
+        createdAt: 1,
+        updatedAt: 5,
+        completedAt: 5,
+      } satisfies AgentRunHeader,
+      messages: [
+        {
+          type: 'user',
+          id: 'stored-user-recovered',
+          turnId: previousTurnId,
+          ts: 1,
+          text: 'Inspect the application.',
+        },
+        {
+          type: 'assistant',
+          id: 'stored-step-recovered',
+          turnId: previousTurnId,
+          ts: 2,
+          text: 'I will inspect it.',
+          modelId: 'k3',
+          thinking: {
+            text: '',
+            providerOptions: { maka: { kimiReasoningField: 'reasoning_content' } },
+          },
+        },
+        {
+          type: 'tool_call',
+          id: 'call-recovered',
+          turnId: previousTurnId,
+          ts: 3,
+          toolName: 'maka_computer',
+          args: { action: 'list_apps' },
+          stepId: 'stored-step-recovered',
+        },
+        {
+          type: 'tool_result',
+          id: 'result-recovered',
+          turnId: previousTurnId,
+          ts: 4,
+          toolUseId: 'call-recovered',
+          isError: false,
+          content: { kind: 'text', text: 'Application list' },
+        },
+      ] satisfies StoredMessage[],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const runtime = new AiSdkBackend({
+      sessionId,
+      header: header('kimi-coding-plan', 'k3'),
+      appendMessage: async () => {},
+      connection: providerConnection,
+      apiKey: 'test-key',
+      modelId: 'k3',
+      permissionEngine: new PermissionEngine({
+        newId: () => 'permission-id',
+        now: () => 1,
+      }),
+      modelFactory: (input) => getAIModel(input),
+      providerOptions: buildProviderOptions(providerConnection, 'k3'),
+      tools: [],
+      maxSteps: 1,
+      loadTurnRuntimeEvents: currentTurn.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    for await (const event of runtime.send(
+      currentTurn.sendInput({ runtimeContext: recovered.events }),
+    )) {
+      currentTurn.record(event);
+    }
+
+    assert.equal(requestBodies.length, 1);
+    const messages = requestBodies[0]!.messages;
+    assert.ok(Array.isArray(messages));
+    const replayedStep = messages.find(
+      (message) =>
+        isRecord(message) &&
+        message.role === 'assistant' &&
+        Array.isArray(message.tool_calls) &&
+        message.tool_calls.some(
+          (toolCall) => isRecord(toolCall) && toolCall.id === 'call-recovered',
+        ),
+    );
+    assert.ok(replayedStep && isRecord(replayedStep));
+    assert.equal(replayedStep.content, 'I will inspect it.');
+    assert.equal(replayedStep.reasoning_content, '');
+    const replayedResult = messages.find(
+      (message) =>
+        isRecord(message) && message.role === 'tool' && message.tool_call_id === 'call-recovered',
+    );
+    assert.ok(replayedResult, 'the recovered result must follow its reconstructed tool call');
+  });
+
   test('replays explicit empty reasoning after missing-ledger recovery and backend recreation', async () => {
     const sessionId = 'session-kimi-openai-cross-turn';
     const firstTurn = createDurableTurnHarness({
