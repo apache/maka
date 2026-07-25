@@ -97,7 +97,7 @@ import {
   type TurnRevisionDraft,
 } from './app-shell-revision-actions';
 import { createAppShellLayoutActions } from './app-shell-layout-actions';
-import { createAppShellQuickChatActions } from './app-shell-quick-chat-actions';
+import { createAppShellSessionStartActions } from './app-shell-session-start-actions';
 import { createAppShellDailyReviewActions } from './app-shell-daily-review-actions';
 import { createAppShellSessionRowActions } from './app-shell-session-row-actions';
 import { createAppShellSessionSettingsActions } from './app-shell-session-settings-actions';
@@ -867,15 +867,15 @@ function AppShellContent({
   const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);
   // Re-entrancy lock only — a ref, not state, because nothing renders
   // from it (#1433 removed its last reader with the first-run hero).
-  const quickChatPendingRef = useRef(false);
-  const { startModeSession, handleExpertTeamStart } = useStableActions(createAppShellQuickChatActions, {
+  const sessionStartPendingRef = useRef(false);
+  const { startModeSession, handleExpertTeamStart } = useStableActions(createAppShellSessionStartActions, {
     uiLocale,
     activeIdRef,
     captureComposerImportOwner,
     composerRef,
     isShellSurfaceOwnerActive,
     openSessionInChat,
-    quickChatPendingRef,
+    sessionStartPendingRef,
     refreshOnboarding: onboarding.refresh,
     refreshSessions,
     toastApi,

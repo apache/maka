@@ -19,8 +19,8 @@ export { shouldRebindSessionToDefault } from '@maka/core';
 export const NO_REAL_CONNECTION_CODE = 'NO_REAL_CONNECTION';
 
 // `ChatConfigurationReason` moved to `@maka/core/connection-readiness`
-// (PR110a) so the same taxonomy is shared between send-path,
-// onboarding, and quick-chat. Re-exported here for back-compat — any
+// (PR110a) so the same taxonomy is shared between the send path and
+// onboarding. Re-exported here for back-compat — any
 // future addition belongs in core, not here.
 export type { ChatConfigurationReason };
 

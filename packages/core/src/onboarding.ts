@@ -1,7 +1,7 @@
 /**
  * Onboarding state machine (PR110a).
  *
- * Derives the first-run / quick-chat readiness state of a workspace
+ * Derives the first-run readiness state of a workspace
  * from connections + defaultSlug + sessions + per-connection secret
  * availability. Pure & sync — never reads credential store, fs, or
  * IPC. Caller is responsible for resolving async inputs (per-slug
@@ -56,8 +56,9 @@ import type { SessionSummary } from './session.js';
  *    persisted defaultModel is no longer enabled, or the model is not
  *    chat-capable). Fix:
  *    open the model picker for the named slug.
- *  - `ready_empty` — fully configured, no sessions yet. Show Quick
- *    Chat entry point.
+ *  - `ready_empty` — fully configured, no sessions yet. #1433: this is
+ *    no longer an onboarding surface — the ordinary empty chat state
+ *    with its Composer takes over, and the hero renders nothing.
  *  - `ready_with_history` — fully configured, ≥1 session in the
  *    workspace (including archived / aborted — they are still user
  *    history and onboarding must not regress to blank slate).

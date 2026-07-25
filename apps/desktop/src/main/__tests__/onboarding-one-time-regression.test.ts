@@ -2,7 +2,7 @@
  * Regression tests for the onboarding one-time fix (PR #466).
  *
  * Three behavioral gates locked by source-level assertions because the
- * renderer action factory (`createAppShellQuickChatActions`) and the
+ * renderer action factory (`createAppShellSessionStartActions`) and the
  * hero component run in the renderer process — no DOM/React test
  * runtime exists in the main-side `node --test` harness.
  *
@@ -29,7 +29,7 @@ function readRenderer(relativePath: string): string {
 
 describe('onboarding one-time regression — quick chat milestone best-effort', () => {
   it('setMilestone is called AFTER openSessionInChat and is fire-and-forget with catch', () => {
-    const src = readRenderer('app-shell-quick-chat-actions.ts');
+    const src = readRenderer('app-shell-session-start-actions.ts');
     const okBranch = src.match(/if \(result\.ok\) \{[\s\S]*?return true;/)?.[0] ?? '';
     assert.ok(okBranch, 'must find result.ok branch');
 

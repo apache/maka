@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { createAppShellQuickChatActions } from '../../renderer/app-shell-quick-chat-actions.js';
+import { createAppShellSessionStartActions } from '../../renderer/app-shell-session-start-actions.js';
 
 type ToastCall = readonly [title: string, description?: string];
 
@@ -28,7 +28,7 @@ function installWindow(maka: unknown): () => void {
 }
 
 function createActions(toasts: ToastCall[], onRefreshOnboarding?: () => void) {
-  return createAppShellQuickChatActions({
+  return createAppShellSessionStartActions({
     uiLocale: 'en',
     activeIdRef: { current: undefined },
     captureComposerImportOwner: () => ({
@@ -38,7 +38,7 @@ function createActions(toasts: ToastCall[], onRefreshOnboarding?: () => void) {
     composerRef: { current: null },
     isShellSurfaceOwnerActive: () => true,
     openSessionInChat: () => undefined,
-    quickChatPendingRef: { current: false },
+    sessionStartPendingRef: { current: false },
     refreshOnboarding: onRefreshOnboarding ?? (() => undefined),
     refreshSessions: async () => undefined,
     toastApi: {

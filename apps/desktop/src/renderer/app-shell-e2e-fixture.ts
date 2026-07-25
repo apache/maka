@@ -89,7 +89,7 @@ export function createAppShellE2eFixtureActions(options: {
     }
     // PR-UI-VISUAL-SMOKE-LOCALE: lock the UI locale BEFORE
     // `refreshSessions()` resolves and BEFORE any locale-dependent
-    // content (EmptyChatHero / Composer / OnboardingHero quickChat)
+    // content (EmptyChatHero / Composer / OnboardingHero)
     // enters the React tree — all of those gate on sessions /
     // connection state which load inside this same effect. The reactive
     // override reaches every consumer before the fixture's

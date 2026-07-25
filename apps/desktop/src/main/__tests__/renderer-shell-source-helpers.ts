@@ -7,7 +7,7 @@ const RENDERER_ROOT = resolve(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer');
 const sourcePaths = [
   'main.tsx',
   'app.tsx',
-  'app-shell-quick-chat-actions.ts',
+  'app-shell-session-start-actions.ts',
   'app-shell-layout-actions.ts',
   'app-shell-daily-review-bridge.ts',
   'app-shell-daily-review-actions.ts',

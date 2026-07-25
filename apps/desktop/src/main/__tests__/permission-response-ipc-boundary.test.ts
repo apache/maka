@@ -452,7 +452,7 @@ describe('permission response IPC boundary', () => {
 
   it('keeps newly created sessions selected across immediate refreshSessions() calls', async () => {
     const renderer = await readRendererShellSources([
-      'app-shell-quick-chat-actions.ts',
+      'app-shell-session-start-actions.ts',
       'app-shell.tsx',
       'app-shell-effects.ts',
       'use-app-shell-session-list.ts',
@@ -511,17 +511,17 @@ describe('permission response IPC boundary', () => {
     assert.ok(modeSessionHandler, 'startModeSession() must exist');
     assert.match(
       renderer,
-      /const quickChatPendingRef = useRef\(false\)/,
+      /const sessionStartPendingRef = useRef\(false\)/,
       'starting a mode session must use a ref-backed pending gate so same-frame double submit cannot start two sessions',
     );
     assert.match(
       modeSessionHandler[0],
-      /if \(quickChatPendingRef\.current\) return false;[\s\S]*?quickChatPendingRef\.current = true/,
+      /if \(sessionStartPendingRef\.current\) return false;[\s\S]*?sessionStartPendingRef\.current = true/,
       'starting a mode session must synchronously reject while another start call is in flight',
     );
     assert.match(
       modeSessionHandler[0],
-      /const owner = captureComposerImportOwner\(\);[\s\S]*quickChatPendingRef\.current = true/,
+      /const owner = captureComposerImportOwner\(\);[\s\S]*sessionStartPendingRef\.current = true/,
       'the launching shell surface must be captured before async session creation',
     );
     assert.match(
@@ -554,13 +554,13 @@ describe('permission response IPC boundary', () => {
     );
     assert.match(
       modeSessionHandler[0],
-      /if \(isShellSurfaceOwnerActive\(owner\)\) \{[\s\S]*toastApi\.error\([\s\S]*copy\.quickChatFailedTitle,[\s\S]*localizedShellErrorMessage\(error, copy\.quickChatFailedFallback, uiLocale\),[\s\S]*\);[\s\S]*\}[\s\S]*?return false;/,
+      /if \(isShellSurfaceOwnerActive\(owner\)\) \{[\s\S]*toastApi\.error\([\s\S]*copy\.sessionStartFailedTitle,[\s\S]*localizedShellErrorMessage\(error, copy\.sessionStartFailedFallback, uiLocale\),[\s\S]*\);[\s\S]*\}[\s\S]*?return false;/,
       'thrown failures should use the locale-aware generalized fallback only while the launching surface is still active',
     );
     assert.doesNotMatch(modeSessionHandler[0], /toastApi\.error\('开始对话失败'/);
     assert.match(
       modeSessionHandler[0],
-      /finally \{\s*quickChatPendingRef\.current = false;\s*\}/,
+      /finally \{\s*sessionStartPendingRef\.current = false;\s*\}/,
       'the pending ref must be cleared in finally — nothing else mirrors it, so a leaked lock would wedge the entry point',
     );
   });

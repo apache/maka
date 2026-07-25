@@ -23,7 +23,7 @@ type ToastApi = {
   info(title: string, description?: string): void;
 };
 
-export interface AppShellQuickChatActions {
+export interface AppShellSessionStartActions {
   /**
    * Open an empty session in a non-default mode (#1433). Text and
    * Skills belong to the Composer, which creates its own session on
@@ -35,18 +35,18 @@ export interface AppShellQuickChatActions {
   handleExpertTeamStart(teamId: string, prompt?: string): Promise<boolean>;
 }
 
-export function createAppShellQuickChatActions(deps: {
+export function createAppShellSessionStartActions(deps: {
   uiLocale: UiLocale;
   activeIdRef: RefBox<string | undefined>;
   captureComposerImportOwner: () => ComposerImportOwner;
   composerRef: RefBox<ComposerFocusHandle | null>;
   isShellSurfaceOwnerActive: (owner: ComposerImportOwner) => boolean;
   openSessionInChat: (sessionId: string, turnId?: string) => void;
-  quickChatPendingRef: RefBox<boolean>;
+  sessionStartPendingRef: RefBox<boolean>;
   refreshOnboarding: () => void;
   refreshSessions: () => Promise<unknown>;
   toastApi: ToastApi;
-}): AppShellQuickChatActions {
+}): AppShellSessionStartActions {
   const {
     uiLocale,
     activeIdRef,
@@ -54,7 +54,7 @@ export function createAppShellQuickChatActions(deps: {
     composerRef,
     isShellSurfaceOwnerActive,
     openSessionInChat,
-    quickChatPendingRef,
+    sessionStartPendingRef,
     refreshOnboarding,
     refreshSessions,
     toastApi,
@@ -62,9 +62,9 @@ export function createAppShellQuickChatActions(deps: {
   const copy = getShellCopy(uiLocale).chatActions;
 
   async function startModeSession(mode: QuickChatMode): Promise<boolean> {
-    if (quickChatPendingRef.current) return false;
+    if (sessionStartPendingRef.current) return false;
     const owner = captureComposerImportOwner();
-    quickChatPendingRef.current = true;
+    sessionStartPendingRef.current = true;
     try {
       // #1433: the one session-creation channel. Main derives the
       // permission boundary, name and labels from `mode`.
@@ -95,20 +95,20 @@ export function createAppShellQuickChatActions(deps: {
       refreshOnboarding();
       if (isShellSurfaceOwnerActive(owner)) {
         toastApi.error(
-          copy.quickChatFailedTitle,
-          localizedShellErrorMessage(error, copy.quickChatFailedFallback, uiLocale),
+          copy.sessionStartFailedTitle,
+          localizedShellErrorMessage(error, copy.sessionStartFailedFallback, uiLocale),
         );
       }
       return false;
     } finally {
-      quickChatPendingRef.current = false;
+      sessionStartPendingRef.current = false;
     }
   }
 
   async function handleExpertTeamStart(teamId: string, prompt?: string): Promise<boolean> {
-    if (quickChatPendingRef.current) return false;
+    if (sessionStartPendingRef.current) return false;
     const owner = captureComposerImportOwner();
-    quickChatPendingRef.current = true;
+    sessionStartPendingRef.current = true;
     try {
       const result = await window.maka.expertTeam.start({
         teamId,
@@ -155,7 +155,7 @@ export function createAppShellQuickChatActions(deps: {
       }
       return false;
     } finally {
-      quickChatPendingRef.current = false;
+      sessionStartPendingRef.current = false;
     }
   }
 

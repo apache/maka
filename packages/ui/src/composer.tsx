@@ -48,7 +48,7 @@ const COMPOSER_MAX_HEIGHT = 240;
  * PR-UI-15 (@yuejing 2026-05-22): Composer copy is locale-aware.
  *
  * Audit §3.5 — placeholder + state copy were hardcoded zh and drifted
- * stylistically from OnboardingHero's quickChat input (which used a
+ * stylistically from the deleted first-run input (which used a
  * long example sentence as the placeholder). Unified style: both
  * surfaces show the same short action-oriented placeholder, and
  * OnboardingHero gets a separate `<small>` example hint below the

@@ -117,9 +117,9 @@ export async function resolveDesktopSessionSkillHost(
 }
 
 /**
- * Resolve Skill capabilities for the ready-empty composer before a session is
+ * Resolve Skill capabilities for the empty-state composer before a session is
  * persisted. The preview header mirrors the mode labels and permission mode
- * that quickChat:start will use for the real session.
+ * that `sessions:create` will apply to the real session.
  */
 export async function resolveDesktopNewSessionSkillHost(
   deps: DesktopBackendToolSurfaceDeps,

@@ -4,15 +4,12 @@ import { join } from 'node:path';
 import { wireAppLifecycle } from './app-lifecycle.js';
 import {
   collapseSessionRevisions,
-  DEFAULT_SESSION_NAME,
   filterModelVisibleTaskLedgerTasks,
-  DEEP_RESEARCH_SESSION_LABEL,
 } from '@maka/core';
 import type {
   BotProvider,
   ConnectionEvent,
   CreateSessionInput,
-  PermissionMode,
   SessionChangedEvent,
   SessionChangedReason,
   SessionEvent,
@@ -648,8 +645,8 @@ const previousBotStatus = new Map<BotProvider, Pick<BotStatus, 'readiness' | 're
 let botIncoming: ReturnType<typeof createBotIncomingMainService>;
 // Single authority for the "current project root" selection, shared across the
 // app/window, git, workspace-search, workspace-instructions, and session-entry
-// IPC surfaces. botIncoming, automation cron runs, and quick-chat read the
-// current selection through the thin `resolveCurrentProjectRoot` adapter below.
+// IPC surfaces. botIncoming and automation cron runs read the current
+// selection through the thin `resolveCurrentProjectRoot` adapter below.
 const projectRootController = createProjectRootController({
   lastProjectPathFile: join(workspaceRoot, 'last-project-path.json'),
   fallbackRoots: () => [process.cwd(), app.getAppPath()],
