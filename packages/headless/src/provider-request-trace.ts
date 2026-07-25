@@ -48,6 +48,8 @@ export interface ProviderRequestTraceDiagnostic {
 
 export interface ProviderRequestTraceAnalysis {
   identity?: ProviderRequestTraceIdentity;
+  /** Every coherent execution represented by a continuation-aware task trace. */
+  identities?: ProviderRequestTraceIdentity[];
   traceId?: string;
   captures: ProviderRequestTraceCaptureAnalysis[];
   attempts: ProviderRequestTraceAttemptAnalysis[];
@@ -68,7 +70,11 @@ export async function readProviderRequestTrace(
   const attempts: ProviderRequestTraceAttemptAnalysis[] = [];
   const diagnostics: ProviderRequestTraceDiagnostic[] = [];
   let identity: ProviderRequestTraceIdentity | undefined;
+  const identities: ProviderRequestTraceIdentity[] = [];
+  const identityByRunId = new Map<string, ProviderRequestTraceIdentity>();
+  const identityByTurnId = new Map<string, ProviderRequestTraceIdentity>();
   let traceId: string | undefined;
+  const lastCaptureByTraceId = new Map<string, ProviderRequestTraceCaptureAnalysis>();
 
   for (const [index, line] of text.split('\n').entries()) {
     if (!line.trim()) continue;
@@ -108,12 +114,21 @@ export async function readProviderRequestTrace(
     const eventIdentity = identityFromEvent(event);
     if (!identity) {
       identity = eventIdentity;
-    } else if (!sameIdentity(identity, eventIdentity)) {
+    }
+    const conflictingIdentity =
+      identity && identity.sessionId !== eventIdentity.sessionId
+        ? identity
+        : (identityByRunId.get(eventIdentity.runId) ?? identityByTurnId.get(eventIdentity.turnId));
+    if (conflictingIdentity && !sameIdentity(conflictingIdentity, eventIdentity)) {
       diagnostics.push({
         code: 'mixed_identity',
         line: lineNumber,
-        message: `provider request trace row identity ${formatIdentity(eventIdentity)} differs from ${formatIdentity(identity)}`,
+        message: `provider request trace row identity ${formatIdentity(eventIdentity)} differs from ${formatIdentity(conflictingIdentity)}`,
       });
+    } else if (!identities.some((candidate) => sameIdentity(candidate, eventIdentity))) {
+      identities.push(eventIdentity);
+      identityByRunId.set(eventIdentity.runId, eventIdentity);
+      identityByTurnId.set(eventIdentity.turnId, eventIdentity);
     }
 
     if (event.type === 'trace_write_failed' || event.type === 'event_corrupt') {
@@ -132,7 +147,7 @@ export async function readProviderRequestTrace(
         continue;
       }
       traceId ??= parsed.value.traceId;
-      const prior = captures.at(-1);
+      const prior = lastCaptureByTraceId.get(parsed.value.traceId);
       captures.push({
         ...parsed.value,
         ...(prior
@@ -141,6 +156,7 @@ export async function readProviderRequestTrace(
             }
           : {}),
       });
+      lastCaptureByTraceId.set(parsed.value.traceId, parsed.value);
       continue;
     }
 
@@ -155,6 +171,7 @@ export async function readProviderRequestTrace(
 
   return {
     ...(identity ? { identity } : {}),
+    ...(identities.length > 0 ? { identities } : {}),
     ...(traceId ? { traceId } : {}),
     captures,
     attempts,
@@ -177,37 +194,63 @@ export function assertProviderRequestTraceComplete(
   };
   const diagnostic = trace.diagnostics[0];
   if (diagnostic) fail(`line ${diagnostic.line}: ${diagnostic.message}`);
-  const identity = trace.identity ?? fail('has no execution identity');
+  const identities =
+    trace.identities && trace.identities.length > 0
+      ? trace.identities
+      : trace.identity
+        ? [trace.identity]
+        : fail('has no execution identity');
+  const identity = trace.identity ?? identities[0]!;
   if (options.expectedIdentity) {
-    for (const key of ['runId', 'sessionId', 'turnId'] as const) {
-      if (identity[key] !== options.expectedIdentity[key]) {
-        fail(`${key} expected ${options.expectedIdentity[key]}, observed ${identity[key]}`);
+    if (identities.length === 1) {
+      for (const key of ['runId', 'sessionId', 'turnId'] as const) {
+        if (identity[key] !== options.expectedIdentity[key]) {
+          fail(`${key} expected ${options.expectedIdentity[key]}, observed ${identity[key]}`);
+        }
+      }
+    } else {
+      const foreignSession = identities.find(
+        (candidate) => candidate.sessionId !== options.expectedIdentity!.sessionId,
+      );
+      if (foreignSession) {
+        fail(
+          `sessionId expected ${options.expectedIdentity.sessionId}, observed ${foreignSession.sessionId}`,
+        );
+      }
+      if (!identities.some((candidate) => sameIdentity(candidate, options.expectedIdentity!))) {
+        fail(
+          `does not contain expected execution identity ${formatIdentity(options.expectedIdentity)}`,
+        );
       }
     }
   }
-  const traceId = trace.traceId ?? fail('has no provider trace id');
+  trace.traceId ?? fail('has no provider trace id');
   if (trace.captures.length === 0 || trace.attempts.length === 0) {
     fail('has incomplete provider request telemetry');
   }
 
   const captures = new Map<string, ProviderRequestTraceCaptureAnalysis>();
+  const turnIdByTraceId = new Map<string, string>();
   for (const capture of trace.captures) {
     if (captures.has(capture.captureId)) fail(`has duplicate capture id ${capture.captureId}`);
-    if (capture.traceId !== traceId) fail(`capture ${capture.captureId} has another trace id`);
-    if (capture.turnId !== identity.turnId) {
+    if (!identities.some((candidate) => candidate.turnId === capture.turnId)) {
       fail(`capture ${capture.captureId} has another turn id`);
     }
+    const traceTurnId = turnIdByTraceId.get(capture.traceId);
+    if (traceTurnId !== undefined && traceTurnId !== capture.turnId) {
+      fail(`capture ${capture.captureId} has another turn id for trace ${capture.traceId}`);
+    }
+    turnIdByTraceId.set(capture.traceId, capture.turnId);
     captures.set(capture.captureId, capture);
   }
 
   const attemptIds = new Set<string>();
   const referencedCaptureIds = new Set<string>();
-  const attemptNumbersByStep = new Map<number, number[]>();
+  const attemptNumbersByStep = new Map<string, number[]>();
   for (const attempt of trace.attempts) {
     if (attemptIds.has(attempt.attemptId)) fail(`has duplicate attempt id ${attempt.attemptId}`);
     attemptIds.add(attempt.attemptId);
-    if (attempt.traceId !== traceId) fail(`attempt ${attempt.attemptId} has another trace id`);
-    if (attempt.turnId !== identity.turnId) {
+    if (!identities.some((candidate) => candidate.turnId === attempt.turnId)) {
       fail(`attempt ${attempt.attemptId} has another turn id`);
     }
     const capture =
@@ -217,18 +260,20 @@ export function assertProviderRequestTraceComplete(
       fail(`attempt ${attempt.attemptId} does not match its request capture`);
     }
     referencedCaptureIds.add(capture.captureId);
-    const numbers = attemptNumbersByStep.get(attempt.step) ?? [];
+    const stepKey = `${attempt.traceId}\u0000${attempt.step}`;
+    const numbers = attemptNumbersByStep.get(stepKey) ?? [];
     numbers.push(attempt.attempt);
-    attemptNumbersByStep.set(attempt.step, numbers);
+    attemptNumbersByStep.set(stepKey, numbers);
   }
 
   for (const captureId of captures.keys()) {
     if (!referencedCaptureIds.has(captureId)) fail(`capture ${captureId} has no request attempt`);
   }
-  for (const [step, numbers] of attemptNumbersByStep) {
+  for (const [stepKey, numbers] of attemptNumbersByStep) {
     numbers.sort((left, right) => left - right);
     for (let index = 0; index < numbers.length; index += 1) {
       if (numbers[index] !== index + 1) {
+        const step = stepKey.slice(stepKey.lastIndexOf('\u0000') + 1);
         fail(`step ${step} request attempt sequence is incomplete`);
       }
     }

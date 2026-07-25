@@ -195,6 +195,97 @@ test('reads a v2 capture and attempt and binds them to the expected execution id
   );
 });
 
+test('validates every request across same-session continuation executions', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-provider-trace-continuation-'));
+  const traceEventsPath = join(dir, 'events.jsonl');
+  const rows: Record<string, unknown>[] = [];
+  const identities = [
+    { runId: 'run-1', sessionId: 'session-1', turnId: 'turn-1' },
+    { runId: 'run-2', sessionId: 'session-1', turnId: 'turn-2' },
+  ];
+  for (const [index, identity] of identities.entries()) {
+    const suffix = String(index + 1);
+    const traceId = `provider-trace-${suffix}`;
+    const captureId = `capture-${suffix}`;
+    const artifactId = `artifact-${suffix}`;
+    rows.push(
+      {
+        type: 'provider_request_captured',
+        id: `capture-event-${suffix}`,
+        ...identity,
+        ts: index * 10 + 1,
+        data: {
+          schemaVersion: 2,
+          traceId,
+          captureId,
+          artifactId,
+          turnId: identity.turnId,
+          step: 0,
+          providerId: 'openai',
+          modelId: 'k3',
+          requestHash: `sha256:request-${suffix}`,
+          requestPayloadWithoutProviderOptionsHash: `sha256:shared-request-${suffix}`,
+          requestBytes: 100,
+          segments: [
+            {
+              kind: 'message',
+              index: 0,
+              role: 'user',
+              cacheable: true,
+              hash: `sha256:message-${suffix}`,
+              bytes: 10,
+            },
+          ],
+        },
+      },
+      {
+        type: 'provider_request_attempt_recorded',
+        id: `attempt-event-${suffix}`,
+        ...identity,
+        ts: index * 10 + 3,
+        data: {
+          traceId,
+          attemptId: `attempt-${suffix}`,
+          turnId: identity.turnId,
+          step: 0,
+          attempt: 1,
+          captureId,
+          captureArtifactId: artifactId,
+          providerId: 'openai',
+          modelId: 'k3',
+          requestHash: `sha256:request-${suffix}`,
+          requestBytes: 100,
+          segments: [
+            {
+              kind: 'message',
+              index: 0,
+              role: 'user',
+              cacheable: true,
+              hash: `sha256:message-${suffix}`,
+              bytes: 10,
+            },
+          ],
+          startedAt: index * 10 + 2,
+          completedAt: index * 10 + 3,
+          status: 'completed',
+          latencyMs: 1,
+        },
+      },
+    );
+  }
+  await writeFile(traceEventsPath, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`);
+
+  const result = await traceAnalysis.readProviderRequestTrace(traceEventsPath);
+
+  assert.equal(result.captures.length, 2);
+  assert.equal(result.captures[1]?.firstChangedCacheableSegment, undefined);
+  assert.doesNotThrow(() =>
+    traceAnalysis.assertProviderRequestTraceComplete(result, {
+      expectedIdentity: identities[1],
+    }),
+  );
+});
+
 test('fails completeness when a later request attempt record is torn', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'maka-provider-trace-'));
   const traceEventsPath = join(dir, 'events.jsonl');
