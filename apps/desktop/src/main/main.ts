@@ -180,12 +180,12 @@ if (!app.requestSingleInstanceLock()) {
 
 const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
 
-// Resolve the user's login-shell environment (PATH, etc.) before any stores,
-// tools, or child processes are created. On macOS, apps launched from
-// Finder/Dock inherit a minimal PATH that lacks /opt/homebrew/bin, ~/.local/bin,
-// etc. This spawns the user's login shell once and merges its env — the same
-// approach VS Code uses. Skipped on Windows, when MAKA_SKIP_SHELL_ENV=1, and
-// when launched from a terminal (TERM/COLORTERM set).
+// Resolve the user's login-shell PATH before any stores, tools, or child
+// processes are created. On macOS, apps launched from Finder/Dock inherit a
+// minimal PATH that lacks /opt/homebrew/bin, ~/.local/bin, etc. Only PATH is
+// imported; application-control variables remain owned by this process.
+// Skipped on Windows, when MAKA_SKIP_SHELL_ENV=1, and when launched from a
+// terminal (TERM/COLORTERM set).
 await resolveShellEnv();
 
 // PR-VISUAL-SMOKE-HEADLESS: resolve the fixture defensively. An unknown

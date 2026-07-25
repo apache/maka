@@ -1,6 +1,6 @@
 // apps/desktop/src/main/shell-env.ts
 //
-// Resolve the user's login-shell environment at Electron startup.
+// Resolve the user's login-shell PATH at Electron startup.
 //
 // On macOS (and Linux), apps launched from Finder / Dock / Spotlight inherit
 // a minimal environment — PATH is typically just /usr/bin:/bin:/usr/sbin:/sbin.

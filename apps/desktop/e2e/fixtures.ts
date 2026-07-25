@@ -114,12 +114,10 @@ function buildE2eEnv(
     }
   }
   env.MAKA_E2E = '1';
-  // The login-shell env probe (resolveShellEnv) must never mutate this
-  // sanitized env: it would re-import *_API_KEY from the dev's shell and
-  // bootstrap a real connection, breaking the true first-run assertion. This
-  // is the owning-layer fix — buildE2eEnv owns the launched env, so it owns
-  // the skip flag. Deterministic and CI-safe (unlike relying on TERM, which
-  // is unset under xvfb).
+  // The login-shell PATH probe must not make E2E command resolution depend on
+  // the developer or CI account. buildE2eEnv owns the launched environment,
+  // so it owns the deterministic skip flag (unlike relying on TERM, which is
+  // unset under xvfb).
   env.MAKA_SKIP_SHELL_ENV = '1';
   env.MAKA_E2E_USER_DATA_DIR = userDataDir;
   if (e2eFixtureScenario) env.MAKA_E2E_FIXTURE = e2eFixtureScenario;
