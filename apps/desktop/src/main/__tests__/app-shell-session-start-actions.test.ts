@@ -4,6 +4,9 @@ import { describe, it } from 'node:test';
 import { createAppShellSessionStartActions } from '../../renderer/app-shell-session-start-actions.js';
 
 type ToastCall = readonly [title: string, description?: string];
+/** `showModelSetupToast(description, reason)` — the shell's shared
+ *  "configure a model" toast, which carries the 打开模型设置 action. */
+type SetupToastCall = readonly [description: string, reason?: string];
 
 function installWindow(maka: unknown): () => void {
   const target = globalThis as unknown as { window?: unknown };
@@ -27,7 +30,11 @@ function installWindow(maka: unknown): () => void {
   };
 }
 
-function createActions(toasts: ToastCall[], onRefreshOnboarding?: () => void) {
+function createActions(
+  toasts: ToastCall[],
+  onRefreshOnboarding?: () => void,
+  setupToasts: SetupToastCall[] = [],
+) {
   return createAppShellSessionStartActions({
     uiLocale: 'en',
     activeIdRef: { current: undefined },
@@ -41,6 +48,7 @@ function createActions(toasts: ToastCall[], onRefreshOnboarding?: () => void) {
     sessionStartPendingRef: { current: false },
     refreshOnboarding: onRefreshOnboarding ?? (() => undefined),
     refreshSessions: async () => undefined,
+    showModelSetupToast: (description, reason) => setupToasts.push([description, reason]),
     toastApi: {
       error: (title, description) => toasts.push([title, description]),
       info: (title, description) => toasts.push([title, description]),
@@ -129,35 +137,89 @@ describe('AppShell quick-entry failure copy', () => {
 
   /**
    * #1433: `quickChat:start` returned `{ ok: false, reason: 'setup_required' }`
-   * and the renderer re-pulled the onboarding snapshot without a toast — the
-   * hero it reveals already states what is missing. `sessions:create` rejects
-   * instead, so that recovery has to survive on the throw path, and it has to
-   * survive as a real DISCRIMINANT: the error main throws for an unusable
-   * setup is `NO_REAL_CONNECTION:<reason>:` (chat-readiness.ts). Asserting
-   * with a plain `new Error(...)` here would pass even if the implementation
-   * treated every failure as a readiness failure.
+   * and the renderer only re-pulled the onboarding snapshot. `sessions:create`
+   * rejects instead, so that recovery has to survive on the throw path, and it
+   * has to survive as a real DISCRIMINANT: the error main throws for an
+   * unusable setup is `NO_REAL_CONNECTION:<reason>:` (chat-readiness.ts).
+   * Asserting with a plain `new Error(...)` here would pass even if the
+   * implementation treated every failure as a readiness failure.
+   *
+   * The snapshot refresh alone was not an answer. The hero it reveals only
+   * takes the chat surface over while `sessions.length === 0 &&
+   * !onboardingSettled` (app-shell.tsx), and onboarding-service backfills that
+   * milestone for anyone who already has a session — so for every existing
+   * user the command silently did nothing. The reason must reach the toast
+   * intact, hence the specific description rather than the generic fallback.
    */
-  it('re-pulls onboarding, without a toast, for a readiness failure', async () => {
+  it('re-pulls onboarding AND shows the model-setup toast for a readiness failure', async () => {
     let refreshed = 0;
     const restoreWindow = installWindow({
       sessions: {
         create: async () =>
-          Promise.reject(new Error('NO_REAL_CONNECTION:missing_credentials: no ready connection')),
+          Promise.reject(new Error('NO_REAL_CONNECTION:missing_api_key: no ready connection')),
       },
       expertTeam: { start: async () => ({ ok: false, reason: 'unknown_team', teamId: 'x' }) },
     });
     const toasts: ToastCall[] = [];
+    const setupToasts: SetupToastCall[] = [];
 
     try {
-      const actions = createActions(toasts, () => {
-        refreshed += 1;
-      });
+      const actions = createActions(
+        toasts,
+        () => {
+          refreshed += 1;
+        },
+        setupToasts,
+      );
       assert.equal(await actions.startModeSession('deep_research'), false);
     } finally {
       restoreWindow();
     }
 
     assert.equal(refreshed, 1);
+    assert.deepEqual(setupToasts, [
+      [
+        'The current model connection has no usable credentials. Add an API key or sign in again under Settings · Models.',
+        'missing_api_key',
+      ],
+    ]);
+    // The generic failure toast must stay out of the way: this state has one
+    // answer, and it is the actionable one.
+    assert.deepEqual(toasts, []);
+  });
+
+  /**
+   * `expertTeam:start` reports the same state through its own `setup_required`
+   * reason code and carries no sub-reason, so the toast falls back to the
+   * generic setup copy. Both entry points must answer, or the one that does
+   * not is a silent dead end.
+   */
+  it('shows the model-setup toast when an expert team cannot start for setup', async () => {
+    let refreshed = 0;
+    const restoreWindow = installWindow({
+      sessions: { create: async () => ({ id: 'session-1' }) },
+      expertTeam: { start: async () => ({ ok: false, reason: 'setup_required' }) },
+    });
+    const toasts: ToastCall[] = [];
+    const setupToasts: SetupToastCall[] = [];
+
+    try {
+      const actions = createActions(
+        toasts,
+        () => {
+          refreshed += 1;
+        },
+        setupToasts,
+      );
+      assert.equal(await actions.handleExpertTeamStart('team'), false);
+    } finally {
+      restoreWindow();
+    }
+
+    assert.equal(refreshed, 1);
+    assert.deepEqual(setupToasts, [
+      ['This model connection cannot send right now. Check it in Settings · Models and try again.', undefined],
+    ]);
     assert.deepEqual(toasts, []);
   });
 

@@ -878,6 +878,7 @@ function AppShellContent({
     sessionStartPendingRef,
     refreshOnboarding: onboarding.refresh,
     refreshSessions,
+    showModelSetupToast,
     toastApi,
   });
   // Built-in expert teams for the composer "+" menu - loaded once via

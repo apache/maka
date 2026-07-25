@@ -2,7 +2,11 @@ import type { QuickChatMode, UiLocale } from '@maka/core';
 import { saveGlobalInputHistoryEntry } from '@maka/ui';
 import type { NavSelection } from '@maka/ui';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
-import { isNoRealConnectionError } from './model-connection-errors.js';
+import {
+  isNoRealConnectionError,
+  noRealConnectionReasonFromError,
+  noRealConnectionSetupDescription,
+} from './model-connection-errors.js';
 import {
   isSessionWorkspaceUnavailableError,
   showSessionWorkspaceUnavailableToast,
@@ -46,6 +50,12 @@ export function createAppShellSessionStartActions(deps: {
   sessionStartPendingRef: RefBox<boolean>;
   refreshOnboarding: () => void;
   refreshSessions: () => Promise<unknown>;
+  /**
+   * The shell's one handler for "no usable model connection" (app-shell.tsx),
+   * shared with the send path and the session-event stream. It carries the
+   * 打开模型设置 action, which is the only thing that resolves this state.
+   */
+  showModelSetupToast: (description: string, reason?: string) => void;
   toastApi: ToastApi;
 }): AppShellSessionStartActions {
   const {
@@ -58,6 +68,7 @@ export function createAppShellSessionStartActions(deps: {
     sessionStartPendingRef,
     refreshOnboarding,
     refreshSessions,
+    showModelSetupToast,
     toastApi,
   } = deps;
   const copy = getShellCopy(uiLocale).chatActions;
@@ -99,10 +110,17 @@ export function createAppShellSessionStartActions(deps: {
         return false;
       }
       if (isNoRealConnectionError(error)) {
-        // Re-pull the snapshot and stop: the hero this reveals already
-        // states what is missing, so a generic error toast on top of it
-        // is noise. This is what `setup_required` did.
+        // Refresh the snapshot so the first-run hero is accurate, then say
+        // what is missing. The hero alone is not an answer: it only takes the
+        // chat surface over while `sessions.length === 0 && !onboardingSettled`
+        // (app-shell.tsx), and onboarding-service backfills that milestone for
+        // anyone who already has a session — so for every existing user the
+        // refresh alone renders nothing and the command appears to do nothing.
+        // This is the same error class the send path handles, so it gets the
+        // same toast rather than a second answer to one question.
         refreshOnboarding();
+        const reason = noRealConnectionReasonFromError(error);
+        showModelSetupToast(noRealConnectionSetupDescription(reason, uiLocale), reason);
         return false;
       }
       if (isShellSurfaceOwnerActive(owner)) {
@@ -138,7 +156,11 @@ export function createAppShellSessionStartActions(deps: {
         void window.maka.onboarding.setMilestone('initial_onboarding', 'completed').catch(() => {});
         return true;
       } else if (result.reason === 'setup_required') {
+        // Same reasoning as startModeSession's readiness branch above: the
+        // hero cannot answer for a user who already has sessions. This channel
+        // reports no sub-reason, so the toast falls back to its generic copy.
         refreshOnboarding();
+        showModelSetupToast(noRealConnectionSetupDescription(undefined, uiLocale));
         return false;
       } else if (result.reason === 'workspace_unavailable') {
         if (isShellSurfaceOwnerActive(owner)) {
