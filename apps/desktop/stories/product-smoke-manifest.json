@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "viewports": {
+    "wide": { "width": 1280, "height": 900 },
+    "compact": { "width": 820, "height": 900 },
+    "floor": { "width": 480, "height": 900 }
+  },
+  "surfaces": {
+    "settings": {
+      "storyId": "product-settings-pages--permission-center-diagnostics-expanded",
+      "productionHost": "SettingsSurface",
+      "state": "Permission Center after expanding diagnostics through its play interaction",
+      "viewports": ["wide", "compact", "floor"]
+    },
+    "skills": {
+      "storyId": "product-module-hubs--extensions-skills-installed",
+      "productionHost": "AppShellDetailPanel > SkillsPage",
+      "state": "Installed skills list",
+      "viewports": ["wide", "compact", "floor"]
+    },
+    "mcp": {
+      "storyId": "product-module-hubs--extensions-mcp",
+      "productionHost": "AppShellDetailPanel > McpPage",
+      "state": "MCP marketplace before a server is installed",
+      "viewports": ["wide", "compact", "floor"]
+    },
+    "planReminders": {
+      "storyId": "product-module-hubs--scheduled-plan-reminders-configured",
+      "productionHost": "AppShellDetailPanel > AutomationsPage",
+      "state": "Configured recurring and completed reminders",
+      "viewports": ["wide", "compact", "floor"]
+    },
+    "dailyReview": {
+      "storyId": "product-module-hubs--scheduled-daily-review",
+      "productionHost": "AppShellDetailPanel > DailyReviewPage",
+      "state": "Loaded daily review summary",
+      "viewports": ["wide", "compact", "floor"]
+    }
+  }
+}
