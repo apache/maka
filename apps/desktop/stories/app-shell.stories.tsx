@@ -336,9 +336,17 @@ export const SwarmModeActive: Story = {
 // session with no messages yet. This is the ONLY empty home: ChatView falls
 // back to its built-in EmptyChatHero (greeting + composer). Do NOT render
 // OnboardingHero here — #1433 narrowed the hero's gate to unfinished setup, so
-// a configured user with zero sessions now lands here too, not on a first-run
-// screen. The setup states are covered by Product/Onboarding; presenting one of
-// them as the empty home makes every comparison against this story wrong.
+// a configured user with zero sessions now lands on this same empty chat, not
+// on a first-run screen. The setup states are covered by Product/Onboarding;
+// presenting one of them as the empty home makes every comparison against this
+// story wrong.
+//
+// Scope: the chat surface, not the whole shell. ComposedShell always projects
+// one active session across the sidebar, header and composer so those three
+// cannot disagree, so what this story shows is the empty chat WITH history
+// present. The zero-session shell differs only in the sidebar; a story for it
+// would mean making the active session optional throughout ComposedShell, and
+// nothing renders differently in the detail pane.
 export const EmptyHome: Story = {
   render: () => <ComposedShell chat={{ messages: [] }} />,
 };

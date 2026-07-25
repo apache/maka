@@ -54,11 +54,22 @@ function report(input: Partial<CapabilityAuditReport['summary']>): CapabilityAud
 }
 
 /**
- * The element the strip is a direct child of on both hosts (skills-panel.tsx,
- * plan-reminder-panel.tsx). Not an approximation of one: the previous frame
- * here was a `maxWidth: 720; padding: 24` box the app never renders, plus
+ * The skills page's frame: the element the strip is a direct child of in
+ * skills-panel.tsx. Not an approximation of one — the previous frame here was
+ * a `maxWidth: 720; padding: 24` box the app never renders, plus
  * `data-maka-e2e-fixture`, which pauses every animation and transition
- * (base.css) — something only the E2E harness does.
+ * (base.css), something only the E2E harness does.
+ *
+ * This is the skills host and only the skills host. The plan-reminder page
+ * mounts the same component in a different frame — `.maka-plan-shell
+ * .agents-inner-view-clamp` inside `.maka-plan-panel`, which caps it at
+ * `min(100%, 1024px)` centred (reference-shell.css) and has no
+ * `.maka-module-main` ancestor, so `module-shell.css`'s
+ * `:has(> .maka-capability-audit-strip)` third grid row does not apply there.
+ * Width and vertical-rhythm measurements taken here do not transfer to that
+ * page. A second story would only be worth its scaffold if someone were doing
+ * pixel work on the plan page; naming the divergence is what stops a
+ * measurement here from being quietly reused there.
  */
 function ModulePage(props: { children: React.ReactNode }) {
   return (
@@ -66,12 +77,14 @@ function ModulePage(props: { children: React.ReactNode }) {
   );
 }
 
-// Real path: sidebar → 扩展 → 技能, or sidebar → 定时任务 → 计划提醒, once something
-// needs attention — a managed skill source waiting for auth or erroring, an
-// automation whose last run failed or was skipped. The strip renders exactly one
-// warning line naming what is wrong. With all four of those counts at zero it
-// returns null and the page carries no strip, so that state has no story: it has
-// no pixels.
+// Real path: sidebar → 扩展 → 技能, once something needs attention — a managed
+// skill source waiting for auth or erroring, an automation whose last run failed
+// or was skipped. The strip renders exactly one warning line naming what is
+// wrong. With all four of those counts at zero it returns null and the page
+// carries no strip, so that state has no story: it has no pixels.
+//
+// 定时任务 → 计划提醒 reaches the same component in a different frame; see
+// ModulePage above for what that changes and why it is not a second story.
 export const WithRisks: Story = {
   render: () => (
     <ModulePage>

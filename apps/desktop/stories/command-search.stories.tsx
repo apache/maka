@@ -3,7 +3,6 @@ import type { SearchErrorReason, SearchResult } from '@maka/core';
 import { SearchModal } from '@maka/ui';
 import {
   Download,
-  EyeOff,
   FolderOpen,
   MessageSquare,
   Plus,
@@ -122,21 +121,6 @@ const paletteCommands: Command[] = [
   },
 ];
 
-const disabledPaletteCommands: Command[] = [
-  {
-    id: 'thread-search:blocked',
-    kind: 'action',
-    label: '搜索已在隐私模式下停用',
-    hint: '隐私模式打开时不会读取本地历史内容。',
-    group: '内容搜索',
-    Icon: EyeOff,
-    keywords: ['incognito', 'privacy', '隐私'],
-    disabled: true,
-    run: noop,
-  },
-  ...paletteCommands.slice(0, 2),
-];
-
 const idlePaletteSearchDeps = {
   runSearch: async () => [],
 } satisfies UseThreadSearchDeps;
@@ -253,15 +237,13 @@ export const CommandPaletteNoMatch: Story = {
   },
 };
 
-// Real path: ⌘K when a command is listed but not currently runnable, so it shows as
-// disabled instead of disappearing.
-export const CommandPaletteDisabledCommand: Story = {
-  render: () => (
-    <CommandPaletteFrame
-      commands={disabledPaletteCommands}
-    />
-  ),
-};
+// A `CommandPaletteDisabledCommand` story used to sit here, hand-building a
+// `thread-search:blocked` row into the base command list and rendering it with
+// no query. `buildCommandList` never emits a disabled command; the only
+// disabled row in the product comes from `buildContentSearchCommands`, which
+// runs only after a query of at least two code points. The reachable version
+// of this state is `CommandPaletteContentSearchBlocked` below, driven through
+// the real builder.
 
 // Real path: ⌘K then ↓↓ — the keyboard-driven selection ring, which the mouse path never
 // shows.

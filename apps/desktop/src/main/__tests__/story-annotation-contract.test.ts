@@ -37,6 +37,13 @@ const STORY_ROOTS = [
 
 const CONVENTION_DOC = 'apps/desktop/stories/FIDELITY.md';
 
+/**
+ * Both extensions Storybook loads. `.storybook/main.ts` globs
+ * `**\/*.stories.@(ts|tsx)`; scanning only `.tsx` would let a new
+ * `Product/…stories.ts` skip the convention without anything failing.
+ */
+const STORY_EXTENSIONS = ['.stories.ts', '.stories.tsx'];
+
 async function listStoryFiles(dir: string): Promise<string[]> {
   const entries = await readdir(dir, { withFileTypes: true });
   const files: string[] = [];
@@ -44,7 +51,7 @@ async function listStoryFiles(dir: string): Promise<string[]> {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
       files.push(...(await listStoryFiles(full)));
-    } else if (entry.name.endsWith('.stories.tsx')) {
+    } else if (STORY_EXTENSIONS.some((extension) => entry.name.endsWith(extension))) {
       files.push(full);
     }
   }
@@ -80,18 +87,24 @@ async function readStoryFiles(): Promise<StoryFile[]> {
 
 /**
  * Story exports declared in this file, with the line each one starts on.
- * Covers both CSF idioms — the annotated `: Story` form and the inferred
- * `satisfies Story` form this repo already uses for `meta`. Matching only the
- * first would let a story opt out of the contract by changing how it is typed.
+ *
+ * Every named export of a CSF file IS a story — that is the format's
+ * definition, not a heuristic about this repo, so matching named exports is
+ * both the complete rule and the simplest one. (`meta` leaves as
+ * `export default`, and CSF's one escape hatch for a named non-story export,
+ * `meta.excludeStories`, is unused here; a file that starts using it would
+ * need this to honour it.)
+ *
+ * An earlier version matched `export const X: Story =` plus — only in files
+ * containing `satisfies Story` — `export const X = {`. No file in either root
+ * contains `satisfies Story`, so that second branch could never run: it was
+ * written for a form the repo does not use, while `export const X =
+ * makeStory()` in a form the repo could use any day slipped through.
  */
 function storyExports(source: string): Array<{ name: string; line: number }> {
-  const lines = source.split('\n');
   const exports: Array<{ name: string; line: number }> = [];
-  const usesSatisfies = /satisfies Story\b/.test(source);
-  lines.forEach((text, index) => {
-    const typed = text.match(/^export const (\w+)\s*:\s*Story\s*=/);
-    const inferred = usesSatisfies ? text.match(/^export const (\w+)\s*=\s*\{/) : null;
-    const name = typed?.[1] ?? inferred?.[1];
+  source.split('\n').forEach((text, index) => {
+    const name = text.match(/^export const (\w+)\s*[:=]/)?.[1];
     if (name) exports.push({ name, line: index });
   });
   return exports;
