@@ -1,21 +1,212 @@
 /**
  * PR #1316 review coverage: lock the per-shell capture-command quoting, the
  * marker-adjacency contract (which is why the dead xonsh branch was dropped),
- * and the mergeEnv preservation / stripping rules. Pure-function unit tests
- * — same `node:test` + `node:assert/strict` layout as `build-info.test.ts`.
+ * and the public capture path. Same `node:test` + `node:assert/strict` layout
+ * as `build-info.test.ts`.
  */
 
 import { strict as assert } from 'node:assert';
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import {
   buildCaptureCommand,
   buildMarkerRegex,
-  mergeEnv,
-  sanitizeCapturedEnv,
+  resolveShellEnv,
+  selectLoginShell,
 } from '../shell-env.js';
 
 const MARK = '0123456789ab';
+
+function snapshotEnv(): () => void {
+  const before = new Map<string, string>();
+  for (const [key, value] of Object.entries(process.env)) {
+    before.set(key, value as string);
+  }
+  return () => {
+    for (const key of Object.keys(process.env)) {
+      if (!before.has(key)) delete process.env[key];
+    }
+    for (const [key, value] of before) process.env[key] = value;
+  };
+}
+
+async function createFakeShell(body: string): Promise<{
+  path: string;
+  cleanup: () => Promise<void>;
+}> {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-shell-env-'));
+  const path = join(directory, 'fake-shell');
+  await writeFile(path, `#!/bin/sh\n${body}\n`, { mode: 0o700 });
+  return {
+    path,
+    cleanup: () => rm(directory, { recursive: true, force: true }),
+  };
+}
+
+describe('resolveShellEnv', () => {
+  it(
+    'imports the login PATH without importing application control variables',
+    { skip: process.platform === 'win32' },
+    async () => {
+      const restoreEnv = snapshotEnv();
+      const shell = await createFakeShell(`
+export PATH='/resolved/bin:/usr/bin'
+export MAKA_E2E_FIXTURE='first-run'
+export VITE_DEV_SERVER_URL='https://example.invalid/renderer'
+export XDG_RUNTIME_DIR='/shell/runtime'
+exec /bin/sh -c "$4"
+`);
+      try {
+        process.env.SHELL = shell.path;
+        process.env.PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+        process.env.XDG_RUNTIME_DIR = '/original/runtime';
+        delete process.env.TERM;
+        delete process.env.COLORTERM;
+        delete process.env.MAKA_SKIP_SHELL_ENV;
+        delete process.env.MAKA_E2E_FIXTURE;
+        delete process.env.VITE_DEV_SERVER_URL;
+        delete process.env.ELECTRON_RUN_AS_NODE;
+        delete process.env.ELECTRON_NO_ATTACH_CONSOLE;
+
+        await resolveShellEnv();
+
+        assert.equal(process.env.PATH, '/resolved/bin:/usr/bin');
+        assert.equal(process.env.MAKA_E2E_FIXTURE, undefined);
+        assert.equal(process.env.VITE_DEV_SERVER_URL, undefined);
+        assert.equal(process.env.XDG_RUNTIME_DIR, '/original/runtime');
+        assert.equal(process.env.ELECTRON_RUN_AS_NODE, undefined);
+        assert.equal(process.env.ELECTRON_NO_ATTACH_CONSOLE, undefined);
+      } finally {
+        restoreEnv();
+        await shell.cleanup();
+      }
+    },
+  );
+
+  it(
+    'keeps the inherited PATH and does not log shell stderr when capture fails',
+    { skip: process.platform === 'win32' },
+    async () => {
+      const restoreEnv = snapshotEnv();
+      const shell = await createFakeShell(`
+printf 'secret-from-shell-startup' >&2
+exit 23
+`);
+      const warnings: string[] = [];
+      const originalWarn = console.warn;
+      console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(' '));
+      try {
+        process.env.SHELL = shell.path;
+        process.env.PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+        delete process.env.TERM;
+        delete process.env.COLORTERM;
+        delete process.env.MAKA_SKIP_SHELL_ENV;
+
+        await resolveShellEnv();
+
+        assert.equal(process.env.PATH, '/usr/bin:/bin:/usr/sbin:/sbin');
+        assert.match(warnings.join('\n'), /exited with code 23/);
+        assert.doesNotMatch(warnings.join('\n'), /secret-from-shell-startup/);
+      } finally {
+        console.warn = originalWarn;
+        restoreEnv();
+        await shell.cleanup();
+      }
+    },
+  );
+
+  it(
+    'kills login-shell descendants when capture times out',
+    { skip: process.platform === 'win32' },
+    async () => {
+      const restoreEnv = snapshotEnv();
+      const shell = await createFakeShell(`
+(
+  trap '' HUP TERM
+  printf 'started' > "$SHELL_ENV_TEST_STARTED_FILE"
+  sleep 1.5
+  printf 'survived' > "$SHELL_ENV_TEST_SURVIVOR_FILE"
+) </dev/null >/dev/null 2>&1 &
+wait
+`);
+      const startedFile = `${shell.path}.started`;
+      const survivorFile = `${shell.path}.survived`;
+      const originalWarn = console.warn;
+      console.warn = () => {};
+      try {
+        process.env.SHELL = shell.path;
+        process.env.SHELL_ENV_TEST_STARTED_FILE = startedFile;
+        process.env.SHELL_ENV_TEST_SURVIVOR_FILE = survivorFile;
+        process.env.PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+        delete process.env.TERM;
+        delete process.env.COLORTERM;
+        delete process.env.MAKA_SKIP_SHELL_ENV;
+
+        await resolveShellEnv(1_000);
+        await access(startedFile);
+        await delay(700);
+
+        await assert.rejects(access(survivorFile));
+        assert.equal(process.env.PATH, '/usr/bin:/bin:/usr/sbin:/sbin');
+      } finally {
+        console.warn = originalWarn;
+        restoreEnv();
+        await shell.cleanup();
+      }
+    },
+  );
+
+  it(
+    'bounds shell output instead of buffering until the global timeout',
+    { skip: process.platform === 'win32' },
+    async () => {
+      const restoreEnv = snapshotEnv();
+      const shell = await createFakeShell(`
+while :; do
+  printf '0123456789abcdef0123456789abcdef'
+done
+`);
+      const warnings: string[] = [];
+      const originalWarn = console.warn;
+      console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(' '));
+      try {
+        process.env.SHELL = shell.path;
+        process.env.PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+        delete process.env.TERM;
+        delete process.env.COLORTERM;
+        delete process.env.MAKA_SKIP_SHELL_ENV;
+
+        await resolveShellEnv(2_000);
+
+        assert.match(warnings.join('\n'), /shell output exceeded 65536 bytes/);
+        assert.equal(process.env.PATH, '/usr/bin:/bin:/usr/sbin:/sbin');
+      } finally {
+        console.warn = originalWarn;
+        restoreEnv();
+        await shell.cleanup();
+      }
+    },
+  );
+});
+
+describe('selectLoginShell', () => {
+  it('prefers the inherited shell over the account shell', () => {
+    assert.equal(selectLoginShell('/bin/bash', '/bin/fish', 'darwin'), '/bin/bash');
+  });
+
+  it('uses the OS account shell when GUI launch omitted SHELL', () => {
+    assert.equal(selectLoginShell(undefined, '/bin/fish', 'linux'), '/bin/fish');
+  });
+
+  it('uses platform-appropriate defaults only when neither source has a shell', () => {
+    assert.equal(selectLoginShell(undefined, undefined, 'darwin'), '/bin/zsh');
+    assert.equal(selectLoginShell(undefined, undefined, 'linux'), '/bin/sh');
+  });
+});
 
 describe('buildCaptureCommand', () => {
   describe('POSIX family (bash / zsh / fish / sh)', () => {
@@ -24,15 +215,15 @@ describe('buildCaptureCommand', () => {
       assert.deepEqual(shellArgs, ['-i', '-l', '-c']);
       assert.equal(
         command,
-        `'/usr/bin/node' -p '"${MARK}" + JSON.stringify(process.env) + "${MARK}"'`,
+        `'/usr/bin/node' -p '"${MARK}" + JSON.stringify({ PATH: process.env.PATH }) + "${MARK}"'`,
       );
       // The payload concatenates mark + JSON + mark with no separator, so the
       // emitted bytes are `<mark>{...}<mark>` — markers flush against the
       // braces the capture regex anchors on.
-      const emitted = `${MARK}${JSON.stringify({ k: 'v' })}${MARK}`;
+      const emitted = `${MARK}${JSON.stringify({ PATH: '/usr/bin' })}${MARK}`;
       const match = buildMarkerRegex(MARK).exec(emitted);
       assert.ok(match);
-      assert.equal(match[1], JSON.stringify({ k: 'v' }));
+      assert.equal(match[1], JSON.stringify({ PATH: '/usr/bin' }));
     });
 
     it('tcsh / csh collapse to the legacy single -ic argv', () => {
@@ -43,7 +234,7 @@ describe('buildCaptureCommand', () => {
       // Same flush-marker payload as the rest of the POSIX family.
       assert.equal(
         tcsh.command,
-        `'/usr/bin/node' -p '"${MARK}" + JSON.stringify(process.env) + "${MARK}"'`,
+        `'/usr/bin/node' -p '"${MARK}" + JSON.stringify({ PATH: process.env.PATH }) + "${MARK}"'`,
       );
     });
 
@@ -54,7 +245,7 @@ describe('buildCaptureCommand', () => {
       assert.deepEqual(shellArgs, ['-i', '-l', '-c']);
       assert.equal(
         command,
-        `'/Users/Bob'\\''s/node' -p '"${MARK}" + JSON.stringify(process.env) + "${MARK}"'`,
+        `'/Users/Bob'\\''s/node' -p '"${MARK}" + JSON.stringify({ PATH: process.env.PATH }) + "${MARK}"'`,
       );
     });
   });
@@ -66,7 +257,7 @@ describe('buildCaptureCommand', () => {
       // PowerShell single-quoted strings escape `'` as `''`.
       assert.equal(
         command,
-        `& '/Users/Bob''s/node' -p '''${MARK}'' + JSON.stringify(process.env) + ''${MARK}'''`,
+        `& '/Users/Bob''s/node' -p '''${MARK}'' + JSON.stringify({ PATH: process.env.PATH }) + ''${MARK}'''`,
       );
     });
 
@@ -75,7 +266,7 @@ describe('buildCaptureCommand', () => {
       assert.deepEqual(shellArgs, ['-Login', '-Command']);
       assert.equal(
         command,
-        `& '/usr/bin/node' -p '''${MARK}'' + JSON.stringify(process.env) + ''${MARK}'''`,
+        `& '/usr/bin/node' -p '''${MARK}'' + JSON.stringify({ PATH: process.env.PATH }) + ''${MARK}'''`,
       );
     });
   });
@@ -86,7 +277,7 @@ describe('buildCaptureCommand', () => {
       assert.deepEqual(shellArgs, ['-i', '-l', '-c']);
       assert.equal(
         command,
-        `^'/usr/bin/node' -p '"${MARK}" + JSON.stringify(process.env) + "${MARK}"'`,
+        `^'/usr/bin/node' -p '"${MARK}" + JSON.stringify({ PATH: process.env.PATH }) + "${MARK}"'`,
       );
     });
   });
@@ -98,7 +289,7 @@ describe('buildCaptureCommand', () => {
     assert.deepEqual(shellArgs, ['-i', '-l', '-c']);
     assert.equal(
       command,
-      `'/usr/bin/node' -p '"${MARK}" + JSON.stringify(process.env) + "${MARK}"'`,
+      `'/usr/bin/node' -p '"${MARK}" + JSON.stringify({ PATH: process.env.PATH }) + "${MARK}"'`,
     );
   });
 });
@@ -112,9 +303,9 @@ describe('buildMarkerRegex', () => {
   });
 
   it('captures the body across newlines (dotall via [\\s\\S])', () => {
-    // Shell init noise / pretty-printed env can land newlines inside the JSON
-    // object; the regex must span them.
-    const body = JSON.stringify({ k: 'v\nmulti', nested: { a: 1 } });
+    const body = `{
+  "PATH": "/usr/bin"
+}`;
     const match = buildMarkerRegex(MARK).exec(`${MARK}${body}${MARK}`);
     assert.ok(match);
     assert.equal(match[1], body);
@@ -128,110 +319,5 @@ describe('buildMarkerRegex', () => {
     // item #3 before it shipped.
     const xonshShape = `${MARK} {"k":"v"} ${MARK}`;
     assert.equal(buildMarkerRegex(MARK).exec(xonshShape), null);
-  });
-});
-
-describe('sanitizeCapturedEnv', () => {
-  it('removes Electron probe variables that were absent from the original process', () => {
-    const sanitized = sanitizeCapturedEnv(
-      {
-        ELECTRON_RUN_AS_NODE: '1',
-        ELECTRON_NO_ATTACH_CONSOLE: '1',
-        PATH: '/resolved/bin',
-      },
-      { PATH: '/original/bin' },
-    );
-
-    assert.equal(sanitized.ELECTRON_RUN_AS_NODE, undefined);
-    assert.equal(sanitized.ELECTRON_NO_ATTACH_CONSOLE, undefined);
-    assert.equal(sanitized.PATH, '/resolved/bin');
-  });
-
-  it('restores the exact Electron values that existed before the probe', () => {
-    const sanitized = sanitizeCapturedEnv(
-      {
-        ELECTRON_RUN_AS_NODE: '1',
-        ELECTRON_NO_ATTACH_CONSOLE: '1',
-        PATH: '/resolved/bin',
-      },
-      {
-        ELECTRON_RUN_AS_NODE: 'original-run-as-node',
-        ELECTRON_NO_ATTACH_CONSOLE: 'original-no-console',
-      },
-    );
-
-    assert.equal(
-      sanitized.ELECTRON_RUN_AS_NODE,
-      'original-run-as-node',
-    );
-    assert.equal(
-      sanitized.ELECTRON_NO_ATTACH_CONSOLE,
-      'original-no-console',
-    );
-  });
-
-  it('drops the login shell runtime directory before it reaches GUI children', () => {
-    const sanitized = sanitizeCapturedEnv(
-      {
-        PATH: '/resolved/bin',
-        XDG_RUNTIME_DIR: '/shell/runtime',
-      },
-      { XDG_RUNTIME_DIR: '/original/runtime' },
-    );
-
-    assert.equal(sanitized.XDG_RUNTIME_DIR, undefined);
-  });
-});
-
-describe('mergeEnv', () => {
-  // mergeEnv mutates the global `process.env`; snapshot every key before each
-  // test and restore exactly afterward so the suite stays hermetic.
-  function snapshotEnv(): () => void {
-    const before = new Map<string, string>();
-    for (const [key, value] of Object.entries(process.env)) before.set(key, value as string);
-    return () => {
-      for (const key of Object.keys(process.env)) {
-        if (!before.has(key)) delete process.env[key];
-      }
-      for (const [key, value] of before) process.env[key] = value;
-    };
-  }
-
-  it('applies the resolved PATH (resolved wins for user-configured vars)', () => {
-    const restore = snapshotEnv();
-    try {
-      delete process.env.PATH;
-      mergeEnv({ PATH: '/resolved/bin:/usr/bin' });
-      assert.equal(process.env.PATH, '/resolved/bin:/usr/bin');
-    } finally {
-      restore();
-    }
-  });
-
-  it('preserves a pre-existing MAKA_* value the resolved env tried to overwrite', () => {
-    // The prefix-rule refactor must restore ANY MAKA_* key, even ones not on
-    // a hand-maintained list — this is what survives future MAKA_* renames.
-    const restore = snapshotEnv();
-    try {
-      process.env.MAKA_FUTURE_FLAG = 'original';
-      mergeEnv({ MAKA_FUTURE_FLAG: 'from-shell', PATH: '/bin' });
-      assert.equal(process.env.MAKA_FUTURE_FLAG, 'original');
-    } finally {
-      restore();
-    }
-  });
-
-  it('preserves the original desktop marker when the resolved env carries it', () => {
-    const restore = snapshotEnv();
-    try {
-      process.env.ORIGINAL_XDG_CURRENT_DESKTOP = 'GNOME';
-      mergeEnv({
-        ORIGINAL_XDG_CURRENT_DESKTOP: 'from-shell',
-        PATH: '/bin',
-      });
-      assert.equal(process.env.ORIGINAL_XDG_CURRENT_DESKTOP, 'GNOME');
-    } finally {
-      restore();
-    }
   });
 });

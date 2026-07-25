@@ -7,26 +7,27 @@
 // User-installed tools (homebrew, ~/.local/bin, nvm, pyenv, etc.) are absent
 // because the GUI process never sources ~/.zshrc / ~/.bash_profile.
 //
-// This module spawns the user's login shell, captures its full environment via
-// JSON.stringify(process.env) with UUID markers, and merges the result into
-// process.env. This is the same battle-tested approach VS Code uses
-// (src/vs/platform/shell/node/shellEnv.ts).
+// This module spawns the user's login shell, captures its PATH with UUID
+// markers, and applies that one value to process.env. Application-control
+// variables remain owned by the process that launched Maka.
 //
 // Call `resolveShellEnv()` once, early in main.ts, before any stores, tools,
 // or child processes are created.
 
-import { spawn } from 'node:child_process';
-import { basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { userInfo } from 'node:os';
+import { basename } from 'node:path';
 
 const DEFAULT_TIMEOUT_MS = 10_000;
+const MAX_CAPTURE_BYTES = 64 * 1024;
 const ELECTRON_PROBE_ENV = {
   ELECTRON_RUN_AS_NODE: '1',
   ELECTRON_NO_ATTACH_CONSOLE: '1',
 } as const;
 
 /**
- * Resolve the user's login-shell environment and merge it into `process.env`.
+ * Resolve the user's login-shell PATH and apply it to `process.env`.
  *
  * Skips resolution when:
  * - Running on Windows (shell env works differently)
@@ -39,24 +40,25 @@ const ELECTRON_PROBE_ENV = {
  * On failure the function logs a warning and returns silently — the app
  * continues with whatever environment Electron was given.
  */
-export async function resolveShellEnv(): Promise<void> {
+export async function resolveShellEnv(timeoutMs = DEFAULT_TIMEOUT_MS): Promise<void> {
   if (process.platform === 'win32') return;
   if (process.env.MAKA_SKIP_SHELL_ENV === '1') return;
   if (process.env.TERM || process.env.COLORTERM) return;
 
   try {
-    const env = await captureLoginShellEnv(DEFAULT_TIMEOUT_MS);
-    mergeEnv(env);
+    process.env.PATH = await captureLoginShellPath(timeoutMs);
+    const pathEntries = process.env.PATH.split(':').length;
+    console.log(`[shell-env] resolved login-shell PATH (${pathEntries} entries)`);
   } catch (err) {
     console.warn(
-      `[shell-env] failed to resolve login-shell environment: ${err instanceof Error ? err.message : String(err)}`,
+      `[shell-env] failed to resolve login-shell PATH: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 }
 
 /**
- * Build the shell command + argv that capture the login shell's full
- * environment as a marker-wrapped JSON blob. Exported so the per-shell
+ * Build the shell command + argv that capture the login shell's PATH as a
+ * marker-wrapped JSON blob. Exported so the per-shell
  * quoting rules and marker layout can be unit-tested in isolation (matching
  * the sibling-module pattern: `resolveBuildInfo`, `buildStdioEnvironment`).
  *
@@ -69,16 +71,17 @@ export function buildCaptureCommand(
   execPath: string,
   mark: string,
 ): { command: string; shellArgs: string[] } {
-  // The inner payload is identical to VS Code's: the binary runs Node and
-  // prints `mark + JSON.stringify(process.env) + mark` with no padding, so
-  // the markers sit flush against the `{` / `}` the capture regex anchors on.
+  // The binary prints only PATH. Importing the entire login environment would
+  // let shell startup files inject Maka's test, debug, and renderer controls
+  // into the already-running application.
+  const payload = 'JSON.stringify({ PATH: process.env.PATH })';
 
   if (/^(?:pwsh|powershell)(?:-preview)?$/.test(shellName)) {
     // PowerShell single-quoted strings escape an embedded apostrophe by
     // doubling it (`''`).
     const escapedExec = `'${execPath.replace(/'/g, "''")}'`;
     return {
-      command: `& ${escapedExec} -p '''${mark}'' + JSON.stringify(process.env) + ''${mark}'''`,
+      command: `& ${escapedExec} -p '''${mark}'' + ${payload} + ''${mark}'''`,
       shellArgs: ['-Login', '-Command'],
     };
   }
@@ -87,7 +90,7 @@ export function buildCaptureCommand(
     // nu raw strings (`^'...'`) cannot escape an embedded quote, so execPath
     // is left as-is — a known edge case (reviewer-accepted).
     return {
-      command: `^'${execPath}' -p '"${mark}" + JSON.stringify(process.env) + "${mark}"'`,
+      command: `^'${execPath}' -p '"${mark}" + ${payload} + "${mark}"'`,
       shellArgs: ['-i', '-l', '-c'],
     };
   }
@@ -100,7 +103,7 @@ export function buildCaptureCommand(
   // the close-quote / literal-quote / reopen-quote sequence `'\''`.
   const escapedExec = `'${execPath.replace(/'/g, "'\\''")}'`;
   return {
-    command: `${escapedExec} -p '"${mark}" + JSON.stringify(process.env) + "${mark}"'`,
+    command: `${escapedExec} -p '"${mark}" + ${payload} + "${mark}"'`,
     shellArgs: shellName === 'tcsh' || shellName === 'csh' ? ['-ic'] : ['-i', '-l', '-c'],
   };
 }
@@ -115,30 +118,48 @@ export function buildMarkerRegex(mark: string): RegExp {
 }
 
 /**
- * Restore the caller's Electron flags and remove the login shell's transient
- * runtime directory before the capture may re-enter the main process.
+ * Prefer the inherited shell, then the OS account shell. GUI launches often
+ * omit SHELL, so a platform default is only the last resort.
  */
-export function sanitizeCapturedEnv(
-  captured: Readonly<Record<string, string>>,
-  original: Readonly<NodeJS.ProcessEnv>,
-): Record<string, string> {
-  const sanitized = { ...captured };
-  for (const key of Object.keys(ELECTRON_PROBE_ENV) as Array<
-    keyof typeof ELECTRON_PROBE_ENV
-  >) {
-    const originalValue = original[key];
-    if (originalValue === undefined) delete sanitized[key];
-    else sanitized[key] = originalValue;
-  }
-  delete sanitized.XDG_RUNTIME_DIR;
-  return sanitized;
+export function selectLoginShell(
+  inheritedShell: string | undefined,
+  accountShell: string | null | undefined,
+  platform: NodeJS.Platform,
+): string {
+  return (
+    inheritedShell?.trim() ||
+    accountShell?.trim() ||
+    (platform === 'darwin' ? '/bin/zsh' : '/bin/sh')
+  );
 }
 
 /**
- * Spawn the user's login shell and capture its full environment.
+ * Kill the detached shell process group so startup-file descendants do not
+ * survive a timeout or an output-limit failure.
  */
-async function captureLoginShellEnv(timeoutMs: number): Promise<Record<string, string>> {
-  const shell = process.env.SHELL ?? '/bin/zsh';
+function terminateProbe(child: ReturnType<typeof spawn>): void {
+  if (process.platform !== 'win32' && child.pid !== undefined) {
+    try {
+      process.kill(-child.pid, 'SIGKILL');
+      return;
+    } catch {
+      // Fall through if the process group has already exited.
+    }
+  }
+  child.kill('SIGKILL');
+}
+
+/**
+ * Spawn the user's login shell and capture only its PATH.
+ */
+async function captureLoginShellPath(timeoutMs: number): Promise<string> {
+  let accountShell: string | null | undefined;
+  try {
+    accountShell = userInfo().shell;
+  } catch {
+    // Account lookup can fail in constrained runtimes; use the platform fallback.
+  }
+  const shell = selectLoginShell(process.env.SHELL, accountShell, process.platform);
   const shellName = basename(shell);
 
   // Build a command that prints the shell's environment as JSON, wrapped in
@@ -148,18 +169,12 @@ async function captureLoginShellEnv(timeoutMs: number): Promise<Record<string, s
   const markerRegex = buildMarkerRegex(mark);
   const { command, shellArgs } = buildCaptureCommand(shellName, process.execPath, mark);
 
-  const originalEnv = { ...process.env };
   const env: Record<string, string | undefined> = {
-    ...originalEnv,
+    ...process.env,
     ...ELECTRON_PROBE_ENV,
   };
 
-  return new Promise<Record<string, string>>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      child.kill();
-      reject(new Error(`timed out after ${timeoutMs}ms spawning ${shell}`));
-    }, timeoutMs);
-
+  return new Promise<string>((resolve, reject) => {
     const child = spawn(shell, [...shellArgs, command], {
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -167,87 +182,79 @@ async function captureLoginShellEnv(timeoutMs: number): Promise<Record<string, s
     });
 
     const stdoutChunks: Buffer[] = [];
-    const stderrChunks: Buffer[] = [];
+    let capturedBytes = 0;
+    let settled = false;
+    let timer: NodeJS.Timeout | undefined;
 
-    child.stdout.on('data', (b: Buffer) => stdoutChunks.push(b));
-    child.stderr.on('data', (b: Buffer) => stderrChunks.push(b));
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      child.stdout.removeAllListeners();
+      child.stderr.removeAllListeners();
+      child.removeAllListeners();
+      child.stdout.destroy();
+      child.stderr.destroy();
+    };
+
+    const fail = (error: Error, terminate = false) => {
+      if (settled) return;
+      settled = true;
+      if (terminate) terminateProbe(child);
+      cleanup();
+      reject(error);
+    };
+
+    const succeed = (path: string) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(path);
+    };
+
+    const capture = (chunk: Buffer, keep: boolean) => {
+      capturedBytes += chunk.length;
+      if (capturedBytes > MAX_CAPTURE_BYTES) {
+        fail(new Error(`shell output exceeded ${MAX_CAPTURE_BYTES} bytes`), true);
+        return;
+      }
+      if (keep) stdoutChunks.push(chunk);
+    };
+
+    child.stdout.on('data', (chunk: Buffer) => capture(chunk, true));
+    // Count stderr toward the bound but never retain or log shell-controlled
+    // bytes: startup files may print secrets.
+    child.stderr.on('data', (chunk: Buffer) => capture(chunk, false));
 
     child.on('error', (err) => {
-      clearTimeout(timer);
-      reject(new Error(`failed to spawn ${shell}: ${err.message}`));
+      fail(new Error(`failed to spawn ${shell}: ${err.message}`));
     });
 
     child.on('close', (code, signal) => {
-      clearTimeout(timer);
-
-      const raw = Buffer.concat(stdoutChunks).toString('utf8');
-      const stderrStr = Buffer.concat(stderrChunks).toString('utf8').trim();
-
-      if (stderrStr) {
-        // Shell init noise is expected; only log at debug level.
-        console.debug(`[shell-env] stderr from ${shell}: ${stderrStr.slice(0, 500)}`);
-      }
-
+      if (settled) return;
       if (code !== 0 && code !== null) {
-        reject(new Error(`${shell} exited with code ${code}${signal ? ` (signal ${signal})` : ''}`));
+        fail(new Error(`${shell} exited with code ${code}${signal ? ` (signal ${signal})` : ''}`));
         return;
       }
 
+      const raw = Buffer.concat(stdoutChunks).toString('utf8');
       const match = markerRegex.exec(raw);
       if (!match) {
-        reject(new Error(`could not find environment markers in ${shell} output`));
+        fail(new Error(`could not find PATH markers in ${shell} output`));
         return;
       }
 
       try {
         const parsed = JSON.parse(match[1]) as Record<string, string>;
-        resolve(sanitizeCapturedEnv(parsed, originalEnv));
-      } catch (err) {
-        reject(new Error(`failed to parse environment JSON: ${err instanceof Error ? err.message : String(err)}`));
+        if (typeof parsed.PATH !== 'string' || parsed.PATH.length === 0) {
+          throw new Error('captured login shell did not provide PATH');
+        }
+        succeed(parsed.PATH);
+      } catch {
+        fail(new Error('failed to parse PATH JSON'));
       }
     });
+
+    timer = setTimeout(() => {
+      fail(new Error(`timed out after ${timeoutMs}ms spawning ${shell}`), true);
+    }, timeoutMs);
   });
-}
-
-/**
- * Merge resolved shell environment into `process.env`. Exported so the
- * preservation / stripping rules can be unit-tested.
- *
- * The resolved env takes precedence for PATH and other user-configured
- * variables, but we preserve the host-owned desktop marker and every `MAKA_*`
- * value that the resolved shell env must not replace. The Electron flags used
- * by the capture probe are already restored at the capture boundary.
- */
-export function mergeEnv(resolved: Record<string, string>): void {
-  // Snapshot the host-owned keys before the resolved env overwrites them.
-  // Scanning `process.env` (not a fixed list) means every currently-set
-  // MAKA_* value is restored verbatim.
-  const preservedKeys = Object.keys(process.env).filter(
-    (key) =>
-      key === 'ORIGINAL_XDG_CURRENT_DESKTOP' ||
-      key.startsWith('MAKA_'),
-  );
-  const preserved: Record<string, string | undefined> = {};
-  for (const key of preservedKeys) {
-    preserved[key] = process.env[key];
-  }
-
-  // Apply the resolved environment.
-  for (const [key, value] of Object.entries(resolved)) {
-    if (typeof value === 'string') {
-      process.env[key] = value;
-    }
-  }
-
-  // Restore preserved keys (delete any that were absent originally).
-  for (const [key, value] of Object.entries(preserved)) {
-    if (value !== undefined) {
-      process.env[key] = value;
-    } else {
-      delete process.env[key];
-    }
-  }
-
-  const pathEntries = (process.env.PATH ?? '').split(':').length;
-  console.log(`[shell-env] resolved login-shell environment (${pathEntries} PATH entries)`);
 }

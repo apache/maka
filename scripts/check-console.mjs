@@ -85,7 +85,7 @@ const ALLOW = new Map([
   ],
   [
     'apps/desktop/src/main/shell-env.ts',
-    'login-shell env resolution diagnostics at startup (PATH-entry count, shell stderr snippet, capture failure reason); non-fatal, no secrets.',
+    'login-shell PATH resolution diagnostics at startup (PATH-entry count and sanitized failure reason); non-fatal, no shell-controlled output.',
   ],
   ['scripts/check-console.mjs', 'this script — explicit allow.'],
   [
