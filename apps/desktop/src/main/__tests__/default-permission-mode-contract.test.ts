@@ -67,19 +67,20 @@ describe('default permission mode contract', () => {
       'the resolver must live in ./permission-mode-default.ts, not inline in main.ts (so its never-rejects fallback is unit-testable)',
     );
 
-    // Both sessions:create branches (fake + ai-sdk) live in sessions-ipc-main.ts
-    // and must inject settingsStore.get into the resolver, proving they route
-    // through the single authority instead of reading settings inline. Count
-    // across the combined main-process source so the split does not weaken the
-    // invariant. #1433 merged the third caller (quickChat:start) into
-    // sessions:create, so two is now the full set — a new session-creation
-    // path that reads settings its own way would push this back over.
+    // sessions:create must inject settingsStore.get into the resolver, proving
+    // it routes through the single authority instead of reading settings
+    // inline. Count across the combined main-process source so the file split
+    // does not weaken the invariant. #1433 merged the third caller
+    // (quickChat:start) into sessions:create and then hoisted the resolution
+    // above the fake/ai-sdk branch, so ONE call site is now the full set — a
+    // new session-creation path that reads settings its own way, or a branch
+    // that re-resolves the default on its own, would push this back over.
     const combined = await readMainProcessCombinedSource();
     const routedCalls = combined.match(/resolveDefaultPermissionMode\(\(\) => settingsStore\.get\(\)\)/g) ?? [];
     assert.equal(
       routedCalls.length,
-      2, // fake branch + ai-sdk branch
-      `all session-creation fallbacks must route through resolveDefaultPermissionMode(() => settingsStore.get()) (found ${routedCalls.length}, expected exactly the two sessions:create branches)`,
+      1, // the single hoisted resolution both sessions:create branches share
+      `all session-creation fallbacks must route through resolveDefaultPermissionMode(() => settingsStore.get()) (found ${routedCalls.length}, expected exactly one)`,
     );
     assert.doesNotMatch(
       src,
@@ -90,16 +91,33 @@ describe('default permission mode contract', () => {
 
   /**
    * #1433: Deep Research is a read-only boundary, so it must win over both
-   * the renderer's request and the configured default. Ordering the
-   * fallback chain this way also means the settings read never happens for
-   * a mode that already fixes the boundary.
+   * the renderer's request and the configured default.
    */
   it('a mode-forced boundary outranks the configured default', async () => {
     const src = await readSessionsIpcSource();
     assert.match(
       src,
-      /permissionMode:\s*modeSeed\?\.permissionMode \?\?\s*input\?\.permissionMode \?\?\s*\(await resolveDefaultPermissionMode/,
+      /const permissionMode =\s*modeSeed\?\.permissionMode \?\?\s*input\?\.permissionMode \?\?\s*\(await resolveDefaultPermissionMode/,
       'the mode seed must be consulted before the renderer request and before the configured default',
+    );
+  });
+
+  /**
+   * #1433: `explore` is a boundary a mode confers, never one a caller may
+   * open a session at — core already names the pickable set
+   * `ChatDefaultPermissionMode`. Without this refusal the seed is only a
+   * default: a renderer could ask for `explore` outright and get it without
+   * the Deep Research label, tools or system prompt that define the mode.
+   * `sessions:setPermissionMode` stays the separate, deliberate path for
+   * moving an EXISTING session (the quote companion relies on it), so the
+   * guard belongs on creation only.
+   */
+  it('sessions:create refuses a directly-requested explore boundary', async () => {
+    const src = await readSessionsIpcSource();
+    assert.match(
+      src,
+      /if \(input\?\.permissionMode !== undefined && !isChatDefaultPermissionMode\(input\.permissionMode\)\) \{\s*throw new TypeError/,
+      'a directly-requested permission mode must be validated against the pickable set, so explore can only arrive via the mode seed',
     );
   });
 

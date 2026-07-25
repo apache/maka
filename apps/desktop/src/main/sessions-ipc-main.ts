@@ -4,6 +4,7 @@ import { stat } from 'node:fs/promises';
 import { ipcMain } from 'electron';
 import {
   DEFAULT_SESSION_NAME,
+  isChatDefaultPermissionMode,
   isCollaborationMode,
   isOrchestrationMode,
   isPermissionMode,
@@ -224,9 +225,10 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
   ipcMain.handle('sessions:list', (_event, filter?: SessionListFilter) => runtime.listSessions(filter));
   ipcMain.handle('sessions:create', async (_event, input?: SessionsCreateInput) => {
     const cwd = input?.cwd ?? (await currentProjectRoot());
-    // #1433: `mode` is a product intent, not a session field. Main owns
-    // what it means; the renderer cannot reach `explore` by asking for it
-    // directly. An unrecognized value normalizes to plain chat.
+    // #1433: `mode` is a product intent, not a session field. Main owns what
+    // it means, and when a mode is given the seed defines the session — the
+    // renderer's own requests only fill in what the mode does not speak to.
+    // An unrecognized value normalizes to plain chat.
     const modeSeed = sessionModeSeed(normalizeQuickChatMode(input?.mode));
     const collaborationMode = input?.collaborationMode ?? 'agent';
     if (!isCollaborationMode(collaborationMode)) {
@@ -236,6 +238,22 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
     if (!isOrchestrationMode(orchestrationMode)) {
       throw new TypeError('Invalid orchestration mode.');
     }
+    // `explore` is a boundary a mode confers, never one a caller may open a
+    // session at — core already spells that out as `ChatDefaultPermissionMode`
+    // (the modes a user can pick). Refusing it here is what makes the seed the
+    // only way in; `sessions:setPermissionMode` stays the separate, deliberate
+    // path for moving an existing session (the quote companion uses it).
+    if (input?.permissionMode !== undefined && !isChatDefaultPermissionMode(input.permissionMode)) {
+      throw new TypeError('Invalid permission mode.');
+    }
+    const permissionMode =
+      modeSeed?.permissionMode ??
+      input?.permissionMode ??
+      (await resolveDefaultPermissionMode(() => settingsStore.get()));
+    const name = modeSeed?.name ?? input?.name ?? DEFAULT_SESSION_NAME;
+    const labels = modeSeed
+      ? [...new Set([...(input?.labels ?? []), ...modeSeed.labels])]
+      : input?.labels;
     if (input?.backend === 'fake') {
       if (!canCreateFakeSession()) {
         throw new Error('FakeBackend sessions are only available in development.');
@@ -245,11 +263,11 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
         backend: 'fake',
         llmConnectionSlug: input.llmConnectionSlug ?? 'fake',
         model: input.model ?? 'fake-model',
-        permissionMode: input.permissionMode ?? (await resolveDefaultPermissionMode(() => settingsStore.get())),
+        permissionMode,
         collaborationMode,
         orchestrationMode,
-        name: input.name ?? DEFAULT_SESSION_NAME,
-        labels: input.labels,
+        name,
+        labels,
       });
       emitSessionsChanged('created', session.id);
       return session;
@@ -265,16 +283,11 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
       llmConnectionSlug: connection.slug,
       model,
       ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
-      // The mode's boundary wins over both the renderer's request and the
-      // configured default — Deep Research is read-only by definition.
-      permissionMode:
-        modeSeed?.permissionMode ??
-        input?.permissionMode ??
-        (await resolveDefaultPermissionMode(() => settingsStore.get())),
+      permissionMode,
       collaborationMode,
       orchestrationMode,
-      name: input?.name ?? modeSeed?.name ?? DEFAULT_SESSION_NAME,
-      labels: modeSeed ? [...(input?.labels ?? []), ...modeSeed.labels] : input?.labels,
+      name,
+      labels,
     });
     emitSessionsChanged('created', session.id);
     return session;
