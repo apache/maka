@@ -145,6 +145,11 @@ describe('Claude subscription runtime wiring', () => {
       src.indexOf("case 'claude-subscription'"),
     );
     assert.match(region, /adapter\.normalizeBaseUrl\s*\?\s*anthropicV1BaseUrl\(baseURL\)/);
+    assert.match(
+      region,
+      /fetch,/,
+      'Anthropic-compatible providers must accept an explicitly supplied proxy transport',
+    );
   });
 
   test('registry sends both MiniMax variants over Bearer without rewriting their base URL', () => {

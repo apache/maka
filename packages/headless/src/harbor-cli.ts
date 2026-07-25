@@ -39,6 +39,7 @@ import { runTaskOnceWithStorage } from './task-agent-controller.js';
 import { taxonomyFromResultRecord } from './task-contracts.js';
 import { taskRunLocator } from './task-run-identity.js';
 import { requireProviderCredentialEnv } from './provider-env.js';
+import { createProviderEnvFetch, type ProviderEnvFetch } from './provider-env-fetch.js';
 import { resolveHeadlessSystemPrompt } from './system-prompts.js';
 
 type HarborMode = 'cell' | 'task-run';
@@ -78,6 +79,7 @@ interface HarborRunOptions {
   newId: () => string;
   registerBackends?: RunHarborCellInput['registerBackends'];
   realBackendIsolation?: RealBackendIsolation;
+  providerEnvFetch?: ProviderEnvFetch;
 }
 
 const HARBOR_RUN_FLAGS = [
@@ -138,6 +140,8 @@ async function harborRunCommand(args: string[]): Promise<number> {
   } catch (error) {
     console.error(`maka eval harbor run: ${(error as Error).message}`);
     return 1;
+  } finally {
+    await options.providerEnvFetch?.close();
   }
 }
 
@@ -423,15 +427,23 @@ export async function resolveHarborRunOptions(
     heavyTask: parsed.bools['heavy-task'] || truthyEnv(env.MAKA_HEAVY_TASK_MODE),
     economyTask: parsed.bools['economy-task'] || truthyEnv(env.MAKA_ECONOMY_TASK_MODE),
   });
-  const registerBackends = buildBackendRegistration({
-    backend,
-    env,
-    now,
-    newId,
-    cellArtifactDir,
-    maxSteps,
-  });
   const realBackendIsolation = buildIsolation(isolation, env, workdir, outDir);
+  const providerEnvFetch = backend === 'ai-sdk' ? createProviderEnvFetch(env) : undefined;
+  let registerBackends: RunHarborCellInput['registerBackends'];
+  try {
+    registerBackends = buildBackendRegistration({
+      backend,
+      env,
+      now,
+      newId,
+      cellArtifactDir,
+      ...(providerEnvFetch ? { fetch: providerEnvFetch.fetch } : {}),
+      maxSteps,
+    });
+  } catch (error) {
+    await providerEnvFetch?.close();
+    throw error;
+  }
   return {
     mode,
     backend,
@@ -464,6 +476,7 @@ export async function resolveHarborRunOptions(
     newId,
     ...(registerBackends ? { registerBackends } : {}),
     ...(realBackendIsolation ? { realBackendIsolation } : {}),
+    ...(providerEnvFetch ? { providerEnvFetch } : {}),
   };
 }
 
@@ -590,6 +603,7 @@ function buildBackendRegistration(input: {
   now: () => number;
   newId: () => string;
   cellArtifactDir: string;
+  fetch?: typeof globalThis.fetch;
   maxSteps?: number;
 }): RunHarborCellInput['registerBackends'] | undefined {
   if (input.backend === 'fake') return undefined;
@@ -604,6 +618,7 @@ function buildBackendRegistration(input: {
     env: input.env,
     now: input.now,
     newId: input.newId,
+    ...(input.fetch ? { fetch: input.fetch } : {}),
     recordUsageCheckpoint: (usage) => writeHarborCellUsageCheckpoint(input.cellArtifactDir, usage),
     ...(input.maxSteps !== undefined ? { maxSteps: input.maxSteps } : {}),
   });

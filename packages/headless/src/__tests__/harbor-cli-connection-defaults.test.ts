@@ -433,6 +433,28 @@ describe('applyConnectionDefaults', () => {
 });
 
 describe('resolveHarborRunOptions backend guard', () => {
+  test('wires an explicit environment-proxy fetch into real container backends', async () => {
+    const opts = await resolveHarborRunOptions(
+      ['--instruction', 'test', '--isolation', 'harbor-local'],
+      {
+        MAKA_MODEL: 'openai-codex/gpt-5.6-sol',
+        MAKA_HOST_API_KEY: 'selected-host-token',
+        MAKA_HOST_BASE_URL: 'http://host.docker.internal:443',
+        NODE_USE_ENV_PROXY: '1',
+        HTTP_PROXY: 'http://agent:test@pier-egress-proxy:8080',
+        HTTPS_PROXY: 'http://agent:test@pier-egress-proxy:8080',
+        NO_PROXY: 'localhost,127.0.0.1',
+      },
+    );
+
+    try {
+      assert.ok(opts.providerEnvFetch);
+      assert.ok(opts.registerBackends);
+    } finally {
+      await opts.providerEnvFetch?.close();
+    }
+  });
+
   test('keeps a local external workspace separate from the headless source fixture', async () => {
     const opts = await resolveHarborRunOptions(
       [
