@@ -8,13 +8,8 @@ import { AppShellTopbarActions, AppShellWorkspaceTopActions } from '../src/rende
 
 const NOW = Date.UTC(2026, 6, 1, 9, 30, 0);
 
-// FIDELITY CONVENTION — every story in this file must map to an app state a
-// real user can reach, with the path noted above the story. A story that
-// composes an unreachable state (or a state that requires different app
-// data than shown) lies about the product, and every visual comparison or
-// review built on it is wrong. If the app changes so a story no longer
-// matches a reachable state, fix the story or delete it — do not keep both
-// "the app" and "the story version" of a surface alive.
+// Fidelity convention (#1433): every story below names the real app path
+// that reaches it. See apps/desktop/stories/FIDELITY.md.
 
 const meta = {
   title: 'Product/Shell Child Composition',
@@ -337,12 +332,13 @@ export const SwarmModeActive: Story = {
   render: () => <ComposedShell composer={{ swarmModeActive: true }} />,
 };
 
-// Real path: returning user with session history → start a new chat (or
-// open a session with no messages yet). This is the DAILY empty home:
-// ChatView falls back to its built-in EmptyChatHero (greeting + composer). Do NOT render OnboardingHero here —
-// app-shell only shows it when sessions.length === 0 (first run), and those
-// states are covered by Product/Onboarding. Presenting the first-run hero as
-// the daily home makes every visual comparison against this story wrong.
+// Real path: any user with onboarding finished → start a new chat, or open a
+// session with no messages yet. This is the ONLY empty home: ChatView falls
+// back to its built-in EmptyChatHero (greeting + composer). Do NOT render
+// OnboardingHero here — #1433 narrowed the hero's gate to unfinished setup, so
+// a configured user with zero sessions now lands here too, not on a first-run
+// screen. The setup states are covered by Product/Onboarding; presenting one of
+// them as the empty home makes every comparison against this story wrong.
 export const EmptyHome: Story = {
   render: () => <ComposedShell chat={{ messages: [] }} />,
 };

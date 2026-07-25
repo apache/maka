@@ -1,8 +1,29 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
-export const REPO_ROOT = resolve(import.meta.dirname, '../../../../..');
+/**
+ * Walk up to the workspace root by looking for it, rather than counting `..`
+ * segments. Contract tests run from `dist/main/__tests__`, so a fixed chain
+ * silently resolves to `/` if the build output ever moves — the failure then
+ * reads as "story directory missing" instead of "root lookup broke".
+ */
+function findRepoRoot(start: string): string {
+  let dir = resolve(start);
+  for (;;) {
+    if (
+      existsSync(join(dir, 'apps', 'desktop', 'package.json'))
+      && existsSync(join(dir, 'packages', 'ui', 'package.json'))
+    ) {
+      return dir;
+    }
+    const parent = resolve(dir, '..');
+    if (parent === dir) throw new Error(`Unable to locate repo root from ${start}`);
+    dir = parent;
+  }
+}
+
+export const REPO_ROOT = findRepoRoot(import.meta.dirname);
 
 /**
  * Every production module of the main process, discovered rather than listed.

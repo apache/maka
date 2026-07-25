@@ -3,15 +3,8 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { LlmConnection, OnboardingState, ProviderType, SettingsSection } from '@maka/core';
 import { OnboardingHero } from '../src/renderer/OnboardingHero';
 
-// FIDELITY CONVENTION (#1433) — every story in this file must map to an app
-// state a real user can reach, with that path noted above the story. Stories
-// are treated as ground truth for what the product looks like, so one that
-// composes an unreachable state makes every visual comparison built on it
-// wrong. If the app changes and a story no longer matches a reachable state,
-// fix the story or delete it — do not keep both "the app" and "the story
-// version" of a surface alive. Where a story deliberately puts several states
-// side by side for review, say so: the arrangement is a scaffold, each panel
-// is the reachable state.
+// Fidelity convention (#1433): every story below names the real app path
+// that reaches it. See apps/desktop/stories/FIDELITY.md.
 
 const meta = {
   title: 'Product/Onboarding',
@@ -47,10 +40,24 @@ const connections: LlmConnection[] = [
   makeConnection({ slug: 'openai-review', name: 'OpenAI Review', providerType: 'openai' }),
 ];
 
+/**
+ * The hero's real frame, not an approximation of it.
+ *
+ * #1433: this used to end in `maxWidth: 720; padding: 48px 32px`, which is
+ * nothing the app renders. The hero actually lands in ChatView's empty slot
+ * (`chat-view.tsx` → `.maka-chatContent`) wrapped in
+ * `.maka-onboarding-surface` (`chat-message-surface.tsx`), and that class owns
+ * the hero's height, padding and alignment (`onboarding.css`). A story that
+ * substitutes its own wrapper measures its own scaffolding — which is exactly
+ * how #1433 produced a 135px offset and a centring bug that neither reproduced
+ * in the built app. The chain below is the app's, class for class.
+ */
 function DetailPane(props: { children: ReactNode }) {
   return (
     <div
       data-maka-e2e-fixture="true"
+      className="mainColumn"
+      data-home-surface="true"
       style={{
         background: 'var(--surface-canvas)',
         height: '100%',
@@ -61,8 +68,8 @@ function DetailPane(props: { children: ReactNode }) {
         className="maka-panel maka-panel-detail maka-floating-panel agents-content-area agents-parchment-paper-surface"
         style={{ height: '100%', overflow: 'auto' }}
       >
-        <div style={{ margin: '0 auto', maxWidth: 720, padding: '48px 32px' }}>
-          {props.children}
+        <div className="maka-chatContent">
+          <div className="maka-onboarding-surface">{props.children}</div>
         </div>
       </div>
     </div>

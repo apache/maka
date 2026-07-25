@@ -378,7 +378,7 @@ describe('Storybook baseline contract', () => {
 
     for (const storyName of [
       'CommandPaletteGroupedResults',
-      'CommandPaletteEmpty',
+      'CommandPaletteNoMatch',
       'CommandPaletteDisabledCommand',
       'CommandPaletteKeyboardFocusedSelection',
       'CommandPaletteContentSearchLoading',

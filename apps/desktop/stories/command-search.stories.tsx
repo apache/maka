@@ -15,15 +15,8 @@ import { CommandPalette } from '../src/renderer/command-palette';
 import type { Command } from '../src/renderer/command-palette-types';
 import type { UseThreadSearchDeps } from '../src/renderer/use-thread-search';
 
-// FIDELITY CONVENTION (#1433) — every story in this file must map to an app
-// state a real user can reach, with that path noted above the story. Stories
-// are treated as ground truth for what the product looks like, so one that
-// composes an unreachable state makes every visual comparison built on it
-// wrong. If the app changes and a story no longer matches a reachable state,
-// fix the story or delete it — do not keep both "the app" and "the story
-// version" of a surface alive. Where a story deliberately puts several states
-// side by side for review, say so: the arrangement is a scaffold, each panel
-// is the reachable state.
+// Fidelity convention (#1433): every story below names the real app path
+// that reaches it. See apps/desktop/stories/FIDELITY.md.
 
 const meta = {
   title: 'Product/Command Search',
@@ -244,13 +237,20 @@ export const CommandPaletteGroupedResults: Story = {
   ),
 };
 
-// Real path: ⌘K in a context that offers no commands — e.g. before any session exists.
-export const CommandPaletteEmpty: Story = {
+// Real path: ⌘K → type a query that matches nothing. There is no
+// no-commands-at-all state to render: `buildCommandList` always emits
+// 新建对话 first (command-palette-commands.ts), so the palette's empty branch
+// is only ever reached through a query — and its copy says so
+// ("没有匹配的命令 / 换个关键词").
+export const CommandPaletteNoMatch: Story = {
   render: () => (
     <CommandPaletteFrame
-      commands={[]}
+      commands={paletteCommands}
     />
   ),
+  play: async ({ canvasElement }) => {
+    await enterQuery(canvasElement, '.maka-palette-input', 'zzzzz-no-such-command');
+  },
 };
 
 // Real path: ⌘K when a command is listed but not currently runnable, so it shows as
