@@ -544,14 +544,12 @@ describe('permission response IPC boundary', () => {
       /return true;/,
       'a successful start must report success so the caller knows the session exists',
     );
-    // #1433: `sessions:create` rejects instead of returning a reason code, so
-    // the readiness recovery the old union carried has to live on the throw
-    // path. Without this the hero would keep claiming setup is complete.
-    assert.match(
-      modeSessionHandler[0],
-      /\} catch \(error\) \{[\s\S]*isSessionWorkspaceUnavailableError\(error\)[\s\S]*refreshOnboarding\(\)/,
-      'an unusable workspace must get its own toast, and every other failure must re-pull the onboarding snapshot',
-    );
+      // #1433: how the catch CLASSIFIES the error (workspace / readiness /
+      // unclassified) is asserted behaviorally in
+      // app-shell-session-start-actions.test.ts, which rejects with each of
+      // the three and checks what actually happens. A source regex cannot
+      // tell them apart — `[\s\S]*` does not express nesting, so it would
+      // pass with the branches swapped.
     assert.match(
       modeSessionHandler[0],
       /if \(isShellSurfaceOwnerActive\(owner\)\) \{[\s\S]*toastApi\.error\([\s\S]*copy\.sessionStartFailedTitle,[\s\S]*localizedShellErrorMessage\(error, copy\.sessionStartFailedFallback, uiLocale\),[\s\S]*\);[\s\S]*\}[\s\S]*?return false;/,

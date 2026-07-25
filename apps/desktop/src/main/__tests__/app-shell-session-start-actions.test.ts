@@ -129,20 +129,27 @@ describe('AppShell quick-entry failure copy', () => {
 
   /**
    * #1433: `quickChat:start` returned `{ ok: false, reason: 'setup_required' }`
-   * and the renderer re-pulled the onboarding snapshot. `sessions:create`
-   * rejects instead, so that recovery has to survive on the throw path — or a
-   * user whose credentials went stale would get a toast and a hero still
-   * claiming everything is fine.
+   * and the renderer re-pulled the onboarding snapshot without a toast — the
+   * hero it reveals already states what is missing. `sessions:create` rejects
+   * instead, so that recovery has to survive on the throw path, and it has to
+   * survive as a real DISCRIMINANT: the error main throws for an unusable
+   * setup is `NO_REAL_CONNECTION:<reason>:` (chat-readiness.ts). Asserting
+   * with a plain `new Error(...)` here would pass even if the implementation
+   * treated every failure as a readiness failure.
    */
-  it('re-pulls onboarding when session creation fails for a readiness reason', async () => {
+  it('re-pulls onboarding, without a toast, for a readiness failure', async () => {
     let refreshed = 0;
     const restoreWindow = installWindow({
-      sessions: { create: async () => Promise.reject(new Error('no ready connection')) },
+      sessions: {
+        create: async () =>
+          Promise.reject(new Error('NO_REAL_CONNECTION:missing_credentials: no ready connection')),
+      },
       expertTeam: { start: async () => ({ ok: false, reason: 'unknown_team', teamId: 'x' }) },
     });
+    const toasts: ToastCall[] = [];
 
     try {
-      const actions = createActions([], () => {
+      const actions = createActions(toasts, () => {
         refreshed += 1;
       });
       assert.equal(await actions.startModeSession('deep_research'), false);
@@ -151,6 +158,35 @@ describe('AppShell quick-entry failure copy', () => {
     }
 
     assert.equal(refreshed, 1);
+    assert.deepEqual(toasts, []);
+  });
+
+  /**
+   * The other half of that discriminant: a storage/disk/bug failure is NOT a
+   * readiness failure. Re-deriving onboarding for it would tell the user their
+   * setup is incomplete when it is fine, and swallowing the toast would leave
+   * them with no feedback at all.
+   */
+  it('toasts an unclassified failure instead of blaming the setup', async () => {
+    let refreshed = 0;
+    const restoreWindow = installWindow({
+      sessions: { create: async () => Promise.reject(new Error('EIO: i/o error, write')) },
+      expertTeam: { start: async () => ({ ok: false, reason: 'unknown_team', teamId: 'x' }) },
+    });
+    const toasts: ToastCall[] = [];
+
+    try {
+      const actions = createActions(toasts, () => {
+        refreshed += 1;
+      });
+      assert.equal(await actions.startModeSession('deep_research'), false);
+    } finally {
+      restoreWindow();
+    }
+
+    assert.equal(refreshed, 0);
+    assert.equal(toasts.length, 1);
+    assert.equal(toasts[0]?.[0], 'Could not start conversation');
   });
 
   /**
@@ -179,7 +215,11 @@ describe('AppShell quick-entry failure copy', () => {
     }
 
     assert.equal(refreshed, 0);
-    assert.equal(toasts.length, 1);
-    assert.notEqual(toasts[0]?.[0], 'Could not start conversation');
+    assert.deepEqual(toasts, [
+      [
+        'Working directory unavailable',
+        'The working directory does not exist or cannot be accessed. Select a valid folder for a new task.',
+      ],
+    ]);
   });
 });

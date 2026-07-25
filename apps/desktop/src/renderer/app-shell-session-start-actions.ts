@@ -2,6 +2,7 @@ import type { QuickChatMode, UiLocale } from '@maka/core';
 import { saveGlobalInputHistoryEntry } from '@maka/ui';
 import type { NavSelection } from '@maka/ui';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
+import { isNoRealConnectionError } from './model-connection-errors.js';
 import {
   isSessionWorkspaceUnavailableError,
   showSessionWorkspaceUnavailableToast,
@@ -81,18 +82,29 @@ export function createAppShellSessionStartActions(deps: {
       void window.maka.onboarding.setMilestone('initial_onboarding', 'completed').catch(() => {});
       return true;
     } catch (error) {
-      // `sessions:create` rejects rather than returning a reason code, so
-      // the two cases the old `quickChat:start` union spelled out are
-      // recovered here: an unusable workspace gets its own toast, and any
-      // readiness failure re-pulls the onboarding snapshot so the hero can
-      // state what is missing.
+      // `sessions:create` rejects rather than returning a reason code, so the
+      // two cases the old `quickChat:start` union spelled out are recovered
+      // here from the errors main actually throws — not from "everything that
+      // is not the other one":
+      //
+      //   workspace_unavailable → `SESSION_WORKSPACE_UNAVAILABLE:` (project-context-root.ts)
+      //   setup_required        → `NO_REAL_CONNECTION:<reason>:`   (chat-readiness.ts)
+      //
+      // Anything else is a genuine failure (storage, disk, a bug) and must
+      // not be silently relabelled as "your setup is incomplete".
       if (isSessionWorkspaceUnavailableError(error)) {
         if (isShellSurfaceOwnerActive(owner)) {
           showSessionWorkspaceUnavailableToast(toastApi, uiLocale);
         }
         return false;
       }
-      refreshOnboarding();
+      if (isNoRealConnectionError(error)) {
+        // Re-pull the snapshot and stop: the hero this reveals already
+        // states what is missing, so a generic error toast on top of it
+        // is noise. This is what `setup_required` did.
+        refreshOnboarding();
+        return false;
+      }
       if (isShellSurfaceOwnerActive(owner)) {
         toastApi.error(
           copy.sessionStartFailedTitle,
