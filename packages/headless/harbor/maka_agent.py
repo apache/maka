@@ -820,13 +820,16 @@ class MakaAgent(BaseInstalledAgent):
         env["MAKA_CELL_ARTIFACT_DIR"] = EnvironmentPaths.agent_dir.as_posix()
         env["MAKA_CELL_SOFT_TIMEOUT_MS"] = str(self._cell_soft_timeout_ms(env))
 
-        proxy_url = env.pop("MAKA_PROVIDER_PROXY_URL", None)
-        proxy_token = env.pop("MAKA_PROVIDER_PROXY_TOKEN", None)
+        proxy_url = self._get_env("MAKA_PROVIDER_PROXY_URL")
+        proxy_token = self._get_env("MAKA_PROVIDER_PROXY_TOKEN")
+        env.pop("MAKA_PROVIDER_PROXY_URL", None)
+        env.pop("MAKA_PROVIDER_PROXY_TOKEN", None)
         if self._harbor_backend() != "fake":
             if not proxy_url or not proxy_token:
                 raise RuntimeError("Maka container task-run requires the host provider proxy")
             env["MAKA_HOST_BASE_URL"] = proxy_url
             env["MAKA_HOST_API_KEY"] = proxy_token
+            env["NODE_USE_ENV_PROXY"] = "1"
         return env
 
     async def _download_task_run_artifacts(self, environment: BaseEnvironment) -> None:

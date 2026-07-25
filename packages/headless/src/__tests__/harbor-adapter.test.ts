@@ -1571,7 +1571,9 @@ class BaseInstalledAgent:
         self.logger = types.SimpleNamespace(debug=lambda *args, **kwargs: None)
 
     def _get_env(self, key):
-        return self._extra_env.get(key)
+        if key in self._extra_env:
+            return self._extra_env[key]
+        return os.environ.get(key)
 
     def version(self):
         return "test"
@@ -1874,13 +1876,13 @@ with tempfile.TemporaryDirectory() as tmp:
 
     original_network_allowlist = maka_agent_mod._NetworkAllowlist
     maka_agent_mod._NetworkAllowlist = FakeNetworkAllowlist
+    os.environ["MAKA_PROVIDER_PROXY_URL"] = "http://host.docker.internal:443"
+    os.environ["MAKA_PROVIDER_PROXY_TOKEN"] = "ephemeral-token"
     try:
         container_agent = ContainerTaskRunAgent(Path(tmp), extra_env={
             "MAKA_BACKEND": "ai-sdk",
             "MAKA_HARBOR_MODE": "task-run",
             "MAKA_NODE_TOOLCHAIN_FINGERPRINT": "sha256:test-node",
-            "MAKA_PROVIDER_PROXY_URL": "http://host.docker.internal:443",
-            "MAKA_PROVIDER_PROXY_TOKEN": "ephemeral-token",
             "MAKA_CELL_TIMEOUT_SEC": "7200",
         })
         container_agent._resolved_flags = {
@@ -1913,6 +1915,9 @@ with tempfile.TemporaryDirectory() as tmp:
     container_env = container_kwargs["env"]
     assert container_env["MAKA_HOST_BASE_URL"] == "http://host.docker.internal:443", container_env
     assert container_env["MAKA_HOST_API_KEY"] == "ephemeral-token", container_env
+    assert container_env["NODE_USE_ENV_PROXY"] == "1", container_env
+    assert "MAKA_PROVIDER_PROXY_URL" not in container_env, container_env
+    assert "MAKA_PROVIDER_PROXY_TOKEN" not in container_env, container_env
     assert "MAKA_HARBOR_TOOL_EXECUTOR_URL" not in container_env, container_env
     assert "MAKA_HARBOR_TOOL_EXECUTOR_TOKEN" not in container_env, container_env
     assert container_env["MAKA_OUTPUT_DIR"] == "/logs/agent/maka-task-run", container_env

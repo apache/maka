@@ -194,16 +194,17 @@ def test_maka_agent_network_policy_under_pier():
     assert fake.network_allowlist().domains == []
 
     # Pier task-run mode runs Maka in the task container. It may reach only the
-    # host credential proxy, never the upstream provider directly.
+    # host credential proxy, never the upstream provider directly. Pier loads
+    # its secret --env-file into os.environ; only --ae values reach extra_env.
+    os.environ["MAKA_PROVIDER_PROXY_URL"] = "https://host.docker.internal"
+    os.environ["MAKA_PROVIDER_PROXY_TOKEN"] = "ephemeral-token"
     task_run = maka_mod.MakaAgent(
         logs_dir=Path("/tmp"),
-        extra_env={
-            "MAKA_HARBOR_MODE": "task-run",
-            "MAKA_PROVIDER_PROXY_URL": "https://host.docker.internal",
-            "MAKA_PROVIDER_PROXY_TOKEN": "ephemeral-token",
-        },
+        extra_env={"MAKA_HARBOR_MODE": "task-run"},
     )
     assert task_run.network_allowlist().domains == ["host.docker.internal"]
+    del os.environ["MAKA_PROVIDER_PROXY_URL"]
+    del os.environ["MAKA_PROVIDER_PROXY_TOKEN"]
 
     fake_task_run = maka_mod.MakaAgent(
         logs_dir=Path("/tmp"),
