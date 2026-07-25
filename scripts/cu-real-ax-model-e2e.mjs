@@ -398,14 +398,24 @@ const computerTool = {
     if (nextTotal > budget.total || nextActionCount > (budget.counts[action] ?? 0)) {
       rejectAttempt('action_budget_exceeded', 'AX-only scenario action budget exceeded');
     }
-    if (
-      action === 'observe' &&
-      (args.app !== fixture.appId || args.window_id !== fixtureWindowId)
-    ) {
-      rejectAttempt(
-        'target_mismatch',
-        'model observe target does not match the exact fixture identity',
-      );
+    if (action === 'observe') {
+      // The `computer` tool contract is "observe requires app OR window_id", so a
+      // model that supplies only one of them is behaving correctly. Requiring both
+      // would fail every compliant model before it ever reaches a dispatch. Assert
+      // the real invariant instead: whatever the model did supply must identify the
+      // fixture, and must not point at any other target.
+      const appProvided = args.app !== undefined;
+      const windowProvided = args.window_id !== undefined;
+      const appMatches = args.app === fixture.appId;
+      const windowMatches = args.window_id === fixtureWindowId;
+      const identifiesFixture = (appProvided && appMatches) || (windowProvided && windowMatches);
+      const contradictsFixture = (appProvided && !appMatches) || (windowProvided && !windowMatches);
+      if (!identifiesFixture || contradictsFixture) {
+        rejectAttempt(
+          'target_mismatch',
+          'model observe target does not match the exact fixture identity',
+        );
+      }
     }
     const actionStartedAt = Date.now();
     let result;

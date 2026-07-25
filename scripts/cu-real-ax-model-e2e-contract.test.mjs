@@ -2,10 +2,11 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-const [launcher, harness, probe] = await Promise.all([
+const [launcher, harness, probe, monitor] = await Promise.all([
   readFile(new URL('./cu-real-ax-model-e2e-launcher.mjs', import.meta.url), 'utf8'),
   readFile(new URL('./cu-real-ax-model-e2e.mjs', import.meta.url), 'utf8'),
   readFile(new URL('./cu-physical-input-age.swift', import.meta.url), 'utf8'),
+  readFile(new URL('./cu-real-e2e-monitor.swift', import.meta.url), 'utf8'),
 ]);
 
 test('real AX model E2E owns fixture lifecycle and never activates it', () => {
@@ -96,8 +97,22 @@ test('launcher validates every READY field emitted by the safety monitor', () =>
   assert.match(launcher, /canonicalAppPath: fields\[6\]/);
   assert.match(launcher, /baseline\.mode !== 'concurrent_user'/);
   assert.match(launcher, /Number\.isFinite\(baseline\.physicalInputAge\)/);
-  assert.match(launcher, /baseline\.bundleIdentifier !== fixtureBundleId/);
-  assert.match(launcher, /baseline\.canonicalAppPath !== expectedAppPath/);
+  // The fixture is launched with `open -n -g`, so the baseline asserts it does
+  // NOT own the foreground. Both identity fields are still validated; only the
+  // direction changed, because requiring the fixture to be frontmost would
+  // contradict the launch mode and the background execution under test.
+  assert.match(launcher, /baseline\.bundleIdentifier === fixtureBundleId/);
+  assert.match(launcher, /baseline\.canonicalAppPath === expectedAppPath/);
+  assert.match(launcher, /baseline\.frontmostPID === fixturePID/);
+});
+
+test('launcher keeps the fixture out of the foreground for the whole run', () => {
+  // `--concurrent-user` only catches the OOP host PID; denying the bundle covers
+  // every process the fixture owns, so a UI process stealing focus mid-scenario
+  // also fails the run rather than silently passing.
+  assert.match(launcher, /'--deny-frontmost-bundle'/);
+  assert.match(monitor, /--deny-frontmost-bundle/);
+  assert.match(monitor, /denied bundle became frontmost during E2E/);
 });
 
 test('candidate qualification keeps artifact identity checks and supports a relocated lab', () => {
