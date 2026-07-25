@@ -537,6 +537,7 @@ export type {
   BranchFromTurnInput,
   ChildAgentTurnInput,
   CreateSessionInput,
+  CreateSessionRequestInput,
   RegenerateTurnInput,
   ReviseBeforeTurnInput,
   TurnOrchestration,

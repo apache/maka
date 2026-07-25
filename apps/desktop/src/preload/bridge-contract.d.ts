@@ -80,7 +80,7 @@ import type {
 } from '@maka/core/usage-stats/types';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
 import type { Result } from '@maka/core/result';
-import type { CreateSessionInput } from '@maka/core';
+import type { CreateSessionRequestInput } from '@maka/core';
 import type {
   McpConfigFile,
   McpServerConfig,
@@ -94,7 +94,6 @@ import type {
   OnboardingMilestone,
   OnboardingMilestoneId,
   OnboardingState,
-  SessionStartMode,
 } from '@maka/core';
 
 export interface ExpertTeamMemberSummary {
@@ -173,7 +172,7 @@ export interface MakaBridge {
   };
   sessions: {
     list(filter?: SessionListFilter): Promise<SessionSummary[]>;
-    create(input?: Partial<CreateSessionInput> & { mode?: SessionStartMode }): Promise<SessionSummary>;
+    create(input?: CreateSessionRequestInput): Promise<SessionSummary>;
     send(
       sessionId: string,
       command:

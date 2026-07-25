@@ -51,6 +51,7 @@ function createActionsDeps() {
     }),
     clearPendingSessionAction: () => undefined,
     isNewChatSendSurfaceActive: () => true,
+    isShellSurfaceOwnerActive: () => true,
     markSessionReadLocally: () => undefined,
     markSessionRunningOptimistic: () => () => undefined,
     messageRetryPendingRef: { current: new Set<string>() },
@@ -150,5 +151,71 @@ describe('composer first-send cleanup', () => {
     }
 
     assert.deepEqual(removed, []);
+  });
+});
+
+/**
+ * #1433 round 5: the failure feedback for a send is addressed to the surface
+ * that sent, and `showModelSetupToast` is not just a toast — it ends in
+ * `openSettingsSection('models')` (app-shell.tsx), so it navigates.
+ *
+ * This branch used to decide "am I still that surface" by comparing the
+ * session id alone. `selectNavigation` never clears `activeId`
+ * (nav-selection.ts), so a user who left the chat for 扩展 → 技能 while the
+ * send was in flight still matched, and a readiness rejection yanked them into
+ * 设置 · 模型. It now asks the shell's one owner predicate, which compares the
+ * nav section too.
+ */
+describe('composer send failure feedback', () => {
+  const readinessFailure = () => ({
+    sessions: {
+      create: async () => {
+        throw new Error('must not create a session when one is already active');
+      },
+      send: async () =>
+        Promise.reject(new Error('NO_REAL_CONNECTION:missing_api_key: no ready connection')),
+      remove: async () => undefined,
+    },
+  });
+
+  it('does not navigate a surface the user left mid-flight', async () => {
+    const setupToasts: string[] = [];
+    const restoreWindow = installWindow(readinessFailure());
+
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef: { current: 'session-a' },
+        // The user is on 技能 now. `activeId` is still 'session-a' — that is
+        // the whole point: the id alone cannot answer this question.
+        isShellSurfaceOwnerActive: () => false,
+        isNewChatSendSurfaceActive: () => false,
+        showModelSetupToast: (description: string) => setupToasts.push(description),
+      });
+      assert.equal(await actions.send('hello'), false);
+    } finally {
+      restoreWindow();
+    }
+
+    assert.deepEqual(setupToasts, [], 'a stale surface must not be navigated to 设置 · 模型');
+  });
+
+  it('still answers the surface that is actually waiting', async () => {
+    const setupToasts: string[] = [];
+    const restoreWindow = installWindow(readinessFailure());
+
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef: { current: 'session-a' },
+        isShellSurfaceOwnerActive: () => true,
+        showModelSetupToast: (description: string) => setupToasts.push(description),
+      });
+      assert.equal(await actions.send('hello'), false);
+    } finally {
+      restoreWindow();
+    }
+
+    assert.equal(setupToasts.length, 1, 'the user who is still looking must get the answer');
   });
 });

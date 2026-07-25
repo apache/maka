@@ -15,6 +15,7 @@ import type { PermissionMode } from './permission.js';
 import type { ThinkingLevel } from './model-thinking.js';
 import type { CollaborationMode } from './collaboration.js';
 import type { OrchestrationMode, TurnOrchestration } from './orchestration.js';
+import type { SessionStartMode } from './explore-agent.js';
 
 export type { TurnOrchestration } from './orchestration.js';
 
@@ -48,6 +49,22 @@ export interface CreateSessionInput {
   revisionState?: 'preparing' | 'committed';
   labels?: string[];
 }
+
+/**
+ * What the desktop `sessions:create` IPC accepts: a partial
+ * `CreateSessionInput` the main process completes, plus the product intent the
+ * renderer may name instead of spelling out what it implies (#1433).
+ *
+ * It lives beside `CreateSessionInput` rather than in the handler because
+ * three modules describe this one wire shape — the handler, the preload
+ * bridge, and the renderer's bridge contract — and only the first of them can
+ * import from main. Written out three times it drifts silently: the renderer
+ * type-checks against `bridge-contract.d.ts` alone, so a field added on one
+ * side and not the other is a type error nowhere.
+ */
+export type CreateSessionRequestInput = Partial<CreateSessionInput> & {
+  mode?: SessionStartMode;
+};
 
 export interface UserMessageInput {
   /** Caller-generated uuid. Same id used in the UserMessage.turnId and in

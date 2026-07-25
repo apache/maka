@@ -19,13 +19,14 @@
  */
 
 import { strict as assert } from 'node:assert';
-import { readdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { join, relative } from 'node:path';
 import { describe, it } from 'node:test';
 import { readRendererShellSources } from './renderer-shell-source-helpers.js';
 import { readSettingsCombinedSource } from './settings-contract-source-helpers.js';
 import {
   REPO_ROOT,
+  mainProcessSourceFiles,
   readMainTsSource,
   readSessionsIpcSource,
 } from './main-process-contract-source-helpers.js';
@@ -58,13 +59,18 @@ describe('default permission mode contract', () => {
     // Read EVERY main-process module, not the curated combined source. This
     // assertion is now the only guard on the single-authority invariant — the
     // two regexes that used to sit beside it became behavioral tests in
-    // create-session-input.test.ts — and the curated list covers 47 of ~100
+    // create-session-input.test.ts — and the curated list covered 47 of ~100
     // files, so a second resolver in an unlisted module would leave it green.
     // A count over a hand-maintained subset is a count of the subset.
-    const mainDir = join(REPO_ROOT, 'apps/desktop/src/main');
-    const modules = (await readdir(mainDir)).filter((name) => name.endsWith('.ts')).sort();
+    //
+    // RECURSIVE, and that word is load-bearing: the first version of this fix
+    // read the top level only, which is 100 of the 133 production modules.
+    // `browser/`, `oauth/`, `search/`, `e2e-fixture/` and three more sit below
+    // it and do write `permissionMode`, so a second resolver there was exactly
+    // the unlisted module the rewrite was supposed to stop being possible.
+    const modules = (await mainProcessSourceFiles()).map((path) => relative(REPO_ROOT, path));
     const sources = await Promise.all(
-      modules.map(async (name) => ({ name, source: await readFile(join(mainDir, name), 'utf8') })),
+      modules.map(async (name) => ({ name, source: await readFile(join(REPO_ROOT, name), 'utf8') })),
     );
 
     // Call sites only — the definition in permission-mode-default.ts is
@@ -75,7 +81,7 @@ describe('default permission mode contract', () => {
     );
     assert.deepEqual(
       callSites,
-      ['create-session-input.ts'], // applied by sessions:create
+      ['apps/desktop/src/main/create-session-input.ts'], // applied by sessions:create
       `every permission-mode fallback must route through the one resolver call in create-session-input.ts (found: ${callSites.join(', ') || 'none'})`,
     );
 

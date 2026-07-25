@@ -119,6 +119,10 @@ export function createAppShellChatActions(deps: {
     setPendingBySession: BooleanRecordUpdater,
   ) => void;
   isNewChatSendSurfaceActive: (owner: ComposerImportOwner) => boolean;
+  /** The shell's one answer to "is this owner still the surface the user is
+   *  looking at". Both halves matter — the section AND the session id — which
+   *  is why the send path asks it instead of comparing the id itself. */
+  isShellSurfaceOwnerActive: (owner: ComposerImportOwner) => boolean;
   markSessionReadLocally: (sessionId: string, readMessages: readonly StoredMessage[]) => void;
   /** #646: optimistically flip the session's status to 'running' at send() so the
    * "正在处理…" gate opens before the runtime's status round-trip lands. */
@@ -149,6 +153,7 @@ export function createAppShellChatActions(deps: {
     captureComposerImportOwner,
     clearPendingSessionAction,
     isNewChatSendSurfaceActive,
+    isShellSurfaceOwnerActive,
     markSessionReadLocally,
     markSessionRunningOptimistic,
     messageRetryPendingRef,
@@ -252,7 +257,8 @@ export function createAppShellChatActions(deps: {
     const skillIds = options.skillIds;
     const quotes = options.quotes;
     const initialSessionId = activeIdRef.current;
-    const newChatOwner = initialSessionId ? null : captureComposerImportOwner();
+    const sendOwner = captureComposerImportOwner();
+    const newChatOwner = initialSessionId ? null : sendOwner;
     let optimisticSessionId: string | undefined;
     let optimisticTurnId: string | undefined;
     let restoreOptimisticStatus: (() => void) | undefined;
@@ -392,9 +398,22 @@ export function createAppShellChatActions(deps: {
       // running dot / blocked permission-mode toggle.
       if (optimisticSessionId && optimisticTurnId) disarmTurnActive(optimisticSessionId, optimisticTurnId);
       restoreOptimisticStatus?.();
+      // Which surface is allowed to hear about this failure. The id alone is
+      // not it: `selectNavigation` never clears `activeId` (nav-selection.ts),
+      // so a user who left for 扩展 → 技能 mid-flight still "is" session A by
+      // that comparison — and the readiness branch below ends in
+      // `openSettingsSection('models')` (app-shell.tsx), which NAVIGATES. That
+      // is the same gap #1433 fixed one file over in the quick-entry path, and
+      // it was reachable here because this line re-derived the rule from an id
+      // instead of asking the shell. One owner for the question, one answer.
+      //
+      // The owner MOVES on an optimistic create: the send began on the new-chat
+      // surface and the app is now on the session it just made, so the id is
+      // taken from the flight and only the section comes from the capture.
       const feedbackSessionId = optimisticSessionId ?? initialSessionId;
       const sendStillOwnsCurrentSurface =
-        (feedbackSessionId !== undefined && activeIdRef.current === feedbackSessionId) ||
+        (feedbackSessionId !== undefined &&
+          isShellSurfaceOwnerActive({ ...sendOwner, sessionId: feedbackSessionId })) ||
         (newChatOwner !== null && isNewChatSendSurfaceActive(newChatOwner));
       if (!sendStillOwnsCurrentSurface) return false;
       if (isNoRealConnectionError(error)) {

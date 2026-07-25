@@ -7,7 +7,7 @@
  * runtime exists in the main-side `node --test` harness.
  *
  * Gates:
- *  1. `setMilestone` failure must not block a successful quick chat.
+ *  1. `setMilestone` failure must not block a successful session start.
  *  2. `showOnboardingHero` must include `sessions.length === 0`.
  *  3. `SkipButton` must restore pending + the `onSkip` caller must
  *     catch + toast on failure.

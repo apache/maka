@@ -95,7 +95,7 @@ import type { BundledSkillCatalogEntry, ManagedSkillSourceEntry, ManagedSkillUpd
 import type { ConfigCategory } from '@maka/storage';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
 import type { Result } from '@maka/core/result';
-import type { CreateSessionInput } from '@maka/core';
+import type { CreateSessionRequestInput } from '@maka/core';
 import type {
   McpConfigFile,
   McpServerConfig,
@@ -105,7 +105,6 @@ import type {
 import type {
   AttachmentRef,
   OnboardingMilestoneId,
-  SessionStartMode,
   QuoteRef,
 } from '@maka/core';
 
@@ -145,7 +144,7 @@ const makaBridge = {
      * labels it implies (`create-session-input.ts`); the renderer cannot
      * reach a boundary like `explore` by asking for it directly.
      */
-    create(input?: Partial<CreateSessionInput> & { mode?: SessionStartMode }): Promise<SessionSummary> {
+    create(input?: CreateSessionRequestInput): Promise<SessionSummary> {
       return ipcRenderer.invoke('sessions:create', input);
     },
     async send(

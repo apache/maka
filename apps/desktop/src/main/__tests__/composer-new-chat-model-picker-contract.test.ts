@@ -183,15 +183,36 @@ describe('home composer new-chat model picker', () => {
     ]);
     const sendBlock = renderer.match(/async function send\([\s\S]*?\n  async function respondToPermission/)?.[0] ?? '';
 
+    // The three facts this predicate rests on, asserted where each one is now
+    // decided rather than re-stated here. The previous version matched the
+    // whole four-clause body in one regex, which pinned a SPELLING: the shell
+    // had three hand-written predicates over the same question, this locked
+    // one of them, and the one it did not lock lost the nav-section half —
+    // which is how a failed send could navigate a user who had already left.
+    // The three are one rule plus preconditions now, so the chain is what
+    // there is to protect.
     assert.match(
       renderer,
-      /function isNewChatSendSurfaceActive\(owner: ComposerImportOwner\): boolean \{[\s\S]*owner\.sessionId === undefined[\s\S]*navSelectionRef\.current\.section === 'sessions'[\s\S]*activeIdRef\.current === undefined[\s\S]*\}/,
-      'new-chat sends must capture the empty-chat surface before async session creation',
+      /function isShellSurfaceOwnerActive\(owner: ComposerImportOwner\): boolean \{\s*return navSelectionRef\.current\.section === owner\.navSection && activeIdRef\.current === owner\.sessionId;/,
+      'the shell needs exactly one answer to "is this owner still the active surface", and it must compare BOTH the nav section and the session id',
     );
     assert.match(
+      renderer,
+      /function isComposerImportOwnerActive\(owner: ComposerImportOwner\): boolean \{\s*return owner\.navSection === 'sessions' && isShellSurfaceOwnerActive\(owner\);/,
+      'the chat-surface predicate must add its precondition to that one answer, not restate it',
+    );
+    assert.match(
+      renderer,
+      /function isNewChatSendSurfaceActive\(owner: ComposerImportOwner\): boolean \{\s*return owner\.sessionId === undefined && isComposerImportOwnerActive\(owner\);/,
+      'new-chat sends must capture the empty-chat surface before async session creation',
+    );
+    // Ordering, which is the thing a behavioral test cannot see: the capture
+    // has to happen before the await, or it records where the user ended up
+    // instead of where they started.
+    assert.match(
       sendBlock,
-      /const newChatOwner = initialSessionId \? null : captureComposerImportOwner\(\);/,
-      'send() must capture the no-active-session composer owner before sessions.create()',
+      /const sendOwner = captureComposerImportOwner\(\);\s*const newChatOwner = initialSessionId \? null : sendOwner;[\s\S]*await window\.maka\.sessions\.create\(/,
+      'send() must capture the composer owner before sessions.create()',
     );
     assert.match(sendBlock, /upsertSessionSummary\(session\);/);
     assert.match(

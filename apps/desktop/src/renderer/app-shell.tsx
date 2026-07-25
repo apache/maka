@@ -1106,6 +1106,7 @@ function AppShellContent({
     captureComposerImportOwner,
     clearPendingSessionAction,
     isNewChatSendSurfaceActive,
+    isShellSurfaceOwnerActive,
     markSessionReadLocally,
     markSessionRunningOptimistic,
     messageRetryPendingRef,
@@ -1422,25 +1423,31 @@ function AppShellContent({
     };
   }
 
-  function isComposerImportOwnerActive(owner: ComposerImportOwner): boolean {
-    return (
-      owner.navSection === 'sessions' &&
-      navSelectionRef.current.section === 'sessions' &&
-      activeIdRef.current === owner.sessionId
-    );
-  }
-
-  function isNewChatSendSurfaceActive(owner: ComposerImportOwner): boolean {
-    return (
-      owner.navSection === 'sessions' &&
-      owner.sessionId === undefined &&
-      navSelectionRef.current.section === 'sessions' &&
-      activeIdRef.current === undefined
-    );
-  }
-
+  /**
+   * "Is this owner still the surface the user is looking at." One rule, both
+   * halves: an async result that lands after the user moved on must not toast,
+   * navigate or steal focus, and `selectNavigation` never clears `activeId`
+   * (nav-selection.ts) — so the session id alone answers yes long after the
+   * user left for 扩展 or 设置.
+   *
+   * The two below are this same question with a precondition on what KIND of
+   * owner the caller wants, not second opinions about the question. They were
+   * three independent spellings once, and the one that re-derived it from an
+   * id drifted: it lost the section half, which is exactly what let a failed
+   * send pull a user out of 技能 and into 设置 · 模型.
+   */
   function isShellSurfaceOwnerActive(owner: ComposerImportOwner): boolean {
     return navSelectionRef.current.section === owner.navSection && activeIdRef.current === owner.sessionId;
+  }
+
+  /** …and the owner was captured on the chat surface. */
+  function isComposerImportOwnerActive(owner: ComposerImportOwner): boolean {
+    return owner.navSection === 'sessions' && isShellSurfaceOwnerActive(owner);
+  }
+
+  /** …and it was the new-chat surface, which by definition has no session. */
+  function isNewChatSendSurfaceActive(owner: ComposerImportOwner): boolean {
+    return owner.sessionId === undefined && isComposerImportOwnerActive(owner);
   }
 
   async function bootstrapSessions() {

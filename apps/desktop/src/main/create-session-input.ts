@@ -44,15 +44,33 @@ interface SessionModeSeed {
   labels: string[];
 }
 
-function sessionModeSeed(mode: unknown): SessionModeSeed | undefined {
-  if (mode !== 'deep_research') return undefined;
-  return {
+/**
+ * Closed over `SessionStartMode`, not over an `if`: adding a member without a
+ * seed is a compile error here, which is the only place that catches it. A
+ * missing arm would otherwise degrade silently into "no mode at all" — a plain
+ * session at the configured default, with the new mode's name, label and
+ * boundary all quietly absent.
+ */
+const SESSION_MODE_SEEDS = {
+  deep_research: {
     // Deep Research is a read-only exploration boundary, so it overrides the
     // user's configured default rather than seeding from it.
     permissionMode: 'explore',
     name: 'Deep Research',
     labels: [DEEP_RESEARCH_SESSION_LABEL],
-  };
+  },
+} satisfies Record<SessionStartMode, SessionModeSeed>;
+
+/**
+ * `unknown`, because this is an IPC boundary and the renderer's type is a
+ * promise, not a guarantee. An unrecognized value confers nothing — it is not
+ * a mode — and the caller falls through to an ordinary session, which is the
+ * same session it would have got by not naming one.
+ */
+function sessionModeSeed(mode: unknown): SessionModeSeed | undefined {
+  return typeof mode === 'string' && Object.hasOwn(SESSION_MODE_SEEDS, mode)
+    ? SESSION_MODE_SEEDS[mode as SessionStartMode]
+    : undefined;
 }
 
 /**

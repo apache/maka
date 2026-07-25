@@ -13,7 +13,7 @@ import {
 } from '@maka/core';
 import type {
   CreateSessionInput,
-  SessionStartMode,
+  CreateSessionRequestInput,
   SessionEvent,
   SessionChangedEvent,
   SessionChangedReason,
@@ -54,15 +54,6 @@ type SessionStore = ReturnType<typeof createSessionStore>;
 type ArtifactStore = ReturnType<typeof createArtifactStore>;
 type MainWindowController = ReturnType<typeof createMainWindowController>;
 type E2eFixture = ReturnType<typeof resolveE2eFixture>;
-
-/**
- * `sessions:create` input. `mode` is the one field that is not a session
- * field: it names a product intent, and main derives the session fields
- * it implies (see `create-session-input.ts`). Keeping it here rather than on
- * `CreateSessionInput` leaves the runtime contract free of product
- * vocabulary.
- */
-export type SessionsCreateInput = Partial<CreateSessionInput> & { mode?: SessionStartMode };
 
 /** The per-session cleanup subset of the cursor-overlay controller. */
 interface SessionOverlayCleanup {
@@ -219,7 +210,7 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
     return tasks.map(sanitizeTaskLedgerTask);
   });
   ipcMain.handle('sessions:list', (_event, filter?: SessionListFilter) => runtime.listSessions(filter));
-  ipcMain.handle('sessions:create', async (_event, input?: SessionsCreateInput) => {
+  ipcMain.handle('sessions:create', async (_event, input?: CreateSessionRequestInput) => {
     const cwd = input?.cwd ?? (await currentProjectRoot());
     // #1433: `mode` is a product intent, not a session field. What it implies,
     // what the renderer may ask for directly, and what the configured default

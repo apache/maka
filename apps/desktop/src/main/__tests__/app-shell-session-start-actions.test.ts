@@ -236,6 +236,40 @@ describe('AppShell quick-entry failure copy', () => {
   });
 
   /**
+   * Every other interrupting branch, same stale surface. Written out because
+   * the previous version of this file covered the readiness branch alone, and
+   * "the gate the one covered branch has" is not the invariant — "no branch
+   * speaks to a surface the user left" is. Deleting either owner check in the
+   * workspace or fallback branches must turn this red.
+   */
+  it('holds that gate on every failure branch, not just readiness', async () => {
+    const cases: Array<[label: string, error: Error]> = [
+      ['workspace', new Error('SESSION_WORKSPACE_UNAVAILABLE: /gone')],
+      ['unclassified', new Error('EIO: i/o error, write')],
+    ];
+
+    for (const [label, error] of cases) {
+      const restoreWindow = installWindow({
+        sessions: { create: async () => Promise.reject(error) },
+        expertTeam: { start: async () => ({ ok: false, reason: 'workspace_unavailable' }) },
+      });
+      const toasts: ToastCall[] = [];
+      const setupToasts: SetupToastCall[] = [];
+
+      try {
+        const actions = createActions(toasts, undefined, setupToasts, () => false);
+        assert.equal(await actions.startModeSession('deep_research'), false);
+        assert.equal(await actions.handleExpertTeamStart('team'), false);
+      } finally {
+        restoreWindow();
+      }
+
+      assert.deepEqual(toasts, [], `${label}: a stale surface must not be toasted`);
+      assert.deepEqual(setupToasts, []);
+    }
+  });
+
+  /**
    * `expertTeam:start` reports the same state through its own `setup_required`
    * reason code and carries no sub-reason, so the toast falls back to the
    * generic setup copy. Both entry points must answer, or the one that does

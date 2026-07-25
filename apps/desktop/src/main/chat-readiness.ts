@@ -74,10 +74,9 @@ export async function requireReadyConnection(
   }
 
   // PR110a: delegate the actual ready judgment to the pure core helper
-  // so onboarding / quick chat / send-path share a single source of
-  // truth. The desktop side only owns: (1) async secret lookup, (2)
-  // Chinese error copy, (3) the throw-error API the rest of main.ts
-  // expects.
+  // so onboarding and the send path share a single source of truth. The
+  // desktop side only owns: (1) async secret lookup, (2) Chinese error
+  // copy, (3) the throw-error API the rest of main.ts expects.
   const normalizedConnection = normalizeOpenAiCodexConnection(connection);
   const apiKey = await deps.getApiKey(normalizedConnection.slug);
   const normalizedRequestedModel = normalizeRequestedModelForReadiness(connection, requestedModel);
