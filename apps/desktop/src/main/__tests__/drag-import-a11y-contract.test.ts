@@ -13,22 +13,15 @@ async function readRepo(path: string): Promise<string> {
 }
 
 describe('drag import accessibility status', () => {
-  it('announces active file drag affordances in the composer and first-run hero', async () => {
+  it('announces active file drag affordances in the composer', async () => {
     const [composer, conversationCopy] = await Promise.all([
       readRepo('packages/ui/src/composer.tsx'),
       readRepo('packages/ui/src/conversation-copy.ts'),
-    ]);
-    const [onboardingHero, onboardingCopy] = await Promise.all([
-      readRepo('apps/desktop/src/renderer/OnboardingHero.tsx'),
-      readRepo('apps/desktop/src/renderer/locales/onboarding-copy.ts'),
     ]);
 
     assert.match(composer, /dragActive && \(\s*<span className="maka-visually-hidden" role="status" aria-live="polite">\s*\{copy\.dropToImport\}\s*<\/span>\s*\)/);
     assert.match(conversationCopy, /dropToImport: '松开以导入文件内容'/);
     assert.match(conversationCopy, /dropToImport: 'Drop to import file contents'/);
-    assert.match(onboardingHero, /dragActive && \(\s*<span className="maka-visually-hidden" role="status" aria-live="polite">\s*\{copy\.dropFiles\}\s*<\/span>\s*\)/);
-    assert.match(onboardingCopy, /dropFiles: '松开以导入文件内容'/);
-    assert.match(onboardingCopy, /dropFiles: 'Drop to import file contents'/);
   });
 
   it('keeps the hidden live status accessible instead of display-none', async () => {

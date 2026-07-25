@@ -7,7 +7,7 @@ import { test, expect } from './fixtures';
  * seeded 'e2e' connection clears onboarding so the composer is usable.
  */
 test('send a message and see the fake backend stream a reply', async ({ window: page }) => {
-  const composer = page.locator('.maka-onboarding-quickchat-input');
+  const composer = page.locator('.maka-composer-textarea');
   await composer.fill('hello e2e');
   await composer.press('Enter');
 

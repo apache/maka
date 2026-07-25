@@ -47,7 +47,6 @@ const TABULAR_NUMS_SELECTORS = [
   '.maka-daily-review-archive-row-meta',
   '.maka-daily-review-top-meta',
   '.maka-nav-count',
-  '.maka-first-run-checklist-count',
   '.settingsQuotaRow',
   // settings numeric surfaces
   '.settingsUsageRecordCount',

@@ -101,8 +101,6 @@ const CONTROL_HEIGHT: ControlHeightCheck[] = [
   // chat-header / palette controls
   { selector: '.maka-chat-jump-bottom', props: ['width', 'height'], token: '--h-control-md' },
   { selector: '.maka-palette-input-wrap', props: ['min-height'], token: '--h-control-xl' },
-  // first-run checklist composite rows
-  { selector: '.maka-first-run-checklist-row > button', props: ['min-height'], token: '--h-control-xl' },
 ];
 
 /** Values that are always allowed (not a control-height beat). `100%`

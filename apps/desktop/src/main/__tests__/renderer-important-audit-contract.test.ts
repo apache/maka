@@ -88,10 +88,6 @@ const RETIRED_RING_RESET_BLOCKS = [
     anchor: '.maka-skill-search input',
   },
   {
-    fileSuffix: 'apps/desktop/src/renderer/styles/onboarding.css',
-    anchor: '.maka-onboarding-quickchat .maka-onboarding-quickchat-input',
-  },
-  {
     fileSuffix: 'apps/desktop/src/renderer/styles/composer.css',
     anchor: '.composer .maka-composer-textarea',
   },

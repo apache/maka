@@ -405,7 +405,6 @@ describe('radius token governance (#406 gap 4)', () => {
       '.settingsWechatQrState': '--radius-surface',
       '.enabledEmptyChip': '--radius-control',
       '.maka-firstrun-list': '--radius-surface',
-      '.maka-first-run-checklist': '--radius-surface',
       '.providerLogo': '--radius-surface',
       '.maka-browser-address': '--radius-control',
       // .maka-plan-shell dropped: unboxed to a plain layout container

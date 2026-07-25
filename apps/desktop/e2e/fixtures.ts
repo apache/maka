@@ -220,7 +220,7 @@ export const test = base.extend<{
   // Seeded: a pre-staged connection clears onboarding so the composer is ready.
   // Used by chat / session / settings / attachment specs.
   window: async ({}, use) => {
-    await withE2eWindow({ seed: true, readinessSelector: '.maka-onboarding-quickchat-input', locale: 'zh' }, use);
+    await withE2eWindow({ seed: true, readinessSelector: '.maka-composer-textarea', locale: 'zh' }, use);
   },
   // Empty: no connection staged — exercises the true first-run boot path.
   // Used by first-run only.
@@ -340,14 +340,14 @@ export const test = base.extend<{
   // Keep this fixture unpinned so the Follow system assertion observes the
   // actual host language while the legacy fixtures remain deterministic.
   localeSwitchWindow: async ({}, use) => {
-    await withE2eWindow({ seed: true, readinessSelector: '.maka-onboarding-quickchat-input' }, use);
+    await withE2eWindow({ seed: true, readinessSelector: '.maka-composer-textarea' }, use);
   },
   // Project + Maka-workspace Skills with one deliberately host-incompatible
   // entry. Proves `/` uses Runtime discovery/gating rather than management UI data.
   invocableSkillsWindow: async ({}, use) => {
     await withE2eWindow({
       seed: true,
-      readinessSelector: '.maka-onboarding-quickchat-input',
+      readinessSelector: '.maka-composer-textarea',
       locale: 'zh',
       invocableSkills: true,
     }, use);

@@ -1,9 +1,14 @@
 // apps/desktop/src/renderer/OnboardingHero.tsx
 //
-// First-run hero rendered above the chat surface when the workspace
-// has no sessions yet (PR110c rewrite). Routes purely off the
-// `OnboardingState` projection from `@maka/core/onboarding` — never
-// re-derives provider readiness, never lists connections directly.
+// Setup hero rendered in place of the chat surface when the workspace
+// has no sessions yet AND the provider setup is incomplete (PR110c
+// rewrite). Routes purely off the `OnboardingState` projection from
+// `@maka/core/onboarding` — never re-derives provider readiness, never
+// lists connections directly.
+//
+// A configured user is not an onboarding case: `ready_empty` and
+// `ready_with_history` both render nothing here and land on the normal
+// empty chat with the one real Composer.
 //
 // @kenji + @xuan PR110c review gates:
 //   - Each `OnboardingState.kind` has an explicit branch with a
@@ -19,45 +24,24 @@
 //     `connectionName` promise) until sanitized display data is
 //     wired in a later PR.
 
-import { ArrowRight, ArrowUp, ChevronRight, RotateCcw, Sparkles, KeyRound, Settings as SettingsIcon, Cpu, AlertCircle, FolderOpen, Paperclip, X } from '@maka/ui/icons';
-import { Fragment, useCallback, useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react';
-import { RECOMMENDED_PROVIDER_TYPES, type LlmConnection, type OnboardingState, type ProviderType, type QuickChatMode, type SettingsSection } from '@maka/core';
+import { ChevronRight, KeyRound, Settings as SettingsIcon, Cpu, AlertCircle } from '@maka/ui/icons';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
+import { RECOMMENDED_PROVIDER_TYPES, type LlmConnection, type OnboardingState, type ProviderType, type SettingsSection } from '@maka/core';
 import {
   Button,
-  ComposerMentionPopup,
   Item,
   ItemActions,
   ItemContent,
   ItemDescription,
   ItemMedia,
   ItemTitle,
-  Textarea,
-  appendPromptContextDraft,
-  createChatInputActionOwner,
-  fileTransferContainsFiles,
-  focusTextInputAtEnd,
-  getConversationCopy,
-  isChatInputComposing,
-  mentionOptionId,
-  useComposerSkillDraft,
-  useMentionPopup,
   useMountedRef,
   useUiLocale,
-  type ChatInputActionOwner,
 } from '@maka/ui';
 import { ProviderLogo, providerDisplay } from './settings/provider-display';
-import { getFirstRunTaskSuggestions } from './first-run-task-suggestions';
 import { getOnboardingHeroCopy, getOnboardingSetupSteps, type OnboardingSetupStep } from './onboarding-hero-copy';
 import { getOnboardingCopy } from './locales/onboarding-copy';
 
-/**
- * PR-UI-15 (@yuejing 2026-05-22): unify OnboardingHero quickChat
- * placeholder style with the main Composer. v1 used a long example
- * sentence as placeholder which stylistically conflicted with the
- * Composer's short action-oriented placeholder. New design: same
- * short placeholder, example sentence moved to a `<small>` hint
- * below the textarea so first-run users still know what to type.
- */
 export interface OnboardingHeroProps {
   state: OnboardingState;
   /** Open Settings with a specific section preselected. */
@@ -66,29 +50,6 @@ export interface OnboardingHeroProps {
   onAddProvider: (providerType: ProviderType) => void;
   /** Open the shared Settings provider catalog. */
   onBrowseProviders: () => void;
-  /**
-   * Quick Chat submit handler (PR110b `quickChat:start`). Only
-   * called from the `ready_empty` branch. The caller is responsible
-   * for handling the discriminated-union result (setActiveId on
-   * success, toast on `send_failed`, etc.). Returns true only after
-   * the target session is created; the hero keeps the draft on false
-   * so a setup/send failure does not erate the user's first prompt.
-   */
-  onQuickChatSubmit: (
-    prompt: string,
-    mode?: QuickChatMode,
-    skillIds?: readonly string[],
-  ) => boolean | Promise<boolean>;
-  /** Enabled, host-compatible Skills offered by the `/` popup. */
-  mentionSkills?: ReadonlyArray<{ ref?: string; id: string; name: string; description?: string }>;
-  /** Keep the parent Skill projection aligned with the ready-empty draft mode. */
-  onQuickChatModeChange?: (mode?: QuickChatMode) => void;
-  /**
-   * Flag set when a `quickChat:start` call is in flight, so the
-   * composer can disable its submit button without owning the
-   * pending state itself.
-   */
-  quickChatPending?: boolean;
   /**
    * PR-ONBOARDING-EARLY-COPY-0: current connection list so the
    * credentials / model heroes can resolve a `connectionSlug` to a
@@ -103,12 +64,11 @@ export interface OnboardingHeroProps {
   onRefreshConnections?: () => Promise<void> | void;
   /**
    * Skip the initial onboarding and enter the app. Writes
-   * `initial_onboarding` milestone as `skipped`. Only invoked from
-   * the `needs_*` / `blocked` branches; `ready_empty` does not show
-   * a skip button because the user is already configured.
+   * `initial_onboarding` milestone as `skipped`. Every branch this
+   * hero still renders is a setup branch, so the skip affordance is
+   * always meaningful.
    */
   onSkip?: () => Promise<void> | void;
-  onImportDroppedTextFiles?: (files: File[]) => Promise<string | undefined>;
 }
 
 export function OnboardingHero(props: OnboardingHeroProps) {
@@ -178,15 +138,16 @@ export function OnboardingHero(props: OnboardingHeroProps) {
         />
       );
     case 'ready_empty':
-      return (
-        <ReadyEmptyHero
-          onQuickChatSubmit={props.onQuickChatSubmit}
-          mentionSkills={props.mentionSkills}
-          onQuickChatModeChange={props.onQuickChatModeChange}
-          quickChatPending={props.quickChatPending === true}
-          onImportDroppedTextFiles={props.onImportDroppedTextFiles}
-        />
-      );
+      // A configured user with no sessions yet gets the daily empty
+      // chat — wordmark hero plus the one real Composer — not a
+      // first-run chat panel of its own. This branch used to render
+      // `ReadyEmptyHero`, a second composer that re-implemented the
+      // textarea, the `/` mention popup, Skill chips, file import and
+      // the IME composition guard, and drifted from the real one
+      // (`PR-FE-BUG-HUNT-0`: Enter committed an unfinished IME
+      // composition). The caller gates on this the same way it gates
+      // `ready_with_history`; rendering nothing here is the fallback.
+      return null;
     case 'blocked':
       // `blocked.reason` is `'all_connections_unhealthy'` in PR110a's
       // closed enum; if a future PR extends it, this assignment will
@@ -495,415 +456,6 @@ function BlockedHero(props: {
       // are recoverable yellow states.
       tone="destructive"
     />
-  );
-}
-
-function ReadyEmptyHero(props: {
-  onQuickChatSubmit: (
-    prompt: string,
-    mode?: QuickChatMode,
-    skillIds?: readonly string[],
-  ) => boolean | Promise<boolean>;
-  mentionSkills?: ReadonlyArray<{ ref?: string; id: string; name: string; description?: string }>;
-  onQuickChatModeChange?: (mode?: QuickChatMode) => void;
-  quickChatPending: boolean;
-  onImportDroppedTextFiles?: (files: File[]) => Promise<string | undefined>;
-}) {
-  const [draft, setDraft] = useState('');
-  const [draftMode, setDraftMode] = useState<QuickChatMode | undefined>();
-  const [dragActive, setDragActive] = useState(false);
-  const [submitPending, setSubmitPending] = useState(false);
-  const [pendingImportAction, setPendingImportAction] = useState<string | null>(null);
-  const inputRef = useRef<HTMLTextAreaElement | null>(null);
-  const readyHeroMountedRef = useMountedRef();
-  const submitPendingRef = useRef(false);
-  const compositionActiveRef = useRef(false);
-  const skillDraft = useComposerSkillDraft('onboarding-quick-chat');
-  const importActionOwnerRef = useRef<ChatInputActionOwner<string> | null>(null);
-  if (!importActionOwnerRef.current) {
-    importActionOwnerRef.current = createChatInputActionOwner((action) => {
-      if (readyHeroMountedRef.current) setPendingImportAction(action);
-    });
-  }
-
-  useEffect(() => {
-    return () => {
-      submitPendingRef.current = false;
-      importActionOwnerRef.current?.reset();
-      props.onQuickChatModeChange?.(undefined);
-    };
-  }, [props.onQuickChatModeChange]);
-
-  const locale = useUiLocale();
-  const onboardingCopy = getOnboardingCopy(locale);
-  const composerCopy = getConversationCopy(locale).composer;
-  const copy = onboardingCopy.ready;
-  const suggestions = getFirstRunTaskSuggestions(locale);
-  const quickChatBusy = props.quickChatPending || submitPending;
-  const importStatusText = pendingImportAction === null
-    ? null
-    : pendingImportAction === 'folder'
-      ? copy.importFolderPending
-      : copy.importFilesPending;
-
-  const saveQuickChatDraft = useCallback((value?: string) => {
-    setDraft(value ?? inputRef.current?.value ?? '');
-  }, []);
-  const {
-    mention,
-    mentionItems,
-    mentionActiveIndex,
-    setMentionActiveIndex,
-    mentionLoading,
-    mentionListboxId,
-    mentionPopupOpen,
-    recomputeMention,
-    closeMention,
-    selectMention,
-  } = useMentionPopup({
-    textareaRef: inputRef,
-    mentionSkills: props.mentionSkills,
-    saveCurrentDraft: saveQuickChatDraft,
-    autoResize: () => {},
-    resetPromptHistoryNavigation: () => {},
-    onSelectSkill: (skill) => skillDraft.add(skill),
-  });
-
-  const submit = useCallback(async () => {
-    if (props.quickChatPending || submitPendingRef.current) return;
-    submitPendingRef.current = true;
-    setSubmitPending(true);
-    // PR110b contract: empty prompt is OK — main creates the session
-    // without sending. Caller (main.tsx) decides whether to focus the
-    // composer afterward.
-    try {
-      const skillIds = skillDraft.skills.map((skill) => skill.ref ?? skill.id);
-      const submitted = await props.onQuickChatSubmit(draft, draftMode, skillIds);
-      if (!readyHeroMountedRef.current) return;
-      if (!submitted) return;
-      setDraft('');
-      setDraftMode(undefined);
-      props.onQuickChatModeChange?.(undefined);
-      skillDraft.clear(skillDraft.activeDraftKey());
-    } finally {
-      submitPendingRef.current = false;
-      if (readyHeroMountedRef.current) setSubmitPending(false);
-    }
-  }, [draft, draftMode, props, skillDraft.skills]);
-
-  const handleKey = useCallback(
-    (event: KeyboardEvent<HTMLTextAreaElement>) => {
-      // PR-FE-BUG-HUNT-0 (kenji bug-hunt 2026-06-24): mirror the main
-      // Composer's IME composition guard. Without this, a Chinese /
-      // Japanese / Korean user committing an IME composition with
-      // Enter immediately fires `submit()` and sends the unfinished
-      // draft. The same guard in packages/ui/src/composer.tsx already
-      // covers the main chat input; the onboarding-hero clone
-      // had drifted.
-      if (isChatInputComposing(event, compositionActiveRef.current)) return;
-      if (mentionPopupOpen) {
-        const count = mentionItems.length;
-        if (event.key === 'ArrowDown') {
-          event.preventDefault();
-          if (count > 0) setMentionActiveIndex((index) => (index + 1) % count);
-          return;
-        }
-        if (event.key === 'ArrowUp') {
-          event.preventDefault();
-          if (count > 0) setMentionActiveIndex((index) => (index - 1 + count) % count);
-          return;
-        }
-        if (event.key === 'Enter' || event.key === 'Tab') {
-          if (count > 0) {
-            event.preventDefault();
-            selectMention(mentionActiveIndex);
-            return;
-          }
-          if (event.key === 'Enter') event.preventDefault();
-          closeMention();
-          return;
-        }
-        if (event.key === 'Escape') {
-          event.preventDefault();
-          closeMention();
-          return;
-        }
-      }
-      if (
-        event.key === 'Backspace' &&
-        event.currentTarget.selectionStart === 0 &&
-        event.currentTarget.selectionEnd === 0 &&
-        skillDraft.removeLast()
-      ) {
-        event.preventDefault();
-        return;
-      }
-      // Enter (without modifier) → submit. Shift+Enter inserts newline.
-      if (event.key === 'Enter' && !event.shiftKey && !event.metaKey && !event.ctrlKey) {
-        event.preventDefault();
-        submit();
-      }
-      // Esc while drag-active clears the stuck highlight. The useEffect
-      // listens for blur/dragend/drop but not keydown, so a user who
-      // hits Esc mid-drag would otherwise see the highlight linger.
-      if (event.key === 'Escape' && dragActive) {
-        setDragActive(false);
-      }
-    },
-    [
-      closeMention,
-      dragActive,
-      mentionActiveIndex,
-      mentionItems.length,
-      mentionPopupOpen,
-      selectMention,
-      setMentionActiveIndex,
-      skillDraft,
-      submit,
-    ],
-  );
-
-  const prefillSuggestion = useCallback((prompt: string, mode?: QuickChatMode) => {
-    if (quickChatBusy) return;
-    const nextDraft = prompt;
-    setDraft(nextDraft);
-    setDraftMode(mode);
-    props.onQuickChatModeChange?.(mode);
-    window.requestAnimationFrame(() => {
-      const input = inputRef.current;
-      if (!input) return;
-      focusTextInputAtEnd(input);
-    });
-  }, [quickChatBusy]);
-
-  const appendImportedPrompt = useCallback((prompt: string) => {
-    if (!readyHeroMountedRef.current) return;
-    let nextDraft = prompt;
-    setDraft((current) => {
-      nextDraft = appendPromptContextDraft(current, prompt);
-      return nextDraft;
-    });
-    setDraftMode(undefined);
-    props.onQuickChatModeChange?.(undefined);
-    window.requestAnimationFrame(() => {
-      const input = inputRef.current;
-      if (!input) return;
-      focusTextInputAtEnd(input);
-    });
-  }, []);
-
-  const runImportAction = useCallback(async (
-    actionKey: string,
-    action: () => Promise<string | undefined>,
-  ) => {
-    if (quickChatBusy) return;
-    const prompt = await importActionOwnerRef.current?.run(actionKey, async () => {
-      const prompt = await action();
-      return prompt;
-    });
-    if (prompt && readyHeroMountedRef.current) appendImportedPrompt(prompt);
-  }, [appendImportedPrompt, quickChatBusy]);
-
-  const importActionBusy = pendingImportAction !== null;
-
-  const canAcceptDroppedTextFiles = useCallback(() => (
-    Boolean(props.onImportDroppedTextFiles && !quickChatBusy && !importActionBusy)
-  ), [importActionBusy, props.onImportDroppedTextFiles, quickChatBusy]);
-
-  const hasDraggedFiles = useCallback((event: DragEvent<HTMLElement>) => (
-    fileTransferContainsFiles(event.dataTransfer.types, event.dataTransfer.files.length)
-  ), []);
-
-  const hasPastedFiles = useCallback((event: ClipboardEvent<HTMLTextAreaElement>) => (
-    fileTransferContainsFiles(event.clipboardData.types, event.clipboardData.files.length)
-  ), []);
-
-  const handleDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
-    if (!canAcceptDroppedTextFiles() || !hasDraggedFiles(event)) return;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'copy';
-    setDragActive(true);
-  }, [canAcceptDroppedTextFiles, hasDraggedFiles]);
-
-  const handleDragLeave = useCallback((event: DragEvent<HTMLDivElement>) => {
-    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
-    setDragActive(false);
-  }, []);
-
-  const handleDrop = useCallback((event: DragEvent<HTMLDivElement>) => {
-    if (!hasDraggedFiles(event)) return;
-    event.preventDefault();
-    setDragActive(false);
-    if (!canAcceptDroppedTextFiles()) return;
-    const files = Array.from(event.dataTransfer.files);
-    if (files.length === 0) return;
-    void runImportAction('drop', async () => props.onImportDroppedTextFiles?.(files));
-  }, [canAcceptDroppedTextFiles, hasDraggedFiles, props.onImportDroppedTextFiles, runImportAction]);
-
-  useEffect(() => {
-    if (!dragActive) return;
-    const clearDragActive = () => setDragActive(false);
-    window.addEventListener('blur', clearDragActive);
-    window.addEventListener('dragend', clearDragActive);
-    window.addEventListener('drop', clearDragActive);
-    return () => {
-      window.removeEventListener('blur', clearDragActive);
-      window.removeEventListener('dragend', clearDragActive);
-      window.removeEventListener('drop', clearDragActive);
-    };
-  }, [dragActive]);
-
-  const handlePaste = useCallback((event: ClipboardEvent<HTMLTextAreaElement>) => {
-    if (isChatInputComposing(event, compositionActiveRef.current)) return;
-    if (!hasPastedFiles(event)) return;
-    if (!canAcceptDroppedTextFiles()) return;
-    const files = Array.from(event.clipboardData.files);
-    if (files.length === 0) return;
-    event.preventDefault();
-    void runImportAction('paste', async () => props.onImportDroppedTextFiles?.(files));
-  }, [canAcceptDroppedTextFiles, hasPastedFiles, props.onImportDroppedTextFiles, runImportAction]);
-
-  return (
-    <section className="maka-onboarding maka-onboarding-ready" aria-label={copy.ariaLabel}>
-      <header>
-        <span className="maka-onboarding-eyebrow">
-          <Sparkles size={12} aria-hidden="true" />
-          <span>{copy.eyebrow}</span>
-        </span>
-        <h1>{copy.headline}</h1>
-        <p>{copy.intro}</p>
-      </header>
-
-      <div
-        className="maka-onboarding-quickchat"
-        data-drag-active={dragActive ? 'true' : undefined}
-        data-maka-file-drop-target={canAcceptDroppedTextFiles() ? 'true' : undefined}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-      >
-        {skillDraft.skills.length > 0 ? (
-          <ul className="maka-composer-skill-chips" aria-label={composerCopy.selectedSkillsAriaLabel}>
-            {skillDraft.skills.map((skill) => (
-              <li className="maka-composer-skill-chip" key={skill.ref ?? skill.id}>
-                <span>{skill.name}</span>
-                <Button
-                  type="button"
-                  variant="quiet"
-                  size="icon"
-                  shape="pill"
-                  className="maka-composer-skill-chip-remove"
-                  aria-label={composerCopy.removeSkillAriaLabel(skill.name)}
-                  onClick={() => {
-                    skillDraft.remove(skill.ref ?? skill.id);
-                    window.requestAnimationFrame(() => inputRef.current?.focus());
-                  }}
-                >
-                  <X size={12} aria-hidden="true" />
-                </Button>
-              </li>
-            ))}
-          </ul>
-        ) : null}
-        <div className="maka-onboarding-quickchat-field">
-          <Textarea
-            ref={inputRef}
-            unstyled
-            className="maka-onboarding-quickchat-input"
-            placeholder={copy.quickChatPlaceholder}
-            rows={3}
-            value={draft}
-            onChange={(event) => {
-              setDraft(event.target.value);
-              recomputeMention();
-            }}
-            onKeyDown={handleKey}
-            onKeyUp={recomputeMention}
-            onClick={recomputeMention}
-            onPaste={handlePaste}
-            onCompositionStart={() => { compositionActiveRef.current = true; }}
-            onCompositionEnd={() => {
-              compositionActiveRef.current = false;
-              recomputeMention();
-            }}
-            disabled={quickChatBusy}
-            aria-label={copy.quickChatAria}
-            aria-controls={mentionPopupOpen ? mentionListboxId : undefined}
-            aria-expanded={mentionPopupOpen ? true : undefined}
-            aria-activedescendant={
-              mentionPopupOpen && mentionItems.length > 0
-                ? mentionOptionId(mentionListboxId, mentionActiveIndex)
-                : undefined
-            }
-          />
-          <small
-            className="maka-onboarding-quickchat-example"
-            data-pending={importStatusText ? 'true' : undefined}
-            aria-hidden={importStatusText ? undefined : 'true'}
-            aria-live={importStatusText ? 'polite' : undefined}
-          >
-            {importStatusText ?? copy.quickChatExample}
-          </small>
-        </div>
-        {mention ? (
-          <ComposerMentionPopup
-            trigger={mention.trigger}
-            items={mentionItems}
-            activeIndex={mentionActiveIndex}
-            loading={mentionLoading}
-            listboxId={mentionListboxId}
-            onSelect={selectMention}
-            onHover={setMentionActiveIndex}
-          />
-        ) : null}
-        {dragActive && (
-          <span className="maka-visually-hidden" role="status" aria-live="polite">
-            {copy.dropFiles}
-          </span>
-        )}
-        {draftMode === 'deep_research' && (
-          <span className="maka-onboarding-quickchat-mode">{copy.deepResearchMode}</span>
-        )}
-        <Button
-          type="button"
-          className="maka-onboarding-quickchat-submit"
-          variant="default"
-          size="icon"
-          onClick={submit}
-          disabled={quickChatBusy}
-          aria-busy={quickChatBusy ? 'true' : undefined}
-          aria-label={quickChatBusy ? copy.submitPendingLabel : copy.submitIdleLabel}
-          title={quickChatBusy ? copy.submitPendingLabel : copy.submitIdleLabel}
-        >
-          <ArrowUp size={18} aria-hidden="true" />
-        </Button>
-      </div>
-
-      {suggestions.length > 0 && (
-        <div className="maka-first-run-task-suggestions" aria-label={copy.suggestionsLabel}>
-          <div className="maka-first-run-task-suggestions-inner">
-            <div className="maka-first-run-task-suggestions-header">
-              <strong>{copy.suggestionsLabel}</strong>
-            </div>
-            <div className="maka-first-run-task-suggestion-list">
-              {suggestions.map((suggestion) => (
-                <div key={suggestion.id} className="maka-first-run-task-suggestion-chip">
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => prefillSuggestion(suggestion.prompt, suggestion.mode)}
-                    disabled={quickChatBusy}
-                  >
-                    {suggestion.label}
-                  </Button>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-    </section>
   );
 }
 

@@ -2,7 +2,7 @@ import { FAKE_ASK_USER_QUESTION_PROMPT } from '@maka/runtime';
 import { test, expect } from './fixtures.js';
 
 test('answers three questions and continues the same fake-backend turn', async ({ window: page }) => {
-  const composer = page.locator('.maka-onboarding-quickchat-input');
+  const composer = page.locator('.maka-composer-textarea');
   await composer.fill(FAKE_ASK_USER_QUESTION_PROMPT);
   await composer.press('Enter');
 

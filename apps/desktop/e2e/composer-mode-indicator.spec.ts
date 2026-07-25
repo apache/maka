@@ -34,7 +34,7 @@ async function enableMode(
 test('Plan and Swarm indicators match composer controls and close directly', async ({
   window: page,
 }) => {
-  const quickChat = page.locator('.maka-onboarding-quickchat-input');
+  const quickChat = page.locator('.maka-composer-textarea');
   await quickChat.fill('open composer');
   await quickChat.press('Enter');
   await expect(page.getByText(/Fake backend received: open composer/)).toBeVisible();

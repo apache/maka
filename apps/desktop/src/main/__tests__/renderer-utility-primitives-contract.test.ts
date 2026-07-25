@@ -299,10 +299,9 @@ describe('renderer utility surfaces use shared UI primitives', () => {
   });
 
   it('keeps representative shared Button consumers on governed variants and sizes', async () => {
-    const [artifact, onboarding, checklist, composer, search, shell, browser, plan, story, rendererCss] = await Promise.all([
+    const [artifact, onboarding, composer, search, shell, browser, plan, story, rendererCss] = await Promise.all([
       readFile(join(process.cwd(), 'src/renderer/artifact-pane.tsx'), 'utf8'),
       readFile(join(process.cwd(), 'src/renderer/OnboardingHero.tsx'), 'utf8'),
-      readFile(join(process.cwd(), 'src/renderer/FirstRunChecklist.tsx'), 'utf8'),
       readFile(join(repoRoot, 'packages/ui/src/composer.tsx'), 'utf8'),
       readFile(join(repoRoot, 'packages/ui/src/search-modal.tsx'), 'utf8'),
       readFile(join(process.cwd(), 'src/renderer/app-shell-chrome-actions.tsx'), 'utf8'),
@@ -317,8 +316,6 @@ describe('renderer utility surfaces use shared UI primitives', () => {
     for (const className of [
       'maka-artifact-pane-collapse',
       'maka-artifact-error-retry',
-      'maka-first-run-task-suggestion',
-      'maka-first-run-checklist-error-action',
       'maka-composer-tool-button',
       'maka-composer-context-plus',
       'maka-composer-send-button',
@@ -328,15 +325,12 @@ describe('renderer utility surfaces use shared UI primitives', () => {
       'maka-browser-navbtn',
     ]) {
       assert.doesNotMatch(
-        `${artifact}\n${onboarding}\n${checklist}\n${composer}\n${search}\n${shell}\n${browser}`,
+        `${artifact}\n${onboarding}\n${composer}\n${search}\n${shell}\n${browser}`,
         new RegExp(`<(?:Button|UiButton)[^>]*className="[^"]*\\b${className}\\b`),
         `${className} must not reskin a shared Button`,
       );
     }
 
-    assert.match(onboarding, /variant="secondary"\s+size="sm"\s+onClick=\{\(\) => prefillSuggestion/);
-    assert.match(checklist, /import \{ Button as BaseButton \} from '@base-ui\/react\/button';/);
-    assert.match(checklist, /<BaseButton[^>]*onClick=\{item\.onClick\}/);
     assert.match(composer, /variant="quiet"\s+size="icon-sm"\s+shape="pill"[\s\S]*aria-label=\{pendingImportAction/);
     assert.match(composer, /variant="default"\s+size="icon"\s+shape="pill"[\s\S]*aria-label=\{copy\.sendLabel\}/);
     assert.match(plan, /variant="secondary"\s+size="sm"[\s\S]*onClick=\{\(\) => applyRunAtPreset/);
@@ -356,8 +350,6 @@ describe('renderer utility surfaces use shared UI primitives', () => {
     for (const selector of [
       'maka-artifact-pane-collapse',
       'maka-artifact-error-retry',
-      'maka-first-run-task-suggestion',
-      'maka-first-run-checklist-error-action',
       'maka-composer-tool-button',
       'maka-composer-context-plus',
       'maka-composer-send-button',

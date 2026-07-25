@@ -17,7 +17,9 @@
  *     sanitized display data is wired in a later PR.
  *   - `ready_with_history` returns `null` — the caller MUST NOT
  *     mount the hero for that state (the existing chat surface
- *     takes over).
+ *     takes over). Since #1433 `ready_empty` returns `null` for the
+ *     same reason: a configured user with no sessions is not an
+ *     onboarding case and lands on the normal empty chat.
  */
 
 import type { OnboardingState, SettingsSection, UiLocale } from '@maka/core';
@@ -47,11 +49,6 @@ export interface OnboardingHeroCopy {
     settingsSection: SettingsSection;
   };
   tone?: 'warning' | 'destructive';
-  /**
-   * Whether the hero should render the Quick Chat composer rather
-   * than a setup CTA. Only true for `ready_empty`.
-   */
-  showQuickChat?: boolean;
 }
 
 export type OnboardingSetupStepState = 'done' | 'active' | 'pending' | 'warning';
@@ -81,8 +78,6 @@ export function getOnboardingHeroCopy(state: OnboardingState, locale: UiLocale):
         ...copy.hero.needs_default_model,
         connectionSlug: state.connectionSlug,
       };
-    case 'ready_empty':
-      return { kind: state.kind, ...copy.hero.ready_empty };
     case 'blocked':
       // `blocked.reason` is `'all_connections_unhealthy'` in PR110a's
       // closed enum. The labeled branch keeps the assertion explicit
@@ -90,10 +85,11 @@ export function getOnboardingHeroCopy(state: OnboardingState, locale: UiLocale):
       // silently fallthrough.
       void state.reason;
       return { kind: state.kind, ...copy.hero.blocked };
+    case 'ready_empty':
     case 'ready_with_history':
       // The renderer caller decides which surface to mount; this
       // helper returning `null` is the explicit "do not render"
-      // signal. The existing chat / session list takes over.
+      // signal. The normal empty chat / session list takes over.
       return null;
     default:
       return assertNever(state);

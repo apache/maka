@@ -11,7 +11,7 @@ import { test, expect } from './fixtures';
  * worse than no assertion.
  */
 test('creating a second chat keeps both in the sidebar', async ({ window: page }) => {
-  const quickChat = page.locator('.maka-onboarding-quickchat-input');
+  const quickChat = page.locator('.maka-composer-textarea');
   await quickChat.fill('alpha-marker');
   await quickChat.press('Enter');
   await expect(page.getByText(/Fake backend received: alpha-marker/)).toBeVisible();

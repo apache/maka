@@ -43,7 +43,6 @@ const sourcePaths = [
   'use-shell-memory-pill.ts',
   'use-shell-layout.ts',
   'use-settings-modal.ts',
-  'onboarding-empty-state.tsx',
   'chat-message-surface.tsx',
   'chat-composer-region.tsx',
   'chat-workbar.tsx',

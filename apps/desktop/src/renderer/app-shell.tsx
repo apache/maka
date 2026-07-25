@@ -13,7 +13,6 @@ import {
 import type {
   PermissionMode,
   PlanReminder,
-  QuickChatMode,
   QuoteRef,
   SessionSummary,
   UiLocale,
@@ -237,7 +236,6 @@ function AppShellContent({
     draftKey: attachmentDraftKey,
   });
   const [newChatPlanModeActive, setNewChatPlanModeActive] = useState(false);
-  const [newChatQuickChatMode, setNewChatQuickChatMode] = useState<QuickChatMode | undefined>();
   const [pendingCollaborationModeBySession, setPendingCollaborationModeBySession] = useState<Record<string, boolean>>({});
   const [newChatSwarmModeActive, setNewChatSwarmModeActive] = useState(false);
   const [pendingOrchestrationModeBySession, setPendingOrchestrationModeBySession] = useState<Record<string, boolean>>({});
@@ -946,11 +944,15 @@ function AppShellContent({
   // + snapshot===null flashes the prompt-suggestion EmptyChatHero before
   // the state-routed OnboardingHero mounts.
   const isOnboardingLoading = sessions.length === 0 && onboardingState === undefined && !onboardingSettled;
+  // Only unfinished setup takes the chat surface over. A configured user with
+  // no sessions is not onboarding: they land on the normal empty chat and use
+  // the one real Composer, which creates the session on its first send.
   const showOnboardingHero =
     sessions.length === 0 &&
     !onboardingSettled &&
     onboardingState !== undefined &&
-    onboardingState.kind !== 'ready_with_history';
+    onboardingState.kind !== 'ready_with_history' &&
+    onboardingState.kind !== 'ready_empty';
   const onboardingComposerHidden = isOnboardingLoading || (showOnboardingHero && onboardingState !== undefined);
   const {
     sessionListWidth,
@@ -1069,7 +1071,6 @@ function AppShellContent({
     projectPath: projectInfo?.projectPath,
     newSessionModel: newChatModel,
     newSessionCollaborationMode: newChatPlanModeActive ? 'plan' : 'agent',
-    newSessionMode: newChatQuickChatMode,
   });
 
   const { applyE2eFixture } = useStableActions(createAppShellE2eFixtureActions, {
@@ -1450,7 +1451,6 @@ function AppShellContent({
   async function createSession() {
     startNewSession();
     setNewChatPlanModeActive(false);
-    setNewChatQuickChatMode(undefined);
     setNavSelection({ section: 'sessions', filter: 'chats' });
     setSearchScrollTarget(null);
     // New-task affordances reset to the empty-state composer; move focus
@@ -1852,10 +1852,6 @@ function AppShellContent({
                 }}
                 onAddProvider={openProviderCreate}
                 onBrowseProviders={openProviderCatalog}
-                onQuickChatSubmit={handleQuickChatSubmit}
-                mentionSkills={mentionSkills}
-                onQuickChatModeChange={setNewChatQuickChatMode}
-                quickChatPending={quickChatPending}
                 connections={connections}
                 onRefreshConnections={refreshConnections}
                 onSkip={async () => {
@@ -1869,14 +1865,6 @@ function AppShellContent({
                     );
                   }
                 }}
-                onOpenSettingsSection={(section) => openSettingsSection(section)}
-                onOpenSidebarModule={(target) => {
-                  setNavSelection({
-                    section: 'automations',
-                    module: target === 'daily-review' ? 'daily-review' : 'plan-reminders',
-                  });
-                }}
-                onStartPlanReminder={openPlanReminderForm}
                 conversationItems={planConversationItems}
               />
               )}

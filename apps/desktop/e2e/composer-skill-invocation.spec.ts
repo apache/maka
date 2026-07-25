@@ -5,27 +5,27 @@ async function createStarterSkillAndReload(page: Page): Promise<void> {
   const result = await page.evaluate(() => window.maka.skills.createStarter());
   expect(result.ok).toBe(true);
   await page.reload();
-  await expect(page.locator('.maka-onboarding-quickchat-input')).toBeVisible();
+  await expect(page.locator('.maka-composer-textarea')).toBeVisible();
 }
 
 async function selectStarterSkill(page: Page): Promise<void> {
-  const quickChat = page.locator('.maka-onboarding-quickchat-input');
-  await quickChat.fill('/');
+  const composer = page.locator('.maka-composer-textarea');
+  await composer.fill('/');
   const listbox = page.getByRole('listbox', { name: '技能' });
   await expect(listbox).toBeVisible();
   await expect(listbox.getByRole('option', { name: /示例技能/ })).toBeVisible();
-  await quickChat.press('Enter');
+  await composer.press('Enter');
   await expect(page.locator('.maka-composer-skill-chip')).toContainText('示例技能');
-  await expect(quickChat).toHaveValue('');
+  await expect(composer).toHaveValue('');
 }
 
-test('first-run Quick Chat selects a structured Skill from slash suggestions', async ({
+test('the composer selects a structured Skill from slash suggestions', async ({
   window: page,
 }) => {
   await createStarterSkillAndReload(page);
   await selectStarterSkill(page);
 
-  const quickChat = page.locator('.maka-onboarding-quickchat-input');
+  const composer = page.locator('.maka-composer-textarea');
   const chip = page.locator('.maka-composer-skill-chip');
   await expect(chip).toHaveCSS('min-height', '32px');
   const removeButton = chip.getByRole('button');
@@ -33,18 +33,18 @@ test('first-run Quick Chat selects a structured Skill from slash suggestions', a
   await removeButton.focus();
   await removeButton.press('Enter');
   await expect(chip).toHaveCount(0);
-  await expect(quickChat).toBeFocused();
+  await expect(composer).toBeFocused();
 
   await selectStarterSkill(page);
-  await quickChat.press('Backspace');
+  await composer.press('Backspace');
   await expect(chip).toHaveCount(0);
 });
 
 test('slash suggestions follow Runtime project discovery and host gating', async ({
   invocableSkillsWindow: page,
 }) => {
-  const quickChat = page.locator('.maka-onboarding-quickchat-input');
-  await quickChat.fill('/');
+  const composer = page.locator('.maka-composer-textarea');
+  await composer.fill('/');
   const listbox = page.getByRole('listbox', { name: '技能' });
   await expect(listbox).toBeVisible();
   await expect(listbox).toContainText('Project Only');
@@ -60,33 +60,36 @@ test('slash suggestions follow Runtime project discovery and host gating', async
   expect(planNames).not.toContain('Agent Write');
 });
 
-test('ready-empty slash suggestions follow the selected Deep Research mode', async ({
+test('slash suggestions in a Deep Research session drop non-research Skills', async ({
   invocableSkillsWindow: page,
 }) => {
-  const quickChat = page.locator('.maka-onboarding-quickchat-input');
+  const composer = page.locator('.maka-composer-textarea');
   const listbox = page.getByRole('listbox', { name: '技能' });
 
-  await quickChat.fill('/');
+  await composer.fill('/');
   await expect(listbox).toBeVisible();
   await expect(listbox).not.toContainText('Deep Research Only');
-  await quickChat.fill('');
+  await composer.fill('');
 
-  await page.getByRole('button', { name: '深度研究一个项目' }).click();
-  await expect(page.getByText('深度研究 · 只读分析')).toBeVisible();
-  await quickChat.fill('/');
+  await page.getByRole('button', { name: '更多操作' }).click();
+  await page.getByRole('menuitem', { name: '打开命令面板' }).click();
+  await page.getByRole('dialog', { name: '命令面板' }).getByRole('option', { name: /新建深度研究/ }).click();
+  await expect(page.getByLabel('深度研究，只读探索')).toBeVisible();
+
+  await composer.fill('/');
   await expect(listbox).toContainText('Deep Research Only');
 });
 
 test('open Skill suggestions follow current collaboration capabilities', async ({
   invocableSkillsWindow: page,
 }) => {
-  const quickChat = page.locator('.maka-onboarding-quickchat-input');
-  await quickChat.fill('Open a session');
-  await quickChat.press('Enter');
-  const composer = page.getByRole('textbox', { name: '消息输入框' });
+  const composer = page.locator('.maka-composer-textarea');
   await expect(composer).toBeVisible();
+  await composer.fill('Open a session');
+  await composer.press('Enter');
+  await expect.poll(async () => (await page.evaluate(() => window.maka.sessions.list())).length).toBe(1);
   const [session] = await page.evaluate(() => window.maka.sessions.list());
-  if (!session) throw new Error('Quick Chat did not create a session');
+  if (!session) throw new Error('the composer did not create a session');
 
   const listNames = (sessionId: string) =>
     page.evaluate(
@@ -114,13 +117,13 @@ test('chip-only send renders a readable user message', async ({ window: page }) 
   await createStarterSkillAndReload(page);
   await selectStarterSkill(page);
 
-  const quickChat = page.locator('.maka-onboarding-quickchat-input');
-  await quickChat.press('Enter');
+  const composer = page.locator('.maka-composer-textarea');
+  await composer.press('Enter');
 
   await expect(page.getByLabel('你发送的消息').first()).toContainText('/skill:starter-skill');
 });
 
-test('blocked first-run Skill invocation keeps the complete Quick Chat draft', async ({
+test('a blocked Skill invocation keeps the complete composer draft', async ({
   window: page,
 }) => {
   await createStarterSkillAndReload(page);
@@ -128,12 +131,12 @@ test('blocked first-run Skill invocation keeps the complete Quick Chat draft', a
   const disabled = await page.evaluate(() => window.maka.skills.setEnabled('starter-skill', false));
   expect(disabled.ok).toBe(true);
 
-  const quickChat = page.locator('.maka-onboarding-quickchat-input');
-  await quickChat.fill('run it');
-  await quickChat.press('Enter');
+  const composer = page.locator('.maka-composer-textarea');
+  await composer.fill('run it');
+  await composer.press('Enter');
 
   await expect(page.getByText('Skill 调用失败，消息未发送')).toBeVisible();
-  await expect(quickChat).toHaveValue('run it');
+  await expect(composer).toHaveValue('run it');
   await expect(page.locator('.maka-composer-skill-chip')).toContainText('示例技能');
   await expect(page.locator('.maka-turn')).toHaveCount(0);
 });
