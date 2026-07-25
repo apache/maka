@@ -64,20 +64,9 @@ it('renders a hard break as a native <br> plus the spacing span (MARKDOWN-PROSE-
     text: '**小节标题**\n正文内容',
   }));
 
-  // Two coupled facts, both measured in the built app (Chromium 150):
-  //
-  // 1. `remarkBreaks` is what turns this SINGLE newline into a break at all.
-  //    Without the plugin CommonMark folds the two lines together, the section
-  //    split disappears, and .maka-hardbreak becomes unreachable dead CSS —
-  //    a regression no CSS contract can see. Asserting on a single-newline
-  //    source keeps the plugin load-bearing.
-  // 2. The break is `<br>` FOLLOWED BY the span, not the span alone. CSS
-  //    cannot give a native <br> any height (display:block / height / margin /
-  //    content:"\A" all leave the paragraph at exactly 39px), which is why the
-  //    span exists — but dropping the <br> costs the `LineBreak` node in the
-  //    accessibility tree (verified via CDP Accessibility.getFullAXTree).
-  //    Emitting both keeps the AX node AND takes the 6px: measured 45px with
-  //    a single "\n" still coming back from Selection.toString().
+  // The source is a SINGLE newline on purpose: `remarkBreaks` is what makes it
+  // a break at all, and without the plugin .maka-hardbreak becomes unreachable
+  // dead CSS — a regression no CSS contract can see.
   assert.match(
     markup,
     /<br\s*\/?>\s*<span class="maka-hardbreak" aria-hidden="true">/,

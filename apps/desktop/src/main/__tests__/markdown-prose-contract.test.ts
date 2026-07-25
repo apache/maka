@@ -541,58 +541,22 @@ describe('MARKDOWN-PROSE-RENDER-OWNER-0 contract (#739)', () => {
 
 /**
  * MARKDOWN-PROSE-CJK-MIXED-SPACING-0: Maka is CJK-first and its assistant
- * prose is dense mixed script — Chinese wrapped around identifiers, paths,
- * version numbers and line numbers. Four spacing rules carry that, each
- * measured in the real Electron app (Chromium 150) rather than headless:
- * headless silently falls PingFang SC back to a serif face while
- * `document.fonts.check` still reports true, so every font-dependent number
- * below comes from `CSS.getPlatformFontsForNode` against the built stack.
+ * prose is dense mixed script, so `.maka-prose` asks for CJK/Latin autospace
+ * and gives inline code pills their own margin. Both rationales live next to
+ * the rules in prose.css; this locks that they are still there.
  *
- * 1. `text-autospace: normal` — Chromium's initial value is `no-autospace`,
- *    NOT the spec's `normal`, so CJK/Latin boundary spacing has to be asked
- *    for. Measured +1.55px per boundary at the 13px body size (1/8 em), and
- *    it applies ACROSS inline element boundaries, so `<code>` pills get it on
- *    both sides too. Same lever LobeChat landed in `:root` after dropping its
- *    runtime pangu.js pass. Scoped to `.maka-prose` here, not `:root`: the
- *    composer, sidebar and settings surfaces are a separate call — widening
- *    it changes text metrics app-wide.
+ * The third pair of tests is the one that matters. Both spacing rules are
+ * PROSE decoration that reaches fenced code unless carved back out —
+ * autospace inherits, and `.maka-prose code` (0,1,1) matches `pre > code` too.
+ * Shipping them uncarved put the first line of every code block 3.25px right
+ * of the lines below it and drifted mixed-script lines off the monospace grid.
+ * That is the invariant #1431 already locked for ligatures, reached a second
+ * time by different properties, so these guard the BOUNDARY as a property
+ * class: they fail for any future shaping declaration too, not just these two.
  *
- * 2. `code { margin-inline: 0.25em }` — autospace alone leaves 1.55px between
- *    Chinese and a code pill that already carries inline padding and a
- *    background, and the pill still reads glued to the text. 0.25em (3.25px)
- *    stacks on top of autospace rather than replacing it.
- *
- * 3. The literal-code boundary. Rules 1 and 2 are PROSE decoration, and both
- *    reach fenced code unless carved back out: `text-autospace` is inherited,
- *    and `.maka-prose code` (0,1,1) matches `pre > code` as well as the inline
- *    pill. Measured in the built app before the carve-out: the first source
- *    line of every code block started 3.25px right of the lines below it
- *    (36.25 vs 33 — a `<code>` inside `white-space: pre` is ONE inline box
- *    spanning all lines, so its margin-left only offsets the first fragment),
- *    and a line crossing a CJK/Latin boundary drifted 1.6px off the monospace
- *    grid per boundary. This is the same invariant #1431 already locked for
- *    ligatures ("code is a literal surface"), reached a second time by a
- *    different property — so the contract below guards the BOUNDARY rather
- *    than the two specific leaks, and fails when any future prose-shaping
- *    declaration lands without a carve-out.
- *
- * 4. `.maka-hardbreak` — `remark-breaks` turns every single newline into a
- *    hard break, and LLM answers lean on `**subhead**\nbody` to separate
- *    sections. A hard break carries only the 4px the line box already gives,
- *    against 16px between paragraphs, so the STRONGER semantic split renders
- *    tighter than the weaker one. CSS cannot fix a native `<br>` —
- *    display:block, height, margin and content:"\A" all leave the paragraph
- *    at exactly 39px — so markdown-body emits the native `<br>` FOLLOWED BY a
- *    block `<span>` that can take a height. Keeping the `<br>` is not
- *    cosmetic: measured via CDP, replacing it with the span alone drops the
- *    `LineBreak` node from the accessibility tree, while `<br>` + span keeps
- *    the AX node, keeps `Selection.toString()` at a single `\n`, and still
- *    lands the gap at 10px, between the 4px line gap and the 16px paragraph
- *    gap. A rule that was dropped on the way here: `td { word-break:
- *    auto-phrase }` — measured inert for Chinese in Chromium 150 (identical
- *    break positions to `normal` under both `lang="zh-CN"` and `lang="en"`;
- *    only `lang="ja"` changes, since the engine's phrase model is Japanese-
- *    only), and double-gated by the renderer's static `<html lang="en">`.
+ * Numbers here come from the built Electron app, never headless — headless
+ * falls PingFang SC back to a serif face while `document.fonts.check` still
+ * returns true, which voids every font-dependent measurement taken there.
  */
 describe('MARKDOWN-PROSE-CJK-MIXED-SPACING-0 contract', () => {
   it('.maka-prose asks for CJK/Latin autospace (Chromium defaults to no-autospace)', async () => {
@@ -618,11 +582,8 @@ describe('MARKDOWN-PROSE-CJK-MIXED-SPACING-0 contract', () => {
   });
 
   /**
-   * Properties that reshape or reposition glyphs and INHERIT into descendants.
-   * `.maka-prose` may set any of them for reading comfort; fenced code is a
-   * literal surface (#1431) and must carve every one of them back out at the
-   * code-block tier. Listing the property class rather than the two known
-   * leaks is the point: this fails on the NEXT one too.
+   * Glyph-reshaping properties that INHERIT. `.maka-prose` may set any of them
+   * for reading comfort; the code-block tier must carve each one back out.
    */
   const INHERITED_SHAPING_PROPERTIES = [
     'text-autospace',
@@ -635,10 +596,8 @@ describe('MARKDOWN-PROSE-CJK-MIXED-SPACING-0 contract', () => {
   ];
 
   /**
-   * Pill chrome on `.maka-prose code` (0,1,1) — which also matches `pre > code`,
-   * so each of these must be neutralised by the block-code reset. `border` and
-   * `padding` are here because they already leaked once (the border painted a
-   * rounded outline around every wrapped line inside the pre).
+   * Pill chrome on `.maka-prose code`, which also matches `pre > code`, so the
+   * block reset must neutralise each. `border`/`padding` already leaked once.
    */
   const PILL_ONLY_PROPERTIES = ['margin', 'padding', 'background', 'border'];
 
@@ -660,7 +619,7 @@ describe('MARKDOWN-PROSE-CJK-MIXED-SPACING-0 contract', () => {
       if (!declares(prose!.decls, property)) continue;
       assert.ok(
         declares(carvedOut, property),
-        `.maka-prose sets ${property}, which inherits into fenced code and shifts glyphs off the monospace grid (text-autospace measured 1.6px of drift per CJK/Latin boundary in the built app). Fenced code is a literal surface — #1431 locked the same invariant for ligatures — so the .maka-code-block pre tier must carve ${property} back out`,
+        `.maka-prose sets ${property}, which inherits into fenced code and shifts glyphs off the monospace grid. Code is a literal surface (#1431) — the .maka-code-block pre tier must carve ${property} back out`,
       );
     }
   });
@@ -677,7 +636,7 @@ describe('MARKDOWN-PROSE-CJK-MIXED-SPACING-0 contract', () => {
       if (!declares(code!.decls, property)) continue;
       assert.ok(
         declares(preCode!.decls, property),
-        `.maka-prose code (0,1,1) matches pre > code as well as the inline pill, so ${property} leaks into fenced code. Measured for margin-inline in the built app: a <code> inside white-space: pre is ONE inline box spanning every line, so its inline margin offsets only the FIRST source line (36.25px vs 33px). The .maka-code-block pre code reset must neutralise ${property}`,
+        `.maka-prose code (0,1,1) matches pre > code too, so ${property} leaks into fenced code — the pill's margin-inline offset the first source line by 3.25px. The .maka-code-block pre code reset must neutralise ${property}`,
       );
     }
   });
@@ -696,9 +655,7 @@ describe('MARKDOWN-PROSE-CJK-MIXED-SPACING-0 contract', () => {
       /height:\s*var\(--space-1-5\)/,
       '.maka-hardbreak must take its 6px from --space-1-5 so the hard-break gap lands between the 4px line gap and the 16px paragraph gap',
     );
-    // The DOM half of this rule — that markdown-body emits `<br>` + the span,
-    // and that remark-breaks is still what produces the break — is locked by
-    // rendering in packages/ui/src/__tests__/markdown-body.test.ts. AST → DOM
-    // is that package's contract; this file owns the CSS tier it lands in.
+    // The DOM half — `<br>` + span, and remark-breaks still producing the
+    // break — is locked by rendering in packages/ui's markdown-body.test.ts.
   });
 });

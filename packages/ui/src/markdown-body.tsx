@@ -129,25 +129,15 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
         // Wrap block code with a language pill header + copy affordance.
         // Surface the detected language so users can verify highlighting.
         pre: ({ children, ...rest }) => <CodeBlock {...rest}>{children}</CodeBlock>,
-        // `remarkBreaks` above turns every single newline into a hard break,
-        // and model answers lean on `**subhead**\nbody` to separate sections —
-        // so this element routinely carries a section split. A native <br>
-        // takes no spacing from CSS (display:block / height / margin /
-        // content:"\A" were each measured against the built app; the paragraph
-        // stays at exactly 39px), because an inline break box cannot be given
-        // a height. A block span CAN take one, so the gap becomes a styleable
-        // tier instead of whatever the line box happened to leave.
-        //
-        // Both elements ship, in this order, because neither alone is
-        // sufficient. Dropping the <br> costs the `LineBreak` node in the
-        // accessibility tree (measured with CDP Accessibility.getFullAXTree:
-        // <br> yields `LineBreak → StaticText`, the bare span yields only
-        // `StaticText`) — the same trade TABLE-A11Y-SEMANTICS-0 below refuses
-        // for table roles. Dropping the span costs the 6px. Together they take
-        // the paragraph to 45px, keep the AX LineBreak node, and still copy as
-        // a single "\n" (Selection.toString(), measured — nesting the <br>
-        // INSIDE the span instead is what produces a spurious "\n\n").
-        // The span is decorative on its own, hence aria-hidden.
+        // `remarkBreaks` above makes every single newline a hard break, and
+        // model answers use `**subhead**\nbody` for section splits, so this
+        // element routinely carries one. Neither element alone works: CSS
+        // cannot give a native <br> any height (an inline break box takes
+        // none), and the span alone drops the `LineBreak` node from the
+        // accessibility tree — the same trade TABLE-A11Y-SEMANTICS-0 below
+        // refuses for table roles. Paired, they keep the AX node, still copy
+        // as a single "\n", and take the paragraph 39px → 45px. Nesting the
+        // <br> inside the span instead is what yields a spurious "\n\n".
         // MARKDOWN-PROSE-CJK-MIXED-SPACING-0.
         br: () => (
           <>

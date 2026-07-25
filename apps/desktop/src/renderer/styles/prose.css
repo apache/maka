@@ -93,14 +93,10 @@
   font-size: var(--font-size-base);
   line-height: var(--leading-normal);
   word-wrap: break-word;
-  /* CJK/Latin boundary spacing. Chromium's initial value is `no-autospace`,
-     NOT the spec's `normal` — verified against the built app — so a CJK-first
-     product renders 中文和identifier glued together unless it asks. Measured
-     +1.55px per boundary at the 13px body (1/8 em), and it applies across
-     inline element boundaries, so the `<code>` pills in a technical answer
-     get it on both sides too.
-     Scoped here rather than on :root: the composer, sidebar and settings
-     surfaces would all shift text metrics, which is a separate call.
+  /* CJK/Latin boundary spacing, +1.55px per boundary (1/8 em at 13px), also
+     across inline element boundaries. Chromium's initial value is
+     `no-autospace`, not the spec's `normal`, so it has to be asked for.
+     Not on :root — that would shift composer and settings metrics too.
      MARKDOWN-PROSE-CJK-MIXED-SPACING-0 locks this. */
   text-autospace: normal;
   /* No max-width here: the reading measure is owned by .maka-message-row
@@ -122,17 +118,11 @@
   margin: 0 0 var(--space-3);
   text-wrap: pretty;
 }
-/* Hard break inside a paragraph. `remark-breaks` (markdown-body.tsx) turns
-   every single newline in the model's output into one of these, and LLM
-   answers lean on `**subhead**\nbody` to separate sections — so this gap
-   routinely carries a SECTION split, not a continuation.
-   Unstyled it gets only the ~4px the line box already provides, against 16px
-   between paragraphs: the stronger semantic split rendered tighter than the
-   weaker one. A native `<br>` cannot be spaced by CSS at all (display:block,
-   height, margin and content:"\A" were each measured — the paragraph stays at
-   exactly 39px), so markdown-body renders the break as this block span, which
-   can take a height. 6px lands the gap at 10px, between the 4px line gap and
-   the 16px paragraph gap.
+/* Hard break inside a paragraph. `remark-breaks` makes every single newline
+   one of these, and LLM answers use `**subhead**\nbody` for section splits, so
+   unstyled the ~4px the line box gives renders the stronger split tighter than
+   the 16px between paragraphs. CSS cannot space a native `<br>` at all, hence
+   the block span markdown-body pairs with it. 6px lands the gap at 10px.
    MARKDOWN-PROSE-CJK-MIXED-SPACING-0 locks this. */
 .maka-hardbreak {
   display: block;
@@ -234,11 +224,9 @@
      two pills). Bg-only pills leave ~5.5px of inter-line air, matching
      plain text; the dropped border was 3% alpha and read as invisible. */
   padding: 0 var(--space-1-5);
-  /* Outer breathing room against surrounding Chinese. `text-autospace` above
-     already reaches across this inline boundary, but its 1.55px is sized for
-     bare glyphs — against a pill carrying its own padding and a filled
-     background the code still reads glued to the text. 0.25em (3.25px)
-     stacks on top of autospace rather than replacing it.
+  /* Autospace reaches across this boundary already, but its 1.55px is sized
+     for bare glyphs; against a pill with its own padding and background the
+     code still reads glued. Stacks on autospace, measured additive.
      MARKDOWN-PROSE-CJK-MIXED-SPACING-0 locks this. */
   margin-inline: 0.25em;
   /* PR-UI-LAYOUT-28: inline code radius 4 → 5. Tiny bump but
@@ -327,17 +315,12 @@
   font-size: var(--font-size-ui);
   line-height: var(--leading-normal);
   white-space: pre;
-  /* THE LITERAL-CODE BOUNDARY. Fenced code renders on a monospace grid, so no
-     prose text shaping may cross into it — the invariant #1431 already locked
-     for ligatures, reached here a second time by an inherited property.
-     `.maka-prose` asks for `text-autospace: normal` (rule 1 of
-     MARKDOWN-PROSE-CJK-MIXED-SPACING-0) and autospace INHERITS, so a code line
-     mixing Chinese comments with Latin identifiers — routine output for a
-     CJK-first product — drifted 1.6px off the grid per boundary until this
-     opted back out. Scoped to the block tier on purpose: the inline pill
-     WANTS autospace on both sides, which is what rule 1 buys.
-     Anything else added to `.maka-prose` that reshapes glyphs belongs here
-     too; MARKDOWN-PROSE-CJK-MIXED-SPACING-0 fails if it is not. */
+  /* The literal-code boundary: no prose text shaping crosses into fenced code,
+     the same invariant #1431 locked for ligatures. `.maka-prose` sets
+     `text-autospace: normal` and autospace inherits, so Chinese comments next
+     to Latin identifiers drifted 1.6px off the monospace grid per boundary.
+     Block tier only — the inline pill wants autospace on both sides.
+     Any future prose shaping belongs here too; the contract fails without it. */
   text-autospace: no-autospace;
 }
 .maka-prose .maka-code-block pre code {
@@ -348,11 +331,9 @@
      box, so a leftover border paints a rounded outline around every wrapped
      line box inside the pre (clearly visible in dark). */
   border: 0;
-  /* Same leak, second property: `.maka-prose code` (0,1,1) matches `pre > code`
-     as well as the pill, so the pill's `margin-inline` reached block code. A
-     <code> inside `white-space: pre` is ONE inline box spanning every line, so
-     that margin offsets only the FIRST source line — measured in the built app,
-     line 1 started at 36.25px against 33px for the lines below it. */
+  /* Same boundary: `.maka-prose code` (0,1,1) matches `pre > code` too, and a
+     <code> inside `white-space: pre` is one inline box spanning every line, so
+     the pill's margin-inline offset only the FIRST source line (36.25 vs 33). */
   margin: 0;
 }
 
@@ -503,14 +484,10 @@
   white-space: nowrap;
   letter-spacing: var(--tracking-normal);
 }
-/* `word-break: auto-phrase` on `td` was tried here for squeezed Chinese cells
-   and REMOVED: measured inert in Chromium 150. Identical break positions to
-   `normal` under both `lang="zh-CN"` and `lang="en"` (只有 `lang="ja"` changes
-   — the engine's phrase model is Japanese-only), and the renderer is pinned to
-   a static `<html lang="en">` with no runtime update, so it was double-gated.
-   If narrow Chinese cells become a real complaint, the levers that do work in
-   this engine are `line-break: strict` / `word-break: keep-all`, each with its
-   own overflow trade-off to measure. */
+/* Don't reach for `word-break: auto-phrase` on `td` for squeezed Chinese cells:
+   measured inert in Chromium 150 — identical breaks to `normal`, since the
+   engine's phrase model is Japanese-only and the renderer is `lang="en"`.
+   `line-break: strict` / `word-break: keep-all` do work, at an overflow cost. */
 .maka-prose hr {
   margin: var(--space-4) 0;
   border: 0;
