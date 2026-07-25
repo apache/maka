@@ -142,7 +142,7 @@ describe('sidebar subtraction', () => {
     assert.match(markup, /aria-label="会话分组方式"/);
   });
 
-  it('renders a flat pinned and recent conversation list in recency order', () => {
+  it('labels only the exceptional pinned section in the flat conversation list', () => {
     const makeSession = (
       session: Pick<SessionSummary, 'id' | 'name' | 'status' | 'isFlagged' | 'lastMessageAt'>,
     ): SessionSummary => ({
@@ -203,7 +203,7 @@ describe('sidebar subtraction', () => {
 
     const groupLabels = [...markup.matchAll(/class="maka-list-group-label"[^>]*><span>([^<]+)<\/span>/g)]
       .map((match) => match[1]);
-    assert.deepEqual(groupLabels, ['置顶', '最近']);
+    assert.deepEqual(groupLabels, ['置顶']);
     assert.ok(markup.indexOf('最近置顶') < markup.indexOf('较早置顶'));
     assert.ok(markup.indexOf('最近会话') < markup.indexOf('较早会话'));
     assert.doesNotMatch(markup, /maka-list-group-toggle|maka-list-group-count|aria-expanded=/);

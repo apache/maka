@@ -253,7 +253,7 @@ describe('localized conversation journey', () => {
     assert.doesNotMatch(en, /分钟|小时/);
   });
 
-  it('localizes the flat recent-conversation heading without disclosure chrome', () => {
+  it('keeps the default conversation list flat without a redundant time heading', () => {
     const zh = render(
       'zh',
       <SessionHistoryList
@@ -269,9 +269,12 @@ describe('localized conversation journey', () => {
       />,
     );
 
-    assert.match(zh, />最近</);
-    assert.match(en, />Recent</);
-    assert.doesNotMatch(`${zh}${en}`, /maka-list-group-toggle|maka-list-group-count|aria-expanded/);
+    assert.match(zh, /Archived conversation/);
+    assert.match(en, /Archived conversation/);
+    assert.doesNotMatch(
+      `${zh}${en}`,
+      /maka-list-group-label|maka-list-group-toggle|maka-list-group-count|aria-expanded/,
+    );
   });
 
   it('localizes live tool activity without rewriting tool-owned text', () => {

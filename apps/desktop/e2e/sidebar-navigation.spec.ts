@@ -13,7 +13,8 @@ test('session grouping menu switches between flat conversations and project disc
   const sidebar = await expandedSidebar(page);
   const grouping = sidebar.getByRole('button', { name: '会话分组方式' });
 
-  await expect(sidebar.getByText('最近', { exact: true })).toBeVisible();
+  await expect(sidebar.locator('.maka-list-group-label')).toHaveCount(0);
+  await expect(sidebar.locator('.maka-list-row').first()).toBeVisible();
   await grouping.click();
   const byTime = page.getByRole('menuitemradio', { name: '按时间' });
   const byProject = page.getByRole('menuitemradio', { name: '按项目' });
@@ -38,23 +39,22 @@ test('session grouping menu fits its Chinese labels instead of inheriting the ge
   expect(width).toBeLessThan(128);
 });
 
-test('session heading stays singular and uses the shared sidebar type tier', async ({
+test('session heading stays singular and the default list has no redundant heading', async ({
   sidebarLongSessionsWindow: page,
 }) => {
   const sidebar = await expandedSidebar(page);
   const panelHeading = sidebar.locator('.maka-session-list-heading');
-  const recentGroupHeading = sidebar.getByText('最近', { exact: true });
   const navLabel = sidebar.locator('.maka-nav-row span:nth-child(2)').first();
 
   await expect(sidebar.getByText('会话', { exact: true })).toHaveCount(1);
-  await expect(recentGroupHeading).toBeVisible();
+  await expect(sidebar.locator('.maka-list-group-label')).toHaveCount(0);
 
   const fontSizes = await Promise.all(
-    [navLabel, panelHeading, recentGroupHeading].map((locator) =>
+    [navLabel, panelHeading].map((locator) =>
       locator.evaluate((element) => getComputedStyle(element).fontSize),
     ),
   );
-  expect(fontSizes).toEqual(['13px', '13px', '13px']);
+  expect(fontSizes).toEqual(['13px', '13px']);
 });
 
 test('scheduled-task hub restores the last selected child module', async ({ window: page }) => {

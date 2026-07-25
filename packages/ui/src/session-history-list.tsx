@@ -175,7 +175,7 @@ export function SessionHistoryList(props: {
                     sessions: g.sessions,
                   }))
                 : groupSessionsForHistory(props.sessions, locale).map((g) => ({
-                    key: g.label,
+                    key: g.id,
                     label: g.label,
                     sessions: g.sessions,
                   }))
@@ -230,9 +230,11 @@ function SessionListGroups(props: {
         }
         return (
           <div key={group.key} className="maka-list-group" data-variant="conversation">
-            <div className="maka-list-group-label">
-              <span>{group.label}</span>
-            </div>
+            {group.label ? (
+              <div className="maka-list-group-label">
+                <span>{group.label}</span>
+              </div>
+            ) : null}
             <div>
               {group.sessions.map((session) => (
                 <SessionTreeRow
@@ -738,6 +740,7 @@ const SessionRow = memo(function SessionRow(props: {
 });
 
 interface SessionGroup {
+  id: 'pinned' | 'unpinned';
   label: string;
   sessions: SessionSummary[];
 }
@@ -749,13 +752,13 @@ function groupSessionsForHistory(sessions: SessionSummary[], locale: UiLocale): 
     return timestampDelta || a.id.localeCompare(b.id);
   });
   const pinned = ordered.filter((session) => session.isFlagged);
-  const recent = ordered.filter((session) => !session.isFlagged);
+  const unpinned = ordered.filter((session) => !session.isFlagged);
   const groups: SessionGroup[] = [];
   if (pinned.length > 0) {
-    groups.push({ label: copy.pinned, sessions: pinned });
+    groups.push({ id: 'pinned', label: copy.pinned, sessions: pinned });
   }
-  if (recent.length > 0) {
-    groups.push({ label: copy.recent, sessions: recent });
+  if (unpinned.length > 0) {
+    groups.push({ id: 'unpinned', label: '', sessions: unpinned });
   }
   return groups;
 }

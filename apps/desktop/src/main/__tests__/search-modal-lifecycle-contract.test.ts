@@ -467,10 +467,11 @@ describe('SearchModal lifecycle contract (PR-SIDEBAR-IA-0 Phase 3 P0 fixup)', ()
     assert.doesNotMatch(searchModal, /搜索暂时不可用，请稍后重试。/, 'Search modal fallback error should not read like a generic unavailable feature');
   });
 
-  it('sessions without messages stay in the flat recent list', async () => {
+  it('sessions without messages stay in the flat conversation list', async () => {
     const markup = renderSessionListPanel({ session: { lastMessageAt: undefined } });
 
-    assert.match(markup, />最近</, 'Sessions without messages still belong to the recent conversation list');
+    assert.match(markup, />测试会话</, 'Sessions without messages still belong to the conversation list');
+    assert.doesNotMatch(markup, /maka-list-group-label/, 'A single default list must not render a redundant heading');
     assert.doesNotMatch(markup, /待发送|尚未发送/, 'The flat conversation list must not create an unfinished-state group');
   });
 });

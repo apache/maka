@@ -43,7 +43,8 @@ describe('sidebar project view mode', () => {
     const fallbackMarkup = renderSessionListPanel({
       sessions: [sessions[1]],
     });
-    assert.match(fallbackMarkup, />最近</);
+    assert.match(fallbackMarkup, /Pending session/);
+    assert.doesNotMatch(fallbackMarkup, /maka-list-group-label/);
   });
 
   it('moves the conversation/project controls into the session-list heading menu', async () => {
@@ -82,8 +83,7 @@ describe('sidebar project view mode', () => {
     });
 
     assert.equal((markup.match(/>会话</g) ?? []).length, 1);
-    assert.equal((markup.match(/maka-list-group-label/g) ?? []).length, 1);
-    assert.match(markup, />最近</);
+    assert.equal((markup.match(/maka-list-group-label/g) ?? []).length, 0);
     assert.equal((markup.match(/maka-list-row-status-icon/g) ?? []).length, 2);
     assert.match(markup, /data-status="running"/);
     assert.match(markup, /data-status="blocked"/);
