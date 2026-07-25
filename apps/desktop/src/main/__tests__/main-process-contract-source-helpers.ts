@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
-const REPO_ROOT = resolve(import.meta.dirname, '../../../../..');
+export const REPO_ROOT = resolve(import.meta.dirname, '../../../../..');
 
 export const MAIN_PROCESS_SOURCE_REPO_PATHS: readonly string[] = [
   'apps/desktop/src/main/main.ts',

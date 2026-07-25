@@ -739,9 +739,9 @@ backends.register('fake', (ctx) =>
 
 // E2E: also route 'ai-sdk' (requested by sessions:create, the single
 // session-creation IPC) through the deterministic fake backend, so no
-// session-creation path can
-// escape the E2E seam and hit a real provider. Registered after the real
-// ai-sdk factory to override it (BackendRegistry uses last-write-wins).
+// session-creation path can escape the E2E seam and hit a real provider.
+// Registered after the real ai-sdk factory to override it (BackendRegistry
+// uses last-write-wins).
 // Production builds never set MAKA_E2E.
 if (isE2e) {
   backends.register('ai-sdk', (ctx) =>

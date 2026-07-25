@@ -91,6 +91,18 @@ describe('resolveCreateSessionInput', () => {
     assert.equal(resolved.permissionMode, 'ask');
   });
 
+  /**
+   * The one input no caller sends today: both a mode and a name. The mode wins,
+   * matching what `quickChat:start` did (it never let the renderer name a Deep
+   * Research session at all) and matching `permissionMode`, where the mode also
+   * outranks the request. Pinned because the type accepts the combination, so
+   * "whichever the expression happened to list first" is not an answer.
+   */
+  it('a mode names the session even when the caller also sent a name', async () => {
+    const resolved = await resolve({ mode: 'deep_research', name: 'Release notes' });
+    assert.equal(resolved.name, 'Deep Research');
+  });
+
   it("adds the mode's label to the caller's rather than replacing them", async () => {
     const resolved = await resolve({
       mode: 'deep_research',

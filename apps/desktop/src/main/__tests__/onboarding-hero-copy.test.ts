@@ -423,7 +423,15 @@ describe('OnboardingHero structure', () => {
     assert.doesNotMatch(hero, /\bTextarea\b/, 'the setup hero must not import the Textarea primitive');
     assert.doesNotMatch(hero, /useMentionPopup|ComposerMentionPopup/, 'Skill mention popups belong to the Composer');
     assert.doesNotMatch(hero, /useComposerSkillDraft|maka-composer-skill-chip/, 'Skill drafts belong to the Composer');
-    assert.doesNotMatch(hero, /onQuickChatSubmit|quickChatPending/, 'the setup hero must not own a send path');
+    // Was `/onQuickChatSubmit|quickChatPending/`, which stopped being able to
+    // fail once #1433 deleted both identifiers repo-wide. The send path it was
+    // guarding still exists — it is just spelled `sessions.create` now, and
+    // the Composer and the command palette own it.
+    assert.doesNotMatch(
+      hero,
+      /sessions\.create|expertTeam\.start/,
+      'the setup hero must not own a send path — creating a session belongs to the Composer and the command palette',
+    );
     assert.doesNotMatch(hero, /onDrop=|onPaste=|onImportDroppedTextFiles/, 'file import belongs to the Composer');
   });
 });

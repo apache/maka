@@ -25,7 +25,6 @@ type ComposerFocusHandle = {
 
 type ToastApi = {
   error(title: string, description?: string): void;
-  info(title: string, description?: string): void;
 };
 
 export interface AppShellSessionStartActions {
@@ -118,9 +117,17 @@ export function createAppShellSessionStartActions(deps: {
         // refresh alone renders nothing and the command appears to do nothing.
         // This is the same error class the send path handles, so it gets the
         // same toast rather than a second answer to one question.
+        //
+        // The refresh is global and silent, so it runs either way. The toast
+        // is not: `showModelSetupToast` ends in `openSettingsSection('models')`
+        // (app-shell.tsx), so it NAVIGATES. Gate it exactly as the sibling
+        // branches gate theirs — an await that resolves after the user moved
+        // on must not pull them back out of wherever they went.
         refreshOnboarding();
-        const reason = noRealConnectionReasonFromError(error);
-        showModelSetupToast(noRealConnectionSetupDescription(reason, uiLocale), reason);
+        if (isShellSurfaceOwnerActive(owner)) {
+          const reason = noRealConnectionReasonFromError(error);
+          showModelSetupToast(noRealConnectionSetupDescription(reason, uiLocale), reason);
+        }
         return false;
       }
       if (isShellSurfaceOwnerActive(owner)) {
@@ -156,11 +163,14 @@ export function createAppShellSessionStartActions(deps: {
         void window.maka.onboarding.setMilestone('initial_onboarding', 'completed').catch(() => {});
         return true;
       } else if (result.reason === 'setup_required') {
-        // Same reasoning as startModeSession's readiness branch above: the
-        // hero cannot answer for a user who already has sessions. This channel
-        // reports no sub-reason, so the toast falls back to its generic copy.
+        // Same reasoning as startModeSession's readiness branch above, gate
+        // included: the hero cannot answer for a user who already has
+        // sessions, and the toast navigates. This channel reports no
+        // sub-reason, so the toast falls back to its generic copy.
         refreshOnboarding();
-        showModelSetupToast(noRealConnectionSetupDescription(undefined, uiLocale));
+        if (isShellSurfaceOwnerActive(owner)) {
+          showModelSetupToast(noRealConnectionSetupDescription(undefined, uiLocale));
+        }
         return false;
       } else if (result.reason === 'workspace_unavailable') {
         if (isShellSurfaceOwnerActive(owner)) {

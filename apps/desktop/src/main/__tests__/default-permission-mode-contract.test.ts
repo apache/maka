@@ -19,11 +19,13 @@
  */
 
 import { strict as assert } from 'node:assert';
+import { readdir, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { readRendererShellSources } from './renderer-shell-source-helpers.js';
 import { readSettingsCombinedSource } from './settings-contract-source-helpers.js';
 import {
-  readMainProcessCombinedSource,
+  REPO_ROOT,
   readMainTsSource,
   readSessionsIpcSource,
 } from './main-process-contract-source-helpers.js';
@@ -53,22 +55,37 @@ describe('default permission mode contract', () => {
    * place resolves a permission-mode default.
    */
   it('exactly one place in the main process resolves a permission-mode default', async () => {
-    const combined = await readMainProcessCombinedSource();
+    // Read EVERY main-process module, not the curated combined source. This
+    // assertion is now the only guard on the single-authority invariant — the
+    // two regexes that used to sit beside it became behavioral tests in
+    // create-session-input.test.ts — and the curated list covers 47 of ~100
+    // files, so a second resolver in an unlisted module would leave it green.
+    // A count over a hand-maintained subset is a count of the subset.
+    const mainDir = join(REPO_ROOT, 'apps/desktop/src/main');
+    const modules = (await readdir(mainDir)).filter((name) => name.endsWith('.ts')).sort();
+    const sources = await Promise.all(
+      modules.map(async (name) => ({ name, source: await readFile(join(mainDir, name), 'utf8') })),
+    );
 
     // Call sites only — the definition in permission-mode-default.ts is
     // `export async function resolveDefaultPermissionMode(`, excluded by the
     // absence of a preceding `function `.
-    const callSites = combined.match(/(?<!function )resolveDefaultPermissionMode\(/g) ?? [];
-    assert.equal(
-      callSites.length,
-      1, // create-session-input.ts, applied by sessions:create
-      `every permission-mode fallback must route through the one resolver call in create-session-input.ts (found ${callSites.length} call sites, expected exactly one)`,
+    const callSites = sources.flatMap(({ name, source }) =>
+      (source.match(/(?<!function )resolveDefaultPermissionMode\(/g) ?? []).map(() => name),
+    );
+    assert.deepEqual(
+      callSites,
+      ['create-session-input.ts'], // applied by sessions:create
+      `every permission-mode fallback must route through the one resolver call in create-session-input.ts (found: ${callSites.join(', ') || 'none'})`,
     );
 
-    assert.doesNotMatch(
-      combined,
-      /\?\? \(await settingsStore\.get\(\)\)\.chatDefaults\.permissionMode/,
-      'no unguarded inline settings read may remain as a permission-mode fallback',
+    const inlineReads = sources
+      .filter(({ source }) => /\?\? \(await settingsStore\.get\(\)\)\.chatDefaults\.permissionMode/.test(source))
+      .map(({ name }) => name);
+    assert.deepEqual(
+      inlineReads,
+      [],
+      `no unguarded inline settings read may remain as a permission-mode fallback (found in: ${inlineReads.join(', ')})`,
     );
     assert.doesNotMatch(
       await readMainTsSource(),

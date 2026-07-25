@@ -34,6 +34,10 @@ function createActions(
   toasts: ToastCall[],
   onRefreshOnboarding?: () => void,
   setupToasts: SetupToastCall[] = [],
+  // Injectable rather than pinned to `true`: every interrupting branch in this
+  // factory is supposed to check it, and a stub frozen on the happy value
+  // cannot fail on that axis. Pinning it is how a missing gate shipped.
+  isShellSurfaceOwnerActive: () => boolean = () => true,
 ) {
   return createAppShellSessionStartActions({
     uiLocale: 'en',
@@ -43,7 +47,7 @@ function createActions(
       navSection: 'sessions',
     }),
     composerRef: { current: null },
-    isShellSurfaceOwnerActive: () => true,
+    isShellSurfaceOwnerActive,
     openSessionInChat: () => undefined,
     sessionStartPendingRef: { current: false },
     refreshOnboarding: onRefreshOnboarding ?? (() => undefined),
@@ -51,7 +55,6 @@ function createActions(
     showModelSetupToast: (description, reason) => setupToasts.push([description, reason]),
     toastApi: {
       error: (title, description) => toasts.push([title, description]),
-      info: (title, description) => toasts.push([title, description]),
     },
   });
 }
@@ -186,6 +189,50 @@ describe('AppShell quick-entry failure copy', () => {
     // The generic failure toast must stay out of the way: this state has one
     // answer, and it is the actionable one.
     assert.deepEqual(toasts, []);
+  });
+
+  /**
+   * `showModelSetupToast` ends in `openSettingsSection('models')`, so it
+   * navigates. A create that rejects after the user moved on must not pull
+   * them back: they are somewhere else on purpose, and the readiness problem
+   * will still be there when they return.
+   *
+   * The sibling branches have always gated on the owner; the readiness branch
+   * did not, and no test could see that while the stub was pinned to `true`.
+   * Both entry points are covered because both had the same gap.
+   */
+  it('does not interrupt a surface the user has already left', async () => {
+    let refreshed = 0;
+    const restoreWindow = installWindow({
+      sessions: {
+        create: async () =>
+          Promise.reject(new Error('NO_REAL_CONNECTION:missing_api_key: no ready connection')),
+      },
+      expertTeam: { start: async () => ({ ok: false, reason: 'setup_required' }) },
+    });
+    const toasts: ToastCall[] = [];
+    const setupToasts: SetupToastCall[] = [];
+
+    try {
+      const actions = createActions(
+        toasts,
+        () => {
+          refreshed += 1;
+        },
+        setupToasts,
+        () => false,
+      );
+      assert.equal(await actions.startModeSession('deep_research'), false);
+      assert.equal(await actions.handleExpertTeamStart('team'), false);
+    } finally {
+      restoreWindow();
+    }
+
+    assert.deepEqual(setupToasts, [], 'a stale surface must not be navigated away from');
+    assert.deepEqual(toasts, []);
+    // The snapshot refresh is global and silent, so it still runs — it keeps
+    // the first-run hero accurate for whoever looks at it next.
+    assert.equal(refreshed, 2);
   });
 
   /**
