@@ -257,6 +257,7 @@ test('pilot candidate pass against an attested baseline timeout can launch full 
               model: 'deepseek-v4-flash',
               systemPromptHash: hashSystemPrompt(runInput.systemPrompt),
               pricingProfile: 'test-profile',
+              agentTools: false,
             },
             tokenSummary: tokenSummary({
               input: 4,
@@ -408,6 +409,7 @@ function output(input: TaskRunInput, activated: boolean): TaskRunOutput {
         model: 'deepseek-v4-flash',
         systemPromptHash: hashSystemPrompt(input.systemPrompt),
         pricingProfile: 'test-profile',
+        agentTools: false,
       },
       tokenSummary: tokenSummary({ input: 4, output: 6, reasoning: 0, total: 10, costUsd: 0.01 }),
       ...(activated

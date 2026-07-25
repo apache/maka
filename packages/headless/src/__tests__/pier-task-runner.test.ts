@@ -101,6 +101,7 @@ function cellOutput(overrides: Partial<HarborCellOutput> = {}): HarborCellOutput
       systemPromptMode: 'default',
       systemPromptHash: 'sha256:abc',
       pricingProfile: 'fake-structural',
+      agentTools: false,
     },
     toolSummary: {
       providerVisibleToolCount: 0,
@@ -627,6 +628,7 @@ test('pier-graded failed cells stay scored through the fixed-prompt controller',
           systemPromptMode: 'default',
           systemPromptHash: promptHash,
           pricingProfile: 'fake-structural',
+          agentTools: false,
         },
       });
       const runner = createPierTaskRunner(
@@ -682,6 +684,7 @@ test('pier and harbor outputs drive identical controller events for an infra-fai
             systemPromptMode: 'default',
             systemPromptHash: promptHash,
             pricingProfile: 'fake-structural',
+            agentTools: false,
           },
         });
         const pierRunner = createPierTaskRunner(
@@ -775,6 +778,7 @@ test('createPierTaskRunner recovers execution identity from a budget-exhausted t
       systemPromptMode: 'default',
       systemPromptHash: 'sha256:abc',
       pricingProfile: 'fake-structural',
+      agentTools: false,
     };
     const runner = createPierTaskRunner(
       baseOptions({

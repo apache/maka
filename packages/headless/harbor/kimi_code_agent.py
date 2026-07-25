@@ -290,7 +290,7 @@ class MakaKimiCodeAgent(BaseInstalledAgent):
             json.dumps(output, indent=2) + "\n", encoding="utf-8"
         )
 
-    def _execution_identity(self) -> dict[str, str]:
+    def _execution_identity(self) -> dict[str, Any]:
         system_prompt = self._get_env("MAKA_SYSTEM_PROMPT") or ""
         prompt_hash = "sha256:" + hashlib.sha256(
             json.dumps(system_prompt, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -302,6 +302,7 @@ class MakaKimiCodeAgent(BaseInstalledAgent):
             **({"reasoningEffort": effort} if effort else {}),
             "systemPromptHash": prompt_hash,
             "pricingProfile": self._get_env("MAKA_TRIAL_PRICING_SOURCE") or "unconfigured",
+            "agentTools": False,
         }
 
     def _write_execution_identity(self) -> None:

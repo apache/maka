@@ -121,6 +121,39 @@ describe('fixed prompt controller', () => {
     });
   });
 
+  test('rejects an execution identity missing the Agent tool policy', async () => {
+    await withDir(async (dir) => {
+      const systemPromptPath = join(dir, 'system_prompt.md');
+      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+      const output = harborOutput({
+        taskId: 'task-a',
+        legacyExecutionIdentity: true,
+        executionIdentity: {
+          llmConnectionSlug: 'fake',
+          model: 'fake-model',
+          systemPromptHash: hashSystemPrompt('fixed prompt\n'),
+          pricingProfile: 'test-profile',
+        },
+      });
+
+      const result = await runFixedPromptController({
+        runId: 'run-1',
+        roundId: 'round-1',
+        config,
+        systemPromptPath,
+        resultsJsonlPath: join(dir, 'results.jsonl'),
+        resultsTsvPath: join(dir, 'results.tsv'),
+        tasks: [{ id: 'task-a', path: '/bench/task-a' }],
+        requireExecutionIdentity: true,
+        expectedPricingProfile: 'test-profile',
+        taskRunner: async () => output,
+      });
+
+      assert.equal(result.events[0]?.type, 'task_plumbing_failed');
+      assert.equal(result.events[0]?.errorClass, 'execution_identity_mismatch');
+    });
+  });
+
   test('resumes from completed task events in the WAL', async () => {
     await withDir(async (dir) => {
       const systemPromptPath = join(dir, 'system_prompt.md');
@@ -1092,6 +1125,7 @@ describe('fixed prompt controller', () => {
         model: 'fake-model',
         systemPromptHash: hashSystemPrompt('fixed prompt\n'),
         pricingProfile: 'test-profile',
+        agentTools: false,
       };
       const result = await runFixedPromptController({
         runId: 'run-1',
@@ -2811,6 +2845,7 @@ function harborOutput(input: {
   errorClass?: string;
   status?: TaskRunOutput['cell']['status'];
   executionIdentity?: TaskRunOutput['cell']['executionIdentity'];
+  legacyExecutionIdentity?: boolean;
   deadlineSettlement?: TaskRunOutput['cell']['deadlineSettlement'];
   verifier?: TaskRunOutput['harbor']['verifier'];
   providerTelemetryPath?: string;
@@ -2828,7 +2863,13 @@ function harborOutput(input: {
       ...(input.omitPromptHash
         ? {}
         : { promptHash: input.promptHash ?? hashSystemPrompt('fixed prompt\n') }),
-      ...(input.executionIdentity ? { executionIdentity: input.executionIdentity } : {}),
+      ...(input.executionIdentity
+        ? {
+            executionIdentity: input.legacyExecutionIdentity
+              ? input.executionIdentity
+              : { agentTools: false, ...input.executionIdentity },
+          }
+        : {}),
       ...(input.deadlineSettlement ? { deadlineSettlement: input.deadlineSettlement } : {}),
       ...(input.omitTokenSummary
         ? {}

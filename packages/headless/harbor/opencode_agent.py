@@ -367,7 +367,7 @@ class MakaOpenCodeAgent(OpenCode):
             json.dumps(output, indent=2) + "\n", encoding="utf-8"
         )
 
-    def _execution_identity(self) -> dict[str, str]:
+    def _execution_identity(self) -> dict[str, Any]:
         provider, model = self.model_name.split("/", 1)
         system_prompt = self._get_env("MAKA_SYSTEM_PROMPT") or ""
         prompt_hash = "sha256:" + hashlib.sha256(
@@ -381,6 +381,7 @@ class MakaOpenCodeAgent(OpenCode):
             **({"reasoningEffort": reasoning_effort} if reasoning_effort else {}),
             "systemPromptHash": prompt_hash,
             "pricingProfile": pricing_profile,
+            "agentTools": False,
         }
 
     def _write_execution_identity(self) -> None:
