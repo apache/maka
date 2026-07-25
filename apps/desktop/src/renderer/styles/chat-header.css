@@ -23,6 +23,7 @@
   padding: 0 var(--space-2-5);
   background: transparent;
   border-bottom: 0;
+  transition: margin-left var(--duration-large) var(--ease-drawer);
   -webkit-app-region: drag;
 }
 

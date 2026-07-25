@@ -36,6 +36,7 @@
 .maka-shell-2col {
   --maka-sidebar-topbar-button-size: var(--h-control-sm);
   --maka-sidebar-topbar-gap: 8px;
+  --maka-sidebar-exit-offset: calc(var(--space-2) * -1);
   /* Alignment governance, PIXEL-MEASURED (screencapture + centroid): the
      macOS traffic lights draw ~13.5pt tall with their optical center at
      y=20.75 — NOT the theoretical 20 (position 14 + 12/2). Icon glyphs
@@ -52,13 +53,10 @@
   );
   position: relative;
   display: grid;
-  grid-template-columns:
-    var(--maka-session-list-width, var(--w-sessionlist))
-    var(--maka-resize-handle-width, 0px)
-    minmax(0, 1fr);
   align-items: stretch;
   gap: 0;
   overflow: hidden;
+  transition: grid-template-columns var(--duration-large) var(--ease-drawer);
   /* PR-CHAT-CHROME-FIX-0 (WAWQAQ msg `1e693dee` + `486b5611`):
      the shell used to carry a 172deg gradient from `--foreground-3`
      to `--background`. The session sidebar is transparent and
@@ -68,6 +66,20 @@
      detail panel. Keep the shell flat neutral; no gradient or
      divider line. */
   background: var(--surface-canvas);
+}
+
+.app.maka-shell-2col {
+  grid-template-columns:
+    var(--maka-session-list-expanded-width)
+    var(--maka-resize-handle-width, 0px)
+    minmax(0, 1fr);
+}
+
+.app.maka-shell-2col[data-sidebar-state="collapsed"] {
+  grid-template-columns:
+    0px
+    var(--maka-resize-handle-width, 0px)
+    minmax(0, 1fr);
 }
 
 .maka-panel {
@@ -86,6 +98,15 @@
 .maka-panel-list.maka-floating-panel {
   border-right: 0;
   background: transparent;
+  opacity: 1;
+  transform: translateX(0);
+  transition:
+    opacity var(--duration-quick) var(--ease-out-strong),
+    transform var(--duration-large) var(--ease-drawer);
+}
+
+.maka-shell-2col .maka-panel-list > .maka-session-panel {
+  width: var(--maka-session-list-expanded-width);
 }
 
 .maka-panel-detail.maka-floating-panel {
@@ -118,6 +139,8 @@
 
 .maka-shell-2col[data-sidebar-state="collapsed"] .maka-panel-list.maka-floating-panel {
   border-right: 0;
+  opacity: 0;
+  transform: translateX(var(--maka-sidebar-exit-offset));
 }
 
 .maka-shell-topbar-rail {
@@ -189,6 +212,10 @@
 .isResizingColumns {
   cursor: col-resize;
   user-select: none;
+}
+
+.isResizingColumns .maka-shell-2col {
+  transition: none;
 }
 
 .mainColumn {

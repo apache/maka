@@ -144,10 +144,10 @@ const baseComposerProps: ComposerProps = {
 	  },
 };
 
-function ShellFrame(props: { children: ReactNode }) {
+function ShellFrame(props: { children: ReactNode; motionEnabled?: boolean }) {
   return (
     <div
-      data-maka-e2e-fixture="true"
+      data-maka-e2e-fixture={props.motionEnabled ? undefined : 'true'}
       style={{ background: 'var(--surface-canvas)', height: '100%', minHeight: 640 }}
     >
       {props.children}
@@ -177,10 +177,11 @@ function ComposedShell(props: {
   chat?: Partial<ChatViewProps>;
   composer?: Partial<ComposerProps>;
   detailChildren?: ReactNode;
+  motionEnabled?: boolean;
 }) {
   const [collapsed, setCollapsed] = useState(props.sidebarCollapsed ?? false);
   const [viewMode, setViewMode] = useState<SessionViewMode>('conversation');
-  const sidebarWidth = collapsed ? 0 : 260;
+  const sidebarWidth = 260;
   const sessions = sidebarSessions.map((s) =>
     s.id === activeSession.id && (props.session?.status || props.session?.blockedReason)
       ? { ...s, status: props.session.status ?? s.status, blockedReason: props.session.blockedReason ?? s.blockedReason }
@@ -195,12 +196,12 @@ function ComposedShell(props: {
   ];
 
   return (
-    <ShellFrame>
+    <ShellFrame motionEnabled={props.motionEnabled}>
       <div
         className="app maka-shell-2col agents-layout-body"
         data-sidebar-state={collapsed ? 'collapsed' : 'expanded'}
         style={{
-          ['--maka-session-list-width' as string]: `${sidebarWidth}px`,
+          ['--maka-session-list-expanded-width' as string]: `${sidebarWidth}px`,
           ['--maka-resize-handle-width' as string]: '0px',
           height: '100%',
         }}
@@ -217,23 +218,25 @@ function ComposedShell(props: {
             column. When collapsed, keep the sidebar mounted (production
             hides it via the data-sidebar-state CSS) so auto-placement
             stays aligned. */}
-        <div className="maka-panel maka-panel-list maka-floating-panel">
-          {!collapsed && (
-            <SessionListPanel
-              selection={{ section: 'sessions', filter: 'chats' }}
-              sessions={sessions}
-              activeId={active.id}
-              groups={viewMode === 'project' ? projectGroups : undefined}
-              streamingSessionIds={streamingIds}
-              viewMode={viewMode}
-              onViewModeChange={setViewMode}
-              onSelect={noop}
-              onSelectSession={noop}
-              onOpenSettings={noop}
-              onNew={noop}
-              rowActions={sidebarRowActions}
-            />
-          )}
+        <div
+          className="maka-panel maka-panel-list maka-floating-panel"
+          aria-hidden={collapsed ? 'true' : undefined}
+          inert={collapsed ? true : undefined}
+        >
+          <SessionListPanel
+            selection={{ section: 'sessions', filter: 'chats' }}
+            sessions={sessions}
+            activeId={active.id}
+            groups={viewMode === 'project' ? projectGroups : undefined}
+            streamingSessionIds={streamingIds}
+            viewMode={viewMode}
+            onViewModeChange={setViewMode}
+            onSelect={noop}
+            onSelectSession={noop}
+            onOpenSettings={noop}
+            onNew={noop}
+            rowActions={sidebarRowActions}
+          />
         </div>
         <div className="maka-resize-handle" aria-hidden="true" />
         <div
@@ -280,6 +283,13 @@ export const DefaultLayout: Story = {
 // (topbar toggle).
 export const CollapsedSidebar: Story = {
   render: () => <ComposedShell sidebarCollapsed />,
+};
+
+// Interaction-only companion to the deterministic expanded/collapsed stories.
+// Keeps real transition durations so reviewers can exercise the structural
+// drawer motion without weakening screenshot stability elsewhere.
+export const SidebarMotion: Story = {
+  render: () => <ComposedShell motionEnabled />,
 };
 
 // Real path: send a message → the turn is streaming (composer shows the

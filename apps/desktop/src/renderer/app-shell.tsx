@@ -75,7 +75,6 @@ import { readNavigationState, selectNavigation } from './nav-selection';
 import { sessionMatchesNavSelection } from './session-nav-filter';
 import { deriveSessionRevisionNavigation } from './session-revisions';
 import {
-  SESSION_LIST_COLLAPSED_WIDTH,
   SESSION_LIST_EXPANDED_MAX_WIDTH,
   SESSION_LIST_EXPANDED_MIN_WIDTH,
 } from './session-list-layout';
@@ -1603,8 +1602,8 @@ function AppShellContent({
         data-sidebar-state={sessionListCollapsed ? 'collapsed' : 'expanded'}
         style={
           {
-          '--maka-session-list-width': `${sessionListCollapsed ? SESSION_LIST_COLLAPSED_WIDTH : sessionListWidth}px`,
-          '--maka-resize-handle-width': '0px',
+            '--maka-session-list-expanded-width': `${sessionListWidth}px`,
+            '--maka-resize-handle-width': '0px',
           } as CSSProperties
         }
       >
@@ -1640,7 +1639,6 @@ function AppShellContent({
             onOpenSettings={openSettings}
             onNew={createSession}
             rowActions={sessionRowActions}
-            sidebarCollapsed={sessionListCollapsed}
           />
         </div>
         <div
