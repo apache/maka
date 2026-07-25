@@ -3,6 +3,16 @@ import { expect, fn, userEvent, within } from 'storybook/test';
 import type { PermissionRequestEvent, PermissionResponse, ToolCategory } from '@maka/core';
 import { PermissionPrompt } from '../src/permission-dialog.js';
 
+// FIDELITY CONVENTION (#1433) — every story in this file must map to an app
+// state a real user can reach, with that path noted above the story. Stories
+// are treated as ground truth for what the product looks like, so one that
+// composes an unreachable state makes every visual comparison built on it
+// wrong. If the app changes and a story no longer matches a reachable state,
+// fix the story or delete it — do not keep both "the app" and "the story
+// version" of a surface alive. Where a story deliberately puts several states
+// side by side for review, say so: the arrangement is a scaffold, each panel
+// is the reachable state.
+
 const meta = {
   title: 'Product/Permission Prompt',
   parameters: {
@@ -91,6 +101,9 @@ function WriteStdinPrompt(props: {
   );
 }
 
+// Real path: chat → the agent runs Bash with a destructive command → the prompt takes
+// over the composer slot (chat-composer-region.tsx). This one also carries a hint, which
+// only some requests have.
 export const ShellDangerous: Story = {
   render: () => (
     <ComposerSlotBackdrop>
@@ -110,12 +123,16 @@ export const ShellDangerous: Story = {
   ),
 };
 
+// Real path: chat → the agent writes to a running PTY's stdin → the prompt renders
+// collapsed, with the raw bytes behind 查看输入 because stdin can carry secrets.
 export const WriteStdin: Story = {
   render: () => <WriteStdinPrompt onRespond={noop} />,
 };
 
 const writeStdinRespond = fn();
 
+// Real path: same as WriteStdin; the play function drives the user's own clicks — expand
+// 查看输入, then 允许操作.
 export const WriteStdinInteraction: Story = {
   render: () => <WriteStdinPrompt onRespond={writeStdinRespond} />,
   play: async ({ canvasElement }) => {
@@ -149,6 +166,8 @@ export const WriteStdinInteraction: Story = {
 
 const fileWriteSentinel = 'FILE_WRITE_PRIVATE_SENTINEL';
 
+// Real path: chat → the agent calls Write on a repo file → the prompt collapses the file
+// body behind 查看内容.
 export const FileWrite: Story = {
   render: () => (
     <ComposerSlotBackdrop>
@@ -178,6 +197,8 @@ export const FileWrite: Story = {
   },
 };
 
+// Real path: chat → the agent calls Edit with a short replacement → the diff fits
+// inline, no disclosure needed.
 export const FileEdit: Story = {
   render: () => (
     <ComposerSlotBackdrop>
@@ -200,6 +221,8 @@ export const FileEdit: Story = {
   ),
 };
 
+// Real path: same as FileEdit but with a long replacement, then the user clicks 查看变更 —
+// the expanded branch of the same prompt.
 export const FileEditExpanded: Story = {
   render: () => (
     <ComposerSlotBackdrop>
@@ -228,6 +251,8 @@ export const FileEditExpanded: Story = {
   },
 };
 
+// Real path: chat → the agent runs a filesystem-destructive shell command (git clean
+// -fdx) → the fs_destructive category of the same prompt.
 export const FsDestructive: Story = {
   render: () => (
     <ComposerSlotBackdrop>
@@ -247,6 +272,8 @@ export const FsDestructive: Story = {
   ),
 };
 
+// Real path: chat → the agent runs a history-rewriting git command (push --force) → the
+// git_destructive category.
 export const GitDestructive: Story = {
   render: () => (
     <ComposerSlotBackdrop>
@@ -265,6 +292,8 @@ export const GitDestructive: Story = {
   ),
 };
 
+// Real path: chat → the agent calls WebFetch → the network category, with the URL as the
+// reviewable argument.
 export const Network: Story = {
   render: () => (
     <ComposerSlotBackdrop>
@@ -283,6 +312,7 @@ export const Network: Story = {
   ),
 };
 
+// Real path: chat → the agent runs a sudo command → the privileged category.
 export const Privileged: Story = {
   render: () => (
     <ComposerSlotBackdrop>
@@ -301,6 +331,7 @@ export const Privileged: Story = {
   ),
 };
 
+// Real path: chat → the agent drives the browser tool → the browser category.
 export const Browser: Story = {
   render: () => (
     <ComposerSlotBackdrop>
@@ -319,6 +350,9 @@ export const Browser: Story = {
   ),
 };
 
+// Real path: chat → the agent takes a screen action through maka_computer → the
+// computer_use category, which shows the action and its target window instead of a
+// command.
 export const ComputerUse: Story = {
   render: () => (
     <ComposerSlotBackdrop>
@@ -343,6 +377,8 @@ export const ComputerUse: Story = {
   ),
 };
 
+// Real path: chat → the agent edits an Office document → file_write with a structured
+// operation rather than a text diff.
 export const OfficeDocumentEdit: Story = {
   render: () => (
     <ComposerSlotBackdrop>
@@ -368,6 +404,8 @@ export const OfficeDocumentEdit: Story = {
   ),
 };
 
+// Real path: an unanswered prompt that has been sitting for a few minutes — the user
+// came back to the session after stepping away.
 export const StaleRequest: Story = {
   render: () => (
     <ComposerSlotBackdrop>
@@ -387,6 +425,8 @@ export const StaleRequest: Story = {
   ),
 };
 
+// Real path: the same prompt left past its expiry; the agent has already given up, so
+// the buttons no longer act.
 export const ExpiredRequest: Story = {
   render: () => (
     <ComposerSlotBackdrop>
@@ -406,6 +446,8 @@ export const ExpiredRequest: Story = {
   ),
 };
 
+// Real path: chat → a tool that declares its own permission reason (here MemoryWrite) →
+// the fallback rendering for reasons the UI has no bespoke copy for.
 export const CustomReason: Story = {
   render: () => (
     <ComposerSlotBackdrop>
@@ -428,6 +470,8 @@ async function wait(ms: number) {
   await new Promise((resolve) => globalThis.setTimeout(resolve, ms));
 }
 
+// Real path: the user clicks 允许 and the main process has not answered yet — the
+// in-flight state between click and resolution.
 export const SubmitPending: Story = {
   render: () => (
     <ComposerSlotBackdrop>

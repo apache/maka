@@ -2,6 +2,16 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { CapabilityAuditReport } from '@maka/core';
 import { CapabilityAuditStrip } from '../src/capability-audit-strip.js';
 
+// FIDELITY CONVENTION (#1433) — every story in this file must map to an app
+// state a real user can reach, with that path noted above the story. Stories
+// are treated as ground truth for what the product looks like, so one that
+// composes an unreachable state makes every visual comparison built on it
+// wrong. If the app changes and a story no longer matches a reachable state,
+// fix the story or delete it — do not keep both "the app" and "the story
+// version" of a surface alive. Where a story deliberately puts several states
+// side by side for review, say so: the arrangement is a scaffold, each panel
+// is the reachable state.
+
 const meta = {
   title: 'Product/Capability Audit Strip',
   parameters: {
@@ -58,6 +68,8 @@ function StripFrame(props: { children: React.ReactNode }) {
   );
 }
 
+// Real path: sidebar → 扩展 → 技能 — the strip sits above the skills list (skills-panel.tsx)
+// and summarizes what is installed and enabled.
 export const SkillsFocusHealthy: Story = {
   render: () => (
     <StripFrame>
@@ -75,6 +87,8 @@ export const SkillsFocusHealthy: Story = {
   ),
 };
 
+// Real path: sidebar → 定时任务 → 计划提醒 — the same strip above the reminder list
+// (plan-reminder-panel.tsx), so its numbers describe automations instead.
 export const AutomationsFocusHealthy: Story = {
   render: () => (
     <StripFrame>
@@ -91,6 +105,9 @@ export const AutomationsFocusHealthy: Story = {
   ),
 };
 
+// Real path: either of those two pages once something needs attention — a managed skill
+// source needing auth or erroring, or an automation whose last run failed or was
+// skipped.
 export const WithRisks: Story = {
   render: () => (
     <StripFrame>
@@ -115,6 +132,8 @@ export const WithRisks: Story = {
   ),
 };
 
+// Real path: either page on a fresh install, with nothing installed and nothing
+// scheduled.
 export const Empty: Story = {
   render: () => (
     <StripFrame>

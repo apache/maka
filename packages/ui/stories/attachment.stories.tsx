@@ -22,6 +22,16 @@ const mockReadBytes = async (_sessionId: string, relativePath: string) => ({
   mimeType: 'image/png',
 });
 
+// FIDELITY CONVENTION (#1433) — every story in this file must map to an app
+// state a real user can reach, with that path noted above the story. Stories
+// are treated as ground truth for what the product looks like, so one that
+// composes an unreachable state makes every visual comparison built on it
+// wrong. If the app changes and a story no longer matches a reachable state,
+// fix the story or delete it — do not keep both "the app" and "the story
+// version" of a surface alive. Where a story deliberately puts several states
+// side by side for review, say so: the arrangement is a scaffold, each panel
+// is the reachable state.
+
 const meta = {
   title: 'Product/Attachments',
   parameters: { layout: 'fullscreen' },
@@ -123,6 +133,7 @@ function Frame({ children }: { children: React.ReactNode }) {
   );
 }
 
+// Real path: composer → ＋ → attach files → the pending chips before the message is sent.
 export const ComposerPendingChips: Story = {
   render: () => (
     <Frame>
@@ -143,6 +154,8 @@ export const ComposerPendingChips: Story = {
   ),
 };
 
+// Real path: send a message with attachments → the chips as they render inside the sent
+// turn.
 export const ChatAttachmentChips: Story = {
   render: () => (
     <Frame>
@@ -154,6 +167,7 @@ export const ChatAttachmentChips: Story = {
   ),
 };
 
+// Real path: attach images → their thumbnails in the sent turn.
 export const ImageThumbnails: Story = {
   render: () => (
     <Frame>
@@ -165,6 +179,8 @@ export const ImageThumbnails: Story = {
   ),
 };
 
+// Real path: attach a file → the skeleton shown while its bytes are still being
+// ingested.
 export const PendingSkeleton: Story = {
   render: () => (
     <Frame>
@@ -178,6 +194,7 @@ export const PendingSkeleton: Story = {
   ),
 };
 
+// Real path: click an image attachment in a turn → the lightbox.
 export const Lightbox: Story = {
   render: () => (
     <Frame>

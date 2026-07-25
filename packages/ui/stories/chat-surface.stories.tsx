@@ -6,6 +6,16 @@ import type { ChatModelChoice } from '../src/chat-model-helpers.js';
 
 const NOW = Date.UTC(2026, 6, 1, 9, 30, 0);
 
+// FIDELITY CONVENTION (#1433) — every story in this file must map to an app
+// state a real user can reach, with that path noted above the story. Stories
+// are treated as ground truth for what the product looks like, so one that
+// composes an unreachable state makes every visual comparison built on it
+// wrong. If the app changes and a story no longer matches a reachable state,
+// fix the story or delete it — do not keep both "the app" and "the story
+// version" of a surface alive. Where a story deliberately puts several states
+// side by side for review, say so: the arrangement is a scaffold, each panel
+// is the reachable state.
+
 const meta = {
   title: 'Product/Chat Surface',
   parameters: {
@@ -504,6 +514,9 @@ const processingConversation: StoredMessage[] = [
   ),
 ];
 
+// Real path: 新任务 → the chat surface before the first send: no active session, ChatView
+// falls back to its empty hero, the composer picks the model for the session it is about
+// to create.
 export const EmptyChat: Story = {
   render: () => (
     <ChatSurface
@@ -528,6 +541,8 @@ export const EmptyChat: Story = {
   ),
 };
 
+// Real path: send a message → the turn is running and text is streaming in; the composer
+// shows Stop.
 export const StreamingResponse: Story = {
   render: () => (
     <ChatSurface
@@ -551,6 +566,8 @@ export const StreamingResponse: Story = {
   ),
 };
 
+// Real path: send a message the agent answers with tool calls → the tool rows render
+// inline in the turn.
 export const WithToolActivity: Story = {
   render: () => (
     <ChatSurface
@@ -561,6 +578,8 @@ export const WithToolActivity: Story = {
   ),
 };
 
+// Real path: a turn where the agent thinks, answers, and calls tools more than once →
+// each step keeps its own thinking/text/tool order.
 export const MultiStepReasoning: Story = {
   render: () => (
     <ChatSurface
@@ -571,6 +590,8 @@ export const MultiStepReasoning: Story = {
   ),
 };
 
+// Real path: a turn whose reasoning and tool calls sit between two answer texts → they
+// fold into one collapsed Processing block (#1307).
 export const Processing: Story = {
   render: () => (
     <ChatSurface
@@ -581,6 +602,8 @@ export const Processing: Story = {
   ),
 };
 
+// Real path: hover a turn → 从这里分支 → the new session opens with the parent banner above
+// the transcript.
 export const BranchedConversation: Story = {
   render: () => (
     <ChatSurface
@@ -610,6 +633,9 @@ export const BranchedConversation: Story = {
   ),
 };
 
+// Real path: two composer states, side by side as a review scaffold: left = Stop pressed
+// while streaming (stop pending); right = the agent is waiting on a permission answer,
+// so the composer is disabled and the permission select explains why.
 export const ComposerPendingAndDisabled: Story = {
   render: () => (
     <ComposerTray>
@@ -633,6 +659,8 @@ export const ComposerPendingAndDisabled: Story = {
   ),
 };
 
+// Real path: 新任务 → ＋ in the composer → the add-context menu, which is where attachment
+// and file import start.
 export const ImportActions: Story = {
   render: () => (
     <ChatSurface
@@ -662,6 +690,8 @@ export const ImportActions: Story = {
   },
 };
 
+// Real path: any session whose turns are long enough to exercise prose wrapping, with
+// local memory enabled so the memory pill shows.
 export const LongMessages: Story = {
   render: () => (
     <ChatSurface
@@ -677,6 +707,8 @@ export const LongMessages: Story = {
   ),
 };
 
+// Real path: the same session with the window narrowed (or the workbar open), which is
+// what drives the narrow chat layout.
 export const NarrowViewport: Story = {
   render: () => (
     <ChatSurface

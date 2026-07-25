@@ -31,6 +31,16 @@ import { withScopedMakaBridge } from '../maka-bridge';
 
 const STORY_PLATFORM = 'darwin' as const;
 
+// FIDELITY CONVENTION (#1433) — every story in this file must map to an app
+// state a real user can reach, with that path noted above the story. Stories
+// are treated as ground truth for what the product looks like, so one that
+// composes an unreachable state makes every visual comparison built on it
+// wrong. If the app changes and a story no longer matches a reachable state,
+// fix the story or delete it — do not keep both "the app" and "the story
+// version" of a surface alive. Where a story deliberately puts several states
+// side by side for review, say so: the arrangement is a scaffold, each panel
+// is the reachable state.
+
 const meta = {
   title: 'Product/Settings/Pages',
   parameters: {
@@ -673,34 +683,42 @@ async function openFirstActiveBotChannel(canvasElement: HTMLElement) {
   );
 }
 
+// Real path: sidebar footer 设置 → 模型.
 export const Models: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="models" />,
 };
+// Real path: 设置 → 通用.
 export const General: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="general" />,
 };
+// Real path: 设置 → 外观.
 export const Appearance: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="appearance" />,
 };
+// Real path: 设置 → 使用统计.
 export const Usage: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="usage" />,
 };
+// Real path: 设置 → 记忆.
 export const Memory: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="memory" />,
 };
+// Real path: 设置 → 联网搜索.
 export const WebSearch: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="search" />,
 };
+// Real path: 设置 → 语音.
 export const Voice: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="voice" />,
 };
+// Real path: 设置 → 语音 → 测试录音, when the microphone is authorized and the pipeline works.
 export const VoiceSuccess: Story = {
   decorators: [withSettingsBridge, withVoiceCaptureOutcome('success')],
   render: () => <SettingsStory section="voice" />,
@@ -708,6 +726,7 @@ export const VoiceSuccess: Story = {
     await runVoiceStoryCapture(canvasElement, '录音链路可用', '已授权');
   },
 };
+// Real path: same test, when macOS has denied microphone access.
 export const VoicePermissionDenied: Story = {
   decorators: [withSettingsBridge, withVoiceCaptureOutcome('denied')],
   render: () => <SettingsStory section="voice" />,
@@ -715,18 +734,23 @@ export const VoicePermissionDenied: Story = {
     await runVoiceStoryCapture(canvasElement, '麦克风权限被拒绝', '已拒绝');
   },
 };
+// Real path: 设置 → 开放网关.
 export const OpenGateway: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="open-gateway" />,
 };
+// Real path: 设置 → 远程接入.
 export const BotChat: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="bot-chat" />,
 };
+// Real path: same page when a bound channel needs attention — e.g. a WeChat session that
+// has to be re-scanned.
 export const BotChatNeedsAttention: Story = {
   decorators: [withBotAttentionBridge],
   render: () => <SettingsStory section="bot-chat" />,
 };
+// Real path: 设置 → 远程接入 → click that channel → its detail panel.
 export const BotChatNeedsAttentionDetail: Story = {
   decorators: [withBotAttentionBridge],
   render: () => <SettingsStory section="bot-chat" />,
@@ -734,14 +758,17 @@ export const BotChatNeedsAttentionDetail: Story = {
     await openFirstActiveBotChannel(canvasElement);
   },
 };
+// Real path: 设置 → 每日回顾.
 export const DailyReview: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="daily-review" />,
 };
+// Real path: 设置 → 数据.
 export const Data: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="data" />,
 };
+// Real path: 设置 → 权限与能力, with diagnostics collapsed — the state the page opens in.
 export const PermissionCenter: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="permissions" />,
@@ -752,6 +779,8 @@ export const PermissionCenter: Story = {
  * collapsed story gives those layouts no baseline at all — which is exactly
  * where the remaining overflow was hiding.
  */
+// Real path: same page after clicking 展开详情 — the capability grid, the guidance block and
+// the OfficeCLI install command only exist in this branch.
 export const PermissionCenterDiagnosticsExpanded: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="permissions" />,
@@ -770,14 +799,18 @@ export const PermissionCenterDiagnosticsExpanded: Story = {
     );
   },
 };
+// Real path: 设置 → 健康 (also reachable from the topbar health action), with probes
+// reporting.
 export const HealthCenter: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="health" />,
 };
+// Real path: same page with nothing to report yet.
 export const HealthCenterEmpty: Story = {
   decorators: [withEmptyHealthBridge],
   render: () => <SettingsStory section="health" />,
 };
+// Real path: 设置 → 关于 (also reachable from 反馈 in the topbar).
 export const About: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="about" />,

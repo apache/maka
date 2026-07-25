@@ -11,6 +11,16 @@ import { ProvidersPanel, type ConnectionsBridge } from '../../src/renderer/setti
 
 const NOW = Date.parse('2026-07-01T08:00:00Z');
 
+// FIDELITY CONVENTION (#1433) — every story in this file must map to an app
+// state a real user can reach, with that path noted above the story. Stories
+// are treated as ground truth for what the product looks like, so one that
+// composes an unreachable state makes every visual comparison built on it
+// wrong. If the app changes and a story no longer matches a reachable state,
+// fix the story or delete it — do not keep both "the app" and "the story
+// version" of a surface alive. Where a story deliberately puts several states
+// side by side for review, say so: the arrangement is a scaffold, each panel
+// is the reachable state.
+
 const meta = {
   title: 'Product/Settings/Providers',
   parameters: {
@@ -325,26 +335,33 @@ function ProviderStory(props: {
   return <ProviderStoryFrame bridge={props.bridge} autoOpen={props.autoOpen} />;
 }
 
+// Real path: 设置 → 模型, while the connection list is still loading.
 export const Loading: Story = {
   render: () => <ProviderStory bridge={createBridge({ loading: true })} />,
 };
 
+// Real path: same page when the connection list fails to load.
 export const LoadError: Story = {
   render: () => <ProviderStory bridge={createBridge({ failLoad: true })} />,
 };
 
+// Real path: same page on a fresh install, with no connection configured yet.
 export const Empty: Story = {
   render: () => <ProviderStory bridge={createBridge({ connections: [], defaultSlug: null })} />,
 };
 
+// Real path: same page with several healthy connections and one of them set as default.
 export const ConfiguredProviders: Story = {
   render: () => <ProviderStory bridge={createBridge({ connections: configuredConnections, defaultSlug: 'zai-live' })} />,
 };
 
+// Real path: same page when connections need attention — missing credentials, a failed
+// probe, or an expired OAuth session.
 export const ProblemConnections: Story = {
   render: () => <ProviderStory bridge={createBridge({ connections: problemConnections, defaultSlug: 'zai-live' })} />,
 };
 
+// Real path: 设置 → 模型 → click a connection → its detail panel.
 export const SelectedDetail: Story = {
   render: () => (
     <ProviderStory
@@ -354,6 +371,7 @@ export const SelectedDetail: Story = {
   ),
 };
 
+// Real path: 设置 → 模型 → 添加 → the provider catalog and the add form.
 export const AddProvider: Story = {
   render: () => (
     <ProviderStory
@@ -363,6 +381,8 @@ export const AddProvider: Story = {
   ),
 };
 
+// Real path: 设置 → 模型 → the OAuth subscription cards, shown here in their needs-attention
+// state.
 export const OAuthCards: Story = {
   render: () => (
     <ProviderStory

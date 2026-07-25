@@ -4,6 +4,16 @@ import type { ProviderType, ThinkingLevel } from '@maka/core';
 import { NewChatModelPicker } from '../src/chat-model-switcher.js';
 import { modelChoiceValue, type ChatModelChoice } from '../src/chat-model-helpers.js';
 
+// FIDELITY CONVENTION (#1433) — every story in this file must map to an app
+// state a real user can reach, with that path noted above the story. Stories
+// are treated as ground truth for what the product looks like, so one that
+// composes an unreachable state makes every visual comparison built on it
+// wrong. If the app changes and a story no longer matches a reachable state,
+// fix the story or delete it — do not keep both "the app" and "the story
+// version" of a surface alive. Where a story deliberately puts several states
+// side by side for review, say so: the arrangement is a scaffold, each panel
+// is the reachable state.
+
 const meta = {
   title: 'Product/Model Picker',
   parameters: {
@@ -71,6 +81,9 @@ function ModelPickerFrame() {
   );
 }
 
+// Real path: chat → the model button in the composer footer (chat-model-switcher.tsx),
+// also reachable from 设置 → 通用 as the default-model field. Search and the 思考级别 submenu
+// are driven from inside the story.
 export const Default: Story = {
   render: () => <ModelPickerFrame />,
 };

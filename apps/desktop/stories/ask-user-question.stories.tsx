@@ -5,6 +5,16 @@ import { expect, userEvent, within } from 'storybook/test';
 
 import './ask-user-question.css';
 
+// FIDELITY CONVENTION (#1433) — every story in this file must map to an app
+// state a real user can reach, with that path noted above the story. Stories
+// are treated as ground truth for what the product looks like, so one that
+// composes an unreachable state makes every visual comparison built on it
+// wrong. If the app changes and a story no longer matches a reachable state,
+// fix the story or delete it — do not keep both "the app" and "the story
+// version" of a surface alive. Where a story deliberately puts several states
+// side by side for review, say so: the arrangement is a scaffold, each panel
+// is the reachable state.
+
 const meta = {
   title: 'Product/Ask User Question',
   parameters: {
@@ -56,6 +66,10 @@ function PreviewColumn(props: {
   );
 }
 
+// Real path: chat → the agent calls AskUserQuestion → the prompt takes over the composer
+// slot, below the turn that asked. The two columns are a review scaffold, not one
+// screen: each is the same reachable prompt at a different chat-column width (default
+// vs. a narrow window or an open artifact pane).
 export const StandardAndNarrow: Story = {
   render: () => (
     <main className="maka-question-review-board">
@@ -65,6 +79,8 @@ export const StandardAndNarrow: Story = {
   ),
 };
 
+// Real path: same prompt, after the user picks 其他 and types a free-text answer — driven
+// here by the play function.
 export const OtherAnswerSelected: Story = {
   render: () => (
     <main className="maka-question-review-board">

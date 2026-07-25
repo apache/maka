@@ -2,6 +2,16 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { Markdown, MakaUriContext } from '../src/markdown.js';
 import { Bubble } from '../src/primitives/chat.js';
 
+// FIDELITY CONVENTION (#1433) — every story in this file must map to an app
+// state a real user can reach, with that path noted above the story. Stories
+// are treated as ground truth for what the product looks like, so one that
+// composes an unreachable state makes every visual comparison built on it
+// wrong. If the app changes and a story no longer matches a reachable state,
+// fix the story or delete it — do not keep both "the app" and "the story
+// version" of a surface alive. Where a story deliberately puts several states
+// side by side for review, say so: the arrangement is a scaffold, each panel
+// is the reachable state.
+
 const meta = {
   title: 'Product/Markdown',
   parameters: {
@@ -66,6 +76,8 @@ const jsonBlock = code('json', [
 
 const plainBlock = code('', 'plain or unknown\nindented sample');
 
+// Real path: chat → an assistant answer that mixes headings, emphasis, a list, a quote
+// and a table — the ordinary shape of a long reply.
 export const RichAssistantAnswer: Story = {
   render: () => (
     <ProseFrame>
@@ -99,6 +111,8 @@ export const RichAssistantAnswer: Story = {
   ),
 };
 
+// Real path: chat → an assistant answer containing fenced code in several languages,
+// plus one unlabelled block.
 export const CodeBlockVariety: Story = {
   render: () => (
     <ProseFrame>
@@ -123,6 +137,7 @@ export const CodeBlockVariety: Story = {
   ),
 };
 
+// Real path: chat → an assistant answer built mostly from nested lists and block quotes.
 export const ListsAndQuote: Story = {
   render: () => (
     <ProseFrame>
@@ -149,6 +164,9 @@ export const ListsAndQuote: Story = {
   ),
 };
 
+// Real path: chat → an assistant answer containing links. Only ChatView installs
+// MakaUriContext (app-shell.tsx), so this is where maka:// links navigate and unsafe
+// ones render as 链接无效.
 export const LinkRouting: Story = {
   render: () => (
     <ProseFrame>
@@ -181,6 +199,8 @@ export const LinkRouting: Story = {
 // Tables shrink-wrap to content and only scroll when wider than the prose
 // measure — this story pins the over-wide branch (frameless horizontal
 // scroller) next to the narrow tables in the stories above.
+// Real path: chat → an assistant answer whose table is wider than the prose measure, so
+// it becomes a horizontal scroller.
 export const WideTable: Story = {
   render: () => (
     <ProseFrame>
@@ -202,6 +222,8 @@ export const WideTable: Story = {
   ),
 };
 
+// Real path: chat → a long assistant answer, pinned at the 680px prose measure to check
+// vertical rhythm across many blocks.
 export const LongFormArticle: Story = {
   render: () => (
     <ProseFrame width={680}>

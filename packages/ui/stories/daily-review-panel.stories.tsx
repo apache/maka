@@ -3,6 +3,16 @@ import type { DailyReviewSummary } from '@maka/core';
 import { DailyReviewPanel } from '../src/daily-review-panel.js';
 import type { DailyReviewBridge } from '../src/module-panel-types.js';
 
+// FIDELITY CONVENTION (#1433) — every story in this file must map to an app
+// state a real user can reach, with that path noted above the story. Stories
+// are treated as ground truth for what the product looks like, so one that
+// composes an unreachable state makes every visual comparison built on it
+// wrong. If the app changes and a story no longer matches a reachable state,
+// fix the story or delete it — do not keep both "the app" and "the story
+// version" of a surface alive. Where a story deliberately puts several states
+// side by side for review, say so: the arrangement is a scaffold, each panel
+// is the reachable state.
+
 const meta = {
   title: 'Product/Daily Review',
   parameters: {
@@ -77,6 +87,7 @@ function ModuleFrame(props: { children: React.ReactNode }) {
   );
 }
 
+// Real path: sidebar → 定时任务 → 每日回顾, with reviews already generated.
 export const Loaded: Story = {
   render: () => (
     <ModuleFrame>
@@ -85,6 +96,7 @@ export const Loaded: Story = {
   ),
 };
 
+// Real path: same page while the review is still being generated or fetched.
 export const Loading: Story = {
   render: () => (
     <ModuleFrame>
@@ -93,6 +105,7 @@ export const Loading: Story = {
   ),
 };
 
+// Real path: same page when the main-process bridge fails to return the review.
 export const LoadError: Story = {
   render: () => (
     <ModuleFrame>

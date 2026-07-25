@@ -15,6 +15,16 @@ import { CommandPalette } from '../src/renderer/command-palette';
 import type { Command } from '../src/renderer/command-palette-types';
 import type { UseThreadSearchDeps } from '../src/renderer/use-thread-search';
 
+// FIDELITY CONVENTION (#1433) — every story in this file must map to an app
+// state a real user can reach, with that path noted above the story. Stories
+// are treated as ground truth for what the product looks like, so one that
+// composes an unreachable state makes every visual comparison built on it
+// wrong. If the app changes and a story no longer matches a reachable state,
+// fix the story or delete it — do not keep both "the app" and "the story
+// version" of a surface alive. Where a story deliberately puts several states
+// side by side for review, say so: the arrangement is a scaffold, each panel
+// is the reachable state.
+
 const meta = {
   title: 'Product/Command Search',
   parameters: {
@@ -225,6 +235,7 @@ async function pressPaletteKey(canvasElement: HTMLElement, key: string) {
   await wait(0);
 }
 
+// Real path: ⌘K (or 更多操作 → 打开命令面板) → the palette with commands grouped by kind.
 export const CommandPaletteGroupedResults: Story = {
   render: () => (
     <CommandPaletteFrame
@@ -233,6 +244,7 @@ export const CommandPaletteGroupedResults: Story = {
   ),
 };
 
+// Real path: ⌘K in a context that offers no commands — e.g. before any session exists.
 export const CommandPaletteEmpty: Story = {
   render: () => (
     <CommandPaletteFrame
@@ -241,6 +253,8 @@ export const CommandPaletteEmpty: Story = {
   ),
 };
 
+// Real path: ⌘K when a command is listed but not currently runnable, so it shows as
+// disabled instead of disappearing.
 export const CommandPaletteDisabledCommand: Story = {
   render: () => (
     <CommandPaletteFrame
@@ -249,6 +263,8 @@ export const CommandPaletteDisabledCommand: Story = {
   ),
 };
 
+// Real path: ⌘K then ↓↓ — the keyboard-driven selection ring, which the mouse path never
+// shows.
 export const CommandPaletteKeyboardFocusedSelection: Story = {
   render: () => (
     <CommandPaletteFrame
@@ -261,6 +277,8 @@ export const CommandPaletteKeyboardFocusedSelection: Story = {
   },
 };
 
+// Real path: ⌘K → type a query → the palette also searches conversation content; this is
+// the in-flight state.
 export const CommandPaletteContentSearchLoading: Story = {
   render: () => (
     <CommandPaletteFrame
@@ -273,6 +291,7 @@ export const CommandPaletteContentSearchLoading: Story = {
   },
 };
 
+// Real path: same, once content matches come back and merge below the command groups.
 export const CommandPaletteContentSearchResults: Story = {
   render: () => (
     <CommandPaletteFrame
@@ -285,6 +304,7 @@ export const CommandPaletteContentSearchResults: Story = {
   },
 };
 
+// Real path: same, when the content-search provider fails.
 export const CommandPaletteContentSearchError: Story = {
   render: () => (
     <CommandPaletteFrame
@@ -301,6 +321,8 @@ export const CommandPaletteContentSearchError: Story = {
   },
 };
 
+// Real path: same, with incognito on — Maka refuses to read local history rather than
+// returning nothing.
 export const CommandPaletteContentSearchBlocked: Story = {
   render: () => (
     <CommandPaletteFrame
@@ -317,6 +339,8 @@ export const CommandPaletteContentSearchBlocked: Story = {
   },
 };
 
+// Real path: titlebar 搜索 icon (app-shell-chrome-actions.tsx) → the modal before anything
+// is typed.
 export const SearchModalEmpty: Story = {
   render: () => (
     <SearchModalFrame
@@ -325,6 +349,7 @@ export const SearchModalEmpty: Story = {
   ),
 };
 
+// Real path: same modal → type a query → the in-flight state.
 export const SearchModalLoading: Story = {
   render: () => (
     <SearchModalFrame
@@ -336,6 +361,7 @@ export const SearchModalLoading: Story = {
   },
 };
 
+// Real path: same modal with matches, grouped by session with the matched excerpt.
 export const SearchModalResults: Story = {
   render: () => (
     <SearchModalFrame
@@ -347,6 +373,7 @@ export const SearchModalResults: Story = {
   },
 };
 
+// Real path: same modal with a query that matches nothing.
 export const SearchModalNoResults: Story = {
   render: () => (
     <SearchModalFrame
@@ -358,6 +385,7 @@ export const SearchModalNoResults: Story = {
   },
 };
 
+// Real path: same modal when the search index is unavailable.
 export const SearchModalError: Story = {
   render: () => (
     <SearchModalFrame
@@ -373,6 +401,8 @@ export const SearchModalError: Story = {
   },
 };
 
+// Real path: same modal with incognito on — search is disabled rather than silently
+// empty.
 export const SearchModalBlocked: Story = {
   render: () => (
     <SearchModalFrame

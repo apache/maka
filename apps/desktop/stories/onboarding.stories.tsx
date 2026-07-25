@@ -3,6 +3,16 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { LlmConnection, OnboardingState, ProviderType, SettingsSection } from '@maka/core';
 import { OnboardingHero } from '../src/renderer/OnboardingHero';
 
+// FIDELITY CONVENTION (#1433) — every story in this file must map to an app
+// state a real user can reach, with that path noted above the story. Stories
+// are treated as ground truth for what the product looks like, so one that
+// composes an unreachable state makes every visual comparison built on it
+// wrong. If the app changes and a story no longer matches a reachable state,
+// fix the story or delete it — do not keep both "the app" and "the story
+// version" of a surface alive. Where a story deliberately puts several states
+// side by side for review, say so: the arrangement is a scaffold, each panel
+// is the reachable state.
+
 const meta = {
   title: 'Product/Onboarding',
   parameters: {
@@ -71,6 +81,9 @@ function heroProps(state: OnboardingState) {
   };
 }
 
+// Real path: first launch with no sessions — the hero fills the chat surface's empty
+// area (chat-message-surface.tsx) while onboarding is unfinished, gated in
+// app-shell.tsx. This is the fresh-install state: no model connection exists at all.
 export const NeedsConnection: Story = {
   render: () => (
     <DetailPane>
@@ -79,6 +92,8 @@ export const NeedsConnection: Story = {
   ),
 };
 
+// Real path: same hero, with at least one ready connection but no default picked — e.g.
+// after deleting the connection that used to be the default.
 export const NeedsDefaultConnection: Story = {
   render: () => (
     <DetailPane>
@@ -87,6 +102,8 @@ export const NeedsDefaultConnection: Story = {
   ),
 };
 
+// Real path: same hero, when the default connection exists but its API key is missing or
+// was rejected.
 export const NeedsConnectionCredentials: Story = {
   render: () => (
     <DetailPane>
@@ -97,6 +114,8 @@ export const NeedsConnectionCredentials: Story = {
   ),
 };
 
+// Real path: same hero, when the default connection is usable but no default model has
+// been chosen.
 export const NeedsDefaultModel: Story = {
   render: () => (
     <DetailPane>
@@ -107,6 +126,8 @@ export const NeedsDefaultModel: Story = {
   ),
 };
 
+// Real path: same hero, when connections exist but every one of them fails its health
+// probe — no per-connection fix applies, so the hero offers no single next step.
 export const BlockedAllUnhealthy: Story = {
   render: () => (
     <DetailPane>
