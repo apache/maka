@@ -31,6 +31,7 @@ export const MAIN_PROCESS_SOURCE_REPO_PATHS: readonly string[] = [
   'apps/desktop/src/main/project-context-root.ts',
   'apps/desktop/src/main/project-root-controller.ts',
   'apps/desktop/src/main/session-entry-ipc-main.ts',
+  'apps/desktop/src/main/session-mode-seed.ts',
   'apps/desktop/src/main/session-branch.ts',
   'apps/desktop/src/main/session-revision.ts',
   'apps/desktop/src/main/session-stream.ts',
@@ -70,4 +71,10 @@ export function readMainProcessCombinedSourceSync(): string {
  *  module's own `export async function resolveDefaultPermissionMode`). */
 export async function readMainTsSource(): Promise<string> {
   return readFile(resolve(REPO_ROOT, 'apps/desktop/src/main/main.ts'), 'utf8');
+}
+
+/** Read just apps/desktop/src/main/sessions-ipc-main.ts — the single
+ *  session-creation IPC since #1433 merged `quickChat:start` into it. */
+export async function readSessionsIpcSource(): Promise<string> {
+  return readFile(resolve(REPO_ROOT, 'apps/desktop/src/main/sessions-ipc-main.ts'), 'utf8');
 }

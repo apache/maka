@@ -97,12 +97,6 @@ import type {
   QuickChatMode,
 } from '@maka/core';
 
-// PR110b: shared union used by `quickChat:start`. Renderer pattern-
-// matches on `ok` + `reason` to route to the correct UI surface.
-//
-// @xuan PR110b review: success branch is `{ ok: true; sessionId }`
-// only. No turn / message anchor — PR110c will add `firstTurnId` if
-// needed.
 export interface ExpertTeamMemberSummary {
   id: string;
   name: string;
@@ -121,12 +115,6 @@ export type ExpertTeamStartResult =
   | { ok: false; reason: 'setup_required'; state: OnboardingState }
   | { ok: false; reason: 'workspace_unavailable' }
   | { ok: false; reason: 'send_failed'; message: string };
-
-export type QuickChatResult =
-  | { ok: true; sessionId: string }
-  | { ok: false; reason: 'setup_required'; state: OnboardingState }
-  | { ok: false; reason: 'workspace_unavailable' }
-  | { ok: false; reason: 'create_failed'; message: string };
 
 export interface OnboardingSnapshot {
   state: OnboardingState;
@@ -185,7 +173,7 @@ export interface MakaBridge {
   };
   sessions: {
     list(filter?: SessionListFilter): Promise<SessionSummary[]>;
-    create(input?: Partial<CreateSessionInput>): Promise<SessionSummary>;
+    create(input?: Partial<CreateSessionInput> & { mode?: QuickChatMode }): Promise<SessionSummary>;
     send(
       sessionId: string,
       command:
@@ -335,9 +323,6 @@ export interface MakaBridge {
       status: 'completed' | 'skipped',
     ): Promise<OnboardingSnapshot>;
     clearMilestone(id: OnboardingMilestoneId): Promise<OnboardingSnapshot>;
-  };
-  quickChat: {
-    start(input?: { mode?: QuickChatMode }): Promise<QuickChatResult>;
   };
   expertTeam: {
     list(): Promise<{ teams: ExpertTeamSummary[] }>;

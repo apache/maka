@@ -2,7 +2,10 @@ import type { QuickChatMode, UiLocale } from '@maka/core';
 import { saveGlobalInputHistoryEntry } from '@maka/ui';
 import type { NavSelection } from '@maka/ui';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
-import { showSessionWorkspaceUnavailableToast } from './session-workspace-errors.js';
+import {
+  isSessionWorkspaceUnavailableError,
+  showSessionWorkspaceUnavailableToast,
+} from './session-workspace-errors.js';
 
 type ComposerImportOwner = {
   sessionId: string | undefined;
@@ -27,7 +30,7 @@ export interface AppShellQuickChatActions {
    * first send; this is for entry points that pick the mode before any
    * text exists, such as the command palette's Deep Research.
    */
-  startQuickChatSession(mode?: QuickChatMode): Promise<boolean>;
+  startModeSession(mode: QuickChatMode): Promise<boolean>;
   /** Start a new expert-team session (from the composer "+" menu). */
   handleExpertTeamStart(teamId: string, prompt?: string): Promise<boolean>;
 }
@@ -42,7 +45,6 @@ export function createAppShellQuickChatActions(deps: {
   quickChatPendingRef: RefBox<boolean>;
   refreshOnboarding: () => void;
   refreshSessions: () => Promise<unknown>;
-  setQuickChatPending: (pending: boolean) => void;
   toastApi: ToastApi;
 }): AppShellQuickChatActions {
   const {
@@ -55,49 +57,42 @@ export function createAppShellQuickChatActions(deps: {
     quickChatPendingRef,
     refreshOnboarding,
     refreshSessions,
-    setQuickChatPending,
     toastApi,
   } = deps;
   const copy = getShellCopy(uiLocale).chatActions;
 
-  async function startQuickChatSession(mode?: QuickChatMode): Promise<boolean> {
+  async function startModeSession(mode: QuickChatMode): Promise<boolean> {
     if (quickChatPendingRef.current) return false;
     const owner = captureComposerImportOwner();
     quickChatPendingRef.current = true;
-    setQuickChatPending(true);
     try {
-      const result = await window.maka.quickChat.start({ mode });
-      if (result.ok) {
-        if (isShellSurfaceOwnerActive(owner)) {
-          openSessionInChat(result.sessionId);
-        }
-        await refreshSessions();
-        if (activeIdRef.current === result.sessionId) {
-          composerRef.current?.focus();
-        }
-        // Best-effort: mark onboarding completed. Failure must not
-        // turn a successful chat into a failure — backfill covers it.
-        void window.maka.onboarding.setMilestone('initial_onboarding', 'completed').catch(() => {});
-        return true;
-      } else if (result.reason === 'setup_required') {
-        refreshOnboarding();
-        return false;
-      } else if (result.reason === 'workspace_unavailable') {
+      // #1433: the one session-creation channel. Main derives the
+      // permission boundary, name and labels from `mode`.
+      const session = await window.maka.sessions.create({ mode });
+      if (isShellSurfaceOwnerActive(owner)) {
+        openSessionInChat(session.id);
+      }
+      await refreshSessions();
+      if (activeIdRef.current === session.id) {
+        composerRef.current?.focus();
+      }
+      // Best-effort: mark onboarding completed. Failure must not
+      // turn a successful chat into a failure — backfill covers it.
+      void window.maka.onboarding.setMilestone('initial_onboarding', 'completed').catch(() => {});
+      return true;
+    } catch (error) {
+      // `sessions:create` rejects rather than returning a reason code, so
+      // the two cases the old `quickChat:start` union spelled out are
+      // recovered here: an unusable workspace gets its own toast, and any
+      // readiness failure re-pulls the onboarding snapshot so the hero can
+      // state what is missing.
+      if (isSessionWorkspaceUnavailableError(error)) {
         if (isShellSurfaceOwnerActive(owner)) {
           showSessionWorkspaceUnavailableToast(toastApi, uiLocale);
         }
         return false;
-      } else {
-        await refreshSessions();
-        if (isShellSurfaceOwnerActive(owner)) {
-          toastApi.error(
-            copy.quickChatFailedTitle,
-            uiLocale === 'zh' ? result.message : copy.quickChatFailedFallback,
-          );
-        }
-        return false;
       }
-    } catch (error) {
+      refreshOnboarding();
       if (isShellSurfaceOwnerActive(owner)) {
         toastApi.error(
           copy.quickChatFailedTitle,
@@ -107,7 +102,6 @@ export function createAppShellQuickChatActions(deps: {
       return false;
     } finally {
       quickChatPendingRef.current = false;
-      setQuickChatPending(false);
     }
   }
 
@@ -115,7 +109,6 @@ export function createAppShellQuickChatActions(deps: {
     if (quickChatPendingRef.current) return false;
     const owner = captureComposerImportOwner();
     quickChatPendingRef.current = true;
-    setQuickChatPending(true);
     try {
       const result = await window.maka.expertTeam.start({
         teamId,
@@ -163,9 +156,8 @@ export function createAppShellQuickChatActions(deps: {
       return false;
     } finally {
       quickChatPendingRef.current = false;
-      setQuickChatPending(false);
     }
   }
 
-  return { startQuickChatSession, handleExpertTeamStart };
+  return { startModeSession, handleExpertTeamStart };
 }

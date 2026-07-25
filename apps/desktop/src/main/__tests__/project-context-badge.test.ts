@@ -177,11 +177,18 @@ describe('project context workspace picker', () => {
   it('defaults new sessions to the main-owned current project root', async () => {
     const main = await readRepo(MAIN);
     const sessionsIpc = await readRepo(SESSIONS_IPC);
+    const sessionEntryIpc = await readRepo('apps/desktop/src/main/session-entry-ipc-main.ts');
     const chatActions = await readRepo('apps/desktop/src/renderer/app-shell-chat-actions.ts');
 
     assert.match(sessionsIpc, /const cwd = input\?\.cwd \?\? \(await currentProjectRoot\(\)\)/);
-    assert.match(main, /handleQuickChatStart\(input, currentProjectRoot\)/);
-    assert.match(main, /cwd:\s*await getCurrentProjectRoot\(\)/);
+    // #1433 merged `quickChat:start` into `sessions:create`, leaving expert
+    // teams as the only other entry that creates a session — it must resolve
+    // the same main-owned root rather than carrying its own notion of cwd.
+    assert.match(sessionEntryIpc, /cwd:\s*await deps\.getCurrentProjectRoot\(\)/);
+    // The automation trigger is the only session main.ts still creates on its
+    // own; it resolves the same main-owned root.
+    assert.match(main, /const cwd = await resolveCurrentProjectRoot\(\);\s*\n\s*const session = await createDesktopSession\(\{/);
+    assert.doesNotMatch(main, /quickChat/, '#1433 merged quickChat:start into sessions:create');
     assert.doesNotMatch(sessionsIpc, /const cwd = input\?\.cwd \?\? process\.cwd\(\)/);
     assert.doesNotMatch(sessionsIpc, /cwd:\s*process\.cwd\(\)/);
     assert.doesNotMatch(main, /cwd:\s*process\.cwd\(\)/);

@@ -865,9 +865,10 @@ function AppShellContent({
   // when sessions.length === 0; any session (including archived /
   // aborted) takes over with the existing chat surface.
   const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);
-  const [quickChatPending, setQuickChatPending] = useState(false);
+  // Re-entrancy lock only — a ref, not state, because nothing renders
+  // from it (#1433 removed its last reader with the first-run hero).
   const quickChatPendingRef = useRef(false);
-  const { startQuickChatSession, handleExpertTeamStart } = useStableActions(createAppShellQuickChatActions, {
+  const { startModeSession, handleExpertTeamStart } = useStableActions(createAppShellQuickChatActions, {
     uiLocale,
     activeIdRef,
     captureComposerImportOwner,
@@ -877,7 +878,6 @@ function AppShellContent({
     quickChatPendingRef,
     refreshOnboarding: onboarding.refresh,
     refreshSessions,
-    setQuickChatPending,
     toastApi,
   });
   // Built-in expert teams for the composer "+" menu - loaded once via
@@ -1567,7 +1567,7 @@ function AppShellContent({
     closePalette,
     composerRef,
     createSession,
-    startQuickChatSession,
+    startModeSession,
     isComposerImportOwnerActive,
     openHelp,
     openPlanReminderForm,

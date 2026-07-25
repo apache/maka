@@ -7,6 +7,7 @@ import {
   isCollaborationMode,
   isOrchestrationMode,
   isPermissionMode,
+  normalizeQuickChatMode,
   revisionFamilySessionIds,
   isThinkingLevel,
   sanitizeTaskLedgerTask,
@@ -14,6 +15,7 @@ import {
 } from '@maka/core';
 import type {
   CreateSessionInput,
+  QuickChatMode,
   SessionEvent,
   SessionChangedEvent,
   SessionChangedReason,
@@ -32,6 +34,7 @@ import { resizeImageForAttachment } from './attachment-resize-native.js';
 import { releaseBrowserSession } from './browser/session.js';
 import { sessionReadMessagesFailureMessage } from './session-read-error-copy.js';
 import { resolveDefaultPermissionMode } from './permission-mode-default.js';
+import { sessionModeSeed } from './session-mode-seed.js';
 import {
   normalizePermissionResponse,
   normalizeRegenerateTurnInput,
@@ -54,6 +57,15 @@ type SessionStore = ReturnType<typeof createSessionStore>;
 type ArtifactStore = ReturnType<typeof createArtifactStore>;
 type MainWindowController = ReturnType<typeof createMainWindowController>;
 type E2eFixture = ReturnType<typeof resolveE2eFixture>;
+
+/**
+ * `sessions:create` input. `mode` is the one field that is not a session
+ * field: it names a product intent, and main derives the session fields
+ * it implies (see `session-mode-seed.ts`). Keeping it here rather than on
+ * `CreateSessionInput` leaves the runtime contract free of product
+ * vocabulary.
+ */
+export type SessionsCreateInput = Partial<CreateSessionInput> & { mode?: QuickChatMode };
 
 /** The per-session cleanup subset of the cursor-overlay controller. */
 interface SessionOverlayCleanup {
@@ -210,8 +222,12 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
     return tasks.map(sanitizeTaskLedgerTask);
   });
   ipcMain.handle('sessions:list', (_event, filter?: SessionListFilter) => runtime.listSessions(filter));
-  ipcMain.handle('sessions:create', async (_event, input?: Partial<CreateSessionInput>) => {
+  ipcMain.handle('sessions:create', async (_event, input?: SessionsCreateInput) => {
     const cwd = input?.cwd ?? (await currentProjectRoot());
+    // #1433: `mode` is a product intent, not a session field. Main owns
+    // what it means; the renderer cannot reach `explore` by asking for it
+    // directly. An unrecognized value normalizes to plain chat.
+    const modeSeed = sessionModeSeed(normalizeQuickChatMode(input?.mode));
     const collaborationMode = input?.collaborationMode ?? 'agent';
     if (!isCollaborationMode(collaborationMode)) {
       throw new TypeError('Invalid collaboration mode.');
@@ -249,11 +265,16 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
       llmConnectionSlug: connection.slug,
       model,
       ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
-      permissionMode: input?.permissionMode ?? (await resolveDefaultPermissionMode(() => settingsStore.get())),
+      // The mode's boundary wins over both the renderer's request and the
+      // configured default — Deep Research is read-only by definition.
+      permissionMode:
+        modeSeed?.permissionMode ??
+        input?.permissionMode ??
+        (await resolveDefaultPermissionMode(() => settingsStore.get())),
       collaborationMode,
       orchestrationMode,
-      name: input?.name ?? DEFAULT_SESSION_NAME,
-      labels: input?.labels,
+      name: input?.name ?? modeSeed?.name ?? DEFAULT_SESSION_NAME,
+      labels: modeSeed ? [...(input?.labels ?? []), ...modeSeed.labels] : input?.labels,
     });
     emitSessionsChanged('created', session.id);
     return session;

@@ -82,7 +82,6 @@ import {
 } from './chat-readiness.js';
 import { createFileCredentialStore } from './credential-store.js';
 import { bindOnboardingDeps, createOnboardingService } from './onboarding-service.js';
-import { handleQuickChatStart as runQuickChatStart, type QuickChatResult } from './quick-chat.js';
 import { createDailyReviewArchiveStore } from './daily-review-archive-store.js';
 import { resolveDefaultPermissionMode } from './permission-mode-default.js';
 import { resolveE2eFixture, seedE2eFixture } from './e2e-fixture.js';
@@ -742,8 +741,9 @@ backends.register('fake', (ctx) =>
   new FakeBackend({ sessionId: ctx.sessionId, header: ctx.header, store: ctx.store, appendMessage: ctx.appendMessage }),
 );
 
-// E2E: also route 'ai-sdk' (requested by sessions:create and quickChat:start)
-// through the deterministic fake backend, so no session-creation path can
+// E2E: also route 'ai-sdk' (requested by sessions:create, the single
+// session-creation IPC) through the deterministic fake backend, so no
+// session-creation path can
 // escape the E2E seam and hit a real provider. Registered after the real
 // ai-sdk factory to override it (BackendRegistry uses last-write-wins).
 // Production builds never set MAKA_E2E.
@@ -978,7 +978,6 @@ function registerIpc(): void {
     ensureSessionCanSend,
     createSession: createDesktopSession,
     streamEvents,
-    quickChatStart: (input) => handleQuickChatStart(input, currentProjectRoot),
   });
   registerPermissionsIpc({
     settingsStore,
@@ -1172,47 +1171,6 @@ async function listDesktopInvocableSkills(
     if (sessionId && isSessionWorkspaceUnavailableError(error)) return [];
     throw error;
   }
-}
-
-/**
- * PR110b: Quick Chat entry — thin adapter over the extracted helper.
- * The discriminated-union logic + readiness gating lives in
- * `./quick-chat.ts` so it can be unit-tested without spinning up an
- * Electron app.
- */
-async function handleQuickChatStart(
-  rawInput: unknown,
-  getCurrentProjectRoot: () => Promise<string>,
-): Promise<QuickChatResult> {
-  return runQuickChatStart(rawInput, {
-    getOnboardingState: async () => (await onboardingService.getSnapshot()).state,
-    createSession: async (input) => {
-      // Re-run requireReadyConnection inside the create path to close
-      // the race window between `getSnapshot()` and `createSession()`
-      // (e.g. user revoked credential in another window).
-      // Deep Research always forces 'explore' (read-only exploration
-      // boundary) regardless of the user's default; any other Quick Chat
-      // session seeds from the same default as the regular sessions:create
-      // path. The settings read is independent of the connection check, and
-      // this sits on the first-message latency path — run them in parallel.
-      const [ready, permissionMode] = await Promise.all([
-        getReadyConnection(input.defaultConnectionSlug, input.defaultModel),
-        input.mode === 'deep_research'
-          ? Promise.resolve<PermissionMode>('explore')
-          : resolveDefaultPermissionMode(() => settingsStore.get()),
-      ]);
-      return createDesktopSession({
-        cwd: await getCurrentProjectRoot(),
-        backend: 'ai-sdk',
-        llmConnectionSlug: ready.connection.slug,
-        model: ready.model,
-        permissionMode,
-        name: input.mode === 'deep_research' ? 'Deep Research' : DEFAULT_SESSION_NAME,
-        labels: input.mode === 'deep_research' ? [DEEP_RESEARCH_SESSION_LABEL] : [],
-      });
-    },
-    emitCreated: (sessionId) => emitSessionsChanged('created', sessionId),
-  });
 }
 
 function emitConnectionListChanged(): void {

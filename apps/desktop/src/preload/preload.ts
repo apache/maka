@@ -6,7 +6,6 @@ import type {
   MakaBridge,
   OnboardingSnapshot,
   PermissionActionResult,
-  QuickChatResult,
   RendererIngestInput,
   WorkspaceInstructionsState,
 } from './bridge-contract.js';
@@ -140,7 +139,13 @@ const makaBridge = {
     list(filter?: SessionListFilter): Promise<SessionSummary[]> {
       return ipcRenderer.invoke('sessions:list', filter);
     },
-    create(input?: Partial<CreateSessionInput>): Promise<SessionSummary> {
+    /**
+     * The single session-creation channel (#1433). `mode` names a
+     * product intent — main derives the permission boundary, name and
+     * labels it implies (`session-mode-seed.ts`); the renderer cannot
+     * reach a boundary like `explore` by asking for it directly.
+     */
+    create(input?: Partial<CreateSessionInput> & { mode?: QuickChatMode }): Promise<SessionSummary> {
       return ipcRenderer.invoke('sessions:create', input);
     },
     async send(
@@ -399,20 +404,6 @@ const makaBridge = {
     },
     clearMilestone(id: OnboardingMilestoneId): Promise<OnboardingSnapshot> {
       return ipcRenderer.invoke('onboarding:clearMilestone', id);
-    },
-  },
-  quickChat: {
-    /**
-     * Open an empty session in a given mode (#1433). Drafting and
-     * sending belong to the one Composer, which creates its own
-     * session on first send; this exists for entry points that must
-     * pick a non-default mode before any text exists, such as the
-     * command palette's Deep Research. The main process always uses
-     * the derived ready default and never accepts user-supplied
-     * connection/model overrides.
-     */
-    start(input?: { mode?: QuickChatMode }): Promise<QuickChatResult> {
-      return ipcRenderer.invoke('quickChat:start', input);
     },
   },
   expertTeam: {

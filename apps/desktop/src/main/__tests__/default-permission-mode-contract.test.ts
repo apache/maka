@@ -22,7 +22,11 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { readRendererShellSources } from './renderer-shell-source-helpers.js';
 import { readSettingsCombinedSource } from './settings-contract-source-helpers.js';
-import { readMainProcessCombinedSource, readMainTsSource } from './main-process-contract-source-helpers.js';
+import {
+  readMainProcessCombinedSource,
+  readMainTsSource,
+  readSessionsIpcSource,
+} from './main-process-contract-source-helpers.js';
 
 describe('default permission mode contract', () => {
   it('renderer always omits permissionMode when creating sessions', async () => {
@@ -64,15 +68,18 @@ describe('default permission mode contract', () => {
     );
 
     // Both sessions:create branches (fake + ai-sdk) live in sessions-ipc-main.ts
-    // and quick chat stays in main.ts — but all must inject settingsStore.get
-    // into the resolver, proving they route through the single authority
-    // instead of reading settings inline. Count across the combined main-process
-    // source so the split does not weaken the invariant.
+    // and must inject settingsStore.get into the resolver, proving they route
+    // through the single authority instead of reading settings inline. Count
+    // across the combined main-process source so the split does not weaken the
+    // invariant. #1433 merged the third caller (quickChat:start) into
+    // sessions:create, so two is now the full set — a new session-creation
+    // path that reads settings its own way would push this back over.
     const combined = await readMainProcessCombinedSource();
     const routedCalls = combined.match(/resolveDefaultPermissionMode\(\(\) => settingsStore\.get\(\)\)/g) ?? [];
-    assert.ok(
-      routedCalls.length >= 3, // fake branch + ai-sdk branch + quick chat
-      `all session-creation fallbacks must route through resolveDefaultPermissionMode(() => settingsStore.get()) (found ${routedCalls.length}, expected >= 3)`,
+    assert.equal(
+      routedCalls.length,
+      2, // fake branch + ai-sdk branch
+      `all session-creation fallbacks must route through resolveDefaultPermissionMode(() => settingsStore.get()) (found ${routedCalls.length}, expected exactly the two sessions:create branches)`,
     );
     assert.doesNotMatch(
       src,
@@ -81,12 +88,18 @@ describe('default permission mode contract', () => {
     );
   });
 
-  it('quick chat resolves the default in parallel with the connection check', async () => {
-    const src = await readMainTsSource();
+  /**
+   * #1433: Deep Research is a read-only boundary, so it must win over both
+   * the renderer's request and the configured default. Ordering the
+   * fallback chain this way also means the settings read never happens for
+   * a mode that already fixes the boundary.
+   */
+  it('a mode-forced boundary outranks the configured default', async () => {
+    const src = await readSessionsIpcSource();
     assert.match(
       src,
-      /await Promise\.all\(\[\s*getReadyConnection\(input\.defaultConnectionSlug, input\.defaultModel\),\s*input\.mode === 'deep_research'/,
-      'quick chat must not serialize the settings read behind getReadyConnection -- it sits on the first-message latency path',
+      /permissionMode:\s*modeSeed\?\.permissionMode \?\?\s*input\?\.permissionMode \?\?\s*\(await resolveDefaultPermissionMode/,
+      'the mode seed must be consulted before the renderer request and before the configured default',
     );
   });
 
