@@ -18,6 +18,7 @@ import {
   runHarborCell,
   writeHarborCellUsageCheckpoint,
 } from '#harbor-cell';
+import { booleanEnv } from '#headless-run-env';
 
 const TRIAL_PRICING_ENV = [
   'MAKA_TRIAL_INPUT_USD_PER_1M',
@@ -51,6 +52,7 @@ export async function main(options = {}) {
   const maxSteps = harborCellMaxStepsFromEnv(env);
   const settleAfterMs = harborCellSoftTimeoutMsFromEnv(env);
   const reasoningEffort = reasoningEffortFromEnv(env.MAKA_REASONING_EFFORT);
+  const agentTools = booleanEnv(env.MAKA_AGENT_TOOLS, 'MAKA_AGENT_TOOLS') ?? false;
   const now = Date.now;
   const newId = randomId;
 
@@ -60,6 +62,7 @@ export async function main(options = {}) {
       backend: 'ai-sdk',
       llmConnectionSlug: env.MAKA_LLM_CONNECTION_SLUG || provider,
       model,
+      agentTools,
       ...(reasoningEffort ? { thinkingLevel: reasoningEffort } : {}),
       ...(env.MAKA_SYSTEM_PROMPT !== undefined ? { systemPrompt: env.MAKA_SYSTEM_PROMPT } : {}),
       ...(economyTaskMode !== undefined ? { economyTaskMode } : {}),

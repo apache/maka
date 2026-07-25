@@ -435,6 +435,26 @@ describe('applyConnectionDefaults', () => {
 });
 
 describe('resolveHarborRunOptions backend guard', () => {
+  test('uses one boolean vocabulary for the Agent tool switch', async () => {
+    const defaultOptions = await resolveHarborRunOptions(
+      ['--backend', 'fake', '--instruction', 'test'],
+      {},
+    );
+    const enabledOptions = await resolveHarborRunOptions(
+      ['--backend', 'fake', '--instruction', 'test'],
+      { MAKA_AGENT_TOOLS: 'true' },
+    );
+
+    assert.equal(defaultOptions.config.agentTools, false);
+    assert.equal(enabledOptions.config.agentTools, true);
+    await assert.rejects(
+      resolveHarborRunOptions(['--backend', 'fake', '--instruction', 'test'], {
+        MAKA_AGENT_TOOLS: 'sometimes',
+      }),
+      /MAKA_AGENT_TOOLS must be a boolean/,
+    );
+  });
+
   test('preserves an explicit economy-task disable over instruction signals', async () => {
     const opts = await resolveHarborRunOptions(
       ['--backend', 'fake', '--instruction', 'summarize the log files'],

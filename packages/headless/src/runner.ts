@@ -151,7 +151,7 @@ export async function runExperimentWithStorage(
       runStore,
       runtimeEventStore: storage.executionStores.runtimeEventStore,
       backends,
-      ...(deps.realBackendIsolation?.toolExecutor
+      ...(config.agentTools && deps.realBackendIsolation?.toolExecutor
         ? {
             childTools: buildChildAgentTools(
               buildIsolatedHeadlessTools(deps.realBackendIsolation.toolExecutor),

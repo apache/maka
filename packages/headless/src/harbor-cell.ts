@@ -328,6 +328,7 @@ export async function runHarborCellWithStorage(
     systemPromptMode: prompt.mode,
     systemPromptHash: prompt.systemPromptHash,
     pricingProfile: input.pricingProfile ?? 'unconfigured',
+    agentTools: config.agentTools === true,
   };
   await writeHarborCellExecutionIdentity(input.outputDir, executionIdentity);
 
@@ -337,7 +338,7 @@ export async function runHarborCellWithStorage(
     runStore: agentRunStore,
     runtimeEventStore,
     backends,
-    ...(input.realBackendIsolation?.toolExecutor
+    ...(config.agentTools && input.realBackendIsolation?.toolExecutor
       ? {
           childTools: buildChildAgentTools(
             buildIsolatedHeadlessTools(input.realBackendIsolation.toolExecutor),
@@ -589,9 +590,11 @@ export async function runHarborCellFromEnv(
   const maxSteps = harborCellMaxStepsFromEnv(resolvedEnv);
   const settleAfterMs = harborCellSoftTimeoutMsFromEnv(resolvedEnv);
   const reasoningEffort = reasoningEffortFromEnv(resolvedEnv.MAKA_REASONING_EFFORT);
+  const agentTools = booleanEnv(resolvedEnv.MAKA_AGENT_TOOLS, 'MAKA_AGENT_TOOLS') ?? false;
   const baseConfig = {
     id: resolvedEnv.MAKA_CONFIG_ID ?? 'harbor-cell',
     backend,
+    agentTools,
     ...(reasoningEffort ? { thinkingLevel: reasoningEffort } : {}),
     ...(resolvedEnv.MAKA_SYSTEM_PROMPT !== undefined
       ? { systemPrompt: resolvedEnv.MAKA_SYSTEM_PROMPT }
@@ -917,6 +920,7 @@ export function buildAiSdkCellBackendRegistration(input: {
       });
       const providerFetch = subscriptionFetch ?? input.fetch;
       const hostTools = buildHarborCellAiSdkTools(context.toolExecutor!, {
+        agentTools: context.config.agentTools,
         ...(context.heavyTaskEvidence ? { heavyTaskEvidence: context.heavyTaskEvidence } : {}),
         ...(context.heavyTaskProgress ? { heavyTaskProgress: context.heavyTaskProgress } : {}),
         ...(context.heavyTaskSelfCheck ? { heavyTaskSelfCheck: context.heavyTaskSelfCheck } : {}),

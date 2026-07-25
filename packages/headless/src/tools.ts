@@ -33,6 +33,7 @@ import {
 } from './task-ledger-experiment.js';
 
 export interface BuildIsolatedHeadlessToolsOptions {
+  agentTools?: boolean;
   heavyTaskEvidence?: HeavyTaskEvidenceRecorder;
   heavyTaskProgress?: HeavyTaskProgressRecorder;
   heavyTaskSelfCheck?: HeavyTaskSelfCheckRecorder;
@@ -96,7 +97,7 @@ export function buildIsolatedHeadlessTools(
     buildIsolatedEditTool(executor, options),
     buildIsolatedGlobTool(executor, options),
     buildIsolatedGrepTool(executor, options),
-    ...buildParentAgentTools(),
+    ...(options.agentTools ? buildParentAgentTools() : []),
   ];
   if (options.heavyTaskProgress) {
     tools.push(...buildHeavyTaskProgressTools(options.heavyTaskProgress));

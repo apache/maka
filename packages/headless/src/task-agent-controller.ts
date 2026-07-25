@@ -14,6 +14,7 @@ import {
   BackendRegistry,
   RuntimeRunner,
   SessionManager,
+  AGENT_TOOL_NAMES,
   buildChildAgentTools,
   type AgentRunActiveSession,
   type InvocationResult,
@@ -295,6 +296,7 @@ export async function runTaskOnceWithStorage(
         toolNames: toolNamesForIdentity(
           Boolean(deps.realBackendIsolation?.toolExecutor),
           heavyTaskMode.enabled,
+          effectiveConfig.agentTools === true,
         ),
       }),
     });
@@ -327,7 +329,7 @@ export async function runTaskOnceWithStorage(
       runStore: agentRunStore,
       runtimeEventStore,
       backends,
-      ...(deps.realBackendIsolation?.toolExecutor
+      ...(config.agentTools && deps.realBackendIsolation?.toolExecutor
         ? {
             childTools: buildChildAgentTools(
               buildIsolatedHeadlessTools(deps.realBackendIsolation.toolExecutor),
@@ -922,8 +924,13 @@ function withOptionalStatePrompts(
   return next;
 }
 
-function toolNamesForIdentity(hasIsolatedExecutor: boolean, heavyTaskEnabled: boolean): string[] {
+function toolNamesForIdentity(
+  hasIsolatedExecutor: boolean,
+  heavyTaskEnabled: boolean,
+  agentTools: boolean,
+): string[] {
   const names = hasIsolatedExecutor ? [...ISOLATED_HEADLESS_TOOL_NAMES] : ['registered_backend'];
+  if (agentTools && hasIsolatedExecutor) names.push(...AGENT_TOOL_NAMES);
   if (heavyTaskEnabled && hasIsolatedExecutor)
     names.push(...HEAVY_TASK_PROGRESS_TOOL_NAMES, ...HEAVY_TASK_SELF_CHECK_TOOL_NAMES);
   return names;

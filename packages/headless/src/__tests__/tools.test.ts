@@ -239,7 +239,7 @@ describe('isolated headless tools', () => {
     assert.deepEqual(seenSignals, [ctx.abortSignal, ctx.abortSignal, ctx.abortSignal]);
   });
 
-  test('standard isolated tool surface exposes externalized file tools to local-read children', () => {
+  test('standard isolated tool surface excludes parent-facing agent tools by default', () => {
     const tools = buildIsolatedHeadlessTools({
       async exec() {
         return { exitCode: 0, stdout: '', stderr: '' };
@@ -249,10 +249,10 @@ describe('isolated headless tools', () => {
     assert.equal(names[0], 'Bash');
     assert.ok(names.includes('Read'));
     assert.ok(names.includes('Write'));
-    assert.ok(names.includes('agent_spawn'));
-    assert.ok(names.includes(AGENT_SWARM_TOOL_NAME));
-    assert.ok(names.includes('agent_list'));
-    assert.ok(names.includes('agent_output'));
+    assert.ok(!names.includes('agent_spawn'));
+    assert.ok(!names.includes(AGENT_SWARM_TOOL_NAME));
+    assert.ok(!names.includes('agent_list'));
+    assert.ok(!names.includes('agent_output'));
     assert.ok(!names.includes('inventory_submit'));
     assert.ok(!names.includes('todo_update'));
     assert.ok(!names.includes('self_check_plan_submit'));
@@ -1701,7 +1701,7 @@ describe('isolated headless tools', () => {
     assert.equal(calls, 0);
   });
 
-  test('standard isolated tool availability defers parent-facing agent tools', () => {
+  test('standard isolated tool availability does not advertise agent tools or a loader', () => {
     const tools = buildIsolatedHeadlessTools({
       async exec() {
         return { exitCode: 0, stdout: '', stderr: '' };
@@ -1716,16 +1716,53 @@ describe('isolated headless tools', () => {
         parameters: {},
         impl: () => ({}),
       },
-    ).prepare([]);
+    ).prepare([
+      {
+        content: {
+          kind: 'function_call',
+          name: LOAD_TOOLS_NAME,
+          args: { group: 'agent' },
+        },
+      },
+    ]);
 
     assert.ok(plan.activeTools.includes('Bash'));
     assert.ok(plan.activeTools.includes('Read'));
+    assert.ok(!plan.activeTools.includes(LOAD_TOOLS_NAME));
+    assert.ok(!plan.activeTools.includes('agent_spawn'));
+    assert.ok(!plan.activeTools.includes(AGENT_SWARM_TOOL_NAME));
+    assert.ok(!plan.activeTools.includes('agent_list'));
+    assert.ok(!plan.activeTools.includes('agent_output'));
+    assert.ok(!plan.providerTools.some((tool) => tool.name === LOAD_TOOLS_NAME));
+    assert.ok(!plan.providerTools.some((tool) => tool.name.startsWith('agent_')));
+    assert.equal(plan.projectActiveTools, undefined);
+  });
+
+  test('explicitly enabled agent tools remain deferred behind the catalog loader', () => {
+    const tools = buildIsolatedHeadlessTools(
+      {
+        async exec() {
+          return { exitCode: 0, stdout: '', stderr: '' };
+        },
+      },
+      { agentTools: true },
+    );
+    const plan = new ToolAvailabilityRuntime(
+      tools,
+      buildIsolatedHeadlessToolAvailability(tools.map((tool) => tool.name)),
+      {
+        name: 'invalid',
+        description: 'invalid',
+        parameters: {},
+        impl: () => ({}),
+      },
+    ).prepare([]);
+
     assert.ok(plan.activeTools.includes(LOAD_TOOLS_NAME));
     assert.ok(!plan.activeTools.includes('agent_spawn'));
     assert.ok(!plan.activeTools.includes(AGENT_SWARM_TOOL_NAME));
     assert.ok(!plan.activeTools.includes('agent_list'));
     assert.ok(!plan.activeTools.includes('agent_output'));
-
     const loaded = plan.projectActiveTools!({
       completedSteps: [{ toolCalls: [{ toolName: LOAD_TOOLS_NAME, input: { group: 'agent' } }] }],
     }).activeTools;
@@ -1763,11 +1800,7 @@ describe('isolated headless tools', () => {
   test('README real-backend sketch preserves child tool overrides', async () => {
     const readme = await readFile(new URL('../../README.md', import.meta.url), 'utf8');
 
-    assert.ok(
-      readme.includes(
-        'const tools = [...(ctx.tools ?? buildIsolatedHeadlessTools(context.toolExecutor!))];',
-      ),
-    );
+    assert.ok(readme.includes('agentTools: context.config.agentTools,'));
   });
 });
 

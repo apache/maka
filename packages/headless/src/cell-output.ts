@@ -136,6 +136,8 @@ export interface HarborCellExecutionIdentity {
   systemPromptMode?: HeadlessSystemPromptMode;
   systemPromptHash: string;
   pricingProfile: string;
+  /** Present on artifacts written after Headless Agent tool gating was introduced. */
+  agentTools?: boolean;
 }
 
 export interface HarborCellDeadlineSettlement {
@@ -383,6 +385,9 @@ export function validateHarborCellExecutionIdentity(value: unknown): HarborCellE
       : {}),
     systemPromptHash: requireString(value.systemPromptHash, 'executionIdentity.systemPromptHash'),
     pricingProfile: requireString(value.pricingProfile, 'executionIdentity.pricingProfile'),
+    ...('agentTools' in value
+      ? { agentTools: requireBoolean(value.agentTools, 'executionIdentity.agentTools') }
+      : {}),
   };
 }
 

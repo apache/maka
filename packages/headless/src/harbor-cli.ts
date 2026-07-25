@@ -358,6 +358,7 @@ async function writeTaskRunExecutionIdentity(
     systemPromptMode: prompt.mode,
     systemPromptHash: prompt.systemPromptHash,
     pricingProfile: options.env.MAKA_TRIAL_PRICING_SOURCE ?? 'unconfigured',
+    agentTools: options.config.agentTools === true,
   });
   await writeHarborCellExecutionIdentity(options.cellArtifactDir, executionIdentity);
   return executionIdentity;
@@ -429,6 +430,7 @@ export async function resolveHarborRunOptions(
     economyTask: parsed.bools['economy-task']
       ? true
       : booleanEnv(env.MAKA_ECONOMY_TASK_MODE, 'MAKA_ECONOMY_TASK_MODE'),
+    agentTools: booleanEnv(env.MAKA_AGENT_TOOLS, 'MAKA_AGENT_TOOLS') ?? false,
   });
   const realBackendIsolation = buildIsolation(isolation, env, workdir, outDir);
   const providerEnvFetch = backend === 'ai-sdk' ? createProviderEnvFetch(env) : undefined;
@@ -555,6 +557,7 @@ function buildConfig(input: {
   backend: BackendKind;
   heavyTask: boolean;
   economyTask: boolean | undefined;
+  agentTools: boolean;
 }): Config {
   const thinkingLevel = reasoningEffortFromEnv(input.env.MAKA_REASONING_EFFORT);
   const economyTaskMode =
@@ -575,6 +578,7 @@ function buildConfig(input: {
       llmConnectionSlug: input.env.MAKA_LLM_CONNECTION_SLUG ?? 'fake',
       model: input.env.MAKA_MODEL ?? input.env.HARBOR_MODEL ?? 'fake',
       ...(thinkingLevel ? { thinkingLevel } : {}),
+      agentTools: input.agentTools,
       ...(input.heavyTask
         ? { heavyTaskMode: { enabled: true, reason: 'maka eval harbor run --heavy-task' } }
         : {}),
@@ -597,6 +601,7 @@ function buildConfig(input: {
     llmConnectionSlug: input.env.MAKA_LLM_CONNECTION_SLUG ?? modelSpec.provider,
     model: modelSpec.model,
     ...(thinkingLevel ? { thinkingLevel } : {}),
+    agentTools: input.agentTools,
     ...(input.env.MAKA_SYSTEM_PROMPT !== undefined
       ? { systemPrompt: input.env.MAKA_SYSTEM_PROMPT }
       : {}),

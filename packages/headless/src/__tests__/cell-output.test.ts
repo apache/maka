@@ -130,6 +130,7 @@ describe('Harbor cell output contract', () => {
         systemPromptMode: 'custom',
         systemPromptHash: 'sha256:prompt-a',
         pricingProfile: 'deepseek-v4-flash-tbench-v1',
+        agentTools: true,
       },
     }) as HarborCellOutput & { executionIdentity?: unknown };
 
@@ -140,6 +141,7 @@ describe('Harbor cell output contract', () => {
       systemPromptMode: 'custom',
       systemPromptHash: 'sha256:prompt-a',
       pricingProfile: 'deepseek-v4-flash-tbench-v1',
+      agentTools: true,
     });
   });
 

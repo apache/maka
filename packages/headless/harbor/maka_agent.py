@@ -584,6 +584,7 @@ class MakaAgent(BaseInstalledAgent):
             "MAKA_TRIAL_CACHE_WRITE_USD_PER_1M",
             "MAKA_TRIAL_PRICING_SOURCE",
             "MAKA_REASONING_EFFORT",
+            "MAKA_AGENT_TOOLS",
             # Default per-command timeout floor for the in-container Bash tool, so
             # long builds/tests do not hit a hard-coded 2-minute ceiling.
             "MAKA_CELL_COMMAND_TIMEOUT_MS",
@@ -1714,6 +1715,7 @@ def _runner_env_summary(env: dict[str, str]) -> dict[str, str]:
         "MAKA_HARBOR_REPLAY_PRIOR_ATTEMPT_RUNTIME_CONTEXT",
         "MAKA_REPLAY_PRIOR_ATTEMPT_RUNTIME_CONTEXT",
         "MAKA_HEAVY_TASK_MODE",
+        "MAKA_AGENT_TOOLS",
         "MAKA_CONTEXT_STALE_TOOL_RESULT_PRUNE",
         "MAKA_CONTEXT_STALE_TOOL_RESULT_MAX_ESTIMATED_TOKENS",
         "MAKA_CONTEXT_STALE_TOOL_RESULT_MIN_RECENT_TURNS_FULL",
