@@ -35,6 +35,8 @@ If the runtime computes a field, ask the runtime for it. A story that hardcodes 
 
 `permission-dialog.stories.tsx` spelled out `category` and `reason` for each request. Four of the combinations could not occur: `rm -rf …` classifies as `fs_destructive`, not `shell_unsafe`; `git clean -fdx` is the reverse; WebFetch's reason falls through to `custom`. The stories rendered fine the whole time. They now call `preToolUse`, which also throws when the mode does not prompt at all — an impossible fixture fails where you can see it instead of quietly showing you a screen that does not exist.
 
+Running the classifier does not clear the arguments, and one round of review missed exactly that gap. `OfficeDocumentEdit` went on shipping `operation: 'replaceText'` after the derivation landed — the tool takes `create | add | set | remove`, its Zod schema rejects the call before the permission engine is ever asked, and the dialog renders the operation verbatim. `preToolUse` had nothing to say about it because classification is not validation. So the rule covers both halves: derive what the runtime computes, and check the args against the schema that would have received them. Naming the authority in the annotation — the enum, the file — is what makes the next person able to check it.
+
 ## A story that renders nothing is not a story
 
 Components that report by exception return `null` in their healthy state. Three `capability-audit-strip` stories passed all-zero counts and rendered blank panels under confident annotations. "This element is absent from the page" needs no story; delete it and say so where the remaining story explains when the element appears.

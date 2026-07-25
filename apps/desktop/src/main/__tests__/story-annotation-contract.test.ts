@@ -25,7 +25,7 @@
 
 import { strict as assert } from 'node:assert';
 import { readdir, readFile } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { REPO_ROOT } from './main-process-contract-source-helpers.js';
@@ -170,14 +170,45 @@ describe('#1433 item 6 — product stories carry a path annotation', () => {
    */
   it('scans exactly what Storybook loads', async () => {
     const config = await readFile(join(REPO_ROOT, STORYBOOK_CONFIG), 'utf8');
-    const globs = [...config.matchAll(/['"`]([^'"`]*\*\*\/\*\.stories\.[^'"`]*)['"`]/g)].map((m) => m[1]);
-    assert.ok(globs.length > 0, `no story globs found in ${STORYBOOK_CONFIG}`);
+    const block = config.match(/\bstories:\s*\[([\s\S]*?)\n\s*\]/)?.[1];
+    assert.ok(block, `could not read the "stories" array out of ${STORYBOOK_CONFIG}`);
 
-    for (const glob of globs) {
-      const [dir, pattern] = glob.split('/**/');
-      const resolved = join(REPO_ROOT, dir.replace(/^(\.\.\/)+/, '').replace(/^apps\/desktop\/\.storybook\//, ''));
-      const covered = STORY_ROOTS.some((root) => root === resolved || root.endsWith(dir.replace(/^(\.\.\/)+/, '')));
-      assert.ok(covered, `${STORYBOOK_CONFIG} loads "${glob}" but STORY_ROOTS does not cover it — add the root here`);
+    // Every ENTRY, then every entry classified — not "every entry I already
+    // know how to read". Picking recognizable globs out of the file skips the
+    // ones it cannot parse, which is the same fail-open the export check two
+    // tests up exists to prevent: a `**/*.csf.tsx` glob would load a whole
+    // directory of stories that no assertion in this file ever sees, and
+    // nothing would go red. One line per entry is the config's own shape.
+    const entries = block
+      .split('\n')
+      .map((line) => line.trim().replace(/,$/, ''))
+      .filter((line) => line !== '' && !line.startsWith('//'));
+    assert.ok(entries.length > 0, `no story globs found in ${STORYBOOK_CONFIG}`);
+
+    for (const entry of entries) {
+      // The two forms this config uses, and the base each is relative to.
+      const relative = entry.match(/^'([^']+)'$/)?.[1];
+      const fromRepoRoot = entry.match(/^resolve\(REPO_ROOT,\s*'([^']+)'\)$/)?.[1];
+      const glob = relative ?? fromRepoRoot;
+      assert.ok(
+        glob,
+        `${STORYBOOK_CONFIG} has a story entry this contract cannot read: ${entry}\nEither use a plain string literal / resolve(REPO_ROOT, '…'), or widen this test deliberately — an entry it skips is a directory of stories nothing here checks.`,
+      );
+
+      const parts = glob.match(/^(.*)\/\*\*\/(\*\.stories\.[^/]*)$/);
+      assert.ok(
+        parts,
+        `${STORYBOOK_CONFIG} loads "${glob}", which is not a "<dir>/**/*.stories.<ext>" glob. listStoryFiles only knows that shape, so this contract would scan the wrong set — widen both together or keep the convention.`,
+      );
+      const [, dir, pattern] = parts;
+
+      const root = relative
+        ? resolve(REPO_ROOT, 'apps/desktop/.storybook', dir)
+        : join(REPO_ROOT, dir);
+      assert.ok(
+        STORY_ROOTS.includes(root),
+        `${STORYBOOK_CONFIG} loads "${glob}" but STORY_ROOTS does not cover ${root} — add the root here`,
+      );
 
       const extensions = pattern.match(/\.stories\.@\(([^)]+)\)/)?.[1].split('|') ?? [pattern.replace(/^\*/, '')];
       for (const extension of extensions) {

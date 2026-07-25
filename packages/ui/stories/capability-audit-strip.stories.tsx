@@ -77,6 +77,32 @@ function ModulePage(props: { children: React.ReactNode }) {
   );
 }
 
+/**
+ * The strip's two siblings on the real page, present because the frame's
+ * interesting property is a ROW ASSIGNMENT and a lone child cannot have one.
+ *
+ * `.maka-module-main` is `grid-template-rows: auto minmax(0, 1fr)` and
+ * `:has(> .maka-capability-audit-strip)` adds a third `auto`
+ * (module-shell.css). With one child the strip lands in row 1 either way, so
+ * the rule the frame exists to exercise is inert and the bug it fixed — the
+ * strip in the `1fr` row, collapsed to ~0 height with its caption bleeding
+ * over the banner below — cannot be reproduced or regressed here. Stand-ins
+ * rather than the real PageHeader and SkillLibraryPanel: what the row
+ * assignment needs is a preceding and a following sibling, not their contents,
+ * and importing the whole skills page to get them would put this story back in
+ * the business of approximating a screen it is not about.
+ */
+function HeaderRow() {
+  return <div className="maka-module-main-header" style={{ height: 56 }} />;
+}
+
+function LibraryRow() {
+  // A literal tint, not a token: this block is scaffolding that marks where the
+  // grid's `minmax(0, 1fr)` row starts, and dressing it in product tokens would
+  // invite reading it as a surface the app renders. It is not one.
+  return <div style={{ minHeight: 160, background: 'rgba(127, 127, 127, 0.08)' }} />;
+}
+
 // Real path: sidebar → 扩展 → 技能, once something needs attention — a managed
 // skill source waiting for auth or erroring, an automation whose last run failed
 // or was skipped. The strip renders exactly one warning line naming what is
@@ -88,6 +114,7 @@ function ModulePage(props: { children: React.ReactNode }) {
 export const WithRisks: Story = {
   render: () => (
     <ModulePage>
+      <HeaderRow />
       <CapabilityAuditStrip
         report={report({
           sourceCount: 4,
@@ -105,6 +132,7 @@ export const WithRisks: Story = {
           skippedAutomationCount: 1,
         })}
       />
+      <LibraryRow />
     </ModulePage>
   ),
 };
