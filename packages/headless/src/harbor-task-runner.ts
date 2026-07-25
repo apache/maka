@@ -210,6 +210,7 @@ const EXPERIMENT_IDENTITY_ENV_KEYS = new Set([
   'MAKA_MODEL',
   'MAKA_PROVIDER',
   'MAKA_LLM_CONNECTION_SLUG',
+  'MAKA_AGENT_TOOLS',
   'MAKA_REASONING_EFFORT',
   'MAKA_OPENCODE_VARIANT',
   'MAKA_SYSTEM_PROMPT',
@@ -959,6 +960,7 @@ export function buildHarborJobConfig(
     MAKA_MODEL: makaModel,
     MAKA_PROVIDER: provider,
     MAKA_LLM_CONNECTION_SLUG: provider,
+    MAKA_AGENT_TOOLS: input.config.agentTools === true ? 'true' : 'false',
     // Verbatim — the controller hashes exactly these bytes and verifies the round-trip.
     MAKA_SYSTEM_PROMPT: input.systemPrompt,
   };

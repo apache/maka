@@ -87,6 +87,40 @@ describe('fixed prompt controller', () => {
     });
   });
 
+  test('rejects an execution identity with the wrong Agent tool policy', async () => {
+    await withDir(async (dir) => {
+      const systemPromptPath = join(dir, 'system_prompt.md');
+      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+      const agentConfig: Config = { ...config, agentTools: true };
+      const output = harborOutput({
+        taskId: 'task-a',
+        executionIdentity: {
+          llmConnectionSlug: 'fake',
+          model: 'fake-model',
+          systemPromptHash: hashSystemPrompt('fixed prompt\n'),
+          pricingProfile: 'test-profile',
+          agentTools: false,
+        },
+      });
+
+      const result = await runFixedPromptController({
+        runId: 'run-1',
+        roundId: 'round-1',
+        config: agentConfig,
+        systemPromptPath,
+        resultsJsonlPath: join(dir, 'results.jsonl'),
+        resultsTsvPath: join(dir, 'results.tsv'),
+        tasks: [{ id: 'task-a', path: '/bench/task-a' }],
+        requireExecutionIdentity: true,
+        expectedPricingProfile: 'test-profile',
+        taskRunner: async () => output,
+      });
+
+      assert.equal(result.events[0]?.type, 'task_plumbing_failed');
+      assert.equal(result.events[0]?.errorClass, 'execution_identity_mismatch');
+    });
+  });
+
   test('resumes from completed task events in the WAL', async () => {
     await withDir(async (dir) => {
       const systemPromptPath = join(dir, 'system_prompt.md');

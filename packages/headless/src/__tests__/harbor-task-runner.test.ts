@@ -1926,6 +1926,30 @@ describe('createHarborOracleQualifier', () => {
 });
 
 describe('buildHarborJobConfig', () => {
+  test('projects the Agent tool policy from the run config', () => {
+    const config = buildHarborJobConfig(
+      runInput({
+        config: {
+          id: 'cfg',
+          backend: 'ai-sdk',
+          llmConnectionSlug: 'deepseek',
+          model: 'deepseek-v4-flash',
+          agentTools: true,
+        },
+      }),
+      {
+        makaRepoPath: '/repo',
+        jobsDir: '/jobs/x',
+        jobName: 'trial',
+        model: 'deepseek/deepseek-v4-flash',
+      },
+    );
+    const agent = (config.agents as Array<Record<string, unknown>>)[0]!;
+    const env = agent.env as Record<string, string>;
+
+    assert.equal(env.MAKA_AGENT_TOOLS, 'true');
+  });
+
   test('pins the OpenCode adapter and max model variant without serializing credentials', () => {
     const toolchain = {
       opencodeToolchainPath: '/cache/opencode-1.17.18-linux-x64',
@@ -2149,12 +2173,13 @@ describe('buildHarborJobConfig', () => {
           model: 'deepseek/deepseek-v4-flash',
           pricing: { inputUsdPer1M: 0.145, outputUsdPer1M: 0.29 },
           agentEnv: {
+            MAKA_AGENT_TOOLS: 'false',
             MAKA_MODEL: 'deepseek-v4-pro',
             MAKA_SYSTEM_PROMPT: 'wrong prompt',
             MAKA_TRIAL_INPUT_USD_PER_1M: '9',
           },
         }),
-      /agentEnv must not override experiment identity: MAKA_MODEL, MAKA_SYSTEM_PROMPT, MAKA_TRIAL_INPUT_USD_PER_1M/,
+      /agentEnv must not override experiment identity: MAKA_AGENT_TOOLS, MAKA_MODEL, MAKA_SYSTEM_PROMPT, MAKA_TRIAL_INPUT_USD_PER_1M/,
     );
   });
 

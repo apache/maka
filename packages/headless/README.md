@@ -49,8 +49,9 @@ default**:
   `Read`/`Write`/`Edit`/`Glob`/`Grep` through the supplied isolation boundary.
   Parent-facing Agent tools and child-session admission are disabled by
   default. Set `Config.agentTools: true` and pass that value to the builder to
-  opt in; Harbor accepts the equivalent canonical environment setting
-  `MAKA_AGENT_TOOLS=true` (`false` is the default).
+  opt in. The Harbor and Pier task runners project that config to the canonical
+  cell setting `MAKA_AGENT_TOOLS=true`; direct Harbor cell/CLI entrypoints accept
+  the same environment setting (`false` is the default).
   Executors can implement native file-operation methods, or rely on the
   command-backed fallback when the isolated workspace has `node` available.
   The headless helper rejects absolute paths, `..` escapes, and absolute glob

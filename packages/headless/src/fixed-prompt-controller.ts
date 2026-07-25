@@ -1088,6 +1088,7 @@ function classifyExecutionIdentityFailure(
       identity.llmConnectionSlug !== expectedConfig.llmConnectionSlug ||
       identity.model !== expectedModel ||
       identity.reasoningEffort !== expectedConfig.thinkingLevel ||
+      (identity.agentTools ?? false) !== (expectedConfig.agentTools === true) ||
       identity.systemPromptHash !== expectedPromptHash ||
       (expectedPricingProfile !== undefined && identity.pricingProfile !== expectedPricingProfile)
     ) {

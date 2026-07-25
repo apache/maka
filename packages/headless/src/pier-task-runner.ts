@@ -626,6 +626,7 @@ function buildPierAgentEnv(
     MAKA_MODEL: makaModel,
     MAKA_PROVIDER: provider,
     MAKA_LLM_CONNECTION_SLUG: provider,
+    MAKA_AGENT_TOOLS: input.config.agentTools === true ? 'true' : 'false',
     MAKA_REPO_ROOT: CONTAINER_MAKA_REPO,
     // MAKA_SYSTEM_PROMPT deliberately does NOT ride --ae: pier's CLI strips
     // whitespace from --ae values, and a stripped copy in the adapter's
