@@ -83,6 +83,7 @@ import { modelSetupToastCopy } from './model-connection-errors';
 import { basenameFromPath } from './app-shell-copy';
 import type { AppShellCommandListOptions } from './app-shell-command-actions';
 import { AppShellTopbarActions, AppShellWorkspaceTopActions } from './app-shell-chrome-actions';
+import { AppShellDetailPanel } from './app-shell-detail-panel';
 import { AppShellOverlays } from './app-shell-overlays';
 import { createAppShellDailyReviewBridge } from './app-shell-daily-review-bridge';
 import { useAppShellModuleData } from './use-module-data';
@@ -1656,10 +1657,9 @@ function AppShellContent({
           onPointerDown={startColumnResize}
           onKeyDown={onResizeHandleKeyDown}
         />
-        <div
-          className="maka-panel maka-panel-detail maka-floating-panel agents-content-area agents-parchment-paper-surface"
+        <AppShellDetailPanel
           data-sidebar-state={sessionListCollapsed ? 'collapsed' : 'expanded'}
-          data-agents-view={
+          agentsView={
             navSelection.section === 'automations'
               ? navSelection.module === 'daily-review' ? 'daily-review' : 'cron'
               : navSelection.section === 'extensions'
@@ -2068,7 +2068,7 @@ function AppShellContent({
             )}
           </div>
           </MakaUriContext.Provider>
-        </div>
+        </AppShellDetailPanel>
       </div>
       <AppShellOverlays
         settingsOpen={settingsOpen}

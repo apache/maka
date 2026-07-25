@@ -75,6 +75,75 @@ describe('Storybook baseline contract', () => {
     assert.match(preview, /data-maka-theme/);
   });
 
+  it('keeps Product stories free of implicit global geometry', () => {
+    const preview = readFileSync(join(REPO_ROOT, 'apps', 'desktop', '.storybook', 'preview.tsx'), 'utf8');
+
+    assert.match(preview, /context\.title\.startsWith\(['"]Product\/['"]\)/);
+    assert.match(preview, /if\s*\([^)]*Product/);
+    assert.match(preview, /return\s+<LocaleProvider[^>]*><Story\s*\/><\/LocaleProvider>/);
+    assert.match(preview, /p-6/, 'non-Product stories must retain explicit review padding');
+  });
+
+  it('uses production-owned hosts for the four module baselines', () => {
+    const storyPath = join(REPO_ROOT, 'apps', 'desktop', 'stories', 'module-hubs.stories.tsx');
+    const story = readFileSync(storyPath, 'utf8');
+
+    assert.match(story, /AppShellDetailPanel/);
+    assert.match(story, /AppShellWorkspaceTopActions/);
+    assert.doesNotMatch(
+      story,
+      /<AppShellDetailPanel[^>]*style=/,
+      'the story scaffold, not the production panel, must own iframe geometry',
+    );
+    for (const storyName of [
+      'ExtensionsSkills',
+      'ExtensionsMcp',
+      'ScheduledPlanReminders',
+      'ScheduledDailyReview',
+      'ExtensionsSkillsInstalled',
+      'ScheduledPlanRemindersConfigured',
+      'ScheduledDailyReviewLoading',
+      'ScheduledDailyReviewLoadError',
+    ]) {
+      assert.match(story, new RegExp(`export const ${storyName}: Story`));
+    }
+    assert.doesNotMatch(
+      story,
+      /className="maka-panel maka-panel-detail maka-floating-panel agents-content-area agents-parchment-paper-surface"/,
+      'stories must consume the production detail-panel host instead of copying its class chain',
+    );
+    for (const callback of [
+      'onRefreshSkills',
+      'onCreateSkillTemplate',
+      'onOpenSkill',
+      'onOpenSkillsFolder',
+      'onRefresh',
+      'onCreate',
+      'onUpdate',
+      'onToggle',
+      'onTriggerNow',
+      'onSnooze',
+      'onClearRunHistory',
+      'onDelete',
+    ]) {
+      assert.match(story, new RegExp(`${callback}=\\{noop\\}`), `${callback} must remain visible`);
+    }
+    assert.match(story, /status:\s*'paused'/, 'configured reminders must preserve paused-state coverage');
+    assert.match(story, /status:\s*'completed'/, 'configured reminders must preserve completed-state coverage');
+
+    for (const obsoleteStory of [
+      'skills-panel.stories.tsx',
+      'plan-reminder-panel.stories.tsx',
+      'daily-review-panel.stories.tsx',
+    ]) {
+      assert.equal(
+        existsSync(join(REPO_ROOT, 'packages', 'ui', 'stories', obsoleteStory)),
+        false,
+        `${obsoleteStory} must not remain as a parallel inner-panel baseline`,
+      );
+    }
+  });
+
   it('offers only real Maka theme palettes in the Storybook toolbar', () => {
     const preview = readFileSync(join(REPO_ROOT, 'apps', 'desktop', '.storybook', 'preview.tsx'), 'utf8');
     const settings = readFileSync(join(REPO_ROOT, 'packages', 'core', 'src', 'settings.ts'), 'utf8');
