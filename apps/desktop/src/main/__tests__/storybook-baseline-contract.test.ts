@@ -6,33 +6,20 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 
-function findRepoRoot(start: string): string {
-  let dir = resolve(start);
-  for (;;) {
-    if (
-      existsSync(join(dir, 'apps', 'desktop', 'package.json'))
-      && existsSync(join(dir, 'packages', 'ui', 'package.json'))
-    ) {
-      return dir;
-    }
-
-    const parent = resolve(dir, '..');
-    if (parent === dir) {
-      throw new Error(`Unable to locate repo root from ${start}`);
-    }
-    dir = parent;
-  }
-}
-
-const REPO_ROOT = findRepoRoot(process.cwd());
+import { REPO_ROOT } from './main-process-contract-source-helpers.js';
 
 /**
  * The rule these assertions enforce is "do not import the app shell", so match
  * the import specifier rather than the bare name — #1433 item 6 added prose
  * comments that cite `app-shell.tsx` as the file a story's real path runs
  * through, and naming a file is not depending on it.
+ *
+ * Anchored to the module itself, not to any specifier containing the string:
+ * `app-shell-command-actions` is a leaf a story may legitimately import (the
+ * command-list builder would make command-search.stories.tsx MORE faithful,
+ * not less), and this rule is about the shell component.
  */
-const IMPORTS_APP_SHELL = /from\s+['"][^'"]*app-shell/;
+const IMPORTS_APP_SHELL = /from\s+['"][^'"]*app-shell(?:\.js)?['"]/;
 
 function readJson(path: string) {
   return JSON.parse(readFileSync(path, 'utf8')) as {

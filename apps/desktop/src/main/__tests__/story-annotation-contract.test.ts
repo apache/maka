@@ -112,7 +112,31 @@ function hasReachablePathComment(source: string, line: number): boolean {
   return false;
 }
 
+const KNOWN_TITLE_PREFIXES = ['Product/', 'Primitives/', 'Design System/'];
+
 describe('#1433 item 6 — product stories carry a path annotation', () => {
+  /**
+   * Every assertion below selects files by title prefix, so a file whose title
+   * cannot be read falls into no bucket and is silently skipped — the one
+   * failure mode that matters, since stopping a NEW story from skipping the
+   * convention is this test's whole job. `metaTitle` only reads a string
+   * literal, so `title: `Product/${SECTION}`` or `title: PRODUCT_TITLE` would
+   * be enough to opt out. The `>= 15` tripwire below only catches mass
+   * failure, not one file slipping through.
+   */
+  it('every story file falls into a known title bucket', async () => {
+    const files = await readStoryFiles();
+    const unclassified = files
+      .filter((file) => !KNOWN_TITLE_PREFIXES.some((prefix) => file.title?.startsWith(prefix)))
+      .map((file) => `${file.path} (title: ${file.title ?? 'unreadable'})`);
+
+    assert.deepEqual(
+      unclassified,
+      [],
+      `these story files are exempt from every assertion in this file by accident. Give each a string-literal meta title starting with one of ${KNOWN_TITLE_PREFIXES.join(', ')}:\n${unclassified.join('\n')}`,
+    );
+  });
+
   it('every Product/* story is annotated with the path that reaches it', async () => {
     const files = await readStoryFiles();
     const productFiles = files.filter((file) => file.title?.startsWith('Product/'));
