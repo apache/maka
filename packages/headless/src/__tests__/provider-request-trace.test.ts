@@ -62,7 +62,16 @@ test('derives the first changed cacheable segment from the existing AgentRun tra
   const result = await traceAnalysis.readProviderRequestTrace(traceEventsPath);
 
   assert.equal(result.traceId, 'provider-trace-1');
+  assert.deepEqual(result.identity, {
+    runId: 'run-1',
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+  });
   assert.equal(result.captures.length, 2);
+  assert.equal(result.captures[0]?.schemaVersion, 1);
+  assert.equal(result.captures[0]?.requestPayloadWithoutProviderOptionsHash, undefined);
+  assert.deepEqual(result.attempts, []);
+  assert.deepEqual(result.diagnostics, []);
   assert.deepEqual(result.captures[1]?.firstChangedCacheableSegment, {
     kind: 'message',
     index: 1,
@@ -103,4 +112,358 @@ test('keeps complete provider captures when the AgentRun trace ends with a torn 
     result.captures.map((capture) => capture.captureId),
     ['capture-1'],
   );
+  assert.deepEqual(
+    result.diagnostics.map((diagnostic) => diagnostic.code),
+    ['invalid_json'],
+  );
+  assert.throws(
+    () => traceAnalysis.assertProviderRequestTraceComplete(result),
+    /line 2.*valid JSON/i,
+  );
 });
+
+test('reads a v2 capture and attempt and binds them to the expected execution identity', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-provider-trace-'));
+  const traceEventsPath = join(dir, 'events.jsonl');
+  const identity = { runId: 'run-2', sessionId: 'session-2', turnId: 'turn-2' };
+  const capture = {
+    type: 'provider_request_captured',
+    id: 'capture-event-1',
+    ...identity,
+    ts: 1,
+    data: {
+      schemaVersion: 2,
+      traceId: 'provider-trace-2',
+      captureId: 'capture-1',
+      artifactId: 'artifact-capture-1',
+      turnId: identity.turnId,
+      step: 0,
+      providerId: 'openai',
+      modelId: 'k3',
+      requestHash: 'sha256:request-1',
+      requestPayloadWithoutProviderOptionsHash: 'sha256:shared-request-1',
+      requestBytes: 100,
+      segments: [],
+    },
+  };
+  const attempt = {
+    type: 'provider_request_attempt_recorded',
+    id: 'attempt-event-1',
+    ...identity,
+    ts: 4,
+    data: {
+      traceId: 'provider-trace-2',
+      attemptId: 'attempt-1',
+      turnId: identity.turnId,
+      step: 0,
+      attempt: 1,
+      captureId: 'capture-1',
+      captureArtifactId: 'artifact-capture-1',
+      providerId: 'openai',
+      modelId: 'k3',
+      requestHash: 'sha256:request-1',
+      requestBytes: 100,
+      segments: [],
+      startedAt: 2,
+      completedAt: 4,
+      status: 'completed',
+      finishReason: 'stop',
+      latencyMs: 2,
+      inputTokens: 12,
+      outputTokens: 3,
+    },
+  };
+  await writeFile(traceEventsPath, `${JSON.stringify(capture)}\n${JSON.stringify(attempt)}\n`);
+
+  const result = await traceAnalysis.readProviderRequestTrace(traceEventsPath);
+
+  assert.equal(result.captures[0]?.schemaVersion, 2);
+  assert.equal(
+    result.captures[0]?.requestPayloadWithoutProviderOptionsHash,
+    'sha256:shared-request-1',
+  );
+  assert.equal(result.attempts.length, 1);
+  assert.doesNotThrow(() =>
+    traceAnalysis.assertProviderRequestTraceComplete(result, { expectedIdentity: identity }),
+  );
+  assert.throws(
+    () =>
+      traceAnalysis.assertProviderRequestTraceComplete(result, {
+        expectedIdentity: { ...identity, runId: 'run-unrelated' },
+      }),
+    /runId.*run-unrelated.*run-2/i,
+  );
+});
+
+test('fails completeness when a later request attempt record is torn', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-provider-trace-'));
+  const traceEventsPath = join(dir, 'events.jsonl');
+  const identity = { runId: 'run-3', sessionId: 'session-3', turnId: 'turn-3' };
+  const capture = {
+    type: 'provider_request_captured',
+    id: 'capture-event-1',
+    ...identity,
+    ts: 1,
+    data: {
+      schemaVersion: 2,
+      traceId: 'provider-trace-3',
+      captureId: 'capture-1',
+      artifactId: 'artifact-capture-1',
+      turnId: identity.turnId,
+      step: 0,
+      providerId: 'openai',
+      modelId: 'k3',
+      requestHash: 'sha256:request-1',
+      requestPayloadWithoutProviderOptionsHash: 'sha256:shared-request-1',
+      requestBytes: 100,
+      segments: [],
+    },
+  };
+  const firstAttempt = {
+    type: 'provider_request_attempt_recorded',
+    id: 'attempt-event-1',
+    ...identity,
+    ts: 3,
+    data: {
+      traceId: 'provider-trace-3',
+      attemptId: 'attempt-1',
+      turnId: identity.turnId,
+      step: 0,
+      attempt: 1,
+      captureId: 'capture-1',
+      captureArtifactId: 'artifact-capture-1',
+      providerId: 'openai',
+      modelId: 'k3',
+      requestHash: 'sha256:request-1',
+      requestBytes: 100,
+      segments: [],
+      startedAt: 2,
+      completedAt: 3,
+      status: 'failed',
+      latencyMs: 1,
+    },
+  };
+  await writeFile(
+    traceEventsPath,
+    `${JSON.stringify(capture)}\n${JSON.stringify(firstAttempt)}\n{"type":"provider_request_attempt_recorded"`,
+  );
+
+  const result = await traceAnalysis.readProviderRequestTrace(traceEventsPath);
+
+  assert.equal(result.attempts.length, 1);
+  assert.deepEqual(
+    result.diagnostics.map((diagnostic) => diagnostic.code),
+    ['invalid_json'],
+  );
+  assert.throws(
+    () => traceAnalysis.assertProviderRequestTraceComplete(result),
+    /line 3.*valid JSON/i,
+  );
+});
+
+test('diagnoses a complete but malformed request attempt row', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-provider-trace-'));
+  const traceEventsPath = join(dir, 'events.jsonl');
+  const { capture, attempt } = completeTraceRows('run-4');
+  Reflect.deleteProperty(attempt.data, 'requestHash');
+  await writeFile(traceEventsPath, `${JSON.stringify(capture)}\n${JSON.stringify(attempt)}\n`);
+
+  const result = await traceAnalysis.readProviderRequestTrace(traceEventsPath);
+
+  assert.deepEqual(
+    result.diagnostics.map((diagnostic) => diagnostic.code),
+    ['invalid_attempt'],
+  );
+  assert.throws(
+    () => traceAnalysis.assertProviderRequestTraceComplete(result),
+    /line 2.*attempt data is invalid/i,
+  );
+});
+
+test('accepts request attempt timing emitted across a non-monotonic clock adjustment', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-provider-trace-'));
+  const traceEventsPath = join(dir, 'events.jsonl');
+  const { capture, attempt } = completeTraceRows('run-clock-adjustment');
+  attempt.data.startedAt = 4;
+  attempt.data.completedAt = 3;
+  attempt.data.latencyMs = 0;
+  await writeFile(traceEventsPath, `${JSON.stringify(capture)}\n${JSON.stringify(attempt)}\n`);
+
+  const result = await traceAnalysis.readProviderRequestTrace(traceEventsPath);
+
+  assert.deepEqual(result.diagnostics, []);
+  assert.doesNotThrow(() => traceAnalysis.assertProviderRequestTraceComplete(result));
+});
+
+test('fails completeness when provider request rows mix execution identities', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-provider-trace-'));
+  const traceEventsPath = join(dir, 'events.jsonl');
+  const { capture, attempt } = completeTraceRows('run-identity-a');
+  attempt.runId = 'run-identity-b';
+  await writeFile(traceEventsPath, `${JSON.stringify(capture)}\n${JSON.stringify(attempt)}\n`);
+
+  const result = await traceAnalysis.readProviderRequestTrace(traceEventsPath);
+
+  assert.deepEqual(
+    result.diagnostics.map((diagnostic) => diagnostic.code),
+    ['mixed_identity'],
+  );
+  assert.throws(
+    () => traceAnalysis.assertProviderRequestTraceComplete(result),
+    /line 2.*identity.*run-identity-b.*run-identity-a/i,
+  );
+});
+
+test('fails completeness when an attempt does not match its request capture', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-provider-trace-'));
+  const traceEventsPath = join(dir, 'events.jsonl');
+  const { capture, attempt } = completeTraceRows('run-mismatched-capture');
+  attempt.data.requestHash = 'sha256:another-request';
+  await writeFile(traceEventsPath, `${JSON.stringify(capture)}\n${JSON.stringify(attempt)}\n`);
+
+  const result = await traceAnalysis.readProviderRequestTrace(traceEventsPath);
+
+  assert.deepEqual(result.diagnostics, []);
+  assert.throws(
+    () => traceAnalysis.assertProviderRequestTraceComplete(result),
+    /attempt attempt-1 does not match its request capture/i,
+  );
+});
+
+test('fails completeness when capture ids are duplicated', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-provider-trace-'));
+  const traceEventsPath = join(dir, 'events.jsonl');
+  const { capture, attempt } = completeTraceRows('run-duplicate-capture');
+  const duplicateCapture = structuredClone(capture);
+  duplicateCapture.id = 'capture-event-2';
+  await writeFile(
+    traceEventsPath,
+    `${[capture, duplicateCapture, attempt].map((event) => JSON.stringify(event)).join('\n')}\n`,
+  );
+
+  const result = await traceAnalysis.readProviderRequestTrace(traceEventsPath);
+
+  assert.throws(
+    () => traceAnalysis.assertProviderRequestTraceComplete(result),
+    /duplicate capture id capture-1/i,
+  );
+});
+
+test('fails completeness when attempt ids are duplicated', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-provider-trace-'));
+  const traceEventsPath = join(dir, 'events.jsonl');
+  const { capture, attempt } = completeTraceRows('run-duplicate-attempt');
+  const duplicateAttempt = structuredClone(attempt);
+  duplicateAttempt.id = 'attempt-event-2';
+  duplicateAttempt.data.attempt = 2;
+  await writeFile(
+    traceEventsPath,
+    `${[capture, attempt, duplicateAttempt].map((event) => JSON.stringify(event)).join('\n')}\n`,
+  );
+
+  const result = await traceAnalysis.readProviderRequestTrace(traceEventsPath);
+
+  assert.throws(
+    () => traceAnalysis.assertProviderRequestTraceComplete(result),
+    /duplicate attempt id attempt-1/i,
+  );
+});
+
+test('fails completeness when a capture has no request attempt', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-provider-trace-'));
+  const traceEventsPath = join(dir, 'events.jsonl');
+  const { capture, attempt } = completeTraceRows('run-unattempted-capture');
+  const unattemptedCapture = structuredClone(capture);
+  unattemptedCapture.id = 'capture-event-2';
+  unattemptedCapture.ts = 5;
+  unattemptedCapture.data.captureId = 'capture-2';
+  unattemptedCapture.data.artifactId = 'artifact-capture-2';
+  unattemptedCapture.data.step = 1;
+  unattemptedCapture.data.requestHash = 'sha256:request-2';
+  await writeFile(
+    traceEventsPath,
+    `${[capture, attempt, unattemptedCapture].map((event) => JSON.stringify(event)).join('\n')}\n`,
+  );
+
+  const result = await traceAnalysis.readProviderRequestTrace(traceEventsPath);
+
+  assert.throws(
+    () => traceAnalysis.assertProviderRequestTraceComplete(result),
+    /capture capture-2 has no request attempt/i,
+  );
+});
+
+test('fails completeness when individually valid attempts have an ordinal gap', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-provider-trace-'));
+  const traceEventsPath = join(dir, 'events.jsonl');
+  const { capture, attempt } = completeTraceRows('run-5');
+  const thirdAttempt = structuredClone(attempt);
+  thirdAttempt.id = 'attempt-event-3';
+  thirdAttempt.ts = 6;
+  thirdAttempt.data.attemptId = 'attempt-3';
+  thirdAttempt.data.attempt = 3;
+  thirdAttempt.data.startedAt = 5;
+  thirdAttempt.data.completedAt = 6;
+  thirdAttempt.data.latencyMs = 1;
+  await writeFile(
+    traceEventsPath,
+    `${[capture, attempt, thirdAttempt].map((event) => JSON.stringify(event)).join('\n')}\n`,
+  );
+
+  const result = await traceAnalysis.readProviderRequestTrace(traceEventsPath);
+
+  assert.deepEqual(result.diagnostics, []);
+  assert.throws(
+    () => traceAnalysis.assertProviderRequestTraceComplete(result),
+    /step 0 request attempt sequence is incomplete/i,
+  );
+});
+
+function completeTraceRows(runId: string) {
+  const identity = { runId, sessionId: `session-${runId}`, turnId: `turn-${runId}` };
+  const capture = {
+    type: 'provider_request_captured',
+    id: 'capture-event-1',
+    ...identity,
+    ts: 1,
+    data: {
+      schemaVersion: 2,
+      traceId: `trace-${runId}`,
+      captureId: 'capture-1',
+      artifactId: 'artifact-capture-1',
+      turnId: identity.turnId,
+      step: 0,
+      providerId: 'openai',
+      modelId: 'k3',
+      requestHash: 'sha256:request-1',
+      requestPayloadWithoutProviderOptionsHash: 'sha256:shared-request-1',
+      requestBytes: 100,
+      segments: [],
+    },
+  };
+  const attempt = {
+    type: 'provider_request_attempt_recorded',
+    id: 'attempt-event-1',
+    ...identity,
+    ts: 4,
+    data: {
+      traceId: `trace-${runId}`,
+      attemptId: 'attempt-1',
+      turnId: identity.turnId,
+      step: 0,
+      attempt: 1,
+      captureId: 'capture-1',
+      captureArtifactId: 'artifact-capture-1',
+      providerId: 'openai',
+      modelId: 'k3',
+      requestHash: 'sha256:request-1',
+      requestBytes: 100,
+      segments: [],
+      startedAt: 2,
+      completedAt: 4,
+      status: 'completed',
+      latencyMs: 2,
+    },
+  };
+  return { capture, attempt };
+}

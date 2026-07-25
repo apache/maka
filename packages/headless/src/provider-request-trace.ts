@@ -4,9 +4,17 @@ import {
   findFirstChangedCacheableSegment,
   type PreparedRequestSegment,
   type PreparedRequestSegmentRef,
+  type ProviderRequestAttemptRecord,
 } from '@maka/runtime';
 
+export interface ProviderRequestTraceIdentity {
+  runId: string;
+  sessionId: string;
+  turnId: string;
+}
+
 export interface ProviderRequestTraceCaptureAnalysis {
+  schemaVersion: 1 | 2;
   traceId: string;
   captureId: string;
   artifactId: string;
@@ -15,14 +23,38 @@ export interface ProviderRequestTraceCaptureAnalysis {
   providerId: string;
   modelId: string;
   requestHash: string;
+  requestPayloadWithoutProviderOptionsHash?: string;
   requestBytes: number;
   segments: PreparedRequestSegment[];
   firstChangedCacheableSegment?: PreparedRequestSegmentRef;
 }
 
+export type ProviderRequestTraceAttemptAnalysis = ProviderRequestAttemptRecord;
+
+export type ProviderRequestTraceDiagnosticCode =
+  | 'invalid_json'
+  | 'invalid_agent_run_event'
+  | 'invalid_capture'
+  | 'invalid_attempt'
+  | 'mixed_identity';
+
+export interface ProviderRequestTraceDiagnostic {
+  code: ProviderRequestTraceDiagnosticCode;
+  line: number;
+  message: string;
+}
+
 export interface ProviderRequestTraceAnalysis {
+  identity?: ProviderRequestTraceIdentity;
   traceId?: string;
   captures: ProviderRequestTraceCaptureAnalysis[];
+  attempts: ProviderRequestTraceAttemptAnalysis[];
+  diagnostics: ProviderRequestTraceDiagnostic[];
+}
+
+export interface AssertProviderRequestTraceCompleteOptions {
+  expectedIdentity?: ProviderRequestTraceIdentity;
+  label?: string;
 }
 
 /** Read Harbor's existing AgentRun events.jsonl; no provider-proxy sidecar is required. */
@@ -31,41 +63,180 @@ export async function readProviderRequestTrace(
 ): Promise<ProviderRequestTraceAnalysis> {
   const text = await readFile(traceEventsPath, 'utf8');
   const captures: ProviderRequestTraceCaptureAnalysis[] = [];
-  for (const line of text.split('\n')) {
+  const attempts: ProviderRequestTraceAttemptAnalysis[] = [];
+  const diagnostics: ProviderRequestTraceDiagnostic[] = [];
+  let identity: ProviderRequestTraceIdentity | undefined;
+  let traceId: string | undefined;
+
+  for (const [index, line] of text.split('\n').entries()) {
     if (!line.trim()) continue;
-    let event: ReturnType<typeof decodeAgentRunEvent>;
+    const lineNumber = index + 1;
+    let value: unknown;
     try {
-      event = decodeAgentRunEvent(JSON.parse(line));
+      value = JSON.parse(line);
     } catch {
+      diagnostics.push({
+        code: 'invalid_json',
+        line: lineNumber,
+        message: 'provider request trace row is not valid JSON',
+      });
       continue;
     }
-    if (event.type !== 'provider_request_captured') continue;
-    const capture = captureFromEvent(event.turnId, event.data);
-    if (!capture) continue;
-    const prior = captures.at(-1);
-    captures.push({
-      ...capture,
-      ...(prior
-        ? {
-            firstChangedCacheableSegment: findFirstChangedCacheableSegment(capture, prior),
-          }
-        : {}),
-    });
+
+    let event: ReturnType<typeof decodeAgentRunEvent>;
+    try {
+      event = decodeAgentRunEvent(value);
+    } catch {
+      diagnostics.push({
+        code: 'invalid_agent_run_event',
+        line: lineNumber,
+        message: 'provider request trace row is not a valid AgentRun event',
+      });
+      continue;
+    }
+    if (
+      event.type !== 'provider_request_captured' &&
+      event.type !== 'provider_request_attempt_recorded'
+    ) {
+      continue;
+    }
+
+    const eventIdentity = identityFromEvent(event);
+    if (!identity) {
+      identity = eventIdentity;
+    } else if (!sameIdentity(identity, eventIdentity)) {
+      diagnostics.push({
+        code: 'mixed_identity',
+        line: lineNumber,
+        message: `provider request trace row identity ${formatIdentity(eventIdentity)} differs from ${formatIdentity(identity)}`,
+      });
+    }
+
+    if (event.type === 'provider_request_captured') {
+      const parsed = captureFromEvent(event.turnId, event.data);
+      if ('error' in parsed) {
+        diagnostics.push({ code: 'invalid_capture', line: lineNumber, message: parsed.error });
+        continue;
+      }
+      traceId ??= parsed.value.traceId;
+      const prior = captures.at(-1);
+      captures.push({
+        ...parsed.value,
+        ...(prior
+          ? {
+              firstChangedCacheableSegment: findFirstChangedCacheableSegment(parsed.value, prior),
+            }
+          : {}),
+      });
+      continue;
+    }
+
+    const parsed = attemptFromEvent(event.turnId, event.data);
+    if ('error' in parsed) {
+      diagnostics.push({ code: 'invalid_attempt', line: lineNumber, message: parsed.error });
+      continue;
+    }
+    traceId ??= parsed.value.traceId;
+    attempts.push(parsed.value);
   }
+
   return {
-    ...(captures[0] ? { traceId: captures[0].traceId } : {}),
+    ...(identity ? { identity } : {}),
+    ...(traceId ? { traceId } : {}),
     captures,
+    attempts,
+    diagnostics,
   };
 }
+
+export function assertProviderRequestTraceComplete(
+  trace: ProviderRequestTraceAnalysis,
+  options: AssertProviderRequestTraceCompleteOptions = {},
+): void {
+  const label = options.label ?? 'Provider request trace';
+  const fail = (message: string): never => {
+    throw new Error(`${label}: ${message}`);
+  };
+  const diagnostic = trace.diagnostics[0];
+  if (diagnostic) fail(`line ${diagnostic.line}: ${diagnostic.message}`);
+  const identity = trace.identity ?? fail('has no execution identity');
+  if (options.expectedIdentity) {
+    for (const key of ['runId', 'sessionId', 'turnId'] as const) {
+      if (identity[key] !== options.expectedIdentity[key]) {
+        fail(`${key} expected ${options.expectedIdentity[key]}, observed ${identity[key]}`);
+      }
+    }
+  }
+  const traceId = trace.traceId ?? fail('has no provider trace id');
+  if (trace.captures.length === 0 || trace.attempts.length === 0) {
+    fail('has incomplete provider request telemetry');
+  }
+
+  const captures = new Map<string, ProviderRequestTraceCaptureAnalysis>();
+  for (const capture of trace.captures) {
+    if (captures.has(capture.captureId)) fail(`has duplicate capture id ${capture.captureId}`);
+    if (capture.traceId !== traceId) fail(`capture ${capture.captureId} has another trace id`);
+    if (capture.turnId !== identity.turnId) {
+      fail(`capture ${capture.captureId} has another turn id`);
+    }
+    captures.set(capture.captureId, capture);
+  }
+
+  const attemptIds = new Set<string>();
+  const referencedCaptureIds = new Set<string>();
+  const attemptNumbersByStep = new Map<number, number[]>();
+  for (const attempt of trace.attempts) {
+    if (attemptIds.has(attempt.attemptId)) fail(`has duplicate attempt id ${attempt.attemptId}`);
+    attemptIds.add(attempt.attemptId);
+    if (attempt.traceId !== traceId) fail(`attempt ${attempt.attemptId} has another trace id`);
+    if (attempt.turnId !== identity.turnId) {
+      fail(`attempt ${attempt.attemptId} has another turn id`);
+    }
+    const capture =
+      captures.get(attempt.captureId) ??
+      fail(`attempt ${attempt.attemptId} does not match its request capture`);
+    if (!attemptMatchesCapture(attempt, capture)) {
+      fail(`attempt ${attempt.attemptId} does not match its request capture`);
+    }
+    referencedCaptureIds.add(capture.captureId);
+    const numbers = attemptNumbersByStep.get(attempt.step) ?? [];
+    numbers.push(attempt.attempt);
+    attemptNumbersByStep.set(attempt.step, numbers);
+  }
+
+  for (const captureId of captures.keys()) {
+    if (!referencedCaptureIds.has(captureId)) fail(`capture ${captureId} has no request attempt`);
+  }
+  for (const [step, numbers] of attemptNumbersByStep) {
+    numbers.sort((left, right) => left - right);
+    for (let index = 0; index < numbers.length; index += 1) {
+      if (numbers[index] !== index + 1) {
+        fail(`step ${step} request attempt sequence is incomplete`);
+      }
+    }
+  }
+}
+
+type ParseResult<T> = { value: T } | { error: string };
 
 function captureFromEvent(
   turnId: string,
   data: Record<string, unknown> | undefined,
-): ProviderRequestTraceCaptureAnalysis | undefined {
-  if (!data) return undefined;
-  const segments = Array.isArray(data.segments)
-    ? data.segments.map(segmentFromValue).filter((value) => value !== undefined)
-    : [];
+): ParseResult<ProviderRequestTraceCaptureAnalysis> {
+  if (!data) return { error: 'provider request capture has no data' };
+  if (data.schemaVersion !== 1 && data.schemaVersion !== 2) {
+    return { error: 'provider request capture has an unsupported schema version' };
+  }
+  if (data.turnId !== undefined && data.turnId !== turnId) {
+    return { error: 'provider request capture turn id differs from its event envelope' };
+  }
+  if (!Array.isArray(data.segments)) {
+    return { error: 'provider request capture segments are missing' };
+  }
+  const segments = data.segments.map(segmentFromValue);
+  if (segments.some((segment) => segment === undefined)) {
+    return { error: 'provider request capture contains an invalid segment' };
+  }
   if (
     typeof data.traceId !== 'string' ||
     typeof data.captureId !== 'string' ||
@@ -75,22 +246,174 @@ function captureFromEvent(
     typeof data.modelId !== 'string' ||
     typeof data.requestHash !== 'string' ||
     !isNonNegativeInteger(data.requestBytes) ||
-    segments.length !== (Array.isArray(data.segments) ? data.segments.length : 0)
+    (data.requestPayloadWithoutProviderOptionsHash !== undefined &&
+      typeof data.requestPayloadWithoutProviderOptionsHash !== 'string') ||
+    (data.schemaVersion === 2 && typeof data.requestPayloadWithoutProviderOptionsHash !== 'string')
   ) {
-    return undefined;
+    return { error: 'provider request capture data is invalid' };
   }
   return {
-    traceId: data.traceId,
-    captureId: data.captureId,
-    artifactId: data.artifactId,
-    turnId,
-    step: data.step,
-    providerId: data.providerId,
-    modelId: data.modelId,
-    requestHash: data.requestHash,
-    requestBytes: data.requestBytes,
-    segments,
+    value: {
+      schemaVersion: data.schemaVersion,
+      traceId: data.traceId,
+      captureId: data.captureId,
+      artifactId: data.artifactId,
+      turnId,
+      step: data.step,
+      providerId: data.providerId,
+      modelId: data.modelId,
+      requestHash: data.requestHash,
+      ...(data.requestPayloadWithoutProviderOptionsHash !== undefined
+        ? {
+            requestPayloadWithoutProviderOptionsHash: data.requestPayloadWithoutProviderOptionsHash,
+          }
+        : {}),
+      requestBytes: data.requestBytes,
+      segments: segments as PreparedRequestSegment[],
+    },
   };
+}
+
+function attemptFromEvent(
+  turnId: string,
+  data: Record<string, unknown> | undefined,
+): ParseResult<ProviderRequestTraceAttemptAnalysis> {
+  if (!data) return { error: 'provider request attempt has no data' };
+  if (data.turnId !== turnId) {
+    return { error: 'provider request attempt turn id differs from its event envelope' };
+  }
+  if (!Array.isArray(data.segments)) {
+    return { error: 'provider request attempt segments are missing' };
+  }
+  const segments = data.segments.map(segmentFromValue);
+  if (segments.some((segment) => segment === undefined)) {
+    return { error: 'provider request attempt contains an invalid segment' };
+  }
+  const requiredStrings = [
+    'traceId',
+    'attemptId',
+    'captureId',
+    'captureArtifactId',
+    'providerId',
+    'modelId',
+    'requestHash',
+  ] as const;
+  if (
+    requiredStrings.some((key) => typeof data[key] !== 'string') ||
+    !isNonNegativeInteger(data.step) ||
+    !isPositiveInteger(data.attempt) ||
+    !isNonNegativeInteger(data.requestBytes) ||
+    !isNonNegativeInteger(data.startedAt) ||
+    !isNonNegativeInteger(data.completedAt) ||
+    !isAttemptStatus(data.status) ||
+    !isNonNegativeInteger(data.latencyMs) ||
+    (data.finishReason !== undefined && typeof data.finishReason !== 'string') ||
+    (data.timeToFirstTokenMs !== undefined && !isNonNegativeInteger(data.timeToFirstTokenMs))
+  ) {
+    return { error: 'provider request attempt data is invalid' };
+  }
+  const optionalTokens = [
+    'inputTokens',
+    'cacheReadInputTokens',
+    'cacheMissInputTokens',
+    'cacheWriteInputTokens',
+    'outputTokens',
+    'reasoningTokens',
+  ] as const;
+  if (
+    optionalTokens.some((key) => data[key] !== undefined && !isNonNegativeInteger(data[key])) ||
+    !validSource(data.cacheReadInputSource) ||
+    !validSource(data.cacheMissInputSource) ||
+    !validSource(data.cacheWriteInputSource)
+  ) {
+    return { error: 'provider request attempt usage is invalid' };
+  }
+  const inputTokens = data.inputTokens as number | undefined;
+  const cacheReadInputTokens = data.cacheReadInputTokens as number | undefined;
+  const cacheMissInputTokens = data.cacheMissInputTokens as number | undefined;
+  const cacheWriteInputTokens = data.cacheWriteInputTokens as number | undefined;
+  const outputTokens = data.outputTokens as number | undefined;
+  const reasoningTokens = data.reasoningTokens as number | undefined;
+  const cacheReadInputSource = data.cacheReadInputSource as
+    | ProviderRequestAttemptRecord['cacheReadInputSource']
+    | undefined;
+  const cacheMissInputSource = data.cacheMissInputSource as
+    | ProviderRequestAttemptRecord['cacheMissInputSource']
+    | undefined;
+  const cacheWriteInputSource = data.cacheWriteInputSource as
+    | ProviderRequestAttemptRecord['cacheWriteInputSource']
+    | undefined;
+  return {
+    value: {
+      traceId: data.traceId as string,
+      attemptId: data.attemptId as string,
+      turnId,
+      step: data.step,
+      attempt: data.attempt,
+      captureId: data.captureId as string,
+      captureArtifactId: data.captureArtifactId as string,
+      providerId: data.providerId as string,
+      modelId: data.modelId as string,
+      requestHash: data.requestHash as string,
+      requestBytes: data.requestBytes,
+      segments: segments as PreparedRequestSegment[],
+      startedAt: data.startedAt,
+      completedAt: data.completedAt,
+      status: data.status,
+      ...(data.finishReason !== undefined ? { finishReason: data.finishReason } : {}),
+      latencyMs: data.latencyMs,
+      ...(data.timeToFirstTokenMs !== undefined
+        ? { timeToFirstTokenMs: data.timeToFirstTokenMs }
+        : {}),
+      ...(inputTokens !== undefined ? { inputTokens } : {}),
+      ...(cacheReadInputTokens !== undefined ? { cacheReadInputTokens } : {}),
+      ...(cacheReadInputSource !== undefined ? { cacheReadInputSource } : {}),
+      ...(cacheMissInputTokens !== undefined ? { cacheMissInputTokens } : {}),
+      ...(cacheMissInputSource !== undefined ? { cacheMissInputSource } : {}),
+      ...(cacheWriteInputTokens !== undefined ? { cacheWriteInputTokens } : {}),
+      ...(cacheWriteInputSource !== undefined ? { cacheWriteInputSource } : {}),
+      ...(outputTokens !== undefined ? { outputTokens } : {}),
+      ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+    },
+  };
+}
+
+function attemptMatchesCapture(
+  attempt: ProviderRequestTraceAttemptAnalysis,
+  capture: ProviderRequestTraceCaptureAnalysis,
+): boolean {
+  return (
+    attempt.traceId === capture.traceId &&
+    attempt.captureArtifactId === capture.artifactId &&
+    attempt.turnId === capture.turnId &&
+    attempt.step === capture.step &&
+    attempt.providerId === capture.providerId &&
+    attempt.modelId === capture.modelId &&
+    attempt.requestHash === capture.requestHash &&
+    attempt.requestBytes === capture.requestBytes &&
+    segmentsEqual(attempt.segments, capture.segments)
+  );
+}
+
+function segmentsEqual(
+  left: readonly PreparedRequestSegment[],
+  right: readonly PreparedRequestSegment[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((segment, index) => {
+      const other = right[index];
+      return (
+        other !== undefined &&
+        segment.kind === other.kind &&
+        segment.index === other.index &&
+        segment.cacheable === other.cacheable &&
+        segment.hash === other.hash &&
+        segment.bytes === other.bytes &&
+        segment.role === other.role
+      );
+    })
+  );
 }
 
 function segmentFromValue(value: unknown): PreparedRequestSegment | undefined {
@@ -111,6 +434,41 @@ function segmentFromValue(value: unknown): PreparedRequestSegment | undefined {
   return segment as unknown as PreparedRequestSegment;
 }
 
+function identityFromEvent(
+  event: ReturnType<typeof decodeAgentRunEvent>,
+): ProviderRequestTraceIdentity {
+  return { runId: event.runId, sessionId: event.sessionId, turnId: event.turnId };
+}
+
+function sameIdentity(
+  left: ProviderRequestTraceIdentity,
+  right: ProviderRequestTraceIdentity,
+): boolean {
+  return (
+    left.runId === right.runId && left.sessionId === right.sessionId && left.turnId === right.turnId
+  );
+}
+
+function formatIdentity(identity: ProviderRequestTraceIdentity): string {
+  return `${identity.runId}/${identity.sessionId}/${identity.turnId}`;
+}
+
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return isNonNegativeInteger(value) && value > 0;
+}
+
+function isAttemptStatus(value: unknown): value is ProviderRequestAttemptRecord['status'] {
+  return (
+    value === 'completed' || value === 'failed' || value === 'interrupted' || value === 'aborted'
+  );
+}
+
+function validSource(
+  value: unknown,
+): value is ProviderRequestAttemptRecord['cacheReadInputSource'] {
+  return value === undefined || value === 'provider' || value === 'derived';
 }

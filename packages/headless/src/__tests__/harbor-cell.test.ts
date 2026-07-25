@@ -3124,7 +3124,7 @@ describe('runHarborCell', () => {
       assert.ok(backendInput.recordProviderRequestCapture);
       await backendInput.loadSynthesisCache({ sessionId: 'session-1' });
       const capture: ProviderRequestCaptureRecord = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         traceId: 'trace-1',
         captureId: 'capture-1',
         turnId: 'turn-1',
@@ -3132,6 +3132,7 @@ describe('runHarborCell', () => {
         providerId: 'openai',
         modelId: 'gpt-4o-mini',
         requestHash: 'sha256:request',
+        requestPayloadWithoutProviderOptionsHash: 'sha256:shared-request',
         requestBytes: 18,
         segments: [],
         serializedRequest: '{"prompt":"hello"}',

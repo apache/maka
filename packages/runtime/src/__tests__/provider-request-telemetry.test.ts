@@ -199,7 +199,7 @@ describe('provider request capture commit', () => {
     });
 
     const result = await recordCapture({
-      schemaVersion: 1,
+      schemaVersion: 2,
       traceId: 'trace-1',
       captureId: 'capture-1',
       turnId: 'turn-1',
@@ -207,6 +207,7 @@ describe('provider request capture commit', () => {
       providerId: 'openai',
       modelId: 'gpt-test',
       requestHash: 'sha256:request',
+      requestPayloadWithoutProviderOptionsHash: 'sha256:shared-request',
       requestBytes: 2,
       segments: [],
       serializedRequest: '{}',
@@ -242,7 +243,7 @@ describe('provider request capture commit', () => {
 
     await assert.rejects(
       recordCapture({
-        schemaVersion: 1,
+        schemaVersion: 2,
         traceId: 'trace-1',
         captureId: 'capture-1',
         turnId: 'turn-1',
@@ -250,6 +251,7 @@ describe('provider request capture commit', () => {
         providerId: 'openai',
         modelId: 'gpt-test',
         requestHash: 'sha256:request',
+        requestPayloadWithoutProviderOptionsHash: 'sha256:shared-request',
         requestBytes: 2,
         segments: [],
         serializedRequest: '{}',
