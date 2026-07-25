@@ -138,15 +138,45 @@ function summaryGeometry(summary: ReturnType<import('@playwright/test').Page['lo
   });
 }
 
-test('permission and health summary tiles stay readable at the window floor', async ({ window: page }) => {
+test('permission rows keep their text at the window floor', async ({ permissionSettingsWindow: page }) => {
   await page.setViewportSize({ width: 480, height: 900 });
-  const settings = await openSettings(page);
-
-  await settings.getByRole('button', { name: '权限与能力', exact: true }).click();
+  const settings = page.getByRole('main', { name: '设置内容' });
   await expect(settings.getByRole('heading', { name: '系统权限' })).toBeVisible();
 
+  // Prove the fixture renders the shape this contract is about before measuring
+  // it: only a requestable + openable permission draws BOTH grant buttons, and
+  // that is the row whose body the `auto` actions track used to squeeze to 0px.
+  // Reading the host's real TCC state would silently skip this — see
+  // `main/permission-snapshot-e2e-fixture.ts`.
+  const rows = settings.locator('.settingsOsPermissionRow');
+  await expect(rows).toHaveCount(5);
+  const twoButtonRows = await rows.evaluateAll((elements) =>
+    elements
+      .map((element, index) => ({
+        index,
+        buttons: element.querySelectorAll('.settingsOsPermissionActions button').length,
+      }))
+      .filter((row) => row.buttons === 2)
+      .map((row) => row.index),
+  );
+  expect(twoButtonRows.length).toBeGreaterThan(0);
+
+  await expect.poll(
+    () =>
+      rows.evaluateAll((elements) =>
+        elements.every((element) => {
+          const body = element.querySelector('.settingsOsPermissionBody');
+          if (!body) return false;
+          // Wide enough for the widest status Badge (~101px intrinsic and
+          // `whitespace-nowrap` by primitive contract), and not clipping.
+          return (
+            body.getBoundingClientRect().width >= 101 && body.scrollWidth <= body.clientWidth
+          );
+        }),
+      ),
+  ).toBe(true);
+
   const permissionSummary = settings.locator('.settingsPermissionSummary');
-  await expect(permissionSummary).toBeVisible();
   await expect.poll(async () => {
     const { trackCount, narrowestTrack, valuesContained } = await summaryGeometry(permissionSummary);
     return {
@@ -156,23 +186,16 @@ test('permission and health summary tiles stay readable at the window floor', as
     };
   }).toEqual({ foldedToFewTracks: true, tracksStayLegible: true, valuesContained: true });
 
-  // The row's `auto` actions track used to beat the body's `minmax(0, 1fr)` and
-  // squeeze it to literally 0px, so the rows that needed action were the ones
-  // that stopped saying which permission they were about.
-  const permissionBodies = settings.locator('.settingsOsPermissionBody');
-  await expect(permissionBodies.first()).toBeVisible();
-  await expect.poll(
-    () =>
-      permissionBodies.evaluateAll((elements) =>
-        elements.every((element) => element.getBoundingClientRect().width >= 96),
-      ),
-  ).toBe(true);
-
   await expect.poll(
     () => settings.evaluate((element) => element.scrollWidth <= element.clientWidth),
   ).toBe(true);
+});
 
+test('health summary tiles stay readable at the window floor', async ({ window: page }) => {
+  await page.setViewportSize({ width: 480, height: 900 });
+  const settings = await openSettings(page);
   await settings.getByRole('button', { name: '健康', exact: true }).click();
+
   const healthSummary = settings.locator('.settingsHealthSummary');
   await expect(healthSummary).toBeVisible();
   await expect.poll(async () => {
@@ -213,10 +236,9 @@ test('permission and health summaries keep one track per metric when wide', asyn
   }).toEqual({ trackCount: 5, tileCount: 5 });
 });
 
-test('capability diagnostics stay contained when expanded at the window floor', async ({ window: page }) => {
+test('capability diagnostics stay contained when expanded at the window floor', async ({ permissionSettingsWindow: page }) => {
   await page.setViewportSize({ width: 480, height: 900 });
-  const settings = await openSettings(page);
-  await settings.getByRole('button', { name: '权限与能力', exact: true }).click();
+  const settings = page.getByRole('main', { name: '设置内容' });
 
   await settings.getByRole('button', { name: '展开详情' }).click();
   const capabilityList = settings.locator('.settingsCapabilityList');

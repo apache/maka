@@ -211,6 +211,7 @@ export const test = base.extend<{
   staleSessionsWindow: Page;
   sessionWorkbarWindow: Page;
   botSettingsWindow: Page;
+  permissionSettingsWindow: Page;
   zhLocaleWindow: Page;
   enLocaleWindow: Page;
   localeSwitchWindow: Page;
@@ -303,6 +304,22 @@ export const test = base.extend<{
   botSettingsWindow: async ({}, use) => {
     await withE2eWindow(
       { seed: false, readinessSelector: '[aria-label="设置内容"]', e2eFixtureScenario: 'settings-bots', locale: 'zh' },
+      use,
+    );
+  },
+  // #1361: Permission Center with a typed OS-permission snapshot (see
+  // `main/permission-snapshot-e2e-fixture.ts`). The narrow-layout contract is
+  // about rows that carry grant buttons, which the host's real TCC state cannot
+  // guarantee — a granted dev machine renders none, and Linux CI reports most
+  // permissions as `unsupported`.
+  permissionSettingsWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: false,
+        readinessSelector: '.settingsOsPermissionRow',
+        e2eFixtureScenario: 'settings-permissions',
+        locale: 'zh',
+      },
       use,
     );
   },

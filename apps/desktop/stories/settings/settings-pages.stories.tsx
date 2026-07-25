@@ -746,6 +746,30 @@ export const PermissionCenter: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="permissions" />,
 };
+/**
+ * #1361: the capability layers grid, the guidance block and the OfficeCLI
+ * install command are all hidden until diagnostics are expanded, so the
+ * collapsed story gives those layouts no baseline at all — which is exactly
+ * where the remaining overflow was hiding.
+ */
+export const PermissionCenterDiagnosticsExpanded: Story = {
+  decorators: [withSettingsBridge],
+  render: () => <SettingsStory section="permissions" />,
+  play: async ({ canvasElement }) => {
+    const toggle = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('展开详情') === true,
+    );
+    toggle.click();
+    await waitForStoryCondition(
+      () =>
+        canvasElement
+          .querySelector('.settingsCapabilityList')
+          ?.getAttribute('data-diagnostics-open') === 'true',
+      'Permission Center story did not expand the capability diagnostics',
+    );
+  },
+};
 export const HealthCenter: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="health" />,

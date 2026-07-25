@@ -363,9 +363,23 @@
      border now lives as a left-edge accent stripe (see status rules
      below) so denied / granted / not_determined still read at a glance. */
 
+/* #1361: was `display: grid` with `36px minmax(0, 1fr) auto`. A grid's `auto`
+   track is sized to its content first, so the actions column won every width
+   contest against the body's `minmax(0, 1fr)` — at the 480px window floor the
+   two grant buttons took the whole column and squeezed the body to *0px*,
+   leaving the rows that need action ("等待授权" / "已拒绝") showing an icon and
+   two buttons but not which permission they were about.
+
+   Flex with `wrap` makes that structural rather than a guessed breakpoint: the
+   body declares the width it needs to stay readable, and when the actions no
+   longer fit beside it they move to their own line on their own. A breakpoint
+   would only relocate the problem — the first attempt at this used 620px and
+   still left 621-660px squeezed, because the threshold depends on the button
+   labels, not on the window. */
+
 .settingsOsPermissionRow {
-    display: grid;
-    grid-template-columns: 36px minmax(0, 1fr) auto;
+    display: flex;
+    flex-wrap: wrap;
     align-items: flex-start;
     gap: var(--space-3);
     padding: var(--space-4) var(--space-4);
@@ -373,10 +387,26 @@
     transition: background var(--duration-base) var(--ease-out-strong);
   }
 
+/* Grows to fill the row, but never narrower than the widest status Badge
+   ("当前平台不支持", ~101px intrinsic and `whitespace-nowrap` by primitive
+   contract) — that floor is what pushes the actions onto their own line.
+
+   The basis is that same floor rather than `auto`: with `auto` the body is
+   measured at its max-content prose width when deciding where to wrap, so a
+   long purpose sentence bumped the body itself onto a second line and left the
+   icon stranded alone on the first. Growing from the floor keeps the icon and
+   the text together and lets only the actions wrap. */
+
+.settingsOsPermissionRow > .settingsOsPermissionBody {
+    flex: 1 1 101px;
+    min-width: 101px;
+  }
+
 .settingsOsPermissionIcon {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    flex: 0 0 36px;
     width: 36px;
     height: 36px;
     border-radius: var(--radius-surface);
@@ -525,22 +555,23 @@
     gap: var(--space-1);
   }
 
-  /* The row's `auto` actions track wins the width contest against the body's
-     `minmax(0, 1fr)`: at the 480px floor the two grant buttons claimed the
-     whole 86px and squeezed the body column to literally 0px, so exactly the
-     rows that need action ("等待授权" / "已拒绝") hid *which* permission they
-     were about — only an icon and two buttons remained. Give the actions their
-     own row so the body keeps the full column. That also leaves room for the
-     widest status Badge ("当前平台不支持", ~101px intrinsic and
-     `whitespace-nowrap` by primitive contract), which previously overflowed
-     the 86px body by 15px. */
+  /* The row itself wraps structurally (see `.settingsOsPermissionRow` above),
+     so this breakpoint only handles what wrapping cannot: at ~190px of content
+     column the 36px icon plus the body's 101px floor no longer share a line, and
+     the icon is `aria-hidden` chrome — so it yields, the same trade the Remote
+     Access page makes when it drops its decorative chevron here. The actions
+     then take the full width they wrapped onto, left-aligned under the text. */
   .settingsOsPermissionRow {
-    grid-template-columns: 36px minmax(0, 1fr);
     row-gap: var(--space-2-5);
+    padding-inline: var(--space-2-5);
+  }
+
+  .settingsOsPermissionIcon {
+    display: none;
   }
 
   .settingsOsPermissionActions {
-    grid-column: 2 / -1;
+    flex-basis: 100%;
     justify-content: flex-start;
   }
 
@@ -559,41 +590,19 @@
     flex-direction: column;
     gap: var(--space-1-5);
   }
-}
-
-/* Below ~540px the content column no longer fits the body next to the 36px
-   decorative icon: the widest status Badge alone is ~101px intrinsic. The icon
-   is `aria-hidden` chrome, so it yields first — the same trade the Remote
-   Access page makes when it drops the redundant chevron at its narrow
-   breakpoint. Everything textual keeps the full column. */
-@media (max-width: 540px) {
-  .settingsOsPermissionRow {
-    grid-template-columns: minmax(0, 1fr);
-    padding-inline: var(--space-2-5);
-  }
-
-  .settingsOsPermissionIcon {
-    display: none;
-  }
-
-  .settingsOsPermissionActions {
-    grid-column: 1 / -1;
-  }
 
   .settingsCapabilityRow {
     padding-inline: var(--space-2-5);
   }
-}
 
-/* #1361: the OfficeCLI guidance actions are the widest thing on the page —
-   "复制 macOS/Linux 安装命令" is ~193px intrinsic against a ~96px content
-   column at the 480px floor. Button is a fixed-height (`h-8`) `shrink-0`
-   inline-flex, so on its own it neither shrinks nor wraps and the overflow
-   propagated all the way up through the guidance block to the capability list.
-   Allow these two to shrink and grow taller rather than clipping the label —
-   the install command itself keeps its own horizontal scroll (`code` above is
-   deliberately `white-space: nowrap; overflow: auto`). */
-@media (max-width: 620px) {
+  /* The OfficeCLI guidance actions are the widest thing on the page —
+     "复制 macOS/Linux 安装命令" is ~193px intrinsic against a ~96px content
+     column at the 480px floor. Button is a fixed-height (`h-8`) `shrink-0`
+     inline-flex, so on its own it neither shrinks nor wraps, and the overflow
+     propagated all the way up through the guidance block to the capability
+     list. Allow these two to shrink and grow taller rather than clipping the
+     label — the install command keeps its own horizontal scroll (`code` above
+     is deliberately `white-space: nowrap; overflow: auto`). */
   .settingsCapabilityGuidanceActions > div > * {
     min-width: 0;
     flex-shrink: 1;
