@@ -295,6 +295,54 @@ test('accepts request attempt timing emitted across a non-monotonic clock adjust
   assert.doesNotThrow(() => traceAnalysis.assertProviderRequestTraceComplete(result));
 });
 
+test('accepts finite fractional timing emitted by the Runtime attempt contract', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-provider-trace-'));
+  const traceEventsPath = join(dir, 'events.jsonl');
+  const { capture, attempt } = completeTraceRows('run-fractional-clock');
+  attempt.data.startedAt = 2.25;
+  attempt.data.completedAt = 4.75;
+  attempt.data.latencyMs = 2.5;
+  Reflect.set(attempt.data, 'timeToFirstTokenMs', 0.5);
+  await writeFile(traceEventsPath, `${JSON.stringify(capture)}\n${JSON.stringify(attempt)}\n`);
+
+  const result = await traceAnalysis.readProviderRequestTrace(traceEventsPath);
+
+  assert.deepEqual(result.diagnostics, []);
+  assert.doesNotThrow(() => traceAnalysis.assertProviderRequestTraceComplete(result));
+});
+
+test('fails completeness when the execution contains a trace failure sentinel', async () => {
+  for (const type of ['trace_write_failed', 'event_corrupt'] as const) {
+    const dir = await mkdtemp(join(tmpdir(), 'maka-provider-trace-'));
+    const traceEventsPath = join(dir, 'events.jsonl');
+    const { capture, attempt } = completeTraceRows(`run-${type}`);
+    const sentinel = {
+      type,
+      id: `${type}-event`,
+      runId: capture.runId,
+      sessionId: capture.sessionId,
+      turnId: capture.turnId,
+      ts: 5,
+      message: `${type} fixture`,
+    };
+    await writeFile(
+      traceEventsPath,
+      `${[capture, attempt, sentinel].map((event) => JSON.stringify(event)).join('\n')}\n`,
+    );
+
+    const result = await traceAnalysis.readProviderRequestTrace(traceEventsPath);
+
+    assert.deepEqual(
+      result.diagnostics.map((diagnostic) => diagnostic.code),
+      [type],
+    );
+    assert.throws(
+      () => traceAnalysis.assertProviderRequestTraceComplete(result),
+      new RegExp(`line 3.*${type.replaceAll('_', ' ')}`, 'i'),
+    );
+  }
+});
+
 test('fails completeness when provider request rows mix execution identities', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'maka-provider-trace-'));
   const traceEventsPath = join(dir, 'events.jsonl');

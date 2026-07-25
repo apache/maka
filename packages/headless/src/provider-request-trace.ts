@@ -36,6 +36,8 @@ export type ProviderRequestTraceDiagnosticCode =
   | 'invalid_agent_run_event'
   | 'invalid_capture'
   | 'invalid_attempt'
+  | 'trace_write_failed'
+  | 'event_corrupt'
   | 'mixed_identity';
 
 export interface ProviderRequestTraceDiagnostic {
@@ -96,7 +98,9 @@ export async function readProviderRequestTrace(
     }
     if (
       event.type !== 'provider_request_captured' &&
-      event.type !== 'provider_request_attempt_recorded'
+      event.type !== 'provider_request_attempt_recorded' &&
+      event.type !== 'trace_write_failed' &&
+      event.type !== 'event_corrupt'
     ) {
       continue;
     }
@@ -110,6 +114,15 @@ export async function readProviderRequestTrace(
         line: lineNumber,
         message: `provider request trace row identity ${formatIdentity(eventIdentity)} differs from ${formatIdentity(identity)}`,
       });
+    }
+
+    if (event.type === 'trace_write_failed' || event.type === 'event_corrupt') {
+      diagnostics.push({
+        code: event.type,
+        line: lineNumber,
+        message: `provider request trace contains ${event.type.replaceAll('_', ' ')} evidence`,
+      });
+      continue;
     }
 
     if (event.type === 'provider_request_captured') {
@@ -149,6 +162,11 @@ export async function readProviderRequestTrace(
   };
 }
 
+/**
+ * Validate evidence for a completed execution that was expected to dispatch at
+ * least one provider request. A pre-dispatch cancellation is intentionally
+ * incomplete here because it is indistinguishable from a missing attempt row.
+ */
 export function assertProviderRequestTraceComplete(
   trace: ProviderRequestTraceAnalysis,
   options: AssertProviderRequestTraceCompleteOptions = {},
@@ -303,12 +321,12 @@ function attemptFromEvent(
     !isNonNegativeInteger(data.step) ||
     !isPositiveInteger(data.attempt) ||
     !isNonNegativeInteger(data.requestBytes) ||
-    !isNonNegativeInteger(data.startedAt) ||
-    !isNonNegativeInteger(data.completedAt) ||
+    !isNonNegativeFiniteNumber(data.startedAt) ||
+    !isNonNegativeFiniteNumber(data.completedAt) ||
     !isAttemptStatus(data.status) ||
-    !isNonNegativeInteger(data.latencyMs) ||
+    !isNonNegativeFiniteNumber(data.latencyMs) ||
     (data.finishReason !== undefined && typeof data.finishReason !== 'string') ||
-    (data.timeToFirstTokenMs !== undefined && !isNonNegativeInteger(data.timeToFirstTokenMs))
+    (data.timeToFirstTokenMs !== undefined && !isNonNegativeFiniteNumber(data.timeToFirstTokenMs))
   ) {
     return { error: 'provider request attempt data is invalid' };
   }
@@ -459,6 +477,10 @@ function isNonNegativeInteger(value: unknown): value is number {
 
 function isPositiveInteger(value: unknown): value is number {
   return isNonNegativeInteger(value) && value > 0;
+}
+
+function isNonNegativeFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
 function isAttemptStatus(value: unknown): value is ProviderRequestAttemptRecord['status'] {
