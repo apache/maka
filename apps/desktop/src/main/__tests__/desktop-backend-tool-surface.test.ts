@@ -154,30 +154,27 @@ describe('Desktop backend tool surface', () => {
     assert.equal(host.toolNames.has('Write'), false);
   });
 
-  it('includes Deep Research tools in the ready-empty Skill preview only for that mode', async () => {
+  it('never previews Deep Research tools — the preview stands in for a plain chat', async () => {
+    // #1433: this used to branch on a `mode` the Quick Chat panel passed in
+    // before its session existed. That panel is gone; the only entry point
+    // that picks Deep Research creates its session up front, so by the time
+    // the composer mounts there is a real header and the preview is not it.
+    // A preview that could still claim Deep Research would be a second,
+    // hand-written copy of `sessionModeSeed`.
     const deepResearchTool = tool('deep_research_status', 'read');
     const deps = makeDeps({ deepResearchTools: [deepResearchTool] });
-    const readyConnection = {
-      connection: connectionFor('claude-sonnet-4-5-20250929'),
-      apiKey: 'preview-key',
-      model: 'claude-sonnet-4-5-20250929',
-    };
 
-    const regular = await resolveDesktopNewSessionSkillHost(deps, {
+    const preview = await resolveDesktopNewSessionSkillHost(deps, {
       projectRoot: '/tmp/project',
       workspaceRoot: '/tmp/workspace',
-      readyConnection,
-      context: { mode: 'chat' },
-    });
-    const deepResearch = await resolveDesktopNewSessionSkillHost(deps, {
-      projectRoot: '/tmp/project',
-      workspaceRoot: '/tmp/workspace',
-      readyConnection,
-      context: { mode: 'deep_research' },
+      readyConnection: {
+        connection: connectionFor('claude-sonnet-4-5-20250929'),
+        apiKey: 'preview-key',
+        model: 'claude-sonnet-4-5-20250929',
+      },
     });
 
-    assert.equal(regular.toolNames.has('deep_research_status'), false);
-    assert.equal(deepResearch.toolNames.has('deep_research_status'), true);
+    assert.equal(preview.toolNames.has('deep_research_status'), false);
   });
 
   it('uses explicit preview inputs without reading a nonexistent session plan', async () => {

@@ -3,10 +3,8 @@ import { copyFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   isCollaborationMode,
-  isQuickChatMode,
   type ArtifactSaveResult,
   type CollaborationMode,
-  type QuickChatMode,
 } from '@maka/core';
 import type {
   HostCapabilities,
@@ -43,7 +41,6 @@ export interface NewSessionSkillContext {
   llmConnectionSlug?: string;
   model?: string;
   collaborationMode?: CollaborationMode;
-  mode?: QuickChatMode;
 }
 
 interface WorkspaceResourcesIpcDeps {
@@ -262,13 +259,11 @@ function normalizeNewSessionSkillContext(input: unknown): NewSessionSkillContext
   const collaborationMode = isCollaborationMode(record.collaborationMode)
     ? record.collaborationMode
     : undefined;
-  const mode = isQuickChatMode(record.mode) ? record.mode : undefined;
-  if (!llmConnectionSlug && !model && !collaborationMode && !mode) return undefined;
+  if (!llmConnectionSlug && !model && !collaborationMode) return undefined;
   return {
     ...(llmConnectionSlug ? { llmConnectionSlug } : {}),
     ...(model ? { model } : {}),
     ...(collaborationMode ? { collaborationMode } : {}),
-    ...(mode ? { mode } : {}),
   };
 }
 

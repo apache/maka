@@ -1,7 +1,6 @@
 import {
   activePlanExecution,
   DEFAULT_SESSION_NAME,
-  DEEP_RESEARCH_SESSION_LABEL,
   expertTeamIdFromLabels,
   isDeepResearchSession,
   isPermissionModeWithinCeiling,
@@ -10,7 +9,6 @@ import {
 import type {
   CollaborationMode,
   LlmConnection,
-  QuickChatMode,
   SessionHeader,
   TaskLedgerStore,
 } from '@maka/core';
@@ -89,7 +87,6 @@ export interface DesktopBackendToolSurface {
 
 export interface DesktopNewSessionSkillContext {
   collaborationMode?: CollaborationMode;
-  mode?: QuickChatMode;
 }
 
 /**
@@ -118,8 +115,10 @@ export async function resolveDesktopSessionSkillHost(
 
 /**
  * Resolve Skill capabilities for the empty-state composer before a session is
- * persisted. The preview header mirrors the mode labels and permission mode
- * that `sessions:create` will apply to the real session.
+ * persisted. The preview header stands in for the session the composer will
+ * create on first send, which is always a plain chat — entry points that pick
+ * a mode (Deep Research) create their session up front, so by the time the
+ * composer mounts there is a real header to read from.
  */
 export async function resolveDesktopNewSessionSkillHost(
   deps: DesktopBackendToolSurfaceDeps,
@@ -132,17 +131,16 @@ export async function resolveDesktopNewSessionSkillHost(
 ): Promise<HostCapabilities> {
   const sessionId = 'new-session-skill-preview';
   const now = Date.now();
-  const deepResearch = input.context?.mode === 'deep_research';
   const header: SessionHeader = {
     id: sessionId,
     workspaceRoot: input.workspaceRoot,
     cwd: input.projectRoot,
     createdAt: now,
     lastUsedAt: now,
-    name: deepResearch ? 'Deep Research' : DEFAULT_SESSION_NAME,
+    name: DEFAULT_SESSION_NAME,
     titleIsManual: false,
     isFlagged: false,
-    labels: deepResearch ? [DEEP_RESEARCH_SESSION_LABEL] : [],
+    labels: [],
     isArchived: false,
     status: 'active',
     hasUnread: false,
@@ -150,7 +148,7 @@ export async function resolveDesktopNewSessionSkillHost(
     llmConnectionSlug: input.readyConnection.connection.slug,
     connectionLocked: false,
     model: input.readyConnection.model,
-    permissionMode: deepResearch ? 'explore' : 'ask',
+    permissionMode: 'ask',
     collaborationMode: input.context?.collaborationMode ?? 'agent',
     orchestrationMode: 'default',
     schemaVersion: 1,

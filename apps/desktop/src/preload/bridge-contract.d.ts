@@ -663,7 +663,6 @@ export interface MakaBridge {
         llmConnectionSlug?: string;
         model?: string;
         collaborationMode?: 'agent' | 'plan';
-        mode?: QuickChatMode;
       },
     ): Promise<import('@maka/runtime').InvocableSkillEntry[]>;
     catalog: {

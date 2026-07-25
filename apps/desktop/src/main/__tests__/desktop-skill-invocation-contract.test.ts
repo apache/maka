@@ -91,9 +91,15 @@ describe('Desktop explicit Skill invocation contract', () => {
       desktopToolSurface,
       /resolveDesktopBackendToolSurface\(deps, \{[\s\S]*header: input\.header,[\s\S]*\{ tools \}/,
     );
-    assert.match(
+    // #1433: the preview may READ the Deep Research label off a real header
+    // (`isDeepResearchSession`), but it must not MINT one. Minting it here is
+    // how the old Quick Chat panel ended up with a second, hand-written copy
+    // of what is now `sessionModeSeed` — the sole authority on what a mode
+    // implies. This fails the moment that derivation is written twice.
+    assert.doesNotMatch(
       desktopToolSurface,
-      /input\.context\?\.mode === 'deep_research'[\s\S]*labels: deepResearch \? \[DEEP_RESEARCH_SESSION_LABEL\]/,
+      /DEEP_RESEARCH_SESSION_LABEL/,
+      'only session-mode-seed.ts may derive the Deep Research label',
     );
     assert.doesNotMatch(
       main,
