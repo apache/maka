@@ -202,7 +202,7 @@ describe('prepared provider request capture', () => {
     );
   });
 
-  test('preserves the exact output limit outside top-level provider options', () => {
+  test('normalizes Anthropic thinking budget into the protocol-independent output limit', () => {
     const capture = (providerOptions: Record<string, unknown>, maxOutputTokens: number) =>
       requestShape.capturePreparedProviderRequest({
         providerId: 'kimi-coding-plan',
@@ -224,14 +224,14 @@ describe('prepared provider request capture', () => {
     );
     const openai = capture({ maka: { kimiReasoningField: 'reasoning_content' } }, 32_768);
 
-    assert.notEqual(
+    assert.equal(
       anthropic.requestPayloadWithoutProviderOptionsHash,
       openai.requestPayloadWithoutProviderOptionsHash,
     );
     assert.notEqual(anthropic.requestHash, openai.requestHash);
   });
 
-  test('preserves provider metadata nested in prompt messages and parts', () => {
+  test('excludes provider metadata nested in prompt messages and parts', () => {
     const capture = (prompt: unknown[], tools: unknown[] = []) =>
       requestShape.capturePreparedProviderRequest({
         providerId: 'provider',
@@ -260,7 +260,7 @@ describe('prepared provider request capture', () => {
       },
     ];
 
-    assert.notEqual(
+    assert.equal(
       capture(anthropicPrompt).requestPayloadWithoutProviderOptionsHash,
       capture(sharedPrompt).requestPayloadWithoutProviderOptionsHash,
     );
@@ -309,7 +309,7 @@ describe('prepared provider request capture', () => {
       },
     ];
 
-    assert.notEqual(
+    assert.equal(
       capture(providerToolPrompt, providerTools).requestPayloadWithoutProviderOptionsHash,
       capture(sharedToolPrompt, sharedTools).requestPayloadWithoutProviderOptionsHash,
     );

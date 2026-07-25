@@ -78,7 +78,7 @@ export interface PreparedProviderRequestInput {
 export interface PreparedProviderRequestCapture {
   schemaVersion: 2;
   requestHash: string;
-  /** Hash of the exact model-call payload after removing protocol-owned options. */
+  /** Hash of protocol-independent model-call semantics for cross-protocol comparison. */
   requestPayloadWithoutProviderOptionsHash: string;
   requestBytes: number;
   serializedRequest: string;
@@ -225,17 +225,79 @@ export function capturePreparedProviderRequest(
       modelId: input.modelId,
       payload,
     }),
-    requestPayloadWithoutProviderOptionsHash: stableHash(withoutTopLevelProviderOptions(payload)),
+    requestPayloadWithoutProviderOptionsHash: stableHash(
+      protocolIndependentRequestPayload(payload),
+    ),
     requestBytes: Buffer.byteLength(serializedRequest, 'utf8'),
     serializedRequest,
     segments,
   };
 }
 
-function withoutTopLevelProviderOptions(payload: unknown): unknown {
+function protocolIndependentRequestPayload(payload: unknown): unknown {
   if (!isObjectLike(payload)) return payload;
-  const { providerOptions: _providerOptions, ...shared } = payload;
+  const { providerOptions, ...shared } = payload;
+  const protocolIndependent: Record<string, unknown> = {
+    ...shared,
+    ...(Array.isArray(shared.prompt)
+      ? { prompt: shared.prompt.map(withoutPromptProviderOptions) }
+      : {}),
+    ...(Array.isArray(shared.messages)
+      ? { messages: shared.messages.map(withoutPromptProviderOptions) }
+      : {}),
+    ...(Array.isArray(shared.tools)
+      ? { tools: shared.tools.map(withoutObjectProviderOptions) }
+      : {}),
+  };
+  const thinkingBudget = anthropicThinkingBudget(providerOptions);
+  if (
+    thinkingBudget === undefined ||
+    !isNonNegativeSafeInteger(protocolIndependent.maxOutputTokens)
+  ) {
+    return protocolIndependent;
+  }
+  const wireOutputLimit = protocolIndependent.maxOutputTokens + thinkingBudget;
+  return Number.isSafeInteger(wireOutputLimit)
+    ? { ...protocolIndependent, maxOutputTokens: wireOutputLimit }
+    : protocolIndependent;
+}
+
+function withoutPromptProviderOptions(value: unknown): unknown {
+  const message = withoutObjectProviderOptions(value);
+  if (!isObjectLike(message) || !Array.isArray(message.content)) return message;
+  return { ...message, content: message.content.map(withoutPromptPartProviderOptions) };
+}
+
+function withoutPromptPartProviderOptions(value: unknown): unknown {
+  const part = withoutObjectProviderOptions(value);
+  if (!isObjectLike(part) || part.type !== 'tool-result') return part;
+  const output = withoutObjectProviderOptions(part.output);
+  if (!isObjectLike(output) || output.type !== 'content' || !Array.isArray(output.value)) {
+    return { ...part, output };
+  }
+  return {
+    ...part,
+    output: { ...output, value: output.value.map(withoutObjectProviderOptions) },
+  };
+}
+
+function withoutObjectProviderOptions(value: unknown): unknown {
+  if (!isObjectLike(value)) return value;
+  const { providerOptions: _providerOptions, ...shared } = value;
   return shared;
+}
+
+function anthropicThinkingBudget(providerOptions: unknown): number | undefined {
+  if (!isObjectLike(providerOptions)) return undefined;
+  const anthropic = providerOptions.anthropic;
+  if (!isObjectLike(anthropic)) return undefined;
+  const thinking = anthropic.thinking;
+  if (!isObjectLike(thinking) || thinking.type !== 'enabled') return undefined;
+  return isNonNegativeSafeInteger(thinking.budgetTokens) ? thinking.budgetTokens : undefined;
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 export function findFirstChangedCacheableSegment(
