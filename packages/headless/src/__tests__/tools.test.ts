@@ -1773,11 +1773,14 @@ describe('isolated headless tools', () => {
   });
 
   test('standard isolated tool availability does not reintroduce agent tools into local-read children', () => {
-    const parentTools = buildIsolatedHeadlessTools({
-      async exec() {
-        return { exitCode: 0, stdout: '', stderr: '' };
+    const parentTools = buildIsolatedHeadlessTools(
+      {
+        async exec() {
+          return { exitCode: 0, stdout: '', stderr: '' };
+        },
       },
-    });
+      { agentTools: true },
+    );
     const childTools = buildChildAgentTools(parentTools);
     const plan = new ToolAvailabilityRuntime(
       childTools,
@@ -1800,6 +1803,7 @@ describe('isolated headless tools', () => {
   test('README real-backend sketch preserves child tool overrides', async () => {
     const readme = await readFile(new URL('../../README.md', import.meta.url), 'utf8');
 
+    assert.ok(readme.includes('ctx.tools ??'));
     assert.ok(readme.includes('agentTools: context.config.agentTools,'));
   });
 });

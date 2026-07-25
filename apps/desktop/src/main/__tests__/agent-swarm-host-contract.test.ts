@@ -22,7 +22,10 @@ describe('AgentSwarm host registration contract', () => {
       /buildParentAgentTools\(\{\s*taskLedger: taskLedgerStore,\s*\}\)/,
     );
     assert.match(cli, /const subagentTools = input\.surface === 'tui'\s*\?\s*buildParentAgentTools\(\)/);
-    assert.match(headless, /\.\.\.buildParentAgentTools\(\)/);
+    assert.match(
+      headless,
+      /\.\.\.\(options\.agentTools\s*\?\s*buildParentAgentTools\(\)\s*:\s*\[\]\)/,
+    );
 
     for (const source of [desktop, cli, headless]) {
       assert.doesNotMatch(

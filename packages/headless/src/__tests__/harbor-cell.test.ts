@@ -137,6 +137,50 @@ class CellReportingBackend implements AgentBackend {
   async dispose(): Promise<void> {}
 }
 
+class CellChildAdmissionProbeBackend implements AgentBackend {
+  readonly kind: BackendKind = 'ai-sdk';
+  readonly sessionId: string;
+
+  constructor(
+    sessionId: string,
+    private readonly context: HeadlessBackendContext,
+    private readonly observed: { spawned?: boolean; error?: string },
+  ) {
+    this.sessionId = sessionId;
+  }
+
+  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    assert.ok(this.context.spawnChildSession);
+    assert.ok(input.runId);
+    try {
+      await this.context.spawnChildSession(this.sessionId, {
+        spawnedBy: {
+          parentRunId: input.runId,
+          parentTurnId: input.turnId,
+          toolCallId: 'cell-child-admission-probe',
+        },
+        agentProfile: 'local_read',
+        prompt: 'inspect the task workspace',
+      });
+      this.observed.spawned = true;
+    } catch (error) {
+      this.observed.spawned = false;
+      this.observed.error = error instanceof Error ? error.message : String(error);
+    }
+    yield {
+      type: 'complete',
+      id: 'cell-child-admission-probe-complete',
+      turnId: input.turnId,
+      ts: Date.now(),
+      stopReason: 'end_turn',
+    };
+  }
+
+  async stop(): Promise<void> {}
+  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async dispose(): Promise<void> {}
+}
+
 const registerCellBackend = (registry: BackendRegistry): void => {
   registry.register(
     'fake',
@@ -928,6 +972,37 @@ describe('runHarborCell', () => {
       );
       assert.match(runtimeEvents, /"id":"cell-usage"/);
       assert.match(runtimeEvents, /"systemPromptHash":"sha256:cell-prompt"/);
+    });
+  });
+
+  test('does not provision child tools when Agent tools are disabled by default', async () => {
+    await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
+      const observed: { spawned?: boolean; error?: string } = {};
+      await runHarborCell({
+        config: { ...config, backend: 'ai-sdk' },
+        instruction: 'probe child admission',
+        cwd: workspaceDir,
+        outputDir,
+        storageRoot,
+        registerBackends: (registry, context) => {
+          registry.register(
+            'ai-sdk',
+            (ctx) => new CellChildAdmissionProbeBackend(ctx.sessionId, context, observed),
+          );
+        },
+        realBackendIsolation: {
+          kind: 'external',
+          label: 'unit isolated executor',
+          toolExecutor: {
+            async exec() {
+              return { exitCode: 0, stdout: '', stderr: '' };
+            },
+          },
+        },
+      });
+
+      assert.equal(observed.spawned, false);
+      assert.match(observed.error ?? '', /missing tools/i);
     });
   });
 
