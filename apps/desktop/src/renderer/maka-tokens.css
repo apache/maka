@@ -1164,12 +1164,6 @@ html[data-os="darwin"].dark {
     flex: 1;
     overflow-y: auto;
     padding: var(--space-6) 0 var(--space-4) 0;
-    display: flex;
-    flex-direction: column;
-    /* PR5 CHAT-TURN-SPACING-0: uniform 12px turn gap (between turns =
-       within turn) — the chat reads as a continuous coding-agent stream
-       instead of stacked Q+A blocks. */
-    gap: var(--space-3);
   }
 
   /* Turn grouping (per kenji UI-04): user msg + tools + assistant answer
@@ -1179,8 +1173,12 @@ html[data-os="darwin"].dark {
   .maka-turn {
     display: flex;
     flex-direction: column;
+    /* The content wrapper owns between-turn flex layout; turns must retain
+       their measured height for content-visibility warm-up and scrolling. */
+    flex: 0 0 auto;
     /* PR5 CHAT-TURN-SPACING-0: uniform 12px within-turn gap, matching the
-       between-turn gap (.maka-chat) — one density, no between/within split. */
+       between-turn gap (.maka-chatContent) — one density, no between/within
+       split. */
     gap: var(--space-3);
     max-width: var(--maka-chat-measure);
     margin: 0 auto;

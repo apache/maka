@@ -223,6 +223,7 @@
   box-sizing: border-box;
   padding: clamp(var(--space-16), 10vh, 116px) 0 clamp(var(--space-5), 4vh, var(--space-10));
   display: grid;
+  gap: 0;
   align-content: center;
 }
 
