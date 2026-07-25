@@ -131,13 +131,14 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
         pre: ({ children, ...rest }) => <CodeBlock {...rest}>{children}</CodeBlock>,
         // `remarkBreaks` above makes every single newline a hard break, and
         // model answers use `**subhead**\nbody` for section splits, so this
-        // element routinely carries one. Neither element alone works: CSS
-        // cannot give a native <br> any height (an inline break box takes
-        // none), and the span alone drops the `LineBreak` node from the
-        // accessibility tree — the same trade TABLE-A11Y-SEMANTICS-0 below
-        // refuses for table roles. Paired, they keep the AX node, still copy
-        // as a single "\n", and take the paragraph 39px → 45px. Nesting the
-        // <br> inside the span instead is what yields a spurious "\n\n".
+        // element routinely carries one. The span does all the spacing work
+        // (39px → 45px); CSS cannot give a native <br> any height, since an
+        // inline break box takes none. The <br> buys exactly one thing, and
+        // it is not visual: without it the `LineBreak` node disappears from
+        // the accessibility tree — the same trade TABLE-A11Y-SEMANTICS-0
+        // below refuses for table roles. Copy fidelity is a single "\n"
+        // either way; nesting the <br> INSIDE the span is what yields a
+        // spurious "\n\n".
         // MARKDOWN-PROSE-CJK-MIXED-SPACING-0.
         br: () => (
           <>

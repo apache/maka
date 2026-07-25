@@ -128,6 +128,15 @@
   display: block;
   height: var(--space-1-5);
 }
+/* `remark-breaks` makes EVERY newline a break, including continuation lines
+   inside a list item or a blockquote — containers that already group their
+   own content, where the gap inverted the grouping (measured 10.5px inside
+   one list item against 6.5px between two of them). Only a paragraph break
+   carries a section split. */
+.maka-prose li .maka-hardbreak,
+.maka-prose blockquote .maka-hardbreak {
+  height: 0;
+}
 .maka-prose h1,
 .maka-prose h2,
 .maka-prose h3,
@@ -193,6 +202,17 @@
   border-radius: var(--radius-control);
   transition: border-bottom-color var(--duration-quick) var(--ease-out-strong), background var(--duration-quick) var(--ease-out-strong), box-shadow var(--duration-quick) var(--ease-out-strong);
 }
+/* That margin is the gap between the pill and its NEIGHBOURING text — at a
+   block edge there is no neighbour, so it indents the block instead: measured
+   2.98px on a paragraph, list item and blockquote opening with inline code,
+   against 0 for one opening with plain text, i.e. a ragged left edge down a
+   list of such items. Drop it at both edges. */
+.maka-prose code:first-child {
+  margin-inline-start: 0;
+}
+.maka-prose code:last-child {
+  margin-inline-end: 0;
+}
 .maka-prose a:hover {
   border-bottom-color: var(--link);
 }
@@ -226,8 +246,9 @@
   padding: 0 var(--space-1-5);
   /* Autospace reaches across this boundary already, but its 1.55px is sized
      for bare glyphs; against a pill with its own padding and background the
-     code still reads glued. Stacks on autospace, measured additive.
-     MARKDOWN-PROSE-CJK-MIXED-SPACING-0 locks this. */
+     code still reads glued. Additive, measured: 78.36 → 81.48 (autospace)
+     → 87.45px (both), i.e. 4.55px of clear space per side against the 3.58px
+     of a literal space. MARKDOWN-PROSE-CJK-MIXED-SPACING-0 locks this. */
   margin-inline: 0.25em;
   /* PR-UI-LAYOUT-28: inline code radius 4 → 5. Tiny bump but
    * pulls it slightly out of the "tight tag" feel into a calmer
@@ -333,8 +354,10 @@
   border: 0;
   /* Same boundary: `.maka-prose code` (0,1,1) matches `pre > code` too, and a
      <code> inside `white-space: pre` is one inline box spanning every line, so
-     the pill's margin-inline offset only the FIRST source line (36.25 vs 33). */
+     the pill's margin-inline offset only the FIRST source line (36.25 vs 33).
+     `border: 0` above does not clear the pill's radius, so zero that too. */
   margin: 0;
+  border-radius: 0;
 }
 
 /* Syntax highlight palette for highlight.js / lowlight class names.
@@ -485,8 +508,10 @@
   letter-spacing: var(--tracking-normal);
 }
 /* Don't reach for `word-break: auto-phrase` on `td` for squeezed Chinese cells:
-   measured inert in Chromium 150 — identical breaks to `normal`, since the
-   engine's phrase model is Japanese-only and the renderer is `lang="en"`.
+   measured inert in Chromium 150 — identical breaks to `normal` under both
+   `lang="zh"` and `lang="en"`, because the engine's phrase model is
+   Japanese-only. (The document lang IS set at runtime — syncUiLocaleDocument
+   in locale-context.tsx — so this is not a lang-tagging gap.)
    `line-break: strict` / `word-break: keep-all` do work, at an overflow cost. */
 .maka-prose hr {
   margin: var(--space-4) 0;
