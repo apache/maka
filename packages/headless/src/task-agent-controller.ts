@@ -355,7 +355,13 @@ export async function runTaskOnceWithStorage(
       name: `task:${config.id}:${task.id}`,
     });
     const turnId = newId();
-    const active = createSingleRunActiveSession(backends, sessionStore, now, newId);
+    const active = createSingleRunActiveSession(
+      backends,
+      sessionStore,
+      runtimeEventStore,
+      now,
+      newId,
+    );
     parentActive = active;
     const run = new AgentRun({
       sessionId: header.id,
@@ -506,7 +512,13 @@ export async function runTaskOnceWithStorage(
       });
 
       if (gateDecision.action === 'repair_prompt') {
-        const repairActive = createSingleRunActiveSession(backends, sessionStore, now, newId);
+        const repairActive = createSingleRunActiveSession(
+          backends,
+          sessionStore,
+          runtimeEventStore,
+          now,
+          newId,
+        );
         parentActive = repairActive;
         const repairRun = new AgentRun({
           sessionId: header.id,
@@ -1091,6 +1103,7 @@ type AgentRunHooks = ConstructorParameters<typeof AgentRun>[0]['hooks'];
 function createSingleRunActiveSession(
   backends: BackendRegistry,
   store: SessionStore,
+  runtimeEventStore: RuntimeEventStore | undefined,
   now: () => number,
   newId: () => string,
 ): {
@@ -1144,6 +1157,17 @@ function createSingleRunActiveSession(
           },
           recordProviderRequestAttempt: (attempt) =>
             boundRun?.recordProviderRequestAttempt(attempt),
+          ...(runtimeEventStore
+            ? {
+                loadTurnRuntimeEvents: (turnId: string) => {
+                  if (!boundRun || boundRun.turnId !== turnId) {
+                    return Promise.reject(new Error('No active AgentRun for turn runtime events'));
+                  }
+                  return boundRun.loadTurnRuntimeEvents();
+                },
+              }
+            : {}),
+          allowMidTurnHistoryCompaction: Boolean(runtimeEventStore),
           recordActiveFullCompactBlock: (block) => boundRun?.recordActiveFullCompactBlock(block),
           recordSemanticCompactBlock: (block) => boundRun?.recordSemanticCompactBlock(block),
         });
