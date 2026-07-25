@@ -43,6 +43,10 @@ import {
   KIMI_CODE_TOOLCHAIN_FINGERPRINT,
 } from './kimi-code-toolchain.js';
 import {
+  MAKA_NODE_TOOLCHAIN_CONTAINER_PATH,
+  MAKA_NODE_TOOLCHAIN_FINGERPRINT,
+} from './maka-node-toolchain.js';
+import {
   summarizeProviderTelemetry,
   startProviderAuthProxy,
   type ProviderRequestTelemetry,
@@ -57,14 +61,14 @@ const TRIAL_REWARD_JSON = 'verifier/reward.json';
 const TRIAL_RESULT = 'result.json';
 const PROVIDER_REQUEST_TELEMETRY = 'provider-request-telemetry.json';
 
-/** The default port a container-CLI arm (Kimi/Codex) binds the host provider
+/** The default port an in-container agent binds the host provider
  * proxy to. Pier's Squid egress for offline (`allow_internet=false`) tasks only
  * permits destination ports 80/443 (`acl Safe_ports port 80 443`), so a
  * container reaching the host proxy through Squid must present one of those.
  * 443 keeps the model endpoint on the conventional TLS port. */
 export const PIER_PROVIDER_PROXY_DEFAULT_PORT = 443;
 
-/** A container-CLI arm binds ONE fixed proxy port per attempt, and Pier's Squid
+/** An in-container agent binds ONE fixed proxy port per attempt, and Pier's Squid
  * egress leaves only two usable destination ports (80/443), so concurrent
  * attempts on the same port must hold it one at a time — a second concurrent
  * bind is a guaranteed EADDRINUSE. The lock's owner is the shared host PORT,
@@ -114,7 +118,9 @@ export type PierTaskPricing = HarborTaskPricing;
 export interface PierTaskRunnerOptions {
   /** Host path to the maka repo, bind-mounted read-only at /opt/maka-agent. */
   makaRepoPath: string;
-  /** Pier adapter under test (default: Maka, host-side LLM + offline container). */
+  /** Pinned Linux/x64 Node runtime mounted read-only for in-container Maka task runs. */
+  makaNodeToolchainPath?: string;
+  /** Pier adapter under test (default: Maka). */
   agent?: PierAgent;
   /** In-container/host cell backend. Only the Maka arm reads it. `fake` runs the
    * inert cell for zero-cost structural checks; `ai-sdk` is the real run. */
@@ -142,16 +148,16 @@ export interface PierTaskRunnerOptions {
   apiKeyFile?: string;
   /** Resolves the upstream authority inside the host proxy for every request. */
   resolveProviderCredential?: ProviderUpstreamCredentialResolver;
-  /** Route the Maka arm's host cell through the auth proxy instead of reading the
-   * key file directly. The container-CLI arms (Kimi/Codex) always use the proxy. */
+  /** Route a Maka host cell through the auth proxy instead of reading the key
+   * file directly. In-container agents, including Maka task-run, always use it. */
   useProviderProxy?: boolean;
-  /** Explicit host proxy listen port for a container-CLI arm (default 443). */
+  /** Explicit host proxy listen port for an in-container agent (default 443). */
   providerProxyPort?: number;
-  /** Host a container-CLI arm's container should dial to reach the host
-   * provider proxy. Only those arms honor it; the Maka arm's host cell always
-   * uses loopback (127.0.0.1) since it runs on the host itself. Unset keeps the
-   * default host.docker.internal, which Docker Desktop injects but native Linux
-   * Docker does NOT provide (pier 0.3.0's compose wires no
+  /** Host an in-container agent should dial to reach the host provider proxy.
+   * This covers Kimi, Codex, and Maka task-run mode; a Maka host cell still uses
+   * loopback (127.0.0.1). Unset keeps the default host.docker.internal, which
+   * Docker Desktop injects but native Linux Docker does NOT provide (pier
+   * 0.3.0's compose wires no
    * extra_hosts/host-gateway), so on native Linux pass the host's
    * docker-bridge-reachable address (e.g. 172.17.0.1) or the container's Squid
    * cannot resolve the proxy. */
@@ -252,16 +258,17 @@ export function createPierTaskRunner(options: PierTaskRunnerOptions): TaskRunner
     // agentEnv must not override experiment identity or MAKA_TRIAL_* pricing.
     assertNoExperimentIdentityOverrides(attemptAgentEnv);
 
+    const traceMode = harborTraceMode(attemptAgentEnv);
     const providerTelemetryPath = join(jobsDir, PROVIDER_REQUEST_TELEMETRY);
     let providerUsage: ProviderTokenUsage | null = null;
     let providerTelemetry: ProviderRequestTelemetry[] = [];
     const envFilePath = join(jobsDir, 'pier-agent.env');
     // Config errors fail fast before the proxy exists (and outside the port lock).
-    const mounts = buildPierMounts(options, agent);
+    const mounts = buildPierMounts(options, agent, traceMode);
     const launchAttempt = async (): Promise<PierRunResult> => {
       // Proxy bind errors surface raw, before the launch try, with their own
       // message — they are configuration faults, not infra flakes.
-      const providerRuntime = await pierProviderRuntime(options, agent);
+      const providerRuntime = await pierProviderRuntime(options, agent, traceMode);
       const envFileEntries = providerRuntime?.envFile ?? {};
       const usesEnvFile = Object.keys(envFileEntries).length > 0;
       try {
@@ -363,12 +370,13 @@ export function createPierTaskRunner(options: PierTaskRunnerOptions): TaskRunner
         );
       }
     };
-    // Only a container-CLI arm (Kimi/Codex) on a FIXED port competes for the
-    // bind; the Maka arm (ephemeral or no proxy) and an explicit port 0
-    // (OS-assigned, used by tests) cannot collide and need no serialization.
+    // Only an in-container agent on a FIXED port competes for the bind; a Maka
+    // host cell and an explicit port 0 (OS-assigned, used by tests) cannot
+    // collide and need no serialization.
     const containerProxyPort = options.providerProxyPort ?? PIER_PROVIDER_PROXY_DEFAULT_PORT;
+    const usesContainerProxy = agent !== 'maka' || traceMode === 'task-run';
     const result =
-      agent !== 'maka' && containerProxyPort !== 0
+      usesContainerProxy && containerProxyPort !== 0
         ? await withProxyPortLock(containerProxyPort, launchAttempt)
         : await launchAttempt();
 
@@ -565,10 +573,22 @@ export function buildPierRunArgs(input: BuildPierRunArgsInput): string[] {
 function buildPierMounts(
   options: PierTaskRunnerOptions,
   agent: PierAgent,
+  mode: 'cell' | 'task-run',
 ): Array<Record<string, unknown>> {
   const mounts: Array<Record<string, unknown>> = [
     { type: 'bind', source: options.makaRepoPath, target: CONTAINER_MAKA_REPO, read_only: true },
   ];
+  if (agent === 'maka' && mode === 'task-run') {
+    if (!options.makaNodeToolchainPath) {
+      throw new Error('makaNodeToolchainPath is required for Maka container task-run mode');
+    }
+    mounts.push({
+      type: 'bind',
+      source: options.makaNodeToolchainPath,
+      target: MAKA_NODE_TOOLCHAIN_CONTAINER_PATH,
+      read_only: true,
+    });
+  }
   if (agent === 'kimi-code') {
     if (!options.kimiCodeToolchainPath) {
       throw new Error('kimiCodeToolchainPath is required for the Kimi Code adapter');
@@ -612,6 +632,9 @@ function buildPierAgentEnv(
     // extra_env would shadow the byte-exact os.environ value. See processEnv.
   };
   if (options.reasoningEffort) env.MAKA_REASONING_EFFORT = options.reasoningEffort;
+  if (agent === 'maka' && options.makaNodeToolchainPath) {
+    env.MAKA_NODE_TOOLCHAIN_FINGERPRINT = MAKA_NODE_TOOLCHAIN_FINGERPRINT;
+  }
   if (agent === 'kimi-code') {
     env.MAKA_KIMI_CODE_TOOLCHAIN_FINGERPRINT = KIMI_CODE_TOOLCHAIN_FINGERPRINT;
   }
@@ -651,14 +674,17 @@ function buildPierAgentEnv(
 async function pierProviderRuntime(
   options: PierTaskRunnerOptions,
   agent: PierAgent,
+  mode: 'cell' | 'task-run',
 ): Promise<PierProviderRuntime | null> {
   const provider = options.provider ?? 'deepseek';
   const baseUrl = options.baseUrl ?? providerDefaultBaseUrl(provider);
+  const makaContainerTaskRun = agent === 'maka' && mode === 'task-run';
   // A resolver-backed credential (e.g. Codex OAuth) is only usable through the
   // proxy — same contract as the Harbor runner — so it forces the proxy path
   // even when the caller forgot useProviderProxy.
   const usesProxy =
     agent !== 'maka' ||
+    (makaContainerTaskRun && options.backend !== 'fake') ||
     options.useProviderProxy === true ||
     options.resolveProviderCredential !== undefined;
 
@@ -705,12 +731,14 @@ async function pierProviderRuntime(
   if (!baseUrl) throw new Error(`Pier ${agent} provider ${provider} requires a base URL`);
 
   const proxyPort =
-    agent !== 'maka' ? (options.providerProxyPort ?? PIER_PROVIDER_PROXY_DEFAULT_PORT) : undefined;
-  // The Maka host cell runs on the host and reaches the proxy on loopback; a
-  // container-CLI arm (Kimi/Codex) reaches it through Docker's host gateway on
-  // a Squid-legal port, defaulting to host.docker.internal unless an explicit
-  // advertised host is supplied (the native-Linux escape hatch, e.g. 172.17.0.1).
-  const advertisedHost = agent === 'maka' ? '127.0.0.1' : options.providerProxyAdvertisedHost;
+    agent !== 'maka' || makaContainerTaskRun
+      ? (options.providerProxyPort ?? PIER_PROVIDER_PROXY_DEFAULT_PORT)
+      : undefined;
+  // A Maka host cell reaches the proxy on loopback. In-container agents reach
+  // it through Docker's host gateway on a Squid-legal port, defaulting to
+  // host.docker.internal unless native Linux supplies an explicit bridge host.
+  const advertisedHost =
+    agent === 'maka' && !makaContainerTaskRun ? '127.0.0.1' : options.providerProxyAdvertisedHost;
   const proxy = await startProviderAuthProxy({
     upstreamBaseUrl: baseUrl,
     ...(advertisedHost !== undefined ? { advertisedHost } : {}),
@@ -727,11 +755,16 @@ async function pierProviderRuntime(
     // through `--env-file` (0600, removed after the run) so it stays off argv.
     envFile:
       agent === 'maka'
-        ? {
-            MAKA_HOST_REPO_ROOT: options.makaRepoPath,
-            MAKA_HOST_BASE_URL: proxy.baseUrl,
-            MAKA_HOST_API_KEY: proxy.token,
-          }
+        ? makaContainerTaskRun
+          ? {
+              MAKA_PROVIDER_PROXY_URL: proxy.baseUrl,
+              MAKA_PROVIDER_PROXY_TOKEN: proxy.token,
+            }
+          : {
+              MAKA_HOST_REPO_ROOT: options.makaRepoPath,
+              MAKA_HOST_BASE_URL: proxy.baseUrl,
+              MAKA_HOST_API_KEY: proxy.token,
+            }
         : { MAKA_PROVIDER_PROXY_URL: proxy.baseUrl, MAKA_PROVIDER_PROXY_TOKEN: proxy.token },
     agentEnv: {},
     usage: proxy.usage,

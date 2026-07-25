@@ -383,18 +383,22 @@ describe('Harbor adapter contract', () => {
     }
   });
 
-  test('maka_agent.py task-run host mode preserves the heavy-task / autonomous bridge contract', async () => {
+  test('maka_agent.py preserves plain Harbor host task-run and Pier container task-run contracts', async () => {
     const source = await readRepoFile('packages/headless/harbor/maka_agent.py');
 
-    // Mode switch: default cell, opt-in task-run host bridge.
+    // Mode switch: default cell, opt-in task-run.
     assert.match(source, /MAKA_HARBOR_MODE/);
     assert.match(source, /def _harbor_mode\(self\) -> str:/);
     assert.match(source, /if self\._harbor_mode\(\) == "task-run":/);
+    assert.match(source, /async def _run_task_run_container\(/);
     assert.match(source, /async def _run_task_run_host\(/);
-    // Spawns the headless CLI in task-run + harbor-http isolation on the host.
+    // Plain Harbor keeps its host bridge; Pier runs the same task-run in the
+    // task container with the pinned runtime and local isolation.
     assert.match(source, /dist" \/ "cli\.js"/);
     assert.match(source, /"--mode",\s*\n\s*"task-run",/);
-    assert.match(source, /"--isolation",\s*\n\s*"harbor-http",/);
+    assert.match(source, /isolation: str = "harbor-http"/);
+    assert.match(source, /isolation="harbor-local"/);
+    assert.match(source, /_MAKA_NODE_TOOLCHAIN_NODE/);
     assert.match(source, /"--include-events"/);
     // autonomous / heavy-task derivation ported verbatim from the fork.
     assert.match(
@@ -1803,6 +1807,141 @@ finally:
     scope_dir.rmdir()
 
 with tempfile.TemporaryDirectory() as tmp:
+    class ContainerTaskRunEnvironment:
+        session_id = "deep-swe-task"
+
+        def __init__(self):
+            self.agent_dir_ready = False
+            self.uploads = []
+            self.downloads = []
+            self.download_dirs = []
+
+        async def upload_file(self, local, remote):
+            assert self.agent_dir_ready, "instruction uploaded before /logs/agent exists"
+            self.uploads.append((str(local), str(remote)))
+
+        async def download_file(self, remote, local):
+            self.downloads.append(str(remote))
+            path = Path(local)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if str(remote).endswith("/maka-cell-output.json"):
+                path.write_text(json.dumps({
+                    "schemaVersion": 1,
+                    "status": "completed",
+                    "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+                    "promptHash": "sha256:test",
+                    "toolSummary": {
+                        "providerVisibleToolCount": 6,
+                        "actualToolCalls": 0,
+                        "actualToolNames": [],
+                        "actualToolCallCounts": {},
+                    },
+                    "steps": 1,
+                    "durationMs": 1,
+                    "startedAt": 1,
+                    "finishedAt": 2,
+                    "runtimeRefs": {
+                        "invocationId": "inv",
+                        "sessionId": "session",
+                        "runId": "run",
+                        "turnId": "turn",
+                    },
+                }), encoding="utf-8")
+            else:
+                path.write_text("", encoding="utf-8")
+
+        async def download_dir(self, remote, local):
+            self.download_dirs.append(str(remote))
+            Path(local).mkdir(parents=True, exist_ok=True)
+
+    class ContainerTaskRunAgent(MakaAgent):
+        def __init__(self, logs_dir, **kwargs):
+            super().__init__(logs_dir, **kwargs)
+            self.container_execs = []
+
+        async def exec_as_agent(self, environment, command, **kwargs):
+            self.container_execs.append((command, kwargs))
+            if command == "mkdir -p /logs/agent":
+                environment.agent_dir_ready = True
+            return types.SimpleNamespace(stdout="", stderr="", return_code=0)
+
+    async def forbidden_host_task_run(*args, **kwargs):
+        raise AssertionError("Pier task-run used the host bridge")
+
+    class FakeNetworkAllowlist:
+        def __init__(self, domains=None):
+            self.domains = domains or []
+
+    original_network_allowlist = maka_agent_mod._NetworkAllowlist
+    maka_agent_mod._NetworkAllowlist = FakeNetworkAllowlist
+    try:
+        container_agent = ContainerTaskRunAgent(Path(tmp), extra_env={
+            "MAKA_BACKEND": "ai-sdk",
+            "MAKA_HARBOR_MODE": "task-run",
+            "MAKA_NODE_TOOLCHAIN_FINGERPRINT": "sha256:test-node",
+            "MAKA_PROVIDER_PROXY_URL": "http://host.docker.internal:443",
+            "MAKA_PROVIDER_PROXY_TOKEN": "ephemeral-token",
+            "MAKA_CELL_TIMEOUT_SEC": "7200",
+        })
+        container_agent._resolved_flags = {
+            "maka_repo": "/opt/maka-agent",
+            "backend": "ai-sdk",
+        }
+        container_agent._run_task_run_host = forbidden_host_task_run
+        container_environment = ContainerTaskRunEnvironment()
+        container_context = AgentContext()
+        assert container_agent.network_allowlist().domains == ["host.docker.internal"]
+        assert container_agent.get_version_command() == "/opt/maka-node-toolchain/bin/node --version"
+        asyncio.run(
+            container_agent.run(
+                "finish the task",
+                container_environment,
+                container_context,
+            )
+        )
+    finally:
+        maka_agent_mod._NetworkAllowlist = original_network_allowlist
+
+    assert len(container_agent.container_execs) == 2, container_agent.container_execs
+    assert container_agent.container_execs[0][0] == "mkdir -p /logs/agent"
+    container_command, container_kwargs = container_agent.container_execs[1]
+    assert "/opt/maka-node-toolchain/bin/node" in container_command, container_command
+    assert "/opt/maka-agent/packages/headless/dist/cli.js" in container_command, container_command
+    assert "--mode task-run" in container_command, container_command
+    assert "--isolation harbor-local" in container_command, container_command
+    assert "harbor-http" not in container_command, container_command
+    container_env = container_kwargs["env"]
+    assert container_env["MAKA_HOST_BASE_URL"] == "http://host.docker.internal:443", container_env
+    assert container_env["MAKA_HOST_API_KEY"] == "ephemeral-token", container_env
+    assert "MAKA_HARBOR_TOOL_EXECUTOR_URL" not in container_env, container_env
+    assert "MAKA_HARBOR_TOOL_EXECUTOR_TOKEN" not in container_env, container_env
+    assert container_env["MAKA_OUTPUT_DIR"] == "/logs/agent/maka-task-run", container_env
+    assert container_env["MAKA_CELL_ARTIFACT_DIR"] == "/logs/agent", container_env
+    assert container_env["MAKA_STORAGE_ROOT"] == "/logs/agent/maka-task-run/runs", container_env
+    assert container_kwargs["timeout_sec"] == 7200, container_kwargs
+    assert "/logs/agent/maka-task-run" in container_environment.download_dirs
+    assert "/logs/agent/maka-cell-output.json" in container_environment.downloads
+    assert json.loads(
+        Path(container_context.metadata["maka_cell_output"]).read_text(encoding="utf-8")
+    )["status"] == "completed"
+
+    container_install_agent = ContainerTaskRunAgent(Path(tmp), extra_env={
+        "MAKA_BACKEND": "fake",
+        "MAKA_HARBOR_MODE": "task-run",
+        "MAKA_NODE_TOOLCHAIN_FINGERPRINT": "sha256:test-node",
+    })
+    container_install_agent._resolved_flags = {"backend": "fake"}
+    maka_agent_mod._NetworkAllowlist = FakeNetworkAllowlist
+    try:
+        asyncio.run(container_install_agent.install(ContainerTaskRunEnvironment()))
+    finally:
+        maka_agent_mod._NetworkAllowlist = original_network_allowlist
+    install_command, install_kwargs = container_install_agent.container_execs[0]
+    assert "sha256sum --check checksums.sha256" in install_command, install_command
+    assert "/opt/maka-node-toolchain/manifest.json" in install_command, install_command
+    assert "/opt/maka-agent/packages/headless/dist/cli.js" in install_command, install_command
+    assert install_kwargs["env"]["MAKA_EXPECTED_TOOLCHAIN_FINGERPRINT"] == "sha256:test-node"
+
     install_agent = MakaAgent(Path(tmp))
     install_agent._resolved_flags = {"maka_repo": "/opt/maka-agent"}
     fake_environment = types.SimpleNamespace(root_commands=[], agent_commands=[])

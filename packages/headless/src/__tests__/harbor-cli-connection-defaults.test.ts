@@ -433,6 +433,27 @@ describe('applyConnectionDefaults', () => {
 });
 
 describe('resolveHarborRunOptions backend guard', () => {
+  test('keeps a local external workspace separate from the headless source fixture', async () => {
+    const opts = await resolveHarborRunOptions(
+      [
+        '--backend',
+        'fake',
+        '--instruction',
+        'test',
+        '--isolation',
+        'harbor-local',
+        '--workdir',
+        '/app',
+        '--out',
+        '/logs/agent/maka-task-run',
+      ],
+      {},
+    );
+
+    assert.equal(opts.workdir, '/app');
+    assert.equal(opts.sourceWorkspaceDir, '/logs/agent/maka-task-run/host-workspace-source');
+  });
+
   test('uses the strict cell soft-timeout parser in task-run mode', async () => {
     await assert.rejects(
       resolveHarborRunOptions(['--backend', 'fake', '--instruction', 'test'], {

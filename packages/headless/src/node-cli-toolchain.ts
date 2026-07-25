@@ -17,7 +17,7 @@ export interface PinnedNodeCliToolchainDefinition<TSpec> {
     archiveSha256: string;
     binarySha256: string;
   };
-  packageArchive: {
+  packageArchive?: {
     url: string;
     integrity: `sha512-${string}`;
   };
@@ -79,7 +79,9 @@ export async function prepareNodeCliToolchain<TSpec>(
   const temporaryPath = await mkdtemp(join(dirname(path), `.${basename(path)}-`));
   try {
     const nodeArchive = join(temporaryPath, 'node.tar.gz');
-    const packageArchive = join(temporaryPath, 'package.tgz');
+    const packageArchive = definition.packageArchive
+      ? join(temporaryPath, 'package.tgz')
+      : undefined;
     await downloadVerified({
       url: definition.node.archiveUrl,
       path: nodeArchive,
@@ -87,14 +89,18 @@ export async function prepareNodeCliToolchain<TSpec>(
       expected: definition.node.archiveSha256,
       fetchFn: options.fetchFn ?? fetch,
     });
-    await downloadVerified({
-      url: definition.packageArchive.url,
-      path: packageArchive,
-      algorithm: 'sha512',
-      expected: definition.packageArchive.integrity.slice('sha512-'.length),
-      encoding: 'base64',
-      fetchFn: options.fetchFn ?? fetch,
-    });
+    if (definition.packageArchive && packageArchive) {
+      await downloadVerified({
+        url: definition.packageArchive.url,
+        path: packageArchive,
+        algorithm: 'sha512',
+        expected: definition.packageArchive.integrity.slice('sha512-'.length),
+        encoding: 'base64',
+        fetchFn: options.fetchFn ?? fetch,
+      });
+    } else if (definition.packageFiles.length > 0) {
+      throw new Error(`${definition.label} toolchain package files require a package archive`);
+    }
     await mkdir(join(temporaryPath, 'bin'));
     await execFileAsync('tar', [
       '-xzf',
@@ -109,6 +115,9 @@ export async function prepareNodeCliToolchain<TSpec>(
       const installedPath = join(temporaryPath, file.installedPath);
       const targetDir = dirname(installedPath);
       await mkdir(targetDir, { recursive: true });
+      if (!packageArchive) {
+        throw new Error(`${definition.label} toolchain package files require a package archive`);
+      }
       await execFileAsync('tar', [
         '-xzf',
         packageArchive,
@@ -158,7 +167,7 @@ export async function prepareNodeCliToolchain<TSpec>(
       'utf8',
     );
     await rm(nodeArchive);
-    await rm(packageArchive);
+    if (packageArchive) await rm(packageArchive);
     await validatePreparedNodeCliToolchain(temporaryPath, definition);
     try {
       await rename(temporaryPath, path);

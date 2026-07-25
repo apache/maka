@@ -32,9 +32,8 @@ test('harness A/B CLI accepts a 5-task operational canary', async () => {
 });
 
 test('harness A/B runtime keeps pruning enabled and semantic compact disabled', async () => {
-  const { harnessMakaContextBudgetEnv } = await import(
-    new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href
-  );
+  const { harnessMakaAgentEnv, harnessMakaContextBudgetEnv, resolveHarnessBenchmarkProfile } =
+    await import(new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href);
 
   assert.deepEqual(harnessMakaContextBudgetEnv(), {
     MAKA_CONTEXT_ACTIVE_TOOL_RESULT_PRUNE: 'on',
@@ -45,6 +44,14 @@ test('harness A/B runtime keeps pruning enabled and semantic compact disabled', 
     MAKA_CONTEXT_STALE_TOOL_RESULT_MIN_RECENT_TURNS_FULL: '0',
     MAKA_CONTEXT_SEMANTIC_COMPACT: 'off',
   });
+  assert.equal(
+    harnessMakaAgentEnv(resolveHarnessBenchmarkProfile('deep-swe-1.1')).MAKA_HARBOR_MODE,
+    'task-run',
+  );
+  assert.equal(
+    'MAKA_HARBOR_MODE' in harnessMakaAgentEnv(resolveHarnessBenchmarkProfile('terminal-bench-2.1')),
+    false,
+  );
 });
 
 test('harness A/B uses one safe execution default and accepts per-run overrides', async () => {
@@ -459,6 +466,25 @@ test('harness execution profile rejects a reasoning effort unsupported by model 
   );
 });
 
+test('DeepSWE resolves a dedicated pinned Maka Node toolchain', async () => {
+  const { resolveHarnessMakaNodeToolchain } = await import(
+    new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href
+  );
+  const { MAKA_NODE_TOOLCHAIN_FINGERPRINT } = await import('../maka-node-toolchain.js');
+
+  const defaultToolchain = resolveHarnessMakaNodeToolchain('/run', {});
+  assert.match(
+    defaultToolchain.path,
+    new RegExp(`maka-node-${MAKA_NODE_TOOLCHAIN_FINGERPRINT.slice(7, 19)}-linux-x64$`),
+  );
+  assert.equal(defaultToolchain.prepare.name, 'prepareMakaNodeToolchain');
+
+  const overridden = resolveHarnessMakaNodeToolchain('/run', {
+    MAKA_HARNESS_AB_MAKA_NODE_TOOLCHAIN: '/prepared/maka-node',
+  });
+  assert.equal(overridden.path, '/prepared/maka-node');
+});
+
 test('Codex comparison resolves both arms from one OAuth account workflow', async () => {
   const { resolveHarnessCompetitorProfile, resolveHarnessRuntimeCredentials } = await import(
     new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href
@@ -724,6 +750,7 @@ test('harness A/B resolves the DeepSWE benchmark axis orthogonally to competitor
     resolveHarnessBenchmarkProfile,
     resolveHarnessCompetitorProfile,
   } = await import(new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href);
+  const { MAKA_NODE_TOOLCHAIN_FINGERPRINT } = await import('../maka-node-toolchain.js');
   const benchmarkProfile = resolveHarnessBenchmarkProfile('deep-swe-1.1');
 
   assert.throws(
@@ -783,6 +810,11 @@ test('harness A/B resolves the DeepSWE benchmark axis orthogonally to competitor
   assert.equal(manifest.metadata.benchmark.version, '1.1');
   assert.equal(manifest.metadata.order.seed, 'deep-swe-1.1:gpt-5.6-sol:harness-comparison:v1');
   assert.equal(manifest.evaluationTaskIds.length, 30);
+  assert.deepEqual(manifest.arms[0].metadata.config.execution, {
+    placement: 'task-container',
+    isolation: 'harbor-local',
+    nodeToolchainFingerprint: MAKA_NODE_TOOLCHAIN_FINGERPRINT,
+  });
 
   // The Pier executor identity is auditable in the manifest, not only hashed
   // into the toolchain fingerprint.
@@ -803,6 +835,7 @@ test('harness A/B resolves the DeepSWE benchmark axis orthogonally to competitor
     toolchainFingerprint: 'tools',
   });
   assert.equal(tbenchManifest.metadata.order.seed, 'terminal-bench-2.1:k3:harness-comparison:v1');
+  assert.equal('execution' in tbenchManifest.arms[0].metadata.config, false);
   // No executor key for Harbor benchmarks: the manifest payload (and with it
   // the resume fingerprint) must stay byte-identical to historical runs.
   assert.equal('executor' in tbenchManifest.metadata.benchmark, false);
@@ -861,14 +894,23 @@ test('harness A/B toolchain identity freezes the Pier version only for Pier benc
     hostToolchainFingerprint: 'host',
     competitorProfile,
     pierVersion: 'pier 0.3.0',
+    makaNodeToolchainFingerprint: `sha256:${'a'.repeat(64)}`,
   });
   const pier040 = buildHarnessAbToolchainFingerprint({
     hostToolchainFingerprint: 'host',
     competitorProfile,
     pierVersion: 'pier 0.4.0',
+    makaNodeToolchainFingerprint: `sha256:${'a'.repeat(64)}`,
+  });
+  const otherMakaNode = buildHarnessAbToolchainFingerprint({
+    hostToolchainFingerprint: 'host',
+    competitorProfile,
+    pierVersion: 'pier 0.3.0',
+    makaNodeToolchainFingerprint: `sha256:${'b'.repeat(64)}`,
   });
   assert.notEqual(pier030, legacy);
   assert.notEqual(pier030, pier040);
+  assert.notEqual(pier030, otherMakaNode);
 });
 
 async function waitForJournal(

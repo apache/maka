@@ -15,6 +15,7 @@ import {
 } from '../fixed-prompt-controller.js';
 import { CODEX_TOOLCHAIN_FINGERPRINT, CODEX_TOOLCHAIN_SPEC } from '../codex-toolchain.js';
 import { findTrialDir } from '../harbor-task-runner.js';
+import { MAKA_NODE_TOOLCHAIN_FINGERPRINT } from '../maka-node-toolchain.js';
 import {
   buildPierRunArgs,
   createPierTaskRunner,
@@ -282,6 +283,60 @@ test('buildPierRunArgs emits the pier CLI contract for the Maka arm', () => {
   assert.ok(!args.includes('--env-file'));
 });
 
+test('createPierTaskRunner mounts the pinned Maka Node runtime for container task-run mode', async () => {
+  await withDirs(async ({ jobsDir, repo }) => {
+    const captured: FakeOptions['captured'] = {};
+    const runner = createPierTaskRunner(
+      baseOptions({
+        jobsDir,
+        makaRepoPath: repo,
+        agent: 'maka',
+        agentEnv: { MAKA_HARBOR_MODE: 'task-run' },
+        makaNodeToolchainPath: '/toolchains/maka-node',
+        runPier: fakePier({ reward: 0, captured }),
+      }),
+    );
+
+    await runner(runInput());
+
+    const args = captured.request?.args ?? [];
+    const mountsFlag = args.indexOf('--mounts-json');
+    const mounts = JSON.parse(args[mountsFlag + 1]!) as Array<{
+      source: string;
+      target: string;
+      read_only: boolean;
+    }>;
+    assert.ok(
+      mounts.some(
+        (mount) =>
+          mount.source === '/toolchains/maka-node' &&
+          mount.target === '/opt/maka-node-toolchain' &&
+          mount.read_only,
+      ),
+    );
+    assert.ok(args.includes(`MAKA_NODE_TOOLCHAIN_FINGERPRINT=${MAKA_NODE_TOOLCHAIN_FINGERPRINT}`));
+  });
+});
+
+test('createPierTaskRunner rejects an unpinned Maka container task run', async () => {
+  await withDirs(async ({ jobsDir, repo }) => {
+    const runner = createPierTaskRunner(
+      baseOptions({
+        jobsDir,
+        makaRepoPath: repo,
+        agent: 'maka',
+        agentEnv: { MAKA_HARBOR_MODE: 'task-run' },
+        runPier: fakePier({ reward: 0 }),
+      }),
+    );
+
+    await assert.rejects(
+      () => runner(runInput()),
+      /makaNodeToolchainPath is required for Maka container task-run mode/,
+    );
+  });
+});
+
 test('buildPierRunArgs targets the Kimi Code adapter and forwards an env-file', () => {
   const args = buildPierRunArgs({
     agent: 'kimi-code',
@@ -431,6 +486,7 @@ test('createPierTaskRunner surfaces the combined trace path in task-run mode', a
       baseOptions({
         jobsDir,
         makaRepoPath: repo,
+        makaNodeToolchainPath: repo,
         agentEnv: { MAKA_HARBOR_MODE: 'task-run' },
         runPier: fakePier({ reward: 0, combinedTrace: true }),
       }),
@@ -1237,6 +1293,39 @@ test('createPierTaskRunner routes a resolver-backed Maka arm through the host pr
     assert.match(captured.envFile?.MAKA_HOST_BASE_URL ?? '', /^http:\/\/127\.0\.0\.1:\d+$/);
     assert.ok((captured.envFile?.MAKA_HOST_API_KEY ?? '').length >= 32);
     assert.notEqual(captured.envFile?.MAKA_HOST_API_KEY, 'upstream-key');
+  });
+});
+
+test('createPierTaskRunner gives a Maka container task run a container-reachable proxy', async () => {
+  await withDirs(async ({ jobsDir, repo }) => {
+    const captured: FakeOptions['captured'] = {};
+    const runner = createPierTaskRunner(
+      baseOptions({
+        jobsDir,
+        makaRepoPath: repo,
+        makaNodeToolchainPath: repo,
+        agent: 'maka',
+        agentEnv: { MAKA_HARBOR_MODE: 'task-run' },
+        backend: 'ai-sdk',
+        provider: 'openai-codex',
+        model: 'gpt-5.6-sol',
+        baseUrl: 'https://chatgpt.com/backend-api/codex',
+        resolveProviderCredential: () => Promise.resolve({ value: 'upstream-key' }),
+        providerProxyPort: 0,
+        runPier: fakePier({ reward: 0, captured }),
+      }),
+    );
+
+    await runner(runInput());
+
+    assert.match(
+      captured.envFile?.MAKA_PROVIDER_PROXY_URL ?? '',
+      /^http:\/\/host\.docker\.internal:\d+$/,
+    );
+    assert.ok((captured.envFile?.MAKA_PROVIDER_PROXY_TOKEN ?? '').length >= 32);
+    assert.notEqual(captured.envFile?.MAKA_PROVIDER_PROXY_TOKEN, 'upstream-key');
+    assert.equal(captured.envFile?.MAKA_HOST_BASE_URL, undefined);
+    assert.equal(captured.envFile?.MAKA_HOST_API_KEY, undefined);
   });
 });
 

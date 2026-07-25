@@ -40,6 +40,7 @@ import {
   CODEX_TOOLCHAIN_SPEC,
   prepareCodexToolchain,
 } from '#codex-toolchain';
+import { MAKA_NODE_TOOLCHAIN_FINGERPRINT, prepareMakaNodeToolchain } from '#maka-node-toolchain';
 import { createCodexOAuthHarnessCredentialBinding } from '#codex-oauth-harness';
 import {
   assertDeepSweSubset30TaskTreeFingerprint,
@@ -172,6 +173,7 @@ export function buildHarnessAbToolchainFingerprint({
   hostToolchainFingerprint,
   competitorProfile,
   pierVersion = null,
+  makaNodeToolchainFingerprint = null,
 }) {
   return `sha256:${createHash('sha256')
     .update(
@@ -180,6 +182,7 @@ export function buildHarnessAbToolchainFingerprint({
         competitor: competitorProfile.id,
         competitorToolchainFingerprint: competitorProfile.toolchainFingerprint,
         ...(pierVersion === null ? {} : { pierVersion }),
+        ...(makaNodeToolchainFingerprint === null ? {} : { makaNodeToolchainFingerprint }),
       }),
     )
     .digest('hex')}`;
@@ -389,6 +392,19 @@ export function resolveHarnessCompetitorToolchain(runRoot, competitorProfile, en
   throw new Error(`unsupported harness competitor: ${competitorProfile.id}`);
 }
 
+export function resolveHarnessMakaNodeToolchain(runRoot, env = process.env) {
+  const fingerprintPrefix = MAKA_NODE_TOOLCHAIN_FINGERPRINT.slice(
+    'sha256:'.length,
+    'sha256:'.length + 12,
+  );
+  return {
+    path: env.MAKA_HARNESS_AB_MAKA_NODE_TOOLCHAIN
+      ? resolve(env.MAKA_HARNESS_AB_MAKA_NODE_TOOLCHAIN)
+      : join(runRoot, 'toolchains', `maka-node-${fingerprintPrefix}-linux-x64`),
+    prepare: prepareMakaNodeToolchain,
+  };
+}
+
 const envPath = (name, fallback) => parseEnvPath(name, process.env[name], fallback);
 const envPathFrom = (env, name, fallback) => parseEnvPath(name, env[name], fallback);
 
@@ -516,6 +532,13 @@ export function harnessMakaContextBudgetEnv() {
   };
 }
 
+export function harnessMakaAgentEnv(benchmarkProfile) {
+  return {
+    ...(benchmarkProfile.executor === 'pier' ? { MAKA_HARBOR_MODE: 'task-run' } : {}),
+    ...harnessMakaContextBudgetEnv(),
+  };
+}
+
 export function buildHarnessAbManifest({
   subjectFingerprint,
   taskSourceFingerprint,
@@ -566,6 +589,15 @@ export function buildHarnessAbManifest({
           attemptPolicy: 'single',
           billingMode: runtime.billingMode,
           contextBudget: HARNESS_MAKA_CONTEXT_BUDGET,
+          ...(benchmarkProfile.executor === 'pier'
+            ? {
+                execution: {
+                  placement: 'task-container',
+                  isolation: 'harbor-local',
+                  nodeToolchainFingerprint: MAKA_NODE_TOOLCHAIN_FINGERPRINT,
+                },
+              }
+            : {}),
         },
       },
       {
@@ -730,6 +762,8 @@ async function runLocked({
     hostToolchainFingerprint,
     competitorProfile,
     pierVersion,
+    makaNodeToolchainFingerprint:
+      benchmarkProfile.executor === 'pier' ? MAKA_NODE_TOOLCHAIN_FINGERPRINT : null,
   });
   const manifest = buildHarnessAbManifest({
     subjectFingerprint,
@@ -752,7 +786,12 @@ async function runLocked({
     throw new Error('manifest contains a task absent from the frozen task source');
 
   const competitorToolchain = resolveHarnessCompetitorToolchain(runRoot, competitorProfile);
-  await competitorToolchain.prepare(competitorToolchain.path);
+  const makaNodeToolchain =
+    benchmarkProfile.executor === 'pier' ? resolveHarnessMakaNodeToolchain(runRoot) : null;
+  await Promise.all([
+    competitorToolchain.prepare(competitorToolchain.path),
+    makaNodeToolchain?.prepare(makaNodeToolchain.path),
+  ]);
 
   const execution = buildHarnessExecutionProfile(competitorProfile);
   if (
@@ -783,13 +822,15 @@ async function runLocked({
         pricing: execution.pricing,
         timeoutMultiplier: 1,
         ...(benchmarkProfile.executor === 'pier'
-          ? { baseUrl: execution.baseUrl }
+          ? {
+              baseUrl: execution.baseUrl,
+              makaNodeToolchainPath: makaNodeToolchain.path,
+            }
           : {
               agentEnv: { MAKA_BASE_URL: execution.baseUrl },
               dockerPlatform: 'linux/amd64',
             }),
       };
-      const makaContextBudgetEnv = harnessMakaContextBudgetEnv();
       const config = (id) => ({
         id: `harness-ab-${id}`,
         backend: 'ai-sdk',
@@ -813,7 +854,7 @@ async function runLocked({
             harborRunner: createBenchmarkRunner({
               ...runnerOptions,
               agent: 'maka',
-              agentEnv: { ...runnerOptions.agentEnv, ...makaContextBudgetEnv },
+              agentEnv: { ...runnerOptions.agentEnv, ...harnessMakaAgentEnv(benchmarkProfile) },
             }),
           },
           {

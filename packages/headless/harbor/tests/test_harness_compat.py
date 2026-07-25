@@ -193,13 +193,33 @@ def test_maka_agent_network_policy_under_pier():
     fake = maka_mod.MakaAgent(logs_dir=Path("/tmp"), backend="fake")
     assert fake.network_allowlist().domains == []
 
-    # task-run mode always runs the model on the host and only bridges tool
-    # commands into the container, so the empty allowlist is correct even
-    # without any MAKA_HOST_* configuration.
+    # Pier task-run mode runs Maka in the task container. It may reach only the
+    # host credential proxy, never the upstream provider directly.
     task_run = maka_mod.MakaAgent(
+        logs_dir=Path("/tmp"),
+        extra_env={
+            "MAKA_HARBOR_MODE": "task-run",
+            "MAKA_PROVIDER_PROXY_URL": "https://host.docker.internal",
+            "MAKA_PROVIDER_PROXY_TOKEN": "ephemeral-token",
+        },
+    )
+    assert task_run.network_allowlist().domains == ["host.docker.internal"]
+
+    fake_task_run = maka_mod.MakaAgent(
+        logs_dir=Path("/tmp"),
+        backend="fake",
+        extra_env={"MAKA_HARBOR_MODE": "task-run"},
+    )
+    assert fake_task_run.network_allowlist().domains == []
+
+    missing_task_run_proxy = maka_mod.MakaAgent(
         logs_dir=Path("/tmp"), extra_env={"MAKA_HARBOR_MODE": "task-run"}
     )
-    assert task_run.network_allowlist().domains == []
+    _raises(
+        missing_task_run_proxy.network_allowlist,
+        ValueError,
+        "host provider proxy",
+    )
 
     # A cell-mode ai-sdk run without host-side provider config would need
     # in-container egress the empty allowlist forbids; fail at environment

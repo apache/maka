@@ -395,7 +395,7 @@ export async function resolveHarborRunOptions(
   const requestedWorkdir = valueOf(parsed, env, 'workdir', 'MAKA_WORKDIR') ?? process.cwd();
   const workdir = isolation === 'harbor-http' ? requestedWorkdir : resolve(requestedWorkdir);
   const sourceWorkspaceDir =
-    isolation === 'harbor-http' ? resolve(join(outDir, 'host-workspace-source')) : workdir;
+    isolation && isolation !== 'none' ? resolve(join(outDir, 'host-workspace-source')) : workdir;
   const instruction = await instructionFromOptions(parsed, env);
   const officialVerifier = officialVerifierKind(
     valueOf(parsed, env, 'official-verifier', 'MAKA_OFFICIAL_VERIFIER') ?? 'external-harbor',
