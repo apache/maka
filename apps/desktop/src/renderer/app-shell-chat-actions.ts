@@ -256,6 +256,26 @@ export function createAppShellChatActions(deps: {
     let optimisticSessionId: string | undefined;
     let optimisticTurnId: string | undefined;
     let restoreOptimisticStatus: (() => void) | undefined;
+    // #1433: the composer creates the session BEFORE it sends, so a first
+    // send that never lands has to take the session with it. Set the moment
+    // creation succeeds, cleared the moment the send does — while it holds a
+    // value, the session exists but has nothing in it. `sessions:send` both
+    // returns `{ ok: false }` (a blocked Skill) and throws (Skill discovery,
+    // project-context resolution), so tracking it in one place is what keeps
+    // the two exits from drifting apart; the deleted `quick-chat.ts` cleaned
+    // up on throw and nothing replaced that half.
+    let unsentSessionId: string | undefined;
+    const discardUnsentSession = async () => {
+      if (!unsentSessionId) return;
+      const sessionId = unsentSessionId;
+      unsentSessionId = undefined;
+      try {
+        await window.maka.sessions.remove(sessionId);
+        await refreshSessions();
+      } catch {
+        // Best-effort: a failed cleanup must not replace the real error.
+      }
+    };
     try {
       const turnId = crypto.randomUUID();
       if (!initialSessionId) {
@@ -274,6 +294,7 @@ export function createAppShellChatActions(deps: {
           collaborationMode: newChatCollaborationMode,
           orchestrationMode: newChatOrchestrationMode,
         });
+        unsentSessionId = session.id;
         upsertSessionSummary(session);
         optimisticSessionId = session.id;
         optimisticTurnId = turnId;
@@ -296,10 +317,10 @@ export function createAppShellChatActions(deps: {
           disarmTurnActive(session.id, turnId);
           restoreOptimisticStatus?.();
           restoreOptimisticStatus = undefined;
-          await window.maka.sessions.remove(session.id);
-          await refreshSessions();
+          await discardUnsentSession();
           return false;
         }
+        unsentSessionId = undefined;
         if (newChatOwner && isNewChatSendSurfaceActive(newChatOwner)) {
           showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
         }
@@ -360,6 +381,7 @@ export function createAppShellChatActions(deps: {
       await refreshMessagesUntilTurn(sessionId, turnId);
       return true;
     } catch (error) {
+      await discardUnsentSession();
       if (optimisticSessionId && optimisticTurnId) {
         removeOptimisticUserMessage(optimisticSessionId, optimisticTurnId);
       }
