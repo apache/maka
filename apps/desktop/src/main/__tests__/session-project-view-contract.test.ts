@@ -54,7 +54,7 @@ describe('sidebar project view mode', () => {
     assert.match(markup, /aria-label="会话分组方式"/);
     assert.doesNotMatch(markup, />按状态|>按项目/);
     assert.match(panel, /<MenuRadioGroup value=\{viewMode\}/);
-    assert.match(panel, /<MenuRadioItem value="conversation">\{copy\.groupByConversation\}/);
+    assert.match(panel, /<MenuRadioItem value="conversation">\{copy\.groupByTime\}/);
     assert.match(panel, /<MenuRadioItem value="project">\{copy\.groupByProject\}/);
   });
 

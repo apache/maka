@@ -15,15 +15,27 @@ test('session grouping menu switches between flat conversations and project disc
 
   await expect(sidebar.getByText('最近', { exact: true })).toBeVisible();
   await grouping.click();
-  const byConversation = page.getByRole('menuitemradio', { name: '按会话' });
+  const byTime = page.getByRole('menuitemradio', { name: '按时间' });
   const byProject = page.getByRole('menuitemradio', { name: '按项目' });
-  await expect(byConversation).toHaveAttribute('aria-checked', 'true');
+  await expect(byTime).toHaveAttribute('aria-checked', 'true');
   await byProject.click();
   await expect(sidebar.locator('.maka-list-project-heading').first()).toBeVisible();
 
   await grouping.click();
   await expect(page.getByRole('menuitemradio', { name: '按项目' })).toHaveAttribute('aria-checked', 'true');
-  await expect(page.getByRole('menuitemradio', { name: '按会话' })).toHaveAttribute('aria-checked', 'false');
+  await expect(page.getByRole('menuitemradio', { name: '按时间' })).toHaveAttribute('aria-checked', 'false');
+});
+
+test('session grouping menu fits its Chinese labels instead of inheriting the generic minimum width', async ({
+  sidebarLongSessionsWindow: page,
+}) => {
+  const sidebar = await expandedSidebar(page);
+  await sidebar.getByRole('button', { name: '会话分组方式' }).click();
+
+  const popup = page.locator('[data-slot="menu-popup"]');
+  await expect(popup).toBeVisible();
+  const width = await popup.evaluate((element) => element.getBoundingClientRect().width);
+  expect(width).toBeLessThan(128);
 });
 
 test('session heading stays singular and uses the shared sidebar type tier', async ({

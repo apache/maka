@@ -64,9 +64,9 @@ export function SessionListPanel(props: {
             >
               <ListTodo size={15} aria-hidden="true" />
             </MenuTrigger>
-            <MenuPopup align="end">
+            <MenuPopup className="w-max !min-w-0" align="end">
               <MenuRadioGroup value={viewMode} onValueChange={(mode) => onViewModeChange(mode as SessionViewMode)}>
-                <MenuRadioItem value="conversation">{copy.groupByConversation}</MenuRadioItem>
+                <MenuRadioItem value="conversation">{copy.groupByTime}</MenuRadioItem>
                 <MenuRadioItem value="project">{copy.groupByProject}</MenuRadioItem>
               </MenuRadioGroup>
             </MenuPopup>
