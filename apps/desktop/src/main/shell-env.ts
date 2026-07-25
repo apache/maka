@@ -135,7 +135,7 @@ export function selectLoginShell(
 
 /**
  * Kill the detached shell process group so startup-file descendants do not
- * survive a timeout or an output-limit failure.
+ * survive the dedicated capture, regardless of how it settles.
  */
 function terminateProbe(child: ReturnType<typeof spawn>): void {
   if (process.platform !== 'win32' && child.pid !== undefined) {
@@ -195,10 +195,10 @@ async function captureLoginShellPath(timeoutMs: number): Promise<string> {
       child.stderr.destroy();
     };
 
-    const fail = (error: Error, terminate = false) => {
+    const fail = (error: Error) => {
       if (settled) return;
       settled = true;
-      if (terminate) terminateProbe(child);
+      terminateProbe(child);
       cleanup();
       reject(error);
     };
@@ -206,6 +206,7 @@ async function captureLoginShellPath(timeoutMs: number): Promise<string> {
     const succeed = (path: string) => {
       if (settled) return;
       settled = true;
+      terminateProbe(child);
       cleanup();
       resolve(path);
     };
@@ -213,7 +214,7 @@ async function captureLoginShellPath(timeoutMs: number): Promise<string> {
     const capture = (chunk: Buffer, keep: boolean) => {
       capturedBytes += chunk.length;
       if (capturedBytes > MAX_CAPTURE_BYTES) {
-        fail(new Error(`shell output exceeded ${MAX_CAPTURE_BYTES} bytes`), true);
+        fail(new Error(`shell output exceeded ${MAX_CAPTURE_BYTES} bytes`));
         return;
       }
       if (keep) stdoutChunks.push(chunk);
@@ -254,7 +255,7 @@ async function captureLoginShellPath(timeoutMs: number): Promise<string> {
     });
 
     timer = setTimeout(() => {
-      fail(new Error(`timed out after ${timeoutMs}ms spawning ${shell}`), true);
+      fail(new Error(`timed out after ${timeoutMs}ms spawning ${shell}`));
     }, timeoutMs);
   });
 }

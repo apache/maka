@@ -6,7 +6,7 @@
  */
 
 import { strict as assert } from 'node:assert';
-import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -47,6 +47,40 @@ async function createFakeShell(body: string): Promise<{
   };
 }
 
+async function readPid(path: string): Promise<number> {
+  const pid = Number.parseInt(await readFile(path, 'utf8'), 10);
+  assert.ok(Number.isInteger(pid) && pid > 0);
+  return pid;
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    throw error;
+  }
+}
+
+async function assertProcessExited(pid: number): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (!isProcessAlive(pid)) return;
+    await delay(20);
+  }
+  assert.fail(`process ${pid} remained alive after shell capture settled`);
+}
+
+function terminateIfAlive(pid: number | undefined): void {
+  if (pid === undefined) return;
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+  }
+}
+
 describe('resolveShellEnv', () => {
   it(
     'imports the login PATH without importing application control variables',
@@ -54,14 +88,22 @@ describe('resolveShellEnv', () => {
     async () => {
       const restoreEnv = snapshotEnv();
       const shell = await createFakeShell(`
+(
+  trap '' HUP TERM
+  sleep 60
+) </dev/null >/dev/null 2>&1 &
+printf '%s' "$!" > "$SHELL_ENV_TEST_PID_FILE"
 export PATH='/resolved/bin:/usr/bin'
 export MAKA_E2E_FIXTURE='first-run'
 export VITE_DEV_SERVER_URL='https://example.invalid/renderer'
 export XDG_RUNTIME_DIR='/shell/runtime'
 exec /bin/sh -c "$4"
 `);
+      const pidFile = `${shell.path}.pid`;
+      let descendantPid: number | undefined;
       try {
         process.env.SHELL = shell.path;
+        process.env.SHELL_ENV_TEST_PID_FILE = pidFile;
         process.env.PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
         process.env.XDG_RUNTIME_DIR = '/original/runtime';
         delete process.env.TERM;
@@ -73,6 +115,7 @@ exec /bin/sh -c "$4"
         delete process.env.ELECTRON_NO_ATTACH_CONSOLE;
 
         await resolveShellEnv();
+        descendantPid = await readPid(pidFile);
 
         assert.equal(process.env.PATH, '/resolved/bin:/usr/bin');
         assert.equal(process.env.MAKA_E2E_FIXTURE, undefined);
@@ -80,7 +123,9 @@ exec /bin/sh -c "$4"
         assert.equal(process.env.XDG_RUNTIME_DIR, '/original/runtime');
         assert.equal(process.env.ELECTRON_RUN_AS_NODE, undefined);
         assert.equal(process.env.ELECTRON_NO_ATTACH_CONSOLE, undefined);
+        await assertProcessExited(descendantPid);
       } finally {
+        terminateIfAlive(descendantPid);
         restoreEnv();
         await shell.cleanup();
       }
@@ -93,25 +138,36 @@ exec /bin/sh -c "$4"
     async () => {
       const restoreEnv = snapshotEnv();
       const shell = await createFakeShell(`
+(
+  trap '' HUP TERM
+  sleep 60
+) </dev/null >/dev/null 2>&1 &
+printf '%s' "$!" > "$SHELL_ENV_TEST_PID_FILE"
 printf 'secret-from-shell-startup' >&2
 exit 23
 `);
+      const pidFile = `${shell.path}.pid`;
+      let descendantPid: number | undefined;
       const warnings: string[] = [];
       const originalWarn = console.warn;
       console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(' '));
       try {
         process.env.SHELL = shell.path;
+        process.env.SHELL_ENV_TEST_PID_FILE = pidFile;
         process.env.PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
         delete process.env.TERM;
         delete process.env.COLORTERM;
         delete process.env.MAKA_SKIP_SHELL_ENV;
 
         await resolveShellEnv();
+        descendantPid = await readPid(pidFile);
 
         assert.equal(process.env.PATH, '/usr/bin:/bin:/usr/sbin:/sbin');
         assert.match(warnings.join('\n'), /exited with code 23/);
         assert.doesNotMatch(warnings.join('\n'), /secret-from-shell-startup/);
+        await assertProcessExited(descendantPid);
       } finally {
+        terminateIfAlive(descendantPid);
         console.warn = originalWarn;
         restoreEnv();
         await shell.cleanup();
@@ -127,33 +183,60 @@ exit 23
       const shell = await createFakeShell(`
 (
   trap '' HUP TERM
-  printf 'started' > "$SHELL_ENV_TEST_STARTED_FILE"
-  sleep 1.5
-  printf 'survived' > "$SHELL_ENV_TEST_SURVIVOR_FILE"
+  sleep 60
 ) </dev/null >/dev/null 2>&1 &
+printf '%s' "$!" > "$SHELL_ENV_TEST_PID_FILE"
 wait
 `);
-      const startedFile = `${shell.path}.started`;
-      const survivorFile = `${shell.path}.survived`;
+      const pidFile = `${shell.path}.pid`;
+      let descendantPid: number | undefined;
       const originalWarn = console.warn;
       console.warn = () => {};
       try {
         process.env.SHELL = shell.path;
-        process.env.SHELL_ENV_TEST_STARTED_FILE = startedFile;
-        process.env.SHELL_ENV_TEST_SURVIVOR_FILE = survivorFile;
+        process.env.SHELL_ENV_TEST_PID_FILE = pidFile;
         process.env.PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
         delete process.env.TERM;
         delete process.env.COLORTERM;
         delete process.env.MAKA_SKIP_SHELL_ENV;
 
         await resolveShellEnv(1_000);
-        await access(startedFile);
-        await delay(700);
+        descendantPid = await readPid(pidFile);
 
-        await assert.rejects(access(survivorFile));
+        await assertProcessExited(descendantPid);
         assert.equal(process.env.PATH, '/usr/bin:/bin:/usr/sbin:/sbin');
       } finally {
+        terminateIfAlive(descendantPid);
         console.warn = originalWarn;
+        restoreEnv();
+        await shell.cleanup();
+      }
+    },
+  );
+
+  it(
+    'does not execute the shell when MAKA_SKIP_SHELL_ENV is set',
+    { skip: process.platform === 'win32' },
+    async () => {
+      const restoreEnv = snapshotEnv();
+      const shell = await createFakeShell(`
+printf 'executed' > "$SHELL_ENV_TEST_SENTINEL_FILE"
+exit 0
+`);
+      const sentinelFile = `${shell.path}.executed`;
+      try {
+        process.env.SHELL = shell.path;
+        process.env.SHELL_ENV_TEST_SENTINEL_FILE = sentinelFile;
+        process.env.PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+        process.env.MAKA_SKIP_SHELL_ENV = '1';
+        delete process.env.TERM;
+        delete process.env.COLORTERM;
+
+        await resolveShellEnv();
+
+        assert.equal(process.env.PATH, '/usr/bin:/bin:/usr/sbin:/sbin');
+        await assert.rejects(readFile(sentinelFile));
+      } finally {
         restoreEnv();
         await shell.cleanup();
       }
