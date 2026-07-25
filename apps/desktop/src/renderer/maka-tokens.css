@@ -127,6 +127,17 @@
   --brand-deep-hover: oklch(from var(--accent) calc(l - 0.06) c h);
   /* Fixed external channel identity; unlike palette-derived Maka accents. */
   --brand-wechat: #07c160;
+  /* Maka's own identity colour, sampled from the `maka` lockup in the app
+     icon (apps/desktop/assets/icon.png).
+     Deliberately NOT `var(--accent)`: an identity mark that turns mauve
+     when the user picks the mauve palette is a themed decoration, not a
+     mark. Same contract as --brand-wechat above — a fixed brand asset that
+     sits outside the palette system — which is also why it stays one value
+     across light and dark rather than being re-derived per theme.
+     Do not reach for this as a general accent: --accent / --brand-deep own
+     emphasis, and using this for CTAs is exactly the palette-invisibility
+     bug called out in the --brand-deep note above. */
+  --maka-brand: #71a8fd;
   /* Every MCP market tile now renders a real library brand mark on a neutral
      plate (mcp-brand-marks.tsx: simple-icons + @ant-design/icons-svg DingTalk +
      the vendored Feishu mark), so no per-brand plate-tint tokens are needed —

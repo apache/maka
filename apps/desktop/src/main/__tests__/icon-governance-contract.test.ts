@@ -97,6 +97,14 @@ const STROKE_EXCEPTION_FILES = new Set([
 //   - apps/desktop/src/renderer/settings/provider-brand-marks.tsx — the LLM
 //     provider brand marks (SiliconCloud, Ollama, xAI, …); every path here is
 //     byte-provenance-pinned above to an upstream brand package.
+//   - packages/ui/src/maka-wordmark.tsx — Maka's own wordmark (#1433). The
+//     one mark here that is first-party rather than vendored: its path was
+//     traced with potrace from the `maka` lockup in
+//     apps/desktop/assets/icon.png, so the geometry has the same "official
+//     logo, reproduced exactly" provenance the vendored marks have. lucide
+//     obviously ships no Maka glyph, and routing a product logo through the
+//     generic icon funnel would subject it to the shared stroke and sizing
+//     seam, which is exactly what a mark must not follow.
 //   - apps/desktop/src/renderer/mcp-brand-marks.tsx — the MCP catalog brand
 //     marks. This is the SANCTIONED pattern for library-sourced marks: the
 //     `<svg>` is an inert MOUNTING SHELL that wraps `<path>` children whose
@@ -113,6 +121,7 @@ const STROKE_EXCEPTION_FILES = new Set([
 // justification (inert shell around library-sourced path geometry).
 const INLINE_SVG_ALLOWLIST = new Set([
   resolve(REPO_ROOT, 'packages/ui/src/bot-brand-logo.tsx'),
+  resolve(REPO_ROOT, 'packages/ui/src/maka-wordmark.tsx'),
   resolve(REPO_ROOT, 'apps/desktop/src/renderer/settings/provider-brand-marks.tsx'),
   resolve(REPO_ROOT, 'apps/desktop/src/renderer/mcp-brand-marks.tsx'),
 ]);
