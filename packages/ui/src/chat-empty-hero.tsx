@@ -26,6 +26,7 @@
 import { Sparkles } from './icons.js';
 import { Button as BaseButton } from '@base-ui/react/button';
 
+import { MakaWordmark } from './maka-wordmark.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy, type DayPeriod } from './conversation-copy.js';
 export type { DayPeriod } from './conversation-copy.js';
@@ -74,23 +75,25 @@ export function EmptyChatHero(props: { onPromptSuggestion?(prompt: string): void
   const period = detectDayPeriod();
   const greeting = copy.greeting[period];
   const greetingTail = copy.greetingTail[period];
+  // #1433: the visual used to be two chat bubbles plus a Maka/user avatar
+  // pair — a staged conversation the user never had. It read as real
+  // content on the one surface that has none, so it went; the wordmark
+  // takes its place as the surface's anchor. The product-pitch line under
+  // the greeting went with it: the daily empty chat is where returning
+  // users land, and they do not need the product explained every time.
   return (
     <section className="maka-hero maka-hero-empty-chat" aria-label={copy.ariaLabel}>
-      <div className="maka-hero-visual" aria-hidden="true">
-        <span className="maka-hero-bubble maka-hero-bubble-primary">{copy.primaryBubble}</span>
-        <span className="maka-hero-avatar maka-hero-avatar-maka">
-          <Sparkles size={18} />
-        </span>
-        <span className="maka-hero-avatar maka-hero-avatar-user">
-          {label ? label.slice(0, 1).toUpperCase() : 'M'}
-        </span>
-        <span className="maka-hero-bubble maka-hero-bubble-secondary">{copy.secondaryBubble}</span>
+      {/* 160px puts the mark's cap height at ~42px against the 25px
+          greeting — a 1.7:1 ratio that reads as anchor-then-line. At the
+          104px it shipped with, the two were within 8% of each other and
+          neither led. */}
+      <div className="maka-hero-visual">
+        <MakaWordmark width={160} />
       </div>
       <header>
         <h1>
           {label ? copy.headlineWithLabel(greeting, label) : copy.headlineFallback(greeting, greetingTail)}
         </h1>
-        <p>{copy.intro}</p>
       </header>
     </section>
   );

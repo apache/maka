@@ -268,36 +268,38 @@ describe('visible-copy hygiene contract (PR-SIDEBAR-IA-0 Phase 3 P0 fixup v2)', 
     });
   }
 
-  it('pins the zh empty-chat hero product tagline', async () => {
+  it('keeps the empty-chat hero free of staged conversation and product pitch', async () => {
+    // #1433: the hero used to stage a conversation the user never had —
+    // two chat bubbles ("好，我来帮你理清楚。" / "为这个任务起草计划") plus a
+    // Maka/user avatar pair — on the one surface that has no content, and
+    // pitched the product ("自主规划，陪你把事做完的智能个人助手。") to
+    // returning users every time they opened a new chat. The wordmark is
+    // the anchor now. This contract keeps that decision from silently
+    // regressing: fake message copy must not come back to the empty state.
     const heroPath = resolve(process.cwd(), '..', '..', 'packages', 'ui', 'src', 'chat-empty-hero.tsx');
     const copyPath = resolve(process.cwd(), '..', '..', 'packages', 'ui', 'src', 'conversation-copy.ts');
     const src = stripComments(await readFile(heroPath, 'utf8'));
     const copy = stripComments(await readFile(copyPath, 'utf8'));
 
-    assert.match(
-      copy,
-      /intro:\s*'自主规划，陪你把事做完的智能个人助手。'/,
-      'The default zh chat empty hero should carry Maka’s exact product tagline.',
-    );
-    assert.match(
-      copy,
-      /primaryBubble:\s*'好，我来帮你理清楚。'/,
-      'The default zh chat empty hero visual should not leak the English fixture bubble.',
-    );
-    assert.match(
-      copy,
-      /secondaryBubble:\s*'为这个任务起草计划'/,
-      'The default zh chat empty hero visual should keep the task prompt bubble Chinese-first.',
+    for (const [field, why] of [
+      ['primaryBubble', 'a staged assistant reply'],
+      ['secondaryBubble', 'a staged user prompt'],
+    ] as const) {
+      assert.doesNotMatch(
+        copy,
+        new RegExp(`${field}\\s*:`),
+        `The empty-chat hero must not reintroduce ${why}: the empty state has no conversation to show.`,
+      );
+    }
+    assert.doesNotMatch(
+      src,
+      /maka-hero-bubble|maka-hero-avatar/,
+      'The empty-chat hero must not render conversation bubbles or avatars.',
     );
     assert.match(
       src,
-      /maka-hero-bubble-primary">\{copy\.primaryBubble\}/,
-      'The empty hero primary bubble should render from the locale copy bundle.',
-    );
-    assert.match(
-      src,
-      /maka-hero-bubble-secondary">\{copy\.secondaryBubble\}/,
-      'The empty hero secondary bubble should render from the locale copy bundle.',
+      /<MakaWordmark\b/,
+      'The empty-chat hero should anchor on the Maka wordmark.',
     );
   });
 });

@@ -29,9 +29,6 @@ export interface ConversationCopy {
     greetingTail: Record<DayPeriod, string>;
     headlineWithLabel: (greeting: string, label: string) => string;
     headlineFallback: (greeting: string, tail: string) => string;
-    primaryBubble: string;
-    secondaryBubble: string;
-    intro: string;
   };
   deepResearchEmpty: {
     ariaLabel: string;
@@ -315,7 +312,6 @@ const CONVERSATION_COPY = {
       greeting: { morning: '早上好', noon: '中午好', afternoon: '下午好', evening: '晚上好' },
       greetingTail: { morning: '清醒的早晨适合理清思路', noon: '专注的午间适合一鼓作气', afternoon: '舒缓的下午适合慢慢推进', evening: '安静的夜晚适合深度思考' },
       headlineWithLabel: (greeting, label) => `${greeting} ${label}，今天想做点什么？`, headlineFallback: (greeting, tail) => `${greeting}，${tail}。`,
-      primaryBubble: '好，我来帮你理清楚。', secondaryBubble: '为这个任务起草计划', intro: '自主规划，陪你把事做完的智能个人助手。',
     },
     deepResearchEmpty: {
       ariaLabel: '深度研究空会话', eyebrow: '深度研究 · 只读探索', title: '先把项目读透，再决定怎么改。', intro: '这个会话固定在只读权限：优先阅读、搜索和分析代码；需要动手实现时，先输出文件、风险和验证命令。',
@@ -423,7 +419,6 @@ const CONVERSATION_COPY = {
       greeting: { morning: 'Good morning', noon: 'Good afternoon', afternoon: 'Good afternoon', evening: 'Good evening' },
       greetingTail: { morning: 'A clear morning is good for untangling ideas', noon: 'A focused midday is good for a single big push', afternoon: 'A calm afternoon is good for steady progress', evening: 'A quiet evening is good for deep thinking' },
       headlineWithLabel: (greeting, label) => `${greeting} ${label} — what shall we tackle today?`, headlineFallback: (greeting, tail) => `${greeting} — ${tail}.`,
-      primaryBubble: 'Sure. I can organize that.', secondaryBubble: 'Draft a plan for this task', intro: 'Describe what you want to change, ask, or look up. Maka will start from the composer below.',
     },
     deepResearchEmpty: {
       ariaLabel: 'Empty Deep Research conversation', eyebrow: 'Deep Research · Read-only exploration', title: 'Understand the project before deciding what to change.', intro: 'This conversation stays read only: inspect, search, and analyze first. When implementation is needed, report the files, risks, and verification commands.',
