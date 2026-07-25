@@ -129,6 +129,18 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
         // Wrap block code with a language pill header + copy affordance.
         // Surface the detected language so users can verify highlighting.
         pre: ({ children, ...rest }) => <CodeBlock {...rest}>{children}</CodeBlock>,
+        // `remarkBreaks` above turns every single newline into a hard break,
+        // and model answers lean on `**subhead**\nbody` to separate sections —
+        // so this element routinely carries a section split. A native <br>
+        // takes no spacing from CSS (display:block / height / margin /
+        // content:"\A" were each measured against the built app; the paragraph
+        // stays at exactly 39px), because an inline break box cannot be given
+        // a height. Rendering it as a block span can, so the gap becomes a
+        // styleable tier instead of whatever the line box happened to leave.
+        // Decorative — the line break is already conveyed by the block layout,
+        // so it is aria-hidden rather than an empty element in the a11y tree.
+        // MARKDOWN-PROSE-CJK-MIXED-SPACING-0.
+        br: () => <span className="maka-hardbreak" aria-hidden="true" />,
         // #618 item 5: the horizontal scroller for over-wide tables lives on
         // a wrapper div. Scrolling on the table itself requires
         // `display: block`, which stops the element generating a table box —

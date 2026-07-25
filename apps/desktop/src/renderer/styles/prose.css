@@ -93,6 +93,16 @@
   font-size: var(--font-size-base);
   line-height: var(--leading-normal);
   word-wrap: break-word;
+  /* CJK/Latin boundary spacing. Chromium's initial value is `no-autospace`,
+     NOT the spec's `normal` — verified against the built app — so a CJK-first
+     product renders 中文和identifier glued together unless it asks. Measured
+     +1.55px per boundary at the 13px body (1/8 em), and it applies across
+     inline element boundaries, so the `<code>` pills in a technical answer
+     get it on both sides too.
+     Scoped here rather than on :root: the composer, sidebar and settings
+     surfaces would all shift text metrics, which is a separate call.
+     MARKDOWN-PROSE-CJK-MIXED-SPACING-0 locks this. */
+  text-autospace: normal;
   /* No max-width here: the reading measure is owned by .maka-message-row
      (var(--maka-chat-measure), the same cap the composer uses), so the
      assistant block matches the composer width. An inner 72ch cap used to
@@ -111,6 +121,22 @@
 .maka-prose p {
   margin: 0 0 var(--space-3);
   text-wrap: pretty;
+}
+/* Hard break inside a paragraph. `remark-breaks` (markdown-body.tsx) turns
+   every single newline in the model's output into one of these, and LLM
+   answers lean on `**subhead**\nbody` to separate sections — so this gap
+   routinely carries a SECTION split, not a continuation.
+   Unstyled it gets only the ~4px the line box already provides, against 16px
+   between paragraphs: the stronger semantic split rendered tighter than the
+   weaker one. A native `<br>` cannot be spaced by CSS at all (display:block,
+   height, margin and content:"\A" were each measured — the paragraph stays at
+   exactly 39px), so markdown-body renders the break as this block span, which
+   can take a height. 6px lands the gap at 10px, between the 4px line gap and
+   the 16px paragraph gap.
+   MARKDOWN-PROSE-CJK-MIXED-SPACING-0 locks this. */
+.maka-hardbreak {
+  display: block;
+  height: var(--space-1-5);
 }
 .maka-prose h1,
 .maka-prose h2,
@@ -208,6 +234,13 @@
      two pills). Bg-only pills leave ~5.5px of inter-line air, matching
      plain text; the dropped border was 3% alpha and read as invisible. */
   padding: 0 var(--space-1-5);
+  /* Outer breathing room against surrounding Chinese. `text-autospace` above
+     already reaches across this inline boundary, but its 1.55px is sized for
+     bare glyphs — against a pill carrying its own padding and a filled
+     background the code still reads glued to the text. 0.25em (3.25px)
+     stacks on top of autospace rather than replacing it.
+     MARKDOWN-PROSE-CJK-MIXED-SPACING-0 locks this. */
+  margin-inline: 0.25em;
   /* PR-UI-LAYOUT-28: inline code radius 4 → 5. Tiny bump but
    * pulls it slightly out of the "tight tag" feel into a calmer
    * pill rhythm that matches the rest of the warm-canvas chrome. */
@@ -451,6 +484,14 @@
      tables hit the overflow-x scroller instead. Body cells still wrap. */
   white-space: nowrap;
   letter-spacing: var(--tracking-normal);
+}
+/* Body cells DO wrap (only `th` is nowrap above), and a squeezed Chinese cell
+   is where breaking gets ugly: the default breaks anywhere, including inside
+   a two-character word. `auto-phrase` breaks on phrase boundaries instead.
+   Scoped to `td` on purpose — on the nowrap `th` a break rule is inert.
+   MARKDOWN-PROSE-CJK-MIXED-SPACING-0 locks this. */
+.maka-prose td {
+  word-break: auto-phrase;
 }
 .maka-prose hr {
   margin: var(--space-4) 0;

@@ -538,3 +538,113 @@ describe('MARKDOWN-PROSE-RENDER-OWNER-0 contract (#739)', () => {
     );
   });
 });
+
+/**
+ * MARKDOWN-PROSE-CJK-MIXED-SPACING-0: Maka is CJK-first and its assistant
+ * prose is dense mixed script — Chinese wrapped around identifiers, paths,
+ * version numbers and line numbers. Four spacing rules carry that, each
+ * measured in the real Electron app (Chromium 150) rather than headless:
+ * headless silently falls PingFang SC back to a serif face while
+ * `document.fonts.check` still reports true, so every font-dependent number
+ * below comes from `CSS.getPlatformFontsForNode` against the built stack.
+ *
+ * 1. `text-autospace: normal` — Chromium's initial value is `no-autospace`,
+ *    NOT the spec's `normal`, so CJK/Latin boundary spacing has to be asked
+ *    for. Measured +1.55px per boundary at the 13px body size (1/8 em), and
+ *    it applies ACROSS inline element boundaries, so `<code>` pills get it on
+ *    both sides too. Same lever LobeChat landed in `:root` after dropping its
+ *    runtime pangu.js pass. Scoped to `.maka-prose` here, not `:root`: the
+ *    composer, sidebar and settings surfaces are a separate call — widening
+ *    it changes text metrics app-wide.
+ *
+ * 2. `code { margin-inline: 0.25em }` — autospace alone leaves 1.55px between
+ *    Chinese and a code pill that already carries inline padding and a
+ *    background, and the pill still reads glued to the text. 0.25em (3.25px)
+ *    stacks on top of autospace rather than replacing it.
+ *
+ * 3. `td { word-break: auto-phrase }` — phrase-aware breaking so a narrow
+ *    Chinese body cell breaks between phrases rather than mid-word. Only
+ *    `td`: `th` is `white-space: nowrap` (headers hold one line so degenerate
+ *    tables hit the wrapper's scroller), where a break rule is inert.
+ *
+ * 4. `.maka-hardbreak` — `remark-breaks` turns every single newline into a
+ *    hard break, and LLM answers lean on `**subhead**\nbody` to separate
+ *    sections. A hard break carries only the 4px the line box already gives,
+ *    against 16px between paragraphs, so the STRONGER semantic split renders
+ *    tighter than the weaker one. CSS cannot fix a native `<br>` —
+ *    display:block, height, margin and content:"\A" all leave the paragraph
+ *    at exactly 39px — so markdown-body renders the break as a block `<span>`
+ *    that can take a height, landing the gap at 10px, between the 4px line
+ *    gap and the 16px paragraph gap.
+ */
+describe('MARKDOWN-PROSE-CJK-MIXED-SPACING-0 contract', () => {
+  it('.maka-prose asks for CJK/Latin autospace (Chromium defaults to no-autospace)', async () => {
+    const css = stripCssComments(await readFile(PROSE_CSS, 'utf8'));
+    const prose = cssBlocks(css).find(({ selectors }) => selectors === '.maka-prose');
+    assert.ok(prose, 'expected a bare .maka-prose base rule in prose.css');
+    assert.match(
+      prose!.decls,
+      /text-autospace:\s*normal/,
+      ".maka-prose must set text-autospace: normal — Chromium's initial value is no-autospace, so a CJK-first product gets no CJK/Latin boundary spacing unless it asks (measured +1.55px per boundary at 13px)",
+    );
+  });
+
+  it('inline code keeps a margin gap so code pills do not glue to surrounding Chinese', async () => {
+    const css = stripCssComments(await readFile(PROSE_CSS, 'utf8'));
+    const code = cssBlocks(css).find(({ selectors }) => /^\.maka-prose\s+code$/.test(selectors));
+    assert.ok(code, 'expected a .maka-prose code rule');
+    assert.match(
+      code!.decls,
+      /margin-inline:\s*0\.25em/,
+      '.maka-prose code must carry margin-inline: 0.25em — text-autospace alone leaves only 1.55px against a pill that already has inline padding and a background',
+    );
+  });
+
+  it('table body cells break on phrase boundaries; headers stay nowrap', async () => {
+    const css = stripCssComments(await readFile(PROSE_CSS, 'utf8'));
+    const blocks = cssBlocks(css);
+    const td = blocks.find(({ selectors, decls }) =>
+      /\.maka-prose\s+td/.test(selectors) && /word-break/.test(decls));
+    assert.ok(td, 'expected a .maka-prose td rule carrying word-break');
+    assert.match(
+      td!.decls,
+      /word-break:\s*auto-phrase/,
+      '.maka-prose td must use word-break: auto-phrase so a narrow Chinese body cell breaks between phrases instead of mid-word',
+    );
+    const th = blocks.find(({ selectors }) => /^\.maka-prose\s+th$/.test(selectors));
+    assert.ok(th, 'expected a .maka-prose th rule');
+    assert.match(
+      th!.decls,
+      /white-space:\s*nowrap/,
+      'th stays nowrap — headers hold one line so degenerate tables hit the wrapper scroller, which makes a break rule on th inert',
+    );
+  });
+
+  it('hard breaks render as a block span with height — a native <br> cannot be spaced by CSS', async () => {
+    const css = stripCssComments(await readFile(PROSE_CSS, 'utf8'));
+    const hb = cssBlocks(css).find(({ selectors }) => /\.maka-hardbreak$/.test(selectors));
+    assert.ok(hb, 'expected a .maka-hardbreak rule in prose.css');
+    assert.match(
+      hb!.decls,
+      /display:\s*block/,
+      '.maka-hardbreak must be display: block — an inline box cannot take a height, which is exactly why a native <br> is unfixable in CSS',
+    );
+    assert.match(
+      hb!.decls,
+      /height:\s*var\(--space-1-5\)/,
+      '.maka-hardbreak must take its 6px from --space-1-5 so the hard-break gap lands between the 4px line gap and the 16px paragraph gap',
+    );
+
+    const src = await readFile(MARKDOWN_BODY, 'utf8');
+    assert.match(
+      src,
+      /br:\s*\(\)\s*=>[\s\S]{0,160}maka-hardbreak/,
+      'markdown-body.tsx must override `br` with the .maka-hardbreak block span — remark-breaks turns every LLM newline into a hard break, and CSS cannot give a native <br> any spacing',
+    );
+    assert.match(
+      src,
+      /br:\s*\(\)\s*=>[\s\S]{0,160}aria-hidden/,
+      'the hard-break span is decorative — it must be aria-hidden so it does not surface as an empty element to screen readers',
+    );
+  });
+});
