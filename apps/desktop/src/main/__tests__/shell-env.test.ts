@@ -8,7 +8,12 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { buildCaptureCommand, buildMarkerRegex, mergeEnv } from '../shell-env.js';
+import {
+  buildCaptureCommand,
+  buildMarkerRegex,
+  mergeEnv,
+  sanitizeCapturedEnv,
+} from '../shell-env.js';
 
 const MARK = '0123456789ab';
 
@@ -126,6 +131,58 @@ describe('buildMarkerRegex', () => {
   });
 });
 
+describe('sanitizeCapturedEnv', () => {
+  it('removes Electron probe variables that were absent from the original process', () => {
+    const sanitized = sanitizeCapturedEnv(
+      {
+        ELECTRON_RUN_AS_NODE: '1',
+        ELECTRON_NO_ATTACH_CONSOLE: '1',
+        PATH: '/resolved/bin',
+      },
+      { PATH: '/original/bin' },
+    );
+
+    assert.equal(sanitized.ELECTRON_RUN_AS_NODE, undefined);
+    assert.equal(sanitized.ELECTRON_NO_ATTACH_CONSOLE, undefined);
+    assert.equal(sanitized.PATH, '/resolved/bin');
+  });
+
+  it('restores the exact Electron values that existed before the probe', () => {
+    const sanitized = sanitizeCapturedEnv(
+      {
+        ELECTRON_RUN_AS_NODE: '1',
+        ELECTRON_NO_ATTACH_CONSOLE: '1',
+        PATH: '/resolved/bin',
+      },
+      {
+        ELECTRON_RUN_AS_NODE: 'original-run-as-node',
+        ELECTRON_NO_ATTACH_CONSOLE: 'original-no-console',
+      },
+    );
+
+    assert.equal(
+      sanitized.ELECTRON_RUN_AS_NODE,
+      'original-run-as-node',
+    );
+    assert.equal(
+      sanitized.ELECTRON_NO_ATTACH_CONSOLE,
+      'original-no-console',
+    );
+  });
+
+  it('drops the login shell runtime directory before it reaches GUI children', () => {
+    const sanitized = sanitizeCapturedEnv(
+      {
+        PATH: '/resolved/bin',
+        XDG_RUNTIME_DIR: '/shell/runtime',
+      },
+      { XDG_RUNTIME_DIR: '/original/runtime' },
+    );
+
+    assert.equal(sanitized.XDG_RUNTIME_DIR, undefined);
+  });
+});
+
 describe('mergeEnv', () => {
   // mergeEnv mutates the global `process.env`; snapshot every key before each
   // test and restore exactly afterward so the suite stays hermetic.
@@ -151,31 +208,6 @@ describe('mergeEnv', () => {
     }
   });
 
-  it('strips XDG_RUNTIME_DIR so the login-shell runtime dir never overwrites the original', () => {
-    // microsoft/vscode#22593: the shell's runtime dir must not persist into
-    // GUI-process children. The resolved value is dropped before the apply
-    // loop, so a pre-existing original is left untouched.
-    const restore = snapshotEnv();
-    try {
-      process.env.XDG_RUNTIME_DIR = '/original/runtime';
-      mergeEnv({ XDG_RUNTIME_DIR: '/shell/runtime', PATH: '/bin' });
-      assert.equal(process.env.XDG_RUNTIME_DIR, '/original/runtime');
-    } finally {
-      restore();
-    }
-  });
-
-  it('also drops XDG_RUNTIME_DIR when the original env lacked one', () => {
-    const restore = snapshotEnv();
-    try {
-      delete process.env.XDG_RUNTIME_DIR;
-      mergeEnv({ XDG_RUNTIME_DIR: '/shell/runtime', PATH: '/bin' });
-      assert.equal(process.env.XDG_RUNTIME_DIR, undefined);
-    } finally {
-      restore();
-    }
-  });
-
   it('preserves a pre-existing MAKA_* value the resolved env tried to overwrite', () => {
     // The prefix-rule refactor must restore ANY MAKA_* key, even ones not on
     // a hand-maintained list — this is what survives future MAKA_* renames.
@@ -189,31 +221,14 @@ describe('mergeEnv', () => {
     }
   });
 
-  it('deletes a preserved key that was absent from the original env', () => {
+  it('preserves the original desktop marker when the resolved env carries it', () => {
     const restore = snapshotEnv();
     try {
-      delete process.env.ELECTRON_RUN_AS_NODE;
-      mergeEnv({ PATH: '/bin' });
-      assert.equal(process.env.ELECTRON_RUN_AS_NODE, undefined);
-    } finally {
-      restore();
-    }
-  });
-
-  it('preserves the Electron-specific trio even when the resolved env carries it', () => {
-    const restore = snapshotEnv();
-    try {
-      process.env.ELECTRON_RUN_AS_NODE = '1';
-      process.env.ELECTRON_NO_ATTACH_CONSOLE = '1';
       process.env.ORIGINAL_XDG_CURRENT_DESKTOP = 'GNOME';
       mergeEnv({
-        ELECTRON_RUN_AS_NODE: 'from-shell',
-        ELECTRON_NO_ATTACH_CONSOLE: 'from-shell',
         ORIGINAL_XDG_CURRENT_DESKTOP: 'from-shell',
         PATH: '/bin',
       });
-      assert.equal(process.env.ELECTRON_RUN_AS_NODE, '1');
-      assert.equal(process.env.ELECTRON_NO_ATTACH_CONSOLE, '1');
       assert.equal(process.env.ORIGINAL_XDG_CURRENT_DESKTOP, 'GNOME');
     } finally {
       restore();

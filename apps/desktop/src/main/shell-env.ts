@@ -20,6 +20,10 @@ import { basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 const DEFAULT_TIMEOUT_MS = 10_000;
+const ELECTRON_PROBE_ENV = {
+  ELECTRON_RUN_AS_NODE: '1',
+  ELECTRON_NO_ATTACH_CONSOLE: '1',
+} as const;
 
 /**
  * Resolve the user's login-shell environment and merge it into `process.env`.
@@ -111,6 +115,26 @@ export function buildMarkerRegex(mark: string): RegExp {
 }
 
 /**
+ * Restore the caller's Electron flags and remove the login shell's transient
+ * runtime directory before the capture may re-enter the main process.
+ */
+export function sanitizeCapturedEnv(
+  captured: Readonly<Record<string, string>>,
+  original: Readonly<NodeJS.ProcessEnv>,
+): Record<string, string> {
+  const sanitized = { ...captured };
+  for (const key of Object.keys(ELECTRON_PROBE_ENV) as Array<
+    keyof typeof ELECTRON_PROBE_ENV
+  >) {
+    const originalValue = original[key];
+    if (originalValue === undefined) delete sanitized[key];
+    else sanitized[key] = originalValue;
+  }
+  delete sanitized.XDG_RUNTIME_DIR;
+  return sanitized;
+}
+
+/**
  * Spawn the user's login shell and capture its full environment.
  */
 async function captureLoginShellEnv(timeoutMs: number): Promise<Record<string, string>> {
@@ -124,10 +148,10 @@ async function captureLoginShellEnv(timeoutMs: number): Promise<Record<string, s
   const markerRegex = buildMarkerRegex(mark);
   const { command, shellArgs } = buildCaptureCommand(shellName, process.execPath, mark);
 
+  const originalEnv = { ...process.env };
   const env: Record<string, string | undefined> = {
-    ...process.env,
-    ELECTRON_RUN_AS_NODE: '1',
-    ELECTRON_NO_ATTACH_CONSOLE: '1',
+    ...originalEnv,
+    ...ELECTRON_PROBE_ENV,
   };
 
   return new Promise<Record<string, string>>((resolve, reject) => {
@@ -177,7 +201,7 @@ async function captureLoginShellEnv(timeoutMs: number): Promise<Record<string, s
 
       try {
         const parsed = JSON.parse(match[1]) as Record<string, string>;
-        resolve(parsed);
+        resolve(sanitizeCapturedEnv(parsed, originalEnv));
       } catch (err) {
         reject(new Error(`failed to parse environment JSON: ${err instanceof Error ? err.message : String(err)}`));
       }
@@ -190,19 +214,16 @@ async function captureLoginShellEnv(timeoutMs: number): Promise<Record<string, s
  * preservation / stripping rules can be unit-tested.
  *
  * The resolved env takes precedence for PATH and other user-configured
- * variables, but we preserve certain Electron-specific variables that the
- * resolved shell env would not have. Preservation uses a prefix rule over
- * the `MAKA_*` namespace (plus the Electron trio) so it survives future
- * `MAKA_*` renames without a hand-maintained allowlist.
+ * variables, but we preserve the host-owned desktop marker and every `MAKA_*`
+ * value that the resolved shell env must not replace. The Electron flags used
+ * by the capture probe are already restored at the capture boundary.
  */
 export function mergeEnv(resolved: Record<string, string>): void {
-  // Snapshot the Electron-specific + MAKA_* keys before the resolved env
-  // overwrites them. Scanning `process.env` (not a fixed list) means every
-  // currently-set MAKA_* value is restored verbatim.
+  // Snapshot the host-owned keys before the resolved env overwrites them.
+  // Scanning `process.env` (not a fixed list) means every currently-set
+  // MAKA_* value is restored verbatim.
   const preservedKeys = Object.keys(process.env).filter(
     (key) =>
-      key === 'ELECTRON_RUN_AS_NODE' ||
-      key === 'ELECTRON_NO_ATTACH_CONSOLE' ||
       key === 'ORIGINAL_XDG_CURRENT_DESKTOP' ||
       key.startsWith('MAKA_'),
   );
@@ -210,11 +231,6 @@ export function mergeEnv(resolved: Record<string, string>): void {
   for (const key of preservedKeys) {
     preserved[key] = process.env[key];
   }
-
-  // The login shell's runtime dir must not persist into GUI-process children
-  // (microsoft/vscode#22593). macOS is unaffected, but strip unconditionally
-  // so the resolved value never overwrites whatever the GUI process had.
-  delete resolved.XDG_RUNTIME_DIR;
 
   // Apply the resolved environment.
   for (const [key, value] of Object.entries(resolved)) {
