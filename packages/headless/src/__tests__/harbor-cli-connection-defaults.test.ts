@@ -6,6 +6,7 @@ import { describe, test, afterEach } from 'node:test';
 import { resolveEconomyTaskMode } from '../economy-task-policy.js';
 import { resolveHarborCellAiSdkEnv } from '../harbor-cell.js';
 import { applyConnectionDefaults, resolveHarborRunOptions } from '../harbor-cli.js';
+import { validateRealBackendIsolation } from '../isolation.js';
 
 /**
  * Tests for applyConnectionDefaults — the function that reads
@@ -495,6 +496,37 @@ describe('resolveHarborRunOptions backend guard', () => {
     assert.equal(
       opts.realBackendIsolation?.submittedSnapshotRoot,
       '/logs/agent/maka-task-run/submitted-snapshots',
+    );
+  });
+
+  test('rejects a persistent snapshot root inside its source workspace', async () => {
+    const opts = await resolveHarborRunOptions(
+      [
+        '--backend',
+        'fake',
+        '--instruction',
+        'test',
+        '--isolation',
+        'harbor-local',
+        '--workdir',
+        '/workspace',
+        '--out',
+        '/workspace/out',
+      ],
+      {},
+    );
+
+    assert.throws(
+      () => validateRealBackendIsolation(opts.realBackendIsolation),
+      /submittedSnapshotRoot must stay outside workspaceDir/,
+    );
+    assert.doesNotThrow(() =>
+      validateRealBackendIsolation({
+        kind: 'external',
+        label: 'Pier task container',
+        workspaceDir: '/app',
+        submittedSnapshotRoot: '/logs/agent/submitted-snapshots',
+      }),
     );
   });
 

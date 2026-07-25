@@ -1,5 +1,5 @@
 import type { StorageRef } from '@maka/core';
-import type { ShellPlan } from '@maka/runtime';
+import { isPathInside, type ShellPlan } from '@maka/runtime';
 import { isAbsolute } from 'node:path';
 import type { Config, Task } from './contracts.js';
 import type { HeavyTaskEvidenceRecorder } from './heavy-task-evidence.js';
@@ -244,6 +244,9 @@ export function validateRealBackendIsolation(isolation: RealBackendIsolation | u
     }
     if (!isAbsolute(isolation.submittedSnapshotRoot)) {
       throw new Error('realBackendIsolation.submittedSnapshotRoot must be absolute');
+    }
+    if (isPathInside(isolation.workspaceDir, isolation.submittedSnapshotRoot)) {
+      throw new Error('realBackendIsolation.submittedSnapshotRoot must stay outside workspaceDir');
     }
   }
 }
