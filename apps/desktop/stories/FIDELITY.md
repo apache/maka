@@ -17,6 +17,8 @@ export const Populated: Story = { … }
 
 The annotation is prose on purpose. Its value is that someone traced the path and wrote it down; a machine-checkable schema would be satisfied by a plausible-looking lie just as easily. `story-annotation-contract.test.ts` checks that the sentence exists — nothing more. **It cannot tell you the sentence is true.** Only a reviewer following the call chain can, and reviewing that sentence is the point of writing it.
 
+What it does guarantee is that nothing slips past it unseen. It derives the files it scans from `.storybook/main.ts` rather than restating them, and it fails on any top-level export it cannot classify instead of skipping it. A contract that quietly ignores what it does not parse passes *because* it did not understand — which is the same failure as a story that quietly shows a screen the app does not render. So stories use `export const Name: Story = …` and nothing else; a new form is a deliberate widening of the contract, not a silent exemption.
+
 Two of the first batch of annotations were wrong, and both were caught by reading rather than by running anything: one named a path through a builder that cannot produce the state (`CommandPaletteDisabledCommand`), and one named two hosts for a frame that is only one of them. Write the sentence narrow enough to be falsifiable — the host, the builder, the gate — because a sentence vague enough to always be true buys nothing.
 
 ## The frame matters, not just the component

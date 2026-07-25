@@ -36,11 +36,11 @@ const STORY_ROOTS = [
 ];
 
 const CONVENTION_DOC = 'apps/desktop/stories/FIDELITY.md';
+const STORYBOOK_CONFIG = 'apps/desktop/.storybook/main.ts';
 
 /**
- * Both extensions Storybook loads. `.storybook/main.ts` globs
- * `**\/*.stories.@(ts|tsx)`; scanning only `.tsx` would let a new
- * `Product/…stories.ts` skip the convention without anything failing.
+ * Both extensions Storybook loads. `.storybook/main.ts` is the authority for
+ * what it loads, so this copy is checked against it below rather than trusted.
  */
 const STORY_EXTENSIONS = ['.stories.ts', '.stories.tsx'];
 
@@ -86,28 +86,39 @@ async function readStoryFiles(): Promise<StoryFile[]> {
 }
 
 /**
- * Story exports declared in this file, with the line each one starts on.
- *
  * Every named export of a CSF file IS a story — that is the format's
- * definition, not a heuristic about this repo, so matching named exports is
- * both the complete rule and the simplest one. (`meta` leaves as
- * `export default`, and CSF's one escape hatch for a named non-story export,
- * `meta.excludeStories`, is unused here; a file that starts using it would
- * need this to honour it.)
+ * definition. A recognizer that enumerates the spellings it knows therefore
+ * fails OPEN: an export it cannot parse is silently exempt from the contract,
+ * and the test passes because it did not understand. This file has already
+ * been through two versions of that mistake — first `export const X: Story =`
+ * plus a `satisfies Story` branch that no file in either root could ever
+ * trigger, then a bare `^export const` that missed `export { X }`,
+ * `export function X()`, and anything indented.
  *
- * An earlier version matched `export const X: Story =` plus — only in files
- * containing `satisfies Story` — `export const X = {`. No file in either root
- * contains `satisfies Story`, so that second branch could never run: it was
- * written for a form the repo does not use, while `export const X =
- * makeStory()` in a form the repo could use any day slipped through.
+ * So it is closed instead: `storyExports` recognizes the ONE form every story
+ * in both roots uses, and `unsupportedExports` fails on any other top-level
+ * export. Reality growing a new form is now a red test with a message, not a
+ * silent exemption. Widening the contract stays a deliberate edit here.
  */
+const STORY_EXPORT = /^export const (\w+)\s*[:=]/;
+/** `export default meta` is the CSF metadata, not a story. */
+const META_EXPORT = /^export default meta;?$/;
+
 function storyExports(source: string): Array<{ name: string; line: number }> {
   const exports: Array<{ name: string; line: number }> = [];
   source.split('\n').forEach((text, index) => {
-    const name = text.match(/^export const (\w+)\s*[:=]/)?.[1];
+    const name = text.match(STORY_EXPORT)?.[1];
     if (name) exports.push({ name, line: index });
   });
   return exports;
+}
+
+/** Top-level export lines this file cannot classify. */
+function unsupportedExports(source: string): string[] {
+  return source
+    .split('\n')
+    .filter((text) => /^\s*export\b/.test(text))
+    .filter((text) => !STORY_EXPORT.test(text) && !META_EXPORT.test(text.trim()));
 }
 
 /**
@@ -147,6 +158,52 @@ describe('#1433 item 6 — product stories carry a path annotation', () => {
       unclassified,
       [],
       `these story files are exempt from every assertion in this file by accident. Give each a string-literal meta title starting with one of ${KNOWN_TITLE_PREFIXES.join(', ')}:\n${unclassified.join('\n')}`,
+    );
+  });
+
+  /**
+   * The file set is derived from `.storybook/main.ts`, not restated. #1433's
+   * own convention doc says a hand-copied chain drifts invisibly, and this
+   * test is where that would bite hardest: a third glob added to the config
+   * would put a whole directory of stories outside every assertion here, and
+   * nothing would go red.
+   */
+  it('scans exactly what Storybook loads', async () => {
+    const config = await readFile(join(REPO_ROOT, STORYBOOK_CONFIG), 'utf8');
+    const globs = [...config.matchAll(/['"`]([^'"`]*\*\*\/\*\.stories\.[^'"`]*)['"`]/g)].map((m) => m[1]);
+    assert.ok(globs.length > 0, `no story globs found in ${STORYBOOK_CONFIG}`);
+
+    for (const glob of globs) {
+      const [dir, pattern] = glob.split('/**/');
+      const resolved = join(REPO_ROOT, dir.replace(/^(\.\.\/)+/, '').replace(/^apps\/desktop\/\.storybook\//, ''));
+      const covered = STORY_ROOTS.some((root) => root === resolved || root.endsWith(dir.replace(/^(\.\.\/)+/, '')));
+      assert.ok(covered, `${STORYBOOK_CONFIG} loads "${glob}" but STORY_ROOTS does not cover it — add the root here`);
+
+      const extensions = pattern.match(/\.stories\.@\(([^)]+)\)/)?.[1].split('|') ?? [pattern.replace(/^\*/, '')];
+      for (const extension of extensions) {
+        const suffix = extension.startsWith('.') ? extension : `.stories.${extension}`;
+        assert.ok(
+          STORY_EXTENSIONS.includes(suffix),
+          `${STORYBOOK_CONFIG} loads "${suffix}" but STORY_EXTENSIONS does not — add it here`,
+        );
+      }
+    }
+  });
+
+  /**
+   * Fail closed on export forms this file cannot classify. Without it, the
+   * annotation check silently skips whatever it does not parse.
+   */
+  it('classifies every top-level export in every story file', async () => {
+    const files = await readStoryFiles();
+    const unsupported = files.flatMap((file) =>
+      unsupportedExports(file.source).map((text) => `${file.path}: ${text.trim()}`),
+    );
+
+    assert.deepEqual(
+      unsupported,
+      [],
+      `these exports are neither "export const X" nor "export default meta", so the annotation check below cannot see them. CSF treats every named export as a story — either use the standard form, or widen storyExports/META_EXPORT deliberately:\n${unsupported.join('\n')}`,
     );
   });
 
