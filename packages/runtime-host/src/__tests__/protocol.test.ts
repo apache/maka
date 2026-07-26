@@ -59,6 +59,7 @@ describe('Runtime Host bootstrap protocol', () => {
       'runtime.policy.query',
       'subscription.close',
       'subscription.open',
+      'task.ledger.query',
       'turn.interrupt',
       'turn.message.submit',
       'turn.query',

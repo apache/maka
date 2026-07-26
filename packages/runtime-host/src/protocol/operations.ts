@@ -10,6 +10,7 @@ import {
 } from './operation-spec.js';
 import { RUNTIME_POLICY_OPERATION_SPECS } from './runtime-policy.js';
 import { SESSION_CONTINUITY_OPERATION_SPECS } from './session-continuity.js';
+import { TASK_LEDGER_OPERATION_SPECS } from './task-ledger.js';
 import { TURN_OPERATION_SPECS } from './turn.js';
 
 export type { HostLifecycleState, HostStatusInput, HostStatusResult } from './host-status.js';
@@ -57,8 +58,13 @@ const CORE_AND_MESSAGE_OPERATION_SPECS = composeOperationSpecMaps(
   MESSAGE_OPERATION_SPECS,
 );
 
-export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
+const CORE_MESSAGE_AND_TASK_LEDGER_OPERATION_SPECS = composeOperationSpecMaps(
   CORE_AND_MESSAGE_OPERATION_SPECS,
+  TASK_LEDGER_OPERATION_SPECS,
+);
+
+export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
+  CORE_MESSAGE_AND_TASK_LEDGER_OPERATION_SPECS,
   SESSION_CONTINUITY_OPERATION_SPECS,
 );
 

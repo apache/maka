@@ -9,13 +9,17 @@ import { test } from 'node:test';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { MessageContent } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
+import type { Task } from '@maka/core/task-ledger';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
+  buildTaskLedgerTools,
   buildRecoveredTerminalRuntimeEvent,
   classifyTerminalRuntimeLedger,
   commitTerminalRunWithRuntimeFact,
   FAKE_ASK_USER_QUESTION_PROMPT,
+  type MakaTool,
+  type MakaToolContext,
 } from '@maka/runtime';
 import {
   openInteractiveExecutionStoresForRead,
@@ -28,6 +32,7 @@ import {
   tryAcquireInteractiveRootReader,
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
+import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-store';
 import {
   connectRuntimeHost,
   RuntimeHostOperationError,
@@ -38,10 +43,15 @@ import {
 import {
   decodeHostFrame,
   RUNTIME_HOST_PROTOCOL_VERSION,
+  TASK_LEDGER_PAGE_MAX_ITEMS,
   type SubscriptionFrame,
+  type TaskLedgerQueryResult,
+  type TaskLedgerRevision,
   type TurnMessageSubmitInput,
   type TurnSnapshot,
 } from '../protocol/index.js';
+import { SessionAdmissionGate } from '../server/session-admission-gate.js';
+import { HostTaskLedgerCoordinator } from '../server/task-ledger-coordinator.js';
 import { FramedTransport } from '../transport/framed-transport.js';
 
 const CURRENT_PROTOCOL = {
@@ -49,6 +59,144 @@ const CURRENT_PROTOCOL = {
   max: RUNTIME_HOST_PROTOCOL_VERSION,
 } as const;
 const PROCESS_TIMEOUT_MS = 10_000;
+
+test('dual UDS Clients query persisted Task Ledger tool-port mutations across Host restart', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const initialRunId = randomUUID();
+    const initialTurnId = randomUUID();
+    // Exercise the Runtime-facing port before Host startup; Hosted tool composition is separate.
+    const toolPortProjection = await withOwnedTaskLedgerToolPort(
+      fixture,
+      async (coordinator, tools) => {
+        const context = taskLedgerToolContext(fixture, {
+          runId: initialRunId,
+          turnId: initialTurnId,
+          toolCallId: randomUUID(),
+        });
+        const create = requireTaskLedgerTool<TaskCreateInput>(tools, 'task_create');
+        const createInput = create.parameters.parse({
+          tasks: Array.from({ length: TASK_LEDGER_PAGE_MAX_ITEMS + 1 }, (_, index) => ({
+            subject: `Authority acceptance task ${index + 1}`,
+          })),
+        });
+        await create.impl(createInput, context);
+
+        const update = requireTaskLedgerTool<TaskUpdateInput>(tools, 'task_update');
+        const updateInput = update.parameters.parse({ id: 'T1', status: 'in_progress' });
+        await update.impl(updateInput, {
+          ...context,
+          toolCallId: randomUUID(),
+        });
+        return coordinator.list(fixture.sessionId, {
+          includeTerminal: true,
+          includeArchived: false,
+          classifyResumeTrust: true,
+        });
+      },
+    );
+    assert.equal(toolPortProjection.length, TASK_LEDGER_PAGE_MAX_ITEMS + 1);
+    assert.deepEqual(toolPortProjection[0]?.owner, {
+      actor: 'main_agent',
+      runId: initialRunId,
+      turnId: initialTurnId,
+    });
+
+    const host = await fixture.startHost();
+    const desktop = await connectClient(fixture.root, 'desktop');
+    const tui = await connectClient(fixture.root, 'tui');
+    let staleContinuation:
+      | {
+          revision: TaskLedgerRevision;
+          cursor: string;
+          task: Task;
+        }
+      | undefined;
+    try {
+      const desktopProjection = await collectTaskLedgerProjection(desktop, fixture.sessionId);
+      const tuiProjection = await collectTaskLedgerProjection(tui, fixture.sessionId);
+      assert.deepEqual(
+        desktopProjection.pages.map((page) => page.tasks.length),
+        [TASK_LEDGER_PAGE_MAX_ITEMS, 1],
+      );
+      assert.deepEqual(tuiProjection, desktopProjection);
+      assert.deepEqual(desktopProjection.tasks, toolPortProjection);
+
+      const byKey = await tui.request('task.ledger.query', {
+        kind: 'get',
+        sessionId: fixture.sessionId,
+        taskRef: 'T1',
+      });
+      assert.equal(byKey.kind, 'task');
+      if (byKey.kind !== 'task') throw new Error('Expected Task Ledger get result');
+      assert.equal(byKey.sessionId, fixture.sessionId);
+      assert.deepEqual(byKey.task, desktopProjection.tasks[0]);
+      assert.equal(byKey.task?.owner?.runId, initialRunId);
+      assert.equal(byKey.task?.owner?.turnId, initialTurnId);
+
+      const firstPage = desktopProjection.pages[0];
+      assert.ok(firstPage?.nextCursor);
+      staleContinuation = {
+        revision: firstPage.revision,
+        cursor: firstPage.nextCursor,
+        task: desktopProjection.tasks[1]!,
+      };
+    } finally {
+      await Promise.allSettled([desktop.close(), tui.close()]);
+      await fixture.stopHost(host);
+    }
+
+    assert.ok(staleContinuation);
+    const { revision: staleRevision, cursor: staleCursor, task: taskToChange } = staleContinuation;
+    const successorTurnId = randomUUID();
+    const changedSubject = `${taskToChange.subject} after authority reacquisition`;
+    await withOwnedTaskLedgerToolPort(fixture, async (_coordinator, tools) => {
+      const update = requireTaskLedgerTool<TaskUpdateInput>(tools, 'task_update');
+      const input = update.parameters.parse({
+        id: taskToChange.key,
+        subject: changedSubject,
+      });
+      await update.impl(
+        input,
+        taskLedgerToolContext(fixture, {
+          runId: randomUUID(),
+          turnId: successorTurnId,
+          toolCallId: randomUUID(),
+        }),
+      );
+    });
+
+    const successorHost = await fixture.startHost();
+    const successor = await connectClient(fixture.root, 'desktop');
+    try {
+      const continued = await successor.request('task.ledger.query', {
+        kind: 'list_continue',
+        sessionId: fixture.sessionId,
+        revision: staleRevision,
+        cursor: staleCursor,
+      });
+      assert.equal(continued.kind, 'revision_changed');
+      if (continued.kind !== 'revision_changed') {
+        throw new Error('Expected stale Task Ledger continuation to report revision_changed');
+      }
+      assert.equal(continued.expected, staleRevision);
+      assert.notEqual(continued.actual, staleRevision);
+
+      const changed = await successor.request('task.ledger.query', {
+        kind: 'get',
+        sessionId: fixture.sessionId,
+        taskRef: taskToChange.key,
+      });
+      assert.equal(changed.kind, 'task');
+      if (changed.kind !== 'task') throw new Error('Expected changed Task Ledger task result');
+      assert.equal(changed.sessionId, fixture.sessionId);
+      assert.equal(changed.task?.subject, changedSubject);
+      assert.equal(changed.revision, continued.actual);
+    } finally {
+      await successor.close();
+      await fixture.stopHost(successorHost);
+    }
+  });
+});
 
 test('two UDS Clients share one Runtime Policy authority and CAS winner', async () => {
   await withExecutionRoot(async (fixture) => {
@@ -1228,6 +1376,104 @@ test('old-Epoch Message submit returns only exact durable outcomes', async () =>
     await fixture.stopHost(successorHost);
   });
 });
+
+interface TaskCreateInput {
+  tasks: Array<{ subject: string; parent_id?: string }>;
+}
+
+interface TaskUpdateInput {
+  id: string;
+  status?: 'pending' | 'in_progress' | 'blocked' | 'completed' | 'failed' | 'cancelled';
+  subject?: string;
+  blockedReason?: string;
+  failureReason?: string;
+  completionEvidence?: string;
+  explicitReopen?: boolean;
+}
+
+type TaskLedgerPage = Extract<TaskLedgerQueryResult, { kind: 'page' }>;
+type TaskLedgerTool<Input> = MakaTool<Input, string> & {
+  parameters: { parse(value: unknown): Input };
+};
+
+async function withOwnedTaskLedgerToolPort<T>(
+  fixture: ExecutionFixture,
+  run: (coordinator: HostTaskLedgerCoordinator, tools: MakaTool[]) => Promise<T>,
+): Promise<T> {
+  const owner = await tryAcquireInteractiveRootOwner(fixture.capability);
+  assert.ok(owner);
+  if (!owner) throw new Error('Unable to acquire the interactive Task Ledger tool port');
+  try {
+    const writer = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
+    const coordinator = new HostTaskLedgerCoordinator(writer, new SessionAdmissionGate());
+    return await run(coordinator, buildTaskLedgerTools({ store: coordinator }));
+  } finally {
+    await owner.close();
+  }
+}
+
+function requireTaskLedgerTool<Input>(
+  tools: readonly MakaTool[],
+  name: 'task_create' | 'task_update',
+): TaskLedgerTool<Input> {
+  const tool = tools.find((candidate) => candidate.name === name);
+  assert.ok(tool, `Expected ${name} Runtime tool`);
+  return tool as TaskLedgerTool<Input>;
+}
+
+function taskLedgerToolContext(
+  fixture: ExecutionFixture,
+  identity: Pick<MakaToolContext, 'runId' | 'turnId' | 'toolCallId'>,
+): MakaToolContext {
+  return {
+    sessionId: fixture.sessionId,
+    cwd: fixture.root,
+    ...identity,
+    abortSignal: new AbortController().signal,
+    emitOutput: () => {},
+  };
+}
+
+async function collectTaskLedgerProjection(
+  client: RuntimeHostConnection,
+  sessionId: string,
+): Promise<{
+  revision: TaskLedgerRevision;
+  pages: TaskLedgerPage[];
+  tasks: Task[];
+}> {
+  const pages: TaskLedgerPage[] = [];
+  let result = await client.request('task.ledger.query', {
+    kind: 'list_start',
+    sessionId,
+  });
+  assert.equal(result.kind, 'page');
+  if (result.kind !== 'page') throw new Error('Expected initial Task Ledger page');
+  const revision = result.revision;
+
+  while (true) {
+    assert.equal(result.sessionId, sessionId);
+    assert.equal(result.revision, revision);
+    pages.push(result);
+    if (result.nextCursor === null) break;
+    result = await client.request('task.ledger.query', {
+      kind: 'list_continue',
+      sessionId,
+      revision,
+      cursor: result.nextCursor,
+    });
+    assert.equal(result.kind, 'page');
+    if (result.kind !== 'page') {
+      throw new Error('Task Ledger changed while collecting a stable projection');
+    }
+  }
+
+  return {
+    revision,
+    pages,
+    tasks: pages.flatMap((page) => page.tasks),
+  };
+}
 
 interface ExecutionHostHandle {
   child: ChildProcess;

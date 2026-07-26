@@ -857,6 +857,13 @@ function createHandlers(queryTurn: TurnQueryHandler): RuntimeHostComposition['ha
       message: 'not available in this test composition',
     },
   } as const;
+  const taskLedgerUnavailable: Awaited<ReturnType<OperationHandlerMap['task.ledger.query']>> = {
+    ok: false,
+    error: {
+      code: 'operation_unavailable',
+      message: 'not available in this test composition',
+    },
+  };
   return {
     ...createUnavailableDomainOperationHandlers(),
     'turn.start': async (input) => ({
@@ -873,6 +880,7 @@ function createHandlers(queryTurn: TurnQueryHandler): RuntimeHostComposition['ha
     'turn.interrupt': async () => unavailable,
     'subscription.open': async () => subscriptionUnavailable,
     'subscription.close': async () => subscriptionUnavailable,
+    'task.ledger.query': async () => taskLedgerUnavailable,
   };
 }
 

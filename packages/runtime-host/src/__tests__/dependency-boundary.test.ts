@@ -30,9 +30,11 @@ const allowedServerExternalImports = new Set([
   '@maka/core/runtime-policy',
   '@maka/core/runtime-event',
   '@maka/core/session',
+  '@maka/core/task-ledger',
   '@maka/runtime',
   '@maka/storage/execution-stores',
   '@maka/storage/runtime-policy-stores',
+  '@maka/storage/task-ledger-store',
   'node:async_hooks',
 ]);
 const allowedExternalImports = {
@@ -41,6 +43,7 @@ const allowedExternalImports = {
     '@maka/core/attachments',
     '@maka/core/events',
     '@maka/core/runtime-policy',
+    '@maka/core/task-ledger',
     'node:util',
   ]),
 } as const;
@@ -134,6 +137,7 @@ test('the production Candidate dependency graph remains non-serving', () => {
     'server/root-turn-coordinator.ts',
     'server/runtime-policy-coordinator.ts',
     'server/session-continuity-coordinator.ts',
+    'server/task-ledger-coordinator.ts',
   ]);
   const violations: string[] = [];
   for (const path of reached) {
@@ -143,7 +147,8 @@ test('the production Candidate dependency graph remains non-serving', () => {
       if (
         specifier === '@maka/runtime' ||
         specifier === '@maka/storage/execution-stores' ||
-        specifier === '@maka/storage/runtime-policy-stores'
+        specifier === '@maka/storage/runtime-policy-stores' ||
+        specifier === '@maka/storage/task-ledger-store'
       ) {
         violations.push(`${localPath}: ${specifier}`);
       }

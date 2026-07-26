@@ -11,6 +11,7 @@
     "./execution-stores": "./dist/execution-stores.js",
     "./root-authority": "./dist/root-authority.js",
     "./runtime-policy-stores": "./dist/runtime-policy-stores.js",
+    "./task-ledger-store": "./dist/task-ledger-store.js",
     "./workspace-identity": "./dist/workspace-identity.js",
     "./write-queue": "./dist/write-queue.js"
   },

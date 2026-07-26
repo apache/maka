@@ -7,6 +7,7 @@ import {
 } from '@maka/runtime';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
+import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-store';
 import { CanonicalSessionProjectionReader } from './canonical-session-projection.js';
 import type { RuntimeHostComposition, RuntimeHostCompositionContext } from './host-kernel.js';
 import { type HostMessageRootPort, HostMessageCoordinator } from './message-coordinator.js';
@@ -17,6 +18,7 @@ import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js
 import { HostRuntimePolicyCoordinator } from './runtime-policy-coordinator.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
 import { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
+import { HostTaskLedgerCoordinator } from './task-ledger-coordinator.js';
 
 export async function createExecutionRuntimeHostComposition(
   context: RuntimeHostCompositionContext,
@@ -26,11 +28,13 @@ export async function createExecutionRuntimeHostComposition(
     const runtimePolicyStores = await openInteractiveRuntimePolicyStoresForWrite(
       context.owner.lease,
     );
+    const taskLedgerStore = await openInteractiveTaskLedgerStoreForWrite(context.owner.lease);
     await stores.messageReceiptStore.beginHostEpoch(context.hostEpoch);
     const backends = new BackendRegistry();
     backends.register('fake', (backendContext) => new FakeBackend(backendContext));
     const runtimePolicyActivation = new RuntimePolicyActivationGate();
     const sessionAdmission = new SessionAdmissionGate();
+    const taskLedger = new HostTaskLedgerCoordinator(taskLedgerStore, sessionAdmission);
     let rootCoordinator: RootTurnCoordinator | undefined;
     let continuity: SessionContinuityCoordinator | undefined;
     const rootPort: HostMessageRootPort = {
@@ -118,6 +122,7 @@ export async function createExecutionRuntimeHostComposition(
       ...messages.handlers,
       ...runtimePolicy.handlers,
       ...continuityCoordinator.handlers,
+      ...taskLedger.handlers,
     } satisfies DomainOperationHandlerMap;
     return {
       handlers,

@@ -47,6 +47,7 @@ export type SessionContinuityOperationKey = Extract<
   OperationKey,
   'subscription.open' | 'subscription.close'
 >;
+export type TaskLedgerOperationKey = Extract<OperationKey, 'task.ledger.query'>;
 export type DomainOperationHandlerMap = Pick<OperationHandlerMap, DomainOperationKey>;
 export type TurnOperationHandlerMap = Pick<OperationHandlerMap, TurnOperationKey>;
 export type RuntimePolicyOperationHandlerMap = Pick<OperationHandlerMap, RuntimePolicyOperationKey>;
@@ -55,6 +56,7 @@ export type SessionContinuityOperationHandlerMap = Pick<
   OperationHandlerMap,
   SessionContinuityOperationKey
 >;
+export type TaskLedgerOperationHandlerMap = Pick<OperationHandlerMap, TaskLedgerOperationKey>;
 
 export function composeOperationHandlers(
   ...handlerMaps: readonly Partial<OperationHandlerMap>[]
