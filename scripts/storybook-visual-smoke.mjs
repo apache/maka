@@ -259,6 +259,12 @@ export async function smokeStory(page, baseUrl, job, options = {}) {
           for (const row of rows) {
             if (row.scrollWidth > row.clientWidth)
               failures.push('plan reminder row has horizontal overflow');
+            if (
+              row.getAttribute('data-status') === 'completed' &&
+              !row.querySelector('.maka-plan-card-run')
+            ) {
+              failures.push('completed plan reminder row is missing its last-run context');
+            }
             for (const selector of [
               '.maka-plan-card-title-row',
               '.maka-plan-card-schedule',

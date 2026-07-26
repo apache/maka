@@ -30,6 +30,18 @@ type Story = StoryObj<typeof meta>;
 const NOW = Date.UTC(2026, 6, 1, 9, 30);
 const PLAN_NOW = Date.now();
 const noop = () => {};
+const CONFIGURED_CRON_LAST_RUN = {
+  id: 'run-1',
+  at: PLAN_NOW - 86_400_000,
+  status: 'triggered',
+  message: '已生成进度摘要。',
+} as const;
+const CONFIGURED_COMPLETED_LAST_RUN = {
+  id: 'run-done',
+  at: PLAN_NOW - 2 * 86_400_000,
+  status: 'triggered',
+  message: '已发送。',
+} as const;
 
 const INSTALLED_SKILLS: SkillEntry[] = [
   {
@@ -87,14 +99,8 @@ const CONFIGURED_REMINDERS: PlanReminder[] = [
     createdAt: PLAN_NOW - 30 * 86_400_000,
     updatedAt: PLAN_NOW - 30 * 86_400_000,
     nextRunAt: PLAN_NOW + 18 * 3_600_000,
-    runs: [
-      {
-        id: 'run-1',
-        at: PLAN_NOW - 86_400_000,
-        status: 'triggered',
-        message: '已生成进度摘要。',
-      },
-    ],
+    lastRun: CONFIGURED_CRON_LAST_RUN,
+    runs: [CONFIGURED_CRON_LAST_RUN],
     runCount: 1,
   },
   {
@@ -120,14 +126,8 @@ const CONFIGURED_REMINDERS: PlanReminder[] = [
     enabled: false,
     createdAt: PLAN_NOW - 10 * 86_400_000,
     updatedAt: PLAN_NOW - 2 * 86_400_000,
-    runs: [
-      {
-        id: 'run-done',
-        at: PLAN_NOW - 2 * 86_400_000,
-        status: 'triggered',
-        message: '已发送。',
-      },
-    ],
+    lastRun: CONFIGURED_COMPLETED_LAST_RUN,
+    runs: [CONFIGURED_COMPLETED_LAST_RUN],
     runCount: 1,
   },
 ];
