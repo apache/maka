@@ -32,7 +32,7 @@ import {
   tryAcquireInteractiveRootReader,
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
-import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-store';
+import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
 import {
   connectRuntimeHost,
   RuntimeHostOperationError,

@@ -34,7 +34,7 @@ const allowedServerExternalImports = new Set([
   '@maka/runtime',
   '@maka/storage/execution-stores',
   '@maka/storage/runtime-policy-stores',
-  '@maka/storage/task-ledger-store',
+  '@maka/storage/task-ledger-authority',
   'node:async_hooks',
 ]);
 const allowedExternalImports = {
@@ -148,7 +148,7 @@ test('the production Candidate dependency graph remains non-serving', () => {
         specifier === '@maka/runtime' ||
         specifier === '@maka/storage/execution-stores' ||
         specifier === '@maka/storage/runtime-policy-stores' ||
-        specifier === '@maka/storage/task-ledger-store'
+        specifier === '@maka/storage/task-ledger-authority'
       ) {
         violations.push(`${localPath}: ${specifier}`);
       }

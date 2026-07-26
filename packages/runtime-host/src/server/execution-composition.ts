@@ -7,7 +7,7 @@ import {
 } from '@maka/runtime';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
-import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-store';
+import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
 import { CanonicalSessionProjectionReader } from './canonical-session-projection.js';
 import type { RuntimeHostComposition, RuntimeHostCompositionContext } from './host-kernel.js';
 import { type HostMessageRootPort, HostMessageCoordinator } from './message-coordinator.js';

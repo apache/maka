@@ -13,7 +13,7 @@ import {
 import {
   authenticateInteractiveTaskLedgerWriter,
   type InteractiveTaskLedgerWriter,
-} from '@maka/storage/task-ledger-store';
+} from '@maka/storage/task-ledger-authority';
 import {
   encodeTaskLedgerTask,
   encodeTaskLedgerQueryResult,

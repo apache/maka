@@ -7,7 +7,7 @@ import {
   authenticateInteractiveTaskLedgerWriter,
   openInteractiveTaskLedgerStoreForWrite,
   type InteractiveTaskLedgerWriter,
-} from '../task-ledger-store.js';
+} from '../task-ledger-authority.js';
 import {
   createHeadlessRootLease,
   resolveStorageRoot,
