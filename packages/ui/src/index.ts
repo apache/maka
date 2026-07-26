@@ -83,6 +83,7 @@ export * from './primitives/segmented.js';
 export * from './primitives/settings-select.js';
 export * from './primitives/settings-switch.js';
 export * from './primitives/input.js';
+export * from './primitives/time-picker.js';
 export * from './primitives/textarea.js';
 export * from './primitives/input-group.js';
 export * from './primitives/toolbar.js';

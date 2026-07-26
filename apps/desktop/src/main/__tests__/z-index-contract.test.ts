@@ -15,6 +15,7 @@
 
 import { strict as assert } from 'node:assert';
 import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { REPO_ROOT, TOKENS_FILE, readAllRendererCss, stripCssComments } from './css-test-helpers.js';
 
@@ -123,5 +124,53 @@ describe('PR-FE-BUG-HUNT-9 z-index contract', () => {
       /z-index:\s*var\(--z-overlay\)\s*;/,
       'SettingsSelect positioner must share SelectPopup\'s --z-overlay layer. The positioner creates the root stacking context for portaled selects; if it stays at --z-dropdown, the popup cannot reliably win hit-tests over composer chrome when it opens upward.',
     );
+  });
+
+  /**
+   * The rule above only proves the CSS class carries the layer — it says
+   * nothing about whether a given call site remembered to apply it. That
+   * gap shipped a real bug: `PermissionModeSelect` rendered a bare
+   * `<SelectPositioner>`, so Settings → 通用 → 默认权限模式 portalled its
+   * popup *below* the `.settingsModal` layer. The popup was in the DOM
+   * with `aria-expanded="true"`, but invisible and unclickable — the
+   * modal won every hit-test. DOM-level e2e cannot see it; only paint
+   * order can.
+   *
+   * The layer now lives on the wrapped `SelectPositioner`/`PopoverPositioner`
+   * in `packages/ui/src/ui.tsx`, so every consumer inherits it. This test
+   * pins that, and pins that the layer is NOT written onto the popup —
+   * Base UI renders popups `position: static`, where `z-index` is inert
+   * and reads as protection that isn't there.
+   */
+  it('carries the overlay layer on the positioner wrappers, never on the static popup', async () => {
+    const ui = await readFile(
+      resolve(REPO_ROOT, 'packages', 'ui', 'src', 'ui.tsx'),
+      'utf8',
+    );
+
+    // `[^>]*` keeps each match inside a single self-closing JSX tag, so a
+    // later element's layer can't be mistaken for this one's.
+    const element = (tag: string): string =>
+      ui.match(new RegExp(`<${tag.replace('.', '\\.')}\\b[^>]*/>`))?.[0] ?? '';
+
+    for (const tag of ['BaseSelect.Positioner', 'BasePopover.Positioner']) {
+      const el = element(tag);
+      assert.notEqual(el, '', `${tag} wrapper not found in packages/ui/src/ui.tsx`);
+      assert.match(
+        el,
+        /z-\[var\(--z-overlay\)\]/,
+        `${tag} must carry the --z-overlay layer: the popup it wraps is position:static, so a z-index there does nothing and the portalled subtree paints under .settingsModal.`,
+      );
+    }
+
+    for (const tag of ['BaseSelect.Popup', 'BasePopover.Popup']) {
+      const el = element(tag);
+      assert.notEqual(el, '', `${tag} wrapper not found in packages/ui/src/ui.tsx`);
+      assert.doesNotMatch(
+        el,
+        /z-\[var\(--z-overlay\)\]/,
+        `${tag} must NOT carry the overlay layer — it is position:static, so the z-index is inert and only disguises a missing layer on the positioner.`,
+      );
+    }
   });
 });

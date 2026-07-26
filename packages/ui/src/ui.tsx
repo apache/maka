@@ -10,6 +10,7 @@ import { RadioGroup as BaseRadioGroup } from '@base-ui/react/radio-group';
 import { Switch as BaseSwitch } from '@base-ui/react/switch';
 import { Toggle as BaseToggle } from '@base-ui/react/toggle';
 import { ToggleGroup as BaseToggleGroup } from '@base-ui/react/toggle-group';
+import { Popover as BasePopover } from '@base-ui/react/popover';
 import { Select as BaseSelect } from '@base-ui/react/select';
 import { Separator as BaseSeparator } from '@base-ui/react/separator';
 import { Check, ChevronDown, X } from './icons.js';
@@ -314,19 +315,33 @@ export const SelectTrigger = forwardRef<
 
 export const SelectValue = BaseSelect.Value;
 export const SelectPortal = BaseSelect.Portal;
-export const SelectPositioner = BaseSelect.Positioner;
+/**
+ * The overlay layer belongs on the POSITIONER, not the popup.
+ *
+ * Base UI renders the popup `position: static` inside an absolutely
+ * positioned positioner. `z-index` has no effect on a static box, so the
+ * layer that used to sit on `SelectPopup` was inert; what actually kept
+ * settings selects above the modal was `.settingsSelectPositioner`
+ * (styles/settings/select.css), applied by hand at each call site. Any
+ * call site that forgot it portalled a popup that paints *below* the
+ * `.settingsModal` layer — invisible, and unclickable because the modal
+ * wins the hit-test. Settings → 通用 → 默认权限模式 shipped that way and
+ * read as "clicking does nothing at all".
+ *
+ * Carrying the layer here makes it structural: every Select consumer
+ * gets it by construction instead of by remembering a class name.
+ */
+export const SelectPositioner = forwardRef<HTMLDivElement, React.ComponentPropsWithoutRef<typeof BaseSelect.Positioner>>(function SelectPositioner(
+  { className, ...props },
+  ref,
+) {
+  return <BaseSelect.Positioner ref={ref} className={cn('z-[var(--z-overlay)]', className)} data-slot="select-positioner" {...props} />;
+});
 export const SelectPopup = forwardRef<HTMLDivElement, React.ComponentPropsWithoutRef<typeof BaseSelect.Popup>>(function SelectPopup(
   { className, ...props },
   ref,
 ) {
-  // The Settings modal uses `--z-modal` (200) — the previous bare
-  // popup layer (Tailwind utility worth 50) was below it, so any
-  // `<SettingsSelect>` opened inside a modal (e.g. Daily Review
-  // → 分析模型) rendered its popup beneath the modal content and
-  // read as "can't select". Pin the popup to `--z-overlay` (300)
-  // so it always floats above the modal it was triggered from
-  // (WAWQAQ msg `d3ea9a33` 2026-06-26).
-  return <BaseSelect.Popup ref={ref} className={cn('z-[var(--z-overlay)] min-w-40 rounded-md bg-popover p-1 text-popover-foreground shadow-maka-panel', className)} data-slot="select-popup" {...props} />;
+  return <BaseSelect.Popup ref={ref} className={cn('min-w-40 rounded-md bg-popover p-1 text-popover-foreground shadow-maka-panel', className)} data-slot="select-popup" {...props} />;
 });
 export const SelectGroup = forwardRef<HTMLDivElement, React.ComponentPropsWithoutRef<typeof BaseSelect.Group>>(function SelectGroup(
   { className, ...props },
@@ -367,6 +382,42 @@ export const SelectItem = forwardRef<HTMLDivElement, React.ComponentPropsWithout
         <BaseSelect.ItemText>{children}</BaseSelect.ItemText>
       </span>
     </BaseSelect.Item>
+  );
+});
+
+/**
+ * Popover — the anchored-surface primitive for pickers that are NOT a
+ * single-value list (Select already covers those). Added for the time
+ * picker, whose popup holds two independent columns and so has no single
+ * "selected item" for Select to own.
+ *
+ * The popup pins the same `--z-overlay` layer as `SelectPopup`: the
+ * Settings modal sits on its own layer, and a bare Tailwind z-utility
+ * would render the popup *beneath* the modal that triggered it — the bug
+ * fixed for Select in WAWQAQ msg `d3ea9a33`.
+ */
+export const PopoverRoot = BasePopover.Root;
+export const PopoverTrigger = BasePopover.Trigger;
+export const PopoverPortal = BasePopover.Portal;
+/** Carries the overlay layer for the same reason `SelectPositioner` does —
+ *  the popup below is `position: static`, so a z-index there is inert. */
+export const PopoverPositioner = forwardRef<HTMLDivElement, React.ComponentPropsWithoutRef<typeof BasePopover.Positioner>>(function PopoverPositioner(
+  { className, ...props },
+  ref,
+) {
+  return <BasePopover.Positioner ref={ref} className={cn('z-[var(--z-overlay)]', className)} data-slot="popover-positioner" {...props} />;
+});
+export const PopoverPopup = forwardRef<HTMLDivElement, React.ComponentPropsWithoutRef<typeof BasePopover.Popup>>(function PopoverPopup(
+  { className, ...props },
+  ref,
+) {
+  return (
+    <BasePopover.Popup
+      ref={ref}
+      className={cn('rounded-md bg-popover p-1 text-popover-foreground shadow-maka-panel outline-none', className)}
+      data-slot="popover-popup"
+      {...props}
+    />
   );
 });
 
