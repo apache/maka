@@ -16,7 +16,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { performance } from 'node:perf_hooks';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -47,6 +47,21 @@ const SUPPORTED_OPTIONS = new Set([
 // Storage-root authority markers bind a directory to its host device/inode and
 // must be regenerated when a session export is materialized elsewhere.
 const STORAGE_ROOT_AUTHORITY_MARKER = '.maka-storage-root.json';
+const PORTABLE_STATE_TOP_LEVEL = new Set(['sessions', 'artifacts', 'runtime.sqlite']);
+const PORTABLE_SESSION_DIRECTORIES = new Set([
+  'deep-research',
+  'projections',
+  'runs',
+  'shell-runs',
+  'turn-admissions',
+]);
+const PORTABLE_SESSION_FILES = new Set([
+  'agent-mailbox.jsonl',
+  'plan-events.jsonl',
+  'plans.json',
+  'task-events.jsonl',
+  'tasks.json',
+]);
 const EXCLUDED_WORKSPACE_SEGMENTS = new Set(['.git', 'node_modules']);
 const SENSITIVE_WORKSPACE_FILE_PATTERNS = [
   /^\.env(?:\..*)?$/i,
@@ -100,8 +115,9 @@ if (process.argv[1] && resolve(process.argv[1]) === SCRIPT_PATH) {
 }
 
 async function main(options) {
-  const workspaceRoot = resolve(options.workspace ?? process.cwd());
+  const workspaceInputs = options.workspace?.length ? options.workspace : [process.cwd()];
   const exportRoots = options['session-export'] ?? [];
+  const workspaceRoots = await Promise.all(workspaceInputs.map((path) => realpath(resolve(path))));
   const iterations = positiveInteger(
     options.iterations ?? (exportRoots.length > 0 ? exportRoots.length : 1),
     'iterations',
@@ -124,6 +140,23 @@ async function main(options) {
       '--iterations must be 1 unless --session-export is supplied; do not duplicate the smoke fixture',
     );
   }
+  if (exportRoots.length === 0 && workspaceRoots.length !== 1) {
+    throw new Error(
+      'repeat --workspace only when pairing one workspace with each --session-export',
+    );
+  }
+  if (
+    exportRoots.length > 0 &&
+    workspaceRoots.length !== 1 &&
+    workspaceRoots.length !== exportRoots.length
+  ) {
+    throw new Error(
+      `--workspace count (${workspaceRoots.length}) must be 1 or match --session-export count (${exportRoots.length})`,
+    );
+  }
+  if (new Set(workspaceRoots).size !== workspaceRoots.length) {
+    throw new Error('each --workspace path must be unique when using one-to-one pairing');
+  }
   const sourceRoots = await Promise.all(exportRoots.map((path) => realpath(resolve(path))));
   if (new Set(sourceRoots).size !== sourceRoots.length) {
     throw new Error('each --session-export path must be unique; do not duplicate real sessions');
@@ -138,21 +171,37 @@ async function main(options) {
 
   const temporaryRoot = await mkdtemp(join(tmpdir(), 'maka-session-bundle-measure-'));
   try {
-    const workspace = await measureWorkspace(workspaceRoot);
-    const workspaceEntries = await readTreeEntries(workspaceRoot, {
-      excludeWorkspaceDirectories: true,
-    });
+    const workspaceMeasurements = await Promise.all(
+      workspaceRoots.map(async (root) => ({
+        root,
+        stats: await measureWorkspace(root),
+        entries: await readTreeEntries(root, { excludeWorkspaceDirectories: true }),
+      })),
+    );
+    const workspaceByRoot = new Map(
+      workspaceMeasurements.map((measurement) => [measurement.root, measurement]),
+    );
     const measuredSourceRoots =
       exportRoots.length > 0 ? sourceRoots : [await createBootstrapSmokeExport(temporaryRoot)];
+    const measuredWorkspaceRoots =
+      workspaceRoots.length === 1
+        ? Array.from({ length: iterations }, () => workspaceRoots[0])
+        : workspaceRoots.slice(0, iterations);
     const samples = [];
 
     for (let index = 0; index < iterations; index += 1) {
       const sampleRoot = join(temporaryRoot, `sample-${String(index + 1).padStart(3, '0')}`);
       const stateRoot = join(sampleRoot, 'state');
       const sourceRoot = measuredSourceRoots[index];
-      await prepareStateExport(sourceRoot, stateRoot);
+      const workspaceMeasurement = workspaceByRoot.get(measuredWorkspaceRoots[index]);
+      if (!workspaceMeasurement) throw new Error('missing workspace measurement for sample');
+      await prepareStateExport(sourceRoot, stateRoot, sourceSessionIds[index]);
       const archivePath = join(sampleRoot, 'session-bundle.tar.zst');
-      const archive = await createBundleArchive({ stateRoot, workspaceEntries, archivePath });
+      const archive = await createBundleArchive({
+        stateRoot,
+        workspaceEntries: workspaceMeasurement.entries,
+        archivePath,
+      });
       const hydrateSamples = [];
       const bootSamplesForSample = [];
       for (let repeat = 0; repeat < bootSamples; repeat += 1) {
@@ -169,6 +218,7 @@ async function main(options) {
         freshProcessBootstrapMs: percentileStats(bootSamplesForSample),
         hydrateSamples,
         bootSamples: bootSamplesForSample,
+        workspace: workspaceReport(workspaceMeasurement),
       });
     }
 
@@ -181,9 +231,21 @@ async function main(options) {
       evidence: {
         kind: evidenceKind,
         sampleCount: samples.length,
-        decisionReady: isDecisionReady(evidenceKind, samples.length),
+        decisionReady: isDecisionReady(
+          evidenceKind,
+          samples.length,
+          workspaceRoots.length,
+          exportRoots.length,
+        ),
         decisionReadyMinSamples: DECISION_READY_MIN_SAMPLES,
         sourceCount: exportRoots.length,
+        workspaceCount: workspaceRoots.length,
+        workspacePairing:
+          exportRoots.length === 0
+            ? 'smoke'
+            : workspaceRoots.length === 1 && exportRoots.length > 1
+              ? 'shared'
+              : 'one-to-one',
         note:
           exportRoots.length > 0
             ? 'Session exports are expected to be sanitized before measurement; JSON text receives a defense-in-depth redaction pass.'
@@ -196,10 +258,7 @@ async function main(options) {
         rawTarBytes: statsFor(samples.map((sample) => sample.rawTarBytes)),
         zstdBytes: statsFor(samples.map((sample) => sample.compressedBytes.zstd)),
       },
-      workspace: {
-        ...workspace,
-        archivedPortableRawBytes: workspaceEntries.reduce((total, entry) => total + entry.bytes, 0),
-      },
+      workspace: buildWorkspaceReport(workspaceMeasurements),
       samples: samples.map((sample) => ({
         id: sample.id,
         source: sample.source,
@@ -208,6 +267,7 @@ async function main(options) {
         compressedBytes: sample.compressedBytes,
         hydrateMs: sample.hydrateMs,
         freshProcessBootstrapMs: sample.freshProcessBootstrapMs,
+        workspace: sample.workspace,
       })),
       coldStart: {
         providerTtfbMs: providerTtfbMs ?? null,
@@ -240,6 +300,7 @@ async function main(options) {
 }
 
 async function createBootstrapSmokeExport(temporaryRoot) {
+  const rawStorageRoot = join(temporaryRoot, 'smoke-storage-raw');
   const storageRoot = join(temporaryRoot, 'smoke-storage');
   const outputDir = join(temporaryRoot, 'smoke-output');
   const workspaceDir = join(temporaryRoot, 'smoke-workspace');
@@ -252,7 +313,7 @@ async function createBootstrapSmokeExport(temporaryRoot) {
       `The real bootstrap smoke path requires built headless artifacts at ${HARBOR_CELL_MODULE}; run the workspace build first (${error instanceof Error ? error.message : String(error)})`,
     );
   }
-  await runHarborCell({
+  const result = await runHarborCell({
     config: {
       id: 'session-bundle-measurement-smoke',
       backend: 'fake',
@@ -262,16 +323,29 @@ async function createBootstrapSmokeExport(temporaryRoot) {
     instruction: 'Inspect the fixture workspace and report one safe improvement.',
     cwd: workspaceDir,
     outputDir,
-    storageRoot,
+    storageRoot: rawStorageRoot,
+  });
+  const { exportSessionBundleState } = await import('@maka/storage');
+  await exportSessionBundleState({
+    stateRoot: rawStorageRoot,
+    configRoot: rawStorageRoot,
+    destinationRoot: storageRoot,
+    sessionId: result.invocation.sessionId,
+    allowShared: true,
   });
   return storageRoot;
 }
 
-async function prepareStateExport(sourceRoot, destinationRoot) {
+async function prepareStateExport(sourceRoot, destinationRoot, expectedSessionId) {
   const source = resolve(sourceRoot);
   const sourceStats = await stat(source).catch(() => undefined);
   if (!sourceStats?.isDirectory()) throw new Error(`session export is not a directory: ${source}`);
   const entries = await readTreeEntries(source);
+  const sessionId = findSessionId(entries);
+  if (expectedSessionId !== undefined && expectedSessionId !== sessionId) {
+    throw new Error(`session export identity changed while preparing: ${source}`);
+  }
+  await validateStateExportEntries(source, entries, sessionId);
   if (!entries.some((entry) => entry.path.startsWith('sessions/'))) {
     throw new Error(`session export has no sessions/** tree: ${source}`);
   }
@@ -283,6 +357,60 @@ async function prepareStateExport(sourceRoot, destinationRoot) {
       await writeFile(destination, sanitizeJsonText(entry.path, await readFile(entry.sourcePath)));
     } else {
       await pipeline(createReadStream(entry.sourcePath), createWriteStream(destination));
+    }
+  }
+}
+
+async function validateStateExportEntries(sourceRoot, entries, sessionId) {
+  for (const entry of entries) {
+    if (entry.path === STORAGE_ROOT_AUTHORITY_MARKER) continue;
+    const [topLevel, child] = entry.path.split('/');
+    if (!PORTABLE_STATE_TOP_LEVEL.has(topLevel)) {
+      throw new Error(
+        `session export contains protected or unclassified state entry: ${entry.path}`,
+      );
+    }
+    if (topLevel === 'sessions') {
+      const sessionPrefix = `sessions/${sessionId}/`;
+      if (entry.path === `sessions/${sessionId}/session.jsonl`) continue;
+      if (!entry.path.startsWith(sessionPrefix)) {
+        throw new Error(`session export contains unfiltered session entry: ${entry.path}`);
+      }
+      const relativePath = entry.path.slice(sessionPrefix.length);
+      const firstSegment = relativePath.split('/')[0];
+      if (
+        (relativePath.includes('/') && PORTABLE_SESSION_DIRECTORIES.has(firstSegment)) ||
+        PORTABLE_SESSION_FILES.has(relativePath)
+      ) {
+        continue;
+      }
+      throw new Error(
+        `session export contains protected or unclassified session entry: ${entry.path}`,
+      );
+    }
+    if (topLevel !== 'artifacts') continue;
+    if (entry.path === 'artifacts/metadata.jsonl') {
+      await validateArtifactMetadata(sourceRoot, entry, sessionId);
+      continue;
+    }
+    if (child !== sessionId || !entry.path.startsWith(`artifacts/${sessionId}/`)) {
+      throw new Error(`session export contains unfiltered artifact entry: ${entry.path}`);
+    }
+  }
+}
+
+async function validateArtifactMetadata(sourceRoot, entry, sessionId) {
+  const text = await readFile(join(sourceRoot, entry.path), 'utf8');
+  for (const [index, line] of text.split('\n').entries()) {
+    if (!line.trim()) continue;
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch (error) {
+      throw new Error(`artifact metadata is invalid JSON at line ${index + 1}`, { cause: error });
+    }
+    if (!record || record.sessionId !== sessionId) {
+      throw new Error(`session export contains unfiltered artifact metadata at line ${index + 1}`);
     }
   }
 }
@@ -456,7 +584,7 @@ async function childBootstrap(archivePath) {
           outputDir: join(destination, 'bootstrap-output'),
           storageRoot,
           resumeSessionId: session.id,
-          onBootstrapReady: () => {
+          onRunStarted: () => {
             process.stdout.write('ready\n');
           },
         },
@@ -585,6 +713,36 @@ async function measureWorkspace(root) {
   };
 }
 
+function workspaceReport(measurement) {
+  return {
+    root: measurement.root,
+    ...measurement.stats,
+    archivedPortableRawBytes: measurement.entries.reduce((total, entry) => total + entry.bytes, 0),
+  };
+}
+
+function buildWorkspaceReport(measurements) {
+  const reports = measurements.map(workspaceReport);
+  if (reports.length === 1) return reports[0];
+  return {
+    mode: 'paired',
+    samples: reports,
+    aggregate: {
+      rawBytes: reports.reduce((total, report) => total + report.rawBytes, 0),
+      categories: Object.fromEntries(
+        Object.keys(reports[0].categories).map((category) => [
+          category,
+          reports.reduce((total, report) => total + report.categories[category], 0),
+        ]),
+      ),
+      archivedPortableRawBytes: reports.reduce(
+        (total, report) => total + report.archivedPortableRawBytes,
+        0,
+      ),
+    },
+  };
+}
+
 async function readTreeEntries(root, options = {}) {
   const files = [];
   await walkFiles(root, async (path, relativePath) => {
@@ -616,7 +774,12 @@ async function walkFiles(root, onFile, current = root) {
   const entries = await readdir(current, { withFileTypes: true });
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     const path = join(current, entry.name);
-    const relativePath = relative(root, path).split('\\').join('/');
+    const platformRelativePath = relative(root, path);
+    if (sep !== '\\' && platformRelativePath.includes('\\')) {
+      throw new Error('workspace/session export contains unsupported backslash path');
+    }
+    const relativePath =
+      sep === '\\' ? platformRelativePath.split(sep).join('/') : platformRelativePath;
     if (entry.isSymbolicLink()) continue;
     if (entry.isDirectory()) await walkFiles(root, onFile, path);
     else if (entry.isFile()) await onFile(path, relativePath);
@@ -667,9 +830,17 @@ function findSessionId(entries) {
   return sessionIds[0];
 }
 
-export function isDecisionReady(evidenceKind, sampleCount) {
+export function isDecisionReady(
+  evidenceKind,
+  sampleCount,
+  workspaceCount = sampleCount,
+  sourceCount = sampleCount,
+) {
   return (
-    evidenceKind === 'sanitized-real-session-exports' && sampleCount >= DECISION_READY_MIN_SAMPLES
+    evidenceKind === 'sanitized-real-session-exports' &&
+    sampleCount >= DECISION_READY_MIN_SAMPLES &&
+    workspaceCount === sourceCount &&
+    sourceCount === sampleCount
   );
 }
 
@@ -741,12 +912,31 @@ export function redactText(value) {
   );
 }
 
-async function writeTarFile(path, entries) {
-  const handle = await open(path, 'wx');
+export async function writeTarFile(path, entries, options = {}) {
+  const { openFile = open, readFileChunks = (sourcePath) => createReadStream(sourcePath) } =
+    options;
+  const handle = await openFile(path, 'wx');
   let offset = 0;
   const write = async (bytes) => {
-    await handle.write(bytes, 0, bytes.byteLength, offset);
-    offset += bytes.byteLength;
+    let written = 0;
+    while (written < bytes.byteLength) {
+      const result = await handle.write(
+        bytes,
+        written,
+        bytes.byteLength - written,
+        offset + written,
+      );
+      const bytesWritten = typeof result === 'number' ? result : result?.bytesWritten;
+      if (
+        !Number.isInteger(bytesWritten) ||
+        bytesWritten <= 0 ||
+        bytesWritten > bytes.byteLength - written
+      ) {
+        throw new Error(`invalid file write count: ${String(bytesWritten)}`);
+      }
+      written += bytesWritten;
+    }
+    offset += written;
   };
   try {
     for (const entry of entries) {
@@ -771,7 +961,7 @@ async function writeTarFile(path, entries) {
       if (Buffer.isBuffer(entry.bytes)) {
         await write(entry.bytes);
       } else {
-        for await (const chunk of createReadStream(entry.sourcePath)) {
+        for await (const chunk of readFileChunks(entry.sourcePath)) {
           await write(chunk);
         }
       }
@@ -927,7 +1117,7 @@ function percentile(values, probability) {
 }
 
 function parseArgs(argv) {
-  const options = { 'session-export': [] };
+  const options = { workspace: [], 'session-export': [] };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (!argument.startsWith('--')) throw new Error(`Unknown argument: ${argument}`);
@@ -935,14 +1125,14 @@ function parseArgs(argv) {
     if (!SUPPORTED_OPTIONS.has(key)) throw new Error(`Unknown option: --${key}`);
     if (key === 'help') {
       process.stdout.write(
-        'Usage: node scripts/measure-session-bundle.mjs --workspace PATH [--session-export PATH ...] [--iterations N] [--boot-samples N] [--provider-ttfb-ms N]\n',
+        'Usage: node scripts/measure-session-bundle.mjs --workspace PATH [--workspace PATH ...] [--session-export PATH ...] [--iterations N] [--boot-samples N] [--provider-ttfb-ms N]\n',
       );
       process.exit(0);
     }
     const value = argv[index + 1];
     if (value === undefined || value.startsWith('--'))
       throw new Error(`Missing value for --${key}`);
-    if (key === 'session-export') options[key].push(value);
+    if (key === 'workspace' || key === 'session-export') options[key].push(value);
     else options[key] = value;
     index += 1;
   }

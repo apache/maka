@@ -11,7 +11,7 @@ import {
 } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import {
@@ -20,6 +20,7 @@ import {
   isDecisionReady,
   measureChildReady,
   redactText,
+  writeTarFile,
 } from './measure-session-bundle.mjs';
 
 const scriptPath = fileURLToPath(new URL('./measure-session-bundle.mjs', import.meta.url));
@@ -171,6 +172,68 @@ test('session bundle measurement rejects copied exports with the same session id
   }
 });
 
+test('session bundle measurement binds each real export to its paired workspace', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-session-bundle-paired-workspace-test-'));
+  const workspaces = [join(root, 'workspace-a'), join(root, 'workspace-b')];
+  const exports = [join(root, 'export-a'), join(root, 'export-b')];
+  try {
+    await Promise.all(workspaces.map((workspace) => mkdir(workspace, { recursive: true })));
+    await writeFile(join(workspaces[0], 'workspace-a.txt'), 'a\n');
+    await writeFile(join(workspaces[1], 'workspace-b.txt'), 'workspace b\n');
+    await Promise.all(
+      exports.map((sessionExport, index) =>
+        createRealSessionExport(sessionExport, workspaces[index]),
+      ),
+    );
+
+    const report = JSON.parse(
+      await run([
+        scriptPath,
+        '--workspace',
+        workspaces[0],
+        '--workspace',
+        workspaces[1],
+        '--session-export',
+        exports[0],
+        '--session-export',
+        exports[1],
+        '--iterations',
+        '2',
+        '--boot-samples',
+        '1',
+      ]),
+    );
+
+    assert.equal(report.evidence.decisionReady, false);
+    assert.equal(report.evidence.workspacePairing, 'one-to-one');
+    assert.equal(report.samples.length, 2);
+    assert.match(report.samples[0].workspace.root, /workspace-a$/);
+    assert.match(report.samples[1].workspace.root, /workspace-b$/);
+    assert.notEqual(
+      report.samples[0].workspace.archivedPortableRawBytes,
+      report.samples[1].workspace.archivedPortableRawBytes,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('shared workspace evidence is not decision-ready for multiple real exports', () => {
+  assert.equal(
+    isDecisionReady('sanitized-real-session-exports', DECISION_READY_MIN_SAMPLES, 1, 100),
+    false,
+  );
+  assert.equal(
+    isDecisionReady(
+      'sanitized-real-session-exports',
+      DECISION_READY_MIN_SAMPLES,
+      DECISION_READY_MIN_SAMPLES,
+      DECISION_READY_MIN_SAMPLES,
+    ),
+    true,
+  );
+});
+
 test('session bundle measurement omits provider estimate without explicit TTFB', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-session-bundle-ttfb-test-'));
   try {
@@ -185,6 +248,26 @@ test('session bundle measurement omits provider estimate without explicit TTFB',
 test('session bundle measurement rejects unknown command-line options', async () => {
   const error = await runFailure([scriptPath, '--workpace', process.cwd()]);
   assert.match(error, /Unknown option: --workpace/);
+});
+
+test('session bundle measurement rejects literal backslashes in POSIX workspace paths', async () => {
+  if (process.platform === 'win32') return;
+  const root = await mkdtemp(join(tmpdir(), 'maka-session-bundle-backslash-path-test-'));
+  try {
+    await writeFile(join(root, 'literal\\backslash.txt'), 'unsupported path\n');
+    const error = await runFailure([
+      scriptPath,
+      '--workspace',
+      root,
+      '--iterations',
+      '1',
+      '--provider-ttfb-ms',
+      '0',
+    ]);
+    assert.match(error, /workspace\/session export contains unsupported backslash path/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('bootstrap timing stops at ready while still waiting for clean child exit', async () => {
@@ -263,6 +346,30 @@ test('session bundle measurement rejects an export containing multiple sessions'
   }
 });
 
+test('session bundle measurement rejects protected state entries in an export', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-session-bundle-protected-export-test-'));
+  const workspace = join(root, 'workspace');
+  const sessionExport = join(root, 'export');
+  try {
+    await mkdir(workspace, { recursive: true });
+    await mkdir(join(sessionExport, 'sessions', 'session-protected'), { recursive: true });
+    await writeFile(join(sessionExport, 'sessions', 'session-protected', 'session.jsonl'), '{}\n');
+    await writeFile(join(sessionExport, 'credentials.json'), '{"token":"must-not-enter"}\n');
+    const error = await runFailure([
+      scriptPath,
+      '--workspace',
+      workspace,
+      '--session-export',
+      sessionExport,
+      '--boot-samples',
+      '1',
+    ]);
+    assert.match(error, /protected or unclassified state entry/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('fresh-process bootstrap fails closed on corrupt restored-session history', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-session-bundle-restored-history-test-'));
   const workspace = join(root, 'workspace');
@@ -300,19 +407,60 @@ test('defense-in-depth redaction preserves ordinary token and secret prose', () 
   assert.equal(redactText('token = top-secret'), 'token = [REDACTED]');
 });
 
-test('bundle creation streams files instead of concatenating the full tar in memory', async () => {
-  const source = await readFile(scriptPath, 'utf8');
-  assert.doesNotMatch(source, /Buffer\.concat\(/);
-  assert.match(source, /createReadStream/);
-  assert.match(source, /createZstdCompress/);
+test('bundle creation streams file bytes and retries injected short writes', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-session-bundle-tar-stream-test-'));
+  try {
+    const sourcePath = join(root, 'source.txt');
+    const payload = Buffer.from('streamed payload through the real tar data path\n');
+    await writeFile(sourcePath, payload);
+    let output = Buffer.alloc(0);
+    let writeCalls = 0;
+    const handle = {
+      async write(bytes, offset, length, position) {
+        writeCalls += 1;
+        const count = Math.min(7, length);
+        const end = position + count;
+        if (end > output.length) {
+          const next = Buffer.alloc(end);
+          output.copy(next);
+          output = next;
+        }
+        bytes.copy(output, position, offset, offset + count);
+        return { bytesWritten: count };
+      },
+      async close() {},
+    };
+    let readerCalls = 0;
+    await writeTarFile(
+      join(root, 'bundle.tar'),
+      [{ path: 'workspace/streamed.txt', sourcePath, bytes: payload.byteLength }],
+      {
+        openFile: async () => handle,
+        readFileChunks: async function* (path) {
+          readerCalls += 1;
+          const bytes = await readFile(path);
+          yield bytes.subarray(0, 9);
+          yield bytes.subarray(9);
+        },
+      },
+    );
+
+    assert.equal(readerCalls, 1);
+    assert.ok(writeCalls > 10, `expected short writes to be retried, got ${writeCalls}`);
+    assert.deepEqual(output.subarray(512, 512 + payload.byteLength), payload);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 async function createRealSessionExport(storageRoot, workspace) {
   const harborCellUrl = new URL('../packages/headless/dist/harbor-cell.js', import.meta.url).href;
-  const outputDir = join(storageRoot, 'fixture-output');
+  const storageSourceRoot = `${storageRoot}-raw`;
+  const outputDir = join(dirname(storageSourceRoot), `${basename(storageSourceRoot)}-output`);
   const source = `
     import { runHarborCell } from ${JSON.stringify(harborCellUrl)};
-    await runHarborCell({
+    import { exportSessionBundleState } from '@maka/storage';
+    const result = await runHarborCell({
       config: {
         id: 'restored-session-fixture',
         backend: 'fake',
@@ -322,7 +470,14 @@ async function createRealSessionExport(storageRoot, workspace) {
       instruction: 'preserve this restored history',
       cwd: ${JSON.stringify(workspace)},
       outputDir: ${JSON.stringify(outputDir)},
-      storageRoot: ${JSON.stringify(storageRoot)},
+      storageRoot: ${JSON.stringify(storageSourceRoot)},
+    });
+    await exportSessionBundleState({
+      stateRoot: ${JSON.stringify(storageSourceRoot)},
+      configRoot: ${JSON.stringify(storageSourceRoot)},
+      destinationRoot: ${JSON.stringify(storageRoot)},
+      sessionId: result.invocation.sessionId,
+      allowShared: true,
     });
   `;
   await run(['--input-type=module', '--eval', source]);

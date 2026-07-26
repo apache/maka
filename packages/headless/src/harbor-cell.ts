@@ -27,6 +27,7 @@ import {
   type SynthesisCacheArtifactStore,
   type SynthesisCacheLoader,
   type SynthesisCacheWriter,
+  type TurnStartOptions,
 } from '@maka/runtime';
 import {
   createAttachmentByteReader,
@@ -140,8 +141,8 @@ export interface RunHarborCellInput {
   newId?: () => string;
   /** Resume one already-materialized session instead of creating a fresh session. */
   resumeSessionId?: string;
-  /** Optional measurement hook fired after local session bootstrap, before backend latency. */
-  onBootstrapReady?: () => void | Promise<void>;
+  /** Optional measurement hook passed through Runtime's run-start boundary. */
+  onRunStarted?: TurnStartOptions['onRunStarted'];
 }
 
 export interface HarborCellContinuationPolicy {
@@ -369,8 +370,6 @@ export async function runHarborCellWithStorage(
         permissionMode: 'execute',
         name: `harbor-cell:${input.config.id}`,
       });
-  await input.onBootstrapReady?.();
-
   let deadlineReached = false;
   let settlementError: unknown;
   let settlementAttempt: Promise<void> | undefined;
@@ -412,7 +411,10 @@ export async function runHarborCellWithStorage(
       for await (const event of manager.sendMessage(
         session.id,
         { turnId, text: nextText },
-        { runId },
+        {
+          runId,
+          ...(input.onRunStarted ? { onRunStarted: input.onRunStarted } : {}),
+        },
       )) {
         if ((event as { type?: string }).type === 'permission_request') {
           const { requestId } = event as { requestId: string };

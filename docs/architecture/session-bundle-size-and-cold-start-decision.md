@@ -31,18 +31,19 @@ The checked-in command is:
 
 ```bash
 npm run measure:session-bundle -- \
-  --workspace /path/to/a/real/checkout \
+  --workspace /path/to/session-1/checkout \
+  --workspace /path/to/session-2/checkout \
   --session-export /path/to/sanitized/state-1 \
   --session-export /path/to/sanitized/state-2 \
   --iterations 2 \
   --provider-ttfb-ms 250
 ```
 
-`--session-export` is repeatable and each path must contain exactly one real exported state tree with `sessions/<id>/session.jsonl`. Canonical paths and session IDs must both be unique, so copying one export to another directory cannot manufacture percentile evidence. JSON and JSONL files receive a defense-in-depth redaction pass before measurement; exports must already be sanitized and must never contain credentials. `--provider-ttfb-ms` is optional; when omitted, the report records that no provider estimate was supplied and omits the first-token planning estimate.
+`--session-export` is repeatable and each path must contain exactly one real exported state tree with `sessions/<id>/session.jsonl`. Each export is paired by position with the corresponding repeated `--workspace` path. A single workspace may be supplied for a smoke run or for comparison exports, but the report marks that evidence `workspacePairing: shared` and it can never be decision-ready. One-to-one workspace/export pairing is required for decision-ready evidence; canonical paths and session IDs must both be unique, so copying one export to another directory cannot manufacture percentile evidence. JSON and JSONL files receive a defense-in-depth redaction pass before measurement; exports must already be sanitized and must never contain credentials. `--provider-ttfb-ms` is optional; when omitted, the report records that no provider estimate was supplied and omits the first-token planning estimate.
 
 For each sample the command:
 
-- walks the selected checkout without following symlinks and recursively excludes every path segment named `.git` or `node_modules` from the portable workspace stream;
+- walks each selected checkout without following symlinks and recursively excludes every path segment named `.git` or `node_modules` from that sample's portable workspace stream;
 - excludes common workspace secret files such as `.env`, credentials/secrets files, private keys, certificates, and logs from the portable workspace stream;
 - materializes the selected state export and builds a real POSIX `manifest.json + state/** + workspace/**` tar stream;
 - compresses that exact tar stream with gzip, Brotli, and Node native Zstandard for codec comparison;
@@ -60,10 +61,10 @@ The JSON report records:
 - the exact archive format and layout;
 - raw tar and compressed byte distributions;
 - per-sample state, archive, hydrate, and fresh-process bootstrap measurements;
-- workspace byte categories and the recursively filtered portable byte count;
+- per-sample workspace roots, byte categories, and recursively filtered portable byte counts (with an aggregate only when multiple workspaces are supplied);
 - provider input provenance and the resulting planning estimate.
 
-Only a report with `evidence.kind: sanitized-real-session-exports` and at least 100 measured samples is marked `evidence.decisionReady: true` and may be used to update the budgets below. A smaller or smoke report is suitable for regression tests and implementation debugging only.
+Only a report with `evidence.kind: sanitized-real-session-exports`, at least 100 measured samples, and one-to-one workspace/export pairing is marked `evidence.decisionReady: true` and may be used to update the budgets below. A smaller, shared-workspace, or smoke report is suitable for regression tests and implementation debugging only.
 
 ## Bundle and Repository Policy
 
@@ -104,7 +105,7 @@ interface SessionRepository {
 The command separates these phases:
 
 1. archive hydrate: read, Zstandard decompress, tar extraction, digest validation;
-2. fresh-process Maka bootstrap: open stores, materialize the workspace, rebase the restored session paths, create the Harbor cell, and signal local runtime/session readiness before invoking FakeBackend; the child still completes and validates the turn after the timing point;
+2. fresh-process Maka bootstrap: open stores, materialize the paired workspace, rebase the restored session paths, create the Harbor cell, and signal local runtime/session readiness from Runtime's `onRunStarted` hook after `run.begin()` and before provider execution; the child still completes and validates the turn after the timing point;
 3. provider first-token latency: an explicit external input, not measured by this command.
 
 The operational budget is therefore expressed as two independent budgets:
