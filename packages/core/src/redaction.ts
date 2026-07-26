@@ -10,12 +10,29 @@ const SENSITIVE_KEY_SUFFIXES = new Set([
 ]);
 const SENSITIVE_KEY_QUALIFIERS = new Set(['api', 'private', 'secret', 'ssh']);
 
+const POSIX_LINE_CONTINUATION_SOURCE = String.raw`\\\r?\n`;
+const OPTIONAL_POSIX_LINE_CONTINUATION_SOURCE = `(?:${POSIX_LINE_CONTINUATION_SOURCE})*`;
+const SHELL_SEPARATOR_SOURCE = `(?:[ \\t]|${POSIX_LINE_CONTINUATION_SOURCE})+`;
+const OPTIONAL_SHELL_SEPARATOR_SOURCE = `(?:[ \\t]|${POSIX_LINE_CONTINUATION_SOURCE})*`;
+const SHELL_SECRET_TOKEN_SOURCE = `("(?:\\\\[\\s\\S]|[^"\\\\])*"|'(?:\\\\[\\s\\S]|[^'\\\\])*'|(?:${POSIX_LINE_CONTINUATION_SOURCE}|[^\\s;&|()<>])+)`;
+
+const AWS_CONFIG_SECRET_KEY_SOURCE = posixContinuedTokenSource('aws_secret_access_key');
+const AWS_SECRET_ACCESS_KEY_FLAG_SOURCE = posixContinuedTokenSource('--secret-access-key');
+const AWS_SECRET_ACCESS_KEY_ENV_SOURCE = posixContinuedTokenSource('AWS_SECRET_ACCESS_KEY');
+
 const QUOTED_SECRET_KEY_VALUE_PATTERN = /((?:"([^"\\]+)"\s*:\s*"))(?:\\.|[^"\\])*/g;
-const ASSIGNED_SECRET_KEY_VALUE_PATTERN = /\b(([A-Za-z][A-Za-z0-9_-]*)\s*[:=]\s*['"]?)[^\s"'&<>]+/g;
+const ASSIGNED_SECRET_KEY_VALUE_PATTERN =
+  /\b(([A-Za-z][A-Za-z0-9_-]*)(?:[ \t]|\\\r?\n)*[:=](?:[ \t]|\\\r?\n)*['"]?)(?:\\\r?\n|[^\s"'&<>])+/g;
 const AUTHORIZATION_HEADER_PATTERN =
   /\b((?:proxy-)?authorization:\s*(?:bearer|basic|token)\s+)[^\s"'<>]+/gi;
-const AWS_CLI_SPACE_SECRET_PATTERN =
-  /(^|[\s;&|()])((?:aws[ \t]+configure[ \t]+set[ \t]+aws_secret_access_key|--secret-access-key)[ \t]+)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s;&|()<>]+)/gm;
+const AWS_CLI_SPACE_SECRET_PATTERN = new RegExp(
+  `(^|[\\s;&|()])((?:aws${SHELL_SEPARATOR_SOURCE}configure${SHELL_SEPARATOR_SOURCE}set${SHELL_SEPARATOR_SOURCE}${AWS_CONFIG_SECRET_KEY_SOURCE}|${AWS_SECRET_ACCESS_KEY_FLAG_SOURCE})${SHELL_SEPARATOR_SOURCE})${SHELL_SECRET_TOKEN_SOURCE}`,
+  'gm',
+);
+const AWS_SECRET_ASSIGNMENT_PATTERN = new RegExp(
+  `\\b(${AWS_SECRET_ACCESS_KEY_ENV_SOURCE}${OPTIONAL_SHELL_SEPARATOR_SOURCE}[:=]${OPTIONAL_SHELL_SEPARATOR_SOURCE}['"]?)(?:${POSIX_LINE_CONTINUATION_SOURCE}|[^\\s"'&<>])+`,
+  'gi',
+);
 
 const SECRET_PATTERNS: RegExp[] = [
   /\b(sk-(?:ant-)?[a-z0-9_-]{8,})\b/gi,
@@ -40,6 +57,10 @@ export function redactSecrets(value: string): string {
     (_match, boundary: string, prefix: string, token: string) =>
       `${boundary}${prefix}${redactShellToken(token)}`,
   );
+  next = next.replace(
+    AWS_SECRET_ASSIGNMENT_PATTERN,
+    (_match, prefix: string) => `${prefix}[redacted]`,
+  );
   next = next.replace(ASSIGNED_SECRET_KEY_VALUE_PATTERN, (match, prefix: string, key: string) =>
     isAssignmentSensitiveKey(key) ? `${prefix}[redacted]` : match,
   );
@@ -51,6 +72,16 @@ export function redactSecrets(value: string): string {
     });
   }
   return next;
+}
+
+function posixContinuedTokenSource(token: string): string {
+  return [...token]
+    .map((character) => escapeRegExpLiteral(character))
+    .join(OPTIONAL_POSIX_LINE_CONTINUATION_SOURCE);
+}
+
+function escapeRegExpLiteral(value: string): string {
+  return value.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
 }
 
 function redactShellToken(token: string): string {

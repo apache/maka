@@ -82,7 +82,7 @@ describe('Interaction projection', () => {
 
   test('redacts standard secret access keys in Bash and generic reviews', () => {
     const command =
-      'aws configure set aws_secret_access_key config-secret && aws s3 cp . s3://bucket --secret-access-key flag-secret && curl -H "awsSecretAccessKey=aws-secret" -H "secretAccessKey=standard-secret" -H "AWS_SECRET_ACCESS_KEY=environment-secret" -H "accessKey=ordinary-access-key" example.test';
+      'aws configure set aws_secret_access_\\\nkey \\\nconfig-secret && aws s3 cp . s3://bucket --secret-access-\\\r\nkey flag-\\\nsecret && AWS_SECRET_ACCESS_\\\nKEY\\\n=environment-secret curl -H "awsSecretAccessKey=aws-secret" -H "secretAccessKey=standard-secret" -H "accessKey=ordinary-access-key" example.test && tool --secret-access-key-\\\nfile visible-file';
     const bashRequest = {
       ...toolPermission,
       args: { command },
@@ -97,10 +97,15 @@ describe('Interaction projection', () => {
     );
     assert.match(
       bash.prompt.review.command,
-      /aws configure set aws_secret_access_key \[redacted\]/,
+      /aws configure set aws_secret_access_\\\\u\{A\}key \\\\u\{A\}\[redacted\]/,
     );
-    assert.match(bash.prompt.review.command, /--secret-access-key \[redacted\]/);
+    assert.match(bash.prompt.review.command, /--secret-access-\\\\u\{D\}\\u\{A\}key \[redacted\]/);
+    assert.match(
+      bash.prompt.review.command,
+      /AWS_SECRET_ACCESS_\\\\u\{A\}KEY\\\\u\{A\}=\[redacted\]/,
+    );
     assert.match(bash.prompt.review.command, /accessKey=ordinary-access-key/);
+    assert.match(bash.prompt.review.command, /visible-file/);
     assert.deepEqual(bashRequest.args, { command });
 
     const generic = projectInteractionPermissionRequest({

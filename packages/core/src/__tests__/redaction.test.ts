@@ -146,9 +146,32 @@ describe('redactSecrets', () => {
     );
   });
 
+  test('masks AWS secrets across POSIX line continuations', () => {
+    assert.equal(
+      redactSecrets(
+        'aws configure set aws_secret_access_key \\\nconfig-secret\nAWS_SECRET_ACCESS_KEY=\\\nenvironment-secret',
+      ),
+      'aws configure set aws_secret_access_key \\\n[redacted]\nAWS_SECRET_ACCESS_KEY=\\\n[redacted]',
+    );
+    assert.equal(
+      redactSecrets('aws s3 cp . s3://bucket --secret-access-key flag-\\\nsecret'),
+      'aws s3 cp . s3://bucket --secret-access-key [redacted]',
+    );
+    assert.equal(
+      redactSecrets('AWS_SECRET_ACCESS_KEY\\\n=environment-secret'),
+      'AWS_SECRET_ACCESS_KEY\\\n=[redacted]',
+    );
+    assert.equal(
+      redactSecrets(
+        'aws configure set aws_secret_access_\\\nkey config-secret && tool --secret-access-\\\r\nkey flag-secret && AWS_SECRET_ACCESS_\\\nKEY=environment-secret',
+      ),
+      'aws configure set aws_secret_access_\\\nkey [redacted] && tool --secret-access-\\\r\nkey [redacted] && AWS_SECRET_ACCESS_\\\nKEY=[redacted]',
+    );
+  });
+
   test('does not mask similar non-secret AWS CLI tokens', () => {
     const text =
-      'aws configure set region us-east-1; aws configure set my_aws_secret_access_key visible; tool --secret-access-key-file credentials.txt';
+      'aws configure set region us-east-1; aws configure set my_aws_secret_access_\\\nkey visible; tool --secret-access-key-\\\r\nfile credentials.txt; AWS_SECRET_ACCESS_KEY_\\\nFILE=visible';
 
     assert.equal(redactSecrets(text), text);
   });
