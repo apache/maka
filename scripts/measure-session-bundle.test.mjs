@@ -370,6 +370,59 @@ test('session bundle measurement rejects protected state entries in an export', 
   }
 });
 
+test('session bundle measurement rejects nested entries under runtime.sqlite', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-session-bundle-nested-runtime-test-'));
+  const workspace = join(root, 'workspace');
+  const sessionExport = join(root, 'export');
+  try {
+    await mkdir(workspace, { recursive: true });
+    await createRealSessionExport(sessionExport, workspace);
+    await rm(join(sessionExport, 'runtime.sqlite'), { force: true });
+    await mkdir(join(sessionExport, 'runtime.sqlite'), { recursive: true });
+    await writeFile(join(sessionExport, 'runtime.sqlite', 'credentials.json'), 'must reject\n');
+    const error = await runFailure([
+      scriptPath,
+      '--workspace',
+      workspace,
+      '--session-export',
+      sessionExport,
+      '--boot-samples',
+      '1',
+    ]);
+    assert.match(error, /protected or unclassified state entry/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('session bundle measurement rejects artifact metadata outside the selected session', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-session-bundle-artifact-metadata-test-'));
+  const workspace = join(root, 'workspace');
+  const sessionExport = join(root, 'export');
+  try {
+    await mkdir(workspace, { recursive: true });
+    await createRealSessionExport(sessionExport, workspace);
+    const [sessionId] = await readdir(join(sessionExport, 'sessions'));
+    await mkdir(join(sessionExport, 'artifacts'), { recursive: true });
+    await writeFile(
+      join(sessionExport, 'artifacts', 'metadata.jsonl'),
+      `${JSON.stringify({ sessionId, relativePath: 'other-session/secret.txt' })}\n`,
+    );
+    const error = await runFailure([
+      scriptPath,
+      '--workspace',
+      workspace,
+      '--session-export',
+      sessionExport,
+      '--boot-samples',
+      '1',
+    ]);
+    assert.match(error, /unfiltered artifact metadata/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('fresh-process bootstrap fails closed on corrupt restored-session history', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-session-bundle-restored-history-test-'));
   const workspace = join(root, 'workspace');

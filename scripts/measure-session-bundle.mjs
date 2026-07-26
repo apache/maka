@@ -388,6 +388,14 @@ async function validateStateExportEntries(sourceRoot, entries, sessionId) {
         `session export contains protected or unclassified session entry: ${entry.path}`,
       );
     }
+    if (topLevel === 'runtime.sqlite') {
+      if (entry.path !== 'runtime.sqlite') {
+        throw new Error(
+          `session export contains protected or unclassified state entry: ${entry.path}`,
+        );
+      }
+      continue;
+    }
     if (topLevel !== 'artifacts') continue;
     if (entry.path === 'artifacts/metadata.jsonl') {
       await validateArtifactMetadata(sourceRoot, entry, sessionId);
@@ -409,10 +417,24 @@ async function validateArtifactMetadata(sourceRoot, entry, sessionId) {
     } catch (error) {
       throw new Error(`artifact metadata is invalid JSON at line ${index + 1}`, { cause: error });
     }
-    if (!record || record.sessionId !== sessionId) {
+    if (
+      !record ||
+      record.sessionId !== sessionId ||
+      typeof record.relativePath !== 'string' ||
+      !isArtifactPathForSession(record.relativePath, sessionId)
+    ) {
       throw new Error(`session export contains unfiltered artifact metadata at line ${index + 1}`);
     }
   }
+}
+
+function isArtifactPathForSession(relativePath, sessionId) {
+  const parts = relativePath.split(/[\\/]+/);
+  return (
+    parts.length >= 2 &&
+    parts[0] === sessionId &&
+    parts.every((part) => part.length > 0 && part !== '.' && part !== '..')
+  );
 }
 
 async function createBundleArchive({ stateRoot, workspaceEntries, archivePath }) {
