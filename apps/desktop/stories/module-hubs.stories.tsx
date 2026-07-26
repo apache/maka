@@ -131,6 +131,76 @@ const CONFIGURED_REMINDERS: PlanReminder[] = [
   },
 ];
 
+const ATTENTION_REMINDERS: PlanReminder[] = [
+  {
+    id: 'plan-delivery-failed',
+    title: '发送每日客户反馈摘要',
+    note: '汇总过去 24 小时的反馈并投递到项目群。',
+    schedule: { kind: 'cron', startAt: NOW - 30 * 86_400_000, expression: '0 18 * * 1-5' },
+    delivery: { channel: 'bot', platform: 'telegram', chatId: 'project-room' },
+    status: 'scheduled',
+    enabled: true,
+    createdAt: NOW - 30 * 86_400_000,
+    updatedAt: NOW - 60 * 60_000,
+    nextRunAt: NOW + 8 * 60 * 60_000,
+    lastRun: {
+      id: 'run-failed',
+      at: NOW - 60 * 60_000,
+      status: 'failed',
+      message: 'Telegram 投递失败：机器人已被移出目标群聊。',
+    },
+    runs: [
+      {
+        id: 'run-failed',
+        at: NOW - 60 * 60_000,
+        status: 'failed',
+        message: 'Telegram 投递失败：机器人已被移出目标群聊。',
+      },
+    ],
+    runCount: 12,
+  },
+];
+
+const LONG_CONTENT_REMINDERS: PlanReminder[] = [
+  {
+    id: 'plan-hostile-content',
+    title: '每周一早上汇总所有仍未关闭、缺少明确负责人或预计完成日期、并且已经连续两个工作日没有更新的跨团队发布阻塞项',
+    note: '从工程、设计、法务与运营项目中读取发布风险，保留原始链接、负责人、最后更新时间和下一步；如果投递目标不可用，必须在本地提醒中完整说明失败原因，而不是静默跳过。',
+    schedule: {
+      kind: 'cron',
+      startAt: NOW - 90 * 86_400_000,
+      expression: '15 8 * * 1',
+    },
+    delivery: {
+      channel: 'bot',
+      platform: 'telegram',
+      chatId: 'release-coordination-room-with-an-intentionally-hostile-identifier',
+    },
+    status: 'scheduled',
+    enabled: true,
+    createdAt: NOW - 90 * 86_400_000,
+    updatedAt: NOW - 2 * 60 * 60_000,
+    nextRunAt: NOW + 5 * 86_400_000,
+    lastRun: {
+      id: 'run-long',
+      at: NOW - 2 * 86_400_000,
+      status: 'blocked',
+      message: '隐私浏览正在进行，因此本轮任务没有读取工作区或向外部群聊投递。',
+      blockReason: 'incognito_active',
+    },
+    runs: [
+      {
+        id: 'run-long',
+        at: NOW - 2 * 86_400_000,
+        status: 'blocked',
+        message: '隐私浏览正在进行，因此本轮任务没有读取工作区或向外部群聊投递。',
+        blockReason: 'incognito_active',
+      },
+    ],
+    runCount: 37,
+  },
+];
+
 const DAILY_REVIEW_SUMMARY: DailyReviewSummary = {
   day: { fromMs: Date.UTC(2026, 6, 1), toMs: Date.UTC(2026, 6, 2) },
   totals: {
@@ -270,6 +340,8 @@ function ScheduledPlanRemindersSurface(props: { reminders?: PlanReminder[] }) {
         }}
         skills={[]}
         reminders={props.reminders ?? []}
+        keepSystemAwake={false}
+        onKeepSystemAwakeChange={async () => {}}
         onRefresh={noop}
         onCreate={noop}
         onUpdate={noop}
@@ -321,6 +393,21 @@ export const ScheduledPlanReminders: Story = {
 // Real path: sidebar → 定时任务 → 计划提醒, with recurring and completed reminders.
 export const ScheduledPlanRemindersConfigured: Story = {
   render: () => <ScheduledPlanRemindersSurface reminders={CONFIGURED_REMINDERS} />,
+};
+
+// Real path: sidebar → 定时任务 → 计划提醒, after the latest delivery needs attention.
+export const ScheduledPlanRemindersAttention: Story = {
+  render: () => <ScheduledPlanRemindersSurface reminders={ATTENTION_REMINDERS} />,
+};
+
+// Real path: sidebar → 定时任务 → 计划提醒, with user-authored content at storage limits.
+export const ScheduledPlanRemindersLongContent: Story = {
+  render: () => <ScheduledPlanRemindersSurface reminders={LONG_CONTENT_REMINDERS} />,
+};
+
+// Real path: sidebar → 定时任务 → 计划提醒, at the 480 × 720 minimum iframe viewport.
+export const ScheduledPlanRemindersNarrow: Story = {
+  render: () => <ScheduledPlanRemindersSurface reminders={LONG_CONTENT_REMINDERS} />,
 };
 
 // Real path: sidebar → 定时任务 → 每日回顾, with reviews already generated.

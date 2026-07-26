@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 export const PRODUCT_VIEWPORTS = Object.freeze({
   wide: Object.freeze({ width: 1280, height: 900 }),
   compact: Object.freeze({ width: 820, height: 900 }),
-  floor: Object.freeze({ width: 480, height: 900 }),
+  floor: Object.freeze({ width: 480, height: 720 }),
 });
 
 export const REQUIRED_PRODUCT_SURFACES = Object.freeze([

@@ -38,6 +38,10 @@ const STORY_INDEX = {
       id: 'product-module-hubs--scheduled-plan-reminders-configured',
       type: 'story',
     },
+    'product-module-hubs--scheduled-plan-reminders-narrow': {
+      id: 'product-module-hubs--scheduled-plan-reminders-narrow',
+      type: 'story',
+    },
     'product-module-hubs--scheduled-daily-review': {
       id: 'product-module-hubs--scheduled-daily-review',
       type: 'story',
@@ -128,7 +132,7 @@ describe('Product Storybook coverage manifest', () => {
     assert.deepEqual(PRODUCT_VIEWPORTS, {
       wide: { width: 1280, height: 900 },
       compact: { width: 820, height: 900 },
-      floor: { width: 480, height: 900 },
+      floor: { width: 480, height: 720 },
     });
   });
 
@@ -137,7 +141,7 @@ describe('Product Storybook coverage manifest', () => {
       await readFile('apps/desktop/stories/product-smoke-manifest.json', 'utf8'),
     );
 
-    assert.equal(validateCoverageManifest(manifest, STORY_INDEX).length, 15);
+    assert.equal(validateCoverageManifest(manifest, STORY_INDEX).length, 16);
   });
 
   it('keeps CI self-contained with the core build and Chromium installation', async () => {
