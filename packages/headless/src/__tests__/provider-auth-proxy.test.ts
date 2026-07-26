@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -27,13 +27,14 @@ test('provider auth proxy keeps the provider key host-side', async () => {
   const keyFile = join(dir, 'provider-key');
   await writeFile(keyFile, `${providerKey}\n`, 'utf8');
   const proxy = await startProviderAuthProxy({
-    upstreamBaseUrl: `http://127.0.0.1:${address.port}/api/v4`,
+    upstreamBaseUrl: `http://127.0.0.1:${address.port}/api/v4/`,
     apiKeyFile: keyFile,
     advertisedHost: '127.0.0.1',
   });
 
   try {
     assert.notEqual(proxy.token, providerKey);
+    assert.equal(new URL(proxy.baseUrl).pathname, '/api/v4');
     const unauthorized = await fetch(`${proxy.baseUrl}/chat/completions`, {
       method: 'POST',
       body: '{}',
@@ -56,6 +57,73 @@ test('provider auth proxy keeps the provider key host-side', async () => {
       upstream.close((error) => (error ? reject(error) : resolve())),
     );
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('provider auth proxy rejects requests outside the upstream base path before resolving credentials', async () => {
+  let credentialResolutions = 0;
+  const proxy = await startProviderAuthProxy({
+    upstreamBaseUrl: 'http://127.0.0.1:1/coding/v1',
+    advertisedHost: '127.0.0.1',
+    resolveUpstreamCredential: async () => {
+      credentialResolutions += 1;
+      return { value: 'upstream-key' };
+    },
+  });
+
+  try {
+    for (const path of ['/other', '/coding/v10']) {
+      const response = await fetch(`${new URL(proxy.baseUrl).origin}${path}`, {
+        headers: { authorization: `Bearer ${proxy.token}` },
+      });
+      assert.equal(response.status, 404);
+    }
+    assert.equal(credentialResolutions, 0);
+  } finally {
+    await proxy.close();
+  }
+});
+
+test('provider auth proxy ignores an absolute-form origin while preserving its path and query', async () => {
+  let upstreamPath = '';
+  const upstream = createServer((request, response) => {
+    upstreamPath = request.url ?? '';
+    response.writeHead(200).end('ok');
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  const address = upstream.address();
+  assert.ok(address && typeof address !== 'string');
+  const proxy = await startProviderAuthProxy({
+    upstreamBaseUrl: `http://127.0.0.1:${address.port}/coding/v1`,
+    advertisedHost: '127.0.0.1',
+    resolveUpstreamCredential: async () => ({ value: 'upstream-key' }),
+  });
+
+  try {
+    const proxyUrl = new URL(proxy.baseUrl);
+    const status = await new Promise<number>((resolve, reject) => {
+      const request = httpRequest(
+        {
+          hostname: proxyUrl.hostname,
+          port: proxyUrl.port,
+          path: 'http://attacker.invalid/coding/v1/models/a%2Fb?view=full',
+          headers: { authorization: `Bearer ${proxy.token}` },
+        },
+        (response) => {
+          response.resume();
+          response.once('end', () => resolve(response.statusCode ?? 0));
+        },
+      );
+      request.once('error', reject);
+      request.end();
+    });
+    assert.equal(status, 200);
+    assert.equal(upstreamPath, '/coding/v1/models/a%2Fb?view=full');
+  } finally {
+    await proxy.close();
+    await new Promise<void>((resolve, reject) =>
+      upstream.close((error) => (error ? reject(error) : resolve())),
+    );
   }
 });
 
@@ -108,10 +176,12 @@ test('provider auth proxy supports Anthropic x-api-key without replacing the cli
   let upstreamApiKey = '';
   let upstreamAuthorization = '';
   let upstreamUserAgent = '';
+  let upstreamPath = '';
   const upstream = createServer((request, response) => {
     upstreamApiKey = String(request.headers['x-api-key'] ?? '');
     upstreamAuthorization = request.headers.authorization ?? '';
     upstreamUserAgent = request.headers['user-agent'] ?? '';
+    upstreamPath = request.url ?? '';
     response.writeHead(200).end('ok');
   });
   await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
@@ -139,6 +209,8 @@ test('provider auth proxy supports Anthropic x-api-key without replacing the cli
     assert.equal(upstreamApiKey, providerKey);
     assert.equal(upstreamAuthorization, '');
     assert.equal(upstreamUserAgent, 'opencode/1.17.18 ai-sdk/6');
+    assert.equal(upstreamPath, '/coding/v1/messages');
+    assert.equal(proxy.telemetry()[0]?.path, '/coding/v1/messages');
   } finally {
     await proxy.close();
     await new Promise<void>((resolve, reject) =>
@@ -626,7 +698,7 @@ test('provider auth proxy binds a caller-specified port', async () => {
     port,
   });
   try {
-    assert.equal(proxy.baseUrl, `http://host.docker.internal:${port}`);
+    assert.equal(proxy.baseUrl, `http://host.docker.internal:${port}/api`);
   } finally {
     await proxy.close();
     await rm(dir, { recursive: true, force: true });

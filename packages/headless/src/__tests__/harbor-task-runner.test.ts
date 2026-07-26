@@ -608,7 +608,7 @@ describe('createHarborTaskRunner', () => {
       assert.equal(harborEnv?.ZAI_API_KEY_FILE, undefined);
       assert.match(
         harborEnv?.MAKA_PROVIDER_PROXY_URL ?? '',
-        /^http:\/\/host\.docker\.internal:\d+$/,
+        /^http:\/\/host\.docker\.internal:\d+\/api\/coding\/paas\/v4$/,
       );
       assert.match(harborEnv?.MAKA_PROVIDER_PROXY_TOKEN ?? '', /^[a-f0-9]{64}$/);
       assert.notEqual(harborEnv?.MAKA_PROVIDER_PROXY_TOKEN, keyFile);
@@ -648,7 +648,7 @@ describe('createHarborTaskRunner', () => {
 
       assert.match(
         harborEnv?.MAKA_PROVIDER_PROXY_URL ?? '',
-        /^http:\/\/host\.docker\.internal:\d+$/,
+        /^http:\/\/host\.docker\.internal:\d+\/v1$/,
       );
       assert.match(harborEnv?.MAKA_PROVIDER_PROXY_TOKEN ?? '', /^[a-f0-9]{64}$/);
       assert.equal(harborEnv?.OPENAI_API_KEY, undefined);
@@ -773,8 +773,10 @@ describe('createHarborTaskRunner', () => {
   test('selects Anthropic x-api-key auth for the OpenCode Kimi Coding Plan proxy', async () => {
     await withRun(async ({ jobsDir, repo, keyFile }) => {
       let upstreamApiKey = '';
+      let upstreamPath = '';
       const upstream = createServer((request, response) => {
         upstreamApiKey = String(request.headers['x-api-key'] ?? '');
+        upstreamPath = request.url ?? '';
         response.writeHead(200).end('ok');
       });
       await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
@@ -811,6 +813,7 @@ describe('createHarborTaskRunner', () => {
 
         await runner(runInput());
         assert.equal(upstreamApiKey, 'sk-secret');
+        assert.equal(upstreamPath, '/coding/v1/messages');
       } finally {
         await new Promise<void>((resolve, reject) =>
           upstream.close((error) => (error ? reject(error) : resolve())),
@@ -822,8 +825,10 @@ describe('createHarborTaskRunner', () => {
   test('gives Kimi Code bearer auth and fills missing cell usage from the provider stream', async () => {
     await withRun(async ({ jobsDir, repo, keyFile }) => {
       let upstreamAuthorization = '';
+      let upstreamPath = '';
       const upstream = createServer((request, response) => {
         upstreamAuthorization = request.headers.authorization ?? '';
+        upstreamPath = request.url ?? '';
         response.writeHead(200, { 'content-type': 'text/event-stream' });
         response.end(
           [
@@ -878,6 +883,7 @@ describe('createHarborTaskRunner', () => {
 
         const output = await runner(runInput());
         assert.equal(upstreamAuthorization, 'Bearer sk-secret');
+        assert.equal(upstreamPath, '/coding/v1/chat/completions');
         assert.deepEqual(output.cell.tokenSummary, {
           input: 100,
           output: 25,

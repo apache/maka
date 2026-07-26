@@ -165,6 +165,7 @@ export async function startProviderAuthProxy(
       `provider auth proxy requires an HTTP(S) upstream: ${upstreamBaseUrl.protocol}`,
     );
   }
+  const upstreamBasePath = normalizeProxyBasePath(upstreamBaseUrl.pathname);
   const resolveUpstreamCredential =
     input.resolveUpstreamCredential ??
     (async () => {
@@ -193,6 +194,7 @@ export async function startProviderAuthProxy(
       request,
       response,
       upstreamBaseUrl,
+      upstreamBasePath,
       resolveUpstreamCredential,
       token,
       authMode,
@@ -221,7 +223,9 @@ export async function startProviderAuthProxy(
   }
   const advertisedHost = input.advertisedHost ?? 'host.docker.internal';
   return {
-    baseUrl: `http://${advertisedHost}:${address.port}`,
+    // Keep the provider's mount path in the client-visible base URL; the proxy
+    // changes authority, while the client remains the sole owner of path joins.
+    baseUrl: `http://${advertisedHost}:${address.port}${upstreamBasePath}`,
     token,
     usage: () => usage.snapshot(),
     telemetry: () => telemetry.snapshot(),
@@ -242,6 +246,7 @@ async function forwardProviderRequest(input: {
   request: IncomingMessage;
   response: ServerResponse;
   upstreamBaseUrl: URL;
+  upstreamBasePath: string;
   resolveUpstreamCredential: ProviderUpstreamCredentialResolver;
   token: string;
   authMode: ProviderAuthProxyMode;
@@ -263,6 +268,11 @@ async function forwardProviderRequest(input: {
     }
     const startedAt = input.now();
     const incomingUrl = new URL(input.request.url ?? '/', 'http://provider-proxy');
+    // A proxy token is scoped to this provider mount, not its entire origin.
+    if (!pathIsWithinBasePath(incomingUrl.pathname, input.upstreamBasePath)) {
+      input.response.writeHead(404).end('not found');
+      return;
+    }
     requestTelemetry = input.telemetry.start({
       method: input.request.method ?? 'GET',
       path: incomingUrl.pathname,
@@ -274,7 +284,7 @@ async function forwardProviderRequest(input: {
       throw new Error('provider credential resolver returned an empty value');
     }
     const upstreamUrl = new URL(input.upstreamBaseUrl);
-    upstreamUrl.pathname = `${upstreamUrl.pathname.replace(/\/$/, '')}/${incomingUrl.pathname.replace(/^\//, '')}`;
+    upstreamUrl.pathname = incomingUrl.pathname;
     upstreamUrl.search = incomingUrl.search;
     const headers = new Headers();
     for (const [name, value] of Object.entries(input.request.headers)) {
@@ -367,6 +377,14 @@ async function forwardProviderRequest(input: {
     if (!input.response.headersSent) input.response.writeHead(502);
     input.response.end('provider proxy request failed');
   }
+}
+
+function normalizeProxyBasePath(pathname: string): string {
+  return pathname === '/' ? '' : pathname.replace(/\/+$/, '');
+}
+
+function pathIsWithinBasePath(pathname: string, basePath: string): boolean {
+  return basePath === '' || pathname === basePath || pathname.startsWith(`${basePath}/`);
 }
 
 class ProviderUsageAccumulator {

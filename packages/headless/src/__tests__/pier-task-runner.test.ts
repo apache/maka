@@ -1089,7 +1089,7 @@ test('createPierTaskRunner wires the Kimi arm through the host proxy on a Squid-
     // never argv.
     assert.match(
       captured.envFile?.MAKA_PROVIDER_PROXY_URL ?? '',
-      /^http:\/\/host\.docker\.internal:\d+$/,
+      /^http:\/\/host\.docker\.internal:\d+\/coding\/v1$/,
     );
     assert.ok((captured.envFile?.MAKA_PROVIDER_PROXY_TOKEN ?? '').length >= 32);
     assert.notEqual(captured.envFile?.MAKA_PROVIDER_PROXY_TOKEN, 'upstream-key');
@@ -1124,7 +1124,10 @@ test('createPierTaskRunner overrides the Kimi proxy advertised host for native L
       }),
     );
     await runner(runInput());
-    assert.match(captured.envFile?.MAKA_PROVIDER_PROXY_URL ?? '', /^http:\/\/172\.17\.0\.1:\d+$/);
+    assert.match(
+      captured.envFile?.MAKA_PROVIDER_PROXY_URL ?? '',
+      /^http:\/\/172\.17\.0\.1:\d+\/coding\/v1$/,
+    );
   });
 });
 
@@ -1286,7 +1289,7 @@ test('createPierTaskRunner wires the Codex arm through the host proxy with the p
     // env-file, never argv.
     assert.match(
       captured.envFile?.MAKA_PROVIDER_PROXY_URL ?? '',
-      /^http:\/\/host\.docker\.internal:\d+$/,
+      /^http:\/\/host\.docker\.internal:\d+\/backend-api\/codex$/,
     );
     assert.ok((captured.envFile?.MAKA_PROVIDER_PROXY_TOKEN ?? '').length >= 32);
     assert.notEqual(captured.envFile?.MAKA_PROVIDER_PROXY_TOKEN, 'upstream-key');
@@ -1322,7 +1325,10 @@ test('createPierTaskRunner routes a resolver-backed Maka arm through the host pr
     await runner(runInput());
     // The host cell dials the loopback proxy with a minted token, never the
     // upstream credential.
-    assert.match(captured.envFile?.MAKA_HOST_BASE_URL ?? '', /^http:\/\/127\.0\.0\.1:\d+$/);
+    assert.match(
+      captured.envFile?.MAKA_HOST_BASE_URL ?? '',
+      /^http:\/\/127\.0\.0\.1:\d+\/backend-api\/codex$/,
+    );
     assert.ok((captured.envFile?.MAKA_HOST_API_KEY ?? '').length >= 32);
     assert.notEqual(captured.envFile?.MAKA_HOST_API_KEY, 'upstream-key');
   });
@@ -1352,7 +1358,7 @@ test('createPierTaskRunner gives a Maka container task run a container-reachable
 
     assert.match(
       captured.envFile?.MAKA_PROVIDER_PROXY_URL ?? '',
-      /^http:\/\/host\.docker\.internal:\d+$/,
+      /^http:\/\/host\.docker\.internal:\d+\/backend-api\/codex$/,
     );
     assert.ok((captured.envFile?.MAKA_PROVIDER_PROXY_TOKEN ?? '').length >= 32);
     assert.notEqual(captured.envFile?.MAKA_PROVIDER_PROXY_TOKEN, 'upstream-key');
