@@ -56,6 +56,7 @@ export class RuntimeHostProcessTerminationRequiredError extends Error {
 
 export interface RuntimeHostCompositionContext {
   owner: InteractiveRootOwner;
+  hostEpoch: string;
   acquireResidency(): RuntimeHostResidency;
   requestDrain(): void;
 }
@@ -189,6 +190,7 @@ export class RuntimeHostKernel {
       await this.#publishRegistration();
       this.#composition = await this.#options.compositionFactory({
         owner: this.#options.owner,
+        hostEpoch: this.hostEpoch,
         acquireResidency: () => this.#acquireResidency(),
         requestDrain: () => this.#requestDrain(),
       });

@@ -877,7 +877,7 @@ describe('buildModelHistoryFromRuntimeEvents', () => {
     });
 
     // Id-based dedupe holds when this projection is the request base.
-    const injected = steeringModelMessage(steered.id, 'steer it');
+    const injected = steeringModelMessage(steered.id, buildSteeringEnvelope('steer it'));
     expect(steeringMessagesMissingFromBase([injected], textMessages)).toEqual([]);
     expect(steeringMessagesMissingFromBase([injected], plan.textMessages)).toEqual([]);
   });

@@ -1,3 +1,9 @@
+import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
+import {
+  decodeMessageContent as decodeCanonicalMessageContent,
+  isCanonicalAttachmentRef,
+  type MessageContent,
+} from '@maka/core/events';
 import { invalidProtocolFrame } from './errors.js';
 import {
   assertExactKeys,
@@ -12,8 +18,19 @@ import { defineOperation } from './operation-spec.js';
 export interface TurnStartInput {
   sessionId: string;
   turnId: string;
-  text: string;
+  content: MessageContent;
 }
+
+export type { MessageContent };
+
+export const TURN_MESSAGE_TEXT_MAX_BYTES = 48 * 1024;
+export const TURN_MESSAGE_CONTENT_MAX_BYTES = 52 * 1024;
+export const TURN_MESSAGE_QUOTE_MAX_COUNT = 16;
+export const TURN_MESSAGE_QUOTE_TEXT_MAX_LENGTH = 32_000;
+export const TURN_MESSAGE_QUOTE_LABEL_MAX_LENGTH = 200;
+const ATTACHMENT_NAME_MAX_BYTES = 512;
+const ATTACHMENT_MIME_TYPE_MAX_BYTES = 256;
+const ATTACHMENT_PATH_MAX_BYTES = 4096;
 
 export interface TurnQueryInput {
   sessionId: string;
@@ -104,12 +121,98 @@ export const TURN_OPERATION_SPECS = {
 } as const;
 
 function decodeTurnStartInput(value: unknown): TurnStartInput {
-  const record = requireExactRecord(value, 'turn.start input', ['sessionId', 'turnId', 'text']);
+  const record = requireExactRecord(value, 'turn.start input', ['sessionId', 'turnId', 'content']);
   return {
     sessionId: requireEntityId(record.sessionId, 'sessionId'),
     turnId: requireEntityId(record.turnId, 'turnId'),
-    text: requireString(record.text, 'text', 48 * 1024),
+    content: decodeMessageContent(record.content),
   };
+}
+
+export function decodeMessageContent(value: unknown): MessageContent {
+  let content: MessageContent;
+  try {
+    content = decodeCanonicalMessageContent(value);
+  } catch {
+    throw invalidProtocolFrame('Invalid Message content');
+  }
+  requireUtf8String(content.text, 'Message text', TURN_MESSAGE_TEXT_MAX_BYTES, false);
+  if (content.displayText !== undefined) {
+    requireUtf8String(
+      content.displayText,
+      'Message displayText',
+      TURN_MESSAGE_TEXT_MAX_BYTES,
+      true,
+    );
+  }
+  if ((content.attachments?.length ?? 0) > MAX_ATTACHMENT_COUNT) {
+    throw invalidProtocolFrame('Invalid Message attachments');
+  }
+  for (const attachment of content.attachments ?? []) {
+    if (!isCanonicalAttachmentRef(attachment)) {
+      throw invalidProtocolFrame('Invalid AttachmentRef');
+    }
+    requireUtf8String(attachment.name, 'AttachmentRef name', ATTACHMENT_NAME_MAX_BYTES, false);
+    requireUtf8String(
+      attachment.mimeType,
+      'AttachmentRef mimeType',
+      ATTACHMENT_MIME_TYPE_MAX_BYTES,
+      false,
+    );
+    if (attachment.bytes > MAX_ATTACHMENT_BYTES) {
+      throw invalidProtocolFrame('Invalid AttachmentRef bytes');
+    }
+    if (attachment.ref.kind === 'session_file') {
+      requireEntityId(attachment.ref.sessionId, 'AttachmentRef sessionId');
+    }
+    const path =
+      attachment.ref.kind === 'external_file'
+        ? attachment.ref.absolutePath
+        : attachment.ref.relativePath;
+    requireUtf8String(path, 'AttachmentRef path', ATTACHMENT_PATH_MAX_BYTES, false);
+  }
+  if ((content.quotes?.length ?? 0) > TURN_MESSAGE_QUOTE_MAX_COUNT) {
+    throw invalidProtocolFrame('Invalid Message quotes');
+  }
+  for (const quote of content.quotes ?? []) {
+    requireString(quote.text, 'QuoteRef text', TURN_MESSAGE_QUOTE_TEXT_MAX_LENGTH);
+    if (quote.label !== undefined) {
+      requireString(quote.label, 'QuoteRef label', TURN_MESSAGE_QUOTE_LABEL_MAX_LENGTH);
+    }
+    if (quote.sourceTurnId !== undefined) {
+      requireEntityId(quote.sourceTurnId, 'QuoteRef sourceTurnId');
+    }
+  }
+  requireEncodedByteLimit(content, 'Message content', TURN_MESSAGE_CONTENT_MAX_BYTES);
+  return content;
+}
+
+function requireUtf8String(
+  value: unknown,
+  label: string,
+  maxBytes: number,
+  allowEmpty: boolean,
+): string {
+  if (
+    typeof value !== 'string' ||
+    (!allowEmpty && value.length === 0) ||
+    Buffer.byteLength(value, 'utf8') > maxBytes
+  ) {
+    throw invalidProtocolFrame(`Invalid ${label}`);
+  }
+  return value;
+}
+
+function requireEncodedByteLimit(value: unknown, label: string, maxBytes: number): void {
+  let encoded: string | undefined;
+  try {
+    encoded = JSON.stringify(value);
+  } catch {
+    throw invalidProtocolFrame(`Invalid ${label}`);
+  }
+  if (encoded === undefined || Buffer.byteLength(encoded, 'utf8') > maxBytes) {
+    throw invalidProtocolFrame(`Invalid ${label}`);
+  }
 }
 
 function decodeTurnQueryInput(value: unknown): TurnQueryInput {
@@ -129,7 +232,7 @@ function decodeTurnStopInput(value: unknown): TurnStopInput {
   };
 }
 
-function decodeTurnSnapshot(value: unknown): TurnSnapshot {
+export function decodeTurnSnapshot(value: unknown): TurnSnapshot {
   const record = requireRecord(value, 'Turn snapshot');
   const base = {
     sessionId: requireEntityId(record.sessionId, 'sessionId'),

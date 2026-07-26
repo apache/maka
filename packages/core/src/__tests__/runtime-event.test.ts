@@ -1,6 +1,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { expect } from '../test-helpers.js';
+import { decodeMessageContent, messageContentsEqual, normalizeMessageContent } from '../events.js';
 import {
   RUNTIME_EVENT_AUTHORS,
   RUNTIME_EVENT_CONTENT_KINDS,
@@ -20,6 +21,7 @@ import {
   type RuntimeEventActions,
   type RuntimeEventContent,
 } from '../runtime-event.js';
+import { decodeStoredMessageForRecovery } from '../session.js';
 
 /** Minimal valid RuntimeEvent; callers spread overrides on top. */
 function baseEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
@@ -85,6 +87,153 @@ describe('RuntimeEvent role / author / status enums', () => {
 });
 
 describe('RuntimeEvent content variants', () => {
+  test('owns canonical MessageContent decoding, copying, and equality', () => {
+    const attachments = [
+      {
+        kind: 'code' as const,
+        name: 'b.ts',
+        mimeType: 'text/typescript',
+        bytes: 2,
+        ref: { kind: 'workspace_file' as const, relativePath: 'b.ts' },
+      },
+      {
+        kind: 'code' as const,
+        name: 'a.ts',
+        mimeType: 'text/typescript',
+        bytes: 1,
+        ref: { kind: 'workspace_file' as const, relativePath: 'a.ts' },
+      },
+    ];
+    const quotes = [
+      { text: 'first', label: 'Assistant', sourceTurnId: 'turn-1' },
+      { text: 'second', sourceTurnId: 'turn-2' },
+    ];
+    assert.deepEqual(normalizeMessageContent({ text: 'model', displayText: 'model' }), {
+      text: 'model',
+    });
+    assert.deepEqual(normalizeMessageContent({ text: 'model', attachments: [] }), {
+      text: 'model',
+    });
+    assert.deepEqual(normalizeMessageContent({ text: 'model', quotes: [] }), {
+      text: 'model',
+    });
+    const decoded = decodeMessageContent({ text: 'model', attachments, quotes });
+    assert.deepEqual(decoded.attachments, attachments);
+    assert.deepEqual(decoded.quotes, quotes);
+    assert.notEqual(decoded.attachments, attachments);
+    assert.notEqual(decoded.attachments?.[0], attachments[0]);
+    assert.notEqual(decoded.attachments?.[0]?.ref, attachments[0]?.ref);
+    assert.notEqual(decoded.quotes, quotes);
+    assert.notEqual(decoded.quotes?.[0], quotes[0]);
+    assert.equal(messageContentsEqual(decoded, { text: 'model', attachments, quotes }), true);
+    assert.equal(
+      messageContentsEqual(decoded, {
+        text: 'model',
+        attachments: [...attachments].reverse(),
+        quotes,
+      }),
+      false,
+    );
+    assert.equal(
+      messageContentsEqual(decoded, { text: 'model', attachments, quotes: [...quotes].reverse() }),
+      false,
+    );
+    assert.equal(
+      messageContentsEqual(decoded, {
+        text: 'model',
+        attachments,
+        quotes: [{ ...quotes[0]!, sourceTurnId: 'turn-other' }, quotes[1]!],
+      }),
+      false,
+    );
+    assert.throws(() => decodeMessageContent({ text: 'model', extra: true }), TypeError);
+    assert.throws(
+      () =>
+        decodeMessageContent({
+          text: 'model',
+          attachments: [{ ...attachments[0]!, ref: { kind: 'workspace_file', relativePath: 1 } }],
+        }),
+      TypeError,
+    );
+    assert.throws(
+      () =>
+        decodeMessageContent({
+          text: 'model',
+          attachments: [{ ...attachments[0]!, bytes: 1.5 }],
+        }),
+      TypeError,
+    );
+    for (const quote of [
+      { text: 1 },
+      { text: 'excerpt', label: 1 },
+      { text: 'excerpt', sourceTurnId: 1 },
+      { text: 'excerpt', extra: true },
+    ]) {
+      assert.throws(() => decodeMessageContent({ text: 'model', quotes: [quote] }), TypeError);
+    }
+    assert.deepEqual(
+      decodeRuntimeEvent(
+        baseEvent({
+          role: 'user',
+          author: 'user',
+          content: {
+            kind: 'text',
+            text: 'model',
+            displayText: 'model',
+            attachments: [],
+            quotes,
+          },
+        }),
+      ).content,
+      { kind: 'text', text: 'model', quotes },
+    );
+    const event = decodeRuntimeEvent(
+      baseEvent({ content: { kind: 'text', text: 'model', quotes } }),
+    );
+    assert.notEqual(
+      event.content && 'quotes' in event.content ? event.content.quotes : undefined,
+      quotes,
+    );
+    assert.notEqual(
+      event.content && 'quotes' in event.content ? event.content.quotes?.[0] : undefined,
+      quotes[0],
+    );
+    const stored = decodeStoredMessageForRecovery({
+      type: 'user',
+      id: 'message-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: 'model',
+      displayText: 'model',
+      attachments: [],
+      quotes,
+    });
+    assert.deepEqual(stored, {
+      type: 'user',
+      id: 'message-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: 'model',
+      quotes,
+    });
+    assert.equal(stored.type, 'user');
+    if (stored.type !== 'user') throw new Error('unreachable');
+    assert.notEqual(stored.quotes, quotes);
+    assert.notEqual(stored.quotes?.[0], quotes[0]);
+    assert.throws(
+      () =>
+        decodeStoredMessageForRecovery({
+          type: 'user',
+          id: 'message-1',
+          turnId: 'turn-1',
+          ts: 1,
+          text: 'model',
+          quotes: [{ text: 'excerpt', sourceTurnId: 1 }],
+        }),
+      /Invalid stored message schema/,
+    );
+  });
+
   test('text content carries a string body', () => {
     const content: RuntimeEventContent = { kind: 'text', text: 'hello' };
     if (content.kind !== 'text') throw new Error('unreachable');

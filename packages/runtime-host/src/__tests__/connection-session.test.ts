@@ -720,6 +720,13 @@ function closeServer(server: Server): Promise<void> {
 }
 
 function createHandlers(queryTurn: TurnQueryHandler): RuntimeHostComposition['handlers'] {
+  const unavailable: Awaited<ReturnType<OperationHandlerMap['turn.message.submit']>> = {
+    ok: false,
+    error: {
+      code: 'operation_unavailable',
+      message: 'not available in this test composition',
+    },
+  };
   return {
     ...createUnavailableDomainOperationHandlers(),
     'turn.start': async (input) => ({
@@ -731,6 +738,9 @@ function createHandlers(queryTurn: TurnQueryHandler): RuntimeHostComposition['ha
       ok: true,
       result: runningSnapshot(input.sessionId, input.turnId),
     }),
+    'turn.message.submit': async () => unavailable,
+    'queue.retract': async () => unavailable,
+    'turn.interrupt': async () => unavailable,
   };
 }
 

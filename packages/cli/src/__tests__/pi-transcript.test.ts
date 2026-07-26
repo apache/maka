@@ -159,6 +159,39 @@ describe('Maka Pi TUI transcript', () => {
     );
   });
 
+  test('renders steering messages with human-facing text and falls back to model-facing text', () => {
+    const state = createMakaPiTranscriptState();
+
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'steering_message',
+        messageId: 'steering-display',
+        content: {
+          text: '<system-reminder>internal context</system-reminder>\nShow the result',
+          displayText: 'Show the result',
+        },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'steering_message',
+        messageId: 'steering-plain',
+        content: { text: 'Also include the tests' },
+      }),
+    );
+
+    assert.deepEqual(state.entries, [
+      { kind: 'user', text: 'Show the result' },
+      { kind: 'user', text: 'Also include the tests' },
+    ]);
+    const rendered = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
+    assert.match(rendered, /Show the result/);
+    assert.match(rendered, /Also include the tests/);
+    assert.doesNotMatch(rendered, /internal context/);
+  });
+
   test('shows a fixed system notice when the configured step limit is reached', () => {
     const state = createMakaPiTranscriptState();
 

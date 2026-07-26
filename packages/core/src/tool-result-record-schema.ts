@@ -3,7 +3,7 @@ import {
   normalizeShellToolResultContent,
 } from './shell-run-result.js';
 import { isPermissionMode } from './permission.js';
-import type { ToolResultContent } from './events.js';
+import { isStorageRef, type ToolResultContent } from './events.js';
 import {
   defineObjectShape,
   hasExactShape,
@@ -13,7 +13,6 @@ import {
   isRecord,
   isStringArray,
 } from './record-schema.js';
-import { isStorageRef } from './interaction-record-schema.js';
 
 type Result<K extends ToolResultContent['kind']> = Extract<ToolResultContent, { kind: K }>;
 type ExploreResult = Result<'explore_agent'>;

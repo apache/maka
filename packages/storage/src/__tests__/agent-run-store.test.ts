@@ -1,10 +1,16 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, it } from 'node:test';
+import { isDeepStrictEqual } from 'node:util';
 import assert from 'node:assert/strict';
 import { createAgentRunStore, createRuntimeEventStore } from '../agent-run-store.js';
-import type { AgentRunEvent, AgentRunHeader, RuntimeEvent } from '@maka/core';
+import {
+  DurableStoreWriteError,
+  type AgentRunEvent,
+  type AgentRunHeader,
+  type RuntimeEvent,
+} from '@maka/core';
 
 describe('AgentRunStore', () => {
   it('creates, reads, updates, and lists runs under a session', async () => {
@@ -1192,6 +1198,139 @@ describe('AgentRunStore', () => {
         events.map((event) => event.id),
         ['runtime-1', 'runtime-2'],
       );
+    });
+  });
+
+  it('preflights durable steering identity before append and repairs a missing proof', async () => {
+    await withStores(async (runStore, runtimeEventStore, root) => {
+      await runStore.createRun(makeHeader());
+      await runStore.createRun(makeHeader({ runId: 'run-2', turnId: 'turn-2' }));
+      const steering = makeRuntimeEvent({
+        id: 'runtime-steering',
+        content: { kind: 'text', text: 'original steering', steering: true },
+        refs: { providerEventId: 'message-steering' },
+      });
+
+      await runtimeEventStore.appendRuntimeEvent('session-1', 'run-1', steering);
+      await runtimeEventStore.appendRuntimeEvent('session-1', 'run-1', steering);
+      assert.deepEqual(await runtimeEventStore.readImmutableRuntimeEvents('session-1', 'run-1'), [
+        steering,
+      ]);
+
+      await rm(
+        join(root, 'sessions', 'session-1', 'message-proofs', 'steering', 'message-steering.json'),
+      );
+      const reopened = createRuntimeEventStore(root);
+      await reopened.repairImmutableSteeringMessageProofsForRecovery('session-1');
+      await reopened.appendRuntimeEvent('session-1', 'run-1', steering);
+
+      const conflicting = makeRuntimeEvent({
+        ...steering,
+        id: 'runtime-conflicting-steering',
+        runId: 'run-2',
+        turnId: 'turn-2',
+        content: { kind: 'text', text: 'conflicting steering', steering: true },
+      });
+      await assert.rejects(
+        () => reopened.appendRuntimeEvent('session-1', 'run-2', conflicting),
+        /Immutable steering message identity conflict: message-steering/,
+      );
+
+      const recovered = createRuntimeEventStore(root);
+      await recovered.repairImmutableSteeringMessageProofsForRecovery('session-1');
+      assert.deepEqual(
+        await recovered.readImmutableSteeringMessageProof('session-1', 'message-steering'),
+        { event: steering },
+      );
+      assert.deepEqual(await recovered.readImmutableRuntimeEvents('session-1', 'run-1'), [
+        steering,
+      ]);
+      assert.deepEqual(await recovered.readImmutableRuntimeEvents('session-1', 'run-2'), []);
+    });
+  });
+
+  it('reports a durable canonical steering event when proof publication fails', async () => {
+    await withStores(async (runStore, runtimeEventStore, root) => {
+      await runStore.createRun(makeHeader());
+      const steering = makeRuntimeEvent({
+        id: 'runtime-steering',
+        content: { kind: 'text', text: 'persisted before proof', steering: true },
+        refs: { providerEventId: 'message-steering' },
+      });
+      const proofDirectory = join(root, 'sessions', 'session-1', 'message-proofs', 'steering');
+      await mkdir(proofDirectory, { recursive: true });
+      await chmod(proofDirectory, 0o500);
+
+      await assert.rejects(
+        () => runtimeEventStore.appendRuntimeEvent('session-1', 'run-1', steering),
+        (error: unknown) => {
+          assert.ok(error instanceof Error);
+          assert.equal(error.name, 'RuntimeEventPostEffectError');
+          assert.match(error.message, /RuntimeEvent runtime-steering is durable/);
+          assert.ok(!(error instanceof DurableStoreWriteError));
+          assert.ok(error.cause instanceof DurableStoreWriteError);
+          return true;
+        },
+      );
+      assert.deepEqual(await runtimeEventStore.readImmutableRuntimeEvents('session-1', 'run-1'), [
+        steering,
+      ]);
+
+      await chmod(proofDirectory, 0o700);
+      await rm(proofDirectory, { recursive: true });
+      const recovered = createRuntimeEventStore(root);
+      await recovered.repairImmutableSteeringMessageProofsForRecovery('session-1');
+
+      assert.deepEqual(
+        await recovered.readImmutableSteeringMessageProof('session-1', 'message-steering'),
+        { event: steering },
+      );
+      assert.deepEqual(await recovered.readImmutableRuntimeEvents('session-1', 'run-1'), [
+        steering,
+      ]);
+    });
+  });
+
+  it('linearizes competing steering identities across runs in one session', async () => {
+    await withStores(async (runStore, runtimeEventStore, root) => {
+      await runStore.createRun(makeHeader());
+      await runStore.createRun(makeHeader({ runId: 'run-2', turnId: 'turn-2' }));
+      const candidates = [
+        makeRuntimeEvent({
+          id: 'runtime-steering-1',
+          content: { kind: 'text', text: 'first candidate', steering: true },
+          refs: { providerEventId: 'message-shared' },
+        }),
+        makeRuntimeEvent({
+          id: 'runtime-steering-2',
+          runId: 'run-2',
+          turnId: 'turn-2',
+          content: { kind: 'text', text: 'second candidate', steering: true },
+          refs: { providerEventId: 'message-shared' },
+        }),
+      ] as const;
+
+      const results = await Promise.allSettled(
+        candidates.map((event) =>
+          runtimeEventStore.appendRuntimeEvent('session-1', event.runId, event),
+        ),
+      );
+      assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+      assert.equal(results.filter((result) => result.status === 'rejected').length, 1);
+
+      const reopened = createRuntimeEventStore(root);
+      await reopened.repairImmutableSteeringMessageProofsForRecovery('session-1');
+      const ledger = (
+        await Promise.all(
+          ['run-1', 'run-2'].map((runId) =>
+            reopened.readImmutableRuntimeEvents('session-1', runId),
+          ),
+        )
+      ).flat();
+      const proof = await reopened.readImmutableSteeringMessageProof('session-1', 'message-shared');
+      assert.equal(ledger.length, 1);
+      assert.deepEqual(proof, { event: ledger[0] });
+      assert.ok(candidates.some((candidate) => isDeepStrictEqual(candidate, ledger[0])));
     });
   });
 });

@@ -24,11 +24,19 @@ import { syncDirectory, syncDirectoryChain, syncFile } from './stable-storage.js
 import { chainWrite } from './write-queue.js';
 import {
   DurableStoreWriteError,
+  decodeMessageContent,
+  isCanonicalAttachmentRef,
   isTerminalRuntimeEvent,
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENT_COUNT,
+  messageContentsEqual,
   type AgentRunEvent,
   type AgentRunEventType,
   type AgentRunHeader,
   type AgentRunStore,
+  type AttachmentRef,
+  type MessageContent,
+  type RootExecutionDescriptor,
   type RuntimeEvent,
   type RuntimeEventStore,
 } from '@maka/core';
@@ -37,10 +45,18 @@ const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const EXCLUSIVE_TEMP_SUFFIX_PATTERN =
   /^\d+\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/;
 
-export const ROOT_TURN_ADMISSION_SCHEMA_VERSION = 2 as const;
+export const ROOT_TURN_ADMISSION_SCHEMA_VERSION = 1 as const;
+export const ROOT_TURN_ADMISSION_MAX_SOURCE_MESSAGES = 64;
+export const ROOT_TURN_ADMISSION_MAX_CONTENT_BYTES = 64 * 1024;
+export const ROOT_TURN_ADMISSION_MAX_RECORD_BYTES = 1024 * 1024;
+const ROOT_TURN_ADMISSION_MAX_AGGREGATED_ATTACHMENTS =
+  ROOT_TURN_ADMISSION_MAX_SOURCE_MESSAGES * MAX_ATTACHMENT_COUNT;
 
-export interface RootTurnAdmissionInput {
-  text: string;
+export interface RootTurnSourceMessage {
+  messageId: string;
+  content: MessageContent;
+  placement: 'current_turn' | 'next_turn';
+  disposition: 'steering' | 'followup' | 'turn_started';
 }
 
 export interface RootTurnAdmission {
@@ -48,9 +64,11 @@ export interface RootTurnAdmission {
   sessionId: string;
   turnId: string;
   runId: string;
-  userMessageId: string;
+  userMessageId: string | null;
+  execution: RootExecutionDescriptor;
   previousRootTurnId: string | null;
-  normalizedInput: RootTurnAdmissionInput;
+  normalizedInput: MessageContent;
+  sourceMessages: readonly RootTurnSourceMessage[];
   admittedAt: number;
 }
 
@@ -58,10 +76,21 @@ export interface AdmitRootTurnInput {
   sessionId: string;
   turnId: string;
   proposedRunId: string;
-  proposedUserMessageId: string;
+  proposedUserMessageId: string | null;
+  execution: RootExecutionDescriptor;
   previousRootTurnId: string | null;
-  normalizedInput: RootTurnAdmissionInput;
+  normalizedInput: MessageContent;
+  sourceMessages: readonly RootTurnSourceMessage[];
   admittedAt: number;
+}
+
+export interface RootTurnSourceMessageReceipt {
+  admission: RootTurnAdmission;
+  sourceMessage: RootTurnSourceMessage;
+}
+
+export interface ImmutableSteeringMessageProof {
+  event: RuntimeEvent;
 }
 
 export type AdmitRootTurnResult =
@@ -72,6 +101,10 @@ export type AdmitRootTurnResult =
 export interface RootTurnAdmissionStore {
   admitRootTurn(input: AdmitRootTurnInput): Promise<AdmitRootTurnResult>;
   readRootTurnAdmission(sessionId: string, turnId: string): Promise<RootTurnAdmission | undefined>;
+  readRootTurnSourceMessageReceipt(
+    sessionId: string,
+    sourceMessageId: string,
+  ): Promise<RootTurnSourceMessageReceipt | undefined>;
   listRootTurnAdmissionsForRecovery(sessionId: string): Promise<RootTurnAdmission[]>;
 }
 
@@ -92,12 +125,28 @@ export interface DurableAgentRunStore extends AgentRunStore, RootTurnAdmissionSt
 
 export interface DurableRuntimeEventStore extends RuntimeEventStore {
   readImmutableRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
+  readImmutableSteeringMessageProof(
+    sessionId: string,
+    messageId: string,
+  ): Promise<ImmutableSteeringMessageProof | undefined>;
+  repairImmutableSteeringMessageProofsForRecovery(sessionId: string): Promise<void>;
 }
 
 interface RuntimePartialSnapshot {
   version: 1;
   event: RuntimeEvent;
   afterEventId?: string;
+}
+
+class RuntimeEventPostEffectError extends Error {
+  readonly name = 'RuntimeEventPostEffectError';
+
+  constructor(
+    message: string,
+    readonly cause: DurableStoreWriteError,
+  ) {
+    super(message);
+  }
 }
 
 export function createAgentRunStore(workspaceRoot: string): DurableAgentRunStore {
@@ -112,6 +161,7 @@ class FileAgentRunStore implements DurableAgentRunStore {
   private readonly durabilityRoot: string;
   private readonly sessionsRoot: string;
   private readonly writeQueues = new Map<string, Promise<void>>();
+  private readonly rootTurnAdmissionWriteQueues = new Map<string, Promise<void>>();
   private readonly projectionWriteQueues = new Map<string, Promise<void>>();
 
   constructor(workspaceRoot: string) {
@@ -154,14 +204,19 @@ class FileAgentRunStore implements DurableAgentRunStore {
     assertSafeId(input.sessionId, 'Invalid session id');
     assertSafeId(input.turnId, 'Invalid turn id');
     assertSafeId(input.proposedRunId, 'Invalid run id');
-    assertSafeId(input.proposedUserMessageId, 'Invalid user message id');
+    if (input.proposedUserMessageId !== null) {
+      assertSafeId(input.proposedUserMessageId, 'Invalid user message id');
+    }
     if (input.previousRootTurnId !== null) {
       assertSafeId(input.previousRootTurnId, 'Invalid previous root turn id');
       if (input.previousRootTurnId === input.turnId) {
         throw new Error('Root turn admission cannot reference itself');
       }
     }
-    const normalizedInput = normalizeRootTurnAdmissionInput(input.normalizedInput);
+    const { normalizedInput, sourceMessages } = normalizeRootTurnAdmissionPayload(
+      input.normalizedInput,
+      input.sourceMessages,
+    );
     if (!Number.isSafeInteger(input.admittedAt) || input.admittedAt < 0) {
       throw new Error('Invalid root turn admission timestamp');
     }
@@ -171,24 +226,44 @@ class FileAgentRunStore implements DurableAgentRunStore {
       turnId: input.turnId,
       runId: input.proposedRunId,
       userMessageId: input.proposedUserMessageId,
+      execution: normalizeRootExecutionDescriptor(input.execution),
       previousRootTurnId: input.previousRootTurnId,
       normalizedInput,
+      sourceMessages,
       admittedAt: input.admittedAt,
     };
-    const path = this.rootTurnAdmissionPath(input.sessionId, input.turnId);
-    const created = await writeExclusiveAtomic(
-      path,
-      JSON.stringify(admission) + '\n',
-      { durable: true },
-      this.durabilityRoot,
-    );
-    if (created) return { kind: 'admitted', admission };
-    const existing = await this.readRootTurnAdmission(input.sessionId, input.turnId);
-    if (!existing) throw new Error(`Root turn admission disappeared: ${input.turnId}`);
-    return existing.previousRootTurnId === input.previousRootTurnId &&
-      existing.normalizedInput.text === normalizedInput.text
-      ? { kind: 'existing', admission: existing }
-      : { kind: 'conflict', admission: existing };
+    assertRootTurnAdmissionContract(admission);
+    assertRootTurnAdmissionRecordSize(admission);
+    deepFreezeRootTurnAdmission(admission);
+    let result: AdmitRootTurnResult | undefined;
+    await chainWrite(this.rootTurnAdmissionWriteQueues, input.sessionId, async () => {
+      const path = this.rootTurnAdmissionPath(input.sessionId, input.turnId);
+      let existing = await this.readRootTurnAdmission(input.sessionId, input.turnId);
+      if (!existing) {
+        await this.assertRootSourceMessageProofOwners(admission);
+        const created = await writeExclusiveAtomic(
+          path,
+          JSON.stringify(admission) + '\n',
+          { durable: true },
+          this.durabilityRoot,
+        );
+        if (created) {
+          await this.ensureRootSourceMessageProofs(admission);
+          result = { kind: 'admitted', admission };
+          return;
+        }
+        existing = await this.readRootTurnAdmission(input.sessionId, input.turnId);
+        if (!existing) throw new Error(`Root turn admission disappeared: ${input.turnId}`);
+      }
+      await this.ensureRootSourceMessageProofs(existing);
+      result =
+        existing.previousRootTurnId === input.previousRootTurnId &&
+        rootTurnAdmissionPayloadsEqual(existing, admission)
+          ? { kind: 'existing', admission: existing }
+          : { kind: 'conflict', admission: existing };
+    });
+    if (!result) throw new Error(`Root turn admission did not complete: ${input.turnId}`);
+    return result;
   }
 
   async readRootTurnAdmission(
@@ -204,7 +279,41 @@ class FileAgentRunStore implements DurableAgentRunStore {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
       throw error;
     }
+    assertRootTurnAdmissionSerializedSize(raw);
     return normalizeRootTurnAdmission(JSON.parse(raw), sessionId, turnId);
+  }
+
+  async readRootTurnSourceMessageReceipt(
+    sessionId: string,
+    sourceMessageId: string,
+  ): Promise<RootTurnSourceMessageReceipt | undefined> {
+    assertSafeId(sessionId, 'Invalid session id');
+    assertSafeId(sourceMessageId, 'Invalid source message id');
+    let raw: string;
+    try {
+      raw = await readFile(this.rootSourceMessageProofPath(sessionId, sourceMessageId), 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      throw error;
+    }
+    const pointer = decodeRootSourceMessageProofPointer(
+      JSON.parse(raw),
+      sessionId,
+      sourceMessageId,
+    );
+    const admission = await this.readRootTurnAdmission(sessionId, pointer.turnId);
+    if (!admission) {
+      throw new Error(`Root source message proof references missing Turn ${pointer.turnId}`);
+    }
+    const matching = admission.sourceMessages.filter(
+      (source) => source.messageId === sourceMessageId,
+    );
+    if (matching.length !== 1) {
+      throw new Error(
+        `Root source message proof does not identify exactly one source: ${sourceMessageId}`,
+      );
+    }
+    return Object.freeze({ admission, sourceMessage: matching[0]! });
   }
 
   async listRootTurnAdmissionsForRecovery(sessionId: string): Promise<RootTurnAdmission[]> {
@@ -236,7 +345,9 @@ class FileAgentRunStore implements DurableAgentRunStore {
       throw new Error(`Invalid root turn admission entry: ${entry.name}`);
     }
     if (removedStagingFile) await syncDirectory(admissionsRoot);
-    return orderRootTurnAdmissionChain(sessionId, admissions);
+    const ordered = orderRootTurnAdmissionChain(sessionId, admissions);
+    for (const admission of ordered) await this.ensureRootSourceMessageProofs(admission);
+    return ordered;
   }
 
   async updateRun(
@@ -524,6 +635,62 @@ class FileAgentRunStore implements DurableAgentRunStore {
     return join(this.sessionsRoot, sessionId, 'turn-admissions');
   }
 
+  private rootSourceMessageProofPath(sessionId: string, messageId: string): string {
+    return join(this.sessionsRoot, sessionId, 'message-proofs', 'root', `${messageId}.json`);
+  }
+
+  private async assertRootSourceMessageProofOwners(admission: RootTurnAdmission): Promise<void> {
+    for (const source of admission.sourceMessages) {
+      const path = this.rootSourceMessageProofPath(admission.sessionId, source.messageId);
+      let raw: string;
+      try {
+        raw = await readFile(path, 'utf8');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw error;
+      }
+      const existing = decodeRootSourceMessageProofPointer(
+        JSON.parse(raw),
+        admission.sessionId,
+        source.messageId,
+      );
+      if (existing.turnId !== admission.turnId) {
+        throw new Error(
+          `Root source message identity belongs to both ${existing.turnId} and ${admission.turnId}`,
+        );
+      }
+    }
+  }
+
+  private async ensureRootSourceMessageProofs(admission: RootTurnAdmission): Promise<void> {
+    for (const source of admission.sourceMessages) {
+      const pointer = {
+        schemaVersion: 1,
+        sessionId: admission.sessionId,
+        messageId: source.messageId,
+        turnId: admission.turnId,
+      };
+      const path = this.rootSourceMessageProofPath(admission.sessionId, source.messageId);
+      const created = await writeExclusiveAtomic(
+        path,
+        `${JSON.stringify(pointer)}\n`,
+        { durable: true },
+        this.durabilityRoot,
+      );
+      if (created) continue;
+      const existing = decodeRootSourceMessageProofPointer(
+        JSON.parse(await readFile(path, 'utf8')),
+        admission.sessionId,
+        source.messageId,
+      );
+      if (existing.turnId !== admission.turnId) {
+        throw new Error(
+          `Root source message identity belongs to both ${existing.turnId} and ${admission.turnId}`,
+        );
+      }
+    }
+  }
+
   private async removeUncommittedRunDirectory(sessionId: string, runId: string): Promise<boolean> {
     const directory = this.runDir(sessionId, runId);
     const entries = await readdir(directory, { withFileTypes: true });
@@ -669,6 +836,7 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
   private readonly durabilityRoot: string;
   private readonly sessionsRoot: string;
   private readonly writeQueues = new Map<string, Promise<void>>();
+  private readonly immutableSteeringWriteQueues = new Map<string, Promise<void>>();
 
   constructor(workspaceRoot: string) {
     this.durabilityRoot = resolve(workspaceRoot);
@@ -683,6 +851,23 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
   ): Promise<void> {
     assertSafeId(sessionId, 'Invalid session id');
     assertSafeId(runId, 'Invalid run id');
+    const steeringMessageId = immutableSteeringMessageId(event);
+    if (steeringMessageId) {
+      await this.withImmutableSteeringQueue(sessionId, async () => {
+        if (await this.preflightImmutableSteeringMessage(event, steeringMessageId)) return;
+        await this.appendRuntimeEventForRun(sessionId, runId, event, options);
+      });
+      return;
+    }
+    await this.appendRuntimeEventForRun(sessionId, runId, event, options);
+  }
+
+  private async appendRuntimeEventForRun(
+    sessionId: string,
+    runId: string,
+    event: RuntimeEvent,
+    options: { durable?: boolean },
+  ): Promise<void> {
     await this.withQueue(sessionId, runId, async () => {
       await mkdir(this.runDir(sessionId, runId), { recursive: true });
       const partial = partialRuntimeStream(event);
@@ -720,11 +905,27 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
         }
         return;
       }
+      const steeringMessageId = immutableSteeringMessageId(event);
       await appendJsonl(
         this.runtimeEventsPath(sessionId, runId),
         JSON.stringify(event, sanitizeJson) + '\n',
-        { ...options, durabilityRoot: this.durabilityRoot },
+        {
+          ...options,
+          ...(steeringMessageId ? { durable: true } : {}),
+          durabilityRoot: this.durabilityRoot,
+        },
       );
+      if (steeringMessageId) {
+        try {
+          await this.ensureImmutableSteeringMessageProof(event, steeringMessageId);
+        } catch (error) {
+          if (!(error instanceof DurableStoreWriteError)) throw error;
+          throw new RuntimeEventPostEffectError(
+            `RuntimeEvent ${event.id} is durable but its steering proof was not published`,
+            error,
+          );
+        }
+      }
       const completedPartialKey = completedPartialRuntimeStreamKey(event);
       if (completedPartialKey) {
         await rm(this.runtimePartialPath(sessionId, runId, completedPartialKey), {
@@ -812,6 +1013,52 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
     );
   }
 
+  async readImmutableSteeringMessageProof(
+    sessionId: string,
+    messageId: string,
+  ): Promise<ImmutableSteeringMessageProof | undefined> {
+    assertSafeId(sessionId, 'Invalid session id');
+    assertSafeId(messageId, 'Invalid message id');
+    let raw: string;
+    try {
+      raw = await readFile(this.immutableSteeringMessageProofPath(sessionId, messageId), 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      throw error;
+    }
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      !isPlainRecord(parsed) ||
+      !hasExactKeys(parsed, ['schemaVersion', 'messageId', 'event']) ||
+      parsed.schemaVersion !== 1 ||
+      parsed.messageId !== messageId ||
+      !isPlainRecord(parsed.event) ||
+      typeof parsed.event.runId !== 'string' ||
+      !isSafeId(parsed.event.runId)
+    ) {
+      throw new Error(`Invalid immutable steering message proof: ${messageId}`);
+    }
+    const event = decodeRuntimeEvent(
+      parsed.event,
+      await this.readRunHeader(sessionId, parsed.event.runId),
+    );
+    if (immutableSteeringMessageId(event) !== messageId) {
+      throw new Error(`Invalid immutable steering message proof: ${messageId}`);
+    }
+    return Object.freeze({ event });
+  }
+
+  async repairImmutableSteeringMessageProofsForRecovery(sessionId: string): Promise<void> {
+    assertSafeId(sessionId, 'Invalid session id');
+    await this.withImmutableSteeringQueue(sessionId, async () => {
+      const events = await this.readSessionRuntimeEvents(sessionId);
+      for (const event of events) {
+        const messageId = immutableSteeringMessageId(event);
+        if (messageId) await this.ensureImmutableSteeringMessageProof(event, messageId);
+      }
+    });
+  }
+
   async readSessionRuntimeEvents(sessionId: string): Promise<RuntimeEvent[]> {
     assertSafeId(sessionId, 'Invalid session id');
     const runsRoot = this.runsRoot(sessionId);
@@ -880,6 +1127,45 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
     return join(this.runtimePartialsDir(sessionId, runId), `${key}.partial`);
   }
 
+  private immutableSteeringMessageProofPath(sessionId: string, messageId: string): string {
+    return join(this.sessionsRoot, sessionId, 'message-proofs', 'steering', `${messageId}.json`);
+  }
+
+  private async ensureImmutableSteeringMessageProof(
+    event: RuntimeEvent,
+    messageId: string,
+  ): Promise<void> {
+    const path = this.immutableSteeringMessageProofPath(event.sessionId, messageId);
+    const stored = { schemaVersion: 1, messageId, event };
+    const created = await writeExclusiveAtomic(
+      path,
+      `${JSON.stringify(stored, sanitizeJson)}\n`,
+      { durable: true },
+      this.durabilityRoot,
+    );
+    if (created) return;
+    const existing = await this.readImmutableSteeringMessageProof(event.sessionId, messageId);
+    if (
+      !existing ||
+      !isDeepStrictEqual(existing.event, JSON.parse(JSON.stringify(event, sanitizeJson)))
+    ) {
+      throw new Error(`Immutable steering message identity conflict: ${messageId}`);
+    }
+  }
+
+  private async preflightImmutableSteeringMessage(
+    event: RuntimeEvent,
+    messageId: string,
+  ): Promise<boolean> {
+    const canonicalEvent = JSON.parse(JSON.stringify(event, sanitizeJson)) as RuntimeEvent;
+    const proof = await this.readImmutableSteeringMessageProof(event.sessionId, messageId);
+    if (!proof) return false;
+    if (!isDeepStrictEqual(proof.event, canonicalEvent)) {
+      throw new Error(`Immutable steering message identity conflict: ${messageId}`);
+    }
+    return true;
+  }
+
   private async readRuntimePartials(
     sessionId: string,
     runId: string,
@@ -926,6 +1212,14 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
     assertSafeId(sessionId, 'Invalid session id');
     assertSafeId(runId, 'Invalid run id');
     return chainWrite(this.writeQueues, `${sessionId}:${runId}`, operation);
+  }
+
+  private withImmutableSteeringQueue(
+    sessionId: string,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    assertSafeId(sessionId, 'Invalid session id');
+    return chainWrite(this.immutableSteeringWriteQueues, sessionId, operation);
   }
 }
 
@@ -1009,6 +1303,17 @@ function completedPartialRuntimeStreamKey(event: RuntimeEvent): string | undefin
     identity = `tool:call:${event.refs.toolCallId}`;
   }
   return identity ? runtimePartialStreamKey(identity, event) : undefined;
+}
+
+function immutableSteeringMessageId(event: RuntimeEvent): string | undefined {
+  const messageId = event.refs?.providerEventId;
+  return event.partial === false &&
+    typeof messageId === 'string' &&
+    isSafeId(messageId) &&
+    event.content?.kind === 'text' &&
+    event.content.steering === true
+    ? messageId
+    : undefined;
 }
 
 function runtimePartialStreamKey(identity: string, event: RuntimeEvent): string {
@@ -1227,18 +1532,18 @@ function normalizeRootTurnAdmission(
   sessionId: string,
   turnId: string,
 ): RootTurnAdmission {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+  if (!isPlainRecord(value)) {
     throw new Error(`Invalid root turn admission for turn ${turnId}: expected an object`);
   }
-  const record = value as Record<string, unknown>;
+  const record = value;
   const valid =
     record.schemaVersion === ROOT_TURN_ADMISSION_SCHEMA_VERSION &&
     record.sessionId === sessionId &&
     record.turnId === turnId &&
     typeof record.runId === 'string' &&
     isSafeId(record.runId) &&
-    typeof record.userMessageId === 'string' &&
-    isSafeId(record.userMessageId) &&
+    (record.userMessageId === null ||
+      (typeof record.userMessageId === 'string' && isSafeId(record.userMessageId))) &&
     (record.previousRootTurnId === null ||
       (typeof record.previousRootTurnId === 'string' &&
         isSafeId(record.previousRootTurnId) &&
@@ -1251,23 +1556,53 @@ function normalizeRootTurnAdmission(
       'turnId',
       'runId',
       'userMessageId',
+      'execution',
       'previousRootTurnId',
       'normalizedInput',
+      'sourceMessages',
       'admittedAt',
     ]);
   if (!valid) {
     throw new Error(`Invalid root turn admission for turn ${turnId}: malformed fields`);
   }
-  return {
+  const { normalizedInput, sourceMessages } = normalizeRootTurnAdmissionPayload(
+    record.normalizedInput,
+    record.sourceMessages,
+  );
+  const admission: RootTurnAdmission = {
     schemaVersion: ROOT_TURN_ADMISSION_SCHEMA_VERSION,
     sessionId,
     turnId,
     runId: record.runId as string,
-    userMessageId: record.userMessageId as string,
+    userMessageId: record.userMessageId as string | null,
+    execution: normalizeRootExecutionDescriptor(record.execution),
     previousRootTurnId: record.previousRootTurnId as string | null,
-    normalizedInput: normalizeRootTurnAdmissionInput(record.normalizedInput),
+    normalizedInput,
+    sourceMessages,
     admittedAt: record.admittedAt as number,
   };
+  assertRootTurnAdmissionContract(admission);
+  assertRootTurnAdmissionRecordSize(admission);
+  return deepFreezeRootTurnAdmission(admission);
+}
+
+function decodeRootSourceMessageProofPointer(
+  value: unknown,
+  sessionId: string,
+  messageId: string,
+): { readonly turnId: string } {
+  if (
+    !isPlainRecord(value) ||
+    !hasExactKeys(value, ['schemaVersion', 'sessionId', 'messageId', 'turnId']) ||
+    value.schemaVersion !== 1 ||
+    value.sessionId !== sessionId ||
+    value.messageId !== messageId ||
+    typeof value.turnId !== 'string' ||
+    !isSafeId(value.turnId)
+  ) {
+    throw new Error(`Invalid root source message proof: ${messageId}`);
+  }
+  return Object.freeze({ turnId: value.turnId });
 }
 
 function orderRootTurnAdmissionChain(
@@ -1316,19 +1651,275 @@ function orderRootTurnAdmissionChain(
   return ordered;
 }
 
-function normalizeRootTurnAdmissionInput(value: unknown): RootTurnAdmissionInput {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('Invalid root turn normalized input: expected an object');
+function normalizeRootTurnMessageContent(
+  value: unknown,
+  description: string,
+  maxAttachments: number,
+): MessageContent {
+  let normalized: MessageContent;
+  try {
+    normalized = decodeMessageContent(value);
+  } catch {
+    if (isPlainRecord(value) && Array.isArray(value.attachments)) {
+      const invalidAttachmentIndex = value.attachments.findIndex(
+        (attachment) => !isCanonicalAttachmentRef(attachment),
+      );
+      if (invalidAttachmentIndex >= 0) {
+        throw new Error(`Invalid ${description} attachment at index ${invalidAttachmentIndex}`);
+      }
+    }
+    throw new Error(`Invalid ${description}`);
   }
-  const record = value as Record<string, unknown>;
+  if (normalized.text.length === 0 || (normalized.attachments?.length ?? 0) > maxAttachments) {
+    throw new Error(`Invalid ${description}`);
+  }
+  for (const [index, attachment] of (normalized.attachments ?? []).entries()) {
+    if (!isValidRootTurnAttachment(attachment)) {
+      throw new Error(`Invalid ${description} attachment at index ${index}`);
+    }
+  }
   if (
-    !hasExactKeys(record, ['text']) ||
-    typeof record.text !== 'string' ||
-    record.text.length === 0
+    Buffer.byteLength(JSON.stringify(normalized), 'utf8') > ROOT_TURN_ADMISSION_MAX_CONTENT_BYTES
   ) {
-    throw new Error('Invalid root turn normalized input');
+    throw new Error(`Invalid ${description}: content exceeds size limit`);
   }
-  return { text: record.text };
+  deepFreezeRootTurnMessageContent(normalized);
+  return normalized;
+}
+
+function isValidRootTurnAttachment(attachment: AttachmentRef): boolean {
+  return isCanonicalAttachmentRef(attachment) && attachment.bytes <= MAX_ATTACHMENT_BYTES;
+}
+
+export function normalizeRootTurnAdmissionPayload(
+  normalizedInputValue: unknown,
+  sourceMessagesValue: unknown,
+): {
+  normalizedInput: MessageContent;
+  sourceMessages: readonly RootTurnSourceMessage[];
+} {
+  const sourceMessages = normalizeRootTurnSourceMessages(sourceMessagesValue);
+  const normalizedInputMaxAttachments =
+    sourceMessages.length > 1
+      ? ROOT_TURN_ADMISSION_MAX_AGGREGATED_ATTACHMENTS
+      : MAX_ATTACHMENT_COUNT;
+  const normalizedInput = normalizeRootTurnMessageContent(
+    normalizedInputValue,
+    'root turn normalized input',
+    normalizedInputMaxAttachments,
+  );
+  if (sourceMessages.length > 0) {
+    const sourceText = sourceMessages.map((source) => source.content.text).join('\n\n');
+    const sourceDisplayText = sourceMessages
+      .map((source) => source.content.displayText ?? source.content.text)
+      .join('\n\n');
+    const sourceAttachments = sourceMessages.flatMap((source) => source.content.attachments ?? []);
+    const sourceQuotes = sourceMessages.flatMap((source) => source.content.quotes ?? []);
+    const expectedInput = normalizeRootTurnMessageContent(
+      {
+        text: sourceText,
+        ...(sourceDisplayText !== sourceText ? { displayText: sourceDisplayText } : {}),
+        ...(sourceAttachments.length > 0 ? { attachments: sourceAttachments } : {}),
+        ...(sourceQuotes.length > 0 ? { quotes: sourceQuotes } : {}),
+      },
+      'root turn aggregated source content',
+      normalizedInputMaxAttachments,
+    );
+    if (!messageContentsEqual(normalizedInput, expectedInput)) {
+      throw new Error('Root turn admission input content does not match source messages');
+    }
+  }
+  const turnStartedCount = sourceMessages.filter(
+    (source) => source.disposition === 'turn_started',
+  ).length;
+  if (turnStartedCount > 0 && (turnStartedCount !== 1 || sourceMessages.length !== 1)) {
+    throw new Error('Root turn admission turn_started source must be the only source message');
+  }
+  return { normalizedInput, sourceMessages };
+}
+
+function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourceMessage[] {
+  if (!Array.isArray(value) || value.length > ROOT_TURN_ADMISSION_MAX_SOURCE_MESSAGES) {
+    throw new Error('Invalid root turn source messages: expected a bounded array');
+  }
+  const messageIds = new Set<string>();
+  const normalized = value.map((item, index): RootTurnSourceMessage => {
+    if (
+      !isPlainRecord(item) ||
+      !hasExactKeys(item, ['messageId', 'content', 'placement', 'disposition'])
+    ) {
+      throw new Error(`Invalid root turn source message at index ${index}`);
+    }
+    const { messageId, content, placement, disposition } = item;
+    if (
+      typeof messageId !== 'string' ||
+      !isSafeId(messageId) ||
+      (placement !== 'current_turn' && placement !== 'next_turn') ||
+      (disposition !== 'steering' &&
+        disposition !== 'followup' &&
+        disposition !== 'turn_started') ||
+      (disposition === 'steering' && placement !== 'current_turn') ||
+      (disposition === 'followup' && placement !== 'next_turn')
+    ) {
+      throw new Error(`Invalid root turn source message at index ${index}`);
+    }
+    if (messageIds.has(messageId)) {
+      throw new Error(`Duplicate root turn source message id: ${messageId}`);
+    }
+    messageIds.add(messageId);
+    return Object.freeze({
+      messageId,
+      content: normalizeRootTurnMessageContent(
+        content,
+        `root turn source message content at index ${index}`,
+        MAX_ATTACHMENT_COUNT,
+      ),
+      placement,
+      disposition,
+    });
+  });
+  return Object.freeze(normalized);
+}
+
+function rootTurnAdmissionPayloadsEqual(
+  left: RootTurnAdmission,
+  right: RootTurnAdmission,
+): boolean {
+  return (
+    isDeepStrictEqual(left.execution, right.execution) &&
+    messageContentsEqual(left.normalizedInput, right.normalizedInput) &&
+    left.sourceMessages.length === right.sourceMessages.length &&
+    left.sourceMessages.every((source, index) => {
+      const other = right.sourceMessages[index];
+      return (
+        other !== undefined &&
+        source.messageId === other.messageId &&
+        source.placement === other.placement &&
+        source.disposition === other.disposition &&
+        messageContentsEqual(source.content, other.content)
+      );
+    })
+  );
+}
+
+function assertRootTurnAdmissionRecordSize(admission: RootTurnAdmission): void {
+  assertRootTurnAdmissionSerializedSize(`${JSON.stringify(admission)}\n`);
+}
+
+function assertRootTurnAdmissionSerializedSize(serialized: string): void {
+  if (Buffer.byteLength(serialized, 'utf8') > ROOT_TURN_ADMISSION_MAX_RECORD_BYTES) {
+    throw new Error('Invalid root turn admission: record exceeds size limit');
+  }
+}
+
+function assertRootTurnAdmissionContract(admission: RootTurnAdmission): void {
+  const execution = admission.execution;
+  const providerRetry = execution.kind === 'linked_child_provider_retry';
+  if ((admission.userMessageId === null) !== providerRetry) {
+    throw new Error(
+      'Invalid root turn admission contract: only linked child provider retry omits UserMessage',
+    );
+  }
+  if (execution.kind !== 'external_message' && admission.sourceMessages.length !== 0) {
+    throw new Error(
+      'Invalid root turn admission contract: linked child execution cannot have source messages',
+    );
+  }
+  if (
+    (execution.kind === 'linked_child_resume' ||
+      execution.kind === 'linked_child_provider_retry') &&
+    execution.sourceRunId === admission.runId
+  ) {
+    throw new Error(
+      'Invalid root turn admission contract: linked child source Run cannot be the admitted Run',
+    );
+  }
+  if (
+    execution.kind === 'external_message' &&
+    admission.sourceMessages.some(
+      (source) =>
+        source.disposition === 'turn_started' && source.messageId !== admission.userMessageId,
+    )
+  ) {
+    throw new Error(
+      'Invalid root turn admission contract: turn-started source must own the UserMessage',
+    );
+  }
+}
+
+function deepFreezeRootTurnAdmission(admission: RootTurnAdmission): RootTurnAdmission {
+  Object.freeze(admission.execution);
+  deepFreezeRootTurnMessageContent(admission.normalizedInput);
+  for (const sourceMessage of admission.sourceMessages) {
+    deepFreezeRootTurnMessageContent(sourceMessage.content);
+    Object.freeze(sourceMessage);
+  }
+  Object.freeze(admission.sourceMessages);
+  return Object.freeze(admission);
+}
+
+function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescriptor {
+  if (!isPlainRecord(value) || typeof value.kind !== 'string') {
+    throw new Error('Invalid root execution descriptor');
+  }
+  if (value.kind === 'external_message') {
+    if (!hasExactKeys(value, ['kind'])) throw new Error('Invalid root execution descriptor');
+    return Object.freeze({ kind: 'external_message' });
+  }
+  if (
+    value.kind !== 'linked_child_initial' &&
+    value.kind !== 'linked_child_resume' &&
+    value.kind !== 'linked_child_provider_retry'
+  ) {
+    throw new Error('Invalid root execution descriptor');
+  }
+  const hasSource = value.kind !== 'linked_child_initial';
+  if (
+    !hasExactKeys(
+      value,
+      hasSource
+        ? ['kind', 'agentId', 'agentName', 'sourceRunId']
+        : ['kind', 'agentId', 'agentName'],
+    ) ||
+    typeof value.agentId !== 'string' ||
+    !isSafeId(value.agentId) ||
+    typeof value.agentName !== 'string' ||
+    value.agentName.length === 0 ||
+    Buffer.byteLength(value.agentName, 'utf8') > 256 ||
+    (hasSource && (typeof value.sourceRunId !== 'string' || !isSafeId(value.sourceRunId)))
+  ) {
+    throw new Error('Invalid root execution descriptor');
+  }
+  if (value.kind === 'linked_child_initial') {
+    return Object.freeze({
+      kind: value.kind,
+      agentId: value.agentId,
+      agentName: value.agentName,
+    });
+  }
+  return Object.freeze({
+    kind: value.kind,
+    agentId: value.agentId,
+    agentName: value.agentName,
+    sourceRunId: value.sourceRunId as string,
+  });
+}
+
+function deepFreezeRootTurnMessageContent(content: MessageContent): void {
+  for (const attachment of content.attachments ?? []) {
+    Object.freeze(attachment.ref);
+    Object.freeze(attachment);
+  }
+  if (content.attachments) Object.freeze(content.attachments);
+  for (const quote of content.quotes ?? []) Object.freeze(quote);
+  if (content.quotes) Object.freeze(content.quotes);
+  Object.freeze(content);
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function turnIdFromAdmissionFile(name: string): string | undefined {

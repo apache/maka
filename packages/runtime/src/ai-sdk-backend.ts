@@ -82,6 +82,7 @@ import type {
   ModelFailureKind,
   ToolCallPart,
   ToolResultOutput,
+  UserContent,
 } from './model-protocol.js';
 import { z } from 'zod';
 
@@ -2571,7 +2572,16 @@ export class AiSdkBackend implements AgentBackend {
         // still presents steering exactly once, in its one provider form.
         const sidecar = steeringSidecar?.get(m.id);
         if (sidecar) {
-          out.push(steeringModelMessage(sidecar.eventId, formatTextWithInlineRefs(m.text, m)));
+          out.push(
+            steeringModelMessage(
+              sidecar.eventId,
+              await this.appendImageParts(
+                buildSteeringEnvelope(formatTextWithInlineRefs(m.text, m)),
+                m.attachments,
+                `steering:${sidecar.eventId}`,
+              ),
+            ),
+          );
           continue;
         }
         out.push({
@@ -2629,7 +2639,7 @@ export class AiSdkBackend implements AgentBackend {
     textContent: string,
     attachments?: AttachmentRef[],
     decisionKeyPrefix?: string,
-  ): Promise<ModelMessage['content']> {
+  ): Promise<UserContent> {
     const images = attachments?.filter((a) => a.kind === 'image') ?? [];
     if (images.length === 0) {
       return textContent;
@@ -2672,7 +2682,7 @@ export class AiSdkBackend implements AgentBackend {
         text: `[${omittedByBudget} image attachment(s) omitted: the per-request image budget was exceeded. Earlier images were sent; ask the user to send fewer or smaller images.]`,
       });
     }
-    return parts as ModelMessage['content'];
+    return parts;
   }
 
   private async materializeToolResultOutput(
@@ -2721,7 +2731,7 @@ export class AiSdkBackend implements AgentBackend {
     attachments?: AttachmentRef[],
     quotes?: QuoteRef[],
     runtimeEventId?: string,
-  ): Promise<ModelMessage['content']> {
+  ): Promise<UserContent> {
     return this.appendImageParts(
       formatTextWithInlineRefs(text, {
         ...(attachments !== undefined ? { attachments } : {}),
@@ -2845,14 +2855,29 @@ export class AiSdkBackend implements AgentBackend {
         if (queue.consumerDetached) {
           throw new Error('steering message was not durably consumed: event consumer detached');
         }
+        // Materialize provider content before publishing the durable event.
+        // After consumption there must be no fallible gap before ack/injection.
         const eventId = this.newId();
+        const providerContent = await this.appendImageParts(
+          buildSteeringEnvelope(formatTextWithInlineRefs(lease.content.text, lease.content)),
+          lease.content.attachments,
+          `steering:${eventId}`,
+        );
+        if (this.aborted || abortSignal?.aborted) {
+          throw Object.assign(new Error('aborted before steering was pushed'), {
+            name: 'AbortError',
+          });
+        }
+        if (queue.consumerDetached) {
+          throw new Error('steering message was not durably consumed: event consumer detached');
+        }
         queue.push({
           type: 'steering_message',
           id: eventId,
           turnId,
           ts: this.now(),
-          messageId: this.newId(),
-          text: lease.text,
+          messageId: lease.messageId,
+          content: lease.content,
         } satisfies SessionEvent);
         const pushedThrough = queue.pushedCount;
         for (;;) {
@@ -2864,7 +2889,7 @@ export class AiSdkBackend implements AgentBackend {
         }
         // The mapped RuntimeEvent inherits this session event's id, so the
         // injected message and its future ledger replay share one identity.
-        this.injectedSteeringMessages.push(steeringModelMessage(eventId, lease.text));
+        this.injectedSteeringMessages.push(steeringModelMessage(eventId, providerContent));
         input.ackSteering?.([lease.id]);
         undelivered.shift();
         if (this.aborted || abortSignal?.aborted) {

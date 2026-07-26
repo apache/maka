@@ -47,6 +47,19 @@ import type {
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 export const SQLITE_SESSION_METADATA_DATABASE_NAME = 'sessions.sqlite';
 
+export class SessionNotFoundError extends Error {
+  readonly name = 'SessionNotFoundError';
+  readonly code = 'session_not_found';
+
+  constructor(readonly sessionId: string) {
+    super(`Session metadata not found: ${sessionId}`);
+  }
+}
+
+export function isSessionNotFoundError(error: unknown): error is SessionNotFoundError {
+  return error instanceof SessionNotFoundError;
+}
+
 export interface SessionStore {
   create(input: CreateSessionInput): Promise<SessionHeader>;
   createSubagent(input: CreateSessionInput): Promise<{ header: SessionHeader; created: boolean }>;
@@ -538,7 +551,14 @@ class FileSessionStore implements SessionStore {
   }
 
   async readHeaderSnapshot(sessionId: string): Promise<SessionHeader> {
-    return this.readHeaderOnly(sessionId);
+    try {
+      return await this.readHeaderOnly(sessionId);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') {
+        throw new SessionNotFoundError(sessionId);
+      }
+      throw error;
+    }
   }
 
   async readMessages(sessionId: string): Promise<StoredMessage[]> {

@@ -7,9 +7,9 @@
  */
 
 import {
+  decodeMessageContent,
   TOOL_ACTIVITY_KINDS,
-  type AttachmentRef,
-  type QuoteRef,
+  type MessageContent,
   type ToolActivityKind,
   type ToolResultContent,
 } from './events.js';
@@ -35,12 +35,15 @@ import {
   isOptionalString,
   isRecord,
 } from './record-schema.js';
-import { isAttachmentRef, isPermissionDecisionFields } from './interaction-record-schema.js';
+import { isPermissionDecisionFields } from './interaction-record-schema.js';
 import { isTokenUsageFields } from './usage-record-schema.js';
 import {
   decodeCanonicalToolResultContent,
   normalizeToolResultContentForRead,
 } from './tool-result-record-schema.js';
+
+export { isDeepResearchSession } from './explore-agent.js';
+export { isExpertTeamSession } from './expert-team.js';
 
 export const SESSION_STATUSES = [
   'active',
@@ -561,26 +564,11 @@ export type StoredMessage =
   | TurnStateMessage
   | SystemNoteMessage;
 
-export interface UserMessage {
+export interface UserMessage extends MessageContent {
   type: 'user';
   id: string;
   turnId: string;
   ts: number;
-  /**
-   * Model-facing turn text (and the default human-facing text). May be a
-   * composed envelope when the client injected content such as explicit
-   * skill instructions; see `displayText`.
-   */
-  text: string;
-  /**
-   * Human-facing text when it differs from `text`. Presentation layers
-   * (transcript, rewind, previews, search) should prefer this. Absent on
-   * legacy rows and on turns where the model text is what the user typed.
-   */
-  displayText?: string;
-  attachments?: AttachmentRef[];
-  /** Inline quoted excerpts carried into this message; rendered as chips. */
-  quotes?: QuoteRef[];
   /** Non-user trigger source (automation fire). Lets the chat mark turns the
    *  user did not hand-type. Mirrors TurnOrigin in runtime-inputs. */
   origin?: { kind: 'automation'; automationId: string };
@@ -852,13 +840,19 @@ function decodeStoredMessage(
       if (
         hasExactShape(message, USER_MESSAGE_SHAPE) &&
         hasMessageEnvelope(message, true) &&
-        typeof message.text === 'string' &&
-        isOptionalString(message.displayText) &&
-        (message.attachments === undefined ||
-          (Array.isArray(message.attachments) && message.attachments.every(isAttachmentRef))) &&
         (message.origin === undefined || isAutomationOrigin(message.origin))
-      )
-        return message as unknown as UserMessage;
+      ) {
+        const { displayText, attachments, quotes, origin, ...envelope } = message;
+        try {
+          return {
+            ...envelope,
+            ...decodeMessageContent({ text: message.text, displayText, attachments, quotes }),
+            ...(origin !== undefined ? { origin } : {}),
+          } as unknown as UserMessage;
+        } catch {
+          break;
+        }
+      }
       break;
     case 'assistant':
       if (

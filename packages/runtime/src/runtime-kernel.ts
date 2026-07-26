@@ -78,6 +78,11 @@ import {
   matchingTerminalRuntimeEvents,
   terminalRunStatusFromRuntimeEvent,
 } from './terminal-run-commit.js';
+import {
+  RuntimeMessageAuthorityInvariantError,
+  type RuntimeMessageAuthority,
+  type RuntimeMessageRunOwner,
+} from './message-authority.js';
 
 export interface RuntimeKernelLike {
   startTurn(
@@ -121,19 +126,15 @@ export interface ChildAgentRetryInput {
   continuation: RuntimeContinuation;
   /** Retry an ordinary session-inline AgentRun inside a linked child Session. */
   linkedSession?: boolean;
+  onRunStarted?: () => void | Promise<void>;
 }
 
 /**
- * A session's two authoritative pending-message queues plus the sink that
- * pushes queue snapshots into the active turn's event stream. The runtime is
- * the single source of truth; UIs mirror it from `queue_update` events and the
- * enqueue results.
+ * An embedded session's authoritative pending-message queues plus its event
+ * sink. Hosted composition never creates this state; its Host owns admission,
+ * snapshots, leases, and follow-up drain.
  */
-interface PendingSteeringMessage {
-  /** Queue/lease identity — NOT the ledger event id. */
-  id: string;
-  text: string;
-}
+interface PendingSteeringMessage extends SteeringLease {}
 
 /**
  * A pulled lease is bound to the turn that pulled it: only the issuing turn's
@@ -187,6 +188,8 @@ export interface RuntimeKernelDeps {
   safeBoundaryResumeEnabled?: boolean;
   continuationFailpoint?: (point: RuntimeContinuationFailpoint) => Promise<void>;
   runBackendActivation?: BackendActivationBoundary;
+  /** Hosted composition capability. When present, the Host owns all message queues. */
+  messageAuthority?: RuntimeMessageAuthority;
 }
 
 export interface HistoryCompactCleanupRequest {
@@ -746,7 +749,13 @@ export class RuntimeKernel implements RuntimeKernelLike {
 
     // A provider retry replays the source ledger without recording a second
     // user prompt and without turning the child into a session continuation.
-    yield* this.runAgentContinuation(continuation, run, false);
+    yield* this.runAgentContinuation(
+      continuation,
+      run,
+      false,
+      input.linkedSession === true,
+      input.onRunStarted,
+    );
   }
 
   private async *runAgentTurn(
@@ -760,14 +769,34 @@ export class RuntimeKernel implements RuntimeKernelLike {
     const sessionEvents = new AsyncEventQueue<SessionEvent>();
     const abortController = new AbortController();
     let flowDone = false;
+    let messageOwner: RuntimeMessageRunOwner | undefined;
+    let messageOwnerReleased = false;
+    const releaseMessageOwner = (): void => {
+      if (!messageOwner || messageOwnerReleased) return;
+      messageOwnerReleased = true;
+      messageOwner.release();
+    };
     let begin: AgentRunBeginResult;
     try {
       begin = await this.runBackendActivation(() => run.begin());
+      if (steering && this.deps.messageAuthority) {
+        messageOwner = this.deps.messageAuthority.bindRun({
+          sessionId,
+          turnId: run.turnId,
+          runId: run.runId,
+        });
+      }
       if (onRunStarted && initialHeader) await onRunStarted(run.runId, initialHeader);
     } catch (error) {
-      await run.recordFailure(error);
+      let failure = error;
+      try {
+        releaseMessageOwner();
+      } catch (releaseError) {
+        failure = new AggregateError([error, releaseError], 'Message owner bind cleanup failed');
+      }
+      await run.recordFailure(failure);
       await run.finalize();
-      throw error;
+      throw failure;
     }
 
     // Steering is a top-level-turn affordance only; child agent turns run
@@ -780,7 +809,11 @@ export class RuntimeKernel implements RuntimeKernelLike {
     let pullSteering: (() => readonly SteeringLease[]) | undefined;
     let ackSteering: ((leaseIds: readonly string[]) => void) | undefined;
     let nackSteering: ((leaseIds: readonly string[]) => void) | undefined;
-    if (steering) {
+    if (messageOwner) {
+      pullSteering = () => messageOwner?.pull() ?? [];
+      ackSteering = (leaseIds) => messageOwner?.ack(leaseIds);
+      nackSteering = (leaseIds) => messageOwner?.nack(leaseIds);
+    } else if (steering) {
       const state = this.ensureSteering(sessionId);
       state.sink = (event) => {
         void sessionEvents.push(event).catch(() => {});
@@ -829,7 +862,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           // Back to the FRONT of the queue: a re-pull at the next step
           // boundary preserves the user's original ordering.
           current.steering = [
-            ...returned.map(({ id, text }) => ({ id, text })),
+            ...returned.map(({ id, messageId, content }) => ({ id, messageId, content })),
             ...current.steering,
           ];
         } else {
@@ -838,7 +871,10 @@ export class RuntimeKernel implements RuntimeKernelLike {
           // steering queue would strand the text ownerless. The followup
           // queue is its only safe home — the same direction a release-time
           // fold takes.
-          current.followup = [...returned.map((message) => message.text), ...current.followup];
+          current.followup = [
+            ...returned.map((message) => message.content.text),
+            ...current.followup,
+          ];
         }
         this.emitQueueUpdate(sessionId, current);
       };
@@ -863,12 +899,13 @@ export class RuntimeKernel implements RuntimeKernelLike {
         flowDone = true;
         try {
           await run.finalize();
-          // Release ownership BEFORE the event stream closes: the stranded
-          // steering → followup migration emits a final queue snapshot through
-          // the sink, and a push after close() is a silent no-op. The release
-          // in the outer finally stays as an idempotent backstop for paths
-          // that never reach this hook (identity-checked, so it no-ops here).
-          if (steering) this.releaseSteeringTurn(sessionId, run.turnId);
+          // Release Runtime access BEFORE the event stream closes. Embedded
+          // queues still emit their final steering → followup projection here;
+          // a hosted owner is only sealed, then the Host performs that handoff
+          // under its Session admission gate. The outer finally remains an
+          // idempotent backstop for paths that never reach this hook.
+          if (messageOwner) releaseMessageOwner();
+          else if (steering) this.releaseSteeringTurn(sessionId, run.turnId);
           sessionEvents.close();
         } catch (error) {
           sessionEvents.fail(error);
@@ -912,6 +949,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           if (!flowDone) {
             flowDone = true;
             await run.finalize();
+            releaseMessageOwner();
             sessionEvents.close();
           }
           await this.deps.runtimeInvocationObserver?.(result);
@@ -934,7 +972,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
         sessionEvents.close();
       }
       await runnerResult.catch(() => undefined);
-      if (steering) this.releaseSteeringTurn(sessionId, run.turnId);
+      if (messageOwner) releaseMessageOwner();
+      else if (steering) this.releaseSteeringTurn(sessionId, run.turnId);
     }
   }
 
@@ -942,19 +981,42 @@ export class RuntimeKernel implements RuntimeKernelLike {
     continuation: RuntimeContinuation,
     run: AgentRun,
     persistContinuationSource = true,
+    bindHostedRoot = false,
+    onRunStarted?: () => void | Promise<void>,
   ): AsyncIterable<SessionEvent> {
     const sessionEvents = new AsyncEventQueue<SessionEvent>();
     const abortController = new AbortController();
     let flowDone = false;
+    let messageOwner: RuntimeMessageRunOwner | undefined;
+    let messageOwnerReleased = false;
+    const releaseMessageOwner = (): void => {
+      if (!messageOwner || messageOwnerReleased) return;
+      messageOwnerReleased = true;
+      messageOwner.release();
+    };
     let begin: Awaited<ReturnType<AgentRun['beginContinuation']>>;
     try {
       begin = await this.runBackendActivation(() =>
         persistContinuationSource ? run.beginContinuation(continuation) : run.beginOperation(),
       );
+      if (bindHostedRoot && this.deps.messageAuthority) {
+        messageOwner = this.deps.messageAuthority.bindRun({
+          sessionId: continuation.sessionId,
+          turnId: continuation.turnId,
+          runId: continuation.runId,
+        });
+      }
+      await onRunStarted?.();
     } catch (error) {
-      await run.recordFailure(error);
+      let failure = error;
+      try {
+        releaseMessageOwner();
+      } catch (releaseError) {
+        failure = new AggregateError([error, releaseError], 'Message owner bind cleanup failed');
+      }
+      await run.recordFailure(failure);
       await run.finalize();
-      throw error;
+      throw failure;
     }
 
     const aiSdkFlow = new AiSdkFlow({
@@ -976,6 +1038,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         flowDone = true;
         try {
           await run.finalize();
+          releaseMessageOwner();
           sessionEvents.close();
         } catch (error) {
           sessionEvents.fail(error);
@@ -1027,6 +1090,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         await run.finalize();
       }
       await runnerResult.catch(() => undefined);
+      releaseMessageOwner();
     }
   }
 
@@ -1221,6 +1285,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
   // --------------------------------------------------------------------------
 
   steer(sessionId: string, text: string): QueueEnqueueOutcome {
+    this.assertEmbeddedMessageQueue('steer');
     // Steering's delivery contract is anchored to the runtime event ledger
     // (fail-closed persist + durable-consume ack). Without a RuntimeEventStore
     // that anchor does not exist — same condition as requireTerminalWrite —
@@ -1233,12 +1298,14 @@ export class RuntimeKernel implements RuntimeKernelLike {
     // fresh turn instead so the message is never dropped.
     const state = this.liveSteeringState(sessionId);
     if (!state) return { kind: 'fallback' };
-    state.steering.push({ id: this.deps.newId(), text });
+    const messageId = this.deps.newId();
+    state.steering.push({ id: messageId, messageId, content: { text } });
     this.emitQueueUpdate(sessionId, state);
     return { kind: 'queued' };
   }
 
   queueMessage(sessionId: string, text: string): QueueEnqueueOutcome {
+    this.assertEmbeddedMessageQueue('queueMessage');
     const state = this.liveSteeringState(sessionId);
     if (!state) return { kind: 'fallback' };
     state.followup.push(text);
@@ -1247,6 +1314,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
   }
 
   drainFollowup(sessionId: string): string | null {
+    this.assertEmbeddedMessageQueue('drainFollowup');
     const state = this.steeringBySession.get(sessionId);
     if (!state || state.followup.length === 0) return null;
     const drained = state.followup.splice(0);
@@ -1255,6 +1323,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
   }
 
   retractQueue(sessionId: string): string {
+    this.assertEmbeddedMessageQueue('retractQueue');
     const state = this.steeringBySession.get(sessionId);
     if (!state) return '';
     // Retract reclaims QUEUED messages only. pull() is the single atomic
@@ -1263,7 +1332,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     // handing its text back to the user here would refill AND execute the
     // same directive. An in-flight lease settles only by the persistence
     // fact (ack when the ledger owns it, nack back to a queue otherwise).
-    const all = [...state.steering.map((message) => message.text), ...state.followup];
+    const all = [...state.steering.map((message) => message.content.text), ...state.followup];
     state.steering = [];
     state.followup = [];
     this.emitQueueUpdate(sessionId, state);
@@ -1276,6 +1345,14 @@ export class RuntimeKernel implements RuntimeKernelLike {
     const created: SessionSteeringState = { steering: [], inFlight: [], followup: [] };
     this.steeringBySession.set(sessionId, created);
     return created;
+  }
+
+  private assertEmbeddedMessageQueue(operation: string): void {
+    if (this.deps.messageAuthority) {
+      throw new RuntimeMessageAuthorityInvariantError(
+        `Hosted Runtime cannot ${operation}; the Runtime Host owns message admission and queues`,
+      );
+    }
   }
 
   /**
@@ -1296,8 +1373,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
       turnId: state.activeTurnId ?? '',
       ts: this.deps.now(),
       steering: [
-        ...state.inFlight.map((message) => message.text),
-        ...state.steering.map((message) => message.text),
+        ...state.inFlight.map((message) => message.content.text),
+        ...state.steering.map((message) => message.content.text),
       ],
       followup: [...state.followup],
     });
@@ -1328,7 +1405,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       // backstop that keeps a never-settled lease from stranding invisibly.
       if (own.length === 0) return;
       state.inFlight = state.inFlight.filter((message) => message.issuingTurnId !== turnId);
-      state.followup = [...own.map((message) => message.text), ...state.followup];
+      state.followup = [...own.map((message) => message.content.text), ...state.followup];
       this.emitQueueUpdate(sessionId, state);
       return;
     }
@@ -1339,8 +1416,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
     // is cleared; otherwise observers stay on the stale pre-fold snapshot.
     if (state.steering.length > 0 || own.length > 0) {
       state.followup = [
-        ...own.map((message) => message.text),
-        ...state.steering.map((message) => message.text),
+        ...own.map((message) => message.content.text),
+        ...state.steering.map((message) => message.content.text),
         ...state.followup,
       ];
       state.inFlight = state.inFlight.filter((message) => message.issuingTurnId !== turnId);

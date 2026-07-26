@@ -621,6 +621,16 @@ async function prepareAgentSwarmInput(
       };
     }),
   );
+  const linkedChildSessions = new Set<string>();
+  for (const resume of resumes) {
+    if (resume.execution?.kind !== 'child_session') continue;
+    if (linkedChildSessions.has(resume.execution.sessionId)) {
+      throw new Error(
+        `Agent swarm cannot resume child Session ${resume.execution.sessionId} more than once`,
+      );
+    }
+    linkedChildSessions.add(resume.execution.sessionId);
+  }
   return {
     items: [...resumes, ...preflight.items],
     maxConcurrency: preflight.maxConcurrency,

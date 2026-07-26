@@ -32,6 +32,7 @@
 
 import {
   failureClassFromCompleteStopReason,
+  normalizeMessageContent,
   type AnyPermissionRequestEvent,
   type CompleteEvent,
   type SessionEvent,
@@ -459,9 +460,9 @@ function mapBackendSessionEvent(
         ...base,
         role: 'user',
         author: 'user',
-        // Raw text + steering marker: read models render the text as-is,
-        // model replay wraps it in the canonical steering envelope.
-        content: { kind: 'text', text: event.text, steering: true },
+        // Canonical content + steering marker: read models may prefer
+        // displayText, while model replay uses text and materializes attachments.
+        content: { kind: 'text', ...normalizeMessageContent(event.content), steering: true },
         refs: { providerEventId: event.messageId },
       };
 

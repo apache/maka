@@ -331,6 +331,39 @@ describe('AgentSwarm adapter', () => {
     assert.equal(starts, 0);
   });
 
+  test('rejects resume inputs that resolve to the same linked child Session before starting work', async () => {
+    let starts = 0;
+    const tool = buildAgentSwarmTool();
+    await assert.rejects(
+      Promise.resolve(
+        tool.impl(
+          {
+            resume_run_ids: {
+              'run-a': 'Continue A.',
+              'run-b': 'Continue B.',
+            },
+          },
+          context({
+            prepareChildAgentResume: async (sourceRunId) => ({
+              ...preparedResume(sourceRunId),
+              execution: {
+                kind: 'child_session',
+                sessionId: 'shared-child-session',
+                currentRunId: sourceRunId,
+              },
+            }),
+            resumeChildAgent: async () => {
+              starts += 1;
+              return childResult(0);
+            },
+          }),
+        ),
+      ),
+      /cannot resume child Session shared-child-session more than once/,
+    );
+    assert.equal(starts, 0);
+  });
+
   test('orders resumed children before new items and preserves resume evidence', async () => {
     const calls: string[] = [];
     const tool = buildAgentSwarmTool();

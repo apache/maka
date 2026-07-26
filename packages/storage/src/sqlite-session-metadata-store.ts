@@ -21,7 +21,11 @@ import {
   type SessionListFilter,
   type SubagentSessionParent,
 } from '@maka/core';
-import { assertSafeSessionId, normalizeSessionHeader } from './session-store.js';
+import {
+  assertSafeSessionId,
+  normalizeSessionHeader,
+  SessionNotFoundError,
+} from './session-store.js';
 import {
   configureSqliteSessionMetadataDatabase,
   migrateSqliteSessionMetadataDatabase,
@@ -220,7 +224,7 @@ export class SqliteSessionMetadataStore {
     this.assertOpen();
     assertSafeSessionId(sessionId);
     const record = this.readRecordSync(sessionId);
-    if (!record) throw new Error(`Session metadata not found: ${sessionId}`);
+    if (!record) throw new SessionNotFoundError(sessionId);
     return record;
   }
 
@@ -474,7 +478,7 @@ export class SqliteSessionMetadataStore {
     }
     return this.transaction(() => {
       const current = this.readRecordSync(sessionId);
-      if (!current) throw new Error(`Session metadata not found: ${sessionId}`);
+      if (!current) throw new SessionNotFoundError(sessionId);
       if (
         options.expectedVersion !== undefined &&
         options.expectedVersion !== current.metadataVersion

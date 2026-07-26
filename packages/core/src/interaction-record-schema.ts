@@ -13,7 +13,6 @@ import {
   validateAdditionalPermissionProfile,
   type AdditionalPermissionRiskSummary,
 } from './additional-permissions.js';
-import type { AttachmentRef, StorageRef } from './events.js';
 import type { UserQuestion, UserQuestionOption, UserQuestionRequest } from './user-question.js';
 import {
   defineObjectShape,
@@ -103,23 +102,6 @@ const QUESTION_REQUEST_SHAPE = defineObjectShape<UserQuestionRequest>()(
 );
 const QUESTION_SHAPE = defineObjectShape<UserQuestion>()(['question', 'options'], []);
 const QUESTION_OPTION_SHAPE = defineObjectShape<UserQuestionOption>()(['label'], ['description']);
-
-const ATTACHMENT_SHAPE = defineObjectShape<AttachmentRef>()(
-  ['kind', 'name', 'mimeType', 'bytes', 'ref'],
-  [],
-);
-type SessionFileRef = Extract<StorageRef, { kind: 'session_file' }>;
-type WorkspaceFileRef = Extract<StorageRef, { kind: 'workspace_file' }>;
-type ExternalFileRef = Extract<StorageRef, { kind: 'external_file' }>;
-const SESSION_FILE_REF_SHAPE = defineObjectShape<SessionFileRef>()(
-  ['kind', 'sessionId', 'relativePath'],
-  [],
-);
-const WORKSPACE_FILE_REF_SHAPE = defineObjectShape<WorkspaceFileRef>()(
-  ['kind', 'relativePath'],
-  [],
-);
-const EXTERNAL_FILE_REF_SHAPE = defineObjectShape<ExternalFileRef>()(['kind', 'absolutePath'], []);
 
 const TOOL_PERMISSION_REASONS = new Set([
   'shell_dangerous',
@@ -217,38 +199,6 @@ export function isUserQuestionRequest(value: unknown): value is UserQuestionRequ
     typeof value.toolUseId === 'string' &&
     Array.isArray(value.questions) &&
     value.questions.every(isUserQuestion)
-  );
-}
-
-export function isAttachmentRef(value: unknown): value is AttachmentRef {
-  return (
-    isRecord(value) &&
-    hasExactShape(value, ATTACHMENT_SHAPE) &&
-    ['image', 'pdf', 'doc', 'code', 'other'].includes(value.kind as string) &&
-    typeof value.name === 'string' &&
-    typeof value.mimeType === 'string' &&
-    isFiniteNumber(value.bytes) &&
-    value.bytes >= 0 &&
-    isStorageRef(value.ref)
-  );
-}
-
-export function isStorageRef(value: unknown): value is StorageRef {
-  if (!isRecord(value)) return false;
-  if (value.kind === 'session_file') {
-    return (
-      hasExactShape(value, SESSION_FILE_REF_SHAPE) &&
-      typeof value.sessionId === 'string' &&
-      typeof value.relativePath === 'string'
-    );
-  }
-  if (value.kind === 'workspace_file') {
-    return hasExactShape(value, WORKSPACE_FILE_REF_SHAPE) && typeof value.relativePath === 'string';
-  }
-  return (
-    value.kind === 'external_file' &&
-    hasExactShape(value, EXTERNAL_FILE_REF_SHAPE) &&
-    typeof value.absolutePath === 'string'
   );
 }
 

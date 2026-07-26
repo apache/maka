@@ -34,14 +34,19 @@ export type OperationHandlerMap = {
 };
 
 export type DomainOperationKey = Exclude<OperationKey, 'host.status'>;
-export type TurnOperationKey = Extract<OperationKey, `turn.${string}`>;
+export type TurnOperationKey = Extract<OperationKey, 'turn.start' | 'turn.query' | 'turn.stop'>;
 export type RuntimePolicyOperationKey = Extract<
   OperationKey,
   `runtime.policy.${string}` | `connection.catalog.${string}` | `credential.vault.${string}`
 >;
+export type MessageOperationKey = Extract<
+  OperationKey,
+  'turn.message.submit' | 'queue.retract' | 'turn.interrupt'
+>;
 export type DomainOperationHandlerMap = Pick<OperationHandlerMap, DomainOperationKey>;
 export type TurnOperationHandlerMap = Pick<OperationHandlerMap, TurnOperationKey>;
 export type RuntimePolicyOperationHandlerMap = Pick<OperationHandlerMap, RuntimePolicyOperationKey>;
+export type MessageOperationHandlerMap = Pick<OperationHandlerMap, MessageOperationKey>;
 
 export function composeOperationHandlers(
   ...handlerMaps: readonly Partial<OperationHandlerMap>[]

@@ -35,6 +35,26 @@ export interface AgentRunContinuationSource {
   sourceRuntimeEventHighWater: number;
 }
 
+export type RootExecutionDescriptor =
+  | { kind: 'external_message' }
+  | {
+      kind: 'linked_child_initial';
+      agentId: string;
+      agentName: string;
+    }
+  | {
+      kind: 'linked_child_resume';
+      agentId: string;
+      agentName: string;
+      sourceRunId: string;
+    }
+  | {
+      kind: 'linked_child_provider_retry';
+      agentId: string;
+      agentName: string;
+      sourceRunId: string;
+    };
+
 const AGENT_RUN_CONTINUATION_SOURCE_SHAPE = defineObjectShape<AgentRunContinuationSource>()(
   ['sourceInvocationId', 'sourceRunId', 'sourceTurnId', 'sourceRuntimeEventHighWater'],
   [],

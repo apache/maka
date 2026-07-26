@@ -25,6 +25,8 @@ const allowedHostExternalImports = new Set([
 const allowedServerExternalImports = new Set([
   ...allowedHostExternalImports,
   '@maka/core/agent-run',
+  '@maka/core/backend-types',
+  '@maka/core/events',
   '@maka/core/runtime-policy',
   '@maka/core/runtime-event',
   '@maka/core/session',
@@ -34,7 +36,12 @@ const allowedServerExternalImports = new Set([
 ]);
 const allowedExternalImports = {
   client: allowedHostExternalImports,
-  protocol: new Set(['@maka/core/runtime-policy', 'node:util']),
+  protocol: new Set([
+    '@maka/core/attachments',
+    '@maka/core/events',
+    '@maka/core/runtime-policy',
+    'node:util',
+  ]),
 } as const;
 
 async function dependencyScannerFixture(target: string): Promise<void> {

@@ -693,7 +693,7 @@ export function applyMakaSessionEventToTranscript(
 
     case 'steering_message':
       // A user interjection injected mid-turn; render it in place as a user turn.
-      appendUserPrompt(state, event.text);
+      appendUserPrompt(state, event.content.displayText ?? event.content.text);
       break;
 
     case 'queue_update':

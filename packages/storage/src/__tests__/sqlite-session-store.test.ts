@@ -7,11 +7,35 @@ import type { CreateSessionInput, SessionHeader } from '@maka/core';
 import {
   createLegacyFileSessionStore,
   createSessionStore,
+  isSessionNotFoundError,
+  SessionNotFoundError,
   SQLITE_SESSION_METADATA_DATABASE_NAME,
 } from '../session-store.js';
 import { createSqliteSessionMetadataStore } from '../sqlite-session-metadata-store.js';
 
 describe('default SQLite session metadata store', () => {
+  test('SQLite and legacy File stores expose one typed missing-Session boundary', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-store-not-found-'));
+    const stores = [
+      createSessionStore(join(root, 'sqlite')),
+      createLegacyFileSessionStore(join(root, 'legacy')),
+    ];
+    try {
+      for (const store of stores) {
+        await assert.rejects(store.readHeaderSnapshot('deleted-session'), (error) => {
+          assert.ok(error instanceof SessionNotFoundError);
+          assert.equal(isSessionNotFoundError(error), true);
+          assert.equal(error.code, 'session_not_found');
+          assert.equal(error.sessionId, 'deleted-session');
+          return true;
+        });
+      }
+    } finally {
+      await Promise.all(stores.map((store) => store.close?.()));
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('waits for in-flight legacy metadata import before closing SQLite', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-store-close-ready-'));
     const legacy = createLegacyFileSessionStore(root);

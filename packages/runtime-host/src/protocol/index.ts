@@ -11,6 +11,7 @@ import {
 } from './operations.js';
 
 export { RuntimeHostProtocolError } from './errors.js';
+export * from './message.js';
 export * from './operations.js';
 
 export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;

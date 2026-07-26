@@ -8,7 +8,7 @@
  * implementation file.
  */
 
-import type { AttachmentRef, QuoteRef, SessionEvent } from './events.js';
+import type { AttachmentRef, MessageContent, QuoteRef, SessionEvent } from './events.js';
 import type { RuntimeEvent } from './runtime-event.js';
 import type { StoredMessage, BackendKind } from './session.js';
 import type { PermissionResponse } from './permission.js';
@@ -77,10 +77,13 @@ export interface BackendSendInput {
   nackSteering?: (leaseIds: readonly string[]) => void;
 }
 
-/** One leased steering message: queue identity + user text. */
+/** One leased steering message: queue identity + canonical user content. */
 export interface SteeringLease {
+  /** Stable user-message identity shared with the durable steering event. */
+  messageId: string;
+  /** Ephemeral delivery lease identity used only for ack/nack settlement. */
   id: string;
-  text: string;
+  content: MessageContent;
 }
 
 /** Alias for clarity at the backend boundary. */

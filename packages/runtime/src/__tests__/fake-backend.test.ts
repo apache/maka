@@ -77,8 +77,8 @@ test('pullSteering drains queued messages at step boundaries as steering events'
   });
   // Queue two steering messages, delivered one per step boundary, then dry up.
   const pending = [
-    { id: 'lease-1', text: 'do X' },
-    { id: 'lease-2', text: 'and Y' },
+    { id: 'lease-1', messageId: 'message-1', content: { text: 'do X' } },
+    { id: 'lease-2', messageId: 'message-2', content: { text: 'and Y' } },
   ];
   const acked: string[] = [];
   const steered: string[] = [];
@@ -90,7 +90,7 @@ test('pullSteering drains queued messages at step boundaries as steering events'
     pullSteering: () => (pending.length > 0 ? [pending.shift()!] : []),
     ackSteering: (leaseIds) => acked.push(...leaseIds),
   })) {
-    if (event.type === 'steering_message') steered.push(event.text);
+    if (event.type === 'steering_message') steered.push(event.content.text);
     if (event.type === 'text_complete') completedText = event.text;
   }
   assert.deepEqual(steered, ['do X', 'and Y']);
@@ -124,8 +124,8 @@ test('a batch of leases settles per lease: delivered ones ack, undelivered ones 
         if (pulled) return [];
         pulled = true;
         return [
-          { id: 'lease-a', text: 'A' },
-          { id: 'lease-b', text: 'B' },
+          { id: 'lease-a', messageId: 'message-a', content: { text: 'A' } },
+          { id: 'lease-b', messageId: 'message-b', content: { text: 'B' } },
         ];
       },
       ackSteering: (leaseIds) => acked.push(...leaseIds),
@@ -137,7 +137,7 @@ test('a batch of leases settles per lease: delivered ones ack, undelivered ones 
   for (let i = 0; i < 20 && steered.length < 2; i += 1) {
     const result = await iterator.next();
     if (result.done) break;
-    if (result.value.type === 'steering_message') steered.push(result.value.text);
+    if (result.value.type === 'steering_message') steered.push(result.value.content.text);
   }
   assert.deepEqual(steered, ['A', 'B']);
 
@@ -157,7 +157,7 @@ test('a lease is acked only after its event is consumed, and nacked when the con
     store: {} as SessionStore,
     appendMessage: async () => {},
   });
-  const pending = [{ id: 'lease-1', text: 'do X' }];
+  const pending = [{ id: 'lease-1', messageId: 'message-1', content: { text: 'do X' } }];
   const acked: string[] = [];
   const nacked: string[] = [];
   const iterator = backend
