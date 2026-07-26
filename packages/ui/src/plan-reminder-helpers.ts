@@ -29,13 +29,7 @@ import {
   botDisplayLabel,
   uiLocaleToIntlLocale,
 } from '@maka/core';
-import { getPlanReminderCopy, type PlanReminderExampleTemplate } from './plan-reminder-copy.js';
-
-export type { PlanReminderExampleTemplate } from './plan-reminder-copy.js';
-
-export function getPlanReminderExampleTemplates(locale: UiLocale): readonly PlanReminderExampleTemplate[] {
-  return getPlanReminderCopy(locale).templates;
-}
+import { getPlanReminderCopy } from './plan-reminder-copy.js';
 
 export type PlanReminderDisplayRow =
   | { kind: 'group'; key: string; label: string; count: number }
@@ -61,20 +55,6 @@ export function planReminderPresetRunAt(preset: 'ten-minutes' | 'one-hour' | 'to
   date.setDate(date.getDate() + daysUntilNextMonday);
   date.setHours(9, 0, 0, 0);
   return date.getTime();
-}
-
-export function planReminderTemplateNextRunAt(template: PlanReminderExampleTemplate, now: number = Date.now()): number {
-  const nextRun = new Date(now);
-  nextRun.setSeconds(0, 0);
-  nextRun.setHours(template.nextRun.hour, template.nextRun.minute, 0, 0);
-  if (typeof template.nextRun.weekday === 'number') {
-    const daysUntilTarget = (template.nextRun.weekday - nextRun.getDay() + 7) % 7;
-    nextRun.setDate(nextRun.getDate() + daysUntilTarget);
-  }
-  if (nextRun.getTime() <= now) {
-    nextRun.setDate(nextRun.getDate() + (typeof template.nextRun.weekday === 'number' ? 7 : 1));
-  }
-  return nextRun.getTime();
 }
 
 export function planReminderFormValidationMessage(input: {
@@ -292,18 +272,6 @@ export function createPlanReminderFormSeed(): PlanReminderFormSeed {
     deliveryChannel: 'local',
     deliveryPlatform: 'telegram',
     deliveryChatId: '',
-  };
-}
-
-/** Create-mode seed prefilled from an example template. */
-export function planReminderTemplateSeed(template: PlanReminderExampleTemplate): PlanReminderFormSeed {
-  return {
-    ...createPlanReminderFormSeed(),
-    title: template.title,
-    note: template.note,
-    recurrence: template.recurrence,
-    cronExpression: template.cronExpression,
-    runAtLocal: toPlanReminderDateTimeInputValue(planReminderTemplateNextRunAt(template)),
   };
 }
 

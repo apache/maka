@@ -9,18 +9,7 @@ import type {
 
 type RunStatus = NonNullable<PlanReminder['lastRun']>['status'];
 
-export type PlanReminderExampleTemplate = {
-  id: string;
-  title: string;
-  note: string;
-  scheduleLabel: string;
-  recurrence: PlanReminderRecurrence;
-  cronExpression: string;
-  nextRun: { weekday?: number; hour: number; minute: number };
-};
-
 export interface PlanReminderCopy {
-  templates: readonly PlanReminderExampleTemplate[];
   validation: {
     title: string;
     timeInvalid: string;
@@ -141,12 +130,6 @@ export interface PlanReminderCopy {
 
 const PLAN_REMINDER_COPY = {
   zh: {
-    templates: [
-      { id: 'daily-download-cleanup', title: '每日下载文件夹清理', note: '请帮我整理「下载」文件夹，把截图、安装包和临时文档按类型归档，并列出可删除项。', scheduleLabel: '每天 18:30', recurrence: 'cron', cronExpression: '30 18 * * *', nextRun: { hour: 18, minute: 30 } },
-      { id: 'midday-reset', title: '午间充电站', note: '午休时间到了，帮我回顾上午完成了什么，并给下午列一个轻量可执行计划。', scheduleLabel: '工作日 12:30', recurrence: 'cron', cronExpression: '30 12 * * 1-5', nextRun: { hour: 12, minute: 30 } },
-      { id: 'weekend-todo-review', title: '周末待办整理', note: '梳理这周完成 / 未完成的待办，输出下周计划，并标记需要优先处理的 3 件事。', scheduleLabel: '每周日 20:00', recurrence: 'cron', cronExpression: '0 20 * * 0', nextRun: { weekday: 0, hour: 20, minute: 0 } },
-      { id: 'daily-news-brief', title: '每日新闻摘要', note: '总结今天科技 / AI / Maka 相关新闻 5 条，按重要性排序，并给出每条 1 句影响判断。', scheduleLabel: '每天 09:30', recurrence: 'cron', cronExpression: '30 9 * * *', nextRun: { hour: 9, minute: 30 } },
-    ],
     validation: { title: '填写标题后才能保存提醒。', timeInvalid: '选择有效的提醒时间。', timePast: '提醒时间必须晚于当前时间。', cron: 'Cron 需要 5 段表达式，例如 0 9 * * 1-5。', chatId: '选择机器人聊天时需要填写 Chat ID。' },
     status: { scheduled: '待触发', paused: '已暂停', completed: '已完成' },
     duplicateSuffix: ' 副本',
@@ -162,12 +145,6 @@ const PLAN_REMINDER_COPY = {
     },
   },
   en: {
-    templates: [
-      { id: 'daily-download-cleanup', title: 'Clean up Downloads', note: 'Organize screenshots, installers, and temporary documents in Downloads by type, then list items that can be deleted.', scheduleLabel: 'Daily at 18:30', recurrence: 'cron', cronExpression: '30 18 * * *', nextRun: { hour: 18, minute: 30 } },
-      { id: 'midday-reset', title: 'Midday reset', note: 'Review what I completed this morning and create a lightweight, actionable plan for the afternoon.', scheduleLabel: 'Weekdays at 12:30', recurrence: 'cron', cronExpression: '30 12 * * 1-5', nextRun: { hour: 12, minute: 30 } },
-      { id: 'weekend-todo-review', title: 'Weekend task review', note: 'Review completed and unfinished tasks from this week, outline next week, and flag the three highest priorities.', scheduleLabel: 'Sundays at 20:00', recurrence: 'cron', cronExpression: '0 20 * * 0', nextRun: { weekday: 0, hour: 20, minute: 0 } },
-      { id: 'daily-news-brief', title: 'Daily news brief', note: 'Summarize five important technology, AI, or Maka stories from today and add one sentence about the impact of each.', scheduleLabel: 'Daily at 09:30', recurrence: 'cron', cronExpression: '30 9 * * *', nextRun: { hour: 9, minute: 30 } },
-    ],
     validation: { title: 'Add a title before saving this reminder.', timeInvalid: 'Choose a valid reminder time.', timePast: 'The reminder time must be in the future.', cron: 'Cron expressions need five fields, for example 0 9 * * 1-5.', chatId: 'Enter a Chat ID when delivering to a bot chat.' },
     status: { scheduled: 'Scheduled', paused: 'Paused', completed: 'Completed' },
     duplicateSuffix: ' copy',

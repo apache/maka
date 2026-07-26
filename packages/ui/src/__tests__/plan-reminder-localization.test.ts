@@ -8,9 +8,8 @@ import {
 import { getPlanReminderCopy } from '../plan-reminder-copy.js';
 
 describe('plan reminder localization', () => {
-  it('provides coherent independent templates in both locales', () => {
-    assert.equal(getPlanReminderCopy('zh').templates[0]?.title, '每日下载文件夹清理');
-    assert.equal(getPlanReminderCopy('en').templates[0]?.title, 'Clean up Downloads');
+  it('provides coherent page copy in both locales', () => {
+    assert.equal(getPlanReminderCopy('zh').page.title, '定时任务');
     assert.equal(getPlanReminderCopy('en').page.title, 'Scheduled tasks');
   });
 
