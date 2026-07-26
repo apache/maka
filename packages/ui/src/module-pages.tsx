@@ -78,6 +78,8 @@ export function AutomationsPage(props: {
   skills?: SkillEntry[];
   hubHeader?: ModuleHubHeader;
   reminders?: PlanReminder[];
+  createRequestNonce?: number;
+  onCreateRequestHandled?: () => void;
   keepSystemAwake?: boolean;
   onKeepSystemAwakeChange?: (next: boolean) => Promise<void>;
   onRefresh?: () => void | Promise<void>;

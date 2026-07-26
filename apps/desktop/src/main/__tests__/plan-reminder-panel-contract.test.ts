@@ -127,6 +127,83 @@ describe('Plan Reminder panel async action contract', () => {
     // The switch reflects the optimistic state and disables while a write runs.
     assert.match(panelBlock, /checked=\{keepSystemAwakeChecked\}/);
     assert.match(panelBlock, /disabled=\{keepSystemAwakePending\}/);
-    assert.match(panelBlock, /onChange=\{\(next\) => void toggleKeepSystemAwake\(next\)\}/);
+    assert.match(panelBlock, /onCheckedChange=\{\(next\) => void toggleKeepSystemAwake\(next\)\}/);
+  });
+});
+
+describe('Plan Reminder management surface contract', () => {
+  it('uses scan-friendly rows without hiding recurrence or run state', async () => {
+    const ui = await readFile(resolve(REPO_ROOT, 'packages/ui/src/plan-reminder-panel.tsx'), 'utf8');
+    const css = await readFile(
+      resolve(REPO_ROOT, 'apps/desktop/src/renderer/styles/module-pages/plan-reminders.css'),
+      'utf8',
+    );
+
+    assert.match(ui, /className="maka-plan-list"/);
+    assert.doesNotMatch(ui, /agents-dual-card-row/);
+    assert.match(ui, /className="maka-plan-card-schedule"/);
+    assert.match(ui, /className="maka-plan-card-run"/);
+    assert.match(ui, /data-attention=\{reminder\.lastRun\?\.status === 'failed'/);
+
+    const listRule = blockBetween(css, '\\.maka-plan-list \\{', '\\}');
+    assert.match(listRule, /grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+    const runRule = blockBetween(css, '\\.maka-plan-card-run \\{', '\\}');
+    assert.doesNotMatch(runRule, /display:\s*none/);
+    assert.doesNotMatch(css, /\.maka-plan-card-chip \+ \.maka-plan-card-chip\s*\{[^}]*display:\s*none/);
+  });
+
+  it('shows collection controls only when the current volume justifies them', async () => {
+    const ui = await readFile(resolve(REPO_ROOT, 'packages/ui/src/plan-reminder-panel.tsx'), 'utf8');
+
+    assert.match(
+      ui,
+      /const showListControls =\s*props\.reminders\.length >= 8 \|\|\s*normalizedListQuery\.length > 0 \|\|\s*listFilter !== 'all' \|\|\s*listSort !== 'created-desc';/,
+    );
+    assert.match(ui, /\{showListControls && planView === 'tasks' \? \(/);
+    assert.match(ui, /useState<PlanReminderListFilter>\('all'\)/);
+  });
+
+  it('keeps page settings contextual and guidance state-dependent', async () => {
+    const ui = await readFile(resolve(REPO_ROOT, 'packages/ui/src/plan-reminder-panel.tsx'), 'utf8');
+    const controller = await readFile(
+      resolve(REPO_ROOT, 'apps/desktop/src/renderer/use-keep-system-awake.ts'),
+      'utf8',
+    );
+
+    assert.match(ui, /<MenuCheckboxItem[\s\S]*checked=\{keepSystemAwakeChecked\}/);
+    assert.match(
+      ui,
+      /const showKeepAwakeGuidance =\s*keepSystemAwakeSupported &&\s*!keepSystemAwakeChecked &&\s*props\.reminders\.some\(\(reminder\) => reminder\.enabled && reminder\.status === 'scheduled'\);/,
+    );
+    assert.match(ui, /\{keepSystemAwakeChecked && <Badge[^>]*maka-plan-awake-indicator/);
+    assert.match(ui, /\{showKeepAwakeGuidance && \(/);
+    assert.doesNotMatch(ui, /maka-plan-system-awake/);
+    assert.match(controller, /keepSystemAwake: boolean \| undefined/);
+    assert.match(controller, /useState<boolean>\(\)/);
+  });
+
+  it('names row controls with the reminder identity', async () => {
+    const ui = await readFile(resolve(REPO_ROOT, 'packages/ui/src/plan-reminder-panel.tsx'), 'utf8');
+
+    assert.match(ui, /aria-label=\{`\$\{reminder\.enabled \? copy\.page\.pause : copy\.page\.enable\}: \$\{reminder\.title\}`\}/);
+    assert.match(ui, /aria-label=\{`\$\{copy\.page\.reminderActions\}: \$\{reminder\.title\}`\}/);
+  });
+
+  it('keeps one create action and a quiet empty explanation', async () => {
+    const ui = await readFile(resolve(REPO_ROOT, 'packages/ui/src/plan-reminder-panel.tsx'), 'utf8');
+    const emptyBranch = blockBetween(ui, 'props.reminders.length === 0 \\? \\(', '\\) : sortedReminders.length');
+
+    assert.match(emptyBranch, /<EmptyState/);
+    assert.doesNotMatch(emptyBranch, /BaseButton|openCreateReminderDialog|openPlanReminderTemplate/);
+  });
+
+  it('opens the existing form owner for an external create request', async () => {
+    const ui = await readFile(resolve(REPO_ROOT, 'packages/ui/src/plan-reminder-panel.tsx'), 'utf8');
+
+    assert.match(ui, /createRequestNonce\?: number/);
+    assert.match(
+      ui,
+      /useEffect\(\(\) => \{\s*if \(!props\.createRequestNonce\) return;\s*openReminderDialog\(createPlanReminderFormSeed\(\)\);\s*props\.onCreateRequestHandled\?\.\(\);\s*\}, \[props\.createRequestNonce\]\)/,
+    );
   });
 });

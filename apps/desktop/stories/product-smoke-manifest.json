@@ -3,7 +3,7 @@
   "viewports": {
     "wide": { "width": 1280, "height": 900 },
     "compact": { "width": 820, "height": 900 },
-    "floor": { "width": 480, "height": 720 }
+    "floor": { "width": 480, "height": 900 }
   },
   "surfaces": {
     "settings": {
@@ -28,13 +28,18 @@
       "storyId": "product-module-hubs--scheduled-plan-reminders-configured",
       "productionHost": "AppShellDetailPanel > AutomationsPage",
       "state": "Configured recurring and completed reminders",
-      "viewports": ["wide", "compact", "floor"]
+      "viewports": ["wide", "compact", "floor"],
+      "colorSchemes": ["light", "dark"]
     },
     "planRemindersNarrow": {
       "storyId": "product-module-hubs--scheduled-plan-reminders-narrow",
       "productionHost": "AppShellDetailPanel > AutomationsPage",
       "state": "Hostile long content at the 480 × 720 minimum iframe viewport",
       "viewports": ["floor"],
+      "viewportSizes": {
+        "floor": { "width": 480, "height": 720 }
+      },
+      "checks": ["plan-reminder-narrow"],
       "viewportOptOuts": {
         "wide": "The populated reference story covers the wide production host.",
         "compact": "The populated reference story covers the compact production host."

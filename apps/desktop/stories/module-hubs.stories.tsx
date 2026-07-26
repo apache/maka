@@ -28,6 +28,7 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 const NOW = Date.UTC(2026, 6, 1, 9, 30);
+const PLAN_NOW = Date.now();
 const noop = () => {};
 
 const INSTALLED_SKILLS: SkillEntry[] = [
@@ -65,13 +66,13 @@ const CONFIGURED_REMINDERS: PlanReminder[] = [
     id: 'plan-weekly',
     title: '每周发布风险复盘',
     note: '聚合本周未解决的发布风险项。',
-    schedule: { kind: 'recurring', startAt: NOW - 7 * 86_400_000, recurrence: 'weekly' },
+    schedule: { kind: 'recurring', startAt: PLAN_NOW - 7 * 86_400_000, recurrence: 'weekly' },
     delivery: { channel: 'local' },
     status: 'scheduled',
     enabled: true,
-    createdAt: NOW - 14 * 86_400_000,
-    updatedAt: NOW - 2 * 86_400_000,
-    nextRunAt: NOW + 2 * 86_400_000,
+    createdAt: PLAN_NOW - 14 * 86_400_000,
+    updatedAt: PLAN_NOW - 2 * 86_400_000,
+    nextRunAt: PLAN_NOW + 2 * 86_400_000,
     runs: [],
     runCount: 0,
   },
@@ -79,17 +80,17 @@ const CONFIGURED_REMINDERS: PlanReminder[] = [
     id: 'plan-cron',
     title: '工作日早 9 点同步进度',
     note: '',
-    schedule: { kind: 'cron', startAt: NOW - 30 * 86_400_000, expression: '0 9 * * 1-5' },
+    schedule: { kind: 'cron', startAt: PLAN_NOW - 30 * 86_400_000, expression: '0 9 * * 1-5' },
     delivery: { channel: 'local' },
     status: 'scheduled',
     enabled: true,
-    createdAt: NOW - 30 * 86_400_000,
-    updatedAt: NOW - 30 * 86_400_000,
-    nextRunAt: NOW + 18 * 3_600_000,
+    createdAt: PLAN_NOW - 30 * 86_400_000,
+    updatedAt: PLAN_NOW - 30 * 86_400_000,
+    nextRunAt: PLAN_NOW + 18 * 3_600_000,
     runs: [
       {
         id: 'run-1',
-        at: NOW - 86_400_000,
+        at: PLAN_NOW - 86_400_000,
         status: 'triggered',
         message: '已生成进度摘要。',
       },
@@ -100,12 +101,12 @@ const CONFIGURED_REMINDERS: PlanReminder[] = [
     id: 'plan-paused',
     title: '一次性补一次截图基线',
     note: '发布前再补一轮稳定基线。',
-    schedule: { kind: 'once', runAt: NOW + 3 * 86_400_000 },
+    schedule: { kind: 'once', runAt: PLAN_NOW + 3 * 86_400_000 },
     delivery: { channel: 'local' },
     status: 'paused',
     enabled: false,
-    createdAt: NOW - 5 * 86_400_000,
-    updatedAt: NOW - 86_400_000,
+    createdAt: PLAN_NOW - 5 * 86_400_000,
+    updatedAt: PLAN_NOW - 86_400_000,
     runs: [],
     runCount: 0,
   },
@@ -113,16 +114,16 @@ const CONFIGURED_REMINDERS: PlanReminder[] = [
     id: 'plan-completed',
     title: '发布日提醒',
     note: '',
-    schedule: { kind: 'once', runAt: NOW - 2 * 86_400_000 },
+    schedule: { kind: 'once', runAt: PLAN_NOW - 2 * 86_400_000 },
     delivery: { channel: 'local' },
     status: 'completed',
     enabled: false,
-    createdAt: NOW - 10 * 86_400_000,
-    updatedAt: NOW - 2 * 86_400_000,
+    createdAt: PLAN_NOW - 10 * 86_400_000,
+    updatedAt: PLAN_NOW - 2 * 86_400_000,
     runs: [
       {
         id: 'run-done',
-        at: NOW - 2 * 86_400_000,
+        at: PLAN_NOW - 2 * 86_400_000,
         status: 'triggered',
         message: '已发送。',
       },
@@ -133,28 +134,30 @@ const CONFIGURED_REMINDERS: PlanReminder[] = [
 
 const ATTENTION_REMINDERS: PlanReminder[] = [
   {
-    id: 'plan-delivery-failed',
+    id: 'plan-delivery-blocked',
     title: '发送每日客户反馈摘要',
     note: '汇总过去 24 小时的反馈并投递到项目群。',
-    schedule: { kind: 'cron', startAt: NOW - 30 * 86_400_000, expression: '0 18 * * 1-5' },
+    schedule: { kind: 'cron', startAt: PLAN_NOW - 30 * 86_400_000, expression: '0 18 * * 1-5' },
     delivery: { channel: 'bot', platform: 'telegram', chatId: 'project-room' },
     status: 'scheduled',
     enabled: true,
-    createdAt: NOW - 30 * 86_400_000,
-    updatedAt: NOW - 60 * 60_000,
-    nextRunAt: NOW + 8 * 60 * 60_000,
+    createdAt: PLAN_NOW - 30 * 86_400_000,
+    updatedAt: PLAN_NOW - 60 * 60_000,
+    nextRunAt: PLAN_NOW + 8 * 60 * 60_000,
     lastRun: {
-      id: 'run-failed',
-      at: NOW - 60 * 60_000,
-      status: 'failed',
-      message: 'Telegram 投递失败：机器人已被移出目标群聊。',
+      id: 'run-blocked',
+      at: PLAN_NOW - 60 * 60_000,
+      status: 'blocked',
+      message: 'Telegram 投递不可用：机器人已被移出目标群聊。',
+      blockReason: 'bot_delivery_unavailable',
     },
     runs: [
       {
-        id: 'run-failed',
-        at: NOW - 60 * 60_000,
-        status: 'failed',
-        message: 'Telegram 投递失败：机器人已被移出目标群聊。',
+        id: 'run-blocked',
+        at: PLAN_NOW - 60 * 60_000,
+        status: 'blocked',
+        message: 'Telegram 投递不可用：机器人已被移出目标群聊。',
+        blockReason: 'bot_delivery_unavailable',
       },
     ],
     runCount: 12,
@@ -168,7 +171,7 @@ const LONG_CONTENT_REMINDERS: PlanReminder[] = [
     note: '从工程、设计、法务与运营项目中读取发布风险，保留原始链接、负责人、最后更新时间和下一步；如果投递目标不可用，必须在本地提醒中完整说明失败原因，而不是静默跳过。',
     schedule: {
       kind: 'cron',
-      startAt: NOW - 90 * 86_400_000,
+      startAt: PLAN_NOW - 90 * 86_400_000,
       expression: '15 8 * * 1',
     },
     delivery: {
@@ -178,12 +181,12 @@ const LONG_CONTENT_REMINDERS: PlanReminder[] = [
     },
     status: 'scheduled',
     enabled: true,
-    createdAt: NOW - 90 * 86_400_000,
-    updatedAt: NOW - 2 * 60 * 60_000,
-    nextRunAt: NOW + 5 * 86_400_000,
+    createdAt: PLAN_NOW - 90 * 86_400_000,
+    updatedAt: PLAN_NOW - 2 * 60 * 60_000,
+    nextRunAt: PLAN_NOW + 5 * 86_400_000,
     lastRun: {
       id: 'run-long',
-      at: NOW - 2 * 86_400_000,
+      at: PLAN_NOW - 2 * 86_400_000,
       status: 'blocked',
       message: '隐私浏览正在进行，因此本轮任务没有读取工作区或向外部群聊投递。',
       blockReason: 'incognito_active',
@@ -191,7 +194,7 @@ const LONG_CONTENT_REMINDERS: PlanReminder[] = [
     runs: [
       {
         id: 'run-long',
-        at: NOW - 2 * 86_400_000,
+        at: PLAN_NOW - 2 * 86_400_000,
         status: 'blocked',
         message: '隐私浏览正在进行，因此本轮任务没有读取工作区或向外部群聊投递。',
         blockReason: 'incognito_active',
@@ -328,7 +331,10 @@ function ExtensionsMcpSurface() {
   );
 }
 
-function ScheduledPlanRemindersSurface(props: { reminders?: PlanReminder[] }) {
+function ScheduledPlanRemindersSurface(props: {
+  reminders?: PlanReminder[];
+  keepSystemAwake?: boolean;
+}) {
   const copy = getSharedUiCopy(useUiLocale()).moduleHubs.automations;
   return (
     <ModuleSurface agentsView="cron">
@@ -340,7 +346,7 @@ function ScheduledPlanRemindersSurface(props: { reminders?: PlanReminder[] }) {
         }}
         skills={[]}
         reminders={props.reminders ?? []}
-        keepSystemAwake={false}
+        keepSystemAwake={props.keepSystemAwake ?? false}
         onKeepSystemAwakeChange={async () => {}}
         onRefresh={noop}
         onCreate={noop}
@@ -398,6 +404,16 @@ export const ScheduledPlanRemindersConfigured: Story = {
 // Real path: sidebar → 定时任务 → 计划提醒, after the latest delivery needs attention.
 export const ScheduledPlanRemindersAttention: Story = {
   render: () => <ScheduledPlanRemindersSurface reminders={ATTENTION_REMINDERS} />,
+};
+
+// Real path: sidebar → 定时任务 → 计划提醒, after Keep system awake is enabled in page settings.
+export const ScheduledPlanRemindersKeepAwake: Story = {
+  render: () => (
+    <ScheduledPlanRemindersSurface
+      reminders={CONFIGURED_REMINDERS}
+      keepSystemAwake
+    />
+  ),
 };
 
 // Real path: sidebar → 定时任务 → 计划提醒, with user-authored content at storage limits.

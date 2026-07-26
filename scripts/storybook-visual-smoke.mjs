@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 export const PRODUCT_VIEWPORTS = Object.freeze({
   wide: Object.freeze({ width: 1280, height: 900 }),
   compact: Object.freeze({ width: 820, height: 900 }),
-  floor: Object.freeze({ width: 480, height: 720 }),
+  floor: Object.freeze({ width: 480, height: 900 }),
 });
 
 export const REQUIRED_PRODUCT_SURFACES = Object.freeze([
@@ -61,19 +61,41 @@ export function validateCoverageManifest(manifest, storyIndex) {
 
     const requiredViewports = Array.isArray(entry.viewports) ? entry.viewports : [];
     const optOuts = isRecord(entry.viewportOptOuts) ? entry.viewportOptOuts : {};
+    const viewportSizes = isRecord(entry.viewportSizes) ? entry.viewportSizes : {};
+    const colorSchemes = Array.isArray(entry.colorSchemes) ? entry.colorSchemes : ['light'];
+    if (
+      colorSchemes.length === 0 ||
+      colorSchemes.some((scheme) => scheme !== 'light' && scheme !== 'dark')
+    ) {
+      fail(`${surface} colorSchemes must contain light or dark`);
+    }
     for (const viewport of requiredViewports) {
       if (!(viewport in PRODUCT_VIEWPORTS)) fail(`${surface} uses unknown viewport: ${viewport}`);
     }
     for (const viewport of Object.keys(PRODUCT_VIEWPORTS)) {
       if (requiredViewports.includes(viewport)) {
-        jobs.push({
-          surface,
-          storyId: entry.storyId,
-          viewport,
-          size: PRODUCT_VIEWPORTS[viewport],
-          productionHost: entry.productionHost,
-          state: entry.state,
-        });
+        const size = viewportSizes[viewport] ?? PRODUCT_VIEWPORTS[viewport];
+        if (
+          !isRecord(size) ||
+          !Number.isInteger(size.width) ||
+          !Number.isInteger(size.height) ||
+          size.width <= 0 ||
+          size.height <= 0
+        ) {
+          fail(`${surface} ${viewport} viewport override must have positive integer dimensions`);
+        }
+        for (const colorScheme of colorSchemes) {
+          jobs.push({
+            surface,
+            storyId: entry.storyId,
+            viewport,
+            size,
+            colorScheme,
+            checks: Array.isArray(entry.checks) ? entry.checks : [],
+            productionHost: entry.productionHost,
+            state: entry.state,
+          });
+        }
         continue;
       }
       if (typeof optOuts[viewport] !== 'string' || optOuts[viewport].trim().length === 0) {
@@ -164,9 +186,13 @@ export async function smokeStory(page, baseUrl, job, options = {}) {
     await page.addInitScript(installStorybookSmokeProbe, { storyId: job.storyId });
 
     await page.setViewportSize(job.size);
-    await page.goto(`${baseUrl}/iframe.html?id=${encodeURIComponent(job.storyId)}&viewMode=story`, {
-      waitUntil: 'load',
-    });
+    const globals = `colorScheme:${job.colorScheme ?? 'light'}`;
+    await page.goto(
+      `${baseUrl}/iframe.html?id=${encodeURIComponent(job.storyId)}&viewMode=story&globals=${encodeURIComponent(globals)}`,
+      {
+        waitUntil: 'load',
+      },
+    );
 
     try {
       await page.waitForFunction(
@@ -183,13 +209,63 @@ export async function smokeStory(page, baseUrl, job, options = {}) {
       }
     }
 
-    const result = await page.evaluate(() => {
-      const root = document.querySelector('#storybook-root');
-      return {
-        hasContent: Boolean(root?.innerHTML.trim()),
-        failures: window.__makaStorybookSmoke?.failures ?? [],
-      };
-    });
+    if (job.checks?.includes('plan-reminder-narrow')) {
+      try {
+        await page.waitForSelector('.maka-plan-card', { state: 'visible', timeout: 5_000 });
+      } catch {
+        browserFailures.push('plan reminder rows did not finish rendering');
+      }
+    }
+
+    const result = await page.evaluate(
+      ({ checks, colorScheme }) => {
+        const root = document.querySelector('#storybook-root');
+        const failures = [...(window.__makaStorybookSmoke?.failures ?? [])];
+        if (
+          colorScheme === 'dark' &&
+          (!document.documentElement.classList.contains('dark') ||
+            getComputedStyle(document.documentElement).colorScheme !== 'dark')
+        ) {
+          failures.push('dark color scheme was not applied to the production root');
+        }
+        if (checks.includes('plan-reminder-narrow')) {
+          if (document.documentElement.scrollWidth > document.documentElement.clientWidth) {
+            failures.push('document has horizontal overflow');
+          }
+          for (const selector of [
+            '.maka-plan-card-title-row',
+            '.maka-plan-card-title-row [data-slot="badge"]',
+            '.maka-plan-card-schedule',
+            '.maka-plan-card-run',
+            '.maka-plan-card-run [data-slot="chip"]',
+            '.maka-plan-card-controls',
+          ]) {
+            const element = document.querySelector(selector);
+            const rect = element?.getBoundingClientRect();
+            if (
+              !element ||
+              getComputedStyle(element).display === 'none' ||
+              !rect ||
+              rect.left < -1 ||
+              rect.right > document.documentElement.clientWidth + 1
+            ) {
+              failures.push(
+                `${selector} is hidden or clipped (${rect?.left ?? 'missing'}..${rect?.right ?? 'missing'} / ${document.documentElement.clientWidth})`,
+              );
+            }
+          }
+          for (const row of document.querySelectorAll('.maka-plan-card')) {
+            if (row.scrollWidth > row.clientWidth)
+              failures.push('plan reminder row has horizontal overflow');
+          }
+        }
+        return {
+          hasContent: Boolean(root?.innerHTML.trim()),
+          failures,
+        };
+      },
+      { checks: job.checks ?? [], colorScheme: job.colorScheme ?? 'light' },
+    );
     if (result !== true) {
       browserFailures.push(...result.failures);
       if (!result.hasContent) browserFailures.push('story root rendered empty content');

@@ -100,6 +100,7 @@ describe('Storybook baseline contract', () => {
       'ExtensionsMcp',
       'ScheduledPlanReminders',
       'ScheduledPlanRemindersAttention',
+      'ScheduledPlanRemindersKeepAwake',
       'ScheduledDailyReview',
       'ExtensionsSkillsInstalled',
       'ScheduledPlanRemindersConfigured',
@@ -133,7 +134,7 @@ describe('Storybook baseline contract', () => {
     }
     assert.match(story, /status:\s*'paused'/, 'configured reminders must preserve paused-state coverage');
     assert.match(story, /status:\s*'completed'/, 'configured reminders must preserve completed-state coverage');
-    assert.match(story, /status:\s*'failed'/, 'attention reminders must preserve failed-run coverage');
+    assert.match(story, /blockReason:\s*'bot_delivery_unavailable'/, 'attention reminders must preserve reachable blocked-delivery coverage');
     assert.match(story, /480 × 720/, 'the narrow story must document its real iframe viewport');
 
     for (const obsoleteStory of [

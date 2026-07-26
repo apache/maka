@@ -190,6 +190,7 @@ export function PlanReminderFormDialog(props: {
                 value={title}
                 onChange={(event) => setTitle(event.currentTarget.value)}
                 maxLength={120}
+                autoFocus
                 data-maka-plan-title-input="true"
                 placeholder={copy.titlePlaceholder}
                 disabled={formInteractionDisabled}

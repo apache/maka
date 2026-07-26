@@ -132,7 +132,7 @@ describe('Product Storybook coverage manifest', () => {
     assert.deepEqual(PRODUCT_VIEWPORTS, {
       wide: { width: 1280, height: 900 },
       compact: { width: 820, height: 900 },
-      floor: { width: 480, height: 720 },
+      floor: { width: 480, height: 900 },
     });
   });
 
@@ -141,7 +141,11 @@ describe('Product Storybook coverage manifest', () => {
       await readFile('apps/desktop/stories/product-smoke-manifest.json', 'utf8'),
     );
 
-    assert.equal(validateCoverageManifest(manifest, STORY_INDEX).length, 16);
+    assert.equal(validateCoverageManifest(manifest, STORY_INDEX).length, 19);
+    const narrow = validateCoverageManifest(manifest, STORY_INDEX).find(
+      (job) => job.surface === 'planRemindersNarrow',
+    );
+    assert.deepEqual(narrow?.size, { width: 480, height: 720 });
   });
 
   it('keeps CI self-contained with the core build and Chromium installation', async () => {

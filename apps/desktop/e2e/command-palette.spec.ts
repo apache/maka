@@ -66,3 +66,16 @@ test('command palette header geometry and dismissal stay intact', async ({ windo
   await page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
 });
+
+test('new plan reminder command opens and focuses the existing form', async ({ window: page }) => {
+  await page.getByRole('button', { name: '更多操作' }).click();
+  await page.getByRole('menuitem', { name: '打开命令面板' }).click();
+
+  const palette = page.getByRole('dialog', { name: '命令面板' });
+  await palette.getByRole('combobox', { name: '搜索命令、设置项或会话' }).fill('新建计划提醒');
+  await palette.getByRole('option', { name: /新建计划提醒/ }).click();
+
+  const reminderDialog = page.getByRole('dialog', { name: '新建提醒' });
+  await expect(reminderDialog).toBeVisible();
+  await expect(reminderDialog.getByRole('textbox', { name: '标题' })).toBeFocused();
+});

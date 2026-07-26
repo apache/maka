@@ -19,7 +19,7 @@ describe('command palette plan reminder contract', () => {
     assert.match(src, /run:\s*args\.onStartPlanReminder/);
   });
 
-  it('wires the action to the shipped plan panel and focuses the title field', async () => {
+  it('routes a create request into the shipped dialog and focuses the title field', async () => {
     const main = await readRendererShellCombinedSource();
     // Issue #1044: the form (and its title input) lives in the extracted
     // PlanReminderFormDialog; the focus hook marker moved with it.
@@ -27,9 +27,11 @@ describe('command palette plan reminder contract', () => {
 
     assert.match(main, /function\s+openPlanReminderForm\(\)/);
     assert.match(main, /setNavSelection\(\{\s*section:\s*'automations',\s*module:\s*'plan-reminders'\s*\}\)/);
+    assert.match(main, /setPlanReminderCreateRequestNonce\(\(nonce\) => nonce \+ 1\)/);
+    assert.match(main, /createRequestNonce=\{planReminderCreateRequestNonce\}/);
     // #1045: run() reads openPlanReminderForm from the live options ref.
     assert.match(main, /onStartPlanReminder:\s*\(\)\s*=>\s*optionsRef\.current\.openPlanReminderForm\(\)/);
-    assert.match(main, /querySelector<HTMLInputElement>\('\[data-maka-plan-title-input="true"\]'\)/);
     assert.match(dialog, /data-maka-plan-title-input="true"/);
+    assert.match(dialog, /autoFocus/);
   });
 });
