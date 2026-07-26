@@ -45,6 +45,8 @@ describe('Runtime Host bootstrap protocol', () => {
   test('keeps the experimental protocol at v0 with the declared authority operations', () => {
     assert.equal(RUNTIME_HOST_PROTOCOL_VERSION, 0);
     assert.deepEqual(Object.keys(HOST_OPERATION_SPECS).sort(), [
+      'artifact.delete',
+      'artifact.query',
       'connection.catalog.create',
       'connection.catalog.query',
       'connection.catalog.remove',

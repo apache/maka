@@ -1,3 +1,4 @@
+import { ARTIFACT_OPERATION_SPECS } from './artifact.js';
 import { requireExactRecord, requireId, requireRecord, requireString } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { HOST_STATUS_OPERATION_SPECS } from './host-status.js';
@@ -16,6 +17,31 @@ import { TURN_OPERATION_SPECS } from './turn.js';
 
 export type { HostLifecycleState, HostStatusInput, HostStatusResult } from './host-status.js';
 export type { HostOperationError, HostOperationErrorCode } from './operation-spec.js';
+export {
+  ARTIFACT_CURSOR_MAX_BYTES,
+  ARTIFACT_MIME_TYPE_MAX_BYTES,
+  ARTIFACT_NAME_MAX_BYTES,
+  ARTIFACT_PAGE_MAX_ITEMS,
+  ARTIFACT_PREVIEW_MAX_BYTES,
+  ARTIFACT_RESULT_MAX_BYTES,
+  ARTIFACT_SUMMARY_MAX_BYTES,
+  decodeArtifactDeleteInput,
+  decodeArtifactDeleteResult,
+  decodeArtifactQueryInput,
+  decodeArtifactQueryResult,
+  encodeArtifactDeleteResult,
+  encodeArtifactQueryResult,
+} from './artifact.js';
+export type {
+  ArtifactBinaryPreview,
+  ArtifactDeleteInput,
+  ArtifactDeleteResult,
+  ArtifactProjection,
+  ArtifactQueryInput,
+  ArtifactQueryResult,
+  ArtifactRevision,
+  ArtifactTextPreview,
+} from './artifact.js';
 export {
   TURN_MESSAGE_CONTENT_MAX_BYTES,
   TURN_MESSAGE_TEXT_MAX_BYTES,
@@ -69,9 +95,15 @@ const CORE_MESSAGE_TASK_LEDGER_AND_INTERACTION_OPERATION_SPECS = composeOperatio
   INTERACTION_OPERATION_SPECS,
 );
 
-export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
+const CORE_MESSAGE_TASK_LEDGER_INTERACTION_AND_CONTINUITY_OPERATION_SPECS =
+  composeOperationSpecMaps(
   CORE_MESSAGE_TASK_LEDGER_AND_INTERACTION_OPERATION_SPECS,
   SESSION_CONTINUITY_OPERATION_SPECS,
+  );
+
+export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
+  CORE_MESSAGE_TASK_LEDGER_INTERACTION_AND_CONTINUITY_OPERATION_SPECS,
+  ARTIFACT_OPERATION_SPECS,
 );
 
 export type OperationSpecMap = typeof HOST_OPERATION_SPECS;

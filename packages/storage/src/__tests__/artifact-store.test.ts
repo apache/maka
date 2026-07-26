@@ -1,8 +1,20 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import {
+  link,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { describe, test } from 'node:test';
+import { basename, dirname, join } from 'node:path';
+import { describe, test, type TestContext } from 'node:test';
+import { ARTIFACT_ENTITY_ID_MAX_CHARS, type ArtifactRecord } from '@maka/core/artifacts';
 import {
   ARTIFACT_TEXT_PREVIEW_LIMIT_BYTES,
   createArtifactStore,
@@ -12,468 +24,529 @@ import {
 } from '../artifact-store.js';
 
 describe('FileArtifactStore', () => {
-  test('creates file-backed records and lists live artifacts newest first', async () => {
-    await withStore(async (store) => {
-      const first = await store.create({
-        id: 'artifact-1',
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        name: 'notes.md',
-        kind: 'file',
-        content: '# Notes',
-        mimeType: 'text/markdown',
-        source: 'fixture',
-        now: 100,
-      });
+  test('publishes stable identities and persists canonical records', async () => {
+    await withWorkspace(async (root) => {
+      const store = createArtifactStore(root);
+      const first = await store.create(artifactInput('artifact-1', '# Notes', 100));
       const second = await store.create({
-        id: 'artifact-2',
-        sessionId: 'session-1',
-        turnId: 'turn-1',
+        ...artifactInput('artifact-2', 'diff --git a/a b/a', 200),
         name: 'patch.diff',
         kind: 'diff',
-        content: 'diff --git a/a b/a',
-        mimeType: 'text/x-diff',
         source: 'tool_result',
-        now: 200,
       });
 
-      assert.equal(first.relativePath, 'session-1/artifact-1-notes.md');
+      assert.equal(first.relativePath, 'session-1/artifact-1-artifact-1.txt');
       assert.equal(first.sizeBytes, 7);
-      assert.equal(second.relativePath, 'session-1/artifact-2-patch.diff');
-
-      const rows = await store.list('session-1');
       assert.deepEqual(
-        rows.map((record) => record.id),
+        (await store.list('session-1')).map((record) => record.id),
         ['artifact-2', 'artifact-1'],
       );
-      assert.equal((await store.get('artifact-1'))?.name, 'notes.md');
-      assert.deepEqual(await store.readText('artifact-1'), { ok: true, text: '# Notes' });
+      assert.deepEqual(await store.readText(first.id), { ok: true, text: '# Notes' });
+
+      const reopened = createArtifactStore(root);
+      assert.deepEqual(await reopened.get(second.id), second);
+      await assert.rejects(
+        () => reopened.create(artifactInput('artifact-1', 'replacement', 300)),
+        /Artifact artifact-1 already exists/,
+      );
+      assert.deepEqual(await reopened.readText('artifact-1'), { ok: true, text: '# Notes' });
     });
   });
 
-  test('persists records across store instances', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      const first = createArtifactStore(workspaceRoot);
-      await first.create({
-        id: 'artifact-1',
+  test('persists complete canonical deep-research and archived tool-result records', async () => {
+    await withWorkspace(async (root) => {
+      const store = createArtifactStore(root);
+      const report = await store.create({
+        id: 'research-report',
         sessionId: 'session-1',
-        turnId: 'turn-1',
+        turnId: 'turn-report',
         name: 'report.html',
         kind: 'html',
-        content: '<h1>Report</h1>',
+        content: '<h1>Research</h1>',
+        mimeType: 'text/html',
         source: 'deep_research',
+        summary: 'Canonical research report',
         deepResearchRole: 'report',
         now: 100,
       });
-
-      const second = createArtifactStore(workspaceRoot);
-      assert.equal(
-        (await second.get('artifact-1'))?.relativePath,
-        'session-1/artifact-1-report.html',
-      );
-      assert.equal((await second.get('artifact-1'))?.deepResearchRole, 'report');
-      assert.deepEqual(await second.readText('artifact-1'), { ok: true, text: '<h1>Report</h1>' });
-    });
-  });
-
-  test('serializes concurrent first-load creates without dropping metadata', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      const seed = createArtifactStore(workspaceRoot);
-      await seed.create({
-        id: 'seed',
+      const archive = await store.create({
+        id: 'tool-archive',
         sessionId: 'session-1',
-        turnId: 'turn-1',
-        name: 'seed.txt',
+        turnId: 'turn-tool',
+        name: 'tool-result.json',
         kind: 'file',
-        content: 'seed',
-        now: 1,
-      });
-
-      const store = createArtifactStore(workspaceRoot);
-      const ids = Array.from({ length: 12 }, (_, index) => `artifact-${index}`);
-      await Promise.all(
-        ids.map((id, index) =>
-          store.create({
-            id,
-            sessionId: 'session-1',
-            turnId: 'turn-1',
-            name: `${id}.txt`,
-            kind: 'file',
-            content: id,
-            now: 10 + index,
-          }),
-        ),
-      );
-
-      const reloaded = createArtifactStore(workspaceRoot);
-      const rows = await reloaded.list('session-1', { includeDeleted: true });
-      assert.deepEqual(rows.map((record) => record.id).sort(), ['seed', ...ids].sort());
-
-      const metadata = await readFile(join(workspaceRoot, 'artifacts', 'metadata.jsonl'), 'utf8');
-      for (const id of ['seed', ...ids]) {
-        assert.match(metadata, new RegExp(`"id":"${id}"`));
-      }
-    });
-  });
-
-  test('recovers valid metadata rows without rewriting a corrupt index on read', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      const seed = createArtifactStore(workspaceRoot);
-      await seed.create({
-        id: 'artifact-1',
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        name: 'one.txt',
-        kind: 'file',
-        content: 'one',
-        now: 100,
-      });
-      await seed.create({
-        id: 'artifact-2',
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        name: 'two.txt',
-        kind: 'file',
-        content: 'two',
+        content: '{"ok":true}',
+        mimeType: 'application/json',
+        source: 'tool_result_archive',
+        summary: 'Archived tool result',
         now: 200,
       });
 
-      const metadataPath = join(workspaceRoot, 'artifacts', 'metadata.jsonl');
-      const before = await readFile(metadataPath, 'utf8');
-      await writeFile(
-        metadataPath,
-        before.split('\n').filter(Boolean).join('\n{not valid json}\n') + '\n',
-        'utf8',
-      );
-
-      const store = createArtifactStore(workspaceRoot);
-      const rows = await store.list('session-1', { includeDeleted: true });
-      assert.deepEqual(
-        rows.map((record) => record.id),
-        ['artifact-2', 'artifact-1'],
-      );
-      assert.deepEqual(await store.readText('artifact-1'), { ok: true, text: 'one' });
-
-      const afterReadOnlyLoad = await readFile(metadataPath, 'utf8');
-      assert.match(afterReadOnlyLoad, /\{not valid json\}/);
+      const reopened = createArtifactStore(root);
+      assert.deepEqual(await reopened.get(report.id), report);
+      assert.deepEqual(await reopened.get(archive.id), archive);
+      assert.deepEqual(await reopened.readText(report.id), {
+        ok: true,
+        text: '<h1>Research</h1>',
+      });
+      assert.deepEqual(await reopened.readText(archive.id), {
+        ok: true,
+        text: '{"ok":true}',
+      });
     });
   });
 
-  test('fails loud on metadata read I/O errors instead of treating the index as empty', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      const metadataPath = join(workspaceRoot, 'artifacts', 'metadata.jsonl');
+  test('exact live replay returns the canonical record without rewriting or accepting conflicts', async () => {
+    await withWorkspace(async (root) => {
+      const input = deepResearchArtifactInput('stable-replay', '# Durable result');
+      const first = await createArtifactStore(root).create(input);
+      const metadataPath = join(root, 'artifacts', 'metadata.jsonl');
+      const metadataBefore = await readFile(metadataPath, 'utf8');
+
+      const replayed = await createArtifactStore(root).create(input);
+      assert.deepEqual(replayed, first);
+      assert.equal(await readFile(metadataPath, 'utf8'), metadataBefore);
+      assert.deepEqual(await createArtifactStore(root).readText(first.id), {
+        ok: true,
+        text: '# Durable result',
+      });
+
+      await assert.rejects(
+        () =>
+          createArtifactStore(root).create({
+            ...input,
+            content: '# Mutated result',
+          }),
+        /already exists with different metadata or content/,
+      );
+      assert.equal(Buffer.byteLength(input.content), Buffer.byteLength('# Mutated result'));
+      await assert.rejects(
+        () =>
+          createArtifactStore(root).create({
+            ...input,
+            summary: 'Different summary',
+          }),
+        /already exists with different metadata or content/,
+      );
+      assert.equal(await readFile(metadataPath, 'utf8'), metadataBefore);
+    });
+  });
+
+  test('exact tombstone replay atomically revives only an unchanged canonical payload', async () => {
+    await withWorkspace(async (root) => {
+      const input = deepResearchArtifactInput('stable-revive', '# Revivable');
+      const store = createArtifactStore(root);
+      const first = await store.create(input);
+      await store.delete(first.id);
+      const deleted = await store.get(first.id);
+      assert.equal(deleted?.status, 'deleted');
+
+      const revived = await createArtifactStore(root).create(input);
+      assert.deepEqual(revived, { ...first, status: 'live' });
+      assert.deepEqual(await createArtifactStore(root).readText(first.id), {
+        ok: true,
+        text: '# Revivable',
+      });
+
+      const reopened = createArtifactStore(root);
+      await reopened.delete(first.id);
+      await writeFile(join(root, 'artifacts', first.relativePath), '# Rewritten', 'utf8');
+      assert.equal(Buffer.byteLength(input.content), Buffer.byteLength('# Rewritten'));
+      await assert.rejects(
+        () => createArtifactStore(root).create(input),
+        /already exists with different metadata or content/,
+      );
+      assert.equal((await createArtifactStore(root).get(first.id))?.status, 'deleted');
+    });
+  });
+
+  test('failed tombstone revival leaves the durable tombstone recoverable', async () => {
+    await withWorkspace(async (root) => {
+      const input = deepResearchArtifactInput('stable-revive-retry', '# Revivable');
+      const store = createArtifactStore(root);
+      const first = await store.create(input);
+      await store.delete(first.id);
+      const metadataPath = join(root, 'artifacts', 'metadata.jsonl');
+      const deletedMetadata = await readFile(metadataPath, 'utf8');
+      await rm(metadataPath);
+      await mkdir(metadataPath);
+
+      await assert.rejects(() => store.create(input));
+      assert.equal((await store.get(first.id))?.status, 'deleted');
+
+      await rm(metadataPath, { recursive: true });
+      await writeFile(metadataPath, deletedMetadata, 'utf8');
+      const reopened = createArtifactStore(root);
+      assert.equal((await reopened.get(first.id))?.status, 'deleted');
+      const revived = await reopened.create(input);
+      assert.equal(revived.status, 'live');
+      assert.equal(revived.createdAt, first.createdAt);
+    });
+  });
+
+  test('serializes concurrent creates without dropping metadata', async () => {
+    await withWorkspace(async (root) => {
+      const store = createArtifactStore(root);
+      const ids = Array.from({ length: 12 }, (_, index) => `artifact-${index}`);
+      await Promise.all(ids.map((id, index) => store.create(artifactInput(id, id, index + 1))));
+
+      const reopened = createArtifactStore(root);
+      const rows = await reopened.list('session-1', { includeDeleted: true });
+      assert.deepEqual(rows.map((record) => record.id).sort(), ids.sort());
+      const metadata = await readFile(join(root, 'artifacts', 'metadata.jsonl'), 'utf8');
+      assert.equal(metadata.trim().split('\n').length, ids.length);
+    });
+  });
+
+  test('does not publish a payload when metadata publication fails', async () => {
+    await withWorkspace(async (root) => {
+      const store = createArtifactStore(root);
+      await store.create(artifactInput('published', 'kept', 1));
+      const metadataPath = join(root, 'artifacts', 'metadata.jsonl');
+      const metadata = await readFile(metadataPath, 'utf8');
+      await rm(metadataPath);
+      await mkdir(metadataPath);
+
+      await assert.rejects(() => store.create(artifactInput('rejected', 'not durable', 2)));
+      await assert.rejects(
+        () => readFile(join(root, 'artifacts', 'session-1', 'rejected-rejected.txt')),
+        { code: 'ENOENT' },
+      );
+      assert.equal(await store.get('rejected'), null);
+
+      await rm(metadataPath, { recursive: true });
+      await writeFile(metadataPath, metadata, 'utf8');
+    });
+  });
+
+  test('explicit write recovery removes an uncommitted publication and permits stable-id retry', async () => {
+    await withWorkspace(async (root) => {
+      const residue = await createPublicationResidue(root, 'stable-retry', 'retry.txt', 'old');
+      const store = createArtifactStore(root);
+
+      await store.recoverForWrite();
+      await assert.rejects(() => stat(residue.stagingPath), { code: 'ENOENT' });
+      await assert.rejects(() => stat(residue.targetPath), { code: 'ENOENT' });
+
+      const retried = await store.create({
+        ...artifactInput('stable-retry', 'new', 1),
+        name: 'retry.txt',
+      });
+      assert.equal(retried.id, 'stable-retry');
+      assert.deepEqual(await store.readText(retried.id), { ok: true, text: 'new' });
+    });
+  });
+
+  test('explicit write recovery completes a committed publication without removing its payload', async () => {
+    await withWorkspace(async (root) => {
+      const first = createArtifactStore(root);
+      const record = await first.create(artifactInput('committed', 'durable', 1));
+      const targetPath = join(root, 'artifacts', record.relativePath);
+      const stagingPath = publicationStagingPath(targetPath);
+      await link(targetPath, stagingPath);
+
+      const reopened = createArtifactStore(root);
+      await reopened.recoverForWrite();
+
+      await assert.rejects(() => stat(stagingPath), { code: 'ENOENT' });
+      assert.equal(await readFile(targetPath, 'utf8'), 'durable');
+      assert.deepEqual(await reopened.readText(record.id), { ok: true, text: 'durable' });
+    });
+  });
+
+  test('fails closed on malformed metadata and mismatched publication residue', async () => {
+    await withWorkspace(async (root) => {
+      const metadataPath = join(root, 'artifacts', 'metadata.jsonl');
+      await mkdir(join(root, 'artifacts'), { recursive: true });
+      await writeFile(metadataPath, '{"id":"incomplete","status":"live"}\n', 'utf8');
+      await assert.rejects(
+        () => createArtifactStore(root).list('session-1'),
+        /Invalid artifact metadata line 1/,
+      );
+    });
+
+    await withWorkspace(async (root) => {
+      const residue = await createPublicationResidue(root, 'mismatch', 'file.txt', 'payload');
+      await rm(residue.targetPath);
+      await writeFile(residue.targetPath, 'different inode', 'utf8');
+      await assert.rejects(
+        () => createArtifactStore(root).recoverForWrite(),
+        /Artifact publication residue does not match canonical state/,
+      );
+      assert.equal(await readFile(residue.stagingPath, 'utf8'), 'payload');
+      assert.equal(await readFile(residue.targetPath, 'utf8'), 'different inode');
+    });
+  });
+
+  test('metadata fails closed on non-canonical artifact, session, and turn identities', async () => {
+    const invalidIdentities = [
+      { field: 'id', value: 'a'.repeat(ARTIFACT_ENTITY_ID_MAX_CHARS + 1) },
+      { field: 'id', value: '.' },
+      { field: 'sessionId', value: 'session/bad' },
+      { field: 'turnId', value: 'turn id' },
+      { field: 'turnId', value: 'turn\nid' },
+    ] as const;
+
+    for (const { field, value } of invalidIdentities) {
+      await withWorkspace(async (root) => {
+        await writeArtifactMetadata(root, [recordWithIdentity(field, value)]);
+        await assert.rejects(
+          () => createArtifactStore(root).list('session-1', { includeDeleted: true }),
+          /Invalid artifact metadata line 1/,
+        );
+      });
+    }
+  });
+
+  test('purge-intent recovery fails closed on non-canonical artifact identities', async () => {
+    for (const artifactId of [
+      'a'.repeat(ARTIFACT_ENTITY_ID_MAX_CHARS + 1),
+      '.',
+      'artifact/id',
+      'artifact id',
+      'artifact\nid',
+    ]) {
+      await withWorkspace(async (root) => {
+        const intentPath = join(root, 'artifacts', '.artifact-purge-intent.json');
+        await mkdir(dirname(intentPath), { recursive: true });
+        await writeFile(
+          intentPath,
+          JSON.stringify({ schemaVersion: 1, artifactIds: [artifactId] }),
+          'utf8',
+        );
+
+        await assert.rejects(
+          () => createArtifactStore(root).recoverForWrite(),
+          /Invalid artifact purge intent/,
+        );
+        assert.equal((await stat(intentPath)).isFile(), true);
+      });
+    }
+  });
+
+  test('fails loud when the metadata path cannot be read as a file', async () => {
+    await withWorkspace(async (root) => {
+      const metadataPath = join(root, 'artifacts', 'metadata.jsonl');
       await mkdir(metadataPath, { recursive: true });
 
-      const store = createArtifactStore(workspaceRoot);
-      await assert.rejects(() => store.list('session-1'), { code: 'EISDIR' });
+      await assert.rejects(
+        () => createArtifactStore(root).list('session-1'),
+        (error: unknown) =>
+          typeof error === 'object' && error !== null && 'code' in error && error.code === 'EISDIR',
+      );
+      assert.equal((await stat(metadataPath)).isDirectory(), true);
     });
   });
 
-  test('guards first metadata load with one shared in-flight promise', async () => {
-    const source = await readFile(join(process.cwd(), 'src/artifact-store.ts'), 'utf8');
-    assert.match(source, /private loadPromise: Promise<void> \| null = null;/);
-    assert.match(source, /if \(this\.loadPromise\) \{\s*await this\.loadPromise;/);
-    assert.match(source, /this\.loadPromise = \(async \(\) => \{/);
-    assert.match(source, /finally \{\s*this\.loadPromise = null;/);
-    assert.match(source, /function parseArtifactMetadata\(text: string\): ArtifactRecord\[\] \{/);
-    assert.match(
-      source,
-      /records\.push\(normalizeRecord\(JSON\.parse\(line\) as ArtifactRecord\)\);/,
-    );
-  });
+  test('soft delete tombstones bytes until idempotent purge', async () => {
+    await withWorkspace(async (root) => {
+      const store = createArtifactStore(root);
+      const record = await store.create(artifactInput('artifact-1', '<h1>Report</h1>', 1));
 
-  test('persists archived tool-result artifacts by id', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      const first = createArtifactStore(workspaceRoot);
-      await first.create({
-        id: 'archive-1',
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        name: 'tool-result-evt-1.json',
-        kind: 'file',
-        content: '{"kind":"json","value":{"ok":true}}',
-        mimeType: 'application/json',
-        source: 'tool_result_archive',
-        now: 100,
-      });
-
-      const second = createArtifactStore(workspaceRoot);
-      const record = await second.get('archive-1');
-      assert.equal(record?.source, 'tool_result_archive');
-      assert.equal(record?.sizeBytes, 35);
-      assert.deepEqual(await second.readText('archive-1'), {
-        ok: true,
-        text: '{"kind":"json","value":{"ok":true}}',
-      });
-    });
-  });
-
-  test('soft delete hides rows and blocks reads without purging file bytes', async () => {
-    await withStore(async (store) => {
-      await store.create({
-        id: 'artifact-1',
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        name: 'report.html',
-        kind: 'html',
-        content: '<h1>Still on disk</h1>',
-      });
-
-      await store.delete('artifact-1');
-
+      await store.delete(record.id);
+      await store.delete(record.id);
       assert.deepEqual(await store.list('session-1'), []);
-      const [deleted] = await store.list('session-1', { includeDeleted: true });
-      assert.equal(deleted?.status, 'deleted');
-      assert.deepEqual(await store.readText('artifact-1'), { ok: false, reason: 'deleted' });
-      assert.deepEqual(await store.readText('artifact-1', { includeDeleted: true }), {
+      assert.equal((await store.get(record.id))?.status, 'deleted');
+      assert.deepEqual(await store.readText(record.id), { ok: false, reason: 'deleted' });
+      assert.deepEqual(await store.readText(record.id, { includeDeleted: true }), {
         ok: true,
-        text: '<h1>Still on disk</h1>',
+        text: '<h1>Report</h1>',
       });
-      assert.deepEqual(await store.readBinary('artifact-1'), { ok: false, reason: 'deleted' });
+      assert.equal(
+        await readFile(join(root, 'artifacts', record.relativePath), 'utf8'),
+        '<h1>Report</h1>',
+      );
+
+      await store.purge([record.id]);
+      await store.purge([record.id]);
+      assert.equal(await store.get(record.id), null);
+      await assert.rejects(() => stat(join(root, 'artifacts', record.relativePath)), {
+        code: 'ENOENT',
+      });
     });
   });
 
-  test('batch purge removes file bytes and metadata records idempotently', async () => {
-    await withStore(async (store, workspaceRoot) => {
-      const first = await store.create({
-        id: 'artifact-1',
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        name: 'one.txt',
-        kind: 'file',
-        content: 'one',
-      });
-      const second = await store.create({
-        id: 'artifact-2',
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        name: 'two.txt',
-        kind: 'file',
-        content: 'two',
-      });
-      await store.create({
-        id: 'artifact-kept',
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        name: 'kept.txt',
-        kind: 'file',
-        content: 'kept',
-      });
-      await store.purge([first.id, second.id]);
-      await store.purge([first.id, second.id]);
-
-      assert.deepEqual(
-        (await store.list('session-1', { includeDeleted: true })).map((record) => record.id),
-        ['artifact-kept'],
-      );
-      await assert.rejects(
-        () => readFile(join(workspaceRoot, 'artifacts', first.relativePath), 'utf8'),
-        { code: 'ENOENT' },
-      );
-      await assert.rejects(
-        () => readFile(join(workspaceRoot, 'artifacts', second.relativePath), 'utf8'),
-        { code: 'ENOENT' },
-      );
-      const metadata = await readFile(join(workspaceRoot, 'artifacts', 'metadata.jsonl'), 'utf8');
-      assert.doesNotMatch(metadata, /artifact-1|artifact-2/);
-      assert.match(metadata, /artifact-kept/);
-    });
-  });
-
-  test('purge rejects symlink escapes without deleting files or metadata', async (t) => {
-    const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-artifact-store-'));
+  test('purge rejects a symlink escape without deleting external bytes or metadata', async (t) => {
     const outsideRoot = await mkdtemp(join(tmpdir(), 'maka-artifact-outside-'));
     try {
-      const artifactRoot = join(workspaceRoot, 'artifacts');
-      await mkdir(artifactRoot, { recursive: true });
-      const outsidePath = join(outsideRoot, 'victim.txt');
-      await writeFile(outsidePath, 'keep', 'utf8');
-      try {
-        await symlink(outsideRoot, join(artifactRoot, 'linked'));
-      } catch (error) {
-        const code = (error as { code?: unknown }).code;
-        if (process.platform === 'win32' && (code === 'EPERM' || code === 'EACCES')) {
-          t.skip('Windows symlink creation requires elevated privileges or Developer Mode');
+      await withWorkspace(async (root) => {
+        const artifactRoot = join(root, 'artifacts');
+        const safeRecord = canonicalRecord({
+          id: 'safe',
+          sessionId: 'session-1',
+          name: 'safe.txt',
+          sizeBytes: 4,
+        });
+        const escapedRecord = canonicalRecord({
+          id: 'escaped',
+          sessionId: 'linked',
+          name: 'victim.txt',
+          sizeBytes: 8,
+        });
+        await mkdir(join(artifactRoot, safeRecord.sessionId), { recursive: true });
+        await writeFile(join(artifactRoot, safeRecord.relativePath), 'safe', 'utf8');
+        const externalPath = join(outsideRoot, basename(escapedRecord.relativePath));
+        await writeFile(externalPath, 'external', 'utf8');
+        if (!(await createSymlinkOrSkip(t, outsideRoot, join(artifactRoot, 'linked'), 'dir')))
           return;
-        }
-        throw error;
-      }
-      const store = createArtifactStore(workspaceRoot);
-      const safe = await store.create({
-        id: 'artifact-safe',
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        name: 'safe.txt',
-        kind: 'file',
-        content: 'safe',
-      });
-      await store.append({
-        id: 'artifact-escaped',
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        createdAt: 1,
-        name: 'victim.txt',
-        kind: 'file',
-        relativePath: 'linked/victim.txt',
-        sizeBytes: 4,
-        status: 'live',
-      });
+        const metadataPath = await writeArtifactMetadata(root, [safeRecord, escapedRecord]);
+        const metadataBefore = await readFile(metadataPath, 'utf8');
 
-      await assert.rejects(
-        () => store.purge(['artifact-safe', 'artifact-escaped']),
-        /outside the artifact root/,
-      );
+        const store = createArtifactStore(root);
+        await assert.rejects(
+          () => store.purge([safeRecord.id, escapedRecord.id]),
+          /outside the artifact root/,
+        );
 
-      assert.equal(await readFile(outsidePath, 'utf8'), 'keep');
-      assert.equal(
-        await readFile(join(workspaceRoot, 'artifacts', safe.relativePath), 'utf8'),
-        'safe',
-      );
-      assert.equal((await store.get('artifact-safe'))?.id, 'artifact-safe');
-      assert.equal((await store.get('artifact-escaped'))?.id, 'artifact-escaped');
+        assert.equal(await readFile(externalPath, 'utf8'), 'external');
+        assert.equal(await readFile(join(artifactRoot, safeRecord.relativePath), 'utf8'), 'safe');
+        assert.equal(await readFile(metadataPath, 'utf8'), metadataBefore);
+        assert.equal((await store.get(safeRecord.id))?.id, safeRecord.id);
+        assert.equal((await store.get(escapedRecord.id))?.id, escapedRecord.id);
+      });
     } finally {
-      await rm(workspaceRoot, { recursive: true, force: true });
       await rm(outsideRoot, { recursive: true, force: true });
     }
   });
 
-  test('purge removes a final symlink without deleting its in-root target', async (t) => {
-    await withWorkspace(async (workspaceRoot) => {
-      const artifactRoot = join(workspaceRoot, 'artifacts');
-      const sessionRoot = join(artifactRoot, 'session-1');
+  test('purge unlinks a final symlink without deleting its in-root target', async (t) => {
+    await withWorkspace(async (root) => {
+      const artifactRoot = join(root, 'artifacts');
+      const record = canonicalRecord({
+        id: 'linked',
+        sessionId: 'session-1',
+        name: 'linked.txt',
+        sizeBytes: 11,
+      });
+      const sessionRoot = join(artifactRoot, record.sessionId);
       await mkdir(sessionRoot, { recursive: true });
       const targetPath = join(sessionRoot, 'target.txt');
+      const linkPath = join(artifactRoot, record.relativePath);
       await writeFile(targetPath, 'keep target', 'utf8');
-      try {
-        await symlink('target.txt', join(sessionRoot, 'linked.txt'));
-      } catch (error) {
-        const code = (error as { code?: unknown }).code;
-        if (process.platform === 'win32' && (code === 'EPERM' || code === 'EACCES')) {
-          t.skip('Windows symlink creation requires elevated privileges or Developer Mode');
-          return;
-        }
-        throw error;
-      }
-      const store = createArtifactStore(workspaceRoot);
-      await store.append({
-        id: 'artifact-link',
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        createdAt: 1,
-        name: 'linked.txt',
-        kind: 'file',
-        relativePath: 'session-1/linked.txt',
-        sizeBytes: 11,
-        status: 'live',
-      });
+      if (!(await createSymlinkOrSkip(t, 'target.txt', linkPath, 'file'))) return;
+      await writeArtifactMetadata(root, [record]);
 
-      await store.purge(['artifact-link']);
+      const store = createArtifactStore(root);
+      await store.purge([record.id]);
 
       assert.equal(await readFile(targetPath, 'utf8'), 'keep target');
-      await assert.rejects(() => readFile(join(sessionRoot, 'linked.txt'), 'utf8'), {
-        code: 'ENOENT',
-      });
-      assert.equal(await store.get('artifact-link'), null);
+      await assert.rejects(() => stat(linkPath), { code: 'ENOENT' });
+      assert.equal(await store.get(record.id), null);
     });
   });
 
-  test('purge preserves files still referenced by a non-target record', async () => {
-    await withStore(async (store, workspaceRoot) => {
-      const first = await store.create({
-        id: 'artifact-1',
+  test('purge preserves a payload inode still referenced by a non-target canonical record', async () => {
+    await withWorkspace(async (root) => {
+      const artifactRoot = join(root, 'artifacts');
+      const first = canonicalRecord({
+        id: 'first',
         sessionId: 'session-1',
-        turnId: 'turn-1',
-        name: 'shared.txt',
-        kind: 'file',
-        content: 'shared bytes',
+        name: 'first.txt',
+        sizeBytes: 12,
       });
-      await store.append({ ...first, id: 'artifact-2' });
+      const second = canonicalRecord({
+        id: 'second',
+        sessionId: 'session-1',
+        name: 'second.txt',
+        sizeBytes: 12,
+      });
+      const firstPath = join(artifactRoot, first.relativePath);
+      const secondPath = join(artifactRoot, second.relativePath);
+      await mkdir(dirname(firstPath), { recursive: true });
+      await writeFile(firstPath, 'shared bytes', 'utf8');
+      await link(firstPath, secondPath);
+      await writeArtifactMetadata(root, [first, second]);
+      const firstStat = await stat(firstPath);
+      const secondStat = await stat(secondPath);
+      assert.equal(firstStat.ino, secondStat.ino);
 
-      await assert.rejects(
-        () => store.purge(['artifact-1']),
-        /still referenced by artifact artifact-2/,
-      );
+      const store = createArtifactStore(root);
+      await store.purge([first.id]);
 
-      assert.equal(
-        await readFile(join(workspaceRoot, 'artifacts', first.relativePath), 'utf8'),
-        'shared bytes',
-      );
-      assert.equal((await store.get('artifact-1'))?.id, 'artifact-1');
-      assert.equal((await store.get('artifact-2'))?.id, 'artifact-2');
+      await assert.rejects(() => stat(firstPath), { code: 'ENOENT' });
+      assert.equal(await readFile(secondPath, 'utf8'), 'shared bytes');
+      assert.equal((await store.get(second.id))?.id, second.id);
+      assert.deepEqual(await store.readText(second.id), { ok: true, text: 'shared bytes' });
     });
   });
 
-  test('retries purge after file removal is interrupted before metadata commit', async () => {
-    await withStore(async (store, workspaceRoot) => {
-      const record = await store.create({
-        id: 'artifact-1',
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        name: 'one.txt',
-        kind: 'file',
-        content: 'one',
-      });
-      const metadataPath = join(workspaceRoot, 'artifacts', 'metadata.jsonl');
+  test('startup recovery completes purge after payload removal but before metadata commit', async () => {
+    await withWorkspace(async (root) => {
+      const store = createArtifactStore(root);
+      const record = await store.create(artifactInput('purge-retry', 'remove me', 1));
+      const payloadPath = join(root, 'artifacts', record.relativePath);
+      const metadataPath = join(root, 'artifacts', 'metadata.jsonl');
+      const purgeIntentPath = join(root, 'artifacts', '.artifact-purge-intent.json');
       const metadata = await readFile(metadataPath, 'utf8');
       await rm(metadataPath);
       await mkdir(metadataPath);
 
       await assert.rejects(() => store.purge([record.id]));
-
+      await assert.rejects(() => stat(payloadPath), { code: 'ENOENT' });
       assert.equal((await store.get(record.id))?.id, record.id);
-      await assert.rejects(
-        () => readFile(join(workspaceRoot, 'artifacts', record.relativePath), 'utf8'),
-        { code: 'ENOENT' },
-      );
+      assert.deepEqual(JSON.parse(await readFile(purgeIntentPath, 'utf8')), {
+        schemaVersion: 1,
+        artifactIds: [record.id],
+      });
 
       await rm(metadataPath, { recursive: true });
       await writeFile(metadataPath, metadata, 'utf8');
-      const reopened = createArtifactStore(workspaceRoot);
-      await reopened.purge([record.id]);
+      const reopened = createArtifactStore(root);
+      await reopened.recoverForWrite();
+      await reopened.recoverForWrite();
 
       assert.equal(await reopened.get(record.id), null);
+      assert.equal(await readFile(metadataPath, 'utf8'), '');
+      await assert.rejects(() => stat(purgeIntentPath), { code: 'ENOENT' });
+      await reopened.purge([record.id]);
+
+      await writeFile(
+        purgeIntentPath,
+        JSON.stringify({ schemaVersion: 1, artifactIds: [record.id] }),
+        'utf8',
+      );
+      await createArtifactStore(root).recoverForWrite();
+      assert.equal(await readFile(metadataPath, 'utf8'), '');
+      await assert.rejects(() => stat(purgeIntentPath), { code: 'ENOENT' });
     });
   });
 
-  test('returns too_large for text previews over the configured limit', async () => {
-    await withStore(async (store) => {
-      await store.create({
-        id: 'artifact-1',
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        name: 'large.txt',
-        kind: 'file',
-        content: 'x'.repeat(ARTIFACT_TEXT_PREVIEW_LIMIT_BYTES + 1),
-      });
+  test('durable attachment reads authenticate the owning session and retain tombstoned bytes', async () => {
+    await withWorkspace(async (root) => {
+      const store = createArtifactStore(root);
+      const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      await store.create({ ...artifactInput('image', png, 1), name: 'image.png', kind: 'image' });
+      await store.delete('image');
 
-      assert.deepEqual(await store.readText('artifact-1'), { ok: false, reason: 'too_large' });
+      assert.deepEqual(await store.readBinary('image'), { ok: false, reason: 'deleted' });
+      assert.deepEqual(
+        await store.readDurableAttachmentBinary({
+          artifactId: 'image',
+          sessionId: 'other-session',
+        }),
+        { ok: false, reason: 'session_mismatch' },
+      );
+      const result = await store.readDurableAttachmentBinary({
+        artifactId: 'image',
+        sessionId: 'session-1',
+      });
+      assert.equal(result.ok, true);
+      if (result.ok) assert.deepEqual(Buffer.from(result.base64, 'base64'), Buffer.from(png));
     });
   });
 
-  test('readBinary only returns allowlisted sniffed MIME types', async () => {
-    await withStore(async (store) => {
+  test('enforces preview limits and sniffed binary MIME types', async () => {
+    await withWorkspace(async (root) => {
+      const store = createArtifactStore(root);
+      await store.create(
+        artifactInput('large', 'x'.repeat(ARTIFACT_TEXT_PREVIEW_LIMIT_BYTES + 1), 1),
+      );
       await store.create({
-        id: 'png',
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        name: 'image.png',
-        kind: 'image',
-        content: Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-        mimeType: 'application/octet-stream',
-      });
-      await store.create({
-        id: 'unknown',
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        name: 'binary.bin',
-        kind: 'file',
-        content: Uint8Array.from([0x00, 0x01, 0x02, 0x03]),
-        mimeType: 'image/png',
+        ...artifactInput('unknown', Uint8Array.from([0, 1, 2, 3]), 2),
+        name: 'unknown.bin',
       });
 
-      const png = await store.readBinary('png');
-      assert.equal(png.ok, true);
-      assert.equal(png.ok ? png.mimeType : '', 'image/png');
+      assert.deepEqual(await store.readText('large'), { ok: false, reason: 'too_large' });
       assert.deepEqual(await store.readBinary('unknown'), {
         ok: false,
         reason: 'unsupported_mime',
@@ -481,108 +554,288 @@ describe('FileArtifactStore', () => {
     });
   });
 
-  test('rejects absolute, traversal, URL-like, and empty relative paths', () => {
+  test('persists canonical entity identities at the shared 128-character boundary', async () => {
+    await withWorkspace(async (root) => {
+      const boundaryId = 'a'.repeat(ARTIFACT_ENTITY_ID_MAX_CHARS);
+      const store = createArtifactStore(root);
+      const record = await store.create({
+        id: boundaryId,
+        sessionId: boundaryId,
+        turnId: boundaryId,
+        name: 'boundary.txt',
+        kind: 'file',
+        content: 'boundary',
+        now: 1,
+      });
+
+      assert.equal(record.id.length, ARTIFACT_ENTITY_ID_MAX_CHARS);
+      assert.deepEqual(await createArtifactStore(root).get(boundaryId), record);
+      assert.deepEqual(await createArtifactStore(root).list(boundaryId), [record]);
+    });
+  });
+
+  test('create rejects non-canonical artifact, session, and turn identities', async () => {
+    const invalidInputs = [
+      {
+        field: 'id',
+        input: { ...artifactInput('a'.repeat(ARTIFACT_ENTITY_ID_MAX_CHARS + 1), 'no', 1) },
+      },
+      {
+        field: 'id',
+        input: { ...artifactInput('.', 'no', 1) },
+      },
+      {
+        field: 'sessionId',
+        input: { ...artifactInput('valid', 'no', 1), sessionId: 'session/bad' },
+      },
+      {
+        field: 'turnId',
+        input: { ...artifactInput('valid', 'no', 1), turnId: 'turn id' },
+      },
+      {
+        field: 'turnId',
+        input: { ...artifactInput('valid', 'no', 1), turnId: 'turn\nid' },
+      },
+    ] as const;
+
+    for (const { field, input } of invalidInputs) {
+      await withWorkspace(async (root) => {
+        await assert.rejects(
+          () => createArtifactStore(root).create(input),
+          new RegExp(`Artifact ${field} must be a canonical entity ID`),
+        );
+        await assert.rejects(() => stat(join(root, 'artifacts')), { code: 'ENOENT' });
+      });
+    }
+  });
+
+  test('keeps relative path resolution inside the artifact root', async () => {
     assert.equal(isSafeRelativeArtifactPath('session-1/artifact.txt'), true);
-    for (const value of [
-      '',
-      '/tmp/file',
-      '../file',
-      'session/../file',
-      'file:///tmp/a',
-      'http://example.test/a',
-      'session//file',
-    ]) {
+    for (const value of ['', '/tmp/file', '../file', 'session/../file', 'file:///tmp/a']) {
       assert.equal(isSafeRelativeArtifactPath(value), false, value);
     }
-  });
+    assert.equal(sanitizeArtifactName(' ../unsafe:name?.txt '), 'unsafe-name-.txt');
 
-  test('path guard rejects symlink escapes from artifact root', async (t) => {
-    const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-artifact-store-'));
-    const outsideRoot = await mkdtemp(join(tmpdir(), 'maka-artifact-outside-'));
-    try {
-      const artifactRoot = join(workspaceRoot, 'artifacts');
-      await mkdir(artifactRoot, { recursive: true });
-      await writeFile(join(outsideRoot, 'secret.txt'), 'secret', 'utf8');
-      try {
-        await symlink(outsideRoot, join(artifactRoot, 'session-1'));
-      } catch (error) {
-        const code = (error as { code?: unknown }).code;
-        if (process.platform === 'win32' && (code === 'EPERM' || code === 'EACCES')) {
-          t.skip('Windows symlink creation requires elevated privileges or Developer Mode');
-          return;
-        }
-        throw error;
-      }
-
+    await withWorkspace(async (root) => {
       assert.deepEqual(
-        await resolveArtifactPath({ artifactRoot, relativePath: 'session-1/secret.txt' }),
+        await resolveArtifactPath({
+          artifactRoot: join(root, 'artifacts'),
+          relativePath: '../outside',
+        }),
         { ok: false, reason: 'not_allowed' },
-      );
-    } finally {
-      await rm(workspaceRoot, { recursive: true, force: true });
-      await rm(outsideRoot, { recursive: true, force: true });
-    }
-  });
-
-  test('create validates generated relative path before writing file bytes', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      const store = createArtifactStore(workspaceRoot);
-
-      await assert.rejects(
-        () =>
-          store.create({
-            id: 'escaped',
-            sessionId: '../escape',
-            turnId: 'turn-1',
-            name: 'bad.txt',
-            kind: 'file',
-            content: 'should not write',
-          }),
-        /Artifact relativePath must be artifact-root-relative/,
-      );
-      await assert.rejects(
-        () => readFile(join(workspaceRoot, 'escape', 'escaped-bad.txt'), 'utf8'),
-        { code: 'ENOENT' },
-      );
-
-      await assert.rejects(
-        () =>
-          store.create({
-            id: '../escaped',
-            sessionId: 'session-1',
-            turnId: 'turn-1',
-            name: 'bad.txt',
-            kind: 'file',
-            content: 'should not write either',
-          }),
-        /Artifact relativePath must be artifact-root-relative/,
-      );
-      await assert.rejects(
-        () => readFile(join(workspaceRoot, 'artifacts', 'escaped-bad.txt'), 'utf8'),
-        { code: 'ENOENT' },
       );
     });
   });
 
-  test('sanitizes unsafe artifact names for file-backed storage', () => {
-    assert.equal(sanitizeArtifactName('../bad:name?.html'), 'bad-name-.html');
-    assert.equal(sanitizeArtifactName('   '), 'artifact');
+  test('resolve and read reject a canonical payload that escapes through a symlink', async (t) => {
+    const outsideRoot = await mkdtemp(join(tmpdir(), 'maka-artifact-read-outside-'));
+    try {
+      await withWorkspace(async (root) => {
+        const artifactRoot = join(root, 'artifacts');
+        const record = canonicalRecord({
+          id: 'escaped',
+          sessionId: 'session-1',
+          name: 'secret.txt',
+          sizeBytes: 6,
+        });
+        await mkdir(join(artifactRoot, record.sessionId), { recursive: true });
+        const outsidePath = join(outsideRoot, 'secret.txt');
+        await writeFile(outsidePath, 'secret', 'utf8');
+        if (
+          !(await createSymlinkOrSkip(
+            t,
+            outsidePath,
+            join(artifactRoot, record.relativePath),
+            'file',
+          ))
+        ) {
+          return;
+        }
+        await writeArtifactMetadata(root, [record]);
+
+        assert.deepEqual(
+          await resolveArtifactPath({
+            artifactRoot,
+            relativePath: record.relativePath,
+          }),
+          { ok: false, reason: 'not_allowed' },
+        );
+        assert.deepEqual(await createArtifactStore(root).readText(record.id), {
+          ok: false,
+          reason: 'not_allowed',
+        });
+      });
+    } finally {
+      await rm(outsideRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('create path and identity failures leave no payload or metadata', async (t) => {
+    await withWorkspace(async (root) => {
+      const store = createArtifactStore(root);
+      await assert.rejects(
+        () => store.create({ ...artifactInput('bad/id', 'no', 1) }),
+        /Artifact id must be a canonical entity ID/,
+      );
+      await assert.rejects(
+        () =>
+          store.create({
+            ...artifactInput('invalid-role', 'no', 1),
+            deepResearchRole: 'invalid' as never,
+          }),
+        /Invalid Artifact deep-research role/,
+      );
+      await assert.rejects(() => stat(join(root, 'artifacts')), { code: 'ENOENT' });
+    });
+
+    const outsideRoot = await mkdtemp(join(tmpdir(), 'maka-artifact-create-outside-'));
+    try {
+      await withWorkspace(async (root) => {
+        const artifactRoot = join(root, 'artifacts');
+        await mkdir(artifactRoot, { recursive: true });
+        if (!(await createSymlinkOrSkip(t, outsideRoot, join(artifactRoot, 'session-1'), 'dir'))) {
+          return;
+        }
+
+        await assert.rejects(
+          () => createArtifactStore(root).create(artifactInput('escaped', 'must not write', 1)),
+          /target directory resolves outside the artifact root/,
+        );
+        assert.deepEqual(await readdir(outsideRoot), []);
+        await assert.rejects(() => stat(join(artifactRoot, 'metadata.jsonl')), {
+          code: 'ENOENT',
+        });
+        assert.deepEqual((await readdir(artifactRoot)).sort(), ['session-1']);
+      });
+    } finally {
+      await rm(outsideRoot, { recursive: true, force: true });
+    }
   });
 });
 
-async function withStore(
-  fn: (store: ReturnType<typeof createArtifactStore>, workspaceRoot: string) => Promise<void>,
-): Promise<void> {
-  await withWorkspace(async (workspaceRoot) =>
-    fn(createArtifactStore(workspaceRoot), workspaceRoot),
+function artifactInput(id: string, content: string | Uint8Array, now: number) {
+  return {
+    id,
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    name: `${id}.txt`,
+    kind: 'file' as const,
+    content,
+    source: 'fixture' as const,
+    now,
+  };
+}
+
+function deepResearchArtifactInput(id: string, content: string) {
+  return {
+    id,
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    name: 'research.md',
+    kind: 'file' as const,
+    content,
+    mimeType: 'text/markdown',
+    source: 'deep_research' as const,
+    summary: 'Stable research artifact',
+    deepResearchRole: 'source' as const,
+  };
+}
+
+function canonicalRecord(input: {
+  id: string;
+  sessionId: string;
+  name: string;
+  sizeBytes: number;
+}): ArtifactRecord {
+  return {
+    id: input.id,
+    sessionId: input.sessionId,
+    turnId: 'turn-1',
+    createdAt: 1,
+    name: input.name,
+    kind: 'file',
+    relativePath: `${input.sessionId}/${input.id}-${input.name}`,
+    sizeBytes: input.sizeBytes,
+    source: 'fixture',
+    status: 'live',
+  };
+}
+
+function recordWithIdentity(field: 'id' | 'sessionId' | 'turnId', value: string): ArtifactRecord {
+  const record = canonicalRecord({
+    id: 'artifact-1',
+    sessionId: 'session-1',
+    name: 'artifact.txt',
+    sizeBytes: 0,
+  });
+  const mutated = { ...record, [field]: value };
+  return {
+    ...mutated,
+    relativePath: `${mutated.sessionId}/${mutated.id}-${mutated.name}`,
+  };
+}
+
+async function writeArtifactMetadata(
+  root: string,
+  records: readonly ArtifactRecord[],
+): Promise<string> {
+  const metadataPath = join(root, 'artifacts', 'metadata.jsonl');
+  await mkdir(dirname(metadataPath), { recursive: true });
+  await writeFile(
+    metadataPath,
+    records.map((record) => JSON.stringify(record)).join('\n') + '\n',
+    'utf8',
+  );
+  return metadataPath;
+}
+
+async function createSymlinkOrSkip(
+  t: TestContext,
+  target: string,
+  path: string,
+  type: 'file' | 'dir',
+): Promise<boolean> {
+  try {
+    await symlink(target, path, type);
+    return true;
+  } catch (error) {
+    const code = (error as { code?: unknown }).code;
+    if (process.platform === 'win32' && (code === 'EPERM' || code === 'EACCES')) {
+      t.skip('Windows symlink creation requires elevated privileges or Developer Mode');
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function createPublicationResidue(
+  root: string,
+  id: string,
+  name: string,
+  content: string,
+): Promise<{ stagingPath: string; targetPath: string }> {
+  const sessionDirectory = join(root, 'artifacts', 'session-1');
+  await mkdir(sessionDirectory, { recursive: true });
+  const targetPath = join(sessionDirectory, `${id}-${name}`);
+  const stagingPath = publicationStagingPath(targetPath);
+  await writeFile(stagingPath, content, { flag: 'wx' });
+  await link(stagingPath, targetPath);
+  return { stagingPath, targetPath };
+}
+
+function publicationStagingPath(targetPath: string): string {
+  const hash = createHash('sha256').update(basename(targetPath)).digest('hex');
+  return join(
+    dirname(targetPath),
+    `.artifact-publish.${hash}.00000000-0000-4000-8000-000000000000.tmp`,
   );
 }
 
-async function withWorkspace(fn: (workspaceRoot: string) => Promise<void>): Promise<void> {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-artifact-store-'));
+async function withWorkspace(run: (root: string) => Promise<void>): Promise<void> {
+  const root = await mkdtemp(join(tmpdir(), 'maka-artifact-store-'));
   try {
-    await fn(workspaceRoot);
+    await run(root);
   } finally {
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
   }
 }

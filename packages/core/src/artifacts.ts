@@ -1,19 +1,34 @@
-export type ArtifactKind = 'file' | 'diff' | 'html' | 'image' | 'pdf';
+export const ARTIFACT_KINDS = ['file', 'diff', 'html', 'image', 'pdf'] as const;
 
-export type ArtifactSource =
-  | 'tool_result'
-  | 'tool_result_archive'
-  | 'synthesis_cache_block'
-  | 'history_compact_block'
-  | 'history_compact_source'
-  | 'provider_request_capture'
-  | 'deep_research'
-  | 'user_upload'
-  | 'export'
-  | 'snapshot'
-  | 'fixture';
+export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
 
-export type ArtifactStatus = 'live' | 'deleted';
+export const ARTIFACT_SOURCES = [
+  'tool_result',
+  'tool_result_archive',
+  'synthesis_cache_block',
+  'history_compact_block',
+  'history_compact_source',
+  'provider_request_capture',
+  'deep_research',
+  'user_upload',
+  'export',
+  'snapshot',
+  'fixture',
+] as const;
+
+export type ArtifactSource = (typeof ARTIFACT_SOURCES)[number];
+
+export const ARTIFACT_STATUSES = ['live', 'deleted'] as const;
+
+export type ArtifactStatus = (typeof ARTIFACT_STATUSES)[number];
+
+export const ARTIFACT_ENTITY_ID_MAX_CHARS = 128;
+
+const ARTIFACT_ENTITY_ID_PATTERN = new RegExp(`^[A-Za-z0-9_-]{1,${ARTIFACT_ENTITY_ID_MAX_CHARS}}$`);
+
+export function isCanonicalArtifactEntityId(value: unknown): value is string {
+  return typeof value === 'string' && ARTIFACT_ENTITY_ID_PATTERN.test(value);
+}
 
 export interface ArtifactRecord {
   id: string;

@@ -5,11 +5,13 @@ import {
   SessionManager,
   type RuntimeHostedRootAuthority,
 } from '@maka/runtime';
+import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
 import { CanonicalSessionProjectionReader } from './canonical-session-projection.js';
 import { HostCanonicalPermissionOutcomeReader } from './canonical-permission-outcome-reader.js';
+import { HostArtifactCoordinator } from './artifact-coordinator.js';
 import type { RuntimeHostComposition, RuntimeHostCompositionContext } from './host-kernel.js';
 import { HostInteractionCoordinator } from './interaction-coordinator.js';
 import { type HostMessageRootPort, HostMessageCoordinator } from './message-coordinator.js';
@@ -26,11 +28,14 @@ export async function createExecutionRuntimeHostComposition(
   context: RuntimeHostCompositionContext,
 ): Promise<RuntimeHostComposition> {
   const stores = await openInteractiveExecutionStoresForWrite(context.owner.lease);
+  let artifactStore: Awaited<ReturnType<typeof openInteractiveArtifactStoreForWrite>> | undefined;
   try {
     const runtimePolicyStores = await openInteractiveRuntimePolicyStoresForWrite(
       context.owner.lease,
     );
     const taskLedgerStore = await openInteractiveTaskLedgerStoreForWrite(context.owner.lease);
+    const openedArtifactStore = await openInteractiveArtifactStoreForWrite(context.owner.lease);
+    artifactStore = openedArtifactStore;
     await stores.messageReceiptStore.beginHostEpoch(context.hostEpoch);
     const backends = new BackendRegistry();
     backends.register('fake', (backendContext) => new FakeBackend(backendContext));
@@ -159,6 +164,7 @@ export async function createExecutionRuntimeHostComposition(
         }
       },
     );
+    const artifacts = new HostArtifactCoordinator(openedArtifactStore);
     const handlers = {
       ...coordinator.handlers,
       ...messages.handlers,
@@ -166,6 +172,7 @@ export async function createExecutionRuntimeHostComposition(
       ...runtimePolicy.handlers,
       ...continuityCoordinator.handlers,
       ...taskLedger.handlers,
+      ...artifacts.handlers,
     } satisfies DomainOperationHandlerMap;
     const recover = () => {
       recoveryTask ??= (async () => {
@@ -176,6 +183,7 @@ export async function createExecutionRuntimeHostComposition(
           );
         }
         await coordinator.prepareRecovery();
+        await openedArtifactStore.recover();
         await interactions.recoverPendingAfterHostRestart();
         await manager.recoverInterruptedSessionsStrict(stores);
         await coordinator.recover();
@@ -217,6 +225,11 @@ export async function createExecutionRuntimeHostComposition(
           errors.push(error);
         }
         try {
+          await openedArtifactStore.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
           await stores.sessionStore.close?.();
         } catch (error) {
           errors.push(error);
@@ -236,6 +249,7 @@ export async function createExecutionRuntimeHostComposition(
       close,
     };
   } catch (error) {
+    await artifactStore?.close().catch(() => undefined);
     await stores.sessionStore.close?.();
     throw error;
   }

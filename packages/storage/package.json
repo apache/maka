@@ -8,6 +8,7 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": "./dist/index.js",
+    "./artifact-stores": "./dist/artifact-stores.js",
     "./execution-stores": "./dist/execution-stores.js",
     "./interaction-store": "./dist/interaction-store.js",
     "./root-authority": "./dist/root-authority.js",

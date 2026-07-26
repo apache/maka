@@ -30,7 +30,10 @@ const headlessStorageWriters = new WeakSet<object>();
 const headlessStorageReaders = new WeakSet<object>();
 
 export type HeadlessArtifactStore = Readonly<
-  Pick<ArtifactStore, 'create' | 'list' | 'readText' | 'get' | 'readBinary'>
+  Pick<
+    ArtifactStore,
+    'create' | 'list' | 'readText' | 'get' | 'readBinary' | 'readDurableAttachmentBinary'
+  >
 >;
 
 export interface HeadlessStorageWriter {
@@ -144,6 +147,7 @@ function leaseBoundArtifactStore(
     get: (artifactId) => run(() => store.get(artifactId)),
     readText: (artifactId, options) => run(() => store.readText(artifactId, options)),
     readBinary: (artifactId, options) => run(() => store.readBinary(artifactId, options)),
+    readDurableAttachmentBinary: (input) => run(() => store.readDurableAttachmentBinary(input)),
   };
   return Object.freeze(facade);
 }

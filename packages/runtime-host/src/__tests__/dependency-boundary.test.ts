@@ -25,6 +25,7 @@ const allowedHostExternalImports = new Set([
 const allowedServerExternalImports = new Set([
   ...allowedHostExternalImports,
   '@maka/core/agent-run',
+  '@maka/core/artifacts',
   '@maka/core/backend-types',
   '@maka/core/events',
   '@maka/core/interaction',
@@ -33,6 +34,7 @@ const allowedServerExternalImports = new Set([
   '@maka/core/session',
   '@maka/core/task-ledger',
   '@maka/runtime',
+  '@maka/storage/artifact-stores',
   '@maka/storage/execution-stores',
   '@maka/storage/interaction-store',
   '@maka/storage/runtime-policy-stores',
@@ -43,6 +45,7 @@ const allowedExternalImports = {
   client: allowedHostExternalImports,
   protocol: new Set([
     '@maka/core/attachments',
+    '@maka/core/artifacts',
     '@maka/core/events',
     '@maka/core/interaction',
     '@maka/core/runtime-policy',
