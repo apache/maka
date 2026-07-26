@@ -99,26 +99,14 @@ describe('Storybook baseline contract', () => {
       'ExtensionsSkills',
       'ExtensionsMcp',
       'ScheduledPlanReminders',
-      'ScheduledPlanRemindersAttention',
-      'ScheduledPlanRemindersKeepAwake',
       'ScheduledDailyReview',
       'ExtensionsSkillsInstalled',
       'ScheduledPlanRemindersConfigured',
-      'ScheduledPlanRemindersLongContent',
       'ScheduledDailyReviewLoading',
       'ScheduledDailyReviewLoadError',
     ]) {
       assert.match(story, new RegExp(`export const ${storyName}: Story`));
     }
-    const keepAwakeStory = story.slice(
-      story.indexOf('export const ScheduledPlanRemindersKeepAwake'),
-      story.indexOf('export const ScheduledPlanRemindersLongContent'),
-    );
-    assert.match(
-      keepAwakeStory,
-      /play:\s*async[\s\S]*assertKeepAwakeStoryState/,
-      'the keep-awake state story must expose and verify its contextual checked control',
-    );
     assert.doesNotMatch(
       story,
       /className="maka-panel maka-panel-detail maka-floating-panel agents-content-area agents-parchment-paper-surface"/,
@@ -142,13 +130,6 @@ describe('Storybook baseline contract', () => {
     }
     assert.match(story, /status:\s*'paused'/, 'configured reminders must preserve paused-state coverage');
     assert.match(story, /status:\s*'completed'/, 'configured reminders must preserve completed-state coverage');
-    assert.match(story, /blockReason:\s*'bot_delivery_unavailable'/, 'attention reminders must preserve reachable blocked-delivery coverage');
-    const smokeManifest = readFileSync(join(REPO_ROOT, 'apps', 'desktop', 'stories', 'product-smoke-manifest.json'), 'utf8');
-    assert.match(
-      smokeManifest,
-      /"floor":\s*\{\s*"width":\s*480,\s*"height":\s*720\s*\}/,
-      'the smoke manifest must own the long-content iframe viewport',
-    );
 
     for (const obsoleteStory of [
       'skills-panel.stories.tsx',

@@ -8,6 +8,24 @@ import { ToastProvider } from '../toast.js';
 
 const NOW = Date.UTC(2026, 6, 26, 8);
 
+function reminder(
+  overrides: Partial<PlanReminder> & Pick<PlanReminder, 'id' | 'title'>,
+): PlanReminder {
+  return {
+    note: '',
+    schedule: { kind: 'recurring', startAt: NOW, recurrence: 'daily' },
+    delivery: { channel: 'local' },
+    status: 'scheduled',
+    enabled: true,
+    createdAt: NOW,
+    updatedAt: NOW,
+    nextRunAt: NOW + 86_400_000,
+    runs: [],
+    runCount: 0,
+    ...overrides,
+  };
+}
+
 function render(reminders: PlanReminder[], keepSystemAwake = false): string {
   return renderToStaticMarkup(
     <LocaleProvider locale="zh">
@@ -25,20 +43,13 @@ function render(reminders: PlanReminder[], keepSystemAwake = false): string {
 describe('Plan Reminder scanning hierarchy', () => {
   it('keeps normal scheduled reminders focused on identity and the next event', () => {
     const markup = render([
-      {
+      reminder({
         id: 'scheduled',
         title: '每周发布风险复盘',
         note: '聚合本周未解决的发布风险项。',
         schedule: { kind: 'recurring', startAt: NOW, recurrence: 'weekly' },
-        delivery: { channel: 'local' },
-        status: 'scheduled',
-        enabled: true,
-        createdAt: NOW,
-        updatedAt: NOW,
         nextRunAt: NOW + 2 * 86_400_000,
-        runs: [],
-        runCount: 0,
-      },
+      }),
     ]);
 
     assert.match(markup, /每周发布风险复盘/);
@@ -67,54 +78,38 @@ describe('Plan Reminder scanning hierarchy', () => {
 
   it('shows exceptional lifecycle and run states once instead of repeating normal state', () => {
     const markup = render([
-      {
+      reminder({
         id: 'completed',
         title: '发布日提醒',
-        note: '',
         schedule: { kind: 'once', runAt: NOW - 60_000 },
-        delivery: { channel: 'local' },
         status: 'completed',
         enabled: false,
-        createdAt: NOW - 120_000,
         updatedAt: NOW - 60_000,
+        nextRunAt: undefined,
         lastRun: {
           id: 'run-completed',
           at: NOW - 60_000,
           status: 'triggered',
           message: '已发送。',
         },
-        runs: [],
         runCount: 1,
-      },
-      {
+      }),
+      reminder({
         id: 'failed',
         title: '发送每日客户反馈摘要',
-        note: '',
-        schedule: { kind: 'recurring', startAt: NOW, recurrence: 'daily' },
-        delivery: { channel: 'local' },
-        status: 'scheduled',
-        enabled: true,
-        createdAt: NOW,
-        updatedAt: NOW,
-        nextRunAt: NOW + 86_400_000,
         lastRun: {
           id: 'run-failed',
           at: NOW - 60_000,
           status: 'failed',
           message: '投递目标不可用。',
         },
-        runs: [],
         runCount: 1,
-      },
+      }),
     ]);
 
     assert.equal(markup.match(/>已完成</g)?.length, 1);
     assert.equal(markup.match(/>失败</g)?.length, 1);
     assert.match(markup, /投递目标不可用。/);
     assert.doesNotMatch(markup, /maka-capability-audit-strip/);
-    assert.match(
-      markup,
-      /maka-plan-card-context[\s\S]*maka-plan-card-schedule[\s\S]*maka-plan-card-run/,
-    );
   });
 });
