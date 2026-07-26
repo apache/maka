@@ -143,7 +143,9 @@ export interface ProviderUpstreamCredential {
   headers?: Readonly<Record<string, string>>;
 }
 
-export type ProviderUpstreamCredentialResolver = () => Promise<ProviderUpstreamCredential>;
+export type ProviderUpstreamCredentialResolver = (
+  signal?: AbortSignal,
+) => Promise<ProviderUpstreamCredential>;
 
 type ProviderAuthProxyRouteConfig = {
   upstreamBaseUrl: string;
@@ -313,8 +315,13 @@ function providerAuthProxyRoute(input: ProviderAuthProxyRouteInput): ProviderAut
   const upstreamBasePath = normalizeProxyBasePath(upstreamBaseUrl.pathname);
   const resolveUpstreamCredential =
     input.resolveUpstreamCredential ??
-    (async () => {
-      const value = (await readFile(input.apiKeyFile, 'utf8')).trim();
+    (async (signal) => {
+      const value = (
+        await readFile(input.apiKeyFile, {
+          encoding: 'utf8',
+          ...(signal ? { signal } : {}),
+        })
+      ).trim();
       if (value.length === 0) throw new Error('provider API key file is empty');
       return { value };
     });
@@ -391,7 +398,10 @@ async function forwardProviderRequest(input: {
       protocol: input.usageProtocol,
       startedAt,
     });
-    const upstreamCredential = await input.resolveUpstreamCredential();
+    const upstreamCredential = await resolveUpstreamCredentialUntilAborted(
+      input.resolveUpstreamCredential,
+      input.signal,
+    );
     if (upstreamCredential.value.length === 0) {
       throw new Error('provider credential resolver returned an empty value');
     }
@@ -488,6 +498,24 @@ async function forwardProviderRequest(input: {
     if (input.response.destroyed) return;
     if (!input.response.headersSent) input.response.writeHead(502);
     input.response.end('provider proxy request failed');
+  }
+}
+
+async function resolveUpstreamCredentialUntilAborted(
+  resolveUpstreamCredential: ProviderUpstreamCredentialResolver,
+  signal: AbortSignal,
+): Promise<ProviderUpstreamCredential> {
+  if (signal.aborted) throw signal.reason ?? new Error('provider proxy request aborted');
+  let rejectOnAbort!: (reason?: unknown) => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    rejectOnAbort = reject;
+  });
+  const onAbort = () => rejectOnAbort(signal.reason ?? new Error('provider proxy request aborted'));
+  signal.addEventListener('abort', onAbort, { once: true });
+  try {
+    return await Promise.race([resolveUpstreamCredential(signal), aborted]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
   }
 }
 

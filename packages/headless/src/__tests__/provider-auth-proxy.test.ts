@@ -858,6 +858,62 @@ test('provider auth proxy aborts an in-flight upstream request on close', async 
   }
 });
 
+test('provider auth proxy cancels credential resolution on close', { timeout: 5_000 }, async () => {
+  let markCredentialRequestStarted!: () => void;
+  let markCredentialSocketClosed!: () => void;
+  let releaseCredentialRequest = () => {};
+  const credentialRequestStarted = new Promise<void>((resolve) => {
+    markCredentialRequestStarted = resolve;
+  });
+  const credentialSocketClosed = new Promise<void>((resolve) => {
+    markCredentialSocketClosed = resolve;
+  });
+  const credentialServer = createServer((request, response) => {
+    markCredentialRequestStarted();
+    request.socket.once('close', markCredentialSocketClosed);
+    releaseCredentialRequest = () => {
+      if (!response.writableEnded) response.end('upstream-key');
+    };
+  });
+  await new Promise<void>((resolve) => credentialServer.listen(0, '127.0.0.1', resolve));
+  const address = credentialServer.address();
+  assert.ok(address && typeof address !== 'string');
+  const proxy = await startProviderAuthProxy({
+    upstreamBaseUrl: 'http://127.0.0.1:1',
+    advertisedHost: '127.0.0.1',
+    resolveUpstreamCredential: async (signal?: AbortSignal) => {
+      const response = await fetch(`http://127.0.0.1:${address.port}/credential`, {
+        ...(signal ? { signal } : {}),
+      });
+      return { value: await response.text() };
+    },
+  });
+  const providerResponse = fetch(`${proxy.baseUrl}/responses`, {
+    headers: { authorization: `Bearer ${proxy.token}` },
+  }).catch(() => undefined);
+
+  try {
+    await credentialRequestStarted;
+    const closeAttempt = proxy.close();
+    const closed = await Promise.race([
+      closeAttempt.then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 250)),
+    ]);
+    assert.equal(closed, true);
+    const credentialSocketWasClosed = await Promise.race([
+      credentialSocketClosed.then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 250)),
+    ]);
+    assert.equal(credentialSocketWasClosed, true);
+    await providerResponse;
+  } finally {
+    releaseCredentialRequest();
+    await proxy.close();
+    credentialServer.closeAllConnections();
+    await new Promise<void>((resolve) => credentialServer.close(() => resolve()));
+  }
+});
+
 test('provider auth proxy aborts the upstream stream when its client disconnects', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'maka-provider-proxy-client-disconnect-'));
   let upstreamClosed!: () => void;
