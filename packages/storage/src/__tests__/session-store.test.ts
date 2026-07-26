@@ -11,7 +11,10 @@ import type {
   SubagentSessionRuntime,
   SubagentSessionSpawn,
 } from '@maka/core';
-import { createLegacyFileSessionStore as createSessionStore } from '../session-store.js';
+import {
+  createLegacyFileSessionStore as createSessionStore,
+  createSessionStore as createSqliteSessionStore,
+} from '../session-store.js';
 
 describe('FileSessionStore CRUD', () => {
   test('list on a missing workspace is observational and does not create session storage', async () => {
@@ -822,6 +825,40 @@ describe('FileSessionStore CRUD', () => {
     });
   });
 
+  test('reads exact legacy subagent results during normal and strict recovery without rewriting', async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-legacy-subagent-result-'));
+    const store = createSqliteSessionStore(workspaceRoot);
+    try {
+      const header = await store.create(makeInput({ name: 'Legacy subagent result' }));
+      const path = join(workspaceRoot, 'sessions', header.id, 'session.jsonl');
+      const legacyRecord = await readFile(
+        new URL(
+          '../../src/__tests__/fixtures/legacy-subagent-waiting-permission.jsonl',
+          import.meta.url,
+        ),
+      );
+      const originalBytes = Buffer.concat([await readFile(path), legacyRecord]);
+      await writeFile(path, originalBytes);
+
+      const normalMessages = await store.readMessages(header.id);
+      assert.equal(subagentStatus(normalMessages), 'waiting_for_user');
+      assert.deepEqual(await readFile(path), originalBytes);
+
+      const recoveryMessages = await store.readMessagesForRecovery(header.id);
+      assert.equal(subagentStatus(recoveryMessages), 'waiting_for_user');
+      assert.deepEqual(await readFile(path), originalBytes);
+
+      assert.deepEqual(
+        (await store.listForRecovery()).map((session) => session.id),
+        [header.id],
+      );
+      assert.deepEqual(await readFile(path), originalBytes);
+    } finally {
+      await store.close?.();
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
   test('recovers readable messages around a corrupt JSONL message line', async () => {
     await withStore(async (store, workspaceRoot) => {
       const sessionId = 'corrupt-middle-line';
@@ -1624,6 +1661,13 @@ function assistantMessageAt(ts: number): StoredMessage {
     text: 'ok',
     modelId: 'fake-model',
   };
+}
+
+function subagentStatus(messages: StoredMessage[]): string | undefined {
+  const result = messages.find((message) => message.id === 'legacy-subagent-result');
+  return result?.type === 'tool_result' && result.content.kind === 'subagent'
+    ? result.content.status
+    : undefined;
 }
 
 async function withStore(

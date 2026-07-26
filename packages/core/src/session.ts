@@ -38,7 +38,7 @@ import {
 import { isPermissionDecisionFields } from './interaction-record-schema.js';
 import { isTokenUsageFields } from './usage-record-schema.js';
 import {
-  decodeCanonicalToolResultContent,
+  decodePersistedToolResultContentForRecovery,
   normalizeToolResultContentForRead,
 } from './tool-result-record-schema.js';
 
@@ -831,7 +831,7 @@ export function decodeStoredMessageForRead(value: unknown): StoredMessage {
 }
 
 export function decodeStoredMessageForRecovery(value: unknown): StoredMessage {
-  return decodeStoredMessage(value, decodeCanonicalToolResultContent);
+  return decodeStoredMessage(value, decodePersistedToolResultContentForRecovery);
 }
 
 function decodeStoredMessage(

@@ -186,7 +186,11 @@ export function normalizeToolResultContentForRead(value: unknown): ToolResultCon
   const shell = normalizeShellToolResultContent(value);
   if (shell.state === 'invalid') throw new Error('Invalid shell tool result content');
   const normalized = shell.state === 'valid' ? shell.content : value;
-  return decodeCanonicalToolResultContent(normalized);
+  return decodeCanonicalToolResultContent(normalizeLegacySubagentToolResultContent(normalized));
+}
+
+export function decodePersistedToolResultContentForRecovery(value: unknown): ToolResultContent {
+  return decodeCanonicalToolResultContent(normalizeLegacySubagentToolResultContent(value));
 }
 
 export function decodeCanonicalToolResultContent(value: unknown): ToolResultContent {
@@ -197,6 +201,18 @@ export function decodeCanonicalToolResultContent(value: unknown): ToolResultCont
     throw new Error('Invalid tool result content');
   }
   return value;
+}
+
+function normalizeLegacySubagentToolResultContent(value: unknown): unknown {
+  if (
+    !isRecord(value) ||
+    value.kind !== 'subagent' ||
+    value.status !== 'waiting_permission' ||
+    !hasValidSubagentResultFields(value)
+  ) {
+    return value;
+  }
+  return { ...value, status: 'waiting_for_user' };
 }
 
 function isNonShellToolResultContent(value: unknown): value is ToolResultContent {
@@ -280,23 +296,10 @@ function isNonShellToolResultContent(value: unknown): value is ToolResultContent
       return isExploreResult(value);
     case 'subagent':
       return (
-        hasExactShape(value, SUBAGENT_SHAPE) &&
-        isOptionalString(value.childSessionId) &&
-        isOptionalString(value.agentId) &&
-        typeof value.agentName === 'string' &&
-        typeof value.turnId === 'string' &&
-        isOptionalString(value.runId) &&
+        hasValidSubagentResultFields(value) &&
         ['completed', 'failed', 'cancelled', 'running', 'waiting_for_user'].includes(
           value.status as string,
-        ) &&
-        isPermissionMode(value.permissionMode) &&
-        typeof value.summary === 'string' &&
-        isStringArray(value.artifactIds) &&
-        isOptionalFiniteNumber(value.startedAt) &&
-        isOptionalFiniteNumber(value.completedAt) &&
-        isOptionalFiniteNumber(value.durationMs) &&
-        isOptionalFiniteNumber(value.eventCount) &&
-        isOptionalString(value.failureClass)
+        )
       );
     case 'agent_swarm':
       return isAgentSwarmResult(value);
@@ -305,6 +308,25 @@ function isNonShellToolResultContent(value: unknown): value is ToolResultContent
     default:
       return false;
   }
+}
+
+function hasValidSubagentResultFields(value: Record<string, unknown>): boolean {
+  return (
+    hasExactShape(value, SUBAGENT_SHAPE) &&
+    isOptionalString(value.childSessionId) &&
+    isOptionalString(value.agentId) &&
+    typeof value.agentName === 'string' &&
+    typeof value.turnId === 'string' &&
+    isOptionalString(value.runId) &&
+    isPermissionMode(value.permissionMode) &&
+    typeof value.summary === 'string' &&
+    isStringArray(value.artifactIds) &&
+    isOptionalFiniteNumber(value.startedAt) &&
+    isOptionalFiniteNumber(value.completedAt) &&
+    isOptionalFiniteNumber(value.durationMs) &&
+    isOptionalFiniteNumber(value.eventCount) &&
+    isOptionalString(value.failureClass)
+  );
 }
 
 function isAgentSwarmResult(value: Record<string, unknown>): value is AgentSwarmResult {
