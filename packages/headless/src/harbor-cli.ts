@@ -7,6 +7,10 @@ import type { BackendKind, ProviderType } from '@maka/core';
 import { PROVIDER_DEFAULTS, normalizeProviderType } from '@maka/core';
 import type { Config, Task } from './contracts.js';
 import {
+  benchmarkDeadlinePolicyFromEnv,
+  type BenchmarkDeadlinePolicy,
+} from './benchmark-deadline-policy.js';
+import {
   type HarborCellExecutionIdentity,
   combineInvocations,
   validateHarborCellExecutionIdentity,
@@ -75,6 +79,7 @@ interface HarborRunOptions {
   maxRuntimeSteps?: number;
   maxWallTimeMs?: number;
   softTimeoutMs?: number;
+  deadlinePolicy?: BenchmarkDeadlinePolicy;
   replayPriorAttemptRuntimeContext: boolean;
   now: () => number;
   newId: () => string;
@@ -159,6 +164,7 @@ async function runHarborCellMode(
       storageRoot: options.storageRoot,
       ...(options.contextBudgetPolicy ? { contextBudgetPolicy: options.contextBudgetPolicy } : {}),
       ...(options.softTimeoutMs !== undefined ? { settleAfterMs: options.softTimeoutMs } : {}),
+      ...(options.deadlinePolicy ? { deadlinePolicy: options.deadlinePolicy } : {}),
       ...(options.registerBackends ? { registerBackends: options.registerBackends } : {}),
       ...(options.realBackendIsolation
         ? { realBackendIsolation: options.realBackendIsolation }
@@ -359,6 +365,7 @@ async function writeTaskRunExecutionIdentity(
     systemPromptHash: prompt.systemPromptHash,
     pricingProfile: options.env.MAKA_TRIAL_PRICING_SOURCE ?? 'unconfigured',
     agentTools: options.config.agentTools === true,
+    ...(options.deadlinePolicy ? { deadlinePolicy: options.deadlinePolicy } : {}),
   });
   await writeHarborCellExecutionIdentity(options.cellArtifactDir, executionIdentity);
   return executionIdentity;
@@ -422,6 +429,7 @@ export async function resolveHarborRunOptions(
     '--max-wall-time-sec',
   );
   const softTimeoutMs = harborCellSoftTimeoutMsFromEnv(env);
+  const deadlinePolicy = benchmarkDeadlinePolicyFromEnv(env);
   const config = buildConfig({
     parsed,
     env,
@@ -474,6 +482,7 @@ export async function resolveHarborRunOptions(
     ...(maxRuntimeSteps !== undefined ? { maxRuntimeSteps } : {}),
     ...(maxWallTimeSec !== undefined ? { maxWallTimeMs: maxWallTimeSec * 1000 } : {}),
     ...(softTimeoutMs !== undefined ? { softTimeoutMs } : {}),
+    ...(deadlinePolicy ? { deadlinePolicy } : {}),
     replayPriorAttemptRuntimeContext:
       parsed.bools['replay-prior-attempt-runtime-context'] ||
       truthyEnv(env.MAKA_REPLAY_PRIOR_ATTEMPT_RUNTIME_CONTEXT),

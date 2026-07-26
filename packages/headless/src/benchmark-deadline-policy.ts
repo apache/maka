@@ -1,4 +1,5 @@
 import { assertPositiveInt } from './numeric-guards.js';
+import { positiveIntEnv, type RunHarborCellEnv } from './headless-run-env.js';
 
 export const TASK_NATIVE_FULL_BUDGET_DEADLINE_POLICY_ID = 'task-native-full-budget-v1';
 
@@ -49,4 +50,28 @@ export function benchmarkDeadlinePoliciesEqual(
     actual.settlementGraceSec === expected.settlementGraceSec &&
     actual.hardTimeoutSec === expected.hardTimeoutSec
   );
+}
+
+export function benchmarkDeadlinePolicyFromEnv(
+  env: RunHarborCellEnv,
+): BenchmarkDeadlinePolicy | undefined {
+  const id = env.MAKA_BENCHMARK_DEADLINE_POLICY;
+  if (id === undefined) return undefined;
+  if (id !== TASK_NATIVE_FULL_BUDGET_DEADLINE_POLICY_ID) {
+    throw new Error(
+      `MAKA_BENCHMARK_DEADLINE_POLICY must be ${TASK_NATIVE_FULL_BUDGET_DEADLINE_POLICY_ID}`,
+    );
+  }
+  const policy = resolveTaskNativeDeadlinePolicy(
+    positiveIntEnv(env.MAKA_CELL_TIMEOUT_SEC, 'MAKA_CELL_TIMEOUT_SEC')!,
+    positiveIntEnv(env.MAKA_CELL_SETTLEMENT_GRACE_SEC, 'MAKA_CELL_SETTLEMENT_GRACE_SEC')!,
+  );
+  const attestedHardTimeout = positiveIntEnv(
+    env.MAKA_CELL_HARD_TIMEOUT_SEC,
+    'MAKA_CELL_HARD_TIMEOUT_SEC',
+  );
+  if (attestedHardTimeout !== policy.hardTimeoutSec) {
+    throw new Error('MAKA_CELL_HARD_TIMEOUT_SEC must equal T + G');
+  }
+  return policy;
 }

@@ -305,6 +305,67 @@ describe('maka-headless CLI', () => {
     }
   });
 
+  test('harbor run task-run attests the controller-owned deadline policy', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'maka-headless-harbor-cli-'));
+    try {
+      const fixture = join(dir, 'fixture');
+      const outDir = join(dir, 'out');
+      const cellArtifactDir = join(dir, 'cell-artifacts');
+      await mkdir(fixture, { recursive: true });
+
+      const result = await runCli(
+        [
+          'harbor',
+          'run',
+          '--mode',
+          'task-run',
+          '--backend',
+          'fake',
+          '--isolation',
+          'none',
+          '--instruction',
+          'solve it',
+          '--workdir',
+          fixture,
+          '--task-id',
+          'deadline-attestation',
+          '--out',
+          outDir,
+        ],
+        {
+          env: {
+            MAKA_BENCHMARK_DEADLINE_POLICY: 'task-native-full-budget-v1',
+            MAKA_CELL_ARTIFACT_DIR: cellArtifactDir,
+            MAKA_CELL_HARD_TIMEOUT_SEC: '5430',
+            MAKA_CELL_SETTLEMENT_GRACE_SEC: '30',
+            MAKA_CELL_SOFT_TIMEOUT_MS: '5400000',
+            MAKA_CELL_TIMEOUT_SEC: '5400',
+            MAKA_MODEL: 'fake-model',
+          },
+        },
+      );
+
+      assert.equal(result.code, 0, result.stderr);
+      const cell = validateHarborCellOutput(
+        JSON.parse(await readFile(join(cellArtifactDir, 'maka-cell-output.json'), 'utf8')),
+      );
+      assert.deepEqual(cell.executionIdentity?.deadlinePolicy, {
+        id: 'task-native-full-budget-v1',
+        modelBudgetSec: 5400,
+        settlementGraceSec: 30,
+        hardTimeoutSec: 5430,
+      });
+      assert.deepEqual(
+        JSON.parse(
+          await readFile(join(cellArtifactDir, 'maka-cell-execution-identity.json'), 'utf8'),
+        ).deadlinePolicy,
+        cell.executionIdentity?.deadlinePolicy,
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test('harbor run task-run writes external Harbor verifier export without fake verifier authority', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'maka-headless-harbor-cli-'));
     try {
