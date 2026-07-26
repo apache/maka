@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -286,6 +286,243 @@ test('exports a torn AgentRun tail as incomplete provider-request evidence', asy
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('also diagnoses missing provider evidence when the only run event is corrupt', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-provider-trace-export-'));
+  const storageRoot = join(root, 'storage');
+  const outputDir = join(root, 'output');
+  const identity = {
+    runId: 'run-only-corrupt',
+    sessionId: 'session-only-corrupt',
+    turnId: 'turn-only-corrupt',
+  };
+  const invocation: InvocationResult = {
+    invocationId: 'invocation-only-corrupt',
+    ...identity,
+    status: 'completed',
+    events: [],
+    startedAt: 1,
+    finishedAt: 4,
+  };
+
+  try {
+    await mkdir(outputDir, { recursive: true });
+    const storage = await openHeadlessStorageForWrite(storageRoot);
+    await storage.executionStores.agentRunStore.createRun({
+      ...identity,
+      status: 'completed',
+      backendKind: 'ai-sdk',
+      llmConnectionSlug: 'kimi-coding-plan',
+      modelId: 'k3',
+      cwd: root,
+      permissionMode: 'execute',
+      createdAt: 1,
+      updatedAt: 4,
+      completedAt: 4,
+    });
+    await writeFile(
+      join(storageRoot, 'sessions', identity.sessionId, 'runs', identity.runId, 'events.jsonl'),
+      '{"type":"tool_failed"',
+    );
+
+    const traceEventsPath = await writeHarborTaskRunTrace({
+      outputDir,
+      storage,
+      invocations: [invocation],
+    });
+    const exportedEvents = (await readFile(traceEventsPath, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as AgentRunEvent);
+
+    assert.deepEqual(
+      exportedEvents.map((event) => event.type),
+      ['event_corrupt', 'event_corrupt'],
+    );
+    assert.equal(exportedEvents[1]?.data?.reason, 'missing_provider_request_evidence');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('exports missing provider-request evidence for every continuation invocation', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-provider-trace-export-'));
+  const storageRoot = join(root, 'storage');
+  const outputDir = join(root, 'output');
+  const identities = [
+    { runId: 'run-1', sessionId: 'session-1', turnId: 'turn-1' },
+    { runId: 'run-2', sessionId: 'session-1', turnId: 'turn-2' },
+  ];
+  const invocations: InvocationResult[] = identities.map((identity, index) => ({
+    invocationId: `invocation-${index + 1}`,
+    ...identity,
+    status: 'completed',
+    events: [],
+    startedAt: index * 10 + 1,
+    finishedAt: index * 10 + 4,
+  }));
+
+  try {
+    await mkdir(outputDir, { recursive: true });
+    const storage = await openHeadlessStorageForWrite(storageRoot);
+    const runStore = storage.executionStores.agentRunStore;
+    for (const [index, identity] of identities.entries()) {
+      const timestamp = index * 10 + 1;
+      await runStore.createRun({
+        ...identity,
+        status: 'completed',
+        backendKind: 'ai-sdk',
+        llmConnectionSlug: 'kimi-coding-plan',
+        modelId: 'k3',
+        cwd: root,
+        permissionMode: 'execute',
+        createdAt: timestamp,
+        updatedAt: timestamp + 3,
+        completedAt: timestamp + 3,
+      });
+    }
+
+    const completeIdentity = identities[1]!;
+    const { capture, attempt } = completeTraceRows(completeIdentity.runId);
+    Object.assign(capture, completeIdentity);
+    Object.assign(attempt, completeIdentity);
+    capture.data.turnId = completeIdentity.turnId;
+    attempt.data.turnId = completeIdentity.turnId;
+    await runStore.appendEvent(
+      completeIdentity.sessionId,
+      completeIdentity.runId,
+      capture as AgentRunEvent,
+    );
+    await runStore.appendEvent(
+      completeIdentity.sessionId,
+      completeIdentity.runId,
+      attempt as AgentRunEvent,
+    );
+
+    const traceEventsPath = await writeHarborTaskRunTrace({
+      outputDir,
+      storage,
+      invocations,
+    });
+    const result = await traceAnalysis.readProviderRequestTrace(traceEventsPath);
+
+    assert.deepEqual(result.identities, identities);
+    assert.throws(
+      () =>
+        traceAnalysis.assertProviderRequestTraceComplete(result, {
+          expectedIdentity: completeIdentity,
+        }),
+      /event corrupt evidence/i,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('preserves existing run events when exporting a missing-evidence diagnostic', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-provider-trace-export-'));
+  const storageRoot = join(root, 'storage');
+  const outputDir = join(root, 'output');
+  const identity = { runId: 'run-tool-failed', sessionId: 'session-1', turnId: 'turn-1' };
+  const invocation: InvocationResult = {
+    invocationId: 'invocation-tool-failed',
+    ...identity,
+    status: 'completed',
+    events: [],
+    startedAt: 1,
+    finishedAt: 4,
+  };
+
+  try {
+    await mkdir(outputDir, { recursive: true });
+    const storage = await openHeadlessStorageForWrite(storageRoot);
+    const runStore = storage.executionStores.agentRunStore;
+    await runStore.createRun({
+      ...identity,
+      status: 'completed',
+      backendKind: 'ai-sdk',
+      llmConnectionSlug: 'kimi-coding-plan',
+      modelId: 'k3',
+      cwd: root,
+      permissionMode: 'execute',
+      createdAt: 1,
+      updatedAt: 4,
+      completedAt: 4,
+    });
+    await runStore.appendEvent(identity.sessionId, identity.runId, {
+      type: 'tool_failed',
+      id: 'tool-failed-1',
+      ...identity,
+      ts: 3,
+      message: 'tool failed before the provider trace was recorded',
+    });
+
+    const traceEventsPath = await writeHarborTaskRunTrace({
+      outputDir,
+      storage,
+      invocations: [invocation],
+    });
+    const exportedEvents = (await readFile(traceEventsPath, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as AgentRunEvent);
+
+    assert.deepEqual(
+      exportedEvents.map((event) => event.type),
+      ['tool_failed', 'event_corrupt'],
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+for (const backendKind of ['fake', 'pi-agent'] as const) {
+  test(`does not diagnose missing provider-request evidence for ${backendKind} runs`, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-provider-trace-export-'));
+    const storageRoot = join(root, 'storage');
+    const outputDir = join(root, 'output');
+    const identity = {
+      runId: `run-${backendKind}`,
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+    };
+    const invocation: InvocationResult = {
+      invocationId: `invocation-${backendKind}`,
+      ...identity,
+      status: 'completed',
+      events: [],
+      startedAt: 1,
+      finishedAt: 4,
+    };
+
+    try {
+      await mkdir(outputDir, { recursive: true });
+      const storage = await openHeadlessStorageForWrite(storageRoot);
+      await storage.executionStores.agentRunStore.createRun({
+        ...identity,
+        status: 'completed',
+        backendKind,
+        llmConnectionSlug: 'test-connection',
+        modelId: 'test-model',
+        cwd: root,
+        permissionMode: 'execute',
+        createdAt: 1,
+        updatedAt: 4,
+        completedAt: 4,
+      });
+
+      const traceEventsPath = await writeHarborTaskRunTrace({
+        outputDir,
+        storage,
+        invocations: [invocation],
+      });
+
+      assert.equal(await readFile(traceEventsPath, 'utf8'), '');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
 
 test('reads a v2 capture and attempt and binds them to the expected execution identity', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'maka-provider-trace-'));

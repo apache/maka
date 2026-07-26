@@ -562,19 +562,40 @@ export async function writeHarborTaskRunTrace(input: {
           invocation.runId,
         ),
       ]);
-      if (!header.traceWriteError || events.some((event) => event.type === 'trace_write_failed')) {
-        return events;
+      const evidenceEvents =
+        header.traceWriteError && !events.some((event) => event.type === 'trace_write_failed')
+          ? [
+              ...events,
+              {
+                type: 'trace_write_failed',
+                id: `run-header-trace-write-failed-${header.runId}`,
+                runId: header.runId,
+                sessionId: header.sessionId,
+                turnId: header.turnId,
+                ts: header.updatedAt,
+                message: header.traceWriteError,
+              } satisfies AgentRunEvent,
+            ]
+          : events;
+      if (header.backendKind !== 'ai-sdk' || evidenceEvents.some(isProviderRequestTraceEvidence)) {
+        return evidenceEvents;
       }
-      const traceWriteFailure: AgentRunEvent = {
-        type: 'trace_write_failed',
-        id: `run-header-trace-write-failed-${header.runId}`,
-        runId: header.runId,
-        sessionId: header.sessionId,
-        turnId: header.turnId,
-        ts: header.updatedAt,
-        message: header.traceWriteError,
-      };
-      return [...events, traceWriteFailure];
+      return [
+        ...evidenceEvents,
+        {
+          type: 'event_corrupt',
+          id: `run-provider-request-evidence-missing-${header.runId}`,
+          runId: header.runId,
+          sessionId: header.sessionId,
+          turnId: header.turnId,
+          ts: header.updatedAt,
+          message: `Provider request trace evidence is missing for invocation ${invocation.invocationId}`,
+          data: {
+            reason: 'missing_provider_request_evidence',
+            invocationId: invocation.invocationId,
+          },
+        } satisfies AgentRunEvent,
+      ];
     }),
   );
   const chunks = eventGroups.map((events) =>
@@ -587,6 +608,14 @@ export async function writeHarborTaskRunTrace(input: {
     nonEmptyChunks.length > 0 ? `${nonEmptyChunks.join('\n')}\n` : '',
   );
   return traceEventsPath;
+}
+
+function isProviderRequestTraceEvidence(event: AgentRunEvent): boolean {
+  return (
+    event.type === 'provider_request_captured' ||
+    event.type === 'provider_request_attempt_recorded' ||
+    event.type === 'trace_write_failed'
+  );
 }
 
 export async function runHarborCellFromEnv(

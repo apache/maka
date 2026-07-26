@@ -241,6 +241,7 @@ function protocolIndependentRequestPayload(payload: unknown): unknown {
     approvalIds: new Map(),
     toolCallIds: new Map(),
   };
+  const reasoningEffort = protocolIndependentReasoningEffort(providerOptions);
   const protocolIndependent: Record<string, unknown> = {
     ...shared,
     ...(Array.isArray(shared.prompt)
@@ -258,6 +259,7 @@ function protocolIndependentRequestPayload(payload: unknown): unknown {
     ...(Array.isArray(shared.tools)
       ? { tools: shared.tools.map(withoutObjectProviderOptions) }
       : {}),
+    ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
   };
   const thinkingBudget = anthropicThinkingBudget(providerOptions);
   if (
@@ -270,6 +272,37 @@ function protocolIndependentRequestPayload(payload: unknown): unknown {
   return Number.isSafeInteger(wireOutputLimit)
     ? { ...protocolIndependent, maxOutputTokens: wireOutputLimit }
     : protocolIndependent;
+}
+
+function protocolIndependentReasoningEffort(
+  providerOptions: unknown,
+): string | string[] | undefined {
+  if (!isObjectLike(providerOptions)) return undefined;
+  const efforts = new Set<string>();
+  const anthropic = providerOptions.anthropic;
+  if (isObjectLike(anthropic) && typeof anthropic.effort === 'string') {
+    efforts.add(anthropic.effort);
+  }
+  for (const namespace of Object.values(providerOptions)) {
+    if (!isObjectLike(namespace)) continue;
+    if (typeof namespace.reasoningEffort === 'string') efforts.add(namespace.reasoningEffort);
+    if (isObjectLike(namespace.thinking) && namespace.thinking.type === 'disabled') {
+      efforts.add('none');
+    }
+    const thinkingConfig = namespace.thinkingConfig;
+    if (isObjectLike(thinkingConfig) && typeof thinkingConfig.thinkingLevel === 'string') {
+      efforts.add(thinkingConfig.thinkingLevel);
+    }
+    if (isObjectLike(thinkingConfig) && thinkingConfig.thinkingBudget === 0) {
+      efforts.add('none');
+    }
+    const chatTemplateKwargs = namespace.chat_template_kwargs;
+    if (isObjectLike(chatTemplateKwargs) && chatTemplateKwargs.thinking === false) {
+      efforts.add('none');
+    }
+  }
+  const normalized = [...efforts].sort();
+  return normalized.length > 1 ? normalized : normalized[0];
 }
 
 interface ProtocolIndependentRequestIdentities {

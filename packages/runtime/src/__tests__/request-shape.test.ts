@@ -202,6 +202,130 @@ describe('prepared provider request capture', () => {
     );
   });
 
+  test('keeps reasoning effort across provider namespaces in the protocol-independent hash', () => {
+    const hash = (providerOptions: Record<string, unknown>, maxOutputTokens: number) =>
+      requestShape.capturePreparedProviderRequest({
+        providerId: 'kimi-coding-plan',
+        modelId: 'kimi-for-coding',
+        messages: [{ role: 'user', content: 'hello' }],
+        tools: [],
+        providerOptions,
+        requestPayload: {
+          prompt: [{ role: 'user', content: 'hello' }],
+          maxOutputTokens,
+          providerOptions,
+        },
+      }).requestPayloadWithoutProviderOptionsHash;
+
+    const anthropicMax = hash(
+      {
+        anthropic: {
+          effort: 'max',
+          thinking: { type: 'enabled', budgetTokens: 1_024 },
+        },
+      },
+      31_744,
+    );
+    const openaiMax = hash({ kimiCodingPlan: { reasoningEffort: 'max' } }, 32_768);
+    const nativeOpenaiMax = hash({ openai: { reasoningEffort: 'max' } }, 32_768);
+    const nativeOpenaiHigh = hash({ openai: { reasoningEffort: 'high' } }, 32_768);
+    const zaiHigh = hash({ 'zai-coding-plan': { reasoningEffort: 'high' } }, 32_768);
+    const zaiLow = hash({ 'zai-coding-plan': { reasoningEffort: 'low' } }, 32_768);
+
+    assert.equal(anthropicMax, openaiMax);
+    assert.equal(anthropicMax, nativeOpenaiMax);
+    assert.equal(nativeOpenaiHigh, zaiHigh);
+    assert.notEqual(zaiHigh, zaiLow);
+    assert.notEqual(anthropicMax, hash({ kimiCodingPlan: { reasoningEffort: 'low' } }, 32_768));
+    assert.notEqual(anthropicMax, hash({ kimiCodingPlan: { reasoningEffort: 'none' } }, 32_768));
+  });
+
+  test('normalizes disabled Anthropic reasoning to OpenAI none', () => {
+    const hash = (providerOptions: Record<string, unknown>) =>
+      requestShape.capturePreparedProviderRequest({
+        providerId: 'provider',
+        modelId: 'model',
+        messages: [{ role: 'user', content: 'hello' }],
+        tools: [],
+        providerOptions,
+        requestPayload: {
+          prompt: [{ role: 'user', content: 'hello' }],
+          maxOutputTokens: 32_768,
+          providerOptions,
+        },
+      }).requestPayloadWithoutProviderOptionsHash;
+
+    assert.equal(
+      hash({ anthropic: { thinking: { type: 'disabled' } } }),
+      hash({ openai: { reasoningEffort: 'none' } }),
+    );
+  });
+
+  test('normalizes Google thinking level to OpenAI reasoning effort', () => {
+    const hash = (providerOptions: Record<string, unknown>) =>
+      requestShape.capturePreparedProviderRequest({
+        providerId: 'provider',
+        modelId: 'model',
+        messages: [{ role: 'user', content: 'hello' }],
+        tools: [],
+        providerOptions,
+        requestPayload: {
+          prompt: [{ role: 'user', content: 'hello' }],
+          maxOutputTokens: 32_768,
+          providerOptions,
+        },
+      }).requestPayloadWithoutProviderOptionsHash;
+
+    assert.equal(
+      hash({ google: { thinkingConfig: { includeThoughts: true, thinkingLevel: 'high' } } }),
+      hash({ openai: { reasoningEffort: 'high' } }),
+    );
+  });
+
+  test('normalizes zero Google thinking budget to OpenAI none', () => {
+    const hash = (providerOptions: Record<string, unknown>) =>
+      requestShape.capturePreparedProviderRequest({
+        providerId: 'provider',
+        modelId: 'model',
+        messages: [{ role: 'user', content: 'hello' }],
+        tools: [],
+        providerOptions,
+        requestPayload: {
+          prompt: [{ role: 'user', content: 'hello' }],
+          maxOutputTokens: 32_768,
+          providerOptions,
+        },
+      }).requestPayloadWithoutProviderOptionsHash;
+
+    assert.equal(
+      hash({ google: { thinkingConfig: { thinkingBudget: 0 } } }),
+      hash({ openai: { reasoningEffort: 'none' } }),
+    );
+  });
+
+  test('normalizes disabled Cloudflare thinking to OpenAI none', () => {
+    const hash = (providerOptions: Record<string, unknown>) =>
+      requestShape.capturePreparedProviderRequest({
+        providerId: 'provider',
+        modelId: 'model',
+        messages: [{ role: 'user', content: 'hello' }],
+        tools: [],
+        providerOptions,
+        requestPayload: {
+          prompt: [{ role: 'user', content: 'hello' }],
+          maxOutputTokens: 32_768,
+          providerOptions,
+        },
+      }).requestPayloadWithoutProviderOptionsHash;
+
+    assert.equal(
+      hash({
+        'cloudflare-workers-ai': { chat_template_kwargs: { thinking: false } },
+      }),
+      hash({ openai: { reasoningEffort: 'none' } }),
+    );
+  });
+
   test('normalizes Anthropic thinking budget into the protocol-independent output limit', () => {
     const capture = (providerOptions: Record<string, unknown>, maxOutputTokens: number) =>
       requestShape.capturePreparedProviderRequest({
