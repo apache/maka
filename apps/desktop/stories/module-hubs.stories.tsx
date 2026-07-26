@@ -376,6 +376,30 @@ function ScheduledDailyReviewSurface(props: { bridge: DailyReviewBridge }) {
   );
 }
 
+async function assertKeepAwakeStoryState(canvasElement: HTMLElement) {
+  const document = canvasElement.ownerDocument;
+  const deadline = Date.now() + 2_000;
+  let trigger: HTMLButtonElement | undefined;
+  while (!trigger && Date.now() < deadline) {
+    trigger = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((button) => {
+      const label = button.getAttribute('aria-label');
+      return label === '定时任务页面设置' || label === 'Scheduled task page settings';
+    });
+    if (!trigger) await new Promise((resolve) => setTimeout(resolve, 16));
+  }
+  if (!trigger) throw new Error('Keep-awake story did not render the page-settings trigger');
+  trigger.click();
+
+  while (Date.now() < deadline) {
+    const item = Array.from(
+      document.querySelectorAll<HTMLElement>('[role="menuitemcheckbox"]'),
+    ).find((candidate) => /保持系统唤醒|Keep system awake/.test(candidate.textContent ?? ''));
+    if (item?.getAttribute('aria-checked') === 'true') return;
+    await new Promise((resolve) => setTimeout(resolve, 16));
+  }
+  throw new Error('Keep-awake story did not expose a checked contextual control');
+}
+
 // Real path: sidebar → 扩展 → 技能, on a fresh install.
 export const ExtensionsSkills: Story = { render: () => <ExtensionsSkillsSurface /> };
 
@@ -413,6 +437,9 @@ export const ScheduledPlanRemindersKeepAwake: Story = {
       keepSystemAwake
     />
   ),
+  play: async ({ canvasElement }) => {
+    await assertKeepAwakeStoryState(canvasElement);
+  },
 };
 
 // Real path: sidebar → 定时任务 → 计划提醒, with user-authored content at storage limits.

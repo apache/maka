@@ -110,6 +110,15 @@ describe('Storybook baseline contract', () => {
     ]) {
       assert.match(story, new RegExp(`export const ${storyName}: Story`));
     }
+    const keepAwakeStory = story.slice(
+      story.indexOf('export const ScheduledPlanRemindersKeepAwake'),
+      story.indexOf('export const ScheduledPlanRemindersLongContent'),
+    );
+    assert.match(
+      keepAwakeStory,
+      /play:\s*async[\s\S]*assertKeepAwakeStoryState/,
+      'the keep-awake state story must expose and verify its contextual checked control',
+    );
     assert.doesNotMatch(
       story,
       /className="maka-panel maka-panel-detail maka-floating-panel agents-content-area agents-parchment-paper-surface"/,

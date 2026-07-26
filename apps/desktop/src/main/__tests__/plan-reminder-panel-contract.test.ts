@@ -178,7 +178,10 @@ describe('Plan Reminder management surface contract', () => {
     assert.doesNotMatch(ui, /showKeepAwakeGuidance|keepAwakeHint|keepAwakeOn|maka-plan-awake|maka-plan-system-awake/);
     assert.match(controller, /keepSystemAwake: boolean \| undefined/);
     assert.match(controller, /useState<boolean>\(\)/);
-    assert.match(controller, /catch \{\s*[\s\S]*setSnapshot\(false\)/);
+    assert.match(
+      controller,
+      /catch \{\s*[\s\S]*setSnapshot\(\(previous\) => previous \?\? false\)/,
+    );
   });
 
   it('names row controls with the reminder identity', async () => {

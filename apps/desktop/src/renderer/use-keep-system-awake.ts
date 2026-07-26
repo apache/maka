@@ -16,7 +16,7 @@ import { useMountedRef } from '@maka/ui';
 export interface KeepSystemAwakeController {
   /** Whether the settings bridge exposing this toggle exists. */
   supported: boolean;
-  /** Last-known persisted value. Undefined until a read succeeds. */
+  /** Last-known persisted value. Undefined until the initial read settles. */
   keepSystemAwake: boolean | undefined;
   /**
    * Persist a new value. Resolves once the store confirms the write (and
@@ -44,9 +44,9 @@ export function useKeepSystemAwake(): KeepSystemAwakeController {
       if (mountedRef.current) setSnapshot(settings.system.keepSystemAwake);
     } catch {
       // The persisted default is false. Falling back to that known-safe value
-      // keeps the page-setting control available so a later write can recover
-      // from a transient read failure.
-      if (mountedRef.current) setSnapshot(false);
+      // after an initial failure keeps the control recoverable; later failures
+      // must not overwrite a value that was already confirmed.
+      if (mountedRef.current) setSnapshot((previous) => previous ?? false);
     }
   }, [supported, mountedRef]);
 

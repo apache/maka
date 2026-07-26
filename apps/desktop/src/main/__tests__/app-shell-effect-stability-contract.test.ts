@@ -5,9 +5,10 @@ import { pathToFileURL } from 'node:url';
 import { afterEach, describe, it } from 'node:test';
 import type { ConnectionEvent, PlanReminder, SessionEvent, StoredMessage } from '@maka/core';
 import { build } from 'esbuild';
-import { act, createElement, type ReactElement } from 'react';
+import { act, createElement, type ReactElement, useEffect } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type * as AppShellEffects from '../../renderer/app-shell-effects.js';
+import type * as KeepSystemAwake from '../../renderer/use-keep-system-awake.js';
 import { readRendererShellSource } from './renderer-shell-source-helpers.js';
 
 const REPO_ROOT = resolve(import.meta.dirname, '../../../../..');
@@ -18,6 +19,7 @@ type AppShellEffectsModule = Pick<
   typeof AppShellEffects,
   'useActiveSessionEvents' | 'useAppShellBootstrapSubscriptions'
 >;
+type KeepSystemAwakeModule = Pick<typeof KeepSystemAwake, 'useKeepSystemAwake'>;
 type CapturedSubscriptions = {
   activeSessionEvent?: (event: SessionEvent) => void;
   activeSessionSubscribeCount: number;
@@ -25,6 +27,8 @@ type CapturedSubscriptions = {
   connectionSubscribeCount: number;
   planDue?: (reminder: PlanReminder) => void;
   planDueSubscribeCount: number;
+  settingsExternalChanged?: () => void;
+  settingsGet?(): Promise<{ system: { keepSystemAwake: boolean } }>;
 };
 type RendererMakaStub = {
   appWindow: {
@@ -41,6 +45,13 @@ type RendererMakaStub = {
     readMessages(sessionId: string): Promise<StoredMessage[]>;
     subscribeChanges(callback: (event: { reason: string; sessionId?: string; ts: number }) => void): () => void;
     subscribeEvents(sessionId: string, callback: (event: SessionEvent) => void): () => void;
+  };
+  settings: {
+    get(): Promise<{ system: { keepSystemAwake: boolean } }>;
+    subscribeExternalChanged(callback: () => void): () => void;
+    update(input: {
+      system: { keepSystemAwake: boolean };
+    }): Promise<{ settings: { system: { keepSystemAwake: boolean } } }>;
   };
 };
 
@@ -189,6 +200,57 @@ describe('AppShell effect stability contract', () => {
     assert.match(src, /\buseEffectEvent\(/);
     assert.doesNotMatch(src, /\buseLatestRef\b|\blatestOptionsRef\b/);
   });
+
+  it('preserves a known keep-awake snapshot when a later refresh fails', async () => {
+    const controller = await importKeepSystemAwake();
+    let readCount = 0;
+    const captured = createCapturedSubscriptions({
+      settingsGet: async () => {
+        readCount += 1;
+        if (readCount === 1) return { system: { keepSystemAwake: true } };
+        throw new Error('transient read failure');
+      },
+    });
+    const root = installReactRenderer(captured);
+    const snapshots: Array<boolean | undefined> = [];
+
+    await render(
+      root,
+      createElement(KeepSystemAwakeProbe, {
+        controller,
+        onSnapshot: (snapshot) => snapshots.push(snapshot),
+      }),
+    );
+    assert.equal(snapshots.at(-1), true);
+
+    await act(async () => {
+      captured.settingsExternalChanged?.();
+      await Promise.resolve();
+    });
+
+    assert.equal(snapshots.at(-1), true);
+  });
+
+  it('falls back to false when the initial keep-awake read fails', async () => {
+    const controller = await importKeepSystemAwake();
+    const captured = createCapturedSubscriptions({
+      settingsGet: async () => {
+        throw new Error('initial read failure');
+      },
+    });
+    const root = installReactRenderer(captured);
+    const snapshots: Array<boolean | undefined> = [];
+
+    await render(
+      root,
+      createElement(KeepSystemAwakeProbe, {
+        controller,
+        onSnapshot: (snapshot) => snapshots.push(snapshot),
+      }),
+    );
+
+    assert.equal(snapshots.at(-1), false);
+  });
 });
 
 function BootstrapSubscriptionProbe(props: {
@@ -264,6 +326,17 @@ function ActiveSessionEventProbe(props: {
   return null;
 }
 
+function KeepSystemAwakeProbe(props: {
+  controller: KeepSystemAwakeModule;
+  onSnapshot(snapshot: boolean | undefined): void;
+}) {
+  const state = props.controller.useKeepSystemAwake();
+  useEffect(() => {
+    props.onSnapshot(state.keepSystemAwake);
+  }, [props, state.keepSystemAwake]);
+  return null;
+}
+
 async function importAppShellEffects(): Promise<AppShellEffectsModule> {
   const outdir = await mkdtemp(resolve(REPO_ROOT, 'apps/desktop/dist/main/__tests__/app-shell-effects-'));
   const outfile = resolve(outdir, 'app-shell-effects.mjs');
@@ -279,6 +352,37 @@ async function importAppShellEffects(): Promise<AppShellEffectsModule> {
     logLevel: 'silent',
   });
   return (await import(`${pathToFileURL(outfile).href}?t=${Date.now()}`)) as AppShellEffectsModule;
+}
+
+async function importKeepSystemAwake(): Promise<KeepSystemAwakeModule> {
+  const outdir = await mkdtemp(resolve(REPO_ROOT, 'apps/desktop/dist/main/__tests__/keep-system-awake-'));
+  const outfile = resolve(outdir, 'use-keep-system-awake.mjs');
+  await mkdir(dirname(outfile), { recursive: true });
+  await build({
+    entryPoints: [resolve(REPO_ROOT, 'apps/desktop/src/renderer/use-keep-system-awake.ts')],
+    outfile,
+    bundle: true,
+    alias: {
+      '@maka/ui': resolve(REPO_ROOT, 'packages/ui/src/use-mounted-ref.ts'),
+    },
+    external: ['react'],
+    platform: 'node',
+    format: 'esm',
+    target: 'node20',
+    logLevel: 'silent',
+  });
+  return (await import(`${pathToFileURL(outfile).href}?t=${Date.now()}`)) as KeepSystemAwakeModule;
+}
+
+function createCapturedSubscriptions(
+  overrides: Partial<CapturedSubscriptions> = {},
+): CapturedSubscriptions {
+  return {
+    activeSessionSubscribeCount: 0,
+    connectionSubscribeCount: 0,
+    planDueSubscribeCount: 0,
+    ...overrides,
+  };
 }
 
 function createBootstrapRefs() {
@@ -361,8 +465,14 @@ function installFakeMaka(captured: CapturedSubscriptions): void {
       },
     },
     settings: {
-      get: async () => ({}),
-      subscribeExternalChanged: () => noop,
+      get: captured.settingsGet ?? (async () => ({ system: { keepSystemAwake: false } })),
+      subscribeExternalChanged(callback: () => void) {
+        captured.settingsExternalChanged = callback;
+        return noop;
+      },
+      update: async ({ system }: { system: { keepSystemAwake: boolean } }) => ({
+        settings: { system },
+      }),
     },
   } as unknown as RendererWindow['maka'];
 }
