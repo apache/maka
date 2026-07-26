@@ -32,12 +32,15 @@ import {
   type DeepResearchArtifactRole,
 } from '@maka/core/deep-research-run';
 import { publishMarkerFile, readBoundedMarkerFile } from './marker-file.js';
+import { syncDirectory, syncDirectoryChain, syncFile } from './stable-storage.js';
 
 export const ARTIFACT_TEXT_PREVIEW_LIMIT_BYTES = 10 * 1024 * 1024;
 export const ARTIFACT_BINARY_PREVIEW_LIMIT_BYTES = 50 * 1024 * 1024;
 
 const PUBLICATION_STAGING_PATTERN =
   /^\.artifact-publish\.([a-f0-9]{64})\.([a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12})\.tmp$/;
+const METADATA_TEMP_PATTERN =
+  /^metadata\.jsonl\.[0-9]+\.([a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12})\.tmp$/;
 const PURGE_INTENT_FILE = '.artifact-purge-intent.json';
 const PURGE_INTENT_SCHEMA_VERSION = 1 as const;
 const MAX_PURGE_INTENT_BYTES = 64 * 1024 * 1024;
@@ -96,6 +99,7 @@ class FileArtifactStore implements ArtifactStore {
   private records: ArtifactRecord[] = [];
   private loaded = false;
   private writerPrepared = false;
+  private writerNeedsReload = false;
   private loadPromise: Promise<void> | null = null;
   private queue: Promise<void> = Promise.resolve();
 
@@ -139,12 +143,18 @@ class FileArtifactStore implements ArtifactStore {
       }
       const target = join(this.artifactRoot, relativePath);
       const targetDirectory = dirname(target);
-      await mkdir(targetDirectory, { recursive: true });
+      const createdDirectory = await mkdir(targetDirectory, { recursive: true });
+      if (createdDirectory !== undefined) {
+        await syncDirectoryChain(targetDirectory, this.workspaceRoot);
+      }
       await assertArtifactDirectory(this.artifactRoot, targetDirectory);
       const tempPath = join(targetDirectory, publicationStagingName(basename(target)));
       let preserveStaging = false;
+      let targetLinked = false;
       try {
         await writeFile(tempPath, input.content, { flag: 'wx' });
+        await syncFile(tempPath);
+        await syncDirectory(targetDirectory);
         const size = await stat(tempPath);
         const record: ArtifactRecord = {
           id,
@@ -163,29 +173,44 @@ class FileArtifactStore implements ArtifactStore {
         };
         const nextRecords = [...this.records, record];
         try {
-          await link(tempPath, target);
-        } catch (error) {
-          if (isAlreadyExists(error)) throw new Error(`Artifact target already exists: ${id}`);
-          throw error;
-        }
-        try {
+          try {
+            await link(tempPath, target);
+            targetLinked = true;
+          } catch (error) {
+            if (isAlreadyExists(error)) throw new Error(`Artifact target already exists: ${id}`);
+            throw error;
+          }
+          await syncDirectory(targetDirectory);
           await this.writeMetadataUnlocked(nextRecords);
         } catch (error) {
-          await unlink(target).catch((cleanupError: unknown) => {
-            if (!isNotFound(cleanupError)) {
+          if (targetLinked && isPublishedMetadataError(error)) {
+            preserveStaging = true;
+            this.invalidateWriterState();
+          } else if (targetLinked) {
+            try {
+              await removeFileDurably(target, targetDirectory);
+            } catch (cleanupError) {
               preserveStaging = true;
+              this.invalidateWriterState();
               throw new AggregateError(
                 [error, cleanupError],
                 `Artifact ${id} metadata publication and payload cleanup both failed`,
               );
             }
-          });
+          }
           throw error;
         }
         this.records = nextRecords;
         return { ...record };
       } finally {
-        if (!preserveStaging) await unlink(tempPath).catch(() => {});
+        if (!preserveStaging) {
+          try {
+            await removeFileDurably(tempPath, targetDirectory);
+          } catch (error) {
+            this.invalidateWriterState();
+            throw error;
+          }
+        }
       }
     });
   }
@@ -406,7 +431,15 @@ class FileArtifactStore implements ArtifactStore {
     ids: ReadonlySet<string>,
     paths: readonly string[],
   ): Promise<void> {
-    for (const path of paths) await rm(path, { force: true });
+    const changedDirectories = new Set<string>();
+    try {
+      for (const path of paths) {
+        await rm(path, { force: true });
+        changedDirectories.add(dirname(path));
+      }
+    } finally {
+      for (const directory of changedDirectories) await syncDirectory(directory);
+    }
     const nextRecords = this.records.filter((record) => !ids.has(record.id));
     await this.writeMetadataUnlocked(nextRecords);
     this.records = nextRecords;
@@ -470,26 +503,65 @@ class FileArtifactStore implements ArtifactStore {
   }
 
   private async writeMetadataUnlocked(records: readonly ArtifactRecord[]): Promise<void> {
-    await mkdir(dirname(this.metadataPath), { recursive: true });
+    const metadataDirectory = dirname(this.metadataPath);
+    const createdDirectory = await mkdir(metadataDirectory, { recursive: true });
+    if (createdDirectory !== undefined) {
+      await syncDirectoryChain(metadataDirectory, this.workspaceRoot);
+    }
     const tempPath = `${this.metadataPath}.${process.pid}.${randomUUID()}.tmp`;
     const payload = records.map((record) => JSON.stringify(record)).join('\n');
+    let published = false;
+    let publicationError: MetadataPublicationError | undefined;
     try {
       await writeFile(tempPath, payload ? `${payload}\n` : '', {
         encoding: 'utf8',
         flag: 'wx',
       });
+      await syncFile(tempPath);
       await rename(tempPath, this.metadataPath);
-    } finally {
-      await rm(tempPath, { force: true }).catch(() => {});
+      published = true;
+      await syncDirectory(metadataDirectory);
+    } catch (error) {
+      this.invalidateWriterState();
+      publicationError = new MetadataPublicationError(error, published);
     }
+    try {
+      await removeFileDurably(tempPath, metadataDirectory);
+    } catch (cleanupError) {
+      this.invalidateWriterState();
+      if (publicationError) {
+        throw new AggregateError(
+          [publicationError, cleanupError],
+          'Artifact metadata publication and temp cleanup both failed',
+        );
+      }
+      throw cleanupError;
+    }
+    if (publicationError) throw publicationError;
   }
 
   private async prepareWriterUnlocked(): Promise<void> {
+    if (this.writerNeedsReload) {
+      this.loaded = false;
+      await this.load();
+      this.writerNeedsReload = false;
+    }
     await this.load();
     if (this.writerPrepared) return;
+    try {
+      await syncDirectory(this.artifactRoot);
+    } catch (error) {
+      if (!isNotFound(error)) throw error;
+    }
+    await this.recoverMetadataTempsUnlocked();
     await this.recoverPublicationsUnlocked();
     await this.recoverPurgeIntentUnlocked();
     this.writerPrepared = true;
+  }
+
+  private invalidateWriterState(): void {
+    this.writerPrepared = false;
+    this.writerNeedsReload = true;
   }
 
   private async publishPurgeIntentUnlocked(artifactIds: readonly string[]): Promise<void> {
@@ -539,8 +611,23 @@ class FileArtifactStore implements ArtifactStore {
   private async removePurgeIntentUnlocked(): Promise<void> {
     try {
       await unlink(this.purgeIntentPath);
+      await syncDirectory(this.artifactRoot);
     } catch (error) {
       if (!isNotFound(error)) throw error;
+    }
+  }
+
+  private async recoverMetadataTempsUnlocked(): Promise<void> {
+    let entries: Dirent[];
+    try {
+      entries = await readdir(this.artifactRoot, { withFileTypes: true });
+    } catch (error) {
+      if (isNotFound(error)) return;
+      throw error;
+    }
+    for (const entry of entries) {
+      if (!entry.isFile() || !METADATA_TEMP_PATTERN.test(entry.name)) continue;
+      await removeFileDurably(join(this.artifactRoot, entry.name), this.artifactRoot);
     }
   }
 
@@ -609,7 +696,7 @@ class FileArtifactStore implements ArtifactStore {
 
     const metadataRecord = metadataMatches[0];
     if (matchingTargets.length === 0 && !metadataRecord && stagingStat.nlink === 1) {
-      await unlink(stagingPath);
+      await removeFileDurably(stagingPath, input.sessionDirectory);
       return;
     }
     if (matchingTargets.length !== 1 || stagingStat.nlink !== 2) {
@@ -634,12 +721,15 @@ class FileArtifactStore implements ArtifactStore {
       ) {
         throw invalidPublicationResidue(input.stagingName);
       }
-      await unlink(stagingPath);
+      await removeFileDurably(stagingPath, input.sessionDirectory);
       return;
     }
 
-    await unlink(join(input.sessionDirectory, linkedTarget.name));
-    await unlink(stagingPath);
+    await removeFileDurably(
+      join(input.sessionDirectory, linkedTarget.name),
+      input.sessionDirectory,
+    );
+    await removeFileDurably(stagingPath, input.sessionDirectory);
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -706,14 +796,38 @@ export function isSafeRelativeArtifactPath(relativePath: string): boolean {
 }
 
 export function sanitizeArtifactName(name: string): string {
-  const trimmed = name.trim();
-  const cleaned = trimmed
+  const cleaned = name
+    .trim()
     .replace(/[\\/:*?"<>|\0]/g, '-')
     .replace(/\s+/g, ' ')
-    .replace(/^\.+/, '')
-    .replace(/^-+/, '')
-    .trim();
-  return (cleaned || 'artifact').slice(0, 120);
+    .replace(/^[ .-]+/, '')
+    .replace(/[ .-]+$/, '');
+  const truncated = cleaned.slice(0, 120).replace(/[ .-]+$/, '');
+  return truncated || 'artifact';
+}
+
+class MetadataPublicationError extends Error {
+  constructor(
+    cause: unknown,
+    readonly published: boolean,
+  ) {
+    super('Artifact metadata publication failed', { cause });
+  }
+}
+
+function isPublishedMetadataError(error: unknown): boolean {
+  return error instanceof MetadataPublicationError && error.published;
+}
+
+async function removeFileDurably(path: string, directory: string): Promise<boolean> {
+  try {
+    await unlink(path);
+  } catch (error) {
+    if (isNotFound(error)) return false;
+    throw error;
+  }
+  await syncDirectory(directory);
+  return true;
 }
 
 function validateRelativeArtifactPath(relativePath: string): void {

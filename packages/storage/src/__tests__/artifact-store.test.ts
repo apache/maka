@@ -53,6 +53,48 @@ describe('FileArtifactStore', () => {
     });
   });
 
+  test('sanitizes adversarial names idempotently across reopen and stable-id retry', async () => {
+    const names = [
+      '-.gitignore',
+      '  . a',
+      `${'a'.repeat(119)}- trailing`,
+      `${'b'.repeat(119)}. trailing`,
+      `${'c'.repeat(119)}  trailing`,
+      `${'.-'.repeat(80)}report.txt`,
+      `${'d'.repeat(120)}---`,
+    ];
+    for (const name of names) {
+      const sanitized = sanitizeArtifactName(name);
+      assert.equal(sanitizeArtifactName(sanitized), sanitized, name);
+      assert.ok(sanitized.length > 0 && sanitized.length <= 120, name);
+      assert.doesNotMatch(sanitized, /^[ .-]|[ .-]$/, name);
+    }
+    assert.equal(sanitizeArtifactName('-.gitignore'), 'gitignore');
+    assert.equal(sanitizeArtifactName('  . a'), 'a');
+
+    await withWorkspace(async (root) => {
+      for (const [index, name] of names.entries()) {
+        const input = {
+          ...artifactInput(`adversarial-${index}`, `payload-${index}`, index + 1),
+          name,
+        };
+        const created = await createArtifactStore(root).create(input);
+        const reopened = createArtifactStore(root);
+
+        assert.deepEqual(await reopened.list(input.sessionId), [
+          created,
+          ...(await reopened.list(input.sessionId)).filter((record) => record.id !== created.id),
+        ]);
+        assert.deepEqual(await reopened.get(created.id), created);
+        assert.deepEqual(await reopened.readText(created.id), {
+          ok: true,
+          text: input.content,
+        });
+        assert.deepEqual(await reopened.create(input), created);
+      }
+    });
+  });
+
   test('persists complete canonical deep-research and archived tool-result records', async () => {
     await withWorkspace(async (root) => {
       const store = createArtifactStore(root);
@@ -251,6 +293,28 @@ describe('FileArtifactStore', () => {
       await assert.rejects(() => stat(stagingPath), { code: 'ENOENT' });
       assert.equal(await readFile(targetPath, 'utf8'), 'durable');
       assert.deepEqual(await reopened.readText(record.id), { ok: true, text: 'durable' });
+    });
+  });
+
+  test('write recovery durably removes only canonical stale metadata temp files', async () => {
+    await withWorkspace(async (root) => {
+      const artifactRoot = join(root, 'artifacts');
+      await mkdir(artifactRoot, { recursive: true });
+      const staleTemp = join(
+        artifactRoot,
+        'metadata.jsonl.123.00000000-0000-4000-8000-000000000000.tmp',
+      );
+      const unknownFiles = [
+        join(artifactRoot, 'metadata.jsonl.123.not-a-uuid.tmp'),
+        join(artifactRoot, 'other.jsonl.123.00000000-0000-4000-8000-000000000000.tmp'),
+      ];
+      await writeFile(staleTemp, 'stale', 'utf8');
+      for (const path of unknownFiles) await writeFile(path, 'keep', 'utf8');
+
+      await createArtifactStore(root).recoverForWrite();
+
+      await assert.rejects(() => stat(staleTemp), { code: 'ENOENT' });
+      for (const path of unknownFiles) assert.equal(await readFile(path, 'utf8'), 'keep');
     });
   });
 
