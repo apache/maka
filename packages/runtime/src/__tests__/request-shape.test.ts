@@ -315,6 +315,58 @@ describe('prepared provider request capture', () => {
     );
   });
 
+  test('normalizes provider-local tool and approval bookkeeping', () => {
+    const hash = (prompt: unknown[]) =>
+      requestShape.capturePreparedProviderRequest({
+        providerId: 'provider',
+        modelId: 'model',
+        messages: prompt,
+        tools: [],
+        requestPayload: { prompt, tools: [] },
+      }).requestPayloadWithoutProviderOptionsHash;
+    const prompt = (suffix: string, approved: boolean) => [
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: `call-${suffix}`,
+            toolName: 'Inspect',
+            input: { path: 'README.md' },
+            providerExecuted: suffix === 'anthropic',
+          },
+          {
+            type: 'tool-approval-request',
+            approvalId: `approval-${suffix}`,
+            toolCallId: `call-${suffix}`,
+            isAutomatic: suffix === 'anthropic',
+            signature: `signature-${suffix}`,
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: `call-${suffix}`,
+            toolName: 'Inspect',
+            output: { type: 'text', value: 'done' },
+          },
+          {
+            type: 'tool-approval-response',
+            approvalId: `approval-${suffix}`,
+            approved,
+            providerExecuted: suffix === 'anthropic',
+          },
+        ],
+      },
+    ];
+
+    assert.equal(hash(prompt('anthropic', true)), hash(prompt('openai', true)));
+    assert.notEqual(hash(prompt('anthropic', true)), hash(prompt('openai', false)));
+  });
+
   test('preserves same-named fields inside user data and tool schemas', () => {
     const hash = (prompt: unknown[], tools: unknown[] = []) =>
       requestShape.capturePreparedProviderRequest({

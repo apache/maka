@@ -237,13 +237,23 @@ export function capturePreparedProviderRequest(
 function protocolIndependentRequestPayload(payload: unknown): unknown {
   if (!isObjectLike(payload)) return payload;
   const { providerOptions, ...shared } = payload;
+  const identities: ProtocolIndependentRequestIdentities = {
+    approvalIds: new Map(),
+    toolCallIds: new Map(),
+  };
   const protocolIndependent: Record<string, unknown> = {
     ...shared,
     ...(Array.isArray(shared.prompt)
-      ? { prompt: shared.prompt.map(withoutPromptProviderOptions) }
+      ? {
+          prompt: shared.prompt.map((message) => withoutPromptProviderOptions(message, identities)),
+        }
       : {}),
     ...(Array.isArray(shared.messages)
-      ? { messages: shared.messages.map(withoutPromptProviderOptions) }
+      ? {
+          messages: shared.messages.map((message) =>
+            withoutPromptProviderOptions(message, identities),
+          ),
+        }
       : {}),
     ...(Array.isArray(shared.tools)
       ? { tools: shared.tools.map(withoutObjectProviderOptions) }
@@ -262,23 +272,77 @@ function protocolIndependentRequestPayload(payload: unknown): unknown {
     : protocolIndependent;
 }
 
-function withoutPromptProviderOptions(value: unknown): unknown {
-  const message = withoutObjectProviderOptions(value);
-  if (!isObjectLike(message) || !Array.isArray(message.content)) return message;
-  return { ...message, content: message.content.map(withoutPromptPartProviderOptions) };
+interface ProtocolIndependentRequestIdentities {
+  approvalIds: Map<string, string>;
+  toolCallIds: Map<string, string>;
 }
 
-function withoutPromptPartProviderOptions(value: unknown): unknown {
+function withoutPromptProviderOptions(
+  value: unknown,
+  identities: ProtocolIndependentRequestIdentities,
+): unknown {
+  const message = withoutObjectProviderOptions(value);
+  if (!isObjectLike(message) || !Array.isArray(message.content)) return message;
+  return {
+    ...message,
+    content: message.content.map((part) => withoutPromptPartProviderOptions(part, identities)),
+  };
+}
+
+function withoutPromptPartProviderOptions(
+  value: unknown,
+  identities: ProtocolIndependentRequestIdentities,
+): unknown {
   const part = withoutObjectProviderOptions(value);
-  if (!isObjectLike(part) || part.type !== 'tool-result') return part;
+  if (!isObjectLike(part)) return part;
+  if (part.type === 'tool-call') {
+    const { providerExecuted: _providerExecuted, ...shared } = part;
+    return {
+      ...shared,
+      toolCallId: protocolIndependentId(part.toolCallId, identities.toolCallIds, 'tool-call'),
+    };
+  }
+  if (part.type === 'tool-approval-request') {
+    const { isAutomatic: _isAutomatic, signature: _signature, ...shared } = part;
+    return {
+      ...shared,
+      approvalId: protocolIndependentId(part.approvalId, identities.approvalIds, 'approval'),
+      toolCallId: protocolIndependentId(part.toolCallId, identities.toolCallIds, 'tool-call'),
+    };
+  }
+  if (part.type === 'tool-approval-response') {
+    const { providerExecuted: _providerExecuted, ...shared } = part;
+    return {
+      ...shared,
+      approvalId: protocolIndependentId(part.approvalId, identities.approvalIds, 'approval'),
+    };
+  }
+  if (part.type !== 'tool-result') return part;
   const output = withoutObjectProviderOptions(part.output);
+  const normalizedPart = {
+    ...part,
+    toolCallId: protocolIndependentId(part.toolCallId, identities.toolCallIds, 'tool-call'),
+  };
   if (!isObjectLike(output) || output.type !== 'content' || !Array.isArray(output.value)) {
-    return { ...part, output };
+    return { ...normalizedPart, output };
   }
   return {
-    ...part,
+    ...normalizedPart,
     output: { ...output, value: output.value.map(withoutObjectProviderOptions) },
   };
+}
+
+function protocolIndependentId(
+  value: unknown,
+  identities: Map<string, string>,
+  prefix: string,
+): unknown {
+  if (typeof value !== 'string') return value;
+  const existing = identities.get(value);
+  if (existing) return existing;
+  const normalized = `${prefix}-${identities.size + 1}`;
+  identities.set(value, normalized);
+  return normalized;
 }
 
 function withoutObjectProviderOptions(value: unknown): unknown {
