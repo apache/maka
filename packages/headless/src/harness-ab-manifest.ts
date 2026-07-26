@@ -222,6 +222,8 @@ export interface HarnessAbRunManifestInput {
     executor?: { id: 'pier'; version: string };
     timeoutPolicy: 'task-native';
     timeoutMultiplier: 1;
+    /** Maka-only Pier agent-phase tail reserved for artifact settlement. */
+    agentSettlementGraceSec?: number;
     outerTimeoutGraceSec: number;
   };
   taskIds: readonly string[];

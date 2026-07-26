@@ -808,6 +808,7 @@ test('harness A/B resolves the DeepSWE benchmark axis orthogonally to competitor
   });
   assert.deepEqual(manifest.metadata.benchmark.dataset, 'deep-swe');
   assert.equal(manifest.metadata.benchmark.version, '1.1');
+  assert.equal(manifest.metadata.benchmark.agentSettlementGraceSec, 30);
   assert.equal(manifest.metadata.order.seed, 'deep-swe-1.1:gpt-5.6-sol:harness-comparison:v1');
   assert.equal(manifest.evaluationTaskIds.length, 30);
   assert.deepEqual(manifest.arms[0].metadata.config.execution, {
@@ -843,6 +844,7 @@ test('harness A/B resolves the DeepSWE benchmark axis orthogonally to competitor
   // No executor key for Harbor benchmarks: the manifest payload (and with it
   // the resume fingerprint) must stay byte-identical to historical runs.
   assert.equal('executor' in tbenchManifest.metadata.benchmark, false);
+  assert.equal('agentSettlementGraceSec' in tbenchManifest.metadata.benchmark, false);
 });
 
 test('harness A/B benchmark profiles bind their executor and resolve from env', async () => {

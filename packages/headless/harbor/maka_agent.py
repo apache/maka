@@ -11,6 +11,7 @@ import re
 import secrets
 import shlex
 import threading
+import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -123,6 +124,20 @@ _MAX_NODE_TIMER_MS = 2_147_483_647
 # ASCII decimal positive integer literal only; [0-9] (not \d) rejects Unicode
 # digits on both sides. Matches the TS host's lenientPositiveIntEnv.
 _POSITIVE_INT_RE = re.compile(r"[1-9][0-9]*")
+
+
+def _positive_int_literal(raw: str | None) -> int | None:
+    if not raw:
+        return None
+    stripped = raw.strip()
+    if _POSITIVE_INT_RE.fullmatch(stripped) is None:
+        return None
+    try:
+        value = int(stripped)
+    except ValueError:
+        # CPython caps integer-string conversion length; an over-long value is malformed.
+        return None
+    return value if value <= _MAX_SAFE_INTEGER else None
 
 
 class MakaAgent(BaseInstalledAgent):
@@ -368,6 +383,7 @@ class MakaAgent(BaseInstalledAgent):
         environment: BaseEnvironment,
         context: AgentContext,
     ) -> None:
+        self._deadline_started_monotonic = time.monotonic()
         if self._harbor_mode() == "task-run":
             if self._task_run_in_container():
                 await self._run_task_run_container(instruction, environment, context)
@@ -394,7 +410,12 @@ class MakaAgent(BaseInstalledAgent):
                 f"2>&1 | tee {shlex.quote(run_log_path.as_posix())}"
             )
             command = f"bash -lc {shlex.quote(shell_script)}"
-            await self.exec_as_agent(environment, command=command, env=env, timeout_sec=self._cell_timeout_sec())
+            await self.exec_as_agent(
+                environment,
+                command=command,
+                env=env,
+                timeout_sec=self._cell_hard_timeout_sec(env),
+            )
             await self._download_cell_output(environment)
         output = self._read_cell_output(required=True)
         self._apply_cell_output(context, output)
@@ -437,18 +458,7 @@ class MakaAgent(BaseInstalledAgent):
             if env is not None
             else self._get_env("MAKA_CELL_TIMEOUT_SEC")
         )
-        if not raw:
-            return self._DEFAULT_CELL_TIMEOUT_SEC
-        stripped = raw.strip()
-        if _POSITIVE_INT_RE.fullmatch(stripped) is None:
-            return self._DEFAULT_CELL_TIMEOUT_SEC
-        try:
-            value = int(stripped)
-        except ValueError:
-            # CPython caps integer-string conversion length; an over-long value
-            # is malformed, not a giant timeout.
-            return self._DEFAULT_CELL_TIMEOUT_SEC
-        return value if value <= _MAX_SAFE_INTEGER else self._DEFAULT_CELL_TIMEOUT_SEC
+        return _positive_int_literal(raw) or self._DEFAULT_CELL_TIMEOUT_SEC
 
     def _cell_settlement_grace_sec(self, env: dict[str, str] | None = None) -> int:
         raw = (
@@ -456,28 +466,45 @@ class MakaAgent(BaseInstalledAgent):
             if env is not None
             else self._get_env("MAKA_CELL_SETTLEMENT_GRACE_SEC")
         )
-        if not raw:
-            return self._DEFAULT_CELL_SETTLEMENT_GRACE_SEC
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            return self._DEFAULT_CELL_SETTLEMENT_GRACE_SEC
-        return value if value > 0 else self._DEFAULT_CELL_SETTLEMENT_GRACE_SEC
+        return _positive_int_literal(raw) or self._DEFAULT_CELL_SETTLEMENT_GRACE_SEC
 
     def _cell_soft_timeout_ms(self, env: dict[str, str] | None = None) -> int:
         timeout_sec = self._cell_timeout_sec(env)
         grace_sec = self._cell_settlement_grace_sec(env)
-        if grace_sec >= timeout_sec:
+        phase_timeout_sec = self._agent_phase_timeout_sec(env)
+        soft_timeout_sec = min(timeout_sec, phase_timeout_sec - grace_sec)
+        if soft_timeout_sec <= 0:
             raise RuntimeError(
-                "MAKA_CELL_SETTLEMENT_GRACE_SEC must be smaller than MAKA_CELL_TIMEOUT_SEC"
+                "MAKA_CELL_SETTLEMENT_GRACE_SEC must be smaller than "
+                "MAKA_AGENT_PHASE_TIMEOUT_SEC"
             )
-        soft_timeout_ms = (timeout_sec - grace_sec) * 1000
+        soft_timeout_ms = int((soft_timeout_sec - self._deadline_elapsed_sec()) * 1000)
+        if soft_timeout_ms <= 0:
+            raise asyncio.TimeoutError("Maka model budget exhausted before cell start")
         if soft_timeout_ms > _MAX_NODE_TIMER_MS:
             raise RuntimeError(
                 "MAKA_CELL_SOFT_TIMEOUT_MS exceeds the Node timer limit "
                 f"of {_MAX_NODE_TIMER_MS}ms"
             )
         return soft_timeout_ms
+
+    def _agent_phase_timeout_sec(self, env: dict[str, str] | None = None) -> int:
+        raw = (
+            env.get("MAKA_AGENT_PHASE_TIMEOUT_SEC")
+            if env is not None
+            else self._get_env("MAKA_AGENT_PHASE_TIMEOUT_SEC")
+        )
+        return _positive_int_literal(raw) or self._cell_timeout_sec(env)
+
+    def _deadline_elapsed_sec(self) -> float:
+        started = getattr(self, "_deadline_started_monotonic", None)
+        return 0.0 if started is None else max(0.0, time.monotonic() - started)
+
+    def _cell_hard_timeout_sec(self, env: dict[str, str] | None = None) -> float:
+        remaining = self._agent_phase_timeout_sec(env) - self._deadline_elapsed_sec()
+        if remaining <= 0:
+            raise asyncio.TimeoutError("Maka agent phase exhausted before cell start")
+        return remaining
 
     def _host_side_llm_enabled(self) -> bool:
         return bool(
@@ -506,14 +533,19 @@ class MakaAgent(BaseInstalledAgent):
                 stderr=asyncio.subprocess.PIPE,
             )
             try:
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=self._cell_timeout_sec())
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(),
+                    timeout=self._cell_hard_timeout_sec(),
+                )
             except BaseException as error:
                 if process.returncode is None:
                     process.kill()
                 stdout, stderr = await process.communicate()
                 run_log_path.write_bytes(stdout + stderr)
                 if isinstance(error, asyncio.TimeoutError):
-                    raise RuntimeError(f"Maka host cell exceeded {self._cell_timeout_sec()}s") from error
+                    raise RuntimeError(
+                        f"Maka host cell exceeded its {self._agent_phase_timeout_sec()}s agent phase"
+                    ) from error
                 raise
             run_log_path.write_bytes(stdout + stderr)
             if process.returncode == 124:
@@ -794,7 +826,7 @@ class MakaAgent(BaseInstalledAgent):
                 environment,
                 command=f"bash -lc {shlex.quote(shell_script)}",
                 env=env,
-                timeout_sec=self._cell_timeout_sec(env),
+                timeout_sec=self._cell_hard_timeout_sec(env),
             )
         finally:
             await self._download_task_run_artifacts(environment)
@@ -909,7 +941,7 @@ class MakaAgent(BaseInstalledAgent):
             },
         )
 
-        timeout_sec = self._cell_timeout_sec(env)
+        timeout_sec = self._cell_hard_timeout_sec(env)
         proc: asyncio.subprocess.Process | None = None
         async with _ToolExecutorServer(self, environment) as executor:
             env["MAKA_HARBOR_TOOL_EXECUTOR_URL"] = executor.url
@@ -1124,7 +1156,7 @@ class MakaAgent(BaseInstalledAgent):
         stdin_payload: bytes,
         stdout_path: Path,
         stderr_path: Path,
-        timeout_sec: int,
+        timeout_sec: float,
     ) -> tuple[bytes, bytes]:
         stdout_chunks: list[bytes] = []
         stderr_chunks: list[bytes] = []

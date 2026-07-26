@@ -100,6 +100,29 @@ describe('harness A/B manifest', () => {
     assert.notEqual(changed.arms[1].fingerprint, original.arms[1].fingerprint);
   });
 
+  test('changes identity when the Pier settlement allowance changes', () => {
+    const originalInput = manifestInput(['a', 'b', 'c']);
+    const original = buildHarnessAbRunManifest({
+      ...originalInput,
+      benchmark: {
+        ...originalInput.benchmark,
+        dataset: 'deep-swe',
+        version: '1.1',
+        executor: { id: 'pier', version: '0.3.0' },
+        agentSettlementGraceSec: 30,
+      },
+    });
+    const changed = buildHarnessAbRunManifest({
+      ...originalInput,
+      benchmark: {
+        ...original.metadata.benchmark,
+        agentSettlementGraceSec: 31,
+      },
+    });
+
+    assert.notEqual(changed.fingerprint, original.fingerprint);
+  });
+
   test('records advisory Oracle annotations without changing frozen A/B selection', () => {
     const oracleEvidence = {
       registryUrl:

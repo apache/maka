@@ -15,7 +15,11 @@ import {
   selectTasksByIds,
 } from '#fixed-prompt-task-source';
 import { createHarborTaskRunner } from '#harbor-task-runner';
-import { createPierProviderProxyHub, createPierTaskRunner } from '#pier-task-runner';
+import {
+  createPierProviderProxyHub,
+  createPierTaskRunner,
+  PIER_MAKA_SETTLEMENT_GRACE_SEC,
+} from '#pier-task-runner';
 import {
   buildHarnessOracleExecutionPolicyFingerprint,
   HARBOR_ORACLE_DOCKER_PLATFORM,
@@ -565,6 +569,9 @@ export function buildHarnessAbManifest({
       ...(pierVersion === null ? {} : { executor: { id: 'pier', version: pierVersion } }),
       timeoutPolicy: 'task-native',
       timeoutMultiplier: 1,
+      ...(benchmarkProfile.executor === 'pier'
+        ? { agentSettlementGraceSec: PIER_MAKA_SETTLEMENT_GRACE_SEC }
+        : {}),
       outerTimeoutGraceSec: HARBOR_SETUP_TEARDOWN_GRACE_SEC,
     },
     taskIds,

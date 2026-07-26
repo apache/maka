@@ -266,6 +266,7 @@ test('buildPierRunArgs emits the pier CLI contract for the Maka arm', () => {
     jobName: 'trial',
     environment: 'docker',
     timeoutMultiplier: 1,
+    agentTimeoutMultiplier: 1.0055555555555555,
     mounts: [{ type: 'bind', source: '/repo', target: '/opt/maka-agent', read_only: true }],
     agentEnv: { MAKA_MODEL: 'k3', MAKA_PROVIDER: 'kimi-coding-plan' },
   });
@@ -277,12 +278,55 @@ test('buildPierRunArgs emits the pier CLI contract for the Maka arm', () => {
   assert.match(joined, /--job-name trial/);
   assert.match(joined, /-k 1/);
   assert.match(joined, /-n 1/);
+  assert.match(joined, /--agent-timeout-multiplier 1\.0055555555555555/);
   assert.match(joined, /--yes/);
   assert.ok(args.includes('--mounts-json'));
   assert.ok(args.includes('--ae'));
   assert.ok(args.includes('MAKA_MODEL=k3'));
   // No provider secret and no env-file were requested.
   assert.ok(!args.includes('--env-file'));
+});
+
+test('createPierTaskRunner gives Maka a controller-owned settlement tail', async () => {
+  await withDirs(async ({ jobsDir, repo }) => {
+    const captured: FakeOptions['captured'] = {};
+    const runner = createPierTaskRunner(
+      baseOptions({
+        jobsDir,
+        makaRepoPath: repo,
+        agent: 'maka',
+        agentEnv: {
+          MAKA_CELL_TIMEOUT_SEC: '1',
+          MAKA_CELL_SETTLEMENT_GRACE_SEC: '1',
+          MAKA_AGENT_PHASE_TIMEOUT_SEC: '1',
+        },
+        runPier: fakePier({ reward: 0, captured }),
+      }),
+    );
+
+    await runner(
+      runInput({
+        task: {
+          id: 'dasel',
+          path: '/tasks/dasel-html-document-format',
+          metadata: {
+            agentTimeoutSec: 5_400,
+            buildTimeoutSec: 1_800,
+            verifierTimeoutSec: 1_800,
+          },
+        },
+      }),
+    );
+
+    const request = captured.request;
+    assert.ok(request);
+    const agentTimeoutFlag = request.args.indexOf('--agent-timeout-multiplier');
+    assert.equal(request.args[agentTimeoutFlag + 1], '1.0055555555555555');
+    assert.ok(request.args.includes('MAKA_CELL_TIMEOUT_SEC=5400'));
+    assert.ok(request.args.includes('MAKA_CELL_SETTLEMENT_GRACE_SEC=30'));
+    assert.ok(request.args.includes('MAKA_AGENT_PHASE_TIMEOUT_SEC=5430'));
+    assert.equal(request.timeoutMs, 13_890_000);
+  });
 });
 
 test('createPierTaskRunner mounts the pinned Maka Node runtime for container task-run mode', async () => {
@@ -456,7 +500,8 @@ test('createPierTaskRunner derives the wall-clock watchdog from the task-native 
     // pier/trial/trial.py:333). The watchdog must cover the complete
     // legitimate lifecycle 2xbuild + setup + agent + 2xverifier = 12960s, or
     // cold builds, slow setups, and verifier retries get killed as infra.
-    // Contract: derived value covers that ceiling plus grace.
+    // Maka alone also reserves its 30s settlement tail. Contract: the derived
+    // value covers that ceiling plus both settlement and outer process grace.
     const deepSweMetadata = {
       agentTimeoutSec: 5400,
       verifierTimeoutSec: 1800,
@@ -469,7 +514,7 @@ test('createPierTaskRunner derives the wall-clock watchdog from the task-native 
     );
     assert.equal(
       captured.request?.timeoutMs,
-      (2 * 1800 + 360 + 5400 + 2 * 1800) * 1_000 + 15 * 60_000,
+      (2 * 1800 + 360 + 5400 + 30 + 2 * 1800) * 1_000 + 15 * 60_000,
     );
     assert.ok((captured.request?.timeoutMs ?? 0) >= 12_960_000);
 
@@ -1240,6 +1285,7 @@ test('buildPierRunArgs targets the Codex adapter and forwards constructor kwargs
     agentKwargs: { version: '0.144.6', reasoning_effort: 'xhigh' },
   });
   assert.match(args.join(' '), /--agent-import-path codex_agent:MakaCodexAgent/);
+  assert.ok(!args.includes('--agent-timeout-multiplier'));
   assert.ok(args.includes('--ak'));
   assert.ok(args.includes('version=0.144.6'));
   assert.ok(args.includes('reasoning_effort=xhigh'));
@@ -1296,7 +1342,19 @@ test('createPierTaskRunner wires the Codex arm through the host proxy with the p
         runPier: fakePier({ reward: 0, captured }),
       }),
     );
-    const output = await runner(runInput());
+    const output = await runner(
+      runInput({
+        task: {
+          id: 'dasel',
+          path: '/tasks/dasel-html-document-format',
+          metadata: {
+            agentTimeoutSec: 5_400,
+            buildTimeoutSec: 1_800,
+            verifierTimeoutSec: 1_800,
+          },
+        },
+      }),
+    );
     assert.equal(output.harbor.reward, 0);
     // The proxy URL and a minted (non-real) token reach the container via
     // env-file, never argv.
@@ -1308,6 +1366,8 @@ test('createPierTaskRunner wires the Codex arm through the host proxy with the p
     assert.notEqual(captured.envFile?.MAKA_PROVIDER_PROXY_TOKEN, 'upstream-key');
     const args = captured.request?.args ?? [];
     // Constructor kwargs ride --ak; the pinned-toolchain fingerprint rides --ae.
+    assert.ok(!args.includes('--agent-timeout-multiplier'));
+    assert.equal(captured.request?.timeoutMs, 13_860_000);
     assert.ok(args.includes(`version=${CODEX_TOOLCHAIN_SPEC.codex.version}`));
     assert.ok(args.includes('reasoning_effort=xhigh'));
     assert.ok(args.includes(`MAKA_CODEX_TOOLCHAIN_FINGERPRINT=${CODEX_TOOLCHAIN_FINGERPRINT}`));

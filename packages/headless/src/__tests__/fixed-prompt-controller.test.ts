@@ -2144,6 +2144,14 @@ describe('fixed prompt controller', () => {
     await withDir(async (dir) => {
       const systemPromptPath = join(dir, 'system_prompt.md');
       await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+      const rawOutput = harborOutput({
+        taskId: 'task-a',
+        reward: 0,
+        status: 'failed',
+        errorClass: 'aborted',
+        deadlineSettlement: { source: 'benchmark.deadline', mode: 'immediate' },
+      });
+      let taskRuns = 0;
 
       const result = await runFixedPromptController({
         runId: 'run-1',
@@ -2153,22 +2161,21 @@ describe('fixed prompt controller', () => {
         resultsJsonlPath: join(dir, 'results.jsonl'),
         resultsTsvPath: join(dir, 'results.tsv'),
         tasks: [{ id: 'task-a', path: '/bench/task-a' }],
-        taskRunner: async () =>
-          harborOutput({
-            taskId: 'task-a',
-            reward: 0,
-            status: 'failed',
-            errorClass: 'aborted',
-            deadlineSettlement: { source: 'benchmark.deadline', mode: 'immediate' },
-          }),
+        taskRunner: async () => {
+          taskRuns += 1;
+          return rawOutput;
+        },
         now: () => 100,
         newId: idFactory(),
       });
 
+      assert.equal(taskRuns, 1);
+      assert.equal(rawOutput.cell.errorClass, 'aborted');
       assert.equal(result.events[0]?.type, 'task_completed');
       assert.equal(result.events[0]?.passed, false);
       assert.equal(result.events[0]?.scored, true);
       assert.equal(result.events[0]?.eligible, true);
+      assert.equal(result.events[0]?.errorClass, 'budget_exhausted');
     });
   });
 

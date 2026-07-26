@@ -881,7 +881,11 @@ function taskCompletedEvent(input: {
       output.cell.errorClass === 'policy_denied') &&
       output.harbor.verifier !== undefined);
   const passed = verifierGraded && output.harbor.reward > 0;
-  const errorClass = passed ? undefined : (output.cell.errorClass ?? 'verification_failed');
+  const errorClass = passed
+    ? undefined
+    : deadlineSettled
+      ? 'budget_exhausted'
+      : (output.cell.errorClass ?? 'verification_failed');
   const scored = verifierGraded && !isUnscoredCellFailure(errorClass);
   const agentFailure = output.cell.status === 'failed' && errorClass === 'tool_step_cap_reached';
   return {
