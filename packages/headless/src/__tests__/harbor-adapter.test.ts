@@ -8,6 +8,7 @@ import { describe, test, type TestContext } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { HARBOR_CELL_CONTEXT_ENV_KEYS, resolveHarborCellAiSdkEnv } from '../harbor-cell.js';
+import { isBudgetExhaustedTrialException } from '../harbor-task-runner.js';
 
 const repoRoot = resolve(fileURLToPath(new URL('../../../..', import.meta.url)));
 const execFileAsync = promisify(execFile);
@@ -70,7 +71,7 @@ describe('Harbor adapter contract', () => {
     assert.match(source, /MAKA_CELL_TIMEOUT_SEC/);
     assert.match(source, /MAKA_CELL_SETTLEMENT_GRACE_SEC/);
     assert.match(source, /MAKA_CELL_SOFT_TIMEOUT_MS/);
-    assert.match(source, /timeout_sec=self\._cell_hard_timeout_sec\(env\)/);
+    assert.match(source, /timeout_sec=self\._cell_timeout_sec\(\)/);
     assert.match(source, /process\.returncode == 124/);
     assert.match(source, /deepseek\/deepseek-v4-flash/);
     assert.doesNotMatch(source, /deepseek\/deepseek-chat/);
@@ -88,6 +89,15 @@ describe('Harbor adapter contract', () => {
     );
     assert.doesNotMatch(source, /and raw else None/);
     assert.doesNotMatch(source, /MAKA_INSTRUCTION_EOF/);
+  });
+
+  test('maka_agent.py emits a host-cell timeout recognized as budget exhaustion', async () => {
+    const source = await readRepoFile('packages/headless/harbor/maka_agent.py');
+    const template = source.match(/f"(Maka host cell exceeded [^"]+)"/)?.[1];
+    assert.ok(template, 'host-cell timeout message template');
+    const message = template.replace('{self._cell_timeout_sec()}', '1800');
+
+    assert.equal(isBudgetExhaustedTrialException(`RuntimeError: ${message}`), true);
   });
 
   test('headless Harbor text files do not contain hidden or unexpected control characters', async () => {
@@ -1551,6 +1561,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import types
 from pathlib import Path
 
@@ -1927,12 +1938,48 @@ with tempfile.TemporaryDirectory() as tmp:
     assert container_env["MAKA_OUTPUT_DIR"] == "/logs/agent/maka-task-run", container_env
     assert container_env["MAKA_CELL_ARTIFACT_DIR"] == "/logs/agent", container_env
     assert container_env["MAKA_STORAGE_ROOT"] == "/logs/agent/maka-task-run/runs", container_env
-    assert 7199 < container_kwargs["timeout_sec"] <= 7200, container_kwargs
+    assert container_kwargs["timeout_sec"] == 7200, container_kwargs
     assert "/logs/agent/maka-task-run" in container_environment.download_dirs
     assert "/logs/agent/maka-cell-output.json" in container_environment.downloads
     assert json.loads(
         Path(container_context.metadata["maka_cell_output"]).read_text(encoding="utf-8")
     )["status"] == "completed"
+
+    pier_agent = ContainerTaskRunAgent(Path(tmp), extra_env={
+        "MAKA_BACKEND": "ai-sdk",
+        "MAKA_HARBOR_MODE": "task-run",
+        "MAKA_NODE_TOOLCHAIN_FINGERPRINT": "sha256:test-node",
+        "MAKA_CELL_TIMEOUT_SEC": "1800",
+        "MAKA_CELL_SETTLEMENT_GRACE_SEC": "60",
+        "MAKA_AGENT_PHASE_TIMEOUT_SEC": "1860",
+    })
+    pier_agent._resolved_flags = {
+        "maka_repo": "/opt/maka-agent",
+        "backend": "ai-sdk",
+    }
+    pier_agent._run_task_run_host = forbidden_host_task_run
+    pier_environment = ContainerTaskRunEnvironment()
+    pier_context = AgentContext()
+    deadline_started_at_ms = int(time.time() * 1000)
+    maka_agent_mod._NetworkAllowlist = FakeNetworkAllowlist
+    try:
+        asyncio.run(
+            pier_agent.run(
+                "finish the task",
+                pier_environment,
+                pier_context,
+            )
+        )
+    finally:
+        maka_agent_mod._NetworkAllowlist = original_network_allowlist
+    deadline_finished_at_ms = int(time.time() * 1000)
+    pier_command, pier_kwargs = pier_agent.container_execs[1]
+    pier_env = pier_kwargs["env"]
+    model_deadline_at_ms = int(pier_env["MAKA_CELL_DEADLINE_AT_MS"])
+    assert deadline_started_at_ms + 1800000 <= model_deadline_at_ms
+    assert model_deadline_at_ms <= deadline_finished_at_ms + 1800000
+    assert "MAKA_CELL_SOFT_TIMEOUT_MS" not in pier_env, pier_env
+    assert 1859 < pier_kwargs["timeout_sec"] <= 1860, pier_kwargs
 
     container_install_agent = ContainerTaskRunAgent(Path(tmp), extra_env={
         "MAKA_BACKEND": "fake",
@@ -2225,46 +2272,6 @@ with tempfile.TemporaryDirectory() as tmp:
         "MAKA_CELL_TIMEOUT_SEC": "1800",
         "MAKA_CELL_SETTLEMENT_GRACE_SEC": "60",
     })._cell_soft_timeout_ms() == 1740000
-    pier_deadline_agent = MakaAgent(Path(tmp), extra_env={
-        "MAKA_CELL_TIMEOUT_SEC": "1800",
-        "MAKA_CELL_SETTLEMENT_GRACE_SEC": "60",
-        "MAKA_AGENT_PHASE_TIMEOUT_SEC": "1860",
-    })
-    pier_deadline_agent._deadline_started_monotonic = 100.0
-    original_monotonic = time.monotonic
-    time.monotonic = lambda: 110.0
-    try:
-        assert pier_deadline_agent._cell_soft_timeout_ms() == 1790000
-        assert pier_deadline_agent._cell_hard_timeout_sec() == 1850
-    finally:
-        time.monotonic = original_monotonic
-    harbor_deadline_agent = MakaAgent(Path(tmp), extra_env={
-        "MAKA_CELL_TIMEOUT_SEC": "1800",
-        "MAKA_CELL_SETTLEMENT_GRACE_SEC": "60",
-    })
-    harbor_deadline_agent._deadline_started_monotonic = 100.0
-    time.monotonic = lambda: 110.0
-    try:
-        assert harbor_deadline_agent._cell_soft_timeout_ms() == 1730000
-        assert harbor_deadline_agent._cell_hard_timeout_sec() == 1790
-    finally:
-        time.monotonic = original_monotonic
-    exhausted_agent = MakaAgent(Path(tmp), extra_env={
-        "MAKA_CELL_TIMEOUT_SEC": "1800",
-        "MAKA_CELL_SETTLEMENT_GRACE_SEC": "60",
-        "MAKA_AGENT_PHASE_TIMEOUT_SEC": "1860",
-    })
-    exhausted_agent._deadline_started_monotonic = 100.0
-    time.monotonic = lambda: 1900.0
-    try:
-        try:
-            exhausted_agent._cell_soft_timeout_ms()
-        except asyncio.TimeoutError as exc:
-            assert "budget exhausted before cell start" in str(exc), str(exc)
-        else:
-            raise AssertionError("expected an exhausted model budget to reject cell start")
-    finally:
-        time.monotonic = original_monotonic
     try:
         MakaAgent(Path(tmp), extra_env={
             "MAKA_CELL_TIMEOUT_SEC": "2147514",

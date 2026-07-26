@@ -559,6 +559,17 @@ describe('resolveHarborRunOptions backend guard', () => {
     );
   });
 
+  test('task-run preserves the adapter absolute model deadline', async () => {
+    const opts = await resolveHarborRunOptions(
+      ['--mode', 'task-run', '--backend', 'fake', '--instruction', 'test'],
+      {
+        MAKA_CELL_DEADLINE_AT_MS: '2800000',
+      },
+    );
+
+    assert.equal(opts.deadlineAtMs, 2_800_000);
+  });
+
   test('explicit host authority overrides stale ambient provider authority', async () => {
     const opts = await resolveHarborRunOptions(
       ['--instruction', 'test', '--isolation', 'harbor-local'],

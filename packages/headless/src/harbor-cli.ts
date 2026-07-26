@@ -75,6 +75,7 @@ interface HarborRunOptions {
   maxRuntimeSteps?: number;
   maxWallTimeMs?: number;
   softTimeoutMs?: number;
+  deadlineAtMs?: number;
   replayPriorAttemptRuntimeContext: boolean;
   now: () => number;
   newId: () => string;
@@ -201,9 +202,11 @@ async function runHarborTaskRunMode(
     ...(options.realBackendIsolation ? { realBackendIsolation: options.realBackendIsolation } : {}),
     now: options.now,
     newId: options.newId,
-    ...(options.softTimeoutMs !== undefined
-      ? { deadlineAtMs: options.now() + options.softTimeoutMs }
-      : {}),
+    ...(options.deadlineAtMs !== undefined
+      ? { deadlineAtMs: options.deadlineAtMs }
+      : options.softTimeoutMs !== undefined
+        ? { deadlineAtMs: options.now() + options.softTimeoutMs }
+        : {}),
   };
   const run = options.autonomous
     ? await runAutonomousTaskWithStorage(
@@ -422,6 +425,10 @@ export async function resolveHarborRunOptions(
     '--max-wall-time-sec',
   );
   const softTimeoutMs = harborCellSoftTimeoutMsFromEnv(env);
+  const deadlineAtMs = optionalPositiveInt(
+    env.MAKA_CELL_DEADLINE_AT_MS,
+    'MAKA_CELL_DEADLINE_AT_MS',
+  );
   const config = buildConfig({
     parsed,
     env,
@@ -474,6 +481,7 @@ export async function resolveHarborRunOptions(
     ...(maxRuntimeSteps !== undefined ? { maxRuntimeSteps } : {}),
     ...(maxWallTimeSec !== undefined ? { maxWallTimeMs: maxWallTimeSec * 1000 } : {}),
     ...(softTimeoutMs !== undefined ? { softTimeoutMs } : {}),
+    ...(deadlineAtMs !== undefined ? { deadlineAtMs } : {}),
     replayPriorAttemptRuntimeContext:
       parsed.bools['replay-prior-attempt-runtime-context'] ||
       truthyEnv(env.MAKA_REPLAY_PRIOR_ATTEMPT_RUNTIME_CONTEXT),
