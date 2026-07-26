@@ -284,6 +284,16 @@ export async function smokeStory(page, baseUrl, job, options = {}) {
                 `plan reminder wide row must have 3 hierarchy columns, got ${columns.length}`,
               );
             }
+            const contextLefts = rows.map((row) =>
+              Math.round(
+                row.querySelector('.maka-plan-card-context')?.getBoundingClientRect().left ?? -1,
+              ),
+            );
+            if (contextLefts.some((left) => Math.abs(left - contextLefts[0]) > 1)) {
+              failures.push(
+                `plan reminder wide context columns must align, got ${contextLefts.join(', ')}`,
+              );
+            }
           }
         }
         return {
