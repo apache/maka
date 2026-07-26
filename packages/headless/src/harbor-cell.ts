@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type {
+  AgentRunEvent,
   AgentRunHeader,
   BackendKind,
   PricingConfig,
@@ -553,9 +554,25 @@ export async function writeHarborTaskRunTrace(input: {
 }): Promise<string> {
   const storage = authenticateHeadlessStorageWriter(input.storage);
   const eventGroups = await Promise.all(
-    input.invocations.map((invocation) =>
-      storage.executionStores.agentRunStore.readEvents(invocation.sessionId, invocation.runId),
-    ),
+    input.invocations.map(async (invocation) => {
+      const [header, events] = await Promise.all([
+        storage.executionStores.agentRunStore.readRun(invocation.sessionId, invocation.runId),
+        storage.executionStores.agentRunStore.readEvents(invocation.sessionId, invocation.runId),
+      ]);
+      if (!header.traceWriteError || events.some((event) => event.type === 'trace_write_failed')) {
+        return events;
+      }
+      const traceWriteFailure: AgentRunEvent = {
+        type: 'trace_write_failed',
+        id: `run-header-trace-write-failed-${header.runId}`,
+        runId: header.runId,
+        sessionId: header.sessionId,
+        turnId: header.turnId,
+        ts: header.updatedAt,
+        message: header.traceWriteError,
+      };
+      return [...events, traceWriteFailure];
+    }),
   );
   const chunks = eventGroups.map((events) =>
     events.map((event) => JSON.stringify(event)).join('\n'),

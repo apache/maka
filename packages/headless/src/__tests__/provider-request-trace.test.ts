@@ -1,9 +1,13 @@
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import type { AgentRunHeader } from '@maka/core';
+import type { InvocationResult } from '@maka/runtime';
 
+import { writeHarborTaskRunTrace } from '../harbor-cell.js';
+import { openHeadlessStorageForWrite } from '../headless-storage.js';
 import * as traceAnalysis from '../provider-request-trace.js';
 
 test('derives the first changed cacheable segment from the existing AgentRun trace', async () => {
@@ -120,6 +124,102 @@ test('keeps complete provider captures when the AgentRun trace ends with a torn 
     () => traceAnalysis.assertProviderRequestTraceComplete(result),
     /line 2.*valid JSON/i,
   );
+});
+
+test('exports the Run-header trace failure latch when its sentinel event is missing', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-provider-trace-export-'));
+  const storageRoot = join(root, 'storage');
+  const outputDir = join(root, 'output');
+  const identity = { runId: 'run-1', sessionId: 'session-1', turnId: 'turn-1' };
+  const header: AgentRunHeader = {
+    ...identity,
+    status: 'completed',
+    backendKind: 'ai-sdk',
+    llmConnectionSlug: 'kimi-coding-plan',
+    modelId: 'k3',
+    cwd: root,
+    permissionMode: 'execute',
+    createdAt: 1,
+    updatedAt: 4,
+    completedAt: 4,
+  };
+  const invocation: InvocationResult = {
+    invocationId: 'invocation-1',
+    ...identity,
+    status: 'completed',
+    events: [],
+    startedAt: 1,
+    finishedAt: 4,
+  };
+
+  try {
+    await mkdir(outputDir, { recursive: true });
+    const storage = await openHeadlessStorageForWrite(storageRoot);
+    const runStore = storage.executionStores.agentRunStore;
+    await runStore.createRun(header);
+    await runStore.appendEvent(identity.sessionId, identity.runId, {
+      type: 'provider_request_captured',
+      id: 'capture-event-1',
+      ...identity,
+      ts: 2,
+      data: {
+        schemaVersion: 2,
+        traceId: 'provider-trace-1',
+        captureId: 'capture-1',
+        artifactId: 'artifact-capture-1',
+        turnId: identity.turnId,
+        step: 0,
+        providerId: 'openai',
+        modelId: 'k3',
+        requestHash: 'sha256:request-1',
+        requestPayloadWithoutProviderOptionsHash: 'sha256:shared-request-1',
+        requestBytes: 100,
+        segments: [],
+      },
+    });
+    await runStore.appendEvent(identity.sessionId, identity.runId, {
+      type: 'provider_request_attempt_recorded',
+      id: 'attempt-event-1',
+      ...identity,
+      ts: 3,
+      data: {
+        traceId: 'provider-trace-1',
+        attemptId: 'attempt-1',
+        turnId: identity.turnId,
+        step: 0,
+        attempt: 1,
+        captureId: 'capture-1',
+        captureArtifactId: 'artifact-capture-1',
+        providerId: 'openai',
+        modelId: 'k3',
+        requestHash: 'sha256:request-1',
+        requestBytes: 100,
+        segments: [],
+        startedAt: 2,
+        completedAt: 3,
+        status: 'completed',
+        latencyMs: 1,
+      },
+    });
+    await runStore.updateRun(identity.sessionId, identity.runId, {
+      traceWriteError: 'append provider request attempt: disk full',
+      updatedAt: 4,
+    });
+
+    const traceEventsPath = await writeHarborTaskRunTrace({
+      outputDir,
+      storage,
+      invocations: [invocation],
+    });
+    const result = await traceAnalysis.readProviderRequestTrace(traceEventsPath);
+
+    assert.throws(
+      () => traceAnalysis.assertProviderRequestTraceComplete(result),
+      /trace write failed evidence/i,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('reads a v2 capture and attempt and binds them to the expected execution identity', async () => {
