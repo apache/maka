@@ -139,19 +139,6 @@ describe('Product Storybook coverage manifest', () => {
 
     assert.equal(validateCoverageManifest(manifest, STORY_INDEX).length, 15);
   });
-
-  it('keeps CI self-contained with the core build and Chromium installation', async () => {
-    const workflow = await readFile('.github/workflows/ci.yml', 'utf8');
-    const job = workflow.slice(workflow.indexOf('  storybook-smoke:'), workflow.indexOf('  e2e:'));
-
-    assert.match(job, /npm --workspace @maka\/core run build/);
-    assert.match(job, /playwright install --with-deps chromium/);
-    assert.ok(
-      job.indexOf('npm --workspace @maka/core run build') <
-        job.indexOf('npm --workspace @maka/desktop run build-storybook'),
-      'the clean Storybook job must build @maka/core before Storybook',
-    );
-  });
 });
 
 class FakePage extends EventEmitter {

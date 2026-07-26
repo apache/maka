@@ -65,24 +65,6 @@ jobs:
       # throw away this dist and rebuild every package a second time.
       - run: npm run test:dist
 
-  storybook-smoke:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          cache: npm
-      - run: npm ci
-      - name: Build Storybook workspace dependency
-        run: npm --workspace @maka/core run build
-      - name: Install Chromium
-        run: npm exec -- playwright install --with-deps chromium
-      - name: Build Product Storybook
-        run: npm --workspace @maka/desktop run build-storybook
-      - name: Render Product Storybook manifest
-        run: npm --workspace @maka/desktop run smoke:storybook
-
   e2e:
     runs-on: ubuntu-latest
     steps:

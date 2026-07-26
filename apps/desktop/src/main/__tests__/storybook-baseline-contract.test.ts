@@ -39,10 +39,11 @@ function readTypescriptConfig(repoRoot: string, configPath: string) {
 }
 
 describe('Storybook baseline contract', () => {
-  it('keeps Storybook as renderer tooling, not part of mandatory build or test', () => {
+  it('keeps Storybook as renderer tooling, not part of mandatory build, test, or CI', () => {
     const rootPkg = readJson(join(REPO_ROOT, 'package.json'));
     const desktopPkg = readJson(join(REPO_ROOT, 'apps', 'desktop', 'package.json'));
     const desktopScripts = desktopPkg.scripts ?? {};
+    const ciWorkflow = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
 
     assert.match(desktopScripts.storybook ?? '', /storybook dev\b/);
     assert.match(desktopScripts['build-storybook'] ?? '', /storybook build\b/);
@@ -55,6 +56,12 @@ describe('Storybook baseline contract', () => {
     })) {
       assert.doesNotMatch(script, /storybook/i, `${name} must not run Storybook yet`);
     }
+
+    assert.doesNotMatch(
+      ciWorkflow,
+      /\bstorybook-smoke:|build-storybook|smoke:storybook/,
+      'default CI must keep the Product Storybook smoke opt-in',
+    );
   });
 
   it('uses the renderer Vite/CSS setup so stories render against the app substrate', () => {
