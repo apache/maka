@@ -345,8 +345,9 @@ export function PlanReminderPanel(props: {
                 <span>{visibleRunEntries.length}</span>
               </TabsTrigger>
             </TabsList>
-            {showListControls && planView === 'tasks' ? (
-              <div className="maka-plan-toolbar" aria-label={copy.page.filtersAriaLabel}>
+            {planView === 'tasks' ? (
+              showListControls ? (
+                <div className="maka-plan-toolbar" aria-label={copy.page.filtersAriaLabel}>
                 <label className="maka-plan-compact-select maka-plan-sort-select">
                   <span>{copy.page.sort}</span>
                   <PlanReminderSelect
@@ -380,7 +381,8 @@ export function PlanReminderPanel(props: {
                     ] satisfies ReadonlyArray<readonly [PlanReminderListFilter, string]>}
                   />
                 </label>
-              </div>
+                </div>
+              ) : null
             ) : (
               <div className="maka-plan-toolbar maka-plan-toolbar-compact" aria-label={copy.page.runsFilterAriaLabel}>
                 <label className="maka-plan-compact-select">

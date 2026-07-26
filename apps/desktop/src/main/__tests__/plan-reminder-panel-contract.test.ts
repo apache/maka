@@ -159,7 +159,11 @@ describe('Plan Reminder management surface contract', () => {
       ui,
       /const showListControls =\s*props\.reminders\.length >= 8 \|\|\s*normalizedListQuery\.length > 0 \|\|\s*listFilter !== 'all' \|\|\s*listSort !== 'created-desc';/,
     );
-    assert.match(ui, /\{showListControls && planView === 'tasks' \? \(/);
+    assert.match(
+      ui,
+      /\{planView === 'tasks' \? \(\s*showListControls \? \([\s\S]*?\) : null\s*\) : \(/,
+      'a low-volume task view must render no collection toolbar, not the run-range toolbar',
+    );
     assert.match(ui, /useState<PlanReminderListFilter>\('all'\)/);
   });
 
