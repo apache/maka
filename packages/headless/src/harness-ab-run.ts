@@ -30,6 +30,7 @@ export interface RunHarnessAbComparisonInput {
   arms: readonly [HarnessAbRuntimeArm, HarnessAbRuntimeArm];
   pairConcurrency?: number;
   armExecution?: 'parallel' | 'sequential';
+  expectedDeadlineSettlementGraceSec?: number;
   now?: () => number;
   newId?: () => string;
 }
@@ -95,6 +96,11 @@ export async function runHarnessAbComparisonUnlocked(
         requireExecutionIdentity: true,
         requireFinalUsage: true,
         expectedPricingProfile: runtimeArm.expectedPricingProfile,
+        ...(input.expectedDeadlineSettlementGraceSec !== undefined
+          ? {
+              expectedDeadlineSettlementGraceSec: input.expectedDeadlineSettlementGraceSec,
+            }
+          : {}),
         ...(runtimeArm.billingMode ? { billingMode: runtimeArm.billingMode } : {}),
         resumeFingerprint: input.resumeFingerprint,
         taskRunner: runtimeArm.harborRunner,

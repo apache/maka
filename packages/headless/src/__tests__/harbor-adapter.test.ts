@@ -70,7 +70,7 @@ describe('Harbor adapter contract', () => {
     assert.match(source, /MAKA_CELL_TIMEOUT_SEC/);
     assert.match(source, /MAKA_CELL_SETTLEMENT_GRACE_SEC/);
     assert.match(source, /MAKA_CELL_SOFT_TIMEOUT_MS/);
-    assert.match(source, /timeout_sec=self\._cell_timeout_sec\(\)/);
+    assert.match(source, /timeout_sec=self\._cell_hard_timeout_sec\(\)/);
     assert.match(source, /process\.returncode == 124/);
     assert.match(source, /deepseek\/deepseek-v4-flash/);
     assert.doesNotMatch(source, /deepseek\/deepseek-chat/);
@@ -2225,6 +2225,15 @@ with tempfile.TemporaryDirectory() as tmp:
         "MAKA_CELL_TIMEOUT_SEC": "1800",
         "MAKA_CELL_SETTLEMENT_GRACE_SEC": "60",
     })._cell_soft_timeout_ms() == 1740000
+    fair_deadline_env = {
+        "MAKA_CELL_TIMEOUT_SEC": "5400",
+        "MAKA_CELL_SETTLEMENT_GRACE_SEC": "30",
+        "MAKA_CELL_HARD_TIMEOUT_SEC": "5430",
+        "MAKA_BENCHMARK_DEADLINE_POLICY": "task-native-full-budget-v1",
+    }
+    fair_deadline_agent = MakaAgent(Path(tmp), extra_env=fair_deadline_env)
+    assert fair_deadline_agent._cell_soft_timeout_ms() == 5400000
+    assert fair_deadline_agent._cell_hard_timeout_sec() == 5430
     try:
         MakaAgent(Path(tmp), extra_env={
             "MAKA_CELL_TIMEOUT_SEC": "2147514",
@@ -3403,6 +3412,10 @@ with tempfile.TemporaryDirectory() as tmp:
             "MAKA_TRIAL_CACHE_READ_USD_PER_1M": "0.5",
             "MAKA_TRIAL_OUTPUT_USD_PER_1M": "30",
             "MAKA_TRIAL_PRICING_SOURCE": "openai-gpt-5.6-sol-2026-07-20",
+            "MAKA_BENCHMARK_DEADLINE_POLICY": "task-native-full-budget-v1",
+            "MAKA_CELL_TIMEOUT_SEC": "5400",
+            "MAKA_CELL_SETTLEMENT_GRACE_SEC": "30",
+            "MAKA_CELL_HARD_TIMEOUT_SEC": "5430",
         },
     )
     environment = Environment()
@@ -3442,6 +3455,12 @@ with tempfile.TemporaryDirectory() as tmp:
     assert cell["executionIdentity"]["model"] == "gpt-5.6-sol", cell
     assert cell["executionIdentity"]["reasoningEffort"] == "max", cell
     assert cell["executionIdentity"]["agentTools"] is False, cell
+    assert cell["executionIdentity"]["deadlinePolicy"] == {
+        "id": "task-native-full-budget-v1",
+        "modelBudgetSec": 5400,
+        "settlementGraceSec": 30,
+        "hardTimeoutSec": 5430,
+    }, cell
     assert cell["runtimeRefs"]["sessionId"] == "thread-1", cell
     assert cell["tokenSummary"]["input"] == 100, cell
     assert cell["tokenSummary"]["cachedInput"] == 40, cell

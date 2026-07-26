@@ -131,6 +131,12 @@ describe('Harbor cell output contract', () => {
         systemPromptHash: 'sha256:prompt-a',
         pricingProfile: 'deepseek-v4-flash-tbench-v1',
         agentTools: true,
+        deadlinePolicy: {
+          id: 'task-native-full-budget-v1',
+          modelBudgetSec: 5400,
+          settlementGraceSec: 30,
+          hardTimeoutSec: 5430,
+        },
       },
     }) as HarborCellOutput & { executionIdentity?: unknown };
 
@@ -142,6 +148,12 @@ describe('Harbor cell output contract', () => {
       systemPromptHash: 'sha256:prompt-a',
       pricingProfile: 'deepseek-v4-flash-tbench-v1',
       agentTools: true,
+      deadlinePolicy: {
+        id: 'task-native-full-budget-v1',
+        modelBudgetSec: 5400,
+        settlementGraceSec: 30,
+        hardTimeoutSec: 5430,
+      },
     });
   });
 

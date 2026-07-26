@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import { buildAbRunManifest, buildRunManifestFingerprint } from './ab-manifest.js';
 import type { AbRunManifest } from './ab-types.js';
+import type { BenchmarkDeadlinePolicyManifest } from './benchmark-deadline-policy.js';
 import type { HarnessOracleAnnotation } from './harness-oracle-registry.js';
 
 export type HarnessAbArmId = 'maka' | 'opencode' | 'kimi-code' | 'codex';
@@ -220,6 +221,7 @@ export interface HarnessAbRunManifestInput {
      * version the toolchain fingerprint also hashes. Absent for Harbor
      * benchmarks so existing Terminal-Bench manifests stay byte-identical. */
     executor?: { id: 'pier'; version: string };
+    deadlinePolicy?: BenchmarkDeadlinePolicyManifest;
     timeoutPolicy: 'task-native';
     timeoutMultiplier: 1;
     outerTimeoutGraceSec: number;

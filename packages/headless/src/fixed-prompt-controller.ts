@@ -18,6 +18,11 @@ import type { MakaChangeAuditRecord } from './change-audit.js';
 import type { HarborBillingMode } from './harbor-task-runner.js';
 import { assertFinitePositive, assertPositiveInt, assertRatio } from './numeric-guards.js';
 import { hashHeadlessSystemPrompt } from './system-prompts.js';
+import {
+  benchmarkDeadlinePoliciesEqual,
+  resolveTaskNativeDeadlinePolicy,
+  type BenchmarkDeadlinePolicy,
+} from './benchmark-deadline-policy.js';
 
 export const FIXED_PROMPT_WAL_SCHEMA_VERSION = 1;
 export const BUDGET_EXHAUSTED_RUNTIME_UNAVAILABLE_REASON = 'budget_exhausted_before_cell_output';
@@ -385,6 +390,9 @@ export interface RunFixedPromptControllerInput {
   requireExecutionIdentity?: boolean;
   requireFinalUsage?: boolean;
   expectedPricingProfile?: string;
+  /** When set, require every task's execution identity to attest the same
+   * task-native T and controller-owned settlement grace. */
+  expectedDeadlineSettlementGraceSec?: number;
   billingMode?: HarborBillingMode;
   /** Refuse resume when a model attempt was durably admitted but no terminal
    * event exists, preserving single-sample benchmark semantics. */
@@ -425,6 +433,25 @@ export async function runFixedPromptController(
   }
   const terminalInfraFailures = input.protectPassAtOne || input.infraFailurePolicy === 'terminal';
   assertUniqueTaskIds(input.tasks.map((task) => task.id));
+  const expectedDeadlinePolicies =
+    input.expectedDeadlineSettlementGraceSec === undefined
+      ? undefined
+      : new Map(
+          input.tasks.map((task) => {
+            if (task.metadata?.agentTimeoutSec === undefined) {
+              throw new Error(
+                `task ${task.id} must declare agentTimeoutSec for deadline attestation`,
+              );
+            }
+            return [
+              task.id,
+              resolveTaskNativeDeadlinePolicy(
+                task.metadata.agentTimeoutSec,
+                input.expectedDeadlineSettlementGraceSec!,
+              ),
+            ];
+          }),
+        );
   const systemPrompt = await readFile(input.systemPromptPath, 'utf8');
   const expectedPromptHash = hashSystemPrompt(systemPrompt);
   const config = { ...input.config, systemPrompt };
@@ -517,6 +544,7 @@ export async function runFixedPromptController(
           requireExecutionIdentity: input.requireExecutionIdentity,
           requireFinalUsage: input.requireFinalUsage,
           expectedPricingProfile: input.expectedPricingProfile,
+          expectedDeadlinePolicy: expectedDeadlinePolicies?.get(task.id),
           billingMode: input.billingMode,
           resumeFingerprint: input.resumeFingerprint,
           id: newId(),
@@ -680,6 +708,7 @@ async function runTaskAndBuildEvent(input: {
   requireExecutionIdentity?: boolean;
   requireFinalUsage?: boolean;
   expectedPricingProfile?: string;
+  expectedDeadlinePolicy?: BenchmarkDeadlinePolicy;
   billingMode?: HarborBillingMode;
   resumeFingerprint?: string;
   id: string;
@@ -726,6 +755,7 @@ async function runTaskAndBuildEvent(input: {
         requireExecutionIdentity: input.requireExecutionIdentity,
         requireFinalUsage: input.requireFinalUsage,
         expectedPricingProfile: input.expectedPricingProfile,
+        expectedDeadlinePolicy: input.expectedDeadlinePolicy,
         billingMode: input.billingMode,
         resumeFingerprint: input.resumeFingerprint,
         id: input.id,
@@ -765,6 +795,7 @@ async function runTaskAndBuildEvent(input: {
           requireExecutionIdentity: input.requireExecutionIdentity,
           requireFinalUsage: input.requireFinalUsage,
           expectedPricingProfile: input.expectedPricingProfile,
+          expectedDeadlinePolicy: input.expectedDeadlinePolicy,
           billingMode: input.billingMode,
           resumeFingerprint: input.resumeFingerprint,
           id: input.id,
@@ -789,6 +820,7 @@ async function runTaskAndBuildEvent(input: {
     requireExecutionIdentity: input.requireExecutionIdentity,
     requireFinalUsage: input.requireFinalUsage,
     expectedPricingProfile: input.expectedPricingProfile,
+    expectedDeadlinePolicy: input.expectedDeadlinePolicy,
     billingMode: input.billingMode,
     resumeFingerprint: input.resumeFingerprint,
     taskId: input.task.id,
@@ -806,6 +838,7 @@ function taskEventFromOutput(input: {
   requireExecutionIdentity?: boolean;
   requireFinalUsage?: boolean;
   expectedPricingProfile?: string;
+  expectedDeadlinePolicy?: BenchmarkDeadlinePolicy;
   billingMode?: HarborBillingMode;
   resumeFingerprint?: string;
   taskId: string;
@@ -824,6 +857,7 @@ function taskEventFromOutput(input: {
     input.expectedPromptHash,
     input.expectedConfig,
     input.expectedPricingProfile,
+    input.expectedDeadlinePolicy,
   );
   if (identityMismatch) {
     return taskPlumbingFailedEvent({
@@ -846,6 +880,7 @@ function taskEventFromOutput(input: {
     input.requireExecutionIdentity ?? false,
     input.requireFinalUsage ?? false,
     input.expectedPricingProfile,
+    input.expectedDeadlinePolicy,
     input.billingMode,
   );
   if (plumbingFailure) {
@@ -881,7 +916,11 @@ function taskCompletedEvent(input: {
       output.cell.errorClass === 'policy_denied') &&
       output.harbor.verifier !== undefined);
   const passed = verifierGraded && output.harbor.reward > 0;
-  const errorClass = passed ? undefined : (output.cell.errorClass ?? 'verification_failed');
+  const errorClass = passed
+    ? undefined
+    : deadlineSettled
+      ? 'budget_exhausted'
+      : (output.cell.errorClass ?? 'verification_failed');
   const scored = verifierGraded && !isUnscoredCellFailure(errorClass);
   const agentFailure = output.cell.status === 'failed' && errorClass === 'tool_step_cap_reached';
   return {
@@ -1005,6 +1044,7 @@ function classifyPlumbingFailure(
   requireExecutionIdentity: boolean,
   requireFinalUsage: boolean,
   expectedPricingProfile: string | undefined,
+  expectedDeadlinePolicy: BenchmarkDeadlinePolicy | undefined,
   billingMode: HarborBillingMode | undefined,
 ):
   | {
@@ -1018,6 +1058,7 @@ function classifyPlumbingFailure(
     expectedConfig,
     requireExecutionIdentity,
     expectedPricingProfile,
+    expectedDeadlinePolicy,
   );
   if (identityFailure) return identityFailure;
   if (output.cell.status === 'completed' && output.cell.promptHash === undefined) {
@@ -1063,6 +1104,7 @@ function classifyExecutionIdentityFailure(
   expectedConfig: Config,
   requireExecutionIdentity: boolean,
   expectedPricingProfile: string | undefined,
+  expectedDeadlinePolicy: BenchmarkDeadlinePolicy | undefined,
 ):
   | {
       errorClass: Extract<
@@ -1090,12 +1132,15 @@ function classifyExecutionIdentityFailure(
       identity.reasoningEffort !== expectedConfig.thinkingLevel ||
       identity.agentTools !== (expectedConfig.agentTools === true) ||
       identity.systemPromptHash !== expectedPromptHash ||
-      (expectedPricingProfile !== undefined && identity.pricingProfile !== expectedPricingProfile)
+      (expectedPricingProfile !== undefined &&
+        identity.pricingProfile !== expectedPricingProfile) ||
+      (expectedDeadlinePolicy !== undefined &&
+        !benchmarkDeadlinePoliciesEqual(identity.deadlinePolicy, expectedDeadlinePolicy))
     ) {
       return {
         errorClass: 'execution_identity_mismatch',
         error:
-          'Harbor cell execution identity did not match the configured connection, model, and prompt',
+          'Harbor cell execution identity did not match the configured connection, model, prompt, pricing, or deadline policy',
       };
     }
   }
@@ -1107,6 +1152,7 @@ function classifyExplicitIdentityMismatch(
   expectedPromptHash: string,
   expectedConfig: Config,
   expectedPricingProfile: string | undefined,
+  expectedDeadlinePolicy: BenchmarkDeadlinePolicy | undefined,
 ): { errorClass: 'execution_identity_mismatch'; error: string } | undefined {
   if (!identity) return undefined;
   const failure = classifyExecutionIdentityFailure(
@@ -1115,6 +1161,7 @@ function classifyExplicitIdentityMismatch(
     expectedConfig,
     false,
     expectedPricingProfile,
+    expectedDeadlinePolicy,
   );
   return failure?.errorClass === 'execution_identity_mismatch'
     ? { errorClass: failure.errorClass, error: failure.error }
@@ -1173,6 +1220,7 @@ function taskBudgetExhaustedEvent(input: {
   requireExecutionIdentity?: boolean;
   requireFinalUsage?: boolean;
   expectedPricingProfile?: string;
+  expectedDeadlinePolicy?: BenchmarkDeadlinePolicy;
   billingMode?: HarborBillingMode;
   resumeFingerprint?: string;
   id: string;
@@ -1192,6 +1240,7 @@ function taskBudgetExhaustedEvent(input: {
       input.expectedPromptHash,
       input.expectedConfig,
       input.expectedPricingProfile,
+      input.expectedDeadlinePolicy,
     );
     evidenceFailure =
       identityMismatch ??
@@ -1212,6 +1261,7 @@ function taskBudgetExhaustedEvent(input: {
               input.requireExecutionIdentity ?? false,
               input.requireFinalUsage ?? false,
               input.expectedPricingProfile,
+              input.expectedDeadlinePolicy,
               input.billingMode,
             ));
   } else {
@@ -1221,6 +1271,7 @@ function taskBudgetExhaustedEvent(input: {
       input.expectedConfig,
       input.requireExecutionIdentity ?? false,
       input.expectedPricingProfile,
+      input.expectedDeadlinePolicy,
     );
     if (evidenceFailure?.errorClass === 'missing_execution_identity') {
       evidenceFailure = {

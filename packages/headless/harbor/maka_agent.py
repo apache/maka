@@ -41,6 +41,7 @@ from process_scope import (
     scoped_process_cleanup_command as _scoped_process_cleanup_command,
 )
 from provider_proxy import provider_proxy_endpoint, warn_if_pier_unreachable_proxy_port
+from deadline_policy import deadline_policy_from_env
 from trial_pricing import estimate_cost, pricing_from_env
 
 # Default wall-clock budget for a single bridged tool command when the client
@@ -394,7 +395,7 @@ class MakaAgent(BaseInstalledAgent):
                 f"2>&1 | tee {shlex.quote(run_log_path.as_posix())}"
             )
             command = f"bash -lc {shlex.quote(shell_script)}"
-            await self.exec_as_agent(environment, command=command, env=env, timeout_sec=self._cell_timeout_sec())
+            await self.exec_as_agent(environment, command=command, env=env, timeout_sec=self._cell_hard_timeout_sec())
             await self._download_cell_output(environment)
         output = self._read_cell_output(required=True)
         self._apply_cell_output(context, output)
@@ -466,6 +467,15 @@ class MakaAgent(BaseInstalledAgent):
 
     def _cell_soft_timeout_ms(self, env: dict[str, str] | None = None) -> int:
         timeout_sec = self._cell_timeout_sec(env)
+        policy = self._benchmark_deadline_policy(env)
+        if policy is not None:
+            soft_timeout_ms = timeout_sec * 1000
+            if soft_timeout_ms > _MAX_NODE_TIMER_MS:
+                raise RuntimeError(
+                    "MAKA_CELL_SOFT_TIMEOUT_MS exceeds the Node timer limit "
+                    f"of {_MAX_NODE_TIMER_MS}ms"
+                )
+            return soft_timeout_ms
         grace_sec = self._cell_settlement_grace_sec(env)
         if grace_sec >= timeout_sec:
             raise RuntimeError(
@@ -478,6 +488,32 @@ class MakaAgent(BaseInstalledAgent):
                 f"of {_MAX_NODE_TIMER_MS}ms"
             )
         return soft_timeout_ms
+
+    def _cell_hard_timeout_sec(self, env: dict[str, str] | None = None) -> int:
+        policy = self._benchmark_deadline_policy(env)
+        return (
+            int(policy["hardTimeoutSec"])
+            if policy is not None
+            else self._cell_timeout_sec(env)
+        )
+
+    def _benchmark_deadline_policy(
+        self, env: dict[str, str] | None = None
+    ) -> dict[str, int | str] | None:
+        policy = deadline_policy_from_env(
+            lambda key: env.get(key) if env is not None else self._get_env(key)
+        )
+        if policy is None:
+            return None
+        # Keep the adapter's lenient legacy parsers honest when the strict
+        # benchmark policy is active.
+        if policy["modelBudgetSec"] != self._cell_timeout_sec(env):
+            raise RuntimeError("deadline policy model budget did not match MAKA_CELL_TIMEOUT_SEC")
+        if policy["settlementGraceSec"] != self._cell_settlement_grace_sec(env):
+            raise RuntimeError(
+                "deadline policy grace did not match MAKA_CELL_SETTLEMENT_GRACE_SEC"
+            )
+        return policy
 
     def _host_side_llm_enabled(self) -> bool:
         return bool(
@@ -506,14 +542,14 @@ class MakaAgent(BaseInstalledAgent):
                 stderr=asyncio.subprocess.PIPE,
             )
             try:
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=self._cell_timeout_sec())
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=self._cell_hard_timeout_sec())
             except BaseException as error:
                 if process.returncode is None:
                     process.kill()
                 stdout, stderr = await process.communicate()
                 run_log_path.write_bytes(stdout + stderr)
                 if isinstance(error, asyncio.TimeoutError):
-                    raise RuntimeError(f"Maka host cell exceeded {self._cell_timeout_sec()}s") from error
+                    raise RuntimeError(f"Maka host cell exceeded {self._cell_hard_timeout_sec()}s") from error
                 raise
             run_log_path.write_bytes(stdout + stderr)
             if process.returncode == 124:
@@ -593,6 +629,10 @@ class MakaAgent(BaseInstalledAgent):
             # runtime's shorter interactive defaults.
             "MAKA_STREAM_CONNECT_TIMEOUT_MS",
             "MAKA_STREAM_IDLE_TIMEOUT_MS",
+            "MAKA_BENCHMARK_DEADLINE_POLICY",
+            "MAKA_CELL_TIMEOUT_SEC",
+            "MAKA_CELL_SETTLEMENT_GRACE_SEC",
+            "MAKA_CELL_HARD_TIMEOUT_SEC",
             # Benchmark-safe deterministic continuation. These are consumed by
             # run-host-cell.mjs/run-cell.mjs, not by the provider backend.
             "MAKA_HARBOR_CONTINUATION",
@@ -794,7 +834,7 @@ class MakaAgent(BaseInstalledAgent):
                 environment,
                 command=f"bash -lc {shlex.quote(shell_script)}",
                 env=env,
-                timeout_sec=self._cell_timeout_sec(env),
+                timeout_sec=self._cell_hard_timeout_sec(env),
             )
         finally:
             await self._download_task_run_artifacts(environment)
@@ -909,7 +949,7 @@ class MakaAgent(BaseInstalledAgent):
             },
         )
 
-        timeout_sec = self._cell_timeout_sec(env)
+        timeout_sec = self._cell_hard_timeout_sec(env)
         proc: asyncio.subprocess.Process | None = None
         async with _ToolExecutorServer(self, environment) as executor:
             env["MAKA_HARBOR_TOOL_EXECUTOR_URL"] = executor.url
@@ -1743,6 +1783,8 @@ def _runner_env_summary(env: dict[str, str]) -> dict[str, str]:
         "MAKA_CELL_TIMEOUT_SEC",
         "MAKA_CELL_SOFT_TIMEOUT_MS",
         "MAKA_CELL_SETTLEMENT_GRACE_SEC",
+        "MAKA_CELL_HARD_TIMEOUT_SEC",
+        "MAKA_BENCHMARK_DEADLINE_POLICY",
     ]
     return {key: env[key] for key in allowed_keys if key in env}
 

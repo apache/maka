@@ -266,6 +266,7 @@ test('buildPierRunArgs emits the pier CLI contract for the Maka arm', () => {
     jobName: 'trial',
     environment: 'docker',
     timeoutMultiplier: 1,
+    agentTimeoutMultiplier: 1 + 30 / 5400,
     mounts: [{ type: 'bind', source: '/repo', target: '/opt/maka-agent', read_only: true }],
     agentEnv: { MAKA_MODEL: 'k3', MAKA_PROVIDER: 'kimi-coding-plan' },
   });
@@ -279,10 +280,85 @@ test('buildPierRunArgs emits the pier CLI contract for the Maka arm', () => {
   assert.match(joined, /-n 1/);
   assert.match(joined, /--yes/);
   assert.ok(args.includes('--mounts-json'));
+  const agentTimeoutMultiplierFlag = args.indexOf('--agent-timeout-multiplier');
+  assert.equal(args[agentTimeoutMultiplierFlag + 1], String(1 + 30 / 5400));
   assert.ok(args.includes('--ae'));
   assert.ok(args.includes('MAKA_MODEL=k3'));
   // No provider secret and no env-file were requested.
   assert.ok(!args.includes('--env-file'));
+});
+
+test('createPierTaskRunner gives only Maka a T+G agent phase while preserving other Pier phases', async () => {
+  await withDirs(async ({ jobsDir, repo }) => {
+    const makaCaptured: FakeOptions['captured'] = {};
+    const makaRunner = createPierTaskRunner(
+      baseOptions({
+        jobsDir,
+        makaRepoPath: repo,
+        agent: 'maka',
+        deadlineSettlementGraceSec: 30,
+        runPier: fakePier({
+          reward: 0,
+          captured: makaCaptured,
+          cell: cellOutput({
+            executionIdentity: {
+              ...cellOutput().executionIdentity!,
+              deadlinePolicy: {
+                id: 'task-native-full-budget-v1',
+                modelBudgetSec: 5400,
+                settlementGraceSec: 30,
+                hardTimeoutSec: 5430,
+              },
+            },
+          }),
+        }),
+      }),
+    );
+    await makaRunner(
+      runInput({
+        task: {
+          id: 'dasel',
+          path: '/tasks/dasel-html-document-format',
+          metadata: { agentTimeoutSec: 5400, buildTimeoutSec: 1800, verifierTimeoutSec: 1800 },
+        },
+      }),
+    );
+
+    const makaArgs = makaCaptured.request?.args ?? [];
+    const agentMultiplierFlag = makaArgs.indexOf('--agent-timeout-multiplier');
+    assert.equal(makaArgs[agentMultiplierFlag + 1], String(5430 / 5400));
+    assert.equal(makaArgs[makaArgs.indexOf('--timeout-multiplier') + 1], '1');
+    assert.ok(!makaArgs.includes('--environment-build-timeout-multiplier'));
+    assert.ok(!makaArgs.includes('--agent-setup-timeout-multiplier'));
+    assert.ok(!makaArgs.includes('--verifier-timeout-multiplier'));
+    assert.ok(makaArgs.includes('MAKA_CELL_TIMEOUT_SEC=5400'));
+    assert.ok(makaArgs.includes('MAKA_CELL_SETTLEMENT_GRACE_SEC=30'));
+    assert.ok(makaArgs.includes('MAKA_CELL_HARD_TIMEOUT_SEC=5430'));
+    assert.ok(makaArgs.includes('MAKA_STREAM_CONNECT_TIMEOUT_MS=5400000'));
+    assert.ok(makaArgs.includes('MAKA_STREAM_IDLE_TIMEOUT_MS=5400000'));
+    assert.equal(
+      makaCaptured.request?.timeoutMs,
+      (2 * 1800 + 360 + 5400 + 30 + 2 * 1800) * 1_000 + 15 * 60_000,
+    );
+
+    const codexArgs = buildPierRunArgs({
+      agent: 'codex',
+      model: 'gpt-5.6-sol',
+      taskPath: '/tasks/dasel',
+      jobsDir: '/jobs',
+      jobName: 'trial',
+      environment: 'docker',
+      timeoutMultiplier: 1,
+      mounts: [],
+      agentEnv: {},
+      agentKwargs: { version: CODEX_TOOLCHAIN_SPEC.codex.version },
+    });
+    assert.ok(!codexArgs.includes('--agent-timeout-multiplier'));
+    assert.equal(codexArgs[codexArgs.indexOf('--timeout-multiplier') + 1], '1');
+    assert.ok(!codexArgs.includes('--environment-build-timeout-multiplier'));
+    assert.ok(!codexArgs.includes('--agent-setup-timeout-multiplier'));
+    assert.ok(!codexArgs.includes('--verifier-timeout-multiplier'));
+  });
 });
 
 test('createPierTaskRunner mounts the pinned Maka Node runtime for container task-run mode', async () => {

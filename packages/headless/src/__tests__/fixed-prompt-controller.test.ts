@@ -2140,10 +2140,21 @@ describe('fixed prompt controller', () => {
     });
   });
 
-  test('keeps verifier-graded deadline settlements as scored benchmark outcomes', async () => {
+  test('normalizes verifier-graded deadline settlement taxonomy without resampling or rewriting the raw trace', async () => {
     await withDir(async (dir) => {
       const systemPromptPath = join(dir, 'system_prompt.md');
+      const runtimeEventsPath = join(dir, 'runtime-events.jsonl');
       await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+      await writeFile(runtimeEventsPath, '{"status":"aborted","source":"runtime"}\n', 'utf8');
+      let calls = 0;
+      const rawOutput = harborOutput({
+        taskId: 'task-a',
+        reward: 0,
+        status: 'failed',
+        errorClass: 'aborted',
+        deadlineSettlement: { source: 'benchmark.deadline', mode: 'immediate' },
+      });
+      rawOutput.cell.runtimeEventsPath = runtimeEventsPath;
 
       const result = await runFixedPromptController({
         runId: 'run-1',
@@ -2153,14 +2164,10 @@ describe('fixed prompt controller', () => {
         resultsJsonlPath: join(dir, 'results.jsonl'),
         resultsTsvPath: join(dir, 'results.tsv'),
         tasks: [{ id: 'task-a', path: '/bench/task-a' }],
-        taskRunner: async () =>
-          harborOutput({
-            taskId: 'task-a',
-            reward: 0,
-            status: 'failed',
-            errorClass: 'aborted',
-            deadlineSettlement: { source: 'benchmark.deadline', mode: 'immediate' },
-          }),
+        taskRunner: async () => {
+          calls += 1;
+          return rawOutput;
+        },
         now: () => 100,
         newId: idFactory(),
       });
@@ -2169,6 +2176,62 @@ describe('fixed prompt controller', () => {
       assert.equal(result.events[0]?.passed, false);
       assert.equal(result.events[0]?.scored, true);
       assert.equal(result.events[0]?.eligible, true);
+      assert.equal(result.events[0]?.errorClass, 'budget_exhausted');
+      assert.equal(calls, 1);
+      assert.equal(rawOutput.cell.errorClass, 'aborted');
+      assert.equal(
+        await readFile(runtimeEventsPath, 'utf8'),
+        '{"status":"aborted","source":"runtime"}\n',
+      );
+    });
+  });
+
+  test('rejects a task-native deadline attestation that does not match T/G/H', async () => {
+    await withDir(async (dir) => {
+      const systemPromptPath = join(dir, 'system_prompt.md');
+      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+      let calls = 0;
+
+      const result = await runFixedPromptController({
+        runId: 'run-1',
+        roundId: 'round-1',
+        config,
+        systemPromptPath,
+        resultsJsonlPath: join(dir, 'results.jsonl'),
+        tasks: [
+          {
+            id: 'task-a',
+            path: '/bench/task-a',
+            metadata: { agentTimeoutSec: 5400 },
+          },
+        ],
+        expectedDeadlineSettlementGraceSec: 30,
+        requireExecutionIdentity: true,
+        taskRunner: async () => {
+          calls += 1;
+          return harborOutput({
+            taskId: 'task-a',
+            executionIdentity: {
+              llmConnectionSlug: 'fake',
+              model: 'fake-model',
+              systemPromptHash: hashSystemPrompt('fixed prompt\n'),
+              pricingProfile: 'test-profile',
+              deadlinePolicy: {
+                id: 'task-native-full-budget-v1',
+                modelBudgetSec: 5370,
+                settlementGraceSec: 30,
+                hardTimeoutSec: 5400,
+              },
+            },
+          });
+        },
+        now: () => 100,
+        newId: idFactory(),
+      });
+
+      assert.equal(result.events[0]?.type, 'task_plumbing_failed');
+      assert.equal(result.events[0]?.errorClass, 'execution_identity_mismatch');
+      assert.equal(calls, 1);
     });
   });
 

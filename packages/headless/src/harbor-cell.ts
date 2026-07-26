@@ -75,6 +75,11 @@ import {
   type RunHarborCellEnv,
 } from './headless-run-env.js';
 import {
+  resolveTaskNativeDeadlinePolicy,
+  TASK_NATIVE_FULL_BUDGET_DEADLINE_POLICY_ID,
+  type BenchmarkDeadlinePolicy,
+} from './benchmark-deadline-policy.js';
+import {
   buildHarborCellContextBudgetBackendOptions,
   buildHarborCellContextBudgetPolicySnapshot,
   buildHarborCellTaskLedgerExperimentPolicy,
@@ -136,6 +141,7 @@ export interface RunHarborCellInput {
   continuationPolicy?: HarborCellContinuationPolicy;
   taskToolSummaryEnabled?: boolean;
   settleAfterMs?: number;
+  deadlinePolicy?: BenchmarkDeadlinePolicy;
   now?: () => number;
   newId?: () => string;
 }
@@ -329,6 +335,7 @@ export async function runHarborCellWithStorage(
     systemPromptHash: prompt.systemPromptHash,
     pricingProfile: input.pricingProfile ?? 'unconfigured',
     agentTools: config.agentTools === true,
+    ...(input.deadlinePolicy ? { deadlinePolicy: input.deadlinePolicy } : {}),
   };
   await writeHarborCellExecutionIdentity(input.outputDir, executionIdentity);
 
@@ -589,6 +596,7 @@ export async function runHarborCellFromEnv(
   const taskLedgerExperimentPolicy = buildHarborCellTaskLedgerExperimentPolicy(resolvedEnv);
   const maxSteps = harborCellMaxStepsFromEnv(resolvedEnv);
   const settleAfterMs = harborCellSoftTimeoutMsFromEnv(resolvedEnv);
+  const deadlinePolicy = benchmarkDeadlinePolicyFromEnv(resolvedEnv);
   const reasoningEffort = reasoningEffortFromEnv(resolvedEnv.MAKA_REASONING_EFFORT);
   const agentTools = booleanEnv(resolvedEnv.MAKA_AGENT_TOOLS, 'MAKA_AGENT_TOOLS') ?? false;
   const baseConfig = {
@@ -686,6 +694,7 @@ export async function runHarborCellFromEnv(
       ...(continuationPolicy ? { continuationPolicy } : {}),
       ...(taskLedgerExperimentPolicy ? { taskToolSummaryEnabled: true } : {}),
       ...(settleAfterMs !== undefined ? { settleAfterMs } : {}),
+      ...(deadlinePolicy ? { deadlinePolicy } : {}),
       ...(registerBackends ? { registerBackends } : {}),
       ...(backendNeedsIsolation(backend)
         ? {
@@ -702,6 +711,30 @@ export async function runHarborCellFromEnv(
   } finally {
     await providerEnvFetch?.close();
   }
+}
+
+function benchmarkDeadlinePolicyFromEnv(
+  env: RunHarborCellEnv,
+): BenchmarkDeadlinePolicy | undefined {
+  const id = env.MAKA_BENCHMARK_DEADLINE_POLICY;
+  const modelBudget = env.MAKA_CELL_TIMEOUT_SEC;
+  const settlementGrace = env.MAKA_CELL_SETTLEMENT_GRACE_SEC;
+  const hardTimeout = env.MAKA_CELL_HARD_TIMEOUT_SEC;
+  if (id === undefined) return undefined;
+  if (id !== TASK_NATIVE_FULL_BUDGET_DEADLINE_POLICY_ID) {
+    throw new Error(
+      `MAKA_BENCHMARK_DEADLINE_POLICY must be ${TASK_NATIVE_FULL_BUDGET_DEADLINE_POLICY_ID}`,
+    );
+  }
+  const policy = resolveTaskNativeDeadlinePolicy(
+    positiveIntEnv(modelBudget, 'MAKA_CELL_TIMEOUT_SEC')!,
+    positiveIntEnv(settlementGrace, 'MAKA_CELL_SETTLEMENT_GRACE_SEC')!,
+  );
+  const attestedHardTimeout = positiveIntEnv(hardTimeout, 'MAKA_CELL_HARD_TIMEOUT_SEC');
+  if (attestedHardTimeout !== policy.hardTimeoutSec) {
+    throw new Error('MAKA_CELL_HARD_TIMEOUT_SEC must equal T + G');
+  }
+  return policy;
 }
 
 export function reasoningEffortFromEnv(

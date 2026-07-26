@@ -24,6 +24,7 @@ from harness_compat import (
 )
 from process_scope import cleanup_process_scope, scoped_command
 from provider_proxy import provider_proxy_endpoint, warn_if_pier_unreachable_proxy_port
+from deadline_policy import deadline_policy_from_env
 from trial_pricing import estimate_cost, pricing_from_env
 
 _TOOLCHAIN_ROOT = Path("/opt/maka-codex-toolchain")
@@ -449,6 +450,7 @@ class MakaCodexAgent(Codex):
             ).encode("utf-8")
         ).hexdigest()
         effort = self._get_env("MAKA_REASONING_EFFORT")
+        deadline_policy = deadline_policy_from_env(self._get_env)
         return {
             "llmConnectionSlug": self._get_env("MAKA_LLM_CONNECTION_SLUG")
             or "openai",
@@ -458,6 +460,11 @@ class MakaCodexAgent(Codex):
             "pricingProfile": self._get_env("MAKA_TRIAL_PRICING_SOURCE")
             or "unconfigured",
             "agentTools": False,
+            **(
+                {"deadlinePolicy": deadline_policy}
+                if deadline_policy is not None
+                else {}
+            ),
         }
 
     def _write_execution_identity(self) -> None:

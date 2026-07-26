@@ -1,5 +1,9 @@
 import type { RuntimeEvent } from '@maka/core';
 import type { ThinkingLevel } from '@maka/core';
+import {
+  TASK_NATIVE_FULL_BUDGET_DEADLINE_POLICY_ID,
+  type BenchmarkDeadlinePolicy,
+} from './benchmark-deadline-policy.js';
 import type { ContextBudgetPolicy, InvocationResult } from '@maka/runtime';
 import type { HeadlessSystemPromptMode } from './contracts.js';
 
@@ -138,6 +142,9 @@ export interface HarborCellExecutionIdentity {
   pricingProfile: string;
   /** Present on artifacts written after Headless Agent tool gating was introduced. */
   agentTools?: boolean;
+  /** Present when a benchmark controller freezes the task-native model budget
+   * separately from the settlement-only tail. */
+  deadlinePolicy?: BenchmarkDeadlinePolicy;
 }
 
 export interface HarborCellDeadlineSettlement {
@@ -388,7 +395,49 @@ export function validateHarborCellExecutionIdentity(value: unknown): HarborCellE
     ...('agentTools' in value
       ? { agentTools: requireBoolean(value.agentTools, 'executionIdentity.agentTools') }
       : {}),
+    ...('deadlinePolicy' in value
+      ? { deadlinePolicy: validateBenchmarkDeadlinePolicy(value.deadlinePolicy) }
+      : {}),
   };
+}
+
+function validateBenchmarkDeadlinePolicy(value: unknown): BenchmarkDeadlinePolicy {
+  if (!isRecord(value)) {
+    throw new Error('executionIdentity.deadlinePolicy must be a JSON object');
+  }
+  const id = requireString(
+    value.id,
+    'executionIdentity.deadlinePolicy.id',
+  ) as BenchmarkDeadlinePolicy['id'];
+  if (id !== TASK_NATIVE_FULL_BUDGET_DEADLINE_POLICY_ID) {
+    throw new Error(
+      `executionIdentity.deadlinePolicy.id must be ${TASK_NATIVE_FULL_BUDGET_DEADLINE_POLICY_ID}`,
+    );
+  }
+  const modelBudgetSec = requireNumber(
+    value.modelBudgetSec,
+    'executionIdentity.deadlinePolicy.modelBudgetSec',
+  );
+  const settlementGraceSec = requireNumber(
+    value.settlementGraceSec,
+    'executionIdentity.deadlinePolicy.settlementGraceSec',
+  );
+  const hardTimeoutSec = requireNumber(
+    value.hardTimeoutSec,
+    'executionIdentity.deadlinePolicy.hardTimeoutSec',
+  );
+  if (
+    !Number.isSafeInteger(modelBudgetSec) ||
+    modelBudgetSec <= 0 ||
+    !Number.isSafeInteger(settlementGraceSec) ||
+    settlementGraceSec <= 0 ||
+    hardTimeoutSec !== modelBudgetSec + settlementGraceSec
+  ) {
+    throw new Error(
+      'executionIdentity.deadlinePolicy must satisfy positive integer T/G and H = T + G',
+    );
+  }
+  return { id, modelBudgetSec, settlementGraceSec, hardTimeoutSec };
 }
 
 function requireThinkingLevel(value: unknown, path: string): ThinkingLevel {

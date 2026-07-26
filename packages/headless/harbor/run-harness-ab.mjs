@@ -88,6 +88,7 @@ const PRICING = {
   source: 'kimi-coding-plan-account-plan',
 };
 const HARBOR_SETUP_TEARDOWN_GRACE_SEC = 15 * 60;
+const PIER_DEADLINE_SETTLEMENT_GRACE_SEC = 30;
 const ORACLE_EVIDENCE_RESOLUTION_TIMEOUT_MS = 15_000;
 const BACKGROUND_RUN_ENV = 'MAKA_HARNESS_AB_BACKGROUND_RUN';
 const BACKGROUND_STARTED_AT_ENV = 'MAKA_HARNESS_AB_DETACHED_STARTED_AT';
@@ -563,6 +564,14 @@ export function buildHarnessAbManifest({
       // version is hashed into the toolchain fingerprint. Absent for Harbor
       // benchmarks so Terminal-Bench manifests stay byte-identical.
       ...(pierVersion === null ? {} : { executor: { id: 'pier', version: pierVersion } }),
+      ...(benchmarkProfile.executor === 'pier'
+        ? {
+            deadlinePolicy: {
+              id: 'task-native-full-budget-v1',
+              settlementGraceSec: PIER_DEADLINE_SETTLEMENT_GRACE_SEC,
+            },
+          }
+        : {}),
       timeoutPolicy: 'task-native',
       timeoutMultiplier: 1,
       outerTimeoutGraceSec: HARBOR_SETUP_TEARDOWN_GRACE_SEC,
@@ -831,6 +840,7 @@ async function runLocked({
               baseUrl: execution.baseUrl,
               makaNodeToolchainPath: makaNodeToolchain.path,
               providerProxyHub,
+              deadlineSettlementGraceSec: PIER_DEADLINE_SETTLEMENT_GRACE_SEC,
             }
           : {
               agentEnv: { MAKA_BASE_URL: execution.baseUrl },
@@ -882,6 +892,9 @@ async function runLocked({
         ],
         pairConcurrency: manifest.maxConcurrency,
         armExecution: manifest.metadata.execution.armExecution,
+        ...(benchmarkProfile.executor === 'pier'
+          ? { expectedDeadlineSettlementGraceSec: PIER_DEADLINE_SETTLEMENT_GRACE_SEC }
+          : {}),
       });
       return buildHarnessAbReport(
         summary,

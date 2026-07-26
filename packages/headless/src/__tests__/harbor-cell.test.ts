@@ -1151,7 +1151,7 @@ describe('runHarborCell', () => {
     });
   });
 
-  test('does not start a continuation turn after the settlement deadline latches', async () => {
+  test('does not issue a new provider request after the model-budget deadline latches', async () => {
     await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
       let backend: DeadlineStepCapBackend | undefined;
       const result = await withTimeout(
@@ -1223,6 +1223,12 @@ describe('runHarborCell', () => {
         outputDir,
         storageRoot,
         pricingProfile: 'deepseek-v4-flash-tbench-v1',
+        deadlinePolicy: {
+          id: 'task-native-full-budget-v1',
+          modelBudgetSec: 5400,
+          settlementGraceSec: 30,
+          hardTimeoutSec: 5430,
+        },
         registerBackends: (registry) => {
           registry.register('fake', (ctx) => new IdentityObservingBackend(ctx.sessionId));
         },
@@ -1235,6 +1241,12 @@ describe('runHarborCell', () => {
         systemPromptHash: `sha256:${createHash('sha256').update(JSON.stringify(config.systemPrompt)).digest('hex')}`,
         pricingProfile: 'deepseek-v4-flash-tbench-v1',
         agentTools: false,
+        deadlinePolicy: {
+          id: 'task-native-full-budget-v1',
+          modelBudgetSec: 5400,
+          settlementGraceSec: 30,
+          hardTimeoutSec: 5430,
+        },
       });
     });
   });

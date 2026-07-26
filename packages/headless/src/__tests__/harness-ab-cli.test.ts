@@ -830,6 +830,10 @@ test('harness A/B resolves the DeepSWE benchmark axis orthogonally to competitor
     pierVersion: '0.3.0',
   });
   assert.deepEqual(pierManifest.metadata.benchmark.executor, { id: 'pier', version: '0.3.0' });
+  assert.deepEqual(pierManifest.metadata.benchmark.deadlinePolicy, {
+    id: 'task-native-full-budget-v1',
+    settlementGraceSec: 30,
+  });
 
   // The Terminal-Bench default keeps its historical order seed byte-for-byte.
   const tbenchManifest = buildHarnessAbManifest({
@@ -843,6 +847,7 @@ test('harness A/B resolves the DeepSWE benchmark axis orthogonally to competitor
   // No executor key for Harbor benchmarks: the manifest payload (and with it
   // the resume fingerprint) must stay byte-identical to historical runs.
   assert.equal('executor' in tbenchManifest.metadata.benchmark, false);
+  assert.equal('deadlinePolicy' in tbenchManifest.metadata.benchmark, false);
 });
 
 test('harness A/B benchmark profiles bind their executor and resolve from env', async () => {

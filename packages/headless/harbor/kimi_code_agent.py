@@ -24,6 +24,7 @@ from harness_compat import (
 )
 from process_scope import cleanup_process_scope, scoped_command
 from provider_proxy import provider_proxy_endpoint, warn_if_pier_unreachable_proxy_port
+from deadline_policy import deadline_policy_from_env
 
 _TOOLCHAIN_ROOT = Path("/opt/maka-kimi-code-toolchain")
 _TOOLCHAIN_NODE = _TOOLCHAIN_ROOT / "bin" / "node"
@@ -296,6 +297,7 @@ class MakaKimiCodeAgent(BaseInstalledAgent):
             json.dumps(system_prompt, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
         effort = self._get_env("MAKA_REASONING_EFFORT")
+        deadline_policy = deadline_policy_from_env(self._get_env)
         return {
             "llmConnectionSlug": self._get_env("MAKA_LLM_CONNECTION_SLUG") or "kimi-coding-plan",
             "model": self._get_env("MAKA_MODEL") or self.model_name or "k3",
@@ -303,6 +305,11 @@ class MakaKimiCodeAgent(BaseInstalledAgent):
             "systemPromptHash": prompt_hash,
             "pricingProfile": self._get_env("MAKA_TRIAL_PRICING_SOURCE") or "unconfigured",
             "agentTools": False,
+            **(
+                {"deadlinePolicy": deadline_policy}
+                if deadline_policy is not None
+                else {}
+            ),
         }
 
     def _write_execution_identity(self) -> None:

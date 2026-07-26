@@ -56,6 +56,10 @@ import {
   type ProviderTokenUsage,
   type ProviderUpstreamCredentialResolver,
 } from './provider-auth-proxy.js';
+import {
+  resolveTaskNativeDeadlinePolicy,
+  type BenchmarkDeadlinePolicy,
+} from './benchmark-deadline-policy.js';
 
 const CONTAINER_MAKA_REPO = '/opt/maka-agent';
 const TRIAL_CELL_OUTPUT = 'agent/maka-cell-output.json';
@@ -180,6 +184,9 @@ export interface PierTaskRunnerOptions {
    * explicit Docker target platform cannot be wired through `pier run`. */
   environment?: string;
   timeoutMultiplier?: number;
+  /** Opts a Pier benchmark into the full task-native model budget plus a
+   * settlement-only tail. The task metadata remains the authority for T. */
+  deadlineSettlementGraceSec?: number;
   /** Wall-clock ceiling for a single `pier run`; a hung Docker/Pier would
    * otherwise stall the unattended loop forever. Defaults to pier's maximum
    * legitimate trial lifecycle (2 x build + agent + 2 x verifier task-native
@@ -250,6 +257,13 @@ export function createPierTaskRunner(options: PierTaskRunnerOptions): TaskRunner
       `Codex adapter version must match toolchain version ${CODEX_TOOLCHAIN_SPEC.codex.version}`,
     );
   }
+  if (
+    options.deadlineSettlementGraceSec !== undefined &&
+    options.timeoutMultiplier !== undefined &&
+    options.timeoutMultiplier !== 1
+  ) {
+    throw new Error('benchmark deadline policy requires timeoutMultiplier 1');
+  }
   const runPier = options.runPier ?? defaultPierProcessRunner;
   const pierBin = options.pierBin ?? 'pier';
   // The bare adapter import path (`maka_agent:MakaAgent`) resolves only when the
@@ -278,6 +292,13 @@ export function createPierTaskRunner(options: PierTaskRunnerOptions): TaskRunner
     // Same benchmark invariant as the Harbor runner (shared implementation):
     // agentEnv must not override experiment identity or MAKA_TRIAL_* pricing.
     assertNoExperimentIdentityOverrides(attemptAgentEnv);
+    const deadlinePolicy =
+      options.deadlineSettlementGraceSec === undefined
+        ? undefined
+        : resolveTaskNativeDeadlinePolicy(
+            requiredAgentTimeoutSec(input),
+            options.deadlineSettlementGraceSec,
+          );
 
     const traceMode = harborTraceMode(attemptAgentEnv);
     const providerTelemetryPath = join(jobsDir, PROVIDER_REQUEST_TELEMETRY);
@@ -297,7 +318,13 @@ export function createPierTaskRunner(options: PierTaskRunnerOptions): TaskRunner
         // closes the proxy: a failure in this window (env-file write, arg
         // assembly) must not leak the listening socket.
         try {
-          const aeEnv = buildPierAgentEnv(input, options, agent, providerRuntime?.agentEnv ?? {});
+          const aeEnv = buildPierAgentEnv(
+            input,
+            options,
+            agent,
+            providerRuntime?.agentEnv ?? {},
+            deadlinePolicy,
+          );
           const processEnv: Record<string, string> = {
             PYTHONPATH: pythonPath,
             // MAKA_BACKEND is a CliFlag whose env_fallback reads os.environ only, so
@@ -326,6 +353,12 @@ export function createPierTaskRunner(options: PierTaskRunnerOptions): TaskRunner
             jobName,
             environment: options.environment ?? 'docker',
             timeoutMultiplier: options.timeoutMultiplier ?? 1,
+            ...(agent === 'maka' && deadlinePolicy
+              ? {
+                  agentTimeoutMultiplier:
+                    deadlinePolicy.hardTimeoutSec / deadlinePolicy.modelBudgetSec,
+                }
+              : {}),
             mounts,
             agentEnv: aeEnv,
             ...(usesEnvFile ? { envFile: envFilePath } : {}),
@@ -355,7 +388,9 @@ export function createPierTaskRunner(options: PierTaskRunnerOptions): TaskRunner
             timeoutMs:
               options.pierTimeoutMs ??
               resolveNativeTrialTimeoutMs({
-                nativePhasesSec: pierMaxTrialPhasesSec(input.task.metadata),
+                nativePhasesSec:
+                  pierMaxTrialPhasesSec(input.task.metadata) +
+                  (agent === 'maka' ? (deadlinePolicy?.settlementGraceSec ?? 0) : 0),
                 timeoutMultiplier: options.timeoutMultiplier ?? 1,
               }),
             env: processEnv,
@@ -540,6 +575,7 @@ export interface BuildPierRunArgsInput {
   jobName: string;
   environment: string;
   timeoutMultiplier: number;
+  agentTimeoutMultiplier?: number;
   mounts: ReadonlyArray<Record<string, unknown>>;
   agentEnv: Record<string, string>;
   envFile?: string;
@@ -581,6 +617,9 @@ export function buildPierRunArgs(input: BuildPierRunArgsInput): string[] {
     '--yes',
     '--quiet',
   ];
+  if (input.agentTimeoutMultiplier !== undefined) {
+    args.push('--agent-timeout-multiplier', String(input.agentTimeoutMultiplier));
+  }
   if (input.envFile) args.push('--env-file', input.envFile);
   for (const [key, value] of Object.entries(input.agentKwargs ?? {})) {
     args.push('--ak', `${key}=${value}`);
@@ -640,6 +679,7 @@ function buildPierAgentEnv(
   options: PierTaskRunnerOptions,
   agent: PierAgent,
   providerAgentEnv: Record<string, string>,
+  deadlinePolicy: BenchmarkDeadlinePolicy | undefined,
 ): Record<string, string> {
   const provider = options.provider ?? 'deepseek';
   const makaModel = modelIdForProvider(options.model, provider);
@@ -690,7 +730,30 @@ function buildPierAgentEnv(
       env.MAKA_STREAM_IDLE_TIMEOUT_MS = String(streamTimeoutMs);
     }
   }
+  if (deadlinePolicy) {
+    // These are controller-owned after user env merges: both arms must attest
+    // the same task-native T/G/H, and an override must not silently alter it.
+    env.MAKA_BENCHMARK_DEADLINE_POLICY = deadlinePolicy.id;
+    env.MAKA_CELL_TIMEOUT_SEC = String(deadlinePolicy.modelBudgetSec);
+    env.MAKA_CELL_SETTLEMENT_GRACE_SEC = String(deadlinePolicy.settlementGraceSec);
+    env.MAKA_CELL_HARD_TIMEOUT_SEC = String(deadlinePolicy.hardTimeoutSec);
+    const modelBudgetMs = deadlinePolicy.modelBudgetSec * 1_000;
+    if (agent === 'maka' && Number.isSafeInteger(modelBudgetMs)) {
+      env.MAKA_STREAM_CONNECT_TIMEOUT_MS = String(modelBudgetMs);
+      env.MAKA_STREAM_IDLE_TIMEOUT_MS = String(modelBudgetMs);
+    }
+  }
   return env;
+}
+
+function requiredAgentTimeoutSec(input: TaskRunInput): number {
+  const timeoutSec = input.task.metadata?.agentTimeoutSec;
+  if (timeoutSec === undefined) {
+    throw new Error(
+      `task ${input.task.id} must declare agentTimeoutSec for the benchmark deadline policy`,
+    );
+  }
+  return timeoutSec;
 }
 
 async function pierProviderRuntime(

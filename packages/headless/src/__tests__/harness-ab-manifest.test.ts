@@ -58,6 +58,10 @@ describe('harness A/B manifest', () => {
         timeoutPolicy: 'task-native',
         timeoutMultiplier: 1,
         outerTimeoutGraceSec: 900,
+        deadlinePolicy: {
+          id: 'task-native-full-budget-v1',
+          settlementGraceSec: 30,
+        },
       },
       metric: 'pass@1',
       execution: { armExecution: 'parallel' },
@@ -179,6 +183,10 @@ function manifestInput(taskIds: readonly string[]) {
       timeoutPolicy: 'task-native' as const,
       timeoutMultiplier: 1 as const,
       outerTimeoutGraceSec: 900,
+      deadlinePolicy: {
+        id: 'task-native-full-budget-v1' as const,
+        settlementGraceSec: 30,
+      },
     },
     taskIds,
     orderSeed: 'maka-glm-5.2-v1',
