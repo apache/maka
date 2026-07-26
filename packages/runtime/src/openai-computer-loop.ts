@@ -16,7 +16,7 @@ import {
   type OpenAIComputerSafetyCheck,
   type OpenAIComputerScreenshot,
 } from './openai-computer-codec.js';
-import type { CuDispatchOutcome, CuRunResult } from './computer-use-tools.js';
+import type { CuDispatchOutcome, CuRunResult } from './computer-use-types.js';
 
 export const DEFAULT_OPENAI_COMPUTER_MAX_TURNS = 12;
 export const DEFAULT_OPENAI_COMPUTER_MAX_ACTIONS_PER_CALL = 8;

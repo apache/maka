@@ -470,8 +470,8 @@ export {
   createOpenAIResponsesTransport,
 } from './openai-responses-transport.js';
 export type { OpenAIResponsesTransportOptions } from './openai-responses-transport.js';
+export type { ComputerUseToolSet } from './computer-use-tools.js';
 export type {
-  ComputerUseToolSet,
   CuAppSummary,
   CuDispatchBackend,
   CuDispatchEvidence,
@@ -485,7 +485,7 @@ export type {
   CuRunResult,
   CuScreenshot,
   CuSemanticAction,
-} from './computer-use-tools.js';
+} from './computer-use-types.js';
 export {
   bindCuaAction,
   bindCuaActionToObservation,

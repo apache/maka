@@ -12,11 +12,7 @@ import {
   isComputerUseErrorCode,
   type CuAction,
   type CuPoint,
-  type ComputerUseDispatchTier,
-  type ComputerUseEffect,
   type ComputerUseErrorCode,
-  type ComputerUsePageIdentity,
-  type ComputerUseDisplayIdentity,
   type ComputerUseWindowIdentity,
 } from '@maka/core';
 import { redactSecrets } from '@maka/core/redaction';
@@ -40,347 +36,49 @@ import {
 
 const COMPUTER_USE_CATEGORY = 'computer_use';
 
-/** A screenshot the backend captured, ready to be surfaced to the model. */
-export interface CuScreenshot {
-  base64: string;
-  mimeType: 'image/png' | 'image/jpeg';
-  widthPx: number;
-  heightPx: number;
-}
+import {
+  adaptToCuAction,
+  computerParams,
+  snapshotComputerParams,
+  summarize,
+  summarizeEvidence,
+  coordinate,
+  text,
+  type ComputerParams,
+  type ComputerSummaryAction,
+} from './computer-use-codec.js';
+import type {
+  CuDispatchBackend,
+  CuDispatchOutcome,
+  CuObservation,
+  CuObservedElement,
+  CuOverlayHook,
+  CuOverlayHookContext,
+  CuPresentationFence,
+  CuRunContext,
+  CuRunResult,
+  CuSemanticAction,
+} from './computer-use-types.js';
 
-export interface CuDispatchEvidence {
-  path?: string;
-  effect?: ComputerUseEffect;
-  reason?: string;
-}
-
-export type CuDispatchOutcome =
-  | {
-      ok: true;
-      tier: ComputerUseDispatchTier;
-      verified?: boolean;
-      evidence?: CuDispatchEvidence;
-      completedSubSteps?: number;
-    }
-  | {
-      ok: false;
-      error: ComputerUseErrorCode;
-      message: string;
-      evidence?: CuDispatchEvidence;
-      completedSubSteps?: number;
-    };
-
-export interface CuRunResult {
-  outcome: CuDispatchOutcome;
-  /** Final logical screen point resolved by the backend for pointer actions. */
-  resolvedScreenPoint?: CuPoint;
-  /** Present for `screenshot`, and (by convention) after a mutating action so
-   *  the model can SEE the result — the authoritative verification (S17). */
-  screenshot?: CuScreenshot;
-  observation?: CuObservation;
-}
-
-export interface CuAppSummary {
-  appId: string;
-  pid: number;
-  name?: string;
-  windowCount: number;
-  windows?: Array<{ windowId: number; title?: string }>;
-}
-
-export interface CuObservedElement {
-  elementId: string;
-  role: string;
-  label?: string;
-  value?: string;
-  /** False when the control is present but cannot currently be actuated. */
-  enabled?: boolean;
-  /** Selection state for controls that carry one (checkbox, radio, tab, row). */
-  selected?: boolean;
-  /** `elementId` of this element's parent, when the observation reports a tree. */
-  parentElementId?: string;
-  frame?: { x: number; y: number; width: number; height: number };
-  identity?: {
-    token?: string;
-    role: string;
-    label?: string;
-    value?: string;
-  };
-}
-
-export interface CuObservation {
-  observationId: string;
-  appId: string;
-  pid: number;
-  windowId: number;
-  windowTitle?: string;
-  capturedAt?: number;
-  windowBounds?: { x: number; y: number; width: number; height: number };
-  sourceBoundsPx?: { x: number; y: number; width: number; height: number };
-  zIndex?: number;
-  bundleId?: string;
-  contentFingerprint?: string;
-  page?: ComputerUsePageIdentity;
-  displays?: ComputerUseDisplayIdentity[];
-  elements: CuObservedElement[];
-  screenshot?: CuScreenshot;
-}
-
-export type CuSemanticAction =
-  | {
-      type: 'click_element';
-      observationId: string;
-      elementId: string;
-      elementIdentity?: CuObservedElement['identity'];
-    }
-  | {
-      type: 'set_value';
-      observationId: string;
-      elementId: string;
-      value: string;
-      elementIdentity?: CuObservedElement['identity'];
-    }
-  | {
-      type: 'select_text';
-      observationId: string;
-      elementId: string;
-      text: string;
-      elementIdentity?: CuObservedElement['identity'];
-    }
-  | {
-      type: 'secondary_action';
-      observationId: string;
-      elementId: string;
-      action: string;
-      elementIdentity?: CuObservedElement['identity'];
-    }
-  | {
-      type: 'press_key';
-      observationId: string;
-      key: string;
-    };
-
-export interface CuRunContext {
-  sessionId: string;
-  turnId: string;
-  toolCallId: string;
-  boundAction?: CuaBoundAction;
-}
-
-export interface CuPresentationFence {
-  readyForInteraction: Promise<void>;
-  finished: Promise<void>;
-}
-
-export interface CuOverlayHookContext {
-  sessionId: string;
-  toolCallId: string;
-  presentationScreenPoint?: CuPoint;
-}
-
-export interface CuOverlayHook {
-  onActionBegin(action: CuAction, context: CuOverlayHookContext): CuPresentationFence | void;
-  onActionEnd?(
-    action: CuAction,
-    result: CuRunResult | undefined,
-    context: CuOverlayHookContext,
-  ): void | Promise<void>;
-}
-
-/**
- * The host dispatch seam. Implemented in @maka/computer-use by the cua-driver
- * backend, which spawns trycua/cua-driver and speaks its JSON-RPC protocol over
- * stdio. Alternative backends can plug in behind this same interface later.
- */
-export interface CuDispatchBackend {
-  /** Live macOS TCC status. Called at EVERY action-start — cached "granted" is
-   *  insufficient because the user can revoke at any time (S12). */
-  preflight(signal: AbortSignal): Promise<{ accessibility: boolean; screenRecording: boolean }>;
-  listApps?(signal: AbortSignal): Promise<CuAppSummary[]>;
-  observeApp?(
-    input: { app?: string; windowId?: number; includeScreenshot: boolean },
-    signal: AbortSignal,
-    context: CuRunContext,
-  ): Promise<CuObservation>;
-  runSemantic?(
-    action: CuSemanticAction,
-    signal: AbortSignal,
-    context: CuRunContext,
-  ): Promise<CuRunResult>;
-  captureObservation?(
-    input: { app?: string; windowId?: number; includeScreenshot: true },
-    signal: AbortSignal,
-    context: CuRunContext,
-  ): Promise<CuObservation>;
-  /** Execute one normalized action; capture a fresh frame where applicable. */
-  run(action: CuAction, signal: AbortSignal, context: CuRunContext): Promise<CuRunResult>;
-  clearSession?(sessionId: string): void;
-}
-
-const coordinate = z.tuple([z.number().int().nonnegative(), z.number().int().nonnegative()]);
-const text = z.string().max(8000);
-const pointerAction = <
-  T extends 'left_click' | 'right_click' | 'middle_click' | 'double_click' | 'triple_click',
->(
-  action: T,
-) =>
-  z
-    .object({
-      action: z.literal(action),
-      observation_id: z.string().min(1).max(256),
-      coordinate,
-      text: text.optional(),
-    })
-    .strict();
-const computerParams = z.discriminatedUnion('action', [
-  z.object({ action: z.literal('list_apps') }).strict(),
-  z
-    .object({
-      action: z.literal('observe'),
-      app: z.string().min(1).max(512).optional(),
-      window_id: z.number().int().positive().optional(),
-      include_screenshot: z.boolean().optional(),
-    })
-    .strict()
-    .refine((input) => input.app !== undefined || input.window_id !== undefined, {
-      message: 'observe requires app or window_id before approval',
-    }),
-  z
-    .object({
-      action: z.literal('click_element'),
-      observation_id: z.string().min(1).max(256),
-      element_id: z.string().min(1).max(256),
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal('set_value'),
-      observation_id: z.string().min(1).max(256),
-      element_id: z.string().min(1).max(256),
-      value: text,
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal('select_text'),
-      observation_id: z.string().min(1).max(256),
-      element_id: z.string().min(1).max(256),
-      text,
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal('secondary_action'),
-      observation_id: z.string().min(1).max(256),
-      element_id: z.string().min(1).max(256),
-      text,
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal('press_key'),
-      observation_id: z.string().min(1).max(256),
-      text,
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal('screenshot'),
-      app: z.string().min(1).max(512).optional(),
-      window_id: z.number().int().positive().optional(),
-    })
-    .strict()
-    .refine((input) => input.app !== undefined || input.window_id !== undefined, {
-      message: 'screenshot requires app or window_id before approval',
-    }),
-  z.object({ action: z.literal('cursor_position') }).strict(),
-  z
-    .object({
-      action: z.literal('mouse_move'),
-      observation_id: z.string().min(1).max(256),
-      coordinate,
-    })
-    .strict(),
-  pointerAction('left_click'),
-  pointerAction('right_click'),
-  pointerAction('middle_click'),
-  pointerAction('double_click'),
-  pointerAction('triple_click'),
-  z
-    .object({
-      action: z.literal('left_mouse_down'),
-      observation_id: z.string().min(1).max(256),
-      coordinate,
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal('left_mouse_up'),
-      observation_id: z.string().min(1).max(256),
-      coordinate,
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal('left_click_drag'),
-      observation_id: z.string().min(1).max(256),
-      start_coordinate: coordinate,
-      coordinate,
-      text: text.optional(),
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal('type'),
-      observation_id: z.string().min(1).max(256),
-      text,
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal('key'),
-      observation_id: z.string().min(1).max(256),
-      text,
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal('hold_key'),
-      observation_id: z.string().min(1).max(256),
-      text,
-      duration: z.number().min(0).max(60).optional(),
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal('scroll'),
-      observation_id: z.string().min(1).max(256),
-      coordinate,
-      scroll_direction: z.enum(['up', 'down', 'left', 'right']).optional(),
-      scroll_amount: z.number().int().min(0).max(100).optional(),
-      text: text.optional(),
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal('wait'),
-      duration: z.number().min(0).max(60).optional(),
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal('zoom'),
-      observation_id: z.string().min(1).max(256),
-      region: z.tuple([
-        z.number().int().nonnegative(),
-        z.number().int().nonnegative(),
-        z.number().int().nonnegative(),
-        z.number().int().nonnegative(),
-      ]),
-    })
-    .strict(),
-]);
-type ComputerParams = z.infer<typeof computerParams>;
+// Re-export the moved types and codec functions so existing direct importers
+// (e.g. openai-computer-loop.ts, index.ts barrel, test files) keep working
+// without changing their import paths.
+export { adaptToCuAction, snapshotComputerParams } from './computer-use-codec.js';
+export type {
+  CuAppSummary,
+  CuDispatchBackend,
+  CuDispatchEvidence,
+  CuDispatchOutcome,
+  CuObservedElement,
+  CuObservation,
+  CuOverlayHook,
+  CuOverlayHookContext,
+  CuPresentationFence,
+  CuRunContext,
+  CuRunResult,
+  CuScreenshot,
+  CuSemanticAction,
+} from './computer-use-types.js';
 
 // Function-tool JSON schemas require an object at the top level.
 // Keep the wire schema as one top-level object, then apply the strict
@@ -469,161 +167,6 @@ const computerWireParams = z
       .describe('Required only for zoom: [x1, y1, x2, y2] in the referenced observation.'),
   })
   .strict();
-
-const point = (c?: [number, number]): CuPoint | undefined => (c ? { x: c[0], y: c[1] } : undefined);
-
-export function snapshotComputerParams(args: ComputerParams): ComputerParams {
-  for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(args))) {
-    if (descriptor.get || descriptor.set) {
-      throw new Error(`invalid_computer_params: '${key}' must be a plain data property`);
-    }
-  }
-  const cloneTuple = <T extends readonly number[] | undefined>(value: T): T =>
-    (value ? Object.freeze([...value]) : value) as T;
-  const source = args as ComputerParams & Record<string, unknown>;
-  const snapshot = { ...source } as Record<string, unknown>;
-  if (Object.hasOwn(source, 'coordinate')) {
-    snapshot.coordinate = cloneTuple(source.coordinate as [number, number] | undefined);
-  }
-  if (Object.hasOwn(args, 'start_coordinate')) {
-    snapshot.start_coordinate = cloneTuple(source.start_coordinate as [number, number] | undefined);
-  }
-  if (Object.hasOwn(source, 'region')) {
-    snapshot.region = cloneTuple(source.region as [number, number, number, number] | undefined);
-  }
-  return Object.freeze(snapshot) as ComputerParams;
-}
-
-/**
- * Map the provider-neutral wire grammar onto the discriminated `CuAction` the
- * backend consumes. Throws on a malformed action (missing required field); the
- * runtime converts the throw into an error tool-result.
- */
-export function adaptToCuAction(args: ComputerParams): CuAction {
-  const need = (c?: [number, number]): CuPoint => {
-    const p = point(c);
-    if (!p) throw new Error(`invalid_coordinate: action '${args.action}' requires coordinate`);
-    return p;
-  };
-  const needText = (value: string | undefined, action: string): string => {
-    if (typeof value !== 'string' || value.length === 0) {
-      throw new Error(`invalid_coordinate: action '${action}' requires text`);
-    }
-    return value;
-  };
-  switch (args.action) {
-    case 'list_apps':
-    case 'observe':
-    case 'click_element':
-    case 'set_value':
-    case 'select_text':
-    case 'secondary_action':
-    case 'press_key':
-      throw new Error(`semantic action '${args.action}' requires the semantic backend`);
-    case 'screenshot':
-      return { type: 'screenshot' };
-    case 'cursor_position':
-      return { type: 'cursor_position' };
-    case 'mouse_move':
-      return { type: 'mouse_move', coordinate: need(args.coordinate) };
-    case 'left_click':
-      return { type: 'left_click', coordinate: need(args.coordinate), text: args.text };
-    case 'right_click':
-      return { type: 'right_click', coordinate: need(args.coordinate), text: args.text };
-    case 'middle_click':
-      return { type: 'middle_click', coordinate: need(args.coordinate), text: args.text };
-    case 'double_click':
-      return { type: 'double_click', coordinate: need(args.coordinate), text: args.text };
-    case 'triple_click':
-      return { type: 'triple_click', coordinate: need(args.coordinate), text: args.text };
-    case 'left_mouse_down':
-      return { type: 'left_mouse_down', coordinate: need(args.coordinate) };
-    case 'left_mouse_up':
-      return { type: 'left_mouse_up', coordinate: need(args.coordinate) };
-    case 'left_click_drag':
-      return {
-        type: 'left_click_drag',
-        startCoordinate: need(args.start_coordinate),
-        coordinate: need(args.coordinate),
-        text: args.text,
-      };
-    case 'type':
-      return { type: 'type', text: needText(args.text, args.action) };
-    case 'key':
-      return { type: 'key', text: needText(args.text, args.action) };
-    case 'hold_key':
-      return {
-        type: 'hold_key',
-        text: needText(args.text, args.action),
-        durationMs: Math.round((args.duration ?? 0) * 1000),
-      };
-    case 'scroll':
-      return {
-        type: 'scroll',
-        coordinate: need(args.coordinate),
-        scrollDirection: args.scroll_direction ?? 'down',
-        scrollAmount: args.scroll_amount ?? 3,
-        text: args.text,
-      };
-    case 'wait':
-      return { type: 'wait', durationMs: Math.round((args.duration ?? 0) * 1000) };
-    case 'zoom': {
-      if (!args.region) throw new Error("invalid_coordinate: action 'zoom' requires region");
-      const [x1, y1, x2, y2] = args.region;
-      return { type: 'zoom', region: { x1, y1, x2, y2 } };
-    }
-    default:
-      throw new Error('invalid_coordinate: unknown action');
-  }
-}
-
-/** Concise, model-facing summary of an outcome (S16-safe: no screen text here). */
-function summarizeEvidence(evidence: CuDispatchEvidence | undefined): string {
-  if (!evidence) return '';
-  const safeToken = (value: string): string | undefined =>
-    /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(value) ? value : undefined;
-  const fields: string[] = [];
-  const path = evidence.path ? safeToken(evidence.path) : undefined;
-  if (path) fields.push(`path=${path}`);
-  if (evidence.effect) fields.push(`effect=${evidence.effect}`);
-  return fields.length > 0 ? `; dispatch ${fields.join(', ')}` : '';
-}
-
-type ComputerSummaryAction = {
-  type: CuAction['type'] | CuSemanticAction['type'];
-};
-
-function summarize(action: ComputerSummaryAction, result: CuRunResult): string {
-  const { outcome } = result;
-  const evidence = summarizeEvidence(outcome.evidence);
-  if (!outcome.ok) {
-    // Driver messages and escalation reasons may contain AX labels, window
-    // titles, or screen text. Keep them in internal evidence only; the
-    // model/session summary exposes controlled codes and short identifiers.
-    return (
-      `computer.${action.type} failed: ${outcome.error}${evidence}` +
-      (typeof outcome.completedSubSteps === 'number'
-        ? ` (completed ${outcome.completedSubSteps} sub-steps)`
-        : '')
-    );
-  }
-  const verified = outcome.verified === undefined ? 'n/a' : String(outcome.verified);
-  const shot = result.screenshot
-    ? `; screenshot ${result.screenshot.widthPx}x${result.screenshot.heightPx}`
-    : '';
-  const point =
-    action.type === 'cursor_position' && result.resolvedScreenPoint
-      ? `; screen_point=${result.resolvedScreenPoint.x},${result.resolvedScreenPoint.y}`
-      : '';
-  return (
-    `computer.${action.type} ok via ${outcome.tier} (verified=${verified})${evidence}${point}${shot}` +
-    (outcome.verified === false
-      ? ' — dispatch could not be confirmed; re-screenshot before retrying'
-      : outcome.verified === true && outcome.evidence?.effect === 'confirmed'
-        ? ' — effect confirmed; do not repeat this action'
-        : '')
-  );
-}
 
 /**
  * Raw result of the `computer` tool. `text` is the S16-safe summary the runtime
