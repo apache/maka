@@ -6,7 +6,13 @@ test('keeps Plan row actions keyboard ordered and destructive confirmation rever
   const pausedRow = page.getByRole('article').filter({ hasText: '暂停的发布检查' });
   const pausedSwitch = pausedRow.getByRole('switch', { name: '启用提醒: 暂停的发布检查' });
   const pausedMenu = pausedRow.getByRole('button', { name: '提醒操作: 暂停的发布检查' });
+  const editItem = page.getByRole('menuitem', { name: '编辑' });
   const deleteItem = page.getByRole('menuitem', { name: '删除' });
+  const openFocusedMenu = async (): Promise<void> => {
+    await page.keyboard.press('Enter');
+    await expect(editItem).toBeVisible();
+    await expect(editItem).toBeFocused();
+  };
 
   await pausedMenu.focus();
   await page.keyboard.press('Shift+Tab');
@@ -22,8 +28,7 @@ test('keeps Plan row actions keyboard ordered and destructive confirmation rever
     'keyboard focus must remain visibly indicated',
   ).toBe(true);
 
-  await page.keyboard.press('Enter');
-  await expect(deleteItem).toBeVisible();
+  await openFocusedMenu();
   await page.keyboard.press('End');
   await expect(deleteItem).toBeFocused();
   await page.keyboard.press('Enter');
@@ -36,9 +41,9 @@ test('keeps Plan row actions keyboard ordered and destructive confirmation rever
   await expect(pausedRow).toBeVisible();
   await expect(pausedMenu).toBeFocused();
 
-  await page.keyboard.press('Enter');
-  await expect(deleteItem).toBeVisible();
+  await openFocusedMenu();
   await page.keyboard.press('End');
+  await expect(deleteItem).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(deleteDialog).toBeVisible();
   await expect(deleteDialog.getByRole('button', { name: '取消' })).toBeFocused();
@@ -51,8 +56,7 @@ test('keeps Plan row actions keyboard ordered and destructive confirmation rever
   const reviewMenu = reviewRow.getByRole('button', { name: '提醒操作: 每周竞品动态追踪' });
   const clearItem = page.getByRole('menuitem', { name: '清空记录' });
   await reviewMenu.focus();
-  await page.keyboard.press('Enter');
-  await expect(clearItem).toBeVisible();
+  await openFocusedMenu();
   await page.keyboard.press('End');
   await expect(deleteItem).toBeFocused();
   await page.keyboard.press('ArrowUp');

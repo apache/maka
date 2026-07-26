@@ -274,6 +274,14 @@ export async function smokeStory(page, baseUrl, job, options = {}) {
               const element = row.querySelector(selector);
               if (element) checkElement(element, selector);
             }
+            for (const countdown of row.querySelectorAll('.maka-plan-card-countdown')) {
+              const marginLeft = Number.parseFloat(getComputedStyle(countdown).marginLeft);
+              if (!Number.isFinite(marginLeft) || marginLeft < 4) {
+                failures.push(
+                  `plan reminder countdown must keep at least 4px from its wall-clock time, got ${marginLeft || 0}px`,
+                );
+              }
+            }
           }
           if (document.documentElement.clientWidth >= 1100 && rows[0]) {
             const columns = getComputedStyle(rows[0])

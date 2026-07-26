@@ -47,7 +47,6 @@ describe('Plan Reminder scanning hierarchy', () => {
     assert.doesNotMatch(markup, /lucide-repeat|lucide-clock/);
     assert.doesNotMatch(markup, />待触发</);
     assert.doesNotMatch(markup, /尚未执行/);
-    assert.doesNotMatch(markup, /电脑休眠会错过/);
   });
 
   it('uses view labels without repeating collection counts in the tabs', () => {

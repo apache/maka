@@ -210,6 +210,12 @@
   padding-bottom: var(--space-0-5);
 }
 
+.maka-plan-form-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
 .maka-plan-form-title {
   margin: 0;
   color: var(--foreground);
@@ -411,7 +417,7 @@
    (e.g. an overdue run), which would opt in via a data-attribute. */
 .maka-plan-card-countdown {
   display: inline-block;
-  flex: 0 0 auto;
+  margin-left: var(--space-1);
   padding: 0 var(--space-1);
   border-radius: var(--radius-pill);
   background: oklch(from var(--foreground) l c h / 0.08);

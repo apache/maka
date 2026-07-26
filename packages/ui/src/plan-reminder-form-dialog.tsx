@@ -31,6 +31,7 @@ import {
   formatPlanDeliveryProviderList,
   planReminderFormValidationMessage,
   planReminderPresetRunAt,
+  planReminderTemplateSeed,
   toPlanReminderDateTimeInputValue,
 } from './plan-reminder-helpers.js';
 import { PlanReminderSelect } from './plan-reminder-select.js';
@@ -42,7 +43,16 @@ import {
 } from './ui.js';
 import { Input } from './primitives/input.js';
 import { Textarea as UiTextarea } from './primitives/textarea.js';
-import { getPlanReminderCopy } from './plan-reminder-copy.js';
+import {
+  Menu,
+  MenuItem,
+  MenuPopup,
+  MenuTrigger,
+} from './primitives/menu.js';
+import {
+  getPlanReminderCopy,
+  type PlanReminderExampleTemplate,
+} from './plan-reminder-copy.js';
 import { useUiLocale } from './locale-context.js';
 import type {
   PlanReminderDraftInput,
@@ -59,7 +69,9 @@ export function PlanReminderFormDialog(props: {
   onUpdate?(id: string, patch: PlanReminderUpdatePatch): boolean | Promise<boolean> | void | Promise<void>;
 }) {
   const locale = useUiLocale();
-  const copy = getPlanReminderCopy(locale).form;
+  const catalog = getPlanReminderCopy(locale);
+  const copy = catalog.form;
+  const templates = catalog.templates;
   const [title, setTitle] = useState(props.seed.title);
   const [note, setNote] = useState(props.seed.note);
   const [runAtLocal, setRunAtLocal] = useState(props.seed.runAtLocal);
@@ -122,6 +134,18 @@ export function PlanReminderFormDialog(props: {
     setRunAtLocal(toPlanReminderDateTimeInputValue(planReminderPresetRunAt(preset)));
   }
 
+  function applyTemplate(template: PlanReminderExampleTemplate) {
+    const seed = planReminderTemplateSeed(template);
+    setTitle(seed.title);
+    setNote(seed.note);
+    setRunAtLocal(seed.runAtLocal);
+    setRecurrence(seed.recurrence);
+    setCronExpression(seed.cronExpression);
+    setDeliveryChannel(seed.deliveryChannel);
+    setDeliveryPlatform(seed.deliveryPlatform);
+    setDeliveryChatId(seed.deliveryChatId);
+  }
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (submitDisabled || submitPendingRef.current) return;
@@ -175,15 +199,36 @@ export function PlanReminderFormDialog(props: {
               <p className="maka-plan-eyebrow">{copy.eyebrow}</p>
               <h3 id="maka-plan-dialog-title" className="maka-plan-form-title">{isEditing ? copy.editTitle : copy.createTitle}</h3>
             </div>
-            <DialogClose
-              render={<UiButton variant="quiet" size="icon-sm" />}
-              type="button"
-              onClick={closeReminderDialog}
-              disabled={formInteractionDisabled}
-              aria-label={copy.close}
-            >
-              <X size={16} aria-hidden="true" />
-            </DialogClose>
+            <div className="maka-plan-form-header-actions">
+              {!isEditing && (
+                <Menu>
+                  <MenuTrigger
+                    render={<UiButton variant="quiet" size="sm" />}
+                    disabled={formInteractionDisabled}
+                    aria-label={copy.useTemplate}
+                  >
+                    {copy.useTemplate}
+                  </MenuTrigger>
+                  <MenuPopup className="min-w-[240px]" align="end" aria-label={copy.templatesAriaLabel}>
+                    {templates.map((template) => (
+                      <MenuItem key={template.id} onClick={() => applyTemplate(template)}>
+                        <span>{template.title}</span>
+                        <span className="ml-auto text-muted-foreground">{template.scheduleLabel}</span>
+                      </MenuItem>
+                    ))}
+                  </MenuPopup>
+                </Menu>
+              )}
+              <DialogClose
+                render={<UiButton variant="quiet" size="icon-sm" />}
+                type="button"
+                onClick={closeReminderDialog}
+                disabled={formInteractionDisabled}
+                aria-label={copy.close}
+              >
+                <X size={16} aria-hidden="true" />
+              </DialogClose>
+            </div>
           </header>
           <div className="maka-plan-form-grid">
             <label className="maka-plan-field">
