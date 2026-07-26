@@ -228,18 +228,18 @@ class FileInteractionStore {
   async recover(): Promise<void> {
     const indexRoot = await this.ensureSessionPendingRoot();
     await syncDirectoryChain(this.sessionPendingRoot, this.root);
-    await assertDirectoryBindings(indexRoot);
+    await sessionPendingDirectoryPolicy.assert(indexRoot);
     const expectedPending = new Map<string, Set<string>>();
     for (const locator of await this.locators()) {
       await this.withLocator(locator, runInteractionStoreOperation, async () => {
-        const directory = join(this.interactionsRoot, locator);
-        for (const entry of await readdir(directory, { withFileTypes: true })) {
-          if (entry.isFile() && TEMP_FILE.test(entry.name))
-            await unlink(join(directory, entry.name));
-        }
-        await syncDirectory(directory);
-        const record = await this.readLocatorUnlocked(locator);
+        const bindings = await this.bindExistingLocator(locator);
+        if (!bindings) invalidInteractionLocator();
+        await this.stabilizeBoundLocator(bindings);
+        const record = await this.readBoundLocatorUnlocked(bindings);
         if (!record) {
+          const directory = bindings.at(-1)?.path;
+          if (!directory) invalidInteractionLocator();
+          await interactionDirectoryPolicy.assert(bindings);
           await rmdir(directory);
           await syncDirectory(this.interactionsRoot);
           return;
@@ -247,7 +247,7 @@ class FileInteractionStore {
         if (!record.outcome) addPendingLocator(expectedPending, record.request.sessionId, locator);
       });
     }
-    await assertDirectoryBindings(indexRoot);
+    await sessionPendingDirectoryPolicy.assert(indexRoot);
     await this.reconcileSessionPendingIndex(expectedPending);
   }
 
@@ -264,8 +264,12 @@ class FileInteractionStore {
         encode(candidate, STORED_INTERACTION_REQUEST_MAX_BYTES),
       );
       try {
-        await this.stabilizeLocatorUnlocked(locator);
-        const record = await this.readLocatorUnlocked(locator, candidate.requestId);
+        const bindings = await this.bindExistingLocator(locator);
+        let record: InteractionRecord | undefined;
+        if (bindings) {
+          await this.stabilizeBoundLocator(bindings);
+          record = await this.readBoundLocatorUnlocked(bindings, candidate.requestId);
+        }
         if (record) {
           if (record.outcome) {
             await this.removeSessionPendingMarker(record.request.sessionId, locator);
@@ -312,8 +316,11 @@ class FileInteractionStore {
     return this.withLocator(locator, authorize, async () => {
       let record: InteractionRecord | undefined;
       try {
-        await this.stabilizeLocatorUnlocked(locator);
-        record = await this.readLocatorUnlocked(locator, requestId);
+        const bindings = await this.bindExistingLocator(locator);
+        if (bindings) {
+          await this.stabilizeBoundLocator(bindings);
+          record = await this.readBoundLocatorUnlocked(bindings, requestId);
+        }
       } catch (error) {
         return {
           status: 'unresolved',
@@ -344,8 +351,12 @@ class FileInteractionStore {
         encode(candidate, STORED_INTERACTION_OUTCOME_MAX_BYTES),
       );
       try {
-        await this.stabilizeLocatorUnlocked(locator);
-        const settled = await this.readLocatorUnlocked(locator, requestId);
+        const bindings = await this.bindExistingLocator(locator);
+        let settled: InteractionRecord | undefined;
+        if (bindings) {
+          await this.stabilizeBoundLocator(bindings);
+          settled = await this.readBoundLocatorUnlocked(bindings, requestId);
+        }
         if (settled?.outcome) {
           await this.removeSessionPendingMarker(settled.request.sessionId, locator);
           return {
@@ -385,7 +396,10 @@ class FileInteractionStore {
     authorize: InteractionStoreOperationRunner = runInteractionStoreOperation,
   ): Promise<InteractionRecord | undefined> {
     const locator = interactionLocator(requestId);
-    return this.withLocator(locator, authorize, () => this.readLocatorUnlocked(locator, requestId));
+    return this.withLocator(locator, authorize, async () => {
+      const bindings = await this.bindExistingLocator(locator);
+      return bindings ? this.readBoundLocatorUnlocked(bindings, requestId) : undefined;
+    });
   }
 
   async listSessionPending(sessionId: string): Promise<StoredInteractionRequest[]> {
@@ -395,9 +409,10 @@ class FileInteractionStore {
     }
     const result: StoredInteractionRequest[] = [];
     for (const locator of await this.sessionPendingLocators(canonicalSessionId)) {
-      const record = await this.withLocator(locator, runInteractionStoreOperation, () =>
-        this.readLocatorUnlocked(locator),
-      );
+      const record = await this.withLocator(locator, runInteractionStoreOperation, async () => {
+        const bindings = await this.bindExistingLocator(locator);
+        return bindings ? this.readBoundLocatorUnlocked(bindings) : undefined;
+      });
       if (record && !record.outcome && record.request.sessionId === canonicalSessionId) {
         result.push(record.request);
       }
@@ -420,9 +435,10 @@ class FileInteractionStore {
   ): Promise<StoredInteractionRequest[]> {
     const result: StoredInteractionRequest[] = [];
     for (const locator of await this.locators()) {
-      const record = await this.withLocator(locator, runInteractionStoreOperation, () =>
-        this.readLocatorUnlocked(locator),
-      );
+      const record = await this.withLocator(locator, runInteractionStoreOperation, async () => {
+        const bindings = await this.bindExistingLocator(locator);
+        return bindings ? this.readBoundLocatorUnlocked(bindings) : undefined;
+      });
       if (record && !record.outcome && matches(record.request, filter)) result.push(record.request);
     }
     return sortPending(result);
@@ -444,7 +460,7 @@ class FileInteractionStore {
       if (isNodeError(error, 'ENOENT')) return;
       throw error;
     }
-    await assertDirectoryBindings(bindings);
+    await sessionPendingDirectoryPolicy.assert(bindings);
     try {
       await unlink(marker);
     } catch (error) {
@@ -452,7 +468,7 @@ class FileInteractionStore {
       throw error;
     }
     await syncDirectory(directory);
-    await assertDirectoryBindings(bindings);
+    await sessionPendingDirectoryPolicy.assert(bindings);
   }
 
   private async reconcileSessionPendingIndex(
@@ -460,7 +476,7 @@ class FileInteractionStore {
   ): Promise<void> {
     for (const sessionLocator of await this.sessionPendingDirectories()) {
       const directory = join(this.sessionPendingRoot, sessionLocator);
-      const bindings = await bindIndexDirectories([
+      const bindings = await sessionPendingDirectoryPolicy.bind([
         this.interactionsRoot,
         this.sessionPendingRoot,
         directory,
@@ -471,11 +487,11 @@ class FileInteractionStore {
         const marker = join(directory, entry.name);
         await readSessionPendingMarker(marker);
         if (expected?.has(entry.name)) continue;
-        await assertDirectoryBindings(bindings);
+        await sessionPendingDirectoryPolicy.assert(bindings);
         await unlink(marker);
       }
       await syncDirectory(directory);
-      await assertDirectoryBindings(bindings);
+      await sessionPendingDirectoryPolicy.assert(bindings);
     }
     for (const [sessionLocator, locators] of expectedPending) {
       for (const locator of locators) {
@@ -492,15 +508,15 @@ class FileInteractionStore {
     const directory = bindings.at(-1)?.path;
     if (!directory) throw invalidSessionPendingMarker();
     await syncDirectoryChain(directory, this.root);
-    await assertDirectoryBindings(bindings);
+    await sessionPendingDirectoryPolicy.assert(bindings);
     const marker = join(directory, locator);
     let handle;
     try {
-      handle = await open(marker, markerCreateFlags(), 0o600);
+      handle = await open(marker, canonicalCreateFlags(), 0o600);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       await readSessionPendingMarker(marker);
-      await assertDirectoryBindings(bindings);
+      await sessionPendingDirectoryPolicy.assert(bindings);
       return;
     }
     try {
@@ -509,10 +525,10 @@ class FileInteractionStore {
     } finally {
       await handle.close();
     }
-    await assertDirectoryBindings(bindings);
+    await sessionPendingDirectoryPolicy.assert(bindings);
     await readSessionPendingMarker(marker);
     await syncDirectory(directory);
-    await assertDirectoryBindings(bindings);
+    await sessionPendingDirectoryPolicy.assert(bindings);
   }
 
   private async sessionPendingLocators(sessionId: string): Promise<string[]> {
@@ -538,12 +554,12 @@ class FileInteractionStore {
       }
       locators.push(entry.name);
     }
-    await assertDirectoryBindings(bindings);
+    await sessionPendingDirectoryPolicy.assert(bindings);
     return locators.sort();
   }
 
   private async sessionPendingDirectories(): Promise<string[]> {
-    const rootBindings = await bindIndexDirectories([
+    const rootBindings = await sessionPendingDirectoryPolicy.bind([
       this.interactionsRoot,
       this.sessionPendingRoot,
     ]);
@@ -551,21 +567,21 @@ class FileInteractionStore {
     const locators: string[] = [];
     for (const entry of entries) {
       if (!LOCATOR.test(entry.name)) invalidSessionPendingMarker();
-      await bindIndexDirectories([
+      await sessionPendingDirectoryPolicy.bind([
         ...rootBindings.map((binding) => binding.path),
         join(this.sessionPendingRoot, entry.name),
       ]);
       locators.push(entry.name);
     }
-    await assertDirectoryBindings(rootBindings);
+    await sessionPendingDirectoryPolicy.assert(rootBindings);
     return locators.sort();
   }
 
   private async ensureSessionPendingRoot(): Promise<DirectoryBinding[]> {
-    await mkdir(this.interactionsRoot, { recursive: true, mode: 0o700 });
-    const interactions = await bindIndexDirectories([this.interactionsRoot]);
+    await mkdirIfMissing(this.interactionsRoot);
+    const interactions = await sessionPendingDirectoryPolicy.bind([this.interactionsRoot]);
     await mkdirIfMissing(this.sessionPendingRoot);
-    return bindIndexDirectories([
+    return sessionPendingDirectoryPolicy.bind([
       ...interactions.map((binding) => binding.path),
       this.sessionPendingRoot,
     ]);
@@ -573,17 +589,20 @@ class FileInteractionStore {
 
   private async ensureSessionPendingDirectory(sessionLocator: string): Promise<DirectoryBinding[]> {
     const rootBindings = await this.ensureSessionPendingRoot();
-    await assertDirectoryBindings(rootBindings);
+    await sessionPendingDirectoryPolicy.assert(rootBindings);
     const directory = join(this.sessionPendingRoot, sessionLocator);
     await mkdirIfMissing(directory);
-    return bindIndexDirectories([...rootBindings.map((binding) => binding.path), directory]);
+    return sessionPendingDirectoryPolicy.bind([
+      ...rootBindings.map((binding) => binding.path),
+      directory,
+    ]);
   }
 
   private async bindExistingSessionPendingDirectory(
     sessionLocator: string,
   ): Promise<DirectoryBinding[] | undefined> {
     try {
-      return await bindIndexDirectories([
+      return await sessionPendingDirectoryPolicy.bind([
         this.interactionsRoot,
         this.sessionPendingRoot,
         join(this.sessionPendingRoot, sessionLocator),
@@ -599,21 +618,32 @@ class FileInteractionStore {
     name: string,
     bytes: Buffer,
   ): Promise<'published_or_existing' | 'not_attempted'> {
-    const directory = join(this.interactionsRoot, locator);
+    let bindings: DirectoryBinding[] | undefined;
+    let directory: string | undefined;
     let temp: string | undefined;
+    let tempIdentity: FileIdentity | undefined;
     let linked = false;
     let linkAttempted = false;
     try {
-      await mkdir(directory, { recursive: true, mode: 0o700 });
+      bindings = await this.ensureLocator(locator);
+      directory = bindings.at(-1)?.path;
+      if (!directory) invalidInteractionLocator();
       await syncDirectoryChain(directory, this.root);
+      await interactionDirectoryPolicy.assert(bindings);
       temp = join(directory, `${name}.${randomUUID()}.tmp`);
-      const handle = await open(temp, 'wx', 0o600);
+      const handle = await open(temp, canonicalCreateFlags(), 0o600);
       try {
+        const metadata = await handle.stat({ bigint: true });
+        assertCanonicalFile(metadata);
+        tempIdentity = { dev: metadata.dev, ino: metadata.ino };
         await handle.writeFile(bytes);
         await handle.sync();
       } finally {
         await handle.close();
       }
+      await interactionDirectoryPolicy.assert(bindings);
+      if (!tempIdentity) invalidInteractionDocument();
+      await assertCanonicalPathIdentity(temp, tempIdentity);
       try {
         linkAttempted = true;
         await link(temp, join(directory, name));
@@ -621,29 +651,38 @@ class FileInteractionStore {
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       }
+      await interactionDirectoryPolicy.assert(bindings);
       await syncDirectory(directory);
-      await unlink(temp);
+      await removeCanonicalTemp(bindings, temp, tempIdentity);
       temp = undefined;
       await syncDirectory(directory);
+      await interactionDirectoryPolicy.assert(bindings);
       return 'published_or_existing';
     } catch {
-      if (temp) await unlink(temp).catch(() => undefined);
+      if (temp && bindings) {
+        await removeCanonicalTemp(bindings, temp, tempIdentity).catch(() => undefined);
+      }
       return linked || linkAttempted ? 'published_or_existing' : 'not_attempted';
     }
   }
 
-  private async readLocatorUnlocked(
-    locator: string,
+  private async readBoundLocatorUnlocked(
+    bindings: readonly DirectoryBinding[],
     expectedId?: string,
   ): Promise<InteractionRecord | undefined> {
-    const directory = join(this.interactionsRoot, locator);
+    const directory = bindings.at(-1)?.path;
+    if (!directory) invalidInteractionLocator();
     let entries;
     try {
       entries = await readdir(directory, { withFileTypes: true });
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        await interactionDirectoryPolicy.assert(bindings);
+        return undefined;
+      }
       throw error;
     }
+    await interactionDirectoryPolicy.assert(bindings);
     if (entries.some((entry) => TEMP_FILE.test(entry.name)))
       throw new InteractionStoreError(
         'invalid_record',
@@ -652,6 +691,7 @@ class FileInteractionStore {
     const requestRaw = await readOptional(
       join(directory, 'request.json'),
       STORED_INTERACTION_REQUEST_MAX_BYTES,
+      bindings,
     );
     if (requestRaw === undefined) {
       if (entries.some((entry) => entry.name === 'outcome.json'))
@@ -661,38 +701,43 @@ class FileInteractionStore {
     const request = normalizeRequest(parseJsonRecord(requestRaw, 'request'), 'record');
     if (
       (expectedId && request.requestId !== expectedId) ||
-      interactionLocator(request.requestId) !== locator
+      join(this.interactionsRoot, interactionLocator(request.requestId)) !== directory
     )
       throw new InteractionStoreError('invalid_record', 'Request identity does not match locator');
     const outcomeRaw = await readOptional(
       join(directory, 'outcome.json'),
       STORED_INTERACTION_OUTCOME_MAX_BYTES,
+      bindings,
     );
     const outcome =
       outcomeRaw === undefined
         ? undefined
         : normalizeOutcome(parseJsonRecord(outcomeRaw, 'outcome'), request);
+    await interactionDirectoryPolicy.assert(bindings);
     return deepFreeze({ request, ...(outcome ? { outcome } : {}) });
   }
 
-  private async stabilizeLocatorUnlocked(locator: string): Promise<void> {
-    const directory = join(this.interactionsRoot, locator);
-    let entries;
-    try {
-      entries = await readdir(directory, { withFileTypes: true });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
-      throw error;
-    }
+  private async stabilizeBoundLocator(bindings: readonly DirectoryBinding[]): Promise<void> {
+    const directory = bindings.at(-1)?.path;
+    if (!directory) invalidInteractionLocator();
+    const entries = await readdir(directory, { withFileTypes: true });
     for (const entry of entries) {
-      if (entry.isFile() && TEMP_FILE.test(entry.name)) {
-        await unlink(join(directory, entry.name));
+      if (TEMP_FILE.test(entry.name)) {
+        await removeCanonicalTemp(bindings, join(directory, entry.name));
       }
     }
     await syncDirectory(directory);
+    await interactionDirectoryPolicy.assert(bindings);
   }
 
   private async locators(): Promise<string[]> {
+    let rootBindings: DirectoryBinding[];
+    try {
+      rootBindings = await interactionDirectoryPolicy.bind([this.interactionsRoot]);
+    } catch (error) {
+      if (isNodeError(error, 'ENOENT')) return [];
+      throw error;
+    }
     let entries;
     try {
       entries = await readdir(this.interactionsRoot, { withFileTypes: true });
@@ -700,10 +745,41 @@ class FileInteractionStore {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
       throw error;
     }
-    return entries
-      .filter((entry) => entry.isDirectory() && LOCATOR.test(entry.name))
-      .map((entry) => entry.name)
-      .sort();
+    const locators: string[] = [];
+    for (const entry of entries) {
+      if (!LOCATOR.test(entry.name)) continue;
+      await interactionDirectoryPolicy.bind([
+        ...rootBindings.map((binding) => binding.path),
+        join(this.interactionsRoot, entry.name),
+      ]);
+      locators.push(entry.name);
+    }
+    await interactionDirectoryPolicy.assert(rootBindings);
+    return locators.sort();
+  }
+
+  private async ensureLocator(locator: string): Promise<DirectoryBinding[]> {
+    await mkdirIfMissing(this.interactionsRoot);
+    const rootBindings = await interactionDirectoryPolicy.bind([this.interactionsRoot]);
+    await interactionDirectoryPolicy.assert(rootBindings);
+    const directory = join(this.interactionsRoot, locator);
+    await mkdirIfMissing(directory);
+    return interactionDirectoryPolicy.bind([
+      ...rootBindings.map((binding) => binding.path),
+      directory,
+    ]);
+  }
+
+  private async bindExistingLocator(locator: string): Promise<DirectoryBinding[] | undefined> {
+    try {
+      return await interactionDirectoryPolicy.bind([
+        this.interactionsRoot,
+        join(this.interactionsRoot, locator),
+      ]);
+    } catch (error) {
+      if (isNodeError(error, 'ENOENT')) return undefined;
+      throw error;
+    }
   }
 
   private async withLocator<T>(
@@ -738,6 +814,11 @@ interface DirectoryBinding {
   readonly ino: bigint;
 }
 
+interface FileIdentity {
+  readonly dev: bigint;
+  readonly ino: bigint;
+}
+
 async function mkdirIfMissing(path: string): Promise<void> {
   try {
     await mkdir(path, { mode: 0o700 });
@@ -746,23 +827,55 @@ async function mkdirIfMissing(path: string): Promise<void> {
   }
 }
 
-async function bindIndexDirectories(paths: readonly string[]): Promise<DirectoryBinding[]> {
-  const bindings: DirectoryBinding[] = [];
-  for (const path of paths) {
-    const metadata = await lstat(path, { bigint: true });
-    if (!metadata.isDirectory()) invalidSessionPendingMarker();
-    bindings.push({ path, dev: metadata.dev, ino: metadata.ino });
-  }
-  return bindings;
+function directoryBindingPolicy(invalidDirectory: () => never): {
+  bind(paths: readonly string[]): Promise<DirectoryBinding[]>;
+  assert(bindings: readonly DirectoryBinding[]): Promise<void>;
+} {
+  return {
+    async bind(paths) {
+      const bindings: DirectoryBinding[] = [];
+      for (const path of paths) {
+        const metadata = await lstat(path, { bigint: true });
+        if (!metadata.isDirectory()) invalidDirectory();
+        bindings.push({ path, dev: metadata.dev, ino: metadata.ino });
+      }
+      return bindings;
+    },
+    async assert(bindings) {
+      for (const binding of bindings) {
+        const metadata = await lstat(binding.path, { bigint: true });
+        if (
+          !metadata.isDirectory() ||
+          metadata.dev !== binding.dev ||
+          metadata.ino !== binding.ino
+        ) {
+          invalidDirectory();
+        }
+      }
+    },
+  };
 }
 
-async function assertDirectoryBindings(bindings: readonly DirectoryBinding[]): Promise<void> {
-  for (const binding of bindings) {
-    const metadata = await lstat(binding.path, { bigint: true });
-    if (!metadata.isDirectory() || metadata.dev !== binding.dev || metadata.ino !== binding.ino) {
-      invalidSessionPendingMarker();
-    }
-  }
+const sessionPendingDirectoryPolicy = directoryBindingPolicy(invalidSessionPendingMarker);
+const interactionDirectoryPolicy = directoryBindingPolicy(invalidInteractionLocator);
+
+async function removeCanonicalTemp(
+  bindings: readonly DirectoryBinding[],
+  path: string,
+  expected?: FileIdentity,
+): Promise<void> {
+  const bound = await lstat(path, { bigint: true });
+  assertCanonicalFile(bound);
+  if (expected) assertCanonicalFileIdentity(bound, expected);
+  await interactionDirectoryPolicy.assert(bindings);
+  await assertCanonicalPathIdentity(path, bound);
+  await unlink(path);
+  await interactionDirectoryPolicy.assert(bindings);
+}
+
+async function assertCanonicalPathIdentity(path: string, expected: FileIdentity): Promise<void> {
+  const metadata = await lstat(path, { bigint: true });
+  assertCanonicalFileIdentity(metadata, expected);
 }
 
 async function readSessionPendingMarker(path: string): Promise<void> {
@@ -793,7 +906,7 @@ function assertSessionPendingMarker(metadata: BigIntStats): void {
   if (!metadata.isFile() || metadata.size !== 0n) invalidSessionPendingMarker();
 }
 
-function markerCreateFlags(): string | number {
+function canonicalCreateFlags(): string | number {
   if (process.platform === 'win32') return 'wx';
   return (
     fsConstants.O_WRONLY |
@@ -802,6 +915,11 @@ function markerCreateFlags(): string | number {
     fsConstants.O_NONBLOCK |
     fsConstants.O_NOFOLLOW
   );
+}
+
+function canonicalReadFlags(): string | number {
+  if (process.platform === 'win32') return fsConstants.O_RDONLY | fsConstants.O_NONBLOCK;
+  return fsConstants.O_RDONLY | fsConstants.O_NONBLOCK | fsConstants.O_NOFOLLOW;
 }
 
 function sessionPendingMarkerError(cause?: unknown): InteractionStoreError {
@@ -816,26 +934,76 @@ function invalidSessionPendingMarker(cause?: unknown): never {
   throw sessionPendingMarkerError(cause);
 }
 
+function invalidInteractionLocator(cause?: unknown): never {
+  throw new InteractionStoreError(
+    'invalid_record',
+    'Interaction locator is not a stable directory',
+    cause === undefined ? undefined : { cause },
+  );
+}
+
+function invalidInteractionDocument(cause?: unknown): never {
+  throw new InteractionStoreError(
+    'invalid_record',
+    'Interaction document is not a stable regular file',
+    cause === undefined ? undefined : { cause },
+  );
+}
+
+function assertCanonicalFile(metadata: BigIntStats): void {
+  if (!metadata.isFile()) invalidInteractionDocument();
+}
+
+function assertCanonicalFileIdentity(metadata: BigIntStats, expected: FileIdentity): void {
+  if (!metadata.isFile() || metadata.dev !== expected.dev || metadata.ino !== expected.ino) {
+    invalidInteractionDocument();
+  }
+}
+
 function isNodeError(error: unknown, code: string): boolean {
   return (
     error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === code
   );
 }
 
-async function readOptional(path: string, limit: number): Promise<string | undefined> {
+async function readOptional(
+  path: string,
+  limit: number,
+  bindings: readonly DirectoryBinding[],
+): Promise<string | undefined> {
+  let pathMetadata: BigIntStats;
+  try {
+    pathMetadata = await lstat(path, { bigint: true });
+  } catch (error) {
+    if (isNodeError(error, 'ENOENT')) {
+      await interactionDirectoryPolicy.assert(bindings);
+      return undefined;
+    }
+    throw error;
+  }
+  assertCanonicalFile(pathMetadata);
+  await interactionDirectoryPolicy.assert(bindings);
   let handle;
   try {
-    handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+    handle = await open(path, canonicalReadFlags());
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    if (isNodeError(error, 'ENOENT')) {
+      await interactionDirectoryPolicy.assert(bindings);
+      return undefined;
+    }
+    if (isNodeError(error, 'ELOOP') || isNodeError(error, 'EISDIR')) {
+      invalidInteractionDocument(error);
+    }
     throw error;
   }
   try {
-    const stat = await handle.stat();
-    if (!stat.isFile())
-      throw new InteractionStoreError('invalid_record', 'Interaction document is not a file');
-    if (stat.size > limit)
+    const stat = await handle.stat({ bigint: true });
+    assertCanonicalFile(stat);
+    if (stat.size > BigInt(limit))
       throw new InteractionStoreError('invalid_record', 'Interaction document exceeds size limit');
+    assertCanonicalFileIdentity(stat, pathMetadata);
+    await assertCanonicalPathIdentity(path, stat);
+    await interactionDirectoryPolicy.assert(bindings);
     const bytes = Buffer.alloc(limit + 1);
     let total = 0;
     while (total < bytes.length) {
@@ -845,13 +1013,17 @@ async function readOptional(path: string, limit: number): Promise<string | undef
     }
     if (total > limit)
       throw new InteractionStoreError('invalid_record', 'Interaction document exceeds size limit');
+    let value: string;
     try {
-      return new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, total));
+      value = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, total));
     } catch (error) {
       throw new InteractionStoreError('invalid_record', 'Interaction document is not valid UTF-8', {
         cause: error,
       });
     }
+    await assertCanonicalPathIdentity(path, stat);
+    await interactionDirectoryPolicy.assert(bindings);
+    return value;
   } finally {
     await handle.close();
   }

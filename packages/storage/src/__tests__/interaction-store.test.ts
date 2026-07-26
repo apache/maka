@@ -222,6 +222,188 @@ describe('Interaction Store', () => {
     });
   });
 
+  test('does not publish a request through a pre-existing locator symlink', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    await withStore(async ({ root, store }) => {
+      const outside = await mkdtemp(join(tmpdir(), 'maka-interaction-locator-request-'));
+      const request = storedQuestion('request_locator_symlink', 100);
+      const locator = join(root, 'interactions', interactionLocator(request.requestId));
+      const sentinel = join(outside, 'sentinel');
+      try {
+        await writeFile(sentinel, 'unchanged');
+        await symlink(outside, locator, 'dir');
+
+        const result = await store.establishRequest(request);
+        assert.equal(result.status, 'unresolved');
+        if (result.status === 'unresolved') assert.equal(result.failure.code, 'invalid_record');
+        assert.deepEqual(await readdir(outside), ['sentinel']);
+        assert.equal(await readFile(sentinel, 'utf8'), 'unchanged');
+      } finally {
+        await rm(outside, { recursive: true, force: true });
+      }
+    });
+  });
+
+  test('does not publish an outcome through a replaced locator symlink', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    await withStore(async ({ root, store }) => {
+      const outside = await mkdtemp(join(tmpdir(), 'maka-interaction-locator-outcome-'));
+      const request = storedQuestion('outcome_locator_symlink', 100);
+      const locator = join(root, 'interactions', interactionLocator(request.requestId));
+      const sentinel = join(outside, 'sentinel');
+      try {
+        const established = await store.establishRequest(request);
+        assert.equal(established.status, 'stable');
+        await rm(locator, { recursive: true });
+        await writeFile(sentinel, 'unchanged');
+        await symlink(outside, locator, 'dir');
+
+        const result = await store.commitOutcome(request.requestId, questionOutcome('done', 200));
+        assert.equal(result.status, 'unresolved');
+        if (result.status === 'unresolved') assert.equal(result.failure.code, 'invalid_record');
+        assert.deepEqual(await readdir(outside), ['sentinel']);
+        assert.equal(await readFile(sentinel, 'utf8'), 'unchanged');
+      } finally {
+        await rm(outside, { recursive: true, force: true });
+      }
+    });
+  });
+
+  test('does not read canonical documents through a locator symlink', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    await withStore(async ({ root, store }) => {
+      const outside = await mkdtemp(join(tmpdir(), 'maka-interaction-locator-read-'));
+      const request = storedQuestion('read_locator_symlink', 100);
+      const locator = join(root, 'interactions', interactionLocator(request.requestId));
+      const externalRequest = join(outside, 'request.json');
+      try {
+        await writeFile(externalRequest, `${JSON.stringify(request)}\n`);
+        await symlink(outside, locator, 'dir');
+
+        await assert.rejects(store.readInteraction(request.requestId), {
+          code: 'invalid_record',
+        });
+        assert.deepEqual(await readdir(outside), ['request.json']);
+        assert.equal(await readFile(externalRequest, 'utf8'), `${JSON.stringify(request)}\n`);
+      } finally {
+        await rm(outside, { recursive: true, force: true });
+      }
+    });
+  });
+
+  test('does not follow a canonical request symlink during publication', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    await withStore(async ({ root, store }) => {
+      const outside = await mkdtemp(join(tmpdir(), 'maka-interaction-request-document-'));
+      const request = storedQuestion('request_document_symlink', 100);
+      const locator = join(root, 'interactions', interactionLocator(request.requestId));
+      const externalRequest = join(outside, 'request.json');
+      const externalContents = `${JSON.stringify(request)}\n`;
+      try {
+        await mkdir(locator);
+        await writeFile(externalRequest, externalContents);
+        await symlink(externalRequest, join(locator, 'request.json'));
+
+        const result = await store.establishRequest(request);
+        assert.equal(result.status, 'unresolved');
+        if (result.status === 'unresolved') assert.equal(result.failure.code, 'invalid_record');
+        assert.equal(await readFile(externalRequest, 'utf8'), externalContents);
+      } finally {
+        await rm(outside, { recursive: true, force: true });
+      }
+    });
+  });
+
+  test('does not follow a canonical outcome symlink during publication', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    await withStore(async ({ root, store }) => {
+      const outside = await mkdtemp(join(tmpdir(), 'maka-interaction-outcome-document-'));
+      const request = storedQuestion('outcome_document_symlink', 100);
+      const locator = join(root, 'interactions', interactionLocator(request.requestId));
+      const externalOutcome = join(outside, 'outcome.json');
+      const outcome = questionOutcome('done', 200);
+      const externalContents = `${JSON.stringify({ ...identity(request), outcome })}\n`;
+      try {
+        const established = await store.establishRequest(request);
+        assert.equal(established.status, 'stable');
+        await writeFile(externalOutcome, externalContents);
+        await symlink(externalOutcome, join(locator, 'outcome.json'));
+
+        const result = await store.commitOutcome(request.requestId, outcome);
+        assert.equal(result.status, 'unresolved');
+        if (result.status === 'unresolved') assert.equal(result.failure.code, 'invalid_record');
+        assert.equal(await readFile(externalOutcome, 'utf8'), externalContents);
+      } finally {
+        await rm(outside, { recursive: true, force: true });
+      }
+    });
+  });
+
+  test('recovery rejects a locator symlink without reading or cleaning the external directory', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    await withStore(async ({ root, owner }) => {
+      const outside = await mkdtemp(join(tmpdir(), 'maka-interaction-locator-recovery-'));
+      const request = storedQuestion('recovery_locator_symlink', 100);
+      const locator = join(root, 'interactions', interactionLocator(request.requestId));
+      const externalRequest = join(outside, 'request.json');
+      const externalTemp = join(outside, 'outcome.json.00000000-0000-4000-8000-000000000003.tmp');
+      try {
+        await writeFile(externalRequest, `${JSON.stringify(request)}\n`);
+        await writeFile(externalTemp, 'must remain');
+        await symlink(outside, locator, 'dir');
+        await owner.close();
+
+        const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+        const recoveredOwner = await tryAcquireInteractiveRootOwner(capability);
+        assert.ok(recoveredOwner);
+        if (!recoveredOwner) return;
+        try {
+          await assert.rejects(openInteractiveInteractionStoreForWrite(recoveredOwner.lease), {
+            code: 'invalid_record',
+          });
+          assert.deepEqual((await readdir(outside)).sort(), [
+            'outcome.json.00000000-0000-4000-8000-000000000003.tmp',
+            'request.json',
+          ]);
+          assert.equal(await readFile(externalRequest, 'utf8'), `${JSON.stringify(request)}\n`);
+          assert.equal(await readFile(externalTemp, 'utf8'), 'must remain');
+        } finally {
+          await recoveredOwner.close();
+        }
+      } finally {
+        await rm(outside, { recursive: true, force: true });
+      }
+    });
+  });
+
+  test('recovery rejects a non-directory with a canonical locator name', async () => {
+    await withStore(async ({ root, owner }) => {
+      const request = storedQuestion('recovery_locator_file', 100);
+      const locator = join(root, 'interactions', interactionLocator(request.requestId));
+      await writeFile(locator, 'not a directory');
+      await owner.close();
+
+      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const recoveredOwner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(recoveredOwner);
+      if (!recoveredOwner) return;
+      try {
+        await assert.rejects(openInteractiveInteractionStoreForWrite(recoveredOwner.lease), {
+          code: 'invalid_record',
+        });
+        assert.equal(await readFile(locator, 'utf8'), 'not a directory');
+      } finally {
+        await recoveredOwner.close();
+      }
+    });
+  });
+
   test('rejects a malformed marker during outcome cleanup and recovery', async () => {
     await withStore(async ({ root, owner, store }) => {
       const request = storedQuestion('request_malformed_cleanup', 100);
