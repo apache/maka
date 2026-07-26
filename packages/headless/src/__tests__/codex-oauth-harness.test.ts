@@ -138,10 +138,13 @@ test('Codex OAuth broker refreshes and persists authority across a long run', as
   }
 });
 
-test('Codex OAuth broker cancels an in-flight refresh with the request signal', async () => {
+test('Codex OAuth broker cancels an in-flight refresh with the request signal', {
+  timeout: 5_000,
+}, async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-codex-oauth-cancel-test-'));
   let releaseRefresh = () => {};
   let resolution: Promise<unknown> | undefined;
+  let rejectionTimeout: ReturnType<typeof setTimeout> | undefined;
   try {
     const store = createFileCredentialStore(root);
     const accountId = 'acct-shared';
@@ -197,8 +200,20 @@ test('Codex OAuth broker cancels an in-flight refresh with the request signal', 
     await refreshStarted;
     assert.equal(observedSignal, controller.signal);
     controller.abort();
-    await assert.rejects(resolution, /credentials are unavailable/);
+    await assert.rejects(
+      Promise.race([
+        resolution,
+        new Promise((_, reject) => {
+          rejectionTimeout = setTimeout(
+            () => reject(new Error('credential resolution did not observe cancellation')),
+            250,
+          );
+        }),
+      ]),
+      /credentials are unavailable/,
+    );
   } finally {
+    if (rejectionTimeout) clearTimeout(rejectionTimeout);
     releaseRefresh();
     await resolution?.catch(() => undefined);
     await rm(root, { recursive: true, force: true });
