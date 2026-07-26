@@ -9,12 +9,22 @@
   width: fit-content;
   display: inline-flex;
   align-items: center;
-  /* Narrow containers wrap whole options to the next row; labels never
-     break inside a button (nowrap below). Keeps every option reachable
-     and 22px tall at any width. */
-  flex-wrap: wrap;
+  /* The track never breaks across rows. A segmented control reads as ONE
+     switch: wrapping split it into a ragged two-row plate (visible in the
+     en locale, where "Follow system / 中文 / English" is ~25% wider than
+     the zh labels and dropped "English" onto its own line). Instead the
+     group refuses to shrink and the label stack beside it — which already
+     carries `min-width: 0` and wraps — absorbs the squeeze. Below the
+     460px card container the whole row stacks (rows.css), so the track
+     gets the full width rather than ever needing to fold. */
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
   gap: var(--space-0-5);
-  border-radius: var(--radius-pill);
+  /* Concentric with the app radius scale, not a pill: at 999px the track
+     read as a foreign shape beside the 6px inputs/selects it shares a card
+     with. Outer sits on --radius-surface; the buttons shrink by the 2px
+     track padding so both curves stay concentric. */
+  border-radius: var(--radius-surface);
   background: var(--foreground-5);
   padding: var(--space-0-5);
 }
@@ -22,7 +32,13 @@
 .maka-segmented button {
   min-height: 22px;
   border: 0;
-  border-radius: var(--radius-pill);
+  /* Concentric with the 8px track: 8px outer - 2px track padding = 6px,
+     which IS --radius-control — and a segment button is a control, so the
+     tier token says it directly. Deliberately not the calc() shrink form:
+     CSS requires whitespace around `-`, but the radius-converge contract
+     splits values on whitespace, so the only spelling that satisfies both
+     would be invalid CSS resolving to 0. */
+  border-radius: var(--radius-control);
   background: transparent;
   color: var(--foreground-secondary);
   padding: 0 var(--space-2);

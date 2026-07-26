@@ -25,10 +25,26 @@ describe('segmented control chrome contract', () => {
   it('owns the full recipe in styles/segmented.css, wired into the entry file', async () => {
     const recipe = stripCssComments(await readFile(resolve(RENDERER, 'styles', 'segmented.css'), 'utf8'));
 
-    assert.match(recipe, /\.maka-segmented\s*\{[^}]*flex-wrap:\s*wrap/);
+    const rootRule = recipe.match(/\.maka-segmented\s*\{[^}]*\}/)?.[0] ?? '';
+    // The track is one unbroken switch: it neither folds across rows nor
+    // shrinks below its content (the label stack beside it absorbs the
+    // squeeze, and below 460px the whole row stacks). Wrapping produced a
+    // ragged two-row plate in the en locale.
+    assert.match(rootRule, /flex-wrap:\s*nowrap/, 'the segmented track never folds across rows');
+    assert.match(rootRule, /flex:\s*0 0 auto/, 'the track keeps its intrinsic width; the label wraps instead');
+    // Concentric with the app radius scale — a 999px pill read as a foreign
+    // shape beside the 6px fields it shares a settings card with.
+    assert.match(rootRule, /border-radius:\s*var\(--radius-surface\)/, 'track sits on the surface radius tier');
+    assert.doesNotMatch(rootRule, /--radius-pill/, 'the pill radius is off the concentric scale');
+
     const buttonRule = recipe.match(/\.maka-segmented button\s*\{[^}]*\}/)?.[0] ?? '';
     assert.match(buttonRule, /font-size:\s*var\(--font-size-ui\)/, 'controls sit on the ui tier, not caption');
-    assert.match(buttonRule, /white-space:\s*nowrap/, 'labels wrap as whole options, never inside a button');
+    assert.match(buttonRule, /white-space:\s*nowrap/, 'labels never break inside a button');
+    assert.match(
+      buttonRule,
+      /border-radius:\s*var\(--radius-control\)/,
+      'segment buttons sit one tier in from the track, keeping the curves concentric',
+    );
     assert.match(buttonRule, /transition:/);
     assert.match(recipe, /\.maka-segmented button:enabled:hover:not\(\[data-pressed\]\)/);
     assert.match(recipe, /\.maka-segmented button:enabled:active:not\(\[data-pressed\]\)/);

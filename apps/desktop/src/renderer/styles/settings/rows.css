@@ -217,6 +217,13 @@
    cap); keying off the row makes the contract local and obvious. */
 .settingsRow[data-control-width="compact"] > input,
 .settingsRow[data-control-width="compact"] > .settingsTimeInput {
+  /* `width: auto` over the Input primitive's `w-full`: a 140px flat cap
+     stretched the box to 140px while `08:00` + the picker glyph only ink
+     ~80px, leaving a ~60px dead strip inside the field's right edge. The
+     field now hugs its content and stays pinned to the same right rail as
+     the switch rows above it; 140px remains the ceiling for the wider
+     compact controls that share this bucket. */
+  width: auto;
   max-width: 140px;
   justify-self: end;
 }
