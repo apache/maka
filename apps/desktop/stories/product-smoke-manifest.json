@@ -29,19 +29,51 @@
       "productionHost": "AppShellDetailPanel > AutomationsPage",
       "state": "Configured recurring and completed reminders",
       "viewports": ["wide", "compact", "floor"],
-      "colorSchemes": ["light", "dark"]
+      "colorSchemes": ["light", "dark"],
+      "checks": ["plan-reminder-row"]
     },
-    "planRemindersNarrow": {
-      "storyId": "product-module-hubs--scheduled-plan-reminders-narrow",
+    "planRemindersEmpty": {
+      "storyId": "product-module-hubs--scheduled-plan-reminders",
       "productionHost": "AppShellDetailPanel > AutomationsPage",
-      "state": "Hostile long content at the 480 × 720 minimum iframe viewport",
-      "viewports": ["floor"],
+      "state": "No reminders configured",
+      "viewports": ["wide"],
+      "viewportOptOuts": {
+        "compact": "The configured reference story covers compact layout behavior.",
+        "floor": "The long-content reference story covers the narrow production host."
+      }
+    },
+    "planRemindersAttention": {
+      "storyId": "product-module-hubs--scheduled-plan-reminders-attention",
+      "productionHost": "AppShellDetailPanel > AutomationsPage",
+      "state": "Latest delivery needs attention",
+      "viewports": ["wide"],
+      "colorSchemes": ["light", "dark"],
+      "viewportOptOuts": {
+        "compact": "The configured reference story covers compact layout behavior.",
+        "floor": "The long-content reference story covers the narrow production host."
+      }
+    },
+    "planRemindersKeepAwake": {
+      "storyId": "product-module-hubs--scheduled-plan-reminders-keep-awake",
+      "productionHost": "AppShellDetailPanel > AutomationsPage",
+      "state": "Keep system awake enabled in contextual page settings",
+      "viewports": ["wide"],
+      "viewportOptOuts": {
+        "compact": "The configured reference story covers compact layout behavior.",
+        "floor": "The long-content reference story covers the narrow production host."
+      }
+    },
+    "planRemindersLongContent": {
+      "storyId": "product-module-hubs--scheduled-plan-reminders-long-content",
+      "productionHost": "AppShellDetailPanel > AutomationsPage",
+      "state": "Hostile long content at wide and 480 × 720 iframe viewports",
+      "viewports": ["wide", "floor"],
+      "colorSchemes": ["light", "dark"],
       "viewportSizes": {
         "floor": { "width": 480, "height": 720 }
       },
-      "checks": ["plan-reminder-narrow"],
+      "checks": ["plan-reminder-row"],
       "viewportOptOuts": {
-        "wide": "The populated reference story covers the wide production host.",
         "compact": "The populated reference story covers the compact production host."
       }
     },

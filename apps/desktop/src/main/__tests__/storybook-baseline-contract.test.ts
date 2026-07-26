@@ -105,7 +105,6 @@ describe('Storybook baseline contract', () => {
       'ExtensionsSkillsInstalled',
       'ScheduledPlanRemindersConfigured',
       'ScheduledPlanRemindersLongContent',
-      'ScheduledPlanRemindersNarrow',
       'ScheduledDailyReviewLoading',
       'ScheduledDailyReviewLoadError',
     ]) {
@@ -135,7 +134,12 @@ describe('Storybook baseline contract', () => {
     assert.match(story, /status:\s*'paused'/, 'configured reminders must preserve paused-state coverage');
     assert.match(story, /status:\s*'completed'/, 'configured reminders must preserve completed-state coverage');
     assert.match(story, /blockReason:\s*'bot_delivery_unavailable'/, 'attention reminders must preserve reachable blocked-delivery coverage');
-    assert.match(story, /480 × 720/, 'the narrow story must document its real iframe viewport');
+    const smokeManifest = readFileSync(join(REPO_ROOT, 'apps', 'desktop', 'stories', 'product-smoke-manifest.json'), 'utf8');
+    assert.match(
+      smokeManifest,
+      /"floor":\s*\{\s*"width":\s*480,\s*"height":\s*720\s*\}/,
+      'the smoke manifest must own the long-content iframe viewport',
+    );
 
     for (const obsoleteStory of [
       'skills-panel.stories.tsx',

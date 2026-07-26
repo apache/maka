@@ -225,8 +225,21 @@ export async function writePlanReminders(workspaceRoot: string, now: number): Pr
       createdAt: now - 3.5 * 60 * 60_000,
       updatedAt: now - 35 * 60_000,
       nextRunAt: Date.UTC(2026, 11, 21, 2, 0, 0),
-      runs: [],
-      runCount: 0,
+      lastRun: {
+        id: 'visual-plan-run-weekly-review',
+        at: now - 35 * 60_000,
+        status: 'triggered',
+        message: '已生成本周竞品动态摘要',
+      },
+      runs: [
+        {
+          id: 'visual-plan-run-weekly-review',
+          at: now - 35 * 60_000,
+          status: 'triggered',
+          message: '已生成本周竞品动态摘要',
+        },
+      ],
+      runCount: 1,
     },
     {
       id: 'visual-plan-reminder-completed',

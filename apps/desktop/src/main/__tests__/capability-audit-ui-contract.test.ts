@@ -84,7 +84,7 @@ describe('capability audit visible system contract', () => {
     assert.notEqual(report.skills[0].permissionMode, 'execute');
   });
 
-  it('derives capability audit reports at the Skills and Automations page boundaries', async () => {
+  it('derives the cross-capability report only where the Skills surface owns it', async () => {
     const components = await readFile(join(repoRoot, 'packages', 'ui', 'src', 'module-pages.tsx'), 'utf8');
 
     assert.match(
@@ -97,10 +97,10 @@ describe('capability audit visible system contract', () => {
       /<SkillsModuleMain \{\.\.\.props\} auditReport=\{auditReport\}/,
       'Skills module must receive the page report',
     );
-    assert.match(
+    assert.doesNotMatch(
       components,
-      /<PlanReminderPanel \{\.\.\.props\} reminders=\{props\.reminders \?\? \[\]\} auditReport=\{auditReport\}/,
-      'Automations module must receive the page report',
+      /function AutomationsPage[\s\S]*deriveCapabilityAuditReport/,
+      'Plan rows already own their exception detail and must not repeat it in a page-level audit strip',
     );
   });
 

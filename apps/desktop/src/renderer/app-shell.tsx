@@ -1712,7 +1712,6 @@ function AppShellContent({
               ) : navSelection.section === 'automations' && navSelection.module === 'plan-reminders' ? (
                 <AutomationsPage
                   hubHeader={automationsHubHeader}
-                  skills={skills}
                   reminders={planReminders}
                   createRequestNonce={planReminderCreateRequestNonce}
                   onCreateRequestHandled={() => setPlanReminderCreateRequestNonce(0)}

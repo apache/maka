@@ -43,8 +43,10 @@ export function useKeepSystemAwake(): KeepSystemAwakeController {
       const settings = await window.maka.settings.get();
       if (mountedRef.current) setSnapshot(settings.system.keepSystemAwake);
     } catch {
-      // Best-effort read: leave the last-known snapshot in place. A failed
-      // read must not throw into render or wedge the toggle.
+      // The persisted default is false. Falling back to that known-safe value
+      // keeps the page-setting control available so a later write can recover
+      // from a transient read failure.
+      if (mountedRef.current) setSnapshot(false);
     }
   }, [supported, mountedRef]);
 

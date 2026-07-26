@@ -72,6 +72,7 @@ export function PlanReminderFormDialog(props: {
   const [submitPending, setSubmitPending] = useState(false);
   const planReminderMountedRef = useMountedRef();
   const submitPendingRef = useRef(false);
+  const titleRef = useRef<HTMLInputElement>(null);
   const parsedRunAt = Date.parse(runAtLocal);
   const delivery: PlanReminderDeliveryTarget = deliveryChannel === 'bot'
     ? { channel: 'bot', platform: deliveryPlatform, chatId: deliveryChatId.trim() }
@@ -165,6 +166,7 @@ export function PlanReminderFormDialog(props: {
       <DialogContent
         className="maka-plan-dialog w-[min(92vw,680px)] p-0"
         aria-labelledby="maka-plan-dialog-title"
+        initialFocus={titleRef}
         showClose={false}
       >
         <form className="maka-plan-form" onSubmit={submit} aria-busy={submitPending ? 'true' : undefined}>
@@ -187,10 +189,10 @@ export function PlanReminderFormDialog(props: {
             <label className="maka-plan-field">
               <span>{copy.field.title}</span>
               <Input
+                ref={titleRef}
                 value={title}
                 onChange={(event) => setTitle(event.currentTarget.value)}
                 maxLength={120}
-                autoFocus
                 data-maka-plan-title-input="true"
                 placeholder={copy.titlePlaceholder}
                 disabled={formInteractionDisabled}

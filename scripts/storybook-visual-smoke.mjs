@@ -18,6 +18,8 @@ export const REQUIRED_PRODUCT_SURFACES = Object.freeze([
   'dailyReview',
 ]);
 
+const PRODUCT_CHECKS = new Set(['plan-reminder-row']);
+
 function fail(message) {
   throw new Error(`Product Storybook manifest: ${message}`);
 }
@@ -63,6 +65,10 @@ export function validateCoverageManifest(manifest, storyIndex) {
     const optOuts = isRecord(entry.viewportOptOuts) ? entry.viewportOptOuts : {};
     const viewportSizes = isRecord(entry.viewportSizes) ? entry.viewportSizes : {};
     const colorSchemes = Array.isArray(entry.colorSchemes) ? entry.colorSchemes : ['light'];
+    const checks = Array.isArray(entry.checks) ? entry.checks : [];
+    for (const check of checks) {
+      if (!PRODUCT_CHECKS.has(check)) fail(`${surface} uses unknown check: ${String(check)}`);
+    }
     if (
       colorSchemes.length === 0 ||
       colorSchemes.some((scheme) => scheme !== 'light' && scheme !== 'dark')
@@ -91,7 +97,7 @@ export function validateCoverageManifest(manifest, storyIndex) {
             viewport,
             size,
             colorScheme,
-            checks: Array.isArray(entry.checks) ? entry.checks : [],
+            checks,
             productionHost: entry.productionHost,
             state: entry.state,
           });
@@ -209,7 +215,7 @@ export async function smokeStory(page, baseUrl, job, options = {}) {
       }
     }
 
-    if (job.checks?.includes('plan-reminder-narrow')) {
+    if (job.checks?.includes('plan-reminder-row')) {
       try {
         await page.waitForSelector('.maka-plan-card', { state: 'visible', timeout: 5_000 });
       } catch {
@@ -228,35 +234,56 @@ export async function smokeStory(page, baseUrl, job, options = {}) {
         ) {
           failures.push('dark color scheme was not applied to the production root');
         }
-        if (checks.includes('plan-reminder-narrow')) {
+        if (checks.includes('plan-reminder-row')) {
           if (document.documentElement.scrollWidth > document.documentElement.clientWidth) {
             failures.push('document has horizontal overflow');
           }
-          for (const selector of [
-            '.maka-plan-card-title-row',
-            '.maka-plan-card-title-row [data-slot="badge"]',
-            '.maka-plan-card-schedule',
-            '.maka-plan-card-run',
-            '.maka-plan-card-run [data-slot="chip"]',
-            '.maka-plan-card-controls',
-          ]) {
-            const element = document.querySelector(selector);
+          const rows = [...document.querySelectorAll('.maka-plan-card')];
+          if (rows.length === 0) failures.push('plan reminder rows are missing');
+          const checkElement = (element, label) => {
             const rect = element?.getBoundingClientRect();
             if (
               !element ||
               getComputedStyle(element).display === 'none' ||
+              getComputedStyle(element).visibility === 'hidden' ||
               !rect ||
+              rect.width <= 0 ||
               rect.left < -1 ||
               rect.right > document.documentElement.clientWidth + 1
             ) {
               failures.push(
-                `${selector} is hidden or clipped (${rect?.left ?? 'missing'}..${rect?.right ?? 'missing'} / ${document.documentElement.clientWidth})`,
+                `${label} is hidden or clipped (${rect?.left ?? 'missing'}..${rect?.right ?? 'missing'} / ${document.documentElement.clientWidth})`,
               );
             }
-          }
-          for (const row of document.querySelectorAll('.maka-plan-card')) {
+          };
+          for (const row of rows) {
             if (row.scrollWidth > row.clientWidth)
               failures.push('plan reminder row has horizontal overflow');
+            for (const selector of [
+              '.maka-plan-card-title-row',
+              '.maka-plan-card-schedule',
+              '.maka-plan-card-controls',
+            ]) {
+              checkElement(row.querySelector(selector), selector);
+            }
+            for (const selector of [
+              '.maka-plan-card-title-row [data-slot="badge"]',
+              '.maka-plan-card-run',
+              '.maka-plan-card-run [data-slot="chip"]',
+            ]) {
+              const element = row.querySelector(selector);
+              if (element) checkElement(element, selector);
+            }
+          }
+          if (document.documentElement.clientWidth >= 1100 && rows[0]) {
+            const columns = getComputedStyle(rows[0])
+              .gridTemplateColumns.split(' ')
+              .filter(Boolean);
+            if (columns.length !== 3) {
+              failures.push(
+                `plan reminder wide row must have 3 hierarchy columns, got ${columns.length}`,
+              );
+            }
           }
         }
         return {

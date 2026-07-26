@@ -344,7 +344,6 @@ function ScheduledPlanRemindersSurface(props: {
           subtitle: copy.description,
           badge: <ModuleHubSelector hub="automations" value="plan-reminders" onChange={() => {}} />,
         }}
-        skills={[]}
         reminders={props.reminders ?? []}
         keepSystemAwake={props.keepSystemAwake ?? false}
         onKeepSystemAwakeChange={async () => {}}
@@ -418,11 +417,6 @@ export const ScheduledPlanRemindersKeepAwake: Story = {
 
 // Real path: sidebar → 定时任务 → 计划提醒, with user-authored content at storage limits.
 export const ScheduledPlanRemindersLongContent: Story = {
-  render: () => <ScheduledPlanRemindersSurface reminders={LONG_CONTENT_REMINDERS} />,
-};
-
-// Real path: sidebar → 定时任务 → 计划提醒, at the 480 × 720 minimum iframe viewport.
-export const ScheduledPlanRemindersNarrow: Story = {
   render: () => <ScheduledPlanRemindersSurface reminders={LONG_CONTENT_REMINDERS} />,
 };
 

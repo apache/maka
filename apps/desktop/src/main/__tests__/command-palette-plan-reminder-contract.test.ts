@@ -32,6 +32,7 @@ describe('command palette plan reminder contract', () => {
     // #1045: run() reads openPlanReminderForm from the live options ref.
     assert.match(main, /onStartPlanReminder:\s*\(\)\s*=>\s*optionsRef\.current\.openPlanReminderForm\(\)/);
     assert.match(dialog, /data-maka-plan-title-input="true"/);
-    assert.match(dialog, /autoFocus/);
+    assert.match(dialog, /initialFocus=\{titleRef\}/);
+    assert.match(dialog, /ref=\{titleRef\}/);
   });
 });

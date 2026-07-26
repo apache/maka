@@ -143,7 +143,6 @@ describe('Plan Reminder management surface contract', () => {
     assert.doesNotMatch(ui, /agents-dual-card-row/);
     assert.match(ui, /className="maka-plan-card-schedule"/);
     assert.match(ui, /className="maka-plan-card-run"/);
-    assert.match(ui, /data-attention=\{reminder\.lastRun\?\.status === 'failed'/);
 
     const listRule = blockBetween(css, '\\.maka-plan-list \\{', '\\}');
     assert.match(listRule, /grid-template-columns:\s*minmax\(0,\s*1fr\)/);
@@ -167,7 +166,7 @@ describe('Plan Reminder management surface contract', () => {
     assert.match(ui, /useState<PlanReminderListFilter>\('all'\)/);
   });
 
-  it('keeps page settings contextual and guidance state-dependent', async () => {
+  it('keeps keep-awake entirely inside contextual page settings', async () => {
     const ui = await readFile(resolve(REPO_ROOT, 'packages/ui/src/plan-reminder-panel.tsx'), 'utf8');
     const controller = await readFile(
       resolve(REPO_ROOT, 'apps/desktop/src/renderer/use-keep-system-awake.ts'),
@@ -175,15 +174,11 @@ describe('Plan Reminder management surface contract', () => {
     );
 
     assert.match(ui, /<MenuCheckboxItem[\s\S]*checked=\{keepSystemAwakeChecked\}/);
-    assert.match(
-      ui,
-      /const showKeepAwakeGuidance =\s*keepSystemAwakeSupported &&\s*!keepSystemAwakeChecked &&\s*props\.reminders\.some\(\(reminder\) => reminder\.enabled && reminder\.status === 'scheduled'\);/,
-    );
-    assert.match(ui, /\{keepSystemAwakeChecked && <Badge[^>]*maka-plan-awake-indicator/);
-    assert.match(ui, /\{showKeepAwakeGuidance && \(/);
-    assert.doesNotMatch(ui, /maka-plan-system-awake/);
+    assert.match(ui, /render=\{<UiButton variant="quiet" size="icon" \/>\}/);
+    assert.doesNotMatch(ui, /showKeepAwakeGuidance|keepAwakeHint|keepAwakeOn|maka-plan-awake|maka-plan-system-awake/);
     assert.match(controller, /keepSystemAwake: boolean \| undefined/);
     assert.match(controller, /useState<boolean>\(\)/);
+    assert.match(controller, /catch \{\s*[\s\S]*setSnapshot\(false\)/);
   });
 
   it('names row controls with the reminder identity', async () => {

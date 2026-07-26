@@ -5,21 +5,14 @@ import {
   ArchiveRestore,
   Clock,
   Copy,
-  Info,
   MoreHorizontal,
   Pencil,
   Plus,
   RefreshCcw,
-  Repeat,
   Trash2,
 } from './icons.js';
-import type {
-  CapabilityAuditReport,
-  PlanReminder,
-  PlanReminderStatus,
-} from '@maka/core';
+import type { PlanReminder, PlanReminderStatus } from '@maka/core';
 import {
-  deriveCapabilityAuditReport,
   generalizedErrorMessage,
   generalizedErrorMessageChinese,
 } from '@maka/core';
@@ -62,7 +55,6 @@ import {
   MenuTrigger,
 } from './primitives/menu.js';
 import { EmptyState } from './empty-state.js';
-import { CapabilityAuditStrip } from './capability-audit-strip.js';
 import type { ModuleHubHeader } from './module-hub-selector.js';
 import type {
   PlanReminderDraftInput,
@@ -88,7 +80,6 @@ export function PlanReminderPanel(props: {
   createRequestNonce?: number;
   onCreateRequestHandled?: () => void;
   hubHeader?: ModuleHubHeader;
-  auditReport?: CapabilityAuditReport;
   /**
    * Current persisted 保持系统唤醒 state. `undefined` means the capability is
    * unavailable (bridge absent / older main) — the row hides entirely.
@@ -147,10 +138,6 @@ export function PlanReminderPanel(props: {
     normalizedListQuery.length > 0 ||
     listFilter !== 'all' ||
     listSort !== 'created-desc';
-  const showKeepAwakeGuidance =
-    keepSystemAwakeSupported &&
-    !keepSystemAwakeChecked &&
-    props.reminders.some((reminder) => reminder.enabled && reminder.status === 'scheduled');
   const searchMatchedReminders = normalizedListQuery
     ? props.reminders.filter((reminder) => planReminderMatchesSearch(reminder, normalizedListQuery, locale))
     : props.reminders;
@@ -172,7 +159,6 @@ export function PlanReminderPanel(props: {
     paused: searchMatchedReminders.filter((reminder) => reminder.status === 'paused').length,
     completed: searchMatchedReminders.filter((reminder) => reminder.status === 'completed').length,
   };
-  const auditReport = props.auditReport ?? deriveCapabilityAuditReport({ planReminders: props.reminders });
 
   useEffect(() => {
     return () => {
@@ -277,55 +263,45 @@ export function PlanReminderPanel(props: {
           headingRowClassName={props.hubHeader ? 'maka-module-hub-heading' : undefined}
           contentClassName="maka-plan-heading"
           actions={
-          <div className="maka-plan-top-actions" aria-label={copy.page.actionsAriaLabel}>
-            {keepSystemAwakeChecked && <Badge variant="secondary" className="maka-plan-awake-indicator">{copy.page.keepAwakeOn}</Badge>}
-            <UiButton type="button" onClick={openCreateReminderDialog}>
-              <Plus size={15} aria-hidden="true" />
-              {copy.page.create}
-            </UiButton>
-            <Menu>
-              <MenuTrigger
-                className="maka-plan-page-menu-trigger"
-                aria-label={copy.page.pageSettings}
-              >
-                <MoreHorizontal size={16} aria-hidden="true" />
-              </MenuTrigger>
-              <MenuPopup className="maka-plan-page-menu" align="end">
-                <MenuItem
-                  onClick={() => void refreshFromPanel()}
-                  disabled={!props.onRefresh || refreshPending}
-                  aria-busy={refreshPending ? 'true' : undefined}
+            <div className="maka-plan-top-actions" aria-label={copy.page.actionsAriaLabel}>
+              <UiButton type="button" onClick={openCreateReminderDialog}>
+                <Plus size={15} aria-hidden="true" />
+                {copy.page.create}
+              </UiButton>
+              <Menu>
+                <MenuTrigger
+                  render={<UiButton variant="quiet" size="icon" />}
+                  aria-label={copy.page.pageSettings}
                 >
-                  <RefreshCcw size={14} aria-hidden="true" />
-                  {refreshPending ? copy.page.refreshing : copy.page.refresh}
-                </MenuItem>
-                {keepSystemAwakeSupported && (
-                  <>
-                    <MenuSeparator />
-                    <MenuCheckboxItem
-                      variant="switch"
-                      checked={keepSystemAwakeChecked}
-                      disabled={keepSystemAwakePending}
-                      onCheckedChange={(next) => void toggleKeepSystemAwake(next)}
-                    >
-                      {copy.page.keepAwake}
-                    </MenuCheckboxItem>
-                  </>
-                )}
-              </MenuPopup>
-            </Menu>
-          </div>
+                  <MoreHorizontal size={16} aria-hidden="true" />
+                </MenuTrigger>
+                <MenuPopup className="maka-plan-page-menu" align="end">
+                  <MenuItem
+                    onClick={() => void refreshFromPanel()}
+                    disabled={!props.onRefresh || refreshPending}
+                    aria-busy={refreshPending ? 'true' : undefined}
+                  >
+                    <RefreshCcw size={14} aria-hidden="true" />
+                    {refreshPending ? copy.page.refreshing : copy.page.refresh}
+                  </MenuItem>
+                  {keepSystemAwakeSupported && (
+                    <>
+                      <MenuSeparator />
+                      <MenuCheckboxItem
+                        variant="switch"
+                        checked={keepSystemAwakeChecked}
+                        disabled={keepSystemAwakePending}
+                        onCheckedChange={(next) => void toggleKeepSystemAwake(next)}
+                      >
+                        {copy.page.keepAwake}
+                      </MenuCheckboxItem>
+                    </>
+                  )}
+                </MenuPopup>
+              </Menu>
+            </div>
           }
         />
-
-        {showKeepAwakeGuidance && (
-          <div className="maka-plan-awake-guidance" role="note">
-            <Info size={14} aria-hidden="true" />
-            <span>{copy.page.keepAwakeHint}</span>
-          </div>
-        )}
-
-        <CapabilityAuditStrip report={auditReport} />
 
         <TabsRoot
           className="maka-plan-tabs"
@@ -338,11 +314,9 @@ export function PlanReminderPanel(props: {
             <TabsList variant="underline" className="maka-plan-tabs-list" aria-label={copy.page.viewsAriaLabel}>
               <TabsTrigger className="maka-plan-tab" value="tasks">
                 {copy.page.tasks}
-                <span>{props.reminders.filter((reminder) => reminder.status !== 'completed').length}</span>
               </TabsTrigger>
               <TabsTrigger className="maka-plan-tab" value="runs">
                 {copy.page.runs}
-                <span>{visibleRunEntries.length}</span>
               </TabsTrigger>
             </TabsList>
             {planView === 'tasks' ? (
@@ -430,58 +404,50 @@ export function PlanReminderPanel(props: {
                       key={reminder.id}
                       className="maka-plan-card"
                       data-status={reminder.status}
-                      data-attention={reminder.lastRun?.status === 'failed' || reminder.lastRun?.status === 'blocked' ? 'true' : undefined}
                     >
                       <div className="maka-plan-card-main">
                         <div className="maka-plan-card-title-row">
                           <h3 className="maka-plan-card-title">{reminder.title}</h3>
-                          <Badge variant={reminder.status === 'scheduled' ? 'success' : reminder.status === 'paused' ? 'warning' : 'secondary'}>
-                            {planReminderStatusLabel(reminder.status, locale)}
-                          </Badge>
+                          {reminder.status !== 'scheduled' && (
+                            <Badge variant={reminder.status === 'paused' ? 'warning' : 'secondary'}>
+                              {planReminderStatusLabel(reminder.status, locale)}
+                            </Badge>
+                          )}
                         </div>
                         <p className="maka-plan-card-note">
                           {reminder.note || copy.delivery.fallback(formatPlanReminderDeliveryTargetLabel(reminder.delivery, locale))}
                         </p>
                       </div>
-                      <div className="maka-plan-card-schedule">
-                        <span>
-                          <Repeat size={13} aria-hidden="true" />
-                          {formatPlanRecurrence(reminder, locale)}
-                        </span>
-                        <span>
-                          <Clock size={13} aria-hidden="true" />
-                          {reminder.nextRunAt ? (
-                            <>
-                              {copy.page.nextRun(formatReminderTime(reminder.nextRunAt, locale))}
-                              <span className="maka-plan-card-countdown">{formatReminderCountdown(reminder.nextRunAt, locale)}</span>
-                            </>
-                          ) : reminder.lastRun ? (
-                            copy.page.recentRun(formatReminderTime(reminder.lastRun.at, locale))
-                          ) : (
-                            copy.page.unscheduled
-                          )}
-                        </span>
-                      </div>
-                      <div className="maka-plan-card-run">
-                        {reminder.lastRun ? (
-                          <>
+                      <div className="maka-plan-card-context">
+                        <div className="maka-plan-card-schedule">
+                          <span>{formatPlanRecurrence(reminder, locale)}</span>
+                          <span className="maka-plan-card-schedule-separator" aria-hidden="true">
+                            ·
+                          </span>
+                          <span>
+                            {reminder.nextRunAt ? (
+                              <>
+                                {copy.page.nextRun(formatReminderTime(reminder.nextRunAt, locale))}
+                                <span className="maka-plan-card-countdown">{formatReminderCountdown(reminder.nextRunAt, locale)}</span>
+                              </>
+                            ) : reminder.lastRun ? (
+                              copy.page.recentRun(formatReminderTime(reminder.lastRun.at, locale))
+                            ) : (
+                              copy.page.unscheduled
+                            )}
+                          </span>
+                        </div>
+                        {reminder.lastRun && (
+                          <div className="maka-plan-card-run">
                             <Chip size="sm" variant={planRunStatusChipTone(reminder.lastRun.status)}>
                               {runStatusLabel(reminder.lastRun.status, locale)}
                             </Chip>
                             <span>{reminder.lastRun.message}</span>
-                          </>
-                        ) : (
-                          <span>{copy.page.neverRun}</span>
+                          </div>
                         )}
                       </div>
                       <div className="maka-plan-card-controls">
-                        {/* Completed one-shot reminders can never be
-                            re-enabled — a disabled OFF switch there read
-                            as "paused", not "done". Show the terminal
-                            state instead of a dead control. */}
-                        {reminder.status === 'completed' ? (
-                          <Badge variant="secondary" className="maka-plan-card-done-badge">{copy.page.completed}</Badge>
-                        ) : (
+                        {reminder.status !== 'completed' && (
                           <Switch
                             checked={reminder.enabled}
                             disabled={reminderActionPending}
@@ -491,7 +457,7 @@ export function PlanReminderPanel(props: {
                         )}
                         <Menu>
                           <MenuTrigger
-                            className="maka-plan-card-menu-trigger"
+                            render={<UiButton variant="quiet" size="icon-sm" />}
                             disabled={reminderActionPending}
                             aria-label={`${copy.page.reminderActions}: ${reminder.title}`}
                           >

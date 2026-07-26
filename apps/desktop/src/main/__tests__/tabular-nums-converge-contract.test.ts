@@ -42,7 +42,6 @@ const TABULAR_NUMS_SELECTORS = [
   '.maka-session-workbar-count',
   '.maka-artifact-row-meta',
   '.settingsRow > span',
-  '.maka-plan-tab span',
   '.maka-daily-review-archive-count',
   '.maka-daily-review-archive-row-meta',
   '.maka-daily-review-top-meta',
