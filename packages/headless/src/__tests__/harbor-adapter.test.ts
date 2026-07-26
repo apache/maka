@@ -641,6 +641,9 @@ describe('Harbor adapter contract', () => {
     assert.match(source, /loadHarnessOracleRegistrySnapshot/);
     assert.match(source, /resolveHarnessOracleAnnotations/);
     assert.match(source, /taskIds: TERMINAL_BENCH_2_1_TASK_IDS/);
+    assert.match(source, /createPierProviderProxyHub/);
+    assert.match(source, /providerProxyHub/);
+    assert.match(source, /\.finally\(\(\) => providerProxyHub\?\.close\(\)\)/);
     assert.doesNotMatch(source, /ensureHarnessOracleQualification/);
     assert.doesNotMatch(source, /createHarborOracleQualifier/);
     assert.doesNotMatch(source, /qualification\.selectedTaskIds/);

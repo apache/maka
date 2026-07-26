@@ -49,6 +49,9 @@ import {
 import {
   summarizeProviderTelemetry,
   startProviderAuthProxy,
+  startProviderAuthProxyHub,
+  type ProviderAuthProxyHub,
+  type ProviderAuthProxyRouteInput,
   type ProviderRequestTelemetry,
   type ProviderTokenUsage,
   type ProviderUpstreamCredentialResolver,
@@ -68,16 +71,10 @@ const PROVIDER_REQUEST_TELEMETRY = 'provider-request-telemetry.json';
  * 443 keeps the model endpoint on the conventional TLS port. */
 export const PIER_PROVIDER_PROXY_DEFAULT_PORT = 443;
 
-/** An in-container agent binds ONE fixed proxy port per attempt, and Pier's Squid
- * egress leaves only two usable destination ports (80/443), so concurrent
- * attempts on the same port must hold it one at a time — a second concurrent
- * bind is a guaranteed EADDRINUSE. The lock's owner is the shared host PORT,
- * not a runner instance: two runners in one process (e.g. an A/B with two
- * container-CLI arms) compete for the same bind. Hence a module-level per-port
- * queue; cross-PROCESS collisions remain the operator's scheduling concern.
- * Serializing the proxy-holding section (instead of sharing one proxy) keeps
- * usage/telemetry attribution per attempt. A pool over both Squid-legal ports
- * is deferred until concurrency actually needs it. */
+/** Compatibility fallback for callers that do not provide a run-scoped proxy
+ * hub. Such callers still bind one fixed port per attempt, so concurrent binds
+ * on the same port must serialize. Benchmark runs that need concurrency share
+ * one listener through `providerProxyHub` and do not enter this queue. */
 const proxyPortQueues = new Map<number, Promise<unknown>>();
 
 function withProxyPortLock<T>(port: number, fn: () => Promise<T>): Promise<T> {
@@ -114,6 +111,12 @@ export class PierInfraError extends Error {
 
 /** Same per-1M pricing contract as the Harbor runner (shared cost math). */
 export type PierTaskPricing = HarborTaskPricing;
+export type PierProviderProxyHub = ProviderAuthProxyHub;
+
+export interface PierProviderProxyHubOptions {
+  providerProxyPort?: number;
+  providerProxyAdvertisedHost?: string;
+}
 
 export interface PierTaskRunnerOptions {
   /** Host path to the maka repo, bind-mounted read-only at /opt/maka-agent. */
@@ -162,6 +165,10 @@ export interface PierTaskRunnerOptions {
    * docker-bridge-reachable address (e.g. 172.17.0.1) or the container's Squid
    * cannot resolve the proxy. */
   providerProxyAdvertisedHost?: string;
+  /** Run-scoped fixed-port listener shared by concurrent in-container attempts.
+   * Each attempt receives an independent token-routed lease, including its own
+   * upstream credential resolver, usage, telemetry, and abort lifecycle. */
+  providerProxyHub?: PierProviderProxyHub;
   /** Per-1M USD pricing forwarded as MAKA_TRIAL_* so the cell emits real costUsd. */
   pricing?: PierTaskPricing;
   /** Extra agent env merged last (e.g. MAKA_HARBOR_MODE). Never provider secrets. */
@@ -182,6 +189,20 @@ export interface PierTaskRunnerOptions {
   pierTimeoutMs?: number;
   /** Injectable Pier process runner (default: execFile the pier binary). */
   runPier?: PierProcessRunner;
+}
+
+/** Start the one fixed-port provider listener owned by a Pier benchmark run.
+ * Runners receive the returned hub through `providerProxyHub` and issue one
+ * isolated lease per attempt. */
+export async function createPierProviderProxyHub(
+  input: PierProviderProxyHubOptions = {},
+): Promise<PierProviderProxyHub> {
+  return await startProviderAuthProxyHub({
+    port: input.providerProxyPort ?? PIER_PROVIDER_PROXY_DEFAULT_PORT,
+    ...(input.providerProxyAdvertisedHost
+      ? { advertisedHost: input.providerProxyAdvertisedHost }
+      : {}),
+  });
 }
 
 export interface PierRunRequest {
@@ -376,7 +397,7 @@ export function createPierTaskRunner(options: PierTaskRunnerOptions): TaskRunner
     const containerProxyPort = options.providerProxyPort ?? PIER_PROVIDER_PROXY_DEFAULT_PORT;
     const usesContainerProxy = agent !== 'maka' || traceMode === 'task-run';
     const result =
-      usesContainerProxy && containerProxyPort !== 0
+      usesContainerProxy && !options.providerProxyHub && containerProxyPort !== 0
         ? await withProxyPortLock(containerProxyPort, launchAttempt)
         : await launchAttempt();
 
@@ -740,16 +761,22 @@ async function pierProviderRuntime(
   // host.docker.internal unless native Linux supplies an explicit bridge host.
   const advertisedHost =
     agent === 'maka' && !makaContainerTaskRun ? '127.0.0.1' : options.providerProxyAdvertisedHost;
-  const proxy = await startProviderAuthProxy({
+  const routeInput: ProviderAuthProxyRouteInput = {
     upstreamBaseUrl: baseUrl,
-    ...(advertisedHost !== undefined ? { advertisedHost } : {}),
-    ...(proxyPort !== undefined ? { port: proxyPort } : {}),
     ...(options.resolveProviderCredential
       ? { resolveUpstreamCredential: options.resolveProviderCredential }
       : { apiKeyFile: options.apiKeyFile! }),
     authMode: agent === 'kimi-code' ? 'bearer' : providerProxyAuthMode(provider),
     usageProtocol: providerProxyUsageProtocol(agent, provider),
-  });
+  };
+  const proxy =
+    options.providerProxyHub && proxyPort !== undefined
+      ? options.providerProxyHub.issue(routeInput)
+      : await startProviderAuthProxy({
+          ...routeInput,
+          ...(advertisedHost !== undefined ? { advertisedHost } : {}),
+          ...(proxyPort !== undefined ? { port: proxyPort } : {}),
+        });
 
   return {
     // Proxy-minted, scoped, ephemeral token — never the real provider key. Routed

@@ -16,6 +16,12 @@ export interface ProviderAuthProxy {
   close(): Promise<void>;
 }
 
+export interface ProviderAuthProxyHub {
+  baseUrl: string;
+  issue(input: ProviderAuthProxyRouteInput): ProviderAuthProxy;
+  close(): Promise<void>;
+}
+
 export interface ProviderTokenUsage {
   input: number;
   cacheRead: number;
@@ -139,16 +145,10 @@ export interface ProviderUpstreamCredential {
 
 export type ProviderUpstreamCredentialResolver = () => Promise<ProviderUpstreamCredential>;
 
-type ProviderAuthProxyInput = {
+type ProviderAuthProxyRouteConfig = {
   upstreamBaseUrl: string;
-  advertisedHost?: string;
   authMode?: ProviderAuthProxyMode;
   usageProtocol?: ProviderUsageProtocol;
-  /** Fixed listen port. Defaults to an ephemeral port (0). Pier's Squid egress
-   * for offline tasks only permits destination ports 80/443, so a container
-   * reaching this proxy through Squid needs it bound to 80 or 443. Binding a
-   * privileged port can fail on Linux; callers get a clear error. */
-  port?: number;
   /** Injectable monotonic clock for deterministic tests. */
   now?: () => number;
 } & (
@@ -156,9 +156,154 @@ type ProviderAuthProxyInput = {
   | { apiKeyFile?: never; resolveUpstreamCredential: ProviderUpstreamCredentialResolver }
 );
 
+export type ProviderAuthProxyRouteInput = ProviderAuthProxyRouteConfig;
+
+type ProviderAuthProxyInput = ProviderAuthProxyRouteConfig & {
+  advertisedHost?: string;
+  /** Fixed listen port. Defaults to an ephemeral port (0). Pier's Squid egress
+   * for offline tasks only permits destination ports 80/443, so a container
+   * reaching this proxy through Squid needs it bound to 80 or 443. Binding a
+   * privileged port can fail on Linux; callers get a clear error. */
+  port?: number;
+};
+
+export interface ProviderAuthProxyHubInput {
+  advertisedHost?: string;
+  port?: number;
+}
+
 export async function startProviderAuthProxy(
   input: ProviderAuthProxyInput,
 ): Promise<ProviderAuthProxy> {
+  const hub = await startProviderAuthProxyHub({
+    ...(input.advertisedHost ? { advertisedHost: input.advertisedHost } : {}),
+    ...(input.port !== undefined ? { port: input.port } : {}),
+  });
+  let lease: ProviderAuthProxy;
+  try {
+    lease = hub.issue(input);
+  } catch (error) {
+    await hub.close();
+    throw error;
+  }
+  let closePromise: Promise<void> | undefined;
+  return {
+    ...lease,
+    close: () => {
+      closePromise ??= lease.close().then(() => hub.close());
+      return closePromise;
+    },
+  };
+}
+
+interface ProviderAuthProxyRoute {
+  readonly upstreamBaseUrl: URL;
+  readonly upstreamBasePath: string;
+  readonly resolveUpstreamCredential: ProviderUpstreamCredentialResolver;
+  readonly token: string;
+  readonly authMode: ProviderAuthProxyMode;
+  readonly usageProtocol?: ProviderUsageProtocol;
+  readonly usage: ProviderUsageAccumulator;
+  readonly telemetry: ProviderTelemetryAccumulator;
+  readonly now: () => number;
+  readonly activeRequests: Set<AbortController>;
+  readonly activeResponses: Set<ServerResponse>;
+  readonly activeForwards: Set<Promise<void>>;
+  closePromise?: Promise<void>;
+}
+
+export async function startProviderAuthProxyHub(
+  input: ProviderAuthProxyHubInput = {},
+): Promise<ProviderAuthProxyHub> {
+  const routes = new Set<ProviderAuthProxyRoute>();
+  const sockets = new Set<Socket>();
+  let closed = false;
+  let closePromise: Promise<void> | undefined;
+  const server = createServer((request, response) => {
+    const route = [...routes].find((candidate) => routeAuthorized(request, candidate));
+    if (!route) {
+      response.writeHead(401).end('unauthorized');
+      return;
+    }
+    const controller = new AbortController();
+    const abortOnRequest = () => controller.abort();
+    const abortOnResponseClose = () => {
+      if (!response.writableEnded) controller.abort();
+    };
+    request.once('aborted', abortOnRequest);
+    response.once('close', abortOnResponseClose);
+    route.activeRequests.add(controller);
+    route.activeResponses.add(response);
+    const forward = forwardProviderRequest({
+      request,
+      response,
+      upstreamBaseUrl: route.upstreamBaseUrl,
+      upstreamBasePath: route.upstreamBasePath,
+      resolveUpstreamCredential: route.resolveUpstreamCredential,
+      token: route.token,
+      authMode: route.authMode,
+      usageProtocol: route.usageProtocol,
+      usage: route.usage,
+      telemetry: route.telemetry,
+      now: route.now,
+      signal: controller.signal,
+    }).finally(() => {
+      request.off('aborted', abortOnRequest);
+      response.off('close', abortOnResponseClose);
+      route.activeRequests.delete(controller);
+      route.activeResponses.delete(response);
+      route.activeForwards.delete(forward);
+    });
+    route.activeForwards.add(forward);
+  });
+  server.on('connection', (socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+  });
+  await listenProviderAuthProxyServer(server, input.port ?? 0);
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    server.close();
+    throw new Error('provider auth proxy did not bind a TCP port');
+  }
+  const advertisedHost = input.advertisedHost ?? 'host.docker.internal';
+  const baseUrl = `http://${advertisedHost}:${address.port}`;
+
+  return {
+    baseUrl,
+    issue: (routeInput) => {
+      if (closed) throw new Error('provider auth proxy hub is closed');
+      const route = providerAuthProxyRoute(routeInput);
+      routes.add(route);
+      return {
+        // Preserve the route's provider mount path while every lease shares the
+        // listener authority. The client remains the sole owner of path joins.
+        baseUrl: `${baseUrl}${route.upstreamBasePath}`,
+        token: route.token,
+        usage: () => route.usage.snapshot(),
+        telemetry: () => route.telemetry.snapshot(),
+        close: () => closeProviderAuthProxyRoute(routes, route),
+      };
+    },
+    close: () => {
+      closePromise ??= (async () => {
+        closed = true;
+        const serverClosed = new Promise<void>((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
+        });
+        const routeClosures = [...routes].map((route) =>
+          closeProviderAuthProxyRoute(routes, route),
+        );
+        for (const socket of sockets) socket.destroy();
+        await serverClosed;
+        await Promise.allSettled(routeClosures);
+      })();
+      return closePromise;
+    },
+  };
+}
+
+function providerAuthProxyRoute(input: ProviderAuthProxyRouteInput): ProviderAuthProxyRoute {
   const upstreamBaseUrl = new URL(input.upstreamBaseUrl);
   if (upstreamBaseUrl.protocol !== 'https:' && upstreamBaseUrl.protocol !== 'http:') {
     throw new Error(
@@ -173,73 +318,40 @@ export async function startProviderAuthProxy(
       if (value.length === 0) throw new Error('provider API key file is empty');
       return { value };
     });
-  const authMode = input.authMode ?? 'bearer';
-  const token = randomBytes(32).toString('hex');
-  const usage = new ProviderUsageAccumulator();
-  const telemetry = new ProviderTelemetryAccumulator();
-  const now = input.now ?? performance.now.bind(performance);
-  const activeRequests = new Set<AbortController>();
-  const activeForwards = new Set<Promise<void>>();
-  const sockets = new Set<Socket>();
-  const server = createServer((request, response) => {
-    const controller = new AbortController();
-    const abortOnRequest = () => controller.abort();
-    const abortOnResponseClose = () => {
-      if (!response.writableEnded) controller.abort();
-    };
-    request.once('aborted', abortOnRequest);
-    response.once('close', abortOnResponseClose);
-    activeRequests.add(controller);
-    const forward = forwardProviderRequest({
-      request,
-      response,
-      upstreamBaseUrl,
-      upstreamBasePath,
-      resolveUpstreamCredential,
-      token,
-      authMode,
-      usageProtocol: input.usageProtocol,
-      usage,
-      telemetry,
-      now,
-      signal: controller.signal,
-    }).finally(() => {
-      request.off('aborted', abortOnRequest);
-      response.off('close', abortOnResponseClose);
-      activeRequests.delete(controller);
-      activeForwards.delete(forward);
-    });
-    activeForwards.add(forward);
-  });
-  server.on('connection', (socket) => {
-    sockets.add(socket);
-    socket.once('close', () => sockets.delete(socket));
-  });
-  await listenProviderAuthProxyServer(server, input.port ?? 0);
-  const address = server.address();
-  if (!address || typeof address === 'string') {
-    server.close();
-    throw new Error('provider auth proxy did not bind a TCP port');
-  }
-  const advertisedHost = input.advertisedHost ?? 'host.docker.internal';
   return {
-    // Keep the provider's mount path in the client-visible base URL; the proxy
-    // changes authority, while the client remains the sole owner of path joins.
-    baseUrl: `http://${advertisedHost}:${address.port}${upstreamBasePath}`,
-    token,
-    usage: () => usage.snapshot(),
-    telemetry: () => telemetry.snapshot(),
-    close: async () => {
-      const closed = new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-      });
-      const forwards = [...activeForwards];
-      for (const controller of activeRequests) controller.abort();
-      for (const socket of sockets) socket.destroy();
-      await closed;
-      await Promise.allSettled(forwards);
-    },
+    upstreamBaseUrl,
+    upstreamBasePath,
+    resolveUpstreamCredential,
+    token: randomBytes(32).toString('hex'),
+    authMode: input.authMode ?? 'bearer',
+    ...(input.usageProtocol ? { usageProtocol: input.usageProtocol } : {}),
+    usage: new ProviderUsageAccumulator(),
+    telemetry: new ProviderTelemetryAccumulator(),
+    now: input.now ?? performance.now.bind(performance),
+    activeRequests: new Set<AbortController>(),
+    activeResponses: new Set<ServerResponse>(),
+    activeForwards: new Set<Promise<void>>(),
   };
+}
+
+function routeAuthorized(request: IncomingMessage, route: ProviderAuthProxyRoute): boolean {
+  const presentedCredential =
+    route.authMode === 'x-api-key' ? request.headers['x-api-key'] : request.headers.authorization;
+  return authorized(presentedCredential, route.token, route.authMode);
+}
+
+function closeProviderAuthProxyRoute(
+  routes: Set<ProviderAuthProxyRoute>,
+  route: ProviderAuthProxyRoute,
+): Promise<void> {
+  route.closePromise ??= (async () => {
+    routes.delete(route);
+    const forwards = [...route.activeForwards];
+    for (const controller of route.activeRequests) controller.abort();
+    for (const response of route.activeResponses) response.destroy();
+    await Promise.allSettled(forwards);
+  })();
+  return route.closePromise;
 }
 
 async function forwardProviderRequest(input: {

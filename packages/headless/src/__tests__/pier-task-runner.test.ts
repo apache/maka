@@ -18,6 +18,7 @@ import { findTrialDir } from '../harbor-task-runner.js';
 import { MAKA_NODE_TOOLCHAIN_FINGERPRINT } from '../maka-node-toolchain.js';
 import {
   buildPierRunArgs,
+  createPierProviderProxyHub,
   createPierTaskRunner,
   defaultPierProcessRunner,
   PierInfraError,
@@ -1131,10 +1132,10 @@ test('createPierTaskRunner overrides the Kimi proxy advertised host for native L
   });
 });
 
-/** One SEPARATE runner instance per port entry, one concurrent attempt each —
- * the lock's owner must be the shared host port, not a runner closure, or an
- * A/B with two Kimi arms in one process EADDRINUSEs. */
-async function runConcurrentKimiAttempts(ports: readonly number[]): Promise<number> {
+async function runConcurrentKimiAttempts(
+  ports: readonly number[],
+  providerProxyHub?: Awaited<ReturnType<typeof createPierProviderProxyHub>>,
+): Promise<number> {
   return await withDirs(async ({ jobsDir, repo }) => {
     let inFlight = 0;
     let maxInFlight = 0;
@@ -1152,6 +1153,7 @@ async function runConcurrentKimiAttempts(ports: readonly number[]): Promise<numb
           kimiCodeToolchainPath: repo,
           resolveProviderCredential: () => Promise.resolve({ value: 'upstream-key' }),
           providerProxyPort,
+          ...(providerProxyHub ? { providerProxyHub } : {}),
           runPier: async (request) => {
             inFlight += 1;
             maxInFlight = Math.max(maxInFlight, inFlight);
@@ -1191,11 +1193,22 @@ async function grabFreePorts(count: number): Promise<number[]> {
   return ports;
 }
 
-test('createPierTaskRunner serializes concurrent Kimi attempts across runners on one fixed port', async () => {
-  // A fixed port (like the default 443) admits exactly one bind: a second
-  // concurrent attempt — even from a DIFFERENT runner instance in the same
-  // process — would be a guaranteed EADDRINUSE, so the port is held one
-  // attempt at a time while both attempts still complete.
+test('createPierTaskRunner runs concurrent attempts through one fixed-port proxy hub', async () => {
+  const [fixedPort] = await grabFreePorts(1);
+  const hub = await createPierProviderProxyHub({
+    providerProxyPort: fixedPort,
+    providerProxyAdvertisedHost: '127.0.0.1',
+  });
+  try {
+    assert.equal(await runConcurrentKimiAttempts(Array(8).fill(fixedPort!), hub), 8);
+  } finally {
+    await hub.close();
+  }
+});
+
+test('createPierTaskRunner serializes fixed-port attempts when no proxy hub is provided', async () => {
+  // Backward compatibility for direct runner callers: without a run-scoped hub,
+  // each attempt owns a listener and therefore must still serialize the bind.
   const [fixedPort] = await grabFreePorts(1);
   assert.equal(await runConcurrentKimiAttempts([fixedPort!, fixedPort!]), 1);
 });

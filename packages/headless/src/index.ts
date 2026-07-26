@@ -246,12 +246,15 @@ export {
 } from './harbor-failure-policy.js';
 export {
   buildPierRunArgs,
+  createPierProviderProxyHub,
   createPierTaskRunner,
   PierInfraError,
   PIER_PROVIDER_PROXY_DEFAULT_PORT,
   type BuildPierRunArgsInput,
   type PierAgent,
   type PierProcessRunner,
+  type PierProviderProxyHub,
+  type PierProviderProxyHubOptions,
   type PierRunRequest,
   type PierRunResult,
   type PierTaskPricing,

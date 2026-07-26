@@ -15,7 +15,7 @@ import {
   selectTasksByIds,
 } from '#fixed-prompt-task-source';
 import { createHarborTaskRunner } from '#harbor-task-runner';
-import { createPierTaskRunner } from '#pier-task-runner';
+import { createPierProviderProxyHub, createPierTaskRunner } from '#pier-task-runner';
 import {
   buildHarnessOracleExecutionPolicyFingerprint,
   HARBOR_ORACLE_DOCKER_PLATFORM,
@@ -804,6 +804,8 @@ async function runLocked({
     throw new Error('harness credential is empty');
   const systemPromptPath = join(runRoot, 'prompts', 'default-system-prompt.txt');
   const evaluatedTaskIds = new Set(evaluationTasks.map((task) => task.id));
+  const providerProxyHub =
+    benchmarkProfile.executor === 'pier' ? await createPierProviderProxyHub() : undefined;
 
   const report = await runExperiment({
     runRoot,
@@ -828,6 +830,7 @@ async function runLocked({
           ? {
               baseUrl: execution.baseUrl,
               makaNodeToolchainPath: makaNodeToolchain.path,
+              providerProxyHub,
             }
           : {
               agentEnv: { MAKA_BASE_URL: execution.baseUrl },
@@ -908,7 +911,7 @@ async function runLocked({
         content: renderHarnessAbReportMarkdown(report),
       },
     ],
-  });
+  }).finally(() => providerProxyHub?.close());
   assertHarnessAbReportCompleted(report);
   console.log(
     `${report.runStatus}: ${report.coverage.attemptedCells}/${report.coverage.scheduledCells} cells attempted; ${report.effectiveness.pairedEvaluated} paired Pass@1 outcomes -> ${runRoot}`,

@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import {
   listenProviderAuthProxyServer,
   startProviderAuthProxy,
+  startProviderAuthProxyHub,
   summarizeProviderTelemetry,
 } from '../provider-auth-proxy.js';
 
@@ -166,6 +167,237 @@ test('provider auth proxy resolves rotating upstream credentials for every reque
     await proxy.close();
     await new Promise<void>((resolve, reject) =>
       upstream.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test('provider auth proxy hub routes concurrent leases independently on one listener', async () => {
+  const upstreamRequests = new Map<string, Array<{ authorization: string; path: string }>>();
+  const startUpstream = async (name: string) => {
+    const requests: Array<{ authorization: string; path: string }> = [];
+    upstreamRequests.set(name, requests);
+    const upstream = createServer((request, response) => {
+      requests.push({
+        authorization: request.headers.authorization ?? '',
+        path: request.url ?? '',
+      });
+      response.writeHead(200).end(name);
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const address = upstream.address();
+    assert.ok(address && typeof address !== 'string');
+    return { upstream, url: `http://127.0.0.1:${address.port}` };
+  };
+  const [alphaUpstream, betaUpstream] = await Promise.all([
+    startUpstream('alpha'),
+    startUpstream('beta'),
+  ]);
+  const hub = await startProviderAuthProxyHub({ advertisedHost: '127.0.0.1' });
+  const alpha = hub.issue({
+    upstreamBaseUrl: `${alphaUpstream.url}/alpha/v1`,
+    resolveUpstreamCredential: async () => ({ value: 'alpha-upstream-key' }),
+  });
+  const beta = hub.issue({
+    upstreamBaseUrl: `${betaUpstream.url}/beta/v1`,
+    resolveUpstreamCredential: async () => ({ value: 'beta-upstream-key' }),
+  });
+
+  try {
+    assert.equal(new URL(alpha.baseUrl).origin, new URL(beta.baseUrl).origin);
+    assert.equal(new URL(alpha.baseUrl).pathname, '/alpha/v1');
+    assert.equal(new URL(beta.baseUrl).pathname, '/beta/v1');
+    assert.notEqual(alpha.token, beta.token);
+    const [alphaResponse, betaResponse] = await Promise.all([
+      fetch(`${alpha.baseUrl}/responses`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${alpha.token}` },
+        body: '{}',
+      }),
+      fetch(`${beta.baseUrl}/responses`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${beta.token}` },
+        body: '{}',
+      }),
+    ]);
+    assert.equal(await alphaResponse.text(), 'alpha');
+    assert.equal(await betaResponse.text(), 'beta');
+    assert.deepEqual(upstreamRequests.get('alpha'), [
+      { authorization: 'Bearer alpha-upstream-key', path: '/alpha/v1/responses' },
+    ]);
+    assert.deepEqual(upstreamRequests.get('beta'), [
+      { authorization: 'Bearer beta-upstream-key', path: '/beta/v1/responses' },
+    ]);
+
+    await alpha.close();
+    const revoked = await fetch(`${alpha.baseUrl}/responses`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${alpha.token}` },
+      body: '{}',
+    });
+    assert.equal(revoked.status, 401);
+    const stillActive = await fetch(`${beta.baseUrl}/responses`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${beta.token}` },
+      body: '{}',
+    });
+    assert.equal(await stillActive.text(), 'beta');
+  } finally {
+    await Promise.allSettled([alpha.close(), beta.close()]);
+    await hub.close();
+    await Promise.all(
+      [alphaUpstream.upstream, betaUpstream.upstream].map(
+        (upstream) =>
+          new Promise<void>((resolve, reject) =>
+            upstream.close((error) => (error ? reject(error) : resolve())),
+          ),
+      ),
+    );
+  }
+});
+
+test('provider auth proxy hub attributes usage and telemetry to each lease', async () => {
+  const startUpstream = async (input: number, output: number) => {
+    const upstream = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end(
+        `data: ${JSON.stringify({
+          choices: [],
+          usage: {
+            prompt_tokens: input,
+            prompt_tokens_details: { cached_tokens: input - 1 },
+            completion_tokens: output,
+          },
+        })}\n\ndata: [DONE]\n\n`,
+      );
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const address = upstream.address();
+    assert.ok(address && typeof address !== 'string');
+    return { upstream, url: `http://127.0.0.1:${address.port}` };
+  };
+  const [alphaUpstream, betaUpstream] = await Promise.all([
+    startUpstream(11, 3),
+    startUpstream(29, 7),
+  ]);
+  const hub = await startProviderAuthProxyHub({ advertisedHost: '127.0.0.1' });
+  const alpha = hub.issue({
+    upstreamBaseUrl: alphaUpstream.url,
+    resolveUpstreamCredential: async () => ({ value: 'alpha-key' }),
+    usageProtocol: 'openai-chat-sse',
+  });
+  const beta = hub.issue({
+    upstreamBaseUrl: betaUpstream.url,
+    resolveUpstreamCredential: async () => ({ value: 'beta-key' }),
+    usageProtocol: 'openai-chat-sse',
+  });
+
+  try {
+    await Promise.all(
+      [alpha, beta].map(async (lease) => {
+        const response = await fetch(`${lease.baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${lease.token}` },
+          body: '{}',
+        });
+        assert.equal(response.status, 200);
+        await response.text();
+      }),
+    );
+    assert.deepEqual(alpha.usage(), {
+      input: 11,
+      cacheRead: 10,
+      cacheWrite: 0,
+      output: 3,
+    });
+    assert.deepEqual(beta.usage(), {
+      input: 29,
+      cacheRead: 28,
+      cacheWrite: 0,
+      output: 7,
+    });
+    assert.deepEqual(
+      alpha.telemetry().map((request) => request.usage),
+      [alpha.usage()],
+    );
+    assert.deepEqual(
+      beta.telemetry().map((request) => request.usage),
+      [beta.usage()],
+    );
+  } finally {
+    await Promise.allSettled([alpha.close(), beta.close()]);
+    await hub.close();
+    await Promise.all(
+      [alphaUpstream.upstream, betaUpstream.upstream].map(
+        (upstream) =>
+          new Promise<void>((resolve, reject) =>
+            upstream.close((error) => (error ? reject(error) : resolve())),
+          ),
+      ),
+    );
+  }
+});
+
+test('provider auth proxy hub aborts only the closed lease requests', async () => {
+  let alphaStarted!: () => void;
+  const alphaReachedUpstream = new Promise<void>((resolve) => {
+    alphaStarted = resolve;
+  });
+  const alphaUpstream = createServer((request, response) => {
+    response.writeHead(200, { 'content-type': 'text/plain' });
+    response.write('partial');
+    alphaStarted();
+    request.once('close', () => response.end());
+  });
+  const betaUpstream = createServer((_request, response) => {
+    response.writeHead(200).end('beta');
+  });
+  await Promise.all(
+    [alphaUpstream, betaUpstream].map(
+      (upstream) => new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve)),
+    ),
+  );
+  const alphaAddress = alphaUpstream.address();
+  const betaAddress = betaUpstream.address();
+  assert.ok(alphaAddress && typeof alphaAddress !== 'string');
+  assert.ok(betaAddress && typeof betaAddress !== 'string');
+  const hub = await startProviderAuthProxyHub({ advertisedHost: '127.0.0.1' });
+  const alpha = hub.issue({
+    upstreamBaseUrl: `http://127.0.0.1:${alphaAddress.port}`,
+    resolveUpstreamCredential: async () => ({ value: 'alpha-key' }),
+  });
+  const beta = hub.issue({
+    upstreamBaseUrl: `http://127.0.0.1:${betaAddress.port}`,
+    resolveUpstreamCredential: async () => ({ value: 'beta-key' }),
+  });
+
+  try {
+    const alphaBody = fetch(`${alpha.baseUrl}/responses`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${alpha.token}` },
+      body: '{}',
+    }).then((response) => response.text());
+    await alphaReachedUpstream;
+    await alpha.close();
+    await alphaBody.catch(() => undefined);
+
+    const betaResponse = await fetch(`${beta.baseUrl}/responses`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${beta.token}` },
+      body: '{}',
+    });
+    assert.equal(await betaResponse.text(), 'beta');
+    assert.equal(alpha.telemetry().at(-1)?.outcome, 'aborted');
+    assert.equal(beta.telemetry().at(-1)?.outcome, 'completed');
+  } finally {
+    await Promise.allSettled([alpha.close(), beta.close()]);
+    await hub.close();
+    await Promise.all(
+      [alphaUpstream, betaUpstream].map(
+        (upstream) =>
+          new Promise<void>((resolve, reject) =>
+            upstream.close((error) => (error ? reject(error) : resolve())),
+          ),
+      ),
     );
   }
 });
