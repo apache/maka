@@ -496,6 +496,63 @@ describe('AiSdkBackend model history', () => {
     ]);
   });
 
+  test('keeps backfilled text-only assistant messages in conversation order', async () => {
+    const model = completionModel();
+    const backend = new AiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const recoveredAssistant = runtimeTextEvent({
+      id: 'rt-a',
+      turnId: 'turn-a',
+      role: 'model',
+      author: 'agent',
+      text: 'assistant A',
+    });
+    recoveredAssistant.refs = { storedMessageId: 'stored-a' };
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'current user',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-u-a',
+            turnId: 'turn-a',
+            role: 'user',
+            author: 'user',
+            text: 'user A',
+          }),
+          recoveredAssistant,
+          runtimeTextEvent({
+            id: 'rt-u-b',
+            turnId: 'turn-b',
+            role: 'user',
+            author: 'user',
+            text: 'user B',
+          }),
+        ],
+      }),
+    );
+
+    assert.deepEqual(promptTextSequence(model), [
+      { role: 'user', text: 'user A' },
+      { role: 'assistant', text: 'assistant A' },
+      { role: 'user', text: 'user B' },
+      { role: 'user', text: 'current user' },
+    ]);
+  });
+
   test('safe-boundary continuation does not append a duplicate current user message', async () => {
     const model = completionModel();
     const backend = new AiSdkBackend({
@@ -12454,6 +12511,18 @@ function compactPrompt(model: MockLanguageModelV4): unknown {
   return model.doStreamCalls[0]?.prompt.map((message) => ({
     role: message.role,
     content: message.content,
+  }));
+}
+
+function promptTextSequence(model: MockLanguageModelV4): Array<{
+  role: string;
+  text: string | undefined;
+}> {
+  return (model.doStreamCalls[0]?.prompt ?? []).map((message) => ({
+    role: message.role,
+    text: Array.isArray(message.content)
+      ? message.content.find((part) => part.type === 'text')?.text
+      : undefined,
   }));
 }
 

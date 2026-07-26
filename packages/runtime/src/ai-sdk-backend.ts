@@ -2503,6 +2503,19 @@ export class AiSdkBackend implements AgentBackend {
       bufferedCalls = [];
       await emitGroupedCalls(calls);
     };
+    const flushPendingSteps = async () => {
+      await flushLooseCalls();
+      for (const [stepId, text] of textByStep) {
+        textByStep.delete(stepId);
+        const reasoning = reasoningByStep.get(stepId);
+        reasoningByStep.delete(stepId);
+        await emitStep(reasoning, text, []);
+      }
+      for (const [stepId, reasoning] of reasoningByStep) {
+        reasoningByStep.delete(stepId);
+        await emitStep(reasoning, '', []);
+      }
+    };
 
     for (const item of plan.items) {
       switch (item.kind) {
@@ -2517,7 +2530,7 @@ export class AiSdkBackend implements AgentBackend {
             reasoningByStep.set(item.stepId, item);
           } else {
             // Legacy standalone reasoning (pure-reasoning turn): emit on its own.
-            await flushLooseCalls();
+            await flushPendingSteps();
             const replayReasoning = reasoningReplay(item);
             if (replayReasoning) {
               out.push({
@@ -2532,7 +2545,7 @@ export class AiSdkBackend implements AgentBackend {
           break;
         case 'text':
           if (item.role !== 'assistant') {
-            await flushLooseCalls();
+            await flushPendingSteps();
             out.push(await this.materializeRuntimeReplayItem(item));
             break;
           }
@@ -2555,30 +2568,13 @@ export class AiSdkBackend implements AgentBackend {
             }
           } else {
             // Legacy per-turn assistant text: standalone after any tool block.
-            await flushLooseCalls();
+            await flushPendingSteps();
             out.push({ role: 'assistant', content: item.content });
           }
           break;
       }
     }
-    await flushLooseCalls();
-    for (const [stepId, text] of textByStep) {
-      await emitStep(reasoningByStep.get(stepId), text, []);
-      reasoningByStep.delete(stepId);
-    }
-    // Any reasoning whose closing text never arrived (defensive): emit standalone.
-    for (const reasoning of reasoningByStep.values()) {
-      const replayReasoning = reasoningReplay(reasoning);
-      if (replayReasoning) {
-        out.push({
-          role: 'assistant',
-          content: replayReasoning.part ? [replayReasoning.part] : [],
-          ...(replayReasoning.providerOptions
-            ? { providerOptions: replayReasoning.providerOptions }
-            : {}),
-        } as ModelMessage);
-      }
-    }
+    await flushPendingSteps();
     return out;
   }
 
