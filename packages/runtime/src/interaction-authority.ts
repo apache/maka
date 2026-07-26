@@ -357,13 +357,9 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
         `Interaction Run ${this.runId} was released before close`,
       );
     }
-    if (this.closeReason && this.closeReason !== reason) {
-      throw new RuntimeInteractionInvariantError(
-        `Interaction Run ${this.runId} cannot close as ${reason} after ${this.closeReason}`,
-      );
-    }
+    if (this.closePromise) return this.closePromise;
     this.closeReason = reason;
-    this.closePromise ??= Promise.resolve()
+    this.closePromise = Promise.resolve()
       .then(() => this.owner.close(reason))
       .catch((error: unknown) => {
         if (

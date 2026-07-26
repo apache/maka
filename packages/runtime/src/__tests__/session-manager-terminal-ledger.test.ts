@@ -523,10 +523,9 @@ describe('SessionManager terminal ledger invariants', () => {
           newId: nextId(),
           now: nextNow(25_200),
           hooks: {
-            ensureActive: async () => {
-              throw new Error('ensureActive should not be called');
+            reserveRun: async () => {
+              throw new Error('reserveRun should not be called');
             },
-            registerRun: () => {},
             unregisterRun: () => {},
             updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
             updateStatus: async () => {},
@@ -551,10 +550,9 @@ describe('SessionManager terminal ledger invariants', () => {
       newId: nextId(),
       now: nextNow(30_000),
       hooks: {
-        ensureActive: async () => {
-          throw new Error('ensureActive should not be called');
+        reserveRun: async () => {
+          throw new Error('reserveRun should not be called');
         },
-        registerRun: () => {},
         unregisterRun: () => {},
         updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
         updateStatus: async () => {},
@@ -616,16 +614,16 @@ describe('SessionManager terminal ledger invariants', () => {
       newId: nextId(),
       now: nextNow(40_000),
       hooks: {
-        ensureActive: async () => ({
-          sessionId: session.id,
-          backend,
-          cachedHeader: session,
-          activeRuns,
-          turnToRunId,
-        }),
-        registerRun: (_active, activeRun) => {
+        reserveRun: async (_sessionId, _header, activeRun) => {
           activeRuns.set(activeRun.runId, activeRun);
           turnToRunId.set(activeRun.turnId, activeRun.runId);
+          return {
+            sessionId: session.id,
+            backend,
+            cachedHeader: session,
+            activeRuns,
+            turnToRunId,
+          };
         },
         unregisterRun: (_active, activeRun) => {
           activeRuns.delete(activeRun.runId);
@@ -668,16 +666,16 @@ describe('SessionManager terminal ledger invariants', () => {
       newId: nextId(),
       now: nextNow(40_500),
       hooks: {
-        ensureActive: async () => ({
-          sessionId: session.id,
-          backend,
-          cachedHeader: session,
-          activeRuns,
-          turnToRunId,
-        }),
-        registerRun: (_active, activeRun) => {
+        reserveRun: async (_sessionId, _header, activeRun) => {
           activeRuns.set(activeRun.runId, activeRun);
           turnToRunId.set(activeRun.turnId, activeRun.runId);
+          return {
+            sessionId: session.id,
+            backend,
+            cachedHeader: session,
+            activeRuns,
+            turnToRunId,
+          };
         },
         unregisterRun: (_active, activeRun) => {
           activeRuns.delete(activeRun.runId);
@@ -717,10 +715,9 @@ describe('SessionManager terminal ledger invariants', () => {
       newId: nextId(),
       now: nextNow(41_000),
       hooks: {
-        ensureActive: async () => {
-          throw new Error('ensureActive should not be called');
+        reserveRun: async () => {
+          throw new Error('reserveRun should not be called');
         },
-        registerRun: () => {},
         unregisterRun: () => {},
         updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
         updateStatus: async () => {},
@@ -771,16 +768,16 @@ describe('SessionManager terminal ledger invariants', () => {
       newId: nextId(),
       now: nextNow(41_250),
       hooks: {
-        ensureActive: async () => ({
-          sessionId: session.id,
-          backend,
-          cachedHeader: session,
-          activeRuns,
-          turnToRunId,
-        }),
-        registerRun: (_active, activeRun) => {
+        reserveRun: async (_sessionId, _header, activeRun) => {
           activeRuns.set(activeRun.runId, activeRun);
           turnToRunId.set(activeRun.turnId, activeRun.runId);
+          return {
+            sessionId: session.id,
+            backend,
+            cachedHeader: session,
+            activeRuns,
+            turnToRunId,
+          };
         },
         unregisterRun: (_active, activeRun) => {
           activeRuns.delete(activeRun.runId);
@@ -833,16 +830,16 @@ describe('SessionManager terminal ledger invariants', () => {
       newId: nextId(),
       now: nextNow(41_500),
       hooks: {
-        ensureActive: async () => ({
-          sessionId: session.id,
-          backend,
-          cachedHeader: session,
-          activeRuns,
-          turnToRunId,
-        }),
-        registerRun: (_active, activeRun) => {
+        reserveRun: async (_sessionId, _header, activeRun) => {
           activeRuns.set(activeRun.runId, activeRun);
           turnToRunId.set(activeRun.turnId, activeRun.runId);
+          return {
+            sessionId: session.id,
+            backend,
+            cachedHeader: session,
+            activeRuns,
+            turnToRunId,
+          };
         },
         unregisterRun: (_active, activeRun) => {
           activeRuns.delete(activeRun.runId);
@@ -1720,10 +1717,9 @@ function nextNow(start: number): () => number {
 
 function inertAgentRunHooks(store: TinySessionStore) {
   return {
-    ensureActive: async () => {
-      throw new Error('ensureActive should not be called');
+    reserveRun: async () => {
+      throw new Error('reserveRun should not be called');
     },
-    registerRun: () => {},
     unregisterRun: () => {},
     updateHeader: (sessionId: string, patch: Partial<SessionHeader>) =>
       store.updateHeader(sessionId, patch),

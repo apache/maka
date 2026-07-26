@@ -41,10 +41,9 @@ test('acks a steering event whose canonical append preceded proof publication fa
       now: () => 10,
       recordSessionMessages: false,
       hooks: {
-        ensureActive: async () => {
-          throw new Error('ensureActive should not be called');
+        reserveRun: async () => {
+          throw new Error('reserveRun should not be called');
         },
-        registerRun: () => {},
         unregisterRun: () => {},
         updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
         updateStatus: async () => {},
@@ -135,10 +134,9 @@ test('awaits canonical Run status persistence before accepting an interaction re
       now: () => 10,
       recordSessionMessages: false,
       hooks: {
-        ensureActive: async () => {
-          throw new Error('ensureActive should not be called');
+        reserveRun: async () => {
+          throw new Error('reserveRun should not be called');
         },
-        registerRun: () => {},
         unregisterRun: () => {},
         updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
         updateStatus: async (sessionId, status, blockedReason, ts = 0) => {
@@ -217,10 +215,9 @@ test('required interaction resume bypasses a failed best-effort Run Store latch'
       now: () => 10,
       recordSessionMessages: false,
       hooks: {
-        ensureActive: async () => {
-          throw new Error('ensureActive should not be called');
+        reserveRun: async () => {
+          throw new Error('reserveRun should not be called');
         },
-        registerRun: () => {},
         unregisterRun: () => {},
         updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
         updateStatus: async (sessionId, status, blockedReason, ts = 0) => {

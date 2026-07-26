@@ -684,6 +684,8 @@ export interface AiSdkFlowInput {
   stopBackend?: AgentBackend['stop'];
   /** Exact hosted Interaction Run forwarded only for this flow invocation. */
   hostedInteraction?: HostedInteractionBridge;
+  /** Synchronous exact-Run ownership fence immediately before backend dispatch. */
+  beforeDispatch?: () => void;
   /**
    * Optional production projection hook. Called for every raw backend
    * SessionEvent after it has been mapped to a RuntimeEvent and before the
@@ -720,6 +722,7 @@ export class AiSdkFlow implements AgentFlow, AgentFlowControl {
   readonly sessionId: string;
   private readonly backend: AgentBackend;
   private readonly hostedInteraction: HostedInteractionBridge | undefined;
+  private readonly beforeDispatch: AiSdkFlowInput['beforeDispatch'];
   private readonly onSessionEvent: AiSdkFlowInput['onSessionEvent'];
   private readonly onError: AiSdkFlowInput['onError'];
   private readonly onFinally: AiSdkFlowInput['onFinally'];
@@ -730,6 +733,7 @@ export class AiSdkFlow implements AgentFlow, AgentFlowControl {
     this.backend = input.backend;
     this.stopBackend = input.stopBackend ?? createSingleFlightBackendStop(input.backend);
     this.hostedInteraction = input.hostedInteraction;
+    this.beforeDispatch = input.beforeDispatch;
     this.sessionId = input.backend.sessionId;
     this.kind = input.backend.kind;
     this.onSessionEvent = input.onSessionEvent;
@@ -771,6 +775,7 @@ export class AiSdkFlow implements AgentFlow, AgentFlowControl {
     let terminalAccepted = false;
     let errorEmitted = false;
     try {
+      this.beforeDispatch?.();
       for await (const sessionEvent of this.backend.send({
         invocationId: ctx.invocationId,
         runId: ctx.runId,

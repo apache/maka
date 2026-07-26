@@ -1488,7 +1488,7 @@ describe('runTaskOnce', () => {
           assert.equal(error, cleanupError);
           return true;
         });
-        assert.equal(childBackend?.stopCalls, 2);
+        assert.equal(childBackend?.stopCalls, 1);
       } finally {
         childBackend?.finishForTest();
         await childPromise;
@@ -1748,7 +1748,7 @@ describe('runTaskOnce', () => {
             return true;
           },
         );
-        assert.equal(childBackend?.stopCalls, 2);
+        assert.equal(childBackend?.stopCalls, 1);
       } finally {
         if (watchdog) realClearTimeout(watchdog);
         childBackend?.finishForTest();

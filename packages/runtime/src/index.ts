@@ -1129,7 +1129,12 @@ export type {
   RuntimeReadModelSessionView,
 } from './runtime-read-model.js';
 export { RuntimeKernel } from './runtime-kernel.js';
-export type { RuntimeKernelDeps, RuntimeKernelLike, TurnStartOptions } from './runtime-kernel.js';
+export type {
+  RuntimeExecutionClaim,
+  RuntimeKernelDeps,
+  RuntimeKernelLike,
+  TurnStartOptions,
+} from './runtime-kernel.js';
 export { AgentRun } from './agent-run.js';
 export type { AgentRunActiveSession, AgentRunDurability, AgentRunLineage } from './agent-run.js';
 

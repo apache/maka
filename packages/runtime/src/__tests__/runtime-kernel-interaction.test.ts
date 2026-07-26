@@ -13,7 +13,7 @@ import {
   RuntimeInteractionFailStopError,
   type RuntimeInteractionAuthority,
 } from '../interaction-authority.js';
-import { RuntimeKernel } from '../runtime-kernel.js';
+import { RuntimeKernel, type RuntimeKernelDeps } from '../runtime-kernel.js';
 import { BackendRegistry, type SessionStore } from '../session-manager.js';
 
 describe('RuntimeKernel Interaction close cleanup', () => {
@@ -86,6 +86,224 @@ describe('RuntimeKernel Interaction close cleanup', () => {
     assert.equal(cleanupFailure, stopFailure);
     assert.equal(fixture.backend.stopCalls.length, 1);
   });
+
+  test('public stop rejection with a blocked send actively disposes the backend', async () => {
+    const stopFailure = new Error('stop rejected without releasing send');
+    const fixture = runtimeFixture({
+      closeSucceeds: true,
+      stopFailure,
+      releaseSendOnStop: false,
+      releaseSendOnDispose: false,
+    });
+    const iterator = fixture.kernel
+      .startTurn(SESSION_ID, { turnId: 'turn-blocked-send', text: 'start' })
+      [Symbol.asyncIterator]();
+
+    assert.equal((await iterator.next()).value?.type, 'text_delta');
+    const failure = await rejectionOf(
+      fixture.kernel.stopSession(SESSION_ID, { source: 'stop_button' }),
+    );
+
+    assert.equal(containsFailure(failure, stopFailure), true);
+    assert.equal(fixture.backend.disposeCalls, 1);
+    const retryFailure = await rejectionOf(
+      fixture.kernel.stopSession(SESSION_ID, { source: 'stop_button' }),
+    );
+    assert.equal(containsFailure(retryFailure, stopFailure), true);
+    assert.equal(fixture.backend.stopCalls.length, 1);
+    const messages = await fixture.store.readMessages(SESSION_ID);
+    assert.equal(
+      messages.filter(
+        (message) =>
+          message.type === 'turn_state' &&
+          message.turnId === 'turn-blocked-send' &&
+          message.status === 'aborted',
+      ).length,
+      1,
+    );
+    assert.equal(
+      messages.filter((message) => message.type === 'system_note' && message.kind === 'abort')
+        .length,
+      1,
+    );
+
+    const blockedActivation = fixture.kernel
+      .startTurn(SESSION_ID, { turnId: 'turn-before-runner-settled', text: 'must not send' })
+      [Symbol.asyncIterator]();
+    await assert.rejects(blockedActivation.next(), /quarantined/);
+    assert.equal(fixture.backend.sendCalls, 1);
+
+    fixture.backend.releaseBlockedSend();
+    await drainIterator(iterator);
+  });
+
+  test('a generation stopped after Run reservation cannot send on the stale backend', async () => {
+    const store = memoryStore();
+    const backends = new BackendRegistry();
+    const backend = new BlockingBackend(SESSION_ID, {
+      stopFailure: new Error('reserved generation stop failed'),
+      releaseSendOnStop: false,
+      releaseSendOnDispose: false,
+    });
+    backends.register('fake', () => backend);
+    const secondReserved = deferred<void>();
+    const releaseSecond = deferred<void>();
+    let reservations = 0;
+    let id = 0;
+    const kernel = new RuntimeKernel({
+      store,
+      backends,
+      newId: () => `reservation-id-${++id}`,
+      now: () => id,
+      runBackendActivation: async (operation) => {
+        const result = await operation();
+        reservations += 1;
+        if (reservations === 2) {
+          secondReserved.resolve();
+          await releaseSecond.promise;
+        }
+        return result;
+      },
+    });
+
+    const first = kernel
+      .startTurn(SESSION_ID, { turnId: 'turn-reservation-1', text: 'first' })
+      [Symbol.asyncIterator]();
+    assert.equal((await first.next()).value?.type, 'text_delta');
+    const second = kernel
+      .startTurn(SESSION_ID, { turnId: 'turn-reservation-2', text: 'second' })
+      [Symbol.asyncIterator]();
+    const secondEvent = second.next();
+    await secondReserved.promise;
+
+    await assert.rejects(
+      kernel.stopSession(SESSION_ID, { source: 'stop_button' }),
+      /reserved generation stop failed/,
+    );
+    assert.equal(backend.disposeCalls, 1);
+    assert.equal(backend.sendCalls, 1);
+
+    releaseSecond.resolve();
+    assert.equal((await secondEvent).done, true);
+    assert.equal(backend.sendCalls, 1);
+
+    backend.releaseBlockedSend();
+    await drainIterator(first).catch(() => undefined);
+  });
+
+  test('a failed stop operation is not reused by the next backend Run generation', async () => {
+    const store = memoryStore();
+    const backends = new BackendRegistry();
+    const built: BlockingBackend[] = [];
+    backends.register('fake', () => {
+      const backend = new BlockingBackend(
+        SESSION_ID,
+        built.length === 0
+          ? {
+              stopFailure: new Error('first generation stop failed'),
+              releaseSendOnStop: false,
+            }
+          : {},
+      );
+      built.push(backend);
+      return backend;
+    });
+    let id = 0;
+    const kernel = new RuntimeKernel({
+      store,
+      backends,
+      newId: () => `generation-id-${++id}`,
+      now: () => id,
+    });
+
+    const first = kernel
+      .startTurn(SESSION_ID, { turnId: 'turn-generation-1', text: 'first' })
+      [Symbol.asyncIterator]();
+    assert.equal((await first.next()).value?.type, 'text_delta');
+    await assert.rejects(
+      kernel.stopSession(SESSION_ID, { source: 'stop_button', mode: 'after_step' }),
+      /first generation stop failed/,
+    );
+    await drainIterator(first);
+    assert.equal(built[0]?.disposeCalls, 1);
+    assert.deepEqual(built[0]?.stopCalls, [{ reason: 'user_stop', mode: 'after_step' }]);
+    const firstMessages = await store.readMessages(SESSION_ID);
+    assert.equal(
+      firstMessages.filter(
+        (message) =>
+          message.type === 'turn_state' &&
+          message.turnId === 'turn-generation-1' &&
+          message.status === 'aborted',
+      ).length,
+      1,
+    );
+    assert.equal(
+      firstMessages.filter((message) => message.type === 'system_note' && message.kind === 'abort')
+        .length,
+      1,
+    );
+
+    const second = kernel
+      .startTurn(SESSION_ID, { turnId: 'turn-generation-2', text: 'second' })
+      [Symbol.asyncIterator]();
+    assert.equal((await second.next()).value?.type, 'text_delta');
+    await kernel.stopSession(SESSION_ID, { source: 'stop_button', mode: 'immediate' });
+    await second.return!(undefined).catch(() => undefined);
+
+    assert.equal(built.length, 2);
+    assert.deepEqual(built[1]?.stopCalls[0], { reason: 'user_stop', mode: 'immediate' });
+    assert.equal(
+      built[1]?.stopCalls.some((call) => call.mode === 'after_step'),
+      false,
+    );
+  });
+
+  test('disposal failure permanently quarantines the Session from backend activation', async () => {
+    const store = memoryStore();
+    const backends = new BackendRegistry();
+    const built: BlockingBackend[] = [];
+    const stopFailure = new Error('backend stop failed');
+    const disposeFailure = new Error('backend disposal failed');
+    backends.register('fake', () => {
+      const backend = new BlockingBackend(SESSION_ID, {
+        stopFailure,
+        disposeFailure,
+        releaseSendOnDispose: false,
+        releaseSendOnStop: false,
+      });
+      built.push(backend);
+      return backend;
+    });
+    let id = 0;
+    const kernel = new RuntimeKernel({
+      store,
+      backends,
+      newId: () => `quarantine-id-${++id}`,
+      now: () => id,
+    });
+
+    const first = kernel
+      .startTurn(SESSION_ID, { turnId: 'turn-quarantine-1', text: 'first' })
+      [Symbol.asyncIterator]();
+    assert.equal((await first.next()).value?.type, 'text_delta');
+    const stopped = await rejectionOf(kernel.stopSession(SESSION_ID, { source: 'stop_button' }));
+    assert.equal(containsFailure(stopped, stopFailure), true);
+    assert.equal(containsFailure(stopped, disposeFailure), true);
+    await assert.rejects(kernel.invalidateCachedBackends(), /backend disposal failed/);
+    assert.equal(built[0]?.disposeCalls, 1);
+    built[0]?.releaseBlockedSend();
+    await drainIterator(first);
+    assert.equal(built[0]?.disposeCalls, 1);
+
+    for (const turnId of ['turn-quarantine-2', 'turn-quarantine-3']) {
+      const blocked = kernel
+        .startTurn(SESSION_ID, { turnId, text: 'must not build' })
+        [Symbol.asyncIterator]();
+      await assert.rejects(blocked.next(), /permanently quarantined/);
+    }
+    assert.equal(built.length, 1);
+    assert.equal(built[0]?.disposeCalls, 1);
+  });
 });
 
 const SESSION_ID = 'session-interaction-cleanup';
@@ -95,11 +313,16 @@ interface RuntimeFixtureOptions {
   deferredClose?: boolean;
   deferredStop?: boolean;
   stopFailure?: Error;
+  disposeFailure?: Error;
+  releaseSendOnDispose?: boolean;
+  releaseSendOnStop?: boolean;
+  runBackendActivation?: RuntimeKernelDeps['runBackendActivation'];
 }
 
 function runtimeFixture(options: RuntimeFixtureOptions = {}): {
   kernel: RuntimeKernel;
   backend: BlockingBackend;
+  store: SessionStore;
   closeFailure: Error;
   closeStarted: Promise<void>;
   releaseClose: () => void;
@@ -147,8 +370,12 @@ function runtimeFixture(options: RuntimeFixtureOptions = {}): {
       interactionAuthority,
       newId: () => `id-${++id}`,
       now: () => id,
+      ...(options.runBackendActivation
+        ? { runBackendActivation: options.runBackendActivation }
+        : {}),
     }),
     backend,
+    store,
     closeFailure,
     closeStarted,
     releaseClose,
@@ -162,6 +389,8 @@ class BlockingBackend implements AgentBackend {
     mode: BackendStopMode | undefined;
   }> = [];
   readonly stopStarted: Promise<void>;
+  disposeCalls = 0;
+  sendCalls = 0;
   private markStopStarted!: () => void;
   private readonly stopReleased: Promise<void>;
   private releaseStopGate!: () => void;
@@ -175,6 +404,9 @@ class BlockingBackend implements AgentBackend {
     private readonly options: {
       deferredStop?: boolean;
       stopFailure?: Error;
+      disposeFailure?: Error;
+      releaseSendOnDispose?: boolean;
+      releaseSendOnStop?: boolean;
     },
   ) {
     this.stopStarted = new Promise<void>((resolve) => {
@@ -186,6 +418,7 @@ class BlockingBackend implements AgentBackend {
   }
 
   async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    this.sendCalls += 1;
     yield {
       type: 'text_delta',
       id: `${input.turnId}-delta`,
@@ -208,7 +441,7 @@ class BlockingBackend implements AgentBackend {
     this.stopCalls.push({ reason, mode });
     this.markStopStarted();
     if (this.options.deferredStop) await this.stopReleased;
-    this.releaseSend?.();
+    if (this.options.releaseSendOnStop !== false) this.releaseSend?.();
     if (this.options.stopFailure) throw this.options.stopFailure;
   }
 
@@ -216,9 +449,23 @@ class BlockingBackend implements AgentBackend {
     this.releaseStopGate();
   }
 
+  releaseBlockedSend(): void {
+    this.releaseSend?.();
+  }
+
   async respondToPermission(_decision: PermissionDecision): Promise<void> {}
 
-  async dispose(): Promise<void> {}
+  async dispose(): Promise<void> {
+    this.disposeCalls += 1;
+    if (this.options.releaseSendOnDispose !== false) this.releaseSend?.();
+    if (this.options.disposeFailure) throw this.options.disposeFailure;
+  }
+}
+
+async function drainIterator(iterator: AsyncIterator<SessionEvent>): Promise<void> {
+  while (!(await iterator.next()).done) {
+    // Drain the active Runtime Run without abandoning its consumer.
+  }
 }
 
 function memoryStore(): SessionStore {
@@ -296,4 +543,15 @@ function containsFailure(failure: unknown, expected: unknown): boolean {
     failure instanceof AggregateError &&
     failure.errors.some((nested) => containsFailure(nested, expected))
   );
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T | PromiseLike<T>): void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }

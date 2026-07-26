@@ -11,6 +11,7 @@ import {
   FAKE_ASK_USER_QUESTION_PROMPT,
   LOCAL_READ_AGENT_PROFILE,
   RuntimeHostedRootConflictError,
+  RuntimeInteractionAdmissionRejectedError,
   SessionManager,
   type RuntimeHostedRootAuthority,
   type RuntimeInteractionAuthority,
@@ -31,7 +32,10 @@ import { HostInteractionCoordinator } from '../server/interaction-coordinator.js
 import { type HostMessageRootPort, HostMessageCoordinator } from '../server/message-coordinator.js';
 import { RootAdmissionOwner } from '../server/root-admission-owner.js';
 import { RootTurnCoordinator } from '../server/root-turn-coordinator.js';
-import { SessionAdmissionGate } from '../server/session-admission-gate.js';
+import {
+  SessionAdmissionGate,
+  type SessionAdmissionLease,
+} from '../server/session-admission-gate.js';
 import { SessionContinuityCoordinator } from '../server/session-continuity-coordinator.js';
 import type { SessionContinuityFrameSink } from '../server/session-continuity-service.js';
 
@@ -71,10 +75,12 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       readSessionHeader: (sessionId) =>
         requireCoordinator(coordinator).readSessionHeader(sessionId),
       readRootState: (sessionId) => requireCoordinator(coordinator).readRootState(sessionId),
+      claimStopFence: (input, commitQueueFence, admission) =>
+        requireCoordinator(coordinator).claimStopFence(input, commitQueueFence, admission),
       startFromMessage: (input, admission) =>
         requireCoordinator(coordinator).startFromMessage(input, admission),
-      claimStop: (input, commitQueueFence) =>
-        requireCoordinator(coordinator).claimStop(input, commitQueueFence),
+      claimStop: (input, commitQueueFence, admission) =>
+        requireCoordinator(coordinator).claimStop(input, commitQueueFence, admission),
     };
     const hostEpoch = 'epoch-linked-root';
     await stores.messageReceiptStore.beginHostEpoch(hostEpoch);
@@ -859,10 +865,12 @@ test('shutdown re-scans a successor created by an in-flight terminal handoff', {
       readSessionHeader: (sessionId) =>
         requireCoordinator(coordinator).readSessionHeader(sessionId),
       readRootState: (sessionId) => requireCoordinator(coordinator).readRootState(sessionId),
+      claimStopFence: (input, commitQueueFence, admission) =>
+        requireCoordinator(coordinator).claimStopFence(input, commitQueueFence, admission),
       startFromMessage: (input, admission) =>
         requireCoordinator(coordinator).startFromMessage(input, admission),
-      claimStop: (input, commitQueueFence) =>
-        requireCoordinator(coordinator).claimStop(input, commitQueueFence),
+      claimStop: (input, commitQueueFence, admission) =>
+        requireCoordinator(coordinator).claimStop(input, commitQueueFence, admission),
     };
     const hostEpoch = 'epoch-close-handoff';
     await stores.messageReceiptStore.beginHostEpoch(hostEpoch);
@@ -911,7 +919,10 @@ test('shutdown re-scans a successor created by an in-flight terminal handoff', {
       stores,
       sessionAdmission,
       rootAdmissionOwner,
-      { assertTerminalFence: async () => undefined },
+      {
+        assertTerminalFence: async () => undefined,
+        claimRunClosure: async () => undefined,
+      },
       messages,
       continuity,
       acquireResidency,
@@ -972,9 +983,372 @@ test('shutdown re-scans a successor created by an in-flight terminal handoff', {
   }
 });
 
+test('public turn.stop rejects an admission queued behind its exact-Run closure without poisoning', {
+  timeout: 20_000,
+}, async () => {
+  let backend: QueuedAdmissionBackend | undefined;
+  const fixture = await createFailureFixture({
+    withInteractions: true,
+    registerBackend: (backends) => {
+      backends.register('fake', (context) => {
+        backend = new QueuedAdmissionBackend(context.sessionId);
+        return backend;
+      });
+    },
+  });
+
+  try {
+    const turnId = 'turn-public-stop-admission-race';
+    const started = await fixture.coordinator.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId,
+        content: { text: 'queue admission behind public stop' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    if (!started.ok) return;
+    assert.ok(backend);
+    assert.ok(fixture.interactions);
+    await backend.readyForAdmission.promise;
+
+    const laneEntered = deferred<void>();
+    const releaseLane = deferred<void>();
+    const blocker = fixture.sessionAdmission.run(fixture.sessionId, async () => {
+      laneEntered.resolve();
+      await releaseLane.promise;
+    });
+    await laneEntered.promise;
+
+    const stopQueued = fixture.sessionAdmission.waitForNextQueuedRun();
+    const stopping = fixture.coordinator.handlers['turn.stop'](
+      {
+        sessionId: fixture.sessionId,
+        turnId,
+        runId: started.result.runId,
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    await stopQueued;
+    backend.triggerAdmission();
+    await backend.admissionQueued.promise;
+    releaseLane.resolve();
+
+    await blocker;
+    const admissionFailure = await completesWithin(
+      backend.admissionFailure.promise,
+      2_000,
+      'queued admission rejection',
+    );
+    const stopOutcome = await completesWithin(stopping, 2_000, 'public turn.stop completion');
+    assert.equal(stopOutcome.ok, true);
+    assert.ok(admissionFailure instanceof RuntimeInteractionAdmissionRejectedError);
+    assert.equal(admissionFailure.reason, 'run_closed');
+    assert.equal(admissionFailure.closureReason, 'turn_stopped');
+    assert.equal(fixture.interactions.isPoisoned(), false);
+    assert.equal(fixture.drainRequested(), false);
+
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.interactions.close();
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test('public turn.interrupt releases the Session lane while a queried Run is still starting', {
+  timeout: 20_000,
+}, async () => {
+  const backendFactoryEntered = deferred<void>();
+  const releaseBackendFactory = deferred<void>();
+  let backend: LinkedChildAuthorityBackend | undefined;
+  const fixture = await createFailureFixture({
+    withInteractions: true,
+    registerBackend: (backends) => {
+      backends.register('fake', async (context) => {
+        backendFactoryEntered.resolve();
+        await releaseBackendFactory.promise;
+        backend = new LinkedChildAuthorityBackend(context.sessionId);
+        return backend;
+      });
+    },
+  });
+
+  try {
+    const turnId = 'turn-public-interrupt-start-race';
+    const starting = fixture.coordinator.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId,
+        content: { text: HOLD_EXTERNAL_PROMPT },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    await backendFactoryEntered.promise;
+    const queried = await fixture.coordinator.handlers['turn.query'](
+      { sessionId: fixture.sessionId, turnId },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(queried.ok, true);
+    if (!queried.ok) return;
+
+    let interruptSettled = false;
+    const interrupting = fixture.messages.handlers['turn.interrupt'](
+      {
+        originHostEpoch: fixture.hostEpoch,
+        interruptId: 'interrupt-before-start-ready',
+        sessionId: fixture.sessionId,
+        turnId,
+        runId: queried.result.runId,
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    ).finally(() => {
+      interruptSettled = true;
+    });
+    assert.equal(await settlesWithin(interrupting, 25), false);
+    assert.equal(interruptSettled, false);
+
+    releaseBackendFactory.resolve();
+    const [startOutcome, interruptOutcome] = await Promise.all([
+      completesWithin(starting, 2_000, 'turn start after interrupt fence'),
+      completesWithin(interrupting, 2_000, 'public interrupt after start handoff'),
+    ]);
+    assert.equal(startOutcome.ok, true);
+    assert.equal(interruptOutcome.ok, true);
+    if (interruptOutcome.ok) {
+      assert.equal(interruptOutcome.result.turn.runId, queried.result.runId);
+      assert.equal(interruptOutcome.result.turn.status, 'cancelled');
+    }
+    assert.equal(backend?.sendCount, 0);
+    assert.equal(fixture.interactions?.isPoisoned(), false);
+    assert.equal(fixture.drainRequested(), false);
+
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.interactions?.close();
+  } finally {
+    releaseBackendFactory.resolve();
+    backend?.release();
+    await fixture.dispose();
+  }
+});
+
+test('Runtime stop lets a running admission publish before its exact-Run closure', {
+  timeout: 20_000,
+}, async () => {
+  const preflightEntered = deferred<void>();
+  const releasePreflight = deferred<void>();
+  let backend: RunningAdmissionBackend | undefined;
+  const fixture = await createFailureFixture({
+    withInteractions: true,
+    beforeInteractionPreflight: async () => {
+      preflightEntered.resolve();
+      await releasePreflight.promise;
+    },
+    registerBackend: (backends) => {
+      backends.register('fake', (context) => {
+        backend = new RunningAdmissionBackend(context.sessionId);
+        return backend;
+      });
+    },
+  });
+
+  try {
+    const turnId = 'turn-running-admission-stop-race';
+    const started = await fixture.coordinator.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId,
+        content: { text: 'stop while admission owns the Session lane' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    if (!started.ok) return;
+    assert.ok(backend);
+    assert.ok(fixture.interactions);
+    await preflightEntered.promise;
+
+    const stopping = fixture.manager.stopSession(fixture.sessionId, {
+      source: 'stop_button',
+    });
+    assert.equal(await settlesWithin(stopping, 25), false);
+    releasePreflight.resolve();
+
+    await completesWithin(backend.admitted.promise, 2_000, 'running admission completion');
+    await completesWithin(stopping, 2_000, 'Runtime stop after running admission');
+    assert.deepEqual(backend.closureReasons, ['turn_stopped']);
+    assert.equal(fixture.interactions.isPoisoned(), false);
+    assert.equal(fixture.drainRequested(), false);
+
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.interactions.close();
+  } finally {
+    releasePreflight.resolve();
+    backend?.release();
+    await fixture.dispose();
+  }
+});
+
+test('public turn.stop wins the Session lane before a wire answer for the same Run', {
+  timeout: 20_000,
+}, async () => {
+  let backend: PendingQuestionBackend | undefined;
+  const fixture = await createFailureFixture({
+    withInteractions: true,
+    registerBackend: (backends) => {
+      backends.register('fake', (context) => {
+        backend = new PendingQuestionBackend(context.sessionId);
+        return backend;
+      });
+    },
+  });
+
+  try {
+    const turnId = 'turn-public-stop-answer-race';
+    const started = await fixture.coordinator.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId,
+        content: { text: 'answer after the public stop fence' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    if (!started.ok) return;
+    assert.ok(backend);
+    assert.ok(fixture.interactions);
+    const requestId = await backend.pendingRequest.promise;
+
+    const laneEntered = deferred<void>();
+    const releaseLane = deferred<void>();
+    const blocker = fixture.sessionAdmission.run(fixture.sessionId, async () => {
+      laneEntered.resolve();
+      await releaseLane.promise;
+    });
+    await laneEntered.promise;
+
+    const stopQueued = fixture.sessionAdmission.waitForNextQueuedRun();
+    const stopping = fixture.coordinator.handlers['turn.stop'](
+      {
+        sessionId: fixture.sessionId,
+        turnId,
+        runId: started.result.runId,
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    await stopQueued;
+    const answered = fixture.interactions.handlers['interaction.answer'](
+      {
+        interactionId: requestId,
+        answer: { kind: 'question', answers: ['Yes'] },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    releaseLane.resolve();
+
+    await blocker;
+    const [stopOutcome, answerOutcome] = await Promise.all([
+      completesWithin(stopping, 2_000, 'public turn.stop completion'),
+      completesWithin(answered, 2_000, 'wire answer completion'),
+    ]);
+    assert.equal(stopOutcome.ok, true);
+    assert.equal(answerOutcome.ok, false);
+    if (!answerOutcome.ok) assert.equal(answerOutcome.error.code, 'already_resolved');
+    assert.deepEqual(backend.closureReasons, ['turn_stopped']);
+    assert.equal(backend.answerApplications, 0);
+    assert.equal(fixture.interactions.isPoisoned(), false);
+    assert.equal(fixture.drainRequested(), false);
+
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.interactions.close();
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test('public turn.stop takes over an earlier closure claim queued behind its lease', {
+  timeout: 20_000,
+}, async () => {
+  let backend: TakeoverClosureBackend | undefined;
+  const fixture = await createFailureFixture({
+    withInteractions: true,
+    registerBackend: (backends) => {
+      backends.register('fake', (context) => {
+        backend = new TakeoverClosureBackend(context.sessionId);
+        return backend;
+      });
+    },
+  });
+  let releaseLane: ReturnType<typeof deferred<void>> | undefined;
+
+  try {
+    const turnId = 'turn-public-stop-closure-takeover';
+    const started = await fixture.coordinator.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId,
+        content: { text: 'take over the queued closure execution' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    if (!started.ok) return;
+    assert.ok(backend);
+    assert.ok(fixture.interactions);
+    await backend.sendStarted.promise;
+
+    const laneEntered = deferred<void>();
+    releaseLane = deferred<void>();
+    const blocker = fixture.sessionAdmission.run(fixture.sessionId, async () => {
+      laneEntered.resolve();
+      await releaseLane?.promise;
+    });
+    await laneEntered.promise;
+
+    const stopQueued = fixture.sessionAdmission.waitForNextQueuedRun();
+    const publicStop = fixture.coordinator.handlers['turn.stop'](
+      {
+        sessionId: fixture.sessionId,
+        turnId,
+        runId: started.result.runId,
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    await stopQueued;
+
+    const runtimeStop = fixture.manager.stopSession(fixture.sessionId, {
+      source: 'stop_button',
+    });
+    await backend.stopStarted.promise;
+    releaseLane.resolve();
+
+    await blocker;
+    await completesWithin(runtimeStop, 2_000, 'Runtime stop closure takeover');
+    backend.releaseSend();
+    const outcome = await completesWithin(publicStop, 2_000, 'public turn.stop completion');
+    assert.equal(outcome.ok, true);
+    assert.equal(fixture.interactions.isPoisoned(), false);
+    assert.equal(fixture.drainRequested(), false);
+
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.interactions.close();
+  } finally {
+    releaseLane?.resolve();
+    backend?.releaseSend();
+    await fixture.dispose();
+  }
+});
+
 async function createFailureFixture(options: {
   registerBackend(backends: BackendRegistry): void;
   wrapAdmissionStore?(store: RootTurnAdmissionStore): RootTurnAdmissionStore;
+  withInteractions?: boolean;
+  beforeInteractionPreflight?(): Promise<void>;
 }) {
   const base = await mkdtemp(join(tmpdir(), 'maka-root-turn-message-failure-'));
   const capability = await resolveStorageRoot({
@@ -996,7 +1370,7 @@ async function createFailureFixture(options: {
   const admissionStore = options.wrapAdmissionStore?.(stores.agentRunStore) ?? stores.agentRunStore;
   const rootAdmissionOwner = new RootAdmissionOwner(admissionStore);
   await rootAdmissionOwner.recoverSession(session.id);
-  const sessionAdmission = new SessionAdmissionGate();
+  const sessionAdmission = new ObservableSessionAdmissionGate();
   let liveResidencies = 0;
   const acquireResidency = (): RuntimeHostResidency => {
     liveResidencies += 1;
@@ -1016,10 +1390,12 @@ async function createFailureFixture(options: {
   const rootPort: HostMessageRootPort = {
     readSessionHeader: (sessionId) => requireCoordinator(coordinator).readSessionHeader(sessionId),
     readRootState: (sessionId) => requireCoordinator(coordinator).readRootState(sessionId),
+    claimStopFence: (input, commitQueueFence, admission) =>
+      requireCoordinator(coordinator).claimStopFence(input, commitQueueFence, admission),
     startFromMessage: (input, admission) =>
       requireCoordinator(coordinator).startFromMessage(input, admission),
-    claimStop: (input, commitQueueFence) =>
-      requireCoordinator(coordinator).claimStop(input, commitQueueFence),
+    claimStop: (input, commitQueueFence, admission) =>
+      requireCoordinator(coordinator).claimStop(input, commitQueueFence, admission),
   };
   const hostEpoch = 'epoch-message-failure';
   await stores.messageReceiptStore.beginHostEpoch(hostEpoch);
@@ -1056,9 +1432,24 @@ async function createFailureFixture(options: {
     sessionAdmission,
     requestDrain,
   );
+  const interactions = options.withInteractions
+    ? new HostInteractionCoordinator({
+        store: stores.interactionStore,
+        sessionAdmission,
+        preflightSessionSnapshot: async (sessionId, interactionProjection) => {
+          await options.beforeInteractionPreflight?.();
+          return canonicalProjectionReader.fitsCandidate(sessionId, {
+            interactions: interactionProjection,
+          });
+        },
+        refreshCanonicalContinuity: (sessionId, admission) =>
+          requireContinuity(continuity).refreshCanonical(sessionId, admission),
+        onPoison: requestDrain,
+      })
+    : undefined;
   const backends = new BackendRegistry();
   options.registerBackend(backends);
-  const manager = new SessionManager({
+  const managerDeps = {
     store: stores.sessionStore,
     runStore: stores.agentRunStore,
     runtimeEventStore: stores.runtimeEventStore,
@@ -1066,13 +1457,23 @@ async function createFailureFixture(options: {
     newId: randomUUID,
     now: Date.now,
     messageAuthority: messages,
-  });
+  };
+  const manager = interactions
+    ? new SessionManager({
+        ...managerDeps,
+        interactionAuthority: interactions,
+        canonicalPermissionOutcomes: interactions,
+      })
+    : new SessionManager(managerDeps);
   coordinator = new RootTurnCoordinator(
     manager,
     stores,
     sessionAdmission,
     rootAdmissionOwner,
-    { assertTerminalFence: async () => undefined },
+    interactions ?? {
+      assertTerminalFence: async () => undefined,
+      claimRunClosure: async () => undefined,
+    },
     messages,
     continuity,
     acquireResidency,
@@ -1085,6 +1486,9 @@ async function createFailureFixture(options: {
     hostEpoch,
     messages,
     coordinator,
+    manager,
+    interactions,
+    sessionAdmission,
     acquireResidency,
     liveResidencies: () => liveResidencies,
     drainRequested: () => drainRequested,
@@ -1137,6 +1541,28 @@ function deferred<T>() {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+class ObservableSessionAdmissionGate extends SessionAdmissionGate {
+  #nextQueuedRun: ReturnType<typeof deferred<void>> | undefined;
+
+  waitForNextQueuedRun(): Promise<void> {
+    if (this.#nextQueuedRun) throw new Error('A Session admission queue signal is already armed');
+    const signal = deferred<void>();
+    this.#nextQueuedRun = signal;
+    return signal.promise;
+  }
+
+  override run<T>(
+    sessionId: string,
+    operation: (lease: SessionAdmissionLease) => Promise<T> | T,
+  ): Promise<T> {
+    const signal = this.#nextQueuedRun;
+    this.#nextQueuedRun = undefined;
+    const result = super.run(sessionId, operation);
+    signal?.resolve();
+    return result;
+  }
 }
 
 async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
@@ -1243,6 +1669,279 @@ class LinkedChildAuthorityBackend implements AgentBackend {
 
   async dispose(): Promise<void> {
     this.releaseWait?.();
+  }
+}
+
+class QueuedAdmissionBackend implements AgentBackend {
+  readonly kind = 'fake' as const;
+  readonly readyForAdmission = deferred<void>();
+  readonly admissionQueued = deferred<void>();
+  readonly admissionFailure = deferred<unknown>();
+  private readonly admissionTrigger = deferred<void>();
+
+  constructor(readonly sessionId: string) {}
+
+  triggerAdmission(): void {
+    this.admissionTrigger.resolve();
+  }
+
+  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    yield {
+      type: 'text_delta',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      messageId: randomUUID(),
+      text: 'running before queued admission',
+    };
+    this.readyForAdmission.resolve();
+    await this.admissionTrigger.promise;
+    if (!input.hostedInteraction) {
+      throw new Error('QueuedAdmissionBackend requires hosted Interaction authority');
+    }
+    const request = {
+      type: 'user_question_request',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      requestId: randomUUID(),
+      toolUseId: randomUUID(),
+      questions: [
+        {
+          question: 'Continue?',
+          options: [{ label: 'Yes' }, { label: 'No' }],
+        },
+      ],
+    } satisfies Extract<SessionEvent, { type: 'user_question_request' }>;
+    const admission = input.hostedInteraction.admitUserQuestionRequest({
+      request,
+      settlement: {
+        applyAnswer: async () => {},
+        applyClosure: async () => {},
+      },
+    });
+    this.admissionQueued.resolve();
+    try {
+      await admission;
+      throw new Error('Queued admission unexpectedly crossed the stop fence');
+    } catch (error) {
+      this.admissionFailure.resolve(error);
+    }
+    yield {
+      type: 'abort',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      reason: 'user_stop',
+    };
+    yield {
+      type: 'complete',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      stopReason: 'user_stop',
+    };
+  }
+
+  async stop(): Promise<void> {
+    this.admissionTrigger.resolve();
+  }
+
+  async respondToPermission(): Promise<void> {}
+
+  async dispose(): Promise<void> {
+    this.admissionTrigger.resolve();
+  }
+}
+
+class RunningAdmissionBackend implements AgentBackend {
+  readonly kind = 'fake' as const;
+  readonly admitted = deferred<void>();
+  readonly closureReasons: string[] = [];
+  private readonly settled = deferred<void>();
+
+  constructor(readonly sessionId: string) {}
+
+  release(): void {
+    this.settled.resolve();
+  }
+
+  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    if (!input.hostedInteraction) {
+      throw new Error('RunningAdmissionBackend requires hosted Interaction authority');
+    }
+    const request = {
+      type: 'user_question_request',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      requestId: randomUUID(),
+      toolUseId: randomUUID(),
+      questions: [
+        {
+          question: 'Continue?',
+          options: [{ label: 'Yes' }, { label: 'No' }],
+        },
+      ],
+    } satisfies Extract<SessionEvent, { type: 'user_question_request' }>;
+    await input.hostedInteraction.admitUserQuestionRequest({
+      request,
+      settlement: {
+        applyAnswer: async () => {
+          this.settled.resolve();
+        },
+        applyClosure: async (reason) => {
+          this.closureReasons.push(reason);
+          this.settled.resolve();
+        },
+      },
+    });
+    this.admitted.resolve();
+    yield request;
+    await this.settled.promise;
+    yield {
+      type: 'abort',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      reason: 'user_stop',
+    };
+    yield {
+      type: 'complete',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      stopReason: 'user_stop',
+    };
+  }
+
+  async stop(): Promise<void> {}
+
+  async respondToPermission(): Promise<void> {}
+
+  async dispose(): Promise<void> {
+    this.settled.resolve();
+  }
+}
+
+class PendingQuestionBackend implements AgentBackend {
+  readonly kind = 'fake' as const;
+  readonly pendingRequest = deferred<string>();
+  readonly closureReasons: string[] = [];
+  answerApplications = 0;
+  private readonly settled = deferred<void>();
+
+  constructor(readonly sessionId: string) {}
+
+  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    if (!input.hostedInteraction) {
+      throw new Error('PendingQuestionBackend requires hosted Interaction authority');
+    }
+    const requestId = randomUUID();
+    const request = {
+      type: 'user_question_request',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      requestId,
+      toolUseId: randomUUID(),
+      questions: [
+        {
+          question: 'Continue?',
+          options: [{ label: 'Yes' }, { label: 'No' }],
+        },
+      ],
+    } satisfies Extract<SessionEvent, { type: 'user_question_request' }>;
+    await input.hostedInteraction.admitUserQuestionRequest({
+      request,
+      settlement: {
+        applyAnswer: async () => {
+          this.answerApplications += 1;
+          this.settled.resolve();
+        },
+        applyClosure: async (reason) => {
+          this.closureReasons.push(reason);
+          this.settled.resolve();
+        },
+      },
+    });
+    this.pendingRequest.resolve(requestId);
+    yield request;
+    await this.settled.promise;
+    yield {
+      type: 'abort',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      reason: 'user_stop',
+    };
+    yield {
+      type: 'complete',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      stopReason: 'user_stop',
+    };
+  }
+
+  async stop(): Promise<void> {
+    this.settled.resolve();
+  }
+
+  async respondToPermission(): Promise<void> {}
+
+  async dispose(): Promise<void> {
+    this.settled.resolve();
+  }
+}
+
+class TakeoverClosureBackend implements AgentBackend {
+  readonly kind = 'fake' as const;
+  readonly sendStarted = deferred<void>();
+  readonly stopStarted = deferred<void>();
+  private readonly sendReleased = deferred<void>();
+
+  constructor(readonly sessionId: string) {}
+
+  releaseSend(): void {
+    this.sendReleased.resolve();
+  }
+
+  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    this.sendStarted.resolve();
+    yield {
+      type: 'text_delta',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      messageId: randomUUID(),
+      text: 'waiting for closure takeover',
+    };
+    await this.sendReleased.promise;
+    yield {
+      type: 'abort',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      reason: 'user_stop',
+    };
+    yield {
+      type: 'complete',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      stopReason: 'user_stop',
+    };
+  }
+
+  async stop(): Promise<void> {
+    this.stopStarted.resolve();
+  }
+
+  async respondToPermission(): Promise<void> {}
+
+  async dispose(): Promise<void> {
+    this.sendReleased.resolve();
   }
 }
 

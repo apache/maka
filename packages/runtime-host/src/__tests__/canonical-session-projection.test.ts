@@ -340,6 +340,10 @@ function createMessages(
   const root: HostMessageRootPort = {
     readSessionHeader: async () => ({ isArchived: false }),
     readRootState: () => ({ kind: 'active', sessionId, turnId: 'turn-1', runId: 'run-1' }),
+    claimStopFence: async () => ({
+      ready: Promise.resolve(),
+      deliverStop: () => Promise.resolve(),
+    }),
     startFromMessage: async () => {
       throw new Error('unexpected root start');
     },

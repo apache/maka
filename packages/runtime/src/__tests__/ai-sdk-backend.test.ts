@@ -9893,6 +9893,60 @@ describe('AiSdkBackend tool permission category hints', () => {
     assert.equal(decision?.decision, 'deny');
   });
 
+  test('a hosted deny rule returns the synthetic denied result without a legacy answer ack', async () => {
+    const messages: unknown[] = [];
+    const events: SessionEvent[] = [];
+    let implCalled = false;
+    const backend = new AiSdkBackend({
+      sessionId: 'session-1',
+      header: header('bypass'),
+      appendMessage: async (message) => {
+        messages.push(message);
+      },
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'claude-sonnet-4-5-20250929',
+      permissionEngine: new PermissionEngine({ newId: idGenerator(), now: () => 1 }),
+      permissionRules: [{ effect: 'deny', kind: 'category', category: 'read' }],
+      modelFactory: () => ({}),
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const runtime = (backend as unknown as { toolRuntime: ToolRuntime }).toolRuntime;
+    const binding = await hostedInteractionBinding({
+      acceptPermissionRequest: async () => {
+        assert.fail('a hosted deny rule must not establish a continuation');
+      },
+    });
+    runtime.beginTurn('turn-1', binding);
+    const tool: MakaTool = {
+      name: 'Read',
+      description: 'read file',
+      parameters: {},
+      permissionRequired: false,
+      impl: async () => {
+        implCalled = true;
+        return { kind: 'text', text: 'should not run' };
+      },
+    };
+
+    const result = await runtimeExecute(backend, tool, 'turn-1', {
+      push: (event) => events.push(event),
+    })({ path: 'notes.md' }, { toolCallId: 'tool-1', abortSignal: new AbortController().signal });
+
+    assert.equal(implCalled, false);
+    assert.match(JSON.stringify(result), /denied/i);
+    assert.deepEqual(
+      messages.map((message) => (message as { type?: string }).type),
+      ['tool_call', 'permission_decision', 'tool_result'],
+    );
+    assert.deepEqual(
+      events.map((event) => event.type),
+      ['tool_start', 'tool_result'],
+    );
+  });
+
   test('permission prompt timeout expires one request, resumes watchdog, and writes an error result', async () => {
     const messages: unknown[] = [];
     const events: SessionEvent[] = [];

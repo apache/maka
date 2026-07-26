@@ -44,10 +44,12 @@ export async function createExecutionRuntimeHostComposition(
         requireRootCoordinator(rootCoordinator).readSessionHeader(sessionId),
       readRootState: (sessionId) =>
         requireRootCoordinator(rootCoordinator).readRootState(sessionId),
+      claimStopFence: (input, commitQueueFence, admission) =>
+        requireRootCoordinator(rootCoordinator).claimStopFence(input, commitQueueFence, admission),
       startFromMessage: (input, admission) =>
         requireRootCoordinator(rootCoordinator).startFromMessage(input, admission),
-      claimStop: (input, commitQueueFence) =>
-        requireRootCoordinator(rootCoordinator).claimStop(input, commitQueueFence),
+      claimStop: (input, commitQueueFence, admission) =>
+        requireRootCoordinator(rootCoordinator).claimStop(input, commitQueueFence, admission),
     };
     const messages = new HostMessageCoordinator({
       hostEpoch: context.hostEpoch,

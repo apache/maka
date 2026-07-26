@@ -33,7 +33,7 @@ Read left to right. Entry points hand user intent to Runtime; model and tool exe
 
 ### 1. Execution facts
 
-An Agent Run produces model messages, Tool Calls, Tool Results, permission decisions, and termination facts. Runtime Event Log is the canonical source for those interaction semantics. Context pruning and Compaction may change what the model sees next, but cannot rewrite facts that already occurred.
+An Agent Run produces model messages, Tool Calls, Tool Results, permission decisions, and termination facts. Runtime Event Log is the canonical source for those interaction semantics except hosted permission answers: InteractionStore is their canonical authority, while the Runtime ledger stores only answer identity and audit facts. The embedded/legacy path retains its existing decision-event semantics. Context pruning and Compaction may change what the model sees next, but cannot rewrite facts that already occurred.
 
 Relevant chapters: 1, 2, and 3.
 

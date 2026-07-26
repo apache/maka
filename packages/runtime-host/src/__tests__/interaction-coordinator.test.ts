@@ -428,6 +428,35 @@ describe('HostInteractionCoordinator', () => {
     });
   });
 
+  test('drain permits only an exact Run preclaimed by its stop closure to bind', async () => {
+    await withStore(async ({ store }) => {
+      const gate = new SessionAdmissionGate();
+      const coordinator = createCoordinator(store, { sessionAdmission: gate });
+      coordinator.beginDrain();
+
+      await gate.run(RUN.sessionId, (admission) =>
+        coordinator.claimRunClosure(RUN, 'turn_stopped', admission),
+      );
+      const owner = coordinator.bindRun(RUN);
+      await assert.rejects(
+        Promise.resolve().then(() =>
+          coordinator.bindRun({
+            sessionId: RUN.sessionId,
+            turnId: 'turn_unclaimed',
+            runId: 'run_unclaimed',
+          }),
+        ),
+        (error: unknown) =>
+          error instanceof RuntimeInteractionAdmissionRejectedError &&
+          error.reason === 'authority_draining',
+      );
+
+      await owner.close('turn_stopped');
+      owner.release();
+      await coordinator.close();
+    });
+  });
+
   test('terminal fence poisons on an exact Run pending record from the authentic Store', async () => {
     await withStore(async ({ store }) => {
       const poison: RuntimeInteractionFailStopError[] = [];

@@ -63,8 +63,11 @@ export interface AgentRunActiveSession {
 }
 
 export interface AgentRunHooks {
-  ensureActive(sessionId: string, header: SessionHeader): Promise<AgentRunActiveSession>;
-  registerRun(active: AgentRunActiveSession, run: AgentRun): void;
+  reserveRun(
+    sessionId: string,
+    header: SessionHeader,
+    run: AgentRun,
+  ): Promise<AgentRunActiveSession>;
   unregisterRun(active: AgentRunActiveSession, run: AgentRun): void | Promise<void>;
   updateHeader(sessionId: string, patch: Partial<SessionHeader>): Promise<SessionHeader>;
   updateStatus(
@@ -522,8 +525,7 @@ export class AgentRun {
       this.header = await this.input.hooks.updateHeader(this.sessionId, { connectionLocked: true });
     }
 
-    this.active = await this.input.hooks.ensureActive(this.sessionId, this.header);
-    this.input.hooks.registerRun(this.active, this);
+    this.active = await this.input.hooks.reserveRun(this.sessionId, this.header, this);
     await this.markRunStarted(this.lastTs);
 
     await this.input.hooks.updateStatus(this.sessionId, 'running', undefined, this.lastTs);
@@ -567,8 +569,7 @@ export class AgentRun {
       this.header = await this.input.hooks.updateHeader(this.sessionId, { connectionLocked: true });
     }
 
-    this.active = await this.input.hooks.ensureActive(this.sessionId, this.header);
-    this.input.hooks.registerRun(this.active, this);
+    this.active = await this.input.hooks.reserveRun(this.sessionId, this.header, this);
     await this.markRunStarted(startedAt);
 
     await this.input.hooks.updateStatus(this.sessionId, 'running', undefined, startedAt);
@@ -607,8 +608,7 @@ export class AgentRun {
       this.header = await this.input.hooks.updateHeader(this.sessionId, { connectionLocked: true });
     }
 
-    this.active = await this.input.hooks.ensureActive(this.sessionId, this.header);
-    this.input.hooks.registerRun(this.active, this);
+    this.active = await this.input.hooks.reserveRun(this.sessionId, this.header, this);
     await this.markRunStarted(startedAt);
     await this.input.hooks.updateStatus(this.sessionId, 'running', undefined, startedAt);
 
@@ -1252,7 +1252,10 @@ export class AgentRun {
         ...(fallbackStatus === 'failed' ? { fallbackFailureClass, fallbackFailureMessage } : {}),
         allowHeaderCommitFailure: true,
       });
-      if (!terminalClaim.write) terminalClaim.write = commit.then(() => undefined);
+      if (!terminalClaim.write) {
+        terminalClaim.write = commit.then(() => undefined);
+        void terminalClaim.write.catch(() => {});
+      }
       const result = await commit;
       this.terminalRunHeaderCommitted = result.headerCommitted;
       if (result.headerCommitted && this.continuationActive) {

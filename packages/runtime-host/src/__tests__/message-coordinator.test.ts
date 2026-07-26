@@ -1221,6 +1221,16 @@ function createFixture(
       }
       return rootState;
     },
+    claimStopFence: async (_input, commitQueueFence) => {
+      commitQueueFence();
+      return {
+        ready: Promise.resolve(),
+        deliverStop: async () => {
+          stopClaimed.resolve(undefined);
+          if (stopDeliveryError) throw stopDeliveryError;
+        },
+      };
+    },
     startFromMessage: async (input) => {
       startCalls += 1;
       const turnId = 'idle-turn';
@@ -1241,10 +1251,7 @@ function createFixture(
     claimStop: async (_input, commitQueueFence) => {
       commitQueueFence();
       return {
-        deliverStop: async () => {
-          stopClaimed.resolve(undefined);
-          if (stopDeliveryError) throw stopDeliveryError;
-        },
+        deliverStop: () => Promise.resolve(),
         terminal: terminal.promise,
       };
     },

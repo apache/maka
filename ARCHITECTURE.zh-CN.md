@@ -33,7 +33,7 @@ flowchart LR
 
 ### 1. 运行事实层
 
-一次 Agent Run 产生模型消息、Tool Call、Tool Result、权限和终止事实。Runtime Event Log 是这些交互语义的 canonical source。上下文裁剪与 Compaction 可以改变模型下一次看到什么，但不能反向改写已经发生的事实。
+一次 Agent Run 产生模型消息、Tool Call、Tool Result、权限和终止事实。除 hosted permission answer 外，Runtime Event Log 是这些交互语义的 canonical source；hosted permission answer 以 InteractionStore 为 canonical authority，Runtime ledger 只保存 answer identity 与 audit fact。embedded/legacy 路径保留既有的 decision-event 语义。上下文裁剪与 Compaction 可以改变模型下一次看到什么，但不能反向改写已经发生的事实。
 
 对应章节：第一章、第二章、第三章。
 

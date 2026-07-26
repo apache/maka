@@ -127,6 +127,7 @@ import {
 import {
   RuntimeKernel,
   type BackendActivationBoundary,
+  type RuntimeExecutionClaim,
   type RuntimeKernelLike,
   type TurnStartOptions,
 } from './runtime-kernel.js';
@@ -1382,15 +1383,25 @@ export class SessionManager {
     sessionId: string,
     input: ChildAgentTurnInput,
   ): AsyncIterable<SessionEvent> {
-    yield* this.runtimeKernel.startChildTurn(sessionId, input);
+    const execution = this.runtimeKernel.claimExecution(sessionId);
+    try {
+      yield* this.runtimeKernel.startChildTurn(sessionId, input, execution);
+    } finally {
+      execution.release();
+    }
   }
 
   async spawnChildAgent(
     sessionId: string,
     input: SpawnChildAgentInput,
   ): Promise<SpawnChildAgentResult> {
-    const definition = requireResolvedAgentDefinition(input.spec.id);
-    return await this.runChildAgent(sessionId, definition, input);
+    const execution = this.runtimeKernel.claimExecution(sessionId);
+    try {
+      const definition = requireResolvedAgentDefinition(input.spec.id);
+      return await this.runChildAgent(sessionId, definition, input, execution);
+    } finally {
+      execution.release();
+    }
   }
 
   /**
@@ -1414,7 +1425,15 @@ export class SessionManager {
       }
       return await inFlight.promise;
     }
-    const promise = this.spawnChildSessionOnce(parentSessionId, input, requestFingerprint);
+    const runtimeOwner = {
+      execution: this.runtimeKernel.claimExecution(parentSessionId),
+    };
+    const promise = this.spawnChildSessionOnce(
+      parentSessionId,
+      input,
+      requestFingerprint,
+      runtimeOwner,
+    ).finally(() => runtimeOwner.execution.release());
     this.childSessionSpawns.set(spawnKey, { requestFingerprint, promise });
     try {
       return await promise;
@@ -1467,7 +1486,10 @@ export class SessionManager {
       }
       return await inFlight.promise;
     }
-    const promise = this.enqueueClaimedAgentGraphIntent(resolved);
+    const runtimeExecution = this.runtimeKernel.claimExecution(claim.targetSessionId);
+    const promise = this.enqueueClaimedAgentGraphIntent(resolved, runtimeExecution).finally(() =>
+      runtimeExecution.release(),
+    );
     this.claimedAgentGraphIntentRuns.set(claim.claimId, {
       requestFingerprint,
       promise,
@@ -1483,6 +1505,7 @@ export class SessionManager {
 
   private enqueueClaimedAgentGraphIntent(
     input: ResolvedClaimedAgentGraphIntentInput,
+    runtimeExecution: RuntimeExecutionClaim,
   ): Promise<ClaimedAgentGraphIntentResult> {
     const sessionId = input.claim.targetSessionId;
     const previous = this.claimedAgentGraphSessionTails.get(sessionId) ?? Promise.resolve();
@@ -1490,7 +1513,7 @@ export class SessionManager {
       .catch(() => {
         // A failed predecessor releases the Session slot for the next claim.
       })
-      .then(() => this.runClaimedAgentGraphIntentOnce(input));
+      .then(() => this.runClaimedAgentGraphIntentOnce(input, runtimeExecution));
     const tail = execution.then(
       () => {},
       () => {},
@@ -1506,6 +1529,7 @@ export class SessionManager {
 
   private async runClaimedAgentGraphIntentOnce(
     input: ResolvedClaimedAgentGraphIntentInput,
+    runtimeExecution: RuntimeExecutionClaim,
   ): Promise<ClaimedAgentGraphIntentResult> {
     if (!this.deps.runStore || !this.deps.runtimeEventStore) {
       throw new Error('Claimed graph execution requires AgentRunStore and RuntimeEventStore');
@@ -1601,6 +1625,7 @@ export class SessionManager {
         runId: claim.targetRunId,
         durability: 'required',
         onRunStarted: notifyReady,
+        execution: runtimeExecution,
       },
     )[Symbol.asyncIterator]();
     const onAbort = () => {
@@ -1697,6 +1722,7 @@ export class SessionManager {
     parentSessionId: string,
     input: SpawnChildSessionInput,
     requestFingerprint: string,
+    runtimeOwner: { execution: RuntimeExecutionClaim },
   ): Promise<SpawnChildSessionResult> {
     if (input.abortSignal?.aborted) {
       throw new Error('Child session spawn was cancelled before creation');
@@ -1762,6 +1788,12 @@ export class SessionManager {
     const spawn = child.subagentSpawn;
     if (!snapshot || !spawn || !child.subagentParent) {
       throw new Error('Stored child session is missing its durable runtime or spawn identity');
+    }
+    try {
+      runtimeOwner.execution = this.transferRuntimeExecution(runtimeOwner.execution, child.id);
+    } catch (error) {
+      if (creation.created) await this.updateStatus(child.id, 'aborted').catch(() => {});
+      throw error;
     }
     const releaseHostedExecution = this.acquireHostedLinkedChildExecution(child.id);
     try {
@@ -1844,6 +1876,7 @@ export class SessionManager {
                 ...(userMessageId ? { userMessageId } : {}),
                 durability: 'required',
                 onRunStarted,
+                execution: runtimeOwner.execution,
               },
             ),
           onReady: notifyReady,
@@ -2236,31 +2269,84 @@ export class SessionManager {
     sessionId: string,
     input: ResumeChildAgentInput,
   ): Promise<SpawnChildAgentResult> {
-    throwIfChildExecutionAborted(
-      input.abortSignal,
-      'Child agent resume was cancelled before start',
-    );
-    const execution = await this.resolveChildAgentExecution(sessionId, input.sourceRunId);
-    if (execution.kind === 'child_session') {
-      const releaseHostedExecution = this.acquireHostedLinkedChildExecution(execution.sessionId);
-      try {
-        const prepared = await this.prepareChildAgentResumeForExecution(
-          sessionId,
-          execution,
-          input.sourceRunId,
-        );
-        return await this.resumeLinkedChildSession(sessionId, execution, prepared, input, true);
-      } finally {
-        releaseHostedExecution();
+    let runtimeExecution = this.runtimeKernel.claimExecution(sessionId);
+    try {
+      throwIfChildExecutionAborted(
+        input.abortSignal,
+        'Child agent resume was cancelled before start',
+      );
+      const execution = await this.resolveChildAgentExecution(sessionId, input.sourceRunId);
+      if (execution.kind === 'child_session') {
+        runtimeExecution = this.transferRuntimeExecution(runtimeExecution, execution.sessionId);
+        const releaseHostedExecution = this.acquireHostedLinkedChildExecution(execution.sessionId);
+        try {
+          const prepared = await this.prepareChildAgentResumeForExecution(
+            sessionId,
+            execution,
+            input.sourceRunId,
+          );
+          return await this.resumeLinkedChildSession(
+            sessionId,
+            execution,
+            prepared,
+            input,
+            runtimeExecution,
+            true,
+          );
+        } finally {
+          releaseHostedExecution();
+        }
       }
+      const prepared = await this.prepareChildAgentResumeForExecution(
+        sessionId,
+        execution,
+        input.sourceRunId,
+      );
+      const definition = getBuiltinAgentDefinition(prepared.agentId)!;
+      return await this.runChildAgent(
+        sessionId,
+        definition,
+        input,
+        runtimeExecution,
+        input.sourceRunId,
+      );
+    } finally {
+      runtimeExecution.release();
     }
-    const prepared = await this.prepareChildAgentResumeForExecution(
-      sessionId,
-      execution,
-      input.sourceRunId,
-    );
-    const definition = getBuiltinAgentDefinition(prepared.agentId)!;
-    return await this.runChildAgent(sessionId, definition, input, input.sourceRunId);
+  }
+
+  private transferRuntimeExecution(
+    source: RuntimeExecutionClaim,
+    targetSessionId: string,
+  ): RuntimeExecutionClaim {
+    if (source.sessionId === targetSessionId) return source;
+    let target: RuntimeExecutionClaim;
+    try {
+      target = this.runtimeKernel.claimExecution(targetSessionId);
+    } catch (error) {
+      source.release();
+      throw error;
+    }
+    return this.handoffRuntimeExecution(source, target);
+  }
+
+  private handoffRuntimeExecution(
+    source: RuntimeExecutionClaim,
+    target: RuntimeExecutionClaim,
+  ): RuntimeExecutionClaim {
+    if (source.sessionId === target.sessionId) {
+      target.release();
+      return source;
+    }
+    const stopped = source.isStopRequested();
+    source.release();
+    if (stopped) {
+      target.release();
+      throw new Error(
+        `Session ${source.sessionId} stopped before child execution ownership transferred`,
+      );
+    }
+    return target;
   }
 
   private async resumeLinkedChildSession(
@@ -2268,6 +2354,7 @@ export class SessionManager {
     execution: Extract<SubagentExecutionRef, { kind: 'child_session' }>,
     prepared: PrepareChildAgentResumeResult,
     input: ResumeChildAgentInput,
+    runtimeExecution: RuntimeExecutionClaim,
     hostedGateAlreadyHeld: boolean,
   ): Promise<SpawnChildAgentResult> {
     throwIfChildExecutionAborted(
@@ -2327,6 +2414,7 @@ export class SessionManager {
               ...(userMessageId ? { userMessageId } : {}),
               durability: 'required',
               onRunStarted,
+              execution: runtimeExecution,
             },
           ),
         onReady: () =>
@@ -2392,6 +2480,7 @@ export class SessionManager {
     sessionId: string,
     definition: AgentDefinition,
     input: SpawnChildAgentInput | ResumeChildAgentInput,
+    execution: RuntimeExecutionClaim,
     resumedFromRunId?: string,
   ): Promise<SpawnChildAgentResult> {
     throwIfChildExecutionAborted(
@@ -2403,17 +2492,23 @@ export class SessionManager {
     const summary = new ChildAgentSummaryAccumulator();
     let aborted = input.abortSignal?.aborted === true;
     await input.onReady?.({ turnId, agentId: definition.id, agentName: definition.name });
-    const iterator = this.startChildTurn(sessionId, {
-      turnId,
-      parentRunId: input.parentRunId,
-      spec: {
-        id: definition.id,
-        name: definition.name,
-        systemPrompt: definition.systemPrompt,
-      },
-      prompt: input.prompt,
-      ...(resumedFromRunId ? { resumedFromRunId } : {}),
-    })[Symbol.asyncIterator]();
+    const iterator = this.runtimeKernel
+      .startChildTurn(
+        sessionId,
+        {
+          turnId,
+          parentRunId: input.parentRunId,
+          spec: {
+            id: definition.id,
+            name: definition.name,
+            systemPrompt: definition.systemPrompt,
+          },
+          prompt: input.prompt,
+          ...(resumedFromRunId ? { resumedFromRunId } : {}),
+        },
+        execution,
+      )
+      [Symbol.asyncIterator]();
     const onAbort = () => {
       aborted = true;
       void iterator.return?.();
@@ -2465,31 +2560,53 @@ export class SessionManager {
     sessionId: string,
     input: RetryChildAgentInput,
   ): Promise<SpawnChildAgentResult> {
-    throwIfChildExecutionAborted(input.abortSignal, 'Child agent retry was cancelled before start');
-    if (!this.deps.runStore || !this.deps.runtimeEventStore) {
-      throw new Error('Child agent retry requires AgentRunStore and RuntimeEventStore');
-    }
-    const execution = await this.resolveChildAgentExecution(sessionId, input.sourceRunId);
-    const releaseHostedExecution =
-      execution.kind === 'child_session'
-        ? this.acquireHostedLinkedChildExecution(execution.sessionId)
-        : () => {};
+    let runtimeExecution = this.runtimeKernel.claimExecution(sessionId);
+    let hintedTargetExecution: RuntimeExecutionClaim | undefined;
     try {
-      return await this.retryChildAgentWithExecution(sessionId, input, execution);
+      if (input.execution?.kind === 'child_session') {
+        hintedTargetExecution = this.runtimeKernel.claimExecution(input.execution.sessionId);
+      }
+      throwIfChildExecutionAborted(
+        input.abortSignal,
+        'Child agent retry was cancelled before start',
+      );
+      if (!this.deps.runStore || !this.deps.runtimeEventStore) {
+        throw new Error('Child agent retry requires AgentRunStore and RuntimeEventStore');
+      }
+      const execution = await this.resolveChildAgentExecution(sessionId, input.sourceRunId);
+      this.assertChildRetryExecutionIdentity(input, execution);
+      if (execution.kind === 'child_session') {
+        if (hintedTargetExecution) {
+          runtimeExecution = this.handoffRuntimeExecution(runtimeExecution, hintedTargetExecution);
+          hintedTargetExecution = undefined;
+        } else {
+          runtimeExecution = this.transferRuntimeExecution(runtimeExecution, execution.sessionId);
+        }
+      }
+      const releaseHostedExecution =
+        execution.kind === 'child_session'
+          ? this.acquireHostedLinkedChildExecution(execution.sessionId)
+          : () => {};
+      try {
+        return await this.retryChildAgentWithExecution(
+          sessionId,
+          input,
+          execution,
+          runtimeExecution,
+        );
+      } finally {
+        releaseHostedExecution();
+      }
     } finally {
-      releaseHostedExecution();
+      hintedTargetExecution?.release();
+      runtimeExecution.release();
     }
   }
 
-  private async retryChildAgentWithExecution(
-    sessionId: string,
+  private assertChildRetryExecutionIdentity(
     input: RetryChildAgentInput,
     execution: SubagentExecutionRef,
-  ): Promise<SpawnChildAgentResult> {
-    throwIfChildExecutionAborted(input.abortSignal, 'Child agent retry was cancelled before start');
-    if (!this.deps.runStore || !this.deps.runtimeEventStore) {
-      throw new Error('Child agent retry requires AgentRunStore and RuntimeEventStore');
-    }
+  ): void {
     if (
       input.execution &&
       (input.execution.kind !== execution.kind ||
@@ -2501,6 +2618,18 @@ export class SessionManager {
           input.execution.currentRunId !== input.sourceRunId))
     ) {
       throw new Error('Child agent retry execution identity changed');
+    }
+  }
+
+  private async retryChildAgentWithExecution(
+    sessionId: string,
+    input: RetryChildAgentInput,
+    execution: SubagentExecutionRef,
+    runtimeExecution: RuntimeExecutionClaim,
+  ): Promise<SpawnChildAgentResult> {
+    throwIfChildExecutionAborted(input.abortSignal, 'Child agent retry was cancelled before start');
+    if (!this.deps.runStore || !this.deps.runtimeEventStore) {
+      throw new Error('Child agent retry requires AgentRunStore and RuntimeEventStore');
     }
     const targetSessionId = execution.sessionId;
     const runs = await this.deps.runStore.listSessionRuns(targetSessionId);
@@ -2647,32 +2776,42 @@ export class SessionManager {
                 ...(retryAnchor.attachments ? { attachments: retryAnchor.attachments } : {}),
               },
               start: ({ onRunStarted }) =>
-                startChildRetry.call(this.runtimeKernel, targetSessionId, {
-                  parentRunId: input.parentRunId,
-                  spec: {
-                    id: definition.id,
-                    name: definition.name,
-                    systemPrompt: definition.systemPrompt,
+                startChildRetry.call(
+                  this.runtimeKernel,
+                  targetSessionId,
+                  {
+                    parentRunId: input.parentRunId,
+                    spec: {
+                      id: definition.id,
+                      name: definition.name,
+                      systemPrompt: definition.systemPrompt,
+                    },
+                    continuation,
+                    linkedSession: true,
+                    onRunStarted,
                   },
-                  continuation,
-                  linkedSession: true,
-                  onRunStarted,
-                }),
+                  runtimeExecution,
+                ),
               onReady: emitReady,
               onEvent: consumeEvent,
             },
             true,
           )
         : this.consumeRuntimeEvents(
-            startChildRetry.call(this.runtimeKernel, targetSessionId, {
-              parentRunId: input.parentRunId,
-              spec: {
-                id: definition.id,
-                name: definition.name,
-                systemPrompt: definition.systemPrompt,
+            startChildRetry.call(
+              this.runtimeKernel,
+              targetSessionId,
+              {
+                parentRunId: input.parentRunId,
+                spec: {
+                  id: definition.id,
+                  name: definition.name,
+                  systemPrompt: definition.systemPrompt,
+                },
+                continuation,
               },
-              continuation,
-            }),
+              runtimeExecution,
+            ),
             emitReady,
             consumeEvent,
           );
@@ -3124,25 +3263,34 @@ export class SessionManager {
     sessionId: string,
     input: RegenerateTurnInput,
   ): AsyncIterable<SessionEvent> {
-    // retry semantics merged into regenerate (#546): regenerate now accepts
-    // failed/aborted turns too, not just completed — one action re-runs the
-    // turn regardless of how the previous attempt ended.
-    const source = await this.requireTurnForAction(
-      sessionId,
-      input.sourceTurnId,
-      ['failed', 'aborted', 'completed'],
-      'regenerate',
-    );
-    const user = await this.requireUserMessageForTurn(sessionId, source.turnId);
-    yield* this.sendMessage(sessionId, {
-      turnId: input.turnId ?? this.deps.newId(),
-      text: user.text,
-      ...(user.displayText !== undefined ? { displayText: user.displayText } : {}),
-      ...(user.attachments ? { attachments: user.attachments } : {}),
-      ...(user.quotes ? { quotes: user.quotes } : {}),
-      parentTurnId: source.turnId,
-      regeneratedFromTurnId: source.turnId,
-    });
+    const execution = this.runtimeKernel.claimExecution(sessionId);
+    try {
+      // retry semantics merged into regenerate (#546): regenerate now accepts
+      // failed/aborted turns too, not just completed — one action re-runs the
+      // turn regardless of how the previous attempt ended.
+      const source = await this.requireTurnForAction(
+        sessionId,
+        input.sourceTurnId,
+        ['failed', 'aborted', 'completed'],
+        'regenerate',
+      );
+      const user = await this.requireUserMessageForTurn(sessionId, source.turnId);
+      yield* this.sendMessage(
+        sessionId,
+        {
+          turnId: input.turnId ?? this.deps.newId(),
+          text: user.text,
+          ...(user.displayText !== undefined ? { displayText: user.displayText } : {}),
+          ...(user.attachments ? { attachments: user.attachments } : {}),
+          ...(user.quotes ? { quotes: user.quotes } : {}),
+          parentTurnId: source.turnId,
+          regeneratedFromTurnId: source.turnId,
+        },
+        { execution },
+      );
+    } finally {
+      execution.release();
+    }
   }
 
   async branchFromTurn(sessionId: string, input: BranchFromTurnInput): Promise<SessionSummary> {

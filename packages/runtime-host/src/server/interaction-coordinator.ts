@@ -71,12 +71,15 @@ export interface HostInteractionCoordinatorOptions {
 interface RunClosure {
   readonly reason: RuntimeInteractionRunClosureReason;
   readonly task: Promise<void>;
-  settled: boolean;
+  readonly resolve: () => void;
+  readonly reject: (error: unknown) => void;
+  phase: 'claimed' | 'running' | 'settled' | 'failed';
 }
 
 interface BoundRun extends RuntimeInteractionRunIdentity {
   closure?: RunClosure;
   readonly rememberedPermissionOutcomes: Map<string, RememberedPermissionOutcome>;
+  bound: boolean;
   released: boolean;
 }
 
@@ -160,24 +163,29 @@ export class HostInteractionCoordinator
 
   bindRun(identity: RuntimeInteractionRunIdentity): RuntimeInteractionRunOwner {
     this.#throwIfPoisoned();
-    if (!this.#accepting) {
-      throw new RuntimeInteractionAdmissionRejectedError(identity.runId, 'authority_draining');
-    }
     const key = runKey(identity);
-    if (this.#runs.has(key)) {
+    const existing = this.#runs.get(key);
+    if (existing?.bound) {
       throw this.#poison(
         new RuntimeInteractionInvariantError(
           `Interaction Run is already bound: ${identity.sessionId}/${identity.turnId}/${identity.runId}`,
         ),
       );
     }
+    if (!this.#accepting && !existing) {
+      throw new RuntimeInteractionAdmissionRejectedError(identity.runId, 'authority_draining');
+    }
 
-    const run: BoundRun = {
-      ...identity,
-      rememberedPermissionOutcomes: new Map(),
-      released: false,
-    };
-    this.#runs.set(key, run);
+    const run =
+      existing ??
+      ({
+        ...identity,
+        rememberedPermissionOutcomes: new Map(),
+        bound: false,
+        released: false,
+      } satisfies BoundRun);
+    run.bound = true;
+    if (!existing) this.#runs.set(key, run);
     return Object.freeze({
       ...identity,
       acceptPermissionRequest: (
@@ -243,6 +251,43 @@ export class HostInteractionCoordinator
         }
       }),
     );
+  }
+
+  claimRunClosure(
+    identity: RuntimeInteractionRunIdentity,
+    reason: RuntimeInteractionRunClosureReason,
+    admission: SessionAdmissionLease,
+  ): Promise<void> {
+    try {
+      this.#throwIfPoisoned();
+      const key = runKey(identity);
+      let run = this.#runs.get(key);
+      if (!run) {
+        run = {
+          ...identity,
+          rememberedPermissionOutcomes: new Map(),
+          bound: false,
+          released: false,
+        };
+        this.#runs.set(key, run);
+      } else if (!sameRun(run, identity)) {
+        throw this.#poison(
+          new RuntimeInteractionInvariantError(
+            `Interaction Run closure claim lost exact ownership for ${identity.runId}`,
+          ),
+        );
+      }
+      const closure = this.#claimRunClosure(run, reason);
+      const execution = this.#sessionAdmission.runAdmitted(identity.sessionId, admission, () =>
+        this.#executeRunClosure(run, closure, admission),
+      );
+      void execution.catch((error: unknown) => {
+        this.#failClaimedRunClosure(closure, error);
+      });
+      return observed(execution);
+    } catch (error) {
+      return rejected(error);
+    }
   }
 
   async close(): Promise<void> {
@@ -390,7 +435,7 @@ export class HostInteractionCoordinator
       );
     }
     if (entry.run.closure) {
-      this.#discardAdmitting(entry);
+      this.#discardClosedAdmission(entry);
       throw new RuntimeInteractionAdmissionRejectedError(
         entry.request.requestId,
         'run_closed',
@@ -670,65 +715,108 @@ export class HostInteractionCoordinator
           ),
         );
       }
-      if (run.closure) {
-        if (run.closure.reason !== reason) {
-          throw this.#poison(
-            new RuntimeInteractionInvariantError(
-              `Interaction Run ${run.runId} received conflicting close reasons`,
-            ),
-          );
-        }
-        return run.closure.task;
-      }
-
-      const closure = {} as RunClosure;
-      const task = this.#sessionAdmission
-        .run(run.sessionId, async (admission) => {
-          this.#throwIfPoisoned();
-          const pending = await this.#readPending(runIdentity(run));
-          const committed: CommittedEntry[] = [];
-          for (const request of pending.sort(compareStoredInteractionRequests)) {
-            const entry = this.#requireLiveEntry(request);
-            committed.push({
-              entry,
-              outcome: await this.#commitOutcome(request, {
-                kind: 'closure',
-                reason,
-                committedAt: this.#now(),
-              }),
-            });
-          }
-          await this.#refreshCanonicalContinuity(run.sessionId, admission);
-          this.#throwIfPoisoned();
-          for (const item of committed) await this.#applyAndDelete(item.entry, item.outcome);
-          for (const entry of this.#live.values()) {
-            if (entry.run === run) {
-              throw this.#poison(
-                new RuntimeInteractionInvariantError(
-                  `Interaction Run ${run.runId} closed with a live continuation`,
-                ),
-              );
-            }
-          }
-          closure.settled = true;
-        })
-        .catch((error: unknown) => {
-          if (error instanceof RuntimeInteractionFailStopError) throw error;
-          throw this.#poison(error);
+      const existing = run.closure;
+      const closure = this.#claimRunClosure(run, reason);
+      if (!existing) {
+        const scheduled = this.#sessionAdmission.run(run.sessionId, (admission) =>
+          this.#executeRunClosure(run, closure, admission),
+        );
+        void scheduled.catch((error: unknown) => {
+          this.#failClaimedRunClosure(closure, error);
         });
-      Object.assign(closure, { reason, task: observed(task), settled: false });
-      run.closure = closure;
+      }
       return closure.task;
     } catch (error) {
       return rejected(error);
     }
   }
 
+  #claimRunClosure(run: BoundRun, reason: RuntimeInteractionRunClosureReason): RunClosure {
+    if (run.closure) return run.closure;
+
+    let resolveClosure!: () => void;
+    let rejectClosure!: (error: unknown) => void;
+    const closureTask = new Promise<void>((resolve, reject) => {
+      resolveClosure = resolve;
+      rejectClosure = reject;
+    });
+    const closure: RunClosure = {
+      reason,
+      task: observed(closureTask),
+      resolve: resolveClosure,
+      reject: rejectClosure,
+      phase: 'claimed',
+    };
+    run.closure = closure;
+    return closure;
+  }
+
+  async #executeRunClosure(
+    run: BoundRun,
+    closure: RunClosure,
+    admission: SessionAdmissionLease,
+  ): Promise<void> {
+    if (closure.phase === 'settled') return;
+    if (closure.phase === 'failed' || closure.phase === 'running') {
+      await closure.task;
+      return;
+    }
+    closure.phase = 'running';
+    try {
+      this.#throwIfPoisoned();
+      for (const entry of [...this.#live.values()]) {
+        if (entry.run === run && entry.phase === 'admitting') {
+          this.#discardAdmitting(entry);
+        }
+      }
+      const pending = await this.#readPending(runIdentity(run));
+      const committed: CommittedEntry[] = [];
+      for (const request of pending.sort(compareStoredInteractionRequests)) {
+        const entry = this.#requireLiveEntry(request);
+        committed.push({
+          entry,
+          outcome: await this.#commitOutcome(request, {
+            kind: 'closure',
+            reason: closure.reason,
+            committedAt: this.#now(),
+          }),
+        });
+      }
+      await this.#refreshCanonicalContinuity(run.sessionId, admission);
+      this.#throwIfPoisoned();
+      for (const item of committed) await this.#applyAndDelete(item.entry, item.outcome);
+      for (const entry of this.#live.values()) {
+        if (entry.run === run) {
+          throw this.#poison(
+            new RuntimeInteractionInvariantError(
+              `Interaction Run ${run.runId} closed with a live continuation`,
+            ),
+          );
+        }
+      }
+      closure.phase = 'settled';
+      closure.resolve();
+    } catch (error) {
+      const failure =
+        error instanceof RuntimeInteractionFailStopError ? error : this.#poison(error);
+      closure.phase = 'failed';
+      closure.reject(failure);
+      throw failure;
+    }
+  }
+
+  #failClaimedRunClosure(closure: RunClosure, error: unknown): void {
+    if (closure.phase !== 'claimed') return;
+    const failure = error instanceof RuntimeInteractionFailStopError ? error : this.#poison(error);
+    closure.phase = 'failed';
+    closure.reject(failure);
+  }
+
   #releaseRun(run: BoundRun): void {
     this.#throwIfPoisoned();
     if (run.released) return;
     this.#assertOwnedRun(run);
-    if (!run.closure?.settled) {
+    if (run.closure?.phase !== 'settled') {
       throw this.#poison(
         new RuntimeInteractionInvariantError(
           `Interaction Run ${run.runId} was released before durable close settled`,
@@ -1036,6 +1124,19 @@ export class HostInteractionCoordinator
       );
     }
     this.#live.delete(entry.request.requestId);
+  }
+
+  #discardClosedAdmission(entry: LiveEntry): void {
+    const owned = this.#live.get(entry.request.requestId);
+    if (owned === undefined) return;
+    if (owned !== entry) {
+      throw this.#poison(
+        new RuntimeInteractionInvariantError(
+          `Interaction admission identity changed for ${entry.request.requestId}`,
+        ),
+      );
+    }
+    this.#discardAdmitting(entry);
   }
 
   #throwIfPoisoned(): void {

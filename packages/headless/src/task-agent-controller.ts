@@ -1145,51 +1145,53 @@ function createSingleRunActiveSession(
       return true;
     },
     hooks: {
-      ensureActive: async (sessionId, header) => {
-        if (active) {
-          active.cachedHeader = header;
-          return active;
-        }
-        const backend = await backends.build(header.backend, {
-          sessionId,
-          workspaceRoot: header.workspaceRoot,
-          header,
-          store,
-          recordRunTrace: (event) => boundRun?.recordRunTrace(event),
-          recordProviderRequestCapture: (capture) => {
-            if (!boundRun) {
-              return Promise.reject(new Error('No active AgentRun for provider request capture'));
-            }
-            return boundRun.recordProviderRequestCapture(capture);
-          },
-          recordProviderRequestAttempt: (attempt) =>
-            boundRun?.recordProviderRequestAttempt(attempt),
-          ...(runtimeEventStore
-            ? {
-                loadTurnRuntimeEvents: (turnId: string) => {
-                  if (!boundRun || boundRun.turnId !== turnId) {
-                    return Promise.reject(new Error('No active AgentRun for turn runtime events'));
-                  }
-                  return boundRun.loadTurnRuntimeEvents();
-                },
+      reserveRun: async (sessionId, header, run) => {
+        let targetActive = active;
+        if (targetActive) {
+          targetActive.cachedHeader = header;
+        } else {
+          const backend = await backends.build(header.backend, {
+            sessionId,
+            workspaceRoot: header.workspaceRoot,
+            header,
+            store,
+            recordRunTrace: (event) => boundRun?.recordRunTrace(event),
+            recordProviderRequestCapture: (capture) => {
+              if (!boundRun) {
+                return Promise.reject(new Error('No active AgentRun for provider request capture'));
               }
-            : {}),
-          allowMidTurnHistoryCompaction: Boolean(runtimeEventStore),
-          recordActiveFullCompactBlock: (block) => boundRun?.recordActiveFullCompactBlock(block),
-          recordSemanticCompactBlock: (block) => boundRun?.recordSemanticCompactBlock(block),
-        });
-        active = {
-          sessionId,
-          backend,
-          cachedHeader: header,
-          activeRuns: new Map(),
-          turnToRunId: new Map(),
-        };
-        return active;
-      },
-      registerRun: (targetActive, run) => {
+              return boundRun.recordProviderRequestCapture(capture);
+            },
+            recordProviderRequestAttempt: (attempt) =>
+              boundRun?.recordProviderRequestAttempt(attempt),
+            ...(runtimeEventStore
+              ? {
+                  loadTurnRuntimeEvents: (turnId: string) => {
+                    if (!boundRun || boundRun.turnId !== turnId) {
+                      return Promise.reject(
+                        new Error('No active AgentRun for turn runtime events'),
+                      );
+                    }
+                    return boundRun.loadTurnRuntimeEvents();
+                  },
+                }
+              : {}),
+            allowMidTurnHistoryCompaction: Boolean(runtimeEventStore),
+            recordActiveFullCompactBlock: (block) => boundRun?.recordActiveFullCompactBlock(block),
+            recordSemanticCompactBlock: (block) => boundRun?.recordSemanticCompactBlock(block),
+          });
+          targetActive = {
+            sessionId,
+            backend,
+            cachedHeader: header,
+            activeRuns: new Map(),
+            turnToRunId: new Map(),
+          };
+          active = targetActive;
+        }
         targetActive.activeRuns.set(run.runId, run);
         targetActive.turnToRunId.set(run.turnId, run.runId);
+        return targetActive;
       },
       unregisterRun: (targetActive, run) => {
         targetActive.activeRuns.delete(run.runId);

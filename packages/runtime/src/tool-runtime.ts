@@ -1092,7 +1092,7 @@ export class ToolRuntime {
             toolName: tool.name,
             decision: 'deny',
           });
-          queue.push(verdict.decisionEvent);
+          if (!hostedInteraction) queue.push(verdict.decisionEvent);
         }
         trace?.emit('permission', 'permission_failed', 'Permission blocked tool execution', {
           toolUseId,
