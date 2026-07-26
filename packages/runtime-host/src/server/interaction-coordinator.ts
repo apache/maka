@@ -294,12 +294,22 @@ export class HostInteractionCoordinator
     this.beginDrain();
     this.#throwIfPoisoned();
     const pending = await this.#readPending();
+    if (this.#live.size === 0 && pending.length === 0) {
+      this.#reapSettledUnboundClosureRuns();
+    }
     if (this.#runs.size !== 0 || this.#live.size !== 0 || pending.length !== 0) {
       throw this.#poison(
         new RuntimeInteractionInvariantError(
           'Interaction coordinator closed with active Runs, live continuations, or durable pending requests',
         ),
       );
+    }
+  }
+
+  #reapSettledUnboundClosureRuns(): void {
+    for (const run of [...this.#runs.values()]) {
+      if (run.bound || run.closure?.phase !== 'settled') continue;
+      this.#releaseRun(run);
     }
   }
 

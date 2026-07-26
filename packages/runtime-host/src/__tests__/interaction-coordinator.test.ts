@@ -457,6 +457,56 @@ describe('HostInteractionCoordinator', () => {
     });
   });
 
+  test('close reaps a settled unbound closure-only Run without poisoning', async () => {
+    await withStore(async ({ store }) => {
+      const poison: RuntimeInteractionFailStopError[] = [];
+      const gate = new SessionAdmissionGate();
+      const coordinator = createCoordinator(store, {
+        sessionAdmission: gate,
+        onPoison: (error) => poison.push(error),
+      });
+      coordinator.beginDrain();
+
+      await gate.run(RUN.sessionId, (admission) =>
+        coordinator.claimRunClosure(RUN, 'turn_stopped', admission),
+      );
+      await coordinator.close();
+
+      assert.equal(coordinator.isPoisoned(), false);
+      assert.deepEqual(poison, []);
+      assert.deepEqual(await store.listPending(RUN), []);
+    });
+  });
+
+  test('close fails closed while an unbound closure claim is unsettled', async () => {
+    await withStore(async ({ store }) => {
+      const poison: RuntimeInteractionFailStopError[] = [];
+      const refreshStarted = deferred();
+      const releaseRefresh = deferred();
+      const gate = new SessionAdmissionGate();
+      const coordinator = createCoordinator(store, {
+        sessionAdmission: gate,
+        refreshCanonicalContinuity: async () => {
+          refreshStarted.resolve();
+          await releaseRefresh.promise;
+        },
+        onPoison: (error) => poison.push(error),
+      });
+      coordinator.beginDrain();
+
+      const claim = gate.run(RUN.sessionId, (admission) =>
+        coordinator.claimRunClosure(RUN, 'turn_stopped', admission),
+      );
+      await refreshStarted.promise;
+      await assert.rejects(coordinator.close(), RuntimeInteractionFailStopError);
+      assert.equal(coordinator.isPoisoned(), true);
+      assert.equal(poison.length, 1);
+
+      releaseRefresh.resolve();
+      await assert.rejects(claim, poison[0]);
+    });
+  });
+
   test('terminal fence poisons on an exact Run pending record from the authentic Store', async () => {
     await withStore(async ({ store }) => {
       const poison: RuntimeInteractionFailStopError[] = [];
