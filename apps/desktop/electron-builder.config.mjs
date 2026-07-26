@@ -6,7 +6,7 @@ export default {
   directories: {
     output: 'release',
   },
-  files: ['dist/**/*', 'dist-renderer/**/*', 'package.json'],
+  files: ['dist/**/*', 'dist-renderer/**/*', 'package.json', '!**/__tests__/**'],
   extraResources: [
     {
       from: 'bundled-tools.json',
@@ -27,6 +27,34 @@ export default {
     {
       from: 'resources/licenses/officecli/ATTRIBUTION.md',
       to: 'licenses/officecli/ATTRIBUTION.md',
+    },
+    {
+      from: '../../LICENSE',
+      to: 'licenses/maka/LICENSE',
+    },
+    {
+      from: '../../NOTICE',
+      to: 'licenses/maka/NOTICE',
+    },
+    {
+      from: 'src/renderer/public/THIRD_PARTY_LICENSES.txt',
+      to: 'licenses/renderer/THIRD_PARTY_LICENSES.txt',
+    },
+    {
+      from: '../../node_modules/@fontsource-variable/geist/LICENSE',
+      to: 'licenses/renderer/GEIST_LICENSE.txt',
+    },
+    {
+      from: '../../node_modules/@fontsource-variable/geist-mono/LICENSE',
+      to: 'licenses/renderer/GEIST_MONO_LICENSE.txt',
+    },
+    {
+      from: 'resources/licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt',
+      to: 'licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt',
+    },
+    {
+      from: 'node_modules/simple-icons/LICENSE.md',
+      to: 'licenses/renderer/SIMPLE_ICONS_LICENSE.md',
     },
   ],
   mac: {

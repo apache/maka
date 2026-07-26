@@ -23,6 +23,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -77,6 +78,9 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: npm run package:macos-arm64
 
+      - name: Remove the temporary notarization key
+        run: rm -f "${{ runner.temp }}/AuthKey_Maka.p8"
+
       - name: Verify the final DMG
         run: npm run verify:macos-arm64 -- "${{ steps.release.outputs.dmg }}"
 
@@ -103,6 +107,6 @@ jobs:
 
           echo "Draft release ${RELEASE_TAG} created from ${GITHUB_SHA}." >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Remove the temporary notarization key
+      - name: Ensure the temporary notarization key is removed
         if: always()
         run: rm -f "${{ runner.temp }}/AuthKey_Maka.p8"

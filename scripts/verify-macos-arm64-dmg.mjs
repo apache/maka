@@ -1,6 +1,15 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -43,7 +52,7 @@ function runCommand(command, args, options = {}) {
     const child = spawn(command, args, {
       cwd: options.cwd ?? repoRoot,
       env: { ...process.env, ...options.env },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
     let stderr = '';
@@ -56,6 +65,7 @@ function runCommand(command, args, options = {}) {
       stderr += chunk;
     });
     child.once('error', reject);
+    if (options.input !== undefined) child.stdin.end(options.input);
     child.once('exit', (code, signal) => {
       if (code === 0) {
         resolvePromise({ stdout, stderr });
@@ -167,7 +177,8 @@ async function evaluateRenderer(webSocketDebuggerUrl) {
               readyState: document.readyState,
               hasBridge: Boolean(window.maka),
               hasRoot: Boolean(document.querySelector('#root')),
-              rootChildCount: document.querySelector('#root')?.childElementCount ?? 0
+              hasPreloadSkeleton: Boolean(document.querySelector('#root > .maka-preload')),
+              hasAppShell: Boolean(document.querySelector('#root [data-agents-page]'))
             })`,
             returnByValue: true,
           },
@@ -188,6 +199,70 @@ async function stopChild(child) {
   ]);
   if (!exited && child.exitCode === null) {
     child.kill('SIGKILL');
+  }
+}
+
+export function isPackagedRendererUsable(rendererState) {
+  return (
+    rendererState?.readyState === 'complete' &&
+    rendererState.hasBridge === true &&
+    rendererState.hasRoot === true &&
+    rendererState.hasPreloadSkeleton === false &&
+    rendererState.hasAppShell === true
+  );
+}
+
+export async function smokePackagedFilesystemWorker(
+  executable,
+  worker,
+  { workingDirectory, run = runCommand } = {},
+) {
+  const workspace = await realpath(workingDirectory);
+  const target = join(workspace, 'filesystem-worker-smoke.txt');
+  const content = 'maka-filesystem-worker-ok';
+  const operationPermission = {
+    fileSystem: {
+      entries: [{ path: target, access: 'write', scope: 'exact' }],
+    },
+  };
+  const permissionsHash = `sha256:${createHash('sha256')
+    .update(JSON.stringify(operationPermission))
+    .digest('hex')}`;
+  const request = {
+    version: 2,
+    requestId: 'release-filesystem-worker-smoke',
+    operation: { kind: 'write', cwd: workspace, path: target, content },
+    operationPermission,
+    permissionsHash,
+    expectedTarget: {
+      enforcementPath: target,
+      access: 'write',
+      scope: 'exact',
+      targetType: 'missing',
+    },
+  };
+
+  await rm(target, { force: true });
+  try {
+    const result = await run(executable, [worker], {
+      cwd: workspace,
+      env: {
+        ELECTRON_RUN_AS_NODE: '1',
+        HOME: join(workspace, 'worker-home'),
+        TMPDIR: workspace,
+      },
+      input: `${JSON.stringify(request)}\n`,
+    });
+    const response = JSON.parse(result.stdout);
+    if (
+      response?.ok !== true ||
+      response.result?.kind !== 'write' ||
+      (await readFile(target, 'utf8')) !== content
+    ) {
+      throw new Error(`Packaged filesystem worker smoke failed: ${result.stdout.trim()}`);
+    }
+  } finally {
+    await rm(target, { force: true });
   }
 }
 
@@ -222,12 +297,7 @@ export async function smokePackagedRenderer(executable, { workingDirectory }) {
     let rendererState;
     while (Date.now() < deadline) {
       rendererState = await evaluateRenderer(target.webSocketDebuggerUrl);
-      if (
-        rendererState?.readyState === 'complete' &&
-        rendererState.hasBridge === true &&
-        rendererState.hasRoot === true &&
-        rendererState.rootChildCount > 0
-      ) {
+      if (isPackagedRendererUsable(rendererState)) {
         return;
       }
       if (child.exitCode !== null) {
@@ -262,6 +332,7 @@ export async function verifyPackagedMacApp(
     requirePath = access,
     forbidPath = assertMissing,
     smokeRenderer = smokePackagedRenderer,
+    smokeFilesystemWorker = smokePackagedFilesystemWorker,
     workingDirectory = dirname(appPath),
   } = {},
 ) {
@@ -282,13 +353,22 @@ export async function verifyPackagedMacApp(
   const executableName = await readPlistValue(run, infoPlist, 'CFBundleExecutable');
   const executable = join(contents, 'MacOS', executableName);
   const officecli = join(resources, 'tools', 'officecli');
+  const filesystemWorker = join(resources, 'workers', 'filesystem-worker.js');
   const appAsar = join(resources, 'app.asar');
 
   await requirePath(executable);
   await requirePath(appAsar);
   await requirePath(join(resources, 'bundled-tools.json'));
-  await requirePath(join(resources, 'workers', 'filesystem-worker.js'));
+  await requirePath(filesystemWorker);
   await requirePath(join(resources, 'licenses', 'officecli', 'LICENSE'));
+  await requirePath(join(resources, 'licenses', 'officecli', 'ATTRIBUTION.md'));
+  await requirePath(join(resources, 'licenses', 'maka', 'LICENSE'));
+  await requirePath(join(resources, 'licenses', 'maka', 'NOTICE'));
+  await requirePath(join(resources, 'licenses', 'renderer', 'THIRD_PARTY_LICENSES.txt'));
+  await requirePath(join(resources, 'licenses', 'renderer', 'GEIST_LICENSE.txt'));
+  await requirePath(join(resources, 'licenses', 'renderer', 'GEIST_MONO_LICENSE.txt'));
+  await requirePath(join(resources, 'licenses', 'renderer', 'ANT_DESIGN_ICONS_LICENSE.txt'));
+  await requirePath(join(resources, 'licenses', 'renderer', 'SIMPLE_ICONS_LICENSE.md'));
   await requirePath(officecli);
   await forbidPath(join(resources, 'bin', 'cua-driver'));
   await forbidPath(join(resources, 'tools', 'cua-driver'));
@@ -312,13 +392,13 @@ export async function verifyPackagedMacApp(
       `Expected OfficeCLI ${expectedOfficeVersion}, found ${officeVersion.stdout.trim()}.`,
     );
   }
-
   await run(executable, ['-e', ptyProbe, join(appAsar, 'package.json')], {
     env: {
       ELECTRON_RUN_AS_NODE: '1',
       HOME: join(workingDirectory, 'pty-home'),
     },
   });
+  await smokeFilesystemWorker(executable, filesystemWorker, { workingDirectory });
   await smokeRenderer(executable, { workingDirectory });
 }
 

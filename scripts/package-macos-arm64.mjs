@@ -59,6 +59,7 @@ export async function packageMacosArm64({
   const manifest = JSON.parse(await readFile(join(desktopRoot, 'package.json'), 'utf8'));
   const dmgPath = join(releaseDirectory, `Maka-${manifest.version}-mac-arm64.dmg`);
 
+  await run('npm', ['run', 'clean']);
   await run('npm', ['run', 'prepare:officecli', '--', '--platform', 'darwin', '--arch', 'arm64']);
   await run('npm', ['run', 'build']);
   await run('npm', ['run', 'check:release']);

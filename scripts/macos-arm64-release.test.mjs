@@ -4,6 +4,9 @@ import test from 'node:test';
 
 const repoRoot = new URL('../', import.meta.url);
 const desktopRoot = new URL('../apps/desktop/', import.meta.url);
+const desktopManifest = JSON.parse(await readFile(new URL('package.json', desktopRoot), 'utf8'));
+const bundledTools = JSON.parse(await readFile(new URL('bundled-tools.json', desktopRoot), 'utf8'));
+const officeCliVersion = bundledTools.officecli.version.replace(/^v/, '');
 const signingEnvironment = {
   CSC_LINK: 'base64-certificate',
   CSC_KEY_PASSWORD: 'password',
@@ -27,12 +30,12 @@ test('desktop packager has one explicit signed macOS arm64 DMG target', async ()
   assert.equal(config.mac.entitlementsInherit, 'build/entitlements.mac.inherit.plist');
   assert.deepEqual(config.mac.binaries, ['Contents/Resources/tools/officecli']);
   assert.deepEqual(config.dmg, { writeUpdateInfo: false });
+  assert.ok(config.files.includes('!**/__tests__/**'));
 });
 
 test('Electron is a build tool rather than a packaged application dependency', async () => {
-  const manifest = JSON.parse(await readFile(new URL('package.json', desktopRoot), 'utf8'));
-  assert.equal(manifest.dependencies.electron, undefined);
-  assert.equal(manifest.devDependencies.electron, '43.1.1');
+  assert.equal(desktopManifest.dependencies.electron, undefined);
+  assert.match(desktopManifest.devDependencies.electron, /^\d+\.\d+\.\d+$/);
 });
 
 test('renderer build inputs are not duplicated in the packaged Node runtime', async () => {
@@ -48,6 +51,32 @@ test('renderer build inputs are not duplicated in the packaged Node runtime', as
     assert.equal(manifest.dependencies[dependency], undefined);
     assert.equal(typeof manifest.devDependencies[dependency], 'string');
   }
+});
+
+test('OfficeCLI arm64 release is anchored to a repository-pinned digest', () => {
+  assert.equal(
+    bundledTools.officecli.sha256['darwin-arm64'],
+    '3ede6c3457f050f2d06d95895d7a3391183911ad729c61df990d4e27c1067510',
+  );
+});
+
+test('OfficeCLI preparation rejects a mutually consistent upstream replacement', async () => {
+  const { assertOfficeCliChecksums } = await import(
+    new URL('prepare-officecli.mjs', import.meta.url)
+  );
+  const pinned = bundledTools.officecli.sha256['darwin-arm64'];
+  const replaced = 'a'.repeat(64);
+
+  assert.throws(
+    () =>
+      assertOfficeCliChecksums({
+        asset: bundledTools.officecli.assets['darwin-arm64'],
+        actual: replaced,
+        upstream: replaced,
+        pinned,
+      }),
+    /does not match repository-pinned checksum/,
+  );
 });
 
 test('desktop packager ships only the release runtime resources', async () => {
@@ -73,6 +102,34 @@ test('desktop packager ships only the release runtime resources', async () => {
     {
       from: 'resources/licenses/officecli/ATTRIBUTION.md',
       to: 'licenses/officecli/ATTRIBUTION.md',
+    },
+    {
+      from: '../../LICENSE',
+      to: 'licenses/maka/LICENSE',
+    },
+    {
+      from: '../../NOTICE',
+      to: 'licenses/maka/NOTICE',
+    },
+    {
+      from: 'src/renderer/public/THIRD_PARTY_LICENSES.txt',
+      to: 'licenses/renderer/THIRD_PARTY_LICENSES.txt',
+    },
+    {
+      from: '../../node_modules/@fontsource-variable/geist/LICENSE',
+      to: 'licenses/renderer/GEIST_LICENSE.txt',
+    },
+    {
+      from: '../../node_modules/@fontsource-variable/geist-mono/LICENSE',
+      to: 'licenses/renderer/GEIST_MONO_LICENSE.txt',
+    },
+    {
+      from: 'resources/licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt',
+      to: 'licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt',
+    },
+    {
+      from: 'node_modules/simple-icons/LICENSE.md',
+      to: 'licenses/renderer/SIMPLE_ICONS_LICENSE.md',
     },
   ]);
   assert.equal(
@@ -100,6 +157,7 @@ test('release package script runs the single arm64 pipeline in order', async () 
   });
 
   assert.deepEqual(calls, [
+    ['npm', ['run', 'clean']],
     ['npm', ['run', 'prepare:officecli', '--', '--platform', 'darwin', '--arch', 'arm64']],
     ['npm', ['run', 'build']],
     ['npm', ['run', 'check:release']],
@@ -108,7 +166,7 @@ test('release package script runs the single arm64 pipeline in order', async () 
   assert.equal(removed.length, 1);
   assert.equal(removed[0][1].recursive, true);
   assert.equal(removed[0][1].force, true);
-  assert.match(result, /apps\/desktop\/release\/Maka-0\.1\.0-mac-arm64\.dmg$/);
+  assert.ok(result.endsWith(`/apps/desktop/release/Maka-${desktopManifest.version}-mac-arm64.dmg`));
 });
 
 test('release package script refuses an unsupported host or incomplete signing identity', async () => {
@@ -140,6 +198,7 @@ test('packaged app verification proves identity, notarization, resources, PTY, a
   const requiredPaths = [];
   const forbiddenPaths = [];
   const rendererLaunches = [];
+  const workerLaunches = [];
 
   await verifyPackagedMacApp('/tmp/Maka.app', {
     run: async (command, args, options) => {
@@ -148,14 +207,14 @@ test('packaged app verification proves identity, notarization, resources, PTY, a
         return args[1] === 'CFBundleIdentifier'
           ? { stdout: 'com.maka.desktop\n', stderr: '' }
           : args[1] === 'CFBundleShortVersionString'
-            ? { stdout: '0.1.0\n', stderr: '' }
+            ? { stdout: `${desktopManifest.version}\n`, stderr: '' }
             : { stdout: 'Maka\n', stderr: '' };
       }
       if (command === 'lipo') {
         return { stdout: 'arm64\n', stderr: '' };
       }
       if (args[0] === '--version') {
-        return { stdout: 'officecli 1.0.63\n', stderr: '' };
+        return { stdout: `officecli ${officeCliVersion}\n`, stderr: '' };
       }
       return { stdout: '', stderr: '' };
     },
@@ -167,6 +226,9 @@ test('packaged app verification proves identity, notarization, resources, PTY, a
     },
     smokeRenderer: async (executable, options) => {
       rendererLaunches.push([executable, options]);
+    },
+    smokeFilesystemWorker: async (executable, worker, options) => {
+      workerLaunches.push([executable, worker, options]);
     },
   });
 
@@ -209,11 +271,34 @@ test('packaged app verification proves identity, notarization, resources, PTY, a
     requiredPaths.some((path) => path.endsWith('/Resources/workers/filesystem-worker.js')),
     true,
   );
+  for (const licensePath of [
+    '/Resources/licenses/officecli/ATTRIBUTION.md',
+    '/Resources/licenses/maka/LICENSE',
+    '/Resources/licenses/maka/NOTICE',
+    '/Resources/licenses/renderer/THIRD_PARTY_LICENSES.txt',
+    '/Resources/licenses/renderer/GEIST_LICENSE.txt',
+    '/Resources/licenses/renderer/GEIST_MONO_LICENSE.txt',
+    '/Resources/licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt',
+    '/Resources/licenses/renderer/SIMPLE_ICONS_LICENSE.md',
+  ]) {
+    assert.equal(
+      requiredPaths.some((path) => path.endsWith(licensePath)),
+      true,
+      `missing final artifact check for ${licensePath}`,
+    );
+  }
   assert.equal(
     forbiddenPaths.some((path) => path.endsWith('/Resources/bin/cua-driver')),
     true,
   );
   assert.equal(rendererLaunches.length, 1);
+  assert.deepEqual(workerLaunches, [
+    [
+      '/tmp/Maka.app/Contents/MacOS/Maka',
+      '/tmp/Maka.app/Contents/Resources/workers/filesystem-worker.js',
+      { workingDirectory: '/tmp' },
+    ],
+  ]);
 });
 
 test('packaged app verification rejects a non-arm64 executable', async () => {
@@ -228,19 +313,46 @@ test('packaged app verification rejects a non-arm64 executable', async () => {
           return args[1] === 'CFBundleIdentifier'
             ? { stdout: 'com.maka.desktop\n', stderr: '' }
             : args[1] === 'CFBundleShortVersionString'
-              ? { stdout: '0.1.0\n', stderr: '' }
+              ? { stdout: `${desktopManifest.version}\n`, stderr: '' }
               : { stdout: 'Maka\n', stderr: '' };
         }
         if (command === 'lipo') {
           return { stdout: 'x86_64\n', stderr: '' };
         }
-        return { stdout: 'officecli 1.0.63\n', stderr: '' };
+        return { stdout: `officecli ${officeCliVersion}\n`, stderr: '' };
       },
       requirePath: async () => {},
       forbidPath: async () => {},
       smokeRenderer: async () => {},
     }),
     /arm64/,
+  );
+});
+
+test('renderer readiness rejects the static preload skeleton', async () => {
+  const { isPackagedRendererUsable } = await import(
+    new URL('verify-macos-arm64-dmg.mjs', import.meta.url)
+  );
+
+  assert.equal(
+    isPackagedRendererUsable({
+      readyState: 'complete',
+      hasBridge: true,
+      hasRoot: true,
+      hasPreloadSkeleton: true,
+      hasAppShell: false,
+    }),
+    false,
+  );
+  assert.equal(
+    isPackagedRendererUsable({
+      readyState: 'complete',
+      hasBridge: true,
+      hasRoot: true,
+      hasPreloadSkeleton: false,
+      hasAppShell: true,
+    }),
+    true,
   );
 });
 
@@ -258,6 +370,7 @@ test('one manual workflow packages, verifies, then creates one draft release fro
   assert.match(workflow, /environment: release/);
   assert.match(workflow, /node-version: ['"]?24['"]?/);
   assert.match(workflow, /ref: \$\{\{ github\.sha \}\}/);
+  assert.match(workflow, /persist-credentials: false/);
   assert.doesNotMatch(workflow, /\bmatrix:/);
   assert.doesNotMatch(workflow, /^\s+push:/m);
   assert.doesNotMatch(workflow, /^\s+workflow_call:/m);
@@ -266,12 +379,15 @@ test('one manual workflow packages, verifies, then creates one draft release fro
   assert.doesNotMatch(jobHeader, /secrets\.|GH_TOKEN/);
 
   const packageStep = workflow.indexOf('npm run package:macos-arm64');
+  const removeKeyStep = workflow.indexOf('Remove the temporary notarization key');
   const auditStep = workflow.indexOf('npm audit --omit=dev --audit-level=high');
   const verifyStep = workflow.indexOf('npm run verify:macos-arm64');
   const releaseStep = workflow.indexOf('gh release create');
   assert.ok(auditStep > 0);
   assert.ok(packageStep > auditStep);
   assert.ok(packageStep > 0);
+  assert.ok(removeKeyStep > packageStep);
+  assert.ok(verifyStep > removeKeyStep);
   assert.ok(verifyStep > packageStep);
   assert.ok(releaseStep > verifyStep);
   assert.match(workflow, /gh release create[\s\S]*--draft/);
@@ -287,9 +403,18 @@ test('the distributable includes OfficeCLI Apache-2.0 attribution', async () => 
   );
   assert.match(license, /Apache License\s+Version 2\.0, January 2004/);
   assert.match(license, /END OF TERMS AND CONDITIONS/);
-  assert.match(attribution, /OfficeCLI v1\.0\.63/);
+  assert.match(attribution, new RegExp(`OfficeCLI ${bundledTools.officecli.version}`));
   assert.match(attribution, /github\.com\/iOfficeAI\/OfficeCLI/);
   assert.match(attribution, /Copyright 2026 OfficeCli/);
+});
+
+test('the distributable includes the governed Ant Design Icons license', async () => {
+  const antDesign = await readFile(
+    new URL('resources/licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt', desktopRoot),
+    'utf8',
+  );
+  assert.match(antDesign, /Copyright \(c\) 2018-present Ant UED/);
+  assert.match(antDesign, /MIT LICENSE/);
 });
 
 test('generated release artifacts never enter source control', async () => {

@@ -2,6 +2,9 @@
   "officecli": {
     "repo": "iOfficeAI/OfficeCLI",
     "version": "v1.0.63",
+    "sha256": {
+      "darwin-arm64": "3ede6c3457f050f2d06d95895d7a3391183911ad729c61df990d4e27c1067510"
+    },
     "assets": {
       "darwin-arm64": "officecli-mac-arm64",
       "darwin-x64": "officecli-mac-x64",

@@ -55,6 +55,20 @@ export function sha256(data) {
   return createHash('sha256').update(Buffer.from(data)).digest('hex');
 }
 
+export function assertOfficeCliChecksums({ asset, actual, upstream, pinned }) {
+  if (!/^[a-f0-9]{64}$/.test(pinned ?? '')) {
+    throw new Error(`Missing repository-pinned checksum for ${asset}`);
+  }
+  if (upstream !== pinned) {
+    throw new Error(
+      `Upstream checksum for ${asset} does not match repository-pinned checksum: expected ${pinned}, got ${upstream}`,
+    );
+  }
+  if (actual !== pinned) {
+    throw new Error(`Checksum mismatch for ${asset}: expected ${pinned}, got ${actual}`);
+  }
+}
+
 export function officeCliVersionMatches(stdout, expectedVersion) {
   const normalized = expectedVersion.replace(/^v/, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`\\b${normalized}\\b`).test(stdout);
@@ -130,17 +144,21 @@ export async function prepareOfficeCli(
   targetPlatform = process.platform,
   targetArch = process.arch,
 ) {
+  const target = `${targetPlatform}-${targetArch}`;
   const asset = assetForTarget(targetPlatform, targetArch);
   const assetUrl = officeCliDownloadUrl(officeCli.version, asset);
   const sums = parseSha256Sums(await fetchText(officeCliSha256SumsUrl(officeCli.version)));
-  const expected = sums.get(asset);
-  if (!expected) throw new Error(`SHA256SUMS does not include ${asset}`);
+  const upstream = sums.get(asset);
+  if (!upstream) throw new Error(`SHA256SUMS does not include ${asset}`);
 
   const data = await fetchBytes(assetUrl);
   const actual = sha256(data);
-  if (actual !== expected) {
-    throw new Error(`Checksum mismatch for ${asset}: expected ${expected}, got ${actual}`);
-  }
+  assertOfficeCliChecksums({
+    asset,
+    actual,
+    upstream,
+    pinned: officeCli.sha256?.[target],
+  });
 
   await mkdir(toolsDir, { recursive: true });
   await rm(join(toolsDir, 'officecli'), { force: true });
