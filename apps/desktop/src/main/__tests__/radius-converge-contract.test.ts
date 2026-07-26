@@ -410,8 +410,9 @@ describe('radius token governance (#406 gap 4)', () => {
       // .maka-plan-shell dropped: unboxed to a plain layout container
       // (the MCP page set the no-outer-frame precedent) — no card chrome,
       // no radius.
-      '.maka-plan-card': '--radius-surface',
-      '.maka-plan-template-strip[data-layout="cards"] .maka-plan-template-card': '--radius-surface',
+      // .maka-plan-card dropped its per-item card chrome when Plan reminders
+      // converged on one divided management list; rows carry no radius.
+      // .maka-plan-template-card retired with the redundant template strip.
       // .maka-skill-library dropped: unboxed to a plain layout container
       // (the MCP page set the no-outer-frame precedent) — no card chrome,
       // no radius.

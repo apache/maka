@@ -109,6 +109,7 @@ describe('renderer style pruning contract', () => {
   it('does not keep CSS for retired renderer hooks', async () => {
     const styles = await readAllRendererCss();
     const retiredHooks = [
+      'agents-dual-card-row',
       'connectionStatus',
       'maka-indeterminate-bar',
       'maka-nav-disclosure',

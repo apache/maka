@@ -129,15 +129,3 @@
   width: min(100%, 1024px);
   margin-inline: auto;
 }
-
-.agents-dual-card-row {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-4);
-}
-
-@media (max-width: 990px) {
-  .agents-dual-card-row {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}

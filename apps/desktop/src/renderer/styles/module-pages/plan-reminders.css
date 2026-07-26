@@ -443,7 +443,7 @@
 
 .maka-plan-card-schedule svg {
   flex: 0 0 auto;
-  margin-top: 2px;
+  margin-top: var(--space-0-5);
 }
 
 /* PR-PLAN-NEXT-RUN-COUNTDOWN-0: small pill next to the absolute next-run
