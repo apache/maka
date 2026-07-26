@@ -76,14 +76,22 @@
 .maka-plan-page-menu-trigger,
 .maka-plan-card-menu-trigger {
   display: inline-flex;
-  width: 28px;
-  height: 28px;
   align-items: center;
   justify-content: center;
   border: 0;
   border-radius: var(--radius-control);
   background: transparent;
   color: var(--foreground-secondary);
+}
+
+.maka-plan-page-menu-trigger {
+  width: 32px;
+  height: 32px;
+}
+
+.maka-plan-card-menu-trigger {
+  width: 28px;
+  height: 28px;
 }
 
 .maka-plan-page-menu-trigger:hover,
