@@ -109,6 +109,50 @@ describe('redactSecrets', () => {
     );
   });
 
+  test('masks standard secret access key names without owning arbitrary access keys', () => {
+    const json = redactSecrets(
+      JSON.stringify({
+        awsSecretAccessKey: 'aws-secret',
+        secretAccessKey: 'standard-secret',
+        AWS_SECRET_ACCESS_KEY: 'environment-secret',
+        accessKey: 'ordinary-access-key',
+      }),
+    );
+
+    assert.deepEqual(JSON.parse(json), {
+      awsSecretAccessKey: '[redacted]',
+      secretAccessKey: '[redacted]',
+      AWS_SECRET_ACCESS_KEY: '[redacted]',
+      accessKey: 'ordinary-access-key',
+    });
+    assert.equal(
+      redactSecrets(
+        'awsSecretAccessKey=aws-secret secretAccessKey:standard-secret AWS_SECRET_ACCESS_KEY="environment-secret" accessKey=ordinary-access-key',
+      ),
+      'awsSecretAccessKey=[redacted] secretAccessKey:[redacted] AWS_SECRET_ACCESS_KEY="[redacted]" accessKey=ordinary-access-key',
+    );
+  });
+
+  test('masks space-separated AWS CLI secret access key values', () => {
+    assert.equal(
+      redactSecrets(
+        "aws configure set aws_secret_access_key aws-config-secret && aws s3 cp . s3://bucket --secret-access-key 'aws-flag-secret'",
+      ),
+      "aws configure set aws_secret_access_key [redacted] && aws s3 cp . s3://bucket --secret-access-key '[redacted]'",
+    );
+    assert.equal(
+      redactSecrets('aws configure set aws_secret_access_key "quoted-secret"'),
+      'aws configure set aws_secret_access_key "[redacted]"',
+    );
+  });
+
+  test('does not mask similar non-secret AWS CLI tokens', () => {
+    const text =
+      'aws configure set region us-east-1; aws configure set my_aws_secret_access_key visible; tool --secret-access-key-file credentials.txt';
+
+    assert.equal(redactSecrets(text), text);
+  });
+
   test('masks escaped and non-string sensitive JSON values structurally', () => {
     const text = redactSecrets(
       JSON.stringify({

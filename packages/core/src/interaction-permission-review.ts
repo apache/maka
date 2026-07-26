@@ -32,7 +32,7 @@ const GENERIC_TOOL_ARGUMENTS_MAX_DEPTH = 32;
 const GENERIC_TOOL_ARGUMENT_LONG_STRING_BYTES = 512;
 const GENERIC_TOOL_ARGUMENT_STRING_BUDGETS = [512, 256, 128, 64, 32, 16, 8] as const;
 const UNSAFE_REVIEW_CHARACTER =
-  /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/gu;
+  /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/gu;
 
 export type InteractionPermissionReason = PermissionRequest['reason'];
 

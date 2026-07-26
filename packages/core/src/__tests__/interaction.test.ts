@@ -80,6 +80,51 @@ describe('Interaction projection', () => {
     });
   });
 
+  test('redacts standard secret access keys in Bash and generic reviews', () => {
+    const command =
+      'aws configure set aws_secret_access_key config-secret && aws s3 cp . s3://bucket --secret-access-key flag-secret && curl -H "awsSecretAccessKey=aws-secret" -H "secretAccessKey=standard-secret" -H "AWS_SECRET_ACCESS_KEY=environment-secret" -H "accessKey=ordinary-access-key" example.test';
+    const bashRequest = {
+      ...toolPermission,
+      args: { command },
+    };
+    const bash = projectInteractionPermissionRequest(bashRequest);
+    assert.equal(bash.prompt.kind, 'tool_permission');
+    assert.equal(bash.prompt.review.kind, 'command');
+    if (bash.prompt.review.kind !== 'command') return;
+    assert.doesNotMatch(
+      bash.prompt.review.command,
+      /config-secret|flag-secret|aws-secret|standard-secret|environment-secret/,
+    );
+    assert.match(
+      bash.prompt.review.command,
+      /aws configure set aws_secret_access_key \[redacted\]/,
+    );
+    assert.match(bash.prompt.review.command, /--secret-access-key \[redacted\]/);
+    assert.match(bash.prompt.review.command, /accessKey=ordinary-access-key/);
+    assert.deepEqual(bashRequest.args, { command });
+
+    const generic = projectInteractionPermissionRequest({
+      ...toolPermission,
+      toolName: 'mcp__aws__invoke',
+      category: 'network_send',
+      reason: 'network',
+      args: {
+        awsSecretAccessKey: 'aws-secret',
+        secretAccessKey: 'standard-secret',
+        AWS_SECRET_ACCESS_KEY: 'environment-secret',
+        accessKey: 'ordinary-access-key',
+      },
+    });
+    assert.equal(generic.prompt.kind, 'tool_permission');
+    assert.equal(generic.prompt.review.kind, 'tool');
+    if (generic.prompt.review.kind !== 'tool') return;
+    assert.doesNotMatch(
+      generic.prompt.review.arguments.text,
+      /aws-secret|standard-secret|environment-secret/,
+    );
+    assert.match(generic.prompt.review.arguments.text, /"accessKey":"ordinary-access-key"/);
+  });
+
   test('projects additional, sandbox, and all browser requests as exact closed reviews', () => {
     const cases: Array<{
       request: PermissionRequestPayload;
@@ -557,6 +602,38 @@ describe('Interaction projection', () => {
       label: '\u202e token=label-secret',
       description: '\napi_key=description-secret',
     });
+  });
+
+  test('visibly escapes every omitted Bidi_Control code point in review labels', () => {
+    const projected = projectInteractionQuestionRequest({
+      toolUseId: 'question-tool',
+      questions: [
+        {
+          question: 'Choose',
+          options: [{ label: '\u061cArabic' }, { label: '\u200eLTR' }, { label: '\u200fRTL' }],
+        },
+      ],
+    });
+
+    assert.deepEqual(projected.questions[0]?.options, [
+      { label: '\\u{61C}Arabic' },
+      { label: '\\u{200E}LTR' },
+      { label: '\\u{200F}RTL' },
+    ]);
+  });
+
+  test('rejects labels that collide with a Bidi_Control visible escape', () => {
+    assert.throws(() =>
+      projectInteractionQuestionRequest({
+        toolUseId: 'question-tool',
+        questions: [
+          {
+            question: 'Choose',
+            options: [{ label: '\u200eLTR' }, { label: '\\u{200E}LTR' }],
+          },
+        ],
+      }),
+    );
   });
 
   test('rejects option labels that collide after safe projection', () => {

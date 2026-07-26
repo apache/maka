@@ -14,6 +14,8 @@ const QUOTED_SECRET_KEY_VALUE_PATTERN = /((?:"([^"\\]+)"\s*:\s*"))(?:\\.|[^"\\])
 const ASSIGNED_SECRET_KEY_VALUE_PATTERN = /\b(([A-Za-z][A-Za-z0-9_-]*)\s*[:=]\s*['"]?)[^\s"'&<>]+/g;
 const AUTHORIZATION_HEADER_PATTERN =
   /\b((?:proxy-)?authorization:\s*(?:bearer|basic|token)\s+)[^\s"'<>]+/gi;
+const AWS_CLI_SPACE_SECRET_PATTERN =
+  /(^|[\s;&|()])((?:aws[ \t]+configure[ \t]+set[ \t]+aws_secret_access_key|--secret-access-key)[ \t]+)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s;&|()<>]+)/gm;
 
 const SECRET_PATTERNS: RegExp[] = [
   /\b(sk-(?:ant-)?[a-z0-9_-]{8,})\b/gi,
@@ -33,6 +35,11 @@ export function redactSecrets(value: string): string {
     AUTHORIZATION_HEADER_PATTERN,
     (_match, prefix: string) => `${prefix}[redacted]`,
   );
+  next = next.replace(
+    AWS_CLI_SPACE_SECRET_PATTERN,
+    (_match, boundary: string, prefix: string, token: string) =>
+      `${boundary}${prefix}${redactShellToken(token)}`,
+  );
   next = next.replace(ASSIGNED_SECRET_KEY_VALUE_PATTERN, (match, prefix: string, key: string) =>
     isAssignmentSensitiveKey(key) ? `${prefix}[redacted]` : match,
   );
@@ -44,6 +51,13 @@ export function redactSecrets(value: string): string {
     });
   }
   return next;
+}
+
+function redactShellToken(token: string): string {
+  const quote = token.at(0);
+  return (quote === '"' || quote === "'") && token.at(-1) === quote
+    ? `${quote}[redacted]${quote}`
+    : '[redacted]';
 }
 
 function redactSerializedJsonSecrets(value: string): string {
@@ -105,7 +119,8 @@ function isSensitiveKey(key: string): boolean {
   if (suffix !== 'key') return SENSITIVE_KEY_SUFFIXES.has(suffix);
   if (segments.length === 1) return true;
   if (SENSITIVE_KEY_QUALIFIERS.has(segments.at(-2) ?? '')) return true;
-  return segments.slice(-3).join('_') === 'service_account_key';
+  const qualifiedKey = segments.slice(-3).join('_');
+  return qualifiedKey === 'service_account_key' || qualifiedKey === 'secret_access_key';
 }
 
 function sensitiveKeySegments(key: string): string[] {

@@ -87,6 +87,33 @@ describe('AgentRunStore', () => {
     });
   });
 
+  it('decodes and lists legacy waiting_permission headers as waiting_for_user', async () => {
+    await withStore(async (store, root) => {
+      const runPath = join(root, 'sessions', 'session-1', 'runs', 'run-1', 'run.json');
+      await mkdir(dirname(runPath), { recursive: true });
+      await writeFile(
+        runPath,
+        JSON.stringify({ ...makeHeader(), status: 'waiting_permission' }) + '\n',
+        'utf8',
+      );
+
+      assert.equal((await store.readRun('session-1', 'run-1')).status, 'waiting_for_user');
+      assert.deepEqual(
+        (await store.listSessionRuns('session-1')).map((run) => [run.runId, run.status]),
+        [['run-1', 'waiting_for_user']],
+      );
+      assert.deepEqual(
+        (await store.listSessionRunsForRecovery('session-1')).map((run) => [run.runId, run.status]),
+        [['run-1', 'waiting_for_user']],
+      );
+      assert.equal(
+        JSON.parse(await readFile(runPath, 'utf8')).status,
+        'waiting_permission',
+        'read recovery must not rewrite legacy bytes',
+      );
+    });
+  });
+
   it('rejects malformed run headers on update without overwriting bytes', async () => {
     await withStore(async (store, root) => {
       await store.createRun(makeHeader());
