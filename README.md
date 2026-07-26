@@ -11,7 +11,7 @@
 Maka does more than answer questions. With controlled permissions, it can inspect projects, execute tools, produce artifacts, and preserve model messages, tool calls, and durable-task progress as recoverable execution facts. The same Runtime is available through the desktop app, terminal TUI, non-interactive CLI, and Headless runner.
 
 > [!IMPORTANT]
-> Maka is under active development and currently targets users running from source or contributing to the project. Data formats, CLI commands, and experimental capabilities may still change.
+> Maka is under active development. The macOS Apple Silicon desktop build is an early public release; data formats, CLI commands, and experimental capabilities may still change.
 
 ## Why Maka
 
@@ -55,6 +55,17 @@ Read [Maka Backend Architecture](./ARCHITECTURE.md) for the complete design.
 - AHE target protocol and evidence export; complete automatic self-iteration remains an external or experimental workflow.
 
 ## Quick start
+
+### Download Desktop for macOS
+
+The signed and notarized Desktop app is available from [GitHub Releases](https://github.com/Maka-Agent/maka-agent/releases/latest) for Apple Silicon Macs only (`arm64`).
+
+1. Download `Maka-<version>-mac-arm64.dmg`;
+2. Open the DMG and drag Maka to Applications;
+3. Install `ripgrep` with `brew install ripgrep` to enable Runtime's `Grep` tool;
+4. Launch Maka and configure your own model connection under `Settings → Models`.
+
+Computer Use is not included in this first public build. Intel Macs, Windows, and Linux packages are not supported yet.
 
 ### Requirements
 
