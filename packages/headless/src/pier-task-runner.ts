@@ -263,8 +263,13 @@ export function createPierTaskRunner(options: PierTaskRunnerOptions): TaskRunner
     const agent = options.agent ?? 'maka';
     const timeoutMultiplier = options.timeoutMultiplier ?? 1;
     const taskAgentTimeoutSec = input.task.metadata?.agentTimeoutSec;
+    const attemptAgentEnv = mergeAgentEnv(options.agentEnv, input.agentEnv);
+    const traceMode = harborTraceMode(attemptAgentEnv);
     const makaDeadline =
-      agent === 'maka' && timeoutMultiplier === 1 && taskAgentTimeoutSec !== undefined
+      agent === 'maka' &&
+      traceMode === 'task-run' &&
+      timeoutMultiplier === 1 &&
+      taskAgentTimeoutSec !== undefined
         ? {
             modelBudgetSec: taskAgentTimeoutSec,
             settlementGraceSec: PIER_MAKA_SETTLEMENT_GRACE_SEC,
@@ -284,13 +289,11 @@ export function createPierTaskRunner(options: PierTaskRunnerOptions): TaskRunner
     await rm(jobsDir, { recursive: true, force: true });
     await mkdir(jobsDir, { recursive: true });
 
-    const attemptAgentEnv = mergeAgentEnv(options.agentEnv, input.agentEnv);
     assertNoProviderSecretsInAgentEnv(attemptAgentEnv);
     // Same benchmark invariant as the Harbor runner (shared implementation):
     // agentEnv must not override experiment identity or MAKA_TRIAL_* pricing.
     assertNoExperimentIdentityOverrides(attemptAgentEnv);
 
-    const traceMode = harborTraceMode(attemptAgentEnv);
     const providerTelemetryPath = join(jobsDir, PROVIDER_REQUEST_TELEMETRY);
     let providerUsage: ProviderTokenUsage | null = null;
     let providerTelemetry: ProviderRequestTelemetry[] = [];

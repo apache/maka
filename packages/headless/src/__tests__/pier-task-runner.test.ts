@@ -295,7 +295,9 @@ test('createPierTaskRunner gives Maka a controller-owned settlement tail', async
         jobsDir,
         makaRepoPath: repo,
         agent: 'maka',
+        makaNodeToolchainPath: '/toolchains/maka-node',
         agentEnv: {
+          MAKA_HARBOR_MODE: 'task-run',
           MAKA_CELL_TIMEOUT_SEC: '1',
           MAKA_CELL_SETTLEMENT_GRACE_SEC: '1',
           MAKA_AGENT_PHASE_TIMEOUT_SEC: '1',
@@ -326,6 +328,44 @@ test('createPierTaskRunner gives Maka a controller-owned settlement tail', async
     assert.ok(request.args.includes('MAKA_CELL_SETTLEMENT_GRACE_SEC=30'));
     assert.ok(request.args.includes('MAKA_AGENT_PHASE_TIMEOUT_SEC=5430'));
     assert.equal(request.timeoutMs, 13_890_000);
+  });
+});
+
+test('createPierTaskRunner preserves caller timeouts for Maka cell mode', async () => {
+  await withDirs(async ({ jobsDir, repo }) => {
+    const captured: FakeOptions['captured'] = {};
+    const runner = createPierTaskRunner(
+      baseOptions({
+        jobsDir,
+        makaRepoPath: repo,
+        agent: 'maka',
+        agentEnv: {
+          MAKA_CELL_TIMEOUT_SEC: '600',
+          MAKA_CELL_SETTLEMENT_GRACE_SEC: '30',
+        },
+        runPier: fakePier({ reward: 0, captured }),
+      }),
+    );
+
+    await runner(
+      runInput({
+        task: {
+          id: 'dasel',
+          path: '/tasks/dasel-html-document-format',
+          metadata: {
+            agentTimeoutSec: 5_400,
+            buildTimeoutSec: 1_800,
+            verifierTimeoutSec: 1_800,
+          },
+        },
+      }),
+    );
+
+    const args = captured.request?.args ?? [];
+    assert.ok(!args.includes('--agent-timeout-multiplier'));
+    assert.ok(args.includes('MAKA_CELL_TIMEOUT_SEC=600'));
+    assert.ok(args.includes('MAKA_CELL_SETTLEMENT_GRACE_SEC=30'));
+    assert.ok(!args.some((arg) => arg.startsWith('MAKA_AGENT_PHASE_TIMEOUT_SEC=')));
   });
 });
 
@@ -489,7 +529,13 @@ test('createPierTaskRunner derives the wall-clock watchdog from the task-native 
   await withDirs(async ({ jobsDir, repo }) => {
     const captured: FakeOptions['captured'] = {};
     const runner = createPierTaskRunner(
-      baseOptions({ jobsDir, makaRepoPath: repo, runPier: fakePier({ reward: 0, captured }) }),
+      baseOptions({
+        jobsDir,
+        makaRepoPath: repo,
+        makaNodeToolchainPath: '/toolchains/maka-node',
+        agentEnv: { MAKA_HARBOR_MODE: 'task-run' },
+        runPier: fakePier({ reward: 0, captured }),
+      }),
     );
     // DeepSWE-shaped budget (113/113 tasks): build 1800s + agent 5400s +
     // verifier 1800s, plus pier's fixed agent_setup phase (360s,
