@@ -557,7 +557,10 @@ export async function writeHarborTaskRunTrace(input: {
     input.invocations.map(async (invocation) => {
       const [header, events] = await Promise.all([
         storage.executionStores.agentRunStore.readRun(invocation.sessionId, invocation.runId),
-        storage.executionStores.agentRunStore.readEvents(invocation.sessionId, invocation.runId),
+        storage.executionStores.agentRunStore.readEventsForEvidence(
+          invocation.sessionId,
+          invocation.runId,
+        ),
       ]);
       if (!header.traceWriteError || events.some((event) => event.type === 'trace_write_failed')) {
         return events;

@@ -111,6 +111,7 @@ export interface RootTurnAdmissionStore {
 export interface DurableAgentRunStore extends AgentRunStore, RootTurnAdmissionStore {
   listSessionRunsForRecovery(sessionId: string): Promise<AgentRunHeader[]>;
   readEventsForRecovery(sessionId: string, runId: string): Promise<AgentRunEvent[]>;
+  readEventsForEvidence(sessionId: string, runId: string): Promise<AgentRunEvent[]>;
   readEventProjection(
     sessionId: string,
     type: AgentRunEventType,
@@ -481,10 +482,15 @@ class FileAgentRunStore implements DurableAgentRunStore {
     return this.readEventsWithPolicy(sessionId, runId, true);
   }
 
+  async readEventsForEvidence(sessionId: string, runId: string): Promise<AgentRunEvent[]> {
+    return this.readEventsWithPolicy(sessionId, runId, false, true);
+  }
+
   private async readEventsWithPolicy(
     sessionId: string,
     runId: string,
     strict: boolean,
+    preserveIncompleteTail = false,
   ): Promise<AgentRunEvent[]> {
     assertSafeId(sessionId, 'Invalid session id');
     assertSafeId(runId, 'Invalid run id');
@@ -508,12 +514,11 @@ class FileAgentRunStore implements DurableAgentRunStore {
       try {
         parsed = JSON.parse(entry.line);
       } catch (error) {
-        if (
+        const incompleteTail =
           !endsWithNewline &&
           entry.lineNumber === lastLineNumber &&
-          classifyJsonRecord(entry.line) === 'incomplete-prefix'
-        )
-          continue;
+          classifyJsonRecord(entry.line) === 'incomplete-prefix';
+        if (incompleteTail && !preserveIncompleteTail) continue;
         if (strict) {
           const detail = error instanceof Error ? error.message : String(error);
           throw new Error(
@@ -527,7 +532,11 @@ class FileAgentRunStore implements DurableAgentRunStore {
           sessionId,
           turnId: header.turnId,
           ts: header.updatedAt,
-          message: error instanceof Error ? error.message : 'Invalid AgentRun event JSONL line',
+          message: incompleteTail
+            ? 'Incomplete AgentRun event JSONL tail'
+            : error instanceof Error
+              ? error.message
+              : 'Invalid AgentRun event JSONL line',
           data: { lineNumber: entry.lineNumber },
         });
         continue;

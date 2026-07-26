@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AgentRunHeader } from '@maka/core';
+import type { AgentRunEvent, AgentRunHeader } from '@maka/core';
 import type { InvocationResult } from '@maka/runtime';
 
 import { writeHarborTaskRunTrace } from '../harbor-cell.js';
@@ -216,6 +216,71 @@ test('exports the Run-header trace failure latch when its sentinel event is miss
     assert.throws(
       () => traceAnalysis.assertProviderRequestTraceComplete(result),
       /trace write failed evidence/i,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('exports a torn AgentRun tail as incomplete provider-request evidence', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-provider-trace-export-'));
+  const storageRoot = join(root, 'storage');
+  const outputDir = join(root, 'output');
+  const runId = 'run-torn-export';
+  const identity = {
+    runId,
+    sessionId: `session-${runId}`,
+    turnId: `turn-${runId}`,
+  };
+  const header: AgentRunHeader = {
+    ...identity,
+    status: 'completed',
+    backendKind: 'ai-sdk',
+    llmConnectionSlug: 'kimi-coding-plan',
+    modelId: 'k3',
+    cwd: root,
+    permissionMode: 'execute',
+    createdAt: 1,
+    updatedAt: 4,
+    completedAt: 4,
+  };
+  const invocation: InvocationResult = {
+    invocationId: 'invocation-torn-export',
+    ...identity,
+    status: 'completed',
+    events: [],
+    startedAt: 1,
+    finishedAt: 4,
+  };
+  const { capture, attempt } = completeTraceRows(runId);
+
+  try {
+    await mkdir(outputDir, { recursive: true });
+    const storage = await openHeadlessStorageForWrite(storageRoot);
+    const runStore = storage.executionStores.agentRunStore;
+    await runStore.createRun(header);
+    await runStore.appendEvent(identity.sessionId, identity.runId, capture as AgentRunEvent);
+    await runStore.appendEvent(identity.sessionId, identity.runId, attempt as AgentRunEvent);
+    await writeFile(
+      join(storageRoot, 'sessions', identity.sessionId, 'runs', identity.runId, 'events.jsonl'),
+      '{"type":"provider_request_attempt_recorded"',
+      { flag: 'a' },
+    );
+
+    const traceEventsPath = await writeHarborTaskRunTrace({
+      outputDir,
+      storage,
+      invocations: [invocation],
+    });
+    const result = await traceAnalysis.readProviderRequestTrace(traceEventsPath);
+
+    assert.deepEqual(
+      result.diagnostics.map((diagnostic) => diagnostic.code),
+      ['event_corrupt'],
+    );
+    assert.throws(
+      () => traceAnalysis.assertProviderRequestTraceComplete(result),
+      /event corrupt evidence/i,
     );
   } finally {
     await rm(root, { recursive: true, force: true });
