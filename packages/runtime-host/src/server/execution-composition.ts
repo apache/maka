@@ -127,6 +127,7 @@ export async function createExecutionRuntimeHostComposition(
       runBackendActivation: (operation) => runtimePolicyActivation.runBackendActivation(operation),
       messageAuthority: runtimeAuthority,
       interactionAuthority: interactions,
+      canonicalPermissionOutcomes: interactions,
     });
     rootCoordinator = new RootTurnCoordinator(
       manager,

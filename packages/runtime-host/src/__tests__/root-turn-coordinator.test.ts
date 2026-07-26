@@ -164,6 +164,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       now: Date.now,
       messageAuthority: authority,
       interactionAuthority,
+      canonicalPermissionOutcomes: interactions,
     });
     coordinator = new RootTurnCoordinator(
       manager,
@@ -1297,16 +1298,12 @@ class PermissionWaitingBackend implements AgentBackend {
       return;
     }
     yield {
-      type: 'permission_decision_ack',
+      type: 'permission_answer_ack',
       id: randomUUID(),
       turnId: input.turnId,
       ts: Date.now(),
       requestId,
       toolUseId,
-      decision: decision.decision,
-      ...(decision.rememberForTurn !== undefined
-        ? { rememberForTurn: decision.rememberForTurn }
-        : {}),
     };
     await new Promise<void>((resolve) => {
       this.releaseAfterDecision = resolve;

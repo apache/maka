@@ -14,6 +14,7 @@ import {
 } from '../protocol/index.js';
 import { isMissingFile, readCanonicalTurnSnapshot } from './canonical-turn-snapshot.js';
 import type { HostMessageCoordinator } from './message-coordinator.js';
+import { worstCaseMessageQueueProjection } from './message-queue-capacity.js';
 import { projectSessionInteractions } from './interaction-projection.js';
 import type { RootAdmissionOwner } from './root-admission-owner.js';
 
@@ -99,7 +100,11 @@ export class CanonicalSessionProjectionReader {
   ): Promise<boolean> {
     const canonical = await this.read(sessionId);
     if (!canonical) return false;
-    const candidateProjection = { ...canonical, ...candidate };
+    const candidateProjection = {
+      ...canonical,
+      ...candidate,
+      queue: worstCaseMessageQueueProjection(candidate.queue ?? canonical.queue),
+    };
     const snapshotInput = sessionContinuitySnapshotInput(
       candidateProjection,
       Number.MAX_SAFE_INTEGER,

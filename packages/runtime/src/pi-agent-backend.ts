@@ -461,31 +461,42 @@ export class PiAgentBackend implements AgentBackend {
       return;
     }
 
-    const decisionMsg: PermissionDecisionMessage = {
-      type: 'permission_decision',
-      id: response.requestId,
-      turnId,
-      ts: this.now(),
-      toolUseId: frame.toolUseId,
-      toolName: frame.toolName,
-      decision: response.decision,
-      ...(response.rememberForTurn !== undefined
-        ? { rememberForTurn: response.rememberForTurn }
-        : {}),
-    };
-    await this.input.appendMessage(decisionMsg);
-    yield {
-      type: 'permission_decision_ack',
-      id: this.newId(),
-      turnId,
-      ts: this.now(),
-      requestId: response.requestId,
-      toolUseId: frame.toolUseId,
-      decision: response.decision,
-      ...(response.rememberForTurn !== undefined
-        ? { rememberForTurn: response.rememberForTurn }
-        : {}),
-    };
+    if (hostedInteraction) {
+      yield {
+        type: 'permission_answer_ack',
+        id: this.newId(),
+        turnId,
+        ts: this.now(),
+        requestId: response.requestId,
+        toolUseId: frame.toolUseId,
+      };
+    } else {
+      const decisionMsg: PermissionDecisionMessage = {
+        type: 'permission_decision',
+        id: response.requestId,
+        turnId,
+        ts: this.now(),
+        toolUseId: frame.toolUseId,
+        toolName: frame.toolName,
+        decision: response.decision,
+        ...(response.rememberForTurn !== undefined
+          ? { rememberForTurn: response.rememberForTurn }
+          : {}),
+      };
+      await this.input.appendMessage(decisionMsg);
+      yield {
+        type: 'permission_decision_ack',
+        id: this.newId(),
+        turnId,
+        ts: this.now(),
+        requestId: response.requestId,
+        toolUseId: frame.toolUseId,
+        decision: response.decision,
+        ...(response.rememberForTurn !== undefined
+          ? { rememberForTurn: response.rememberForTurn }
+          : {}),
+      };
+    }
 
     if (response.decision === 'deny') {
       this.suppressedToolUseIds.add(frame.toolUseId);

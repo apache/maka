@@ -13,6 +13,8 @@ import {
   RuntimeInteractionAdmissionRejectedError,
   RuntimeInteractionFailStopError,
   RuntimeInteractionInvariantError,
+  type CanonicalPermissionOutcomeReader,
+  type CanonicalPermissionOutcomeRecord,
   type RuntimeInteractionAuthority,
   type RuntimeInteractionContinuationIdentity,
   type RuntimeInteractionRunClosureReason,
@@ -107,7 +109,9 @@ interface CommittedEntry {
 }
 
 /** Host-epoch authority for durable Runtime Interactions. */
-export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
+export class HostInteractionCoordinator
+  implements RuntimeInteractionAuthority, CanonicalPermissionOutcomeReader
+{
   readonly handlers: InteractionOperationHandlerMap = {
     'interaction.query': (input) => this.#query(input.sessionId, input.interactionId),
     'interaction.answer': (input) => this.#answer(input),
@@ -131,6 +135,27 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     this.#preflightSessionSnapshot = options.preflightSessionSnapshot;
     this.#refreshCanonicalContinuity = options.refreshCanonicalContinuity;
     this.#onPoison = options.onPoison;
+  }
+
+  async readPermissionOutcome(
+    requestId: string,
+  ): Promise<CanonicalPermissionOutcomeRecord | undefined> {
+    const record = await this.#store.readInteraction(requestId);
+    if (
+      !record?.outcome ||
+      record.request.request.kind !== 'permission' ||
+      record.outcome.outcome.kind !== 'permission_answer'
+    ) {
+      return undefined;
+    }
+    return {
+      sessionId: record.request.sessionId,
+      runId: record.request.runId,
+      turnId: record.request.turnId,
+      requestId: record.request.requestId,
+      request: record.request.request,
+      outcome: record.outcome.outcome,
+    };
   }
 
   bindRun(identity: RuntimeInteractionRunIdentity): RuntimeInteractionRunOwner {

@@ -157,6 +157,8 @@ export {
   RuntimeInteractionInvariantError,
 } from './interaction-authority.js';
 export type {
+  CanonicalPermissionOutcomeReader,
+  CanonicalPermissionOutcomeRecord,
   RuntimeInteractionAdmissionRejectionReason,
   RuntimeInteractionAuthority,
   RuntimeInteractionClosureReason,

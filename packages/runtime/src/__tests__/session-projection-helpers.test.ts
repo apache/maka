@@ -124,6 +124,9 @@ describe('session projection helpers', () => {
     ).toEqual({
       status: 'running',
     });
+    expect(statusFromEvent({ type: 'permission_answer_ack', ts: 1 } as never)).toEqual({
+      status: 'running',
+    });
     expect(
       statusFromEvent({ type: 'permission_decision_ack', ts: 1, decision: 'allow' } as never, {
         allowInteractionResume: false,

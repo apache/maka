@@ -101,6 +101,9 @@ export function statusFromEvent(
       return { status: 'waiting_for_user', blockedReason: 'permission_required' };
     case 'user_question_request':
       return { status: 'waiting_for_user' };
+    case 'permission_answer_ack':
+      if (options.allowInteractionResume === false) return undefined;
+      return { status: 'running' };
     case 'permission_decision_ack':
       if (event.decision === 'deny') return { status: 'aborted' };
       if (options.allowInteractionResume === false) return undefined;

@@ -2,6 +2,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { expect } from '../test-helpers.js';
 import { decodeMessageContent, messageContentsEqual, normalizeMessageContent } from '../events.js';
+import { INTERACTION_TOOL_NAME_MAX_BYTES } from '../interaction.js';
 import {
   RUNTIME_EVENT_AUTHORS,
   RUNTIME_EVENT_CONTENT_KINDS,
@@ -329,24 +330,72 @@ describe('RuntimeEvent actions', () => {
         rememberForTurnAllowed: true,
       },
       permissionDecision: { requestId: 'pr-1', decision: 'deny' },
+      permissionAnswerAccepted: { requestId: 'hosted-pr-1' },
       userQuestionAnswerAccepted: { requestId: 'question-1' },
     };
     expect(actions.permissionRequest?.category).toBe('shell_unsafe');
     expect(actions.permissionDecision?.decision).toBe('deny');
-    expect(decodeRuntimeEvent(baseEvent({ actions })).actions?.userQuestionAnswerAccepted).toEqual({
-      requestId: 'question-1',
+    assert.deepEqual(decodeRuntimeEvent(baseEvent({ actions })).actions?.permissionDecision, {
+      requestId: 'pr-1',
+      decision: 'deny',
     });
-    assert.throws(() =>
-      decodeRuntimeEvent(
-        baseEvent({
-          actions: {
-            userQuestionAnswerAccepted: {
-              requestId: 'x'.repeat(257),
-            },
-          },
+    const decodedActions = decodeRuntimeEvent(baseEvent({ actions })).actions;
+    for (const [accepted, requestId] of [
+      [decodedActions?.permissionAnswerAccepted, 'hosted-pr-1'],
+      [decodedActions?.userQuestionAnswerAccepted, 'question-1'],
+    ] as const) {
+      assert.deepEqual(accepted, { requestId });
+      assert.ok(accepted);
+      assert.deepEqual(Object.keys(accepted), ['requestId']);
+      assert.equal(Object.hasOwn(accepted, 'requestId'), true);
+      assert.equal(Object.hasOwn(accepted, 'decision'), false);
+    }
+
+    for (const invalidAcceptedAction of [
+      { permissionAnswerAccepted: { requestId: 'pr-1', extra: true } },
+      { userQuestionAnswerAccepted: { requestId: 'question-1', extra: true } },
+      { permissionAnswerAccepted: Object.create({ requestId: 'inherited-pr-1' }) },
+      { userQuestionAnswerAccepted: { requestId: 'x'.repeat(257) } },
+    ]) {
+      assert.throws(() =>
+        decodeRuntimeEvent({
+          ...baseEvent(),
+          actions: invalidAcceptedAction,
         }),
-      ),
+      );
+    }
+  });
+
+  test('permission decisions optionally retain a bounded tool name', () => {
+    const permissionDecision = {
+      requestId: 'pr-1',
+      decision: 'allow' as const,
+      rememberForTurn: true,
+      toolName: 'Bash',
+    };
+
+    assert.deepEqual(
+      decodeRuntimeEvent(baseEvent({ actions: { permissionDecision } })).actions
+        ?.permissionDecision,
+      permissionDecision,
     );
+
+    for (const invalidPermissionDecision of [
+      { requestId: 'pr-1', decision: 'allow', toolName: '' },
+      {
+        requestId: 'pr-1',
+        decision: 'allow',
+        toolName: 'x'.repeat(INTERACTION_TOOL_NAME_MAX_BYTES + 1),
+      },
+      { requestId: 'pr-1', decision: 'allow', toolName: 'Bash', extra: true },
+    ]) {
+      assert.throws(() =>
+        decodeRuntimeEvent({
+          ...baseEvent(),
+          actions: { permissionDecision: invalidPermissionDecision },
+        }),
+      );
+    }
   });
 
   test('state/artifact deltas accept primitive values', () => {

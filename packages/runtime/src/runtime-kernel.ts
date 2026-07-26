@@ -38,7 +38,11 @@ import {
   type AgentRunLineage,
   type RuntimeContinuationFailpoint,
 } from './agent-run.js';
-import { AiSdkFlow, mapSessionEventToRuntimeEvent } from './ai-sdk-flow.js';
+import {
+  AiSdkFlow,
+  createSingleFlightBackendStop,
+  mapSessionEventToRuntimeEvent,
+} from './ai-sdk-flow.js';
 import type { AgentBackend, SteeringLease } from '@maka/core/backend-types';
 import type { AgentTeamExecutionContext, MakaTool } from './tool-runtime.js';
 import type {
@@ -210,6 +214,7 @@ export interface HistoryCompactCleanupRequest {
 interface ActiveSession extends AgentRunActiveSession {
   sessionId: string;
   backend: AgentBackend;
+  stopBackend: AgentBackend['stop'];
   cachedHeader: SessionHeader;
   activeRuns: Map<string, AgentRun>;
   turnToRunId: Map<string, string>;
@@ -835,14 +840,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
 
     let finalizePromise: Promise<void> | undefined;
     const finalizeRun = (): Promise<void> => {
-      finalizePromise ??= (async () => {
-        if (interactionRun) {
-          await interactionRun.close(interactionClosureReason(run));
-          await interactionRun.settleLocalClosures();
-        }
-        await run.finalize();
-        if (interactionRun) this.releaseInteractionRun(run, interactionRun);
-      })();
+      finalizePromise ??= this.finalizeRunWithInteraction(run, interactionRun);
       return finalizePromise;
     };
 
@@ -929,6 +927,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
 
     const aiSdkFlow = new AiSdkFlow({
       backend: begin.backend,
+      stopBackend: this.stopBackendFor(begin.backend),
       ...(interactionRun ? { hostedInteraction: interactionRun } : {}),
       drainAfterTerminal: true,
       onSessionEvent: async (sessionEvent, runtimeEvent) => {
@@ -1017,15 +1016,20 @@ export class RuntimeKernel implements RuntimeKernelLike {
       }
       await runnerResult;
     } finally {
-      if (!flowDone) {
-        await interactionRun?.close(interactionClosureReason(run));
-        abortController.abort();
-        sessionEvents.close();
-      }
-      await runnerResult.catch(() => undefined);
-      await finalizeRun();
-      if (messageOwner) releaseMessageOwner();
-      else if (steering) this.releaseSteeringTurn(sessionId, run.turnId);
+      await this.cleanupRunExecution({
+        run,
+        flow: aiSdkFlow,
+        flowDone,
+        abortController,
+        sessionEvents,
+        runnerResult,
+        interactionRun,
+        finalizeRun,
+        releaseOwner: () => {
+          if (messageOwner) releaseMessageOwner();
+          else if (steering) this.releaseSteeringTurn(sessionId, run.turnId);
+        },
+      });
     }
   }
 
@@ -1097,19 +1101,13 @@ export class RuntimeKernel implements RuntimeKernelLike {
 
     let finalizePromise: Promise<void> | undefined;
     const finalizeRun = (): Promise<void> => {
-      finalizePromise ??= (async () => {
-        if (interactionRun) {
-          await interactionRun.close(interactionClosureReason(run));
-          await interactionRun.settleLocalClosures();
-        }
-        await run.finalize();
-        if (interactionRun) this.releaseInteractionRun(run, interactionRun);
-      })();
+      finalizePromise ??= this.finalizeRunWithInteraction(run, interactionRun);
       return finalizePromise;
     };
 
     const aiSdkFlow = new AiSdkFlow({
       backend: begin.backend,
+      stopBackend: this.stopBackendFor(begin.backend),
       ...(interactionRun ? { hostedInteraction: interactionRun } : {}),
       drainAfterTerminal: true,
       onSessionEvent: async (sessionEvent, runtimeEvent) => {
@@ -1175,17 +1173,58 @@ export class RuntimeKernel implements RuntimeKernelLike {
       }
       await runnerResult;
     } finally {
-      if (!flowDone) {
-        await interactionRun?.close(interactionClosureReason(run));
-        abortController.abort();
-        sessionEvents.close();
-        if (runnerFailure !== undefined) await run.recordFailure(runnerFailure);
-        await finalizeRun();
-      }
-      await runnerResult.catch(() => undefined);
-      await finalizeRun();
-      releaseMessageOwner();
+      await this.cleanupRunExecution({
+        run,
+        flow: aiSdkFlow,
+        flowDone,
+        abortController,
+        sessionEvents,
+        runnerResult,
+        interactionRun,
+        ...(runnerFailure !== undefined ? { runnerFailure } : {}),
+        finalizeRun,
+        releaseOwner: releaseMessageOwner,
+      });
     }
+  }
+
+  private async cleanupRunExecution(input: {
+    run: AgentRun;
+    flow: AiSdkFlow;
+    flowDone: boolean;
+    abortController: AbortController;
+    sessionEvents: AsyncEventQueue<SessionEvent>;
+    runnerResult: Promise<InvocationResult>;
+    interactionRun: RuntimeInteractionRunBinding | undefined;
+    runnerFailure?: unknown;
+    finalizeRun: () => Promise<void>;
+    releaseOwner: () => void;
+  }): Promise<void> {
+    const failures = new FailureCollector();
+
+    if (!input.flowDone) {
+      let interactionClose: Promise<void> | undefined;
+      try {
+        interactionClose = input.interactionRun?.close(interactionClosureReason(input.run));
+      } catch (error) {
+        failures.add(error);
+      }
+      const backendStop = input.flow.stop('user_stop');
+      input.abortController.abort();
+      input.sessionEvents.close();
+      await Promise.all([
+        failures.capture(() => interactionClose),
+        failures.capture(() => backendStop),
+      ]);
+      if (input.runnerFailure !== undefined) {
+        await failures.capture(() => input.run.recordFailure(input.runnerFailure));
+      }
+    }
+
+    await input.runnerResult.catch(() => undefined);
+    await failures.capture(input.finalizeRun);
+    await failures.capture(input.releaseOwner);
+    failures.throwIfAny(`Run cleanup failed for ${input.run.runId}`);
   }
 
   private registerInteractionRun(run: AgentRun, binding: RuntimeInteractionRunBinding): void {
@@ -1201,6 +1240,25 @@ export class RuntimeKernel implements RuntimeKernelLike {
       );
     }
     this.interactionRuns.set(run, binding);
+  }
+
+  private async finalizeRunWithInteraction(
+    run: AgentRun,
+    interactionRun: RuntimeInteractionRunBinding | undefined,
+  ): Promise<void> {
+    const failures = new FailureCollector();
+    if (interactionRun) {
+      await failures.capture(async () => {
+        await interactionRun.close(interactionClosureReason(run));
+        await interactionRun.settleLocalClosures();
+      });
+    }
+
+    await failures.capture(() => run.finalize());
+    if (!failures.hasFailures && interactionRun) {
+      await failures.capture(() => this.releaseInteractionRun(run, interactionRun));
+    }
+    failures.throwIfAny(`Interaction and Run finalization failed for ${run.runId}`);
   }
 
   private releaseInteractionRun(run: AgentRun, binding: RuntimeInteractionRunBinding): void {
@@ -1316,27 +1374,30 @@ export class RuntimeKernel implements RuntimeKernelLike {
     const stoppedRuns = [
       ...new Set([...operation.targets.values()].flatMap((target) => [...target.runs])),
     ];
-    try {
-      await Promise.all(
-        stoppedRuns.map((run) => this.interactionRuns.get(run)?.close('turn_stopped')),
-      );
-    } catch (error) {
-      throw interactionFailStop(
-        `Could not durably close stopped Runs for session ${sessionId}`,
-        error,
-      );
-    }
-
-    const undelivered = [...operation.targets.values()].filter((target) => !target.delivered);
-    const results = await Promise.allSettled(
-      undelivered.map((target) => target.active.backend.stop('user_stop', input.mode)),
-    );
-    let stopError: unknown;
-    results.forEach((result, index) => {
-      if (result.status === 'fulfilled') undelivered[index]!.delivered = true;
-      else stopError ??= result.reason;
+    const failures = new FailureCollector();
+    const interactionClosures = stoppedRuns.map(async (run) => {
+      try {
+        await this.interactionRuns.get(run)?.close('turn_stopped');
+      } catch (error) {
+        failures.add(
+          interactionFailStop(
+            `Could not durably close stopped Runs for session ${sessionId}`,
+            error,
+          ),
+        );
+      }
     });
-    if (stopError !== undefined) throw stopError;
+    const undelivered = [...operation.targets.values()].filter((target) => !target.delivered);
+    const backendStops = undelivered.map(async (target) => {
+      try {
+        await target.active.stopBackend('user_stop', input.mode);
+        target.delivered = true;
+      } catch (error) {
+        failures.add(error);
+      }
+    });
+    await Promise.all([...interactionClosures, ...backendStops]);
+    failures.throwIfAny(`Stop cleanup failed for session ${sessionId}`);
 
     if (!operation.statusProjected) {
       await this.updateStatus(sessionId, 'aborted', undefined, operation.ts);
@@ -1642,6 +1703,13 @@ export class RuntimeKernel implements RuntimeKernelLike {
     return sessions;
   }
 
+  private stopBackendFor(backend: AgentBackend): AgentBackend['stop'] {
+    for (const active of [...this.active.values(), ...this.childActive.values()]) {
+      if (active.backend === backend) return active.stopBackend;
+    }
+    throw new Error(`Backend stop owner is unavailable for session ${backend.sessionId}`);
+  }
+
   private loadHistoryCompactCheckpoint(
     sessionId: string,
   ): Promise<HistoryCompactCheckpoint | undefined> {
@@ -1833,6 +1901,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     const entry: ActiveSession = {
       sessionId,
       backend,
+      stopBackend: createSingleFlightBackendStop(backend),
       cachedHeader: header,
       activeRuns: new Map(),
       turnToRunId: new Map(),
@@ -1963,6 +2032,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     const entry: ActiveSession = {
       sessionId,
       backend,
+      stopBackend: createSingleFlightBackendStop(backend),
       cachedHeader: header,
       activeRuns: new Map(),
       turnToRunId: new Map(),
@@ -2245,7 +2315,9 @@ function interactionResumeAllowed(
 ): boolean {
   if (
     !interactionRun ||
-    (event.type !== 'permission_decision_ack' && event.type !== 'user_question_answer_ack')
+    (event.type !== 'permission_answer_ack' &&
+      event.type !== 'permission_decision_ack' &&
+      event.type !== 'user_question_answer_ack')
   ) {
     return true;
   }
@@ -2260,6 +2332,38 @@ function interactionFailStop(message: string, error: unknown): Error {
   return error instanceof RuntimeInteractionFailStopError
     ? error
     : new RuntimeInteractionFailStopError(message, error);
+}
+
+class FailureCollector {
+  private readonly failures: unknown[] = [];
+  private readonly seen = new Set<unknown>();
+
+  get hasFailures(): boolean {
+    return this.failures.length > 0;
+  }
+
+  add(error: unknown): void {
+    if (error instanceof AggregateError) {
+      for (const nested of error.errors) this.add(nested);
+      return;
+    }
+    if (this.seen.has(error)) return;
+    this.seen.add(error);
+    this.failures.push(error);
+  }
+
+  async capture(operation: () => Promise<unknown> | unknown): Promise<void> {
+    try {
+      await operation();
+    } catch (error) {
+      this.add(error);
+    }
+  }
+
+  throwIfAny(message: string): void {
+    if (this.failures.length === 1) throw this.failures[0];
+    if (this.failures.length > 1) throw new AggregateError(this.failures, message);
+  }
 }
 
 interface AsyncEventQueueEntry<T> {

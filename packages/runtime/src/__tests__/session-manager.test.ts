@@ -1,4 +1,5 @@
 import { describe, test } from 'node:test';
+import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import {
@@ -47,7 +48,7 @@ import {
 } from '../session-manager.js';
 import { RuntimeKernel, type RuntimeKernelLike } from '../runtime-kernel.js';
 import { FAKE_ASK_USER_QUESTION_PROMPT, FakeBackend } from '../fake-backend.js';
-import { RuntimeReadModel } from '../runtime-read-model.js';
+import { RuntimeReadModel, RuntimeReadModelError } from '../runtime-read-model.js';
 import type { AgentBackend } from '@maka/core/backend-types';
 import type { MakaTool } from '../tool-runtime.js';
 import type { ShellRunProcessManager } from '../shell-run-manager.js';
@@ -79,6 +80,9 @@ import {
 } from '../message-authority.js';
 import {
   RuntimeInteractionInvariantError,
+  type CanonicalPermissionOutcomeReader,
+  type CanonicalPermissionOutcomeRecord,
+  type RuntimeInteractionAuthority,
   type RuntimeInteractionRunIdentity,
   type RuntimeUserQuestionContinuation,
 } from '../interaction-authority.js';
@@ -5074,6 +5078,181 @@ describe('SessionManager permission mode updates', () => {
     ]);
   });
 
+  test('SessionManager projects hosted permission details from the canonical outcome', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const header = makeRunHeader({ status: 'completed' });
+    await store.create(makeInput());
+    await seedCanonicalPermissionRun(runStore, header);
+    const canonicalPermissionOutcomes: CanonicalPermissionOutcomeReader = {
+      readPermissionOutcome: async (requestId) =>
+        canonicalPermissionRecord(header, {
+          requestId,
+          outcome: {
+            kind: 'permission_answer' as const,
+            decision: 'allow' as const,
+            rememberForTurn: true,
+            reviewer: 'auto_review' as const,
+            riskLevel: 'medium' as const,
+            committedAt: 125,
+          },
+        }),
+    };
+    const backends = new BackendRegistry();
+    const interactionAuthority: RuntimeInteractionAuthority = {
+      bindRun: () => {
+        throw new Error('read-only test authority cannot bind a Run');
+      },
+    };
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      newId: nextId(),
+      now: nextNow(125),
+      interactionAuthority,
+      canonicalPermissionOutcomes,
+    });
+
+    const messages = await manager.getMessages(header.sessionId);
+
+    expect(messages.find((message) => message.type === 'permission_decision')).toEqual({
+      type: 'permission_decision',
+      id: 'request-canonical',
+      turnId: header.turnId,
+      ts: 125,
+      toolUseId: 'tool-canonical',
+      toolName: 'Write',
+      decision: 'allow',
+      rememberForTurn: true,
+      reviewer: 'auto_review',
+      riskLevel: 'medium',
+      hint: 'write approval',
+    });
+
+    const cachedView = await new RuntimeReadModel({
+      runStore,
+      runtimeEventStore: runStore,
+      projectionCache: {
+        readMessages: async () =>
+          messages.filter((message) => message.type !== 'permission_decision'),
+      },
+      canonicalPermissionOutcomes,
+    }).getSessionView(header.sessionId);
+
+    expect(cachedView.diagnostics).toEqual([]);
+  });
+
+  test('SessionManager joins a canonical hosted permission without a ledger request', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const header = makeRunHeader({ status: 'completed' });
+    await store.create(makeInput());
+    await seedCanonicalPermissionRun(runStore, header, false);
+    const canonicalPermissionOutcomes: CanonicalPermissionOutcomeReader = {
+      readPermissionOutcome: async (requestId) =>
+        canonicalPermissionRecord(header, {
+          requestId,
+          outcome: {
+            kind: 'permission_answer',
+            decision: 'allow',
+            rememberForTurn: true,
+            reviewer: 'auto_review',
+            committedAt: 125,
+          },
+        }),
+    };
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(125),
+      interactionAuthority: {
+        bindRun: () => {
+          throw new Error('read-only test authority cannot bind a Run');
+        },
+      },
+      canonicalPermissionOutcomes,
+    });
+
+    const messages = await manager.getMessages(header.sessionId);
+
+    expect(messages.find((message) => message.type === 'permission_decision')).toEqual({
+      type: 'permission_decision',
+      id: 'request-canonical',
+      turnId: header.turnId,
+      ts: 125,
+      toolUseId: 'tool-canonical',
+      toolName: 'Write',
+      decision: 'allow',
+      rememberForTurn: true,
+      reviewer: 'auto_review',
+    });
+  });
+
+  test('RuntimeReadModel fails closed for a missing or mismatched hosted permission outcome', async () => {
+    const header = makeRunHeader({ status: 'completed' });
+    const canonical = canonicalPermissionRecord(header);
+    const outcomes: Array<CanonicalPermissionOutcomeRecord | undefined> = [
+      undefined,
+      {
+        ...canonical,
+        sessionId: 'wrong-session',
+        outcome: {
+          kind: 'permission_answer' as const,
+          decision: 'deny' as const,
+          rememberForTurn: false as const,
+          reviewer: 'user' as const,
+          committedAt: 125,
+        },
+      },
+    ];
+    for (const outcome of outcomes) {
+      const runStore = new MemoryAgentRunStore();
+      await seedCanonicalPermissionRun(runStore, header);
+      await assert.rejects(
+        new RuntimeReadModel({
+          runStore,
+          runtimeEventStore: runStore,
+          canonicalPermissionOutcomes: {
+            readPermissionOutcome: async () => outcome,
+          },
+        }).getSessionView(header.sessionId),
+        (error: unknown) =>
+          error instanceof RuntimeReadModelError &&
+          error.diagnostics.some((diagnostic) => diagnostic.code === 'incomplete_event'),
+      );
+    }
+  });
+
+  test('RuntimeReadModel converts hosted permission outcome read failure to a hard diagnostic', async () => {
+    const runStore = new MemoryAgentRunStore();
+    const header = makeRunHeader({ status: 'completed' });
+    await seedCanonicalPermissionRun(runStore, header);
+
+    await assert.rejects(
+      new RuntimeReadModel({
+        runStore,
+        runtimeEventStore: runStore,
+        canonicalPermissionOutcomes: {
+          readPermissionOutcome: async () => {
+            throw new Error('interaction store read failed');
+          },
+        },
+      }).getSessionView(header.sessionId),
+      (error: unknown) =>
+        error instanceof RuntimeReadModelError &&
+        error.diagnostics.some(
+          (diagnostic) =>
+            diagnostic.code === 'incomplete_event' &&
+            diagnostic.message.includes('readPermissionOutcome failed'),
+        ),
+    );
+  });
+
   test('RuntimeReadModel excludes child runs from the default session transcript', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -6948,6 +7127,114 @@ describe('SessionManager permission mode updates', () => {
     ).toBe(true);
   });
 
+  test('getMessages overlays a canonical permission acceptance from a running ledger', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const session = await store.create(makeInput());
+    const header = makeRunHeader({
+      sessionId: session.id,
+      runId: 'active-run',
+      turnId: 'active-turn',
+      status: 'running',
+      createdAt: 100,
+      updatedAt: 125,
+    });
+    await runStore.createRun(header);
+    await store.appendMessages(session.id, [
+      {
+        type: 'user',
+        id: 'active-user',
+        turnId: header.turnId,
+        ts: 100,
+        text: 'write the file',
+      },
+      {
+        type: 'turn_state',
+        id: 'active-state',
+        turnId: header.turnId,
+        ts: 101,
+        status: 'running',
+        partialOutputRetained: false,
+      },
+    ]);
+    await runStore.appendRuntimeEvent(
+      session.id,
+      header.runId,
+      runtimeEvent({
+        id: 'active-permission-request',
+        sessionId: session.id,
+        runId: header.runId,
+        turnId: header.turnId,
+        ts: 110,
+        actions: {
+          permissionRequest: {
+            kind: 'tool_permission',
+            requestId: 'request-canonical',
+            toolUseId: 'tool-canonical',
+            toolName: 'Write',
+            category: 'file_write',
+            reason: 'file_write',
+            args: { path: '/tmp/file' },
+            rememberForTurnAllowed: true,
+            hint: 'write approval',
+          },
+        },
+        refs: { toolCallId: 'tool-canonical' },
+      }),
+    );
+    await runStore.appendRuntimeEvent(
+      session.id,
+      header.runId,
+      runtimeEvent({
+        id: 'active-permission-acceptance',
+        sessionId: session.id,
+        runId: header.runId,
+        turnId: header.turnId,
+        ts: 126,
+        actions: { permissionAnswerAccepted: { requestId: 'request-canonical' } },
+        refs: { toolCallId: 'tool-canonical' },
+      }),
+    );
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(125),
+      interactionAuthority: {
+        bindRun: () => {
+          throw new Error('read-only test authority cannot bind a Run');
+        },
+      },
+      canonicalPermissionOutcomes: {
+        readPermissionOutcome: async () =>
+          canonicalPermissionRecord(header, {
+            outcome: {
+              kind: 'permission_answer',
+              decision: 'allow',
+              rememberForTurn: true,
+              reviewer: 'auto_review',
+              committedAt: 125,
+            },
+          }),
+      },
+    });
+
+    expect(
+      (await manager.getMessages(session.id)).find(
+        (message) => message.type === 'permission_decision',
+      ),
+    ).toMatchObject({
+      type: 'permission_decision',
+      id: 'request-canonical',
+      turnId: header.turnId,
+      toolUseId: 'tool-canonical',
+      decision: 'allow',
+      reviewer: 'auto_review',
+    });
+  });
+
   test('active RuntimeEvent ledger without a projection cache produces an explicit read-model error', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -7337,6 +7624,131 @@ describe('SessionManager permission mode updates', () => {
       type: 'assistant',
       turnId: 'source',
       text: 'runtime branch answer',
+    });
+  });
+
+  test('conversation copies materialize requestless hosted permission history', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    const backendInstances: TestBackend[] = [];
+    backends.register('fake', (ctx) => {
+      const backend = new TestBackend(ctx);
+      backendInstances.push(backend);
+      return backend;
+    });
+    const session = await store.create(makeInput({ name: 'Parent' }));
+    const header = makeRunHeader({
+      sessionId: session.id,
+      runId: 'source-run',
+      turnId: 'source',
+      status: 'completed',
+      createdAt: 100,
+      updatedAt: 130,
+      completedAt: 130,
+    });
+    await seedCanonicalPermissionRun(runStore, header, false);
+    const sourcePermissionEvents = await runStore.readRuntimeEvents(session.id, header.runId);
+    expect(sourcePermissionEvents.some((event) => event.actions?.permissionRequest)).toBe(false);
+    expect(sourcePermissionEvents.some((event) => event.content?.kind === 'function_call')).toBe(
+      false,
+    );
+    await seedRuntimeRun(
+      runStore,
+      makeRunHeader({
+        sessionId: session.id,
+        runId: 'later-run',
+        turnId: 'later',
+        status: 'completed',
+        createdAt: 140,
+        updatedAt: 141,
+        completedAt: 141,
+      }),
+      [
+        runtimeEvent({
+          id: 'later-user',
+          sessionId: session.id,
+          runId: 'later-run',
+          turnId: 'later',
+          ts: 140,
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'replace this turn' },
+        }),
+        runtimeEvent({
+          id: 'later-terminal',
+          sessionId: session.id,
+          runId: 'later-run',
+          turnId: 'later',
+          ts: 141,
+          status: 'completed',
+          actions: { endInvocation: true },
+        }),
+      ],
+    );
+    let sourceInteractionAvailable = true;
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      newId: nextId(),
+      now: nextNow(6_755),
+      interactionAuthority: testInteractionAuthority(),
+      canonicalPermissionOutcomes: {
+        readPermissionOutcome: async () =>
+          sourceInteractionAvailable ? canonicalPermissionRecord(header) : undefined,
+      },
+    });
+
+    const child = await manager.branchFromTurn(session.id, {
+      sourceTurnId: header.turnId,
+      name: 'Child',
+    });
+    const revision = await manager.reviseBeforeTurn(session.id, { sourceTurnId: 'later' });
+    sourceInteractionAvailable = false;
+
+    const [childSourceRun] = await runStore.listSessionRuns(child.id);
+    const childSourceEvents = childSourceRun
+      ? await runStore.readRuntimeEvents(child.id, childSourceRun.runId)
+      : [];
+    expect(
+      childSourceEvents.find((event) => event.actions?.permissionDecision)?.actions
+        ?.permissionDecision,
+    ).toMatchObject({
+      requestId: 'request-canonical',
+      toolName: 'Write',
+      decision: 'deny',
+    });
+    expect(childSourceEvents.some((event) => event.actions?.permissionRequest)).toBe(false);
+    expect(childSourceEvents.some((event) => event.actions?.permissionAnswerAccepted)).toBe(false);
+
+    for (const copiedSession of [child, revision]) {
+      expect(
+        (await manager.getMessages(copiedSession.id)).find(
+          (message) => message.type === 'permission_decision',
+        ),
+      ).toMatchObject({
+        type: 'permission_decision',
+        id: 'request-canonical',
+        turnId: header.turnId,
+        toolUseId: 'tool-canonical',
+        toolName: 'Write',
+        decision: 'deny',
+        reviewer: 'user',
+      });
+    }
+
+    await drain(manager.sendMessage(child.id, { turnId: 'child-next', text: 'continue' }));
+    expect(
+      backendInstances
+        .find((backend) => backend.sessionId === child.id)
+        ?.sendInputs[0]?.context.find((message) => message.type === 'permission_decision'),
+    ).toMatchObject({
+      id: 'request-canonical',
+      toolUseId: 'tool-canonical',
+      toolName: 'Write',
+      decision: 'deny',
     });
   });
 
@@ -13017,6 +13429,7 @@ describe('SessionManager steering and followup queues', () => {
           };
         },
       },
+      canonicalPermissionOutcomes: noCanonicalPermissionOutcomes,
     });
     const session = await manager.createSession(
       makeInput({ backend: 'fake', permissionMode: 'bypass' }),
@@ -13066,6 +13479,7 @@ describe('SessionManager steering and followup queues', () => {
           release: () => lifecycle.push('release'),
         }),
       },
+      canonicalPermissionOutcomes: noCanonicalPermissionOutcomes,
     });
     const session = await manager.createSession(
       makeInput({ backend: 'fake', permissionMode: 'ask' }),
@@ -13119,6 +13533,7 @@ describe('SessionManager steering and followup queues', () => {
           },
         }),
       },
+      canonicalPermissionOutcomes: noCanonicalPermissionOutcomes,
     });
     const session = await manager.createSession(
       makeInput({ backend: 'fake', permissionMode: 'ask' }),
@@ -16682,6 +17097,125 @@ function runtimeEvent(overrides: Partial<RuntimeEvent>): RuntimeEvent {
     role: 'system',
     author: 'system',
     ...overrides,
+  };
+}
+
+async function seedCanonicalPermissionRun(
+  runStore: MemoryAgentRunStore,
+  header: AgentRunHeader,
+  includeLedgerRequest = true,
+): Promise<void> {
+  const events = [
+    runtimeEvent({
+      id: 'permission-user-canonical',
+      sessionId: header.sessionId,
+      runId: header.runId,
+      turnId: header.turnId,
+      ts: 99,
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: 'write the file' },
+    }),
+    ...(includeLedgerRequest
+      ? [
+          runtimeEvent({
+            id: 'permission-request-canonical',
+            sessionId: header.sessionId,
+            runId: header.runId,
+            turnId: header.turnId,
+            ts: 100,
+            actions: {
+              permissionRequest: {
+                kind: 'tool_permission',
+                requestId: 'request-canonical',
+                toolUseId: 'tool-canonical',
+                toolName: 'Write',
+                category: 'file_write',
+                reason: 'file_write',
+                args: { path: '/tmp/file' },
+                rememberForTurnAllowed: true,
+                hint: 'write approval',
+              },
+            },
+            refs: { toolCallId: 'tool-canonical' },
+          }),
+        ]
+      : []),
+    runtimeEvent({
+      id: 'permission-answer-canonical',
+      sessionId: header.sessionId,
+      runId: header.runId,
+      turnId: header.turnId,
+      ts: 126,
+      author: 'user',
+      actions: {
+        permissionAnswerAccepted: { requestId: 'request-canonical' },
+      },
+      refs: { toolCallId: 'tool-canonical' },
+    }),
+    runtimeEvent({
+      id: 'permission-terminal-canonical',
+      sessionId: header.sessionId,
+      runId: header.runId,
+      turnId: header.turnId,
+      ts: 130,
+      status: 'completed',
+      actions: { endInvocation: true },
+    }),
+  ];
+  await seedRuntimeRun(runStore, header, events);
+}
+
+function canonicalPermissionRecord(
+  header: AgentRunHeader,
+  overrides: Partial<CanonicalPermissionOutcomeRecord> = {},
+): CanonicalPermissionOutcomeRecord {
+  return {
+    sessionId: header.sessionId,
+    runId: header.runId,
+    turnId: header.turnId,
+    requestId: 'request-canonical',
+    request: {
+      kind: 'permission',
+      toolUseId: 'tool-canonical',
+      prompt: {
+        kind: 'tool_permission',
+        toolName: 'Write',
+        category: 'file_write',
+        reason: 'file_write',
+        review: { kind: 'path', operation: 'write', path: '/tmp/file' },
+        rememberForTurnAllowed: true,
+      },
+    },
+    outcome: {
+      kind: 'permission_answer',
+      decision: 'deny',
+      rememberForTurn: false,
+      reviewer: 'user',
+      committedAt: 125,
+    },
+    ...overrides,
+  };
+}
+
+const noCanonicalPermissionOutcomes: CanonicalPermissionOutcomeReader = {
+  readPermissionOutcome: async () => undefined,
+};
+
+function testInteractionAuthority(): RuntimeInteractionAuthority {
+  return {
+    bindRun: (identity) => ({
+      ...identity,
+      acceptPermissionRequest: async () => ({ state: 'pending' }),
+      commitPermissionAnswer: async ({ answer }) => ({
+        kind: 'permission_answer',
+        answer,
+      }),
+      commitPermissionTimeout: async () => ({ kind: 'closure', reason: 'timed_out' }),
+      acceptUserQuestionRequest: async () => {},
+      close: async () => {},
+      release: () => {},
+    }),
   };
 }
 

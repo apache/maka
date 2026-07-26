@@ -40,6 +40,7 @@ import {
   type TurnSnapshot,
 } from '../protocol/index.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
+import { worstCaseMessageQueueProjection } from './message-queue-capacity.js';
 import type { MessageOperationHandlerMap } from './operation-dispatcher.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
 
@@ -560,8 +561,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       if (!projectionFitsEveryEntryState(candidate)) {
         return failure('session_busy', 'Message queue projection capacity is full');
       }
-      const worstCaseCandidate = worstCaseQueueProjection(candidate);
-      if (!(await this.#preflightSessionSnapshot(input.sessionId, { queue: worstCaseCandidate }))) {
+      if (!(await this.#preflightSessionSnapshot(input.sessionId, { queue: candidate }))) {
         return failure('session_busy', 'Session projection capacity is full');
       }
       if (!interruptResultFits(candidate, rootState)) {
@@ -1341,19 +1341,9 @@ function queuedEntryCount(state: SessionState): number {
 
 function projectionFitsEveryEntryState(projection: SessionMessageQueueProjection): boolean {
   return fitsEncodedByteLimit(
-    worstCaseQueueProjection(projection),
+    worstCaseMessageQueueProjection(projection),
     MESSAGE_QUEUE_PROJECTION_MAX_BYTES,
   );
-}
-
-function worstCaseQueueProjection(
-  projection: SessionMessageQueueProjection,
-): SessionMessageQueueProjection {
-  return {
-    ...projection,
-    queueRevision: Number.MAX_SAFE_INTEGER,
-    steering: projection.steering.map((entry) => ({ ...entry, state: 'in_flight' as const })),
-  };
 }
 
 function retractionResultFits(

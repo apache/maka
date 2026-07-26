@@ -2,11 +2,16 @@ import { isDeepStrictEqual } from 'node:util';
 
 import type {
   AnyPermissionRequestEvent,
+  PermissionAnswerAckEvent,
   PermissionDecisionAckEvent,
   UserQuestionAnswerAckEvent,
   UserQuestionRequestEvent,
 } from '@maka/core/events';
-import type { InteractionClosureReason } from '@maka/core';
+import type {
+  InteractionCanonicalPermissionOutcome,
+  InteractionClosureReason,
+  InteractionPermissionRequest,
+} from '@maka/core';
 import type {
   HostedInteractionBridge,
   HostedPermissionAdmission,
@@ -90,6 +95,19 @@ export interface RuntimeInteractionRunFacet
 export interface RuntimeInteractionRunOwner extends RuntimeInteractionRunFacet {
   close(reason: RuntimeInteractionRunClosureReason): Promise<void>;
   release(): void;
+}
+
+export interface CanonicalPermissionOutcomeRecord {
+  readonly sessionId: string;
+  readonly runId: string;
+  readonly turnId: string;
+  readonly requestId: string;
+  readonly request: InteractionPermissionRequest;
+  readonly outcome: InteractionCanonicalPermissionOutcome;
+}
+
+export interface CanonicalPermissionOutcomeReader {
+  readPermissionOutcome(requestId: string): Promise<CanonicalPermissionOutcomeRecord | undefined>;
 }
 
 export interface RuntimeInteractionAuthority {
@@ -201,9 +219,16 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
     return this.owner.runId;
   }
 
-  canResumeAfterAnswerAck(event: PermissionDecisionAckEvent | UserQuestionAnswerAckEvent): boolean {
+  canResumeAfterAnswerAck(
+    event: PermissionAnswerAckEvent | PermissionDecisionAckEvent | UserQuestionAnswerAckEvent,
+  ): boolean {
+    if (event.type === 'permission_decision_ack') {
+      throw new RuntimeInteractionInvariantError(
+        `Hosted permission answer ${event.requestId} used a legacy decision acknowledgement`,
+      );
+    }
     const answered = this.continuations.get(event.requestId);
-    const expectedKind = event.type === 'permission_decision_ack' ? 'permission' : 'question';
+    const expectedKind = event.type === 'permission_answer_ack' ? 'permission' : 'question';
     if (
       !answered ||
       answered.kind !== expectedKind ||
@@ -307,10 +332,15 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
   assertPendingAdmission(request: AnyPermissionRequestEvent | UserQuestionRequestEvent): void {
     const tracked = this.continuations.get(request.requestId);
     const kind = request.type === 'permission_request' ? 'permission' : 'question';
+    // This synchronous guard is the publication linearization point. Close and
+    // settlement synchronously mark their state before starting durable work.
     if (
       !tracked ||
       tracked.kind !== kind ||
       tracked.admissionState !== 'pending' ||
+      this.closeReason !== undefined ||
+      tracked.settlementStarted ||
+      tracked.settled ||
       tracked.published ||
       !isDeepStrictEqual(tracked.request, request)
     ) {

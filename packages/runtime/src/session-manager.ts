@@ -121,6 +121,7 @@ import {
 } from './message-authority.js';
 import {
   RuntimeInteractionInvariantError,
+  type CanonicalPermissionOutcomeReader,
   type RuntimeInteractionAuthority,
 } from './interaction-authority.js';
 import {
@@ -486,7 +487,7 @@ export class BackendRegistry {
 // SessionManager
 // ============================================================================
 
-export interface SessionManagerDeps {
+interface SessionManagerBaseDeps {
   store: SessionStore;
   planStore?: PlanStore;
   runStore?: AgentRunStore;
@@ -511,8 +512,6 @@ export interface SessionManagerDeps {
   safeBoundaryResumeEnabled?: boolean;
   /** Hosted composition capability. Omit for the production embedded queue. */
   messageAuthority?: RuntimeMessageAuthority;
-  /** Hosted composition capability. Omit for production embedded interactions. */
-  interactionAuthority?: RuntimeInteractionAuthority;
   onContinuationLifecycleEvent?: (event: RuntimeContinuationLifecycleEvent) => void | Promise<void>;
   generateSessionTitle?: (input: {
     sessionId: string;
@@ -521,6 +520,19 @@ export interface SessionManagerDeps {
   }) => Promise<string | undefined>;
   onSessionTitleChanged?: (sessionId: string) => void;
 }
+
+type SessionManagerInteractionDeps =
+  | {
+      /** Hosted composition capabilities. Omit both for embedded interaction ownership. */
+      interactionAuthority: RuntimeInteractionAuthority;
+      canonicalPermissionOutcomes: CanonicalPermissionOutcomeReader;
+    }
+  | {
+      interactionAuthority?: undefined;
+      canonicalPermissionOutcomes?: undefined;
+    };
+
+export type SessionManagerDeps = SessionManagerBaseDeps & SessionManagerInteractionDeps;
 
 export type RuntimeContinuationLifecycleEvent =
   | {
@@ -3524,6 +3536,9 @@ export class SessionManager {
       runStore: this.deps.runStore,
       runtimeEventStore: this.deps.runtimeEventStore,
       projectionCache: this.deps.store,
+      ...(this.deps.canonicalPermissionOutcomes
+        ? { canonicalPermissionOutcomes: this.deps.canonicalPermissionOutcomes }
+        : {}),
     });
   }
 
@@ -3545,6 +3560,11 @@ export class SessionManager {
         copiedTurnIds.add(message.turnId);
     }
     if (copiedTurnIds.size === 0) return;
+    const copiedPermissionDecisions = new Map(
+      copiedMessages.flatMap((message) =>
+        message.type === 'permission_decision' ? [[message.id, message] as const] : [],
+      ),
+    );
 
     for (const sourceRun of sourceView.runs) {
       if (!copiedTurnIds.has(sourceRun.turnId)) continue;
@@ -3566,12 +3586,16 @@ export class SessionManager {
       const sourceTerminalLedger = classifyTerminalRuntimeLedger(sourceRun, sourceEvents);
       const clonedEventBySourceId = new Map<string, RuntimeEvent>();
       for (const event of sourceEvents) {
-        const clonedEvent = cloneRuntimeEventForConversationCopy(event, {
-          sessionId: childSessionId,
-          runId,
-          eventId: this.deps.newId(),
-          invocationId,
-        });
+        const clonedEvent = cloneRuntimeEventForConversationCopy(
+          event,
+          {
+            sessionId: childSessionId,
+            runId,
+            eventId: this.deps.newId(),
+            invocationId,
+          },
+          copiedPermissionDecisions,
+        );
         await this.deps.runtimeEventStore.appendRuntimeEvent(childSessionId, runId, clonedEvent);
         clonedEventBySourceId.set(event.id, clonedEvent);
       }
@@ -4115,14 +4139,38 @@ function turnStateLineage(
 function cloneRuntimeEventForConversationCopy(
   event: RuntimeEvent,
   ids: { sessionId: string; runId: string; eventId: string; invocationId: string },
+  copiedPermissionDecisions: ReadonlyMap<
+    string,
+    Extract<StoredMessage, { type: 'permission_decision' }>
+  >,
 ): RuntimeEvent {
-  return {
+  const cloned: RuntimeEvent = {
     ...event,
     id: ids.eventId,
     invocationId: ids.invocationId,
     sessionId: ids.sessionId,
     runId: ids.runId,
   };
+  const accepted = event.actions?.permissionAnswerAccepted;
+  const decision = accepted ? copiedPermissionDecisions.get(accepted.requestId) : undefined;
+  if (!decision || !cloned.actions) return cloned;
+  const { permissionAnswerAccepted: _accepted, ...actions } = cloned.actions;
+  cloned.actions = {
+    ...actions,
+    permissionDecision: {
+      requestId: decision.id,
+      toolName: decision.toolName,
+      decision: decision.decision,
+      ...(decision.rememberForTurn !== undefined
+        ? { rememberForTurn: decision.rememberForTurn }
+        : {}),
+      ...(decision.reviewer !== undefined ? { reviewer: decision.reviewer } : {}),
+      ...(decision.rationale !== undefined ? { rationale: decision.rationale } : {}),
+      ...(decision.riskLevel !== undefined ? { riskLevel: decision.riskLevel } : {}),
+    },
+  };
+  cloned.ts = decision.ts;
+  return cloned;
 }
 
 function cloneRunHeaderForConversationCopy(

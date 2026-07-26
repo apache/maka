@@ -1235,49 +1235,66 @@ export class ToolRuntime {
           return this.errorReturn(reason);
         }
 
-        const decisionMsg: PermissionDecisionMessage = {
-          type: 'permission_decision',
-          id: response.requestId,
-          turnId,
-          ts: this.input.now(),
-          toolUseId,
-          toolName: tool.name,
-          decision: response.decision,
-          ...(response.rememberForTurn !== undefined
-            ? { rememberForTurn: response.rememberForTurn }
-            : {}),
-          ...(response.reviewer !== undefined ? { reviewer: response.reviewer } : {}),
-          ...(response.rationale !== undefined ? { rationale: response.rationale } : {}),
-          ...(response.riskLevel !== undefined ? { riskLevel: response.riskLevel } : {}),
-        };
-        await this.input.appendMessage(decisionMsg);
-        queue.push({
-          type: 'permission_decision_ack',
-          id: this.input.newId(),
-          turnId,
-          ts: this.input.now(),
-          requestId: response.requestId,
-          toolUseId,
-          decision: response.decision,
-          ...(response.rememberForTurn !== undefined
-            ? { rememberForTurn: response.rememberForTurn }
-            : {}),
-          ...(response.reviewer !== undefined ? { reviewer: response.reviewer } : {}),
-          ...(response.rationale !== undefined ? { rationale: response.rationale } : {}),
-          ...(response.riskLevel !== undefined ? { riskLevel: response.riskLevel } : {}),
-        });
-        trace?.emit('permission', 'permission_decided', 'Permission decision recorded', {
-          requestId: response.requestId,
-          toolUseId,
-          toolName: tool.name,
-          decision: response.decision,
-          requestKind: verdict.event.kind ?? 'tool_permission',
-          ...(response.rememberForTurn !== undefined
-            ? { rememberForTurn: response.rememberForTurn }
-            : {}),
-          ...(response.reviewer !== undefined ? { reviewer: response.reviewer } : {}),
-          ...(response.riskLevel !== undefined ? { riskLevel: response.riskLevel } : {}),
-        });
+        if (hostedRun) {
+          queue.push({
+            type: 'permission_answer_ack',
+            id: this.input.newId(),
+            turnId,
+            ts: this.input.now(),
+            requestId: response.requestId,
+            toolUseId,
+          });
+          trace?.emit('permission', 'permission_decided', 'Permission answer accepted', {
+            requestId: response.requestId,
+            toolUseId,
+            toolName: tool.name,
+            accepted: true,
+          });
+        } else {
+          const decisionMsg: PermissionDecisionMessage = {
+            type: 'permission_decision',
+            id: response.requestId,
+            turnId,
+            ts: this.input.now(),
+            toolUseId,
+            toolName: tool.name,
+            decision: response.decision,
+            ...(response.rememberForTurn !== undefined
+              ? { rememberForTurn: response.rememberForTurn }
+              : {}),
+            ...(response.reviewer !== undefined ? { reviewer: response.reviewer } : {}),
+            ...(response.rationale !== undefined ? { rationale: response.rationale } : {}),
+            ...(response.riskLevel !== undefined ? { riskLevel: response.riskLevel } : {}),
+          };
+          await this.input.appendMessage(decisionMsg);
+          queue.push({
+            type: 'permission_decision_ack',
+            id: this.input.newId(),
+            turnId,
+            ts: this.input.now(),
+            requestId: response.requestId,
+            toolUseId,
+            decision: response.decision,
+            ...(response.rememberForTurn !== undefined
+              ? { rememberForTurn: response.rememberForTurn }
+              : {}),
+            ...(response.reviewer !== undefined ? { reviewer: response.reviewer } : {}),
+            ...(response.rationale !== undefined ? { rationale: response.rationale } : {}),
+            ...(response.riskLevel !== undefined ? { riskLevel: response.riskLevel } : {}),
+          });
+          trace?.emit('permission', 'permission_decided', 'Permission decision recorded', {
+            requestId: response.requestId,
+            toolUseId,
+            toolName: tool.name,
+            decision: response.decision,
+            requestKind: verdict.event.kind ?? 'tool_permission',
+            ...(response.rememberForTurn !== undefined
+              ? { rememberForTurn: response.rememberForTurn }
+              : {}),
+            ...(response.reviewer !== undefined ? { reviewer: response.reviewer } : {}),
+            ...(response.riskLevel !== undefined ? { riskLevel: response.riskLevel } : {}),
+          });
+        }
 
         if (response.decision === 'deny') {
           if (autoReviewEscalationKey && response.reviewer === 'auto_review') {
@@ -1287,7 +1304,7 @@ export class ToolRuntime {
             response.reviewer === 'auto_review'
               ? `自动审批已拒绝权限请求${response.rationale ? `：${response.rationale}` : ''}`
               : '用户已拒绝权限请求';
-          if (isEscalation) {
+          if (isEscalation && !hostedRun) {
             trace?.emit('permission', 'sandbox_escalation_denied', 'Sandbox escalation denied', {
               requestId: response.requestId,
               toolUseId,
@@ -1308,7 +1325,7 @@ export class ToolRuntime {
         if (autoReviewEscalationKey) {
           this.autoReviewEscalationAttempts.delete(autoReviewEscalationKey);
         }
-        if (isEscalation) {
+        if (isEscalation && !hostedRun) {
           trace?.emit('permission', 'sandbox_escalation_granted', 'Sandbox escalation granted', {
             requestId: response.requestId,
             toolUseId,

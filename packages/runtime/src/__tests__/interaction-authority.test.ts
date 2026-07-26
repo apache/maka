@@ -85,6 +85,79 @@ describe('Runtime Interaction authority seam', () => {
     assert.deepEqual(log, ['close:turn_terminal', 'release']);
   });
 
+  test('fails closed when Run close wins the publication linearization point', async () => {
+    const binding = await bindRuntimeInteractionRun(authority(), RUN);
+    const request = {
+      type: 'permission_request',
+      id: 'event-close-race',
+      turnId: RUN.turnId,
+      ts: 1,
+      requestId: 'request-close-race',
+      toolUseId: 'tool-close-race',
+      toolName: 'Write',
+      category: 'file_write',
+      args: { path: '/tmp/a' },
+      kind: 'tool_permission',
+      reason: 'file_write',
+      rememberForTurnAllowed: true,
+    } as const;
+    await binding.admitPermissionRequest({
+      request,
+      settlement: {
+        applyAnswer: async () => {},
+        applyClosure: async () => {},
+      },
+    });
+
+    await binding.close('turn_stopped');
+
+    assert.throws(() => binding.assertPendingAdmission(request), RuntimeInteractionInvariantError);
+  });
+
+  test('fails closed when continuation settlement wins the publication linearization point', async () => {
+    const localSettlement = deferred<void>();
+    let continuation: RuntimePermissionContinuation | undefined;
+    const binding = await bindRuntimeInteractionRun(
+      authority({
+        acceptPermissionRequest: async ({ continuation: admitted }) => {
+          continuation = admitted;
+          return { state: 'pending' };
+        },
+      }),
+      RUN,
+    );
+    const request = {
+      type: 'permission_request',
+      id: 'event-settlement-race',
+      turnId: RUN.turnId,
+      ts: 1,
+      requestId: 'request-settlement-race',
+      toolUseId: 'tool-settlement-race',
+      toolName: 'Write',
+      category: 'file_write',
+      args: { path: '/tmp/a' },
+      kind: 'tool_permission',
+      reason: 'file_write',
+      rememberForTurnAllowed: true,
+    } as const;
+    await binding.admitPermissionRequest({
+      request,
+      settlement: {
+        applyAnswer: async () => localSettlement.promise,
+        applyClosure: async () => {},
+      },
+    });
+
+    const settlement = continuation!.applyAnswer({ decision: 'allow' });
+
+    assert.throws(() => binding.assertPendingAdmission(request), RuntimeInteractionInvariantError);
+    localSettlement.resolve();
+    await settlement;
+    await binding.close('turn_terminal');
+    await binding.settleLocalClosures();
+    binding.release();
+  });
+
   test('keeps embedded answers unchanged and gates hosted answers on durable commit', async () => {
     const embedded = permissionEngine();
     embedded.beginTurn('embedded-turn');
@@ -691,6 +764,30 @@ describe('Runtime Interaction authority seam', () => {
       });
     }
     await continuations[0]!.applyAnswer({ decision: 'allow', rememberForTurn: true });
+    assert.equal(
+      binding.canResumeAfterAnswerAck({
+        type: 'permission_answer_ack',
+        id: 'first-permission-answer',
+        turnId: RUN.turnId,
+        ts: 1,
+        requestId: continuations[0]!.requestId,
+        toolUseId: 'tool-1',
+      }),
+      false,
+    );
+    assert.throws(
+      () =>
+        binding.canResumeAfterAnswerAck({
+          type: 'permission_decision_ack',
+          id: 'legacy-hosted-decision',
+          turnId: RUN.turnId,
+          ts: 1,
+          requestId: continuations[0]!.requestId,
+          toolUseId: 'tool-1',
+          decision: 'allow',
+        }),
+      RuntimeInteractionInvariantError,
+    );
     let secondSettled = false;
     void second.parked.then(() => {
       secondSettled = true;
@@ -701,6 +798,17 @@ describe('Runtime Interaction authority seam', () => {
     durable.push('sibling-durable');
     await continuations[1]!.applyAnswer({ decision: 'allow', rememberForTurn: true });
     assert.equal((await second.parked).decision, 'allow');
+    assert.equal(
+      binding.canResumeAfterAnswerAck({
+        type: 'permission_answer_ack',
+        id: 'second-permission-answer',
+        turnId: RUN.turnId,
+        ts: 2,
+        requestId: continuations[1]!.requestId,
+        toolUseId: 'tool-2',
+      }),
+      true,
+    );
     assert.deepEqual(durable, ['sibling-durable']);
     await first.parked;
     engine.endTurn(RUN.turnId);
@@ -784,6 +892,9 @@ describe('Runtime Interaction authority seam', () => {
       newId: () => 'id',
       now: () => 1,
       interactionAuthority: authority(),
+      canonicalPermissionOutcomes: {
+        readPermissionOutcome: async () => undefined,
+      },
       runtimeKernel: {
         respondToPermission: async () => {
           permissionBroadcasts += 1;

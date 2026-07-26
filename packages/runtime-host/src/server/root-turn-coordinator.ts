@@ -1296,7 +1296,11 @@ function isRuntimeSessionTransientEvent(
 }
 
 function isInteractionAnswerAck(event: SessionEvent): boolean {
-  return event.type === 'permission_decision_ack' || event.type === 'user_question_answer_ack';
+  return (
+    event.type === 'permission_answer_ack' ||
+    event.type === 'permission_decision_ack' ||
+    event.type === 'user_question_answer_ack'
+  );
 }
 
 function completedStart(outcome: TurnStartOutcome): TurnStartDisposition {

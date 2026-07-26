@@ -1449,6 +1449,7 @@ function isPermissionHandoffTerminal(event: RuntimeEvent): boolean {
 
 function isInteractionResumeAck(event: SessionEvent): boolean {
   return (
+    event.type === 'permission_answer_ack' ||
     (event.type === 'permission_decision_ack' && event.decision === 'allow') ||
     event.type === 'user_question_answer_ack'
   );

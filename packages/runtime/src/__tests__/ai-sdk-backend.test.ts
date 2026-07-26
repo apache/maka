@@ -169,11 +169,14 @@ describe('AiSdkBackend model history', () => {
       },
     });
     const events: SessionEvent[] = [];
+    const messages: StoredMessage[] = [];
     const model = singlePermissionToolModel();
     const backend = new AiSdkBackend({
       sessionId: 'session-1',
       header: header('execute'),
-      appendMessage: async () => {},
+      appendMessage: async (message) => {
+        messages.push(message);
+      },
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
@@ -212,6 +215,18 @@ describe('AiSdkBackend model history', () => {
     allowAdmission.release();
     await running;
     assert.equal(reviewStarted, true);
+    const ack = events.find((event) => event.type === 'permission_answer_ack');
+    assert.ok(ack);
+    assert.equal(JSON.stringify(ack).includes('decision'), false);
+    assert.equal(
+      messages.some((message) => message.type === 'permission_decision'),
+      false,
+    );
+    const accepted = durable.ledger.find(
+      (event) => event.actions?.permissionAnswerAccepted?.requestId === ack.requestId,
+    );
+    assert.ok(accepted);
+    assert.equal(JSON.stringify(accepted).includes('decision'), false);
 
     await binding.close('turn_terminal');
     await binding.settleLocalClosures();
@@ -276,7 +291,6 @@ describe('AiSdkBackend model history', () => {
     assert.equal(timeoutCommits, 1);
     const request = events.find((event) => event.type === 'permission_request');
     if (request?.type !== 'permission_request') assert.fail('expected admitted timeout request');
-    binding.assertPendingAdmission(request);
 
     await binding.close('turn_terminal');
     await binding.settleLocalClosures();

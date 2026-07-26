@@ -153,6 +153,11 @@ describe('HostInteractionCoordinator', () => {
       ]);
       assert.equal(first?.outcome?.outcome.kind, 'permission_answer');
       assert.equal(second?.outcome?.outcome.kind, 'permission_answer');
+      const canonical = await coordinator.readPermissionOutcome('permission_later');
+      assert.equal(canonical?.requestId, 'permission_later');
+      assert.equal(canonical?.request.toolUseId, 'tool_later');
+      assert.equal(canonical?.request.prompt.toolName, 'Bash');
+      assert.equal(canonical?.outcome.kind, 'permission_answer');
 
       await owner.close('turn_terminal');
       owner.release();

@@ -347,6 +347,16 @@ describe('PiAgentBackend skeleton', () => {
     await backend.respondToPermission({ requestId, decision: 'deny' });
     const second = await secondPromise;
     assert.equal(second.value?.type, 'permission_decision_ack');
+    assert.equal(
+      second.value?.type === 'permission_decision_ack' ? second.value.decision : undefined,
+      'deny',
+    );
+    assert.equal(
+      messages.some(
+        (message) => message.type === 'permission_decision' && message.decision === 'deny',
+      ),
+      true,
+    );
     const third = await iterator.next();
     assert.equal(third.value?.type, 'tool_result');
     assert.equal(third.value?.type === 'tool_result' ? third.value.isError : false, true);
@@ -913,10 +923,13 @@ describe('PiAgentBackend skeleton', () => {
         return { state: 'pending' };
       },
     });
+    const messages: StoredMessage[] = [];
     const backend = new PiAgentBackend({
       sessionId: 'session-1',
       header: header({ permissionMode: 'ask' }),
-      appendMessage: async () => {},
+      appendMessage: async (message) => {
+        messages.push(message);
+      },
       permissionEngine: new PermissionEngine({ newId: nextId('permission'), now: nextNow(6_100) }),
       transport: frames([
         {
@@ -956,9 +969,31 @@ describe('PiAgentBackend skeleton', () => {
     if (request?.type !== 'permission_request') assert.fail('expected Pi permission request');
     binding.assertPendingAdmission(request);
     await continuation!.applyAnswer({ decision: 'deny', rememberForTurn: false });
+    const events: SessionEvent[] = [];
     for await (const _event of { [Symbol.asyncIterator]: () => iterator }) {
-      // Drain the real Pi decision/result path.
+      events.push(_event);
     }
+    const ack = events.find((event) => event.type === 'permission_answer_ack');
+    assert.ok(ack);
+    assert.deepEqual(
+      {
+        requestId: ack.requestId,
+        toolUseId: ack.toolUseId,
+      },
+      {
+        requestId: request.requestId,
+        toolUseId: request.toolUseId,
+      },
+    );
+    assert.equal(JSON.stringify(ack).includes('decision'), false);
+    assert.equal(
+      messages.some((message) => message.type === 'permission_decision'),
+      false,
+    );
+    assert.equal(
+      events.some((event) => event.type === 'tool_result' && event.isError),
+      true,
+    );
 
     await binding.close('turn_terminal');
     await binding.settleLocalClosures();
@@ -1028,10 +1063,13 @@ describe('PiAgentBackend skeleton', () => {
         return { state: 'settled' };
       },
     });
+    const messages: StoredMessage[] = [];
     const backend = new PiAgentBackend({
       sessionId: 'session-1',
       header: header({ permissionMode: 'ask' }),
-      appendMessage: async () => {},
+      appendMessage: async (message) => {
+        messages.push(message);
+      },
       permissionEngine: new PermissionEngine({ newId: nextId('permission'), now: nextNow(6_300) }),
       transport: frames([
         {
@@ -1061,8 +1099,16 @@ describe('PiAgentBackend skeleton', () => {
       false,
     );
     assert.equal(
-      events.some((event) => event.type === 'permission_decision_ack'),
+      events.some((event) => event.type === 'permission_answer_ack'),
       true,
+    );
+    assert.equal(
+      events.some((event) => event.type === 'permission_decision_ack'),
+      false,
+    );
+    assert.equal(
+      messages.some((message) => message.type === 'permission_decision'),
+      false,
     );
     assert.equal(scopes.length, 1);
 

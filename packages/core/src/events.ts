@@ -324,6 +324,7 @@ export type SessionEvent =
   | ToolProgressEvent
   | ToolResultEvent
   | AnyPermissionRequestEvent
+  | PermissionAnswerAckEvent
   | PermissionDecisionAckEvent
   | UserQuestionRequestEvent
   | UserQuestionAnswerAckEvent
@@ -718,9 +719,18 @@ export interface UserQuestionAnswerAckEvent extends BaseEvent {
 }
 
 /**
- * Echo of the user's permission decision back through the event stream so
- * all UI observers (and JSONL audit) see the same outcome. Mirrors the
- * PermissionDecisionMessage that storage appends.
+ * Echo that the hosted runtime accepted a permission answer.
+ * The canonical decision remains owned by the Interaction outcome.
+ */
+export interface PermissionAnswerAckEvent extends BaseEvent {
+  type: 'permission_answer_ack';
+  requestId: string;
+  toolUseId: string;
+}
+
+/**
+ * Embedded/legacy echo of a permission decision. Hosted execution uses the
+ * identity-only PermissionAnswerAckEvent instead.
  */
 export interface PermissionDecisionAckEvent extends BaseEvent {
   type: 'permission_decision_ack';

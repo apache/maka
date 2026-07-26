@@ -445,6 +445,18 @@ function mapBackendSessionEvent(
         },
         refs: { toolCallId: event.toolUseId },
       };
+    case 'permission_answer_ack':
+      return {
+        ...base,
+        role: 'system',
+        author: 'user',
+        actions: {
+          permissionAnswerAccepted: {
+            requestId: event.requestId,
+          },
+        },
+        refs: { toolCallId: event.toolUseId },
+      };
     case 'user_question_request':
       return {
         ...base,
@@ -668,6 +680,8 @@ function completeRuntimeEvent(
 export interface AiSdkFlowInput {
   /** The wrapped stepping engine. Production: AiSdkBackend. Tests: any AgentBackend. */
   backend: AgentBackend;
+  /** Backend-activation stop owner. Standalone flows create a local fallback when omitted. */
+  stopBackend?: AgentBackend['stop'];
   /** Exact hosted Interaction Run forwarded only for this flow invocation. */
   hostedInteraction?: HostedInteractionBridge;
   /**
@@ -710,9 +724,11 @@ export class AiSdkFlow implements AgentFlow, AgentFlowControl {
   private readonly onError: AiSdkFlowInput['onError'];
   private readonly onFinally: AiSdkFlowInput['onFinally'];
   private readonly drainAfterTerminal: boolean;
+  private readonly stopBackend: AgentBackend['stop'];
 
   constructor(input: AiSdkFlowInput) {
     this.backend = input.backend;
+    this.stopBackend = input.stopBackend ?? createSingleFlightBackendStop(input.backend);
     this.hostedInteraction = input.hostedInteraction;
     this.sessionId = input.backend.sessionId;
     this.kind = input.backend.kind;
@@ -818,8 +834,8 @@ export class AiSdkFlow implements AgentFlow, AgentFlowControl {
     }
   }
 
-  async stop(reason: 'user_stop' | 'redirect'): Promise<void> {
-    await this.backend.stop(reason);
+  stop(reason: 'user_stop' | 'redirect'): Promise<void> {
+    return this.stopBackend(reason);
   }
 
   async respondToPermission(decision: PermissionDecision): Promise<void> {
@@ -833,6 +849,20 @@ export class AiSdkFlow implements AgentFlow, AgentFlowControl {
   async dispose(): Promise<void> {
     await this.backend.dispose();
   }
+}
+
+export function createSingleFlightBackendStop(backend: AgentBackend): AgentBackend['stop'] {
+  let pending: Promise<void> | undefined;
+  return (reason, mode) => {
+    if (pending) return pending;
+    const attempt = Promise.resolve().then(() => backend.stop(reason, mode));
+    pending = attempt;
+    const clear = (): void => {
+      if (pending === attempt) pending = undefined;
+    };
+    void attempt.then(clear, clear);
+    return attempt;
+  };
 }
 
 function missingTerminalSessionEvents(

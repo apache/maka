@@ -121,8 +121,8 @@ test('full snapshot preflight rejection leaves queue, receipt, residency, and pu
   const rejected = await submit(fixture, 'capacity-candidate', 'small message', 'current_turn');
   assert.equal(rejected.ok, false);
   if (!rejected.ok) assert.equal(rejected.error.code, 'session_busy');
-  assert.equal(observedQueue?.queueRevision, Number.MAX_SAFE_INTEGER);
-  assert.equal(observedQueue?.steering[0]?.state, 'in_flight');
+  assert.equal(observedQueue?.queueRevision, 1);
+  assert.equal(observedQueue?.steering[0]?.state, 'queued');
   assert.deepEqual(fixture.coordinator.projection(ROOT.sessionId).steering, []);
   assert.equal(fixture.liveResidencies(), 0);
   assert.deepEqual(changedSessions, []);
