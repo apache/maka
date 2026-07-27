@@ -432,7 +432,6 @@ class MakaAgent(BaseInstalledAgent):
             await self.exec_as_agent(environment, command=command, env=env, timeout_sec=self._cell_timeout_sec())
             await self._download_cell_output(environment)
         output = self._read_cell_output(required=True)
-        await self._download_runtime_events(environment, output)
         await self._download_runtime_artifacts(environment)
         self._apply_cell_output(context, output)
 
@@ -730,26 +729,6 @@ class MakaAgent(BaseInstalledAgent):
             "maka_actual_tool_call_counts": _optional_dict(output.get("toolSummary"), "actualToolCallCounts"),
         }
         self._write_trajectory(output)
-
-    async def _download_runtime_events(
-        self,
-        environment: BaseEnvironment,
-        output: dict[str, Any],
-    ) -> None:
-        if self._resolve_runtime_events_path() is not None:
-            return
-        remote = output.get("runtimeEventsPath")
-        if not isinstance(remote, str) or not remote:
-            return
-        expected_remote = EnvironmentPaths.agent_dir / self._RUNTIME_EVENTS_FILENAME
-        if Path(remote) != expected_remote:
-            self.logger.debug("Ignoring unexpected Maka runtime events path %s", remote)
-            return
-        local = self.logs_dir / self._RUNTIME_EVENTS_FILENAME
-        try:
-            await environment.download_file(remote, local)
-        except Exception as exc:  # noqa: BLE001 - summary fallback records the missing evidence.
-            self.logger.debug("Could not download Maka runtime events %s: %s", remote, exc)
 
     def _resolve_runtime_events_path(self) -> Path | None:
         local = self.logs_dir / self._RUNTIME_EVENTS_FILENAME

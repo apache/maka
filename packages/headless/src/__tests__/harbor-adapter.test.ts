@@ -49,9 +49,38 @@ describe('Harbor adapter contract', () => {
       },
       refs: { stepId: 'step-1', toolCallId: 'call-1' },
     });
+    const schemaCorpus = [
+      { name: 'valid-function-call', event: providerOptionsEvent },
+      {
+        name: 'unknown-refs-key',
+        event: {
+          ...providerOptionsEvent,
+          refs: { ...providerOptionsEvent.refs, unexpected: 'drift' },
+        },
+      },
+      {
+        name: 'unknown-actions-key',
+        event: { ...providerOptionsEvent, actions: { unexpected: true } },
+      },
+    ].map((entry) => {
+      let accepted = true;
+      try {
+        decodeRuntimeEvent(entry.event);
+      } catch {
+        accepted = false;
+      }
+      return { ...entry, accepted };
+    });
     const result = spawnSync(
       'python3',
-      ['-c', pythonTrajectoryBuilderScript(repoRoot, JSON.stringify(providerOptionsEvent))],
+      [
+        '-c',
+        pythonTrajectoryBuilderScript(
+          repoRoot,
+          JSON.stringify(providerOptionsEvent),
+          JSON.stringify(schemaCorpus),
+        ),
+      ],
       {
         cwd: repoRoot,
         encoding: 'utf8',
@@ -2757,7 +2786,11 @@ with tempfile.TemporaryDirectory() as tmp:
 `;
 }
 
-function pythonTrajectoryBuilderScript(root: string, providerOptionsEventJson: string): string {
+function pythonTrajectoryBuilderScript(
+  root: string,
+  providerOptionsEventJson: string,
+  schemaCorpusJson: string,
+): string {
   return String.raw`
 import json
 import sys
@@ -2895,13 +2928,23 @@ assert "'message': 'keep me'" in quoted, quoted
 raw = redact_text("token=private-token Cookie: session=private-cookie; Path=/ Set-Cookie: sid=private-set-cookie")
 for secret in ("private-token", "private-cookie", "private-set-cookie"):
     assert secret not in raw, raw
+quoted_authorization = redact_text("Authorization: \"Basic private-basic-token\"; Authorization: 'Bearer private-bearer-token'")
+for secret in ("private-basic-token", "private-bearer-token"):
+    assert secret not in quoted_authorization, quoted_authorization
 spaced = redact_text("token = private-spaced-token --token\t=\tprivate-tabbed-token")
 for secret in ("private-spaced-token", "private-tabbed-token"):
     assert secret not in spaced, spaced
 prose = "Optimize token budget before answering. The cookie policy is documented."
 assert redact_text(prose) == prose, redact_text(prose)
+colon_prose = "A secret: the answer is 42."
+assert redact_text(colon_prose) == colon_prose, redact_text(colon_prose)
+header = redact_text("token: private-header-token\nnext line")
+assert "private-header-token" not in header, header
 flagged = redact_text("command --token private-flag-token")
 assert "private-flag-token" not in flagged, flagged
+namespaced_flags = redact_text("command --client-secret private-client-secret --github-token private-github-token --openai-api-key private-openai-key")
+for secret in ("private-client-secret", "private-github-token", "private-openai-key"):
+    assert secret not in namespaced_flags, namespaced_flags
 
 provider_options_events = json.loads(json.dumps(events))
 provider_options_events[2] = json.loads(${JSON.stringify(providerOptionsEventJson)})
@@ -2916,6 +2959,16 @@ assert provider_options_extra["maka_provider_options"] == {
         "apiKey": "[REDACTED]",
     }
 }, provider_options_extra
+
+schema_corpus = json.loads(${JSON.stringify(schemaCorpusJson)})
+for case in schema_corpus:
+    corpus_events = json.loads(json.dumps(events))
+    corpus_events[2] = case["event"]
+    corpus_result = build_runtime_trajectory(corpus_events, "completed", runtime_refs)
+    expected_kind = "full" if case["accepted"] else "summary"
+    assert corpus_result.artifact_kind == expected_kind, (case, corpus_result)
+    if not case["accepted"]:
+        assert corpus_result.reason == "runtime_event_schema_invalid", (case, corpus_result)
 
 thinking_provider_options_events = json.loads(json.dumps(events))
 thinking_provider_options_events[1]["content"]["providerOptions"] = {
@@ -3179,6 +3232,19 @@ with tempfile.TemporaryDirectory() as tmp:
     assert image_content[0].source.path.endswith(".png"), image_content
     assert (logs_dir / image_content[0].source.path).is_file(), image_content
 
+    materialized_path = logs_dir / image_content[0].source.path
+    protected_path = logs_dir / "protected-image-target"
+    materialized_path.unlink()
+    protected_path.write_bytes(b"protected")
+    materialized_path.symlink_to(protected_path)
+    agent._apply_cell_output(context, {
+        "status": "completed",
+        "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
+    })
+    assert not materialized_path.is_symlink(), materialized_path
+    assert protected_path.read_bytes() == b"protected", protected_path
+
     image_path.unlink()
     agent._apply_cell_output(context, {
         "status": "completed",
@@ -3231,12 +3297,15 @@ with tempfile.TemporaryDirectory() as tmp:
 
     class DownloadEnvironment:
         async def download_file(self, remote, local):
+            if remote == "/logs/agent/maka-cell-output.json":
+                Path(local).write_text(json.dumps({
+                    "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+                }), encoding="utf-8")
+                return
             assert remote == "/logs/agent/runtime-events.jsonl", remote
             Path(local).write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
 
-    asyncio.run(download_agent._download_runtime_events(DownloadEnvironment(), {
-        "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
-    }))
+    asyncio.run(download_agent._download_cell_output(DownloadEnvironment()))
     assert (download_logs / "runtime-events.jsonl").is_file()
 
     downloaded_image_events = events[:2] + [

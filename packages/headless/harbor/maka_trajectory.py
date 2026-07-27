@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import shutil
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -60,7 +62,7 @@ _SECRET_PATTERNS = (
     ),
     re.compile(
         r"(?i)((?:authorization|x-api-key|api-key)\s*:\s*)"
-        r"(?:bearer\s+|basic\s+)?[^\s,;\"']+"
+        r"(?:\"[^\"]*\"|'[^']*'|(?:bearer\s+|basic\s+)?(?:\"[^\"]*\"|'[^']*'|[^\s,;\"']+))"
     ),
     re.compile(r"(?i)([a-z][a-z0-9+.-]*://[^/\s:@]+:)[^@\s/]+(?=@)"),
     re.compile(
@@ -68,12 +70,13 @@ _SECRET_PATTERNS = (
         r"[^&#\s]+"
     ),
     re.compile(
-        r"(?i)(?<![A-Za-z0-9_])((?:--?(?:api[-_]?key|auth[-_]?token|access[-_]?token|token|cookie|set-cookie|password|secret))"
+        r"(?i)(?<![A-Za-z0-9_])((?:--?(?:[a-z0-9]+[-_])*(?:api[-_]?key|access[-_]?key|auth[-_]?token|access[-_]?token|token|cookie|set[-_]?cookie|password|passwd|secret|credentials?|private[-_]?key|refresh[-_]?token|client[-_]?secret))"
         r"(?:\s*[:=]\s*|\s+))(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
     ),
     re.compile(
-        r"(?i)((?:api[-_]?key|auth[-_]?token|access[-_]?token|token|cookie|set-cookie|password|secret)"
-        r"\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+        r"(?im)(^[ \t]*(?:api[-_]?key|auth[-_]?token|access[-_]?token|token|cookie|set-cookie|password|secret)"
+        r"\s*:\s*|(?<![A-Za-z0-9_-])(?:api[-_]?key|auth[-_]?token|access[-_]?token|token|cookie|set-cookie|password|secret)"
+        r"\s*=\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
     ),
     re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s,;]+"),
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}"),
@@ -138,6 +141,32 @@ class _IncompleteTrajectoryEvidence(ValueError):
 
 
 _RUNTIME_REF_KEYS = ("invocationId", "runId", "sessionId", "turnId")
+_RUNTIME_ACTION_KEYS = {
+    "stateDelta",
+    "artifactDelta",
+    "permissionRequest",
+    "permissionDecision",
+    "userQuestionRequest",
+    "transferToAgent",
+    "endInvocation",
+    "tokenUsage",
+    "toolDispatch",
+    "runtimeProtocol",
+}
+_RUNTIME_EVENT_REF_KEYS = {
+    "storedMessageId",
+    "traceEventId",
+    "toolCallId",
+    "providerEventId",
+    "providerRequestTraceId",
+    "artifactId",
+    "operationId",
+    "stepId",
+    "sourceInvocationId",
+    "sourceRunId",
+    "sourceTurnId",
+    "sourceRuntimeEventHighWater",
+}
 
 
 class _ImageArtifactResolver:
@@ -195,9 +224,21 @@ class _ImageArtifactResolver:
             digest = hashlib.sha256(artifact_id.encode("utf-8")).hexdigest()
             filename = f"{digest}{_IMAGE_EXTENSIONS[mime_type]}"
             target = assets_root / filename
-            shutil.copyfile(source, target)
-            if _sniff_image_media_type(target) != mime_type:
-                raise OSError
+            temporary_fd, temporary_name = tempfile.mkstemp(
+                dir=assets_root, prefix=f".{filename}.", suffix=".tmp"
+            )
+            os.close(temporary_fd)
+            temporary_target = Path(temporary_name)
+            try:
+                shutil.copyfile(source, temporary_target)
+                if _sniff_image_media_type(temporary_target) != mime_type:
+                    raise OSError
+                os.replace(temporary_target, target)
+            finally:
+                try:
+                    temporary_target.unlink()
+                except FileNotFoundError:
+                    pass
             trajectory_path = target.relative_to(trajectory_root).as_posix()
         except (OSError, RuntimeError, ValueError):
             raise _IncompleteTrajectoryEvidence("image_artifact_materialization_failed") from None
@@ -791,9 +832,15 @@ def _is_runtime_event(event: dict[str, Any]) -> bool:
         return False
     if "status" in event and event["status"] not in _TERMINAL_STATUSES | {"streaming"}:
         return False
-    if "actions" in event and not isinstance(event["actions"], dict):
+    if "actions" in event and (
+        not isinstance(event["actions"], dict)
+        or set(event["actions"]) - _RUNTIME_ACTION_KEYS
+    ):
         return False
-    if "refs" in event and not isinstance(event["refs"], dict):
+    if "refs" in event and (
+        not isinstance(event["refs"], dict)
+        or set(event["refs"]) - _RUNTIME_EVENT_REF_KEYS
+    ):
         return False
     return "content" not in event or _is_runtime_content(event["content"])
 
