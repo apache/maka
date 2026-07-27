@@ -1,5 +1,10 @@
 import { existsSync, writeSync } from 'node:fs';
-import type { RuntimeEvent, ToolRecoveryFactEnvelope } from '@maka/core';
+import {
+  createRuntimeBoundaryCursor,
+  runtimePrefixSegment,
+  type RuntimeEvent,
+  type ToolRecoveryFactEnvelope,
+} from '@maka/core';
 import { createSqliteRuntimeStore } from '../../sqlite-runtime-store.js';
 
 const mode = requiredEnv('MAKA_SQLITE_RECOVERY_CONCURRENCY_MODE');
@@ -27,6 +32,28 @@ try {
     await store.commitToolRecoveryBundle(parkedBundle());
   } else if (mode === 'rebuild') {
     await store.rebuildToolProjectionsFromRuntimeEvents();
+  } else if (mode === 'claim') {
+    const prefix = await store.readImmutableRuntimePrefix({
+      sessionId: 'session-1',
+      runId: 'run-1',
+    });
+    const boundary = createRuntimeBoundaryCursor([runtimePrefixSegment(prefix)]);
+    const result = await store.claimContinuation({
+      claim: {
+        protocol: 'continuation_claim_v1',
+        claimId: `claim-${process.pid}`,
+        boundaryDigest: boundary.manifestDigest,
+        boundary,
+        target: {
+          sessionId: 'session-1',
+          invocationId: `invocation-${process.pid}`,
+          runId: `run-${process.pid}`,
+          turnId: `turn-${process.pid}`,
+        },
+        claimedAt: process.pid,
+      },
+    });
+    writeSync(1, `CLAIM ${result.kind}\n`);
   } else {
     throw new Error(`Unknown concurrency mode ${mode}`);
   }

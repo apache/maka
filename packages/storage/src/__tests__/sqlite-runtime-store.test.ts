@@ -2,8 +2,16 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
-import { canonicalToolArgsHash, type RuntimeEvent } from '@maka/core';
+import {
+  buildImmutableRuntimePrefix,
+  canonicalToolArgsHash,
+  createRuntimeBoundaryCursor,
+  runtimePrefixSegment,
+  type ContinuationClaimV1,
+  type RuntimeEvent,
+} from '@maka/core';
 import {
   SQLITE_RUNTIME_SCHEMA_VERSION,
   createSqliteRuntimeStore,
@@ -349,6 +357,255 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
+  it('atomically acquires one continuation claim and makes exact retry observable', async () => {
+    await withStore(async (store) => {
+      const claim = continuationClaim();
+
+      const acquired = await store.claimContinuation({ claim });
+      const existing = await store.claimContinuation({
+        claim: { ...claim, claimId: 'claim-retry', claimedAt: 11 },
+      });
+
+      assert.equal(acquired.kind, 'acquired');
+      assert.equal(existing.kind, 'existing');
+      assert.deepEqual(existing.claim, claim);
+      assert.deepEqual(await store.readContinuationClaimByBoundary(claim.boundaryDigest), claim);
+    });
+  });
+
+  it('rolls back a continuation claim when the process fails after its insert', async () => {
+    await withStore(async (store, _dbPath, setFailpoint) => {
+      const claim = continuationClaim();
+      setFailpoint('after_continuation_claim_insert');
+
+      await assert.rejects(store.claimContinuation({ claim }), /after_continuation_claim_insert/);
+      assert.equal(await store.readContinuationClaimByBoundary(claim.boundaryDigest), undefined);
+
+      setFailpoint(undefined);
+      assert.equal((await store.claimContinuation({ claim })).kind, 'acquired');
+    });
+  });
+
+  it('rejects a second boundary that tries to reuse an acquired target identity', async () => {
+    await withStore(async (store) => {
+      const claim = continuationClaim();
+      const otherBoundary = createRuntimeBoundaryCursor([
+        runtimePrefixSegment(
+          buildImmutableRuntimePrefix(
+            {
+              sessionId: 'session-1',
+              invocationId: 'invocation-source-2',
+              runId: 'run-source-2',
+              turnId: 'turn-source-2',
+            },
+            [
+              {
+                eventSeq: 1,
+                event: functionCallEvent({
+                  id: 'source-2-event',
+                  invocationId: 'invocation-source-2',
+                  runId: 'run-source-2',
+                  turnId: 'turn-source-2',
+                  content: undefined,
+                }),
+              },
+            ],
+          ),
+        ),
+      ]);
+      assert.equal((await store.claimContinuation({ claim })).kind, 'acquired');
+
+      const conflict = await store.claimContinuation({
+        claim: {
+          ...claim,
+          claimId: 'claim-2',
+          boundaryDigest: otherBoundary.manifestDigest,
+          boundary: otherBoundary,
+          claimedAt: 11,
+        },
+      });
+
+      assert.equal(conflict.kind, 'conflict');
+      assert.deepEqual(conflict.claim, claim);
+    });
+  });
+
+  it('fails closed when continuation claim columns disagree with canonical payload', async () => {
+    await withStore(async (store, dbPath) => {
+      const claim = continuationClaim();
+      assert.equal((await store.claimContinuation({ claim })).kind, 'acquired');
+
+      const tamper = new DatabaseSync(dbPath);
+      try {
+        tamper
+          .prepare('UPDATE runtime_continuation_claims SET source_run_id = ? WHERE claim_id = ?')
+          .run('forged-source-run', claim.claimId);
+      } finally {
+        tamper.close();
+      }
+
+      await assert.rejects(
+        store.readContinuationClaimByBoundary(claim.boundaryDigest),
+        /row\/payload identity mismatch/,
+      );
+    });
+  });
+
+  it('commits continuation-start exactly once through its dedicated authority writer', async () => {
+    await withStore(async (store) => {
+      const claim = continuationClaim();
+      const event = continuationStartEvent(claim);
+      assert.equal((await store.claimContinuation({ claim })).kind, 'acquired');
+
+      await assert.rejects(
+        store.appendRuntimeEvent(claim.target.sessionId, claim.target.runId, event),
+        /continuation authority writer/i,
+      );
+      assert.deepEqual(await store.commitContinuationStart({ claim, event }), {
+        created: true,
+        runtimeEventSeq: 1,
+      });
+      assert.deepEqual(await store.commitContinuationStart({ claim, event }), {
+        created: false,
+        runtimeEventSeq: 1,
+      });
+      assert.deepEqual(
+        await store.readImmutableRuntimeEvents(claim.target.sessionId, claim.target.runId),
+        [event],
+      );
+    });
+  });
+
+  it('rolls back continuation-start when failure occurs after the event insert', async () => {
+    await withStore(async (store, _dbPath, setFailpoint) => {
+      const claim = continuationClaim();
+      const event = continuationStartEvent(claim);
+      assert.equal((await store.claimContinuation({ claim })).kind, 'acquired');
+      setFailpoint('after_continuation_start_insert');
+
+      await assert.rejects(
+        store.commitContinuationStart({ claim, event }),
+        /after_continuation_start_insert/,
+      );
+      assert.deepEqual(
+        await store.readImmutableRuntimeEvents(claim.target.sessionId, claim.target.runId),
+        [],
+      );
+      assert.deepEqual(await store.readContinuationClaimByBoundary(claim.boundaryDigest), claim);
+
+      setFailpoint(undefined);
+      assert.deepEqual(await store.commitContinuationStart({ claim, event }), {
+        created: true,
+        runtimeEventSeq: 1,
+      });
+    });
+  });
+
+  it('pins a physical immutable prefix independently of mutable partial snapshots', async () => {
+    await withStore(async (store) => {
+      const first = functionCallEvent({
+        id: 'user-event-1',
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'hello' },
+      });
+      await store.appendRuntimeEvent('session-1', 'run-1', first);
+      const beforePartial = await store.readImmutableRuntimePrefix({
+        sessionId: 'session-1',
+        runId: 'run-1',
+      });
+
+      await store.appendRuntimeEvent(
+        'session-1',
+        'run-1',
+        functionCallEvent({
+          id: 'partial-1',
+          ts: 2,
+          partial: true,
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'text', text: 'working' },
+          refs: { providerEventId: 'message-1' },
+        }),
+      );
+      const afterPartial = await store.readImmutableRuntimePrefix({
+        sessionId: 'session-1',
+        runId: 'run-1',
+      });
+
+      assert.equal((await store.readRuntimeEvents('session-1', 'run-1')).length, 2);
+      assert.deepEqual(afterPartial.position, {
+        lastEventSeq: 1,
+        eventCount: 1,
+        lastEventId: 'user-event-1',
+      });
+      assert.equal(afterPartial.prefixDigest, beforePartial.prefixDigest);
+
+      await store.appendRuntimeEvent(
+        'session-1',
+        'run-1',
+        functionCallEvent({
+          id: 'model-event-2',
+          ts: 3,
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'text', text: 'done' },
+        }),
+      );
+      const pinned = await store.readImmutableRuntimePrefix({
+        sessionId: 'session-1',
+        runId: 'run-1',
+        upToEventSeq: 1,
+      });
+      const latest = await store.readImmutableRuntimePrefix({
+        sessionId: 'session-1',
+        runId: 'run-1',
+      });
+
+      assert.equal(pinned.prefixDigest, beforePartial.prefixDigest);
+      assert.equal(latest.position.lastEventSeq, 2);
+      assert.notEqual(latest.prefixDigest, beforePartial.prefixDigest);
+    });
+  });
+
+  it('rejects a physical immutable prefix with an event-seq gap', async () => {
+    await withStore(async (store, dbPath) => {
+      for (let eventSeq = 1; eventSeq <= 3; eventSeq += 1) {
+        await store.appendRuntimeEvent(
+          'session-1',
+          'run-1',
+          functionCallEvent({
+            id: `event-${eventSeq}`,
+            ts: eventSeq,
+            role: 'user',
+            author: 'user',
+            content: { kind: 'text', text: String(eventSeq) },
+          }),
+        );
+      }
+      store.close();
+      const raw = new DatabaseSync(dbPath);
+      try {
+        raw.prepare('DELETE FROM runtime_events WHERE event_seq = 2').run();
+      } finally {
+        raw.close();
+      }
+
+      const reopened = createSqliteRuntimeStore(dbPath);
+      try {
+        await assert.rejects(
+          reopened.readImmutableRuntimePrefix({
+            sessionId: 'session-1',
+            runId: 'run-1',
+          }),
+          /event_seq gap/,
+        );
+      } finally {
+        reopened.close();
+      }
+    });
+  });
+
   it('replaces text and tool partial snapshots when their durable final arrives', async () => {
     await withStore(async (store) => {
       await store.appendRuntimeEvent(
@@ -431,6 +688,66 @@ async function withStore(
     store.close();
     await rm(root, { recursive: true, force: true });
   }
+}
+
+function continuationClaim(): ContinuationClaimV1 {
+  const boundary = createRuntimeBoundaryCursor([
+    runtimePrefixSegment(
+      buildImmutableRuntimePrefix(
+        {
+          sessionId: 'session-1',
+          invocationId: 'invocation-1',
+          runId: 'run-1',
+          turnId: 'turn-1',
+        },
+        [{ eventSeq: 1, event: functionCallEvent({ content: undefined }) }],
+      ),
+    ),
+  ]);
+  return {
+    protocol: 'continuation_claim_v1',
+    claimId: 'claim-1',
+    boundaryDigest: boundary.manifestDigest,
+    boundary,
+    target: {
+      sessionId: 'session-1',
+      invocationId: 'invocation-2',
+      runId: 'run-2',
+      turnId: 'turn-2',
+    },
+    claimedAt: 10,
+  };
+}
+
+function continuationStartEvent(claim: ContinuationClaimV1): RuntimeEvent {
+  const source = claim.boundary.segments.at(-1)!;
+  return {
+    id: 'continuation-start-1',
+    ...claim.target,
+    ts: 12,
+    partial: false,
+    role: 'system',
+    author: 'system',
+    actions: {
+      continuationStart: {
+        protocol: 'continuation_start_v2',
+        claimId: claim.claimId,
+        boundaryDigest: claim.boundaryDigest,
+        immediateSource: {
+          sessionId: source.identity.sessionId,
+          invocationId: source.identity.invocationId,
+          runId: source.identity.runId,
+          turnId: source.identity.turnId,
+          highWater: source.position.lastEventSeq,
+          prefixDigest: source.prefixDigest,
+        },
+        replayManifestDigest: claim.boundary.manifestDigest,
+        providerProjectionVersion: 1,
+        providerReplayDigest:
+          'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      },
+    },
+  };
 }
 
 function functionCallEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {

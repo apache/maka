@@ -2,20 +2,29 @@ import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
-import type { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 import { isDeepStrictEqual } from 'node:util';
 import {
   canonicalToolArgsHash,
+  buildImmutableRuntimePrefix,
+  decodeContinuationClaim,
   decodeRuntimeEvent,
   encodeCanonicalRuntimeEvent,
   isPartialRuntimeEvent,
   isTerminalRuntimeEvent,
+  RUNTIME_CONTINUATION_AUTHORITY_V1,
   scanToolLedger,
+  stableJsonStringify,
   TOOL_RECOVERY_BUNDLE_CAPABILITY_V1,
   validateGenericToolLedgerAppend,
   validateToolLedgerEventLane,
   validateToolLedgerTransition,
+  type ContinuationClaimResult,
+  type ContinuationClaimV1,
   type RuntimeEvent,
+  type ImmutableRuntimePrefixV1,
+  type RuntimeBoundaryDigest,
+  type RuntimeContinuationAuthorityStore,
   type RuntimeRecoveryBundleCommit,
   type RuntimeRecoveryBundleStore,
   type ToolRecoveryDecisionFact,
@@ -31,6 +40,8 @@ import {
   readUserVersion,
   RUNTIME_RECOVERY_AUTHORITY_CAPABILITY,
   RUNTIME_RECOVERY_AUTHORITY_CAPABILITY_VERSION,
+  RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY,
+  RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY_VERSION,
 } from './sqlite-runtime-schema.js';
 
 export { SQLITE_RUNTIME_SCHEMA_VERSION } from './sqlite-runtime-schema.js';
@@ -55,7 +66,9 @@ export type SqliteRuntimeStoreFailpoint =
   | 'after_journal_event_insert'
   | 'after_recovery_reconcile'
   | 'after_recovery_outcome'
-  | 'after_recovery_decision';
+  | 'after_recovery_decision'
+  | 'after_continuation_claim_insert'
+  | 'after_continuation_start_insert';
 
 export interface SqliteRuntimeStoreOptions {
   failpoint?: (point: SqliteRuntimeStoreFailpoint) => void;
@@ -133,10 +146,13 @@ export function createSqliteRuntimeStore(
   return new SqliteRuntimeStore(path, options);
 }
 
-export class SqliteRuntimeStore implements RuntimeRecoveryBundleStore {
+export class SqliteRuntimeStore
+  implements RuntimeRecoveryBundleStore, RuntimeContinuationAuthorityStore
+{
   readonly durability = 'canonical' as const;
   readonly toolBoundaryProtocol = 't1_after_preflight_v1' as const;
   readonly recoveryBundleCapability = TOOL_RECOVERY_BUNDLE_CAPABILITY_V1;
+  readonly continuationAuthorityCapability = RUNTIME_CONTINUATION_AUTHORITY_V1;
   private readonly db: DatabaseSync;
   private closed = false;
 
@@ -151,6 +167,7 @@ export class SqliteRuntimeStore implements RuntimeRecoveryBundleStore {
       configureSqliteRuntimeDatabase(this.db);
       migrateSqliteRuntimeDatabase(this.db);
       assertRecoveryAuthorityCapability(this.db);
+      assertContinuationAuthorityCapability(this.db);
     } catch (error) {
       this.db.close();
       this.closed = true;
@@ -330,6 +347,214 @@ export class SqliteRuntimeStore implements RuntimeRecoveryBundleStore {
     `)
       .all(sessionId, runId) as unknown as RuntimeEventStorageRow[];
     return rows.map(decodeRuntimeEventStorageRow);
+  }
+
+  async readImmutableRuntimePrefix(input: {
+    sessionId: string;
+    runId: string;
+    upToEventSeq?: number;
+  }): Promise<ImmutableRuntimePrefixV1> {
+    if (
+      input.upToEventSeq !== undefined &&
+      (!Number.isSafeInteger(input.upToEventSeq) || input.upToEventSeq <= 0)
+    ) {
+      throw new Error('Invalid immutable RuntimeEvent prefix high-water');
+    }
+    const highWater = input.upToEventSeq ?? null;
+    const rows = this.db
+      .prepare(`
+        SELECT event_id, session_id, invocation_id, run_id, turn_id, event_seq, payload_json
+        FROM runtime_events
+        WHERE session_id = ? AND run_id = ?
+          AND (? IS NULL OR event_seq <= ?)
+        ORDER BY event_seq ASC
+      `)
+      .all(
+        input.sessionId,
+        input.runId,
+        highWater,
+        highWater,
+      ) as unknown as RuntimeEventPrefixStorageRow[];
+    if (rows.length === 0) {
+      throw new Error('immutable RuntimeEvent prefix is empty');
+    }
+    const lastEventSeq = rows.at(-1)?.event_seq;
+    if (input.upToEventSeq !== undefined && lastEventSeq !== input.upToEventSeq) {
+      throw new Error(
+        `immutable RuntimeEvent prefix high-water ${input.upToEventSeq} is unavailable`,
+      );
+    }
+    const decoded = rows.map((row) => ({
+      eventSeq: row.event_seq,
+      event: decodeRuntimeEventStorageRow(row),
+    }));
+    const first = decoded[0]!.event;
+    return buildImmutableRuntimePrefix(
+      {
+        sessionId: first.sessionId,
+        invocationId: first.invocationId,
+        runId: first.runId,
+        turnId: first.turnId,
+      },
+      decoded,
+    );
+  }
+
+  async claimContinuation(input: { claim: ContinuationClaimV1 }): Promise<ContinuationClaimResult> {
+    const claim = decodeContinuationClaim(input.claim);
+    const boundaryJson = stableJsonStringify(claim.boundary);
+    return this.transaction(() => {
+      const byBoundary = this.readContinuationClaimRow('boundary_digest = ?', claim.boundaryDigest);
+      if (byBoundary) {
+        const existing = decodeContinuationClaimRow(byBoundary);
+        if (byBoundary.boundary_json !== boundaryJson) {
+          throw new Error('Continuation claim boundary digest has conflicting canonical JSON');
+        }
+        return { kind: 'existing', claim: existing };
+      }
+
+      const source = claim.boundary.segments.at(-1)!;
+      const conflict = this.readContinuationClaimRow(
+        `claim_id = ?
+          OR target_invocation_id = ?
+          OR target_run_id = ?
+          OR (target_session_id = ? AND target_turn_id = ?)
+          OR (
+            source_session_id = ?
+            AND source_run_id = ?
+            AND source_event_high_water = ?
+          )`,
+        claim.claimId,
+        claim.target.invocationId,
+        claim.target.runId,
+        claim.target.sessionId,
+        claim.target.turnId,
+        source.identity.sessionId,
+        source.identity.runId,
+        source.position.lastEventSeq,
+      );
+      if (conflict) {
+        return { kind: 'conflict', claim: decodeContinuationClaimRow(conflict) };
+      }
+
+      try {
+        this.db
+          .prepare(`
+            INSERT INTO runtime_continuation_claims (
+              claim_id,
+              source_session_id,
+              source_invocation_id,
+              source_run_id,
+              source_turn_id,
+              source_event_high_water,
+              source_prefix_digest,
+              boundary_digest,
+              boundary_json,
+              target_session_id,
+              target_invocation_id,
+              target_run_id,
+              target_turn_id,
+              claimed_at,
+              protocol_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+          `)
+          .run(
+            claim.claimId,
+            source.identity.sessionId,
+            source.identity.invocationId,
+            source.identity.runId,
+            source.identity.turnId,
+            source.position.lastEventSeq,
+            source.prefixDigest,
+            claim.boundaryDigest,
+            boundaryJson,
+            claim.target.sessionId,
+            claim.target.invocationId,
+            claim.target.runId,
+            claim.target.turnId,
+            claim.claimedAt,
+          );
+      } catch (error) {
+        const raced =
+          this.readContinuationClaimRow('boundary_digest = ?', claim.boundaryDigest) ??
+          this.readContinuationClaimRow(
+            `claim_id = ?
+              OR target_invocation_id = ?
+              OR target_run_id = ?
+              OR (target_session_id = ? AND target_turn_id = ?)
+              OR (
+                source_session_id = ?
+                AND source_run_id = ?
+                AND source_event_high_water = ?
+              )`,
+            claim.claimId,
+            claim.target.invocationId,
+            claim.target.runId,
+            claim.target.sessionId,
+            claim.target.turnId,
+            source.identity.sessionId,
+            source.identity.runId,
+            source.position.lastEventSeq,
+          );
+        if (!raced) throw error;
+        const racedClaim = decodeContinuationClaimRow(raced);
+        return racedClaim.boundaryDigest === claim.boundaryDigest
+          ? { kind: 'existing', claim: racedClaim }
+          : { kind: 'conflict', claim: racedClaim };
+      }
+      this.options.failpoint?.('after_continuation_claim_insert');
+      return { kind: 'acquired', claim };
+    });
+  }
+
+  async readContinuationClaimByBoundary(
+    boundaryDigest: RuntimeBoundaryDigest,
+  ): Promise<ContinuationClaimV1 | undefined> {
+    if (!/^sha256:[0-9a-f]{64}$/.test(boundaryDigest)) {
+      throw new Error('Invalid continuation boundary digest');
+    }
+    const row = this.readContinuationClaimRow('boundary_digest = ?', boundaryDigest);
+    return row ? decodeContinuationClaimRow(row) : undefined;
+  }
+
+  async commitContinuationStart(input: {
+    claim: ContinuationClaimV1;
+    event: RuntimeEvent;
+  }): Promise<ToolCommitResult> {
+    const claim = decodeContinuationClaim(input.claim);
+    const event = canonicalizeRuntimeEventForStorage(input.event);
+    assertContinuationStartEvent(claim, event);
+    return this.transaction(() => {
+      const row = this.readContinuationClaimRow('boundary_digest = ?', claim.boundaryDigest);
+      if (!row) {
+        throw new Error('Continuation start requires an acquired durable claim');
+      }
+      const storedClaim = decodeContinuationClaimRow(row);
+      if (!isDeepStrictEqual(storedClaim, claim)) {
+        throw new Error('Continuation start claim identity conflict');
+      }
+      if (row.start_event_id) {
+        if (row.start_event_id !== event.id) {
+          throw new Error('Continuation claim already has a different start event');
+        }
+        assertStoredRuntimeEventEquals(event, this.readRuntimeEventJson(event.id));
+        return { created: false, runtimeEventSeq: this.runtimeEventSeq(event.id) };
+      }
+      this.assertInvocationIdentity([event]);
+      const runtimeEventSeq = this.insertRuntimeEvent(event, event.ts, false);
+      if (runtimeEventSeq !== 1) {
+        throw new Error('Continuation start must be the first target RuntimeEvent');
+      }
+      this.options.failpoint?.('after_continuation_start_insert');
+      this.db
+        .prepare(`
+          UPDATE runtime_continuation_claims
+          SET start_event_id = ?
+          WHERE claim_id = ? AND start_event_id IS NULL
+        `)
+        .run(event.id, claim.claimId);
+      return { created: true, runtimeEventSeq };
+    });
   }
 
   async readSessionRuntimeEvents(sessionId: string): Promise<RuntimeEvent[]> {
@@ -876,6 +1101,36 @@ export class SqliteRuntimeStore implements RuntimeRecoveryBundleStore {
     }
   }
 
+  private readContinuationClaimRow(
+    predicate: string,
+    ...values: readonly SQLInputValue[]
+  ): ContinuationClaimStorageRow | undefined {
+    return this.db
+      .prepare(`
+        SELECT
+          claim_id,
+          source_session_id,
+          source_invocation_id,
+          source_run_id,
+          source_turn_id,
+          source_event_high_water,
+          source_prefix_digest,
+          boundary_digest,
+          boundary_json,
+          target_session_id,
+          target_invocation_id,
+          target_run_id,
+          target_turn_id,
+          claimed_at,
+          start_event_id,
+          protocol_version
+        FROM runtime_continuation_claims
+        WHERE ${predicate}
+        LIMIT 1
+      `)
+      .get(...values) as ContinuationClaimStorageRow | undefined;
+  }
+
   private assertToolLedgerTransition(
     candidateEvents: readonly RuntimeEvent[],
     expectedTransition: Parameters<typeof validateToolLedgerTransition>[0]['expectedTransition'],
@@ -1326,6 +1581,9 @@ function assertNoReservedRecoveryFact(event: RuntimeEvent): void {
 }
 
 function assertNoReservedToolLedgerFact(event: RuntimeEvent): void {
+  if (event.actions?.continuationStart !== undefined) {
+    throw new Error('Continuation start facts require the continuation authority writer');
+  }
   const validation = validateGenericToolLedgerAppend(event);
   if (validation.ok) return;
   if (validation.code === 'reserved_recovery_fact') {
@@ -1402,6 +1660,50 @@ function assertRecoveryAuthorityCapability(db: DatabaseSync): void {
   }
 }
 
+function assertContinuationStartEvent(claim: ContinuationClaimV1, event: RuntimeEvent): void {
+  const start = event.actions?.continuationStart;
+  const source = claim.boundary.segments.at(-1)!;
+  if (
+    event.sessionId !== claim.target.sessionId ||
+    event.invocationId !== claim.target.invocationId ||
+    event.runId !== claim.target.runId ||
+    event.turnId !== claim.target.turnId ||
+    event.partial ||
+    event.role !== 'system' ||
+    event.author !== 'system' ||
+    event.status !== undefined ||
+    event.content !== undefined ||
+    !event.actions ||
+    Object.keys(event.actions).length !== 1 ||
+    !start ||
+    start.protocol !== 'continuation_start_v2' ||
+    start.claimId !== claim.claimId ||
+    start.boundaryDigest !== claim.boundaryDigest ||
+    start.replayManifestDigest !== claim.boundary.manifestDigest ||
+    !isDeepStrictEqual(start.immediateSource, {
+      sessionId: source.identity.sessionId,
+      invocationId: source.identity.invocationId,
+      runId: source.identity.runId,
+      turnId: source.identity.turnId,
+      highWater: source.position.lastEventSeq,
+      prefixDigest: source.prefixDigest,
+    })
+  ) {
+    throw new Error('Invalid continuation-start authority event');
+  }
+}
+
+function assertContinuationAuthorityCapability(db: DatabaseSync): void {
+  const row = db
+    .prepare('SELECT version FROM runtime_capabilities WHERE capability = ?')
+    .get(RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY) as { version?: unknown } | undefined;
+  if (row?.version !== RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY_VERSION) {
+    throw new Error(
+      `SQLite runtime continuation capability ${RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY}@${RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY_VERSION} is unavailable`,
+    );
+  }
+}
+
 interface RuntimeEventStorageRow {
   event_id: string;
   session_id: string;
@@ -1409,6 +1711,29 @@ interface RuntimeEventStorageRow {
   run_id: string;
   turn_id: string;
   payload_json: string;
+}
+
+interface RuntimeEventPrefixStorageRow extends RuntimeEventStorageRow {
+  event_seq: number;
+}
+
+interface ContinuationClaimStorageRow {
+  claim_id: string;
+  source_session_id: string;
+  source_invocation_id: string;
+  source_run_id: string;
+  source_turn_id: string;
+  source_event_high_water: number;
+  source_prefix_digest: string;
+  boundary_digest: string;
+  boundary_json: string;
+  target_session_id: string;
+  target_invocation_id: string;
+  target_run_id: string;
+  target_turn_id: string;
+  claimed_at: number;
+  start_event_id: string | null;
+  protocol_version: number;
 }
 
 interface RuntimePartialStorageRow {
@@ -1570,4 +1895,36 @@ function runtimePartialStreamKey(identity: string, event: RuntimeEvent): string 
 function hasOnlyKeys(value: object, allowed: readonly string[]): boolean {
   const allowedSet = new Set(allowed);
   return Object.keys(value).every((key) => allowedSet.has(key));
+}
+
+function decodeContinuationClaimRow(row: ContinuationClaimStorageRow): ContinuationClaimV1 {
+  if (row.protocol_version !== 1) {
+    throw new Error(`Unsupported continuation claim protocol ${row.protocol_version}`);
+  }
+  const boundary = JSON.parse(row.boundary_json) as unknown;
+  const claim = decodeContinuationClaim({
+    protocol: 'continuation_claim_v1',
+    claimId: row.claim_id,
+    boundaryDigest: row.boundary_digest,
+    boundary,
+    target: {
+      sessionId: row.target_session_id,
+      invocationId: row.target_invocation_id,
+      runId: row.target_run_id,
+      turnId: row.target_turn_id,
+    },
+    claimedAt: row.claimed_at,
+  });
+  const source = claim.boundary.segments.at(-1)!;
+  if (
+    row.source_session_id !== source.identity.sessionId ||
+    row.source_invocation_id !== source.identity.invocationId ||
+    row.source_run_id !== source.identity.runId ||
+    row.source_turn_id !== source.identity.turnId ||
+    row.source_event_high_water !== source.position.lastEventSeq ||
+    row.source_prefix_digest !== source.prefixDigest
+  ) {
+    throw new Error(`Continuation claim row/payload identity mismatch for ${row.claim_id}`);
+  }
+  return claim;
 }

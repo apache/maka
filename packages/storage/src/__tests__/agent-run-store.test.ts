@@ -701,6 +701,49 @@ describe('AgentRunStore', () => {
     });
   });
 
+  it('keeps continuation-start authority facts out of the JSONL generic writer', async () => {
+    await withStores(async (runStore, runtimeEventStore) => {
+      await runStore.createRun(makeHeader());
+      const continuationStart = makeRuntimeEvent({
+        id: 'continuation-start-reserved',
+        role: 'system',
+        author: 'system',
+        content: undefined,
+        actions: {
+          continuationStart: {
+            protocol: 'continuation_start_v2',
+            claimId: 'claim-1',
+            boundaryDigest:
+              'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            immediateSource: {
+              sessionId: 'session-1',
+              invocationId: 'source-invocation',
+              runId: 'source-run',
+              turnId: 'source-turn',
+              highWater: 1,
+              prefixDigest:
+                'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+            },
+            replayManifestDigest:
+              'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            providerProjectionVersion: 1,
+            providerReplayDigest:
+              'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+          },
+        },
+      });
+
+      await assert.rejects(
+        runtimeEventStore.appendRuntimeEvent('session-1', 'run-1', continuationStart),
+        /continuation authority/i,
+      );
+      assert.deepEqual(
+        await runtimeEventStore.readImmutableRuntimeEvents('session-1', 'run-1'),
+        [],
+      );
+    });
+  });
+
   it('keeps an exact ordinary RuntimeEvent retry idempotent in JSONL', async () => {
     await withStores(async (runStore, runtimeEventStore) => {
       await runStore.createRun(makeHeader());

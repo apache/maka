@@ -96,6 +96,20 @@ describe('SQLite recovery authority multi-process races', () => {
     });
   });
 
+  it('grants provider authority to exactly one process for one continuation boundary', async () => {
+    await withPreparedDatabase(async ({ dbPath, startPath }) => {
+      const results = await runWorkers(dbPath, startPath, ['claim', 'claim']);
+      assert.deepEqual(
+        results.map(({ code }) => code),
+        [0, 0],
+      );
+      assert.deepEqual(
+        results.flatMap(({ stdout }) => stdout.match(/CLAIM (acquired|existing)/g) ?? []).sort(),
+        ['CLAIM acquired', 'CLAIM existing'],
+      );
+    });
+  });
+
   it('allows concurrent processes to keep the same initialized WAL database open', async () => {
     await withPreparedDatabase(async ({ dbPath, startPath }) => {
       const results = await runOpenWorkers(dbPath, startPath);
@@ -106,11 +120,13 @@ describe('SQLite recovery authority multi-process races', () => {
     });
   });
 
-  it('serializes concurrent schema 4 to 5 upgrades', async () => {
+  it('serializes concurrent schema 4 to 6 upgrades', async () => {
     await withPreparedDatabase(async ({ dbPath, startPath }) => {
       const db = new DatabaseSync(dbPath);
       try {
-        db.exec('DROP TABLE runtime_capabilities; PRAGMA user_version = 4;');
+        db.exec(
+          'DROP TABLE runtime_continuation_claims; DROP TABLE runtime_capabilities; PRAGMA user_version = 4;',
+        );
       } finally {
         db.close();
       }
@@ -123,7 +139,7 @@ describe('SQLite recovery authority multi-process races', () => {
 
       const upgraded = createSqliteRuntimeStore(dbPath);
       try {
-        assert.equal(upgraded.schemaVersion(), 5);
+        assert.equal(upgraded.schemaVersion(), 6);
       } finally {
         upgraded.close();
       }

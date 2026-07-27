@@ -834,6 +834,9 @@ function historyCompactProjectionIsSourceBound(event: AgentRunEvent): boolean {
 }
 
 function assertNoReservedToolLedgerFact(event: RuntimeEvent): void {
+  if (event.actions?.continuationStart !== undefined) {
+    throw new Error('Continuation start facts require SQLite continuation authority');
+  }
   const validation = validateGenericToolLedgerAppend(event);
   if (validation.ok) return;
   if (validation.code === 'reserved_recovery_fact') {
