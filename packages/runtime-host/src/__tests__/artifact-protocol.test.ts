@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import type { ArtifactRecord } from '@maka/core/artifacts';
 import {
+  ARTIFACT_MIME_TYPE_MAX_BYTES,
+  ARTIFACT_NAME_MAX_BYTES,
   ARTIFACT_PAGE_MAX_ITEMS,
   ARTIFACT_PREVIEW_MAX_BYTES,
   ARTIFACT_RESULT_MAX_BYTES,
+  ARTIFACT_SUMMARY_MAX_BYTES,
   decodeClientFrame,
   decodeHostFrame,
   encodeArtifactQueryResult,
@@ -12,6 +16,7 @@ import {
   RUNTIME_HOST_MAX_FRAME_BYTES,
   RuntimeHostProtocolError,
 } from '../protocol/index.js';
+import { encodeArtifactProjection } from '../protocol/artifact.js';
 
 const revision = `sha256:${'a'.repeat(64)}` as const;
 
@@ -88,9 +93,19 @@ describe('Artifact protocol', () => {
         kind: 'page',
         sessionId: 'session-1',
         revision,
-        artifacts: [artifact],
+        artifacts: [{ ...artifact, turnId: 'future-runtime-kind:sequence/branch' }],
         nextCursor: null,
       }),
+    );
+    assert.throws(
+      () =>
+        response('artifact.query', {
+          kind: 'artifact',
+          sessionId: 'session-1',
+          revision,
+          artifact: { ...artifact, turnId: 'turn\n1' },
+        }),
+      isInvalidFrame,
     );
     assert.throws(
       () =>
@@ -191,6 +206,26 @@ describe('Artifact protocol', () => {
         result: maximumBinary,
       }).byteLength <= RUNTIME_HOST_MAX_FRAME_BYTES,
     );
+  });
+
+  test('projects producer records to canonical UTF-8 byte boundaries', () => {
+    const record: ArtifactRecord = {
+      ...validArtifact(),
+      relativePath: 'session-1/artifact.txt',
+      name: `\0${'a'.repeat(509)}tail`,
+      mimeType: '\u754c'.repeat(171),
+      summary: `\x7f${'\u754c'.repeat(3_000)}`,
+    };
+
+    const projected = encodeArtifactProjection(record);
+
+    assert.equal(projected.name, `\ufffd${'a'.repeat(509)}`);
+    assert.equal(Buffer.byteLength(projected.name, 'utf8'), ARTIFACT_NAME_MAX_BYTES);
+    assert.equal(projected.mimeType, '\u754c'.repeat(170));
+    assert.ok(Buffer.byteLength(projected.mimeType, 'utf8') <= ARTIFACT_MIME_TYPE_MAX_BYTES);
+    assert.equal(projected.summary?.startsWith('\ufffd'), true);
+    assert.ok(Buffer.byteLength(projected.summary ?? '', 'utf8') <= ARTIFACT_SUMMARY_MAX_BYTES);
+    assert.equal('relativePath' in projected, false);
   });
 });
 

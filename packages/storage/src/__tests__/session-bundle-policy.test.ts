@@ -22,7 +22,7 @@ import {
   planSessionBundleExport,
   type SessionBundleExportError,
 } from '../session-bundle-policy.js';
-import { createArtifactStore } from '../artifact-store.js';
+import { createArtifactStore, createArtifactStoreWriteAuthority } from '../artifact-store.js';
 import { createSessionStore } from '../session-store.js';
 import { createSqliteRuntimeStore } from '../sqlite-runtime-store.js';
 
@@ -315,6 +315,53 @@ test('requires Artifact authority recovery for canonical transaction residue', a
       });
     });
   }
+});
+
+test('authority recovery removes canonical root temps before bundle export', async () => {
+  await withBundleRoots(async ({ stateRoot, configRoot, destinationRoot }) => {
+    const sessionId = await createSelectedSession(stateRoot);
+    const artifacts = createArtifactStore(stateRoot);
+    const record = await artifacts.create({
+      id: 'canonical-artifact',
+      sessionId,
+      turnId: 'turn-1',
+      name: 'canonical.txt',
+      kind: 'file',
+      content: 'canonical payload\n',
+      now: 1,
+    });
+    const artifactRoot = join(stateRoot, 'artifacts');
+    const uuid = '00000000-0000-4000-8000-000000000000';
+    const tempPaths = [
+      join(artifactRoot, `metadata.jsonl.123.${uuid}.tmp`),
+      join(artifactRoot, 'metadata.jsonl.123.1700000000000.tmp'),
+      join(artifactRoot, `.artifact-purge-intent.json.123.${uuid}.tmp`),
+    ];
+    await writeFile(tempPaths[0]!, await readFile(join(artifactRoot, 'metadata.jsonl')));
+    await writeFile(tempPaths[1]!, await readFile(join(artifactRoot, 'metadata.jsonl')));
+    await writeFile(tempPaths[2]!, JSON.stringify({ schemaVersion: 1, artifactIds: [record.id] }));
+
+    await assertArtifactRecoveryRequired(
+      planSessionBundleExport({ stateRoot, configRoot, destinationRoot, sessionId }),
+    );
+    const authority = createArtifactStoreWriteAuthority(stateRoot);
+    await authority.recover();
+    for (const tempPath of tempPaths) {
+      await assert.rejects(lstat(tempPath), { code: 'ENOENT' });
+    }
+
+    await exportSessionBundleState({
+      stateRoot,
+      configRoot,
+      destinationRoot,
+      sessionId,
+    });
+    assert.deepEqual(await createArtifactStore(destinationRoot).list(sessionId), [record]);
+    assert.deepEqual(await createArtifactStore(destinationRoot).readText(record.id), {
+      ok: true,
+      text: 'canonical payload\n',
+    });
+  });
 });
 
 test('requires Artifact authority recovery for publication residue in another session', async () => {

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import {
   link,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -14,15 +15,21 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { describe, test, type TestContext } from 'node:test';
-import { ARTIFACT_ENTITY_ID_MAX_CHARS, type ArtifactRecord } from '@maka/core/artifacts';
+import {
+  ARTIFACT_ENTITY_ID_MAX_CHARS,
+  ARTIFACT_TURN_KEY_MAX_CHARS,
+  type ArtifactRecord,
+} from '@maka/core/artifacts';
 import {
   ARTIFACT_TEXT_PREVIEW_LIMIT_BYTES,
+  type CreateArtifactInput,
   createArtifactStore,
   createArtifactStoreWriteAuthority,
   isSafeRelativeArtifactPath,
   resolveArtifactPath,
   sanitizeArtifactName,
 } from '../artifact-store.js';
+import { withArtifactWriterLock } from '../artifact-writer-lock.js';
 
 describe('FileArtifactStore', () => {
   test('creates a missing workspace root before acquiring the writer lock', async () => {
@@ -70,6 +77,36 @@ describe('FileArtifactStore', () => {
         /Artifact artifact-1 already exists/,
       );
       assert.deepEqual(await reopened.readText('artifact-1'), { ok: true, text: '# Notes' });
+    });
+  });
+
+  test('persists and reopens bounded synthetic turn keys', async () => {
+    await withWorkspace(async (root) => {
+      for (const [id, turnId] of [
+        ['history-artifact', 'history-compact:42'],
+        ['synthesis-artifact', 'synthesis-cache:43'],
+      ] as const) {
+        const input = { ...artifactInput(id, 'compacted', 1), turnId };
+        const created = await createArtifactStore(root).create(input);
+        assert.equal(created.turnId, input.turnId);
+        assert.equal((await createArtifactStore(root).get(created.id))?.turnId, input.turnId);
+      }
+
+      for (const turnId of [
+        '',
+        'history-compact:\n1',
+        'synthesis-cache:\u007f1',
+        'x'.repeat(ARTIFACT_TURN_KEY_MAX_CHARS + 1),
+      ]) {
+        await assert.rejects(
+          () =>
+            createArtifactStore(root).create({
+              ...artifactInput(`invalid-${turnId.length}`, 'invalid', 2),
+              turnId,
+            }),
+          /bounded opaque turn key/,
+        );
+      }
     });
   });
 
@@ -125,22 +162,12 @@ describe('FileArtifactStore', () => {
       );
 
       await store.create(artifactInput('revision-race', 'race', 25));
-      const currentBeforeDelete = await store.getInSession('session-1', 'first');
-      assert.ok(currentBeforeDelete.record);
-      const deletedResult = await store.deleteInSession({
-        sessionId: 'session-1',
-        expected: currentBeforeDelete.record,
-      });
+      const deletedResult = await store.deleteUserArtifactInSession('session-1', 'first');
       assert.equal(deletedResult.kind, 'deleted');
       const deleted = await store.listPage('session-1', { offset: 0, limit: 3 });
       assert.notEqual(deleted.revision, created.revision);
       assert.equal(deleted.records.find((record) => record.id === 'first')?.status, 'deleted');
-      const deletedEntry = await store.getInSession('session-1', 'first');
-      assert.ok(deletedEntry.record);
-      await store.deleteInSession({
-        sessionId: 'session-1',
-        expected: deletedEntry.record,
-      });
+      assert.equal((await store.deleteUserArtifactInSession('session-1', 'first')).kind, 'deleted');
       assert.equal(
         (await store.listPage('session-1', { offset: 0, limit: 3 })).revision,
         deleted.revision,
@@ -151,23 +178,39 @@ describe('FileArtifactStore', () => {
       assert.notEqual(revived.revision, deleted.revision);
       assert.equal(revived.records.find((record) => record.id === 'first')?.status, 'live');
 
-      const staleEntry = await store.getInSession('session-1', 'first');
-      assert.ok(staleEntry.record);
-      await store.purge(['first']);
-      await store.create({
-        ...artifactInput('first', 'replacement', 30),
-        source: 'fixture',
-      });
-      const staleDelete = await store.deleteInSession({
-        sessionId: 'session-1',
-        expected: staleEntry.record,
-      });
-      assert.equal(staleDelete.kind, 'record_changed');
-
       await store.purge(['first', 'second', 'revision-race']);
       const purged = await store.listPage('session-1', { offset: 0, limit: 2 });
       assert.equal(purged.revision, empty.revision);
       assert.equal(purged.total, 0);
+    });
+  });
+
+  test('user delete evaluates current-generation policy before tombstone state', async () => {
+    await withWorkspace(async (root) => {
+      const authority = createArtifactStoreWriteAuthority(root);
+      await authority.recover();
+      const { store } = authority;
+      const input = artifactInput('current-policy', 'replaceable', 1);
+      await store.create(input);
+      await store.purge([input.id]);
+      const protectedRecord = await store.create({
+        ...input,
+        content: 'protected replacement',
+        source: 'deep_research',
+      });
+
+      assert.deepEqual(await store.deleteUserArtifactInSession(input.sessionId, input.id), {
+        kind: 'protected',
+      });
+      assert.deepEqual(await store.get(input.id), protectedRecord);
+      assert.deepEqual(await store.deleteUserArtifactInSession('different-session', input.id), {
+        kind: 'not_found',
+      });
+
+      await store.delete(input.id);
+      assert.deepEqual(await store.deleteUserArtifactInSession(input.sessionId, input.id), {
+        kind: 'protected',
+      });
     });
   });
 
@@ -422,7 +465,7 @@ describe('FileArtifactStore', () => {
       await mkdir(metadataPath);
 
       await assert.rejects(() => store.create(input));
-      assert.equal((await store.get(first.id))?.status, 'deleted');
+      await assert.rejects(() => store.get(first.id), { code: 'EISDIR' });
 
       await rm(metadataPath, { recursive: true });
       await writeFile(metadataPath, deletedMetadata, 'utf8');
@@ -465,6 +508,138 @@ describe('FileArtifactStore', () => {
     });
   });
 
+  test('snapshots mutable create input and bytes before waiting for the writer lock', async () => {
+    await withWorkspace(async (root) => {
+      let releaseLock!: () => void;
+      let lockAcquired!: () => void;
+      const acquired = new Promise<void>((resolve) => {
+        lockAcquired = resolve;
+      });
+      const release = new Promise<void>((resolve) => {
+        releaseLock = resolve;
+      });
+      const holder = withArtifactWriterLock(root, async () => {
+        lockAcquired();
+        await release;
+      });
+      await acquired;
+
+      const bytes = Uint8Array.from([0x73, 0x61, 0x66, 0x65]);
+      const input: CreateArtifactInput = {
+        id: 'accepted-id',
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        name: 'accepted.bin',
+        kind: 'file',
+        content: bytes,
+        mimeType: 'application/octet-stream',
+        source: 'fixture',
+        summary: 'accepted summary',
+        now: 7,
+      };
+      const accepted = createArtifactStore(root).create(input);
+
+      input.id = 'mutated-id';
+      input.sessionId = 'mutated-session';
+      input.turnId = 'mutated-turn';
+      input.name = 'mutated.txt';
+      input.kind = 'diff';
+      input.content = 'mutated content';
+      input.mimeType = 'text/plain';
+      input.source = 'tool_result';
+      input.summary = 'mutated summary';
+      input.now = 99;
+      bytes.fill(0x78);
+      releaseLock();
+      await holder;
+
+      const record = await accepted;
+      assert.deepEqual(record, {
+        id: 'accepted-id',
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        createdAt: 7,
+        name: 'accepted.bin',
+        kind: 'file',
+        relativePath: 'session-1/accepted-id-accepted.bin',
+        sizeBytes: 4,
+        mimeType: 'application/octet-stream',
+        source: 'fixture',
+        summary: 'accepted summary',
+        status: 'live',
+      });
+      assert.deepEqual(
+        await readFile(join(root, 'artifacts', record.relativePath)),
+        Buffer.from('safe'),
+      );
+      const reopened = createArtifactStore(root);
+      assert.deepEqual(await reopened.get(record.id), record);
+      assert.deepEqual(await reopened.list('session-1'), [record]);
+      assert.equal(await reopened.get('mutated-id'), null);
+    });
+  });
+
+  test('refreshes a loaded legacy store after another instance commits metadata', async () => {
+    await withWorkspace(async (root) => {
+      const stale = createArtifactStore(root);
+      const writer = createArtifactStore(root);
+      await stale.create(artifactInput('first', 'first', 1));
+      assert.deepEqual(
+        (await stale.list('session-1')).map((record) => record.id),
+        ['first'],
+      );
+
+      await writer.create(artifactInput('second', 'second', 2));
+
+      assert.deepEqual(
+        (await stale.list('session-1')).map((record) => record.id),
+        ['second', 'first'],
+      );
+      assert.equal((await stale.get('second'))?.id, 'second');
+      assert.deepEqual(await stale.readText('second'), { ok: true, text: 'second' });
+    });
+  });
+
+  test('refreshes metadata changed in place without an inode or size change', async () => {
+    await withWorkspace(async (root) => {
+      const store = createArtifactStore(root);
+      await store.create(artifactInput('stable-inode', 'payload', 1));
+      assert.equal((await store.get('stable-inode'))?.turnId, 'turn-1');
+
+      const metadataPath = join(root, 'artifacts', 'metadata.jsonl');
+      const before = await stat(metadataPath);
+      const original = await readFile(metadataPath, 'utf8');
+      const changed = original.replace('"turnId":"turn-1"', '"turnId":"turn-2"');
+      assert.equal(Buffer.byteLength(changed), Buffer.byteLength(original));
+      await writeFile(metadataPath, changed, { flag: 'r+' });
+      const after = await stat(metadataPath);
+      assert.equal(after.ino, before.ino);
+      assert.equal(after.size, before.size);
+
+      assert.equal((await store.get('stable-inode'))?.turnId, 'turn-2');
+    });
+  });
+
+  test('snapshots purge inputs before lock waits', async () => {
+    await withWorkspace(async (root) => {
+      const authority = createArtifactStoreWriteAuthority(root);
+      await authority.recover();
+      const { store } = authority;
+      await store.create(artifactInput('purge-me', 'purge', 2));
+      await store.create(artifactInput('keep-me', 'keep', 3));
+
+      const purgeIds = ['purge-me'];
+      const purgeLock = await holdArtifactWriterLock(root);
+      const purged = store.purge(purgeIds);
+      purgeIds[0] = 'keep-me';
+      purgeLock.release();
+      await purgeLock.finished;
+      await purged;
+      assert.equal(await store.get('purge-me'), null);
+      assert.equal((await store.get('keep-me'))?.status, 'live');
+    });
+  });
+
   test('does not publish a payload when metadata publication fails', async () => {
     await withWorkspace(async (root) => {
       const store = createArtifactStore(root);
@@ -479,7 +654,7 @@ describe('FileArtifactStore', () => {
         () => readFile(join(root, 'artifacts', 'session-1', 'rejected-rejected.txt')),
         { code: 'ENOENT' },
       );
-      assert.equal(await store.get('rejected'), null);
+      await assert.rejects(() => store.get('rejected'), { code: 'EISDIR' });
 
       await rm(metadataPath, { recursive: true });
       await writeFile(metadataPath, metadata, 'utf8');
@@ -558,6 +733,39 @@ describe('FileArtifactStore', () => {
     });
   });
 
+  test('legacy mutations recover target-local publications without rescanning unrelated sessions', async () => {
+    await withWorkspace(async (root) => {
+      const store = createArtifactStore(root);
+      await store.create(artifactInput('delete-me', 'delete', 1));
+      await store.create(artifactInput('purge-me', 'purge', 2));
+
+      const unrelated = await createPublicationResidue(
+        root,
+        'unrelated',
+        'unrelated.txt',
+        'publication bytes',
+        'session-2',
+      );
+      await rm(unrelated.targetPath);
+      await writeFile(unrelated.targetPath, 'different bytes');
+
+      const created = await store.create({
+        ...artifactInput('target-only', 'created', 3),
+        sessionId: 'session-1',
+      });
+      assert.equal(created.id, 'target-only');
+      await store.delete('delete-me');
+      await store.purge(['purge-me']);
+      assert.equal((await store.get('delete-me'))?.status, 'deleted');
+      assert.equal(await store.get('purge-me'), null);
+
+      await assert.rejects(
+        () => createArtifactStoreWriteAuthority(root).recover(),
+        /Artifact publication residue does not match canonical state/,
+      );
+    });
+  });
+
   test('authority recovery adopts only its pre-existing exact stable-id orphan snapshot', async () => {
     await withWorkspace(async (root) => {
       const input = artifactInput('drifted-orphan', 'expected bytes', 1);
@@ -618,25 +826,49 @@ describe('FileArtifactStore', () => {
     });
   });
 
-  test('write recovery durably removes only canonical stale metadata temp files', async () => {
+  test('write recovery durably removes only canonical root transaction temp files', async () => {
     await withWorkspace(async (root) => {
       const artifactRoot = join(root, 'artifacts');
       await mkdir(artifactRoot, { recursive: true });
-      const staleTemp = join(
-        artifactRoot,
-        'metadata.jsonl.123.00000000-0000-4000-8000-000000000000.tmp',
-      );
+      const canonicalTemps = [
+        join(artifactRoot, 'metadata.jsonl.123.00000000-0000-4000-8000-000000000000.tmp'),
+        join(artifactRoot, 'metadata.jsonl.123.1700000000000.tmp'),
+        join(
+          artifactRoot,
+          '.artifact-purge-intent.json.123.00000000-0000-4000-8000-000000000000.tmp',
+        ),
+      ];
       const unknownFiles = [
         join(artifactRoot, 'metadata.jsonl.123.not-a-uuid.tmp'),
+        join(artifactRoot, '.artifact-purge-intent.json.123.not-a-uuid.tmp'),
         join(artifactRoot, 'other.jsonl.123.00000000-0000-4000-8000-000000000000.tmp'),
       ];
-      await writeFile(staleTemp, 'stale', 'utf8');
+      for (const path of canonicalTemps) await writeFile(path, 'stale', 'utf8');
       for (const path of unknownFiles) await writeFile(path, 'keep', 'utf8');
 
       await createArtifactStoreWriteAuthority(root).recover();
 
-      await assert.rejects(() => stat(staleTemp), { code: 'ENOENT' });
+      for (const path of canonicalTemps) {
+        await assert.rejects(() => stat(path), { code: 'ENOENT' });
+      }
       for (const path of unknownFiles) assert.equal(await readFile(path, 'utf8'), 'keep');
+    });
+  });
+
+  test('write recovery fails closed on a non-file canonical transaction temp', async () => {
+    await withWorkspace(async (root) => {
+      const artifactRoot = join(root, 'artifacts');
+      const canonicalTemp = join(
+        artifactRoot,
+        '.artifact-purge-intent.json.123.00000000-0000-4000-8000-000000000000.tmp',
+      );
+      await mkdir(canonicalTemp, { recursive: true });
+
+      await assert.rejects(
+        () => createArtifactStoreWriteAuthority(root).recover(),
+        /Artifact recovery temp is not a regular file/,
+      );
+      assert.equal((await stat(canonicalTemp)).isDirectory(), true);
     });
   });
 
@@ -664,13 +896,13 @@ describe('FileArtifactStore', () => {
     });
   });
 
-  test('metadata fails closed on non-canonical artifact, session, and turn identities', async () => {
+  test('metadata fails closed on invalid path identities and bounded turn keys', async () => {
     const invalidIdentities = [
       { field: 'id', value: 'a'.repeat(ARTIFACT_ENTITY_ID_MAX_CHARS + 1) },
       { field: 'id', value: '.' },
       { field: 'sessionId', value: 'session/bad' },
-      { field: 'turnId', value: 'turn id' },
       { field: 'turnId', value: 'turn\nid' },
+      { field: 'turnId', value: 'x'.repeat(ARTIFACT_TURN_KEY_MAX_CHARS + 1) },
     ] as const;
 
     for (const { field, value } of invalidIdentities) {
@@ -856,6 +1088,76 @@ describe('FileArtifactStore', () => {
     });
   });
 
+  test('purge rejects case aliases that resolve to another live record', async (t) => {
+    await withWorkspace(async (root) => {
+      const artifactRoot = join(root, 'artifacts');
+      const lower = canonicalRecord({
+        id: 'case',
+        sessionId: 'session-1',
+        name: 'file.txt',
+        sizeBytes: 12,
+      });
+      const upper = canonicalRecord({
+        id: 'CASE',
+        sessionId: 'session-1',
+        name: 'file.txt',
+        sizeBytes: 12,
+      });
+      const lowerPath = join(artifactRoot, lower.relativePath);
+      const upperPath = join(artifactRoot, upper.relativePath);
+      await mkdir(dirname(lowerPath), { recursive: true });
+      await writeFile(lowerPath, 'shared bytes', 'utf8');
+      if (!(await stat(upperPath).catch(() => null))) {
+        t.skip('filesystem is case-sensitive');
+        return;
+      }
+      await writeArtifactMetadata(root, [lower, upper]);
+
+      const store = createArtifactStore(root);
+      await assert.rejects(() => store.purge([lower.id]), /path is still referenced/);
+      assert.equal(await readFile(upperPath, 'utf8'), 'shared bytes');
+      assert.equal((await store.get(upper.id))?.status, 'live');
+    });
+  });
+
+  test('purge rejects case aliases of the same final symlink without unlinking it', async (t) => {
+    await withWorkspace(async (root) => {
+      const artifactRoot = join(root, 'artifacts');
+      const lower = canonicalRecord({
+        id: 'case',
+        sessionId: 'session-1',
+        name: 'file.txt',
+        sizeBytes: 12,
+      });
+      const upper = canonicalRecord({
+        id: 'CASE',
+        sessionId: 'session-1',
+        name: 'file.txt',
+        sizeBytes: 12,
+      });
+      const lowerPath = join(artifactRoot, lower.relativePath);
+      const upperPath = join(artifactRoot, upper.relativePath);
+      const targetPath = join(dirname(lowerPath), 'target.txt');
+      await mkdir(dirname(lowerPath), { recursive: true });
+      await writeFile(targetPath, 'shared bytes', 'utf8');
+      if (!(await createSymlinkOrSkip(t, 'target.txt', lowerPath, 'file'))) return;
+      const upperEntry = await lstat(upperPath).catch(() => null);
+      if (!upperEntry?.isSymbolicLink()) {
+        t.skip('filesystem is case-sensitive');
+        return;
+      }
+      await writeArtifactMetadata(root, [lower, upper]);
+
+      const store = createArtifactStore(root);
+      await assert.rejects(() => store.purge([lower.id]), /path is still referenced/);
+
+      assert.deepEqual(await store.readText(upper.id), { ok: true, text: 'shared bytes' });
+      assert.equal((await lstat(lowerPath)).isSymbolicLink(), true);
+      assert.equal((await lstat(upperPath)).isSymbolicLink(), true);
+      assert.equal(await readFile(targetPath, 'utf8'), 'shared bytes');
+    });
+  });
+
   test('startup recovery completes purge after payload removal but before metadata commit', async () => {
     await withWorkspace(async (root) => {
       const authority = createArtifactStoreWriteAuthority(root);
@@ -986,36 +1288,40 @@ describe('FileArtifactStore', () => {
     });
   });
 
-  test('create rejects non-canonical artifact, session, and turn identities', async () => {
+  test('create rejects invalid path identities and bounded turn keys', async () => {
     const invalidInputs = [
       {
-        field: 'id',
+        expected: /Artifact id must be a canonical entity ID/,
         input: { ...artifactInput('a'.repeat(ARTIFACT_ENTITY_ID_MAX_CHARS + 1), 'no', 1) },
       },
       {
-        field: 'id',
+        expected: /Artifact id must be a canonical entity ID/,
         input: { ...artifactInput('.', 'no', 1) },
       },
       {
-        field: 'sessionId',
+        expected: /Artifact sessionId must be a canonical entity ID/,
         input: { ...artifactInput('valid', 'no', 1), sessionId: 'session/bad' },
       },
       {
-        field: 'turnId',
-        input: { ...artifactInput('valid', 'no', 1), turnId: 'turn id' },
+        expected: /Artifact turnId must be a bounded opaque turn key/,
+        input: { ...artifactInput('valid', 'no', 1), turnId: '' },
       },
       {
-        field: 'turnId',
+        expected: /Artifact turnId must be a bounded opaque turn key/,
         input: { ...artifactInput('valid', 'no', 1), turnId: 'turn\nid' },
+      },
+      {
+        expected: /Artifact turnId must be a bounded opaque turn key/,
+        input: {
+          ...artifactInput('valid', 'no', 1),
+          turnId: 'x'.repeat(ARTIFACT_TURN_KEY_MAX_CHARS + 1),
+        },
       },
     ] as const;
 
-    for (const { field, input } of invalidInputs) {
+    for (const { expected, input } of invalidInputs) {
       await withWorkspace(async (root) => {
-        await assert.rejects(
-          () => createArtifactStore(root).create(input),
-          new RegExp(`Artifact ${field} must be a canonical entity ID`),
-        );
+        await assert.rejects(() => createArtifactStore(root).create(input), expected);
         await assert.rejects(() => stat(join(root, 'artifacts')), { code: 'ENOENT' });
       });
     }
@@ -1225,14 +1531,34 @@ async function createPublicationResidue(
   id: string,
   name: string,
   content: string,
+  sessionId = 'session-1',
 ): Promise<{ stagingPath: string; targetPath: string }> {
-  const sessionDirectory = join(root, 'artifacts', 'session-1');
+  const sessionDirectory = join(root, 'artifacts', sessionId);
   await mkdir(sessionDirectory, { recursive: true });
   const targetPath = join(sessionDirectory, `${id}-${name}`);
   const stagingPath = publicationStagingPath(targetPath);
   await writeFile(stagingPath, content, { flag: 'wx' });
   await link(stagingPath, targetPath);
   return { stagingPath, targetPath };
+}
+
+async function holdArtifactWriterLock(
+  root: string,
+): Promise<{ release: () => void; finished: Promise<void> }> {
+  let release!: () => void;
+  let acquired!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const entered = new Promise<void>((resolve) => {
+    acquired = resolve;
+  });
+  const finished = withArtifactWriterLock(root, async () => {
+    acquired();
+    await gate;
+  });
+  await entered;
+  return { release, finished };
 }
 
 function publicationStagingPath(targetPath: string): string {

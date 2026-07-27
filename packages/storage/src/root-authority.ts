@@ -18,6 +18,7 @@ export type StorageRootAccess = 'read' | 'write';
 const capabilityBrand: unique symbol = Symbol('StorageRootCapability');
 const leaseBrand: unique symbol = Symbol('StorageRootLease');
 const repairBrand: unique symbol = Symbol('StorageRootIdentityRepairCandidate');
+const artifactWriterLockAuthorityBrand: unique symbol = Symbol('ArtifactWriterLockAuthority');
 
 export interface StorageRootCapability<K extends StorageRootKind = StorageRootKind> {
   readonly kind: K;
@@ -39,6 +40,12 @@ export interface StorageRootLease<
   readonly canonicalPath: string;
   readonly rootId: string;
   readonly [leaseBrand]: true;
+}
+
+export interface ArtifactWriterLockAuthority {
+  readonly controlDirectory: string;
+  readonly assertCurrentRoot: () => Promise<void>;
+  readonly [artifactWriterLockAuthorityBrand]: true;
 }
 
 export interface ResolveStorageRootInput<K extends StorageRootKind> {
@@ -486,14 +493,42 @@ export async function prepareStorageRootControlDirectory(
     'Unable to prepare the Runtime Host control directory',
     async () => {
       const record = requireCapability(capability, capability.kind);
-      await assertRootIdentity(record);
-      const controlRoot = resolve(resolveRootControlNamespace());
-      await ensurePrivateDirectory(controlRoot);
-      const controlDirectory = join(controlRoot, record.rootId);
-      await ensurePrivateDirectory(controlDirectory);
-      return { controlRoot, controlDirectory };
+      return prepareStorageRootControlDirectoryForRecord(record);
     },
   );
+}
+
+export async function prepareArtifactWriterLockAuthorityForLease<K extends StorageRootKind>(
+  lease: StorageRootLease<K, 'write'>,
+  expectedKind: K,
+): Promise<ArtifactWriterLockAuthority> {
+  return withAuthorityFailure(
+    'control_io_failed',
+    'Unable to prepare the Artifact writer lock control path',
+    async () => {
+      const record = requireLease(lease, expectedKind, 'write');
+      const { controlDirectory } = await prepareStorageRootControlDirectoryForRecord(record);
+      requireLease(lease, expectedKind, 'write');
+      return createArtifactWriterLockAuthority(record, controlDirectory);
+    },
+  );
+}
+
+export async function prepareArtifactWriterLockAuthorityForMarkedRoot(
+  path: string,
+): Promise<ArtifactWriterLockAuthority | undefined> {
+  let capability: DiscoveredStorageRootCapability;
+  try {
+    capability = await discoverMarkedStorageRoot({ path });
+  } catch (error) {
+    if (error instanceof StorageRootAuthorityError && error.code === 'root_unmarked') {
+      return undefined;
+    }
+    throw error;
+  }
+  const record = requireCapability(capability, capability.kind);
+  const { controlDirectory } = await prepareStorageRootControlDirectoryForRecord(record);
+  return createArtifactWriterLockAuthority(record, controlDirectory);
 }
 
 export async function tryAcquireInteractiveRootReader(
@@ -521,6 +556,14 @@ export async function assertStorageRootLease<
   const record = requireLease(lease, expectedKind, expectedAccess);
   await assertRootIdentity(record);
   requireLease(lease, expectedKind, expectedAccess);
+}
+
+export function createStorageRootLeaseIdentityGuard<
+  K extends StorageRootKind,
+  A extends StorageRootAccess,
+>(lease: StorageRootLease<K, A>, expectedKind: K, expectedAccess: A): () => Promise<void> {
+  const record = requireLease(lease, expectedKind, expectedAccess);
+  return () => assertRootIdentity(record);
 }
 
 export async function runWithStorageRootLease<
@@ -741,6 +784,29 @@ function invalidLease(kind: StorageRootKind, access: StorageRootAccess): Storage
     'invalid_lease',
     `Expected an active ${kind} ${access} storage root lease`,
   );
+}
+
+async function prepareStorageRootControlDirectoryForRecord(
+  record: CapabilityRecord,
+): Promise<{ controlRoot: string; controlDirectory: string }> {
+  await assertRootIdentity(record);
+  const controlRoot = resolve(resolveRootControlNamespace());
+  await ensurePrivateDirectory(controlRoot);
+  const controlDirectory = join(controlRoot, record.rootId);
+  await ensurePrivateDirectory(controlDirectory);
+  await assertRootIdentity(record);
+  return { controlRoot, controlDirectory };
+}
+
+function createArtifactWriterLockAuthority(
+  record: CapabilityRecord,
+  controlDirectory: string,
+): ArtifactWriterLockAuthority {
+  return Object.freeze({
+    controlDirectory,
+    assertCurrentRoot: () => assertRootIdentity(record),
+    [artifactWriterLockAuthorityBrand]: true as const,
+  });
 }
 
 async function assertRootIdentity(record: CapabilityRecord): Promise<void> {

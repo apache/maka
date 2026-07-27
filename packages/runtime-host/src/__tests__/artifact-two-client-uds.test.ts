@@ -36,6 +36,7 @@ const PROTECTED_ARTIFACTS = [
 
 test('production Host recovers Artifact publication and preserves deletes across owner death', {
   skip: process.platform === 'win32' ? 'POSIX process death gate' : false,
+  timeout: 120_000,
 }, async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-artifacts-'));
   const root = join(base, 'root');

@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { constants as fsConstants, createReadStream, type Dirent } from 'node:fs';
+import { type BigIntStats, constants as fsConstants, createReadStream, type Dirent } from 'node:fs';
 import {
   access,
   link,
   lstat,
   mkdir,
+  open,
   readFile,
   readdir,
   realpath,
@@ -24,6 +25,8 @@ import {
   ArtifactRecord,
   ArtifactSource,
   ArtifactTextReadResult,
+  canUserDeleteArtifact,
+  isArtifactTurnKey,
   isCanonicalArtifactEntityId,
 } from '@maka/core/artifacts';
 import {
@@ -32,9 +35,9 @@ import {
 } from '@maka/core/deep-research-run';
 import { publishMarkerFile, readBoundedMarkerFile } from './marker-file.js';
 import {
-  ARTIFACT_METADATA_TEMP_PATTERN,
   ARTIFACT_PUBLICATION_STAGING_PATTERN,
   ARTIFACT_PURGE_INTENT_FILE,
+  isCanonicalArtifactRecoveryTempName,
 } from './artifact-storage-layout.js';
 import {
   decodeArtifactMetadata,
@@ -42,7 +45,11 @@ import {
   validateCanonicalArtifactTargetName,
   validateRelativeArtifactPath,
 } from './artifact-metadata-codec.js';
-import { withArtifactWriterLock } from './artifact-writer-lock.js';
+import {
+  withArtifactWriterLock,
+  withLeaseBoundArtifactWriterLock,
+} from './artifact-writer-lock.js';
+import type { ArtifactWriterLockAuthority } from './root-authority.js';
 import { syncDirectory, syncDirectoryChain, syncFile } from './stable-storage.js';
 
 export { isSafeRelativeArtifactPath } from './artifact-metadata-codec.js';
@@ -60,6 +67,32 @@ const EMPTY_SESSION_SNAPSHOT: ArtifactSessionSnapshot = {
 interface ArtifactSessionSnapshot {
   readonly records: readonly ArtifactRecord[];
   readonly revision: ArtifactListRevision;
+}
+
+interface MetadataFileIdentity {
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly size: bigint;
+  readonly mtimeNs: bigint;
+  readonly ctimeNs: bigint;
+  readonly birthtimeNs: bigint;
+}
+
+type ArtifactReadFailure = {
+  readonly ok: false;
+  readonly reason: 'not_found' | 'too_large' | 'read_failed' | 'not_allowed' | 'deleted';
+};
+
+interface PreparedArtifactRead {
+  readonly ok: true;
+  readonly path: string;
+  readonly record: ArtifactRecord;
+  readonly maxBytes: number;
+}
+
+interface ArtifactRemovalEntry {
+  readonly unlinkPath: string;
+  readonly comparisonIdentity: string;
 }
 
 interface RecoverableOrphan {
@@ -125,12 +158,16 @@ export interface ArtifactStore extends ArtifactStoreReader, DurableArtifactAttac
   purge(artifactIds: readonly string[]): Promise<void>;
 }
 
-export type ArtifactSessionDeleteResult =
+export type ArtifactUserDeleteResult =
   | { readonly kind: 'deleted'; readonly record: ArtifactRecord }
   | { readonly kind: 'not_found' }
-  | { readonly kind: 'record_changed' };
+  | { readonly kind: 'protected' };
 
 export interface ArtifactAuthorityStore extends ArtifactStore {
+  deleteUserArtifactInSession(
+    sessionId: string,
+    artifactId: string,
+  ): Promise<ArtifactUserDeleteResult>;
   listPage(
     sessionId: string,
     options: { offset: number; limit: number },
@@ -146,10 +183,6 @@ export interface ArtifactAuthorityStore extends ArtifactStore {
     artifactId: string,
     opts?: { maxBytes?: number },
   ): Promise<ArtifactBinaryReadResult>;
-  deleteInSession(input: {
-    sessionId: string;
-    expected: ArtifactRecord;
-  }): Promise<ArtifactSessionDeleteResult>;
 }
 
 export interface ArtifactStoreWriteAuthority {
@@ -163,8 +196,17 @@ export function createArtifactStore(workspaceRoot: string): ArtifactStore {
 
 export function createArtifactStoreWriteAuthority(
   workspaceRoot: string,
+  options: {
+    assertAuthority?: () => Promise<void>;
+    leaseBoundWriterLockAuthority?: ArtifactWriterLockAuthority;
+  } = {},
 ): ArtifactStoreWriteAuthority {
-  const store = new FileArtifactStore(workspaceRoot, 'authority');
+  const store = new FileArtifactStore(
+    workspaceRoot,
+    'authority',
+    options.assertAuthority,
+    options.leaseBoundWriterLockAuthority,
+  );
   return Object.freeze({
     store,
     recover: () => store.recoverForWriteWithAuthority(),
@@ -179,62 +221,80 @@ class FileArtifactStore implements ArtifactAuthorityStore {
   private sessionSnapshots = new Map<string, ArtifactSessionSnapshot>();
   private loaded = false;
   private recoveryRequired: boolean;
+  private legacyRecoveryRequired: boolean;
   private recoverableOrphans = new Map<string, RecoverableOrphan>();
-  private loadPromise: Promise<void> | null = null;
+  private metadataIdentity: MetadataFileIdentity | null | undefined;
   private queue: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly workspaceRoot: string,
     private readonly recoveryMode: 'legacy' | 'authority',
+    private readonly assertAuthority?: () => Promise<void>,
+    private readonly leaseBoundWriterLockAuthority?: ArtifactWriterLockAuthority,
   ) {
     this.artifactRoot = join(workspaceRoot, 'artifacts');
     this.metadataPath = join(this.artifactRoot, 'metadata.jsonl');
     this.purgeIntentPath = join(this.artifactRoot, ARTIFACT_PURGE_INTENT_FILE);
     this.recoveryRequired = recoveryMode === 'authority';
+    this.legacyRecoveryRequired = recoveryMode === 'legacy';
   }
 
   async create(input: CreateArtifactInput): Promise<ArtifactRecord> {
-    const id = input.id ?? randomUUID();
-    if (!ARTIFACT_KIND_SET.has(input.kind)) throw new Error('Invalid Artifact kind');
-    if (input.source !== undefined && !ARTIFACT_SOURCE_SET.has(input.source)) {
+    const acceptedInput: CreateArtifactInput = Object.freeze({
+      ...input,
+      content: typeof input.content === 'string' ? input.content : new Uint8Array(input.content),
+    });
+    const id = acceptedInput.id ?? randomUUID();
+    if (!ARTIFACT_KIND_SET.has(acceptedInput.kind)) throw new Error('Invalid Artifact kind');
+    if (acceptedInput.source !== undefined && !ARTIFACT_SOURCE_SET.has(acceptedInput.source)) {
       throw new Error('Invalid Artifact source');
     }
     if (
-      input.deepResearchRole !== undefined &&
-      !isDeepResearchArtifactRole(input.deepResearchRole)
+      acceptedInput.deepResearchRole !== undefined &&
+      !isDeepResearchArtifactRole(acceptedInput.deepResearchRole)
     ) {
       throw new Error('Invalid Artifact deep-research role');
     }
-    if (input.now !== undefined && (!Number.isSafeInteger(input.now) || input.now < 0)) {
+    if (
+      acceptedInput.now !== undefined &&
+      (!Number.isSafeInteger(acceptedInput.now) || acceptedInput.now < 0)
+    ) {
       throw new Error('Invalid Artifact creation time');
     }
     assertCanonicalArtifactEntityId(id, 'id');
-    assertCanonicalArtifactEntityId(input.sessionId, 'sessionId');
-    assertCanonicalArtifactEntityId(input.turnId, 'turnId');
-    const name = sanitizeArtifactName(input.name);
-    const relativePath = `${input.sessionId}/${id}-${name}`;
+    assertCanonicalArtifactEntityId(acceptedInput.sessionId, 'sessionId');
+    assertArtifactTurnKey(acceptedInput.turnId);
+    const name = sanitizeArtifactName(acceptedInput.name);
+    const relativePath = `${acceptedInput.sessionId}/${id}-${name}`;
     validateRelativeArtifactPath(relativePath);
     validateCanonicalArtifactTargetName(basename(relativePath));
     return this.enqueueMutation(async () => {
-      await this.prepareMutationUnlocked();
+      await this.prepareMutationUnlocked({
+        kind: 'create',
+        input: acceptedInput,
+        identity: { id, canonicalName: name },
+      });
       const existing = this.records.find((record) => record.id === id);
       if (existing) {
-        return this.replayExistingArtifactUnlocked(existing, input, {
+        return this.replayExistingArtifactUnlocked(existing, acceptedInput, {
           id,
           name,
           relativePath,
         });
       }
-      await this.assertNoCompatiblePublicationStagingUnlocked(input, {
+      await this.assertNoCompatiblePublicationStagingUnlocked(acceptedInput, {
         id,
         canonicalName: name,
       });
-      const adopted = await this.adoptRecoverableOrphanUnlocked(input, {
+      const adopted = await this.adoptRecoverableOrphanUnlocked(acceptedInput, {
         id,
         canonicalName: name,
       });
       if (adopted) return adopted;
-      await this.assertNoCompatiblePayloadExistsUnlocked(input, { id, canonicalName: name });
+      await this.assertNoCompatiblePayloadExistsUnlocked(acceptedInput, {
+        id,
+        canonicalName: name,
+      });
       const target = join(this.artifactRoot, relativePath);
       const targetDirectory = dirname(target);
       const createdDirectory = await mkdir(targetDirectory, { recursive: true });
@@ -246,23 +306,25 @@ class FileArtifactStore implements ArtifactAuthorityStore {
       let preserveStaging = false;
       let targetLinked = false;
       try {
-        await writeFile(tempPath, input.content, { flag: 'wx' });
+        await writeFile(tempPath, acceptedInput.content, { flag: 'wx' });
         await syncFile(tempPath);
         await syncDirectory(targetDirectory);
         const size = await stat(tempPath);
         const record: ArtifactRecord = {
           id,
-          sessionId: input.sessionId,
-          turnId: input.turnId,
-          createdAt: input.now ?? Date.now(),
+          sessionId: acceptedInput.sessionId,
+          turnId: acceptedInput.turnId,
+          createdAt: acceptedInput.now ?? Date.now(),
           name,
-          kind: input.kind,
+          kind: acceptedInput.kind,
           relativePath,
           sizeBytes: size.size,
-          ...(input.mimeType ? { mimeType: input.mimeType } : {}),
-          ...(input.source ? { source: input.source } : {}),
-          ...(input.summary ? { summary: input.summary } : {}),
-          ...(input.deepResearchRole ? { deepResearchRole: input.deepResearchRole } : {}),
+          ...(acceptedInput.mimeType ? { mimeType: acceptedInput.mimeType } : {}),
+          ...(acceptedInput.source ? { source: acceptedInput.source } : {}),
+          ...(acceptedInput.summary ? { summary: acceptedInput.summary } : {}),
+          ...(acceptedInput.deepResearchRole
+            ? { deepResearchRole: acceptedInput.deepResearchRole }
+            : {}),
           status: 'live',
         };
         const nextRecords = [...this.records, record];
@@ -375,22 +437,27 @@ class FileArtifactStore implements ArtifactAuthorityStore {
     sessionId: string,
     opts: { includeDeleted?: boolean } = {},
   ): Promise<ArtifactRecord[]> {
-    await this.load();
-    return (
-      this.records
-        .filter((record) => record.sessionId === sessionId)
-        .filter((record) => opts.includeDeleted || record.status !== 'deleted')
-        // Secondary `id` sort for determinism when fixture artifacts share
-        // a frozen createdAt (PR108k-yj e2e-fixture determinism).
-        .sort(compareArtifactRecords)
-        .map((record) => ({ ...record }))
-    );
+    const includeDeleted = opts.includeDeleted ?? false;
+    return this.enqueue(async () => {
+      await this.load();
+      return (
+        this.records
+          .filter((record) => record.sessionId === sessionId)
+          .filter((record) => includeDeleted || record.status !== 'deleted')
+          // Secondary `id` sort for determinism when fixture artifacts share
+          // a frozen createdAt (PR108k-yj e2e-fixture determinism).
+          .sort(compareArtifactRecords)
+          .map((record) => ({ ...record }))
+      );
+    });
   }
 
   async get(artifactId: string): Promise<ArtifactRecord | null> {
-    await this.load();
-    const record = this.records.find((item) => item.id === artifactId);
-    return record ? { ...record } : null;
+    return this.enqueue(async () => {
+      await this.load();
+      const record = this.records.find((item) => item.id === artifactId);
+      return record ? { ...record } : null;
+    });
   }
 
   async listPage(
@@ -399,25 +466,28 @@ class FileArtifactStore implements ArtifactAuthorityStore {
   ): Promise<ArtifactListPage> {
     assertPageBound(options.offset, true, 'offset');
     assertPageBound(options.limit, false, 'limit');
-    await this.load();
-    const snapshot = this.sessionSnapshots.get(sessionId) ?? EMPTY_SESSION_SNAPSHOT;
-    return {
-      revision: snapshot.revision,
-      records: snapshot.records
-        .slice(options.offset, options.offset + options.limit)
-        .map((record) => ({ ...record })),
-      total: snapshot.records.length,
-    };
+    const { offset, limit } = options;
+    return this.enqueue(async () => {
+      await this.load();
+      const snapshot = this.sessionSnapshots.get(sessionId) ?? EMPTY_SESSION_SNAPSHOT;
+      return {
+        revision: snapshot.revision,
+        records: snapshot.records.slice(offset, offset + limit).map((record) => ({ ...record })),
+        total: snapshot.records.length,
+      };
+    });
   }
 
   async getInSession(sessionId: string, artifactId: string): Promise<ArtifactSessionEntry> {
-    await this.load();
-    const snapshot = this.sessionSnapshots.get(sessionId) ?? EMPTY_SESSION_SNAPSHOT;
-    const record = snapshot.records.find((candidate) => candidate.id === artifactId);
-    return {
-      revision: snapshot.revision,
-      record: record ? { ...record } : null,
-    };
+    return this.enqueue(async () => {
+      await this.load();
+      const snapshot = this.sessionSnapshots.get(sessionId) ?? EMPTY_SESSION_SNAPSHOT;
+      const record = snapshot.records.find((candidate) => candidate.id === artifactId);
+      return {
+        revision: snapshot.revision,
+        record: record ? { ...record } : null,
+      };
+    });
   }
 
   async readText(
@@ -496,43 +566,27 @@ class FileArtifactStore implements ArtifactAuthorityStore {
   }
 
   private async readPreparedText(
-    prepared:
-      | { ok: true; path: string; record: ArtifactRecord }
-      | {
-          ok: false;
-          reason: 'not_found' | 'too_large' | 'read_failed' | 'not_allowed' | 'deleted';
-        },
+    prepared: PreparedArtifactRead | ArtifactReadFailure,
   ): Promise<ArtifactTextReadResult> {
     if (!prepared.ok) return prepared;
-    try {
-      return { ok: true, text: await readFile(prepared.path, 'utf8') };
-    } catch {
-      return { ok: false, reason: 'read_failed' };
-    }
+    const bytes = await readPreparedBytes(prepared);
+    return bytes.ok ? { ok: true, text: bytes.bytes.toString('utf8') } : bytes;
   }
 
   private async readPreparedBinary(
-    prepared:
-      | { ok: true; path: string; record: ArtifactRecord }
-      | {
-          ok: false;
-          reason: 'not_found' | 'too_large' | 'read_failed' | 'not_allowed' | 'deleted';
-        },
+    prepared: PreparedArtifactRead | ArtifactReadFailure,
   ): Promise<ArtifactBinaryReadResult> {
     if (!prepared.ok) return prepared;
-    try {
-      const bytes = await readFile(prepared.path);
-      const mimeType = sniffAllowedBinaryMime(bytes);
-      if (!mimeType) return { ok: false, reason: 'unsupported_mime' };
-      return { ok: true, base64: bytes.toString('base64'), mimeType };
-    } catch {
-      return { ok: false, reason: 'read_failed' };
-    }
+    const read = await readPreparedBytes(prepared);
+    if (!read.ok) return read;
+    const mimeType = sniffAllowedBinaryMime(read.bytes);
+    if (!mimeType) return { ok: false, reason: 'unsupported_mime' };
+    return { ok: true, base64: read.bytes.toString('base64'), mimeType };
   }
 
   async delete(artifactId: string): Promise<void> {
     await this.enqueueMutation(async () => {
-      await this.prepareMutationUnlocked();
+      await this.prepareMutationUnlocked({ kind: 'delete' });
       const nextRecords: ArtifactRecord[] = this.records.map((record) =>
         record.id === artifactId && record.status !== 'deleted'
           ? { ...record, status: 'deleted' }
@@ -544,25 +598,16 @@ class FileArtifactStore implements ArtifactAuthorityStore {
     });
   }
 
-  deleteInSession(input: {
-    sessionId: string;
-    expected: ArtifactRecord;
-  }): Promise<ArtifactSessionDeleteResult> {
+  deleteUserArtifactInSession(
+    sessionId: string,
+    artifactId: string,
+  ): Promise<ArtifactUserDeleteResult> {
     return this.enqueueMutation(async () => {
-      await this.prepareMutationUnlocked();
-      const snapshot = this.sessionSnapshots.get(input.sessionId) ?? EMPTY_SESSION_SNAPSHOT;
-      const existing = snapshot.records.find((record) => record.id === input.expected.id);
+      await this.prepareMutationUnlocked({ kind: 'delete' });
+      const snapshot = this.sessionSnapshots.get(sessionId) ?? EMPTY_SESSION_SNAPSHOT;
+      const existing = snapshot.records.find((record) => record.id === artifactId);
       if (!existing) return { kind: 'not_found' };
-      if (!sameArtifactRecord(existing, input.expected)) {
-        if (
-          existing.status === 'deleted' &&
-          input.expected.status === 'live' &&
-          sameArtifactRecord(existing, { ...input.expected, status: 'deleted' })
-        ) {
-          return { kind: 'deleted', record: { ...existing } };
-        }
-        return { kind: 'record_changed' };
-      }
+      if (!canUserDeleteArtifact(existing)) return { kind: 'protected' };
       if (existing.status === 'deleted') {
         return { kind: 'deleted', record: { ...existing } };
       }
@@ -577,9 +622,10 @@ class FileArtifactStore implements ArtifactAuthorityStore {
   }
 
   async purge(artifactIds: readonly string[]): Promise<void> {
+    const acceptedArtifactIds = Object.freeze([...artifactIds]);
     await this.enqueueMutation(async () => {
-      await this.prepareMutationUnlocked();
-      const ids = new Set(artifactIds);
+      await this.prepareMutationUnlocked({ kind: 'purge' });
+      const ids = new Set(acceptedArtifactIds);
       const records = this.records.filter((record) => ids.has(record.id));
       if (records.length === 0) return;
       const paths = await this.preparePurgePathsUnlocked(records);
@@ -598,16 +644,19 @@ class FileArtifactStore implements ArtifactAuthorityStore {
   ): Promise<readonly string[]> {
     const root = await ensureRealDirectory(this.artifactRoot);
     const ids = new Set(records.map((record) => record.id));
-    const paths = new Map<string, ArtifactRecord>();
+    const entries = new Map<
+      string,
+      { readonly unlinkPath: string; readonly record: ArtifactRecord }
+    >();
     const relativePaths = new Map(records.map((record) => [record.relativePath, record] as const));
     for (const record of records) {
       validateRelativeArtifactPath(record.relativePath);
-      const path = await resolveArtifactRemovalEntry(this.artifactRoot, record.relativePath);
-      if (!path) continue;
-      if (!isInsideOrSamePath(root, dirname(path))) {
+      const entry = await resolveArtifactRemovalEntry(this.artifactRoot, record.relativePath);
+      if (!entry) continue;
+      if (!isInsideOrSamePath(root, dirname(entry.unlinkPath))) {
         throw new Error(`Artifact ${record.id} resolves outside the artifact root`);
       }
-      paths.set(path, record);
+      entries.set(entry.comparisonIdentity, { unlinkPath: entry.unlinkPath, record });
     }
     for (const record of this.records) {
       if (ids.has(record.id)) continue;
@@ -617,13 +666,13 @@ class FileArtifactStore implements ArtifactAuthorityStore {
           `Artifact ${exactTarget.id} path is still referenced by artifact ${record.id}`,
         );
       }
-      const path = await resolveArtifactRemovalEntry(this.artifactRoot, record.relativePath);
-      const target = path ? paths.get(path) : undefined;
+      const entry = await resolveArtifactRemovalEntry(this.artifactRoot, record.relativePath);
+      const target = entry ? entries.get(entry.comparisonIdentity)?.record : undefined;
       if (target) {
         throw new Error(`Artifact ${target.id} path is still referenced by artifact ${record.id}`);
       }
     }
-    return [...paths.keys()];
+    return [...entries.values()].map((entry) => entry.unlinkPath);
   }
 
   private async completePurgeUnlocked(
@@ -649,10 +698,7 @@ class FileArtifactStore implements ArtifactAuthorityStore {
     artifactId: string,
     maxBytes: number,
     includeDeleted = false,
-  ): Promise<
-    | { ok: true; path: string; record: ArtifactRecord }
-    | { ok: false; reason: 'not_found' | 'too_large' | 'read_failed' | 'not_allowed' | 'deleted' }
-  > {
+  ): Promise<PreparedArtifactRead | ArtifactReadFailure> {
     const record = await this.get(artifactId);
     if (!record) return { ok: false, reason: 'not_found' };
     return this.prepareRecordRead(record, maxBytes, includeDeleted);
@@ -662,10 +708,7 @@ class FileArtifactStore implements ArtifactAuthorityStore {
     sessionId: string,
     artifactId: string,
     maxBytes: number,
-  ): Promise<
-    | { ok: true; path: string; record: ArtifactRecord }
-    | { ok: false; reason: 'not_found' | 'too_large' | 'read_failed' | 'not_allowed' | 'deleted' }
-  > {
+  ): Promise<PreparedArtifactRead | ArtifactReadFailure> {
     await this.load();
     const snapshot = this.sessionSnapshots.get(sessionId) ?? EMPTY_SESSION_SNAPSHOT;
     const record = snapshot.records.find((candidate) => candidate.id === artifactId);
@@ -677,42 +720,40 @@ class FileArtifactStore implements ArtifactAuthorityStore {
     record: ArtifactRecord,
     maxBytes: number,
     includeDeleted: boolean,
-  ): Promise<
-    | { ok: true; path: string; record: ArtifactRecord }
-    | { ok: false; reason: 'not_found' | 'too_large' | 'read_failed' | 'not_allowed' | 'deleted' }
-  > {
+  ): Promise<PreparedArtifactRead | ArtifactReadFailure> {
     if (record.status === 'deleted' && !includeDeleted) return { ok: false, reason: 'deleted' };
     const resolved = await resolveArtifactPath({
       artifactRoot: this.artifactRoot,
       relativePath: record.relativePath,
     });
     if (!resolved.ok) return { ok: false, reason: resolved.reason };
-    const size = await stat(resolved.path).catch(() => null);
-    if (!size || !size.isFile()) return { ok: false, reason: 'not_found' };
-    if (size.size > maxBytes) return { ok: false, reason: 'too_large' };
-    return { ok: true, path: resolved.path, record };
+    return { ok: true, path: resolved.path, record, maxBytes };
   }
 
   private async load(): Promise<void> {
-    if (this.loaded) return;
-    if (this.loadPromise) {
-      await this.loadPromise;
+    let handle;
+    try {
+      handle = await open(this.metadataPath, 'r');
+    } catch (error) {
+      if (!isNotFound(error)) throw error;
+      if (!this.loaded || this.metadataIdentity !== null) {
+        this.replaceRecords([]);
+        this.metadataIdentity = null;
+        this.loaded = true;
+      }
       return;
     }
-    this.loadPromise = (async () => {
-      try {
-        const text = await readFile(this.metadataPath, 'utf8');
-        this.replaceRecords(decodeArtifactMetadata(text));
-      } catch (error) {
-        if (!isNotFound(error)) throw error;
-        this.replaceRecords([]);
-      }
-      this.loaded = true;
-    })();
     try {
-      await this.loadPromise;
+      const metadataStat = await handle.stat({ bigint: true });
+      if (!metadataStat.isFile()) throw artifactMetadataNotFile();
+      const identity = metadataFileIdentity(metadataStat);
+      if (this.loaded && sameMetadataIdentity(this.metadataIdentity, identity)) return;
+      const text = await handle.readFile({ encoding: 'utf8' });
+      this.replaceRecords(decodeArtifactMetadata(text));
+      this.metadataIdentity = identity;
+      this.loaded = true;
     } finally {
-      this.loadPromise = null;
+      await handle.close();
     }
   }
 
@@ -725,6 +766,7 @@ class FileArtifactStore implements ArtifactAuthorityStore {
     const tempPath = `${this.metadataPath}.${process.pid}.${randomUUID()}.tmp`;
     const payload = records.map((record) => JSON.stringify(record)).join('\n');
     let published = false;
+    let publishedIdentity: MetadataFileIdentity | undefined;
     let publicationError: MetadataPublicationError | undefined;
     try {
       await writeFile(tempPath, payload ? `${payload}\n` : '', {
@@ -732,6 +774,8 @@ class FileArtifactStore implements ArtifactAuthorityStore {
         flag: 'wx',
       });
       await syncFile(tempPath);
+      const tempStat = await stat(tempPath, { bigint: true });
+      publishedIdentity = metadataFileIdentity(tempStat);
       await rename(tempPath, this.metadataPath);
       published = true;
       await syncDirectory(metadataDirectory);
@@ -739,26 +783,52 @@ class FileArtifactStore implements ArtifactAuthorityStore {
       this.invalidateWriterState();
       publicationError = new MetadataPublicationError(error, published);
     }
-    try {
-      await removeFileDurably(tempPath, metadataDirectory);
-    } catch (cleanupError) {
-      this.invalidateWriterState();
-      if (publicationError) {
-        throw new AggregateError(
-          [publicationError, cleanupError],
-          'Artifact metadata publication and temp cleanup both failed',
-        );
+    if (!published) {
+      try {
+        await removeFileDurably(tempPath, metadataDirectory);
+      } catch (cleanupError) {
+        this.invalidateWriterState();
+        if (publicationError) {
+          throw new AggregateError(
+            [publicationError, cleanupError],
+            'Artifact metadata publication and temp cleanup both failed',
+          );
+        }
+        throw cleanupError;
       }
-      throw cleanupError;
     }
     if (publicationError) throw publicationError;
+    if (!publishedIdentity)
+      throw new Error('Artifact metadata publication identity is unavailable');
+    this.metadataIdentity = publishedIdentity;
+    this.loaded = true;
   }
 
-  private async prepareMutationUnlocked(): Promise<void> {
+  private async prepareMutationUnlocked(
+    purpose:
+      | {
+          readonly kind: 'create';
+          readonly input: CreateArtifactInput;
+          readonly identity: { readonly id: string; readonly canonicalName: string };
+        }
+      | { readonly kind: 'delete' | 'purge' },
+  ): Promise<void> {
     if (this.recoveryMode === 'legacy') {
       this.recoverableOrphans.clear();
-      await this.prepareRecoveryUnlocked();
-      this.recoverableOrphans = await this.findRecoverableOrphansUnlocked();
+      if (this.legacyRecoveryRequired) {
+        await this.prepareRecoveryUnlocked();
+        this.legacyRecoveryRequired = false;
+      } else {
+        await this.reloadForMutationUnlocked();
+        await this.recoverPurgeIntentUnlocked();
+      }
+      if (purpose.kind === 'create') {
+        await this.recoverCompatiblePublicationsUnlocked(purpose.input, purpose.identity);
+        this.recoverableOrphans = await this.findCompatibleRecoverableOrphansUnlocked(
+          purpose.input,
+          purpose.identity,
+        );
+      }
       return;
     }
     await this.reloadForMutationUnlocked();
@@ -769,13 +839,21 @@ class FileArtifactStore implements ArtifactAuthorityStore {
   }
 
   private async reloadForMutationUnlocked(): Promise<void> {
-    if (this.loadPromise) await this.loadPromise;
     try {
-      const text = await readFile(this.metadataPath, 'utf8');
-      this.replaceRecords(decodeArtifactMetadata(text));
+      const handle = await open(this.metadataPath, 'r');
+      try {
+        const metadataStat = await handle.stat({ bigint: true });
+        if (!metadataStat.isFile()) throw artifactMetadataNotFile();
+        const text = await handle.readFile({ encoding: 'utf8' });
+        this.replaceRecords(decodeArtifactMetadata(text));
+        this.metadataIdentity = metadataFileIdentity(metadataStat);
+      } finally {
+        await handle.close();
+      }
     } catch (error) {
       if (!isNotFound(error)) throw error;
       this.replaceRecords([]);
+      this.metadataIdentity = null;
     }
     this.loaded = true;
   }
@@ -795,7 +873,7 @@ class FileArtifactStore implements ArtifactAuthorityStore {
       if (isNotFound(error)) return false;
       throw error;
     }
-    if (sessionEntries.some((entry) => ARTIFACT_METADATA_TEMP_PATTERN.test(entry.name))) {
+    if (sessionEntries.some((entry) => isCanonicalArtifactRecoveryTempName(entry.name))) {
       return true;
     }
     for (const sessionEntry of sessionEntries) {
@@ -930,6 +1008,73 @@ class FileArtifactStore implements ArtifactAuthorityStore {
     return orphans;
   }
 
+  private async findCompatibleRecoverableOrphansUnlocked(
+    input: CreateArtifactInput,
+    identity: { id: string; canonicalName: string },
+  ): Promise<Map<string, RecoverableOrphan>> {
+    const orphans = new Map<string, RecoverableOrphan>();
+    const sessionDirectory = join(this.artifactRoot, input.sessionId);
+    try {
+      await assertArtifactDirectory(this.artifactRoot, sessionDirectory);
+    } catch (error) {
+      if (isNotFound(error)) return orphans;
+      throw error;
+    }
+    const referencedPaths = new Set(
+      this.records.map((record) => filesystemPathKey(record.relativePath)),
+    );
+    for (const name of compatibleArtifactNames(input.name, identity.canonicalName)) {
+      const relativePath = `${input.sessionId}/${identity.id}-${name}`;
+      if (referencedPaths.has(filesystemPathKey(relativePath))) continue;
+      const path = join(this.artifactRoot, relativePath);
+      let pathStat;
+      try {
+        pathStat = await lstat(path);
+      } catch (error) {
+        if (isNotFound(error)) continue;
+        throw error;
+      }
+      if (!pathStat.isFile() || pathStat.isSymbolicLink()) continue;
+      orphans.set(filesystemPathKey(relativePath), {
+        canonicalPath: await realpath(path),
+        dev: pathStat.dev,
+        ino: pathStat.ino,
+        size: pathStat.size,
+        digest: await digestFile(path),
+      });
+    }
+    return orphans;
+  }
+
+  private async recoverCompatiblePublicationsUnlocked(
+    input: CreateArtifactInput,
+    identity: { id: string; canonicalName: string },
+  ): Promise<void> {
+    const sessionDirectory = join(this.artifactRoot, input.sessionId);
+    const targetHashes = new Set(
+      [...compatibleArtifactNames(input.name, identity.canonicalName)].map((name) =>
+        artifactTargetHash(`${identity.id}-${name}`),
+      ),
+    );
+    let entries: Dirent[];
+    try {
+      entries = await readdir(sessionDirectory, { withFileTypes: true });
+    } catch (error) {
+      if (isNotFound(error)) return;
+      throw error;
+    }
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      const match = ARTIFACT_PUBLICATION_STAGING_PATTERN.exec(entry.name);
+      if (!match || !targetHashes.has(match[1]!)) continue;
+      await this.recoverPublicationUnlocked({
+        sessionId: input.sessionId,
+        sessionDirectory,
+        stagingName: entry.name,
+        targetHash: match[1]!,
+      });
+    }
+  }
+
   private async assertNoCompatiblePayloadExistsUnlocked(
     input: CreateArtifactInput,
     identity: { id: string; canonicalName: string },
@@ -972,6 +1117,7 @@ class FileArtifactStore implements ArtifactAuthorityStore {
 
   private invalidateWriterState(): void {
     if (this.recoveryMode === 'authority') this.recoveryRequired = true;
+    else this.legacyRecoveryRequired = true;
   }
 
   private replaceRecords(records: ArtifactRecord[]): void {
@@ -1055,7 +1201,10 @@ class FileArtifactStore implements ArtifactAuthorityStore {
       throw error;
     }
     for (const entry of entries) {
-      if (!entry.isFile() || !ARTIFACT_METADATA_TEMP_PATTERN.test(entry.name)) continue;
+      if (!isCanonicalArtifactRecoveryTempName(entry.name)) continue;
+      if (!entry.isFile()) {
+        throw new Error(`Artifact recovery temp is not a regular file: ${entry.name}`);
+      }
       await removeFileDurably(join(this.artifactRoot, entry.name), this.artifactRoot);
     }
   }
@@ -1161,7 +1310,7 @@ class FileArtifactStore implements ArtifactAuthorityStore {
     await removeFileDurably(stagingPath, input.sessionDirectory);
   }
 
-  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+  private enqueueSerialized<T>(operation: () => Promise<T>): Promise<T> {
     const next = this.queue.then(operation, operation);
     this.queue = next.then(
       () => {},
@@ -1170,13 +1319,97 @@ class FileArtifactStore implements ArtifactAuthorityStore {
     return next;
   }
 
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    return this.enqueueSerialized(async () => {
+      await this.assertAuthority?.();
+      return operation();
+    });
+  }
+
   private enqueueMutation<T>(operation: () => Promise<T>): Promise<T> {
-    return this.enqueue(() => withArtifactWriterLock(this.workspaceRoot, operation));
+    return this.enqueueSerialized(() => {
+      const leaseBoundWriterLockAuthority = this.leaseBoundWriterLockAuthority;
+      const withWriterLock = leaseBoundWriterLockAuthority
+        ? (lockedOperation: () => Promise<T>) =>
+            withLeaseBoundArtifactWriterLock(leaseBoundWriterLockAuthority, lockedOperation)
+        : (lockedOperation: () => Promise<T>) =>
+            withArtifactWriterLock(this.workspaceRoot, lockedOperation);
+      return withWriterLock(async () => {
+        await this.assertAuthority?.();
+        return operation();
+      });
+    });
   }
 }
 
 function publicationStagingName(targetBasename: string): string {
   return `.artifact-publish.${artifactTargetHash(targetBasename)}.${randomUUID()}.tmp`;
+}
+
+function sameMetadataIdentity(
+  left: MetadataFileIdentity | null | undefined,
+  right: MetadataFileIdentity,
+): boolean {
+  return (
+    left !== null &&
+    left !== undefined &&
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs &&
+    left.birthtimeNs === right.birthtimeNs
+  );
+}
+
+function metadataFileIdentity(fileStat: BigIntStats): MetadataFileIdentity {
+  return {
+    dev: fileStat.dev,
+    ino: fileStat.ino,
+    size: fileStat.size,
+    mtimeNs: fileStat.mtimeNs,
+    ctimeNs: fileStat.ctimeNs,
+    birthtimeNs: fileStat.birthtimeNs,
+  };
+}
+
+async function openRealTarget(path: string) {
+  const noFollowFlags = fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW;
+  try {
+    return await open(path, noFollowFlags);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (process.platform !== 'win32' || (code !== 'EINVAL' && code !== 'ENOTSUP')) throw error;
+    return open(path, fsConstants.O_RDONLY);
+  }
+}
+
+async function readPreparedBytes(
+  prepared: PreparedArtifactRead,
+): Promise<{ readonly ok: true; readonly bytes: Buffer } | ArtifactReadFailure> {
+  let handle;
+  try {
+    handle = await openRealTarget(prepared.path);
+    const payloadStat = await handle.stat();
+    if (!payloadStat.isFile()) return { ok: false, reason: 'not_found' };
+    if (payloadStat.size > prepared.maxBytes) return { ok: false, reason: 'too_large' };
+
+    const bytes = Buffer.alloc(payloadStat.size + 1);
+    let total = 0;
+    while (total < bytes.byteLength) {
+      const read = await handle.read(bytes, total, bytes.byteLength - total, total);
+      if (read.bytesRead === 0) break;
+      total += read.bytesRead;
+    }
+    if (total !== payloadStat.size || total > prepared.maxBytes) {
+      return { ok: false, reason: total > prepared.maxBytes ? 'too_large' : 'read_failed' };
+    }
+    return { ok: true, bytes: bytes.subarray(0, total) };
+  } catch {
+    return { ok: false, reason: 'read_failed' };
+  } finally {
+    await handle?.close();
+  }
 }
 
 function artifactTargetHash(targetBasename: string): string {
@@ -1193,6 +1426,12 @@ function artifactReplayConflict(artifactId: string): Error {
 
 function artifactWriteRecoveryRequired(): Error {
   return new Error('Artifact write recovery is required before another mutation');
+}
+
+function artifactMetadataNotFile(): NodeJS.ErrnoException {
+  const error = new Error('Artifact metadata path is not a regular file') as NodeJS.ErrnoException;
+  error.code = 'EISDIR';
+  return error;
 }
 
 function optionalCanonicalText(value: string | undefined): string | undefined {
@@ -1324,12 +1563,18 @@ async function removeFileDurably(path: string, directory: string): Promise<boole
 
 function assertCanonicalArtifactEntityId(
   value: unknown,
-  field: 'id' | 'sessionId' | 'turnId',
+  field: 'id' | 'sessionId',
 ): asserts value is string {
   if (!isCanonicalArtifactEntityId(value)) {
     throw new Error(
       `Artifact ${field} must be a canonical entity ID of 1-${ARTIFACT_ENTITY_ID_MAX_CHARS} ASCII letters, digits, "_" or "-"`,
     );
+  }
+}
+
+function assertArtifactTurnKey(value: unknown): asserts value is string {
+  if (!isArtifactTurnKey(value)) {
+    throw new Error('Artifact turnId must be a bounded opaque turn key without control characters');
   }
 }
 
@@ -1389,15 +1634,41 @@ async function ensureRealDirectory(path: string): Promise<string> {
 async function resolveArtifactRemovalEntry(
   artifactRoot: string,
   relativePath: string,
-): Promise<string | undefined> {
+): Promise<ArtifactRemovalEntry | undefined> {
   const target = join(artifactRoot, relativePath);
   try {
     const parent = await realpath(dirname(target));
-    return join(parent, basename(target));
+    const entry = join(parent, basename(target));
+    const entryStat = await lstat(entry, { bigint: true });
+    if (entryStat.isSymbolicLink()) {
+      return {
+        unlinkPath: entry,
+        comparisonIdentity: symlinkEntryIdentity(entryStat),
+      };
+    }
+    const resolvedEntry = await realpath(entry);
+    return {
+      unlinkPath: resolvedEntry,
+      comparisonIdentity: `path:${resolvedEntry}`,
+    };
   } catch (error) {
     if (isNotFound(error)) return undefined;
     throw error;
   }
+}
+
+function symlinkEntryIdentity(entryStat: BigIntStats): string {
+  if (entryStat.dev !== 0n || entryStat.ino !== 0n) {
+    return `symlink:${entryStat.dev}:${entryStat.ino}`;
+  }
+  return [
+    'symlink-stat',
+    entryStat.mode,
+    entryStat.size,
+    entryStat.birthtimeNs,
+    entryStat.ctimeNs,
+    entryStat.mtimeNs,
+  ].join(':');
 }
 
 function isInsideOrSamePath(root: string, target: string): boolean {

@@ -8,6 +8,8 @@ import {
 } from './artifact-store.js';
 import {
   assertStorageRootLease,
+  createStorageRootLeaseIdentityGuard,
+  prepareArtifactWriterLockAuthorityForLease,
   runWithStorageRootLease,
   StorageRootAuthorityError,
   type StorageRootLease,
@@ -30,7 +32,7 @@ export interface InteractiveArtifactStoreWriter extends DurableArtifactAttachmen
   getInSession: ArtifactAuthorityStore['getInSession'];
   readTextInSession: ArtifactAuthorityStore['readTextInSession'];
   readBinaryInSession: ArtifactAuthorityStore['readBinaryInSession'];
-  deleteInSession: ArtifactAuthorityStore['deleteInSession'];
+  deleteUserArtifactInSession: ArtifactAuthorityStore['deleteUserArtifactInSession'];
 }
 
 export type HeadlessArtifactStoreWriter = Readonly<
@@ -57,7 +59,15 @@ export async function openInteractiveArtifactStoreForWrite(
   if (opening) return opening;
 
   const pending = Promise.resolve().then(async () => {
-    const authority = createArtifactStoreWriteAuthority(lease.canonicalPath);
+    const leaseBoundWriterLockAuthority = await prepareArtifactWriterLockAuthorityForLease(
+      lease,
+      'interactive',
+    );
+    const assertAuthority = createStorageRootLeaseIdentityGuard(lease, 'interactive', 'write');
+    const authority = createArtifactStoreWriteAuthority(lease.canonicalPath, {
+      assertAuthority,
+      leaseBoundWriterLockAuthority,
+    });
     await assertStorageRootLease(lease, 'interactive', 'write');
     const recoveredExisting = writerByLease.get(lease);
     if (recoveredExisting) return recoveredExisting;
@@ -84,7 +94,15 @@ export async function openHeadlessArtifactStoreForWrite(
   if (opening) return opening;
 
   const pending = Promise.resolve().then(async () => {
-    const authority = createArtifactStoreWriteAuthority(lease.canonicalPath);
+    const leaseBoundWriterLockAuthority = await prepareArtifactWriterLockAuthorityForLease(
+      lease,
+      'headless',
+    );
+    const assertAuthority = createStorageRootLeaseIdentityGuard(lease, 'headless', 'write');
+    const authority = createArtifactStoreWriteAuthority(lease.canonicalPath, {
+      assertAuthority,
+      leaseBoundWriterLockAuthority,
+    });
     const run = <T>(operation: () => Promise<T>) =>
       runWithStorageRootLease(lease, 'headless', 'write', operation);
     await run(() => authority.recover());
@@ -112,7 +130,10 @@ function createHeadlessWriterFacade(
   const run = <T>(operation: () => Promise<T>) =>
     runWithStorageRootLease(lease, 'headless', 'write', operation);
   return Object.freeze({
-    create: (input) => run(() => store.create(input)),
+    create: (input) => {
+      const acceptedInput = snapshotCreateInput(input);
+      return run(() => store.create(acceptedInput));
+    },
     list: (sessionId, options) => run(() => store.list(sessionId, options)),
     get: (artifactId) => run(() => store.get(artifactId)),
     readText: (artifactId, options) => run(() => store.readText(artifactId, options)),
@@ -140,10 +161,21 @@ function createWriterFacade(
       run(() => store.readBinaryInSession(sessionId, artifactId, options)),
     readDurableAttachmentBinary: (input) => run(() => store.readDurableAttachmentBinary(input)),
     recover: () => run(() => authority.recover()),
-    create: (input) => run(() => store.create(input)),
-    deleteInSession: (input) => run(() => store.deleteInSession(input)),
+    create: (input) => {
+      const acceptedInput = snapshotCreateInput(input);
+      return run(() => store.create(acceptedInput));
+    },
+    deleteUserArtifactInSession: (sessionId, artifactId) =>
+      run(() => store.deleteUserArtifactInSession(sessionId, artifactId)),
   };
   return Object.freeze(facade);
+}
+
+function snapshotCreateInput(input: CreateArtifactInput): CreateArtifactInput {
+  return Object.freeze({
+    ...input,
+    content: typeof input.content === 'string' ? input.content : new Uint8Array(input.content),
+  });
 }
 
 function invalidFacade(): StorageRootAuthorityError {

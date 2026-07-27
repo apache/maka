@@ -2,11 +2,13 @@ import {
   ARTIFACT_KINDS,
   ARTIFACT_SOURCES,
   ARTIFACT_STATUSES,
+  type ArtifactRecord,
   type ArtifactBinaryReadFailureReason,
   type ArtifactKind,
   type ArtifactReadFailureReason,
   type ArtifactSource,
   type ArtifactStatus,
+  isArtifactTurnKey,
   isCanonicalArtifactEntityId,
 } from '@maka/core/artifacts';
 import { requireCount, requireExactRecord, requireRecord } from './codec.js';
@@ -280,6 +282,26 @@ export function decodeArtifactDeleteResult(value: unknown): ArtifactDeleteResult
 
 export const encodeArtifactDeleteResult = decodeArtifactDeleteResult;
 
+export function encodeArtifactProjection(record: ArtifactRecord): ArtifactProjection {
+  return {
+    id: record.id,
+    sessionId: record.sessionId,
+    turnId: record.turnId,
+    createdAt: record.createdAt,
+    name: projectArtifactText(record.name, ARTIFACT_NAME_MAX_BYTES),
+    kind: record.kind,
+    sizeBytes: record.sizeBytes,
+    ...(record.mimeType === undefined
+      ? {}
+      : { mimeType: projectArtifactText(record.mimeType, ARTIFACT_MIME_TYPE_MAX_BYTES) }),
+    ...(record.source === undefined ? {} : { source: record.source }),
+    ...(record.summary === undefined
+      ? {}
+      : { summary: projectArtifactText(record.summary, ARTIFACT_SUMMARY_MAX_BYTES) }),
+    status: record.status,
+  };
+}
+
 function decodeArtifactProjection(value: unknown): ArtifactProjection {
   const record = requireRecord(value, 'artifact projection');
   if (Object.keys(record).some((key) => !ARTIFACT_FIELDS.has(key))) {
@@ -291,7 +313,7 @@ function decodeArtifactProjection(value: unknown): ArtifactProjection {
   return {
     id: artifactEntityId(record.id, 'artifact id'),
     sessionId: artifactEntityId(record.sessionId, 'artifact sessionId'),
-    turnId: artifactEntityId(record.turnId, 'artifact turnId'),
+    turnId: artifactTurnKey(record.turnId),
     createdAt: requireCount(record.createdAt, 'artifact createdAt'),
     name: boundedText(record.name, 'artifact name', ARTIFACT_NAME_MAX_BYTES),
     kind: artifactKind(record.kind),
@@ -307,6 +329,20 @@ function decodeArtifactProjection(value: unknown): ArtifactProjection {
       ? { summary: boundedText(record.summary, 'artifact summary', ARTIFACT_SUMMARY_MAX_BYTES) }
       : {}),
   };
+}
+
+function projectArtifactText(value: string, maxBytes: number): string {
+  let bytes = 0;
+  let projected = '';
+  for (const codePoint of value) {
+    const scalar = codePoint.codePointAt(0)!;
+    const canonical = scalar <= 0x1f || scalar === 0x7f ? '\ufffd' : codePoint;
+    const width = Buffer.byteLength(canonical, 'utf8');
+    if (bytes + width > maxBytes) break;
+    projected += canonical;
+    bytes += width;
+  }
+  return projected || 'artifact';
 }
 
 function decodeTextPreview(value: unknown): ArtifactTextPreview {
@@ -365,6 +401,11 @@ function boundedText(value: unknown, label: string, maxBytes: number, allowEmpty
 
 function artifactEntityId(value: unknown, label: string): string {
   if (!isCanonicalArtifactEntityId(value)) throw invalidProtocolFrame(`Invalid ${label}`);
+  return value;
+}
+
+function artifactTurnKey(value: unknown): string {
+  if (!isArtifactTurnKey(value)) throw invalidProtocolFrame('Invalid artifact turnId');
   return value;
 }
 

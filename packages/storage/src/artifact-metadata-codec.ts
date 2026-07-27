@@ -6,6 +6,7 @@ import {
   type ArtifactKind,
   type ArtifactRecord,
   type ArtifactSource,
+  isArtifactTurnKey,
   isCanonicalArtifactEntityId,
 } from '@maka/core/artifacts';
 import { isDeepResearchArtifactRole } from '@maka/core/deep-research-run';
@@ -81,7 +82,7 @@ function decodeArtifactRecord(value: unknown, line: number): ArtifactRecord {
   if (
     !isCanonicalArtifactEntityId(value.id) ||
     !isCanonicalArtifactEntityId(value.sessionId) ||
-    !isCanonicalArtifactEntityId(value.turnId) ||
+    !isArtifactTurnKey(value.turnId) ||
     !isNonEmptyString(value.name) ||
     typeof value.kind !== 'string' ||
     !ARTIFACT_KIND_SET.has(value.kind as ArtifactKind) ||

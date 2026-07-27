@@ -10,6 +10,7 @@ import {
   openInteractiveArtifactStoreForWrite,
   type InteractiveArtifactStoreWriter,
 } from '../artifact-stores.js';
+import { ARTIFACT_WRITER_LOCK_FILE } from '../artifact-storage-layout.js';
 import {
   createHeadlessRootLease,
   resolveStorageRoot,
@@ -42,7 +43,7 @@ describe('interactive artifact store authority', () => {
   });
 
   test('returns one authenticated writer per lease and preserves mutation operations', async () => {
-    await withInteractiveOwner(async (owner) => {
+    await withInteractiveOwner(async (owner, root) => {
       const [first, second] = await Promise.all([
         openInteractiveArtifactStoreForWrite(owner.lease),
         openInteractiveArtifactStoreForWrite(owner.lease),
@@ -52,11 +53,7 @@ describe('interactive artifact store authority', () => {
       assert.strictEqual(authenticateInteractiveArtifactStoreWriter(first), first);
       await first.recover();
       await first.create(artifactInput('deleted', 'delete me'));
-      const beforeDelete = await first.getInSession('session-1', 'deleted');
-      const deleted = await first.deleteInSession({
-        sessionId: 'session-1',
-        expected: beforeDelete.record!,
-      });
+      const deleted = await first.deleteUserArtifactInSession('session-1', 'deleted');
 
       assert.strictEqual(await openInteractiveArtifactStoreForWrite(owner.lease), first);
       assert.equal(deleted.kind, 'deleted');
@@ -75,6 +72,7 @@ describe('interactive artifact store authority', () => {
         ok: false,
         reason: 'not_found',
       });
+      await assert.rejects(() => stat(join(root, ARTIFACT_WRITER_LOCK_FILE)), { code: 'ENOENT' });
     });
   });
 
@@ -95,6 +93,35 @@ describe('interactive artifact store authority', () => {
         () => writer.listPage('session-1', { offset: 0, limit: 1 }),
         invalidLease,
       );
+    });
+  });
+
+  test('snapshots create inputs and makes user deletion idempotent', async () => {
+    await withInteractiveOwner(async (owner) => {
+      const writer = await openInteractiveArtifactStoreForWrite(owner.lease);
+      await writer.recover();
+      const bytes = Uint8Array.from([0x73, 0x61, 0x66, 0x65]);
+      const createInput = artifactInput('accepted', bytes);
+      const created = writer.create(createInput);
+      createInput.id = 'mutated';
+      createInput.sessionId = 'mutated-session';
+      createInput.content = 'mutated';
+      bytes.fill(0x78);
+
+      const record = await created;
+      assert.equal(record.id, 'accepted');
+      assert.deepEqual(await writer.readTextInSession('session-1', 'accepted'), {
+        ok: true,
+        text: 'safe',
+      });
+
+      const deleted = writer.deleteUserArtifactInSession('session-1', record.id);
+      assert.equal((await deleted).kind, 'deleted');
+      assert.equal(
+        (await writer.deleteUserArtifactInSession('session-1', record.id)).kind,
+        'deleted',
+      );
+      assert.equal((await writer.getInSession('session-1', 'accepted')).record?.status, 'deleted');
     });
   });
 });
@@ -118,6 +145,7 @@ describe('headless artifact store authority', () => {
         (await first.list('session-1', { includeDeleted: true })).map((record) => record.id).sort(),
         ['same-lease-first', 'same-lease-second'],
       );
+      await assert.rejects(() => stat(join(root, ARTIFACT_WRITER_LOCK_FILE)), { code: 'ENOENT' });
     });
   });
 
@@ -137,7 +165,15 @@ describe('headless artifact store authority', () => {
       await assert.rejects(() => stat(residue.stagingPath), { code: 'ENOENT' });
       await assert.rejects(() => stat(residue.targetPath), { code: 'ENOENT' });
       await first.create(artifactInput('sequential-first', 'first'));
+      assert.deepEqual(
+        (await first.list('session-1')).map((record) => record.id),
+        ['sequential-first'],
+      );
       await second.create(artifactInput('sequential-second', 'second'));
+      assert.deepEqual(
+        (await first.list('session-1')).map((record) => record.id),
+        ['sequential-first', 'sequential-second'],
+      );
       await Promise.all([
         first.create(artifactInput('concurrent-first', 'first')),
         second.create(artifactInput('concurrent-second', 'second')),
@@ -192,6 +228,7 @@ async function createPublicationResidue(
 async function withInteractiveOwner(
   run: (
     owner: NonNullable<Awaited<ReturnType<typeof tryAcquireInteractiveRootOwner>>>,
+    root: string,
   ) => Promise<void>,
 ): Promise<void> {
   await withTemporaryRoot('interactive', async (root) => {
@@ -199,7 +236,7 @@ async function withInteractiveOwner(
     const owner = await tryAcquireInteractiveRootOwner(capability);
     assert.ok(owner);
     try {
-      await run(owner);
+      await run(owner, root);
     } finally {
       await owner.close();
     }

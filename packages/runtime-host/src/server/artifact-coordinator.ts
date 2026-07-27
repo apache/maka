@@ -4,12 +4,9 @@ import {
   type InteractiveArtifactStoreWriter,
 } from '@maka/storage/artifact-stores';
 import {
-  ARTIFACT_MIME_TYPE_MAX_BYTES,
-  ARTIFACT_NAME_MAX_BYTES,
   ARTIFACT_PAGE_MAX_ITEMS,
   ARTIFACT_PREVIEW_MAX_BYTES,
   ARTIFACT_RESULT_MAX_BYTES,
-  ARTIFACT_SUMMARY_MAX_BYTES,
   encodeArtifactDeleteResult,
   encodeArtifactQueryResult,
   type ArtifactProjection,
@@ -18,6 +15,7 @@ import {
   type ArtifactRevision,
   type OperationOutcome,
 } from '../protocol/index.js';
+import { encodeArtifactProjection } from '../protocol/artifact.js';
 import type { ArtifactOperationHandlerMap } from './operation-dispatcher.js';
 
 /** Session-scoped Host projection and deletion authority for Artifacts. */
@@ -30,7 +28,7 @@ export class HostArtifactCoordinator {
   readonly #store: InteractiveArtifactStoreWriter;
   readonly #requestDrain: () => void;
 
-  constructor(store: InteractiveArtifactStoreWriter, requestDrain: () => void = () => undefined) {
+  constructor(store: InteractiveArtifactStoreWriter, requestDrain: () => void) {
     this.#store = authenticateInteractiveArtifactStoreWriter(store);
     this.#requestDrain = requestDrain;
   }
@@ -71,7 +69,7 @@ export class HostArtifactCoordinator {
             kind: 'artifact',
             sessionId: input.sessionId,
             revision: entry.revision,
-            artifact: entry.record ? projectArtifact(entry.record) : null,
+            artifact: entry.record ? encodeArtifactProjection(entry.record) : null,
           }),
         );
       }
@@ -110,15 +108,17 @@ export class HostArtifactCoordinator {
     readonly artifactId: string;
   }): Promise<OperationOutcome<'artifact.delete'>> {
     try {
-      const entry = await this.#store.getInSession(input.sessionId, input.artifactId);
-      const existing = entry.record;
-      if (!existing) {
+      const deleted = await this.#store.deleteUserArtifactInSession(
+        input.sessionId,
+        input.artifactId,
+      );
+      if (deleted.kind === 'not_found') {
         return {
           ok: false,
           error: { code: 'not_found', message: 'Artifact was not found' },
         };
       }
-      if (isProtectedRuntimeEvidence(existing)) {
+      if (deleted.kind === 'protected') {
         return {
           ok: false,
           error: {
@@ -127,30 +127,11 @@ export class HostArtifactCoordinator {
           },
         };
       }
-      const deleted = await this.#store.deleteInSession({
-        sessionId: input.sessionId,
-        expected: existing,
-      });
-      if (deleted.kind === 'not_found') {
-        return {
-          ok: false,
-          error: { code: 'not_found', message: 'Artifact was not found' },
-        };
-      }
-      if (deleted.kind === 'record_changed') {
-        return {
-          ok: false,
-          error: {
-            code: 'operation_conflict',
-            message: 'Artifact changed before deletion could commit',
-          },
-        };
-      }
       return {
         ok: true,
         result: encodeArtifactDeleteResult({
           kind: 'deleted',
-          artifact: projectArtifact(deleted.record),
+          artifact: encodeArtifactProjection(deleted.record),
         }),
       };
     } catch {
@@ -158,44 +139,6 @@ export class HostArtifactCoordinator {
       return persistenceFailure('artifact.delete', 'Artifact deletion could not be committed');
     }
   }
-}
-
-function isProtectedRuntimeEvidence(record: Pick<ArtifactRecord, 'source'>): boolean {
-  return record.source === 'deep_research' || record.source === 'tool_result_archive';
-}
-
-function projectArtifact(record: ArtifactRecord): ArtifactProjection {
-  return {
-    id: record.id,
-    sessionId: record.sessionId,
-    turnId: record.turnId,
-    createdAt: record.createdAt,
-    name: projectText(record.name, ARTIFACT_NAME_MAX_BYTES),
-    kind: record.kind,
-    sizeBytes: record.sizeBytes,
-    ...(record.mimeType === undefined
-      ? {}
-      : { mimeType: projectText(record.mimeType, ARTIFACT_MIME_TYPE_MAX_BYTES) }),
-    ...(record.source === undefined ? {} : { source: record.source }),
-    ...(record.summary === undefined
-      ? {}
-      : { summary: projectText(record.summary, ARTIFACT_SUMMARY_MAX_BYTES) }),
-    status: record.status,
-  };
-}
-
-function projectText(value: string, maxBytes: number): string {
-  let bytes = 0;
-  let projected = '';
-  for (const codePoint of value) {
-    const scalar = codePoint.codePointAt(0)!;
-    const canonical = scalar <= 0x1f || scalar === 0x7f ? '\ufffd' : codePoint;
-    const width = Buffer.byteLength(canonical, 'utf8');
-    if (bytes + width > maxBytes) break;
-    projected += canonical;
-    bytes += width;
-  }
-  return projected || 'artifact';
 }
 
 function createPage(
@@ -207,7 +150,7 @@ function createPage(
 ): ArtifactQueryResult {
   const pageArtifacts: ArtifactProjection[] = [];
   for (const record of records) {
-    const artifact = projectArtifact(record);
+    const artifact = encodeArtifactProjection(record);
     const candidateArtifacts = [...pageArtifacts, artifact];
     const nextOffset = offset + candidateArtifacts.length;
     const candidate: ArtifactQueryResult = {

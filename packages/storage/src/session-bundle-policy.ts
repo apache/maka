@@ -14,11 +14,10 @@ import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path
 import type { RuntimeEvent } from '@maka/core';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import {
-  ARTIFACT_METADATA_TEMP_PATTERN,
   ARTIFACT_PUBLICATION_STAGING_PATTERN,
   ARTIFACT_PURGE_INTENT_FILE,
-  ARTIFACT_PURGE_INTENT_TEMP_PATTERN,
   ARTIFACT_WRITER_LOCK_FILE,
+  isCanonicalArtifactRecoveryTempName,
 } from './artifact-storage-layout.js';
 import { decodeArtifactMetadata } from './artifact-metadata-codec.js';
 import { withArtifactWriterLock } from './artifact-writer-lock.js';
@@ -144,12 +143,19 @@ interface PreparedSessionBundleExport {
   plan: SessionBundleExportPlan;
   artifactMetadata: ArtifactMetadataSnapshot;
   requestedDestinationRoot: string;
+  stateRootIdentity: SessionBundleRootIdentity;
 }
 
 interface SessionBundleRoots {
   stateRoot: string;
+  stateRootIdentity: SessionBundleRootIdentity;
   configRoot: string;
   destinationRoot: string;
+}
+
+interface SessionBundleRootIdentity {
+  dev: bigint;
+  ino: bigint;
 }
 
 /**
@@ -179,7 +185,8 @@ export async function planSessionBundleExport(
 async function prepareSessionBundleExport(
   input: SessionBundleExportInput,
 ): Promise<PreparedSessionBundleExport> {
-  const { stateRoot, configRoot, destinationRoot } = await resolveSessionBundleRoots(input);
+  const { stateRoot, stateRootIdentity, configRoot, destinationRoot } =
+    await resolveSessionBundleRoots(input);
 
   const includedEntries: string[] = [];
   const excludedEntries: string[] = [];
@@ -261,6 +268,7 @@ async function prepareSessionBundleExport(
     },
     artifactMetadata,
     requestedDestinationRoot: input.destinationRoot,
+    stateRootIdentity,
   };
 }
 
@@ -269,6 +277,7 @@ async function resolveSessionBundleRoots(
 ): Promise<SessionBundleRoots> {
   assertSafeSessionId(input.sessionId);
   const stateRoot = await canonicalizeExistingRoot(input.stateRoot, 'state');
+  const stateRootIdentity = await readSessionBundleRootIdentity(stateRoot);
   const configRoot = await canonicalizeExistingOrMissingRoot(input.configRoot, 'config');
   assertRootsDoNotOverlap(stateRoot, configRoot, input.allowShared === true);
 
@@ -279,7 +288,7 @@ async function resolveSessionBundleRoots(
   assertRootsDoNotOverlap(stateRoot, destinationRoot, false);
   assertRootsDoNotOverlap(configRoot, destinationRoot, false);
 
-  return { stateRoot, configRoot, destinationRoot };
+  return { stateRoot, stateRootIdentity, configRoot, destinationRoot };
 }
 
 /**
@@ -291,20 +300,29 @@ export async function exportSessionBundleState(
   input: SessionBundleExportInput,
 ): Promise<SessionBundleExportPlan> {
   const preflight = await resolveSessionBundleRoots(input);
-  const prepared = await withArtifactWriterLock(preflight.stateRoot, async () => {
+  // A session_file reference is committed only after its Artifact create
+  // returns. Keep Artifact mutations fenced through session projection so a
+  // create cannot land between the Artifact snapshot and a copied reference.
+  return withArtifactWriterLock(preflight.stateRoot, async () => {
+    await assertSessionBundleRootIdentity(preflight.stateRoot, preflight.stateRootIdentity);
     const current = await prepareSessionBundleExport(input);
-    if (current.plan.stateRoot !== preflight.stateRoot) {
+    if (
+      current.plan.stateRoot !== preflight.stateRoot ||
+      !sameSessionBundleRootIdentity(current.stateRootIdentity, preflight.stateRootIdentity)
+    ) {
       throw new SessionBundleExportError(
         'invalid_root',
         'Session bundle state root changed before Artifact snapshot export',
       );
     }
     await ensureEmptyDestination(current.requestedDestinationRoot, current.plan.destinationRoot);
+    await assertSessionBundleRootIdentity(preflight.stateRoot, preflight.stateRootIdentity);
     await exportPreparedArtifactState(current);
-    return current;
+    await assertSessionBundleRootIdentity(preflight.stateRoot, preflight.stateRootIdentity);
+    await exportPreparedNonArtifactState(current.plan);
+    await assertSessionBundleRootIdentity(preflight.stateRoot, preflight.stateRootIdentity);
+    return current.plan;
   });
-  await exportPreparedNonArtifactState(prepared.plan);
-  return prepared.plan;
 }
 
 async function exportPreparedArtifactState(prepared: PreparedSessionBundleExport): Promise<void> {
@@ -510,8 +528,7 @@ async function planSelectedArtifactTree(
     }
     if (
       entry.name === ARTIFACT_PURGE_INTENT_FILE ||
-      ARTIFACT_PURGE_INTENT_TEMP_PATTERN.test(entry.name) ||
-      ARTIFACT_METADATA_TEMP_PATTERN.test(entry.name)
+      isCanonicalArtifactRecoveryTempName(entry.name)
     ) {
       throwArtifactRecoveryRequired(`artifacts/${entry.name}`);
     }
@@ -625,8 +642,7 @@ async function assertNoCanonicalArtifactTransactionResidue(stateRoot: string): P
     assertNoSymlink(entry.isSymbolicLink(), relativePath);
     if (
       entry.name === ARTIFACT_PURGE_INTENT_FILE ||
-      ARTIFACT_PURGE_INTENT_TEMP_PATTERN.test(entry.name) ||
-      ARTIFACT_METADATA_TEMP_PATTERN.test(entry.name)
+      isCanonicalArtifactRecoveryTempName(entry.name)
     ) {
       throwArtifactRecoveryRequired(relativePath);
     }
@@ -949,6 +965,48 @@ async function canonicalizeExistingRoot(path: string, role: string): Promise<str
     );
   }
   return realpath(requestedPath);
+}
+
+async function readSessionBundleRootIdentity(
+  stateRoot: string,
+): Promise<SessionBundleRootIdentity> {
+  let metadata;
+  try {
+    metadata = await lstat(stateRoot, { bigint: true });
+  } catch (error) {
+    throw new SessionBundleExportError(
+      'invalid_root',
+      `Unable to inspect session bundle state root identity: ${stateRoot}`,
+      { cause: error },
+    );
+  }
+  if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+    throw new SessionBundleExportError(
+      'invalid_root',
+      `Session bundle state root identity is not a directory: ${stateRoot}`,
+    );
+  }
+  return { dev: metadata.dev, ino: metadata.ino };
+}
+
+async function assertSessionBundleRootIdentity(
+  stateRoot: string,
+  expected: SessionBundleRootIdentity,
+): Promise<void> {
+  const actual = await readSessionBundleRootIdentity(stateRoot);
+  if (!sameSessionBundleRootIdentity(actual, expected)) {
+    throw new SessionBundleExportError(
+      'invalid_root',
+      `Session bundle state root changed during export: ${stateRoot}`,
+    );
+  }
+}
+
+function sameSessionBundleRootIdentity(
+  left: SessionBundleRootIdentity,
+  right: SessionBundleRootIdentity,
+): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
 }
 
 async function canonicalizeExistingOrMissingRoot(path: string, role: string): Promise<string> {

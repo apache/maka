@@ -5,6 +5,10 @@ import { lstat, mkdir, open, realpath, type FileHandle } from 'node:fs/promises'
 import { join } from 'node:path';
 import { unlock, waitForLock } from 'fs-native-extensions';
 import { ARTIFACT_WRITER_LOCK_FILE } from './artifact-storage-layout.js';
+import {
+  prepareArtifactWriterLockAuthorityForMarkedRoot,
+  type ArtifactWriterLockAuthority,
+} from './root-authority.js';
 
 const lockGates = new Map<string, Promise<void>>();
 
@@ -15,7 +19,28 @@ export async function withArtifactWriterLock<T>(
 ): Promise<T> {
   await mkdir(workspaceRoot, { recursive: true });
   const canonicalRoot = await realpath(workspaceRoot);
-  const lockPath = join(canonicalRoot, ARTIFACT_WRITER_LOCK_FILE);
+  const authority = await prepareArtifactWriterLockAuthorityForMarkedRoot(canonicalRoot);
+  if (authority) return withLeaseBoundArtifactWriterLock(authority, operation);
+  return withArtifactWriterLockPath(join(canonicalRoot, ARTIFACT_WRITER_LOCK_FILE), operation);
+}
+
+export async function withLeaseBoundArtifactWriterLock<T>(
+  authority: ArtifactWriterLockAuthority,
+  operation: () => Promise<T>,
+): Promise<T> {
+  return withArtifactWriterLockPath(
+    join(authority.controlDirectory, ARTIFACT_WRITER_LOCK_FILE),
+    async () => {
+      await authority.assertCurrentRoot();
+      return operation();
+    },
+  );
+}
+
+async function withArtifactWriterLockPath<T>(
+  lockPath: string,
+  operation: () => Promise<T>,
+): Promise<T> {
   return runWithLockGate(lockPath, async () => {
     const handle = await openArtifactWriterLock(lockPath);
     let acquired = false;
