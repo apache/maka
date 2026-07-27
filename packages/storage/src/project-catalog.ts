@@ -110,7 +110,11 @@ class FileProjectCatalog implements ProjectCatalog {
         const location = existing.locations.find((item) => item.path === locationPath);
         if (location) {
           location.lastUsedAt = Math.max(location.lastUsedAt, timestamp);
-          location.branch = resolved.git?.branch;
+          if (resolved.git?.branch) {
+            location.branch = resolved.git.branch;
+          } else {
+            delete location.branch;
+          }
           location.isWorktree = resolved.git?.isWorktree ?? false;
         } else {
           existing.locations.push({
