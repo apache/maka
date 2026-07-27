@@ -1,0 +1,182 @@
+# Runtime Resume #1346 拆分与提取账本
+
+- 状态：Active
+- 更新日期：2026-07-27
+- 集成实验来源：`origin/codex/runtime-resume-phase3a@24bb5f33`
+- PR A 旧重写来源：`codex/runtime-recovery-authority@c843519e`
+- 当前平铺基线：`upstream/main@9d9a47b9`
+- 当前平铺分支：`codex/runtime-recovery-authority-v2`
+
+## 1. 目的
+
+#1346 是设计与集成实验，不再作为可合并交付单元。生产实现按“一个 PR 证明一个完整不变量”
+重新落地，禁止按旧 commit 边界机械 cherry-pick。
+
+| 切片 | 唯一需要证明的不变量 |
+|---|---|
+| PR A | recovery fact 只有一个原子写入权威，且 online/reopen/rebuild/Resolver 必然同构 |
+| PR B | continuation cursor 只来自 immutable RuntimeEvents，同一 source boundary 只有一个 claim |
+| PR C | T1 选择 file reconcile 时必须有可信 evidence；自动恢复只做 after-state finalize |
+| PR D | store、worker、registry、后台恢复任务各有唯一 host owner 和完整关闭顺序 |
+
+Phase 3B/4A 的 workspace checkpoint 是后续独立切片，不进入 PR A。
+
+## 2. 提取规则
+
+1. 每个新 PR 从当时最新 `upstream/main` 建立平铺分支。
+2. 先迁移或重写能表达黑盒不变量的测试，再补最小生产代码。
+3. 不 cherry-pick merge commit。
+4. 同时跨越两个不变量的旧 commit 只能按 hunk 阅读和手工重写。
+5. 不为让旧测试通过而恢复已否决的 public API。
+6. 每个 PR 必须执行 path diff、range-diff 和 production-shaped crash tests。
+7. PR A–C 合并后关闭 #1346，但保留其讨论作为设计与审查记录。
+
+## 3. PR A 的提取结论
+
+### 3.1 保留并重写的能力
+
+- 精确的 reconcile-result / recovery-decision v1 schema；
+- domain-separated、strict-JSON tool args identity；
+- call、dispatch、outcome、reconcile、decision semantic lane；
+- generic append/import 对保留事实的 authority gate；
+- 一个 SQLite recovery bundle transaction；
+- completed 必须引用同 execution identity 的成功 outcome；
+- parked 是 v1 的永久终态，只有 exact bundle retry 幂等；
+- tool projection 可以只从 immutable RuntimeEvents 重建；
+- mutable partial corruption fail-soft，immutable corruption fail-closed；
+- SQL row identity 与 payload identity 交叉校验；
+- online、close/reopen、rebuild、Resolver 的黄金等价性。
+
+### 3.2 明确不带入 PR A
+
+- recovery contract registry、observer、reconciler；
+- Write/Edit file checkpoint；
+- continuation planning、claim 或 provider replay；
+- Desktop/CLI 自动 resume 接线；
+- Git carrier、restricted verifier、retry/reattach 原型；
+- #1346 SQLite 数据迁移、downgrade 或 mixed-version reader。
+
+### 3.3 实验格式断代
+
+#1346 从未发布、没有用户，其 SQLite 数据是一次性实验数据。PR A 不猜测兼容：
+
+```text
+#1346 experimental capability  -> unsupported, fail closed
+mainline schema 4              -> supported migration to schema 5
+PR A capability                -> runtime_recovery_authority@1
+future newer schema            -> fail closed
+```
+
+这项决策只删除未发布实验格式的迁移负担，不删除正式 mainline 数据升级责任。
+
+## 4. PR A 文件账本
+
+### Core
+
+| 文件 | 归属 | 处理 |
+|---|---|---|
+| `runtime-event.ts` | PR A | 增加 exact recovery fact envelope decoder |
+| `runtime-event-store.ts` | PR A | 增加单一 bundle capability |
+| `tool-args-identity.ts` | PR A | strict JSON + domain separation |
+| `tool-ledger-scanner.ts` | PR A | 共享 lane、duplicate/order/identity scanner |
+| `tool-recovery-fact.ts` | PR A | truthful observation 与 terminal decision |
+| `tool-recovery-bundle.ts` | PR A | writer/rebuild/Resolver 共享 bundle 与 causal interpreter |
+
+### Storage
+
+| 文件 | 归属 | 处理 |
+|---|---|---|
+| `sqlite-runtime-schema.ts` | PR A | schema 5 + `runtime_recovery_authority@1` |
+| `sqlite-runtime-store.ts` | PR A | T1/T2 gate、atomic recovery bundle、projection rebuild |
+| `agent-run-store.ts` | PR A | JSONL generic writer 拒绝保留 tool facts |
+
+### Runtime
+
+| 文件 | 归属 | 处理 |
+|---|---|---|
+| `recovery-resolver.ts` | PR A | 只消费共享 scanner/interpreter，不维护第二套 map |
+| `runtime-event-read-model.ts` | PR A | recovery audit fact 不产生聊天消息 |
+| `runtime-commit-sink.ts` | PR A | 使用 core canonical args identity |
+| `runtime-resume.ts` | PR A | 保留真实 corruption machine code 与 terminal parked |
+
+## 5. PR A 测试账本
+
+| 场景 | 新测试位置 | 状态 |
+|---|---|---|
+| strict JSON hash / domain separation | core authority test | 已覆盖 |
+| semantic lane smuggling | core + storage authority test | 已覆盖 |
+| generic SQLite/JSONL writer bypass | storage tests | 已覆盖 |
+| T1 wrong hash | storage authority test | 已覆盖 |
+| duplicate call / operation / event | core + rebuild tests | 已覆盖 |
+| dispatch-before-call | core + rebuild tests | 已覆盖 |
+| completed missing/mismatched outcome | core bundle validator | 已覆盖 |
+| completed/parked exact retry | storage authority test | 已覆盖 |
+| reconcile/outcome/decision crash rollback | storage authority test | 已覆盖 |
+| populated mainline schema 4 upgrade | storage authority test | 已覆盖 |
+| #1346 capability rejection | storage authority test | 已覆盖 |
+| immutable row/payload mismatch | storage authority test | 已覆盖 |
+| corrupt mutable partial | storage authority test | 已覆盖 |
+| online = reopen = rebuild = Resolver | runtime equivalence test | 已覆盖 |
+| parked 不再进入 reconcile | storage + runtime equivalence test | 已覆盖 |
+| audit fact 不产生 message row | runtime read-model test | 已覆盖 |
+
+## 6. 旧 commit 去向
+
+旧 PR A 的八个非 merge commit只作为阅读来源，不整体 cherry-pick：
+
+| 旧 commit | 处理 |
+|---|---|
+| `34805553` core fact authority | 测试与最小 schema 手工重写 |
+| `68ee74de` SQLite bundle | transaction 思路手工重写 |
+| `f464cfb1` runtime causality | 被共享 scanner/interpreter 替代 |
+| `5f2b0ae5` restart tests | 有效场景重写到新 fixture |
+| `4de05393` writer bypass | 收敛为 core generic authority gate |
+| `b36486b7` evidence identity | 收敛为 strict hash + bundle validator |
+| `b0683358` rebuild races | duplicate/order 场景重写 |
+| `c843519e` JSONL validation | 仅提取 generic writer gate |
+
+#1346 中其余 commit 按职责进入 PR B、PR C、PR D 或直接 defer/drop；Git carrier、restricted
+verification、auto redo、retry/reattach 不从实验分支迁移。
+
+## 7. Diff 审计与合并门槛
+
+提交前执行：
+
+```text
+git diff --name-status upstream/main...HEAD
+git log --no-merges --name-only upstream/main..HEAD
+git range-diff upstream/main..codex/runtime-recovery-authority upstream/main..HEAD
+git diff --stat codex/runtime-recovery-authority HEAD -- <PR-A-owned-paths>
+```
+
+range-diff 的目标不是伪造 commit 等价，而是确认旧实现中的有效场景都有明确去向。路径审计必须证明
+PR A 没带入 file checkpoint、continuation 或 host lifecycle。
+
+2026-07-27 本轮结果：
+
+- 旧 PR A 的 8 个 commit 全部显示为 removed；
+- 新平铺 PR A 的 4 个 commit 全部显示为 added；
+- 没有 commit 被错误标记为等价 cherry-pick；
+- `upstream/main...HEAD` 只涉及 core recovery contract、SQLite/JSONL authority、
+  Runtime Resolver/read-model/resume diagnostics、对应测试与本路线文档；
+- 未出现 file checkpoint carrier、filesystem worker、SessionManager/Desktop/CLI host wiring
+  或 Git carrier 路径。
+
+合并门槛：
+
+- core、storage、runtime build 通过；
+- PR A 定向测试全部通过；
+- 三个包完整测试通过，或明确记录与本改动无关的平台既有失败；
+- SQLite transaction crash matrix 通过；
+- 文档中的能力边界与代码一致；
+- 工作树不包含用户的 workspace/测试文件。
+
+## 8. #1346 的关闭条件
+
+PR A–C 合并后：
+
+1. 在 #1346 最后评论列出 replacement PR；
+2. 明确未迁移的原型和原因；
+3. 保持 Draft 并关闭，不 squash/merge；
+4. PR body 与 review thread 保留为历史证据；
+5. PR D 可独立推进，不阻塞 #1346 关闭。
