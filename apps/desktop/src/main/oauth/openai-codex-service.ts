@@ -341,7 +341,7 @@ export class OpenAiCodexService {
         credentialStore: this.credentialStore,
         now: this.now,
         fetchFn: this.fetchFn,
-        refreshTokens: (tokens) => this.requestTokenRefresh(tokens),
+        refreshTokens: (tokens, signal) => this.requestTokenRefresh(tokens, signal),
       });
       return this.applyRefreshOutcome(result);
     } finally {
@@ -398,7 +398,7 @@ export class OpenAiCodexService {
         credentialStore: this.credentialStore,
         now: this.now,
         fetchFn: this.fetchFn,
-        refreshTokens: (tokens) => this.requestTokenRefresh(tokens),
+        refreshTokens: (tokens, signal) => this.requestTokenRefresh(tokens, signal),
       });
       if (result.outcome === 'current') return result.tokens.access_token;
       const action = this.applyRefreshOutcome(result);
@@ -426,12 +426,16 @@ export class OpenAiCodexService {
   // INTERNALS
   // -----------------------------------------------------------
 
-  private async requestTokenRefresh(tokens: OAuthSubscriptionTokens): Promise<OAuthSubscriptionTokens> {
+  private async requestTokenRefresh(
+    tokens: OAuthSubscriptionTokens,
+    signal: AbortSignal,
+  ): Promise<OAuthSubscriptionTokens> {
     const next = await refreshOAuthSubscriptionTokens({
       providerType: 'openai-codex',
       tokens,
       now: this.now,
       fetchFn: this.fetchFn,
+      signal,
     });
     const claims = extractAccountClaims(next.access_token, next.id_token);
     return { ...next, account_id: claims.accountId || tokens.account_id };

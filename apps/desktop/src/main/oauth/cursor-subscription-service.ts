@@ -277,7 +277,7 @@ export class CursorSubscriptionService {
       const result = await refreshAndPersistOAuthSubscriptionTokens({
         slug: 'cursor-subscription',
         credentialStore: this.credentialStore,
-        refreshTokens: (tokens) => this.requestRefresh(tokens.refresh_token),
+        refreshTokens: (tokens, signal) => this.requestRefresh(tokens.refresh_token, signal),
       });
       return this.applyRefreshOutcome(result);
     } finally {
@@ -325,7 +325,7 @@ export class CursorSubscriptionService {
         credentialStore: this.credentialStore,
         now: this.now,
         refreshSkewMs: 0,
-        refreshTokens: (tokens) => this.requestRefresh(tokens.refresh_token),
+        refreshTokens: (tokens, signal) => this.requestRefresh(tokens.refresh_token, signal),
       });
       if (result.outcome === 'current') return result.tokens.access_token;
       const action = this.applyRefreshOutcome(result);
@@ -435,7 +435,10 @@ export class CursorSubscriptionService {
     this.pending.delete(authRequestId);
   }
 
-  private async requestRefresh(refreshToken: string): Promise<PersistedTokens> {
+  private async requestRefresh(
+    refreshToken: string,
+    signal: AbortSignal,
+  ): Promise<PersistedTokens> {
     const response = await this.fetchFn(CURSOR_REFRESH_URL, {
       method: 'POST',
       headers: {
@@ -444,6 +447,7 @@ export class CursorSubscriptionService {
         'User-Agent': PLAIN_USER_AGENT,
       },
       body: '{}',
+      signal,
     });
     if (!response.ok) throw new Error(`Cursor token refresh failed (${response.status}).`);
     const data = (await response.json()) as {

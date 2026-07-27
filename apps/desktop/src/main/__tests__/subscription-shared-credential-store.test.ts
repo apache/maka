@@ -17,6 +17,7 @@ import { ClaudeSubscriptionService } from '../oauth/claude-subscription-service.
 import { CursorSubscriptionService } from '../oauth/cursor-subscription-service.js';
 import { OpenAiCodexService } from '../oauth/openai-codex-service.js';
 import type { SharedOAuthCredentialStore } from '../oauth/shared-credential-bridge.js';
+import { XaiOAuthService } from '../oauth/xai-oauth-service.js';
 import { readMainProcessCombinedSource } from './main-process-contract-source-helpers.js';
 
 const DESKTOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -32,7 +33,7 @@ interface OAuthServiceContract {
 interface ServiceCase {
   name: string;
   slug: string;
-  legacyFile: string;
+  legacyFile?: string;
   initialTokens: Record<string, unknown>;
   refresh: {
     accessToken: string;
@@ -158,6 +159,32 @@ const STORE_AUTHORITY_SERVICES: ServiceCase[] = [
         openExternal: async () => undefined,
       }),
   },
+  {
+    name: 'xAI',
+    slug: 'xai-oauth',
+    initialTokens: {
+      access_token: 'xai-access',
+      refresh_token: 'xai-refresh',
+      expires_at: NOW + 3_600_000,
+      token_type: 'Bearer',
+    },
+    refresh: {
+      accessToken: 'xai-access-refreshed',
+      response: {
+        access_token: 'xai-access-refreshed',
+        refresh_token: 'xai-refresh-refreshed',
+        expires_in: 3600,
+        token_type: 'Bearer',
+      },
+    },
+    create: ({ credentialStore, fetchFn }) =>
+      new XaiOAuthService({
+        credentialStore,
+        fetchFn,
+        now: () => NOW,
+        openExternal: async () => undefined,
+      }),
+  },
 ];
 
 const tempRoots: string[] = [];
@@ -173,8 +200,10 @@ describe('OAuth subscription token authority (shared CredentialStore)', () => {
       const credentials = createMemoryCredentialStore();
       credentials.set(serviceCase.slug, 'oauth_token', JSON.stringify(serviceCase.initialTokens));
       credentials.set(serviceCase.slug, 'api_key', 'api-key-must-survive');
-      const legacyFile = join(userDataDir, serviceCase.legacyFile);
-      await writeFile(legacyFile, 'legacy-encrypted-token');
+      const legacyFile = serviceCase.legacyFile
+        ? join(userDataDir, serviceCase.legacyFile)
+        : undefined;
+      if (legacyFile) await writeFile(legacyFile, 'legacy-encrypted-token');
       const service = serviceCase.create({
         userDataDir,
         credentialStore: credentials.store,
@@ -190,7 +219,7 @@ describe('OAuth subscription token authority (shared CredentialStore)', () => {
       assert.deepEqual(await service.logout(), { ok: true });
       assert.equal(credentials.get(serviceCase.slug, 'oauth_token'), null);
       assert.equal(credentials.get(serviceCase.slug, 'api_key'), 'api-key-must-survive');
-      await assert.rejects(stat(legacyFile), { code: 'ENOENT' });
+      if (legacyFile) await assert.rejects(stat(legacyFile), { code: 'ENOENT' });
     });
 
     const refresh = serviceCase.refresh;

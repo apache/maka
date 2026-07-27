@@ -102,7 +102,10 @@ export type RefreshAndPersistOAuthSubscriptionTokensInput = {
   | { providerType: OAuthSubscriptionProvider; refreshTokens?: never }
   | {
       providerType?: never;
-      refreshTokens: (tokens: OAuthSubscriptionTokens) => Promise<OAuthSubscriptionTokens>;
+      refreshTokens: (
+        tokens: OAuthSubscriptionTokens,
+        signal: AbortSignal,
+      ) => Promise<OAuthSubscriptionTokens>;
     }
 );
 
@@ -119,8 +122,10 @@ const CODEX_TOKEN_USER_AGENT = 'maka-desktop/0.1.0 (oauth-subscription)';
 
 const XAI_CLIENT_ID = 'b1a00492-073a-47ea-816f-4c329264a828';
 const XAI_TOKEN_ENDPOINT = 'https://auth.x.ai/oauth2/token';
+const XAI_DEFAULT_TOKEN_LIFETIME_SECONDS = 3_600;
 
 const OAUTH_REFRESH_LEASE_MS = 30_000;
+const OAUTH_REFRESH_REQUEST_TIMEOUT_MS = 20_000;
 const OAUTH_REFRESH_LEASE_POLL_MS = 25;
 const OAUTH_REFRESH_LEASE_FIELD = '_refresh_lock';
 
@@ -301,6 +306,10 @@ async function refreshAndPersistWithLease(
               error: new Error('Stored OAuth token is invalid.'),
             };
           }
+          if (parseOAuthRefreshLease(released.current)) {
+            raw = released.current;
+            continue;
+          }
           return { outcome: 'superseded', tokens: current };
         }
       } catch (storageError) {
@@ -322,6 +331,10 @@ async function refreshAndPersistWithLease(
         if (!current) {
           return { outcome: 'storage-failed', error: new Error('Stored OAuth token is invalid.') };
         }
+        if (parseOAuthRefreshLease(committed.current)) {
+          raw = committed.current;
+          continue;
+        }
         return { outcome: 'superseded', tokens: current };
       }
     } catch (error) {
@@ -336,14 +349,29 @@ async function refreshTokensForInput(
   input: RefreshAndPersistOAuthSubscriptionTokensInput,
   tokens: OAuthSubscriptionTokens,
 ): Promise<OAuthSubscriptionTokens> {
-  return input.refreshTokens
-    ? input.refreshTokens(tokens)
-    : refreshOAuthSubscriptionTokens({
-        providerType: input.providerType,
-        tokens,
-        now: input.now,
-        fetchFn: input.fetchFn,
-      });
+  const controller = new AbortController();
+  const timeoutError = new Error('OAuth token refresh timed out.');
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      controller.abort(timeoutError);
+      reject(timeoutError);
+    }, OAUTH_REFRESH_REQUEST_TIMEOUT_MS);
+  });
+  try {
+    const refresh = input.refreshTokens
+      ? input.refreshTokens(tokens, controller.signal)
+      : refreshOAuthSubscriptionTokens({
+          providerType: input.providerType,
+          tokens,
+          now: input.now,
+          fetchFn: input.fetchFn,
+          signal: controller.signal,
+        });
+    return await Promise.race([refresh, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function parseOAuthRefreshLease(raw: string): OAuthRefreshLease | null {
@@ -399,18 +427,19 @@ export async function refreshOAuthSubscriptionTokens(input: {
   tokens: OAuthSubscriptionTokens;
   now?: () => number;
   fetchFn?: typeof fetch;
+  signal?: AbortSignal;
 }): Promise<OAuthSubscriptionTokens> {
   const now = input.now ?? (() => Date.now());
   const fetchFn = input.fetchFn ?? fetch;
   switch (input.providerType) {
     case 'claude-subscription':
-      return refreshClaudeSubscriptionTokens(input.tokens, now, fetchFn);
+      return refreshClaudeSubscriptionTokens(input.tokens, now, fetchFn, input.signal);
     case 'openai-codex':
-      return refreshOpenAiCodexTokens(input.tokens, now, fetchFn);
+      return refreshOpenAiCodexTokens(input.tokens, now, fetchFn, input.signal);
     case 'github-copilot':
       return input.tokens;
     case 'xai-oauth':
-      return refreshXaiOAuthTokens(input.tokens, now, fetchFn);
+      return refreshXaiOAuthTokens(input.tokens, now, fetchFn, input.signal);
   }
 }
 
@@ -470,6 +499,7 @@ async function refreshClaudeSubscriptionTokens(
   tokens: OAuthSubscriptionTokens,
   now: () => number,
   fetchFn: typeof fetch,
+  signal?: AbortSignal,
 ): Promise<OAuthSubscriptionTokens> {
   const response = await fetchFn(CLAUDE_TOKEN_ENDPOINT, {
     method: 'POST',
@@ -482,6 +512,7 @@ async function refreshClaudeSubscriptionTokens(
       refresh_token: tokens.refresh_token,
       client_id: CLAUDE_CLIENT_ID,
     }),
+    signal,
   });
   if (!response.ok) throw new Error(`Claude OAuth token refresh failed (${response.status}).`);
   const payload = (await response.json()) as {
@@ -507,6 +538,7 @@ async function refreshOpenAiCodexTokens(
   tokens: OAuthSubscriptionTokens,
   now: () => number,
   fetchFn: typeof fetch,
+  signal?: AbortSignal,
 ): Promise<OAuthSubscriptionTokens> {
   const body = new URLSearchParams({
     grant_type: 'refresh_token',
@@ -520,6 +552,7 @@ async function refreshOpenAiCodexTokens(
       'User-Agent': CODEX_TOKEN_USER_AGENT,
     },
     body: body.toString(),
+    signal,
   });
   if (!response.ok) throw new Error(`Codex OAuth token refresh failed (${response.status}).`);
   const payload = (await response.json()) as {
@@ -542,6 +575,7 @@ async function refreshXaiOAuthTokens(
   tokens: OAuthSubscriptionTokens,
   now: () => number,
   fetchFn: typeof fetch,
+  signal?: AbortSignal,
 ): Promise<OAuthSubscriptionTokens> {
   const response = await fetchFn(XAI_TOKEN_ENDPOINT, {
     method: 'POST',
@@ -551,6 +585,7 @@ async function refreshXaiOAuthTokens(
       client_id: XAI_CLIENT_ID,
       refresh_token: tokens.refresh_token,
     }).toString(),
+    signal,
   });
   if (!response.ok) throw new Error(`xAI OAuth token refresh failed (${response.status}).`);
   const payload = (await response.json()) as {
@@ -560,7 +595,11 @@ async function refreshXaiOAuthTokens(
     token_type?: string;
     scope?: string;
   };
-  const { accessToken, expiresInMs } = requireRefreshedTokenFields('xAI', payload);
+  const { accessToken, expiresInMs } = requireRefreshedTokenFields('xAI', {
+    ...payload,
+    expires_in:
+      payload.expires_in === undefined ? XAI_DEFAULT_TOKEN_LIFETIME_SECONDS : payload.expires_in,
+  });
   return {
     access_token: accessToken,
     refresh_token: nextRefreshToken(payload.refresh_token, tokens.refresh_token),

@@ -13,6 +13,7 @@ import {
   refreshOAuthSubscriptionTokens,
   resolveAndPersistOAuthSubscriptionTokens,
   resolveOAuthSubscriptionTokens,
+  type OAuthSubscriptionTokens,
 } from '../subscription-credentials.js';
 
 test('xAI OAuth refresh preserves a rotated refresh token through the shared provider contract', async () => {
@@ -56,6 +57,32 @@ test('xAI OAuth refresh preserves a rotated refresh token through the shared pro
     expires_at: 3_610_000,
     token_type: 'Bearer',
     scope: 'openid offline_access grok-cli:access api:access',
+  });
+});
+
+test('xAI OAuth refresh uses the documented one-hour lifetime when expires_in is omitted', async () => {
+  const tokens = await refreshOAuthSubscriptionTokens({
+    providerType: 'xai-oauth',
+    tokens: {
+      access_token: 'old-access',
+      refresh_token: 'old-refresh',
+      expires_at: 1_000,
+    },
+    now: () => 10_000,
+    fetchFn: async () =>
+      Response.json({
+        access_token: 'new-access',
+        refresh_token: 'new-refresh',
+        token_type: 'Bearer',
+      }),
+  });
+
+  assert.deepEqual(tokens, {
+    access_token: 'new-access',
+    refresh_token: 'new-refresh',
+    expires_at: 3_610_000,
+    token_type: 'Bearer',
+    scope: undefined,
   });
 });
 
@@ -474,6 +501,58 @@ describe('OAuth refresh persistence transaction', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  test('aborts a remote refresh before its credential lease can expire', async (context) => {
+    context.mock.timers.enable({ apis: ['Date', 'setTimeout'] });
+    let current = JSON.stringify({
+      access_token: 'old-access',
+      refresh_token: 'rotating-refresh',
+      expires_at: 1_000,
+    });
+    let observedSignal: AbortSignal | undefined;
+    let releaseRemote!: () => void;
+    let rejectRemote!: (reason?: unknown) => void;
+    const remoteSettled = new Promise<OAuthSubscriptionTokens>((resolve, reject) => {
+      rejectRemote = reject;
+      releaseRemote = () =>
+        resolve({
+          access_token: 'late-access',
+          refresh_token: 'late-refresh',
+          expires_at: 20_000_000,
+        });
+    });
+    const refreshTokens = async (
+      _tokens: OAuthSubscriptionTokens,
+      signal?: AbortSignal,
+    ): Promise<OAuthSubscriptionTokens> => {
+      observedSignal = signal;
+      signal?.addEventListener('abort', () => rejectRemote(signal.reason), { once: true });
+      return remoteSettled;
+    };
+    const pending = refreshAndPersistOAuthSubscriptionTokens({
+      slug: 'xai-oauth',
+      credentialStore: {
+        getSecret: async () => current,
+        compareAndSetSecret: async (_slug, _kind, expected, value) => {
+          if (current !== expected) return { committed: false, current };
+          current = value;
+          return { committed: true };
+        },
+      },
+      refreshTokens,
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    context.mock.timers.tick(29_999);
+    await new Promise((resolve) => setImmediate(resolve));
+    const wasAborted = observedSignal?.aborted ?? false;
+    if (!wasAborted) releaseRemote();
+    const result = await pending;
+
+    assert.equal(wasAborted, true, 'the remote refresh must be cancelled before the 30s lease');
+    assert.equal(result.outcome, 'refresh-failed');
+    assert.equal(parseOAuthSubscriptionTokens(current)?.access_token, 'old-access');
   });
 
   test('two concurrent refreshes perform one remote rotation and converge on its token', async () => {

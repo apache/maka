@@ -277,7 +277,7 @@ export class AntigravitySubscriptionService {
       const result = await refreshAndPersistOAuthSubscriptionTokens({
         slug: 'antigravity-subscription',
         credentialStore: this.credentialStore,
-        refreshTokens: (tokens) => this.requestRefresh(tokens.refresh_token),
+        refreshTokens: (tokens, signal) => this.requestRefresh(tokens.refresh_token, signal),
       });
       return this.applyRefreshOutcome(result);
     } finally {
@@ -314,7 +314,7 @@ export class AntigravitySubscriptionService {
         slug: 'antigravity-subscription',
         credentialStore: this.credentialStore,
         now: this.now,
-        refreshTokens: (tokens) => this.requestRefresh(tokens.refresh_token),
+        refreshTokens: (tokens, signal) => this.requestRefresh(tokens.refresh_token, signal),
       });
       if (result.outcome === 'current') return result.tokens.access_token;
       const action = this.applyRefreshOutcome(result);
@@ -476,7 +476,10 @@ export class AntigravitySubscriptionService {
     };
   }
 
-  private async requestRefresh(refreshToken: string): Promise<PersistedTokens> {
+  private async requestRefresh(
+    refreshToken: string,
+    signal: AbortSignal,
+  ): Promise<PersistedTokens> {
     const body = new URLSearchParams({
       grant_type: 'refresh_token',
       client_id: GOOGLE_CLIENT_ID,
@@ -489,6 +492,7 @@ export class AntigravitySubscriptionService {
         'User-Agent': PLAIN_USER_AGENT,
       },
       body: body.toString(),
+      signal,
     });
     if (!response.ok) throw new Error(`Token refresh failed (${response.status}).`);
     const payload = (await response.json()) as {

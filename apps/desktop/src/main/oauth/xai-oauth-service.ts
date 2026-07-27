@@ -345,7 +345,9 @@ export class XaiOAuthService {
         intervalMs += 5_000;
         continue;
       }
-      if (code === 'access_denied') throw new XaiAuthorizationDeniedError();
+      if (code === 'access_denied' || code === 'authorization_denied') {
+        throw new XaiAuthorizationDeniedError();
+      }
       if (code === 'expired_token') throw new XaiAuthorizationExpiredError();
       throw new Error('xAI device token exchange failed.');
     }
@@ -406,7 +408,7 @@ function isAllowedVerificationUrl(value: string): boolean {
     const url = new URL(value);
     return (
       url.protocol === 'https:' &&
-      (url.hostname === 'x.ai' || url.hostname === 'auth.x.ai')
+      (url.hostname === 'x.ai' || url.hostname.endsWith('.x.ai'))
     );
   } catch {
     return false;

@@ -6,6 +6,7 @@ import { generateText, isStepCount, streamText, tool } from 'ai';
 import { z } from 'zod';
 import { fetchProviderModels } from '../model-fetcher.js';
 import { buildProviderOptions, getAIModel } from '../model-factory.js';
+import { resolveOAuthSubscriptionAccessToken } from '../subscription-credentials.js';
 import { testConnection } from '../test-connection.js';
 import {
   closeAllJsonServers,
@@ -65,13 +66,13 @@ describe('models.dev provider conformance', () => {
     assert.deepEqual(requestBody?.cache_control, { type: 'ephemeral' });
   });
 
-  test('xAI Grok 4.5 completes a Responses reasoning tool loop without affecting its exact model id', async () => {
+  test('xAI OAuth credential completes a Grok 4.5 Responses reasoning tool loop', async () => {
     const modelId = 'grok-4.5';
     const requestBodies: Array<Record<string, unknown>> = [];
     const server = await startJsonServer(async (request, response) => {
       assert.equal(request.method, 'POST');
       assert.equal(request.url, '/v1/responses');
-      assert.equal(request.headers.authorization, 'Bearer xai-test-key');
+      assert.equal(request.headers.authorization, 'Bearer xai-oauth-access-refreshed');
       requestBodies.push(JSON.parse(await readBody(request)) as Record<string, unknown>);
       if (requestBodies.length === 1) {
         respondJson(response, 200, {
@@ -121,18 +122,53 @@ describe('models.dev provider conformance', () => {
       });
     });
     const connection: LlmConnection = {
-      slug: 'xai',
-      name: 'xAI',
-      providerType: 'xai',
+      slug: 'xai-oauth',
+      name: 'xAI OAuth',
+      providerType: 'xai-oauth',
       baseUrl: `${server.url}/v1`,
       defaultModel: modelId,
       enabled: true,
       createdAt: 1,
       updatedAt: 1,
     };
+    let storedTokens = JSON.stringify({
+      access_token: 'xai-oauth-access-expired',
+      refresh_token: 'xai-oauth-refresh',
+      expires_at: 1_000,
+    });
+    let refreshRequests = 0;
+    const accessToken = await resolveOAuthSubscriptionAccessToken({
+      providerType: 'xai-oauth',
+      slug: connection.slug,
+      credentialStore: {
+        getSecret: async () => storedTokens,
+        compareAndSetSecret: async (_slug, _kind, expected, value) => {
+          if (storedTokens !== expected) return { committed: false, current: storedTokens };
+          storedTokens = value;
+          return { committed: true };
+        },
+      },
+      now: () => 10_000,
+      fetchFn: async (url, init) => {
+        refreshRequests += 1;
+        assert.equal(String(url), 'https://auth.x.ai/oauth2/token');
+        assert.equal(init?.signal instanceof AbortSignal, true);
+        return Response.json({
+          access_token: 'xai-oauth-access-refreshed',
+          refresh_token: 'xai-oauth-refresh-rotated',
+          expires_in: 3_600,
+        });
+      },
+    });
+    assert.ok(accessToken);
+    assert.equal(refreshRequests, 1);
+    assert.equal(
+      (JSON.parse(storedTokens) as { refresh_token: string }).refresh_token,
+      'xai-oauth-refresh-rotated',
+    );
 
     const result = await generateText({
-      model: getAIModel({ connection, apiKey: 'xai-test-key', modelId }),
+      model: getAIModel({ connection, apiKey: accessToken, modelId }),
       prompt: 'Call echo with hello.',
       providerOptions: buildProviderOptions(connection, modelId, 'high'),
       stopWhen: isStepCount(2),
