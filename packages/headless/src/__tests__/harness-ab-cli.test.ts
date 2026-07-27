@@ -497,6 +497,10 @@ test('harness A/B composition defaults preserve existing routes and reject unsup
     () => resolveHarnessComposition({ benchmark: 'deep-swe-1.1', competitor: 'opencode' }),
     /unsupported harness composition: benchmark=deep-swe-1\.1, runtime=kimi-coding-plan-k3-max, competitor=opencode/,
   );
+  assert.throws(
+    () => resolveHarnessComposition({ runtime: 'unknown' }),
+    /MAKA_HARNESS_AB_RUNTIME must be one of: kimi-coding-plan-k3-max, zai-coding-plan-glm-5\.2-max, openai-codex-gpt-5\.6-sol-xhigh/,
+  );
 
   const glmComposition = resolveHarnessComposition({
     runtime: 'zai-coding-plan-glm-5.2-max',
@@ -527,6 +531,55 @@ test('harness A/B composition defaults preserve existing routes and reject unsup
     }),
     /composition must come from resolveHarnessComposition/,
   );
+});
+
+test('harness composition preserves historical manifest fingerprints', async () => {
+  const { buildHarnessAbManifest, resolveHarnessComposition } = await import(
+    new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href
+  );
+  const cases = [
+    {
+      name: 'Terminal-Bench Kimi Code',
+      composition: { competitor: 'kimi-code' },
+      pierVersion: null,
+      fingerprint: 'sha256:c1f1f4ef3c1de99a4f20ba71f5deddc144f942d5cdb1d9b1223b2ac65e551f9b',
+    },
+    {
+      name: 'Terminal-Bench OpenCode',
+      composition: { competitor: 'opencode' },
+      pierVersion: null,
+      fingerprint: 'sha256:700267bbe62f37892d72c2b6ee327dd37632b3f0563a755e693681730a07bb68',
+    },
+    {
+      name: 'Terminal-Bench Codex',
+      composition: { competitor: 'codex' },
+      pierVersion: null,
+      fingerprint: 'sha256:176c2b12f36b6a78e7558d79a43bc7f12a0073afb8b1e893d0178bccf6d23de4',
+    },
+    {
+      name: 'DeepSWE Kimi Code',
+      composition: { benchmark: 'deep-swe-1.1', competitor: 'kimi-code' },
+      pierVersion: '0.3.0',
+      fingerprint: 'sha256:4a3979f0ccf085063e9cd812444d3739d9f792bac58397eac25ba76120785779',
+    },
+    {
+      name: 'DeepSWE Codex',
+      composition: { benchmark: 'deep-swe-1.1', competitor: 'codex' },
+      pierVersion: '0.3.0',
+      fingerprint: 'sha256:e61cf1e48747d6fafc696f334ea609e62d00e98e8b79db2352964aafca128c25',
+    },
+  ] as const;
+
+  for (const expected of cases) {
+    const manifest = buildHarnessAbManifest({
+      subjectFingerprint: 'subject',
+      taskSourceFingerprint: 'tasks',
+      toolchainFingerprint: 'tools',
+      composition: resolveHarnessComposition(expected.composition),
+      pierVersion: expected.pierVersion,
+    });
+    assert.equal(manifest.fingerprint, expected.fingerprint, expected.name);
+  }
 });
 
 test('harness A/B completion log preserves the report status', async () => {
