@@ -1,4 +1,4 @@
-import type { ProjectCatalog, ProjectRecord } from '@maka/storage';
+import type { ProjectCatalog, ProjectRecord, SessionStore } from '@maka/storage';
 
 type DirectoryActionResult =
   | { ok: true; project: ProjectRecord }
@@ -19,6 +19,7 @@ export interface ProjectManagementService {
 
 export function createProjectManagementService(deps: {
   catalog: ProjectCatalog;
+  sessions: Pick<SessionStore, 'listHeaders' | 'updateHeader'>;
   chooseDirectory(): Promise<string | undefined>;
   setSelectedPath(path: string): void;
 }): ProjectManagementService {
@@ -44,7 +45,14 @@ export function createProjectManagementService(deps: {
       const id = requireProjectId(projectId);
       const path = await deps.chooseDirectory();
       if (!path) return { ok: false, reason: 'cancelled' };
-      const project = await deps.catalog.relink(id, path);
+      const mergeSessions = async (conflictingProjectId: string) => {
+        for (const header of await deps.sessions.listHeaders()) {
+          if (header.projectId === conflictingProjectId) {
+            await deps.sessions.updateHeader(header.id, { projectId: id });
+          }
+        }
+      };
+      const project = await deps.catalog.relink(id, path, mergeSessions);
       return { ok: true, project };
     },
 

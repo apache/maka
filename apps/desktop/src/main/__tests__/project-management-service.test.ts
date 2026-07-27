@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { createProjectCatalog } from '@maka/storage';
+import { createProjectCatalog, createSessionStore } from '@maka/storage';
 import { createProjectManagementService } from '../project-management-service.js';
 
 test('project management service owns selection and reversible lifecycle actions', async () => {
@@ -20,6 +20,12 @@ test('project management service owns selection and reversible lifecycle actions
   });
   const service = createProjectManagementService({
     catalog,
+    sessions: {
+      listHeaders: async () => [],
+      updateHeader: async () => {
+        throw new Error('No sessions expected');
+      },
+    },
     chooseDirectory: async () => nextDirectory,
     setSelectedPath: (path) => selectedPaths.push(path),
   });
@@ -66,6 +72,12 @@ test('project management service rejects malformed IPC identities before catalog
   const base = await mkdtemp(join(tmpdir(), 'maka-project-service-input-'));
   const service = createProjectManagementService({
     catalog: createProjectCatalog(join(base, 'storage')),
+    sessions: {
+      listHeaders: async () => [],
+      updateHeader: async () => {
+        throw new Error('No sessions expected');
+      },
+    },
     chooseDirectory: async () => undefined,
     setSelectedPath: () => {},
   });
@@ -77,3 +89,79 @@ test('project management service rejects malformed IPC identities before catalog
     await rm(base, { recursive: true, force: true });
   }
 });
+
+test('relinking merges a project that was accidentally added from its new path', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-service-merge-'));
+  const oldPath = join(base, 'old-location');
+  const newPath = join(base, 'new-location');
+  const storage = join(base, 'storage');
+  await mkdir(oldPath);
+  let nextDirectory: string | undefined = oldPath;
+  let nextId = 0;
+  const catalog = createProjectCatalog(storage, {
+    now: () => 1_000,
+    createId: () => `project-${++nextId}`,
+  });
+  const sessions = createSessionStore(storage);
+  const service = createProjectManagementService({
+    catalog,
+    sessions,
+    chooseDirectory: async () => nextDirectory,
+    setSelectedPath: () => {},
+  });
+
+  try {
+    const original = await service.add();
+    assert.equal(original.ok, true);
+    if (!original.ok) throw new Error('Expected original project');
+    await service.rename(original.project.id, 'Original name');
+    await rename(oldPath, newPath);
+
+    nextDirectory = newPath;
+    const duplicate = await service.add();
+    assert.equal(duplicate.ok, true);
+    if (!duplicate.ok) throw new Error('Expected duplicate project');
+    const oldSession = await sessions.create(
+      makeSessionInput(oldPath, original.project.id, 'Old history'),
+    );
+    const newSession = await sessions.create(
+      makeSessionInput(newPath, duplicate.project.id, 'New history'),
+    );
+
+    const merged = await service.relink(original.project.id);
+
+    assert.equal(merged.ok, true);
+    if (!merged.ok) throw new Error('Expected merged project');
+    assert.equal(merged.project.id, original.project.id);
+    assert.equal(merged.project.name, 'Original name');
+    assert.equal(merged.project.preferredPath, await realpath(newPath));
+    assert.deepEqual(
+      (await catalog.list()).map((project) => project.id),
+      [original.project.id],
+    );
+    assert.equal(
+      (await sessions.readHeaderSnapshot(oldSession.id)).projectId,
+      original.project.id,
+    );
+    assert.equal(
+      (await sessions.readHeaderSnapshot(newSession.id)).projectId,
+      original.project.id,
+    );
+  } finally {
+    await sessions.close?.();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+function makeSessionInput(cwd: string, projectId: string, name: string) {
+  return {
+    cwd,
+    projectId,
+    backend: 'fake' as const,
+    llmConnectionSlug: 'fake',
+    model: 'fake-model',
+    permissionMode: 'ask' as const,
+    name,
+    labels: [],
+  };
+}

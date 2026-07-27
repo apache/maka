@@ -716,6 +716,7 @@ const projectRootController = createProjectRootController({
 });
 const projectManagement = createProjectManagementService({
   catalog: projectCatalog,
+  sessions: store,
   chooseDirectory: async () => {
     const result = await mainWindowController.showOpenDialog({
       title: '添加项目',

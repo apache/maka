@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -77,6 +77,29 @@ test('new sessions preserve unexpected catalog failures', async () => {
         }),
       (error) => error === storageFailure,
     );
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('new sessions persist the catalog canonical path instead of a symlink alias', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-new-session-project-canonical-'));
+  const projectPath = join(base, 'project');
+  const aliasPath = join(base, 'project-alias');
+  await mkdir(projectPath);
+  await symlink(projectPath, aliasPath, 'dir');
+  const catalog = createProjectCatalog(join(base, 'storage'), {
+    createId: () => 'project-1',
+  });
+
+  try {
+    const project = await catalog.register(projectPath);
+    const resolved = await resolveNewSessionProjectInput(
+      makeInput(aliasPath, { projectId: project.id }),
+      catalog,
+    );
+
+    assert.equal(resolved.cwd, await realpath(projectPath));
   } finally {
     await rm(base, { recursive: true, force: true });
   }

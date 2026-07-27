@@ -15,15 +15,19 @@ export async function resolveNewSessionProjectInput(
     if (project.archivedAt !== undefined) throw new Error(`Project is archived: ${input.projectId}`);
     if (!project.available) throw new Error(`Project is unavailable: ${input.projectId}`);
     try {
-      await catalog.touch(project.id, input.cwd);
+      const touched = await catalog.touch(project.id, input.cwd);
+      return { ...input, cwd: touched.preferredPath ?? input.cwd };
     } catch (error) {
       if (!isProjectPathMismatchError(error)) throw error;
       throw new Error(`Project does not match the selected directory: ${input.projectId}`);
     }
-    return input;
   }
 
   const project = await catalog.register(input.cwd);
   if (project.archivedAt !== undefined) throw new Error(`Project is archived: ${project.id}`);
-  return { ...input, projectId: project.id };
+  return {
+    ...input,
+    cwd: project.preferredPath ?? input.cwd,
+    projectId: project.id,
+  };
 }

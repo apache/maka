@@ -31,7 +31,11 @@ export interface ProjectCatalog {
   importLegacyPath(path: string, usedAt?: number): Promise<ProjectRecord>;
   select(projectId: string): Promise<{ project: ProjectRecord; path: string }>;
   touch(projectId: string, path?: string): Promise<ProjectRecord>;
-  relink(projectId: string, path: string): Promise<ProjectRecord>;
+  relink(
+    projectId: string,
+    path: string,
+    mergeConflict?: (conflictingProjectId: string) => Promise<void>,
+  ): Promise<ProjectRecord>;
   rename(projectId: string, name: string): Promise<ProjectRecord>;
   archive(projectId: string): Promise<ProjectRecord>;
   restore(projectId: string): Promise<ProjectRecord>;
@@ -266,7 +270,11 @@ class FileProjectCatalog implements ProjectCatalog {
     return this.present(touched);
   }
 
-  async relink(projectId: string, path: string): Promise<ProjectRecord> {
+  async relink(
+    projectId: string,
+    path: string,
+    mergeConflict?: (conflictingProjectId: string) => Promise<void>,
+  ): Promise<ProjectRecord> {
     const resolved = await resolveProjectLocation({ path });
     const timestamp = this.now();
     let relinked: PersistedProject | undefined;
@@ -277,7 +285,13 @@ class FileProjectCatalog implements ProjectCatalog {
       const conflict = file.projects.find(
         (item) => item.id !== projectId && item.identity === resolved.identity,
       );
-      if (conflict) throw new Error(`Project path already belongs to project: ${conflict.id}`);
+      if (conflict) {
+        if (!mergeConflict) {
+          throw new Error(`Project path already belongs to project: ${conflict.id}`);
+        }
+        await mergeConflict(conflict.id);
+        file.projects = file.projects.filter((item) => item.id !== conflict.id);
+      }
       const locationPath =
         resolved.kind === 'git' ? resolved.git!.worktreeRoot : resolved.canonicalPath;
       project.identity = resolved.identity;
@@ -291,7 +305,7 @@ class FileProjectCatalog implements ProjectCatalog {
           lastUsedAt: timestamp,
         },
       ];
-      project.lastUsedAt = timestamp;
+      project.lastUsedAt = Math.max(timestamp, conflict?.lastUsedAt ?? 0);
       project.updatedAt = timestamp;
       relinked = project;
       await this.write(file);

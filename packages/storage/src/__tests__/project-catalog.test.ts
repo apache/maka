@@ -270,6 +270,49 @@ test('relinking an unavailable project preserves its id and adopts the new direc
   }
 });
 
+test('conflicting relink waits for a retryable merge before removing the duplicate project', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-relink-merge-'));
+  try {
+    const relocated = join(base, 'relocated');
+    await mkdir(relocated);
+    let id = 0;
+    const catalog = createProjectCatalog(join(base, 'storage'), {
+      now: () => 1_000,
+      createId: () => `project-${++id}`,
+    });
+    const original = await catalog.importLegacyPath(join(base, 'missing-original'));
+    const duplicate = await catalog.register(relocated);
+    const interrupted = new Error('session reassignment interrupted');
+
+    await assert.rejects(
+      () =>
+        catalog.relink(original.id, relocated, async () => {
+          throw interrupted;
+        }),
+      (error) => error === interrupted,
+    );
+    assert.deepEqual(
+      (await catalog.list()).map((project) => project.id).sort(),
+      [original.id, duplicate.id].sort(),
+    );
+
+    let mergedProjectId: string | undefined;
+    const merged = await catalog.relink(original.id, relocated, async (conflictingProjectId) => {
+      mergedProjectId = conflictingProjectId;
+    });
+
+    assert.equal(mergedProjectId, duplicate.id);
+    assert.equal(merged.id, original.id);
+    assert.equal(merged.name, original.name);
+    assert.deepEqual(
+      (await catalog.list()).map((project) => project.id),
+      [original.id],
+    );
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 test('projects are listed by most recent use', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-recency-'));
   try {
