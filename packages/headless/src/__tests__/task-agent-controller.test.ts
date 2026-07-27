@@ -83,6 +83,15 @@ class ReportingBackend implements AgentBackend {
     });
     yield { type: 'text_complete', id: 'report-text', turnId, ts, messageId, text: 'done' };
     yield {
+      type: 'tool_start',
+      id: 'report-tool-start',
+      turnId,
+      ts,
+      toolUseId: 'tool-1',
+      toolName: 'bash',
+      args: { command: 'printf artifact' },
+    };
+    yield {
       type: 'tool_result',
       id: 'report-artifact',
       turnId,

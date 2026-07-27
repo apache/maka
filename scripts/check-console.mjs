@@ -68,6 +68,10 @@ const ALLOW = new Map([
     'PR110b: credential lookup failure logs error class only (no message / secret bytes); never reaches renderer.',
   ],
   [
+    'apps/desktop/src/main/permission-overlay/permission-overlay-main.ts',
+    'macOS permission onboarding lifecycle diagnostics stay in the main process and contain no credential or file contents.',
+  ],
+  [
     'packages/runtime/src/bots/bot-registry.ts',
     'message routed through generalizedErrorMessage (xuan raw-error sweep).',
   ],
