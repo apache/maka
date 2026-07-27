@@ -1002,6 +1002,7 @@ export {
   fetchOpenAiCodexModels,
   fetchProviderModels,
   OpenAiCodexDiscoveryError,
+  ProviderModelDiscoveryHttpError,
 } from './model-fetcher.js';
 
 export { materializeSession, applyAppendedMessage, setToolStatus } from './materializer.js';

@@ -364,6 +364,7 @@ export function ProviderBrandMark({ type }: { type: ProviderType }): ReactElemen
     case 'cerebras':
       return <img src={cerebrasBrandMark} alt="" />;
     case 'xai':
+    case 'xai-oauth':
       return <XAI />;
     case 'togetherai':
       return <img src={togetherBrandMark} alt="" />;

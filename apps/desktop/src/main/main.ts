@@ -25,6 +25,7 @@ import { ClaudeSubscriptionService } from './oauth/claude-subscription-service.j
 import { OpenAiCodexService } from './oauth/openai-codex-service.js';
 import { createOpenAiCodexE2eFixtureService } from './openai-codex-e2e-fixture.js';
 import { GitHubCopilotSubscriptionService } from './oauth/github-copilot-subscription-service.js';
+import { XaiOAuthService } from './oauth/xai-oauth-service.js';
 import { CursorSubscriptionService } from './oauth/cursor-subscription-service.js';
 import { AntigravitySubscriptionService } from './oauth/antigravity-subscription-service.js';
 import type { WorkspacePrivacyContext } from '@maka/core/incognito';
@@ -305,6 +306,10 @@ const openAiCodex = e2eFixture?.scenario === 'oauth-relogin'
       credentialStore,
     });
 const githubCopilotSubscription = new GitHubCopilotSubscriptionService({ credentialStore });
+const xaiOAuth = new XaiOAuthService({
+  credentialStore,
+  openExternal: (url) => shell.openExternal(url),
+});
 const buildSubscriptionModelFetch = createSubscriptionModelFetch({
   claudeSubscription,
 });
@@ -314,6 +319,7 @@ const oauthModelConnections = createOAuthModelConnectionsMainService({
   claudeSubscription,
   openAiCodex,
   githubCopilotSubscription,
+  xaiOAuth,
   ...(e2eFixture?.scenario === 'oauth-relogin'
     ? { fetchModels: async () => [{ id: 'gpt-5.6-sol' }] }
     : {}),
@@ -322,6 +328,12 @@ const isClaudeSubscriptionAuthenticatedState = oauthModelConnections.isClaudeSub
 
 function syncClaudeSubscriptionConnection(): Promise<LlmConnection | null> {
   return oauthModelConnections.syncClaudeSubscriptionConnection();
+}
+function activateXaiOAuthConnection(): Promise<LlmConnection | null> {
+  return oauthModelConnections.activateXaiOAuthConnection();
+}
+function syncXaiOAuthConnection(): Promise<LlmConnection | null> {
+  return oauthModelConnections.syncXaiOAuthConnection();
 }
 
 function syncOpenAiCodexConnection(): Promise<LlmConnection | null> {
@@ -994,6 +1006,7 @@ function registerIpc(): void {
     claudeSubscription,
     openAiCodex,
     githubCopilotSubscription,
+    xaiOAuth,
     cursorSubscription,
     antigravitySubscription,
     isClaudeSubscriptionAuthenticatedState,
@@ -1001,6 +1014,8 @@ function registerIpc(): void {
     activateOpenAiCodexConnection,
     syncOpenAiCodexConnection,
     syncGitHubCopilotConnection,
+    activateXaiOAuthConnection,
+    syncXaiOAuthConnection,
     emitConnectionListChanged,
   });
   registerWebSearchIpc({ settingsStore, getWorkspacePrivacyContext });

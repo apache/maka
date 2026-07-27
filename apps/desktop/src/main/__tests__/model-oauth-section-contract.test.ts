@@ -3,8 +3,8 @@
  * the provider settings source files
  * (PR-MODEL-OAUTH-ALL-0).
  *
- * Pins the user-visible OAuth login surface: three runnable cards
- * (Claude / Codex / GitHub Copilot), each marked
+ * Pins the user-visible OAuth login surface: four runnable cards
+ * (Claude / Codex / GitHub Copilot / xAI), each marked
  * `status: 'available'`, and each click wires through to its
  * matching `window.maka.<provider>Subscription` bridge namespace.
  *
@@ -475,7 +475,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     const ids = [...body.matchAll(/id:\s*'([a-z-]+)'/g)].map((m) => m[1]);
     assert.deepEqual(
       ids.sort(),
-      ['claude', 'codex', 'github-copilot'],
+      ['claude', 'codex', 'github-copilot', 'xai'],
       'the catalog must hide account logins that cannot create a runnable model connection',
     );
 
@@ -568,7 +568,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     assert.ok(match, 'modelOAuthCards locale-aware factory must exist');
     const body = match[1]!;
     const statuses = [...body.matchAll(/status:\s*'([a-z_]+)'/g)].map((m) => m[1]);
-    assert.equal(statuses.length, 3, 'each visible runnable card must declare a status');
+    assert.equal(statuses.length, 4, 'each visible runnable card must declare a status');
     for (const s of statuses) {
       assert.equal(s, 'available', `card status must be 'available', got '${s}'`);
     }
@@ -1103,10 +1103,17 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
   });
 
-  it('SubscriptionLoginModal keeps only the runnable Codex catalog bridge', async () => {
+  it('SubscriptionLoginModal routes the runnable Codex and xAI browser flows through one seam', async () => {
     const src = await readProviderSettingsCombinedSource();
     const modal = src.match(/function SubscriptionLoginModal[\s\S]*?function ClaudeSubscriptionCard/)?.[0] ?? '';
     assert.match(modal, /window\.maka\.openAiCodex/);
+    assert.match(modal, /window\.maka\.xaiOAuth/);
+    assert.match(modal, /service: 'codex' \| 'xai'/);
+    assert.match(
+      modal,
+      /\{isXai \? copy\.deviceCode : copy\.stateHint\}/,
+      'xAI must identify the RFC 8628 user code instead of presenting it as a loopback state hint',
+    );
     assert.doesNotMatch(modal, /pickSubscriptionBridge|cursorSubscription|antigravitySubscription/, 'hidden non-runnable catalog services must not retain unreachable modal branches');
   });
 

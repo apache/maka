@@ -265,10 +265,14 @@ describe('OAuth subscription token authority (shared CredentialStore)', () => {
 
         if (entryPoint === 'explicit') {
           assert.deepEqual(result, { ok: true });
-          assert.equal(fetchCalls, 1);
         } else {
           assert.equal(result, winner.access_token);
         }
+        assert.equal(
+          fetchCalls,
+          0,
+          'a credential superseded before lease acquisition must not present its stale rotating refresh token',
+        );
         assert.deepEqual(
           JSON.parse(credentials.get(serviceCase.slug, 'oauth_token') ?? 'null'),
           winner,

@@ -417,12 +417,15 @@ describe('Storybook baseline contract', () => {
       'SelectedDetail',
       'AddProvider',
       'OAuthCards',
+      'XaiDeviceAuthorization',
     ]) {
       assert.match(story, new RegExp(`export const ${storyName}: Story`), `${storyName} story must be exported`);
     }
 
     assert.match(story, /ConnectionsBridge/, 'stories must drive ProvidersPanel through its bridge seam');
     assert.match(story, /claudeSubscription/, 'OAuth cards must render against story-local subscription fixtures');
+    assert.match(story, /xaiOAuth/, 'xAI device authorization must render against a story-local OAuth fixture');
+    assert.match(story, /ABCD-EFGH/, 'the xAI story must keep the user-facing device code visible');
     assert.doesNotMatch(storyPath, /src\/renderer/, 'desktop Storybook stories must stay out of the renderer build tree');
   });
 

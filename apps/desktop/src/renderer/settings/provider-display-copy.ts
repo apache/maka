@@ -258,6 +258,10 @@ export const PROVIDER_DISPLAY_COPY = {
     zh: { name: 'OpenAI OAuth', description: 'ChatGPT / Codex 账号登录；登录后自动成为可用模型连接。' },
     en: { name: 'OpenAI OAuth', description: 'Sign in with a ChatGPT / Codex account; it becomes an available model connection once signed in.' },
   },
+  'xai-oauth': {
+    zh: { name: 'xAI OAuth', description: '使用 SuperGrok 或 X Premium 账号登录。', badge: 'Account' },
+    en: { name: 'xAI OAuth', description: 'Sign in with SuperGrok or X Premium.', badge: 'Account' },
+  },
   'gemini-cli': {
     zh: { name: 'Gemini CLI', description: 'Google 账号登录暂未接入聊天发送。' },
     en: { name: 'Gemini CLI', description: 'Google account sign-in is not yet wired to chat.' },

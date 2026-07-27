@@ -621,6 +621,39 @@ const makaBridge = {
       return ipcRenderer.invoke('openai-codex:logout');
     },
   },
+  xaiOAuth: {
+    getAuthUrl(): Promise<AuthorizationUrlPayload | SubscriptionActionResult> {
+      return ipcRenderer.invoke('xai-oauth:get-auth-url');
+    },
+    openAuthUrl(authRequestId: string): Promise<SubscriptionActionResult> {
+      return ipcRenderer.invoke('xai-oauth:open-auth-url', authRequestId);
+    },
+    completeAuthorization(authRequestId: string): Promise<SubscriptionActionResult> {
+      return ipcRenderer.invoke('xai-oauth:complete-authorization', authRequestId);
+    },
+    cancelAuthorization(authRequestId?: string): Promise<{ ok: true }> {
+      return ipcRenderer.invoke('xai-oauth:cancel-authorization', authRequestId);
+    },
+    getAccountState(): Promise<{
+      provider: 'xai-oauth';
+      runtimeState:
+        | 'not_logged_in'
+        | 'authorizing'
+        | 'authenticated'
+        | 'refreshing'
+        | 'refresh_failed'
+        | 'storage_failed';
+      errorMessage?: string;
+    }> {
+      return ipcRenderer.invoke('xai-oauth:get-account-state');
+    },
+    refreshTokens(): Promise<SubscriptionActionResult> {
+      return ipcRenderer.invoke('xai-oauth:refresh-tokens');
+    },
+    logout(): Promise<SubscriptionActionResult> {
+      return ipcRenderer.invoke('xai-oauth:logout');
+    },
+  },
   githubCopilotSubscription: {
     connectExistingLogin(): Promise<SubscriptionActionResult> {
       return ipcRenderer.invoke('github-copilot:connect-existing-login');

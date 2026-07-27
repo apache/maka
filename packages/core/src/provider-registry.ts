@@ -30,7 +30,7 @@ export type ProviderRuntimeAdapter =
 export type ProviderModelDiscovery =
   | {
       kind: 'protocol';
-      auth?: 'claude-subscription' | 'github-copilot' | 'openai-codex' | 'none';
+      auth?: 'claude-subscription' | 'github-copilot' | 'oauth-bearer' | 'openai-codex' | 'none';
       path?: string;
       query?: Readonly<Record<string, string>>;
       responseShape?: 'array-or-data';
@@ -872,6 +872,26 @@ const providerRegistry = {
     modelsDevId: xai.id,
     readyOrder: 10,
     catalogOrder: 12,
+  },
+  'xai-oauth': {
+    label: 'xAI OAuth (SuperGrok / X Premium)',
+    description: 'Use an eligible Grok account through xAI device authorization.',
+    baseUrl: 'https://api.x.ai/v1',
+    authKind: 'oauth_token',
+    backendKind: 'ai-sdk',
+    fallbackModels: xaiModelIds,
+    status: 'ready',
+    protocol: 'openai',
+    runtimeAdapter: { kind: 'openai' },
+    modelDiscovery: {
+      kind: 'protocol',
+      auth: 'oauth-bearer',
+      filter: 'fallback-models',
+    },
+    category: 'oauth',
+    catalogBadge: 'Account',
+    signupUrl: 'https://x.ai/grok',
+    modelsDevId: xai.id,
   },
   zai: {
     label: zai.name,

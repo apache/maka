@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { after, describe, test } from 'node:test';
 import type { LlmConnection } from '@maka/core';
-import { fetchProviderModels } from '../model-fetcher.js';
+import { fetchProviderModels, ProviderModelDiscoveryHttpError } from '../model-fetcher.js';
 
 const servers: Array<{ close(): Promise<void> }> = [];
 
@@ -54,6 +54,56 @@ describe('fetchProviderModels', () => {
       { url: '/zen/v1/models', authorization: 'Bearer opencode-test-key' },
       { url: '/zen/go/v1/models', authorization: 'Bearer opencode-test-key' },
     ]);
+  });
+
+  test('xAI OAuth discovers only supported Grok models with bearer auth', async () => {
+    const server = await startJsonServer((request, response) => {
+      assert.equal(request.method, 'GET');
+      assert.equal(request.url, '/v1/models');
+      assert.equal(request.headers.authorization, 'Bearer xai-oauth-token');
+      respondJson(response, 200, {
+        data: [{ id: 'grok-4.5' }, { id: 'grok-imagine-image' }],
+      });
+    });
+
+    const models = await fetchProviderModels(
+      {
+        slug: 'xai-oauth',
+        name: 'xAI OAuth',
+        providerType: 'xai-oauth',
+        baseUrl: `${server.url}/v1`,
+        defaultModel: 'grok-4.5',
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      'xai-oauth-token',
+    );
+
+    assert.deepEqual(models, [{ id: 'grok-4.5' }]);
+  });
+
+  test('xAI OAuth preserves discovery HTTP status for auth-failure classification', async () => {
+    const server = await startJsonServer((_request, response) => {
+      respondJson(response, 401, { error: 'invalid_token' });
+    });
+
+    await assert.rejects(
+      fetchProviderModels(
+        {
+          slug: 'xai-oauth',
+          name: 'xAI OAuth',
+          providerType: 'xai-oauth',
+          baseUrl: `${server.url}/v1`,
+          defaultModel: 'grok-4.5',
+          enabled: true,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        'expired-xai-oauth-token',
+      ),
+      (error: unknown) => error instanceof ProviderModelDiscoveryHttpError && error.status === 401,
+    );
   });
 
   test('Vercel AI Gateway discovers the complete public language-model list without exposing its inference key', async () => {

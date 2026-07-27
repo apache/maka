@@ -5,7 +5,7 @@ import { TOKEN_REFRESH_SKEW_MS } from '@maka/core';
 
 export type OAuthSubscriptionProvider = Extract<
   ProviderType,
-  'claude-subscription' | 'openai-codex' | 'github-copilot'
+  'claude-subscription' | 'openai-codex' | 'github-copilot' | 'xai-oauth'
 >;
 
 export interface OAuthSubscriptionTokens {
@@ -26,7 +26,8 @@ export function isOAuthSubscriptionProvider(
   return (
     providerType === 'claude-subscription' ||
     providerType === 'openai-codex' ||
-    providerType === 'github-copilot'
+    providerType === 'github-copilot' ||
+    providerType === 'xai-oauth'
   );
 }
 
@@ -115,6 +116,9 @@ const CLAUDE_TOKEN_USER_AGENT = 'claude-cli/2.1.153 (external, cli)';
 const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const CODEX_TOKEN_ENDPOINT = 'https://auth.openai.com/oauth/token';
 const CODEX_TOKEN_USER_AGENT = 'maka-desktop/0.1.0 (oauth-subscription)';
+
+const XAI_CLIENT_ID = 'b1a00492-073a-47ea-816f-4c329264a828';
+const XAI_TOKEN_ENDPOINT = 'https://auth.x.ai/oauth2/token';
 
 const OAUTH_REFRESH_LEASE_MS = 30_000;
 const OAUTH_REFRESH_LEASE_POLL_MS = 25;
@@ -405,6 +409,8 @@ export async function refreshOAuthSubscriptionTokens(input: {
       return refreshOpenAiCodexTokens(input.tokens, now, fetchFn);
     case 'github-copilot':
       return input.tokens;
+    case 'xai-oauth':
+      return refreshXaiOAuthTokens(input.tokens, now, fetchFn);
   }
 }
 
@@ -529,5 +535,37 @@ async function refreshOpenAiCodexTokens(
     id_token: payload.id_token ?? tokens.id_token,
     expires_at: now() + expiresInMs,
     account_id: tokens.account_id,
+  };
+}
+
+async function refreshXaiOAuthTokens(
+  tokens: OAuthSubscriptionTokens,
+  now: () => number,
+  fetchFn: typeof fetch,
+): Promise<OAuthSubscriptionTokens> {
+  const response = await fetchFn(XAI_TOKEN_ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      client_id: XAI_CLIENT_ID,
+      refresh_token: tokens.refresh_token,
+    }).toString(),
+  });
+  if (!response.ok) throw new Error(`xAI OAuth token refresh failed (${response.status}).`);
+  const payload = (await response.json()) as {
+    access_token?: string;
+    refresh_token?: string;
+    expires_in?: number;
+    token_type?: string;
+    scope?: string;
+  };
+  const { accessToken, expiresInMs } = requireRefreshedTokenFields('xAI', payload);
+  return {
+    access_token: accessToken,
+    refresh_token: nextRefreshToken(payload.refresh_token, tokens.refresh_token),
+    expires_at: now() + expiresInMs,
+    token_type: payload.token_type ?? tokens.token_type,
+    scope: payload.scope ?? tokens.scope,
   };
 }

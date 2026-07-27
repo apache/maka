@@ -10,9 +10,54 @@ import {
   createGitHubCopilotAccountTokens,
   parseOAuthSubscriptionTokens,
   refreshAndPersistOAuthSubscriptionTokens,
+  refreshOAuthSubscriptionTokens,
   resolveAndPersistOAuthSubscriptionTokens,
   resolveOAuthSubscriptionTokens,
 } from '../subscription-credentials.js';
+
+test('xAI OAuth refresh preserves a rotated refresh token through the shared provider contract', async () => {
+  let requestUrl = '';
+  let requestBody = '';
+  const tokens = await refreshOAuthSubscriptionTokens({
+    providerType: 'xai-oauth',
+    tokens: {
+      access_token: 'old-access',
+      refresh_token: 'old-refresh',
+      expires_at: 1_000,
+      scope: 'openid offline_access',
+    },
+    now: () => 10_000,
+    fetchFn: async (url, init) => {
+      requestUrl = String(url);
+      requestBody = String(init?.body);
+      assert.equal(
+        new Headers(init?.headers).get('content-type'),
+        'application/x-www-form-urlencoded',
+      );
+      return Response.json({
+        access_token: 'new-access',
+        refresh_token: 'new-refresh',
+        expires_in: 3_600,
+        token_type: 'Bearer',
+        scope: 'openid offline_access grok-cli:access api:access',
+      });
+    },
+  });
+
+  assert.equal(requestUrl, 'https://auth.x.ai/oauth2/token');
+  assert.deepEqual(Object.fromEntries(new URLSearchParams(requestBody)), {
+    grant_type: 'refresh_token',
+    client_id: 'b1a00492-073a-47ea-816f-4c329264a828',
+    refresh_token: 'old-refresh',
+  });
+  assert.deepEqual(tokens, {
+    access_token: 'new-access',
+    refresh_token: 'new-refresh',
+    expires_at: 3_610_000,
+    token_type: 'Bearer',
+    scope: 'openid offline_access grok-cli:access api:access',
+  });
+});
 
 describe('GitHub Copilot subscription credentials', () => {
   test('preserves the account-scoped API endpoint in the existing OAuth token record', () => {

@@ -369,6 +369,7 @@ export function buildProviderOptions(
         },
       };
     case 'xai':
+    case 'xai-oauth':
       return modelId === 'grok-4.5'
         ? {
             openai: {

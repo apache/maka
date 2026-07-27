@@ -51,6 +51,7 @@ describe('provider compatibility contract', () => {
       'siliconflow',
       'vercel',
       'xai',
+      'xai-oauth',
       'zai',
       'xiaomi',
       'xiaomi-token-plan-cn',
@@ -376,6 +377,30 @@ describe('provider compatibility contract', () => {
       readyOrder: 10,
       catalogOrder: 12,
     });
+  });
+
+  it('keeps xAI account OAuth separate from the existing API-key provider', () => {
+    assert.deepEqual(PROVIDER_REGISTRY['xai-oauth'], {
+      label: 'xAI OAuth (SuperGrok / X Premium)',
+      description: 'Use an eligible Grok account through xAI device authorization.',
+      baseUrl: 'https://api.x.ai/v1',
+      authKind: 'oauth_token',
+      backendKind: 'ai-sdk',
+      fallbackModels: PROVIDER_REGISTRY.xai.fallbackModels,
+      status: 'ready',
+      protocol: 'openai',
+      runtimeAdapter: { kind: 'openai' },
+      modelDiscovery: {
+        kind: 'protocol',
+        auth: 'oauth-bearer',
+        filter: 'fallback-models',
+      },
+      category: 'oauth',
+      catalogBadge: 'Account',
+      signupUrl: 'https://x.ai/grok',
+      modelsDevId: 'xai',
+    });
+    assert.equal(PROVIDER_REGISTRY.xai.authKind, 'api_key');
   });
 
   for (const provider of [

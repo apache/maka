@@ -39,6 +39,11 @@ export function oauthLoginServiceFor(providerType: ProviderType): OAuthLoginServ
         bridge: window.maka.openAiCodex as unknown as OAuthLoginFlowBridge,
         display: { name: 'OpenAI Codex', shortName: 'Codex' },
       };
+    case 'xai-oauth':
+      return {
+        bridge: window.maka.xaiOAuth as unknown as OAuthLoginFlowBridge,
+        display: { name: 'xAI Grok', shortName: 'SuperGrok / X Premium' },
+      };
     case 'gemini-cli':
       return {
         bridge: window.maka.antigravitySubscription as unknown as OAuthLoginFlowBridge,

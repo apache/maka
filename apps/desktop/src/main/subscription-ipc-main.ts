@@ -21,14 +21,17 @@ import {
   CLAUDE_SUBSCRIPTION_CONNECTION_SLUG,
   CODEX_SUBSCRIPTION_CONNECTION_SLUG,
   GITHUB_COPILOT_CONNECTION_SLUG,
+  XAI_OAUTH_CONNECTION_SLUG,
 } from './oauth-model-connections-main.js';
 import type { GitHubCopilotSubscriptionService } from './oauth/github-copilot-subscription-service.js';
+import type { XaiOAuthService } from './oauth/xai-oauth-service.js';
 
 interface SubscriptionIpcDeps {
   connectionStore: ConnectionStore;
   claudeSubscription: ClaudeSubscriptionService;
   openAiCodex: OpenAiCodexService;
   githubCopilotSubscription: GitHubCopilotSubscriptionService;
+  xaiOAuth: XaiOAuthService;
   cursorSubscription: CursorSubscriptionService;
   antigravitySubscription: AntigravitySubscriptionService;
   isClaudeSubscriptionAuthenticatedState(
@@ -38,6 +41,8 @@ interface SubscriptionIpcDeps {
   activateOpenAiCodexConnection(): Promise<LlmConnection | null>;
   syncOpenAiCodexConnection(): Promise<LlmConnection | null>;
   syncGitHubCopilotConnection(models?: NonNullable<LlmConnection['models']>): Promise<LlmConnection | null>;
+  activateXaiOAuthConnection(): Promise<LlmConnection | null>;
+  syncXaiOAuthConnection(): Promise<LlmConnection | null>;
   emitConnectionListChanged(): void;
 }
 
@@ -98,6 +103,68 @@ export function registerSubscriptionIpc(deps: SubscriptionIpcDeps): void {
         lastTestStatus: 'needs_reauth',
         lastTestAt: new Date().toISOString(),
         lastTestMessage: 'GitHub Copilot 已移除本地登录。',
+      });
+      deps.emitConnectionListChanged();
+    }
+    return result;
+  });
+
+  ipcMain.handle('xai-oauth:get-auth-url', async () => deps.xaiOAuth.getAuthorizationUrl());
+  ipcMain.handle('xai-oauth:open-auth-url', async (_event, authRequestId: unknown) => {
+    if (typeof authRequestId !== 'string') {
+      return {
+        ok: false as const,
+        reason: 'authorization_pending' as const,
+        message: 'xAI 授权会话不存在。',
+      };
+    }
+    return deps.xaiOAuth.openAuthorizationUrl(authRequestId);
+  });
+  ipcMain.handle('xai-oauth:complete-authorization', async (_event, authRequestId: unknown) => {
+    if (typeof authRequestId !== 'string') {
+      return {
+        ok: false as const,
+        reason: 'authorization_pending' as const,
+        message: 'xAI 授权会话不存在。',
+      };
+    }
+    const result = await deps.xaiOAuth.completeAuthorization(authRequestId);
+    if (result.ok) {
+      await deps.activateXaiOAuthConnection();
+      deps.emitConnectionListChanged();
+      void deps
+        .syncXaiOAuthConnection()
+        .then(() => deps.emitConnectionListChanged())
+        .catch((error: unknown) => {
+          console.warn('[maka] xAI OAuth model discovery failed', error);
+        });
+    }
+    return result;
+  });
+  ipcMain.handle('xai-oauth:cancel-authorization', async (_event, authRequestId: unknown) => {
+    deps.xaiOAuth.cancelAuthorization(
+      typeof authRequestId === 'string' ? authRequestId : undefined,
+    );
+    return { ok: true as const };
+  });
+  ipcMain.handle('xai-oauth:get-account-state', async () => deps.xaiOAuth.getAccountState());
+  ipcMain.handle('xai-oauth:refresh-tokens', async () => {
+    const result = await deps.xaiOAuth.refreshTokens();
+    if (result.ok) {
+      await deps.syncXaiOAuthConnection();
+      deps.emitConnectionListChanged();
+    }
+    return result;
+  });
+  ipcMain.handle('xai-oauth:logout', async () => {
+    const result = await deps.xaiOAuth.logout();
+    const existing = await deps.connectionStore.get(XAI_OAUTH_CONNECTION_SLUG);
+    if (existing) {
+      await deps.connectionStore.update(existing.slug, {
+        enabled: false,
+        lastTestStatus: 'needs_reauth',
+        lastTestAt: new Date().toISOString(),
+        lastTestMessage: 'xAI OAuth 已退出登录。',
       });
       deps.emitConnectionListChanged();
     }

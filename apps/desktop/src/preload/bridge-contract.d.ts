@@ -468,6 +468,25 @@ export interface MakaBridge {
     refreshTokens(): Promise<SubscriptionActionResult>;
     logout(): Promise<SubscriptionActionResult>;
   };
+  xaiOAuth: {
+    getAuthUrl(): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
+    openAuthUrl(authRequestId: string): Promise<SubscriptionActionResult>;
+    completeAuthorization(authRequestId: string): Promise<SubscriptionActionResult>;
+    cancelAuthorization(authRequestId?: string): Promise<{ ok: true }>;
+    getAccountState(): Promise<{
+      provider: 'xai-oauth';
+      runtimeState:
+        | 'not_logged_in'
+        | 'authorizing'
+        | 'authenticated'
+        | 'refreshing'
+        | 'refresh_failed'
+        | 'storage_failed';
+      errorMessage?: string;
+    }>;
+    refreshTokens(): Promise<SubscriptionActionResult>;
+    logout(): Promise<SubscriptionActionResult>;
+  };
   githubCopilotSubscription: {
     connectExistingLogin(): Promise<SubscriptionActionResult>;
     getAccountState(): Promise<{

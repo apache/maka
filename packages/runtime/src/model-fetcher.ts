@@ -89,7 +89,12 @@ export async function fetchProviderModels(
   } catch (error) {
     // Preserve status-bearing discovery errors so the sync layer can classify
     // auth/protocol/network failures; only wrap unknown errors for display.
-    if (error instanceof OpenAiCodexDiscoveryError) throw error;
+    if (
+      error instanceof OpenAiCodexDiscoveryError ||
+      error instanceof ProviderModelDiscoveryHttpError
+    ) {
+      throw error;
+    }
     throw new Error(generalizedErrorMessage(error, 'Failed to fetch provider models'));
   }
 }
@@ -152,15 +157,20 @@ async function fetchProviderModelsStrict(
       const r = await proxiedFetch(modelListUrl(baseUrl, discovery.path, discovery.query), {
         headers: {
           'content-type': 'application/json',
-          ...(discovery.auth !== 'none' &&
-          apiKey &&
-          providerAuthSupportsApiKey(connection.providerType)
+          ...(apiKey &&
+          (discovery.auth === 'oauth-bearer' ||
+            (discovery.auth !== 'none' && providerAuthSupportsApiKey(connection.providerType)))
             ? { authorization: `Bearer ${apiKey}` }
             : {}),
         },
         timeoutMs: MODEL_FETCH_TIMEOUT_MS,
       });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      if (!r.ok) {
+        if (connection.providerType === 'xai-oauth') {
+          throw new ProviderModelDiscoveryHttpError(r.status);
+        }
+        throw new Error(`HTTP ${r.status}`);
+      }
       const data = (await r.json()) as { data?: RawProviderModel[] } | RawProviderModel[];
       const rawModels =
         discovery.responseShape === 'array-or-data'
@@ -230,6 +240,14 @@ export class OpenAiCodexDiscoveryError extends Error {
   constructor(public readonly status: number) {
     super(`HTTP ${status}`);
     this.name = 'OpenAiCodexDiscoveryError';
+  }
+}
+
+/** Structured status for standard provider `/models` endpoints. */
+export class ProviderModelDiscoveryHttpError extends Error {
+  constructor(public readonly status: number) {
+    super(`HTTP ${status}`);
+    this.name = 'ProviderModelDiscoveryHttpError';
   }
 }
 

@@ -24,7 +24,7 @@ const meta = {
 export default meta;
 
 type Story = StoryObj<typeof meta>;
-type AutoOpenTarget = 'detail' | 'add' | 'oauth';
+type AutoOpenTarget = 'detail' | 'add' | 'oauth' | 'xai-device';
 
 function makeConnection(input: {
   slug: string;
@@ -221,6 +221,10 @@ function installSubscriptionFixtures() {
       email: 'codex@example.com',
       plan: 'Plus',
     }),
+    githubCopilotSubscription: browserSubscriptionFixture({
+      runtimeState: 'not_logged_in',
+    }),
+    xaiOAuth: xaiDeviceSubscriptionFixture(),
     cursorSubscription: browserSubscriptionFixture({
       runtimeState: 'not_logged_in',
     }),
@@ -228,6 +232,17 @@ function installSubscriptionFixtures() {
       runtimeState: 'storage_failed',
       errorMessage: '需要 Google client_id 后才能完成登录。',
     }),
+  };
+}
+
+function xaiDeviceSubscriptionFixture() {
+  return {
+    getAccountState: async () => ({ provider: 'xai-oauth', runtimeState: 'authorizing' }),
+    getAuthUrl: async () => ({ authRequestId: 'storybook-xai', stateHint: 'ABCD-EFGH' }),
+    openAuthUrl: async () => ({ ok: true }),
+    completeAuthorization: async () => new Promise<never>(() => undefined),
+    cancelAuthorization: async () => ({ ok: true }),
+    logout: async () => ({ ok: true }),
   };
 }
 
@@ -314,6 +329,26 @@ function clickAutoOpenTarget(root: HTMLElement, target: AutoOpenTarget): boolean
     oauthTab?.click();
     return Boolean(oauthTab);
   }
+  if (target === 'xai-device') {
+    const dialog = document.querySelector<HTMLElement>(
+      '[aria-labelledby="provider-connection-dialog-xai-oauth"]',
+    );
+    if (dialog) {
+      const code = dialog.querySelector('code');
+      if (code?.textContent?.trim() === 'ABCD-EFGH') return true;
+      const loginButton = Array.from(dialog.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent?.includes('SuperGrok / X Premium'));
+      if (loginButton && !loginButton.disabled) loginButton.click();
+      return false;
+    }
+    const xaiCard = root.querySelector<HTMLButtonElement>('button[data-card-id="xai"]');
+    if (xaiCard) {
+      xaiCard.click();
+      return false;
+    }
+    root.querySelector<HTMLButtonElement>('button[data-catalog-tab="oauth"]')?.click();
+    return false;
+  }
 
   const addButton = Array.from(root.querySelectorAll<HTMLButtonElement>('button'))
     .find((button) => button.textContent?.trim() === '自定义');
@@ -381,6 +416,17 @@ export const OAuthCards: Story = {
     <ProviderStory
       bridge={createBridge({ connections: problemConnections, defaultSlug: 'zai-live' })}
       autoOpen="oauth"
+    />
+  ),
+};
+
+// Real path: 设置 → 模型 → 账号 → xAI Grok → 登录, while the RFC 8628
+// device flow waits for the user to enter the displayed code in the browser.
+export const XaiDeviceAuthorization: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: configuredConnections, defaultSlug: 'zai-live' })}
+      autoOpen="xai-device"
     />
   ),
 };

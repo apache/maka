@@ -118,6 +118,8 @@ export type SubscriptionActionFailureReason =
   | 'invalid_paste_code' // user pasted malformed code or wrong state
   | 'authorization_pending' // no startAuthorization called yet
   | 'authorization_expired' // verifier TTL passed before paste
+  | 'authorization_denied' // provider account owner rejected device authorization
+  | 'authorization_cancelled' // caller cancelled an in-flight authorization
   | 'token_exchange_failed' // /oauth/token returned non-200
   | 'refresh_failed' // refresh attempt errored
   | 'storage_failed' // shared credential store write failed
