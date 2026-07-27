@@ -459,9 +459,13 @@ test('harness A/B resolves an explicit GLM 5.2 runtime independently from OpenCo
 });
 
 test('harness A/B composition defaults preserve existing routes and reject unsupported triples', async () => {
-  const { resolveHarnessComposition } = await import(
-    new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href
-  );
+  const {
+    buildHarnessAbManifest,
+    resolveHarnessAbRunId,
+    resolveHarnessComposition,
+    resolveHarnessCompetitorProfile,
+    resolveHarnessRuntimeCredentials,
+  } = await import(new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href);
 
   assert.equal(
     resolveHarnessComposition({ competitor: 'opencode' }).runtimeProfile.id,
@@ -492,6 +496,36 @@ test('harness A/B composition defaults preserve existing routes and reject unsup
   assert.throws(
     () => resolveHarnessComposition({ benchmark: 'deep-swe-1.1', competitor: 'opencode' }),
     /unsupported harness composition: benchmark=deep-swe-1\.1, runtime=kimi-coding-plan-k3-max, competitor=opencode/,
+  );
+
+  const glmComposition = resolveHarnessComposition({
+    runtime: 'zai-coding-plan-glm-5.2-max',
+    competitor: 'opencode',
+  });
+  const forgedComposition = {
+    ...glmComposition,
+    competitorProfile: resolveHarnessCompetitorProfile('kimi-code'),
+  };
+  assert.throws(
+    () =>
+      buildHarnessAbManifest({
+        subjectFingerprint: 'subject',
+        taskSourceFingerprint: 'tasks',
+        toolchainFingerprint: 'tools',
+        composition: forgedComposition,
+      }),
+    /composition must come from resolveHarnessComposition/,
+  );
+  assert.throws(
+    () => resolveHarnessAbRunId(forgedComposition),
+    /composition must come from resolveHarnessComposition/,
+  );
+  await assert.rejects(
+    resolveHarnessRuntimeCredentials({
+      composition: forgedComposition,
+      env: { MAKA_HARNESS_AB_KEY_FILE: '/secrets/zai.key' },
+    }),
+    /composition must come from resolveHarnessComposition/,
   );
 });
 
@@ -570,27 +604,17 @@ test('Codex comparison freezes the OpenAI model, pricing, and run identity', asy
 });
 
 test('harness execution profile rejects a reasoning effort unsupported by model metadata', async () => {
-  const { buildHarnessAbManifest, buildHarnessExecutionProfile, resolveHarnessComposition } =
-    await import(new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href);
+  const { buildHarnessExecutionProfile, resolveHarnessComposition } = await import(
+    new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href
+  );
   const composition = resolveHarnessComposition({ competitor: 'codex' });
   const invalidRuntimeProfile = {
     ...composition.runtimeProfile,
     reasoningEffort: 'minimal',
   };
-  const invalidComposition = { ...composition, runtimeProfile: invalidRuntimeProfile };
 
   assert.throws(
     () => buildHarnessExecutionProfile(invalidRuntimeProfile),
-    /does not support reasoning effort minimal/,
-  );
-  assert.throws(
-    () =>
-      buildHarnessAbManifest({
-        subjectFingerprint: 'subject',
-        taskSourceFingerprint: 'tasks',
-        toolchainFingerprint: 'tools',
-        composition: invalidComposition,
-      }),
     /does not support reasoning effort minimal/,
   );
 });

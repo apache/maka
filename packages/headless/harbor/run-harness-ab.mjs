@@ -306,6 +306,7 @@ const SUPPORTED_HARNESS_COMPOSITIONS = new Set([
   'deep-swe-1.1|kimi-coding-plan-k3-max|kimi-code',
   'deep-swe-1.1|openai-codex-gpt-5.6-sol-xhigh|codex',
 ]);
+const RESOLVED_HARNESS_COMPOSITIONS = new WeakSet();
 
 export function resolveHarnessCompetitorProfile(raw = 'kimi-code') {
   const profile = HARNESS_COMPETITOR_PROFILES[raw];
@@ -346,7 +347,15 @@ export function resolveHarnessComposition(input = {}) {
       `unsupported harness composition: benchmark=${benchmarkProfile.id}, runtime=${runtimeProfile.id}, competitor=${competitorProfile.id}`,
     );
   }
-  return Object.freeze({ benchmarkProfile, runtimeProfile, competitorProfile });
+  const composition = Object.freeze({ benchmarkProfile, runtimeProfile, competitorProfile });
+  RESOLVED_HARNESS_COMPOSITIONS.add(composition);
+  return composition;
+}
+
+function assertResolvedHarnessComposition(composition) {
+  if (!composition || !RESOLVED_HARNESS_COMPOSITIONS.has(composition)) {
+    throw new Error('composition must come from resolveHarnessComposition');
+  }
 }
 
 export function buildHarnessExecutionProfile(runtimeProfile) {
@@ -376,6 +385,7 @@ export function buildHarnessExecutionProfile(runtimeProfile) {
 }
 
 export async function resolveHarnessRuntimeCredentials(input) {
+  assertResolvedHarnessComposition(input.composition);
   const { auth } = input.composition.runtimeProfile;
   if (auth.kind === 'api-key-file') {
     return {
@@ -396,6 +406,7 @@ export async function resolveHarnessRuntimeCredentials(input) {
 }
 
 export function resolveHarnessAbRunId(composition, explicitRunId, isolatedTaskId, explicitTaskIds) {
+  assertResolvedHarnessComposition(composition);
   if (isolatedTaskId?.trim() && !explicitRunId?.trim()) {
     throw new Error('MAKA_HARNESS_AB_RUN_ID is required with MAKA_HARNESS_AB_TASK_ID');
   }
@@ -615,6 +626,7 @@ export function buildHarnessAbManifest({
   credentialIdentity,
   pierVersion = null,
 }) {
+  assertResolvedHarnessComposition(composition);
   const { benchmarkProfile, runtimeProfile, competitorProfile } = composition;
   const resolvedTaskIds = taskIds ?? benchmarkProfile.taskIds;
   const resolvedPairConcurrency =
