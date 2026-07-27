@@ -88,6 +88,13 @@ import {
   type RuntimeUserQuestionContinuation,
 } from '../interaction-authority.js';
 
+test('session summaries preserve an explicit no-project association', async () => {
+  const store = new MemorySessionStore();
+  const header = await store.create(makeInput({ projectId: null }));
+
+  expect(headerToSummary(header).projectId).toBe(null);
+});
+
 describe('SessionManager child-session read model', () => {
   test('lists typed child sessions without treating branches as children', async () => {
     const store = new MemorySessionStore();
@@ -747,6 +754,48 @@ describe('SessionManager child-session runtime primitive', () => {
       /could not find the requested child session/,
     );
 
+    parentGate.release();
+    while (!(await parentTurn.next()).done) {}
+  });
+
+  test('child sessions preserve an explicit no-project association', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    const parentGate = makeGate();
+    backends.register(
+      'fake',
+      (ctx) => new TestBackend(ctx, ctx.header.subagentRuntime ? undefined : parentGate),
+    );
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+      newId: nextId(),
+      now: nextNow(200),
+      runtimeSource: 'test',
+    });
+    const parent = await manager.createSession(makeInput({ projectId: null }));
+    const parentTurn = manager
+      .sendMessage(parent.id, { turnId: 'parent-turn', text: 'keep the parent active' })
+      [Symbol.asyncIterator]();
+    await parentTurn.next();
+    const [parentRun] = await runStore.listSessionRuns(parent.id);
+    if (!parentRun) throw new Error('parent run was not recorded');
+
+    const child = await manager.spawnChildSession(parent.id, {
+      spawnedBy: {
+        parentRunId: parentRun.runId,
+        parentTurnId: parentRun.turnId,
+        toolCallId: 'tool-call-no-project',
+      },
+      agentProfile: LOCAL_READ_AGENT_PROFILE,
+      prompt: 'inspect without a project',
+    });
+
+    expect((await store.readHeader(child.childSessionId)).projectId).toBe(null);
     parentGate.release();
     while (!(await parentTurn.next()).done) {}
   });
@@ -14082,6 +14131,31 @@ describe('SessionManager permission mode updates', () => {
     expect(childMessages.some((message) => message.type === 'turn_state')).toBe(false);
   });
 
+  test('branchFromTurn preserves an explicit no-project association', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    backends.register(
+      'fake',
+      (ctx) => new EventBackend(ctx, [{ type: 'complete', stopReason: 'end_turn' }]),
+    );
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      newId: nextId(),
+      now: nextNow(15_100),
+    });
+    const session = await manager.createSession(makeInput({ projectId: null }));
+    await drain(manager.sendMessage(session.id, { turnId: 'source', text: 'context' }));
+
+    const child = await manager.branchFromTurn(session.id, { sourceTurnId: 'source' });
+
+    expect(child.projectId).toBe(null);
+    expect((await store.readHeader(child.id)).projectId).toBe(null);
+  });
+
   test('hydrates an inherited running ShellRun with its source-session owner', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -14478,6 +14552,31 @@ describe('SessionManager permission mode updates', () => {
     expect(version3.revisionIndex).toBe(3);
     expect(version3.revisionState).toBe('preparing');
     expect(version3.parentSessionId).toBeUndefined();
+  });
+
+  test('reviseBeforeTurn preserves an explicit no-project association', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    backends.register(
+      'fake',
+      (ctx) => new EventBackend(ctx, [{ type: 'complete', stopReason: 'end_turn' }]),
+    );
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      newId: nextId(),
+      now: nextNow(16_800),
+    });
+    const session = await manager.createSession(makeInput({ projectId: null }));
+    await drain(manager.sendMessage(session.id, { turnId: 'source', text: 'context' }));
+
+    const revision = await manager.reviseBeforeTurn(session.id, { sourceTurnId: 'source' });
+
+    expect(revision.projectId).toBe(null);
+    expect((await store.readHeader(revision.id)).projectId).toBe(null);
   });
 
   test('startup recovery removes empty preparing revisions and commits admitted edits', async () => {
@@ -17676,7 +17775,7 @@ class MemorySessionStore implements SessionStore {
       id: `session-${this.headers.size + 1}`,
       workspaceRoot: '/tmp/workspace',
       cwd: input.cwd,
-      ...(input.projectId ? { projectId: input.projectId } : {}),
+      ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
       createdAt: 1,
       lastUsedAt: 1,
       name: input.name ?? 'New Chat',

@@ -1748,7 +1748,7 @@ export class SessionManager {
     const proposedRunId = input.runId ?? this.deps.newId();
     const creation = await this.deps.store.createSubagent({
       cwd: parentHeader.cwd,
-      ...(parentHeader.projectId ? { projectId: parentHeader.projectId } : {}),
+      ...(parentHeader.projectId !== undefined ? { projectId: parentHeader.projectId } : {}),
       name: input.name ?? definition.name,
       backend: parentHeader.backend,
       llmConnectionSlug: parentHeader.llmConnectionSlug,
@@ -3344,7 +3344,7 @@ export class SessionManager {
       Math.max(1, ...family.map((candidate) => candidate.revisionIndex ?? 1)) + 1;
     const next = await this.deps.store.create({
       cwd: header.cwd,
-      ...(header.projectId ? { projectId: header.projectId } : {}),
+      ...(header.projectId !== undefined ? { projectId: header.projectId } : {}),
       backend: header.backend,
       llmConnectionSlug: header.llmConnectionSlug,
       model: header.model,
@@ -3396,7 +3396,7 @@ export class SessionManager {
     const header = await this.deps.store.readHeader(sessionId);
     const next = await this.deps.store.create({
       cwd: header.cwd,
-      ...(header.projectId ? { projectId: header.projectId } : {}),
+      ...(header.projectId !== undefined ? { projectId: header.projectId } : {}),
       backend: header.backend,
       llmConnectionSlug: header.llmConnectionSlug,
       model: header.model,
@@ -4004,7 +4004,7 @@ export function headerToSummary(h: SessionHeader): SessionSummary {
   const summary: SessionSummary = {
     id: h.id,
     cwd: h.cwd,
-    ...(h.projectId ? { projectId: h.projectId } : {}),
+    ...(h.projectId !== undefined ? { projectId: h.projectId } : {}),
     name: h.name === 'New Session' ? DEFAULT_SESSION_NAME : h.name,
     isFlagged: h.isFlagged,
     isArchived: h.isArchived,
