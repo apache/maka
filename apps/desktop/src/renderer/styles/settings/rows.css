@@ -35,10 +35,41 @@
 }
 
 /* Label/value row: title + hint stack on the left, value or a single
-   control on the right column. */
+   control on the right column.
+
+   THE LABEL IS THE CONTENT; the right column is the accessory. So the
+   right track is sized to what it actually holds and the label takes
+   everything else — `fit-content(45%)`, not a proportional share.
+
+   This used to read `minmax(150px, 0.36fr) minmax(0, 1fr)`, which is
+   backwards: it handed the accessory 1fr and rationed the content to
+   0.36fr. Nothing in this codebase ever fills that 1fr — every right
+   column is a switch, a ~94px time field, a capped select, or (28 rows
+   across 5 pages, via SettingRow) a short read-only string. Measured on
+   the 数据 and 开放网关 pages at a ~1076px row: the value used ~64px of
+   a ~791px track while the label was pinned to ~285px and wrapped its
+   hint to four lines — mid-word in Chinese, which has no spaces to break
+   at — with ~730px sitting blank between them.
+
+   #1524 already made this trade for switches and the compact bucket, but
+   it enumerated control types instead of stating the rule, so read-only
+   values — the most common right column in the app — kept the backwards
+   default. Stating it as the default is what makes it hold for the next
+   row someone adds.
+
+   `fit-content(45%)` rather than `auto` because the cap is load-bearing:
+   the workspace path on the 数据 page is a ~690px unbroken string, and an
+   `auto` track sizes to max-content, which would starve the label exactly
+   the way the old default did — just in the other direction. 45% matches
+   the share the select bucket below already caps at. A value longer than
+   the cap wraps, which is the documented intent for mono paths (see the
+   `[data-mono]` rule further down).
+
+   Controls that genuinely fill their track opt out: see the select rule
+   below, whose `w-full` trigger collapses under an intrinsic track. */
 .settingsRow {
   display: grid;
-  grid-template-columns: minmax(150px, 0.36fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) fit-content(45%);
   align-items: center;
   gap: var(--space-4);
   /* Same padding as .settingsFormRow below so the two row kinds read
@@ -61,25 +92,15 @@
   justify-self: end;
 }
 
-/* Narrow controls give their slack back to the label.
-   ---------------------------------------------------
-   The default track split hands the control column `1fr` against the
-   label's `0.36fr`. That is right for a control that fills its column,
-   and wrong for one that cannot: a switch is 32px and a time field ~94px,
-   so on a 718px row the label was pinned to 173px with 465px of empty
-   track beside it. The hint then wrapped after ~9 characters — mid-word
-   in Chinese, which has no spaces to break at — while most of the row sat
-   blank. Sizing these two buckets to their content and giving the rest to
-   the label is the same trade the 460px container rule below already
-   makes, for the same reason; it was just never applied at full width.
+/* #1524's switch and `[data-control-width="compact"]` track splits lived
+   here. Both said `minmax(0, 1fr) auto` — which is what the default above
+   now says, only stated as the rule rather than as two exceptions to it.
+   A 32px switch and a ~94px time field both sit well under the 45% cap,
+   so they size identically and the rules were pure duplication. The
+   `compact` attribute stays: it still carries the control-width and
+   stacking rules further down.
 
-   Selects need a different shape — see the rule below. */
-.settingsRow:has(> [role="switch"]):not(:has(> :nth-child(3):not(input))),
-.settingsRow[data-control-width="compact"] {
-  grid-template-columns: minmax(0, 1fr) auto;
-}
-
-/* Selects can't take the intrinsic track above: their trigger is `w-full`
+   Selects can't take the intrinsic track above: their trigger is `w-full`
    under a 320px cap, so an `auto` track collapses it to the width of
    whatever option happens to be selected (measured: 320px → 118px).
    They get an explicit cap instead, and it has to be BOTH absolute and

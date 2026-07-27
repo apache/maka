@@ -104,7 +104,12 @@ describe('Settings form accessibility labels', () => {
     assert.doesNotMatch(connectionBadge, /rounded-\[var\(--radius-pill\)\]/, 'Settings connection badges (Chip primitive) must not regress to pill-shaped chrome');
     assert.doesNotMatch(settingsBadge, /rounded-\[var\(--radius-pill\)\]/, 'Generic Settings badges (Chip primitive) must not regress to pill-shaped chrome');
     assert.match(settingsRow, /display:\s*grid;/, 'Settings rows should use a stable label/value grid instead of flex auto sizing');
-    assert.match(settingsRow, /grid-template-columns:\s*minmax\(150px,\s*0\.36fr\)\s+minmax\(0,\s*1fr\);/, 'Settings rows need a protected label column and shrinkable value column');
+    // The track split itself is pinned by settings-row-track-contract, which
+    // is the one home for that rule. This file used to restate it as
+    // `minmax(150px, 0.36fr) minmax(0, 1fr)` under the banner "protected
+    // label column" — the split that starved the label, so the duplicate was
+    // both redundant and wrong, and the second copy is what a fix has to
+    // hunt down. Assert the shape here, not the numbers.
     assert.match(settingsRowValue, /overflow-wrap:\s*anywhere;/, 'Long Settings values such as workspace paths should wrap in the value column');
     assert.match(settingsRowValue, /text-align:\s*right;/, 'Short Settings values should keep the existing right-aligned summary rhythm');
     // #1362: the old `white-space: nowrap` title pin protected labels from
