@@ -166,15 +166,15 @@ describe('OAuth refresh persistence transaction', () => {
       refresh_token: 'old-refresh',
       expires_at: 1_000,
     });
-    let committed: string | null = null;
+    let current: string | null = stored;
     const tokens = await resolveOAuthSubscriptionTokens({
       providerType: 'claude-subscription',
       slug: 'claude-subscription',
       credentialStore: {
-        getSecret: async () => stored,
+        getSecret: async () => current,
         compareAndSetSecret: async (_slug, _kind, expected, value) => {
-          assert.equal(expected, stored);
-          committed = value;
+          if (expected !== current) return { committed: false, current };
+          current = value;
           return { committed: true };
         },
       },
@@ -192,7 +192,7 @@ describe('OAuth refresh persistence transaction', () => {
     });
 
     assert.equal(tokens?.access_token, 'new-access');
-    assert.equal(parseOAuthSubscriptionTokens(committed ?? '')?.access_token, 'new-access');
+    assert.equal(parseOAuthSubscriptionTokens(current ?? '')?.access_token, 'new-access');
   });
 
   test('near-expiry resolve keeps its first read as the refresh commit basis', async () => {
@@ -208,7 +208,7 @@ describe('OAuth refresh persistence transaction', () => {
     });
     let current = initial;
     let reads = 0;
-    let commits = 0;
+    const committedValues: string[] = [];
     const tokens = await resolveOAuthSubscriptionTokens({
       providerType: 'claude-subscription',
       slug: 'claude-subscription',
@@ -220,7 +220,7 @@ describe('OAuth refresh persistence transaction', () => {
         },
         compareAndSetSecret: async (_slug, _kind, expected, value) => {
           if (expected !== current) return { committed: false, current };
-          commits += 1;
+          committedValues.push(value);
           current = value;
           return { committed: true };
         },
@@ -242,9 +242,11 @@ describe('OAuth refresh persistence transaction', () => {
 
     assert.equal(tokens?.access_token, 'winner-access');
     assert.equal(
-      commits,
-      0,
-      'a resolve triggered by the old basis must not commit over the winner',
+      committedValues.some(
+        (value) => parseOAuthSubscriptionTokens(value)?.access_token === 'redundant-access',
+      ),
+      false,
+      'a resolve triggered by the old basis must not commit its redundant refresh over the winner',
     );
     assert.equal(current, winner);
   });
@@ -261,7 +263,7 @@ describe('OAuth refresh persistence transaction', () => {
       expires_at: 20_000_000,
     });
     let current = initial;
-    let commits = 0;
+    const committedValues: string[] = [];
 
     const result = await resolveAndPersistOAuthSubscriptionTokens({
       slug: 'cursor-subscription',
@@ -269,7 +271,7 @@ describe('OAuth refresh persistence transaction', () => {
         getSecret: async () => current,
         compareAndSetSecret: async (_slug, _kind, expected, value) => {
           if (expected !== current) return { committed: false, current };
-          commits += 1;
+          committedValues.push(value);
           current = value;
           return { committed: true };
         },
@@ -291,7 +293,13 @@ describe('OAuth refresh persistence transaction', () => {
       result.outcome === 'superseded' ? result.tokens.access_token : null,
       'winner-access',
     );
-    assert.equal(commits, 0, 'the old expiry-decision basis must not commit over the winner');
+    assert.equal(
+      committedValues.some(
+        (value) => parseOAuthSubscriptionTokens(value)?.access_token === 'redundant-access',
+      ),
+      false,
+      'the old expiry-decision basis must not commit its redundant refresh over the winner',
+    );
     assert.equal(current, winner);
   });
 
@@ -345,7 +353,85 @@ describe('OAuth refresh persistence transaction', () => {
     }
   });
 
-  test('two concurrent refreshes converge on the single committed token', async () => {
+  test('a stale refresh lease is recoverable after its owner exits', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'maka-oauth-refresh-'));
+    try {
+      const store = createFileCredentialStore(dir);
+      await store.setSecret(
+        'claude-subscription',
+        'oauth_token',
+        JSON.stringify({
+          access_token: 'old-access',
+          refresh_token: 'old-refresh',
+          expires_at: 1_000,
+          _refresh_lock: { id: 'crashed-process', expires_at: Date.now() - 1 },
+        }),
+      );
+      let refreshCalls = 0;
+
+      const result = await refreshAndPersistOAuthSubscriptionTokens({
+        slug: 'claude-subscription',
+        credentialStore: store,
+        refreshTokens: async () => {
+          refreshCalls += 1;
+          return {
+            access_token: 'new-access',
+            refresh_token: 'new-refresh',
+            expires_at: 20_000_000,
+          };
+        },
+      });
+
+      assert.equal(result.outcome, 'refreshed');
+      assert.equal(refreshCalls, 1);
+      assert.equal(
+        parseOAuthSubscriptionTokens(
+          (await store.getSecret('claude-subscription', 'oauth_token')) ?? '',
+        )?.access_token,
+        'new-access',
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a failed refresh releases its lease so a later request can retry', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'maka-oauth-refresh-'));
+    try {
+      const store = createFileCredentialStore(dir);
+      const stored = JSON.stringify({
+        access_token: 'old-access',
+        refresh_token: 'old-refresh',
+        expires_at: 1_000,
+      });
+      await store.setSecret('claude-subscription', 'oauth_token', stored);
+
+      const failed = await refreshAndPersistOAuthSubscriptionTokens({
+        slug: 'claude-subscription',
+        credentialStore: store,
+        refreshTokens: async () => {
+          throw new Error('temporary network failure');
+        },
+      });
+      assert.equal(failed.outcome, 'refresh-failed');
+      assert.equal(await store.getSecret('claude-subscription', 'oauth_token'), stored);
+
+      const retried = await refreshAndPersistOAuthSubscriptionTokens({
+        slug: 'claude-subscription',
+        credentialStore: store,
+        refreshTokens: async () => ({
+          access_token: 'new-access',
+          refresh_token: 'new-refresh',
+          expires_at: 20_000_000,
+        }),
+      });
+      assert.equal(retried.outcome, 'refreshed');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('two concurrent refreshes perform one remote rotation and converge on its token', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'maka-oauth-refresh-'));
     try {
       const storeA = createFileCredentialStore(dir);
@@ -357,35 +443,41 @@ describe('OAuth refresh persistence transaction', () => {
       });
       await storeA.setSecret('claude-subscription', 'oauth_token', stored);
 
-      let started = 0;
-      let markBothStarted!: () => void;
-      const bothStarted = new Promise<void>((resolve) => {
-        markBothStarted = resolve;
+      let refreshCalls = 0;
+      let markRefreshStarted!: () => void;
+      const refreshStarted = new Promise<void>((resolve) => {
+        markRefreshStarted = resolve;
       });
-      let releaseBoth!: () => void;
+      let releaseRefresh!: () => void;
       const released = new Promise<void>((resolve) => {
-        releaseBoth = resolve;
+        releaseRefresh = resolve;
       });
-      const run = (store: typeof storeA, suffix: string) =>
+      const run = (store: typeof storeA) =>
         refreshAndPersistOAuthSubscriptionTokens({
           slug: 'claude-subscription',
           credentialStore: store,
           refreshTokens: async () => {
-            started += 1;
-            if (started === 2) markBothStarted();
+            refreshCalls += 1;
+            markRefreshStarted();
             await released;
             return {
-              access_token: `access-${suffix}`,
-              refresh_token: `refresh-${suffix}`,
+              access_token: 'new-access',
+              refresh_token: 'new-refresh',
               expires_at: 20_000_000,
             };
           },
         });
 
-      const pendingA = run(storeA, 'A');
-      const pendingB = run(storeB, 'B');
-      await bothStarted;
-      releaseBoth();
+      const pendingA = run(storeA);
+      await refreshStarted;
+      const pendingB = run(storeB);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.equal(
+        refreshCalls,
+        1,
+        'a rotating refresh token must be presented to the provider only once',
+      );
+      releaseRefresh();
       const results = await Promise.all([pendingA, pendingB]);
 
       assert.deepEqual(results.map((result) => result.outcome).sort(), ['refreshed', 'superseded']);

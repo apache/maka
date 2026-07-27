@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import type { ProviderType } from '@maka/core/llm-connections';
 import { TOKEN_REFRESH_SKEW_MS } from '@maka/core';
 
@@ -114,6 +116,15 @@ const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const CODEX_TOKEN_ENDPOINT = 'https://auth.openai.com/oauth/token';
 const CODEX_TOKEN_USER_AGENT = 'maka-desktop/0.1.0 (oauth-subscription)';
 
+const OAUTH_REFRESH_LEASE_MS = 30_000;
+const OAUTH_REFRESH_LEASE_POLL_MS = 25;
+const OAUTH_REFRESH_LEASE_FIELD = '_refresh_lock';
+
+interface OAuthRefreshLease {
+  id: string;
+  expires_at: number;
+}
+
 export async function resolveOAuthSubscriptionAccessToken(
   input: ResolveOAuthSubscriptionAccessTokenInput,
 ): Promise<string | null> {
@@ -181,28 +192,125 @@ async function refreshAndPersistOAuthSubscriptionTokensFromRaw(
     return { outcome: 'storage-failed', error: new Error('Credential store is read-only.') };
   }
 
+  if (input.credentialStore.compareAndSetSecret) {
+    return refreshAndPersistWithLease(input, raw);
+  }
+
   let refreshed: OAuthSubscriptionTokens;
   try {
-    refreshed = input.refreshTokens
-      ? await input.refreshTokens(tokens)
-      : await refreshOAuthSubscriptionTokens({
-          providerType: input.providerType,
-          tokens,
-          now: input.now,
-          fetchFn: input.fetchFn,
-        });
+    refreshed = await refreshTokensForInput(input, tokens);
   } catch (error) {
     return { outcome: 'refresh-failed', error };
   }
 
   const serialized = serializeOAuthSubscriptionTokens(refreshed);
   try {
-    if (input.credentialStore.compareAndSetSecret) {
-      const committed = await input.credentialStore.compareAndSetSecret(
+    await input.credentialStore.setSecret!(input.slug, 'oauth_token', serialized);
+  } catch (error) {
+    return { outcome: 'storage-failed', error };
+  }
+
+  return { outcome: 'refreshed', tokens: refreshed };
+}
+
+async function refreshAndPersistWithLease(
+  input: RefreshAndPersistOAuthSubscriptionTokensInput,
+  initialRaw: string,
+): Promise<OAuthSubscriptionRefreshAndPersistOutcome> {
+  const compareAndSet = input.credentialStore.compareAndSetSecret!.bind(input.credentialStore);
+  let raw = initialRaw;
+
+  for (;;) {
+    const tokens = parseOAuthSubscriptionTokens(raw);
+    if (!tokens) {
+      return { outcome: 'storage-failed', error: new Error('Stored OAuth token is invalid.') };
+    }
+
+    const lease = parseOAuthRefreshLease(raw);
+    if (lease && lease.expires_at > Date.now()) {
+      let current: string | null;
+      try {
+        current = await waitForOAuthCredentialChange(
+          input.credentialStore,
+          input.slug,
+          raw,
+          lease.expires_at,
+        );
+      } catch (error) {
+        return { outcome: 'storage-failed', error };
+      }
+      if (current === null) return { outcome: 'logged-out' };
+      if (current === raw) continue;
+
+      const currentTokens = parseOAuthSubscriptionTokens(current);
+      if (!currentTokens) {
+        return { outcome: 'storage-failed', error: new Error('Stored OAuth token is invalid.') };
+      }
+      if (parseOAuthRefreshLease(current)) {
+        raw = current;
+        continue;
+      }
+      if (
+        serializeOAuthSubscriptionTokens(currentTokens) === serializeOAuthSubscriptionTokens(tokens)
+      ) {
+        raw = current;
+        continue;
+      }
+      return { outcome: 'superseded', tokens: currentTokens };
+    }
+
+    const claimedRaw = serializeOAuthSubscriptionTokensWithLease(tokens, {
+      id: randomUUID(),
+      expires_at: Date.now() + OAUTH_REFRESH_LEASE_MS,
+    });
+    let claim: { committed: true } | { committed: false; current: string | null };
+    try {
+      claim = await compareAndSet(input.slug, 'oauth_token', raw, claimedRaw);
+    } catch (error) {
+      return { outcome: 'storage-failed', error };
+    }
+    if (!claim.committed) {
+      if (claim.current === null) return { outcome: 'logged-out' };
+      const currentTokens = parseOAuthSubscriptionTokens(claim.current);
+      if (!currentTokens) {
+        return { outcome: 'storage-failed', error: new Error('Stored OAuth token is invalid.') };
+      }
+      if (parseOAuthRefreshLease(claim.current)) {
+        raw = claim.current;
+        continue;
+      }
+      return { outcome: 'superseded', tokens: currentTokens };
+    }
+
+    let refreshed: OAuthSubscriptionTokens;
+    try {
+      refreshed = await refreshTokensForInput(input, tokens);
+    } catch (error) {
+      try {
+        const released = await compareAndSet(input.slug, 'oauth_token', claimedRaw, raw);
+        if (!released.committed) {
+          if (released.current === null) return { outcome: 'logged-out' };
+          const current = parseOAuthSubscriptionTokens(released.current);
+          if (!current) {
+            return {
+              outcome: 'storage-failed',
+              error: new Error('Stored OAuth token is invalid.'),
+            };
+          }
+          return { outcome: 'superseded', tokens: current };
+        }
+      } catch (storageError) {
+        return { outcome: 'storage-failed', error: storageError };
+      }
+      return { outcome: 'refresh-failed', error };
+    }
+
+    try {
+      const committed = await compareAndSet(
         input.slug,
         'oauth_token',
-        raw,
-        serialized,
+        claimedRaw,
+        serializeOAuthSubscriptionTokens(refreshed),
       );
       if (!committed.committed) {
         if (committed.current === null) return { outcome: 'logged-out' };
@@ -212,14 +320,68 @@ async function refreshAndPersistOAuthSubscriptionTokensFromRaw(
         }
         return { outcome: 'superseded', tokens: current };
       }
-    } else {
-      await input.credentialStore.setSecret!(input.slug, 'oauth_token', serialized);
+    } catch (error) {
+      return { outcome: 'storage-failed', error };
     }
-  } catch (error) {
-    return { outcome: 'storage-failed', error };
-  }
 
-  return { outcome: 'refreshed', tokens: refreshed };
+    return { outcome: 'refreshed', tokens: refreshed };
+  }
+}
+
+async function refreshTokensForInput(
+  input: RefreshAndPersistOAuthSubscriptionTokensInput,
+  tokens: OAuthSubscriptionTokens,
+): Promise<OAuthSubscriptionTokens> {
+  return input.refreshTokens
+    ? input.refreshTokens(tokens)
+    : refreshOAuthSubscriptionTokens({
+        providerType: input.providerType,
+        tokens,
+        now: input.now,
+        fetchFn: input.fetchFn,
+      });
+}
+
+function parseOAuthRefreshLease(raw: string): OAuthRefreshLease | null {
+  try {
+    const record = JSON.parse(raw) as Record<string, unknown>;
+    const candidate = record[OAUTH_REFRESH_LEASE_FIELD];
+    if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate))
+      return null;
+    const lease = candidate as Record<string, unknown>;
+    return typeof lease.id === 'string' &&
+      lease.id.length > 0 &&
+      typeof lease.expires_at === 'number' &&
+      Number.isFinite(lease.expires_at)
+      ? { id: lease.id, expires_at: lease.expires_at }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function serializeOAuthSubscriptionTokensWithLease(
+  tokens: OAuthSubscriptionTokens,
+  lease: OAuthRefreshLease,
+): string {
+  return JSON.stringify({ ...tokens, [OAUTH_REFRESH_LEASE_FIELD]: lease });
+}
+
+async function waitForOAuthCredentialChange(
+  store: OAuthSubscriptionCredentialStore,
+  slug: string,
+  expected: string,
+  leaseExpiresAt: number,
+): Promise<string | null> {
+  for (;;) {
+    const remaining = leaseExpiresAt - Date.now();
+    if (remaining <= 0) return store.getSecret(slug, 'oauth_token');
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(OAUTH_REFRESH_LEASE_POLL_MS, remaining)),
+    );
+    const current = await store.getSecret(slug, 'oauth_token');
+    if (current !== expected) return current;
+  }
 }
 
 /**
