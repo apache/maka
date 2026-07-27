@@ -27,12 +27,13 @@ import {
   type ShellRunUpdate,
 } from '@maka/core';
 import {
+  assessForeignSessionStaleness,
   buildForeignSessionHandoffMessage,
   foreignSessionHandoffDisplayText,
   foreignSourceLabel,
   type ForeignSessionSummary,
 } from '@maka/core/foreign-session';
-import type { ForeignSessionStore } from '@maka/storage';
+import { probeForeignSessionRepoState, type ForeignSessionStore } from '@maka/storage';
 import type { GoalTurnOutcome, SessionActivityLease } from '@maka/runtime';
 import type { ModelChoice } from './connection-target.js';
 import {
@@ -1784,13 +1785,22 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     let handedOff = false;
     try {
       const digest = await input.foreignSessions.readDigest(summary);
+      // #1057 follow-up: probe the CURRENT repo state (cwd / branch / touched-
+      // file mtimes) and hand the model Maka-verified staleness flags instead
+      // of leaving it to trust the transcript's account of the world. The
+      // probe is best-effort — a probe failure downgrades the handoff to the
+      // unchecked shape rather than blocking the import.
+      const staleness = await probeForeignSessionRepoState(digest).then(
+        (probe) => assessForeignSessionStaleness(digest, probe),
+        () => undefined,
+      );
       if (closed) return;
       newSession();
       void runAgentTurn({
         kind: 'external',
         prompt: foreignSessionHandoffDisplayText(digest),
         sessionId: input.driver.getSessionId(),
-        sendText: buildForeignSessionHandoffMessage(digest),
+        sendText: buildForeignSessionHandoffMessage(digest, staleness),
       });
       handedOff = true;
     } catch (error) {

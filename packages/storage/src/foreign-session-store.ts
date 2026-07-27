@@ -24,9 +24,9 @@
  * rollout-file directory walk as fallback.
  */
 
-import { open, readdir, realpath, stat, type FileHandle } from 'node:fs/promises';
+import { open, readdir, readFile, realpath, stat, type FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, join, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import {
   FOREIGN_SESSION_DIGEST_MAX_READ_BYTES,
   FOREIGN_SESSION_HEAD_BYTES,
@@ -42,6 +42,7 @@ import {
   collectClaudeTitle,
   createDigestAccumulator,
   finishDigest,
+  foreignRecordTimestampMs,
   isSafeForeignId,
   normalizeCodexThreadRow,
   parseForeignJsonLine,
@@ -54,6 +55,7 @@ import {
   type ClaudeTranscriptMeta,
   type CodexThreadRow,
   type ForeignSessionDigest,
+  type ForeignSessionRepoProbe,
   type ForeignSessionSource,
   type ForeignSessionSummary,
 } from '@maka/core/foreign-session';
@@ -415,7 +417,10 @@ class FileForeignSessionStore implements ForeignSessionStore {
         } else if (record.type === 'assistant') {
           const text = claudeAssistantText(record);
           if (text !== undefined) pushDigestMessage(acc, 'assistant', text);
-          for (const path of claudeToolFilePaths(record)) pushDigestFile(acc, path);
+          // The record's own timestamp anchors each touch — it is what the
+          // handoff-time staleness check compares file mtimes against.
+          const eventAtMs = foreignRecordTimestampMs(record);
+          for (const path of claudeToolFilePaths(record)) pushDigestFile(acc, path, eventAtMs);
         }
       } else {
         const message = codexRolloutMessage(record);
@@ -431,7 +436,76 @@ class FileForeignSessionStore implements ForeignSessionStore {
       cwd: summary.cwd,
       gitBranch: summary.gitBranch,
       updatedAtMs: summary.updatedAtMs,
+      transcriptPath: summary.transcriptPath,
     });
+  }
+}
+
+/* --------------------- handoff-time repository probe --------------------- */
+
+/**
+ * Observe the CURRENT repository state the digest's claims will be compared
+ * against (#1057 follow-up; assessment itself is pure and lives in core).
+ * Read-only like everything in this module, and never throws: an unreadable
+ * path is simply reported as absent — the assessment turns absence into a
+ * flag, not a crash.
+ */
+export async function probeForeignSessionRepoState(
+  digest: Pick<ForeignSessionDigest, 'cwd' | 'filesTouched'>,
+  options?: { nowMs?: number },
+): Promise<ForeignSessionRepoProbe> {
+  const cwd = digest.cwd;
+  const cwdExists = cwd.length > 0 ? await isDirectory(cwd) : false;
+  const currentGitBranch = cwdExists ? await readCurrentGitBranch(cwd) : undefined;
+  const fileMtimes = new Map<string, number>();
+  if (cwdExists || digest.filesTouched.some((touch) => isAbsolute(touch.path))) {
+    for (const touch of digest.filesTouched) {
+      // Keyed VERBATIM by the digest path (the assessment matches keys as
+      // given); resolution against cwd happens only for the stat itself.
+      const absolute = isAbsolute(touch.path)
+        ? touch.path
+        : cwdExists
+          ? resolve(cwd, touch.path)
+          : undefined;
+      if (absolute === undefined) continue;
+      try {
+        const st = await stat(absolute);
+        if (st.isFile()) fileMtimes.set(touch.path, st.mtimeMs);
+      } catch {
+        // Missing/unreadable → no entry; the assessment flags it.
+      }
+    }
+  }
+  return {
+    probedAtMs: options?.nowMs ?? Date.now(),
+    cwdExists,
+    currentGitBranch,
+    fileMtimes,
+  };
+}
+
+/**
+ * Current branch from `.git/HEAD` without spawning git. Handles the
+ * worktree/submodule layout where `.git` is a FILE containing
+ * `gitdir: <path>` (one level — enough for worktrees, whose HEAD lives in
+ * the referenced directory). Detached HEAD or any read failure → undefined.
+ */
+async function readCurrentGitBranch(cwd: string): Promise<string | undefined> {
+  try {
+    let gitDir = join(cwd, '.git');
+    const st = await stat(gitDir);
+    if (st.isFile()) {
+      const pointer = await readFile(gitDir, 'utf8');
+      const match = pointer.match(/^gitdir:\s*(.+)\s*$/m);
+      if (!match) return undefined;
+      const target = match[1]!.trim();
+      gitDir = isAbsolute(target) ? target : resolve(dirname(gitDir), target);
+    }
+    const head = await readFile(join(gitDir, 'HEAD'), 'utf8');
+    const ref = head.match(/^ref:\s*refs\/heads\/(.+)\s*$/m);
+    return ref ? ref[1]!.trim() : undefined;
+  } catch {
+    return undefined;
   }
 }
 

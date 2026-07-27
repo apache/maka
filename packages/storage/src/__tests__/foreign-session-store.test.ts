@@ -12,6 +12,7 @@ import {
   createForeignSessionStore,
   isClaudeCodeImportEnabled,
   isCodexImportEnabled,
+  probeForeignSessionRepoState,
 } from '../foreign-session-store.js';
 
 const NOW = Date.now();
@@ -465,7 +466,12 @@ describe('foreign session store — digest', () => {
     const digest = await store.readDigest(session);
     assert.deepEqual(digest.userMessages, ['帮我修复解析器']);
     assert.deepEqual(digest.assistantTexts, ['已修复并补了测试']);
-    assert.deepEqual(digest.filesTouched, ['/repo/src/parser.ts']);
+    // Evidence pointers: the touch carries the assistant record's own
+    // timestamp, and the digest names its source transcript.
+    assert.deepEqual(digest.filesTouched, [
+      { path: '/repo/src/parser.ts', lastEventAtMs: NOW - 30_000 },
+    ]);
+    assert.equal(digest.transcriptPath, session.transcriptPath);
     // The seeded transcript contains one deliberately-broken line.
     assert.ok(
       digest.warnings.some((w) => w.includes('malformed')),
@@ -524,7 +530,7 @@ describe('foreign session store — digest', () => {
     const digest = await store.readDigest(session);
     assert.deepEqual(digest.userMessages, ['main request']);
     assert.deepEqual(digest.assistantTexts, ['main reply']);
-    assert.deepEqual(digest.filesTouched, ['/repo/main.ts']);
+    assert.deepEqual(digest.filesTouched, [{ path: '/repo/main.ts', lastEventAtMs: undefined }]);
     const flat = JSON.stringify(digest);
     assert.ok(!flat.includes('SIDECHAIN'), flat);
     assert.ok(!flat.includes('sidechain-only.ts'), flat);
@@ -556,5 +562,65 @@ describe('foreign session store — digest', () => {
     await rm(path);
     await symlink(secret, path);
     await assert.rejects(() => store.readDigest(session as ForeignSessionSummary), /escaped/);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * #1057 follow-up: handoff-time repository probe
+ * ------------------------------------------------------------------ */
+
+describe('probeForeignSessionRepoState', () => {
+  it('observes cwd, branch, and per-file mtimes keyed verbatim by digest paths', async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'maka-probe-'));
+    await mkdir(join(repo, '.git'), { recursive: true });
+    await writeFile(join(repo, '.git', 'HEAD'), 'ref: refs/heads/feat/probe\n', 'utf8');
+    await mkdir(join(repo, 'src'), { recursive: true });
+    await writeFile(join(repo, 'src', 'a.ts'), 'export {}\n', 'utf8');
+    const probe = await probeForeignSessionRepoState(
+      {
+        cwd: repo,
+        filesTouched: [
+          { path: 'src/a.ts', lastEventAtMs: 1 }, // relative — resolved against cwd
+          { path: join(repo, 'src', 'a.ts') }, // absolute — same file, separate key
+          { path: 'src/gone.ts' }, // missing → no entry
+        ],
+      },
+      { nowMs: 12345 },
+    );
+    assert.equal(probe.probedAtMs, 12345);
+    assert.equal(probe.cwdExists, true);
+    assert.equal(probe.currentGitBranch, 'feat/probe');
+    assert.ok(probe.fileMtimes.get('src/a.ts')! > 0);
+    assert.ok(probe.fileMtimes.get(join(repo, 'src', 'a.ts'))! > 0);
+    assert.equal(probe.fileMtimes.has('src/gone.ts'), false);
+  });
+
+  it('follows a worktree .git FILE to its gitdir HEAD', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-probe-wt-'));
+    const gitdir = join(root, 'real-gitdir');
+    await mkdir(gitdir, { recursive: true });
+    await writeFile(join(gitdir, 'HEAD'), 'ref: refs/heads/wt-branch\n', 'utf8');
+    const worktree = join(root, 'worktree');
+    await mkdir(worktree, { recursive: true });
+    await writeFile(join(worktree, '.git'), `gitdir: ${gitdir}\n`, 'utf8');
+    const probe = await probeForeignSessionRepoState({ cwd: worktree, filesTouched: [] });
+    assert.equal(probe.currentGitBranch, 'wt-branch');
+  });
+
+  it('reports a detached HEAD and a missing cwd as unknown, never throwing', async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'maka-probe-detached-'));
+    await mkdir(join(repo, '.git'), { recursive: true });
+    await writeFile(join(repo, '.git', 'HEAD'), 'a1b2c3d4e5f6\n', 'utf8');
+    const detached = await probeForeignSessionRepoState({ cwd: repo, filesTouched: [] });
+    assert.equal(detached.currentGitBranch, undefined);
+    assert.equal(detached.cwdExists, true);
+
+    const gone = await probeForeignSessionRepoState({
+      cwd: join(repo, 'no-such-dir'),
+      filesTouched: [{ path: 'x.ts' }],
+    });
+    assert.equal(gone.cwdExists, false);
+    assert.equal(gone.currentGitBranch, undefined);
+    assert.equal(gone.fileMtimes.size, 0);
   });
 });
