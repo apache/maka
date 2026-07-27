@@ -1,3 +1,5 @@
+import { rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { app, ipcMain, shell } from 'electron';
 import {
   generalizedErrorMessageChinese,
@@ -48,6 +50,7 @@ export interface SettingsIpcDeps {
   botOnboardingReadChannelStatus?: (
     provider: BotOnboardingStartInput['provider'],
   ) => { running: boolean; reason?: string };
+  botDataDir?: string;
 }
 
 function proxyTestFailureMessage(result: TestProxyResult): string {
@@ -79,6 +82,7 @@ export function registerSettingsIpc(deps: SettingsIpcDeps): SettingsIpcHandle {
       ? { readChannelStatus: deps.botOnboardingReadChannelStatus }
       : {}),
     productVersion: app.getVersion(),
+    botDataDir: deps.botDataDir,
     openExternal: (url) => shell.openExternal(url),
   });
 
@@ -87,6 +91,15 @@ export function registerSettingsIpc(deps: SettingsIpcDeps): SettingsIpcHandle {
     const normalizedPatch = await normalizeSettingsPatch(patch);
     const next = await settingsStore.update(normalizedPatch);
     await applySettingsRuntimeEffects(next, patch);
+    if (
+      normalizedPatch.botChat?.channels?.whatsapp?.sessionConfigured === false
+      && deps.botDataDir
+    ) {
+      await rm(join(deps.botDataDir, 'whatsapp', 'default'), {
+        recursive: true,
+        force: true,
+      });
+    }
     return buildSettingsUpdateResult(next, patch);
   });
   ipcMain.handle('settings:testNetworkProxy', async (_event, input: TestProxyInput = {}) => {

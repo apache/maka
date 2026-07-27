@@ -30,4 +30,6 @@ export const BOT_BRAND: Record<BotProvider, BotBrand> = {
   discord:  { color: '#5865F2', glyph: 'D', configDocUrl: 'https://discord.com/developers/docs/intro' },
   dingtalk: { color: '#1372FB', glyph: '钉', configDocUrl: 'https://open.dingtalk.com/document/' },
   qq:       { color: '#12B7F5', glyph: 'Q', configDocUrl: 'https://bot.q.qq.com/wiki/' },
+  slack:    { color: '#4A154B', glyph: 'S', configDocUrl: 'https://api.slack.com/start/quickstart' },
+  whatsapp: { color: '#25D366', glyph: 'W', configDocUrl: 'https://faq.whatsapp.com/1317564962315842' },
 };

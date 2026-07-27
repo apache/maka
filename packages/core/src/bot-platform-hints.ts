@@ -106,6 +106,32 @@ const BOT_PLATFORM_PROMPT_HINTS: Record<BotProvider, BotPlatformPromptHint> = {
       'Do not assume rich cards or unavailable platform-specific actions.',
     ],
   },
+  slack: {
+    platform: 'slack',
+    displayName: 'Slack',
+    formattingProfile: 'enterprise_chat',
+    deliveryFormat: 'Slack message over Socket Mode',
+    mediaSupport: ['text', 'image/file metadata only unless tools provide extracted content'],
+    capabilityCaveat:
+      'Slack replies are plain messages; do not assume Block Kit actions or workspace administration.',
+    systemPromptBullets: [
+      'Use concise workplace-chat formatting with clear outcomes and next actions.',
+      'Do not assume reactions, canvases, workflows, or administrative actions unless tools expose them.',
+    ],
+  },
+  whatsapp: {
+    platform: 'whatsapp',
+    displayName: 'WhatsApp',
+    formattingProfile: 'plain_text',
+    deliveryFormat: 'mobile chat message over a linked-device session',
+    mediaSupport: ['text', 'image/file/voice metadata only unless tools provide extracted content'],
+    capabilityCaveat:
+      'WhatsApp replies are sent as plain text through the locally linked device.',
+    systemPromptBullets: [
+      'Reply in short plain-text paragraphs suitable for a mobile chat.',
+      'Do not assume rich cards, desktop panes, or unavailable platform actions.',
+    ],
+  },
 };
 
 export function getBotPlatformPromptHint(platform: BotProvider): BotPlatformPromptHint {

@@ -1,4 +1,6 @@
 import { botDisplayLabel, type BotChannelSettings, type BotProvider } from '@maka/core';
+import { generalizedErrorMessage } from '@maka/core/redaction';
+import { WebClient } from '@slack/web-api';
 import type { BotTestResult } from './types.js';
 import { proxiedFetch } from './proxied-fetch.js';
 import {
@@ -29,6 +31,8 @@ export async function testBotChannel(
     provider !== 'wechat' &&
     provider !== 'dingtalk' &&
     provider !== 'qq' &&
+    provider !== 'slack' &&
+    provider !== 'whatsapp' &&
     !channel.token.trim()
   ) {
     return { ok: false, error: 'Bot token is required' };
@@ -48,7 +52,50 @@ export async function testBotChannel(
       return testWechat(channel);
     case 'qq':
       return testQQ(channel);
+    case 'slack':
+      return testSlack(channel);
+    case 'whatsapp':
+      return testWhatsApp(channel);
   }
+}
+
+async function testSlack(channel: BotChannelSettings): Promise<BotTestResult> {
+  const botToken = channel.token.trim();
+  const appToken = channel.appSecret?.trim() ?? '';
+  if (!botToken || !appToken) {
+    return { ok: false, error: 'Slack 需要 Bot Token 与 App-Level Token' };
+  }
+  try {
+    const identity = await new WebClient(botToken).auth.test();
+    if (!identity.ok) return { ok: false, error: identity.error ?? 'Slack auth.test failed' };
+    const socket = await new WebClient(appToken).apps.connections.open();
+    if (!socket.ok || !socket.url) {
+      return { ok: false, error: socket.error ?? 'Slack Socket Mode connection failed' };
+    }
+    return {
+      ok: true,
+      identity: {
+        id: identity.user_id ?? identity.bot_id ?? identity.team_id ?? 'slack',
+        ...(identity.user ? { username: identity.user, displayName: identity.user } : {}),
+      },
+      capabilities: { auth: true, socketMode: true },
+      hint: '凭据有效，Socket Mode 连接可用。',
+    };
+  } catch (error) {
+    return { ok: false, error: generalizedErrorMessage(error) };
+  }
+}
+
+async function testWhatsApp(channel: BotChannelSettings): Promise<BotTestResult> {
+  if (!channel.sessionConfigured) {
+    return { ok: false, error: 'WhatsApp 尚未通过二维码关联设备', verified: false };
+  }
+  return {
+    ok: true,
+    verified: false,
+    capabilities: { localSession: true },
+    hint: '本机关联凭据已保存；实际可用性以运行态连接为准。',
+  };
 }
 
 async function testWechat(channel: BotChannelSettings): Promise<BotTestResult> {

@@ -305,7 +305,7 @@ describe('Storybook baseline contract', () => {
     assert.match(story, /OMITTED_RUNTIME_EXPORTS/);
     assert.match(story, /BotBrandLogo/);
     assert.match(story, /BOT_BRAND/);
-    for (const provider of ['telegram', 'feishu', 'wecom', 'wechat', 'discord', 'dingtalk', 'qq']) {
+    for (const provider of ['telegram', 'feishu', 'wecom', 'wechat', 'discord', 'dingtalk', 'qq', 'slack', 'whatsapp']) {
       assert.match(story, new RegExp(`['"]${provider}['"]`), `${provider} must appear in the bot brand icon story`);
     }
   });

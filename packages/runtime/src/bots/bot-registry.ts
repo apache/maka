@@ -1,11 +1,18 @@
 import { EventEmitter } from 'node:events';
-import type { BotChannelSettings, BotChatSettings, BotProvider } from '@maka/core';
+import { join } from 'node:path';
+import {
+  hasBotChannelCredentials,
+  type BotChannelSettings,
+  type BotChatSettings,
+  type BotProvider,
+} from '@maka/core';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { BOT_PROVIDERS } from '@maka/core/settings';
 import { DingTalkBotBridge } from './dingtalk-bridge.js';
 import { FeishuBotBridge } from './feishu-bridge.js';
 import { DiscordBotBridge } from './discord-bridge.js';
 import { QQBotBridge } from './qq-bridge.js';
+import { SlackBotBridge } from './slack-bridge.js';
 import { SimpleBotBridge } from './simple-bridge.js';
 import type {
   BotBridge,
@@ -17,10 +24,13 @@ import type {
 } from './types.js';
 import { WechatBridge } from './wechat-bridge.js';
 import { WeComBotBridge } from './wecom-bridge.js';
+import { WhatsAppBotBridge } from './whatsapp-bridge.js';
 
 export interface BotRegistryDeps {
   onIncomingMessage: (message: BotIncomingMessage) => void;
   onStatusChange: (status: BotStatus) => void;
+  /** Main-owned local directory for channel session state such as WhatsApp. */
+  botDataDir?: string;
 }
 
 export class BotRegistry extends EventEmitter {
@@ -152,6 +162,15 @@ export class BotRegistry extends EventEmitter {
                 ? new DingTalkBotBridge(platform, settings)
                 : platform === 'qq'
                   ? new QQBotBridge(platform, settings)
+                  : platform === 'slack'
+                    ? new SlackBotBridge(settings)
+                    : platform === 'whatsapp'
+                      ? new WhatsAppBotBridge(
+                          settings,
+                          this.deps.botDataDir
+                            ? join(this.deps.botDataDir, 'whatsapp', 'default')
+                            : undefined,
+                        )
                   : new SimpleBotBridge(platform, settings);
     this.wire(bridge);
     this.bridges.set(platform, bridge);
@@ -177,7 +196,9 @@ function isImplemented(platform: BotPlatform): boolean {
     platform === 'wechat' ||
     platform === 'discord' ||
     platform === 'dingtalk' ||
-    platform === 'qq'
+    platform === 'qq' ||
+    platform === 'slack' ||
+    platform === 'whatsapp'
   );
 }
 
@@ -222,6 +243,6 @@ function scaffoldStatus(platform: BotPlatform, settings: BotChannelSettings): Bo
 
 function readinessFromSettings(settings: BotChannelSettings): BotStatus['readiness'] {
   if (!settings.enabled) return 'scaffolded';
-  if (!settings.token.trim() && !settings.appId && !settings.appSecret) return 'scaffolded';
+  if (!hasBotChannelCredentials(settings)) return 'scaffolded';
   return 'configured';
 }

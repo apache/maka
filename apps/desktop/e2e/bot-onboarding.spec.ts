@@ -83,3 +83,57 @@ test('关闭扫码弹窗会取消迟到结果，过期二维码可以重新生�
   const larkDialog = page.getByRole('dialog', { name: '配置 Lark 扫码接入' });
   await expect(larkDialog.getByRole('img', { name: '配置 Lark 二维码' })).toBeVisible();
 });
+
+test('QQ 与 WhatsApp 完成扫码接入、secret 隔离和本机关联解除', async ({ botSettingsWindow: page }) => {
+  const settings = page.getByRole('main', { name: '设置内容' });
+
+  await settings.getByRole('button', { name: '接入 QQ' }).click();
+  await settings.getByRole('button', { name: '使用QQ扫码接入' }).click();
+  const qqDialog = page.getByRole('dialog', { name: '配置 QQ 扫码接入' });
+  await expect(qqDialog.getByRole('img', { name: '配置 QQ 二维码' })).toBeVisible();
+  await expect(qqDialog.getByText('已扫码，请在 QQ 中完成确认')).toBeVisible({ timeout: 4_000 });
+  await expect(qqDialog.getByText('QQ 已连接')).toBeVisible({ timeout: 5_000 });
+
+  const afterQq = await page.evaluate(() => window.maka.settings.get());
+  expect(afterQq.botChat.channels.qq.appId).toBe('e2e-fixture-qq-app');
+  expect(afterQq.botChat.channels.qq.appSecret).not.toBe('e2e-fixture-qq-secret');
+  expect(JSON.stringify(afterQq)).not.toContain('e2e-fixture-qq-secret');
+  await qqDialog.getByRole('button', { name: '完成' }).click();
+
+  await settings.getByRole('button', { name: '返回远程接入' }).click();
+  await settings.getByRole('button', { name: '接入 WhatsApp' }).click();
+  await expect(settings.getByText('关联 WhatsApp 设备')).toBeVisible();
+  await settings.getByRole('button', { name: '使用WhatsApp扫码接入' }).click();
+  const whatsappDialog = page.getByRole('dialog', { name: 'WhatsApp 扫码关联' });
+  await expect(whatsappDialog.getByRole('img', { name: 'WhatsApp 关联二维码' })).toBeVisible();
+  await expect(whatsappDialog.getByText('已扫码，正在完成设备关联')).toBeVisible({ timeout: 4_000 });
+  await expect(whatsappDialog.getByText('WhatsApp 已连接')).toBeVisible({ timeout: 5_000 });
+
+  const afterWhatsapp = await page.evaluate(() => window.maka.settings.get());
+  expect(afterWhatsapp.botChat.channels.whatsapp.sessionConfigured).toBe(true);
+  expect(afterWhatsapp.botChat.channels.whatsapp.botUserId).toBe('e2e-fixture-whatsapp');
+  expect(afterWhatsapp.botChat.channels.whatsapp.token).toBe('');
+  await whatsappDialog.getByRole('button', { name: '完成' }).click();
+
+  await settings.getByRole('button', { name: '断开 WhatsApp 关联' }).click();
+  await expect(page.getByText('断开 WhatsApp 关联？')).toBeVisible();
+  await page.getByRole('button', { name: '断开登录' }).click();
+  await expect.poll(
+    async () => (await page.evaluate(() => window.maka.settings.get()))
+      .botChat.channels.whatsapp.sessionConfigured,
+  ).toBe(false);
+});
+
+test('Slack 展示完整 Socket Mode 凭据，Telegram 明示官方 Token 流程', async ({ botSettingsWindow: page }) => {
+  const settings = page.getByRole('main', { name: '设置内容' });
+
+  await settings.getByRole('button', { name: '接入 Slack' }).click();
+  await expect(settings.getByLabel('Slack Bot Token')).toBeVisible();
+  await expect(settings.getByLabel('Slack App-Level Token')).toBeVisible();
+  await expect(settings.getByText('使用 Bot Token 与 App-Level Token 通过 Socket Mode 接入')).toBeVisible();
+
+  await settings.getByRole('button', { name: '返回远程接入' }).click();
+  await settings.getByRole('button', { name: '接入 Telegram' }).click();
+  await expect(settings.getByLabel('Telegram Bot Token')).toBeVisible();
+  await expect(settings.getByText(/Telegram 官方目前仅支持通过 @BotFather 获取 Bot Token/)).toBeVisible();
+});

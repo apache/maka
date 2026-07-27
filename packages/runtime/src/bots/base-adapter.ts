@@ -75,6 +75,7 @@ export function botSettingsRequireRestart(
     previous.token !== next.token ||
     previous.appId !== next.appId ||
     previous.appSecret !== next.appSecret ||
+    previous.sessionConfigured !== next.sessionConfigured ||
     previous.domain !== next.domain ||
     previous.webhookUrl !== next.webhookUrl
   );

@@ -134,7 +134,7 @@ describe('icon library seam contract', () => {
     const source = await readFile(ICONS_FILE, 'utf8');
     const botBrand = await readFile(resolve(REPO_ROOT, 'packages/ui/src/bot-brand.ts'), 'utf8');
     const ui = await import(resolve(REPO_ROOT, 'packages/ui/dist/index.js'));
-    const providers = ['telegram', 'feishu', 'wecom', 'wechat', 'discord', 'dingtalk', 'qq'] as const;
+    const providers = ['telegram', 'feishu', 'wecom', 'wechat', 'discord', 'dingtalk', 'qq', 'slack', 'whatsapp'] as const;
 
     assert.equal(typeof ui.BotBrandLogo, 'function', '@maka/ui must expose a provider-based bot brand logo component');
     assert.doesNotMatch(source, /BotBrandIcon/, 'the icon seam must not expose a generic bot icon registry API');

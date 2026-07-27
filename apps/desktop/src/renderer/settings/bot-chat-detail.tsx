@@ -74,7 +74,7 @@ export function BotChatChannelDetail(props: {
   onTest(): void;
   onTestAndConnect(): void;
   onRestart(): void;
-  onDisconnectWechat(): void;
+  onDisconnectSession(): void;
   onReload(): Promise<void>;
   onRefreshStatuses(): Promise<boolean>;
 }) {
@@ -97,12 +97,13 @@ export function BotChatChannelDetail(props: {
   const readiness = viewState.readiness;
   const readinessCopy = botReadinessCopyForSupport(support, readiness, locale);
   const quickOnboarding = supportsQuickOnboarding(provider);
+  const qrOnlyOnboarding = provider === 'wechat' || provider === 'whatsapp';
   // PR1197 review (P1-8): the scan-login action row belongs to quick mode only.
   // WeChat has no manual mode, so it always uses the scan affordance. In manual
   // mode the runtime providers (e.g. DingTalk) must fall through to the shared
   // 测试并连接 CTA — otherwise the manual credential form has no way to start the
   // listener and the connect action is lost.
-  const inQuickOnboarding = quickOnboarding && (provider === 'wechat' || setupMode === 'quick');
+  const inQuickOnboarding = quickOnboarding && (qrOnlyOnboarding || setupMode === 'quick');
   const enableSwitchDisabled = support === 'planned' || (!channel.enabled && !canEnableBotChannel(readiness));
   const enableSwitchHint = support === 'planned'
     ? detailCopy.unavailableHint
@@ -196,9 +197,16 @@ export function BotChatChannelDetail(props: {
                   <Button type="button" disabled={props.actionBusy} onClick={() => setScanLoginOpen(true)}>
                     {provider === 'wecom' ? detailCopy.quickBind : provider === 'wechat' ? detailCopy.scanLogin : detailCopy.scanConnect}
                   </Button>
-                  {provider === 'wechat' && (channel.token || status?.identity) && (
-                    <Button type="button" variant="secondary" disabled={props.actionBusy} onClick={() => void props.onDisconnectWechat()}>
-                      {props.pendingAction === 'disconnect' ? detailCopy.disconnecting : detailCopy.disconnectWechat}
+                  {(
+                    (provider === 'wechat' && (channel.token || status?.identity))
+                    || (provider === 'whatsapp' && channel.sessionConfigured)
+                  ) && (
+                    <Button type="button" variant="secondary" disabled={props.actionBusy} onClick={() => void props.onDisconnectSession()}>
+                      {props.pendingAction === 'disconnect'
+                        ? detailCopy.disconnecting
+                        : provider === 'whatsapp'
+                          ? detailCopy.disconnectWhatsapp
+                          : detailCopy.disconnectWechat}
                     </Button>
                   )}
                   {provider === 'wechat' && (
@@ -255,11 +263,11 @@ export function BotChatChannelDetail(props: {
         )}
 
         <div className="settingsBotConfigurationHeader">
-          <h4>{quickOnboarding && provider !== 'wechat' ? detailCopy.setupMethod : detailCopy.connectionSettings}</h4>
+          <h4>{quickOnboarding && !qrOnlyOnboarding ? detailCopy.setupMethod : detailCopy.connectionSettings}</h4>
           <span>{quickOnboarding ? detailCopy.localCredentials : detailCopy.autosave}</span>
         </div>
 
-        {quickOnboarding && provider !== 'wechat' && (
+        {quickOnboarding && !qrOnlyOnboarding && (
           <Segmented<'quick' | 'manual'>
             className="settingsBotSetupModes"
             value={setupMode}
@@ -272,14 +280,26 @@ export function BotChatChannelDetail(props: {
           />
         )}
 
-        {quickOnboarding && provider !== 'wechat' && setupMode === 'quick' && (
+        {quickOnboarding && provider !== 'wechat' && (provider === 'whatsapp' || setupMode === 'quick') && (
           <section className="settingsBotQuickSetup" aria-label={detailCopy.quickAria(providerPresentation.label)}>
             <div>
-              <strong>{provider === 'wecom' ? detailCopy.quickWecomTitle : detailCopy.quickTitle}</strong>
+              <strong>
+                {provider === 'wecom'
+                  ? detailCopy.quickWecomTitle
+                  : provider === 'qq'
+                    ? detailCopy.quickQqTitle
+                    : provider === 'whatsapp'
+                      ? detailCopy.quickWhatsappTitle
+                      : detailCopy.quickTitle}
+              </strong>
               <p>
                 {provider === 'wecom'
                   ? detailCopy.quickWecomDetail
-                  : detailCopy.quickDetail}
+                  : provider === 'qq'
+                    ? detailCopy.quickQqDetail
+                    : provider === 'whatsapp'
+                      ? detailCopy.quickWhatsappDetail
+                      : detailCopy.quickDetail}
               </p>
             </div>
             {provider === 'feishu' ? (
@@ -298,6 +318,12 @@ export function BotChatChannelDetail(props: {
               {provider === 'wecom' ? detailCopy.beginQuickBind : detailCopy.scanWith(provider === 'feishu' && feishuBrand === 'lark' ? 'Lark' : providerPresentation.label)}
             </Button>
           </section>
+        )}
+
+        {provider === 'whatsapp' && (
+          <Alert variant="warning">
+            <AlertDescription>{detailCopy.whatsappProtocolNotice}</AlertDescription>
+          </Alert>
         )}
 
         {/* PR-BOT-WECHAT-SCAN-LOGIN-0 (WAWQAQ msg `2fa6ada6` screenshots):
@@ -401,6 +427,7 @@ function botCredentialFields(copy: BotSettingsCopy['detail']): Partial<Record<Bo
   return {
   telegram: [
     { kind: 'password', key: 'token', label: 'Bot Token', placeholder: '123456:ABC-DEF...', ariaLabel: 'Telegram Bot Token' },
+    { kind: 'notice', text: copy.telegramOfficialFlow },
     {
       kind: 'text',
       key: 'proxyUrl',
@@ -448,6 +475,10 @@ function botCredentialFields(copy: BotSettingsCopy['detail']): Partial<Record<Bo
   qq: [
     { kind: 'text', key: 'appId', label: 'AppID', placeholder: '102xxxxxx', ariaLabel: copy.qqId },
     { kind: 'password', key: 'appSecret', label: 'AppSecret', placeholder: 'xxxx', ariaLabel: 'QQ AppSecret' },
+  ],
+  slack: [
+    { kind: 'password', key: 'token', label: 'Bot Token', placeholder: 'xoxb-…', ariaLabel: 'Slack Bot Token' },
+    { kind: 'password', key: 'appSecret', label: 'App-Level Token', placeholder: 'xapp-…', ariaLabel: 'Slack App-Level Token' },
   ],
   };
 }

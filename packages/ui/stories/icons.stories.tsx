@@ -28,7 +28,17 @@ const LUCIDE_ICONS: IconEntry[] = Object.entries(Icons)
   .map(([name, value]) => ({ name, Comp: value as IconEntry['Comp'] }))
   .sort((a, b) => a.name.localeCompare(b.name));
 
-const BOT_BRAND_PROVIDERS = ['telegram', 'feishu', 'wecom', 'wechat', 'discord', 'dingtalk', 'qq'] as const satisfies ReadonlyArray<keyof typeof BOT_BRAND>;
+const BOT_BRAND_PROVIDERS = [
+  'telegram',
+  'feishu',
+  'wecom',
+  'wechat',
+  'discord',
+  'dingtalk',
+  'qq',
+  'slack',
+  'whatsapp',
+] as const satisfies ReadonlyArray<keyof typeof BOT_BRAND>;
 
 export const LucideIcons: Story = {
   render: () => (

@@ -876,6 +876,8 @@ const botAttentionStatuses: StoryBotStatuses = {
   wechat: createInactiveStoryBotStatus('wechat'),
   dingtalk: createInactiveStoryBotStatus('dingtalk'),
   qq: createInactiveStoryBotStatus('qq'),
+  slack: createInactiveStoryBotStatus('slack'),
+  whatsapp: createInactiveStoryBotStatus('whatsapp'),
 };
 
 function makeBotAttentionBridge(settings: AppSettings) {

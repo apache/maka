@@ -5,7 +5,9 @@ export type BotProvider =
   | 'wechat'
   | 'discord'
   | 'dingtalk'
-  | 'qq';
+  | 'qq'
+  | 'slack'
+  | 'whatsapp';
 
 export const BOT_READINESS_STATES = [
   'unscaffolded',
@@ -36,6 +38,8 @@ export interface BotChannelSettings {
   appId?: string;
   appSecret?: string;
   botUserId?: string;
+  /** A local multi-device session exists outside settings.json (for example WhatsApp). */
+  sessionConfigured?: boolean;
   lastTestAt?: number;
   lastError?: string;
   /**
@@ -72,11 +76,13 @@ export const BOT_PROVIDERS: BotProvider[] = [
   'discord',
   'dingtalk',
   'qq',
+  'slack',
+  'whatsapp',
 ];
 
 export type BotDeliveryProvider = Extract<
   BotProvider,
-  'telegram' | 'wechat' | 'discord' | 'dingtalk' | 'qq'
+  'telegram' | 'wechat' | 'discord' | 'dingtalk' | 'qq' | 'slack' | 'whatsapp'
 >;
 
 export const BOT_DELIVERY_PROVIDERS: BotDeliveryProvider[] = [
@@ -85,6 +91,8 @@ export const BOT_DELIVERY_PROVIDERS: BotDeliveryProvider[] = [
   'discord',
   'dingtalk',
   'qq',
+  'slack',
+  'whatsapp',
 ];
 
 export function isBotDeliveryProvider(value: unknown): value is BotDeliveryProvider {
@@ -199,6 +207,10 @@ function normalizeBotChannel(
 }
 
 export function hasBotChannelCredentials(channel: BotChannelSettings): boolean {
+  if (channel.provider === 'slack') {
+    return channel.token.trim().length > 0 && Boolean(channel.appSecret?.trim());
+  }
+  if (channel.provider === 'whatsapp') return channel.sessionConfigured === true;
   if (channel.token.trim().length > 0 || Boolean(channel.appId) || Boolean(channel.appSecret))
     return true;
   if (channel.provider === 'wechat' && Boolean(channel.webhookUrl?.trim())) return true;

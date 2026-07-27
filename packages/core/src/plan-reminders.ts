@@ -675,6 +675,10 @@ function botProviderLabel(provider: BotProvider): string {
       return '钉钉';
     case 'qq':
       return 'QQ';
+    case 'slack':
+      return 'Slack';
+    case 'whatsapp':
+      return 'WhatsApp';
   }
 }
 

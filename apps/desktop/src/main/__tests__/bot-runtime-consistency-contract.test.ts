@@ -92,7 +92,14 @@ describe('Bot runtime / delivery / label cross-source consistency (PR-BOT-RUNTIM
     // adapter and is in BOT_DELIVERY_PROVIDERS, but its `support` stays
     // `'credentials'` because the end-to-end UX requires the user to run
     // an external local bridge process.
-    const expectedRuntime = new Set(['telegram', 'discord', 'dingtalk', 'qq']);
+    const expectedRuntime = new Set([
+      'telegram',
+      'discord',
+      'dingtalk',
+      'qq',
+      'slack',
+      'whatsapp',
+    ]);
     const actualRuntime = new Set<string>();
     for (const provider of BOT_PROVIDERS) {
       const segment = labelsBlock[0].match(

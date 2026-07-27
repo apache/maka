@@ -18,6 +18,17 @@ export {
 } from './wechat-bridge.js';
 export type { WechatBridgeQrCodeResult } from './wechat-bridge.js';
 export { WeComBotBridge, wecomTextFrameToEvent } from './wecom-bridge.js';
+export { SlackBotBridge, slackMessageToEvent } from './slack-bridge.js';
+export {
+  startWhatsAppQrLogin,
+  type WhatsAppQrLogin,
+  type WhatsAppQrLoginPollResult,
+} from './whatsapp-auth.js';
+export {
+  WhatsAppBotBridge,
+  whatsappMessageToEvent,
+  whatsappTimestampMs,
+} from './whatsapp-bridge.js';
 export type {
   BotBridge,
   BotIncomingMessage,

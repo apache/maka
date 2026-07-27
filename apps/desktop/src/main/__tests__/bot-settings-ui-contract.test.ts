@@ -59,7 +59,7 @@ describe('Bot settings UI contract', () => {
     assert.match(page, /<BotBrandMark[\s\S]*provider=\{props\.provider\}/, 'Bot settings must pass provider directly to the local brand logo renderer');
     assert.match(page, /<Item\b/, 'Remote access rows must use the shared Item primitive');
     assert.match(botBrand, /export const BOT_BRAND:/, 'Shared bot brand metadata must stay exported from @maka/ui');
-    for (const provider of ['telegram', 'feishu', 'wecom', 'wechat', 'discord', 'dingtalk', 'qq']) {
+    for (const provider of ['telegram', 'feishu', 'wecom', 'wechat', 'discord', 'dingtalk', 'qq', 'slack', 'whatsapp']) {
       assert.match(botBrand, new RegExp(`${provider}:\\s*\\{[\\s\\S]*?configDocUrl:`), `${provider} needs a visible configuration-document link target`);
     }
     assert.match(page, /function BotBrandLogo\b/, 'Bot settings must use the shared brand-logo component');
@@ -164,7 +164,7 @@ describe('Bot settings UI contract', () => {
       /function botCredentialFields\(copy: BotSettingsCopy\['detail'\]\): Partial<Record<BotProvider, ReadonlyArray<BotCredentialField>>>/,
       'Per-provider credential fields must be declared in a shared descriptor table',
     );
-    for (const provider of ['telegram', 'feishu', 'discord', 'dingtalk', 'wecom', 'qq']) {
+    for (const provider of ['telegram', 'feishu', 'discord', 'dingtalk', 'wecom', 'qq', 'slack']) {
       assert.match(
         settings,
         new RegExp(`\\r?\\n  ${provider}: \\[\\r?\\n`),
@@ -218,8 +218,8 @@ describe('Bot settings UI contract', () => {
     const testBlock = pageBlock.match(/async function testChannel\(\)[\s\S]*?\n\s*\/\*\*/)?.[0] ?? '';
     const connectBlock = pageBlock.match(/async function testAndConnect\(\)[\s\S]*?async function restartBotProvider/)?.[0] ?? '';
     const restartProviderBlock = pageBlock.match(/async function restartBotProvider\(provider: BotProvider\)[\s\S]*?async function restartChannel/)?.[0] ?? '';
-    const refreshBlock = pageBlock.match(/async function refreshBotStatuses\(\)[\s\S]*?async function disconnectWechatLogin/)?.[0] ?? '';
-    const disconnectBlock = pageBlock.match(/async function disconnectWechatLogin\(\)[\s\S]*?const support =/)?.[0] ?? '';
+    const refreshBlock = pageBlock.match(/async function refreshBotStatuses\(\)[\s\S]*?async function disconnectLinkedSession/)?.[0] ?? '';
+    const disconnectBlock = pageBlock.match(/async function disconnectLinkedSession\(\)[\s\S]*?function openChannel/)?.[0] ?? '';
 
     assert.match(pageBlock, /const botPageMountedRef = useMountedRef\(\)/);
     assert.match(
@@ -294,8 +294,8 @@ describe('Bot settings UI contract', () => {
     );
     assert.match(
       disconnectBlock,
-      /const saved = await updateChannelFor\(provider,[\s\S]*if \(!saved\) return;[\s\S]*if \(!botPageMountedRef\.current\) return;[\s\S]*await refreshBotStatuses\(\);[\s\S]*if \(botPageMountedRef\.current\) \{[\s\S]*toast\.success\(copy\.disconnected, copy\.credentialsCleared\);/,
-      'WeChat disconnect success must not toast after unmount',
+      /const saved = await updateChannelFor\([\s\S]*if \(!saved\) return;[\s\S]*if \(!botPageMountedRef\.current\) return;[\s\S]*await refreshBotStatuses\(\);[\s\S]*if \(botPageMountedRef\.current\) \{[\s\S]*toast\.success\(/,
+      'Linked-session disconnect success must not toast after unmount',
     );
   });
 
@@ -309,7 +309,7 @@ describe('Bot settings UI contract', () => {
     assert.notEqual(quickActions, '', 'The quick-onboarding action row must stay gated behind inQuickOnboarding');
     assert.match(
       detail,
-      /const inQuickOnboarding = quickOnboarding && \(provider === 'wechat' \|\| setupMode === 'quick'\)/,
+      /const inQuickOnboarding = quickOnboarding && \(qrOnlyOnboarding \|\| setupMode === 'quick'\)/,
       'Manual mode must drop out of the scan-login action row so runtime providers keep 测试并连接',
     );
     assert.doesNotMatch(quickActions, /props\.onRestart|重启监听/, 'Quick onboarding actions must not embed a duplicate listener restart button');
@@ -337,7 +337,7 @@ describe('Bot settings UI contract', () => {
     assert.equal((settings.match(/<BotOnboardingModal\b/g) ?? []).length, 1, 'All quick-onboarding providers must share one modal authority');
     assert.match(onboardingMain, /case 'wechat':[\s\S]*token: credential\.botToken[\s\S]*webhookUrl: credential\.baseUrl[\s\S]*botUserId: credential\.botId/, 'Confirmed iLink credentials must be persisted by the main-process onboarding authority');
     // PR1197 review (P2-12): onboarding device-code HTTP must be proxy-aware.
-    assert.match(onboardingMain, /import \{ proxiedFetch \} from '@maka\/runtime'/, 'Onboarding HTTP must import the proxy-aware fetch');
+    assert.match(onboardingMain, /import \{[^}]*proxiedFetch[^}]*\} from '@maka\/runtime'/, 'Onboarding HTTP must import the proxy-aware fetch');
     assert.doesNotMatch(onboardingMain, /await fetch\(/, 'Onboarding provider calls must not bypass the proxy with a bare fetch');
     assert.match(
       settings,
@@ -364,10 +364,12 @@ describe('Bot settings UI contract', () => {
     assert.match(settings, /window\.maka\.settings\.bots\.wechatQrCode\(\)/, 'QR modal must call the bridge QR IPC');
     assert.match(settings, /<img src=\{qrDataUrl\} alt=\{copy\.qrAlt\}/, 'QR modal must render a visible QR image with a localized accessible name');
     assert.match(settings, /setWechatQrOpen\(true\)/, 'Scan-login button must open the QR modal');
-    assert.match(settings, /async function disconnectWechatLogin\(\)/, 'Saved WeChat scan-login credentials must have a visible disconnect path');
+    assert.match(settings, /async function disconnectLinkedSession\(\)/, 'Saved QR session credentials must have a visible disconnect path');
     assert.match(settings, /detailCopy\.disconnectWechat/, 'WeChat action stack must expose the localized disconnect label after login');
+    assert.match(settings, /detailCopy\.disconnectWhatsapp/, 'WhatsApp action stack must expose a localized unlink label after pairing');
     assert.match(settings, /token:\s*''[\s\S]*connected:\s*false[\s\S]*readiness:\s*'scaffolded'/, 'Disconnect must clear saved scan-login credentials and readiness');
-    assert.match(settings, /const saved = await updateChannelFor\(provider, \{[\s\S]*token:\s*''[\s\S]*\}\);[\s\S]*if \(!saved\) return;[\s\S]*toast\.success\(copy\.disconnected/, 'Disconnect must not report success if clearing saved WeChat credentials fails');
+    assert.match(settings, /sessionConfigured:\s*false[\s\S]*readiness:\s*'scaffolded'/, 'WhatsApp unlink must clear the local-session marker and readiness');
+    assert.match(settings, /const saved = await updateChannelFor\([\s\S]*token:\s*''[\s\S]*if \(!saved\) return;[\s\S]*toast\.success\(/, 'Disconnect must not report success if clearing saved credentials fails');
     assert.doesNotMatch(settings, /扫码登录由本机 wechat-bridge 处理/, 'Scan login must not be a toast-only handoff');
     assert.match(styles, /\.settingsWechatQrModal\b/, 'QR modal styles must be present');
     assert.match(styles, /\.settingsWechatQrFrame img\b/, 'QR image must have a stable frame style');

@@ -112,6 +112,34 @@ export function createE2eFixtureBotOnboardingAdapters(): AdapterMap {
         };
       },
     },
+    qq: {
+      async start() { return start('qq'); },
+      async poll(session) {
+        await settlePoll();
+        if (nextPoll(session.opaqueToken) === 1) return { status: 'scanned' };
+        return {
+          status: 'confirmed',
+          credential: {
+            provider: 'qq',
+            appId: 'e2e-fixture-qq-app',
+            appSecret: 'e2e-fixture-qq-secret',
+          },
+          identity: { id: 'e2e-fixture-qq-app', displayName: 'Maka QQ 测试机器人' },
+        };
+      },
+    },
+    whatsapp: {
+      async start() { return start('whatsapp'); },
+      async poll(session) {
+        await settlePoll();
+        if (nextPoll(session.opaqueToken) === 1) return { status: 'scanned' };
+        return {
+          status: 'confirmed',
+          credential: { provider: 'whatsapp', accountId: 'e2e-fixture-whatsapp' },
+          identity: { id: 'e2e-fixture-whatsapp', displayName: 'Maka WhatsApp 测试账号' },
+        };
+      },
+    },
   };
 }
 
@@ -145,5 +173,7 @@ function createWaitingHoldBotOnboardingAdapters(): AdapterMap {
     feishu: waitingHold('feishu'),
     wecom: waitingHold('wecom'),
     wechat: waitingHold('wechat'),
+    qq: waitingHold('qq'),
+    whatsapp: waitingHold('whatsapp'),
   };
 }

@@ -48,7 +48,8 @@ describe('Settings destructive confirm contract', () => {
 
     assert.match(settings, /title: copy\.text\.restoreLatestTitle/);
     assert.match(settings, /title: copy\.text\.restoreCandidateTitle/);
-    assert.match(settings, /title: copy\.disconnectTitle/);
+    assert.match(settings, /copy\.disconnectTitle/);
+    assert.match(settings, /copy\.disconnectWhatsappTitle/);
 
     assert.match(providers, /destructive:\s*true/, 'provider destructive confirms must use destructive styling');
     assert.match(settings, /destructive:\s*true/, 'settings destructive confirms must use destructive styling');

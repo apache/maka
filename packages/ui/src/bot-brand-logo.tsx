@@ -1,7 +1,7 @@
 // Local bot channel brand logos.
 //
 // Sources and licenses:
-// - Telegram, Discord, WeChat, QQ: Simple Icons, CC0-1.0.
+// - Telegram, Discord, WeChat, QQ, Slack, WhatsApp: Simple Icons, CC0-1.0.
 // - WeCom: TDesign Icons `logo-wecom`, MIT, by Tencent.
 // - DingTalk: MingCute Icon `dingtalk-fill`, Apache-2.0.
 // - Feishu/Lark: Allogo `feishu/icon.svg`; Allogo code is MIT, and
@@ -103,6 +103,32 @@ function QQLogo(): ReactNode {
   );
 }
 
+function SlackLogo(): ReactNode {
+  return (
+    <>
+      <rect width="24" height="24" rx="5" ry="5" fill="#fff" />
+      <g transform="translate(4 4)">
+        <path fill="#36C5F0" d="M3.38 9.64a1.69 1.69 0 1 1-1.69-1.69h1.69zM4.23 9.64a1.69 1.69 0 0 1 3.38 0v4.23a1.69 1.69 0 0 1-3.38 0z" />
+        <path fill="#2EB67D" d="M6.36 3.38a1.69 1.69 0 1 1 1.69-1.69v1.69zM6.36 4.23a1.69 1.69 0 0 1 0 3.38H2.13a1.69 1.69 0 0 1 0-3.38z" />
+        <path fill="#ECB22E" d="M12.62 6.36a1.69 1.69 0 1 1 1.69 1.69h-1.69zM11.77 6.36a1.69 1.69 0 0 1-3.38 0V2.13a1.69 1.69 0 0 1 3.38 0z" />
+        <path fill="#E01E5A" d="M9.64 12.62a1.69 1.69 0 1 1-1.69 1.69v-1.69zM9.64 11.77a1.69 1.69 0 0 1 0-3.38h4.23a1.69 1.69 0 0 1 0 3.38z" />
+      </g>
+    </>
+  );
+}
+
+function WhatsAppLogo(): ReactNode {
+  return (
+    <>
+      <rect width="24" height="24" rx="5" ry="5" fill="#25D366" />
+      <path
+        fill="#fff"
+        d="M12.03 4.2a7.7 7.7 0 0 0-6.68 11.52L4.2 19.8l4.18-1.1a7.7 7.7 0 1 0 3.65-14.5m0 1.3a6.4 6.4 0 1 1-3.26 11.9l-.31-.18l-2.48.65l.66-2.42l-.2-.32a6.4 6.4 0 0 1 5.59-9.63m-2.3 3.02c-.14 0-.35.05-.54.26c-.18.2-.7.68-.7 1.66s.72 1.93.82 2.06c.1.14 1.41 2.16 3.42 3.03c.48.2.85.33 1.14.42c.48.15.91.13 1.26.08c.38-.06 1.18-.49 1.35-.95c.16-.46.16-.85.11-.94c-.05-.08-.18-.13-.38-.23l-1.32-.62c-.18-.06-.31-.1-.44.1c-.13.2-.51.63-.63.76c-.12.13-.23.15-.43.05c-.2-.1-.84-.31-1.6-.99a6 6 0 0 1-1.1-1.37c-.12-.2-.01-.3.09-.4l.29-.34c.1-.12.13-.2.2-.33c.06-.13.03-.25-.02-.35l-.6-1.45c-.16-.38-.32-.33-.44-.34z"
+      />
+    </>
+  );
+}
+
 const BOT_BRAND_LOGOS = {
   telegram: TelegramLogo,
   feishu: FeishuLogo,
@@ -111,6 +137,8 @@ const BOT_BRAND_LOGOS = {
   discord: DiscordLogo,
   dingtalk: DingTalkLogo,
   qq: QQLogo,
+  slack: SlackLogo,
+  whatsapp: WhatsAppLogo,
 } satisfies Record<BotProvider, BotBrandLogoPaths>;
 
 export function BotBrandLogo({

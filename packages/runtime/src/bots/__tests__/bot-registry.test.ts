@@ -238,6 +238,8 @@ function settingsWith(
     'discord',
     'dingtalk',
     'qq',
+    'slack',
+    'whatsapp',
   ];
   return {
     channels: Object.fromEntries(

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
+import { join } from 'node:path';
 import type {
   AppSettings,
   BotChannelSettings,
@@ -16,9 +17,10 @@ import {
   isBotOnboardingProvider,
   redactSecrets,
 } from '@maka/core';
-import type { BotRegistry } from '@maka/runtime';
-import { proxiedFetch } from '@maka/runtime';
+import type { BotRegistry, WhatsAppQrLogin } from '@maka/runtime';
+import { proxiedFetch, startWhatsAppQrLogin } from '@maka/runtime';
 import type { SettingsStore } from '@maka/storage';
+import { createQQBindTask, pollQQBindTask } from './qq-bot-scan-login.js';
 import { fetchWeChatQrcode, pollWeChatQrcodeStatus } from './wechat-scan-login.js';
 
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -48,7 +50,9 @@ type OnboardingCredential =
   | { provider: 'dingtalk'; clientId: string; clientSecret: string }
   | { provider: 'feishu'; appId: string; appSecret: string; brand: BotOnboardingBrand; botName?: string }
   | { provider: 'wecom'; botId: string; secret: string }
-  | { provider: 'wechat'; botToken: string; baseUrl: string; botId: string; userId: string };
+  | { provider: 'wechat'; botToken: string; baseUrl: string; botId: string; userId: string }
+  | { provider: 'qq'; appId: string; appSecret: string }
+  | { provider: 'whatsapp'; accountId: string };
 
 type ProviderStartResult = {
   opaqueToken: string;
@@ -97,6 +101,8 @@ export interface BotOnboardingServiceDeps {
   createId?: () => string;
   openExternal?: (url: string) => Promise<unknown>;
   productVersion?: string;
+  /** Main-owned root used for local multi-device auth state. */
+  botDataDir?: string;
   /**
    * Fixture/test seam for the post-persist connection-health read (P0-3).
    * Defaults to the live `botRegistry.getStatus`. The dev-only e2e-fixture
@@ -120,8 +126,11 @@ export class BotOnboardingService {
   private readonly readChannelStatus: (provider: BotOnboardingProvider) => { running: boolean; reason?: string };
 
   constructor(private readonly deps: BotOnboardingServiceDeps) {
-    this.adapters = createProductionBotOnboardingAdapters(deps.productVersion ?? '0.1.0');
-    for (const provider of ['dingtalk', 'feishu', 'wecom', 'wechat'] as const) {
+    this.adapters = createProductionBotOnboardingAdapters(
+      deps.productVersion ?? '0.1.0',
+      deps.botDataDir,
+    );
+    for (const provider of BOT_ONBOARDING_PROVIDER_KEYS) {
       const override = deps.adapters?.[provider];
       if (override) this.adapters[provider] = override;
     }
@@ -518,6 +527,14 @@ function channelPatchFromCredential(credential: OnboardingCredential): Partial<B
         webhookUrl: credential.baseUrl,
         botUserId: credential.botId,
       };
+    case 'qq':
+      return { ...common, appId: credential.appId, appSecret: credential.appSecret };
+    case 'whatsapp':
+      return {
+        ...common,
+        sessionConfigured: true,
+        botUserId: credential.accountId,
+      };
   }
 }
 
@@ -568,6 +585,8 @@ function identityFromCredential(credential: OnboardingCredential): { id?: string
     case 'feishu': return { id: credential.appId, displayName: credential.botName };
     case 'wecom': return { id: credential.botId };
     case 'wechat': return { id: credential.botId };
+    case 'qq': return { id: credential.appId };
+    case 'whatsapp': return { id: credential.accountId };
   }
 }
 
@@ -622,7 +641,20 @@ function platformCode(): number {
   }
 }
 
-function createProductionBotOnboardingAdapters(productVersion: string): Record<BotOnboardingProvider, BotOnboardingProviderAdapter> {
+const BOT_ONBOARDING_PROVIDER_KEYS = [
+  'dingtalk',
+  'feishu',
+  'wecom',
+  'wechat',
+  'qq',
+  'whatsapp',
+] as const satisfies ReadonlyArray<BotOnboardingProvider>;
+
+function createProductionBotOnboardingAdapters(
+  productVersion: string,
+  botDataDir: string | undefined,
+): Record<BotOnboardingProvider, BotOnboardingProviderAdapter> {
+  const whatsappLogins = new Map<string, WhatsAppQrLogin>();
   return {
     dingtalk: {
       async start(_input, signal) {
@@ -794,7 +826,83 @@ function createProductionBotOnboardingAdapters(productVersion: string): Record<B
         };
       },
     },
+    qq: {
+      async start(_input, signal) {
+        const task = await createQQBindTask(signal);
+        return {
+          opaqueToken: JSON.stringify({
+            taskId: task.taskId,
+            decryptionKey: task.decryptionKey,
+          }),
+          qrValue: task.verificationUrl,
+          verificationUrl: task.verificationUrl,
+          pollIntervalMs: 2_000,
+          expiresInSeconds: DEFAULT_EXPIRES_IN_SECONDS,
+        };
+      },
+      async poll(session, signal) {
+        const token = parseQQOpaqueToken(session.opaqueToken);
+        const result = await pollQQBindTask(token.taskId, token.decryptionKey, signal);
+        if (result.status === 'pending') return { status: 'pending' };
+        if (result.status === 'expired') return { status: 'expired' };
+        return {
+          status: 'confirmed',
+          credential: {
+            provider: 'qq',
+            appId: result.appId,
+            appSecret: result.appSecret,
+          },
+          identity: { id: result.appId },
+        };
+      },
+    },
+    whatsapp: {
+      async start(_input, signal) {
+        if (!botDataDir) throw new Error('WhatsApp local auth directory is unavailable');
+        const loginId = randomUUID();
+        const login = await startWhatsAppQrLogin(
+          join(botDataDir, 'whatsapp', 'default'),
+          signal,
+        );
+        whatsappLogins.set(loginId, login);
+        signal.addEventListener('abort', () => {
+          login.cancel();
+          whatsappLogins.delete(loginId);
+        }, { once: true });
+        return {
+          opaqueToken: loginId,
+          qrValue: login.initialQrValue,
+          pollIntervalMs: 2_000,
+          expiresInSeconds: 3 * 60,
+        };
+      },
+      async poll(session) {
+        const login = session.opaqueToken ? whatsappLogins.get(session.opaqueToken) : undefined;
+        if (!login) throw new Error('WhatsApp QR login session is unavailable');
+        const result = await login.poll();
+        if (result.status === 'pending') return { status: 'pending' };
+        if (result.status === 'error') throw new Error(result.error);
+        whatsappLogins.delete(session.opaqueToken ?? '');
+        return {
+          status: 'confirmed',
+          credential: { provider: 'whatsapp', accountId: result.identity?.id ?? 'default' },
+          ...(result.identity ? { identity: result.identity } : {}),
+        };
+      },
+    },
   };
+}
+
+function parseQQOpaqueToken(value: string | undefined): {
+  taskId: string;
+  decryptionKey: string;
+} {
+  if (!value) throw new Error('QQ bind session is missing');
+  const parsed = JSON.parse(value) as { taskId?: unknown; decryptionKey?: unknown };
+  if (typeof parsed.taskId !== 'string' || typeof parsed.decryptionKey !== 'string') {
+    throw new Error('QQ bind session is invalid');
+  }
+  return { taskId: parsed.taskId, decryptionKey: parsed.decryptionKey };
 }
 
 async function fetchFeishuBotName(
