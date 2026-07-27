@@ -1941,10 +1941,15 @@ class ExecutionFixture {
     }
     const exit = await withTimeout(
       waitForExitResult(host.child),
-      PROCESS_TIMEOUT_MS,
+      PROCESS_TIMEOUT_MS + 2_000,
       'execution Host did not stop',
     );
     this.#children.delete(host.child);
+    if (exit.code !== 0 || exit.signal !== null) {
+      throw new Error(
+        `execution Host stopped uncleanly: ${exit.code === null ? exit.signal : `code ${exit.code}`}`,
+      );
+    }
     return exit;
   }
 
