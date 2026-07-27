@@ -1,7 +1,10 @@
 import type {
   AgentRunHeader,
   AgentRunStore,
+  ContinuationClaimV1,
+  ImmutableRuntimePrefixV1,
   RuntimeEvent,
+  RuntimeContinuationAuthorityStore,
   RuntimeEventStore,
   ToolBoundaryProtocol,
 } from '@maka/core';
@@ -32,6 +35,7 @@ import {
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import {
   AgentRun,
+  ContinuationStartCommitError,
   type AgentRunActiveSession,
   type AgentRunBeginResult,
   type AgentRunDurability,
@@ -74,6 +78,8 @@ import {
   type RuntimeContinuation,
   type RuntimeContinuationSafetyObservation,
 } from './runtime-resume.js';
+import { buildContinuationReplayPlan } from './continuation-replay.js';
+import { PROVIDER_REPLAY_PROJECTION_VERSION } from './model-history.js';
 import {
   matchingTerminalRuntimeEvents,
   terminalRunStatusFromRuntimeEvent,
@@ -604,6 +610,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     if (!this.deps.runStore || !this.deps.runtimeEventStore) {
       throw new Error('Runtime continuation requires AgentRunStore and RuntimeEventStore');
     }
+    const continuationAuthority = requireRuntimeContinuationAuthority(this.deps.runtimeEventStore);
     if (
       this.hasActiveRuns(continuation.sessionId) ||
       (this.executionClaims.get(continuation.sessionId)?.size ?? 0) > 1
@@ -616,16 +623,22 @@ export class RuntimeKernel implements RuntimeKernelLike {
       continuation.sessionId,
       continuation.sourceRunId,
     );
-    const sourceEvents = await this.deps.runtimeEventStore.readRuntimeEvents(
-      continuation.sessionId,
-      continuation.sourceRunId,
-    );
+    const sourceEvents = await revalidateContinuationBoundary(continuationAuthority, continuation);
     assertContinuationSourceUnchanged(continuation, sourceRun, sourceEvents);
     if (!this.deps.inspectContinuationSafety) {
       throw new Error('Runtime continuation requires an authoritative safety inspector');
     }
     const observation = await this.deps.inspectContinuationSafety(continuation.sessionId);
     assertContinuationSafetyUnchanged(continuation, observation);
+
+    const claim = continuationClaimForExecution(continuation, this.deps.now());
+    const claimResult = await continuationAuthority.claimContinuation({ claim });
+    if (claimResult.kind !== 'acquired') {
+      throw new RuntimeContinuationRevalidationError(
+        'continuation_claim_conflict',
+        `Runtime continuation boundary is already claimed by ${claimResult.claim.claimId}`,
+      );
+    }
 
     const sessionRuns = await this.deps.runStore.listSessionRuns(continuation.sessionId);
     const existingClaim = sessionRuns.find(
@@ -672,6 +685,38 @@ export class RuntimeKernel implements RuntimeKernelLike {
       workspaceIdentity: continuation.safetySnapshot.workspaceIdentity,
       effectiveOrchestration: effectiveOrchestrationForRun(sourceRun, header),
       continuationFailpoint: this.deps.continuationFailpoint,
+      commitContinuationStart: async (startedAt) => {
+        const source = claim.boundary.segments.at(-1)!;
+        await continuationAuthority.commitContinuationStart({
+          claim,
+          event: {
+            id: this.deps.newId(),
+            ...claim.target,
+            ts: startedAt,
+            partial: false,
+            role: 'system',
+            author: 'system',
+            actions: {
+              continuationStart: {
+                protocol: 'continuation_start_v2',
+                claimId: claim.claimId,
+                boundaryDigest: claim.boundaryDigest,
+                immediateSource: {
+                  sessionId: source.identity.sessionId,
+                  invocationId: source.identity.invocationId,
+                  runId: source.identity.runId,
+                  turnId: source.identity.turnId,
+                  highWater: source.position.lastEventSeq,
+                  prefixDigest: source.prefixDigest,
+                },
+                replayManifestDigest: claim.boundary.manifestDigest,
+                providerProjectionVersion: continuation.providerProjectionVersion!,
+                providerReplayDigest: continuation.providerReplayDigest!,
+              },
+            },
+          },
+        });
+      },
       hooks: {
         reserveRun: async (targetSessionId, nextHeader, activeRun) => {
           const active = await this.reserveParentRun(
@@ -980,6 +1025,29 @@ export class RuntimeKernel implements RuntimeKernelLike {
     if (linkedSnapshot && childTools.length !== linkedSnapshot.toolNames.length) {
       throw new Error('Linked child retry durable runtime tool snapshot is unavailable');
     }
+    if (!this.deps.runStore || !this.deps.runtimeEventStore) {
+      throw new Error('Child retry continuation requires AgentRunStore and RuntimeEventStore');
+    }
+    const continuationAuthority = requireRuntimeContinuationAuthority(this.deps.runtimeEventStore);
+    const sourceRun = await this.deps.runStore.readRun(sessionId, continuation.sourceRunId);
+    const sourceEvents = await revalidateContinuationBoundary(continuationAuthority, continuation);
+    assertContinuationSourceUnchanged(continuation, sourceRun, sourceEvents);
+    if (!this.deps.inspectContinuationSafety) {
+      throw new Error('Child retry continuation requires an authoritative safety inspector');
+    }
+    const safetyObservation = await this.deps.inspectContinuationSafety(sessionId);
+    assertContinuationSafetyUnchanged(continuation, {
+      ...safetyObservation,
+      availableToolNames: childTools.map((tool) => tool.name),
+    });
+    const claim = continuationClaimForExecution(continuation, this.deps.now());
+    const claimResult = await continuationAuthority.claimContinuation({ claim });
+    if (claimResult.kind !== 'acquired') {
+      throw new RuntimeContinuationRevalidationError(
+        'continuation_claim_conflict',
+        `Child retry continuation boundary is already claimed by ${claimResult.claim.claimId}`,
+      );
+    }
     const expertIdentity = linkedSnapshot ? undefined : parseExpertAgentId(definition.id);
     const agentTeam: AgentTeamExecutionContext | undefined = expertIdentity
       ? {
@@ -1023,6 +1091,38 @@ export class RuntimeKernel implements RuntimeKernelLike {
       workspaceIdentity: continuation.safetySnapshot.workspaceIdentity,
       effectiveOrchestration: resolveEffectiveOrchestration('default', undefined),
       recordSessionMessages: false,
+      commitContinuationStart: async (startedAt) => {
+        const source = claim.boundary.segments.at(-1)!;
+        await continuationAuthority.commitContinuationStart({
+          claim,
+          event: {
+            id: this.deps.newId(),
+            ...claim.target,
+            ts: startedAt,
+            partial: false,
+            role: 'system',
+            author: 'system',
+            actions: {
+              continuationStart: {
+                protocol: 'continuation_start_v2',
+                claimId: claim.claimId,
+                boundaryDigest: claim.boundaryDigest,
+                immediateSource: {
+                  sessionId: source.identity.sessionId,
+                  invocationId: source.identity.invocationId,
+                  runId: source.identity.runId,
+                  turnId: source.identity.turnId,
+                  highWater: source.position.lastEventSeq,
+                  prefixDigest: source.prefixDigest,
+                },
+                replayManifestDigest: claim.boundary.manifestDigest,
+                providerProjectionVersion: continuation.providerProjectionVersion!,
+                providerReplayDigest: continuation.providerReplayDigest!,
+              },
+            },
+          },
+        });
+      },
       hooks: {
         reserveRun: async (targetSessionId, nextHeader, activeRun) => {
           const active = linkedSnapshot
@@ -1061,12 +1161,13 @@ export class RuntimeKernel implements RuntimeKernelLike {
 
     this.attachExecutionClaim(execution, run);
     // A provider retry replays the source ledger without recording a second
-    // user prompt and without turning the child into a session continuation.
+    // user prompt, but it still consumes the source boundary through the same
+    // durable claim and continuation-start provider T1 as top-level resume.
     yield* this.runAgentContinuation(
       continuation,
       run,
       execution,
-      false,
+      true,
       input.linkedSession === true,
       input.onRunStarted,
     );
@@ -1340,6 +1441,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
       }
       await onRunStarted?.();
     } catch (error) {
+      if (error instanceof ContinuationStartCommitError) {
+        throw await owners.abandonUnstartedContinuation(error);
+      }
       throw await owners.failStart(error);
     }
 
@@ -1382,12 +1486,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
       providers: { newId: this.deps.newId, now: this.deps.now },
       stopOnTerminal: false,
       ...(run.toolBoundaryProtocol ? { toolBoundaryProtocol: run.toolBoundaryProtocol } : {}),
-      commitContinuationStart: async (event) => {
-        await run.recordRuntimeEvents([event], { requireTerminalWrite: true });
-        if (persistContinuationSource) {
-          await this.deps.continuationFailpoint?.('after_continuation_start_committed');
-        }
-      },
     });
     if (run.isStopped()) abortController.abort();
     let runnerFailure: unknown;
@@ -2813,6 +2911,97 @@ export class RuntimeKernel implements RuntimeKernelLike {
   }
 }
 
+function requireRuntimeContinuationAuthority(
+  store: RuntimeEventStore,
+): RuntimeContinuationAuthorityStore {
+  const candidate = store as Partial<RuntimeContinuationAuthorityStore>;
+  if (
+    candidate.continuationAuthorityCapability !== 'runtime_continuation_authority_v1' ||
+    typeof candidate.readImmutableRuntimePrefix !== 'function' ||
+    typeof candidate.claimContinuation !== 'function' ||
+    typeof candidate.commitContinuationStart !== 'function'
+  ) {
+    throw new Error('Runtime continuation requires SQLite continuation authority');
+  }
+  return candidate as RuntimeContinuationAuthorityStore;
+}
+
+async function revalidateContinuationBoundary(
+  store: RuntimeContinuationAuthorityStore,
+  continuation: RuntimeContinuation,
+): Promise<RuntimeEvent[]> {
+  if (
+    !continuation.boundary ||
+    !continuation.providerReplayDigest ||
+    continuation.providerProjectionVersion !== PROVIDER_REPLAY_PROJECTION_VERSION
+  ) {
+    throw new RuntimeContinuationRevalidationError(
+      'source_identity_changed',
+      'Runtime continuation is missing its versioned immutable boundary',
+    );
+  }
+  const prefixes: ImmutableRuntimePrefixV1[] = [];
+  for (const segment of continuation.boundary.segments) {
+    const prefix = await store.readImmutableRuntimePrefix({
+      sessionId: segment.identity.sessionId,
+      runId: segment.identity.runId,
+      upToEventSeq: segment.position.lastEventSeq,
+    });
+    if (
+      !isDeepStrictEqual(prefix.identity, segment.identity) ||
+      !isDeepStrictEqual(prefix.position, segment.position) ||
+      prefix.prefixDigest !== segment.prefixDigest
+    ) {
+      throw new RuntimeContinuationRevalidationError(
+        'source_identity_changed',
+        `Runtime continuation boundary changed for ${segment.identity.runId}`,
+      );
+    }
+    prefixes.push(prefix);
+  }
+  const replay = buildContinuationReplayPlan({
+    prefixes: prefixes as [ImmutableRuntimePrefixV1, ...ImmutableRuntimePrefixV1[]],
+    providerProjectionVersion: continuation.providerProjectionVersion,
+  });
+  if (
+    replay.kind !== 'replayable' ||
+    replay.plan.boundary.manifestDigest !== continuation.boundary.manifestDigest ||
+    replay.plan.providerReplayDigest !== continuation.providerReplayDigest ||
+    !isDeepStrictEqual(replay.plan.runtimeContext, continuation.runtimeContext)
+  ) {
+    throw new RuntimeContinuationRevalidationError(
+      'source_replay_changed',
+      'Runtime continuation replay changed after planning',
+    );
+  }
+  return [...prefixes.at(-1)!.events];
+}
+
+function continuationClaimForExecution(
+  continuation: RuntimeContinuation,
+  claimedAt: number,
+): ContinuationClaimV1 {
+  if (!continuation.claimId || !continuation.boundary) {
+    throw new RuntimeContinuationRevalidationError(
+      'source_identity_changed',
+      'Runtime continuation is missing its durable claim identity',
+    );
+  }
+  return {
+    protocol: 'continuation_claim_v1',
+    claimId: continuation.claimId,
+    boundaryDigest: continuation.boundary.manifestDigest,
+    boundary: continuation.boundary,
+    target: {
+      sessionId: continuation.sessionId,
+      invocationId: continuation.invocationId,
+      runId: continuation.runId,
+      turnId: continuation.turnId,
+    },
+    claimedAt,
+  };
+}
+
 function assertContinuationSourceUnchanged(
   continuation: RuntimeContinuation,
   sourceRun: AgentRunHeader,
@@ -2855,6 +3044,11 @@ function assertContinuationSourceUnchanged(
       'source_ledger_identity_changed',
       'Runtime continuation source ledger identity changed after planning',
     );
+  }
+  if (continuation.boundary) {
+    // Composite immutable-prefix and provider replay equality were already
+    // revalidated by revalidateContinuationBoundary().
+    return;
   }
   const replayPlan = buildResumePlanFromRuntimeEvents(sourceEvents, {
     expectedRuntimeEventHighWater: continuation.sourceRuntimeEventHighWater,
@@ -2980,6 +3174,13 @@ class RuntimeRunOwnerScope {
     await this.run.recordFailure(failure);
     await this.callbacks.finalizeExecution(() => this.run.finalize());
     throw failure;
+  }
+
+  async abandonUnstartedContinuation(error: unknown): Promise<never> {
+    this.settleReservedExecution({ ok: false, error });
+    this.releaseMessage();
+    await this.callbacks.finalizeExecution(async () => undefined);
+    throw error;
   }
 
   finalize(): Promise<void> {

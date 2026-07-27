@@ -6,6 +6,17 @@ import {
   type RuntimeEventFunctionCallContent,
   type RuntimeEventFunctionResponseContent,
 } from '@maka/core/runtime-event';
+import type {
+  ImmutableRuntimePrefixV1,
+  RuntimeBoundaryCursorV1,
+  RuntimeBoundaryDigest,
+} from '@maka/core/runtime-boundary';
+import { createRuntimeBoundaryCursor, runtimePrefixSegment } from '@maka/core/runtime-boundary';
+import {
+  buildContinuationReplayPlan,
+  type ContinuationReplayPlanV1,
+} from './continuation-replay.js';
+import { PROVIDER_REPLAY_PROJECTION_VERSION } from './model-history.js';
 import { resolveRuntimeRecovery, type RuntimeRecoveryResolution } from './recovery-resolver.js';
 
 export type ToolOperationStatus =
@@ -70,10 +81,20 @@ export type ResumePlanDiagnosticCode =
   | 'continuation_identity_reused'
   | 'provider_resume_head_unsupported'
   | 'provider_resume_boundary_unsupported'
+  | 'provider_replay_non_suffix_gap'
+  | 'provider_replay_unsupported'
+  | 'runtime_lineage_cycle'
+  | 'runtime_lineage_depth_exceeded'
+  | 'runtime_lineage_missing'
+  | 'runtime_lineage_start_mismatch'
+  | 'source_prefix_digest_mismatch'
   | 'workspace_ref_missing'
   | 'checkpoint_restore_failed'
   | 'source_run_unreadable'
   | 'continuation_already_exists'
+  | 'continuation_authority_unavailable'
+  | 'continuation_claim_repair_required'
+  | 'continuation_started_indeterminate'
   | 'workspace_identity_missing'
   | 'safety_observation_unavailable'
   | 'resume_feature_disabled'
@@ -101,10 +122,20 @@ export type ResumeRejectionReason =
   | 'continuation_identity_reused'
   | 'provider_resume_head_unsupported'
   | 'provider_resume_boundary_unsupported'
+  | 'provider_replay_non_suffix_gap'
+  | 'provider_replay_unsupported'
+  | 'runtime_lineage_cycle'
+  | 'runtime_lineage_depth_exceeded'
+  | 'runtime_lineage_missing'
+  | 'runtime_lineage_start_mismatch'
+  | 'source_prefix_digest_mismatch'
   | 'workspace_ref_missing'
   | 'checkpoint_restore_failed'
   | 'source_run_unreadable'
   | 'continuation_already_exists'
+  | 'continuation_authority_unavailable'
+  | 'continuation_claim_repair_required'
+  | 'continuation_started_indeterminate'
   | 'workspace_identity_missing'
   | 'safety_observation_unavailable'
   | 'resume_feature_disabled'
@@ -226,8 +257,11 @@ export interface SafeBoundaryContinuationFacts {
   backgroundOperationsSettled: boolean;
   availableToolNames: readonly string[];
   continuationIdentity: ContinuationIdentity;
+  continuationClaimId?: string;
   /** User-anchored replay prefix inherited from continuation ancestors. */
   priorRuntimeContext?: readonly RuntimeEvent[];
+  /** Versioned, segment-scoped provider replay built from immutable prefixes. */
+  continuationReplayPlan?: ContinuationReplayPlanV1;
   expectedRuntimeEventHighWater?: number;
   workspaceCheckpoint?: {
     ref?: string;
@@ -245,10 +279,17 @@ export interface RuntimeContinuation {
   sourceRunId: string;
   sourceTurnId: string;
   sourceRuntimeEventHighWater: number;
+  /** Proposed durable claim id; only execution may acquire it. */
+  claimId?: string;
   /** Replay events owned by the immediate source run. */
   sourceRuntimeContext?: RuntimeEvent[];
   /** Full user-anchored provider history, including continuation ancestors. */
   runtimeContext: RuntimeEvent[];
+  /** Composite immutable ledger boundary used to build runtimeContext. */
+  boundary?: RuntimeBoundaryCursorV1;
+  /** Identity of the exact provider-facing replay projection. */
+  providerReplayDigest?: RuntimeBoundaryDigest;
+  providerProjectionVersion?: typeof PROVIDER_REPLAY_PROJECTION_VERSION;
   safetySnapshot: RuntimeContinuationSafetySnapshot;
 }
 
@@ -302,13 +343,29 @@ export interface RuntimeContinuationPlannerDeps {
     cwd: string;
     status: string;
     continuationSource?: {
+      protocol?: 'continuation_source_v2';
+      claimId?: string;
+      boundaryDigest?: RuntimeBoundaryDigest;
       sourceInvocationId: string;
       sourceRunId: string;
       sourceTurnId: string;
       sourceRuntimeEventHighWater: number;
+      sourcePrefixDigest?: RuntimeBoundaryDigest;
+      replayManifestDigest?: RuntimeBoundaryDigest;
     };
   }>;
-  readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
+  readImmutableRuntimePrefix(input: {
+    sessionId: string;
+    runId: string;
+    upToEventSeq?: number;
+  }): Promise<ImmutableRuntimePrefixV1>;
+  readContinuationClaimByBoundary?(boundaryDigest: RuntimeBoundaryDigest): Promise<
+    | {
+        claimId: string;
+        target: { sessionId: string; invocationId: string; runId: string; turnId: string };
+      }
+    | undefined
+  >;
   findExistingContinuation?(
     sessionId: string,
     sourceRunId: string,
@@ -328,41 +385,73 @@ export class RuntimeContinuationPlanner {
       return parkedPlan('source_run_unreadable', 'source AgentRun could not be read');
     }
 
-    let events: RuntimeEvent[];
+    let prefixes: [ImmutableRuntimePrefixV1, ...ImmutableRuntimePrefixV1[]];
     try {
-      events = await this.deps.readRuntimeEvents(input.sessionId, input.sourceRunId);
-    } catch {
+      prefixes = await this.readLineagePrefixes(input.sessionId, input.sourceRunId, sourceRun);
+    } catch (error) {
+      if (error instanceof RuntimeLineageError) {
+        return parkedPlan(error.code, error.message);
+      }
       return parkedPlan(
         'runtime_ledger_unreadable',
         'RuntimeEvent ledger could not be read reliably',
       );
     }
+    const sourcePrefix = prefixes.at(-1)!;
+    const events = [...sourcePrefix.events];
     if (
-      events.some(
-        (event) => event.sessionId !== input.sessionId || event.runId !== input.sourceRunId,
-      )
+      sourcePrefix.identity.sessionId !== input.sessionId ||
+      sourcePrefix.identity.runId !== input.sourceRunId
     ) {
       return parkedPlan(
         'runtime_identity_mismatch',
         'RuntimeEvent ledger does not belong to the requested source run',
       );
     }
-    let priorRuntimeContext: RuntimeEvent[] = [];
+    const replay = buildContinuationReplayPlan({
+      prefixes,
+      providerProjectionVersion: PROVIDER_REPLAY_PROJECTION_VERSION,
+    });
+    if (replay.kind === 'blocked') {
+      const reason =
+        replay.reason === 'provider_replay_non_suffix_gap'
+          ? 'provider_replay_non_suffix_gap'
+          : replay.reason === 'provider_replay_unsupported'
+            ? 'provider_replay_unsupported'
+            : 'runtime_ledger_unreadable';
+      return parkedPlan(
+        reason,
+        `continuation replay segment ${replay.segmentIndex} is not replayable: ${replay.reason}`,
+      );
+    }
+    let durableClaim:
+      | {
+          claimId: string;
+          target: {
+            sessionId: string;
+            invocationId: string;
+            runId: string;
+            turnId: string;
+          };
+        }
+      | undefined;
     try {
-      priorRuntimeContext = await this.readPriorRuntimeContext(
-        input.sessionId,
-        sourceRun.continuationSource,
+      durableClaim = await this.deps.readContinuationClaimByBoundary?.(
+        replay.plan.boundary.manifestDigest,
       );
     } catch {
       return parkedPlan(
-        'runtime_ledger_unreadable',
-        'continuation ancestor RuntimeEvent ledger could not be read reliably',
+        'continuation_authority_unavailable',
+        'durable continuation authority is unavailable',
       );
+    }
+    if (durableClaim) {
+      return this.classifyExistingClaim(input.sessionId, durableClaim);
     }
     const existingContinuation = await this.deps.findExistingContinuation?.(
       input.sessionId,
       input.sourceRunId,
-      events.length,
+      sourcePrefix.position.lastEventSeq,
     );
     if (existingContinuation) {
       return parkedPlan(
@@ -386,7 +475,8 @@ export class RuntimeContinuationPlanner {
         runId: this.deps.newId(),
         turnId: this.deps.newId(),
       },
-      ...(priorRuntimeContext.length > 0 ? { priorRuntimeContext } : {}),
+      continuationClaimId: this.deps.newId(),
+      continuationReplayPlan: replay.plan,
       ...(input.expectedRuntimeEventHighWater !== undefined
         ? { expectedRuntimeEventHighWater: input.expectedRuntimeEventHighWater }
         : {}),
@@ -396,42 +486,212 @@ export class RuntimeContinuationPlanner {
     });
   }
 
-  private async readPriorRuntimeContext(
+  private async classifyExistingClaim(
     sessionId: string,
-    initial: Awaited<
-      ReturnType<RuntimeContinuationPlannerDeps['readSourceRun']>
-    >['continuationSource'],
-  ): Promise<RuntimeEvent[]> {
-    const segments: RuntimeEvent[][] = [];
-    const seen = new Set<string>();
-    let source = initial;
+    claim: {
+      claimId: string;
+      target: {
+        sessionId: string;
+        invocationId: string;
+        runId: string;
+        turnId: string;
+      };
+    },
+  ): Promise<SafeBoundaryContinuationPlan> {
+    const detail = {
+      continuationClaimId: claim.claimId,
+      continuationRunId: claim.target.runId,
+    };
+    let run: Awaited<ReturnType<RuntimeContinuationPlannerDeps['readSourceRun']>>;
+    try {
+      run = await this.deps.readSourceRun(sessionId, claim.target.runId);
+    } catch {
+      return parkedPlan(
+        'continuation_claim_repair_required',
+        'durable continuation claim exists but its target Run is missing',
+        detail,
+      );
+    }
+    if (isTerminalRunStatus(run.status)) {
+      return parkedPlan(
+        'continuation_already_exists',
+        'source boundary already has a terminal continuation',
+        detail,
+      );
+    }
+    let prefix: ImmutableRuntimePrefixV1;
+    try {
+      prefix = await this.deps.readImmutableRuntimePrefix({
+        sessionId,
+        runId: claim.target.runId,
+      });
+    } catch {
+      return parkedPlan(
+        'continuation_claim_repair_required',
+        'durable continuation claim target has no committed continuation-start',
+        detail,
+      );
+    }
+    const start = prefix.events[0]?.actions?.continuationStart;
+    if (prefix.events.some(isTerminalRuntimeEvent)) {
+      return parkedPlan(
+        'continuation_claim_repair_required',
+        'continuation target has a terminal fact whose Run header requires repair',
+        detail,
+      );
+    }
+    if (
+      prefix.identity.sessionId === claim.target.sessionId &&
+      prefix.identity.invocationId === claim.target.invocationId &&
+      prefix.identity.runId === claim.target.runId &&
+      prefix.identity.turnId === claim.target.turnId &&
+      start?.claimId === claim.claimId
+    ) {
+      return parkedPlan(
+        'continuation_started_indeterminate',
+        'continuation-start is durable but the target Run is not terminal',
+        detail,
+      );
+    }
+    return parkedPlan(
+      'continuation_claim_repair_required',
+      'durable continuation claim target is missing a matching continuation-start',
+      detail,
+    );
+  }
+
+  private async readLineagePrefixes(
+    sessionId: string,
+    sourceRunId: string,
+    sourceRun: Awaited<ReturnType<RuntimeContinuationPlannerDeps['readSourceRun']>>,
+  ): Promise<[ImmutableRuntimePrefixV1, ...ImmutableRuntimePrefixV1[]]> {
+    const immediate = await this.deps.readImmutableRuntimePrefix({
+      sessionId,
+      runId: sourceRunId,
+    });
+    const segments: ImmutableRuntimePrefixV1[] = [immediate];
+    const seen = new Set<string>([sourceRunId]);
+    const v2Edges: Array<{ childRunId: string; boundaryDigest: RuntimeBoundaryDigest }> = [];
+    let source = sourceRun.continuationSource;
+    let childRunId = sourceRunId;
+    let childPrefix = immediate;
+    let depth = 1;
     while (source) {
       const current = source;
-      if (seen.has(current.sourceRunId)) throw new Error('continuation source cycle');
+      if (current.protocol === 'continuation_source_v2' && current.boundaryDigest) {
+        const start = childPrefix.events[0]?.actions?.continuationStart;
+        if (
+          !start ||
+          start.claimId !== current.claimId ||
+          start.boundaryDigest !== current.boundaryDigest ||
+          start.replayManifestDigest !== current.replayManifestDigest ||
+          start.immediateSource.sessionId !== sessionId ||
+          start.immediateSource.invocationId !== current.sourceInvocationId ||
+          start.immediateSource.runId !== current.sourceRunId ||
+          start.immediateSource.turnId !== current.sourceTurnId ||
+          start.immediateSource.highWater !== current.sourceRuntimeEventHighWater ||
+          start.immediateSource.prefixDigest !== current.sourcePrefixDigest
+        ) {
+          throw new RuntimeLineageError(
+            'runtime_lineage_start_mismatch',
+            `continuation-start does not authenticate lineage edge for ${childRunId}`,
+          );
+        }
+        v2Edges.push({ childRunId, boundaryDigest: current.boundaryDigest });
+      }
+      if (seen.has(current.sourceRunId)) {
+        throw new RuntimeLineageError(
+          'runtime_lineage_cycle',
+          'continuation source lineage contains a cycle',
+        );
+      }
+      if (depth >= 64) {
+        throw new RuntimeLineageError(
+          'runtime_lineage_depth_exceeded',
+          'continuation source lineage exceeds the maximum depth of 64',
+        );
+      }
       seen.add(current.sourceRunId);
-      const [run, events] = await Promise.all([
-        this.deps.readSourceRun(sessionId, current.sourceRunId),
-        this.deps.readRuntimeEvents(sessionId, current.sourceRunId),
-      ]);
-      if (events.length < current.sourceRuntimeEventHighWater) {
-        throw new Error('continuation ancestor high-water is unavailable');
+      let run: Awaited<ReturnType<RuntimeContinuationPlannerDeps['readSourceRun']>>;
+      let prefix: ImmutableRuntimePrefixV1;
+      try {
+        [run, prefix] = await Promise.all([
+          this.deps.readSourceRun(sessionId, current.sourceRunId),
+          this.deps.readImmutableRuntimePrefix({
+            sessionId,
+            runId: current.sourceRunId,
+            upToEventSeq: current.sourceRuntimeEventHighWater,
+          }),
+        ]);
+      } catch {
+        throw new RuntimeLineageError(
+          'runtime_lineage_missing',
+          `continuation ancestor ${current.sourceRunId} is unavailable`,
+        );
       }
-      const prefix = events.slice(0, current.sourceRuntimeEventHighWater);
       if (
-        prefix.some(
-          (event) =>
-            event.sessionId !== sessionId ||
-            event.invocationId !== current.sourceInvocationId ||
-            event.runId !== current.sourceRunId ||
-            event.turnId !== current.sourceTurnId,
-        )
+        prefix.identity.sessionId !== sessionId ||
+        prefix.identity.invocationId !== current.sourceInvocationId ||
+        prefix.identity.runId !== current.sourceRunId ||
+        prefix.identity.turnId !== current.sourceTurnId ||
+        prefix.position.lastEventSeq !== current.sourceRuntimeEventHighWater
       ) {
-        throw new Error('continuation ancestor identity mismatch');
+        throw new RuntimeLineageError(
+          'runtime_identity_mismatch',
+          `continuation ancestor ${current.sourceRunId} identity does not match its lineage edge`,
+        );
       }
-      segments.unshift(buildResumeReplayRuntimeEvents(prefix));
+      if (
+        current.protocol === 'continuation_source_v2' &&
+        current.sourcePrefixDigest !== prefix.prefixDigest
+      ) {
+        throw new RuntimeLineageError(
+          'source_prefix_digest_mismatch',
+          `continuation ancestor ${current.sourceRunId} prefix digest changed`,
+        );
+      }
+      segments.unshift(prefix);
+      childPrefix = prefix;
       source = run.continuationSource;
+      childRunId = current.sourceRunId;
+      depth += 1;
     }
-    return segments.flat();
+    for (const edge of v2Edges) {
+      const childIndex = segments.findIndex((prefix) => prefix.identity.runId === edge.childRunId);
+      if (childIndex <= 0) {
+        throw new RuntimeLineageError(
+          'runtime_lineage_missing',
+          `continuation lineage edge for ${edge.childRunId} is incomplete`,
+        );
+      }
+      const edgeSegments = segments.slice(0, childIndex).map(runtimePrefixSegment) as [
+        ReturnType<typeof runtimePrefixSegment>,
+        ...ReturnType<typeof runtimePrefixSegment>[],
+      ];
+      if (createRuntimeBoundaryCursor(edgeSegments).manifestDigest !== edge.boundaryDigest) {
+        throw new RuntimeLineageError(
+          'source_prefix_digest_mismatch',
+          `continuation lineage manifest changed before ${edge.childRunId}`,
+        );
+      }
+    }
+    return segments as [ImmutableRuntimePrefixV1, ...ImmutableRuntimePrefixV1[]];
+  }
+}
+
+class RuntimeLineageError extends Error {
+  constructor(
+    readonly code:
+      | 'runtime_lineage_cycle'
+      | 'runtime_lineage_depth_exceeded'
+      | 'runtime_lineage_missing'
+      | 'runtime_identity_mismatch'
+      | 'runtime_lineage_start_mismatch'
+      | 'source_prefix_digest_mismatch',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'RuntimeLineageError';
   }
 }
 
@@ -662,9 +922,12 @@ export function buildSafeBoundaryContinuationPlan(
       phaseOneRejectionReasons.push('checkpoint_restore_failed');
     }
   }
-  const modelRuntimeContext = [
+  const compositeReplay = facts.continuationReplayPlan;
+  const sourceReplayRuntimeEvents =
+    compositeReplay?.segments.at(-1)?.replayRuntimeEvents ?? replayPlan.replayRuntimeEvents;
+  const modelRuntimeContext = compositeReplay?.runtimeContext ?? [
     ...(facts.priorRuntimeContext ?? []),
-    ...replayPlan.replayRuntimeEvents,
+    ...sourceReplayRuntimeEvents,
   ];
   const availableToolNames = new Set(facts.availableToolNames);
   const unavailableToolNames = [
@@ -729,11 +992,23 @@ export function buildSafeBoundaryContinuationPlan(
       sourceInvocationId: source.invocationId,
       sourceRunId: source.runId,
       sourceTurnId: source.turnId,
-      sourceRuntimeEventHighWater: replayPlan.sourceRuntimeEventHighWater,
-      ...(facts.priorRuntimeContext?.length
-        ? { sourceRuntimeContext: replayPlan.replayRuntimeEvents }
+      sourceRuntimeEventHighWater:
+        compositeReplay?.segments.at(-1)?.boundary.position.lastEventSeq ??
+        replayPlan.sourceRuntimeEventHighWater,
+      ...(compositeReplay && compositeReplay.segments.length > 1
+        ? { sourceRuntimeContext: [...sourceReplayRuntimeEvents] }
+        : facts.priorRuntimeContext?.length
+          ? { sourceRuntimeContext: replayPlan.replayRuntimeEvents }
+          : {}),
+      runtimeContext: [...modelRuntimeContext],
+      ...(facts.continuationClaimId ? { claimId: facts.continuationClaimId } : {}),
+      ...(compositeReplay
+        ? {
+            boundary: compositeReplay.boundary,
+            providerReplayDigest: compositeReplay.providerReplayDigest,
+            providerProjectionVersion: compositeReplay.providerProjectionVersion,
+          }
         : {}),
-      runtimeContext: modelRuntimeContext,
       safetySnapshot: {
         workspaceIdentity: facts.currentWorkspaceIdentity,
         backgroundOperationsSettled: true,

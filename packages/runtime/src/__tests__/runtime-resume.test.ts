@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
+import {
+  buildImmutableRuntimePrefix,
+  type ImmutableRuntimePrefixV1,
+} from '@maka/core/runtime-boundary';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 
 import {
@@ -139,6 +143,22 @@ describe('runtime resume phase 1 safe-boundary continuation', () => {
   test('replays the user-anchored ancestor prefix when continuing a continuation run', async () => {
     const rootEvents = [
       textEvent('root-user', 'user', 'finish the task'),
+      base({
+        id: 'root-interrupted-thinking',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'thinking',
+          text: 'unfinished',
+          signature: 'signed-root',
+        },
+      }),
+      base({
+        id: 'root-interrupted-text',
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'I was interrupted' },
+      }),
       base({ id: 'root-terminal', status: 'failed', actions: { endInvocation: true } }),
     ];
     const continuationIdentity = {
@@ -184,8 +204,10 @@ describe('runtime resume phase 1 safe-boundary continuation', () => {
               },
             }
           : { cwd: '/workspace/repo', status: 'failed' },
-      readRuntimeEvents: async (_sessionId, runId) =>
-        runId === 'run-2' ? childEvents : rootEvents,
+      readImmutableRuntimePrefix: async ({ runId, upToEventSeq }) => {
+        const events = runId === 'run-2' ? childEvents : rootEvents;
+        return immutablePrefix(upToEventSeq === undefined ? events : events.slice(0, upToEventSeq));
+      },
       newId: (() => {
         let next = 2;
         return () => `generated-${++next}`;
@@ -583,6 +605,23 @@ function base(overrides: Partial<RuntimeEvent>): RuntimeEvent {
     role: 'system',
     ...overrides,
   };
+}
+
+function immutablePrefix(events: readonly RuntimeEvent[]): ImmutableRuntimePrefixV1 {
+  const first = events[0];
+  if (!first) throw new Error('test immutable prefix requires at least one event');
+  return buildImmutableRuntimePrefix(
+    {
+      sessionId: first.sessionId,
+      invocationId: first.invocationId,
+      runId: first.runId,
+      turnId: first.turnId,
+    },
+    events.map((runtimeEvent, index) => ({
+      eventSeq: index + 1,
+      event: runtimeEvent,
+    })),
+  );
 }
 
 function callEvent(id: string, toolCallId: string, name: string, args: unknown): RuntimeEvent {

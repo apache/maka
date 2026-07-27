@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, test } from 'node:test';
 
 import type { AgentRunHeader, RuntimeEvent } from '@maka/core';
-import { createAgentRunStore, createRuntimeEventStore, createSessionStore } from '@maka/storage';
+import { createAgentRunStore, createSessionStore, createSqliteRuntimeStore } from '@maka/storage';
 
 import { type RuntimeContinuationFailpoint } from '../agent-run.js';
 import { BackendRegistry, SessionManager } from '../session-manager.js';
@@ -37,7 +37,7 @@ if (process.env[CRASH_CHILD_ENV] === '1') {
 
           const store = createSessionStore(workspaceRoot);
           const runStore = createAgentRunStore(workspaceRoot);
-          const runtimeEventStore = createRuntimeEventStore(workspaceRoot);
+          const runtimeEventStore = createCrashRuntimeStore(workspaceRoot);
           const [session] = await store.list();
           assert.ok(session, `${failpoint} did not persist a session`);
           const runsBeforeRecovery = await runStore.listSessionRuns(session.id);
@@ -49,16 +49,28 @@ if (process.env[CRASH_CHILD_ENV] === '1') {
           const prefix = await runtimeEventStore.readRuntimeEvents(session.id, continuation.runId);
           assertPrefix(failpoint, continuation, prefix);
 
-          const manager = createManager(workspaceRoot);
+          runtimeEventStore.close();
+          await store.close?.();
+          const {
+            manager,
+            runtimeEventStore: recoveryRuntimeStore,
+            sessionStore: recoverySessionStore,
+          } = createManager(workspaceRoot);
           const repeatedPlan = await manager.planAuthoritativeSafeBoundaryContinuation(session.id, {
             sourceRunId: 'source-run',
           });
           assert.equal(repeatedPlan.disposition, 'park');
-          assert.deepEqual(repeatedPlan.rejectionReasons, ['continuation_already_exists']);
+          assert.deepEqual(repeatedPlan.rejectionReasons, [
+            failpoint === 'after_run_created' || failpoint === 'after_terminal_event_committed'
+              ? 'continuation_claim_repair_required'
+              : failpoint === 'after_continuation_start_committed'
+                ? 'continuation_started_indeterminate'
+                : 'continuation_already_exists',
+          ]);
 
           await manager.recoverInterruptedSessions();
           const repaired = await runStore.readRun(session.id, continuation.runId);
-          const repairedEvents = await runtimeEventStore.readRuntimeEvents(
+          const repairedEvents = await recoveryRuntimeStore.readRuntimeEvents(
             session.id,
             continuation.runId,
           );
@@ -72,9 +84,16 @@ if (process.env[CRASH_CHILD_ENV] === '1') {
               repaired.status === 'cancelled',
             `${failpoint} left the continuation non-terminal`,
           );
+          recoveryRuntimeStore.close();
+          await recoverySessionStore.close?.();
         }
       } finally {
-        await rm(root, { recursive: true, force: true });
+        await rm(root, {
+          recursive: true,
+          force: true,
+          maxRetries: process.platform === 'win32' ? 20 : 0,
+          retryDelay: 100,
+        });
       }
     });
   });
@@ -87,7 +106,7 @@ async function runCrashChild(): Promise<void> {
   ) as RuntimeContinuationFailpoint;
   const store = createSessionStore(workspaceRoot);
   const runStore = createAgentRunStore(workspaceRoot);
-  const runtimeEventStore = createRuntimeEventStore(workspaceRoot);
+  const runtimeEventStore = createCrashRuntimeStore(workspaceRoot);
   const backends = new BackendRegistry();
   backends.register(
     'fake',
@@ -100,6 +119,14 @@ async function runCrashChild(): Promise<void> {
       }),
   );
   let id = 0;
+  let resolveSelectedFailpoint!: () => void;
+  const selectedFailpointReached = new Promise<void>((resolve) => {
+    resolveSelectedFailpoint = resolve;
+  });
+  // A pending Promise does not keep Node alive. Terminal header finalization is
+  // deliberately detached from the public stream, so keep the crash child
+  // alive while that background durability work advances to its failpoint.
+  setInterval(() => {}, 1_000);
   const manager = new SessionManager({
     store,
     runStore,
@@ -108,11 +135,8 @@ async function runCrashChild(): Promise<void> {
     safeBoundaryResumeEnabled: true,
     inspectContinuationSafety: async () => stableSafetyObservation(),
     continuationFailpoint: async (point) => {
-      if (point !== failpoint) return;
-      process.stdout.write(`READY:${point}\n`);
-      await new Promise<never>(() => {
-        setInterval(() => {}, 1_000);
-      });
+      if (point !== failpoint || point === 'after_terminal_header_committed') return;
+      await suspendCrashChild(point, resolveSelectedFailpoint);
     },
     newId: () => `id-${++id}`,
     now: (() => {
@@ -141,13 +165,41 @@ async function runCrashChild(): Promise<void> {
   for await (const _event of manager.resumeSafeBoundaryContinuation(plan.continuation)) {
     // drain until the selected failpoint suspends the child
   }
-  throw new Error(`continuation completed without reaching failpoint ${failpoint}`);
+  if (failpoint === 'after_terminal_header_committed') {
+    const continuation = await runStore.readRun(session.id, plan.continuation.runId);
+    if (continuation.status !== 'completed') {
+      throw new Error(`continuation terminal header did not settle: ${continuation.status}`);
+    }
+    await suspendCrashChild(failpoint, resolveSelectedFailpoint);
+  }
+  // Terminal projection finalization may continue after the public event stream
+  // closes. Wait for the selected durable boundary instead of racing that
+  // background finalizer and reporting a false negative.
+  await selectedFailpointReached;
+  await new Promise<never>(() => {
+    setInterval(() => {}, 1_000);
+  });
 }
 
-function createManager(workspaceRoot: string): SessionManager {
+async function suspendCrashChild(
+  point: RuntimeContinuationFailpoint,
+  markReached: () => void,
+): Promise<never> {
+  process.stdout.write(`READY:${point}\n`);
+  markReached();
+  return await new Promise<never>(() => {
+    setInterval(() => {}, 1_000);
+  });
+}
+
+function createManager(workspaceRoot: string): {
+  manager: SessionManager;
+  runtimeEventStore: ReturnType<typeof createSqliteRuntimeStore>;
+  sessionStore: ReturnType<typeof createSessionStore>;
+} {
   const store = createSessionStore(workspaceRoot);
   const runStore = createAgentRunStore(workspaceRoot);
-  const runtimeEventStore = createRuntimeEventStore(workspaceRoot);
+  const runtimeEventStore = createCrashRuntimeStore(workspaceRoot);
   const backends = new BackendRegistry();
   backends.register(
     'fake',
@@ -160,17 +212,25 @@ function createManager(workspaceRoot: string): SessionManager {
       }),
   );
   let id = 100;
-  return new SessionManager({
-    store,
-    runStore,
+  return {
     runtimeEventStore,
-    backends,
-    safeBoundaryResumeEnabled: true,
-    inspectContinuationSafety: async () => stableSafetyObservation(),
-    newId: () => `recovery-id-${++id}`,
-    now: Date.now,
-    runtimeSource: 'test',
-  });
+    sessionStore: store,
+    manager: new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore,
+      backends,
+      safeBoundaryResumeEnabled: true,
+      inspectContinuationSafety: async () => stableSafetyObservation(),
+      newId: () => `recovery-id-${++id}`,
+      now: Date.now,
+      runtimeSource: 'test',
+    }),
+  };
+}
+
+function createCrashRuntimeStore(workspaceRoot: string) {
+  return createSqliteRuntimeStore(join(workspaceRoot, '.maka', 'runtime.sqlite'));
 }
 
 async function crashContinuationAt(
@@ -197,7 +257,10 @@ async function crashContinuationAt(
   child.stderr.on('data', (chunk: string) => {
     stderr += chunk;
   });
-  const exited = once(child, 'exit') as Promise<[number | null, NodeJS.Signals | null]>;
+  // `exit` may fire before Windows releases inherited stdio/process handles.
+  // Wait for `close` so the following reopen and recursive cleanup cannot race
+  // a dead child that still owns the SQLite files.
+  const closed = once(child, 'close') as Promise<[number | null, NodeJS.Signals | null]>;
   const deadline = Date.now() + 10_000;
   while (
     !stdout.includes(`READY:${failpoint}\n`) &&
@@ -208,11 +271,11 @@ async function crashContinuationAt(
   }
   if (!stdout.includes(`READY:${failpoint}\n`)) {
     child.kill('SIGKILL');
-    await exited;
+    await closed;
     throw new Error(`${failpoint} child did not reach boundary: ${stderr || stdout}`);
   }
   assert.equal(child.kill('SIGKILL'), true);
-  const [exitCode, signal] = await exited;
+  const [exitCode, signal] = await closed;
   assert.ok(exitCode !== 0 || signal !== null);
 }
 
@@ -226,7 +289,7 @@ function assertPrefix(
     assert.deepEqual(events, []);
     return;
   }
-  assert.equal(events[0]?.actions?.stateDelta?.continuationStart, true);
+  assert.equal(events[0]?.actions?.continuationStart?.protocol, 'continuation_start_v2');
   if (failpoint === 'after_continuation_start_committed') {
     assert.equal(
       events.some((event) => event.actions?.endInvocation === true),

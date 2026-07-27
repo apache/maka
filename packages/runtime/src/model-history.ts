@@ -46,6 +46,8 @@ import { normalizeShellToolResultContent, normalizeToolResultContentForRead } fr
 import type { AttachmentRef, QuoteRef } from '@maka/core/events';
 import type { ModelMessage, UserContent, UserModelMessage } from './model-protocol.js';
 
+export const PROVIDER_REPLAY_PROJECTION_VERSION = 1;
+
 // ============================================================================
 // Output type
 // ============================================================================

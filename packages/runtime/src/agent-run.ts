@@ -116,6 +116,8 @@ export interface AgentRunInput {
   now: () => number;
   workspaceIdentity?: string;
   continuationFailpoint?: (point: RuntimeContinuationFailpoint) => Promise<void>;
+  /** Commits the claimed continuation provider-call T1 after Run creation. */
+  commitContinuationStart?: (startedAt: number) => Promise<void>;
   hooks: AgentRunHooks;
   recordSessionMessages?: boolean;
   invocationId?: string;
@@ -130,6 +132,18 @@ export type RuntimeContinuationFailpoint =
   | 'after_continuation_start_committed'
   | 'after_terminal_event_committed'
   | 'after_terminal_header_committed';
+
+export class ContinuationStartCommitError extends Error {
+  readonly name = 'ContinuationStartCommitError';
+
+  constructor(readonly storeCause: unknown) {
+    super(
+      `Continuation start was not durably committed: ${
+        storeCause instanceof Error ? storeCause.message : String(storeCause)
+      }`,
+    );
+  }
+}
 
 export interface AgentRunBeginResult {
   backend: AgentBackend;
@@ -607,6 +621,15 @@ export class AgentRun {
     await this.input.continuationFailpoint?.('after_run_created');
     const startedAt = this.input.now();
     this.lastTs = startedAt;
+    if (!this.input.commitContinuationStart) {
+      throw new Error('Runtime continuation requires a durable continuation-start authority');
+    }
+    try {
+      await this.input.commitContinuationStart(startedAt);
+    } catch (error) {
+      throw new ContinuationStartCommitError(error);
+    }
+    await this.input.continuationFailpoint?.('after_continuation_start_committed');
     if (this.recordsSessionMessages()) {
       await this.input.hooks.appendTurnState(this.sessionId, this.turnId, 'running', this.lineage, {
         ts: startedAt,
@@ -943,12 +966,25 @@ export class AgentRun {
       ...this.lineage,
       ...(continuation
         ? {
-            continuationSource: {
-              sourceInvocationId: continuation.sourceInvocationId,
-              sourceRunId: continuation.sourceRunId,
-              sourceTurnId: continuation.sourceTurnId,
-              sourceRuntimeEventHighWater: continuation.sourceRuntimeEventHighWater,
-            },
+            continuationSource:
+              continuation.claimId && continuation.boundary
+                ? {
+                    protocol: 'continuation_source_v2' as const,
+                    claimId: continuation.claimId,
+                    boundaryDigest: continuation.boundary.manifestDigest,
+                    sourceInvocationId: continuation.sourceInvocationId,
+                    sourceRunId: continuation.sourceRunId,
+                    sourceTurnId: continuation.sourceTurnId,
+                    sourceRuntimeEventHighWater: continuation.sourceRuntimeEventHighWater,
+                    sourcePrefixDigest: continuation.boundary.segments.at(-1)!.prefixDigest,
+                    replayManifestDigest: continuation.boundary.manifestDigest,
+                  }
+                : {
+                    sourceInvocationId: continuation.sourceInvocationId,
+                    sourceRunId: continuation.sourceRunId,
+                    sourceTurnId: continuation.sourceTurnId,
+                    sourceRuntimeEventHighWater: continuation.sourceRuntimeEventHighWater,
+                  },
           }
         : {}),
       ...(this.input.userInput.agentId ? { agentId: this.input.userInput.agentId } : {}),

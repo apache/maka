@@ -133,7 +133,6 @@ export interface InitialUserRuntimeEventInput {
 
 export class RuntimeRunner {
   private readonly flow: RunnableAgentFlow;
-  private readonly commitContinuationStart: RuntimeRunnerDeps['commitContinuationStart'];
   private readonly toolBoundaryProtocol: RuntimeRunnerDeps['toolBoundaryProtocol'];
   private readonly gate: RuntimeGate | undefined;
   private readonly providers: InvocationProviders;
@@ -141,7 +140,6 @@ export class RuntimeRunner {
 
   constructor(deps: RuntimeRunnerDeps) {
     this.flow = deps.flow;
-    this.commitContinuationStart = deps.commitContinuationStart;
     this.toolBoundaryProtocol = deps.toolBoundaryProtocol;
     this.gate = deps.gate;
     this.providers = deps.providers ?? createDefaultInvocationProviders();
@@ -292,36 +290,6 @@ export class RuntimeRunner {
           ...(this.toolBoundaryProtocol ? { toolBoundaryProtocol: this.toolBoundaryProtocol } : {}),
         });
       events.push(userEvent);
-    } else {
-      if (!this.commitContinuationStart) {
-        throw new Error('Runtime continuation requires a durable continuation-start sink');
-      }
-      const continuationStart: RuntimeEvent = {
-        id: ctx.newId(),
-        invocationId: ctx.invocationId,
-        runId: ctx.runId,
-        sessionId: ctx.sessionId,
-        turnId: ctx.turnId,
-        ts: ctx.startedAt,
-        ...(ctx.branch ? { branch: ctx.branch } : {}),
-        partial: false,
-        role: 'system',
-        author: 'system',
-        actions: {
-          stateDelta: { continuationStart: true },
-          ...(this.toolBoundaryProtocol
-            ? { runtimeProtocol: { toolBoundary: this.toolBoundaryProtocol } }
-            : {}),
-        },
-        refs: {
-          sourceInvocationId: request.continuation.sourceInvocationId,
-          sourceRunId: request.continuation.sourceRunId,
-          sourceTurnId: request.continuation.sourceTurnId,
-          sourceRuntimeEventHighWater: request.continuation.sourceRuntimeEventHighWater,
-        },
-      };
-      await this.commitContinuationStart(continuationStart);
-      events.push(continuationStart);
     }
     const flowInput = buildFlowInput(request);
 
@@ -414,6 +382,10 @@ function invocationContinuationMetadata(
     turnId: _turnId,
     runtimeContext: _runtimeContext,
     safetySnapshot: _safetySnapshot,
+    claimId: _claimId,
+    boundary: _boundary,
+    providerReplayDigest: _providerReplayDigest,
+    providerProjectionVersion: _providerProjectionVersion,
     ...metadata
   } = continuation;
   return metadata;

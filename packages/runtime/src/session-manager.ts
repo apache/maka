@@ -84,6 +84,7 @@ import type {
   RootExecutionDescriptor,
   RuntimeEvent,
   RuntimeEventStore,
+  RuntimeContinuationAuthorityStore,
   ToolBoundaryProtocol,
   SubagentWorkspaceBinding,
   SubagentWorktreeExecutor,
@@ -161,13 +162,25 @@ import { requireResolvedAgentDefinition } from './expert-catalog.js';
 import { stableHash } from './request-shape.js';
 import type { SubagentExecutionRef } from './subagent-execution.js';
 import {
-  buildResumePlanFromRuntimeEvents,
   RuntimeContinuationPlanner,
   type RuntimeContinuation,
   type RuntimeContinuationPlannerInput,
   type RuntimeContinuationSafetyObservation,
   type SafeBoundaryContinuationPlan,
 } from './runtime-resume.js';
+
+function runtimeContinuationAuthority(
+  store: RuntimeEventStore | undefined,
+): RuntimeContinuationAuthorityStore | undefined {
+  const candidate = store as Partial<RuntimeContinuationAuthorityStore> | undefined;
+  return candidate?.continuationAuthorityCapability === 'runtime_continuation_authority_v1' &&
+    typeof candidate.readImmutableRuntimePrefix === 'function' &&
+    typeof candidate.claimContinuation === 'function' &&
+    typeof candidate.readContinuationClaimByBoundary === 'function' &&
+    typeof candidate.commitContinuationStart === 'function'
+    ? (candidate as RuntimeContinuationAuthorityStore)
+    : undefined;
+}
 
 export interface StopSessionInput {
   source?: 'stop_button' | 'benchmark_deadline' | 'graph_supervisor';
@@ -1245,9 +1258,17 @@ export class SessionManager {
         if (!this.deps.runStore) throw new Error('AgentRunStore is not configured');
         return this.deps.runStore.readRun(targetSessionId, runId);
       },
-      readRuntimeEvents: async (targetSessionId, runId) => {
-        if (!this.deps.runtimeEventStore) throw new Error('RuntimeEventStore is not configured');
-        return this.deps.runtimeEventStore.readRuntimeEvents(targetSessionId, runId);
+      readImmutableRuntimePrefix: async (prefixInput) => {
+        const authority = runtimeContinuationAuthority(this.deps.runtimeEventStore);
+        if (!authority) {
+          throw new Error('Immutable RuntimeEvent prefix reader is not configured');
+        }
+        return authority.readImmutableRuntimePrefix(prefixInput);
+      },
+      readContinuationClaimByBoundary: async (boundaryDigest) => {
+        const authority = runtimeContinuationAuthority(this.deps.runtimeEventStore);
+        if (!authority) throw new Error('Continuation authority is not configured');
+        return authority.readContinuationClaimByBoundary(boundaryDigest);
       },
       findExistingContinuation: async (
         targetSessionId,
@@ -2891,6 +2912,7 @@ export class SessionManager {
       name: string;
       systemPrompt: string;
       permissionMode: PermissionMode;
+      toolNames: string[];
     };
     if (execution.kind === 'child_session') {
       const [parentRun, child] = await Promise.all([
@@ -2913,77 +2935,97 @@ export class SessionManager {
         name: snapshot.agentName,
         systemPrompt: snapshot.systemPrompt,
         permissionMode: child.permissionMode,
+        toolNames: [...snapshot.toolNames],
       };
     } else {
       if (!sourceRun.parentRunId || sourceRun.parentRunId !== input.parentRunId) {
         throw new Error('Child agent retry source does not belong to the active parent run');
       }
       if (!sourceRun.agentId) throw new Error('Child agent retry source is missing its agent id');
-      definition = requireResolvedAgentDefinition(sourceRun.agentId);
+      const resolved = requireResolvedAgentDefinition(sourceRun.agentId);
+      definition = {
+        ...resolved,
+        toolNames: buildToolsForAgentDefinition(this.deps.childTools ?? [], resolved).map(
+          (tool) => tool.name,
+        ),
+      };
     }
     if (sourceRun.status !== 'failed' || sourceRun.failureClass !== 'RateLimit') {
       throw new Error('Child agent retry source must be a provider rate-limit failure');
     }
     this.assertChildRunHasNoSuccessor(runs, sourceRun.runId);
 
-    const replaySegments: RuntimeEvent[][] = [];
-    let chainRun: AgentRunHeader | undefined = rawSourceRun;
-    const visited = new Set<string>();
-    while (chainRun) {
-      if (visited.has(chainRun.runId))
-        throw new Error('Child agent retry lineage contains a cycle');
-      visited.add(chainRun.runId);
-      const events = await this.deps.runtimeEventStore.readRuntimeEvents(
-        targetSessionId,
-        chainRun.runId,
+    const authority = runtimeContinuationAuthority(this.deps.runtimeEventStore);
+    if (!authority || !this.deps.inspectContinuationSafety) {
+      throw new Error('Child agent retry requires SQLite continuation authority and safety');
+    }
+    const runsById = new Map(runs.map((run) => [run.runId, run]));
+    const planner = new RuntimeContinuationPlanner({
+      readSourceRun: async (_sessionId, runId) => {
+        const raw = runsById.get(runId);
+        if (!raw) throw new Error(`Child agent retry lineage source ${runId} is missing`);
+        const effective =
+          runId === sourceRun.runId
+            ? sourceRun
+            : await this.effectiveRunHeaderFromRuntimeLedger(raw);
+        if (effective.continuationSource) return effective;
+        const previousRunId = effective.retriedFromRunId ?? effective.resumedFromRunId;
+        if (!previousRunId) return effective;
+        const previous = runsById.get(previousRunId);
+        if (!previous)
+          throw new Error(`Child agent retry lineage source ${previousRunId} is missing`);
+        const prefix = await authority.readImmutableRuntimePrefix({
+          sessionId: targetSessionId,
+          runId: previousRunId,
+        });
+        return {
+          ...effective,
+          continuationSource: {
+            sourceInvocationId: prefix.identity.invocationId,
+            sourceRunId: prefix.identity.runId,
+            sourceTurnId: prefix.identity.turnId,
+            sourceRuntimeEventHighWater: prefix.position.lastEventSeq,
+          },
+        };
+      },
+      readImmutableRuntimePrefix: (prefixInput) =>
+        authority.readImmutableRuntimePrefix(prefixInput),
+      readContinuationClaimByBoundary: (boundaryDigest) =>
+        authority.readContinuationClaimByBoundary(boundaryDigest),
+      findExistingContinuation: async (_sessionId, sourceRunId, sourceRuntimeEventHighWater) =>
+        runs.find(
+          (run) =>
+            run.continuationSource?.sourceRunId === sourceRunId &&
+            run.continuationSource.sourceRuntimeEventHighWater === sourceRuntimeEventHighWater,
+        ),
+      newId: this.deps.newId,
+    });
+    const [targetHeader, safety] = await Promise.all([
+      this.deps.store.readHeader(targetSessionId),
+      this.deps.inspectContinuationSafety(targetSessionId),
+    ]);
+    const retryPlan = await planner.plan({
+      sessionId: targetSessionId,
+      sourceRunId: sourceRun.runId,
+      currentCwd: targetHeader.cwd,
+      sourceWorkspaceIdentity: sourceRun.workspaceIdentity ?? sourceRun.cwd,
+      currentWorkspaceIdentity: safety.workspaceIdentity,
+      backgroundOperationsSettled: safety.backgroundOperationsSettled,
+      availableToolNames: definition.toolNames,
+      ...(safety.workspaceCheckpoint ? { workspaceCheckpoint: safety.workspaceCheckpoint } : {}),
+    });
+    if (retryPlan.disposition !== 'continue' || !retryPlan.continuation) {
+      throw new Error(
+        `Child agent retry source is not safely replayable: ${retryPlan.rejectionReasons.join(', ')}`,
       );
-      const plan = buildResumePlanFromRuntimeEvents(events);
-      if (plan.disposition !== 'safe_replay') {
-        throw new Error(`Child agent retry source is not safely replayable: ${chainRun.runId}`);
-      }
-      replaySegments.unshift(plan.replayRuntimeEvents);
-      const previousRunId: string | undefined =
-        chainRun.retriedFromRunId ?? chainRun.resumedFromRunId;
-      if (!previousRunId) break;
-      chainRun = runs.find((run) => run.runId === previousRunId);
-      if (!chainRun) throw new Error('Child agent retry lineage source is missing');
     }
-
-    const sourceEvents = await this.deps.runtimeEventStore.readRuntimeEvents(
-      targetSessionId,
-      sourceRun.runId,
-    );
-    const sourcePlan = buildResumePlanFromRuntimeEvents(sourceEvents);
-    if (sourcePlan.disposition !== 'safe_replay') {
-      throw new Error('Child agent retry source is not safely replayable');
-    }
-    const sourceInvocationId = sourceRun.invocationId ?? sourceEvents[0]?.invocationId;
-    if (!sourceInvocationId) throw new Error('Child agent retry source has no invocation id');
-    const retryReplay = buildRuntimeEventModelReplayPlan(replaySegments.flat());
+    const continuation = retryPlan.continuation;
+    const retryReplay = buildRuntimeEventModelReplayPlan(continuation.runtimeContext);
     const retryAnchor = retryReplay.items[0];
     if (!retryAnchor || retryAnchor.kind !== 'text' || retryAnchor.role !== 'user') {
       throw new Error('Child agent retry source has no user-anchored history');
     }
-    const turnId = this.deps.newId();
-    const runId = this.deps.newId();
-    const invocationId = this.deps.newId();
-    const continuation: RuntimeContinuation = {
-      sessionId: targetSessionId,
-      invocationId,
-      runId,
-      turnId,
-      sourceInvocationId,
-      sourceRunId: sourceRun.runId,
-      sourceTurnId: sourceRun.turnId,
-      sourceRuntimeEventHighWater: sourceEvents.length,
-      sourceRuntimeContext: sourcePlan.replayRuntimeEvents,
-      runtimeContext: replaySegments.flat(),
-      safetySnapshot: {
-        workspaceIdentity: sourceRun.workspaceIdentity ?? sourceRun.cwd,
-        backgroundOperationsSettled: true,
-        availableToolNames: [],
-      },
-    };
+    const { turnId, runId } = continuation;
 
     const startedAt = this.deps.now();
     const summary = new ChildAgentSummaryAccumulator();

@@ -1309,6 +1309,13 @@ export type {
   ToolOperation,
   ToolOperationStatus,
 } from './runtime-resume.js';
+export { buildContinuationReplaySegment } from './continuation-replay.js';
+export type {
+  ContinuationReplayBlockReason,
+  ContinuationReplaySegmentPlanV1,
+  ContinuationReplaySegmentResult,
+  ContinuationReplaySegmentV1,
+} from './continuation-replay.js';
 
 export { resolveRuntimeRecovery } from './recovery-resolver.js';
 export type {

@@ -212,7 +212,10 @@ export function projectRuntimeEventsToStoredMessages(
       projected = true;
     }
 
-    if (event.actions?.stateDelta?.continuationStart === true) {
+    if (
+      event.actions?.stateDelta?.continuationStart === true ||
+      event.actions?.continuationStart !== undefined
+    ) {
       // Continuation start is a canonical lineage/recovery fact with no
       // legacy chat row. Its following model events own the visible output.
       projected = true;

@@ -4,6 +4,9 @@ import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import {
   DEEP_RESEARCH_SESSION_LABEL,
+  RUNTIME_CONTINUATION_AUTHORITY_V1,
+  buildImmutableRuntimePrefix,
+  decodeContinuationClaim,
   deriveTurnRecords,
   isSessionInlineRun,
   isTerminalRuntimeEvent,
@@ -19,6 +22,9 @@ import type {
   AgentRunEvent,
   AgentRunHeader,
   AgentRunStore,
+  ContinuationClaimV1,
+  RuntimeBoundaryDigest,
+  RuntimeContinuationAuthorityStore,
   RuntimeEvent,
   RuntimeEventStore,
   SessionEvent,
@@ -1188,6 +1194,11 @@ describe('SessionManager child-session runtime primitive', () => {
       runtimeEventStore: runStore,
       backends,
       childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+      inspectContinuationSafety: async () => ({
+        workspaceIdentity: '/tmp/cwd',
+        backgroundOperationsSettled: true,
+        availableToolNames: [],
+      }),
       newId: nextId(),
       now: nextNow(145),
       runtimeSource: 'test',
@@ -1248,6 +1259,15 @@ describe('SessionManager child-session runtime primitive', () => {
     expect(isSessionInlineRun(retryRun)).toBe(true);
     expect(retryRun.parentRunId).toBe(undefined);
     expect(retryRun.retriedFromRunId).toBe(resumed.runId);
+    expect(retryRun.continuationSource).toMatchObject({
+      protocol: 'continuation_source_v2',
+      sourceRunId: resumed.runId,
+    });
+    const retryStart = (
+      await runStore.readImmutableRuntimeEvents(child.childSessionId, retried.runId!)
+    )[0]?.actions?.continuationStart;
+    expect(retryStart?.protocol).toBe('continuation_start_v2');
+    expect(retryStart?.immediateSource.runId).toBe(resumed.runId);
     await expectRejects(
       manager.prepareChildAgentResume(parent.id, child.runId),
       /already has a successor/,
@@ -1323,6 +1343,11 @@ describe('SessionManager child-session runtime primitive', () => {
       runtimeEventStore: runStore,
       backends,
       childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+      inspectContinuationSafety: async () => ({
+        workspaceIdentity: '/tmp/cwd',
+        backgroundOperationsSettled: true,
+        availableToolNames: [],
+      }),
       newId: nextId(),
       now: nextNow(155),
       runtimeSource: 'test',
@@ -3993,13 +4018,23 @@ describe('SessionManager permission mode updates', () => {
       session.id,
       plan.continuation.runId,
     );
-    expect(continuationEvents[0]?.actions?.stateDelta).toEqual({ continuationStart: true });
-    expect(continuationEvents[0]?.refs).toMatchObject({
-      sourceInvocationId,
-      sourceRunId,
-      sourceTurnId,
-      sourceRuntimeEventHighWater: sourceEvents.length,
+    expect(continuationEvents[0]?.actions?.continuationStart).toMatchObject({
+      protocol: 'continuation_start_v2',
+      claimId: plan.continuation.claimId,
+      boundaryDigest: plan.continuation.boundary?.manifestDigest,
+      immediateSource: {
+        sessionId: session.id,
+        invocationId: sourceInvocationId,
+        runId: sourceRunId,
+        turnId: sourceTurnId,
+        highWater: sourceEvents.length,
+        prefixDigest: plan.continuation.boundary?.segments.at(-1)?.prefixDigest,
+      },
+      replayManifestDigest: plan.continuation.boundary?.manifestDigest,
+      providerProjectionVersion: 1,
+      providerReplayDigest: plan.continuation.providerReplayDigest,
     });
+    expect(continuationEvents[0]?.refs).toBe(undefined);
     expect(continuationEvents.some((event) => event.role === 'user')).toBe(false);
     expect((await store.readMessages(session.id)).some((message) => message.type === 'user')).toBe(
       false,
@@ -4407,7 +4442,7 @@ describe('SessionManager permission mode updates', () => {
     await collectSessionEvents(manager.resumeSafeBoundaryContinuation(firstPlan.continuation));
     await expectRejects(
       collectSessionEvents(manager.resumeSafeBoundaryContinuation(stalePlan.continuation)),
-      /already has a continuation/i,
+      /boundary is already claimed/i,
     );
 
     expect(backendCalls).toBe(1);
@@ -4699,8 +4734,9 @@ describe('SessionManager permission mode updates', () => {
       manager.resumeSafeBoundaryContinuation(plan.continuation),
     );
     await continuationCommitted.promise;
-    await manager.stopSession(session.id, { source: 'stop_button' });
+    const stop = manager.stopSession(session.id, { source: 'stop_button' });
     releaseContinuationCommit.release();
+    await stop;
     await execution.catch(() => []);
 
     expect(backendCalls).toBe(0);
@@ -4708,7 +4744,7 @@ describe('SessionManager permission mode updates', () => {
     expect(targetRun.status).toBe('cancelled');
     const targetEvents = await runStore.readRuntimeEvents(session.id, plan.continuation.runId);
     expect(
-      targetEvents.filter((event) => event.actions?.stateDelta?.continuationStart === true),
+      targetEvents.filter((event) => event.actions?.continuationStart !== undefined),
     ).toHaveLength(1);
     expect(targetEvents.filter(isTerminalRuntimeEvent)).toHaveLength(1);
   });
@@ -9663,6 +9699,11 @@ describe('SessionManager permission mode updates', () => {
       runtimeEventStore: runStore,
       backends,
       childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+      inspectContinuationSafety: async () => ({
+        workspaceIdentity: '/tmp/cwd',
+        backgroundOperationsSettled: true,
+        availableToolNames: [],
+      }),
       newId: nextId(),
       now: nextNow(6_843),
       runtimeSource: 'test',
@@ -9756,7 +9797,15 @@ describe('SessionManager permission mode updates', () => {
     ).toBe(true);
     const retryRun = await runStore.readRun(session.id, retried.runId!);
     expect(retryRun.retriedFromRunId).toBe(second.runId);
-    expect(retryRun.continuationSource).toBe(undefined);
+    expect(isSessionInlineRun(retryRun)).toBe(false);
+    expect(retryRun.continuationSource).toMatchObject({
+      protocol: 'continuation_source_v2',
+      sourceRunId: second.runId,
+    });
+    const retryStart = (await runStore.readImmutableRuntimeEvents(session.id, retried.runId!))[0]
+      ?.actions?.continuationStart;
+    expect(retryStart?.protocol).toBe('continuation_start_v2');
+    expect(retryStart?.immediateSource.runId).toBe(second.runId);
     expect(
       (await store.readMessages(session.id)).filter(
         (message) => 'turnId' in message && message.turnId === retried.turnId,
@@ -10309,6 +10358,11 @@ describe('SessionManager permission mode updates', () => {
       runtimeEventStore: runStore,
       backends,
       childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+      inspectContinuationSafety: async () => ({
+        workspaceIdentity: '/tmp/cwd',
+        backgroundOperationsSettled: true,
+        availableToolNames: [],
+      }),
       newId: nextId(),
       now: nextNow(6_845),
       runtimeSource: 'test',
@@ -18261,12 +18315,16 @@ class MemorySessionStore implements SessionStore {
   }
 }
 
-class MemoryAgentRunStore implements AgentRunStore, RuntimeEventStore {
+class MemoryAgentRunStore
+  implements AgentRunStore, RuntimeEventStore, RuntimeContinuationAuthorityStore
+{
+  readonly continuationAuthorityCapability = RUNTIME_CONTINUATION_AUTHORITY_V1;
   listSessionRunsCalls = 0;
   readEventsCalls = 0;
   private headers = new Map<string, AgentRunHeader>();
   private events = new Map<string, AgentRunEvent[]>();
   private runtimeEvents = new Map<string, RuntimeEvent[]>();
+  private continuationClaims = new Map<string, ContinuationClaimV1>();
   private runtimeEventAppendCount = 0;
 
   constructor(
@@ -18408,9 +18466,64 @@ class MemoryAgentRunStore implements AgentRunStore, RuntimeEventStore {
 
   async readImmutableRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]> {
     if (this.options.failRuntimeEventReads) throw new Error('runtime event read failed');
+    await this.options.beforeRuntimeEventRead?.(sessionId, runId);
     return (this.runtimeEvents.get(key(sessionId, runId)) ?? [])
       .filter((event) => event.partial !== true)
       .map(copyRuntimeEvent);
+  }
+
+  async readImmutableRuntimePrefix(input: {
+    sessionId: string;
+    runId: string;
+    upToEventSeq?: number;
+  }) {
+    const events = await this.readImmutableRuntimeEvents(input.sessionId, input.runId);
+    const selected =
+      input.upToEventSeq === undefined ? events : events.slice(0, input.upToEventSeq);
+    const first = selected[0];
+    if (!first || selected.length !== (input.upToEventSeq ?? selected.length)) {
+      throw new Error('immutable RuntimeEvent prefix is unavailable');
+    }
+    return buildImmutableRuntimePrefix(
+      {
+        sessionId: first.sessionId,
+        invocationId: first.invocationId,
+        runId: first.runId,
+        turnId: first.turnId,
+      },
+      selected.map((event, index) => ({ eventSeq: index + 1, event })),
+    );
+  }
+
+  async claimContinuation(input: { claim: ContinuationClaimV1 }) {
+    const claim = decodeContinuationClaim(input.claim);
+    const existing = this.continuationClaims.get(claim.boundaryDigest);
+    if (existing) return { kind: 'existing' as const, claim: existing };
+    const conflict = [...this.continuationClaims.values()].find(
+      (candidate) =>
+        candidate.target.invocationId === claim.target.invocationId ||
+        candidate.target.runId === claim.target.runId ||
+        (candidate.target.sessionId === claim.target.sessionId &&
+          candidate.target.turnId === claim.target.turnId),
+    );
+    if (conflict) return { kind: 'conflict' as const, claim: conflict };
+    this.continuationClaims.set(claim.boundaryDigest, claim);
+    return { kind: 'acquired' as const, claim };
+  }
+
+  async readContinuationClaimByBoundary(
+    boundaryDigest: RuntimeBoundaryDigest,
+  ): Promise<ContinuationClaimV1 | undefined> {
+    return this.continuationClaims.get(boundaryDigest);
+  }
+
+  async commitContinuationStart(input: { claim: ContinuationClaimV1; event: RuntimeEvent }) {
+    await this.appendRuntimeEvent(
+      input.claim.target.sessionId,
+      input.claim.target.runId,
+      input.event,
+    );
+    return { created: true, runtimeEventSeq: 1 };
   }
 
   async readSessionRuntimeEvents(sessionId: string): Promise<RuntimeEvent[]> {

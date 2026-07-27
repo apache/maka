@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import {
+  buildImmutableRuntimePrefix,
+  createRuntimeBoundaryCursor,
+  runtimePrefixSegment,
+  type ImmutableRuntimePrefixV1,
+} from '@maka/core/runtime-boundary';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 
 import type { FlowInput } from '../agent-flow.js';
@@ -72,17 +78,9 @@ test('RuntimeRunner continues from replay context without synthesizing another u
 
   let capturedContext: InvocationContext | undefined;
   let capturedInput: FlowInput | undefined;
-  const committedStartEvents: RuntimeEvent[] = [];
   const runner = new RuntimeRunner({
-    commitContinuationStart: async (candidate) => {
-      committedStartEvents.push(candidate);
-    },
     flow: {
       async *run(context, input) {
-        assert.deepEqual(
-          committedStartEvents.map((candidate) => candidate.id),
-          ['continuation-start'],
-        );
         capturedContext = context;
         capturedInput = input;
         yield event({
@@ -107,15 +105,8 @@ test('RuntimeRunner continues from replay context without synthesizing another u
   assert.equal(result.turnId, 'turn-2');
   assert.deepEqual(
     result.events.map((candidate) => candidate.id),
-    ['continuation-start', 'continued-complete'],
+    ['continued-complete'],
   );
-  assert.deepEqual(result.events[0]?.refs, {
-    sourceInvocationId: 'invocation-1',
-    sourceRunId: 'run-1',
-    sourceTurnId: 'turn-1',
-    sourceRuntimeEventHighWater: 3,
-  });
-  assert.deepEqual(committedStartEvents, [result.events[0]]);
   assert.equal(capturedContext?.request.continuation?.sourceRunId, 'run-1');
   assert.deepEqual(capturedInput?.runtimeContext, sourceEvents);
   assert.equal(capturedInput?.continuation?.sourceRuntimeEventHighWater, 3);
@@ -231,10 +222,11 @@ test('RuntimeContinuationPlanner reads the durable source boundary and allocates
       actions: { endInvocation: true },
     }),
   ];
-  const ids = ['invocation-2', 'run-2', 'turn-2'];
+  const sourcePrefix = immutablePrefix(sourceEvents);
+  const ids = ['invocation-2', 'run-2', 'turn-2', 'claim-2'];
   const planner = new RuntimeContinuationPlanner({
     readSourceRun: async () => ({ cwd: '/workspace/repo', status: 'failed' }),
-    readRuntimeEvents: async () => sourceEvents,
+    readImmutableRuntimePrefix: async () => sourcePrefix,
     newId: () => ids.shift() ?? 'unexpected-id',
   });
 
@@ -258,7 +250,22 @@ test('RuntimeContinuationPlanner reads the durable source boundary and allocates
     sourceRunId: 'run-1',
     sourceTurnId: 'turn-1',
     sourceRuntimeEventHighWater: 2,
+    claimId: 'claim-2',
     runtimeContext: sourceEvents,
+    boundary: {
+      protocol: 'runtime_boundary_cursor_v1',
+      segments: [
+        {
+          protocol: 'runtime_prefix_segment_v1',
+          identity: sourcePrefix.identity,
+          position: sourcePrefix.position,
+          prefixDigest: sourcePrefix.prefixDigest,
+        },
+      ],
+      manifestDigest: plan.continuation?.boundary?.manifestDigest,
+    },
+    providerReplayDigest: plan.continuation?.providerReplayDigest,
+    providerProjectionVersion: 1,
     safetySnapshot: {
       workspaceIdentity: 'workspace-1',
       backgroundOperationsSettled: true,
@@ -310,7 +317,7 @@ test('RuntimeRunner rejects a continuation envelope whose high-water is behind i
 test('RuntimeContinuationPlanner parks with a stable reason when the ledger cannot be read', async () => {
   const planner = new RuntimeContinuationPlanner({
     readSourceRun: async () => ({ cwd: '/workspace/repo', status: 'failed' }),
-    readRuntimeEvents: async () => {
+    readImmutableRuntimePrefix: async () => {
       throw new Error('corrupt ledger');
     },
     newId: () => 'unused',
@@ -333,14 +340,15 @@ test('RuntimeContinuationPlanner parks with a stable reason when the ledger cann
 test('RuntimeContinuationPlanner derives terminal repair from durable run and event facts', async () => {
   const planner = new RuntimeContinuationPlanner({
     readSourceRun: async () => ({ cwd: '/workspace/repo', status: 'running' }),
-    readRuntimeEvents: async () => [
-      event({
-        id: 'source-user',
-        role: 'user',
-        author: 'user',
-        content: { kind: 'text', text: 'continue' },
-      }),
-    ],
+    readImmutableRuntimePrefix: async () =>
+      immutablePrefix([
+        event({
+          id: 'source-user',
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'continue' },
+        }),
+      ]),
     newId: () => 'fresh-id',
   });
 
@@ -361,21 +369,22 @@ test('RuntimeContinuationPlanner derives terminal repair from durable run and ev
 test('RuntimeContinuationPlanner parks when the terminal run header disagrees with the ledger fact', async () => {
   const planner = new RuntimeContinuationPlanner({
     readSourceRun: async () => ({ cwd: '/workspace/repo', status: 'completed' }),
-    readRuntimeEvents: async () => [
-      event({
-        id: 'source-user',
-        role: 'user',
-        author: 'user',
-        content: { kind: 'text', text: 'continue' },
-      }),
-      event({
-        id: 'source-terminal',
-        role: 'system',
-        author: 'system',
-        status: 'failed',
-        actions: { endInvocation: true },
-      }),
-    ],
+    readImmutableRuntimePrefix: async () =>
+      immutablePrefix([
+        event({
+          id: 'source-user',
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'continue' },
+        }),
+        event({
+          id: 'source-terminal',
+          role: 'system',
+          author: 'system',
+          status: 'failed',
+          actions: { endInvocation: true },
+        }),
+      ]),
     newId: () => 'fresh-id',
   });
 
@@ -396,23 +405,24 @@ test('RuntimeContinuationPlanner parks when the terminal run header disagrees wi
 test('RuntimeContinuationPlanner rejects a ledger returned for another source run', async () => {
   const planner = new RuntimeContinuationPlanner({
     readSourceRun: async () => ({ cwd: '/workspace/repo', status: 'failed' }),
-    readRuntimeEvents: async () => [
-      event({
-        id: 'wrong-user',
-        runId: 'run-other',
-        role: 'user',
-        author: 'user',
-        content: { kind: 'text', text: 'continue' },
-      }),
-      event({
-        id: 'wrong-terminal',
-        runId: 'run-other',
-        role: 'system',
-        author: 'system',
-        status: 'failed',
-        actions: { endInvocation: true },
-      }),
-    ],
+    readImmutableRuntimePrefix: async () =>
+      immutablePrefix([
+        event({
+          id: 'wrong-user',
+          runId: 'run-other',
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'continue' },
+        }),
+        event({
+          id: 'wrong-terminal',
+          runId: 'run-other',
+          role: 'system',
+          author: 'system',
+          status: 'failed',
+          actions: { endInvocation: true },
+        }),
+      ]),
     newId: () => 'fresh-id',
   });
 
@@ -430,6 +440,299 @@ test('RuntimeContinuationPlanner rejects a ledger returned for another source ru
   assert.deepEqual(plan.rejectionReasons, ['runtime_identity_mismatch']);
 });
 
+test('RuntimeContinuationPlanner fails a cyclic continuation lineage closed', async () => {
+  const runs = {
+    'run-1': {
+      cwd: '/workspace/repo',
+      status: 'failed',
+      continuationSource: {
+        sourceInvocationId: 'invocation-2',
+        sourceRunId: 'run-2',
+        sourceTurnId: 'turn-2',
+        sourceRuntimeEventHighWater: 1,
+      },
+    },
+    'run-2': {
+      cwd: '/workspace/repo',
+      status: 'failed',
+      continuationSource: {
+        sourceInvocationId: 'invocation-1',
+        sourceRunId: 'run-1',
+        sourceTurnId: 'turn-1',
+        sourceRuntimeEventHighWater: 1,
+      },
+    },
+  } as const;
+  const prefixes = new Map([
+    ['run-1', prefixForIdentity('invocation-1', 'run-1', 'turn-1')],
+    ['run-2', prefixForIdentity('invocation-2', 'run-2', 'turn-2')],
+  ]);
+  const planner = new RuntimeContinuationPlanner({
+    readSourceRun: async (_sessionId, runId) => runs[runId as keyof typeof runs],
+    readImmutableRuntimePrefix: async ({ runId }) => prefixes.get(runId)!,
+    newId: () => 'unused',
+  });
+
+  const plan = await planner.plan({
+    sessionId: 'session-1',
+    sourceRunId: 'run-1',
+    currentCwd: '/workspace/repo',
+    sourceWorkspaceIdentity: 'workspace-1',
+    currentWorkspaceIdentity: 'workspace-1',
+    backgroundOperationsSettled: true,
+    availableToolNames: [],
+  });
+
+  assert.equal(plan.disposition, 'park');
+  assert.deepEqual(plan.rejectionReasons, ['runtime_lineage_cycle']);
+});
+
+test('RuntimeContinuationPlanner parks when a continuation ancestor is unavailable', async () => {
+  const source = prefixForIdentity('invocation-2', 'run-2', 'turn-2');
+  const planner = new RuntimeContinuationPlanner({
+    readSourceRun: async (_sessionId, runId) => {
+      if (runId === 'run-2') {
+        return {
+          cwd: '/workspace/repo',
+          status: 'failed',
+          continuationSource: {
+            sourceInvocationId: 'invocation-1',
+            sourceRunId: 'run-missing',
+            sourceTurnId: 'turn-1',
+            sourceRuntimeEventHighWater: 1,
+          },
+        };
+      }
+      throw new Error('missing ancestor');
+    },
+    readImmutableRuntimePrefix: async ({ runId }) => {
+      if (runId === 'run-2') return source;
+      throw new Error('missing ancestor prefix');
+    },
+    newId: () => 'unused',
+  });
+
+  const plan = await planner.plan({
+    sessionId: 'session-1',
+    sourceRunId: 'run-2',
+    currentCwd: '/workspace/repo',
+    sourceWorkspaceIdentity: 'workspace-1',
+    currentWorkspaceIdentity: 'workspace-1',
+    backgroundOperationsSettled: true,
+    availableToolNames: [],
+  });
+
+  assert.equal(plan.disposition, 'park');
+  assert.deepEqual(plan.rejectionReasons, ['runtime_lineage_missing']);
+});
+
+test('RuntimeContinuationPlanner caps continuation lineage at 64 segments', async () => {
+  const runs = new Map<
+    string,
+    {
+      cwd: string;
+      status: string;
+      continuationSource: {
+        sourceInvocationId: string;
+        sourceRunId: string;
+        sourceTurnId: string;
+        sourceRuntimeEventHighWater: number;
+      };
+    }
+  >();
+  const prefixes = new Map<string, ImmutableRuntimePrefixV1>();
+  for (let index = 1; index <= 64; index += 1) {
+    const runId = `run-${index}`;
+    runs.set(runId, {
+      cwd: '/workspace/repo',
+      status: 'failed',
+      continuationSource: {
+        sourceInvocationId: `invocation-${index + 1}`,
+        sourceRunId: `run-${index + 1}`,
+        sourceTurnId: `turn-${index + 1}`,
+        sourceRuntimeEventHighWater: 1,
+      },
+    });
+    prefixes.set(runId, prefixForIdentity(`invocation-${index}`, runId, `turn-${index}`));
+  }
+  const planner = new RuntimeContinuationPlanner({
+    readSourceRun: async (_sessionId, runId) => {
+      const run = runs.get(runId);
+      if (!run) throw new Error('unexpected lineage read');
+      return run;
+    },
+    readImmutableRuntimePrefix: async ({ runId }) => {
+      const prefix = prefixes.get(runId);
+      if (!prefix) throw new Error('unexpected lineage prefix read');
+      return prefix;
+    },
+    newId: () => 'unused',
+  });
+
+  const plan = await planner.plan({
+    sessionId: 'session-1',
+    sourceRunId: 'run-1',
+    currentCwd: '/workspace/repo',
+    sourceWorkspaceIdentity: 'workspace-1',
+    currentWorkspaceIdentity: 'workspace-1',
+    backgroundOperationsSettled: true,
+    availableToolNames: [],
+  });
+
+  assert.equal(plan.disposition, 'park');
+  assert.deepEqual(plan.rejectionReasons, ['runtime_lineage_depth_exceeded']);
+});
+
+test('RuntimeContinuationPlanner verifies a v2 lineage edge prefix digest', async () => {
+  const ancestor = prefixForIdentity('invocation-1', 'run-1', 'turn-1');
+  const source = immutablePrefix([
+    event({
+      id: 'run-2-start',
+      invocationId: 'invocation-2',
+      runId: 'run-2',
+      turnId: 'turn-2',
+      role: 'system',
+      author: 'system',
+      actions: {
+        continuationStart: {
+          protocol: 'continuation_start_v2',
+          claimId: 'claim-1',
+          boundaryDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          immediateSource: {
+            sessionId: 'session-1',
+            invocationId: 'invocation-1',
+            runId: 'run-1',
+            turnId: 'turn-1',
+            highWater: 1,
+            prefixDigest: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          },
+          replayManifestDigest:
+            'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          providerProjectionVersion: 1,
+          providerReplayDigest:
+            'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+        },
+      },
+    }),
+  ]);
+  const planner = new RuntimeContinuationPlanner({
+    readSourceRun: async (_sessionId, runId) =>
+      runId === 'run-2'
+        ? {
+            cwd: '/workspace/repo',
+            status: 'failed',
+            continuationSource: {
+              protocol: 'continuation_source_v2',
+              claimId: 'claim-1',
+              boundaryDigest:
+                'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+              sourceInvocationId: 'invocation-1',
+              sourceRunId: 'run-1',
+              sourceTurnId: 'turn-1',
+              sourceRuntimeEventHighWater: 1,
+              sourcePrefixDigest:
+                'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+              replayManifestDigest:
+                'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            },
+          }
+        : { cwd: '/workspace/repo', status: 'failed' },
+    readImmutableRuntimePrefix: async ({ runId }) => (runId === 'run-2' ? source : ancestor),
+    newId: () => 'unused',
+  });
+
+  const plan = await planner.plan({
+    sessionId: 'session-1',
+    sourceRunId: 'run-2',
+    currentCwd: '/workspace/repo',
+    sourceWorkspaceIdentity: 'workspace-1',
+    currentWorkspaceIdentity: 'workspace-1',
+    backgroundOperationsSettled: true,
+    availableToolNames: [],
+  });
+
+  assert.equal(plan.disposition, 'park');
+  assert.deepEqual(plan.rejectionReasons, ['source_prefix_digest_mismatch']);
+});
+
+test('RuntimeContinuationPlanner binds every v2 lineage edge to its continuation-start T1', async () => {
+  const ancestor = prefixForIdentity('invocation-1', 'run-1', 'turn-1');
+  const ancestorBoundary = createRuntimeBoundaryCursor([runtimePrefixSegment(ancestor)]);
+  const sourceIdentity = {
+    sessionId: 'session-1',
+    invocationId: 'invocation-2',
+    runId: 'run-2',
+    turnId: 'turn-2',
+  };
+  const source = immutablePrefix([
+    event({
+      id: 'continuation-start-2',
+      ...sourceIdentity,
+      role: 'system',
+      author: 'system',
+      actions: {
+        continuationStart: {
+          protocol: 'continuation_start_v2',
+          claimId: 'forged-claim',
+          boundaryDigest: ancestorBoundary.manifestDigest,
+          immediateSource: {
+            ...ancestor.identity,
+            highWater: ancestor.position.lastEventSeq,
+            prefixDigest: ancestor.prefixDigest,
+          },
+          replayManifestDigest: ancestorBoundary.manifestDigest,
+          providerProjectionVersion: 1,
+          providerReplayDigest:
+            'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+        },
+      },
+    }),
+    event({
+      id: 'run-2-terminal',
+      ...sourceIdentity,
+      role: 'system',
+      author: 'system',
+      status: 'failed',
+      actions: { endInvocation: true },
+    }),
+  ]);
+  const planner = new RuntimeContinuationPlanner({
+    readSourceRun: async (_sessionId, runId) =>
+      runId === 'run-2'
+        ? {
+            cwd: '/workspace/repo',
+            status: 'failed',
+            continuationSource: {
+              protocol: 'continuation_source_v2',
+              claimId: 'claim-expected',
+              boundaryDigest: ancestorBoundary.manifestDigest,
+              sourceInvocationId: ancestor.identity.invocationId,
+              sourceRunId: ancestor.identity.runId,
+              sourceTurnId: ancestor.identity.turnId,
+              sourceRuntimeEventHighWater: ancestor.position.lastEventSeq,
+              sourcePrefixDigest: ancestor.prefixDigest,
+              replayManifestDigest: ancestorBoundary.manifestDigest,
+            },
+          }
+        : { cwd: '/workspace/repo', status: 'failed' },
+    readImmutableRuntimePrefix: async ({ runId }) => (runId === 'run-2' ? source : ancestor),
+    newId: () => 'unused',
+  });
+
+  const plan = await planner.plan({
+    sessionId: 'session-1',
+    sourceRunId: 'run-2',
+    currentCwd: '/workspace/repo',
+    sourceWorkspaceIdentity: 'workspace-1',
+    currentWorkspaceIdentity: 'workspace-1',
+    backgroundOperationsSettled: true,
+    availableToolNames: [],
+  });
+
+  assert.equal(plan.disposition, 'park');
+  assert.deepEqual(plan.rejectionReasons, ['runtime_lineage_start_mismatch']);
+});
+
 function event(overrides: Partial<RuntimeEvent>): RuntimeEvent {
   return {
     id: 'event',
@@ -443,4 +746,39 @@ function event(overrides: Partial<RuntimeEvent>): RuntimeEvent {
     author: 'agent',
     ...overrides,
   };
+}
+
+function immutablePrefix(events: readonly RuntimeEvent[]): ImmutableRuntimePrefixV1 {
+  const first = events[0];
+  if (!first) throw new Error('test immutable prefix requires at least one event');
+  return buildImmutableRuntimePrefix(
+    {
+      sessionId: first.sessionId,
+      invocationId: first.invocationId,
+      runId: first.runId,
+      turnId: first.turnId,
+    },
+    events.map((runtimeEvent, index) => ({
+      eventSeq: index + 1,
+      event: runtimeEvent,
+    })),
+  );
+}
+
+function prefixForIdentity(
+  invocationId: string,
+  runId: string,
+  turnId: string,
+): ImmutableRuntimePrefixV1 {
+  return immutablePrefix([
+    event({
+      id: `${runId}-user`,
+      invocationId,
+      runId,
+      turnId,
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: 'continue' },
+    }),
+  ]);
 }
