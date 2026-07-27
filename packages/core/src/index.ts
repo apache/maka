@@ -16,6 +16,7 @@ export * from './agent-graph-control.js';
 export * from './agent-graph-schedule.js';
 export * from './runtime-policy.js';
 export * from './interaction.js';
+export * from './project.js';
 
 // events.ts
 export type {

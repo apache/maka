@@ -37,4 +37,5 @@ export * from './sqlite-runtime-store.js';
 export * from './runtime-event-transfer.js';
 export * from './mcp-config-store.js';
 export * from './workspace-identity.js';
+export * from './project-catalog.js';
 export * from './session-bundle-policy.js';
