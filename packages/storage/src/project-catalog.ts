@@ -27,9 +27,11 @@ export function isProjectPathMismatchError(error: unknown): error is ProjectPath
 
 export interface ProjectRelinkContext {
   projectId: string;
+  projectAliases: string[];
   destinationPath: string;
   previousLocations: ProjectLocation[];
   conflictingProjectId?: string;
+  conflictingProjectAliases?: string[];
 }
 
 export interface ProjectCatalog {
@@ -303,9 +305,15 @@ class FileProjectCatalog implements ProjectCatalog {
         resolved.kind === 'git' ? resolved.git!.worktreeRoot : resolved.canonicalPath;
       await beforeCommit?.({
         projectId: project.id,
+        projectAliases: [...(project.aliases ?? [])],
         destinationPath: locationPath,
         previousLocations: project.locations.map((location) => ({ ...location })),
-        ...(conflict ? { conflictingProjectId: conflict.id } : {}),
+        ...(conflict
+          ? {
+              conflictingProjectId: conflict.id,
+              conflictingProjectAliases: [...(conflict.aliases ?? [])],
+            }
+          : {}),
       });
       if (conflict) {
         project.aliases = [

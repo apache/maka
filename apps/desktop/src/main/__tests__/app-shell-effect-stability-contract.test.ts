@@ -40,6 +40,12 @@ type CapturedSubscriptions = {
   settingsGet?(): Promise<{ system: { keepSystemAwake: boolean } }>;
 };
 type RendererMakaStub = {
+  app: {
+    sessionProjectInfo(sessionId: string): Promise<{
+      projectPath: string;
+      projectGit: { isGitRepo: boolean };
+    }>;
+  };
   appWindow: {
     subscribeOpenSettings(callback: () => void): () => void;
   };
@@ -339,6 +345,58 @@ describe('AppShell effect stability contract', () => {
 
     assert.equal(snapshots.at(-1), null);
   });
+
+  it('preserves an explicitly persisted no-project selection across hydration', async () => {
+    const context = await importProjectContext();
+    const captured = createCapturedSubscriptions();
+    const root = installReactRenderer(captured);
+    const project = makeProject('available-project', '/workspace/available');
+    window.maka.projects.list = async () => [project];
+    const snapshots: Array<string | null | undefined> = [];
+
+    await render(
+      root,
+      createElement(ProjectContextProbe, {
+        context,
+        persistedComposerDefaults: { projectPath: null, model: null },
+        onSelectedProjectId: (projectId) => snapshots.push(projectId),
+      }),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    assert.equal(snapshots.at(-1), null);
+  });
+
+  it('resolves a session project alias to the surviving active project', async () => {
+    const context = await importProjectContext();
+    const captured = createCapturedSubscriptions();
+    const root = installReactRenderer(captured);
+    const project = {
+      ...makeProject('surviving-project', '/workspace/relocated'),
+      aliases: ['merged-project'],
+    };
+    window.maka.projects.list = async () => [project];
+    const snapshots: Array<string | undefined> = [];
+
+    await render(
+      root,
+      createElement(ProjectContextProbe, {
+        context,
+        sessionId: 'session-1',
+        sessionCwd: '/workspace/relocated',
+        sessionProjectId: 'merged-project',
+        onSelectedProjectId: () => {},
+        onCurrentProjectId: (projectId) => snapshots.push(projectId),
+      }),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    assert.equal(snapshots.at(-1), project.id);
+  });
 });
 
 function BootstrapSubscriptionProbe(props: {
@@ -432,12 +490,23 @@ function KeepSystemAwakeProbe(props: {
 
 function ProjectContextProbe(props: {
   context: ProjectContextModule;
+  persistedComposerDefaults?: { projectPath: string | null; model: null } | null;
+  sessionId?: string;
+  sessionCwd?: string;
+  sessionProjectId?: string | null;
   onSelectedProjectId(projectId: string | null | undefined): void;
+  onCurrentProjectId?(projectId: string | undefined): void;
 }) {
   const state = props.context.useAppShellProjectContext({
     uiLocale: 'zh',
-    persistedComposerDefaults: { projectPath: '/workspace/archived', model: null },
+    persistedComposerDefaults:
+      props.persistedComposerDefaults === undefined
+        ? { projectPath: '/workspace/archived', model: null }
+        : props.persistedComposerDefaults,
     rendererMountedRef: { current: true },
+    sessionId: props.sessionId,
+    sessionCwd: props.sessionCwd,
+    sessionProjectId: props.sessionProjectId,
     onProjectSelected: () => {},
     toastApi: {
       success: () => {},
@@ -447,6 +516,9 @@ function ProjectContextProbe(props: {
   useEffect(() => {
     props.onSelectedProjectId(state.selectedProjectId);
   }, [props, state.selectedProjectId]);
+  useEffect(() => {
+    props.onCurrentProjectId?.(state.currentProject?.id);
+  }, [props, state.currentProject]);
   return null;
 }
 
@@ -567,6 +639,12 @@ async function render(root: Root, element: ReactElement): Promise<void> {
 
 function installFakeMaka(captured: CapturedSubscriptions): void {
   window.maka = {
+    app: {
+      sessionProjectInfo: async () => ({
+        projectPath: '/workspace/relocated',
+        projectGit: { isGitRepo: false },
+      }),
+    },
     appWindow: {
       subscribeOpenSettings: () => noop,
     },

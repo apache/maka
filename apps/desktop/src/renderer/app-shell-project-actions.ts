@@ -177,6 +177,7 @@ export function createAppShellProjectActions(deps: {
   function selectNoProject(): void {
     setSelectedProjectId(null);
     setBranchList(null);
+    saveComposerDefaults({ projectPath: null });
     onProjectSelected(sessionId);
   }
 

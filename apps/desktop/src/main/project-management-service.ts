@@ -48,22 +48,32 @@ export function createProjectManagementService(deps: {
       if (!path) return { ok: false, reason: 'cancelled' };
       let selectedProjectWasRelinked = false;
       const prepareSessions = async (context: {
+        projectId: string;
+        projectAliases: string[];
         destinationPath: string;
         previousLocations: Array<{ path: string }>;
         conflictingProjectId?: string;
+        conflictingProjectAliases?: string[];
       }) => {
         const selectedPath = await deps.getSelectedPath();
         selectedProjectWasRelinked = context.previousLocations.some(
           (location) => location.path === selectedPath,
         );
+        const survivingIds = new Set([context.projectId, ...context.projectAliases]);
+        const conflictingIds = new Set([
+          ...(context.conflictingProjectId ? [context.conflictingProjectId] : []),
+          ...(context.conflictingProjectAliases ?? []),
+        ]);
         for (const header of await deps.sessions.listHeaders()) {
-          if (header.projectId === id) {
-            await deps.sessions.updateHeader(header.id, { cwd: context.destinationPath });
-          } else if (
-            context.conflictingProjectId &&
-            header.projectId === context.conflictingProjectId
-          ) {
-            await deps.sessions.updateHeader(header.id, { projectId: id });
+          if (header.projectId && survivingIds.has(header.projectId)) {
+            await deps.sessions.updateHeader(header.id, {
+              cwd: context.destinationPath,
+              ...(header.projectId !== context.projectId
+                ? { projectId: context.projectId }
+                : {}),
+            });
+          } else if (header.projectId && conflictingIds.has(header.projectId)) {
+            await deps.sessions.updateHeader(header.id, { projectId: context.projectId });
           }
         }
       };

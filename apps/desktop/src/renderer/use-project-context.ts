@@ -85,6 +85,7 @@ export function useAppShellProjectContext(options: {
         setProjects(next);
         setSelectedProjectId((current) => {
           if (current !== undefined) return current;
+          if (persistedComposerDefaults?.projectPath === null) return null;
           const persistedPath = persistedComposerDefaults?.projectPath;
           return (
             next.find((project) =>
@@ -136,7 +137,9 @@ export function useAppShellProjectContext(options: {
       (sessionCwd ? { projectPath: sessionCwd, projectGit: { isGitRepo: false } } : null))
     : appInfo;
   const currentProjectId = sessionId ? (sessionProjectId ?? null) : selectedProjectId;
-  const currentProject = projects.find((project) => project.id === currentProjectId);
+  const currentProject = projects.find(
+    (project) => project.id === currentProjectId || project.aliases?.includes(currentProjectId ?? ''),
+  );
   const branchList =
     branchListState?.contextKey === (sessionId ?? null)
     ? { branches: branchListState.branches, current: branchListState.current }

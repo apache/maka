@@ -115,6 +115,61 @@ test('preparing a default task preserves an explicit no-project selection', asyn
   }
 });
 
+test('selecting no project clears the persisted project default', async () => {
+  const actionsModule = await importProjectActions();
+  const previousLocalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const storage = new Map([
+    [
+      'maka-composer-defaults-v1',
+      JSON.stringify({ projectPath: '/workspace/old-project', model: null }),
+    ],
+  ]);
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+    },
+  });
+
+  try {
+    const actions = actionsModule.createAppShellProjectActions({
+      uiLocale: 'zh',
+      projectPickerPendingRef: { current: false },
+      projectPickerRequestRef: { current: 0 },
+      rendererMountedRef: { current: true },
+      setAppInfo: () => {},
+      setSessionProjectInfo: () => {},
+      setProjectPickerPending: () => {},
+      setBranchPending: () => {},
+      setBranchList: () => {},
+      setProjects: () => {},
+      setSelectedProjectId: () => {},
+      selectedProjectId: 'project-1',
+      projects: [],
+      projectInfo: null,
+      onProjectSelected: () => {},
+      toastApi: {
+        success: () => {},
+        error: () => {},
+      },
+    });
+
+    actions.selectNoProject();
+
+    assert.equal(
+      JSON.parse(storage.get('maka-composer-defaults-v1') ?? '{}').projectPath,
+      null,
+    );
+  } finally {
+    if (previousLocalStorage) {
+      Object.defineProperty(globalThis, 'localStorage', previousLocalStorage);
+    } else {
+      delete (globalThis as { localStorage?: Storage }).localStorage;
+    }
+  }
+});
+
 function makeProject(id: string, path: string): ProjectRecord {
   return {
     id,

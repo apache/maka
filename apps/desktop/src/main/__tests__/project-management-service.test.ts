@@ -97,6 +97,7 @@ test('relinking merges a project that was accidentally added from its new path',
   const base = await mkdtemp(join(tmpdir(), 'maka-project-service-merge-'));
   const oldPath = join(base, 'old-location');
   const newPath = join(base, 'new-location');
+  const secondPath = join(base, 'second-location');
   const storage = join(base, 'storage');
   await mkdir(oldPath);
   let nextDirectory: string | undefined = oldPath;
@@ -177,6 +178,21 @@ test('relinking merges a project that was accidentally added from its new path',
     assert.equal(
       (await sessions.readHeaderSnapshot(newSession.id)).projectId,
       original.project.id,
+    );
+
+    const lateAliasSession = await sessions.create(
+      makeSessionInput(newPath, duplicate.project.id, 'Late alias history'),
+    );
+    await rename(newPath, secondPath);
+    nextDirectory = secondPath;
+    const relinkedAgain = await service.relink(original.project.id);
+
+    assert.equal(relinkedAgain.ok, true);
+    const lateAliasHeader = await sessions.readHeaderSnapshot(lateAliasSession.id);
+    assert.equal(lateAliasHeader.projectId, original.project.id);
+    assert.equal(
+      lateAliasHeader.cwd,
+      await realpath(secondPath),
     );
   } finally {
     await sessions.close?.();
