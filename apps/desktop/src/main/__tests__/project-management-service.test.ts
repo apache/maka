@@ -29,6 +29,7 @@ test('project management service owns selection and reversible lifecycle actions
     assert.equal(added.ok, true);
     if (!added.ok) throw new Error('Expected an added project');
     assert.equal(added.project.id, 'project-1');
+    assert.equal(added.path, await realpath(firstPath));
     assert.equal(selectedPaths.at(-1), added.project.preferredPath);
 
     assert.equal((await service.rename('project-1', '  Renamed  ')).name, 'Renamed');

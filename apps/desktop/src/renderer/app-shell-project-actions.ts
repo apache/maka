@@ -108,10 +108,12 @@ export function createAppShellProjectActions(deps: {
     return next;
   }
 
-  async function selectProjectRecord(project: ProjectRecord, notify: boolean): Promise<boolean> {
-    if (!project.available || project.archivedAt !== undefined) return false;
-    const selected = await window.maka.projects.select(project.id);
-    const info = await window.maka.app.resolveProjectGitInfo(selected.path);
+  async function applySelectedProject(
+    project: ProjectRecord,
+    path: string,
+    notify: boolean,
+  ): Promise<boolean> {
+    const info = await window.maka.app.resolveProjectGitInfo(path);
     if (!info.ok) throw new Error(copy.selectedPathUnreadable);
     setAppInfo({ projectPath: info.projectPath, projectGit: info.projectGit });
     setSelectedProjectId(project.id);
@@ -123,6 +125,12 @@ export function createAppShellProjectActions(deps: {
       toastApi.success(copy.directorySwitchedTitle, project.name);
     }
     return true;
+  }
+
+  async function selectProjectRecord(project: ProjectRecord, notify: boolean): Promise<boolean> {
+    if (!project.available || project.archivedAt !== undefined) return false;
+    const selected = await window.maka.projects.select(project.id);
+    return applySelectedProject(selected.project, selected.path, notify);
   }
 
   async function addProject(): Promise<ProjectRecord | null> {
@@ -137,7 +145,7 @@ export function createAppShellProjectActions(deps: {
       const result = await window.maka.projects.add();
       if (!isCurrentProjectPickerRequest()) return null;
       if (!result.ok) return null;
-      await selectProjectRecord(result.project, true);
+      await applySelectedProject(result.project, result.path, true);
       return result.project;
     } catch (error) {
       if (isCurrentProjectPickerRequest()) {

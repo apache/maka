@@ -262,6 +262,21 @@ describe('sidebar project view mode', () => {
     assert.match(markup, /显示更多/);
   });
 
+  it('does not reopen a manually collapsed project when only session data refreshes', async () => {
+    const list = await readRepo('packages/ui/src/session-history-list.tsx');
+    const projectGroup =
+      list.match(
+        /function ProjectSessionGroup\([\s\S]*?\nfunction SessionTreeRow/,
+      )?.[0] ?? '';
+
+    assert.doesNotMatch(
+      projectGroup,
+      /useEffect\(\(\) => \{[\s\S]*setExpanded\(true\)[\s\S]*props\.sessions/,
+    );
+    assert.match(projectGroup, /observedActiveSessionId/);
+    assert.match(projectGroup, /activeSessionId !== disclosure\.observedActiveSessionId/);
+  });
+
   it('renders linked child sessions directly beneath their parent as normal selectable rows', () => {
     const parent = makeSessionSummary({ id: 'parent', name: 'Parent task' });
     const child = makeSessionSummary({ id: 'child', name: 'Child agent' });

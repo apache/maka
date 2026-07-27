@@ -304,7 +304,9 @@ const makaBridge = {
     list(): Promise<ProjectRecord[]> {
       return ipcRenderer.invoke('projects:list');
     },
-    add(): Promise<{ ok: true; project: ProjectRecord } | { ok: false; reason: 'cancelled' }> {
+    add(): Promise<
+      { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }
+    > {
       return ipcRenderer.invoke('projects:add');
     },
     select(projectId: string): Promise<{ project: ProjectRecord; path: string }> {

@@ -192,6 +192,7 @@ export function useAppShellBootstrapSubscriptions(options: {
   refreshMemoryActive: (failureContext?: 'load') => Promise<void>;
   refreshMessages: (sessionId: string) => Promise<boolean>;
   refreshPlanReminders: (options?: { shouldShowError?: () => boolean }) => Promise<void>;
+  refreshProjects: () => Promise<unknown>;
   refreshShellSettings: () => Promise<void>;
   refreshSkills: (options?: { shouldShowError?: () => boolean }) => Promise<void>;
   refreshManagedSkillSources: (options?: { shouldShowError?: () => boolean }) => Promise<void>;
@@ -219,6 +220,9 @@ export function useAppShellBootstrapSubscriptions(options: {
   const handleSessionChange = useEffectEvent(
     (event: { reason: string; sessionId?: string; ts: number; modelId?: string }) => {
     void options.refreshSessions();
+    if (event.reason === 'created') {
+      void options.refreshProjects();
+    }
     if (event.sessionId) {
       options.setSessionEventHealthBySession((current) => {
         const previous = current[event.sessionId!];

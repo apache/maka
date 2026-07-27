@@ -9,6 +9,22 @@ export type { ProjectLocation, ProjectRecord } from '@maka/core';
 
 const execFileAsync = promisify(execFile);
 
+export class ProjectPathMismatchError extends Error {
+  readonly name = 'ProjectPathMismatchError';
+  readonly code = 'project_path_mismatch';
+
+  constructor(
+    readonly projectId: string,
+    readonly path: string,
+  ) {
+    super(`Path does not belong to project ${projectId}: ${path}`);
+  }
+}
+
+export function isProjectPathMismatchError(error: unknown): error is ProjectPathMismatchError {
+  return error instanceof ProjectPathMismatchError;
+}
+
 export interface ProjectCatalog {
   list(): Promise<ProjectRecord[]>;
   register(path: string): Promise<ProjectRecord>;
@@ -237,7 +253,7 @@ class FileProjectCatalog implements ProjectCatalog {
             (a, b) => b.lastUsedAt - a.lastUsedAt || a.path.localeCompare(b.path),
           )[0];
       if (resolvedPath && !location) {
-        throw new Error(`Path does not belong to project ${projectId}: ${resolvedPath}`);
+        throw new ProjectPathMismatchError(projectId, resolvedPath);
       }
       const timestamp = this.now();
       if (location) location.lastUsedAt = timestamp;

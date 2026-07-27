@@ -55,6 +55,33 @@ test('new sessions reject a project id that does not own the selected directory'
   }
 });
 
+test('new sessions preserve unexpected catalog failures', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-new-session-project-storage-failure-'));
+  const cwd = join(base, 'project');
+  await mkdir(cwd);
+  const catalog = createProjectCatalog(join(base, 'storage'), {
+    createId: () => 'project-1',
+  });
+
+  try {
+    await catalog.register(cwd);
+    const storageFailure = new Error('catalog write failed');
+    await assert.rejects(
+      () =>
+        resolveNewSessionProjectInput(makeInput(cwd, { projectId: 'project-1' }), {
+          list: () => catalog.list(),
+          register: (path) => catalog.register(path),
+          touch: async () => {
+            throw storageFailure;
+          },
+        }),
+      (error) => error === storageFailure,
+    );
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 function makeInput(
   cwd: string,
   overrides: Partial<CreateSessionInput> = {},

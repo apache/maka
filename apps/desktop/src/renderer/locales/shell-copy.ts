@@ -164,8 +164,6 @@ type ShellCopy = {
     readPathFailedTitle: string;
     readPathFailedFallback: string;
     selectDirectoryFailedTitle: string;
-    missingSelection: string;
-    directorySwitchFallback: string;
     selectedPathUnreadable: string;
     directorySwitchedTitle: string;
     projectUpdateFailedTitle: string;
@@ -705,8 +703,6 @@ const SHELL_COPY_BY_LOCALE = {
       readPathFailedTitle: '读取项目路径失败',
       readPathFailedFallback: '项目路径暂时无法读取，请稍后重试。',
       selectDirectoryFailedTitle: '选择工作目录失败',
-      missingSelection: '没有读取到选中的目录，请重新选择。',
-      directorySwitchFallback: '工作目录暂时无法切换，请稍后重试。',
       selectedPathUnreadable: '所选路径不存在或不可读。',
       directorySwitchedTitle: '已切换工作目录',
       projectUpdateFailedTitle: '项目操作失败',
@@ -1172,8 +1168,6 @@ const SHELL_COPY_BY_LOCALE = {
       readPathFailedTitle: 'Could not read project path',
       readPathFailedFallback: 'The project path is temporarily unavailable. Try again later.',
       selectDirectoryFailedTitle: 'Could not select working directory',
-      missingSelection: 'The selected directory could not be read. Select it again.',
-      directorySwitchFallback: 'The working directory could not be changed. Try again later.',
       selectedPathUnreadable: 'The selected path does not exist or cannot be read.',
       directorySwitchedTitle: 'Working directory changed',
       projectUpdateFailedTitle: 'Could not update project',

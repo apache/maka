@@ -360,7 +360,20 @@ function ProjectSessionGroup(props: ProjectGroupSharedProps & {
 }) {
   const copy = getConversationCopy(useUiLocale()).sessions;
   const [revealed, setRevealed] = useState(false);
-  const [expanded, setExpanded] = useState(props.sessions.length > 0);
+  const activeSessionId = props.sessions.some((session) => session.id === props.activeId)
+    ? props.activeId
+    : undefined;
+  const [disclosure, setDisclosure] = useState({
+    expanded: props.sessions.length > 0,
+    observedActiveSessionId: activeSessionId,
+  });
+  if (activeSessionId !== disclosure.observedActiveSessionId) {
+    setDisclosure({
+      expanded: activeSessionId ? true : disclosure.expanded,
+      observedActiveSessionId: activeSessionId,
+    });
+  }
+  const expanded = disclosure.expanded;
   const [editing, setEditing] = useState(false);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const mountedRef = useMountedRef();
@@ -383,12 +396,6 @@ function ProjectSessionGroup(props: ProjectGroupSharedProps & {
     inputRef.current?.focus();
     inputRef.current?.select();
   }, [editing]);
-
-  useEffect(() => {
-    if (props.activeId && props.sessions.some((session) => session.id === props.activeId)) {
-      setExpanded(true);
-    }
-  }, [props.activeId, props.sessions]);
 
   useEffect(() => {
     return () => {
@@ -462,7 +469,12 @@ function ProjectSessionGroup(props: ProjectGroupSharedProps & {
             type="button"
             className="maka-list-project-heading"
             onClick={() => {
-              if (canExpand) setExpanded((current) => !current);
+              if (canExpand) {
+                setDisclosure((current) => ({
+                  ...current,
+                  expanded: !current.expanded,
+                }));
+              }
             }}
             disabled={!canExpand}
             aria-expanded={canExpand ? expanded : false}

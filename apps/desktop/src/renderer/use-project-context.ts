@@ -35,7 +35,7 @@ export function useAppShellProjectContext(options: {
   rendererMountedRef: RefBox<boolean>;
   sessionId?: string;
   sessionCwd?: string;
-  sessionProjectId?: string;
+  sessionProjectId?: string | null;
   onProjectSelected(ownerSessionId?: string): void;
   toastApi: ToastApi;
 }): AppShellProjectActions & {

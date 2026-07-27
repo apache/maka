@@ -27,6 +27,7 @@ type CapturedSubscriptions = {
   connectionSubscribeCount: number;
   planDue?: (reminder: PlanReminder) => void;
   planDueSubscribeCount: number;
+  sessionChange?: (event: { reason: string; sessionId?: string; ts: number }) => void;
   settingsExternalChanged?: () => void;
   settingsGet?(): Promise<{ system: { keepSystemAwake: boolean } }>;
 };
@@ -64,6 +65,33 @@ afterEach(() => {
 });
 
 describe('AppShell effect stability contract', () => {
+  it('refreshes the project catalog when a background session creates a project', async () => {
+    const effects = await importAppShellEffects();
+    const refs = createBootstrapRefs();
+    const captured = createCapturedSubscriptions();
+    const root = installReactRenderer(captured);
+    let projectRefreshes = 0;
+
+    await render(
+      root,
+      createElement(BootstrapSubscriptionProbe, {
+        effects,
+        onConnectionEvent: () => {},
+        onProjectRefresh: () => {
+          projectRefreshes += 1;
+        },
+        refs,
+      }),
+    );
+
+    await act(async () => {
+      captured.sessionChange?.({ reason: 'created', sessionId: 'background-session', ts: 1 });
+      await Promise.resolve();
+    });
+
+    assert.equal(projectRefreshes, 1);
+  });
+
   it('keeps bootstrap subscriptions stable while invoking the latest connection handler', async () => {
     const effects = await importAppShellEffects();
     const refs = createBootstrapRefs();
@@ -256,6 +284,7 @@ describe('AppShell effect stability contract', () => {
 function BootstrapSubscriptionProbe(props: {
   effects: AppShellEffectsModule;
   onConnectionEvent(event: ConnectionEvent): void;
+  onProjectRefresh?(): void;
   onNavSelection?(selection: { section: string }): void;
   onToastAction?(onClick: (() => void) | undefined): void;
   refs: ReturnType<typeof createBootstrapRefs>;
@@ -281,6 +310,10 @@ function BootstrapSubscriptionProbe(props: {
     refreshMemoryActive: async () => {},
     refreshMessages: async () => true,
     refreshPlanReminders: async () => {},
+    refreshProjects: async () => {
+      props.onProjectRefresh?.();
+      return [];
+    },
     refreshShellSettings: async () => {},
     refreshSkills: async () => {},
     refreshManagedSkillSources: async () => {},
@@ -457,7 +490,10 @@ function installFakeMaka(captured: CapturedSubscriptions): void {
     },
     sessions: {
       readMessages: async () => [],
-      subscribeChanges: () => noop,
+      subscribeChanges(callback: (event: { reason: string; sessionId?: string; ts: number }) => void) {
+        captured.sessionChange = callback;
+        return noop;
+      },
       subscribeEvents(_sessionId: string, callback: (event: SessionEvent) => void) {
         captured.activeSessionSubscribeCount += 1;
         captured.activeSessionEvent = callback;

@@ -87,6 +87,9 @@ describe('project context workspace picker', () => {
     const preload = await readRepo('apps/desktop/src/preload/preload.ts');
     const globalTypes = await readRepo('apps/desktop/src/preload/bridge-contract.d.ts');
     const renderer = await readRendererShellCombinedSource();
+    const projectActionsSource = await readRepo(
+      'apps/desktop/src/renderer/app-shell-project-actions.ts',
+    );
     const workspacePickerBlock = renderer.match(/workspacePicker=\{\{[\s\S]*?\n\s*\}\}/)?.[0] ?? '';
 
     assert.match(controller, /let selectedProjectRoot: string \| null = null;/);
@@ -136,8 +139,15 @@ describe('project context workspace picker', () => {
       'project picker must release only the matching pending owner after the native dialog resolves or fails',
     );
     assert.match(
-      renderer,
-      /await selectProjectRecord\(result\.project/,
+      projectActionsSource,
+      /await applySelectedProject\(result\.project, result\.path, true\)/,
+    );
+    assert.doesNotMatch(
+      projectActionsSource.match(
+        /async function addProject\(\): Promise<ProjectRecord \| null> \{[\s\S]*?\n  \}/,
+      )?.[0] ?? '',
+      /async function addProject\(\)[\s\S]*await selectProjectRecord\(result\.project/,
+      'adding a project must not select it a second time after main already adopted the path',
     );
     assert.match(workspacePickerBlock, /pending:\s*projectPickerPending/);
     assert.match(workspacePickerBlock, /projects:\s*projects\.filter/);

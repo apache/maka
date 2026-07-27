@@ -291,7 +291,9 @@ export interface MakaBridge {
   };
   projects: {
     list(): Promise<ProjectRecord[]>;
-    add(): Promise<{ ok: true; project: ProjectRecord } | { ok: false; reason: 'cancelled' }>;
+    add(): Promise<
+      { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }
+    >;
     select(projectId: string): Promise<{ project: ProjectRecord; path: string }>;
     relink(
       projectId: string,

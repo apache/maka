@@ -3,10 +3,13 @@ import type { ProjectCatalog, ProjectRecord } from '@maka/storage';
 type DirectoryActionResult =
   | { ok: true; project: ProjectRecord }
   | { ok: false; reason: 'cancelled' };
+type SelectedDirectoryActionResult =
+  | { ok: true; project: ProjectRecord; path: string }
+  | { ok: false; reason: 'cancelled' };
 
 export interface ProjectManagementService {
   list(): Promise<ProjectRecord[]>;
-  add(): Promise<DirectoryActionResult>;
+  add(): Promise<SelectedDirectoryActionResult>;
   select(projectId: unknown): Promise<{ project: ProjectRecord; path: string }>;
   relink(projectId: unknown): Promise<DirectoryActionResult>;
   rename(projectId: unknown, name: unknown): Promise<ProjectRecord>;
@@ -28,7 +31,7 @@ export function createProjectManagementService(deps: {
       const project = await deps.catalog.register(path);
       const selected = await deps.catalog.select(project.id);
       deps.setSelectedPath(selected.path);
-      return { ok: true, project: selected.project };
+      return { ok: true, project: selected.project, path: selected.path };
     },
 
     async select(projectId) {
