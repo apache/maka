@@ -39,6 +39,11 @@ jobs:
         with:
           node-version: '24'
           cache: npm
+      - uses: astral-sh/setup-uv@v6
+      - name: Install pinned Harbor contract runtime
+        run: |
+          uv tool install "harbor==0.13.2"
+          uv tool dir --bin >> "$GITHUB_PATH"
       - name: Install Linux runtime dependencies
         run: sudo apt-get update && sudo apt-get install -y ripgrep bubblewrap
       # Ubuntu 24.04 hosted runners gate unprivileged user namespaces through
@@ -63,7 +68,10 @@ jobs:
       # test:dist runs the suites against the dist just built above. The
       # workspace `test` scripts each do `clean && build` first, which would
       # throw away this dist and rebuild every package a second time.
-      - run: npm run test:dist
+      - name: Run required test suite
+        env:
+          MAKA_REQUIRE_HARBOR_CONTRACT: '1'
+        run: npm run test:dist
 
   e2e:
     runs-on: ubuntu-latest

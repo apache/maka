@@ -68,9 +68,12 @@ _SECRET_PATTERNS = (
         r"[^&#\s]+"
     ),
     re.compile(
-        r"(?i)((?:--?(?:api[-_]?key|auth[-_]?token|access[-_]?token|token|cookie|set-cookie|password|secret)"
-        r"|(?:api[-_]?key|auth[-_]?token|access[-_]?token|token|cookie|set-cookie|password|secret))"
+        r"(?i)(?<![A-Za-z0-9_])((?:--?(?:api[-_]?key|auth[-_]?token|access[-_]?token|token|cookie|set-cookie|password|secret))"
         r"(?:\s*[:=]\s*|\s+))(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+    ),
+    re.compile(
+        r"(?i)((?:api[-_]?key|auth[-_]?token|access[-_]?token|token|cookie|set-cookie|password|secret)"
+        r"\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
     ),
     re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s,;]+"),
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}"),
@@ -419,6 +422,15 @@ def build_runtime_trajectory(
                         "arguments": arguments,
                         "extra": {
                             "maka_runtime_event_id": _event_id(event),
+                            **(
+                                {
+                                    "maka_provider_options": redact_value(
+                                        content["providerOptions"]
+                                    )
+                                }
+                                if "providerOptions" in content
+                                else {}
+                            ),
                             **(
                                 {"maka_provider_tool_call_id": call_id}
                                 if call_id != correlation_id
@@ -807,16 +819,24 @@ def _is_runtime_content(content: Any) -> bool:
         )
     if kind == "thinking":
         return (
-            set(content) <= {"kind", "text", "signature"}
+            set(content) <= {"kind", "text", "signature", "providerOptions"}
             and isinstance(content.get("text"), str)
             and ("signature" not in content or isinstance(content["signature"], str))
+            and (
+                "providerOptions" not in content
+                or isinstance(content["providerOptions"], dict)
+            )
         )
     if kind == "function_call":
         return (
-            set(content) <= {"kind", "id", "name", "args"}
+            set(content) <= {"kind", "id", "name", "args", "providerOptions"}
             and isinstance(content.get("id"), str)
             and isinstance(content.get("name"), str)
             and "args" in content
+            and (
+                "providerOptions" not in content
+                or isinstance(content["providerOptions"], dict)
+            )
         )
     if kind == "function_response":
         return (
