@@ -96,6 +96,51 @@ export function createOAuthModelConnectionsMainService(deps: OAuthModelConnectio
     return state.runtimeState === 'authenticated' || state.runtimeState === 'refreshing';
   }
 
+  /**
+   * Make a newly authenticated Codex account visible to the product without
+   * waiting for live model discovery. OAuth completion has already persisted
+   * the credential at this point, so the connection can immediately become
+   * usable with the last fetched model list (or the curated fallback list).
+   *
+   * `syncOpenAiCodexConnection` still runs afterwards to replace this
+   * optimistic snapshot with the account's authoritative model catalog.
+   */
+  async function activateOpenAiCodexConnection(): Promise<LlmConnection | null> {
+    if (!isOpenAiCodexExperimentalEnabled()) return null;
+    const state = await deps.openAiCodex.getAccountState();
+    const existing = await deps.connectionStore.get(CODEX_SUBSCRIPTION_CONNECTION_SLUG);
+    if (!isOpenAiCodexAuthenticatedState(state)) return existing;
+
+    const defaults = PROVIDER_DEFAULTS['openai-codex'];
+    const fallbackModels = defaults.fallbackModels.map((id) => ({ id }));
+    const fetchedModels = existing?.modelSource === 'fetched'
+      ? normalizeOpenAiCodexModels(existing.models, [])
+      : [];
+    const models = fetchedModels.length > 0 ? fetchedModels : fallbackModels;
+    const now = Date.now();
+    return deps.connectionStore.save({
+      slug: CODEX_SUBSCRIPTION_CONNECTION_SLUG,
+      name: existing?.name ?? 'Codex OAuth',
+      providerType: 'openai-codex',
+      baseUrl: defaults.baseUrl,
+      defaultModel: normalizeOpenAiCodexDefaultModel(
+        existing?.defaultModel,
+        models.map((entry) => entry.id),
+        defaults.fallbackModels[0] || '',
+      ),
+      enabled: true,
+      enabledModelIds: existing?.enabledModelIds,
+      models,
+      modelSource: fetchedModels.length > 0 ? 'fetched' : 'fallback',
+      modelsFetchedAt: fetchedModels.length > 0 ? existing?.modelsFetchedAt : undefined,
+      lastTestStatus: 'verified',
+      lastTestAt: new Date(now).toISOString(),
+      lastTestMessage: 'Codex OAuth 已登录。',
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    });
+  }
+
   async function syncGitHubCopilotConnection(
     discoveredModels?: Awaited<ReturnType<typeof fetchProviderModels>>,
   ): Promise<LlmConnection | null> {
@@ -381,6 +426,7 @@ export function createOAuthModelConnectionsMainService(deps: OAuthModelConnectio
     resolveConnectionSecret,
     hasConnectionSecret,
     syncClaudeSubscriptionConnection,
+    activateOpenAiCodexConnection,
     syncOpenAiCodexConnection,
     syncGitHubCopilotConnection,
     syncOAuthModelConnections,

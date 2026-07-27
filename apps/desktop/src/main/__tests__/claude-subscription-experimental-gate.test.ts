@@ -440,8 +440,15 @@ describe('Claude OAuth model connection bridge', () => {
     const completeRegion = src.slice(completeIdx, completeIdx + 1200);
     assert.match(
       completeRegion,
-      /if\s*\(\s*result\.ok\s*\)\s*\{[\s\S]*await (?:deps\.)?syncOpenAiCodexConnection\(\);[\s\S]*(?:deps\.)?emitConnectionListChanged\(\);/,
-      'successful Codex OAuth completion must sync the connection and notify renderer',
+      /if\s*\(\s*result\.ok\s*\)\s*\{[\s\S]*await (?:deps\.)?activateOpenAiCodexConnection\(\);[\s\S]*(?:deps\.)?emitConnectionListChanged\(\);[\s\S]*void (?:deps\.)?syncOpenAiCodexConnection\(\)/,
+      'successful Codex OAuth completion must activate immediately, notify renderer, then discover models in the background',
+    );
+    const accountStateIdx = src.indexOf("openai-codex:get-account-state");
+    const accountStateRegion = src.slice(accountStateIdx, accountStateIdx + 500);
+    assert.doesNotMatch(
+      accountStateRegion,
+      /syncOpenAiCodexConnection/,
+      'Codex account-state reads must not trigger slow or mutating model discovery',
     );
     assert.match(
       src,

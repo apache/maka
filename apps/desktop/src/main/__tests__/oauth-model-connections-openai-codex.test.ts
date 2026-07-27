@@ -37,7 +37,11 @@ function makeService(opts: {
   token?: string | null;
   fetchModels?: (conn: LlmConnection, token: string) => Promise<ModelInfo[]>;
   accountState?: { runtimeState: string };
-}): { sync: () => Promise<LlmConnection | null>; getSaved: () => LlmConnection | null } {
+}): {
+  activate: () => Promise<LlmConnection | null>;
+  sync: () => Promise<LlmConnection | null>;
+  getSaved: () => LlmConnection | null;
+} {
   let saved: LlmConnection | null = null;
   const existing = opts.existing ?? null;
   const connectionStore = {
@@ -77,7 +81,11 @@ function makeService(opts: {
     githubCopilotSubscription: {} as never,
     fetchModels: opts.fetchModels,
   } as never);
-  return { sync: () => service.syncOpenAiCodexConnection(), getSaved: () => saved };
+  return {
+    activate: () => service.activateOpenAiCodexConnection(),
+    sync: () => service.syncOpenAiCodexConnection(),
+    getSaved: () => saved,
+  };
 }
 
 describe('syncOpenAiCodexConnection live discovery behavior', () => {
@@ -86,6 +94,52 @@ describe('syncOpenAiCodexConnection live discovery behavior', () => {
       PROVIDER_REGISTRY['openai-codex'].modelDiscovery,
       { kind: 'protocol', auth: 'openai-codex' },
     );
+  });
+
+  it('activates a newly authenticated connection without waiting for model discovery', async () => {
+    let discoveryCalls = 0;
+    const { activate, getSaved } = makeService({
+      existing: makeExisting({
+        enabled: false,
+        lastTestStatus: 'needs_reauth',
+        modelSource: 'fallback',
+      }),
+      token: 'tok',
+      fetchModels: async () => {
+        discoveryCalls += 1;
+        return [{ id: 'gpt-5.6-sol' }];
+      },
+    });
+
+    const result = await activate();
+
+    assert.equal(discoveryCalls, 0);
+    assert.equal(result?.enabled, true);
+    assert.equal(result?.lastTestStatus, 'verified');
+    assert.equal(result?.lastTestMessage, 'Codex OAuth 已登录。');
+    assert.deepEqual(
+      result?.models?.map((model) => model.id),
+      PROVIDER_DEFAULTS['openai-codex'].fallbackModels,
+    );
+    assert.equal(getSaved()?.enabled, true);
+  });
+
+  it('preserves a non-empty fetched model cache during immediate activation', async () => {
+    const existing = makeExisting({
+      enabled: false,
+      lastTestStatus: 'needs_reauth',
+      models: [{ id: 'gpt-5.6-sol' }, { id: 'gpt-5.5' }],
+      modelSource: 'fetched',
+      modelsFetchedAt: 42,
+    });
+    const { activate } = makeService({ existing, token: 'tok' });
+
+    const result = await activate();
+
+    assert.deepEqual(result?.models, existing.models);
+    assert.equal(result?.modelSource, 'fetched');
+    assert.equal(result?.modelsFetchedAt, 42);
+    assert.equal(result?.enabled, true);
   });
 
   it('stamps modelSource=fetched and persists discovered models on success', async () => {

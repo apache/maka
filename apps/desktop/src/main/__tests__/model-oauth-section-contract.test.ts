@@ -962,8 +962,8 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     // catches enabled-model refresh failures.
     assert.match(
       src,
-      /async function refreshAfterModalClose\(\)[\s\S]*?await refreshAllCards\(\)[\s\S]*?await props\.onConnectionsChanged\(\)/,
-      'modal onClose must call refreshAllCards so the card updates after login',
+      /async function refreshAfterOAuthChange\(\)[\s\S]*?await refreshAllCards\(\)[\s\S]*?await props\.onConnectionsChanged\(\)/,
+      'OAuth changes must refresh both the account card and connection list',
     );
     assert.match(
       src,
@@ -972,8 +972,13 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       src,
-      /onClose=\{\(\)\s*=>\s*\{[\s\S]*?void refreshAfterModalClose\(\)/,
+      /onClose=\{\(\)\s*=>\s*\{[\s\S]*?void refreshAfterOAuthChange\(\)/,
       'modal onClose must call the fail-soft refresh helper',
+    );
+    assert.match(
+      src,
+      /<SubscriptionLoginModal[\s\S]*onLoginSuccess=\{refreshAfterOAuthChange\}/,
+      'successful Codex OAuth must refresh immediately without waiting for modal close',
     );
     // 5. Card render shows "已登录" badge when authenticated.
     assert.match(
@@ -997,7 +1002,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     const sectionMatch = src.match(/function ModelOAuthSection[\s\S]*?function ClaudeSubscriptionModal/);
     assert.ok(sectionMatch, 'ModelOAuthSection must exist');
     const section = sectionMatch[0]!;
-    const refreshMatch = section.match(/async function refreshAllCards\(\)[\s\S]*?async function refreshAfterModalClose/);
+    const refreshMatch = section.match(/async function refreshAllCards\(\)[\s\S]*?async function refreshAfterOAuthChange/);
     assert.ok(refreshMatch, 'refreshAllCards must exist inside ModelOAuthSection');
     const refresh = refreshMatch[0]!;
 
@@ -1053,7 +1058,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       section,
-      /async function refreshAfterModalClose\(\) \{[\s\S]*const refreshed = await refreshAllCards\(\);[\s\S]*if \(!modelOAuthMountedRef\.current \|\| !refreshed\) return;[\s\S]*await props\.onConnectionsChanged\(\);/,
+      /async function refreshAfterOAuthChange\(\) \{[\s\S]*const refreshed = await refreshAllCards\(\);[\s\S]*if \(!modelOAuthMountedRef\.current \|\| !refreshed\) return;[\s\S]*await props\.onConnectionsChanged\(\);/,
       'modal close continuation must not refresh enabled providers after a stale OAuth card refresh',
     );
     assert.match(

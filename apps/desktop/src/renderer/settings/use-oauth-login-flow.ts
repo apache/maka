@@ -94,7 +94,8 @@ export function useOAuthLoginFlow(params: {
   display: OAuthLoginFlowDisplay;
   // Fired after a successful completeAuthorization (browser handoff done).
   // The detail sheet uses it to re-probe hasSecret + reload connection status;
-  // the modal leaves it undefined and relies on its own snapshot refresh.
+  // catalog modals use it to refresh both their account card and the shared
+  // model connection list without waiting for the modal to close.
   onLoginSuccess?: () => void | Promise<void>;
   // When present, startLogin runs this one-shot import instead of the
   // getAuthUrl -> openAuthUrl -> completeAuthorization handoff, and the

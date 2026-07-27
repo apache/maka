@@ -34,10 +34,8 @@ interface SubscriptionIpcDeps {
   isClaudeSubscriptionAuthenticatedState(
     state: Awaited<ReturnType<ClaudeSubscriptionService['getAccountState']>>,
   ): boolean;
-  isOpenAiCodexAuthenticatedState(
-    state: Awaited<ReturnType<OpenAiCodexService['getAccountState']>>,
-  ): boolean;
   syncClaudeSubscriptionConnection(): Promise<LlmConnection | null>;
+  activateOpenAiCodexConnection(): Promise<LlmConnection | null>;
   syncOpenAiCodexConnection(): Promise<LlmConnection | null>;
   syncGitHubCopilotConnection(models?: NonNullable<LlmConnection['models']>): Promise<LlmConnection | null>;
   emitConnectionListChanged(): void;
@@ -227,8 +225,17 @@ export function registerSubscriptionIpc(deps: SubscriptionIpcDeps): void {
       }
       const result = await deps.openAiCodex.completeAuthorization(authRequestId);
       if (result.ok) {
-        await deps.syncOpenAiCodexConnection();
+        // OAuth success is authoritative as soon as the credential is stored.
+        // Publish a usable connection immediately; live model discovery can
+        // take up to its network timeout and must not hold the login UI on the
+        // stale `needs_reauth` state.
+        await deps.activateOpenAiCodexConnection();
         deps.emitConnectionListChanged();
+        void deps.syncOpenAiCodexConnection()
+          .then(() => deps.emitConnectionListChanged())
+          .catch((error: unknown) => {
+            console.warn('[maka] Codex model discovery after OAuth failed', error);
+          });
       }
       return result;
     },
@@ -250,11 +257,9 @@ export function registerSubscriptionIpc(deps: SubscriptionIpcDeps): void {
         runtimeState: 'not_logged_in' as const,
       };
     }
-    const state = await deps.openAiCodex.getAccountState();
-    if (deps.isOpenAiCodexAuthenticatedState(state)) {
-      await deps.syncOpenAiCodexConnection();
-    }
-    return state;
+    // Status reads stay read-only and fast. Connection synchronization is
+    // driven by OAuth completion, explicit token refresh, and startup.
+    return deps.openAiCodex.getAccountState();
   });
   ipcMain.handle('openai-codex:refresh-tokens', async () => {
     if (!isOpenAiCodexExperimentalEnabled()) return codexDisabledResponse;

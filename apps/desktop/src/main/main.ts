@@ -23,6 +23,7 @@ import { assembleDesktopTools } from './tool-assembly.js';
 import { createToolArtifactPersistence } from './tool-artifact-persistence.js';
 import { ClaudeSubscriptionService } from './oauth/claude-subscription-service.js';
 import { OpenAiCodexService } from './oauth/openai-codex-service.js';
+import { createOpenAiCodexE2eFixtureService } from './openai-codex-e2e-fixture.js';
 import { GitHubCopilotSubscriptionService } from './oauth/github-copilot-subscription-service.js';
 import { CursorSubscriptionService } from './oauth/cursor-subscription-service.js';
 import { AntigravitySubscriptionService } from './oauth/antigravity-subscription-service.js';
@@ -272,11 +273,13 @@ const claudeSubscription = new ClaudeSubscriptionService({
 // IPC payloads never carry tokens, each gated behind its own
 // MAKA_*_EXPERIMENTAL env var. Antigravity is a `preview` placeholder
 // until the Google client_id question is resolved.
-const openAiCodex = new OpenAiCodexService({
-  userDataDir: app.getPath('userData'),
-  openExternal: (url) => shell.openExternal(url),
-  credentialStore,
-});
+const openAiCodex = e2eFixture?.scenario === 'oauth-relogin'
+  ? createOpenAiCodexE2eFixtureService()
+  : new OpenAiCodexService({
+      userDataDir: app.getPath('userData'),
+      openExternal: (url) => shell.openExternal(url),
+      credentialStore,
+    });
 const githubCopilotSubscription = new GitHubCopilotSubscriptionService({ credentialStore });
 const buildSubscriptionModelFetch = createSubscriptionModelFetch({
   claudeSubscription,
@@ -287,9 +290,11 @@ const oauthModelConnections = createOAuthModelConnectionsMainService({
   claudeSubscription,
   openAiCodex,
   githubCopilotSubscription,
+  ...(e2eFixture?.scenario === 'oauth-relogin'
+    ? { fetchModels: async () => [{ id: 'gpt-5.6-sol' }] }
+    : {}),
 });
 const isClaudeSubscriptionAuthenticatedState = oauthModelConnections.isClaudeSubscriptionAuthenticatedState;
-const isOpenAiCodexAuthenticatedState = oauthModelConnections.isOpenAiCodexAuthenticatedState;
 
 function syncClaudeSubscriptionConnection(): Promise<LlmConnection | null> {
   return oauthModelConnections.syncClaudeSubscriptionConnection();
@@ -297,6 +302,10 @@ function syncClaudeSubscriptionConnection(): Promise<LlmConnection | null> {
 
 function syncOpenAiCodexConnection(): Promise<LlmConnection | null> {
   return oauthModelConnections.syncOpenAiCodexConnection();
+}
+
+function activateOpenAiCodexConnection(): Promise<LlmConnection | null> {
+  return oauthModelConnections.activateOpenAiCodexConnection();
 }
 
 function syncGitHubCopilotConnection(): Promise<LlmConnection | null> {
@@ -964,8 +973,8 @@ function registerIpc(): void {
     cursorSubscription,
     antigravitySubscription,
     isClaudeSubscriptionAuthenticatedState,
-    isOpenAiCodexAuthenticatedState,
     syncClaudeSubscriptionConnection,
+    activateOpenAiCodexConnection,
     syncOpenAiCodexConnection,
     syncGitHubCopilotConnection,
     emitConnectionListChanged,

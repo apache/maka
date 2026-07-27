@@ -150,7 +150,7 @@ export async function writeConnections(workspaceRoot: string, now: number, scena
     // subscription token store (empty here), so the button reads 登录; the
     // hasSecret===true → 重新登录 label is pinned by the detail-sheet contract.
     connections.push({
-      slug: 'codex-oauth',
+      slug: 'codex-subscription',
       name: 'OpenAI Codex Fixture',
       providerType: 'openai-codex',
       defaultModel: 'gpt-5.5',
@@ -185,7 +185,7 @@ function connectionFocusSlug(scenario: E2eFixtureScenario): string | null {
     case 'fetched-empty':
       return 'empty-fetched';
     case 'oauth-relogin':
-      return 'codex-oauth';
+      return 'codex-subscription';
     case 'connection-error':
       return 'broken-provider';
     default:

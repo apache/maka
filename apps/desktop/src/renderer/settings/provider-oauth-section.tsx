@@ -120,7 +120,7 @@ export function ModelOAuthSection(props: { query?: string; onConnectionsChanged(
     return true;
   }
 
-  async function refreshAfterModalClose() {
+  async function refreshAfterOAuthChange() {
     const refreshed = await refreshAllCards();
     if (!modelOAuthMountedRef.current || !refreshed) return;
     try {
@@ -189,7 +189,7 @@ export function ModelOAuthSection(props: { query?: string; onConnectionsChanged(
         <ClaudeSubscriptionModal
           onClose={() => {
             setOpenModal(null);
-            void refreshAfterModalClose();
+            void refreshAfterOAuthChange();
           }}
         />
       )}
@@ -197,17 +197,18 @@ export function ModelOAuthSection(props: { query?: string; onConnectionsChanged(
         <GitHubCopilotSubscriptionModal
           onClose={() => {
             setOpenModal(null);
-            void refreshAfterModalClose();
+            void refreshAfterOAuthChange();
           }}
         />
       )}
       {openModal === 'codex' && (
         <SubscriptionLoginModal
+          onLoginSuccess={refreshAfterOAuthChange}
           onClose={() => {
             setOpenModal(null);
             // Always re-fetch after the modal closes — the user may
             // have logged in, logged out, or cancelled.
-            void refreshAfterModalClose();
+            void refreshAfterOAuthChange();
           }}
         />
       )}
@@ -237,7 +238,7 @@ function ClaudeSubscriptionModal(props: { onClose(): void }) {
   );
 }
 
-function SubscriptionLoginModal(props: { onClose(): void }) {
+function SubscriptionLoginModal(props: { onClose(): void; onLoginSuccess(): void | Promise<void> }) {
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).oauthSection;
   const display: SubscriptionDisplay = {
@@ -253,6 +254,7 @@ function SubscriptionLoginModal(props: { onClose(): void }) {
   const flow = useOAuthLoginFlow({
     bridge: window.maka.openAiCodex as unknown as OAuthLoginFlowBridge,
     display: { name: display.name, shortName: display.shortName },
+    onLoginSuccess: props.onLoginSuccess,
   });
 
   return (
@@ -397,4 +399,3 @@ function presentSnapshotDetail(state: SubscriptionSnapshot | null, display: Subs
   const _exhaustive: never = state.runtimeState;
   return _exhaustive;
 }
-

@@ -386,13 +386,13 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
     case 'fetched-empty':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'models' };
     case 'oauth-relogin':
-      // Open the codex-oauth connection's detail sheet (not just the 模型
+      // Open the persisted Codex connection's detail sheet (not just the 模型
       // section) so the needs_reauth re-login affordance is captured.
       return {
         ...state,
         activeSessionId: TURN_SESSION_ID,
         openSettingsSection: 'models',
-        openConnectionDetailSlug: 'codex-oauth',
+        openConnectionDetailSlug: 'codex-subscription',
       };
     case 'connection-error':
       return { ...state, activeSessionId: ERROR_SESSION_ID, openSettingsSection: 'models' };

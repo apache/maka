@@ -266,6 +266,7 @@ export const test = base.extend<{
   localeSwitchWindow: Page;
   invocableSkillsWindow: Page;
   planRemindersWindow: Page;
+  oauthReloginWindow: Page;
 }>({
   // Seeded: a pre-staged connection clears onboarding so the composer is ready.
   // Used by chat / session / settings / attachment specs.
@@ -440,6 +441,17 @@ export const test = base.extend<{
         seed: false,
         readinessSelector: '.maka-plan-card',
         e2eFixtureScenario: 'plan-reminders',
+        locale: 'zh',
+      },
+      use,
+    );
+  },
+  oauthReloginWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: false,
+        readinessSelector: '[role="dialog"]',
+        e2eFixtureScenario: 'oauth-relogin',
         locale: 'zh',
       },
       use,
