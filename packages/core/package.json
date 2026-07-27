@@ -10,6 +10,7 @@
   "exports": {
     ".": "./dist/index.js",
     "./canonical-runtime-event": "./dist/canonical-runtime-event.js",
+    "./runtime-boundary": "./dist/runtime-boundary.js",
     "./runtime-event": "./dist/runtime-event.js",
     "./tool-args-identity": "./dist/tool-args-identity.js",
     "./tool-ledger-scanner": "./dist/tool-ledger-scanner.js",

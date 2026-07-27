@@ -253,6 +253,23 @@ export interface RuntimeEventProtocolMarker {
   toolBoundary: ToolBoundaryProtocol;
 }
 
+export interface RuntimeEventContinuationStartV2 {
+  protocol: 'continuation_start_v2';
+  claimId: string;
+  boundaryDigest: `sha256:${string}`;
+  immediateSource: {
+    sessionId: string;
+    invocationId: string;
+    runId: string;
+    turnId: string;
+    highWater: number;
+    prefixDigest: `sha256:${string}`;
+  };
+  replayManifestDigest: `sha256:${string}`;
+  providerProjectionVersion: 1;
+  providerReplayDigest: `sha256:${string}`;
+}
+
 interface RuntimeEventAnswerAcceptedIdentity {
   requestId: string;
 }
@@ -301,6 +318,8 @@ export interface RuntimeEventActions {
   toolRecovery?: ToolRecoveryFactEnvelope;
   /** Protocols that were actually active from the first event of this run. */
   runtimeProtocol?: RuntimeEventProtocolMarker;
+  /** Durable provider-call T1 for a claimed continuation. */
+  continuationStart?: RuntimeEventContinuationStartV2;
 }
 
 // ============================================================================
@@ -431,6 +450,7 @@ const RUNTIME_ACTIONS_SHAPE = defineObjectShape<RuntimeEventActions>()(
     'toolDispatch',
     'toolRecovery',
     'runtimeProtocol',
+    'continuationStart',
   ],
 );
 const ANSWER_ACCEPTED_IDENTITY_SHAPE = defineObjectShape<RuntimeEventAnswerAcceptedIdentity>()(
@@ -459,6 +479,21 @@ const RUNTIME_PROTOCOL_MARKER_SHAPE = defineObjectShape<RuntimeEventProtocolMark
   ['toolBoundary'],
   [],
 );
+const RUNTIME_CONTINUATION_START_SHAPE = defineObjectShape<RuntimeEventContinuationStartV2>()(
+  [
+    'protocol',
+    'claimId',
+    'boundaryDigest',
+    'immediateSource',
+    'replayManifestDigest',
+    'providerProjectionVersion',
+    'providerReplayDigest',
+  ],
+  [],
+);
+const RUNTIME_CONTINUATION_SOURCE_SHAPE = defineObjectShape<
+  RuntimeEventContinuationStartV2['immediateSource']
+>()(['sessionId', 'invocationId', 'runId', 'turnId', 'highWater', 'prefixDigest'], []);
 const RUNTIME_TOKEN_USAGE_SHAPE = defineObjectShape<RuntimeEventTokenUsage>()(
   ['input', 'output'],
   [
@@ -636,7 +671,8 @@ function isRuntimeEventActions(value: unknown): value is RuntimeEventActions {
     (value.tokenUsage === undefined || isRuntimeTokenUsage(value.tokenUsage)) &&
     (value.toolDispatch === undefined || isRuntimeToolDispatch(value.toolDispatch)) &&
     (value.toolRecovery === undefined || isToolRecoveryFactEnvelope(value.toolRecovery)) &&
-    (value.runtimeProtocol === undefined || isRuntimeProtocolMarker(value.runtimeProtocol))
+    (value.runtimeProtocol === undefined || isRuntimeProtocolMarker(value.runtimeProtocol)) &&
+    (value.continuationStart === undefined || isRuntimeContinuationStart(value.continuationStart))
   );
 }
 
@@ -701,6 +737,36 @@ function isRuntimeProtocolMarker(value: unknown): value is RuntimeEventProtocolM
     hasExactShape(value, RUNTIME_PROTOCOL_MARKER_SHAPE) &&
     value.toolBoundary === TOOL_BOUNDARY_PROTOCOL_V1
   );
+}
+
+function isRuntimeContinuationStart(value: unknown): value is RuntimeEventContinuationStartV2 {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, RUNTIME_CONTINUATION_START_SHAPE) &&
+    value.protocol === 'continuation_start_v2' &&
+    isNonEmptyString(value.claimId) &&
+    isSha256Digest(value.boundaryDigest) &&
+    isRecord(value.immediateSource) &&
+    hasExactShape(value.immediateSource, RUNTIME_CONTINUATION_SOURCE_SHAPE) &&
+    isNonEmptyString(value.immediateSource.sessionId) &&
+    isNonEmptyString(value.immediateSource.invocationId) &&
+    isNonEmptyString(value.immediateSource.runId) &&
+    isNonEmptyString(value.immediateSource.turnId) &&
+    Number.isSafeInteger(value.immediateSource.highWater) &&
+    (value.immediateSource.highWater as number) > 0 &&
+    isSha256Digest(value.immediateSource.prefixDigest) &&
+    isSha256Digest(value.replayManifestDigest) &&
+    value.providerProjectionVersion === 1 &&
+    isSha256Digest(value.providerReplayDigest)
+  );
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
+function isSha256Digest(value: unknown): value is `sha256:${string}` {
+  return typeof value === 'string' && /^sha256:[0-9a-f]{64}$/.test(value);
 }
 
 function isRuntimeTokenUsage(value: unknown): value is RuntimeEventTokenUsage {

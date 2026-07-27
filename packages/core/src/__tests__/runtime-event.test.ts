@@ -93,6 +93,51 @@ describe('RuntimeEvent role / author / status enums', () => {
   });
 });
 
+describe('continuation-start protocol', () => {
+  test('accepts only the replay projection version defined by v2', () => {
+    const continuationStart = {
+      protocol: 'continuation_start_v2',
+      claimId: 'claim-1',
+      boundaryDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      immediateSource: {
+        sessionId: 'sess-1',
+        invocationId: 'inv-source',
+        runId: 'run-source',
+        turnId: 'turn-source',
+        highWater: 1,
+        prefixDigest: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      },
+      replayManifestDigest:
+        'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      providerProjectionVersion: 1,
+      providerReplayDigest:
+        'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+    } as const;
+
+    assert.deepEqual(
+      decodeRuntimeEvent(
+        baseEvent({
+          role: 'system',
+          author: 'system',
+          content: undefined,
+          actions: { continuationStart },
+        }),
+      ).actions?.continuationStart,
+      continuationStart,
+    );
+    assert.throws(
+      () =>
+        decodeRuntimeEvent({
+          ...baseEvent({ role: 'system', author: 'system', content: undefined }),
+          actions: {
+            continuationStart: { ...continuationStart, providerProjectionVersion: 2 },
+          },
+        }),
+      /RuntimeEvent schema/,
+    );
+  });
+});
+
 describe('RuntimeEvent content variants', () => {
   test('owns canonical MessageContent decoding, copying, and equality', () => {
     const attachments = [

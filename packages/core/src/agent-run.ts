@@ -28,12 +28,24 @@ export const AGENT_RUN_STATUSES = [
 
 export type AgentRunStatus = (typeof AGENT_RUN_STATUSES)[number];
 
-export interface AgentRunContinuationSource {
+export interface AgentRunContinuationSourceV1 {
   sourceInvocationId: string;
   sourceRunId: string;
   sourceTurnId: string;
   sourceRuntimeEventHighWater: number;
 }
+
+export interface AgentRunContinuationSourceV2 extends AgentRunContinuationSourceV1 {
+  protocol: 'continuation_source_v2';
+  claimId: string;
+  boundaryDigest: `sha256:${string}`;
+  sourcePrefixDigest: `sha256:${string}`;
+  replayManifestDigest: `sha256:${string}`;
+}
+
+export type AgentRunContinuationSource =
+  | AgentRunContinuationSourceV1
+  | AgentRunContinuationSourceV2;
 
 export type RootExecutionDescriptor =
   | { kind: 'external_message' }
@@ -55,8 +67,22 @@ export type RootExecutionDescriptor =
       sourceRunId: string;
     };
 
-const AGENT_RUN_CONTINUATION_SOURCE_SHAPE = defineObjectShape<AgentRunContinuationSource>()(
+const AGENT_RUN_CONTINUATION_SOURCE_V1_SHAPE = defineObjectShape<AgentRunContinuationSourceV1>()(
   ['sourceInvocationId', 'sourceRunId', 'sourceTurnId', 'sourceRuntimeEventHighWater'],
+  [],
+);
+const AGENT_RUN_CONTINUATION_SOURCE_V2_SHAPE = defineObjectShape<AgentRunContinuationSourceV2>()(
+  [
+    'protocol',
+    'claimId',
+    'boundaryDigest',
+    'sourceInvocationId',
+    'sourceRunId',
+    'sourceTurnId',
+    'sourceRuntimeEventHighWater',
+    'sourcePrefixDigest',
+    'replayManifestDigest',
+  ],
   [],
 );
 
@@ -279,17 +305,35 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
       value.traceWriteError,
     ].every(isOptionalString) &&
     (value.continuationSource === undefined ||
-      (isRecord(value.continuationSource) &&
-        hasExactShape(value.continuationSource, AGENT_RUN_CONTINUATION_SOURCE_SHAPE) &&
-        typeof value.continuationSource.sourceInvocationId === 'string' &&
-        typeof value.continuationSource.sourceRunId === 'string' &&
-        typeof value.continuationSource.sourceTurnId === 'string' &&
-        typeof value.continuationSource.sourceRuntimeEventHighWater === 'number' &&
-        Number.isSafeInteger(value.continuationSource.sourceRuntimeEventHighWater) &&
-        value.continuationSource.sourceRuntimeEventHighWater >= 0));
+      isAgentRunContinuationSource(value.continuationSource));
   if (!valid) throw new Error('Invalid AgentRun header schema');
   if (status !== value.status) return { ...value, status } as unknown as AgentRunHeader;
   return value as unknown as AgentRunHeader;
+}
+
+function isAgentRunContinuationSource(value: unknown): value is AgentRunContinuationSource {
+  if (!isRecord(value)) return false;
+  const common =
+    typeof value.sourceInvocationId === 'string' &&
+    typeof value.sourceRunId === 'string' &&
+    typeof value.sourceTurnId === 'string' &&
+    typeof value.sourceRuntimeEventHighWater === 'number' &&
+    Number.isSafeInteger(value.sourceRuntimeEventHighWater) &&
+    value.sourceRuntimeEventHighWater >= 0;
+  if (!common) return false;
+  if (hasExactShape(value, AGENT_RUN_CONTINUATION_SOURCE_V1_SHAPE)) return true;
+  return (
+    hasExactShape(value, AGENT_RUN_CONTINUATION_SOURCE_V2_SHAPE) &&
+    value.protocol === 'continuation_source_v2' &&
+    typeof value.claimId === 'string' &&
+    isSha256Digest(value.boundaryDigest) &&
+    isSha256Digest(value.sourcePrefixDigest) &&
+    isSha256Digest(value.replayManifestDigest)
+  );
+}
+
+function isSha256Digest(value: unknown): value is `sha256:${string}` {
+  return typeof value === 'string' && /^sha256:[0-9a-f]{64}$/.test(value);
 }
 
 export function decodeAgentRunEvent(value: unknown): AgentRunEvent {
@@ -347,12 +391,18 @@ export interface AgentRunStore {
 
 /**
  * Whether a run contributes directly to the owning session's transcript.
- * Continuations carry parent lineage for recovery, but unlike child-agent runs
- * their output remains part of the parent session conversation.
+ * Top-level continuations carry parent lineage for recovery, but unlike
+ * child-agent runs their output remains part of the parent session
+ * conversation. A legacy child retry may also carry continuation authority;
+ * its agent identity keeps it outside the owning session transcript.
  */
 export function isSessionInlineRun(run: {
   readonly parentRunId?: string;
   readonly continuationSource?: unknown;
+  readonly agentId?: string;
 }): boolean {
-  return run.parentRunId === undefined || run.continuationSource !== undefined;
+  return (
+    run.parentRunId === undefined ||
+    (run.continuationSource !== undefined && run.agentId === undefined)
+  );
 }
