@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { test } from 'node:test';
@@ -670,25 +670,49 @@ test('Codex comparison resolves both arms from one OAuth account workflow', asyn
   ]);
 });
 
-test('GLM comparison requires its own explicit Z.AI credential file', async () => {
+test('plan runtimes resolve only their own key-file environment', async () => {
   const { resolveHarnessComposition, resolveHarnessRuntimeCredentials } = await import(
     new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href
   );
-  const composition = resolveHarnessComposition({
+  const glmComposition = resolveHarnessComposition({
     runtime: 'zai-coding-plan-glm-5.2-max',
     competitor: 'opencode',
   });
+  const kimiComposition = resolveHarnessComposition({ competitor: 'opencode' });
 
   await assert.rejects(
-    resolveHarnessRuntimeCredentials({ composition, env: {} }),
-    /MAKA_HARNESS_AB_KEY_FILE is required/,
+    resolveHarnessRuntimeCredentials({
+      composition: glmComposition,
+      env: { MAKA_HARNESS_AB_KEY_FILE: '/secrets/kimi.key' },
+    }),
+    /MAKA_HARNESS_AB_ZAI_KEY_FILE is required/,
   );
   assert.deepEqual(
     await resolveHarnessRuntimeCredentials({
-      composition,
-      env: { MAKA_HARNESS_AB_KEY_FILE: '/secrets/zai.key' },
+      composition: glmComposition,
+      env: {
+        MAKA_HARNESS_AB_KEY_FILE: '/secrets/kimi.key',
+        MAKA_HARNESS_AB_ZAI_KEY_FILE: '/secrets/zai.key',
+      },
     }),
     { apiKeyFile: '/secrets/zai.key' },
+  );
+  assert.deepEqual(
+    await resolveHarnessRuntimeCredentials({
+      composition: kimiComposition,
+      env: {
+        MAKA_HARNESS_AB_KEY_FILE: '/secrets/kimi.key',
+        MAKA_HARNESS_AB_ZAI_KEY_FILE: '/secrets/zai.key',
+      },
+    }),
+    { apiKeyFile: '/secrets/kimi.key' },
+  );
+  assert.deepEqual(
+    await resolveHarnessRuntimeCredentials({
+      composition: kimiComposition,
+      env: { MAKA_HARNESS_AB_ZAI_KEY_FILE: '/secrets/zai.key' },
+    }),
+    { apiKeyFile: join(homedir(), '.maka/secrets/kimi-coding-plan.key') },
   );
 });
 

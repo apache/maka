@@ -257,6 +257,7 @@ export const HARNESS_RUNTIME_PROFILES = Object.freeze({
     pricing: KIMI_CODING_PLAN_PRICING,
     auth: Object.freeze({
       kind: 'api-key-file',
+      keyFileEnv: 'MAKA_HARNESS_AB_KEY_FILE',
       defaultPath: join(homedir(), '.maka/secrets/kimi-coding-plan.key'),
     }),
   }),
@@ -268,7 +269,10 @@ export const HARNESS_RUNTIME_PROFILES = Object.freeze({
     baseUrl: 'https://api.z.ai/api/coding/paas/v4',
     billingMode: 'account-plan',
     pricing: ZAI_CODING_PLAN_PRICING,
-    auth: Object.freeze({ kind: 'api-key-file' }),
+    auth: Object.freeze({
+      kind: 'api-key-file',
+      keyFileEnv: 'MAKA_HARNESS_AB_ZAI_KEY_FILE',
+    }),
   }),
   'openai-codex-gpt-5.6-sol-xhigh': Object.freeze({
     id: 'openai-codex-gpt-5.6-sol-xhigh',
@@ -389,7 +393,7 @@ export async function resolveHarnessRuntimeCredentials(input) {
   const { auth } = input.composition.runtimeProfile;
   if (auth.kind === 'api-key-file') {
     return {
-      apiKeyFile: envPathFrom(input.env, 'MAKA_HARNESS_AB_KEY_FILE', auth.defaultPath),
+      apiKeyFile: envPathFrom(input.env, auth.keyFileEnv, auth.defaultPath),
     };
   }
   const credentialsRoot = envPathFrom(
