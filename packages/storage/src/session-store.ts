@@ -377,6 +377,7 @@ class FileSessionStore implements SessionStore {
   ): Promise<SessionHeader> {
     if (
       input.projectId !== undefined &&
+      input.projectId !== null &&
       (typeof input.projectId !== 'string' || input.projectId.length === 0)
     ) {
       throw new Error('Invalid project id');

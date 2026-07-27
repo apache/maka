@@ -145,6 +145,7 @@ export function createAppShellChatActions(deps: {
   pendingNewChatThinkingLevel: PendingNewChatThinkingLevel;
   newChatCollaborationMode: CollaborationMode;
   newChatOrchestrationMode: OrchestrationMode;
+  newChatProjectId: string | null | undefined;
 }): AppShellChatActions {
   const {
     uiLocale,
@@ -172,6 +173,7 @@ export function createAppShellChatActions(deps: {
     pendingNewChatThinkingLevel,
     newChatCollaborationMode,
     newChatOrchestrationMode,
+    newChatProjectId,
   } = deps;
   const copy = getShellCopy(uiLocale).chatActions;
 
@@ -299,6 +301,7 @@ export function createAppShellChatActions(deps: {
           ...(pendingNewChatThinkingLevel ? { thinkingLevel: pendingNewChatThinkingLevel } : {}),
           collaborationMode: newChatCollaborationMode,
           orchestrationMode: newChatOrchestrationMode,
+          ...(newChatProjectId !== undefined ? { projectId: newChatProjectId } : {}),
         });
         unsentSessionId = session.id;
         upsertSessionSummary(session);

@@ -38,6 +38,7 @@ function createActions(
   // factory is supposed to check it, and a stub frozen on the happy value
   // cannot fail on that axis. Pinning it is how a missing gate shipped.
   isShellSurfaceOwnerActive: () => boolean = () => true,
+  newChatProjectId: string | null | undefined = undefined,
 ) {
   return createAppShellSessionStartActions({
     uiLocale: 'en',
@@ -49,6 +50,7 @@ function createActions(
     composerRef: { current: null },
     isShellSurfaceOwnerActive,
     openSessionInChat: () => undefined,
+    newChatProjectId,
     sessionStartPendingRef: { current: false },
     refreshOnboarding: onRefreshOnboarding ?? (() => undefined),
     refreshSessions: async () => undefined,
@@ -60,6 +62,31 @@ function createActions(
 }
 
 describe('AppShell quick-entry failure copy', () => {
+  it('forwards an explicit no-project selection to expert-team sessions', async () => {
+    let receivedInput: unknown;
+    const restoreWindow = installWindow({
+      sessions: { create: async () => ({ id: 'unused' }) },
+      onboarding: { setMilestone: async () => undefined },
+      expertTeam: {
+        start: async (input: unknown) => {
+          receivedInput = input;
+          return { ok: true, sessionId: 'session-team' };
+        },
+      },
+    });
+
+    try {
+      assert.equal(
+        await createActions([], undefined, [], () => true, null).handleExpertTeamStart('code-review'),
+        true,
+      );
+    } finally {
+      restoreWindow();
+    }
+
+    assert.deepEqual(receivedInput, { teamId: 'code-review', prompt: '', projectId: null });
+  });
+
   it('sends only the mode — text and Skills belong to the Composer', async () => {
     let receivedInput: unknown;
     const restoreWindow = installWindow({

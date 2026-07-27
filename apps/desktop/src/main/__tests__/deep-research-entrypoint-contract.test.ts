@@ -27,14 +27,16 @@ describe('deep research command entrypoint contract', () => {
       /onStartDeepResearch:\s*async \(\)\s*=>\s*\{[\s\S]*await startModeSession\('deep_research'\);[\s\S]*\}/,
       'deep research palette action must await the mode-session start so the palette sees the pending promise',
     );
-    // #1433: the renderer names the intent; main derives the boundary. A
-    // renderer that spelled out `permissionMode: 'explore'` here would be
-    // asserting a security boundary it does not own.
+    // #1433: the renderer names the intent and may attach the selected
+    // project; main still derives the permission boundary. A renderer that
+    // spelled out `permissionMode: 'explore'` here would be asserting a
+    // security boundary it does not own.
     assert.match(
       src,
-      /window\.maka\.sessions\.create\(\{ mode \}\)/,
-      'the mode-session start must go through sessions:create with the mode alone',
+      /window\.maka\.sessions\.create\(\{[\s\S]*mode,[\s\S]*projectId: newChatProjectId[\s\S]*\}\)/,
+      'the mode-session start must go through sessions:create with the mode and optional selected project',
     );
+    assert.doesNotMatch(src, /window\.maka\.sessions\.create\(\{[\s\S]*permissionMode:\s*'explore'/);
     assert.doesNotMatch(
       src,
       /window\.maka\.quickChat/,

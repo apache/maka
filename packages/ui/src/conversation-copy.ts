@@ -182,6 +182,9 @@ export interface ConversationCopy {
     choose: string;
     current: string;
     chooseOther: string;
+    addProject: string;
+    noProject: string;
+    relink: string;
     branch: string;
     noBranches: string;
     currentProject: string;
@@ -298,6 +301,16 @@ export interface ConversationCopy {
     groupByTime: string;
     groupByProject: string;
     groupingAriaLabel: string;
+    projectActionsAriaLabel: (name: string) => string;
+    projectNewTask: string;
+    projectRename: string;
+    projectArchive: string;
+    projectRestore: string;
+    projectRelink: string;
+    projectUnavailable: string;
+    archivedProjects: string;
+    archivedProjectsAriaLabel: string;
+    worktreeAriaLabel: string;
     promptRailAriaLabel: string;
     emptyPrompt: string;
     jumpToPrompt: (preview: string) => string;
@@ -366,9 +379,9 @@ const CONVERSATION_COPY = {
     questions: { other: '其他', otherDescription: '输入一个不同的答案。', otherAriaLabel: '其他答案', otherPlaceholder: '输入你的答案', stop: '停止', stopping: '停止中…', previous: '上一题', submitting: '正在提交…', submit: '提交答案', next: '下一题' },
     mentions: { noFiles: '未找到文件', noSkills: '暂无技能', filesAriaLabel: '工作区文件', skillsAriaLabel: '技能', loading: '加载中…' },
     workspace: {
-      choose: '选择工作目录', current: '当前工作目录', chooseOther: '选择其他目录…', branch: '选择分支', noBranches: '无本地分支', currentProject: '当前项目',
-      chooseTitle: (branch) => branch ? `选择工作目录 · ${branch}` : '选择工作目录',
-      chooseAriaLabel: (label, branch) => branch ? `选择工作目录：${label}，当前分支 ${branch}` : `选择工作目录：${label}`,
+      choose: '选择项目', current: '当前项目', chooseOther: '选择其他目录…', addProject: '添加项目', noProject: '无项目', relink: '重新定位', branch: '选择分支', noBranches: '无本地分支', currentProject: '当前项目',
+      chooseTitle: (branch) => branch ? `选择项目 · ${branch}` : '选择项目',
+      chooseAriaLabel: (label, branch) => branch ? `选择项目：${label}，当前分支 ${branch}` : `选择项目：${label}`,
       branchTitle: (branch) => branch ? `分支：${branch}` : '选择分支', branchAriaLabel: (branch) => branch ? `切换分支：${branch}` : '选择分支',
     },
     messages: {
@@ -409,7 +422,7 @@ const CONVERSATION_COPY = {
     sessions: {
       status: { active: '可继续', running: '进行中', waiting_for_user: '等你确认', blocked: '需要处理', review: '待审核', done: '已完成', archived: '已归档', aborted: '已中止' },
       blockedReason: { NO_REAL_CONNECTION: '等待配置可用模型连接', auth: '需要重新登录', permission_required: '等待权限确认', tool_failed: '工具调用失败', unknown: '运行中断，可重试' },
-      listAriaLabel: '对话列表', title: '会话', emptyTitle: '等待开始对话', emptyBody: '和 Maka 的对话会出现在这里。', showMore: '显示更多', showMoreAriaLabel: (count) => `显示 ${count} 条更多对话`, renameAriaLabel: '重命名对话', respondingAriaLabel: '正在响应', respondingTitle: '对话正在流式响应中', staleTitle: '此会话使用的模型连接已不可用，发送时会切换到默认连接', staleAriaLabel: '会话已过期', stale: '已过期', unreadAriaLabel: '未读消息', actionsAriaLabel: '对话操作', pin: '置顶', unpin: '取消置顶', rename: '重命名', archive: '归档', unarchive: '取消归档', delete: '删除', pinned: '置顶', groupByTime: '按时间', groupByProject: '按项目', groupingAriaLabel: '会话分组方式', promptRailAriaLabel: '按提问跳转', emptyPrompt: '（空提问）', jumpToPrompt: (preview) => `跳到提问：${preview}`,
+      listAriaLabel: '对话列表', title: '会话', emptyTitle: '等待开始对话', emptyBody: '和 Maka 的对话会出现在这里。', showMore: '显示更多', showMoreAriaLabel: (count) => `显示 ${count} 条更多对话`, renameAriaLabel: '重命名对话', respondingAriaLabel: '正在响应', respondingTitle: '对话正在流式响应中', staleTitle: '此会话使用的模型连接已不可用，发送时会切换到默认连接', staleAriaLabel: '会话已过期', stale: '已过期', unreadAriaLabel: '未读消息', actionsAriaLabel: '对话操作', pin: '置顶', unpin: '取消置顶', rename: '重命名', archive: '归档', unarchive: '取消归档', delete: '删除', pinned: '置顶', groupByTime: '按时间', groupByProject: '按项目', groupingAriaLabel: '会话分组方式', projectActionsAriaLabel: (name) => `${name} 项目操作`, projectNewTask: '新建任务', projectRename: '重命名', projectArchive: '归档', projectRestore: '恢复', projectRelink: '重新定位', projectUnavailable: '项目目录不可用', archivedProjects: '已归档项目', archivedProjectsAriaLabel: '展开已归档项目', worktreeAriaLabel: 'Git 工作树', promptRailAriaLabel: '按提问跳转', emptyPrompt: '（空提问）', jumpToPrompt: (preview) => `跳到提问：${preview}`,
     },
   },
   en: {
@@ -502,9 +515,9 @@ const CONVERSATION_COPY = {
     questions: { other: 'Other', otherDescription: 'Enter a different answer.', otherAriaLabel: 'Other answer', otherPlaceholder: 'Enter your answer', stop: 'Stop', stopping: 'Stopping…', previous: 'Previous', submitting: 'Submitting…', submit: 'Submit answers', next: 'Next' },
     mentions: { noFiles: 'No files found', noSkills: 'No skills available', filesAriaLabel: 'Workspace files', skillsAriaLabel: 'Skills', loading: 'Loading…' },
     workspace: {
-      choose: 'Choose working directory', current: 'Current working directory', chooseOther: 'Choose another directory…', branch: 'Choose branch', noBranches: 'No local branches', currentProject: 'Current project',
-      chooseTitle: (branch) => branch ? `Choose working directory · ${branch}` : 'Choose working directory',
-      chooseAriaLabel: (label, branch) => branch ? `Choose working directory: ${label}, current branch ${branch}` : `Choose working directory: ${label}`,
+      choose: 'Choose project', current: 'Current project', chooseOther: 'Choose another directory…', addProject: 'Add project', noProject: 'No project', relink: 'Relink', branch: 'Choose branch', noBranches: 'No local branches', currentProject: 'Current project',
+      chooseTitle: (branch) => branch ? `Choose project · ${branch}` : 'Choose project',
+      chooseAriaLabel: (label, branch) => branch ? `Choose project: ${label}, current branch ${branch}` : `Choose project: ${label}`,
       branchTitle: (branch) => branch ? `Branch: ${branch}` : 'Choose branch', branchAriaLabel: (branch) => branch ? `Switch branch: ${branch}` : 'Choose branch',
     },
     messages: {
@@ -545,7 +558,7 @@ const CONVERSATION_COPY = {
     sessions: {
       status: { active: 'Ready', running: 'Running', waiting_for_user: 'Waiting for you', blocked: 'Needs attention', review: 'Review', done: 'Done', archived: 'Archived', aborted: 'Stopped' },
       blockedReason: { NO_REAL_CONNECTION: 'Waiting for an available model connection', auth: 'Sign in again', permission_required: 'Waiting for permission', tool_failed: 'Tool call failed', unknown: 'Run interrupted; retry available' },
-      listAriaLabel: 'Conversation list', title: 'Conversations', emptyTitle: 'Start a conversation', emptyBody: 'Your conversations with Maka will appear here.', showMore: 'Show more', showMoreAriaLabel: (count) => `Show ${count} more conversations`, renameAriaLabel: 'Rename conversation', respondingAriaLabel: 'Responding', respondingTitle: 'This conversation is streaming a response', staleTitle: 'This conversation\'s model connection is unavailable; sending will switch to the default connection', staleAriaLabel: 'Stale conversation', stale: 'Stale', unreadAriaLabel: 'Unread messages', actionsAriaLabel: 'Conversation actions', pin: 'Pin', unpin: 'Unpin', rename: 'Rename', archive: 'Archive', unarchive: 'Unarchive', delete: 'Delete', pinned: 'Pinned', groupByTime: 'By time', groupByProject: 'By project', groupingAriaLabel: 'Conversation grouping', promptRailAriaLabel: 'Jump by prompt', emptyPrompt: '(empty prompt)', jumpToPrompt: (preview) => `Jump to prompt: ${preview}`,
+      listAriaLabel: 'Conversation list', title: 'Conversations', emptyTitle: 'Start a conversation', emptyBody: 'Your conversations with Maka will appear here.', showMore: 'Show more', showMoreAriaLabel: (count) => `Show ${count} more conversations`, renameAriaLabel: 'Rename conversation', respondingAriaLabel: 'Responding', respondingTitle: 'This conversation is streaming a response', staleTitle: 'This conversation\'s model connection is unavailable; sending will switch to the default connection', staleAriaLabel: 'Stale conversation', stale: 'Stale', unreadAriaLabel: 'Unread messages', actionsAriaLabel: 'Conversation actions', pin: 'Pin', unpin: 'Unpin', rename: 'Rename', archive: 'Archive', unarchive: 'Unarchive', delete: 'Delete', pinned: 'Pinned', groupByTime: 'By time', groupByProject: 'By project', groupingAriaLabel: 'Conversation grouping', projectActionsAriaLabel: (name) => `${name} project actions`, projectNewTask: 'New task', projectRename: 'Rename', projectArchive: 'Archive', projectRestore: 'Restore', projectRelink: 'Relocate', projectUnavailable: 'Project directory unavailable', archivedProjects: 'Archived projects', archivedProjectsAriaLabel: 'Expand archived projects', worktreeAriaLabel: 'Git worktree', promptRailAriaLabel: 'Jump by prompt', emptyPrompt: '(empty prompt)', jumpToPrompt: (preview) => `Jump to prompt: ${preview}`,
     },
   },
 } satisfies UiCatalog<ConversationCopy>;

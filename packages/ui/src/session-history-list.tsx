@@ -1,8 +1,9 @@
 import { memo, useEffect, useRef, useState, type FocusEvent, type KeyboardEvent } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
-import type { SessionSummary, UiLocale } from '@maka/core';
+import type { ProjectRecord, SessionSummary, UiLocale } from '@maka/core';
 import { formatCompactTimestamp } from '@maka/core';
 import {
+  AlertTriangle,
   Archive,
   ArchiveRestore,
   Ban,
@@ -10,6 +11,7 @@ import {
   ChevronRight,
   CircleCheckBig,
   Eye,
+  FolderGit2,
   FolderOpen,
   Hourglass,
   Loader2,
@@ -18,6 +20,7 @@ import {
   Pencil,
   Pin,
   PinOff,
+  Plus,
   ShieldAlert,
   Trash2,
 } from './icons.js';
@@ -46,10 +49,19 @@ export interface SessionRowActions {
   onDelete(sessionId: string): void | Promise<void>;
 }
 
+export interface ProjectRowActions {
+  onNew(projectId: string): void | Promise<void>;
+  onRename(projectId: string, name: string): void | Promise<void>;
+  onArchive(projectId: string): void | Promise<void>;
+  onRestore(projectId: string): void | Promise<void>;
+  onRelink(projectId: string): void | Promise<void>;
+}
+
 export interface SessionHistoryGroup {
   id: string;
   label: string;
   sessions: SessionSummary[];
+  project?: ProjectRecord;
 }
 
 export function SessionHistoryList(props: {
@@ -73,6 +85,8 @@ export function SessionHistoryList(props: {
   staleSessionIds?: Set<string>;
   /** Pre-computed groups used by the project view. */
   groups?: ReadonlyArray<SessionHistoryGroup>;
+  worktreeSessionIds?: ReadonlySet<string>;
+  projectActions?: ProjectRowActions;
   /** Linked subagent Sessions keyed by their durable parent Session id. */
   childSessionsByParentId?: ReadonlyMap<string, readonly SessionSummary[]>;
   groupVariant?: SessionHistoryGroupVariant;
@@ -147,7 +161,8 @@ export function SessionHistoryList(props: {
 
   return (
     <section className="maka-session-list" aria-label={sessionListTitle}>
-      {props.sessions.length === 0 ? (
+      {props.sessions.length === 0 &&
+      !(props.groupVariant === 'project' && (props.groups?.length ?? 0) > 0) ? (
         // WAWQAQ msg `f56f38c1` (2026-06-20): the create-session CTA
         // belongs in the sidebar header / nav rail, never in the
         // bottom session-history empty state. The empty state here is
@@ -173,6 +188,7 @@ export function SessionHistoryList(props: {
                     key: g.id,
                     label: g.label,
                     sessions: g.sessions,
+                    project: g.project,
                   }))
                 : groupSessionsForHistory(props.sessions, locale).map((g) => ({
                     key: g.id,
@@ -185,8 +201,10 @@ export function SessionHistoryList(props: {
             streamingSessionIds={props.streamingSessionIds}
             staleSessionIds={props.staleSessionIds}
             childSessionsByParentId={props.childSessionsByParentId}
+            worktreeSessionIds={props.worktreeSessionIds}
             onSelectSession={props.onSelectSession}
             rowActions={props.rowActions}
+            projectActions={props.projectActions}
           />
         </OverlayScrollArea>
       )}
@@ -200,34 +218,60 @@ function SessionListGroups(props: {
     key: string;
     label: string;
     sessions: SessionSummary[];
+    project?: ProjectRecord;
   }>;
   groupVariant: SessionHistoryGroupVariant;
   activeId?: string;
   streamingSessionIds?: Set<string>;
   staleSessionIds?: Set<string>;
   childSessionsByParentId?: ReadonlyMap<string, readonly SessionSummary[]>;
+  worktreeSessionIds?: ReadonlySet<string>;
   onSelectSession(sessionId: string): void;
   rowActions?: SessionRowActions;
+  projectActions?: ProjectRowActions;
 }) {
+  if (props.groupVariant === 'project') {
+    const activeGroups = props.groups.filter((group) => group.project?.archivedAt === undefined);
+    const archivedGroups = props.groups.filter((group) => group.project?.archivedAt !== undefined);
+    return (
+      <>
+        {activeGroups.map((group) => (
+          <ProjectSessionGroup
+            key={group.key}
+            groupKey={group.key}
+            label={group.label}
+            sessions={group.sessions}
+            project={group.project}
+            activeId={props.activeId}
+            streamingSessionIds={props.streamingSessionIds}
+            staleSessionIds={props.staleSessionIds}
+            childSessionsByParentId={props.childSessionsByParentId}
+            worktreeSessionIds={props.worktreeSessionIds}
+            onSelectSession={props.onSelectSession}
+            rowActions={props.rowActions}
+            projectActions={props.projectActions}
+          />
+        ))}
+        {archivedGroups.length > 0 && (
+          <ArchivedProjectGroups
+            groups={archivedGroups}
+            activeId={props.activeId}
+            streamingSessionIds={props.streamingSessionIds}
+            staleSessionIds={props.staleSessionIds}
+            childSessionsByParentId={props.childSessionsByParentId}
+            worktreeSessionIds={props.worktreeSessionIds}
+            onSelectSession={props.onSelectSession}
+            rowActions={props.rowActions}
+            projectActions={props.projectActions}
+          />
+        )}
+      </>
+    );
+  }
+
   return (
     <>
       {props.groups.map((group) => {
-        if (props.groupVariant === 'project') {
-          return (
-            <ProjectSessionGroup
-              key={group.key}
-              groupKey={group.key}
-              label={group.label}
-              sessions={group.sessions}
-              activeId={props.activeId}
-              streamingSessionIds={props.streamingSessionIds}
-              staleSessionIds={props.staleSessionIds}
-              childSessionsByParentId={props.childSessionsByParentId}
-              onSelectSession={props.onSelectSession}
-              rowActions={props.rowActions}
-            />
-          );
-        }
         return (
           <div key={group.key} className="maka-list-group" data-variant="conversation">
             {group.label ? (
@@ -244,6 +288,7 @@ function SessionListGroups(props: {
                   streamingSessionIds={props.streamingSessionIds}
                   staleSessionIds={props.staleSessionIds}
                   childSessionsByParentId={props.childSessionsByParentId}
+                  worktreeSessionIds={props.worktreeSessionIds}
                   onSelectSession={props.onSelectSession}
                   rowActions={props.rowActions}
                 />
@@ -256,20 +301,72 @@ function SessionListGroups(props: {
   );
 }
 
-function ProjectSessionGroup(props: {
-  groupKey: string;
-  label: string;
-  sessions: SessionSummary[];
+interface ProjectGroupSharedProps {
   activeId?: string;
   streamingSessionIds?: Set<string>;
   staleSessionIds?: Set<string>;
   childSessionsByParentId?: ReadonlyMap<string, readonly SessionSummary[]>;
+  worktreeSessionIds?: ReadonlySet<string>;
   onSelectSession(sessionId: string): void;
   rowActions?: SessionRowActions;
+  projectActions?: ProjectRowActions;
+}
+
+function ArchivedProjectGroups(
+  props: ProjectGroupSharedProps & {
+    groups: ReadonlyArray<{
+      key: string;
+      label: string;
+      sessions: SessionSummary[];
+      project?: ProjectRecord;
+    }>;
+  },
+) {
+  const copy = getConversationCopy(useUiLocale()).sessions;
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="maka-list-archived-projects">
+      <BaseButton
+        type="button"
+        className="maka-list-archived-projects-heading"
+        onClick={() => setExpanded((current) => !current)}
+        aria-expanded={expanded}
+        aria-label={copy.archivedProjectsAriaLabel}
+      >
+        <ChevronRight size={13} aria-hidden="true" />
+        <span>{copy.archivedProjects}</span>
+        <span className="maka-list-project-count">{props.groups.length}</span>
+      </BaseButton>
+      {expanded &&
+        props.groups.map((group) => (
+          <ProjectSessionGroup
+            key={group.key}
+            {...props}
+            groupKey={group.key}
+            label={group.label}
+            sessions={group.sessions}
+            project={group.project}
+          />
+        ))}
+    </div>
+  );
+}
+
+function ProjectSessionGroup(props: ProjectGroupSharedProps & {
+  groupKey: string;
+  label: string;
+  sessions: SessionSummary[];
+  project?: ProjectRecord;
 }) {
   const copy = getConversationCopy(useUiLocale()).sessions;
   const [revealed, setRevealed] = useState(false);
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(props.sessions.length > 0);
+  const [editing, setEditing] = useState(false);
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const mountedRef = useMountedRef();
+  const pendingActionRef = useRef<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const escapeCancelledRef = useRef(false);
   const activeIsHidden = props.activeId
     ? props.sessions.findIndex((session) => session.id === props.activeId) >= PROJECT_GROUP_PREVIEW_LIMIT
     : false;
@@ -278,19 +375,180 @@ function ProjectSessionGroup(props: {
     ? props.sessions
     : props.sessions.slice(0, PROJECT_GROUP_PREVIEW_LIMIT);
   const hiddenCount = props.sessions.length - visibleSessions.length;
+  const project = props.project;
+  const canExpand = props.sessions.length > 0;
+
+  useEffect(() => {
+    if (!editing) return;
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, [editing]);
+
+  useEffect(() => {
+    if (props.activeId && props.sessions.some((session) => session.id === props.activeId)) {
+      setExpanded(true);
+    }
+  }, [props.activeId, props.sessions]);
+
+  useEffect(() => {
+    return () => {
+      pendingActionRef.current = null;
+    };
+  }, []);
+
+  function runProjectAction(actionId: string, action: () => void | Promise<void>) {
+    if (pendingActionRef.current) return;
+    pendingActionRef.current = actionId;
+    setPendingAction(actionId);
+    void (async () => {
+      try {
+        await action();
+      } catch {
+        // AppShell owns visible project-action failure feedback.
+      } finally {
+        pendingActionRef.current = null;
+        if (mountedRef.current) setPendingAction(null);
+      }
+    })();
+  }
+
+  function commitRename(value: string) {
+    const name = value.trim();
+    setEditing(false);
+    if (!project || !props.projectActions || !name || name === project.name) return;
+    runProjectAction('rename', () => props.projectActions!.onRename(project.id, name));
+  }
 
   return (
-    <div className="maka-list-group" data-variant="project">
-      <BaseButton
-        type="button"
-        className="maka-list-project-heading"
-        onClick={() => setExpanded((current) => !current)}
-        aria-expanded={expanded}
-        aria-controls={`maka-list-group-body-${props.groupKey}`}
-      >
-        <FolderOpen size={14} aria-hidden="true" />
-        <span>{props.label}</span>
-      </BaseButton>
+    <div
+      className="maka-list-group"
+      data-variant="project"
+      data-unavailable={project && !project.available ? 'true' : undefined}
+    >
+      <div className="maka-list-project-header">
+        {editing ? (
+          <form
+            className="maka-list-project-heading maka-list-project-rename"
+            onSubmit={(event) => {
+              event.preventDefault();
+              commitRename(inputRef.current?.value ?? '');
+            }}
+          >
+            <FolderOpen size={14} aria-hidden="true" />
+            <input
+              ref={inputRef}
+              defaultValue={props.label}
+              maxLength={80}
+              aria-label={copy.projectRename}
+              onBlur={(event) => {
+                if (escapeCancelledRef.current) {
+                  escapeCancelledRef.current = false;
+                  return;
+                }
+                commitRename(event.currentTarget.value);
+              }}
+              onKeyDown={(event) => {
+                if (event.nativeEvent.isComposing || event.key === 'Process') return;
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  escapeCancelledRef.current = true;
+                  setEditing(false);
+                }
+              }}
+            />
+          </form>
+        ) : (
+          <BaseButton
+            type="button"
+            className="maka-list-project-heading"
+            onClick={() => {
+              if (canExpand) setExpanded((current) => !current);
+            }}
+            disabled={!canExpand}
+            aria-expanded={canExpand ? expanded : false}
+            aria-controls={canExpand ? `maka-list-group-body-${props.groupKey}` : undefined}
+          >
+            <FolderOpen size={14} aria-hidden="true" />
+            <span className="maka-list-project-name">{props.label}</span>
+            {project && !project.available && (
+              <AlertTriangle
+                size={12}
+                aria-label={copy.projectUnavailable}
+              />
+            )}
+            <span className="maka-list-project-count">{props.sessions.length}</span>
+          </BaseButton>
+        )}
+        {project && props.projectActions && !editing && (
+          <Menu>
+            <MenuTrigger
+              render={<UiButton variant="quiet" size="icon-sm" />}
+              className="maka-list-project-menu-trigger"
+              aria-label={copy.projectActionsAriaLabel(project.name)}
+              disabled={pendingAction !== null}
+            >
+              {pendingAction ? (
+                <Loader2 size={14} aria-hidden="true" />
+              ) : (
+                <MoreHorizontal size={14} aria-hidden="true" />
+              )}
+            </MenuTrigger>
+            <MenuPopup align="end" side="bottom">
+              {project.archivedAt !== undefined ? (
+                <MenuItem
+                  onClick={() =>
+                    runProjectAction('restore', () => props.projectActions!.onRestore(project.id))
+                  }
+                >
+                  <ArchiveRestore size={15} aria-hidden="true" />
+                  {copy.projectRestore}
+                </MenuItem>
+              ) : (
+                <>
+                  {project.available ? (
+                    <MenuItem
+                      onClick={() =>
+                        runProjectAction('new', () => props.projectActions!.onNew(project.id))
+                      }
+                    >
+                      <Plus size={15} aria-hidden="true" />
+                      {copy.projectNewTask}
+                    </MenuItem>
+                  ) : (
+                    <MenuItem
+                      onClick={() =>
+                        runProjectAction('relink', () =>
+                          props.projectActions!.onRelink(project.id))
+                      }
+                    >
+                      <FolderOpen size={15} aria-hidden="true" />
+                      {copy.projectRelink}
+                    </MenuItem>
+                  )}
+                  <MenuSeparator />
+                  <MenuItem
+                    onClick={() => {
+                      if (!pendingActionRef.current) setEditing(true);
+                    }}
+                  >
+                    <Pencil size={15} aria-hidden="true" />
+                    {copy.projectRename}
+                  </MenuItem>
+                  <MenuItem
+                    onClick={() =>
+                      runProjectAction('archive', () =>
+                        props.projectActions!.onArchive(project.id))
+                    }
+                  >
+                    <Archive size={15} aria-hidden="true" />
+                    {copy.projectArchive}
+                  </MenuItem>
+                </>
+              )}
+            </MenuPopup>
+          </Menu>
+        )}
+      </div>
       {expanded && (
         <>
           <div id={`maka-list-group-body-${props.groupKey}`}>
@@ -302,6 +560,7 @@ function ProjectSessionGroup(props: {
                 streamingSessionIds={props.streamingSessionIds}
                 staleSessionIds={props.staleSessionIds}
                 childSessionsByParentId={props.childSessionsByParentId}
+                worktreeSessionIds={props.worktreeSessionIds}
                 onSelectSession={props.onSelectSession}
                 rowActions={props.rowActions}
               />
@@ -329,6 +588,7 @@ function SessionTreeRow(props: {
   streamingSessionIds?: Set<string>;
   staleSessionIds?: Set<string>;
   childSessionsByParentId?: ReadonlyMap<string, readonly SessionSummary[]>;
+  worktreeSessionIds?: ReadonlySet<string>;
   onSelectSession(sessionId: string): void;
   rowActions?: SessionRowActions;
   depth?: number;
@@ -345,6 +605,7 @@ function SessionTreeRow(props: {
         active={props.session.id === props.activeId}
         streaming={props.streamingSessionIds?.has(props.session.id) ?? false}
         stale={props.staleSessionIds?.has(props.session.id) ?? false}
+        worktree={props.worktreeSessionIds?.has(props.session.id) ?? false}
         nested={depth > 0}
         onSelect={props.onSelectSession}
         actions={props.rowActions}
@@ -449,12 +710,14 @@ const SessionRow = memo(function SessionRow(props: {
    * user can spot broken sessions in the list before clicking in.
    */
   stale?: boolean;
+  /** This session runs from a linked Git worktree. */
+  worktree?: boolean;
   /** Render this linked child as an indented nested Session row. */
   nested?: boolean;
   onSelect(sessionId: string): void;
   actions?: SessionRowActions;
 }) {
-  const { session, active, streaming, stale, nested, actions, onSelect } = props;
+  const { session, active, streaming, stale, worktree, nested, actions, onSelect } = props;
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).sessions;
   const [editing, setEditing] = useState(false);
@@ -638,6 +901,13 @@ const SessionRow = memo(function SessionRow(props: {
                   size={12}
                   aria-hidden="true"
                   className="maka-list-row-subagent-icon"
+                />
+              )}
+              {worktree && (
+                <FolderGit2
+                  size={12}
+                  aria-label={copy.worktreeAriaLabel}
+                  className="maka-list-row-worktree-icon"
                 />
               )}
               {streaming && (

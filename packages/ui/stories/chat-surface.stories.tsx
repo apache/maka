@@ -136,8 +136,11 @@ const baseComposerProps: ComposerProps = {
 	  workspacePicker: {
 	    label: 'maka-agent',
 	    branch: 'codex/storybook-chat-surface',
-	    onOpen: noop,
-	    onSelect: noop,
+	    projects: [],
+	    onAdd: noop,
+	    onSelectProject: noop,
+	    onRelink: noop,
+	    onSelectNoProject: noop,
 	  },
 };
 

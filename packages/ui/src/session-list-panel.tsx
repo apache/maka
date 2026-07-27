@@ -1,6 +1,11 @@
 import type { PlanReminder, SessionSummary } from '@maka/core';
 import type { NavModuleMemory, NavSelection } from './nav-selection.js';
-import { SessionHistoryList, type SessionHistoryGroup, type SessionRowActions } from './session-history-list.js';
+import {
+  SessionHistoryList,
+  type ProjectRowActions,
+  type SessionHistoryGroup,
+  type SessionRowActions,
+} from './session-history-list.js';
 import { SessionSidebarFooter, SessionSidebarNav, type SidebarUpdateReminder } from './session-sidebar-nav.js';
 import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from './primitives/menu.js';
 import { Button as UiButton } from './ui.js';
@@ -18,6 +23,8 @@ export function SessionListPanel(props: {
   streamingSessionIds?: Set<string>;
   staleSessionIds?: Set<string>;
   groups?: ReadonlyArray<SessionHistoryGroup>;
+  worktreeSessionIds?: ReadonlySet<string>;
+  projectActions?: ProjectRowActions;
   childSessionsByParentId?: ReadonlyMap<string, readonly SessionSummary[]>;
   viewMode?: SessionViewMode;
   onViewModeChange?: (mode: SessionViewMode) => void;
@@ -80,6 +87,8 @@ export function SessionListPanel(props: {
         staleSessionIds={props.staleSessionIds}
         groupVariant={viewMode}
         groups={groups}
+        worktreeSessionIds={props.worktreeSessionIds}
+        projectActions={props.projectActions}
         childSessionsByParentId={props.childSessionsByParentId}
         onSelectSession={props.onSelectSession}
         rowActions={props.rowActions}

@@ -43,6 +43,7 @@ import {
   type TurnFooterActionMeta,
   useToast,
   activeInteractionFor,
+  getConversationCopy,
   getSharedUiCopy,
 } from '@maka/ui';
 import { useKeyboardHelp } from './keyboard-help';
@@ -67,7 +68,7 @@ import { useShellAppearance } from './use-shell-appearance';
 import { useShellSearch } from './use-shell-search';
 import { useSessionGoal } from './use-session-goal';
 import { deriveStaleSessionIds } from './stale-sessions';
-import { deriveProjectGroups } from './session-project-grouping';
+import { deriveProjectGroups, deriveWorktreeSessionIds } from './session-project-grouping';
 import { deriveAppShellTurnViewModel } from './app-shell-turn-view-model';
 import { readScrollMotionBehavior } from './scroll-motion-policy';
 import { deriveBranchBanner } from './branch-banner';
@@ -79,7 +80,6 @@ import {
   SESSION_LIST_EXPANDED_MIN_WIDTH,
 } from './session-list-layout';
 import { modelSetupToastCopy } from './model-connection-errors';
-import { basenameFromPath } from './app-shell-copy';
 import type { AppShellCommandListOptions } from './app-shell-command-actions';
 import { AppShellTopbarActions, AppShellWorkspaceTopActions } from './app-shell-chrome-actions';
 import { AppShellDetailPanel } from './app-shell-detail-panel';
@@ -501,8 +501,6 @@ function AppShellContent({
     [sidebarSessionTree, navSelection, companionForkId],
   );
   const visibleSessions = visibleSessionTree.roots;
-  const sessionProjectGroups = useMemo(() => deriveProjectGroups(visibleSessions, uiLocale), [visibleSessions, uiLocale]);
-
   // PR-DAILY-REVIEW-MVP-0: bridge for the main Daily Review module.
   // Memoized so the panel's `useEffect` cleanup keys
   // off a stable reference instead of refetching on every render.
@@ -960,19 +958,6 @@ function AppShellContent({
   // Re-entrancy lock only — a ref, not state, because nothing renders
   // from it (#1433 removed its last reader with the first-run hero).
   const sessionStartPendingRef = useRef(false);
-  const { startModeSession, handleExpertTeamStart } = useStableActions(createAppShellSessionStartActions, {
-    uiLocale,
-    activeIdRef,
-    captureComposerImportOwner,
-    composerRef,
-    isShellSurfaceOwnerActive,
-    openSessionInChat,
-    sessionStartPendingRef,
-    refreshOnboarding: onboarding.refresh,
-    refreshSessions,
-    showModelSetupToast,
-    toastApi,
-  });
   // Built-in expert teams for the composer "+" menu - loaded once via
   // `useShellExpertTeams` (static catalog; a failure just hides the 专家团 entry).
   const expertTeams = useShellExpertTeams();
@@ -1129,15 +1114,25 @@ function AppShellContent({
 
   const {
     projectInfo,
+    projects,
+    selectedProjectId,
+    currentProjectId,
+    currentProject,
     branchList,
     branchPending,
-    recentProjectPaths,
     projectPickerPending,
     projectPickerPendingRef,
     projectPickerRequestRef,
     refreshAppInfo,
-    selectProjectDirectory,
-    selectRecentProjectDirectory,
+    addProject,
+    selectProject,
+    selectNoProject,
+    prepareDefaultProject,
+    prepareProject,
+    relinkProject,
+    renameProject,
+    archiveProject,
+    restoreProject,
     openProjectFolder,
     openWorkspaceFolder,
     openSkillsFolder,
@@ -1149,11 +1144,43 @@ function AppShellContent({
     rendererMountedRef,
     sessionId: activeId,
     sessionCwd: activeSession?.cwd,
+    sessionProjectId: activeSession?.projectId,
     onProjectSelected: (ownerSessionId) => {
-      if (ownerSessionId && activeIdRef.current === ownerSessionId) void createSession();
+      if (ownerSessionId && activeIdRef.current === ownerSessionId) openNewTaskSurface();
     },
     toastApi,
   });
+  const sessionProjectGroups = useMemo(
+    () => deriveProjectGroups(visibleSessions, projects, uiLocale),
+    [visibleSessions, projects, uiLocale],
+  );
+  const worktreeSessionIds = useMemo(
+    () => deriveWorktreeSessionIds(visibleSessions, projects),
+    [visibleSessions, projects],
+  );
+  const { startModeSession, handleExpertTeamStart } = useStableActions(createAppShellSessionStartActions, {
+    uiLocale,
+    activeIdRef,
+    captureComposerImportOwner,
+    composerRef,
+    isShellSurfaceOwnerActive,
+    openSessionInChat,
+    newChatProjectId: selectedProjectId,
+    sessionStartPendingRef,
+    refreshOnboarding: onboarding.refresh,
+    refreshSessions,
+    showModelSetupToast,
+    toastApi,
+  });
+  const projectRowActions: NonNullable<Parameters<typeof SessionListPanel>[0]['projectActions']> = {
+    onNew: createSessionInProject,
+    onRename: renameProject,
+    onArchive: archiveProject,
+    onRestore: restoreProject,
+    onRelink: async (projectId) => {
+      await relinkProject(projectId);
+    },
+  };
 
   // Composer mention popups: `/` uses Runtime's session/project-aware,
   // host-compatible projection; `@` uses workspace file search. Keep the
@@ -1217,6 +1244,7 @@ function AppShellContent({
     pendingNewChatThinkingLevel: newChatThinkingLevel ?? null,
     newChatCollaborationMode: newChatPlanModeActive ? 'plan' : 'agent',
     newChatOrchestrationMode: newChatSwarmModeActive ? 'swarm' : 'default',
+    newChatProjectId: selectedProjectId,
   });
 
   const { handleTurnFooterAction } = useStableActions(createAppShellTurnActions, {
@@ -1548,7 +1576,7 @@ function AppShellContent({
     bootstrapSelectionLease.release();
   }
 
-  async function createSession() {
+  function openNewTaskSurface() {
     startNewSession();
     setNewChatPlanModeActive(false);
     setNavSelection({ section: 'sessions', filter: 'chats' });
@@ -1556,6 +1584,14 @@ function AppShellContent({
     // New-task affordances reset to the empty-state composer; move focus
     // there so the user can start typing immediately.
     window.requestAnimationFrame(() => composerRef.current?.focus());
+  }
+
+  async function createSession() {
+    if (await prepareDefaultProject()) openNewTaskSurface();
+  }
+
+  async function createSessionInProject(projectId: string) {
+    if (await prepareProject(projectId)) openNewTaskSurface();
   }
 
   function openPlanReminderForm() {
@@ -1724,6 +1760,7 @@ function AppShellContent({
             onViewModeChange={setViewMode}
             groups={viewMode === 'project' ? sessionProjectGroups : undefined}
             childSessionsByParentId={visibleSessionTree.childrenByParentId}
+            worktreeSessionIds={worktreeSessionIds}
             moduleMemory={navigationState.moduleMemory}
             onSelect={setNavSelection}
             onSelectSession={sessionListSelectSession}
@@ -1732,6 +1769,7 @@ function AppShellContent({
             onOpenUpdate={openUpdateDownload}
             onNew={createSession}
             rowActions={sessionRowActions}
+            projectActions={projectRowActions}
           />
         </div>
         <div
@@ -2058,19 +2096,28 @@ function AppShellContent({
                 onOpenModelSettings={() => openSettingsSection('models')}
                 noModelConnection={connections.length === 0}
                 workspacePicker={{
-                    label: projectInfo ? basenameFromPath(projectInfo.projectPath, uiLocale) : undefined,
-                  branch: projectInfo?.projectGit.branch,
+                  label:
+                    currentProject?.name ??
+                    (currentProjectId === null
+                      ? getConversationCopy(uiLocale).workspace.noProject
+                      : undefined),
+                  branch: currentProjectId === null ? null : projectInfo?.projectGit.branch,
                   pending: projectPickerPending,
-                  recentWorkspaces: recentProjectPaths,
-                  onOpen: () => {
-                    void selectProjectDirectory();
+                  projects: projects.filter((project) => project.archivedAt === undefined),
+                  selectedProjectId: currentProjectId,
+                  onAdd: () => {
+                    void addProject();
                   },
-                  onSelect: (path: string) => {
-                    void selectRecentProjectDirectory(path);
+                  onSelectProject: (projectId: string) => {
+                    void selectProject(projectId);
                   },
+                  onRelink: (projectId: string) => {
+                    void relinkProject(projectId, true);
+                  },
+                  onSelectNoProject: selectNoProject,
                 }}
                 branchPicker={
-                  projectInfo?.projectGit.isGitRepo
+                  currentProjectId !== null && projectInfo?.projectGit.isGitRepo
                     ? {
                         branch: projectInfo.projectGit.branch ?? null,
                         pending: branchPending,

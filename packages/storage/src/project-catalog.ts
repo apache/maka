@@ -13,6 +13,7 @@ export interface ProjectCatalog {
   list(): Promise<ProjectRecord[]>;
   register(path: string): Promise<ProjectRecord>;
   importLegacyPath(path: string): Promise<ProjectRecord>;
+  select(projectId: string): Promise<{ project: ProjectRecord; path: string }>;
   touch(projectId: string, path?: string): Promise<ProjectRecord>;
   relink(projectId: string, path: string): Promise<ProjectRecord>;
   rename(projectId: string, name: string): Promise<ProjectRecord>;
@@ -175,6 +176,44 @@ class FileProjectCatalog implements ProjectCatalog {
     });
     if (!imported) throw new Error(`Failed to import legacy project: ${path}`);
     return this.present(imported);
+  }
+
+  async select(projectId: string): Promise<{ project: ProjectRecord; path: string }> {
+    let selected: PersistedProject | undefined;
+    let selectedPath: string | undefined;
+    await this.withQueue(async () => {
+      const file = await this.read();
+      const project = file.projects.find((item) => item.id === projectId);
+      if (!project) throw new Error(`No such project: ${projectId}`);
+      if (project.archivedAt !== undefined) {
+        throw new Error(`Project is archived: ${projectId}`);
+      }
+      const availableLocations = (
+        await Promise.all(
+          project.locations.map(async (location) => ({
+            location,
+            available: await isDirectory(location.path),
+          })),
+        )
+      )
+        .filter((entry) => entry.available)
+        .sort(
+          (a, b) =>
+            b.location.lastUsedAt - a.location.lastUsedAt ||
+            a.location.path.localeCompare(b.location.path),
+        );
+      const location = availableLocations[0]?.location;
+      if (!location) throw new Error(`Project is unavailable: ${projectId}`);
+      const timestamp = this.now();
+      location.lastUsedAt = timestamp;
+      project.lastUsedAt = timestamp;
+      project.updatedAt = timestamp;
+      selected = project;
+      selectedPath = location.path;
+      await this.write(file);
+    });
+    if (!selected || !selectedPath) throw new Error(`Failed to select project: ${projectId}`);
+    return { project: await this.present(selected), path: selectedPath };
   }
 
   async touch(projectId: string, path?: string): Promise<ProjectRecord> {

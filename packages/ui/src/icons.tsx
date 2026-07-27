@@ -56,6 +56,7 @@ export {
   FileType,
   Flag,
   FolderOpen,
+  FolderGit2,
   GitBranch,
   GitMerge,
   Globe,

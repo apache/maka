@@ -46,6 +46,7 @@ export function createAppShellSessionStartActions(deps: {
   composerRef: RefBox<ComposerFocusHandle | null>;
   isShellSurfaceOwnerActive: (owner: ComposerImportOwner) => boolean;
   openSessionInChat: (sessionId: string, turnId?: string) => void;
+  newChatProjectId: string | null | undefined;
   sessionStartPendingRef: RefBox<boolean>;
   refreshOnboarding: () => void;
   refreshSessions: () => Promise<unknown>;
@@ -64,6 +65,7 @@ export function createAppShellSessionStartActions(deps: {
     composerRef,
     isShellSurfaceOwnerActive,
     openSessionInChat,
+    newChatProjectId,
     sessionStartPendingRef,
     refreshOnboarding,
     refreshSessions,
@@ -79,7 +81,10 @@ export function createAppShellSessionStartActions(deps: {
     try {
       // #1433: the one session-creation channel. Main derives the
       // permission boundary, name and labels from `mode`.
-      const session = await window.maka.sessions.create({ mode });
+      const session = await window.maka.sessions.create({
+        mode,
+        ...(newChatProjectId !== undefined ? { projectId: newChatProjectId } : {}),
+      });
       if (isShellSurfaceOwnerActive(owner)) {
         openSessionInChat(session.id);
       }
@@ -150,6 +155,7 @@ export function createAppShellSessionStartActions(deps: {
       const result = await window.maka.expertTeam.start({
         teamId,
         prompt: prompt ?? '',
+        ...(newChatProjectId !== undefined ? { projectId: newChatProjectId } : {}),
       });
       if (result.ok) {
         if (prompt && prompt.trim()) saveGlobalInputHistoryEntry(prompt);

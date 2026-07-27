@@ -145,6 +145,8 @@ import {
   sessionLifecycleErrorFromReadFailure,
 } from './session-lifecycle.js';
 import { createProjectRootController } from './project-root-controller.js';
+import { createProjectManagementService } from './project-management-service.js';
+import { resolveNewSessionProjectInput } from './new-session-project.js';
 import {
   assertSessionWorkspaceAvailable,
   isSessionWorkspaceUnavailableError,
@@ -714,6 +716,17 @@ const projectRootController = createProjectRootController({
   lastProjectPathFile: join(workspaceRoot, 'last-project-path.json'),
   fallbackRoots: () => [process.cwd(), app.getAppPath()],
 });
+const projectManagement = createProjectManagementService({
+  catalog: projectCatalog,
+  chooseDirectory: async () => {
+    const result = await mainWindowController.showOpenDialog({
+      title: '添加项目',
+      properties: ['openDirectory'],
+    });
+    return result.canceled ? undefined : result.filePaths[0];
+  },
+  setSelectedPath: (path) => projectRootController.setSelected(path),
+});
 const resolveCurrentProjectRoot: () => Promise<string> = () => projectRootController.current();
 const resolveProjectRootForContext = (sessionId: unknown): Promise<string> =>
   resolveProjectContextRoot(sessionId, {
@@ -959,6 +972,7 @@ function registerIpc(): void {
     workspaceRoot,
     buildInfo,
     e2eFixture,
+    projectManagement,
   });
   registerMemoryIpc({ localMemory });
   registerConfigIpc({ connectionStore, settingsStore, credentialStore, workspaceRoot });
@@ -1176,7 +1190,7 @@ async function ensureSessionWorkspaceAvailable(sessionId: string): Promise<void>
 
 async function createDesktopSession(input: CreateSessionInput) {
   await assertSessionWorkspaceAvailable(input.cwd);
-  return runtime.createSession(input);
+  return runtime.createSession(await resolveNewSessionProjectInput(input, projectCatalog));
 }
 
 const readyConnectionDeps = {

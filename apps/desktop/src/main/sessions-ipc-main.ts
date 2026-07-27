@@ -224,6 +224,7 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
       }
       const session = await createSession({
         cwd,
+        projectId: input?.projectId,
         backend: 'fake',
         llmConnectionSlug: input.llmConnectionSlug ?? 'fake',
         model: input.model ?? 'fake-model',
@@ -243,6 +244,7 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
 
     const session = await createSession({
       cwd,
+      projectId: input?.projectId,
       backend: 'ai-sdk',
       llmConnectionSlug: connection.slug,
       model,

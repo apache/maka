@@ -82,12 +82,14 @@ describe('session open routing contract', () => {
   it('new-chat navigation does not wipe other sessions live renderer state', async () => {
     const source = await readRendererShellSources(['app-shell.tsx', 'use-app-shell-session-workspace.ts']);
     const createSession = source.match(/async function createSession\(\) \{[\s\S]*?\n  \}/)?.[0] ?? '';
+    const openNewTaskSurface = source.match(/function openNewTaskSurface\(\) \{[\s\S]*?\n  \}/)?.[0] ?? '';
     const startNewSession = source.match(/function startNewSession\(\): void \{[\s\S]*?\n  \}/)?.[0] ?? '';
 
-    assert.match(createSession, /startNewSession\(\);/);
+    assert.match(createSession, /openNewTaskSurface\(\);/);
+    assert.match(openNewTaskSurface, /startNewSession\(\);/);
     assert.match(startNewSession, /setActiveId\(undefined\);/);
-    assert.match(createSession, /setNavSelection\(\{ section: 'sessions', filter: 'chats' \}\);/);
-    assert.match(createSession, /setSearchScrollTarget\(null\);/);
+    assert.match(openNewTaskSurface, /setNavSelection\(\{ section: 'sessions', filter: 'chats' \}\);/);
+    assert.match(openNewTaskSurface, /setSearchScrollTarget\(null\);/);
     assert.match(startNewSession, /setMessages\(\[\]\);/);
     assert.doesNotMatch(
       createSession,

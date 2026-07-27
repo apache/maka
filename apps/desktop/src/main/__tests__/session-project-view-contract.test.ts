@@ -4,7 +4,10 @@ import { join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { filterLinkedSessionTree, projectLinkedSessionTree } from '@maka/core';
 import { sessionMatchesNavSelection } from '../../renderer/session-nav-filter.js';
-import { deriveProjectGroups } from '../../renderer/session-project-grouping.js';
+import {
+  deriveProjectGroups,
+  deriveWorktreeSessionIds,
+} from '../../renderer/session-project-grouping.js';
 import { makeSessionSummary, renderSessionListPanel } from './session-list-render-helpers.js';
 
 const REPO_ROOT = resolve(process.cwd(), '..', '..');
@@ -14,11 +17,122 @@ async function readRepo(path: string): Promise<string> {
 }
 
 describe('sidebar project view mode', () => {
+  it('groups by stable project identity, retains empty projects, and marks only worktree sessions', () => {
+    const projects = [
+      project('project-1', 'Maka', [
+        { path: '/work/maka', isWorktree: false },
+        { path: '/work/maka-feature', isWorktree: true },
+      ]),
+      project('project-2', 'Empty project', [{ path: '/work/empty', isWorktree: false }]),
+    ];
+    const sessions = [
+      makeSessionSummary({
+        id: 'main-session',
+        projectId: 'project-1',
+        cwd: '/work/maka',
+      }),
+      makeSessionSummary({
+        id: 'worktree-session',
+        projectId: 'project-1',
+        cwd: '/work/maka-feature',
+      }),
+    ];
+
+    const groups = deriveProjectGroups(sessions, projects, 'zh');
+
+    assert.deepEqual(
+      groups.map((group) => ({
+        id: group.id,
+        label: group.label,
+        sessions: group.sessions.map((session) => session.id),
+      })),
+      [
+        {
+          id: 'project:project-1',
+          label: 'Maka',
+          sessions: ['main-session', 'worktree-session'],
+        },
+        {
+          id: 'project:project-2',
+          label: 'Empty project',
+          sessions: [],
+        },
+      ],
+    );
+    assert.deepEqual([...deriveWorktreeSessionIds(sessions, projects)], ['worktree-session']);
+  });
+
+  it('renders compact project rows, lifecycle menus, archived disclosure, and one worktree icon', async () => {
+    const active = project('project-active', 'Active project', [
+      { path: '/work/active', isWorktree: false },
+    ]);
+    const unavailable = {
+      ...project('project-missing', 'Missing project', [
+        { path: '/work/missing', isWorktree: false },
+      ]),
+      available: false,
+      preferredPath: undefined,
+    };
+    const archived = {
+      ...project('project-archived', 'Archived project', [
+        { path: '/work/archived', isWorktree: false },
+      ]),
+      archivedAt: 2,
+    };
+    const worktreeSession = makeSessionSummary({
+      id: 'worktree-session',
+      name: 'Worktree task',
+      projectId: active.id,
+      cwd: '/work/active-feature',
+    });
+    active.locations.push({
+      path: '/work/active-feature',
+      isWorktree: true,
+      addedAt: 1,
+      lastUsedAt: 1,
+    });
+    const groups = deriveProjectGroups(
+      [worktreeSession],
+      [active, unavailable, archived],
+      'zh',
+    );
+
+    const markup = renderSessionListPanel({
+      sessions: [worktreeSession],
+      groups,
+      viewMode: 'project',
+      worktreeSessionIds: new Set([worktreeSession.id]),
+      projectActions: {
+        onNew() {},
+        onRename() {},
+        onArchive() {},
+        onRestore() {},
+        onRelink() {},
+      },
+    });
+
+    assert.match(markup, />Active project</);
+    assert.match(markup, /maka-list-project-count[^>]*>1</);
+    assert.match(markup, />Missing project</);
+    assert.match(markup, /aria-label="Active project 项目操作"/);
+    assert.match(markup, /aria-label="Missing project 项目操作"/);
+    assert.match(markup, />已归档项目</);
+    assert.doesNotMatch(markup, />Archived project</);
+    assert.equal((markup.match(/lucide-folder-git-2/g) ?? []).length, 1);
+
+    const list = await readRepo('packages/ui/src/session-history-list.tsx');
+    assert.match(list, /project\.available \?[\s\S]*copy\.projectNewTask[\s\S]*copy\.projectRelink/);
+    assert.match(list, /copy\.projectRename/);
+    assert.match(list, /copy\.projectArchive/);
+    assert.match(list, /copy\.projectRestore/);
+  });
+
   it('renders project groups, the unassigned bucket, and keeps the conversation fallback path', () => {
     const sessions = [
       makeSessionSummary({
         id: 'repo-session',
         name: 'Repo session',
+        projectId: 'project-repo',
         cwd: 'C:\\work\\repo-a',
         status: 'active',
         lastMessageAt: 3,
@@ -34,7 +148,11 @@ describe('sidebar project view mode', () => {
 
     const projectMarkup = renderSessionListPanel({
       sessions,
-      groups: deriveProjectGroups(sessions),
+      groups: deriveProjectGroups(sessions, [
+        project('project-repo', 'repo-a', [
+          { path: 'C:\\work\\repo-a', isWorktree: false },
+        ]),
+      ]),
       viewMode: 'project',
     });
     assert.match(projectMarkup, /repo-a/);
@@ -114,13 +232,18 @@ describe('sidebar project view mode', () => {
     const sessions = Array.from({ length: 5 }, (_, index) => makeSessionSummary({
       id: `project-session-${index + 1}`,
       name: `Project chat ${index + 1}`,
+      projectId: 'project-testzcode',
       cwd: 'D:\\work\\testzcode',
       lastMessageAt: 10 - index,
     }));
 
     const markup = renderSessionListPanel({
       sessions,
-      groups: deriveProjectGroups(sessions),
+      groups: deriveProjectGroups(sessions, [
+        project('project-testzcode', 'testzcode', [
+          { path: 'D:\\work\\testzcode', isWorktree: false },
+        ]),
+      ]),
       viewMode: 'project',
     });
 
@@ -233,7 +356,8 @@ describe('sidebar project view mode', () => {
       /const visibleSessionTree = useMemo\([\s\S]*filterLinkedSessionTree\(sidebarSessionTree,[\s\S]*sessionMatchesNavSelection\(session, navSelection\)[\s\S]*\[sidebarSessionTree, navSelection[^\]]*\]/,
     );
     assert.doesNotMatch(appShell, /deriveSessionStatusGroups|sessionStatusGroups/);
-    assert.match(appShell, /deriveProjectGroups\(visibleSessions, uiLocale\)/);
+    assert.match(appShell, /deriveProjectGroups\(visibleSessions, projects, uiLocale\)/);
+    assert.match(appShell, /deriveWorktreeSessionIds\(visibleSessions, projects\)/);
     assert.match(appShell, /groups=\{viewMode === 'project' \? sessionProjectGroups : undefined\}/);
     assert.match(
       appShell,
@@ -247,11 +371,33 @@ describe('sidebar project view mode', () => {
 
   it('project group ids stay DOM-safe and distinct when the cwd has spaces or shared basenames', () => {
     const sessions = [
-      makeSessionSummary({ id: 'a', cwd: '/Users/me/My Project/repo-a' }),
-      makeSessionSummary({ id: 'b', cwd: '/Users/me/Other/repo-a' }),
-      makeSessionSummary({ id: 'c', cwd: 'C:\\work\\spaced dir\\x' }),
+      makeSessionSummary({
+        id: 'a',
+        projectId: 'project-a',
+        cwd: '/Users/me/My Project/repo-a',
+      }),
+      makeSessionSummary({
+        id: 'b',
+        projectId: 'project-b',
+        cwd: '/Users/me/Other/repo-a',
+      }),
+      makeSessionSummary({
+        id: 'c',
+        projectId: 'project-c',
+        cwd: 'C:\\work\\spaced dir\\x',
+      }),
     ];
-    const groups = deriveProjectGroups(sessions);
+    const groups = deriveProjectGroups(sessions, [
+      project('project-a', 'repo-a', [
+        { path: '/Users/me/My Project/repo-a', isWorktree: false },
+      ]),
+      project('project-b', 'repo-a', [
+        { path: '/Users/me/Other/repo-a', isWorktree: false },
+      ]),
+      project('project-c', 'x', [
+        { path: 'C:\\work\\spaced dir\\x', isWorktree: false },
+      ]),
+    ]);
     const ids = groups.map((g) => g.id);
 
     // DOM id must contain no ASCII whitespace and only DOM-safe chars.
@@ -281,6 +427,28 @@ describe('sidebar project view mode', () => {
     }
   });
 });
+
+function project(
+  id: string,
+  name: string,
+  locations: Array<{ path: string; isWorktree: boolean }>,
+) {
+  return {
+    id,
+    name,
+    kind: 'git' as const,
+    locations: locations.map((location) => ({
+      ...location,
+      addedAt: 1,
+      lastUsedAt: 1,
+    })),
+    createdAt: 1,
+    updatedAt: 1,
+    lastUsedAt: 1,
+    available: true,
+    preferredPath: locations[0]?.path,
+  };
+}
 
 function childRelation(parentSessionId: string) {
   return {

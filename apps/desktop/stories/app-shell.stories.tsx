@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { useState, type ReactNode } from 'react';
 import type { ComponentProps } from 'react';
-import type { SessionSummary, StoredMessage } from '@maka/core';
+import type { ProjectRecord, SessionSummary, StoredMessage } from '@maka/core';
 import { ChatView, Composer, SessionListPanel } from '@maka/ui';
 import type { ChatModelChoice, SessionViewMode } from '@maka/ui';
 import { AppShellTopbarActions, AppShellWorkspaceTopActions } from '../src/renderer/app-shell-chrome-actions';
@@ -50,6 +50,8 @@ function makeSession(input: {
   lastMessageAt?: number;
   isFlagged?: boolean;
   hasUnread?: boolean;
+  projectId?: string;
+  cwd?: string;
 }): SessionSummary {
   return {
     id: input.id,
@@ -65,15 +67,47 @@ function makeSession(input: {
     connectionLocked: false,
     model: 'claude-sonnet-4-5',
     permissionMode: 'ask',
+    ...(input.projectId ? { projectId: input.projectId } : {}),
+    ...(input.cwd ? { cwd: input.cwd } : {}),
   };
 }
 
 const sidebarSessions: SessionSummary[] = [
-  makeSession({ id: 'session-running', name: '生成本周 benchmark 对比表', status: 'running', lastMessageAt: NOW - 2 * 60_000 }),
-  makeSession({ id: 'session-active', name: '整理 Storybook 表面覆盖', lastMessageAt: NOW - 14 * 60_000, hasUnread: true }),
-  makeSession({ id: 'session-waiting', name: '等待权限确认的部署任务', status: 'waiting_for_user', lastMessageAt: NOW - 8 * 60_000 }),
-  makeSession({ id: 'session-pinned', name: 'PR #435 发布风险清单', lastMessageAt: NOW - 76 * 60_000, isFlagged: true }),
-  makeSession({ id: 'session-review', name: '已完成的 smoke 回归', status: 'done', lastMessageAt: NOW - 3 * 60 * 60_000 }),
+  makeSession({ id: 'session-running', name: '生成本周 benchmark 对比表', status: 'running', lastMessageAt: NOW - 2 * 60_000, projectId: 'project-maka', cwd: '/workspace/maka-agent' }),
+  makeSession({ id: 'session-active', name: '整理 Storybook 表面覆盖', lastMessageAt: NOW - 14 * 60_000, hasUnread: true, projectId: 'project-maka', cwd: '/workspace/maka-agent/.worktree/storybook' }),
+  makeSession({ id: 'session-waiting', name: '等待权限确认的部署任务', status: 'waiting_for_user', lastMessageAt: NOW - 8 * 60_000, projectId: 'project-docs', cwd: '/workspace/docs' }),
+  makeSession({ id: 'session-pinned', name: 'PR #435 发布风险清单', lastMessageAt: NOW - 76 * 60_000, isFlagged: true, projectId: 'project-maka', cwd: '/workspace/maka-agent' }),
+  makeSession({ id: 'session-review', name: '已完成的 smoke 回归', status: 'done', lastMessageAt: NOW - 3 * 60 * 60_000, projectId: 'project-archived', cwd: '/workspace/legacy' }),
+];
+
+function project(input: Partial<ProjectRecord> & Pick<ProjectRecord, 'id' | 'name'>): ProjectRecord {
+  return {
+    kind: 'folder',
+    locations: [],
+    createdAt: NOW,
+    updatedAt: NOW,
+    lastUsedAt: NOW,
+    available: true,
+    ...input,
+  };
+}
+
+const catalogProjects: ProjectRecord[] = [
+  project({
+    id: 'project-maka',
+    name: 'maka-agent',
+    kind: 'git',
+    preferredPath: '/workspace/maka-agent',
+    locations: [
+      { path: '/workspace/maka-agent', isWorktree: false, addedAt: NOW, lastUsedAt: NOW },
+      { path: '/workspace/maka-agent/.worktree/storybook', branch: 'feat/storybook', isWorktree: true, addedAt: NOW, lastUsedAt: NOW },
+    ],
+  }),
+  project({ id: 'project-docs', name: '产品文档', preferredPath: '/workspace/docs' }),
+  project({ id: 'project-missing', name: '旧版桌面端', available: false }),
+  ...Array.from({ length: 7 }, (_, index) =>
+    project({ id: `project-recent-${index}`, name: `最近项目 ${index + 1}` })),
+  project({ id: 'project-archived', name: '历史实验', archivedAt: NOW - 86_400_000 }),
 ];
 
 const sidebarRowActions: NonNullable<SessionListPanelProps['rowActions']> = {
@@ -82,6 +116,13 @@ const sidebarRowActions: NonNullable<SessionListPanelProps['rowActions']> = {
   onUnarchive: noop,
   onRename: noop,
   onDelete: noop,
+};
+const projectRowActions: NonNullable<SessionListPanelProps['projectActions']> = {
+  onNew: noop,
+  onRename: noop,
+  onArchive: noop,
+  onRestore: noop,
+  onRelink: noop,
 };
 
 const activeSession = sidebarSessions[1];
@@ -137,11 +178,15 @@ const baseComposerProps: ComposerProps = {
   swarmModeActive: false,
   onSwarmModeChange: noop,
   workspacePicker: {
-	    label: 'maka-agent',
-	    branch: 'opencode/storybook-surface-coverage',
-	    onOpen: noop,
-	    onSelect: noop,
-	  },
+    label: 'maka-agent',
+    branch: 'opencode/storybook-surface-coverage',
+    projects: catalogProjects.filter((item) => item.archivedAt === undefined),
+    selectedProjectId: 'project-maka',
+    onAdd: noop,
+    onSelectProject: noop,
+    onRelink: noop,
+    onSelectNoProject: noop,
+  },
 };
 
 function ShellFrame(props: { children: ReactNode; motionEnabled?: boolean }) {
@@ -161,6 +206,7 @@ function ShellFrame(props: { children: ReactNode; motionEnabled?: boolean }) {
 // layout shifts, this story may drift — it owns its own 2-col scaffold.
 function ComposedShell(props: {
   sidebarCollapsed?: boolean;
+  initialViewMode?: SessionViewMode;
   /**
    * The ONE active-session scenario. ComposedShell projects it across the
    * sidebar row, the chat header, and the composer, so the three regions
@@ -180,7 +226,7 @@ function ComposedShell(props: {
   motionEnabled?: boolean;
 }) {
   const [collapsed, setCollapsed] = useState(props.sidebarCollapsed ?? false);
-  const [viewMode, setViewMode] = useState<SessionViewMode>('conversation');
+  const [viewMode, setViewMode] = useState<SessionViewMode>(props.initialViewMode ?? 'conversation');
   const sidebarWidth = 260;
   const sessions = sidebarSessions.map((s) =>
     s.id === activeSession.id && (props.session?.status || props.session?.blockedReason)
@@ -191,9 +237,12 @@ function ComposedShell(props: {
   const streamingIds = new Set(
     props.session?.streaming ? ['session-running', active.id] : ['session-running'],
   );
-  const projectGroups: SessionGroup[] = [
-    { id: 'project:maka-agent', label: 'maka-agent', sessions },
-  ];
+  const projectGroups: SessionGroup[] = catalogProjects.map((item) => ({
+    id: `project:${item.id}`,
+    label: item.name,
+    project: item,
+    sessions: sessions.filter((session) => session.projectId === item.id),
+  }));
 
   return (
     <ShellFrame motionEnabled={props.motionEnabled}>
@@ -236,6 +285,8 @@ function ComposedShell(props: {
             onOpenSettings={noop}
             onNew={noop}
             rowActions={sidebarRowActions}
+            projectActions={projectRowActions}
+            worktreeSessionIds={new Set(['session-active'])}
           />
         </div>
         <div className="maka-resize-handle" aria-hidden="true" />
@@ -277,6 +328,29 @@ function ComposedShell(props: {
 // messages (sidebar expanded, composer ready).
 export const DefaultLayout: Story = {
   render: () => <ComposedShell />,
+};
+
+// Real path: switch the sidebar grouping to Projects. Covers compact
+// zero-session rows, an unavailable project, worktree glyph, and the
+// default-collapsed archived section in one stable review surface.
+export const ProjectCatalogSidebar: Story = {
+  render: () => <ComposedShell initialViewMode="project" />,
+};
+
+// Real path: open the project chip below the composer. The recent-project
+// region scrolls while Add Project and the separated No Project action stay
+// fixed at the bottom.
+export const ProjectCatalogPicker: Story = {
+  render: () => (
+    <ComposedShell
+      composer={{
+        workspacePicker: {
+          ...baseComposerProps.workspacePicker!,
+          defaultOpen: true,
+        },
+      }}
+    />
+  ),
 };
 
 // Real path: same as DefaultLayout after the user collapses the sidebar

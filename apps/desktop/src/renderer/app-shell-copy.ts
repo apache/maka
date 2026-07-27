@@ -43,12 +43,6 @@ export function openPathActionErrorMessage(
   return localizedErrorMessage(error, copy.errors.openPath(copy.paths[key]), locale);
 }
 
-export function selectProjectDirectoryFailureCopy(reason: 'missing-selection', locale: UiLocale): string {
-  const copy = getShellCopy(locale).projectActions;
-  if (reason === 'missing-selection') return copy.missingSelection;
-  return copy.directorySwitchFallback;
-}
-
 export function commandPaletteConnectionTestFailureMessage(result: ConnectionTestResult, locale: UiLocale): string {
   const fallback = commandPaletteConnectionTestFailureFallback(result, locale);
   if (!result.errorMessage) return fallback;

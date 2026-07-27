@@ -50,6 +50,10 @@ export function registerSessionEntryIpc(deps: SessionEntryIpcDeps): void {
     })),
   }));
   ipcMain.handle('expertTeam:start', async (_event, input: unknown) => {
+    const projectId =
+      input && typeof input === 'object' && 'projectId' in input
+        ? (input as { projectId?: unknown }).projectId
+        : undefined;
     return runExpertTeamStart(input, {
       isKnownTeam: (teamId) => getExpertTeam(teamId) !== undefined,
       getOnboardingState: () => deps.getOnboardingState(),
@@ -66,6 +70,7 @@ export function registerSessionEntryIpc(deps: SessionEntryIpcDeps): void {
           permissionMode: 'explore',
           name: team ? team.name : 'Expert Team',
           labels: [expertTeamLabel(teamId)],
+          ...(typeof projectId === 'string' || projectId === null ? { projectId } : {}),
         });
       },
       emitCreated: (sessionId) => deps.emitSessionsChanged('created', sessionId),

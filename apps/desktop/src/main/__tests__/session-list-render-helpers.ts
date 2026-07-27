@@ -26,6 +26,8 @@ export function renderSessionListPanel(options: {
   sessions?: SessionSummary[];
   rowActions?: Parameters<typeof SessionListPanel>[0]['rowActions'];
   groups?: Parameters<typeof SessionListPanel>[0]['groups'];
+  projectActions?: Parameters<typeof SessionListPanel>[0]['projectActions'];
+  worktreeSessionIds?: Parameters<typeof SessionListPanel>[0]['worktreeSessionIds'];
   childSessionsByParentId?: Parameters<
     typeof SessionListPanel
   >[0]['childSessionsByParentId'];
@@ -45,6 +47,8 @@ export function renderSessionListPanel(options: {
       selection: { section: 'sessions', filter: 'chats' },
       sessions: options.sessions ?? [makeSessionSummary(options.session)],
       groups: options.groups,
+      projectActions: options.projectActions,
+      worktreeSessionIds: options.worktreeSessionIds,
       childSessionsByParentId: options.childSessionsByParentId,
       viewMode: options.viewMode,
       onViewModeChange: options.viewMode ? () => {} : undefined,

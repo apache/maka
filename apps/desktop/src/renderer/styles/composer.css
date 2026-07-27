@@ -394,11 +394,11 @@
   margin-left: auto;
 }
 
-/* Workspace directory picker menu — mirrors the branch menu layout.
-   Shows recently opened directories at the top with a separator before
-   the "选择其他目录..." option. */
+/* The project catalog is the only scrollable region. Add Project and the
+   deliberately low-emphasis No Project escape hatch stay fixed below it. */
 .maka-composer-workspace-menu {
-  min-width: 200px;
+  min-width: 220px;
+  max-width: min(320px, calc(100vw - var(--space-6)));
 }
 .maka-composer-workspace-menu [data-slot="menu-item"] svg {
   flex: 0 0 auto;
@@ -408,6 +408,40 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.maka-composer-project-scroll {
+  max-height: 224px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-color: var(--border-strong) transparent;
+  scrollbar-width: thin;
+}
+
+.maka-composer-project-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.maka-composer-project-scroll::-webkit-scrollbar-thumb {
+  border: var(--border-width-thick) solid transparent;
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+  background-clip: padding-box;
+}
+
+.maka-composer-project-status {
+  margin-left: auto;
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
+}
+
+.maka-composer-project-check {
+  margin-left: auto;
+}
+
+.maka-composer-no-project {
+  color: var(--muted-foreground);
 }
 
 /* Composer streaming hint — replaces the Enter/Shift+Enter help text while

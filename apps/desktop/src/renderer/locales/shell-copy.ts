@@ -168,6 +168,8 @@ type ShellCopy = {
     directorySwitchFallback: string;
     selectedPathUnreadable: string;
     directorySwitchedTitle: string;
+    projectUpdateFailedTitle: string;
+    projectUpdateFailedFallback: string;
     openFailedTitle(path: string): string;
     openPathLabels: Record<'workspace' | 'skills' | 'memory' | 'project', string>;
     openPathFailures: Record<
@@ -707,6 +709,8 @@ const SHELL_COPY_BY_LOCALE = {
       directorySwitchFallback: '工作目录暂时无法切换，请稍后重试。',
       selectedPathUnreadable: '所选路径不存在或不可读。',
       directorySwitchedTitle: '已切换工作目录',
+      projectUpdateFailedTitle: '项目操作失败',
+      projectUpdateFailedFallback: '暂时无法更新项目，请稍后重试。',
       openFailedTitle: (path: string) => `无法打开${path}`,
       openPathLabels: {
         workspace: '工作区目录',
@@ -1172,6 +1176,8 @@ const SHELL_COPY_BY_LOCALE = {
       directorySwitchFallback: 'The working directory could not be changed. Try again later.',
       selectedPathUnreadable: 'The selected path does not exist or cannot be read.',
       directorySwitchedTitle: 'Working directory changed',
+      projectUpdateFailedTitle: 'Could not update project',
+      projectUpdateFailedFallback: 'The project could not be updated. Try again later.',
       openFailedTitle: (path: string) => `Could not open ${path}`,
       openPathLabels: {
         workspace: 'workspace folder',

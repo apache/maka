@@ -66,6 +66,7 @@ import type {
   SubscriptionAccountState,
   SubscriptionActionResult,
   PlanReminder,
+  ProjectRecord,
   PlanReminderDeliveryTarget,
   PlanReminderRecurrence,
   DailyReviewArchive,
@@ -299,6 +300,31 @@ const makaBridge = {
       return ipcRenderer.invoke('sessions:remove', sessionId, options);
     },
   },
+  projects: {
+    list(): Promise<ProjectRecord[]> {
+      return ipcRenderer.invoke('projects:list');
+    },
+    add(): Promise<{ ok: true; project: ProjectRecord } | { ok: false; reason: 'cancelled' }> {
+      return ipcRenderer.invoke('projects:add');
+    },
+    select(projectId: string): Promise<{ project: ProjectRecord; path: string }> {
+      return ipcRenderer.invoke('projects:select', projectId);
+    },
+    relink(projectId: string): Promise<
+      { ok: true; project: ProjectRecord } | { ok: false; reason: 'cancelled' }
+    > {
+      return ipcRenderer.invoke('projects:relink', projectId);
+    },
+    rename(projectId: string, name: string): Promise<ProjectRecord> {
+      return ipcRenderer.invoke('projects:rename', projectId, name);
+    },
+    archive(projectId: string): Promise<ProjectRecord> {
+      return ipcRenderer.invoke('projects:archive', projectId);
+    },
+    restore(projectId: string): Promise<ProjectRecord> {
+      return ipcRenderer.invoke('projects:restore', projectId);
+    },
+  },
   shellRuns: {
     list(sessionId: string): Promise<ShellRunUpdate[]> {
       return ipcRenderer.invoke('shell-runs:list', sessionId);
@@ -411,7 +437,7 @@ const makaBridge = {
     list(): Promise<{ teams: ExpertTeamSummary[] }> {
       return ipcRenderer.invoke('expertTeam:list');
     },
-    start(input: { teamId: string; prompt?: string }): Promise<ExpertTeamStartResult> {
+    start(input: { teamId: string; prompt?: string; projectId?: string | null }): Promise<ExpertTeamStartResult> {
       return ipcRenderer.invoke('expertTeam:start', input);
     },
   },
@@ -1014,18 +1040,6 @@ const makaBridge = {
         }
     > {
       return ipcRenderer.invoke('app:openPath', key, sessionId);
-    },
-    selectProjectDirectory(): Promise<
-      | { ok: true; projectPath: string; projectGit: { isGitRepo: boolean; branch?: string } }
-      | { ok: false; reason: 'cancelled' | 'missing-selection' }
-    > {
-      return ipcRenderer.invoke('app:selectProjectDirectory');
-    },
-    selectProjectRoot(projectPath: string): Promise<
-      | { ok: true; projectPath: string; projectGit: { isGitRepo: boolean; branch?: string } }
-      | { ok: false; reason: 'invalid-path' | 'not-found' }
-    > {
-      return ipcRenderer.invoke('app:selectProjectRoot', projectPath);
     },
     resolveProjectGitInfo(projectPath: string): Promise<
       | { ok: true; projectPath: string; projectGit: { isGitRepo: boolean; branch?: string } }

@@ -325,6 +325,35 @@ test('touching a project moves it to the front of the recent list', async () => 
   }
 });
 
+test('selecting a project returns its most recent available location and rejects inactive projects', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-select-'));
+  try {
+    const availablePath = join(base, 'available');
+    const missingPath = join(base, 'missing');
+    await mkdir(availablePath);
+    let now = 1_000;
+    let id = 0;
+    const catalog = createProjectCatalog(join(base, 'storage'), {
+      now: () => now,
+      createId: () => `project-${++id}`,
+    });
+    const available = await catalog.register(availablePath);
+    const missing = await catalog.importLegacyPath(missingPath);
+
+    now = 2_000;
+    const selected = await catalog.select(available.id);
+    assert.equal(selected.path, await realpath(availablePath));
+    assert.equal(selected.project.id, available.id);
+    assert.equal(selected.project.lastUsedAt, 2_000);
+
+    await assert.rejects(() => catalog.select(missing.id), /unavailable/i);
+    await catalog.archive(available.id);
+    await assert.rejects(() => catalog.select(available.id), /archived/i);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 test('a malformed project catalog fails closed without overwriting it', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-corrupt-'));
   try {

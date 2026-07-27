@@ -62,17 +62,20 @@ test('migrates legacy sessions into stable projects once without losing missing 
     const missingHeader = await sessions.readHeaderSnapshot(missing.id);
     assert.equal(mainHeader.projectId, linkedHeader.projectId);
     assert.notEqual(missingHeader.projectId, mainHeader.projectId);
-    assert.deepEqual(
-      (await catalog.list()).map((project) => ({
-        id: project.id,
-        available: project.available,
-        locations: project.locations.length,
-      })),
-      [
-        { id: mainHeader.projectId, available: true, locations: 2 },
-        { id: missingHeader.projectId, available: false, locations: 1 },
-      ],
+    const projectsById = new Map(
+      (await catalog.list()).map((project) => [
+        project.id,
+        { available: project.available, locations: project.locations.length },
+      ]),
     );
+    assert.deepEqual(projectsById.get(mainHeader.projectId!), {
+      available: true,
+      locations: 2,
+    });
+    assert.deepEqual(projectsById.get(missingHeader.projectId!), {
+      available: false,
+      locations: 1,
+    });
 
     assert.deepEqual(await migrateSessionProjects({ sessions, catalog }), {
       migrated: 0,

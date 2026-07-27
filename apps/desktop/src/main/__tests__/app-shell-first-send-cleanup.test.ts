@@ -70,10 +70,38 @@ function createActionsDeps() {
     pendingNewChatThinkingLevel: null,
     newChatCollaborationMode: 'agent' as const,
     newChatOrchestrationMode: 'default' as const,
+    newChatProjectId: undefined,
   };
 }
 
 describe('composer first-send cleanup', () => {
+  it('forwards an explicit no-project selection when creating the first session', async () => {
+    let createInput: unknown;
+    const restoreWindow = installWindow({
+      sessions: {
+        create: async (input: unknown) => {
+          createInput = input;
+          return { id: 'session-1' };
+        },
+        send: async () => ({
+          ok: true,
+          attachments: [],
+          skillInvocation: { loaded: [], failed: [] },
+        }),
+        readMessages: async () => [],
+      },
+    });
+
+    try {
+      const deps = { ...createActionsDeps(), newChatProjectId: null };
+      assert.equal(await createAppShellChatActions(deps).send('hello'), true);
+    } finally {
+      restoreWindow();
+    }
+
+    assert.equal((createInput as { projectId?: unknown }).projectId, null);
+  });
+
   it('removes the just-created session when the first send REJECTS', async () => {
     const removed: string[] = [];
     const restoreWindow = installWindow({
