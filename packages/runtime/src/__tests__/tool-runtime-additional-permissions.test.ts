@@ -60,7 +60,12 @@ function settle(harness: Harness, tool: MakaTool, input: unknown): Promise<unkno
       toolCallId: 'tool-1',
       input,
       abortSignal: new AbortController().signal,
-      eventSink: { push: (event) => harness.events.push(event) },
+      eventSink: {
+        push: (event) => harness.events.push(event),
+        pushAndWaitUntilConsumed: async (event) => {
+          harness.events.push(event);
+        },
+      },
     })
     .then((settlement) => settlement.result);
 }

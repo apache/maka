@@ -49,7 +49,7 @@ function hostedInteraction(turnId = 'turn-1'): HostedInteractionBridge {
     runId: 'run-1',
     admitPermissionRequest: async () => ({ state: 'pending' }),
     commitPermissionAnswer: async () => {},
-    commitPermissionTimeout: async () => {},
+    commitPermissionTimeout: async () => ({ kind: 'closure', reason: 'timed_out' }),
     admitUserQuestionRequest: async () => {},
   };
 }

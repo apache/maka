@@ -42,7 +42,7 @@ import {
   type RuntimeEventContent,
   type RuntimeEventRole,
 } from '@maka/core/runtime-event';
-import { normalizeShellToolResultContent } from '@maka/core';
+import { normalizeShellToolResultContent, normalizeToolResultContentForRead } from '@maka/core';
 import type { AttachmentRef, QuoteRef } from '@maka/core/events';
 import type { ModelMessage, UserContent, UserModelMessage } from './model-protocol.js';
 
@@ -551,21 +551,30 @@ export function buildRuntimeEventModelReplayPlan(
           );
           continue;
         }
-        const normalizedShellResult = normalizeShellToolResultContent(event.content.result);
-        if (normalizedShellResult.state === 'invalid') {
+        const shellResult = normalizeShellToolResultContent(event.content.result);
+        let invalidResultMessage: string | undefined;
+        let normalizedResult: unknown = event.content.result;
+        if (shellResult.state === 'invalid') {
+          invalidResultMessage = 'function_response contains an invalid shell tool result';
+        } else if (
+          shellResult.state === 'valid' ||
+          isLegacySubagentToolResultCandidate(event.content.name, event.content.result)
+        ) {
+          try {
+            normalizedResult = normalizeToolResultContentForRead(event.content.result);
+          } catch {
+            invalidResultMessage =
+              'function_response contains an invalid legacy subagent tool result';
+          }
+        }
+        if (invalidResultMessage) {
           const call = callsById.get(event.content.id);
           if (call) {
             const callIndex = items.indexOf(call.item);
             if (callIndex >= 0) items.splice(callIndex, 1);
             callsById.delete(event.content.id);
           }
-          diagnostics.push(
-            diagnostic(
-              event,
-              'unsupported_content',
-              'function_response contains an invalid shell tool result',
-            ),
-          );
+          diagnostics.push(diagnostic(event, 'unsupported_content', invalidResultMessage));
           continue;
         }
         const call = callsById.get(event.content.id);
@@ -599,10 +608,7 @@ export function buildRuntimeEventModelReplayPlan(
           kind: 'tool_result',
           toolCallId: event.content.id,
           toolName: event.content.name,
-          output:
-            normalizedShellResult.state === 'valid'
-              ? normalizedShellResult.content
-              : event.content.result,
+          output: normalizedResult,
           isError: event.content.isError === true,
           eventId: event.id,
           ts: event.ts,
@@ -831,6 +837,15 @@ export function stripSteeringMessages(
     const eventId = steeringEventIdOf(message);
     return eventId === undefined || !ids.has(eventId);
   });
+}
+
+const LEGACY_SUBAGENT_RESULT_TOOL_NAMES = new Set(['Task', 'agent_spawn', 'expert_dispatch']);
+
+function isLegacySubagentToolResultCandidate(toolName: string, value: unknown): boolean {
+  if (!LEGACY_SUBAGENT_RESULT_TOOL_NAMES.has(toolName)) return false;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  return candidate.kind === 'subagent' && candidate.status === 'waiting_permission';
 }
 
 /**

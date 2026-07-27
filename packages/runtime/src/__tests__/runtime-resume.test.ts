@@ -324,6 +324,29 @@ describe('runtime resume phase 1 safe-boundary continuation', () => {
     );
   });
 
+  test('continues after a hosted timeout durably closes the pending permission', () => {
+    const request = permissionRequestEvent('permission-1', 'tool-1');
+    const closure = base({
+      id: 'permission-closure-1',
+      role: 'system',
+      author: 'system',
+      actions: {
+        permissionClosureAccepted: {
+          requestId: request.actions!.permissionRequest!.requestId,
+          reason: 'timed_out',
+        },
+      },
+      refs: { toolCallId: 'tool-1' },
+    });
+    const events = [textEvent('user-1', 'user', 'edit the file'), request, closure];
+
+    const plan = buildSafeBoundaryContinuationPlan(events, safeBoundaryFacts());
+
+    assert.equal(plan.disposition, 'continue');
+    assert.deepEqual(plan.rejectionReasons, []);
+    assert.deepEqual(plan.continuation?.runtimeContext, events);
+  });
+
   test('parks when the current workspace identity differs from the source boundary', () => {
     const plan = buildSafeBoundaryContinuationPlan(
       [textEvent('user-1', 'user', 'inspect the repository')],

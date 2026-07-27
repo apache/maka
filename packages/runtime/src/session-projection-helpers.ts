@@ -104,6 +104,9 @@ export function statusFromEvent(
     case 'permission_answer_ack':
       if (options.allowInteractionResume === false) return undefined;
       return { status: 'running' };
+    case 'permission_closure_ack':
+      if (options.allowInteractionResume === false) return undefined;
+      return { status: 'running' };
     case 'permission_decision_ack':
       if (event.decision === 'deny') return { status: 'aborted' };
       if (options.allowInteractionResume === false) return undefined;

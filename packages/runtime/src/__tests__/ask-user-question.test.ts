@@ -71,7 +71,12 @@ describe('AskUserQuestion runtime round trip', () => {
           ],
         },
         abortSignal: new AbortController().signal,
-        eventSink: { push: (event) => events.push(event) },
+        eventSink: {
+          push: (event) => events.push(event),
+          pushAndWaitUntilConsumed: async (event) => {
+            events.push(event);
+          },
+        },
       })
       .then((settlement) => settlement.result);
 
@@ -137,7 +142,12 @@ describe('AskUserQuestion runtime round trip', () => {
           ],
         },
         abortSignal: new AbortController().signal,
-        eventSink: { push: (event) => events.push(event) },
+        eventSink: {
+          push: (event) => events.push(event),
+          pushAndWaitUntilConsumed: async (event) => {
+            events.push(event);
+          },
+        },
       })
       .then((settlement) => settlement.result);
 

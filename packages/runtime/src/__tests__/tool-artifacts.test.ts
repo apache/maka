@@ -119,7 +119,12 @@ describe('ToolRuntime artifact recorder scheduling', () => {
           toolCallId: 'tool-1',
           input: { path: 'notes.md', content: 'hello' },
           abortSignal: new AbortController().signal,
-          eventSink: { push: (event) => events.push(event) },
+          eventSink: {
+            push: (event) => events.push(event),
+            pushAndWaitUntilConsumed: async (event) => {
+              events.push(event);
+            },
+          },
         })
         .then(() => 'done' as const),
       delay(20).then(() => 'timeout' as const),

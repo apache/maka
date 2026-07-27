@@ -45,7 +45,6 @@ import { redactSecrets } from '@maka/core/redaction';
 import { TOOL_BOUNDARY_PROTOCOL_V1, type RuntimeEvent } from '@maka/core';
 
 import type { PermissionEngine } from './permission-engine.js';
-import type { AsyncEventQueue } from './async-queue.js';
 import { recordToolArtifactsSafely, type ToolArtifactRecorder } from './tool-artifacts.js';
 import { createToolOutputDeltaEmitter } from './tool-output-delta.js';
 import { truncateToolOutput } from './tool-output.js';
@@ -95,7 +94,12 @@ export interface ResolvedMakaToolCall {
   input: unknown;
   providerOptions?: Record<string, unknown>;
   abortSignal: AbortSignal;
-  eventSink: AsyncEventQueue<SessionEvent> | { push(event: SessionEvent): void };
+  eventSink: DurableSessionEventSink;
+}
+
+export interface DurableSessionEventSink {
+  push(event: SessionEvent): void;
+  pushAndWaitUntilConsumed(event: SessionEvent): Promise<void>;
 }
 
 export interface ToolSettlement {
@@ -647,7 +651,7 @@ export class ToolRuntime {
     toolUseId: string,
     turnId: string,
     text: string,
-    queue: AsyncEventQueue<SessionEvent> | { push(event: SessionEvent): void },
+    queue: DurableSessionEventSink,
   ): Promise<void> {
     const content: ToolResultContent = {
       kind: 'text',
@@ -680,7 +684,7 @@ export class ToolRuntime {
   private async executeTool(
     tool: MakaTool,
     turnId: string,
-    queue: AsyncEventQueue<SessionEvent> | { push(event: SessionEvent): void },
+    queue: DurableSessionEventSink,
     args: unknown,
     ctx: {
       toolCallId: string;
@@ -1182,15 +1186,19 @@ export class ToolRuntime {
           response =
             admissionState === 'settled'
               ? await verdict.parked
-              : await this.awaitPermissionDecision(verdict, turnId, () =>
-                  this.approvalCoordinator.resolve({
-                    mode: this.input.header.permissionMode,
-                    verdict,
-                    permissionEngine: this.input.permissionEngine,
-                    context: reviewContext,
-                    emitUserRequest: (event) => queue.push(event),
-                    abortSignal: ctx.abortSignal,
-                  }),
+              : await this.awaitPermissionDecision(
+                  verdict,
+                  turnId,
+                  () =>
+                    this.approvalCoordinator.resolve({
+                      mode: this.input.header.permissionMode,
+                      verdict,
+                      permissionEngine: this.input.permissionEngine,
+                      context: reviewContext,
+                      emitUserRequest: (event) => queue.push(event),
+                      abortSignal: ctx.abortSignal,
+                    }),
+                  hostedRun ? { run: hostedRun, eventSink: queue } : undefined,
                 );
         } catch (err) {
           if (isInteractionControlError(err)) throw err;
@@ -1236,7 +1244,7 @@ export class ToolRuntime {
         }
 
         if (hostedRun) {
-          queue.push({
+          await this.publishHostedSettlementAck(queue, {
             type: 'permission_answer_ack',
             id: this.input.newId(),
             turnId,
@@ -1354,6 +1362,8 @@ export class ToolRuntime {
       }
     }
 
+    this.assertCapturedRunOwner(tool.name, runId);
+
     const reservedSubagentSlot = this.reserveSubagentSlot(tool);
     if (!reservedSubagentSlot) {
       trace?.emit('tool', 'tool_failed', 'Tool execution rejected by runtime limit', {
@@ -1374,6 +1384,7 @@ export class ToolRuntime {
           proposal: additionalPlan.proposal,
           cwd: this.input.header.cwd,
         });
+        this.assertCapturedRunOwner(tool.name, runId);
         const additionalGrant = this.input.permissionEngine.consumeAdditionalPermissionGrant({
           sessionId: this.input.sessionId,
           turnId,
@@ -1390,6 +1401,12 @@ export class ToolRuntime {
         }
         permissionContext = Object.freeze({ additionalGrant });
       } catch (error) {
+        try {
+          this.assertCapturedRunOwner(tool.name, runId);
+        } catch (ownerError) {
+          if (reservedSubagentSlot) this.releaseSubagentSlot(tool);
+          throw ownerError;
+        }
         const reason = formatSyntheticToolErrorText(error);
         trace?.emit(
           'permission',
@@ -1457,13 +1474,21 @@ export class ToolRuntime {
         return this.errorReturn(reason);
       }
     }
-    const durableAttempt = await this.prepareDurableToolAttempt({
-      tool,
-      startEvent: startEv,
-      persistedArgs,
-      ...(invocationId ? { invocationId } : {}),
-      ...(runId ? { runId } : {}),
-    });
+    let durableAttempt: DurableToolAttempt | undefined;
+    try {
+      this.assertCapturedRunOwner(tool.name, runId);
+      durableAttempt = await this.prepareDurableToolAttempt({
+        tool,
+        startEvent: startEv,
+        persistedArgs,
+        abortSignal: ctx.abortSignal,
+        ...(invocationId ? { invocationId } : {}),
+        ...(runId ? { runId } : {}),
+      });
+    } catch (error) {
+      if (reservedSubagentSlot) this.releaseSubagentSlot(tool);
+      throw error;
+    }
     if (durableAttempt) {
       this.durableToolAttempts.set(durableAttemptKey(turnId, toolUseId), durableAttempt);
     }
@@ -1774,6 +1799,7 @@ export class ToolRuntime {
     tool: MakaTool;
     startEvent: ToolStartEvent;
     persistedArgs: unknown;
+    abortSignal: AbortSignal;
     invocationId?: string;
     runId?: string;
   }): Promise<DurableToolAttempt | undefined> {
@@ -1853,6 +1879,8 @@ export class ToolRuntime {
       refs: { operationId, toolCallId: input.startEvent.toolUseId },
     };
     try {
+      this.assertCapturedRunOwner(input.tool.name, runId);
+      this.assertDurableDispatchNotAborted(input.tool.name, input.abortSignal);
       const prepared = await sink.commitToolPrepared({
         operationId,
         journalEventId: `${operationId}_prepared`,
@@ -1951,23 +1979,27 @@ export class ToolRuntime {
     verdict: Extract<ReturnType<PermissionEngine['evaluate']>, { kind: 'prompt' }>,
     turnId: string,
     resolve: () => Promise<PermissionDecision> = () => verdict.parked,
+    hosted?: {
+      run: HostedInteractionBridge;
+      eventSink: DurableSessionEventSink;
+    },
   ): Promise<PermissionDecision> {
     const timeoutMs = this.input.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS;
     const pauseTarget = this.input.getPermissionPauseTarget();
     pauseTarget?.pause();
     try {
       if (timeoutMs <= 0) return await resolve();
+      const timeoutSentinel = Symbol('permission_timeout');
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const timeout = new Promise<PermissionDecision>((resolveTimeout, rejectTimeout) => {
+      const timeout = new Promise<typeof timeoutSentinel>((resolveTimeout) => {
         timer = setTimeout(() => {
-          void this.resolvePermissionTimeout(verdict, turnId, timeoutMs).then(
-            resolveTimeout,
-            rejectTimeout,
-          );
+          resolveTimeout(timeoutSentinel);
         }, timeoutMs);
       });
       try {
-        return await Promise.race([resolve(), timeout]);
+        const winner = await Promise.race([resolve(), timeout]);
+        if (winner !== timeoutSentinel) return winner;
+        return await this.resolvePermissionTimeout(verdict, turnId, timeoutMs, hosted);
       } finally {
         if (timer !== undefined) clearTimeout(timer);
       }
@@ -1980,23 +2012,69 @@ export class ToolRuntime {
     verdict: Extract<ReturnType<PermissionEngine['evaluate']>, { kind: 'prompt' }>,
     turnId: string,
     timeoutMs: number,
+    hosted:
+      | {
+          run: HostedInteractionBridge;
+          eventSink: DurableSessionEventSink;
+        }
+      | undefined,
   ): Promise<PermissionDecision> {
     const requestId = verdict.event.requestId;
     const reason = `Permission request ${requestId} timed out after ${timeoutMs}ms`;
-    const hostedRun = this.interactionRun(turnId);
-    if (!hostedRun) {
+    if (!hosted) {
       this.input.permissionEngine.expireRequest(turnId, requestId, reason);
       return await verdict.parked;
     }
+    let outcome;
     try {
-      await hostedRun.commitPermissionTimeout({ requestId });
+      outcome = await hosted.run.commitPermissionTimeout({ requestId });
     } catch (error) {
       throw interactionAuthorityError(
         `Could not confirm the timeout winner for permission ${requestId}`,
         error,
       );
     }
-    return await verdict.parked;
+    if (outcome.kind === 'permission_answer') {
+      return {
+        requestId,
+        ...outcome.answer,
+      };
+    }
+
+    let closureError: unknown;
+    try {
+      await verdict.parked;
+      closureError = new RuntimeInteractionInvariantError(
+        `Hosted permission closure ${requestId} left the local request resolved`,
+      );
+    } catch (error) {
+      closureError = error;
+    }
+    if (outcome.reason === 'timed_out') {
+      await this.publishHostedSettlementAck(hosted.eventSink, {
+        type: 'permission_closure_ack',
+        id: this.input.newId(),
+        turnId,
+        ts: this.input.now(),
+        requestId,
+        toolUseId: verdict.event.toolUseId,
+        reason: 'timed_out',
+      });
+    }
+    throw closureError;
+  }
+
+  private assertCapturedRunOwner(toolName: string, expectedRunId: string | undefined): void {
+    if (expectedRunId && this.input.getCurrentRunId?.() !== expectedRunId) {
+      throw new Error(`Tool ${toolName} lost Run ownership before durable dispatch`);
+    }
+  }
+
+  private assertDurableDispatchNotAborted(toolName: string, abortSignal: AbortSignal): void {
+    if (!abortSignal.aborted) return;
+    throw abortSignal.reason instanceof Error
+      ? abortSignal.reason
+      : new Error(`Tool ${toolName} was cancelled before durable dispatch`);
   }
 
   private reserveSubagentSlot(tool: MakaTool): boolean {
@@ -2227,7 +2305,7 @@ export class ToolRuntime {
     turnId: string,
     toolUseId: string,
     questions: UserQuestion[],
-    queue: AsyncEventQueue<SessionEvent> | { push(event: SessionEvent): void },
+    queue: DurableSessionEventSink,
   ): Promise<UserQuestionResult> {
     const hostedRun = this.interactionRun(turnId);
     const requestId = this.input.newId();
@@ -2274,14 +2352,16 @@ export class ToolRuntime {
     }
     queue.push(request);
     const response = await parked;
-    queue.push({
+    const answerAck = {
       type: 'user_question_answer_ack',
       id: this.input.newId(),
       turnId,
       ts: this.input.now(),
       requestId,
       toolUseId,
-    });
+    } as const;
+    if (hostedRun) await this.publishHostedSettlementAck(queue, answerAck);
+    else queue.push(answerAck);
     return {
       answers: questions.map((question, index) => ({
         question: question.question,
@@ -2292,6 +2372,20 @@ export class ToolRuntime {
 
   private interactionRun(turnId: string): HostedInteractionBridge | undefined {
     return this.hostedInteractions.get(turnId);
+  }
+
+  private async publishHostedSettlementAck(
+    queue: DurableSessionEventSink,
+    event: SessionEvent,
+  ): Promise<void> {
+    try {
+      await queue.pushAndWaitUntilConsumed(event);
+    } catch (error) {
+      throw new RuntimeInteractionFailStopError(
+        `Could not durably acknowledge hosted ${event.type}`,
+        error,
+      );
+    }
   }
 
   private finishDeferredQuestionTurnClosure(turnId: string): void {

@@ -103,7 +103,12 @@ function run(h: Harness, t: MakaTool, args: unknown = {}) {
       toolCallId: 'tc1',
       input: args,
       abortSignal: new AbortController().signal,
-      eventSink: { push: (event) => h.pushed.push(event) },
+      eventSink: {
+        push: (event) => h.pushed.push(event),
+        pushAndWaitUntilConsumed: async (event) => {
+          h.pushed.push(event);
+        },
+      },
     })
     .then((settlement) => settlement.result);
 }

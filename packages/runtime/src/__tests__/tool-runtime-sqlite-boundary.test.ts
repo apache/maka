@@ -52,7 +52,12 @@ describe('ToolRuntime with real SQLite boundary', () => {
         toolCallId: 'provider-call-1',
         input: {},
         abortSignal: new AbortController().signal,
-        eventSink: { push: (event) => published.push(event) },
+        eventSink: {
+          push: (event) => published.push(event),
+          pushAndWaitUntilConsumed: async (event) => {
+            published.push(event);
+          },
+        },
       });
 
       assert.equal(implementationCalls, 1);
@@ -131,7 +136,12 @@ describe('ToolRuntime with real SQLite boundary', () => {
         toolCallId: 'provider-call-1',
         input: {},
         abortSignal: new AbortController().signal,
-        eventSink: { push: (event) => published.push(event) },
+        eventSink: {
+          push: (event) => published.push(event),
+          pushAndWaitUntilConsumed: async (event) => {
+            published.push(event);
+          },
+        },
       });
 
       const memory = createSessionEventMapMemory();

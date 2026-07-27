@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type {
   AnyPermissionRequestEvent,
   PermissionAnswerAckEvent,
+  PermissionClosureAckEvent,
   PermissionDecisionAckEvent,
   UserQuestionAnswerAckEvent,
   UserQuestionRequestEvent,
@@ -16,6 +17,7 @@ import type {
   HostedInteractionBridge,
   HostedPermissionAdmission,
   HostedPermissionAnswer,
+  HostedPermissionCommitOutcome,
   HostedPermissionSettlement,
   HostedUserQuestionAnswer,
   HostedUserQuestionSettlement,
@@ -180,6 +182,7 @@ interface TrackedContinuationBase {
   published: boolean;
   settlementStarted: boolean;
   settled: boolean;
+  outcome?: RuntimePermissionOutcome | RuntimeUserQuestionOutcome;
   settlementPromise?: Promise<void>;
 }
 
@@ -219,29 +222,39 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
     return this.owner.runId;
   }
 
-  canResumeAfterAnswerAck(
-    event: PermissionAnswerAckEvent | PermissionDecisionAckEvent | UserQuestionAnswerAckEvent,
-  ): boolean {
+  async canResumeAfterSettlementAck(
+    event:
+      | PermissionAnswerAckEvent
+      | PermissionClosureAckEvent
+      | PermissionDecisionAckEvent
+      | UserQuestionAnswerAckEvent,
+  ): Promise<boolean> {
     if (event.type === 'permission_decision_ack') {
       throw new RuntimeInteractionInvariantError(
         `Hosted permission answer ${event.requestId} used a legacy decision acknowledgement`,
       );
     }
-    const answered = this.continuations.get(event.requestId);
-    const expectedKind = event.type === 'permission_answer_ack' ? 'permission' : 'question';
+    const settled = this.continuations.get(event.requestId);
+    const expectedKind = event.type === 'user_question_answer_ack' ? 'question' : 'permission';
     if (
-      !answered ||
-      answered.kind !== expectedKind ||
-      answered.request.turnId !== event.turnId ||
-      answered.request.toolUseId !== event.toolUseId ||
-      !answered.settlementStarted
+      !settled ||
+      settled.kind !== expectedKind ||
+      settled.request.turnId !== event.turnId ||
+      settled.request.toolUseId !== event.toolUseId ||
+      !settled.settlementPromise
     ) {
       throw new RuntimeInteractionInvariantError(
-        `Interaction answer ${event.requestId} has no exact local settlement`,
+        `Interaction acknowledgement ${event.requestId} has no exact local settlement`,
+      );
+    }
+    await settled.settlementPromise;
+    if (!settled.settled || !settlementMatchesAck(settled, event)) {
+      throw new RuntimeInteractionInvariantError(
+        `Interaction acknowledgement ${event.requestId} has no exact local settlement`,
       );
     }
     for (const tracked of this.continuations.values()) {
-      if (tracked === answered) continue;
+      if (tracked === settled) continue;
       if (!tracked.settled) return false;
     }
     return true;
@@ -293,17 +306,20 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
       continuation: tracked.continuation,
       answer: input.answer,
     });
-    this.assertPermissionOutcome(input.requestId, outcome);
     await this.requireSettlement(tracked, 'permission answer commit');
+    this.assertPermissionOutcome(tracked, outcome);
   }
 
-  async commitPermissionTimeout(input: { requestId: string }): Promise<void> {
+  async commitPermissionTimeout(input: {
+    requestId: string;
+  }): Promise<HostedPermissionCommitOutcome> {
     const tracked = this.pendingPermission(input.requestId);
     const outcome = await this.owner.commitPermissionTimeout({
       continuation: tracked.continuation,
     });
-    this.assertPermissionOutcome(input.requestId, outcome);
     await this.requireSettlement(tracked, 'permission timeout commit');
+    this.assertPermissionOutcome(tracked, outcome);
+    return outcome;
   }
 
   async admitUserQuestionRequest(input: {
@@ -442,9 +458,19 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
       turnId: this.turnId,
       runId: this.runId,
       applyAnswer: (answer: RuntimePermissionAnswer) =>
-        this.settleTracked(tracked, () => local.applyAnswer(answer), 'permission answer'),
+        this.settleTracked(
+          tracked,
+          () => local.applyAnswer(answer),
+          { kind: 'permission_answer', answer },
+          'permission answer',
+        ),
       applyClosure: (reason: RuntimeInteractionClosureReason) =>
-        this.settleTracked(tracked, () => local.applyClosure(reason), 'permission closure'),
+        this.settleTracked(
+          tracked,
+          () => local.applyClosure(reason),
+          { kind: 'closure', reason },
+          'permission closure',
+        ),
     });
     tracked = {
       kind: 'permission',
@@ -471,9 +497,19 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
       turnId: this.turnId,
       runId: this.runId,
       applyAnswer: (answer: RuntimeUserQuestionAnswer) =>
-        this.settleTracked(tracked, () => local.applyAnswer(answer), 'question answer'),
+        this.settleTracked(
+          tracked,
+          () => local.applyAnswer(answer),
+          { kind: 'question_answer', answer },
+          'question answer',
+        ),
       applyClosure: (reason: RuntimeUserQuestionClosureReason) =>
-        this.settleTracked(tracked, () => local.applyClosure(reason), 'question closure'),
+        this.settleTracked(
+          tracked,
+          () => local.applyClosure(reason),
+          { kind: 'closure', reason },
+          'question closure',
+        ),
     });
     tracked = {
       kind: 'question',
@@ -512,6 +548,7 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
   private settleTracked(
     tracked: TrackedContinuation,
     apply: () => Promise<void>,
+    outcome: RuntimePermissionOutcome | RuntimeUserQuestionOutcome,
     operation: string,
   ): Promise<void> {
     if (tracked.settlementStarted) {
@@ -525,6 +562,7 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
     const settlement = Promise.resolve()
       .then(apply)
       .then(() => {
+        tracked.outcome = outcome;
         tracked.settled = true;
       });
     tracked.settlementPromise = settlement;
@@ -560,12 +598,36 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
     }
   }
 
-  private assertPermissionOutcome(requestId: string, outcome: RuntimePermissionOutcome): void {
-    if (!outcome || (outcome.kind !== 'permission_answer' && outcome.kind !== 'closure')) {
+  private assertPermissionOutcome(
+    tracked: TrackedPermissionContinuation,
+    outcome: RuntimePermissionOutcome,
+  ): void {
+    if (
+      !outcome ||
+      (outcome.kind !== 'permission_answer' && outcome.kind !== 'closure') ||
+      !tracked.outcome ||
+      !isDeepStrictEqual(outcome, tracked.outcome)
+    ) {
       throw new RuntimeInteractionInvariantError(
-        `Interaction authority returned an invalid outcome for permission ${requestId}`,
+        `Interaction authority returned an inconsistent outcome for permission ${tracked.requestId}`,
       );
     }
+  }
+}
+
+function settlementMatchesAck(
+  tracked: TrackedContinuation,
+  event: PermissionAnswerAckEvent | PermissionClosureAckEvent | UserQuestionAnswerAckEvent,
+): boolean {
+  const outcome = tracked.outcome;
+  if (!outcome) return false;
+  switch (event.type) {
+    case 'permission_answer_ack':
+      return outcome.kind === 'permission_answer';
+    case 'permission_closure_ack':
+      return outcome.kind === 'closure' && outcome.reason === event.reason;
+    case 'user_question_answer_ack':
+      return outcome.kind === 'question_answer';
   }
 }
 

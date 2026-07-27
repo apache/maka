@@ -5,6 +5,7 @@ import type { SessionHeader } from '@maka/core/session';
 
 import { buildAdditionalPermissionProposal } from '../additional-permissions.js';
 import { buildAskUserQuestionTool } from '../ask-user-question-tool.js';
+import { AsyncEventQueue } from '../async-queue.js';
 import {
   RuntimeInteractionAdmissionRejectedError,
   RuntimeInteractionClosedError,
@@ -19,7 +20,7 @@ import {
 import { PermissionEngine } from '../permission-engine.js';
 import { planDeclaredBashSandboxEscalation } from '../sandbox-escalation.js';
 import { SessionManager } from '../session-manager.js';
-import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
+import { ToolRuntime, type DurableSessionEventSink, type MakaTool } from '../tool-runtime.js';
 
 describe('Runtime Interaction authority seam', () => {
   test('binds the exact Run and rejects release before durable close', async () => {
@@ -441,9 +442,12 @@ describe('Runtime Interaction authority seam', () => {
     );
     const runtime = toolRuntime(events);
     runtime.beginTurn(RUN.turnId, binding);
-    const pending = settleTool(runtime, buildAskUserQuestionTool(), RUN.turnId, {
-      push: (event) => events.push(event),
-    })(
+    const pending = settleTool(
+      runtime,
+      buildAskUserQuestionTool(),
+      RUN.turnId,
+      durableEventSink(events),
+    )(
       {
         questions: [
           {
@@ -496,9 +500,12 @@ describe('Runtime Interaction authority seam', () => {
     );
     const runtime = toolRuntime(events);
     runtime.beginTurn(RUN.turnId, binding);
-    const execute = settleTool(runtime, buildAskUserQuestionTool(), RUN.turnId, {
-      push: (event) => events.push(event),
-    });
+    const execute = settleTool(
+      runtime,
+      buildAskUserQuestionTool(),
+      RUN.turnId,
+      durableEventSink(events),
+    );
     const first = execute(
       {
         questions: [
@@ -523,34 +530,32 @@ describe('Runtime Interaction authority seam', () => {
     );
 
     await waitFor(() => continuations.length === 2);
-    assert.throws(
-      () =>
-        binding.canResumeAfterAnswerAck({
-          type: 'user_question_answer_ack',
-          id: 'unknown-answer',
-          turnId: RUN.turnId,
-          ts: 1,
-          requestId: 'unknown-question',
-          toolUseId: 'tool-unknown',
-        }),
+    await assert.rejects(
+      binding.canResumeAfterSettlementAck({
+        type: 'user_question_answer_ack',
+        id: 'unknown-answer',
+        turnId: RUN.turnId,
+        ts: 1,
+        requestId: 'unknown-question',
+        toolUseId: 'tool-unknown',
+      }),
       RuntimeInteractionInvariantError,
     );
     await continuations[0]!.applyAnswer({ answers: ['Yes'] });
     await first;
-    assert.throws(
-      () =>
-        binding.canResumeAfterAnswerAck({
-          type: 'user_question_answer_ack',
-          id: 'mismatched-answer',
-          turnId: RUN.turnId,
-          ts: 1,
-          requestId: continuations[0]!.requestId,
-          toolUseId: 'wrong-tool',
-        }),
+    await assert.rejects(
+      binding.canResumeAfterSettlementAck({
+        type: 'user_question_answer_ack',
+        id: 'mismatched-answer',
+        turnId: RUN.turnId,
+        ts: 1,
+        requestId: continuations[0]!.requestId,
+        toolUseId: 'wrong-tool',
+      }),
       RuntimeInteractionInvariantError,
     );
     assert.equal(
-      binding.canResumeAfterAnswerAck({
+      await binding.canResumeAfterSettlementAck({
         type: 'user_question_answer_ack',
         id: 'first-answer',
         turnId: RUN.turnId,
@@ -567,7 +572,7 @@ describe('Runtime Interaction authority seam', () => {
     await continuations[1]!.applyAnswer({ answers: ['No'] });
     await second;
     assert.equal(
-      binding.canResumeAfterAnswerAck({
+      await binding.canResumeAfterSettlementAck({
         type: 'user_question_answer_ack',
         id: 'second-answer',
         turnId: RUN.turnId,
@@ -614,14 +619,163 @@ describe('Runtime Interaction authority seam', () => {
         return { ok: true };
       },
     };
-    const result = await settleTool(runtime, tool, RUN.turnId, {
-      push: (event) => events.push(event),
-    })({ path: '/tmp/a' }, { toolCallId: 'tool-1', abortSignal: new AbortController().signal });
+    const result = await settleTool(
+      runtime,
+      tool,
+      RUN.turnId,
+      durableEventSink(events),
+    )({ path: '/tmp/a' }, { toolCallId: 'tool-1', abortSignal: new AbortController().signal });
 
     assert.equal(implementationCalled, false);
     assert.deepEqual(log, ['accepted', 'timeout-durable', 'timeout-local']);
     assert.match((result as { error: string }).error, /timed_out/);
+    const closureAck = events.find((event) => event.type === 'permission_closure_ack');
+    if (closureAck?.type !== 'permission_closure_ack') {
+      assert.fail('expected a durable permission timeout acknowledgement');
+    }
+    await assert.rejects(
+      binding.canResumeAfterSettlementAck({
+        ...closureAck,
+        type: 'permission_answer_ack',
+      }),
+      RuntimeInteractionInvariantError,
+    );
+    assert.equal(await binding.canResumeAfterSettlementAck(closureAck), true);
     runtime.endTurn(RUN.turnId);
+    await binding.close('turn_terminal');
+    await binding.settleLocalClosures();
+    binding.release();
+  });
+
+  test('uses the canonical answer when it wins the hosted timeout attempt', async () => {
+    const events: SessionEvent[] = [];
+    const binding = await bindRuntimeInteractionRun(
+      authority({
+        commitPermissionTimeout: async ({ continuation }) => {
+          const answer = {
+            decision: 'allow',
+            rememberForTurn: false,
+            reviewer: 'user',
+          } as const;
+          await continuation.applyAnswer(answer);
+          return { kind: 'permission_answer', answer };
+        },
+      }),
+      RUN,
+    );
+    const runtime = toolRuntime(events, 1);
+    runtime.beginTurn(RUN.turnId, binding);
+    let implementationCalled = false;
+    const result = await settleTool(
+      runtime,
+      {
+        name: 'Write',
+        description: 'test',
+        parameters: {},
+        impl: () => {
+          implementationCalled = true;
+          return { ok: true };
+        },
+      },
+      RUN.turnId,
+      durableEventSink(events),
+    )({ path: '/tmp/a' }, { toolCallId: 'tool-1', abortSignal: new AbortController().signal });
+
+    assert.equal(implementationCalled, true);
+    assert.deepEqual(result, { ok: true });
+    assert.equal(events.filter((event) => event.type === 'permission_answer_ack').length, 1);
+    assert.equal(
+      events.some((event) => event.type === 'permission_closure_ack'),
+      false,
+    );
+    runtime.endTurn(RUN.turnId);
+    await binding.close('turn_terminal');
+    await binding.settleLocalClosures();
+    binding.release();
+  });
+
+  test('rejects an authority outcome that disagrees with exact local settlement', async () => {
+    const binding = await bindRuntimeInteractionRun(
+      authority({
+        commitPermissionTimeout: async ({ continuation }) => {
+          await continuation.applyClosure('timed_out');
+          return {
+            kind: 'permission_answer',
+            answer: { decision: 'allow', rememberForTurn: false, reviewer: 'user' },
+          };
+        },
+      }),
+      RUN,
+    );
+    await binding.admitPermissionRequest({
+      request: {
+        type: 'permission_request',
+        id: 'event-inconsistent-outcome',
+        turnId: RUN.turnId,
+        ts: 1,
+        requestId: 'request-inconsistent-outcome',
+        toolUseId: 'tool-inconsistent-outcome',
+        toolName: 'Write',
+        category: 'file_write',
+        args: { path: '/tmp/a' },
+        kind: 'tool_permission',
+        reason: 'file_write',
+        rememberForTurnAllowed: true,
+      },
+      settlement: {
+        applyAnswer: async () => {},
+        applyClosure: async () => {},
+      },
+    });
+
+    await assert.rejects(
+      binding.commitPermissionTimeout({ requestId: 'request-inconsistent-outcome' }),
+      /inconsistent outcome/,
+    );
+    await binding.close('turn_terminal');
+    await binding.settleLocalClosures();
+    binding.release();
+  });
+
+  test('keeps an admitted permission timeout bound to its exact Run after turn cleanup', async () => {
+    const events: SessionEvent[] = [];
+    let timeoutCommits = 0;
+    const binding = await bindRuntimeInteractionRun(
+      authority({
+        commitPermissionTimeout: async ({ continuation }) => {
+          timeoutCommits += 1;
+          await continuation.applyClosure('timed_out');
+          return { kind: 'closure', reason: 'timed_out' };
+        },
+      }),
+      RUN,
+    );
+    const runtime = toolRuntime(events, 20);
+    runtime.beginTurn(RUN.turnId, binding);
+    let implementationCalled = false;
+    const pending = settleTool(
+      runtime,
+      {
+        name: 'Write',
+        description: 'test',
+        parameters: {},
+        impl: () => {
+          implementationCalled = true;
+          return { ok: true };
+        },
+      },
+      RUN.turnId,
+      durableEventSink(events),
+    )({ path: '/tmp/a' }, { toolCallId: 'tool-1', abortSignal: new AbortController().signal });
+    await waitFor(() => events.some((event) => event.type === 'permission_request'));
+
+    runtime.endTurn(RUN.turnId, 'aborted');
+    const result = await pending;
+
+    assert.equal(timeoutCommits, 1);
+    assert.equal(implementationCalled, false);
+    assert.match((result as { error: string }).error, /timed_out/);
+    assert.equal(events.filter((event) => event.type === 'permission_closure_ack').length, 1);
     await binding.close('turn_terminal');
     await binding.settleLocalClosures();
     binding.release();
@@ -648,9 +802,12 @@ describe('Runtime Interaction authority seam', () => {
     let currentRunId: string | undefined = RUN.runId;
     const runtime = toolRuntime(events, undefined, () => currentRunId);
     runtime.beginTurn(RUN.turnId, binding);
-    const pending = settleTool(runtime, buildAskUserQuestionTool(), RUN.turnId, {
-      push: (event) => events.push(event),
-    })(
+    const pending = settleTool(
+      runtime,
+      buildAskUserQuestionTool(),
+      RUN.turnId,
+      durableEventSink(events),
+    )(
       {
         questions: [
           {
@@ -691,9 +848,12 @@ describe('Runtime Interaction authority seam', () => {
     const runtime = toolRuntime(events);
     runtime.beginTurn(RUN.turnId, binding);
     await assert.rejects(
-      settleTool(runtime, buildAskUserQuestionTool(), RUN.turnId, {
-        push: (event) => events.push(event),
-      })(
+      settleTool(
+        runtime,
+        buildAskUserQuestionTool(),
+        RUN.turnId,
+        durableEventSink(events),
+      )(
         {
           questions: [
             {
@@ -765,7 +925,7 @@ describe('Runtime Interaction authority seam', () => {
     }
     await continuations[0]!.applyAnswer({ decision: 'allow', rememberForTurn: true });
     assert.equal(
-      binding.canResumeAfterAnswerAck({
+      await binding.canResumeAfterSettlementAck({
         type: 'permission_answer_ack',
         id: 'first-permission-answer',
         turnId: RUN.turnId,
@@ -775,17 +935,16 @@ describe('Runtime Interaction authority seam', () => {
       }),
       false,
     );
-    assert.throws(
-      () =>
-        binding.canResumeAfterAnswerAck({
-          type: 'permission_decision_ack',
-          id: 'legacy-hosted-decision',
-          turnId: RUN.turnId,
-          ts: 1,
-          requestId: continuations[0]!.requestId,
-          toolUseId: 'tool-1',
-          decision: 'allow',
-        }),
+    await assert.rejects(
+      binding.canResumeAfterSettlementAck({
+        type: 'permission_decision_ack',
+        id: 'legacy-hosted-decision',
+        turnId: RUN.turnId,
+        ts: 1,
+        requestId: continuations[0]!.requestId,
+        toolUseId: 'tool-1',
+        decision: 'allow',
+      }),
       RuntimeInteractionInvariantError,
     );
     let secondSettled = false;
@@ -799,7 +958,7 @@ describe('Runtime Interaction authority seam', () => {
     await continuations[1]!.applyAnswer({ decision: 'allow', rememberForTurn: true });
     assert.equal((await second.parked).decision, 'allow');
     assert.equal(
-      binding.canResumeAfterAnswerAck({
+      await binding.canResumeAfterSettlementAck({
         type: 'permission_answer_ack',
         id: 'second-permission-answer',
         turnId: RUN.turnId,
@@ -848,9 +1007,7 @@ describe('Runtime Interaction authority seam', () => {
         return { ok: true };
       },
     };
-    const execute = settleTool(runtime, tool, RUN.turnId, {
-      push: (event) => events.push(event),
-    });
+    const execute = settleTool(runtime, tool, RUN.turnId, durableEventSink(events));
 
     const firstResult = execute(
       { path: '/tmp/shared' },
@@ -991,7 +1148,7 @@ function settleTool(
   runtime: ToolRuntime,
   tool: MakaTool,
   turnId: string,
-  eventSink: { push(event: SessionEvent): void },
+  eventSink: DurableSessionEventSink,
 ) {
   return async (
     input: unknown,
@@ -1007,6 +1164,17 @@ function settleTool(
         eventSink,
       })
     ).result;
+}
+
+function durableEventSink(events: SessionEvent[]): AsyncEventQueue<SessionEvent> {
+  const queue = new AsyncEventQueue<SessionEvent>();
+  void (async () => {
+    for await (const event of queue) {
+      events.push(event);
+      queue.ackConsumed();
+    }
+  })();
+  return queue;
 }
 
 function header(): SessionHeader {

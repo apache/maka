@@ -981,21 +981,12 @@ export class AiSdkBackend implements AgentBackend {
                 } as ModelMessage,
               ];
         const settledModelOutputs = new Map<string, ToolResultOutput>();
-        const waitForDurableQueueBoundary = async (): Promise<void> => {
-          const pushedThrough = queue.pushedCount;
-          while (queue.consumedCount < pushedThrough) {
-            if (queue.consumerDetached) {
-              throw new Error('event consumer detached before the durable projection boundary');
-            }
-            await queue.waitForProgress();
-          }
-        };
         const loadDurableTurnEvents = async (): Promise<RuntimeEvent[]> => {
           const loadTurnRuntimeEvents = this.input.loadTurnRuntimeEvents;
           if (!loadTurnRuntimeEvents) {
             throw new Error('durable current-run reader is required for tool continuation');
           }
-          await waitForDurableQueueBoundary();
+          await queue.waitUntilConsumedThroughCurrent();
           return (await loadTurnRuntimeEvents(turnId)).filter((event) => event.turnId === turnId);
         };
         const loadDurableTurnProjection = async (): Promise<ModelMessage[]> => {
@@ -1525,7 +1516,7 @@ export class AiSdkBackend implements AgentBackend {
 
           finishReason = (await result.finishReason.catch(() => 'stop')) ?? 'stop';
           rawFinishReason = rawFinishReason ?? finishReason;
-          await waitForDurableQueueBoundary();
+          await queue.waitUntilConsumedThroughCurrent();
 
           if (returnedToolCalls.length > 0) {
             const continuationBudgetRemains =
@@ -1582,7 +1573,7 @@ export class AiSdkBackend implements AgentBackend {
                 this.handlePlanToolResult(settlement.result, turnId, queue);
               }
             }
-            await waitForDurableQueueBoundary();
+            await queue.waitUntilConsumedThroughCurrent();
             for (let index = 0; index < returnedToolCalls.length; index += 1) {
               const toolCall = returnedToolCalls[index];
               const settlement = settlements[index];
@@ -2926,7 +2917,7 @@ export class AiSdkBackend implements AgentBackend {
         if (queue.consumerDetached) {
           throw new Error('steering message was not durably consumed: event consumer detached');
         }
-        queue.push({
+        await queue.pushAndWaitUntilConsumed({
           type: 'steering_message',
           id: eventId,
           turnId,
@@ -2934,14 +2925,6 @@ export class AiSdkBackend implements AgentBackend {
           messageId: lease.messageId,
           content: lease.content,
         } satisfies SessionEvent);
-        const pushedThrough = queue.pushedCount;
-        for (;;) {
-          if (queue.consumedCount >= pushedThrough) break;
-          if (queue.consumerDetached) {
-            throw new Error('steering message was not durably consumed: event consumer detached');
-          }
-          await queue.waitForProgress();
-        }
         // The mapped RuntimeEvent inherits this session event's id, so the
         // injected message and its future ledger replay share one identity.
         this.injectedSteeringMessages.push(steeringModelMessage(eventId, providerContent));

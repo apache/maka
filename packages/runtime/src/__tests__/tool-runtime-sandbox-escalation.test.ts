@@ -144,7 +144,12 @@ function settle(
       toolCallId,
       input: args,
       abortSignal: new AbortController().signal,
-      eventSink: { push: (event) => fixture.events.push(event) },
+      eventSink: {
+        push: (event) => fixture.events.push(event),
+        pushAndWaitUntilConsumed: async (event) => {
+          fixture.events.push(event);
+        },
+      },
     })
     .then((settlement) => settlement.result);
 }

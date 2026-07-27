@@ -15,13 +15,12 @@
  *   subsequent `next()` calls re-throw.
  * - One consumer only. Multiple consumers will race on `next()`.
  *
- * Seq-ack counters: `pushedCount` stamps a monotonic sequence on the producer
- * side at enqueue; the consumer loop acks each event AFTER fully processing it
+ * Seq-ack boundary: the consumer loop acks each event AFTER fully processing it
  * via `ackConsumed()` (see AiSdkBackend.drain — the generator's pull IS the
- * ack). A producer-side waiter can then await "everything enqueued before this
- * boundary has been processed" with `consumedCount >= pushedCount`, using
- * `waitForProgress()` as the condition-variable wake — no polling, and immune
- * to event-kind predicate drift because it counts the stream itself.
+ * ack). Producers use `pushAndWaitUntilConsumed()` for one exact event, or
+ * `waitUntilConsumedThroughCurrent()` for everything already enqueued. Both are
+ * event-driven and fail closed if the consumer detaches or the queue errors
+ * before the boundary is consumed.
  */
 
 export class AsyncEventQueue<T> implements AsyncIterable<T> {
@@ -41,8 +40,37 @@ export class AsyncEventQueue<T> implements AsyncIterable<T> {
   private progressWaiters: Array<() => void> = [];
 
   push(item: T): void {
-    if (this.closed || this.err) return;
-    this.pushedCount += 1;
+    if (!this.canEnqueue()) return;
+    this.enqueue(item);
+  }
+
+  /**
+   * Enqueue one item and resolve only after the consumer has fully processed
+   * that exact sequence. Unlike `push()`, an enqueue rejected by queue state is
+   * observable by the producer.
+   */
+  pushAndWaitUntilConsumed(item: T): Promise<void> {
+    if (this.err) return Promise.reject(this.err);
+    if (this.consumerDetached) return Promise.reject(consumerDetachedError());
+    if (this.closed) return Promise.reject(queueClosedError());
+    const sequence = this.enqueue(item);
+    return this.waitUntilConsumed(sequence);
+  }
+
+  /**
+   * Wait through the producer boundary captured at call time. Items enqueued
+   * later do not extend the wait.
+   */
+  waitUntilConsumedThroughCurrent(): Promise<void> {
+    return this.waitUntilConsumed(this.pushedCount);
+  }
+
+  private canEnqueue(): boolean {
+    return !this.closed && !this.err && !this.consumerDetached;
+  }
+
+  private enqueue(item: T): number {
+    const sequence = ++this.pushedCount;
     const w = this.waiters.shift();
     if (w) {
       w.resolve({ value: item, done: false });
@@ -50,6 +78,15 @@ export class AsyncEventQueue<T> implements AsyncIterable<T> {
       this.buf.push(item);
     }
     this.wake();
+    return sequence;
+  }
+
+  private async waitUntilConsumed(sequence: number): Promise<void> {
+    while (this.consumedCount < sequence) {
+      if (this.err) throw this.err;
+      if (this.consumerDetached) throw consumerDetachedError();
+      await this.waitForProgress();
+    }
   }
 
   /** Consumer-side ack: one event has been fully processed (not just received). */
@@ -60,6 +97,7 @@ export class AsyncEventQueue<T> implements AsyncIterable<T> {
 
   /** The consumer stopped pulling; wake waiters so they can observe it. */
   noteConsumerDetached(): void {
+    if (this.consumerDetached) return;
     this.consumerDetached = true;
     this.wake();
   }
@@ -121,4 +159,12 @@ export class AsyncEventQueue<T> implements AsyncIterable<T> {
       },
     };
   }
+}
+
+function queueClosedError(): Error {
+  return new Error('cannot enqueue: async event queue is closed');
+}
+
+function consumerDetachedError(): Error {
+  return new Error('event consumer detached before the queue boundary was consumed');
 }

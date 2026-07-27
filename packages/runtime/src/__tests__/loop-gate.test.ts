@@ -257,7 +257,12 @@ function call(h: Harness, t: MakaTool, args: unknown, turnId = 'turn-1'): Promis
       toolCallId: `tc-${++callSeq}`,
       input: args,
       abortSignal: new AbortController().signal,
-      eventSink: { push: (event) => h.pushed.push(event) },
+      eventSink: {
+        push: (event) => h.pushed.push(event),
+        pushAndWaitUntilConsumed: async (event) => {
+          h.pushed.push(event);
+        },
+      },
     })
     .then((settlement) => settlement.result);
 }

@@ -33,7 +33,7 @@ import {
   type AiSdkBackendInput,
   type RunTraceEvent,
 } from '../ai-sdk-backend.js';
-import type { MakaTool, ToolRuntime } from '../tool-runtime.js';
+import type { DurableSessionEventSink, MakaTool, ToolRuntime } from '../tool-runtime.js';
 import { LOAD_TOOLS_NAME } from '../tool-availability.js';
 import { PermissionEngine } from '../permission-engine.js';
 import {
@@ -171,6 +171,7 @@ describe('AiSdkBackend model history', () => {
     const events: SessionEvent[] = [];
     const messages: StoredMessage[] = [];
     const model = singlePermissionToolModel();
+    let implementationSawDurableAnswer = false;
     const backend = new AiSdkBackend({
       sessionId: 'session-1',
       header: header('execute'),
@@ -188,7 +189,13 @@ describe('AiSdkBackend model history', () => {
         },
       },
       modelFactory: () => model,
-      tools: [permissionTool()],
+      tools: [
+        permissionTool(() => {
+          implementationSawDurableAnswer = durable.ledger.some(
+            (event) => event.actions?.permissionAnswerAccepted !== undefined,
+          );
+        }),
+      ],
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
       now: monotonicClock(),
@@ -215,6 +222,7 @@ describe('AiSdkBackend model history', () => {
     allowAdmission.release();
     await running;
     assert.equal(reviewStarted, true);
+    assert.equal(implementationSawDurableAnswer, true);
     const ack = events.find((event) => event.type === 'permission_answer_ack');
     assert.ok(ack);
     assert.equal(JSON.stringify(ack).includes('decision'), false);
@@ -291,6 +299,17 @@ describe('AiSdkBackend model history', () => {
     assert.equal(timeoutCommits, 1);
     const request = events.find((event) => event.type === 'permission_request');
     if (request?.type !== 'permission_request') assert.fail('expected admitted timeout request');
+    const closureAck = events.find((event) => event.type === 'permission_closure_ack');
+    if (closureAck?.type !== 'permission_closure_ack') {
+      assert.fail('expected a durable permission timeout acknowledgement');
+    }
+    assert.ok(
+      durable.ledger.some(
+        (event) =>
+          event.actions?.permissionClosureAccepted?.requestId === request.requestId &&
+          event.actions.permissionClosureAccepted.reason === 'timed_out',
+      ),
+    );
 
     await binding.close('turn_terminal');
     await binding.settleLocalClosures();
@@ -6740,7 +6759,14 @@ describe('AiSdkBackend error surfaces', () => {
       'tool-1',
       'turn-1',
       'failed with api_key=sk-live-secret-token-value',
-      { push: (event) => events.push(event) },
+      {
+        push: (event) => {
+          events.push(event);
+        },
+        pushAndWaitUntilConsumed: async (event) => {
+          events.push(event);
+        },
+      },
     );
 
     assert.equal(JSON.stringify(messages).includes('sk-live-secret-token-value'), false);
@@ -12923,13 +12949,16 @@ function testTool(name: string, parameters: unknown): MakaTool {
   };
 }
 
-function permissionTool(): MakaTool {
+function permissionTool(onExecute?: () => void): MakaTool {
   return {
     name: 'Bash',
     description: 'shell',
     parameters: z.object({ command: z.string() }),
     permissionRequired: true,
-    impl: async () => ({ ok: true }),
+    impl: async () => {
+      onExecute?.();
+      return { ok: true };
+    },
   };
 }
 
@@ -13176,6 +13205,10 @@ function runtimeExecute(
   eventSink: { push(event: SessionEvent): void },
 ) {
   const runtime = (backend as unknown as { toolRuntime: ToolRuntime }).toolRuntime;
+  const durableEventSink: DurableSessionEventSink = {
+    push: (event) => eventSink.push(event),
+    pushAndWaitUntilConsumed: async (event) => eventSink.push(event),
+  };
   return async (
     input: unknown,
     context: { toolCallId: string; abortSignal: AbortSignal },
@@ -13187,7 +13220,7 @@ function runtimeExecute(
         toolCallId: context.toolCallId,
         input,
         abortSignal: context.abortSignal,
-        eventSink,
+        eventSink: durableEventSink,
       })
     ).result;
 }

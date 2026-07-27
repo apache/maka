@@ -105,7 +105,12 @@ async function invoke(fixture: ReturnType<typeof harness>, value: MakaTool): Pro
       toolCallId: `tool-call-${++toolCallSequence}`,
       input: {},
       abortSignal: new AbortController().signal,
-      eventSink: { push: (event) => fixture.events.push(event) },
+      eventSink: {
+        push: (event) => fixture.events.push(event),
+        pushAndWaitUntilConsumed: async (event) => {
+          fixture.events.push(event);
+        },
+      },
     })
   ).result;
 }

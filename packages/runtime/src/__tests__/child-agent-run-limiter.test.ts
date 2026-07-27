@@ -329,7 +329,10 @@ async function executeTool(
       toolCallId: `tool-${tool.name}`,
       input: {},
       abortSignal: controller.signal,
-      eventSink: { push: () => {} },
+      eventSink: {
+        push: () => {},
+        pushAndWaitUntilConsumed: async () => {},
+      },
     })
   ).result;
 }

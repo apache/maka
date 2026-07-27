@@ -530,6 +530,7 @@ export class PermissionEngine {
       decision: answer.decision,
       ...(answer.rememberForTurn !== undefined ? { rememberForTurn: answer.rememberForTurn } : {}),
       ...(answer.reviewer !== undefined ? { reviewer: answer.reviewer } : {}),
+      ...(answer.rationale !== undefined ? { rationale: answer.rationale } : {}),
       ...(answer.riskLevel !== undefined ? { riskLevel: answer.riskLevel } : {}),
     };
     this.assertValidResponse(response);
@@ -553,6 +554,7 @@ export class PermissionEngine {
         response.reviewer !== 'user' &&
         response.reviewer !== 'auto_review') ||
       (response.rationale !== undefined && typeof response.rationale !== 'string') ||
+      (response.rationale !== undefined && response.reviewer !== 'auto_review') ||
       (response.riskLevel !== undefined &&
         !['low', 'medium', 'high', 'critical'].includes(response.riskLevel))
     ) {
@@ -938,6 +940,7 @@ function runtimePermissionAnswer(response: PermissionResponse): HostedPermission
       ? { rememberForTurn: response.rememberForTurn }
       : {}),
     ...(response.reviewer !== undefined ? { reviewer: response.reviewer } : {}),
+    ...(response.rationale !== undefined ? { rationale: response.rationale } : {}),
     ...(response.riskLevel !== undefined ? { riskLevel: response.riskLevel } : {}),
   };
 }

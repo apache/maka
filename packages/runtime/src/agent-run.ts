@@ -472,6 +472,14 @@ export class AgentRun {
       await this.recordSessionEvent(sessionEvent, options);
       return;
     }
+    if (this.requiresDurablePersistence() && isInteractionResumeAck(sessionEvent)) {
+      // A hosted continuation may resume execution only after its identity-only
+      // settlement fact is durable. Run status advances next, then Session
+      // status; the queue consumer acknowledges the event only after all three.
+      await this.recordRuntimeEvents([runtimeEvent], { requireDurableWrite: true });
+      await this.recordSessionEvent(sessionEvent, options);
+      return;
+    }
     await this.recordSessionEvent(sessionEvent, options);
     if (sessionEvent.type === 'provider_retry') return;
     if (!isNonTerminalErrorRuntimeEvent(runtimeEvent)) {
@@ -1453,6 +1461,7 @@ function isPermissionHandoffTerminal(event: RuntimeEvent): boolean {
 function isInteractionResumeAck(event: SessionEvent): boolean {
   return (
     event.type === 'permission_answer_ack' ||
+    event.type === 'permission_closure_ack' ||
     (event.type === 'permission_decision_ack' && event.decision === 'allow') ||
     event.type === 'user_question_answer_ack'
   );

@@ -756,6 +756,8 @@ function collectPendingPermissionDiagnostics(
     if (decision) pending.delete(decision.requestId);
     const accepted = event.actions?.permissionAnswerAccepted;
     if (accepted) pending.delete(accepted.requestId);
+    const closed = event.actions?.permissionClosureAccepted;
+    if (closed) pending.delete(closed.requestId);
   }
   return [...pending.entries()].map(([requestId, event]) => ({
     code: 'pending_permission',

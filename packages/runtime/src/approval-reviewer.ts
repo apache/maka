@@ -1,4 +1,5 @@
 import type { AnyPermissionRequestEvent } from '@maka/core/events';
+import { INTERACTION_AUTO_REVIEW_RATIONALE_MAX_CHARS } from '@maka/core';
 import {
   approvalRoutingPolicyForMode,
   type ApprovalRiskLevel,
@@ -11,7 +12,7 @@ import { z } from 'zod';
 import type { EvaluateResult, PermissionEngine } from './permission-engine.js';
 
 export const DEFAULT_AUTO_APPROVAL_REVIEW_TIMEOUT_MS = 90_000;
-export const MAX_AUTO_APPROVAL_RATIONALE_CHARS = 1_000;
+export const MAX_AUTO_APPROVAL_RATIONALE_CHARS = INTERACTION_AUTO_REVIEW_RATIONALE_MAX_CHARS;
 const MAX_REVIEW_CONTEXT_CHARS = 12_000;
 
 export interface AutoApprovalReviewContext {

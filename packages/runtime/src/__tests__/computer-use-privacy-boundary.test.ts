@@ -74,7 +74,12 @@ test('Computer Use snapshots execution args and persists only the approval summa
     toolCallId: 'tool-1',
     input: args,
     abortSignal: new AbortController().signal,
-    eventSink: { push: (event) => events.push(event) },
+    eventSink: {
+      push: (event) => events.push(event),
+      pushAndWaitUntilConsumed: async (event) => {
+        events.push(event);
+      },
+    },
   });
 
   args.app = 'Mutated';
@@ -170,7 +175,12 @@ test('Computer Use validation failures still persist a redacted call and result'
       coordinate: [123, 456],
     },
     abortSignal: new AbortController().signal,
-    eventSink: { push: (event) => events.push(event) },
+    eventSink: {
+      push: (event) => events.push(event),
+      pushAndWaitUntilConsumed: async (event) => {
+        events.push(event);
+      },
+    },
   });
 
   assert.equal((result as { error?: string }).error, 'Computer Use arguments failed validation');

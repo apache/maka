@@ -72,6 +72,68 @@ describe('ToolRuntime durable boundary', () => {
     );
   });
 
+  it('does not cross T1 after the captured Run loses ownership', async () => {
+    let runReads = 0;
+    let preparedCalls = 0;
+    let implementationCalls = 0;
+    const harness = makeHarness(
+      {
+        commitToolPrepared: async () => {
+          preparedCalls += 1;
+          return { created: true, runtimeEventSeq: 1 };
+        },
+        commitToolOutcome: async () => {
+          throw new Error('must not reach T2');
+        },
+      },
+      undefined,
+      () => (++runReads === 1 ? 'run-1' : undefined),
+    );
+
+    await assert.rejects(
+      harness.execute(
+        tool(() => {
+          implementationCalls += 1;
+          return { ok: true };
+        }),
+      ),
+      /lost Run ownership/,
+    );
+
+    assert.equal(preparedCalls, 0);
+    assert.equal(implementationCalls, 0);
+  });
+
+  it('does not cross T1 when durable dispatch is already aborted', async () => {
+    let preparedCalls = 0;
+    let implementationCalls = 0;
+    const controller = new AbortController();
+    controller.abort(new Error('stop before start'));
+    const harness = makeHarness({
+      commitToolPrepared: async () => {
+        preparedCalls += 1;
+        return { created: true, runtimeEventSeq: 1 };
+      },
+      commitToolOutcome: async () => {
+        throw new Error('must not reach T2');
+      },
+    });
+
+    await assert.rejects(
+      harness.execute(
+        tool(() => {
+          implementationCalls += 1;
+          return { ok: true };
+        }),
+        controller.signal,
+      ),
+      /stop before start/,
+    );
+
+    assert.equal(preparedCalls, 0);
+    assert.equal(implementationCalls, 0);
+  });
+
   it('commits T1 before implementation and T2 before publishing the result', async () => {
     const order: string[] = [];
     const prepared: ToolPreparedCommit[] = [];
@@ -236,7 +298,11 @@ describe('ToolRuntime durable boundary', () => {
   });
 });
 
-function makeHarness(sink: RuntimeCommitSink, order?: string[]) {
+function makeHarness(
+  sink: RuntimeCommitSink,
+  order?: string[],
+  getCurrentRunId: () => string | undefined = () => 'run-1',
+) {
   const messages: StoredMessage[] = [];
   const events: SessionEvent[] = [];
   const permissionEngine = new PermissionEngine({ newId: nextId(), now: () => 1 });
@@ -253,23 +319,27 @@ function makeHarness(sink: RuntimeCommitSink, order?: string[]) {
     newId: nextId(),
     now: nextNow(),
     getPermissionPauseTarget: () => null,
-    getCurrentRunId: () => 'run-1',
+    getCurrentRunId,
     runtimeCommitSink: sink,
   });
   return {
     messages,
     events,
     permissionEngine,
-    execute: async (target: MakaTool) =>
+    execute: async (target: MakaTool, abortSignal: AbortSignal = new AbortController().signal) =>
       (
         await runtime.settleToolCall({
           tool: target,
           turnId: 'turn-1',
           toolCallId: 'provider-call-1',
           input: {},
-          abortSignal: new AbortController().signal,
+          abortSignal,
           eventSink: {
             push: (event) => {
+              events.push(event);
+              if (event.type === 'tool_result') order?.push('published-result');
+            },
+            pushAndWaitUntilConsumed: async (event) => {
               events.push(event);
               if (event.type === 'tool_result') order?.push('published-result');
             },

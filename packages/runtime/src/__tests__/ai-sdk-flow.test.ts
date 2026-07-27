@@ -422,6 +422,29 @@ describe('AiSdkFlow seam', () => {
     assert.doesNotThrow(() => decodeRuntimeEvent(JSON.parse(JSON.stringify(mapped))));
   });
 
+  test('maps hosted permission closure acknowledgement as a strict system action', () => {
+    const mapped = mapSessionEventToRuntimeEvent(
+      ev({
+        type: 'permission_closure_ack',
+        requestId: 'req-hosted-timeout-1',
+        toolUseId: 'tool-hosted-timeout-1',
+        reason: 'timed_out',
+      }),
+      ctx,
+    );
+
+    assert.equal(mapped.role, 'system');
+    assert.equal(mapped.author, 'system');
+    assert.deepEqual(mapped.actions, {
+      permissionClosureAccepted: {
+        requestId: 'req-hosted-timeout-1',
+        reason: 'timed_out',
+      },
+    });
+    assert.deepEqual(mapped.refs, { toolCallId: 'tool-hosted-timeout-1' });
+    assert.deepEqual(decodeRuntimeEvent(JSON.parse(JSON.stringify(mapped))), mapped);
+  });
+
   test('maps additional permission requests without exposing raw tool args', () => {
     const mapped = mapSessionEventToRuntimeEvent(
       ev({

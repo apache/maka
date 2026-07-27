@@ -80,6 +80,14 @@ describe('ToolRuntime argument ownership', () => {
             resolvePermission(event);
           }
         },
+        pushAndWaitUntilConsumed: async (event) => {
+          if (event.type === 'tool_start') {
+            observeAndMutate(observed, 'event', event.args);
+          } else if (event.type === 'permission_request') {
+            observed.set('permission', structuredClone(event.args) as InvocationArgs);
+            resolvePermission(event);
+          }
+        },
       },
     });
     mutateArgs(providerArgs, 'provider');

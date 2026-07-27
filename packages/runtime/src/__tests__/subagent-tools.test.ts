@@ -752,7 +752,12 @@ describe('subagent tools', () => {
           task_id: task.key,
         },
         abortSignal: new AbortController().signal,
-        eventSink: { push: (event) => events.push(event) },
+        eventSink: {
+          push: (event) => events.push(event),
+          pushAndWaitUntilConsumed: async (event) => {
+            events.push(event);
+          },
+        },
       })
       .then((settlement) => settlement.result);
     await waitFor(() => events.some((event) => event.type === 'permission_request'));
@@ -1201,7 +1206,12 @@ async function runTool(
       toolCallId: `tool-${name}-${typeof args === 'object' && args && 'command' in args ? (args as { command: string }).command : 'read'}`,
       input: args,
       abortSignal: new AbortController().signal,
-      eventSink: { push: (event) => events.push(event) },
+      eventSink: {
+        push: (event) => events.push(event),
+        pushAndWaitUntilConsumed: async (event) => {
+          events.push(event);
+        },
+      },
     })
   ).result;
 }

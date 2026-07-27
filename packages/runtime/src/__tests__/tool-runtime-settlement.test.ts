@@ -16,7 +16,10 @@ describe('ToolRuntime settlement', () => {
       toolCallId: 'call-1',
       input: {},
       abortSignal: new AbortController().signal,
-      eventSink: { push: () => {} },
+      eventSink: {
+        push: () => {},
+        pushAndWaitUntilConsumed: async () => {},
+      },
     });
 
     assert.deepEqual(settlement, {
@@ -46,7 +49,10 @@ describe('ToolRuntime settlement', () => {
       toolCallId: 'call-1',
       input: {},
       abortSignal: new AbortController().signal,
-      eventSink: { push: () => {} },
+      eventSink: {
+        push: () => {},
+        pushAndWaitUntilConsumed: async () => {},
+      },
     });
 
     assert.deepEqual(settlement, {
@@ -68,7 +74,10 @@ describe('ToolRuntime settlement', () => {
         toolCallId: `call-${expected}`,
         input: {},
         abortSignal: new AbortController().signal,
-        eventSink: { push: () => {} },
+        eventSink: {
+          push: () => {},
+          pushAndWaitUntilConsumed: async () => {},
+        },
       });
 
       assert.deepEqual(settlement.modelOutput, { type: 'error-text', value: expected });
@@ -95,7 +104,12 @@ describe('ToolRuntime settlement', () => {
       toolCallId: 'call-1',
       input: {},
       abortSignal: new AbortController().signal,
-      eventSink: { push: (event) => events.push(event) },
+      eventSink: {
+        push: (event) => events.push(event),
+        pushAndWaitUntilConsumed: async (event) => {
+          events.push(event);
+        },
+      },
     });
 
     assert.equal(
@@ -122,7 +136,10 @@ describe('ToolRuntime settlement', () => {
       toolCallId: 'call-1',
       input: {},
       abortSignal: new AbortController().signal,
-      eventSink: { push: () => {} },
+      eventSink: {
+        push: () => {},
+        pushAndWaitUntilConsumed: async () => {},
+      },
     });
 
     assert.deepEqual(settlement.modelOutput, { type: 'text', value: 'materialized image' });
@@ -137,7 +154,10 @@ describe('ToolRuntime settlement', () => {
       toolCallId: 'call-1',
       input: {},
       abortSignal: new AbortController().signal,
-      eventSink: { push: () => {} },
+      eventSink: {
+        push: () => {},
+        pushAndWaitUntilConsumed: async () => {},
+      },
     });
 
     await pending;

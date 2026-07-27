@@ -28,6 +28,8 @@ import {
   terminalRunHeaderMatchesFact,
 } from './terminal-run-commit.js';
 
+const CANONICAL_PERMISSION_READ_CONCURRENCY = 8;
+
 export interface RuntimeReadModelProjectionCache {
   readMessages(sessionId: string): Promise<StoredMessage[]>;
 }
@@ -357,12 +359,16 @@ export class RuntimeReadModel {
     ];
     const outcomes = new Map<string, CanonicalPermissionOutcomeRecord>();
     const diagnostics: RuntimeEventReadModelDiagnostic[] = [];
-    await Promise.all(
-      requestIds.map(async (requestId) => {
-        if (!this.deps.canonicalPermissionOutcomes) return;
+    const reader = this.deps.canonicalPermissionOutcomes;
+    if (!reader) return { outcomes, diagnostics };
+
+    let nextIndex = 0;
+    const worker = async (): Promise<void> => {
+      while (nextIndex < requestIds.length) {
+        const requestId = requestIds[nextIndex]!;
+        nextIndex += 1;
         try {
-          const outcome =
-            await this.deps.canonicalPermissionOutcomes.readPermissionOutcome(requestId);
+          const outcome = await reader.readPermissionOutcome(requestId);
           if (outcome) outcomes.set(requestId, outcome);
         } catch (error) {
           diagnostics.push(
@@ -373,7 +379,13 @@ export class RuntimeReadModel {
             ),
           );
         }
-      }),
+      }
+    };
+    await Promise.all(
+      Array.from(
+        { length: Math.min(CANONICAL_PERMISSION_READ_CONCURRENCY, requestIds.length) },
+        worker,
+      ),
     );
     return { outcomes, diagnostics };
   }
@@ -397,13 +409,15 @@ export class RuntimeReadModel {
 function activePermissionOverlayEvent(event: RuntimeEvent): RuntimeEvent[] {
   const permissionRequest = event.actions?.permissionRequest;
   const permissionAnswerAccepted = event.actions?.permissionAnswerAccepted;
-  if (!permissionRequest && !permissionAnswerAccepted) return [];
+  const permissionClosureAccepted = event.actions?.permissionClosureAccepted;
+  if (!permissionRequest && !permissionAnswerAccepted && !permissionClosureAccepted) return [];
   const overlay = { ...event };
   delete overlay.content;
   delete overlay.status;
   overlay.actions = {
     ...(permissionRequest ? { permissionRequest } : {}),
     ...(permissionAnswerAccepted ? { permissionAnswerAccepted } : {}),
+    ...(permissionClosureAccepted ? { permissionClosureAccepted } : {}),
   };
   return [overlay];
 }

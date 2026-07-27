@@ -84,6 +84,7 @@ import {
   type CanonicalPermissionOutcomeRecord,
   type RuntimeInteractionAuthority,
   type RuntimeInteractionRunIdentity,
+  type RuntimePermissionContinuation,
   type RuntimeUserQuestionContinuation,
 } from '../interaction-authority.js';
 
@@ -5472,6 +5473,7 @@ describe('SessionManager permission mode updates', () => {
             decision: 'allow' as const,
             rememberForTurn: true,
             reviewer: 'auto_review' as const,
+            rationale: 'The requested write is limited to the reviewed path.',
             riskLevel: 'medium' as const,
             committedAt: 125,
           },
@@ -5506,6 +5508,7 @@ describe('SessionManager permission mode updates', () => {
       decision: 'allow',
       rememberForTurn: true,
       reviewer: 'auto_review',
+      rationale: 'The requested write is limited to the reviewed path.',
       riskLevel: 'medium',
       hint: 'write approval',
     });
@@ -5629,6 +5632,95 @@ describe('SessionManager permission mode updates', () => {
             diagnostic.code === 'incomplete_event' &&
             diagnostic.message.includes('readPermissionOutcome failed'),
         ),
+    );
+  });
+
+  test('RuntimeReadModel bounds concurrent hosted permission outcome reads', {
+    timeout: 2_000,
+  }, async (t) => {
+    const runStore = new MemoryAgentRunStore();
+    const header = makeRunHeader({ status: 'completed' });
+    const requestIds = Array.from({ length: 20 }, (_, index) => `request-${index}`);
+    await seedRuntimeRun(runStore, header, [
+      runtimeEvent({
+        id: 'permission-concurrency-user',
+        sessionId: header.sessionId,
+        runId: header.runId,
+        turnId: header.turnId,
+        ts: 99,
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'approve the operations' },
+      }),
+      ...requestIds.map((requestId, index) =>
+        runtimeEvent({
+          id: `permission-concurrency-${index}`,
+          sessionId: header.sessionId,
+          runId: header.runId,
+          turnId: header.turnId,
+          ts: 100 + index,
+          author: 'user',
+          actions: { permissionAnswerAccepted: { requestId } },
+          refs: { toolCallId: `tool-${requestId}` },
+        }),
+      ),
+      runtimeEvent({
+        id: 'permission-concurrency-terminal',
+        sessionId: header.sessionId,
+        runId: header.runId,
+        turnId: header.turnId,
+        ts: 200,
+        status: 'completed',
+        actions: { endInvocation: true },
+      }),
+    ]);
+
+    let activeReads = 0;
+    let maxActiveReads = 0;
+    let startedReads = 0;
+    let releaseReads!: () => void;
+    const readsReleased = new Promise<void>((resolve) => {
+      releaseReads = resolve;
+    });
+    t.after(() => releaseReads());
+    let initialWorkersStarted!: () => void;
+    const initialWorkers = new Promise<void>((resolve) => {
+      initialWorkersStarted = resolve;
+    });
+    const viewPromise = new RuntimeReadModel({
+      runStore,
+      runtimeEventStore: runStore,
+      canonicalPermissionOutcomes: {
+        readPermissionOutcome: async (requestId) => {
+          activeReads += 1;
+          startedReads += 1;
+          maxActiveReads = Math.max(maxActiveReads, activeReads);
+          if (startedReads === 8) initialWorkersStarted();
+          await readsReleased;
+          activeReads -= 1;
+          const canonical = canonicalPermissionRecord(header);
+          return {
+            ...canonical,
+            requestId,
+            request: {
+              ...canonical.request,
+              toolUseId: `tool-${requestId}`,
+            },
+          };
+        },
+      },
+    }).getSessionView(header.sessionId);
+
+    await initialWorkers;
+    expect(startedReads).toBe(8);
+    expect(maxActiveReads).toBe(8);
+    releaseReads();
+    const view = await viewPromise;
+
+    expect(startedReads).toBe(requestIds.length);
+    expect(maxActiveReads).toBe(8);
+    expect(view.messages.filter((message) => message.type === 'permission_decision').length).toBe(
+      requestIds.length,
     );
   });
 
@@ -14568,6 +14660,263 @@ describe('SessionManager steering and followup queues', () => {
     expect(lifecycle).toEqual(['close:turn_terminal', 'release']);
   });
 
+  test('hosted permission answer waits for its durable ack before resuming and entering the tool', {
+    timeout: 2_000,
+  }, async (t) => {
+    const ackAppendStarted = makeGate();
+    const releaseAckAppend = makeGate();
+    t.after(() => releaseAckAppend.release());
+    let toolExecutions = 0;
+    let continuation: RuntimePermissionContinuation | undefined;
+    let answerPermission: (() => Promise<void>) | undefined;
+    let ackDurable: boolean | undefined;
+    const runStore = new MemoryAgentRunStore({
+      beforeRuntimeEventAppend: async (_sessionId, _runId, event, options) => {
+        if (!event.actions?.permissionAnswerAccepted) return;
+        ackDurable = options?.durable;
+        ackAppendStarted.release();
+        await releaseAckAppend.promise;
+      },
+    });
+    const interactionAuthority: RuntimeInteractionAuthority = {
+      bindRun: (identity) => ({
+        ...identity,
+        acceptPermissionRequest: async ({ continuation: accepted }) => {
+          continuation = accepted;
+          answerPermission = () => accepted.applyAnswer({ decision: 'allow' });
+          return { state: 'pending' };
+        },
+        commitPermissionAnswer: async ({ continuation: accepted, answer }) => {
+          await accepted.applyAnswer(answer);
+          return { kind: 'permission_answer', answer };
+        },
+        commitPermissionTimeout: async ({ continuation: accepted }) => {
+          await accepted.applyClosure('timed_out');
+          return { kind: 'closure', reason: 'timed_out' };
+        },
+        acceptUserQuestionRequest: async () => {},
+        close: async () => {},
+        release: () => {},
+      }),
+    };
+    const model = steeringToolThenDoneModel(true);
+    const { manager, session, store } = await steeringDeliverySession(
+      runStore,
+      model,
+      async () => {
+        const [run] = await runStore.listSessionRuns(session.id);
+        const runtimeEvents = await runStore.readRuntimeEvents(session.id, run!.runId);
+        expect(runtimeEvents.some((event) => event.actions?.permissionAnswerAccepted)).toBe(true);
+        expect(run?.status).toBe('running');
+        expect((await store.readHeader(session.id)).status).toBe('running');
+        toolExecutions += 1;
+      },
+      {
+        permissionRequired: true,
+        permissionMode: 'ask',
+        interactionAuthority,
+      },
+    );
+
+    const turn = drainAll(
+      manager.sendMessage(
+        session.id,
+        { turnId: 'turn-hosted-answer-durable', text: 'go' },
+        { durability: 'required' },
+      ),
+    );
+    await waitUntil(() => continuation !== undefined);
+    await waitUntil(async () => {
+      const [run] = await runStore.listSessionRuns(session.id);
+      return (
+        run?.status === 'waiting_for_user' &&
+        (await store.readHeader(session.id)).status === 'waiting_for_user'
+      );
+    });
+
+    await answerPermission!();
+    await ackAppendStarted.promise;
+    expect(ackDurable).toBe(true);
+    const [waitingRun] = await runStore.listSessionRuns(session.id);
+    expect(toolExecutions).toBe(0);
+    expect(waitingRun?.status).toBe('waiting_for_user');
+    expect((await store.readHeader(session.id)).status).toBe('waiting_for_user');
+    expect(
+      (await runStore.readRuntimeEvents(session.id, waitingRun!.runId)).some(
+        (event) => event.actions?.permissionAnswerAccepted,
+      ),
+    ).toBe(false);
+
+    releaseAckAppend.release();
+    await turn;
+    expect(toolExecutions).toBe(1);
+    expect(model.doStreamCalls.length).toBe(2);
+  });
+
+  test('hosted permission answer fails stop when its durable ack append is rejected', {
+    timeout: 2_000,
+  }, async () => {
+    let toolExecutions = 0;
+    let continuation: RuntimePermissionContinuation | undefined;
+    let answerPermission: (() => Promise<void>) | undefined;
+    let ackDurable: boolean | undefined;
+    const runStore = new MemoryAgentRunStore({
+      beforeRuntimeEventAppend: (_sessionId, _runId, event, options) => {
+        if (!event.actions?.permissionAnswerAccepted) return;
+        ackDurable = options?.durable;
+        throw new Error('permission answer ack append rejected');
+      },
+    });
+    const interactionAuthority: RuntimeInteractionAuthority = {
+      bindRun: (identity) => ({
+        ...identity,
+        acceptPermissionRequest: async ({ continuation: accepted }) => {
+          continuation = accepted;
+          answerPermission = () => accepted.applyAnswer({ decision: 'allow' });
+          return { state: 'pending' };
+        },
+        commitPermissionAnswer: async ({ continuation: accepted, answer }) => {
+          await accepted.applyAnswer(answer);
+          return { kind: 'permission_answer', answer };
+        },
+        commitPermissionTimeout: async ({ continuation: accepted }) => {
+          await accepted.applyClosure('timed_out');
+          return { kind: 'closure', reason: 'timed_out' };
+        },
+        acceptUserQuestionRequest: async () => {},
+        close: async () => {},
+        release: () => {},
+      }),
+    };
+    const { manager, session } = await steeringDeliverySession(
+      runStore,
+      steeringToolThenDoneModel(true),
+      () => {
+        toolExecutions += 1;
+      },
+      {
+        permissionRequired: true,
+        permissionMode: 'ask',
+        interactionAuthority,
+      },
+    );
+
+    const turn = drainAll(
+      manager.sendMessage(
+        session.id,
+        { turnId: 'turn-hosted-answer-rejected', text: 'go' },
+        { durability: 'required' },
+      ),
+    );
+    await waitUntil(() => continuation !== undefined);
+    await answerPermission!();
+    let failure: unknown;
+    try {
+      await turn;
+    } catch (error) {
+      failure = error;
+    }
+
+    expect((failure as Error).message).toBe('permission answer ack append rejected');
+    expect(ackDurable).toBe(true);
+    expect(toolExecutions).toBe(0);
+    const [run] = await runStore.listSessionRuns(session.id);
+    expect(
+      (await runStore.readRuntimeEvents(session.id, run!.runId)).some(
+        (event) => event.actions?.permissionAnswerAccepted,
+      ),
+    ).toBe(false);
+  });
+
+  test('hosted permission timeout waits for its durable closure ack before continuing with a synthetic error', {
+    timeout: 2_000,
+  }, async (t) => {
+    const ackAppendStarted = makeGate();
+    const releaseAckAppend = makeGate();
+    t.after(() => releaseAckAppend.release());
+    let toolExecutions = 0;
+    let closureApplications = 0;
+    let ackDurable: boolean | undefined;
+    const runStore = new MemoryAgentRunStore({
+      beforeRuntimeEventAppend: async (_sessionId, _runId, event, options) => {
+        if (!event.actions?.permissionClosureAccepted) return;
+        ackDurable = options?.durable;
+        ackAppendStarted.release();
+        await releaseAckAppend.promise;
+      },
+    });
+    const interactionAuthority: RuntimeInteractionAuthority = {
+      bindRun: (identity) => ({
+        ...identity,
+        acceptPermissionRequest: async () => ({ state: 'pending' }),
+        commitPermissionAnswer: async ({ continuation, answer }) => {
+          await continuation.applyAnswer(answer);
+          return { kind: 'permission_answer', answer };
+        },
+        commitPermissionTimeout: async ({ continuation }) => {
+          closureApplications += 1;
+          await continuation.applyClosure('timed_out');
+          return { kind: 'closure', reason: 'timed_out' };
+        },
+        acceptUserQuestionRequest: async () => {},
+        close: async () => {},
+        release: () => {},
+      }),
+    };
+    const model = steeringToolThenDoneModel(true);
+    const { manager, session, store } = await steeringDeliverySession(
+      runStore,
+      model,
+      () => {
+        toolExecutions += 1;
+      },
+      {
+        permissionRequired: true,
+        permissionMode: 'ask',
+        permissionTimeoutMs: 5,
+        interactionAuthority,
+      },
+    );
+
+    const turn = drainAll(
+      manager.sendMessage(
+        session.id,
+        { turnId: 'turn-hosted-timeout-durable', text: 'go' },
+        { durability: 'required' },
+      ),
+    );
+    await ackAppendStarted.promise;
+    expect(ackDurable).toBe(true);
+    const [waitingRun] = await runStore.listSessionRuns(session.id);
+    expect(closureApplications).toBe(1);
+    expect(toolExecutions).toBe(0);
+    expect(waitingRun?.status).toBe('waiting_for_user');
+    expect((await store.readHeader(session.id)).status).toBe('waiting_for_user');
+    expect(
+      (await runStore.readRuntimeEvents(session.id, waitingRun!.runId)).some(
+        (event) => event.actions?.permissionClosureAccepted,
+      ),
+    ).toBe(false);
+    expect(model.doStreamCalls.length).toBe(1);
+
+    releaseAckAppend.release();
+    const events = await turn;
+    const runtimeEvents = await runStore.readRuntimeEvents(session.id, waitingRun!.runId);
+    expect(
+      runtimeEvents.some(
+        (event) => event.actions?.permissionClosureAccepted?.reason === 'timed_out',
+      ),
+    ).toBe(true);
+    expect(
+      runtimeEvents.some(
+        (event) => event.content?.kind === 'function_response' && event.content.isError === true,
+      ),
+    ).toBe(true);
+    expect(events.some((event) => event.type === 'permission_closure_ack')).toBe(true);
+    expect(toolExecutions).toBe(0);
+    expect(model.doStreamCalls.length).toBe(2);
+  });
+
   test('hosted stopped question abandonment preserves stop closure before release', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -15494,15 +15843,15 @@ async function drainAll(iterable: AsyncIterable<SessionEvent>): Promise<SessionE
   return events;
 }
 
-async function waitUntil(predicate: () => boolean): Promise<void> {
-  for (let i = 0; i < 500 && !predicate(); i += 1) {
+async function waitUntil(predicate: () => boolean | Promise<boolean>): Promise<void> {
+  for (let i = 0; i < 500 && !(await predicate()); i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 2));
   }
-  expect(predicate()).toBe(true);
+  expect(await predicate()).toBe(true);
 }
 
 /** Mock model: first request calls the Probe tool, second finishes with text. */
-function steeringToolThenDoneModel(): MockLanguageModelV4 {
+function steeringToolThenDoneModel(permissionRequired = false): MockLanguageModelV4 {
   const usage = {
     inputTokens: { total: 100, noCache: 100, cacheRead: 0, cacheWrite: 0 },
     outputTokens: { total: 10, text: 10, reasoning: 0 },
@@ -15517,8 +15866,8 @@ function steeringToolThenDoneModel(): MockLanguageModelV4 {
               {
                 type: 'tool-call',
                 toolCallId: 'tool-1',
-                toolName: 'Probe',
-                input: JSON.stringify({ q: 'x' }),
+                toolName: permissionRequired ? 'Bash' : 'Probe',
+                input: JSON.stringify(permissionRequired ? { command: 'echo x' } : { q: 'x' }),
               },
               { type: 'finish', finishReason: { unified: 'tool-calls', raw: 'tool_calls' }, usage },
             ]
@@ -15546,7 +15895,13 @@ function steeringToolThenDoneModel(): MockLanguageModelV4 {
 async function steeringDeliverySession(
   runStore: MemoryAgentRunStore,
   model: MockLanguageModelV4,
-  duringTool: (manager: SessionManager, sessionId: string) => void,
+  duringTool: (manager: SessionManager, sessionId: string) => Promise<void> | void,
+  options: {
+    permissionRequired?: boolean;
+    permissionMode?: PermissionMode;
+    permissionTimeoutMs?: number;
+    interactionAuthority?: RuntimeInteractionAuthority;
+  } = {},
 ) {
   const store = new MemorySessionStore();
   const backends = new BackendRegistry();
@@ -15572,14 +15927,19 @@ async function steeringDeliverySession(
         modelId: 'mock-model-id',
         permissionEngine: new PermissionEngine({ newId: () => 'perm-1', now: () => 1 }),
         modelFactory: () => model,
+        ...(options.permissionTimeoutMs !== undefined
+          ? { permissionTimeoutMs: options.permissionTimeoutMs }
+          : {}),
         tools: [
           {
-            name: 'Probe',
-            description: 'Probe description',
-            parameters: z.object({ q: z.string() }),
-            permissionRequired: false,
+            name: options.permissionRequired ? 'Bash' : 'Probe',
+            description: options.permissionRequired ? 'Shell description' : 'Probe description',
+            parameters: options.permissionRequired
+              ? z.object({ command: z.string() })
+              : z.object({ q: z.string() }),
+            permissionRequired: options.permissionRequired ?? false,
             impl: async () => {
-              duringTool(manager, sessionId);
+              await duringTool(manager, sessionId);
               return { ok: true };
             },
           },
@@ -15590,19 +15950,26 @@ async function steeringDeliverySession(
         now: nextNow(1),
       }),
   );
-  manager = new SessionManager({
+  const managerDeps = {
     store,
     runStore,
     runtimeEventStore: runStore,
     backends,
     newId: nextId(),
     now: nextNow(1_000),
-  });
+  };
+  manager = options.interactionAuthority
+    ? new SessionManager({
+        ...managerDeps,
+        interactionAuthority: options.interactionAuthority,
+        canonicalPermissionOutcomes: noCanonicalPermissionOutcomes,
+      })
+    : new SessionManager(managerDeps);
   const session = await manager.createSession(
-    makeInput({ backend: 'fake', permissionMode: 'bypass' }),
+    makeInput({ backend: 'fake', permissionMode: options.permissionMode ?? 'bypass' }),
   );
   sessionId = session.id;
-  return { manager, session };
+  return { manager, session, store };
 }
 
 /**
@@ -17434,6 +17801,7 @@ class MemoryAgentRunStore implements AgentRunStore, RuntimeEventStore {
         sessionId: string,
         runId: string,
         event: RuntimeEvent,
+        options?: { durable?: boolean },
       ) => Promise<void> | void;
       beforeRunRead?: (sessionId: string, runId: string) => Promise<void> | void;
       beforeAgentRunEventAppend?: (
@@ -17504,8 +17872,13 @@ class MemoryAgentRunStore implements AgentRunStore, RuntimeEventStore {
     return (this.events.get(key(sessionId, runId)) ?? []).map(copyEvent);
   }
 
-  async appendRuntimeEvent(sessionId: string, runId: string, event: RuntimeEvent): Promise<void> {
-    await this.options.beforeRuntimeEventAppend?.(sessionId, runId, event);
+  async appendRuntimeEvent(
+    sessionId: string,
+    runId: string,
+    event: RuntimeEvent,
+    options?: { durable?: boolean },
+  ): Promise<void> {
+    await this.options.beforeRuntimeEventAppend?.(sessionId, runId, event, options);
     if (this.options.failRuntimeEventAppends) throw new Error('runtime event append failed');
     this.runtimeEventAppendCount += 1;
     if (

@@ -457,6 +457,19 @@ function mapBackendSessionEvent(
         },
         refs: { toolCallId: event.toolUseId },
       };
+    case 'permission_closure_ack':
+      return {
+        ...base,
+        role: 'system',
+        author: 'system',
+        actions: {
+          permissionClosureAccepted: {
+            requestId: event.requestId,
+            reason: event.reason,
+          },
+        },
+        refs: { toolCallId: event.toolUseId },
+      };
     case 'user_question_request':
       return {
         ...base,

@@ -160,6 +160,15 @@ describe('session projection helpers', () => {
     });
   });
 
+  test('only resumes a permission closure projection when authority permits it', () => {
+    const closure = { type: 'permission_closure_ack', ts: 1 } as never;
+
+    expect(statusFromEvent(closure, { allowInteractionResume: true })).toEqual({
+      status: 'running',
+    });
+    expect(statusFromEvent(closure, { allowInteractionResume: false })).toBeUndefined();
+  });
+
   test('projects turn terminal events without changing failure classes', () => {
     expect(turnStatusFromEvent({ type: 'abort', ts: 1 } as never)).toEqual({ status: 'aborted' });
     expect(turnStatusFromEvent({ type: 'error', ts: 1, reason: 'tool_failed' } as never)).toEqual({

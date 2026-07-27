@@ -13,7 +13,7 @@ import {
   isPartialRuntimeEvent,
   isTerminalRuntimeEvent,
   isTerminalRuntimeEventStatus,
-  normalizeShellToolResultContent,
+  normalizeToolResultContentForRead,
 } from '@maka/core';
 import type { CanonicalPermissionOutcomeRecord } from './interaction-authority.js';
 import { isArchivedToolResultPlaceholder } from './tool-result-archive.js';
@@ -191,6 +191,12 @@ export function projectRuntimeEventsToStoredMessages(
         messages,
         options.canonicalPermissionOutcomes,
       );
+      projected = true;
+    }
+
+    if (event.actions?.permissionClosureAccepted) {
+      // The canonical closure is already represented by this identity-only
+      // RuntimeEvent; unlike an answer it has no legacy permission-decision row.
       projected = true;
     }
 
@@ -667,30 +673,21 @@ function projectFunctionResponse(
   const archivedPlaceholder = isArchivedToolResultPlaceholder(compatibleResult)
     ? compatibleResult
     : undefined;
-  const normalizedShellResult = archivedPlaceholder
-    ? { state: 'not_shell' as const }
-    : normalizeShellToolResultContent(compatibleResult);
-  if (normalizedShellResult.state === 'invalid') {
-    diagnostic(
-      state,
-      event,
-      'incomplete_event',
-      'function_response contains an invalid shell tool result',
-    );
-    return false;
-  }
-  if (
-    !archivedPlaceholder &&
-    normalizedShellResult.state === 'not_shell' &&
-    !isToolResultContent(compatibleResult)
-  ) {
-    diagnostic(
-      state,
-      event,
-      'incomplete_event',
-      'function_response result is not a supported ToolResultContent',
-    );
-    return false;
+  let normalizedResult: ToolResultContent | undefined;
+  if (!archivedPlaceholder) {
+    try {
+      normalizedResult = normalizeToolResultContentForRead(compatibleResult);
+    } catch (error) {
+      diagnostic(
+        state,
+        event,
+        'incomplete_event',
+        error instanceof Error && error.message === 'Invalid shell tool result content'
+          ? 'function_response contains an invalid shell tool result'
+          : 'function_response result is not a supported ToolResultContent',
+      );
+      return false;
+    }
   }
   if (archivedPlaceholder) {
     diagnostic(
@@ -723,9 +720,7 @@ function projectFunctionResponse(
         rewriteVersion: archivedPlaceholder.rewriteVersion,
         reason: archivedPlaceholder.reason,
       }
-    : normalizedShellResult.state === 'valid'
-      ? normalizedShellResult.content
-      : (compatibleResult as ToolResultContent);
+    : normalizedResult!;
   messages.push({
     type: 'tool_result',
     id: stableMessageId(event, state, 'tool_result'),
@@ -864,6 +859,7 @@ function projectCanonicalPermissionOutcome(
     decision: outcome.decision,
     rememberForTurn: outcome.rememberForTurn,
     reviewer: outcome.reviewer,
+    ...(outcome.rationale !== undefined ? { rationale: outcome.rationale } : {}),
     ...(outcome.riskLevel !== undefined ? { riskLevel: outcome.riskLevel } : {}),
     ...(ledgerRequest?.hint !== undefined ? { hint: ledgerRequest.hint } : {}),
   });
@@ -1128,29 +1124,6 @@ function toolActivityKindStateDelta(event: RuntimeEvent): ToolActivityKind | und
 function numberStateDelta(event: RuntimeEvent, key: string): number | undefined {
   const value = event.actions?.stateDelta?.[key];
   return typeof value === 'number' ? value : undefined;
-}
-
-function isToolResultContent(value: unknown): value is ToolResultContent {
-  if (!value || typeof value !== 'object') return false;
-  const kind = (value as { kind?: unknown }).kind;
-  return (
-    kind === 'text' ||
-    kind === 'json' ||
-    kind === 'file_diff' ||
-    kind === 'file_write' ||
-    kind === 'terminal' ||
-    kind === 'shell_run' ||
-    kind === 'image' ||
-    kind === 'archived_tool_result' ||
-    kind === 'summary' ||
-    kind === 'web_search' ||
-    kind === 'web_search_error' ||
-    kind === 'office_document' ||
-    kind === 'explore_agent' ||
-    kind === 'subagent' ||
-    kind === 'agent_swarm' ||
-    kind === 'rive_workflow'
-  );
 }
 
 function isLegacyPlanToolResult(value: unknown): boolean {

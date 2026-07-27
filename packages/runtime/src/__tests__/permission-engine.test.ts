@@ -7,6 +7,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { expect } from '../test-helpers.js';
 import { PermissionEngine, type PermissionEngineDeps } from '../permission-engine.js';
+import type { HostedInteractionBridge, HostedPermissionAnswer } from '@maka/core/backend-types';
 import type { PermissionResponse, ToolExecutionFacts } from '@maka/core/permission';
 
 const LOCAL_EXECUTION_FACTS: ToolExecutionFacts = {
@@ -641,6 +642,60 @@ describe('PermissionEngine — turn lifecycle', () => {
 });
 
 describe('PermissionEngine — recordResponse edge cases', () => {
+  test('preserves auto-review rationale through hosted commit and settlement', async () => {
+    const { engine } = makeEngine();
+    let committed: HostedPermissionAnswer | undefined;
+    const hostedInteraction: HostedInteractionBridge = {
+      sessionId: 's1',
+      turnId: 't1',
+      runId: 'run-1',
+      admitPermissionRequest: async () => ({ state: 'pending' }),
+      commitPermissionAnswer: async ({ answer }) => {
+        committed = answer;
+      },
+      commitPermissionTimeout: async () => ({ kind: 'closure', reason: 'timed_out' }),
+      admitUserQuestionRequest: async () => {},
+    };
+    engine.beginTurn('t1');
+    const result = engine.evaluate({
+      sessionId: 's1',
+      turnId: 't1',
+      runId: 'run-1',
+      hostedInteraction,
+      toolUseId: 'tu1',
+      toolName: 'Write',
+      args: {},
+      mode: 'ask',
+    });
+    if (result.kind !== 'prompt') throw new Error('expected prompt');
+    assert.ok(result.settlement);
+
+    engine.recordResponse('t1', {
+      requestId: result.event.requestId,
+      decision: 'allow',
+      reviewer: 'auto_review',
+      rationale: 'Exact write target is allowed.',
+      riskLevel: 'low',
+    });
+    await Promise.resolve();
+    assert.deepEqual(committed, {
+      decision: 'allow',
+      reviewer: 'auto_review',
+      rationale: 'Exact write target is allowed.',
+      riskLevel: 'low',
+    });
+
+    await result.settlement.applyAnswer({ ...committed!, rememberForTurn: false });
+    assert.deepEqual(await result.parked, {
+      requestId: result.event.requestId,
+      decision: 'allow',
+      rememberForTurn: false,
+      reviewer: 'auto_review',
+      rationale: 'Exact write target is allowed.',
+      riskLevel: 'low',
+    });
+  });
+
   test('malformed response decisions fail closed before resolving parked tools', async () => {
     const { engine } = makeEngine();
     engine.beginTurn('t1');
