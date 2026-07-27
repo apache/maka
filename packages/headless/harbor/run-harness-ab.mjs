@@ -330,14 +330,14 @@ export function resolveHarnessRuntimeProfile(raw = 'kimi-coding-plan-k3-max') {
 export function resolveHarnessComposition(input = {}) {
   const env = input.env ?? process.env;
   const benchmarkProfile = resolveHarnessBenchmarkProfile(
-    input.benchmark ?? env.MAKA_HARNESS_AB_BENCHMARK ?? 'terminal-bench-2.1',
+    input.benchmark || env.MAKA_HARNESS_AB_BENCHMARK || 'terminal-bench-2.1',
   );
   const competitorProfile = resolveHarnessCompetitorProfile(
-    input.competitor ?? env.MAKA_HARNESS_AB_COMPETITOR ?? 'kimi-code',
+    input.competitor || env.MAKA_HARNESS_AB_COMPETITOR || 'kimi-code',
   );
   const runtimeProfile = resolveHarnessRuntimeProfile(
-    input.runtime ??
-      env.MAKA_HARNESS_AB_RUNTIME ??
+    input.runtime ||
+      env.MAKA_HARNESS_AB_RUNTIME ||
       DEFAULT_RUNTIME_BY_COMPETITOR[competitorProfile.id],
   );
   const compositionKey = `${benchmarkProfile.id}|${runtimeProfile.id}|${competitorProfile.id}`;

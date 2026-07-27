@@ -471,6 +471,16 @@ test('harness A/B composition defaults preserve existing routes and reject unsup
     resolveHarnessComposition({ competitor: 'codex' }).runtimeProfile.id,
     'openai-codex-gpt-5.6-sol-xhigh',
   );
+  assert.equal(
+    resolveHarnessComposition({
+      env: {
+        MAKA_HARNESS_AB_BENCHMARK: '',
+        MAKA_HARNESS_AB_RUNTIME: '',
+        MAKA_HARNESS_AB_COMPETITOR: '',
+      },
+    }).runtimeProfile.id,
+    'kimi-coding-plan-k3-max',
+  );
   assert.throws(
     () =>
       resolveHarnessComposition({
