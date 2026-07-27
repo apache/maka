@@ -388,23 +388,48 @@
   --font-serif: Georgia, "Times New Roman", Times, serif;
 
   /* === layout ===
-     Concentric nesting:
-     when a rounded surface sits inside another rounded surface with padding
-     between them, the inner radius = outer radius − padding so the two
-     curves share a center and read as one machined shell. Two forms:
-       1. If outer − padding lands on a tier, pick that tier directly —
-          e.g. a settings card (8px surface) inside a 12px modal with 4px
-          padding: 12 − 4 = 8 = --radius-surface. The radius-converge
-          contract's SELECTOR_TIER already pins this.
-       2. If outer − padding does NOT land on a tier, use
-          `calc(var(--radius-*) - Npx)` — e.g. an input inside a 12px modal
-          with 8px inset: 12 − 8 = 4px (not a tier), so
-          `border-radius: calc(var(--radius-modal) - 8px)`. The radius
-          contract's calc allowlist permits only this shrink form. */
+     Concentric nesting — inner radius = outer radius − inset.
+
+     THE PRECONDITION IS ADJACENCY, not merely "inside". Two curves are
+     concentric only when the inner corner actually sits in the outer
+     corner: the child must hug that corner, and the inset must be equal
+     on BOTH edges meeting there. A child floating in the middle of its
+     parent has no outer curve to be concentric with, and a child whose
+     horizontal and vertical insets differ cannot share a center with
+     anything — the formula then returns an arbitrary number that merely
+     looks derived.
+
+     This paragraph used to say only "with padding between them", and
+     illustrated itself with an input in the middle row of the search
+     modal — 57px below the shell's top edge, 12px in from its sides,
+     touching no corner at all. The rule's only worked example was its
+     only misuse, and a contract test pinned the result. Adjacency is
+     the whole rule; state it or the rule licenses nonsense.
+
+     Both legitimate forms in this codebase:
+       1. Tier swap, when outer − inset lands on a tier — the segmented
+          track (8px surface) with a uniform 2px pad: 8 − 2 = 6 =
+          --radius-control for the buttons that hug its ends.
+          See styles/segmented.css.
+       2. `calc(var(--radius-*) - 1px)`, the border inset — a ::before
+          overlay at inset-0 hugging the inner edge of a 1px border.
+          See primitives/menu.tsx and primitives/empty.tsx.
+     Both are corner-adjacent with a uniform inset. If a proposed
+     shrink is neither, it is not concentric — pick the tier the
+     element's ROLE calls for instead. */
   --radius-control: 6px;
   --radius-surface: 8px;
   --radius-modal: 12px;
   --radius-pill: 999px;
+  /* Square icon plates (provider logo, about logo, feature status) are
+     governed by RATIO, not by tier: their roundness must read the same
+     at 32px and 48px, which a fixed px cannot do (8px reads 25% on a
+     32px plate and 16.7% on a 48px one — the same token, visibly
+     different shapes). A percentage is scale-invariant, so one value
+     is correct at every size, including sizes not yet added.
+     27% restores the anchor ratio measured in PR-UI-13 (12px on the
+     44px plate) that the tier convergence silently reverted. */
+  --radius-plate: 27%;
 
   /* PR-SPACING-CONVERGE-0 (issue #430 PR3, 2026-07-03):
      One ruler for every padding/gap/margin. Absolute 4px (not 0.25rem)

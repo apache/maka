@@ -409,7 +409,9 @@
     flex: 0 0 36px;
     width: 36px;
     height: 36px;
-    border-radius: var(--radius-surface);
+    /* Square icon plate — ratio-governed, see --radius-plate. Twin of
+       .settingsFeatureStatusIcon, same 36px box. */
+    border-radius: var(--radius-plate);
     background: oklch(from var(--foreground) l c h / 0.05);
     color: var(--foreground-secondary);
   }

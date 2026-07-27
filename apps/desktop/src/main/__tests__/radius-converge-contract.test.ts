@@ -2,10 +2,18 @@
  * Radius governance contract (#406 gap 4).
  *
  * Radius vocabulary contract:
- *   - control  6px  — button / input / chip / kbd / inline code / tab trigger / nav row
+ *   - control  6px  — button / input / chip / kbd / inline code / tab trigger /
+ *                     nav row / checkbox (square by design; only radio is round)
  *   - surface  8px  — card / popover / menu popup / alert / toolbar / tab list / select popup
  *   - modal   12px — Settings / Confirm / Permission modal / floating card
- *   - pill    999px — pill / badge / round dot / switch / checkbox / radio / progress
+ *   - pill    999px — pill / badge / round dot / switch / radio / progress
+ *   - plate    27% — square icon plates (provider logo, about logo, feature
+ *                     status). Ratio, not tier: see --radius-plate.
+ *
+ * The checkbox line used to read `pill 999px — ... checkbox ...` while every
+ * checkbox in the codebase renders `rounded-[var(--radius-control)]`. The code
+ * was right (a fully round checkbox is a radio), the vocabulary was wrong, and
+ * because Checkbox is absent from COMPONENT_RADIUS nothing ever caught it.
  *
  * Tailwind alias map (styles.css):
  *   rounded-sm → --radius-control (6px)
@@ -45,6 +53,7 @@ const RADIUS_TOKEN_WHITELIST = new Set([
   '--radius-surface',
   '--radius-modal',
   '--radius-pill',
+  '--radius-plate', // 27% — square icon plates, ratio-governed (see maka-tokens.css)
   '--radius-sm', // tailwind alias → control
   '--radius-md', // tailwind alias → surface
   '--radius-lg', // tailwind alias → surface
@@ -262,11 +271,16 @@ const COMPONENT_RADIUS: ComponentRadiusCheck[] = [
   // review P3.1); the modal popup class now lives in MODAL_POPUP_CLASS.
   { file: 'packages/ui/src/ui.tsx', name: 'MODAL_POPUP_CLASS', tier: 'modal' },
   { file: 'packages/ui/src/ui.tsx', name: 'SelectPopup', tier: 'surface' },
-  // TabsTrigger/TabsList used to be declared in ui.tsx with --radius-* tokens;
-  // #499 P0-3 re-exports them from primitives/tabs.tsx, which uses Tailwind
-  // rounded-md/rounded-sm (governed by primitives-design-contract escape
-  // hatches, not the radius-token convergence contract).
   { file: 'packages/ui/src/ui.tsx', name: 'ToggleGroup', tier: 'surface' },
+  // TabsTrigger/TabsList were dropped from this table when #499 P0-3 moved
+  // them to primitives/tabs.tsx, on the stated grounds that they became
+  // "governed by primitives-design-contract escape hatches". That file
+  // contains no radius or rounded assertion at all, so the move left the
+  // vocabulary's own "tab trigger" (control) and "tab list" (surface) as the
+  // only two named roles with no governance anywhere. The components merely
+  // changed file; re-pointing the entry is the whole fix.
+  { file: 'packages/ui/src/primitives/tabs.tsx', name: 'TabsList', tier: 'surface' },
+  { file: 'packages/ui/src/primitives/tabs.tsx', name: 'TabsTab', tier: 'control' },
   { file: 'packages/ui/src/primitives/input-group.tsx', name: 'InputGroup', tier: 'control' },
   { file: 'packages/ui/src/primitives/badge.tsx', name: 'badgeVariants', tier: 'pill' },
   { file: 'packages/ui/src/primitives/item.tsx', name: 'itemVariants', tier: 'surface' },
@@ -459,6 +473,11 @@ describe('radius token governance (#406 gap 4)', () => {
       '.settingsModal': '--radius-modal',
       '.maka-palette-modal': '--radius-modal',
       '.maka-palette-input-wrap': '--radius-control',
+      // The search modal's input is the structural twin of the palette's:
+      // same InputGroup, same position inside the same 12px shell. It spent
+      // its life at 4px on a concentric derivation that never applied (see
+      // radius-nesting-contract). Pinned here so the two stay together.
+      '.maka-search-modal-input-row': '--radius-control',
       // .settingsPermissionIntro / .settingsHealthIntro retired (polish wave
       // Item 5): the second gray-banner PageHeader on each page was converged
       // onto the SectionHeader primitive, which carries no page-level radius.
@@ -475,16 +494,25 @@ describe('radius token governance (#406 gap 4)', () => {
       '.settingsBotRuntime': '--radius-surface',
       // .settingsNotice retired: last consumer (account page) removed in the
       // UI-quality campaign; notices now ride the Alert primitive.
-      '.settingsAboutLogo': '--radius-surface',
+      // Square icon plates are ratio-governed, not tier-governed — a fixed px
+      // cannot read the same at 32px and 48px. See --radius-plate.
+      '.settingsAboutLogo': '--radius-plate',
       // .settingsAboutPrivacy retired (polish wave): the brand-blue section
       // dialect used by 关于's privacy card + 数据's 配置导入导出 header was
       // converged onto SectionHeader + Alert; its neutral replacements
       // (.settingsPrivacyBlock / .settingsConfigSection) carry no radius.
       '.settingsWechatQrFrame': '--radius-surface',
       '.settingsWechatQrState': '--radius-surface',
-      '.enabledEmptyChip': '--radius-control',
+      // Named "chip" but rendered as a full-width two-line card (16px padding,
+      // <strong> + <small>) — surface, matching its twin .settingsWechatQrState.
+      '.enabledEmptyChip': '--radius-surface',
       '.maka-firstrun-list': '--radius-surface',
-      '.providerLogo': '--radius-surface',
+      // This entry used to pin --radius-surface, which is how the tier
+      // convergence quietly reverted PR-UI-13: that PR had pinned a single
+      // ~27-28% ratio across plate sizes, and 8px is 18.2% at 44px but 25%
+      // at 32px. The contract then made the regression unfixable — restoring
+      // the ratio failed the test. Ratio-governed now; see --radius-plate.
+      '.providerLogo': '--radius-plate',
       '.maka-browser-address': '--radius-control',
       // .maka-plan-shell dropped: unboxed to a plain layout container
       // (the MCP page set the no-outer-frame precedent) — no card chrome,
@@ -547,6 +575,9 @@ describe('radius token governance (#406 gap 4)', () => {
       '--radius-surface': '8px',
       '--radius-modal': '12px',
       '--radius-pill': '999px',
+      // Percentage on purpose: scale-invariant, so one value is correct at
+      // every plate size. 27% restores the PR-UI-13 anchor (12px at 44px).
+      '--radius-plate': '27%',
     };
     for (const [tok, val] of Object.entries(expected)) {
       assert.equal(tokens.get(tok), val, `${tok} must be ${val}. Update the token source and this contract together.`);

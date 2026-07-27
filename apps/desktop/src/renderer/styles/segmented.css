@@ -34,10 +34,15 @@
   border: 0;
   /* Concentric with the 8px track: 8px outer - 2px track padding = 6px,
      which IS --radius-control — and a segment button is a control, so the
-     tier token says it directly. Deliberately not the calc() shrink form:
-     CSS requires whitespace around `-`, but the radius-converge contract
-     splits values on whitespace, so the only spelling that satisfies both
-     would be invalid CSS resolving to 0. */
+     tier token says it directly. This is the codebase's one genuinely
+     concentric nesting: the first and last buttons hug the track's
+     corners, and the 2px pad is uniform on both axes.
+     Deliberately not the calc() shrink form — when the value lands on a
+     tier, the tier is the spelling: it survives a token revalue, where a
+     hardcoded 2px shrink would silently drift. (This comment used to say
+     the calc form was unspellable because the converge contract split
+     values on whitespace; #1514 fixed that splitter, so the reason is now
+     the one above.) */
   border-radius: var(--radius-control);
   background: transparent;
   color: var(--foreground-secondary);

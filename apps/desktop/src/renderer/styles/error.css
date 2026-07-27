@@ -33,7 +33,8 @@
     height: 32px;
     display: grid;
     place-items: center;
-    border-radius: var(--radius-surface);
+    /* Square icon plate — ratio-governed, see --radius-plate. */
+    border-radius: var(--radius-plate);
     background: oklch(from var(--destructive) l c h / 0.10);
     color: var(--destructive-text);
   }
