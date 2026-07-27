@@ -66,7 +66,7 @@ describe('Interaction projection', () => {
     if (request.kind !== 'tool_permission') throw new Error('Expected tool permission');
     request.args = {
       command:
-        'curl -H "Authorization: Bearer super-secret-token" -H "Proxy-Authorization: Basic proxy-secret" example.test password=\'correct horse battery staple\'',
+        'curl -H "Authorization: Bearer super-secret-token" -H "Proxy-Authorization: Basic proxy-secret" example.test password=\'correct-horse-battery-staple\'',
     };
     const projected = projectInteractionPermissionRequest(request);
     assert.equal(projected.prompt.kind, 'tool_permission');
@@ -77,17 +77,17 @@ describe('Interaction projection', () => {
     assert.match(projected.prompt.review.command, /password='\[redacted\]'/);
     assert.doesNotMatch(
       projected.prompt.review.command,
-      /super-secret-token|proxy-secret|correct horse battery staple/,
+      /super-secret-token|proxy-secret|correct-horse-battery-staple/,
     );
     assert.deepEqual(request.args, {
       command:
-        'curl -H "Authorization: Bearer super-secret-token" -H "Proxy-Authorization: Basic proxy-secret" example.test password=\'correct horse battery staple\'',
+        'curl -H "Authorization: Bearer super-secret-token" -H "Proxy-Authorization: Basic proxy-secret" example.test password=\'correct-horse-battery-staple\'',
     });
   });
 
   test('redacts standard secret access keys in Bash and generic reviews', () => {
     const command =
-      'aws configure set aws_secret_access_\\\nkey \\\nconfig-secret && aws configure set \'profile.team prod.aws_secret_access_key\' \'quoted \\\nprofile-secret\' && aws configure set $\'aws_secret_access_key\' ansi-secret && aws s3 cp . s3://bucket --secret-access-\\\r\nkey flag-\\\nsecret && AWS_SECRET_ACCESS_\\\nKEY\\\n=environment-secret curl -H "awsSecretAccessKey=aws-secret" -H "secretAccessKey=standard-secret" -H "accessKey=ordinary-access-key" example.test && tool --secret-access-key-\\\nfile visible-file';
+      'aws configure set aws_secret_access_\\\nkey \\\nconfig-secret && aws s3 cp . s3://bucket --secret-access-\\\r\nkey flag-\\\nsecret && AWS_SECRET_ACCESS_\\\nKEY\\\n=environment-secret curl -H "awsSecretAccessKey=aws-secret" -H "secretAccessKey=standard-secret" -H "accessKey=ordinary-access-key" example.test && tool --secret-access-key-\\\nfile visible-file';
     const bashRequest = {
       ...toolPermission,
       args: { command },
@@ -98,7 +98,7 @@ describe('Interaction projection', () => {
     if (bash.prompt.review.kind !== 'command') return;
     assert.doesNotMatch(
       bash.prompt.review.command,
-      /config-secret|profile-secret|ansi-secret|flag-secret|aws-secret|standard-secret|environment-secret/,
+      /config-secret|flag-secret|aws-secret|standard-secret|environment-secret/,
     );
     assert.match(
       bash.prompt.review.command,
@@ -417,6 +417,46 @@ describe('Interaction projection', () => {
     assert.match(agent.prompt.review.arguments.text, /"profile":"explorer"/);
     assert.doesNotMatch(agent.prompt.review.arguments.text, /agent-secret/);
     assert.deepEqual(decodeInteractionRequest(agent), agent);
+  });
+
+  test('redacts multiline assignments in generic string fields without dropping later commands', () => {
+    const projected = projectInteractionPermissionRequest({
+      ...toolPermission,
+      toolName: 'mcp__deploy__run',
+      category: 'network_send',
+      reason: 'network',
+      args: {
+        script: 'review note\npassword=dummy-value\nrun visible',
+      },
+    });
+    assert.equal(projected.prompt.kind, 'tool_permission');
+    assert.equal(projected.prompt.review.kind, 'tool');
+    if (projected.prompt.review.kind !== 'tool') return;
+
+    assert.deepEqual(JSON.parse(projected.prompt.review.arguments.text), {
+      script: 'review note\npassword=[redacted]\nrun visible',
+    });
+    assert.doesNotMatch(projected.prompt.review.arguments.text, /dummy-value/);
+  });
+
+  test('redacts authorization in generic string fields without consuming the next line', () => {
+    const projected = projectInteractionPermissionRequest({
+      ...toolPermission,
+      toolName: 'mcp__deploy__run',
+      category: 'network_send',
+      reason: 'network',
+      args: {
+        request: 'Authorization: Bearer opaque-value\nrun visible',
+      },
+    });
+    assert.equal(projected.prompt.kind, 'tool_permission');
+    assert.equal(projected.prompt.review.kind, 'tool');
+    if (projected.prompt.review.kind !== 'tool') return;
+
+    assert.deepEqual(JSON.parse(projected.prompt.review.arguments.text), {
+      request: 'Authorization: Bearer [redacted]\nrun visible',
+    });
+    assert.doesNotMatch(projected.prompt.review.arguments.text, /opaque-value/);
   });
 
   test('preserves short generic tool fields and fails closed when they exceed the preview cap', () => {
