@@ -43,6 +43,7 @@ import {
   isUserQuestionRequest,
 } from './interaction-record-schema.js';
 import { isTokenUsageFields } from './usage-record-schema.js';
+import { isToolRecoveryFactEnvelope, type ToolRecoveryFactEnvelope } from './tool-recovery-fact.js';
 
 // ============================================================================
 // Role / Author / Status
@@ -293,6 +294,8 @@ export interface RuntimeEventActions {
   tokenUsage?: RuntimeEventTokenUsage;
   /** Durable, non-model-visible T1 tool-dispatch fact. */
   toolDispatch?: RuntimeEventToolDispatch;
+  /** Reserved recovery fact; only the atomic recovery-bundle writer may persist it. */
+  toolRecovery?: ToolRecoveryFactEnvelope;
   /** Protocols that were actually active from the first event of this run. */
   runtimeProtocol?: RuntimeEventProtocolMarker;
 }
@@ -423,6 +426,7 @@ const RUNTIME_ACTIONS_SHAPE = defineObjectShape<RuntimeEventActions>()(
     'endInvocation',
     'tokenUsage',
     'toolDispatch',
+    'toolRecovery',
     'runtimeProtocol',
   ],
 );
@@ -610,6 +614,7 @@ function isRuntimeEventActions(value: unknown): value is RuntimeEventActions {
     (value.endInvocation === undefined || typeof value.endInvocation === 'boolean') &&
     (value.tokenUsage === undefined || isRuntimeTokenUsage(value.tokenUsage)) &&
     (value.toolDispatch === undefined || isRuntimeToolDispatch(value.toolDispatch)) &&
+    (value.toolRecovery === undefined || isToolRecoveryFactEnvelope(value.toolRecovery)) &&
     (value.runtimeProtocol === undefined || isRuntimeProtocolMarker(value.runtimeProtocol))
   );
 }

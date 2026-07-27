@@ -179,6 +179,56 @@ export {
 // runtime-event-store.ts
 export type { RuntimeEventStore } from './runtime-event-store.js';
 export { DurableStoreWriteError } from './runtime-event-store.js';
+export type {
+  RuntimeRecoveryBundleCommit,
+  RuntimeRecoveryBundleStore,
+} from './runtime-event-store.js';
+export { TOOL_RECOVERY_BUNDLE_CAPABILITY_V1 } from './runtime-event-store.js';
+export type {
+  ToolLedgerIssue,
+  ToolLedgerIssueCode,
+  GenericToolLedgerAppendValidation,
+  ToolLedgerLane,
+  ToolLedgerLaneValidation,
+  ToolLedgerScanOperation,
+  ToolLedgerScanResult,
+} from './tool-ledger-scanner.js';
+export {
+  scanToolLedger,
+  validateGenericToolLedgerAppend,
+  validateToolLedgerEventLane,
+} from './tool-ledger-scanner.js';
+export type {
+  ToolReconcileObservation,
+  ToolReconcileResultFact,
+  ToolRecoveryCompletedDecisionFact,
+  ToolRecoveryDecisionFact,
+  ToolRecoveryFactEnvelope,
+  ToolRecoveryParkedDecisionFact,
+  ToolRecoveryParkReason,
+} from './tool-recovery-fact.js';
+export {
+  TOOL_RECONCILE_RESULT_FACT_KIND,
+  TOOL_RECOVERY_DECISION_FACT_KIND,
+  TOOL_RECOVERY_FACT_VERSION,
+  isToolReconcileResultFact,
+  isToolRecoveryDecisionFact,
+  isToolRecoveryFactEnvelope,
+} from './tool-recovery-fact.js';
+export type {
+  ScannedToolRecoveryInterpretation,
+  ToolRecoveryBundleValidationCode,
+  ToolRecoveryBundleValidationResult,
+  ToolRecoveryEventBundle,
+  ToolRecoveryOperationIdentity,
+} from './tool-recovery-bundle.js';
+export {
+  ToolRecoveryBundleValidationError,
+  assertToolRecoveryEventBundle,
+  interpretScannedToolRecovery,
+  validateToolRecoveryEventBundle,
+} from './tool-recovery-bundle.js';
+export { canonicalToolArgsHash, stableJsonStringify } from './tool-args-identity.js';
 
 // session.ts
 export type {
