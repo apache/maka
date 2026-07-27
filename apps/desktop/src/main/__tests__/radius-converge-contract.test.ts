@@ -116,8 +116,25 @@ function isAllowedCorner(corner: string): boolean {
 
 // --- CSS scanning (single entry: readAllRendererCss unfolds all imports) -----
 
-const RADIUS_DECL_RE = /border-radius\s*:\s*([^;}\n]+)\s*[;}]/gi;
-const RADIUS_LONGHAND_RE = /border-(?:top-left|top-right|bottom-left|bottom-right|start-start|start-end|end-start|end-end)-radius\s*:\s*([^;}\n]+)\s*[;}]/gi;
+/**
+ * The value class is `[^;}]` — it must NOT exclude `\n`.
+ *
+ * A `border-radius` value may legally wrap onto a second line (a long
+ * four-corner shorthand, or a calc() that pushes past the print width),
+ * and neither prettier nor biome reflows it back onto one line. While the
+ * class read `[^;}\n]+` such a declaration matched *nothing at all*, so the
+ * scanner skipped it silently instead of reporting it — any radius could
+ * escape governance just by being formatted across two lines.
+ *
+ * (Note the newline right after the colon was always fine: the `\s*` there
+ * already spans it. Only a newline *inside the value* was affected.)
+ *
+ * Dropping `\n` from the class cannot make the match run past its own
+ * declaration: `;` and `}` are still excluded, so it stops at the first
+ * declaration terminator or the end of the rule body either way.
+ */
+const RADIUS_DECL_RE = /border-radius\s*:\s*([^;}]+)\s*[;}]/gi;
+const RADIUS_LONGHAND_RE = /border-(?:top-left|top-right|bottom-left|bottom-right|start-start|start-end|end-start|end-end)-radius\s*:\s*([^;}]+)\s*[;}]/gi;
 
 /**
  * Split a `border-radius` value into its corner tokens.
@@ -618,6 +635,72 @@ describe('radius whitelist negative cases', () => {
       const offenders = findCssOffenders(css, 'test');
       assert.ok(offenders.length > 0, `${JSON.stringify(css)} must be flagged as bare px`);
     }
+  });
+
+  /**
+   * A value that wraps onto a second line must still be scanned. The value
+   * class used to exclude `\n`, so such a declaration matched nothing and
+   * was skipped in silence — governance was opt-out by formatting.
+   */
+  it('CSS scanner reads values that wrap onto a second line', () => {
+    const badSnippets = [
+      'border-radius:\n  10px;',
+      'border-radius: 10px\n  12px;',
+      'border-radius: 10px 12px\n  14px 16px;',
+      // shrink-only rule, still enforced across the line break
+      'border-radius: calc(var(--radius-modal)\n  + 8px);',
+      'border-top-left-radius: 10px\n  12px;',
+    ];
+    for (const css of badSnippets) {
+      RADIUS_DECL_RE.lastIndex = 0;
+      RADIUS_LONGHAND_RE.lastIndex = 0;
+      assert.ok(
+        findCssOffenders(css, 'test').length > 0,
+        `${JSON.stringify(css)} must be flagged, not silently skipped`,
+      );
+    }
+
+    // ...and a valid multi-line value must still pass: splitCorners() breaks
+    // on any whitespace at paren depth 0, newlines included.
+    const okSnippets = [
+      'border-radius: var(--radius-control)\n  var(--radius-surface);',
+      'border-radius: calc(var(--radius-modal)\n  - 8px);',
+      'border-bottom-right-radius:\n  var(--radius-surface);',
+    ];
+    for (const css of okSnippets) {
+      RADIUS_DECL_RE.lastIndex = 0;
+      RADIUS_LONGHAND_RE.lastIndex = 0;
+      assert.deepEqual(findCssOffenders(css, 'test'), [], `${JSON.stringify(css)} must pass`);
+    }
+  });
+
+  /**
+   * Widening the value class must not let one match swallow the declaration
+   * after it, or run past the end of its own rule body — that would turn the
+   * fix into a false-positive machine.
+   */
+  it('CSS scanner stops each match at its own declaration boundary', () => {
+    const css = [
+      '.a {',
+      '  border-radius: var(--radius-control);',
+      '  color: red;',
+      '}',
+      '.b {',
+      '  border-radius: var(--radius-surface)',
+      '}',
+      '.c { border-radius: var(--radius-modal); }',
+    ].join('\n');
+    RADIUS_DECL_RE.lastIndex = 0;
+    RADIUS_LONGHAND_RE.lastIndex = 0;
+    assert.deepEqual(findCssOffenders(css, 'test'), [], 'valid declarations must not bleed into each other');
+
+    RADIUS_DECL_RE.lastIndex = 0;
+    const matched = [...css.matchAll(RADIUS_DECL_RE)].map((m) => m[1].trim());
+    assert.deepEqual(
+      matched,
+      ['var(--radius-control)', 'var(--radius-surface)', 'var(--radius-modal)'],
+      'each declaration must be captured separately',
+    );
   });
 
   it('calc() with internal whitespace still passes for valid tokens', () => {
