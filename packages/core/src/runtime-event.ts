@@ -14,7 +14,12 @@
  * projection, or ledger logic lives here. Those arrive in later nodes.
  */
 
-import { isMessageContent, normalizeMessageContent, type MessageContent } from './events.js';
+import {
+  isMessageContent,
+  normalizeMessageContent,
+  type MessageContent,
+  type PermissionClosureReason,
+} from './events.js';
 import { INTERACTION_ID_MAX_BYTES, INTERACTION_TOOL_NAME_MAX_BYTES } from './interaction.js';
 import type { PermissionRequestPayload, PermissionResponse } from './permission.js';
 import type { UserQuestionRequest } from './user-question.js';
@@ -253,6 +258,11 @@ export interface RuntimeEventUserQuestionAnswerAccepted
 
 export interface RuntimeEventPermissionAnswerAccepted extends RuntimeEventAnswerAcceptedIdentity {}
 
+export interface RuntimeEventPermissionClosureAccepted {
+  requestId: string;
+  reason: PermissionClosureReason;
+}
+
 /**
  * Control and side-effect intent carried alongside content. An event may
  * carry content, actions, both, or (rarely) neither — but a terminal
@@ -269,6 +279,8 @@ export interface RuntimeEventActions {
   permissionDecision?: RuntimeEventPermissionDecision;
   /** Audit fact only; the canonical permission outcome remains in InteractionStore. */
   permissionAnswerAccepted?: RuntimeEventPermissionAnswerAccepted;
+  /** Audit fact that an unanswered hosted permission request was durably closed. */
+  permissionClosureAccepted?: RuntimeEventPermissionClosureAccepted;
   /** A bounded in-turn question raised by a tool call. */
   userQuestionRequest?: UserQuestionRequest;
   /** Audit fact only; the canonical answer remains in InteractionStore. */
@@ -404,6 +416,7 @@ const RUNTIME_ACTIONS_SHAPE = defineObjectShape<RuntimeEventActions>()(
     'permissionRequest',
     'permissionDecision',
     'permissionAnswerAccepted',
+    'permissionClosureAccepted',
     'userQuestionRequest',
     'userQuestionAnswerAccepted',
     'transferToAgent',
@@ -417,6 +430,8 @@ const ANSWER_ACCEPTED_IDENTITY_SHAPE = defineObjectShape<RuntimeEventAnswerAccep
   ['requestId'],
   [],
 );
+const PERMISSION_CLOSURE_ACCEPTED_SHAPE =
+  defineObjectShape<RuntimeEventPermissionClosureAccepted>()(['requestId', 'reason'], []);
 const RUNTIME_PERMISSION_DECISION_SHAPE = defineObjectShape<RuntimeEventPermissionDecision>()(
   ['requestId', 'decision'],
   ['rememberForTurn', 'reviewer', 'rationale', 'riskLevel', 'toolName'],
@@ -567,6 +582,12 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
 
 function isRuntimeEventActions(value: unknown): value is RuntimeEventActions {
   if (!isRecord(value) || !hasExactShape(value, RUNTIME_ACTIONS_SHAPE)) return false;
+  if (
+    value.permissionClosureAccepted !== undefined &&
+    Object.keys(value).some((key) => key !== 'permissionClosureAccepted')
+  ) {
+    return false;
+  }
   return (
     (value.stateDelta === undefined || isRecord(value.stateDelta)) &&
     (value.artifactDelta === undefined ||
@@ -580,6 +601,8 @@ function isRuntimeEventActions(value: unknown): value is RuntimeEventActions {
       isRuntimeEventPermissionDecision(value.permissionDecision)) &&
     (value.permissionAnswerAccepted === undefined ||
       isRuntimeEventAnswerAcceptedIdentity(value.permissionAnswerAccepted)) &&
+    (value.permissionClosureAccepted === undefined ||
+      isRuntimeEventPermissionClosureAccepted(value.permissionClosureAccepted)) &&
     (value.userQuestionRequest === undefined || isUserQuestionRequest(value.userQuestionRequest)) &&
     (value.userQuestionAnswerAccepted === undefined ||
       isRuntimeEventAnswerAcceptedIdentity(value.userQuestionAnswerAccepted)) &&
@@ -613,6 +636,19 @@ function isRuntimeEventAnswerAcceptedIdentity(
     typeof value.requestId === 'string' &&
     value.requestId.length > 0 &&
     UTF8.encode(value.requestId).byteLength <= INTERACTION_ID_MAX_BYTES
+  );
+}
+
+function isRuntimeEventPermissionClosureAccepted(
+  value: unknown,
+): value is RuntimeEventPermissionClosureAccepted {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, PERMISSION_CLOSURE_ACCEPTED_SHAPE) &&
+    typeof value.requestId === 'string' &&
+    value.requestId.length > 0 &&
+    UTF8.encode(value.requestId).byteLength <= INTERACTION_ID_MAX_BYTES &&
+    value.reason === 'timed_out'
   );
 }
 

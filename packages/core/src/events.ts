@@ -325,6 +325,7 @@ export type SessionEvent =
   | ToolResultEvent
   | AnyPermissionRequestEvent
   | PermissionAnswerAckEvent
+  | PermissionClosureAckEvent
   | PermissionDecisionAckEvent
   | UserQuestionRequestEvent
   | UserQuestionAnswerAckEvent
@@ -726,6 +727,19 @@ export interface PermissionAnswerAckEvent extends BaseEvent {
   type: 'permission_answer_ack';
   requestId: string;
   toolUseId: string;
+}
+
+export type PermissionClosureReason = 'timed_out';
+
+/**
+ * Echo that the hosted runtime durably closed an unanswered permission request.
+ * This acknowledgement carries identity and closure reason only.
+ */
+export interface PermissionClosureAckEvent extends BaseEvent {
+  type: 'permission_closure_ack';
+  requestId: string;
+  toolUseId: string;
+  reason: PermissionClosureReason;
 }
 
 /**

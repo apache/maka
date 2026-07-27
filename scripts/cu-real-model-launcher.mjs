@@ -822,7 +822,7 @@ async function waitForRunHeader(store, sessionId, turnId) {
       latest &&
       latest.status !== 'created' &&
       latest.status !== 'running' &&
-      latest.status !== 'waiting_permission'
+      latest.status !== 'waiting_for_user'
     )
       return latest;
     await new Promise((resolve) => setTimeout(resolve, 50));

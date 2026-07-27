@@ -28,6 +28,7 @@ export const INTERACTION_ANSWER_MAX_BYTES = 2048;
 export const INTERACTION_REQUEST_MAX_BYTES = 16 * 1024;
 export const INTERACTION_ANSWER_SERIALIZED_MAX_BYTES = 8 * 1024;
 export const INTERACTION_OUTCOME_SERIALIZED_MAX_BYTES = 8 * 1024;
+export const INTERACTION_AUTO_REVIEW_RATIONALE_MAX_CHARS = 1_000;
 
 export const INTERACTION_CLOSURE_REASONS = [
   'turn_stopped',
@@ -82,6 +83,7 @@ export type InteractionAnswer = InteractionPermissionAnswer | InteractionQuestio
 export type InteractionCanonicalPermissionOutcome = {
   readonly kind: 'permission_answer';
   readonly reviewer: ApprovalsReviewer;
+  readonly rationale?: string;
   readonly riskLevel?: ApprovalRiskLevel;
   readonly committedAt: number;
 } & InteractionPermissionDecisionFields;
@@ -126,7 +128,7 @@ const QUESTION_ANSWER_SHAPE = defineObjectShape<InteractionQuestionAnswer>()(
 );
 const PERMISSION_OUTCOME_SHAPE = defineObjectShape<InteractionCanonicalPermissionOutcome>()(
   ['kind', 'reviewer', 'committedAt', 'decision', 'rememberForTurn'],
-  ['riskLevel'],
+  ['rationale', 'riskLevel'],
 );
 const QUESTION_OUTCOME_SHAPE = defineObjectShape<InteractionCanonicalQuestionOutcome>()(
   ['kind', 'answers', 'committedAt'],
@@ -200,9 +202,22 @@ export function decodeInteractionCanonicalOutcome(value: unknown): InteractionCa
     const rememberForTurn = boolean(record.rememberForTurn, 'rememberForTurn');
     if (decision === 'deny' && rememberForTurn)
       throw new Error('Denied permission cannot be remembered');
+    const reviewer = oneOf(record.reviewer, APPROVALS_REVIEWERS, 'reviewer');
+    if (record.rationale !== undefined && reviewer !== 'auto_review') {
+      throw new Error('Only auto-review permission outcomes can include rationale');
+    }
     const common = {
       kind: 'permission_answer' as const,
-      reviewer: oneOf(record.reviewer, APPROVALS_REVIEWERS, 'reviewer'),
+      reviewer,
+      ...(record.rationale === undefined
+        ? {}
+        : {
+            rationale: boundedCharacterString(
+              record.rationale,
+              'rationale',
+              INTERACTION_AUTO_REVIEW_RATIONALE_MAX_CHARS,
+            ),
+          }),
       ...(record.riskLevel === undefined
         ? {}
         : {
@@ -457,6 +472,12 @@ function plainArray(value: unknown, label: string, min: number, max: number): un
 
 function boundedString(value: unknown, label: string, maxBytes: number): string {
   if (typeof value !== 'string' || value.length === 0 || UTF8.encode(value).byteLength > maxBytes)
+    throw new Error(`Invalid ${label}`);
+  return value;
+}
+
+function boundedCharacterString(value: unknown, label: string, maxChars: number): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > maxChars)
     throw new Error(`Invalid ${label}`);
   return value;
 }

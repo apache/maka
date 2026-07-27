@@ -3,6 +3,7 @@ import { describe, test } from 'node:test';
 
 import {
   INTERACTION_BROWSER_TEXT_PREVIEW_MAX_BYTES,
+  INTERACTION_AUTO_REVIEW_RATIONALE_MAX_CHARS,
   INTERACTION_GENERIC_TOOL_ARGUMENTS_MAX_BYTES,
   INTERACTION_MAX_QUESTIONS,
   InteractionPermissionProjectionError,
@@ -65,7 +66,7 @@ describe('Interaction projection', () => {
     if (request.kind !== 'tool_permission') throw new Error('Expected tool permission');
     request.args = {
       command:
-        'curl -H "Authorization: Bearer super-secret-token" -H "Proxy-Authorization: Basic proxy-secret" example.test',
+        'curl -H "Authorization: Bearer super-secret-token" -H "Proxy-Authorization: Basic proxy-secret" example.test password=\'correct horse battery staple\'',
     };
     const projected = projectInteractionPermissionRequest(request);
     assert.equal(projected.prompt.kind, 'tool_permission');
@@ -73,16 +74,20 @@ describe('Interaction projection', () => {
     if (projected.prompt.review.kind !== 'command') return;
     assert.match(projected.prompt.review.command, /Authorization: Bearer \[redacted\]/);
     assert.match(projected.prompt.review.command, /Proxy-Authorization: Basic \[redacted\]/);
-    assert.doesNotMatch(projected.prompt.review.command, /super-secret-token|proxy-secret/);
+    assert.match(projected.prompt.review.command, /password='\[redacted\]'/);
+    assert.doesNotMatch(
+      projected.prompt.review.command,
+      /super-secret-token|proxy-secret|correct horse battery staple/,
+    );
     assert.deepEqual(request.args, {
       command:
-        'curl -H "Authorization: Bearer super-secret-token" -H "Proxy-Authorization: Basic proxy-secret" example.test',
+        'curl -H "Authorization: Bearer super-secret-token" -H "Proxy-Authorization: Basic proxy-secret" example.test password=\'correct horse battery staple\'',
     });
   });
 
   test('redacts standard secret access keys in Bash and generic reviews', () => {
     const command =
-      'aws configure set aws_secret_access_\\\nkey \\\nconfig-secret && aws s3 cp . s3://bucket --secret-access-\\\r\nkey flag-\\\nsecret && AWS_SECRET_ACCESS_\\\nKEY\\\n=environment-secret curl -H "awsSecretAccessKey=aws-secret" -H "secretAccessKey=standard-secret" -H "accessKey=ordinary-access-key" example.test && tool --secret-access-key-\\\nfile visible-file';
+      'aws configure set aws_secret_access_\\\nkey \\\nconfig-secret && aws configure set \'profile.team prod.aws_secret_access_key\' \'quoted \\\nprofile-secret\' && aws configure set $\'aws_secret_access_key\' ansi-secret && aws s3 cp . s3://bucket --secret-access-\\\r\nkey flag-\\\nsecret && AWS_SECRET_ACCESS_\\\nKEY\\\n=environment-secret curl -H "awsSecretAccessKey=aws-secret" -H "secretAccessKey=standard-secret" -H "accessKey=ordinary-access-key" example.test && tool --secret-access-key-\\\nfile visible-file';
     const bashRequest = {
       ...toolPermission,
       args: { command },
@@ -93,7 +98,7 @@ describe('Interaction projection', () => {
     if (bash.prompt.review.kind !== 'command') return;
     assert.doesNotMatch(
       bash.prompt.review.command,
-      /config-secret|flag-secret|aws-secret|standard-secret|environment-secret/,
+      /config-secret|profile-secret|ansi-secret|flag-secret|aws-secret|standard-secret|environment-secret/,
     );
     assert.match(
       bash.prompt.review.command,
@@ -832,5 +837,73 @@ describe('Interaction decoding and validity', () => {
         }),
       );
     }
+  });
+
+  test('decodes only bounded auto-review rationale while preserving legacy outcomes', () => {
+    const rationale = 'r'.repeat(INTERACTION_AUTO_REVIEW_RATIONALE_MAX_CHARS);
+    const reviewed = decodeInteractionCanonicalOutcome({
+      kind: 'permission_answer',
+      decision: 'allow',
+      rememberForTurn: false,
+      reviewer: 'auto_review',
+      rationale,
+      committedAt: 1,
+    });
+    assert.equal(reviewed.kind, 'permission_answer');
+    if (reviewed.kind !== 'permission_answer') return;
+    assert.equal(reviewed.rationale, rationale);
+    const retry = decodeInteractionCanonicalOutcome({
+      kind: 'permission_answer',
+      decision: 'allow',
+      rememberForTurn: false,
+      reviewer: 'auto_review',
+      rationale: 'A retry may explain the same user-answer semantics differently.',
+      committedAt: 2,
+    });
+    assert.equal(interactionCanonicalOutcomesEquivalent(reviewed, retry), true);
+    assert.equal(
+      retry.kind === 'permission_answer' ? retry.rationale : undefined,
+      'A retry may explain the same user-answer semantics differently.',
+    );
+
+    const legacy = decodeInteractionCanonicalOutcome({
+      kind: 'permission_answer',
+      decision: 'deny',
+      rememberForTurn: false,
+      reviewer: 'auto_review',
+      committedAt: 3,
+    });
+    assert.equal(legacy.kind, 'permission_answer');
+    if (legacy.kind !== 'permission_answer') return;
+    assert.equal(legacy.rationale, undefined);
+
+    assert.throws(() =>
+      decodeInteractionCanonicalOutcome({
+        kind: 'permission_answer',
+        decision: 'allow',
+        rememberForTurn: false,
+        reviewer: 'auto_review',
+        rationale: `${rationale}x`,
+        committedAt: 4,
+      }),
+    );
+    assert.throws(() =>
+      decodeInteractionCanonicalOutcome({
+        kind: 'permission_answer',
+        decision: 'allow',
+        rememberForTurn: false,
+        reviewer: 'user',
+        rationale: 'User wire answers cannot adjudicate themselves.',
+        committedAt: 5,
+      }),
+    );
+    assert.throws(() =>
+      decodeInteractionAnswer({
+        kind: 'permission',
+        decision: 'allow',
+        rememberForTurn: false,
+        rationale: 'not on the user answer wire',
+      }),
+    );
   });
 });

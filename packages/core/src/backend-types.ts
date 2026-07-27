@@ -92,8 +92,13 @@ export interface HostedPermissionAnswer {
   readonly decision: PermissionResponse['decision'];
   readonly rememberForTurn?: boolean;
   readonly reviewer?: PermissionResponse['reviewer'];
+  readonly rationale?: PermissionResponse['rationale'];
   readonly riskLevel?: PermissionResponse['riskLevel'];
 }
+
+export type HostedPermissionCommitOutcome =
+  | { readonly kind: 'permission_answer'; readonly answer: HostedPermissionAnswer }
+  | { readonly kind: 'closure'; readonly reason: InteractionClosureReason };
 
 export interface HostedUserQuestionAnswer {
   readonly requestId?: never;
@@ -134,7 +139,7 @@ export interface HostedInteractionBridge {
     answer: HostedPermissionAnswer;
   }): Promise<void>;
 
-  commitPermissionTimeout(input: { requestId: string }): Promise<void>;
+  commitPermissionTimeout(input: { requestId: string }): Promise<HostedPermissionCommitOutcome>;
 
   admitUserQuestionRequest(input: {
     request: UserQuestionRequestEvent;

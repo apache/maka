@@ -43,6 +43,8 @@ export type {
   AnyPermissionRequestEvent,
   PermissionRequestEvent,
   PermissionAnswerAckEvent,
+  PermissionClosureAckEvent,
+  PermissionClosureReason,
   PermissionDecisionAckEvent,
   UserQuestionRequestEvent,
   PlanSubmittedEvent,
@@ -120,6 +122,7 @@ export type {
   RuntimeEventTokenUsage,
   RuntimeEventPermissionDecision,
   RuntimeEventPermissionAnswerAccepted,
+  RuntimeEventPermissionClosureAccepted,
   RuntimeEventUserQuestionAnswerAccepted,
   RuntimeEventProtocolMarker,
   RuntimeEventToolDispatch,
@@ -229,7 +232,10 @@ export {
   decodeStoredMessageForRecovery,
   userFacingText,
 } from './session.js';
-export { decodeCanonicalToolResultContent } from './tool-result-record-schema.js';
+export {
+  decodeCanonicalToolResultContent,
+  normalizeToolResultContentForRead,
+} from './tool-result-record-schema.js';
 
 // model-thinking.ts
 export type { ThinkingLevel } from './model-thinking.js';

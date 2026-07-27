@@ -109,6 +109,244 @@ describe('redactSecrets', () => {
     );
   });
 
+  test('does not cross enclosing quotes between adjacent header assignments', () => {
+    assert.equal(
+      redactSecrets(
+        'curl -H "awsSecretAccessKey=aws-secret" -H "secretAccessKey=standard-secret" -H "accessKey=ordinary-access-key"',
+      ),
+      'curl -H "awsSecretAccessKey=[redacted]" -H "secretAccessKey=[redacted]" -H "accessKey=ordinary-access-key"',
+    );
+    assert.equal(
+      redactSecrets('curl -H "password=secret value" -H "accessKey=ordinary-access-key"'),
+      'curl -H "password=[redacted]" -H "accessKey=ordinary-access-key"',
+    );
+  });
+
+  test('masks quoted fragments appended to unquoted assignment values', () => {
+    assert.equal(
+      redactSecrets('password=abc" secret tail" && echo visible'),
+      'password=[redacted] && echo visible',
+    );
+  });
+
+  test('uses expansion-local quote context for assignments', () => {
+    assert.equal(
+      redactSecrets(
+        'echo "$(password=abc" secret tail"; echo inner-visible)" && echo outer-visible',
+      ),
+      'echo "$(password=[redacted]; echo inner-visible)" && echo outer-visible',
+    );
+  });
+
+  test('treats prose apostrophes as ambiguous text instead of outer shell quotes', () => {
+    assert.equal(
+      redactSecrets("can't connect: password=abc' secret tail' && status=visible"),
+      "can't connect: password=[redacted] && status=visible",
+    );
+    assert.equal(
+      redactSecrets("James' error: password=secret status=visible"),
+      "James' error: password=[redacted] status=visible",
+    );
+    assert.equal(
+      redactSecrets("curl -H 'password=secret value' -H 'status=visible'"),
+      "curl -H 'password=[redacted]' -H 'status=visible'",
+    );
+    assert.equal(redactSecrets("'password=secret status=visible"), "'password=[redacted]");
+  });
+
+  test('keeps the longer complete strict-shell interpretation for quote concatenation', () => {
+    assert.equal(
+      redactSecrets("note=abc' password=abc secret tail' status=visible"),
+      "note=abc' password=[redacted]' status=visible",
+    );
+    assert.equal(
+      redactSecrets("can't run note=abc' password=secret tail' status=visible"),
+      "can't run note=abc' password=[redacted]' status=visible",
+    );
+  });
+
+  test('closes a complete quoted field before interpreting the next assignment', () => {
+    assert.equal(
+      redactSecrets("note='complete field' password=secret status=visible"),
+      "note='complete field' password=[redacted] status=visible",
+    );
+  });
+
+  test('bounds lexical ambiguity across repeated apostrophes and expansions', () => {
+    const prefix = "word's $(echo visible) ".repeat(512);
+    const ordinary = redactSecrets(`${prefix}password=secret status=visible`);
+    const unterminated = redactSecrets(`${prefix}'password=secret tail-visible`);
+
+    assert.equal(ordinary, `${prefix}password=[redacted] status=visible`);
+    assert.equal(unterminated, `${prefix}'password=[redacted]`);
+  });
+
+  test('redacts a large assignment batch through one ordered context pass', () => {
+    const assignments = Array.from({ length: 2_000 }, (_, index) => `password=value-${index}`);
+    const text = redactSecrets(assignments.join(' '));
+
+    assert.equal(text, assignments.map(() => 'password=[redacted]').join(' '));
+  });
+
+  test('masks complete shell tokens in generic secret assignments', () => {
+    assert.equal(
+      redactSecrets(
+        `password='correct horse battery staple' && api_token="secret with \\"quoted\\" text" ; printf 'keep this command'`,
+      ),
+      `password='[redacted]' && api_token="[redacted]" ; printf 'keep this command'`,
+    );
+    assert.equal(
+      redactSecrets(
+        'client_secret=correct\\ horse\\ battery && password="continued \\\nsecret value" || echo still-visible',
+      ),
+      'client_secret=[redacted] && password="[redacted]" || echo still-visible',
+    );
+  });
+
+  test('masks Bash append and indexed sensitive assignments', () => {
+    assert.equal(
+      redactSecrets(
+        'API_TOKEN+=correct-horse-battery-staple API_TOKEN[0]=indexed-secret && echo visible',
+      ),
+      'API_TOKEN+=[redacted] API_TOKEN[0]=[redacted] && echo visible',
+    );
+    assert.equal(
+      redactSecrets(
+        `API_TOKEN["team] prod"]='quoted secret' && API_\\
+TOKEN[0]\\
++=continued\\
+-secret; printf visible`,
+      ),
+      `API_TOKEN["team] prod"]='[redacted]' && API_\\
+TOKEN[0]\\
++=[redacted]; printf visible`,
+    );
+  });
+
+  test('does not treat arbitrary arrays or similar keys as sensitive assignments', () => {
+    const text =
+      'items[0]=ordinary API_TOKENS[0]=plural TOKEN_COUNT[0]+=1 cache_key[API_TOKEN]=visible';
+    assert.equal(redactSecrets(text), text);
+  });
+
+  test('redacts command strings inside serialized JSON without crossing JSON syntax', () => {
+    const text = redactSecrets(
+      JSON.stringify({
+        command: 'deploy --label visible password="json secret" --region ap-southeast-1',
+        adjacent: 'still visible',
+        argv: ['--name', 'ordinary'],
+      }),
+    );
+
+    assert.deepEqual(JSON.parse(text), {
+      command: 'deploy --label visible password="[redacted]" --region ap-southeast-1',
+      adjacent: 'still visible',
+      argv: ['--name', 'ordinary'],
+    });
+  });
+
+  test('fails closed for incomplete quoted and escaped secret words', () => {
+    assert.equal(
+      redactSecrets("password='unterminated secret && echo also-secret"),
+      'password=[redacted]',
+    );
+    assert.equal(
+      redactSecrets('api_token="unterminated secret || echo also-secret'),
+      'api_token=[redacted]',
+    );
+    assert.equal(redactSecrets('client_secret=trailing-secret\\'), 'client_secret=[redacted]');
+    assert.equal(
+      redactSecrets("aws configure set aws_secret_access_key 'unterminated aws secret"),
+      'aws configure set aws_secret_access_key [redacted]',
+    );
+    assert.equal(
+      redactSecrets('tool --secret-access-key "unterminated flag secret'),
+      'tool --secret-access-key [redacted]',
+    );
+  });
+
+  test('fails closed when AWS config keys require shell evaluation', () => {
+    const ansi = redactSecrets(
+      String.raw`aws configure set $'aws_secret_access_\x6bey' ansi-secret && echo visible`,
+    );
+    const substitution = redactSecrets(
+      'aws configure set aws_secret_access_$(printf key) substitution-secret && echo visible',
+    );
+    const nestedValue = redactSecrets(
+      'password=$(printf %s $(load-secret))literal-secret && echo visible',
+    );
+    const dynamicProfile = redactSecrets(
+      'aws configure set profile.$(team).aws_secret_access_key profile-secret',
+    );
+    const splitKey = redactSecrets(
+      'aws configure set aws_$(printf secret)_access_key split-secret',
+    );
+
+    assert.equal(
+      ansi,
+      String.raw`aws configure set $'aws_secret_access_\x6bey' [redacted] && echo visible`,
+    );
+    assert.equal(
+      substitution,
+      'aws configure set aws_secret_access_$(printf key) [redacted] && echo visible',
+    );
+    assert.equal(nestedValue, 'password=[redacted] && echo visible');
+    assert.equal(
+      dynamicProfile,
+      'aws configure set profile.$(team).aws_secret_access_key [redacted]',
+    );
+    assert.equal(splitKey, 'aws configure set aws_$(printf secret)_access_key [redacted]');
+  });
+
+  test('keeps arithmetic and subshell grouping inside the redacted word span', () => {
+    assert.equal(
+      redactSecrets('password=$((1 + 2))literal-secret && echo visible'),
+      'password=[redacted] && echo visible',
+    );
+    assert.equal(
+      redactSecrets('password=$( (printf secret) )literal-secret && echo visible'),
+      'password=[redacted] && echo visible',
+    );
+  });
+
+  test('fails closed only for uncertain words that can resolve to the sensitive AWS flag', () => {
+    assert.equal(
+      redactSecrets("$'--secret-access-key' flag-secret && echo visible"),
+      "$'--secret-access-key' [redacted] && echo visible",
+    );
+    assert.equal(
+      redactSecrets('--secret-access-$(printf key) flag-secret && echo visible'),
+      '--secret-access-$(printf key) [redacted] && echo visible',
+    );
+    assert.equal(
+      redactSecrets('--output-$(printf format) visible-value && echo visible'),
+      '--output-$(printf format) visible-value && echo visible',
+    );
+  });
+
+  test('consumes complete ANSI-C escape payloads before matching sensitive flags', () => {
+    for (const flag of [
+      String.raw`$'--secret-access-\x6bey'`,
+      String.raw`$'--secret-access-\u006bey'`,
+      String.raw`$'--secret-access-\U0000006bey'`,
+      String.raw`$'--secret-access-\153ey'`,
+    ]) {
+      assert.equal(
+        redactSecrets(`${flag} flag-secret && echo visible`),
+        `${flag} [redacted] && echo visible`,
+      );
+    }
+    const nonSecret = String.raw`$'--secret-access-\x66ile' visible-value && echo visible`;
+    assert.equal(redactSecrets(nonSecret), nonSecret);
+  });
+
+  test('uses original UTF-16 spans when redacting non-ASCII shell words', () => {
+    assert.equal(
+      redactSecrets('echo 前缀 password="秘密🔑 值" 后缀=可见'),
+      'echo 前缀 password="[redacted]" 后缀=可见',
+    );
+  });
+
   test('masks standard secret access key names without owning arbitrary access keys', () => {
     const json = redactSecrets(
       JSON.stringify({
@@ -144,6 +382,36 @@ describe('redactSecrets', () => {
       redactSecrets('aws configure set aws_secret_access_key "quoted-secret"'),
       'aws configure set aws_secret_access_key "[redacted]"',
     );
+    assert.equal(
+      redactSecrets(
+        'aws configure set profile.team-prod-admin.aws_secret_access_key "profile secret value" && aws configure set region us-west-2',
+      ),
+      'aws configure set profile.team-prod-admin.aws_secret_access_key "[redacted]" && aws configure set region us-west-2',
+    );
+    assert.equal(
+      redactSecrets(
+        "aws configure set 'profile.team.aws_secret_access_key' 'quoted \\\nsecret value' && echo visible",
+      ),
+      "aws configure set 'profile.team.aws_secret_access_key' '[redacted]' && echo visible",
+    );
+    assert.equal(
+      redactSecrets(
+        "aws configure set 'profile.team prod.aws_secret_access_key' 'quoted secret value'",
+      ),
+      "aws configure set 'profile.team prod.aws_secret_access_key' '[redacted]'",
+    );
+    assert.equal(
+      redactSecrets(
+        `aws configure set profile.'team prod'.aws_secret_access_key "segmented secret "value`,
+      ),
+      `aws configure set profile.'team prod'.aws_secret_access_key [redacted]`,
+    );
+    assert.equal(
+      redactSecrets(
+        "aws configure set $'aws_secret_access_key' 'ansi secret'; aws configure set aws_secret_access_$'key' suffix-secret",
+      ),
+      "aws configure set $'aws_secret_access_key' '[redacted]'; aws configure set aws_secret_access_$'key' [redacted]",
+    );
   });
 
   test('masks AWS secrets across POSIX line continuations', () => {
@@ -171,9 +439,15 @@ describe('redactSecrets', () => {
 
   test('does not mask similar non-secret AWS CLI tokens', () => {
     const text =
-      'aws configure set region us-east-1; aws configure set my_aws_secret_access_\\\nkey visible; tool --secret-access-key-\\\r\nfile credentials.txt; AWS_SECRET_ACCESS_KEY_\\\nFILE=visible';
+      'aws configure set region us-east-1; aws configure set \'profile.team prod.region\' us-west-2; aws configure set profile.team.prod.aws_secret_access_key ordinary-value; aws configure set "aws_secret_access_ke\\y" escaped-value; aws configure set my_aws_secret_access_\\\nkey visible; tool --secret-access-key-\\\r\nfile credentials.txt; AWS_SECRET_ACCESS_KEY_\\\nFILE=visible';
 
     assert.equal(redactSecrets(text), text);
+    assert.equal(
+      redactSecrets(
+        'aws configure set $(printf region) us-west-2; aws configure set profile.$(team).region us-west-2',
+      ),
+      'aws configure set $(printf region) us-west-2; aws configure set profile.$(team).region us-west-2',
+    );
   });
 
   test('masks escaped and non-string sensitive JSON values structurally', () => {
