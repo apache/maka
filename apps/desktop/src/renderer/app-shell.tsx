@@ -359,14 +359,14 @@ function AppShellContent({
         .then((result) => {
           if (result.ok) return;
           toastApi.error(
-            uiLocale === 'zh' ? '无法安装更新' : 'Could not install update',
-            uiLocale === 'zh' ? '请稍后重试，或手动下载最新版本。' : 'Try again later, or download the latest version manually.',
+            shellCopy.updateInstallFailedTitle,
+            shellCopy.updateInstallManualFallback,
           );
         })
         .catch((error) => {
           toastApi.error(
-            uiLocale === 'zh' ? '无法安装更新' : 'Could not install update',
-            localizedShellErrorMessage(error, uiLocale === 'zh' ? '请稍后重试。' : 'Try again later.', uiLocale),
+            shellCopy.updateInstallFailedTitle,
+            localizedShellErrorMessage(error, shellCopy.updateInstallFailedFallback, uiLocale),
           );
         });
       return;
@@ -377,8 +377,8 @@ function AppShellContent({
         .then((next) => setAppUpdateStatus(next))
         .catch((error) => {
           toastApi.error(
-            uiLocale === 'zh' ? '无法下载更新' : 'Could not download update',
-            localizedShellErrorMessage(error, uiLocale === 'zh' ? '请稍后重试。' : 'Try again later.', uiLocale),
+            shellCopy.updateDownloadFailedTitle,
+            localizedShellErrorMessage(error, shellCopy.tryAgainLater, uiLocale),
           );
         });
       return;
@@ -388,19 +388,17 @@ function AppShellContent({
       .then((result) => {
         if (result.ok) return;
         toastApi.error(
-          uiLocale === 'zh' ? '无法打开更新' : 'Could not open update',
-          uiLocale === 'zh'
-            ? '请稍后重试，或前往 GitHub Releases 下载最新版本。'
-            : 'Try again later, or download the latest version from GitHub Releases.',
+          shellCopy.updateOpenFailedTitle,
+          shellCopy.updateOpenManualFallback,
         );
       })
       .catch((error) => {
         toastApi.error(
-          uiLocale === 'zh' ? '无法打开更新' : 'Could not open update',
-          localizedShellErrorMessage(error, uiLocale === 'zh' ? '请稍后重试。' : 'Try again later.', uiLocale),
+          shellCopy.updateOpenFailedTitle,
+          localizedShellErrorMessage(error, shellCopy.tryAgainLater, uiLocale),
         );
       });
-  }, [appUpdateStatus, toastApi, uiLocale]);
+  }, [appUpdateStatus, shellCopy, toastApi, uiLocale]);
   const moduleHubCopy = getSharedUiCopy(uiLocale).moduleHubs;
   const extensionsHubHeader = {
     title: moduleHubCopy.extensions.title,

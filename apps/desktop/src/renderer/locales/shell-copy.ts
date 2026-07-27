@@ -406,6 +406,12 @@ type ShellCopy = {
     resizeConversationList: string;
     skipErrorTitle: string;
     tryAgainLater: string;
+    updateInstallFailedTitle: string;
+    updateInstallFailedFallback: string;
+    updateInstallManualFallback: string;
+    updateDownloadFailedTitle: string;
+    updateOpenFailedTitle: string;
+    updateOpenManualFallback: string;
     loading: string;
     goToModels: string;
     permissionModeChanging: string;
@@ -1078,6 +1084,12 @@ const SHELL_COPY_BY_LOCALE = {
       resizeConversationList: '调整对话列表宽度',
       skipErrorTitle: '跳过失败',
       tryAgainLater: '请稍后重试。',
+      updateInstallFailedTitle: '无法安装更新',
+      updateInstallFailedFallback: '请稍后重试。',
+      updateInstallManualFallback: '请稍后重试，或手动下载最新版本。',
+      updateDownloadFailedTitle: '无法下载更新',
+      updateOpenFailedTitle: '无法打开更新',
+      updateOpenManualFallback: '请稍后重试，或前往 GitHub Releases 下载最新版本。',
       loading: '加载中',
       goToModels: '去模型',
       permissionModeChanging: '权限模式正在切换，完成后再继续操作。',
@@ -1579,6 +1591,12 @@ const SHELL_COPY_BY_LOCALE = {
       resizeConversationList: 'Resize conversation list',
       skipErrorTitle: 'Could not skip onboarding',
       tryAgainLater: 'Try again later.',
+      updateInstallFailedTitle: 'Could not install update',
+      updateInstallFailedFallback: 'Try again later.',
+      updateInstallManualFallback: 'Try again later, or download the latest version manually.',
+      updateDownloadFailedTitle: 'Could not download update',
+      updateOpenFailedTitle: 'Could not open update',
+      updateOpenManualFallback: 'Try again later, or download the latest version from GitHub Releases.',
       loading: 'Loading',
       goToModels: 'Go to Models',
       permissionModeChanging: 'The permission mode is changing. Wait for it to finish before continuing.',

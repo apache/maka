@@ -1,6 +1,6 @@
 import type { PlanReminder } from '@maka/core';
 import type { CSSProperties } from 'react';
-import { Blocks, Download, RotateCw, Settings, SquarePen, Timer } from './icons.js';
+import { Blocks, Settings, SquarePen, Timer } from './icons.js';
 import type { NavModuleMemory, NavSelection } from './nav-selection.js';
 import { cn } from './ui.js';
 import { cva } from 'class-variance-authority';
@@ -131,7 +131,6 @@ export function SessionSidebarFooter(props: {
       : props.updateReminder
         ? copy.updateAvailable(props.updateReminder.latestVersion)
         : copy.update;
-  const UpdateIcon = props.updateReminder?.state === 'downloaded' ? RotateCw : Download;
   return (
     <footer className="maka-session-panel-footer">
       <BaseButton
@@ -156,7 +155,6 @@ export function SessionSidebarFooter(props: {
           title={updateTitle}
         >
           {props.updateReminder.state === 'downloading' && <span className="maka-sidebar-update-progress" aria-hidden="true" />}
-          <UpdateIcon className="maka-nav-icon" aria-hidden="true" />
           <span>{updateLabel}</span>
         </BaseButton>
       )}

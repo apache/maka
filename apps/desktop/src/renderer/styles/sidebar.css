@@ -78,7 +78,7 @@
   min-width: 0;
   height: 34px;
   display: inline-grid;
-  grid-template-columns: var(--icon-size) auto;
+  grid-template-columns: auto;
   align-items: center;
   gap: var(--space-1);
   border: 0;
@@ -94,13 +94,11 @@
   -webkit-app-region: no-drag;
   transition:
     background-color var(--duration-base) var(--ease-out-strong),
-    transform var(--duration-fast) var(--ease-out-strong);
+    transform var(--duration-quick) var(--ease-out-strong);
 }
 
-.maka-sidebar-update-button > svg,
 .maka-sidebar-update-button > span:not(.maka-sidebar-update-progress) {
   position: relative;
-  z-index: 1;
 }
 
 .maka-sidebar-update-button[data-update-state="downloading"] {
@@ -116,7 +114,6 @@
 .maka-sidebar-update-progress {
   position: absolute;
   inset: 0;
-  z-index: 0;
   transform: scaleX(var(--maka-update-progress, 0));
   transform-origin: left center;
   background: oklch(from var(--control) calc(l - 0.08) c h);
@@ -131,17 +128,9 @@
   background: oklch(from var(--control) calc(l + 0.04) calc(c * 0.68) h);
 }
 
-.maka-sidebar-update-button:active {
-  transform: translateY(1px);
-}
-
 .maka-sidebar-update-button:focus-visible {
   outline: var(--focus-ring-width) solid var(--focus-ring);
-  outline-offset: 2px;
-}
-
-.maka-sidebar-update-button .maka-nav-icon {
-  color: currentColor;
+  outline-offset: var(--focus-ring-offset);
 }
 
 /* Color intentionally not declared: nav glyphs are tinted by the
