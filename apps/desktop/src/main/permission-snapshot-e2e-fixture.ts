@@ -5,7 +5,7 @@ import type { OsPermissionSnapshot, OsPermissionState, PermissionSnapshot } from
  * fixture.
  *
  * The Permission Center's narrow-layout contract is about what happens when a
- * row carries grant buttons: the row grid's `auto` actions track used to beat
+ * row carries several grant buttons: the row grid's `auto` actions track used to beat
  * the body's `minmax(0, 1fr)` and squeeze it to 0px, hiding which permission
  * the row was even about. Reading the host's real TCC state cannot exercise
  * that — a fully-granted dev machine renders no buttons at all, and Linux CI
@@ -13,8 +13,8 @@ import type { OsPermissionSnapshot, OsPermissionState, PermissionSnapshot } from
  * without testing anything.
  *
  * This fixture pins the states that matter instead:
- *   - `screen_recording` — `not_determined` + requestable + openable, the only
- *     shape that renders BOTH buttons (the original squeeze);
+ *   - `screen_recording` — `not_determined` + requestable + openable, the
+ *     three-action shape (open, guided drag, request) that exercises the squeeze;
  *   - `microphone` — `denied`, one button;
  *   - `accessibility` / `notifications` — `granted`, no buttons;
  *   - `automation` — `unsupported`, which carries the widest status Badge

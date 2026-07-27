@@ -563,7 +563,9 @@
      then take the full width they wrapped onto, left-aligned under the text. */
   .settingsOsPermissionRow {
     row-gap: var(--space-2-5);
-    padding-inline: var(--space-2-5);
+    /* Keep 170px for the longest mixed-script title at the 480px window
+       floor; 10px padding left only 166px and clipped its closing glyph. */
+    padding-inline: var(--space-2);
   }
 
   .settingsOsPermissionIcon {
