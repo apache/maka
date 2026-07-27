@@ -718,6 +718,25 @@ describe('AgentRunStore', () => {
     });
   });
 
+  it('re-establishes stable storage on an exact durable RuntimeEvent retry', async () => {
+    await withStores(async (runStore, runtimeEventStore) => {
+      await runStore.createRun(makeHeader());
+      const event = makeRuntimeEvent({ id: 'ordinary-event-1' });
+      await runtimeEventStore.appendRuntimeEvent('session-1', 'run-1', event);
+
+      await runtimeEventStore.appendRuntimeEvent('session-1', 'run-1', event, {
+        durable: true,
+      });
+
+      assert.deepEqual(
+        (await runtimeEventStore.readImmutableRuntimeEvents('session-1', 'run-1')).map(
+          (item) => item.id,
+        ),
+        ['ordinary-event-1'],
+      );
+    });
+  });
+
   it('keeps an exact tool call retry idempotent in JSONL', async () => {
     await withStores(async (runStore, runtimeEventStore) => {
       await runStore.createRun(makeHeader());
@@ -1129,6 +1148,55 @@ describe('AgentRunStore', () => {
     });
   });
 
+  it('cleans a retained partial snapshot on an exact final-event retry', async () => {
+    await withStores(async (runStore, runtimeEventStore, root) => {
+      await runStore.createRun(makeHeader());
+      const partial = makeRuntimeEvent({
+        id: 'runtime-partial',
+        partial: true,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'hello' },
+        refs: { providerEventId: 'message-1' },
+      });
+      const final = makeRuntimeEvent({
+        id: 'runtime-final',
+        ts: 2,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'hello world' },
+        refs: { providerEventId: 'message-1' },
+      });
+      await runtimeEventStore.appendRuntimeEvent('session-1', 'run-1', partial);
+      const partialsDirectory = join(
+        root,
+        'sessions',
+        'session-1',
+        'runs',
+        'run-1',
+        'runtime-partials',
+      );
+      const [partialFilename] = await readdir(partialsDirectory);
+      assert.ok(partialFilename);
+      const partialPath = join(partialsDirectory, partialFilename);
+      const retainedSnapshot = await readFile(partialPath);
+      await runtimeEventStore.appendRuntimeEvent('session-1', 'run-1', final);
+
+      // Simulate a crash after the immutable append but before replaceable
+      // partial cleanup, then drive recovery through the public exact retry.
+      await writeFile(partialPath, retainedSnapshot);
+      await runtimeEventStore.appendRuntimeEvent('session-1', 'run-1', final);
+
+      assert.deepEqual(await readdir(partialsDirectory), []);
+      assert.deepEqual(
+        (await runtimeEventStore.readImmutableRuntimeEvents('session-1', 'run-1')).map(
+          (event) => event.id,
+        ),
+        ['runtime-final'],
+      );
+    });
+  });
+
   it('produces equivalent durable replay for differently chunked final output', async () => {
     const replayFor = async (chunks: readonly string[]) => {
       let replay: RuntimeEvent[] = [];
@@ -1339,6 +1407,41 @@ describe('AgentRunStore', () => {
     });
   });
 
+  it('rejects a terminal event whose identity does not match the target run', async () => {
+    for (const mismatch of [
+      { sessionId: 'other-session' },
+      { runId: 'other-run' },
+      { turnId: 'other-turn' },
+      { invocationId: 'other-invocation' },
+    ] satisfies Array<Partial<RuntimeEvent>>) {
+      await withStores(async (runStore, runtimeEventStore, root) => {
+        await runStore.createRun(makeHeader({ invocationId: 'turn-1' }));
+        const terminal = makeRuntimeEvent({
+          id: 'runtime-terminal',
+          role: 'system',
+          author: 'system',
+          status: 'completed',
+          content: undefined,
+          actions: { endInvocation: true },
+          ...mismatch,
+        });
+
+        await assert.rejects(
+          runtimeEventStore.ensureTerminalRuntimeEventDurable('session-1', 'run-1', terminal),
+          /RuntimeEvent identity does not match its run/,
+        );
+        const ledger = await readFile(
+          join(root, 'sessions', 'session-1', 'runs', 'run-1', 'runtime-events.jsonl'),
+          'utf8',
+        ).catch((error) => {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return '';
+          throw error;
+        });
+        assert.equal(ledger, '');
+      });
+    }
+  });
+
   it('rejects complete schema-invalid and path-mismatched runtime events', async () => {
     await withStores(async (runStore, runtimeEventStore, root) => {
       await runStore.createRun(makeHeader({ invocationId: 'turn-1' }));
@@ -1456,8 +1559,11 @@ describe('AgentRunStore', () => {
         join(root, 'sessions', 'session-1', 'message-proofs', 'steering', 'message-steering.json'),
       );
       const reopened = createRuntimeEventStore(root);
-      await reopened.repairImmutableSteeringMessageProofsForRecovery('session-1');
       await reopened.appendRuntimeEvent('session-1', 'run-1', steering);
+      assert.deepEqual(
+        await reopened.readImmutableSteeringMessageProof('session-1', 'message-steering'),
+        { event: steering },
+      );
 
       const conflicting = makeRuntimeEvent({
         ...steering,
@@ -1484,7 +1590,9 @@ describe('AgentRunStore', () => {
     });
   });
 
-  it('reports a durable canonical steering event when proof publication fails', async () => {
+  it('reports a durable canonical steering event when proof publication fails', {
+    skip: process.platform === 'win32',
+  }, async () => {
     await withStores(async (runStore, runtimeEventStore, root) => {
       await runStore.createRun(makeHeader());
       const steering = makeRuntimeEvent({

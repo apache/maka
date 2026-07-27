@@ -945,8 +945,18 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
         throw new Error(`RuntimeEvent ${event.id} appears more than once in run ${runId}`);
       }
       if (matching.length === 1) {
-        if (isDeepStrictEqual(matching[0], event)) return;
-        throw new Error(`RuntimeEvent identity conflict for ${event.id}`);
+        if (!isDeepStrictEqual(matching[0], event)) {
+          throw new Error(`RuntimeEvent identity conflict for ${event.id}`);
+        }
+        await this.settleImmutableRuntimeEventPostEffects({
+          sessionId,
+          runId,
+          event,
+          path: this.runtimeEventsPath(sessionId, runId),
+          ensureDurability:
+            options.durable === true || immutableSteeringMessageId(event) !== undefined,
+        });
+        return;
       }
       if (isToolLedgerBearingEvent(event)) {
         const validation = validateToolLedgerTransition({
@@ -970,26 +980,54 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
           durabilityRoot: this.durabilityRoot,
         },
       );
-      if (steeringMessageId) {
-        try {
-          await this.ensureImmutableSteeringMessageProof(event, steeringMessageId);
-        } catch (error) {
-          if (!(error instanceof DurableStoreWriteError)) throw error;
-          throw new RuntimeEventPostEffectError(
-            `RuntimeEvent ${event.id} is durable but its steering proof was not published`,
-            error,
-          );
-        }
-      }
-      const completedPartialKey = completedPartialRuntimeStreamKey(event);
-      if (completedPartialKey) {
-        await rm(this.runtimePartialPath(sessionId, runId, completedPartialKey), {
-          force: true,
-        }).catch(() => {
-          // The immutable final is already durable. Reads suppress any stale snapshot.
-        });
-      }
+      await this.settleImmutableRuntimeEventPostEffects({
+        sessionId,
+        runId,
+        event,
+        path: this.runtimeEventsPath(sessionId, runId),
+        ensureDurability: false,
+      });
     });
+  }
+
+  private async settleImmutableRuntimeEventPostEffects(input: {
+    sessionId: string;
+    runId: string;
+    event: RuntimeEvent;
+    path: string;
+    ensureDurability: boolean;
+  }): Promise<void> {
+    if (input.ensureDurability) {
+      try {
+        await syncFile(input.path);
+        await syncDirectoryChain(dirname(input.path), this.durabilityRoot);
+      } catch (error) {
+        throw new DurableStoreWriteError(
+          `RuntimeEvent did not reach stable storage: ${input.path}`,
+          error,
+        );
+      }
+    }
+    const steeringMessageId = immutableSteeringMessageId(input.event);
+    if (steeringMessageId) {
+      try {
+        await this.ensureImmutableSteeringMessageProof(input.event, steeringMessageId);
+      } catch (error) {
+        if (!(error instanceof DurableStoreWriteError)) throw error;
+        throw new RuntimeEventPostEffectError(
+          `RuntimeEvent ${input.event.id} is durable but its steering proof was not published`,
+          error,
+        );
+      }
+    }
+    const completedPartialKey = completedPartialRuntimeStreamKey(input.event);
+    if (completedPartialKey) {
+      await rm(this.runtimePartialPath(input.sessionId, input.runId, completedPartialKey), {
+        force: true,
+      }).catch(() => {
+        // The immutable final is already durable. Reads suppress any stale snapshot.
+      });
+    }
   }
 
   async ensureTerminalRuntimeEventDurable(
@@ -1009,6 +1047,7 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
     await this.withQueue(sessionId, runId, async () => {
       const path = this.runtimeEventsPath(sessionId, runId);
       const header = await this.readRunHeader(sessionId, runId);
+      decodeRuntimeEvent(canonicalEvent, header);
       const existing = await readRuntimeEventJsonl(path, header);
       const matching = existing.filter((candidate) => candidate.id === canonicalEvent.id);
       if (matching.length > 1) {
