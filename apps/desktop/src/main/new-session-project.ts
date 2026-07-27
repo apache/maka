@@ -6,8 +6,7 @@ export async function resolveNewSessionProjectInput(
   catalog: Pick<ProjectCatalog, 'list' | 'register' | 'touch'>,
 ): Promise<CreateSessionInput> {
   if (input.projectId === null) {
-    const { projectId: _projectId, ...unassigned } = input;
-    return unassigned;
+    return input;
   }
 
   if (input.projectId) {

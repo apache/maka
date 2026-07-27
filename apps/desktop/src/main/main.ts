@@ -72,7 +72,6 @@ import {
   createMcpConfigStore,
   createShellRunStore,
   createTelemetryRepo,
-  migrateSessionProjects,
 } from '@maka/storage';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
 import { McpClientManager } from '@maka/mcp';
@@ -259,7 +258,6 @@ async function confirmDesktopStorageRootRepair(): Promise<boolean> {
 const keepSystemAwake = createKeepSystemAwakeController(powerSaveBlocker);
 const store = createSessionStore(workspaceRoot);
 const projectCatalog = createProjectCatalog(workspaceRoot);
-await migrateSessionProjects({ sessions: store, catalog: projectCatalog });
 const planStore = createPlanStore(workspaceRoot);
 const runStore = createAgentRunStore(workspaceRoot);
 const runtimePersistence = await openRuntimeEventPersistence({
@@ -1300,6 +1298,7 @@ wireAppLifecycle({
   e2eFixture,
   workspaceRoot,
   sessionStore: store,
+  projectCatalog,
   credentialStore,
   connectionStore,
   settingsStore,

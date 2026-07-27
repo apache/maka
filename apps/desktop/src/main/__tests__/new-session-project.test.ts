@@ -30,7 +30,7 @@ test('new sessions auto-register a project while explicit no-project sessions st
       makeInput(cwd, { projectId: null }),
       catalog,
     );
-    assert.equal(Object.hasOwn(unassigned, 'projectId'), false);
+    assert.equal(unassigned.projectId, null);
   } finally {
     await rm(base, { recursive: true, force: true });
   }

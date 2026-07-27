@@ -2,10 +2,12 @@ import { app, nativeImage, safeStorage } from 'electron';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { buildPricingLookup, setActiveProxy } from '@maka/runtime';
+import { migrateSessionProjects } from '@maka/storage';
 import type { BotRegistry, SessionManager, ShellRunProcessManager } from '@maka/runtime';
 import type { McpClientManager } from '@maka/mcp';
 import type {
   createConnectionStore,
+  createProjectCatalog,
   createSessionStore,
   createSettingsStore,
   createTelemetryRepo,
@@ -36,6 +38,7 @@ export interface AppLifecycleDeps {
   e2eFixture: ReturnType<typeof resolveE2eFixture>;
   workspaceRoot: string;
   sessionStore: ReturnType<typeof createSessionStore>;
+  projectCatalog: ReturnType<typeof createProjectCatalog>;
   credentialStore: ReturnType<typeof createFileCredentialStore>;
   connectionStore: ReturnType<typeof createConnectionStore>;
   settingsStore: ReturnType<typeof createSettingsStore>;
@@ -86,6 +89,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     e2eFixture,
     workspaceRoot,
     sessionStore,
+    projectCatalog,
     credentialStore,
     connectionStore,
     settingsStore,
@@ -130,6 +134,17 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     } catch {
       // Best-effort: startup should still reach the renderer so users can inspect
       // and repair any remaining local session state.
+    }
+  }
+
+  async function migrateSessionProjectsOnStartup(): Promise<void> {
+    try {
+      const result = await migrateSessionProjects({ sessions: sessionStore, catalog: projectCatalog });
+      if (result.failed > 0) {
+        console.error(`[projects] skipped ${result.failed} legacy session migration(s)`);
+      }
+    } catch (error) {
+      console.error('[projects] legacy session migration failed:', error);
     }
   }
 
@@ -273,6 +288,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     keepSystemAwake.apply(settings.system.keepSystemAwake);
     await telemetryRepo.load();
     setLookupPricing(buildPricingLookup(telemetryRepo.listPricingOverrides()));
+    await migrateSessionProjectsOnStartup();
     await recoverInterruptedSessionsOnStartup();
     await botRegistry.applySettings(settings.botChat);
     await openGateway.sync(settings.openGateway);

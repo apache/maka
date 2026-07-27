@@ -12,7 +12,7 @@ const execFileAsync = promisify(execFile);
 export interface ProjectCatalog {
   list(): Promise<ProjectRecord[]>;
   register(path: string): Promise<ProjectRecord>;
-  importLegacyPath(path: string): Promise<ProjectRecord>;
+  importLegacyPath(path: string, usedAt?: number): Promise<ProjectRecord>;
   select(projectId: string): Promise<{ project: ProjectRecord; path: string }>;
   touch(projectId: string, path?: string): Promise<ProjectRecord>;
   relink(projectId: string, path: string): Promise<ProjectRecord>;
@@ -68,8 +68,11 @@ class FileProjectCatalog implements ProjectCatalog {
   }
 
   async register(path: string): Promise<ProjectRecord> {
+    return this.registerAt(path, this.now());
+  }
+
+  private async registerAt(path: string, timestamp: number): Promise<ProjectRecord> {
     const resolved = await resolveProjectLocation({ path });
-    const timestamp = this.now();
     let registered: PersistedProject | undefined;
     await this.withQueue(async () => {
       const file = await this.read();
@@ -79,7 +82,7 @@ class FileProjectCatalog implements ProjectCatalog {
       if (existing) {
         const location = existing.locations.find((item) => item.path === locationPath);
         if (location) {
-          location.lastUsedAt = timestamp;
+          location.lastUsedAt = Math.max(location.lastUsedAt, timestamp);
           location.branch = resolved.git?.branch;
           location.isWorktree = resolved.git?.isWorktree ?? false;
         } else {
@@ -91,8 +94,8 @@ class FileProjectCatalog implements ProjectCatalog {
             lastUsedAt: timestamp,
           });
         }
-        existing.lastUsedAt = timestamp;
-        existing.updatedAt = timestamp;
+        existing.lastUsedAt = Math.max(existing.lastUsedAt, timestamp);
+        existing.updatedAt = Math.max(existing.updatedAt, timestamp);
         registered = existing;
       } else {
         const project: PersistedProject = {
@@ -122,16 +125,16 @@ class FileProjectCatalog implements ProjectCatalog {
     return this.present(registered);
   }
 
-  async importLegacyPath(path: string): Promise<ProjectRecord> {
+  async importLegacyPath(path: string, usedAt: number = this.now()): Promise<ProjectRecord> {
     try {
-      return await this.register(path);
+      return await this.registerAt(path, usedAt);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
 
     const canonicalPath = normalize(resolve(path));
     const identity = `folder:${canonicalPath}`;
-    const timestamp = this.now();
+    const timestamp = usedAt;
     let imported: PersistedProject | undefined;
     await this.withQueue(async () => {
       const file = await this.read();
@@ -139,7 +142,7 @@ class FileProjectCatalog implements ProjectCatalog {
       if (existing) {
         const location = existing.locations.find((item) => item.path === canonicalPath);
         if (location) {
-          location.lastUsedAt = timestamp;
+          location.lastUsedAt = Math.max(location.lastUsedAt, timestamp);
         } else {
           existing.locations.push({
             path: canonicalPath,
@@ -148,8 +151,8 @@ class FileProjectCatalog implements ProjectCatalog {
             lastUsedAt: timestamp,
           });
         }
-        existing.lastUsedAt = timestamp;
-        existing.updatedAt = timestamp;
+        existing.lastUsedAt = Math.max(existing.lastUsedAt, timestamp);
+        existing.updatedAt = Math.max(existing.updatedAt, timestamp);
         imported = existing;
       } else {
         const project: PersistedProject = {

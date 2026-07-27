@@ -64,6 +64,8 @@ export interface SessionStore {
   create(input: CreateSessionInput): Promise<SessionHeader>;
   createSubagent(input: CreateSessionInput): Promise<{ header: SessionHeader; created: boolean }>;
   list(filter?: SessionListFilter): Promise<SessionSummary[]>;
+  /** Enumerate durable metadata without reading transcript bodies. */
+  listHeaders(): Promise<SessionHeader[]>;
   listForRecovery(): Promise<SessionHeader[]>;
   /** Read only the durable header without triggering connection-lock self-healing. */
   readHeaderSnapshot(sessionId: string): Promise<SessionHeader>;
@@ -186,14 +188,18 @@ class SqliteSessionStore implements SessionStore {
   }
 
   async listForRecovery(): Promise<SessionHeader[]> {
-    await this.ensureReady();
-    const headers = (await this.metadata.list())
-      .map((record) => record.header)
-      .sort((a, b) => a.id.localeCompare(b.id));
+    const headers = await this.listHeaders();
     for (const header of headers) {
       await this.files.readTranscriptMessagesForRecovery(header.id, header);
     }
     return headers;
+  }
+
+  async listHeaders(): Promise<SessionHeader[]> {
+    await this.ensureReady();
+    return (await this.metadata.list())
+      .map((record) => record.header)
+      .sort((a, b) => a.id.localeCompare(b.id));
   }
 
   async readHeaderSnapshot(sessionId: string): Promise<SessionHeader> {
@@ -406,7 +412,7 @@ class FileSessionStore implements SessionStore {
       id,
       workspaceRoot: this.workspaceRoot,
       cwd: input.cwd,
-      ...(input.projectId ? { projectId: input.projectId } : {}),
+      ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
       createdAt: now,
       lastUsedAt: now,
       name: resolvedName,
@@ -533,6 +539,10 @@ class FileSessionStore implements SessionStore {
   }
 
   async listForRecovery(): Promise<SessionHeader[]> {
+    return this.listHeaders();
+  }
+
+  async listHeaders(): Promise<SessionHeader[]> {
     let entries;
     try {
       entries = await readdir(this.sessionsRoot, { withFileTypes: true });
@@ -1136,6 +1146,7 @@ export function normalizeSessionHeader(
     typeof header.workspaceRoot === 'string' &&
     typeof header.cwd === 'string' &&
     (header.projectId === undefined ||
+      header.projectId === null ||
       (typeof header.projectId === 'string' && header.projectId.length > 0)) &&
     isFiniteNumber(header.createdAt) &&
     isFiniteNumber(header.lastUsedAt) &&
@@ -1250,7 +1261,7 @@ function toSummary(header: SessionHeader, messages: StoredMessage[] = []): Sessi
   return {
     id: header.id,
     cwd: header.cwd,
-    ...(header.projectId ? { projectId: header.projectId } : {}),
+    ...(header.projectId !== undefined ? { projectId: header.projectId } : {}),
     name: normalizeSessionName(header.name),
     isFlagged: header.isFlagged,
     isArchived: header.isArchived,

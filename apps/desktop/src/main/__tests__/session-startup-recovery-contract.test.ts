@@ -48,4 +48,21 @@ describe('session startup recovery contract', () => {
       'recovery must skip sessions with live runs — this guard is what makes background recovery safe',
     );
   });
+
+  it('runs legacy project migration after first paint and keeps startup fail-soft', async () => {
+    const src = await readMainProcessCombinedSource();
+    const main = await readFile(join(REPO_ROOT, 'apps/desktop/src/main/main.ts'), 'utf8');
+    const backgroundBlock =
+      src.match(/async function runBackgroundStartup\(\): Promise<void> \{[\s\S]*?\n  \}/)?.[0] ??
+      '';
+    const migration =
+      src.match(
+        /async function migrateSessionProjectsOnStartup\(\): Promise<void> \{[\s\S]*?\n  \}/,
+      )?.[0] ?? '';
+
+    assert.doesNotMatch(main, /^await migrateSessionProjects\(/m);
+    assert.match(backgroundBlock, /await migrateSessionProjectsOnStartup\(\);/);
+    assert.match(migration, /try \{[\s\S]*await migrateSessionProjects\(/);
+    assert.match(migration, /catch \(error\) \{[\s\S]*console\.error/);
+  });
 });

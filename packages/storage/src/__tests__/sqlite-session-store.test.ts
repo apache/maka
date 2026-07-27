@@ -132,6 +132,30 @@ describe('default SQLite session metadata store', () => {
     }
   });
 
+  test('persists an explicit no-project association across SQLite reopen', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-default-session-no-project-'));
+    const store = createSessionStore(root);
+    try {
+      const created = await store.create(makeInput({ projectId: null }));
+
+      assert.equal(created.projectId, null);
+      assert.equal((await store.readHeaderSnapshot(created.id)).projectId, null);
+      assert.equal((await store.list())[0]?.projectId, null);
+
+      await store.close?.();
+      const reopened = createSessionStore(root);
+      try {
+        assert.equal((await reopened.readHeaderSnapshot(created.id)).projectId, null);
+        assert.equal((await reopened.list())[0]?.projectId, null);
+      } finally {
+        await reopened.close?.();
+      }
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('lists linked child sessions through SQLite without conflating ordinary branches', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-default-session-relations-'));
     const store = createSessionStore(root);
