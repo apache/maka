@@ -555,6 +555,59 @@ describe('OAuth refresh persistence transaction', () => {
     assert.equal(parseOAuthSubscriptionTokens(current)?.access_token, 'old-access');
   });
 
+  test('preserves lease finalization time when claiming the credential is delayed', async (context) => {
+    context.mock.timers.enable({ apis: ['Date', 'setTimeout'] });
+    let current = JSON.stringify({
+      access_token: 'old-access',
+      refresh_token: 'rotating-refresh',
+      expires_at: 1_000,
+    });
+    let claimDelayed = false;
+    let leaseExpiresAt = 0;
+    let observedSignal: AbortSignal | undefined;
+    let rejectRemote!: (reason?: unknown) => void;
+    const remoteSettled = new Promise<OAuthSubscriptionTokens>((_resolve, reject) => {
+      rejectRemote = reject;
+    });
+    const pending = refreshAndPersistOAuthSubscriptionTokens({
+      slug: 'xai-oauth',
+      credentialStore: {
+        getSecret: async () => current,
+        compareAndSetSecret: async (_slug, _kind, expected, value) => {
+          if (current !== expected) return { committed: false, current };
+          if (!claimDelayed) {
+            claimDelayed = true;
+            leaseExpiresAt = (JSON.parse(value) as { _refresh_lock: { expires_at: number } })
+              ._refresh_lock.expires_at;
+            context.mock.timers.tick(9_000);
+          }
+          current = value;
+          return { committed: true };
+        },
+      },
+      refreshTokens: async (_tokens, signal) => {
+        observedSignal = signal;
+        signal.addEventListener('abort', () => rejectRemote(signal.reason), { once: true });
+        return remoteSettled;
+      },
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    context.mock.timers.tick(11_000);
+    await new Promise((resolve) => setImmediate(resolve));
+    const wasAborted = observedSignal?.aborted ?? false;
+    if (!wasAborted) rejectRemote(new Error('release the RED-path refresh'));
+    const result = await pending;
+
+    assert.equal(wasAborted, true);
+    assert.ok(
+      leaseExpiresAt - Date.now() >= 10_000,
+      'the remote refresh must stop with enough lease time left to persist or release it',
+    );
+    assert.equal(result.outcome, 'refresh-failed');
+    assert.equal(parseOAuthSubscriptionTokens(current)?.access_token, 'old-access');
+  });
+
   test('two concurrent refreshes perform one remote rotation and converge on its token', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'maka-oauth-refresh-'));
     try {

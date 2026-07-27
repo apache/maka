@@ -226,6 +226,48 @@ describe('XaiOAuthService', () => {
     });
   });
 
+  test('does not revive a cancelled authorization after the browser finishes opening', async () => {
+    const browserOpened = deferred<void>();
+    let pollAttempts = 0;
+    const service = new XaiOAuthService({
+      credentialStore: memoryCredentialStore(),
+      openExternal: async () => browserOpened.promise,
+      sleep: async () => {
+        pollAttempts += 1;
+      },
+      fetchFn: async (url) => {
+        if (String(url).endsWith('/device/code')) {
+          return Response.json({
+            device_code: 'secret-device-code',
+            user_code: 'ABCD-EFGH',
+            verification_uri: 'https://x.ai/device',
+            expires_in: 900,
+            interval: 5,
+          });
+        }
+        return assert.fail('a cancelled authorization must not poll the token endpoint');
+      },
+    });
+
+    const authorization = await service.getAuthorizationUrl();
+    assert.equal('ok' in authorization, false);
+    if ('ok' in authorization) return;
+    const opening = service.openAuthorizationUrl(authorization.authRequestId);
+    service.cancelAuthorization(authorization.authRequestId);
+    browserOpened.resolve();
+
+    assert.deepEqual(await opening, {
+      ok: false,
+      reason: 'authorization_cancelled',
+      message: 'xAI 授权已取消。',
+    });
+    assert.equal(pollAttempts, 0);
+    assert.deepEqual(await service.getAccountState(), {
+      provider: 'xai-oauth',
+      runtimeState: 'not_logged_in',
+    });
+  });
+
   test('maps xAI authorization_denied to the denial outcome', async () => {
     const service = new XaiOAuthService({
       credentialStore: memoryCredentialStore(),
@@ -304,4 +346,15 @@ function memoryCredentialStore() {
       return { committed: true as const };
     },
   };
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }

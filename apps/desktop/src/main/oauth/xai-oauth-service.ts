@@ -146,6 +146,16 @@ export class XaiOAuthService {
     }
     try {
       await this.openExternal(pending.url);
+      if (
+        this.pending.get(authRequestId) !== pending ||
+        pending.controller.signal.aborted
+      ) {
+        return {
+          ok: false,
+          reason: 'authorization_cancelled',
+          message: 'xAI 授权已取消。',
+        };
+      }
       this.authorizing = true;
       pending.pollPromise ??= this.pollForTokens(pending);
       void pending.pollPromise.catch(() => undefined);

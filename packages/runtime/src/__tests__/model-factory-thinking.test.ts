@@ -427,7 +427,7 @@ describe('getAIModel: models.dev registry providers', () => {
       });
 
       assert.equal(responses.provider, 'openai.responses');
-      assert.equal(chat.provider, 'openai.chat');
+      assert.equal(chat.provider, `${providerType}.chat`);
     }
   });
 

@@ -126,6 +126,7 @@ const XAI_DEFAULT_TOKEN_LIFETIME_SECONDS = 3_600;
 
 const OAUTH_REFRESH_LEASE_MS = 30_000;
 const OAUTH_REFRESH_REQUEST_TIMEOUT_MS = 20_000;
+const OAUTH_REFRESH_FINALIZE_BUDGET_MS = 10_000;
 const OAUTH_REFRESH_LEASE_POLL_MS = 25;
 const OAUTH_REFRESH_LEASE_FIELD = '_refresh_lock';
 
@@ -268,10 +269,11 @@ async function refreshAndPersistWithLease(
       return { outcome: 'superseded', tokens: currentTokens };
     }
 
-    const claimedRaw = serializeOAuthSubscriptionTokensWithLease(tokens, {
+    const refreshLease = {
       id: randomUUID(),
       expires_at: Date.now() + OAUTH_REFRESH_LEASE_MS,
-    });
+    };
+    const claimedRaw = serializeOAuthSubscriptionTokensWithLease(tokens, refreshLease);
     let claim: { committed: true } | { committed: false; current: string | null };
     try {
       claim = await compareAndSet(input.slug, 'oauth_token', raw, claimedRaw);
@@ -293,7 +295,7 @@ async function refreshAndPersistWithLease(
 
     let refreshed: OAuthSubscriptionTokens;
     try {
-      refreshed = await refreshTokensForInput(input, tokens);
+      refreshed = await refreshTokensForInput(input, tokens, refreshLease.expires_at);
     } catch (error) {
       try {
         const released = await compareAndSet(input.slug, 'oauth_token', claimedRaw, raw);
@@ -348,15 +350,24 @@ async function refreshAndPersistWithLease(
 async function refreshTokensForInput(
   input: RefreshAndPersistOAuthSubscriptionTokensInput,
   tokens: OAuthSubscriptionTokens,
+  leaseExpiresAt?: number,
 ): Promise<OAuthSubscriptionTokens> {
   const controller = new AbortController();
   const timeoutError = new Error('OAuth token refresh timed out.');
+  const timeoutMs =
+    leaseExpiresAt === undefined
+      ? OAUTH_REFRESH_REQUEST_TIMEOUT_MS
+      : Math.min(
+          OAUTH_REFRESH_REQUEST_TIMEOUT_MS,
+          Math.max(0, leaseExpiresAt - Date.now() - OAUTH_REFRESH_FINALIZE_BUDGET_MS),
+        );
+  if (timeoutMs === 0) throw timeoutError;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
       controller.abort(timeoutError);
       reject(timeoutError);
-    }, OAUTH_REFRESH_REQUEST_TIMEOUT_MS);
+    }, timeoutMs);
   });
   try {
     const refresh = input.refreshTokens

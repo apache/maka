@@ -184,14 +184,24 @@ function wireForProtocol(protocol: ProviderDefaults['protocol']): ProviderContra
 function sampleModelIdFor(providerType: ProviderType, def: ProviderDefaults): string {
   const usesDefaultWire = (id: string): boolean => {
     if (lookupModelProviderOverride(providerType, id)) return false;
-    if (
-      def.runtimeAdapter.kind === 'openai' &&
-      openAiAdapterApiProtocol(id, providerType) === 'openai-responses'
-    )
-      return false;
+    if (usesOpenAiResponsesWire(providerType, def, id)) return false;
     return true;
   };
   return def.fallbackModels.find(usesDefaultWire) ?? SYNTHETIC_SAMPLE_MODEL_ID;
+}
+
+function usesOpenAiResponsesWire(
+  providerType: ProviderType,
+  def: ProviderDefaults,
+  modelId: string,
+): boolean {
+  const adapter = def.runtimeAdapter;
+  const supportsResponses =
+    adapter.kind === 'openai' ||
+    (adapter.kind === 'openai-compatible' && adapter.supportsOpenAiResponses === true);
+  return (
+    supportsResponses && openAiAdapterApiProtocol(modelId, providerType) === 'openai-responses'
+  );
 }
 
 /**
@@ -239,10 +249,7 @@ function edgeWireSamplesFor(
           );
       }
     }
-    if (
-      def.runtimeAdapter.kind === 'openai' &&
-      openAiAdapterApiProtocol(modelId, providerType) === 'openai-responses'
-    ) {
+    if (usesOpenAiResponsesWire(providerType, def, modelId)) {
       throw new Error(
         `edge wire sample ${providerType}/${modelId} routes to the OpenAI Responses wire, which has no ` +
           'generated executor; own it with a named override binding instead of an edge declaration',

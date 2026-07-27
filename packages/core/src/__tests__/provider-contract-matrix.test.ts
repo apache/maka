@@ -178,6 +178,17 @@ describe('provider contract matrix — wire and reasoning derivation', () => {
     });
   });
 
+  it('keeps xAI Chat reasoning replay generated when Grok 4.5 uses Responses', () => {
+    for (const providerType of ['xai', 'xai-oauth'] as const) {
+      const cell = cellFor(providerType, 'reasoning-replay');
+      assert.equal(cell.state, 'generated');
+      assert.deepEqual(cell.state === 'generated' ? cell.reasoningReplay : undefined, {
+        sourceField: 'reasoning_content',
+        replayField: 'reasoning_content',
+      });
+    }
+  });
+
   it('generates a reasoning field rename when the adapter declares replayAssistantReasoningAs', () => {
     const cell = cellFor('ollama-cloud', 'reasoning-replay');
     assert.equal(cell.state, 'generated');

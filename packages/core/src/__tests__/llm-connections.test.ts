@@ -367,7 +367,11 @@ describe('provider compatibility contract', () => {
       ],
       status: 'ready',
       protocol: 'openai',
-      runtimeAdapter: { kind: 'openai' },
+      runtimeAdapter: {
+        kind: 'openai-compatible',
+        name: 'provider',
+        supportsOpenAiResponses: true,
+      },
       modelDiscovery: { kind: 'protocol' },
       category: 'overseas',
       catalogGroup: 'api',
@@ -389,7 +393,11 @@ describe('provider compatibility contract', () => {
       fallbackModels: PROVIDER_REGISTRY.xai.fallbackModels,
       status: 'ready',
       protocol: 'openai',
-      runtimeAdapter: { kind: 'openai' },
+      runtimeAdapter: {
+        kind: 'openai-compatible',
+        name: 'provider',
+        supportsOpenAiResponses: true,
+      },
       modelDiscovery: {
         kind: 'protocol',
         auth: 'oauth-bearer',

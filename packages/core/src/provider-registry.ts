@@ -22,6 +22,7 @@ export type ProviderRuntimeAdapter =
       includeUsage?: boolean;
       passFetch?: boolean;
       requireBaseUrl?: boolean;
+      supportsOpenAiResponses?: true;
       replayAssistantReasoningAs?: 'reasoning';
       replayAssistantReasoningDetails?: true;
     }
@@ -863,7 +864,11 @@ const providerRegistry = {
     fallbackModels: xaiModelIds,
     status: 'ready',
     protocol: 'openai',
-    runtimeAdapter: { kind: 'openai' },
+    runtimeAdapter: {
+      kind: 'openai-compatible',
+      name: 'provider',
+      supportsOpenAiResponses: true,
+    },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
@@ -882,7 +887,11 @@ const providerRegistry = {
     fallbackModels: xaiModelIds,
     status: 'ready',
     protocol: 'openai',
-    runtimeAdapter: { kind: 'openai' },
+    runtimeAdapter: {
+      kind: 'openai-compatible',
+      name: 'provider',
+      supportsOpenAiResponses: true,
+    },
     modelDiscovery: {
       kind: 'protocol',
       auth: 'oauth-bearer',

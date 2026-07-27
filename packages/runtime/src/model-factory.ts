@@ -116,6 +116,11 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
           `${connection.providerType} connection ${connection.slug} requires a base URL`,
         );
       }
+      const resolvedApiProtocol =
+        apiProtocol ?? openAiAdapterApiProtocol(modelId, connection.providerType);
+      if (adapter.supportsOpenAiResponses === true && resolvedApiProtocol === 'openai-responses') {
+        return createOpenAI({ apiKey, baseURL, fetch }).responses(modelId);
+      }
       const name = adapter.name === 'connection' ? connection.slug : connection.providerType;
       const kimiTransport =
         connection.providerType === 'kimi-coding-plan' && apiProtocol === 'openai-chat'
