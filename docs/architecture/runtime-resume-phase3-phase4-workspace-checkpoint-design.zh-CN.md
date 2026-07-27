@@ -81,27 +81,182 @@ PR A 的证明矩阵包括：
 不变量：
 
 > continuation cursor 只来自 immutable RuntimeEvents；同一 source boundary 至多一个 durable
-> claim；祖先与直接 source 使用同一 replay policy。
+> claim；祖先与直接 source 使用同一 replay policy；durable continuation-start 是
+> provider-call T1。
 
-实施顺序：
+PR B 从已合并 PR A 的 `upstream/main@de242b43` 平铺实现，不迁移 #1346 的 continuation
+代码块。当前实现分为 B1 和 B2；B3 typed branch 继续 defer。
 
-1. store 以 PR A canonical bytes 在一个一致性读事务中返回 immutable prefix、event-seq
-   high-water 与 domain-separated digest，而不是用 `events.length`；读取既有 row 后必须重新调用
-   `encodeCanonicalRuntimeEvent(event).json`，禁止直接 hash legacy `payload_json` 原始文本；
-2. claim key 绑定 source run + immutable high-water/digest；
-3. claim 创建使用 SQLite unique constraint/transaction，而非“先查后建”；
-4. plan 与 execution revalidation 使用同一 envelope；
-5. immediate source 与 ancestor segment 共用 provider suffix trimming；
-6. mutable partial 只用于 UI，不能进入 cursor；
-7. clone 有 recovery refs 时必须完整重写 ID，或明确拒绝。
+#### B1：immutable composite boundary
 
-Crash matrix：
+单个 Run 的 boundary 不是 `events.length`，而是：
 
-- claim durable 前/后崩溃；
-- startup resume 与手动 resume 并发；
-- 二代、三代 continuation；
+```text
+ImmutableRuntimePrefixV1
+  identity = sessionId + invocationId + runId + turnId
+  position = lastEventSeq + eventCount + lastEventId
+  prefixDigest = sha256(domain || identity || eventSeq || canonicalEventBytes...)
+```
+
+约束如下：
+
+1. store 只读取 `runtime_events` 物理行，不合并 `runtime_partial_snapshots`；
+2. `event_seq` 必须从 1 连续增长，high-water 必须对应真实物理行；
+3. 每行先经 PR A 的 lossless canonical RuntimeEvent codec 解码并重新编码，再参与 digest；
+4. prefix 内任何 session/invocation/run/turn 漂移都会拒绝；
+5. mutable partial snapshot 不能进入 prefix；
+6. `runtimePrefixSegment()` 会从携带的 events 重建 position/digest，调用方不能伪造 prefix 对象。
+
+多代 lineage 使用 oldest-to-source ordered manifest：
+
+```text
+RuntimeBoundaryCursorV1
+  segments = [ancestor A, continuation B, immediate source C]
+  manifestDigest = sha256(domain || canonical(segments))
+```
+
+相同 segment 的不同顺序会得到不同 manifest。lineage 最大 64 段；cycle、missing ancestor、
+V2 edge prefix digest、edge manifest 或 child continuation-start 不一致都会用稳定 reason park。
+
+#### B1：唯一 provider replay projection
+
+每个 segment 独立调用 `buildRuntimeEventModelReplayPlan()`；PR B 不复制 provider step 组合逻辑。
+随后应用同一 suffix policy：
+
+- 最近稳定边界只能是 user text 或 tool result；
+- crash 时未完成的 assistant text/thinking/tool-call suffix 被裁掉；
+- unmatched call 后仍出现 provider-visible 内容属于 non-suffix gap，必须 park；
+- tool recovery corruption/unsettled 状态先由 PR A Resolver 阻断；
+- 每段先投影再拼接，祖先曾被裁掉的 suffix 不会在下一代 continuation 中重新出现。
+
+`retryChildAgentWithExecution()` 同样通过 `RuntimeContinuationPlanner` 构造 immutable
+composite boundary。旧 child 的 `retriedFromRunId/resumedFromRunId` 边从对应 immutable prefix
+严格派生临时 V1 segment；新 child retry 持久化 V2 `continuationSource`。该路径不再使用
+`readRuntimeEvents()`、`events.length` 或独立的 `buildResumePlanFromRuntimeEvents()` 组装
+provider history。
+
+最终同时冻结：
+
+- `providerProjectionVersion = 1`；
+- composite `providerReplayDigest`；
+- segment boundary manifest。
+
+未知 projection version 不能按“正整数即兼容”采信。
+
+#### B2：SQLite durable claim authority
+
+schema 6 增加 `runtime_continuation_claims` 与 capability
+`runtime_continuation_authority@1`。claim v1 同时保存：
+
+- canonical boundary JSON 与 manifest digest；
+- immediate source execution identity、physical high-water、prefix digest；
+- fresh target session/invocation/run/turn；
+- claim id、claimed-at、protocol version；
+- 可空、唯一的 continuation-start event id。
+
+数据库约束保证：
+
+- 一个 boundary digest 只能有一个 claim；
+- source boundary tuple 只能 claim 一次；
+- target invocation/run/session+turn 不能复用；
+- start event 只能绑定一个 claim。
+
+`BEGIN IMMEDIATE` transaction 是唯一裁判。结果只有：
+
+```text
+acquired  -> 本执行拥有创建 target/provider T1 的资格
+existing  -> exact boundary 已有 owner；只读分类，绝不再调用 provider
+conflict  -> claim/target/source identity 被复用；fail closed
+```
+
+planner 只读 existing claim 并分类：
+
+- claim + missing target Run/start：`continuation_claim_repair_required`；
+- matching start + nonterminal target：`continuation_started_indeterminate`；
+- terminal target：`continuation_already_exists`；
+- terminal RuntimeEvent 与 header 未收敛：repair required。
+
+JSONL 没有跨进程 unique claim authority，因此只保留读取兼容，不能执行 durable continuation；
+generic SQLite/JSONL append 均拒绝 continuation-start。
+
+#### B2：执行前重验证与 provider-call T1
+
+```mermaid
+sequenceDiagram
+    participant H as Host / SessionManager
+    participant P as Read-only Planner
+    participant K as RuntimeKernel
+    participant S as SQLite Authority
+    participant R as AgentRun
+    participant B as Backend / Provider
+
+    H->>P: plan(sourceRun)
+    P->>S: read immutable lineage prefixes
+    P->>P: build one composite replay + safety plan
+    P-->>H: continuation(boundary, replayDigest, fresh target)
+    H->>K: execute planned continuation
+    K->>S: re-read every pinned prefix
+    K->>K: rebuild manifest + provider replay + safety
+    K->>S: claimContinuation(boundary, target)
+    alt acquired
+        K->>R: create target Run(status=created)
+        R->>S: commit continuation_start_v2 (event_seq=1)
+        S-->>R: durable T1
+        R->>B: reserve/start backend
+        B-->>R: provider events
+    else existing or conflict
+        K-->>H: fail closed; provider is never called
+    end
+```
+
+严格顺序是：
+
+1. 进程内 execution claim；
+2. 重读所有 immutable segment，重建 boundary/replay，重做 safety revalidation；
+3. SQLite durable boundary claim；
+4. 创建 fresh target Run，状态为 `created`；
+5. 通过 dedicated writer 提交 `continuation_start_v2`，必须是 target `event_seq=1`；
+6. 才允许 append running turn state、reserve backend、标记 running、调用 provider。
+
+linked child 与 legacy child 的 provider retry 也按这套顺序执行：重新验证 boundary/replay、
+workspace/background/tool catalog，竞争同一个 SQLite boundary claim，再写 continuation-start。
+`retriedFromRunId` 继续承担产品查询与展示语义，但不承担并发执行所有权。
+
+continuation-start 同时绑定 claim id、boundary digest、immediate source identity/high-water/prefix
+digest、replay manifest、provider projection version 和 provider replay digest。V2 AgentRun header 的
+`continuationSource` 必须与首条 continuation-start 完全一致。
+
+如果 start 写失败，Run 不会被伪装成普通 failed terminal：它保持 `created`，claim 保持 durable，
+provider 调用次数为 0，后续进入 repair。existing claim 永远不会重新获得 provider authority。
+
+#### B2 crash matrix
+
+| crash / race point | durable state | reopen decision |
+|---|---|---|
+| claim insert transaction 内失败 | 无 claim | 可重新规划 |
+| claim committed、target Run 尚未创建 | claim only | repair required |
+| target Run created、start 尚未提交 | claim + created Run | repair required |
+| start committed、backend 尚未启动 | claim + start | started indeterminate |
+| terminal event committed、header 未提交 | terminal fact | header repair |
+| terminal header committed | terminal continuation | already exists |
+| startup 与手动 resume 同时 claim | 1 acquired + 1 existing | 只调用一次 provider |
+
+测试同时覆盖：
+
+- 二代/三代 lineage；
 - interrupted text/thinking suffix；
-- partial snapshot 与 immutable cursor 并存。
+- ancestor suffix 不重现；
+- mutable partial 与 immutable prefix 并存；
+- cycle、64 段上限、missing ancestor；
+- claim row/payload mismatch 与 forged prefix；
+- 两进程 claim race；
+- 四个真实进程 SIGKILL boundary。
+
+#### B3：明确延后
+
+本 PR 不实现 provider retry、ShellRun reattach、Bash 重放或其他 typed continuation branch。
+这些能力必须在各自拥有 durable handle/幂等协议后独立设计，不能复用 B2 的普通 continuation
+claim 来暗示副作用可重跑。
 
 ### PR C — File evidence + finalize-only recovery
 

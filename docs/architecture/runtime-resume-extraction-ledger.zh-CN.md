@@ -1,11 +1,12 @@
 # Runtime Resume #1346 拆分与提取账本
 
 - 状态：Active
-- 更新日期：2026-07-27
+- 更新日期：2026-07-28
 - 集成实验来源：`origin/codex/runtime-resume-phase3a@24bb5f33`
 - PR A 旧重写来源：`codex/runtime-recovery-authority@c843519e`
-- 当前平铺基线：`upstream/main@466f238b`
-- 当前平铺分支：`codex/runtime-recovery-authority-v2`
+- PR A 已合并：`upstream/main@086ec99d`（#1521）
+- 当前 PR B 平铺基线：`upstream/main@de242b43`
+- 当前 PR B 平铺分支：`codex/runtime-continuation-correctness`
 
 ## 1. 目的
 
@@ -227,7 +228,122 @@ PR A 后续清偿项不阻塞当前 correctness merge gate：
 - JSONL 是 legacy/readable fallback，不承担跨进程的全局 invocation uniqueness；恢复 authority
   需要 SQLite。
 
-## 8. #1346 的关闭条件
+## 8. PR B 的提取与施工账本
+
+PR B 没有整体 cherry-pick #1346 的任何 commit。它从已包含 PR A 的
+`upstream/main@de242b43` 建立平铺分支，先重写 immutable boundary、lineage replay、
+claim race 与 provider-call T1 测试，再补满足不变量的最小生产路径。
+
+### 8.1 PR B 的唯一不变量
+
+> continuation 只有在一个版本化的 composite immutable boundary 被执行前重验证并原子 claim
+> 后才能调用 provider；每个 lineage segment 使用同一 replay projection；durable
+> continuation-start 是 provider-call T1。
+
+这条不变量拆为两个已实现层次：
+
+- **B1 — immutable boundary 与 replay**：物理 `event_seq`、canonical RuntimeEvent bytes、
+  segment digest、ordered manifest、provider replay digest；
+- **B2 — durable authority 与 provider T1**：SQLite unique claim、执行前完整重验证、
+  target Run `created`、continuation-start T1、然后才允许 backend/provider 启动。
+
+B3（typed retry/reattach branch）仍然 defer，不进入本 PR。
+
+### 8.2 文件归属
+
+#### Core
+
+| 文件 | PR B 职责 |
+|---|---|
+| `runtime-boundary.ts` | immutable prefix、segment、composite cursor、claim v1 与 strict decoder |
+| `runtime-event.ts` | exact `continuation_start_v2` provider-call T1 |
+| `runtime-event-store.ts` | `RuntimeContinuationAuthorityStore` capability |
+| `agent-run.ts` | `continuation_source_v2` header lineage |
+| `runtime-boundary.test.ts` | canonical bytes、物理位置、partial 排除、伪造 prefix、manifest 顺序 |
+| `runtime-event.test.ts` | continuation-start exact shape 与 projection version 冻结 |
+
+#### Storage
+
+| 文件 | PR B 职责 |
+|---|---|
+| `sqlite-runtime-schema.ts` | schema 6 + `runtime_continuation_authority@1` |
+| `sqlite-runtime-store.ts` | prefix 一致性读、claim transaction、dedicated start writer |
+| `agent-run-store.ts` | JSONL 拒绝 continuation-start authority fact |
+| `sqlite-runtime-store.test.ts` | prefix/claim/start/rollback/row-payload mismatch |
+| `sqlite-recovery-concurrency.test.ts` | 两进程争抢同一 boundary |
+| `sqlite-recovery-concurrency-child.ts` | production-shaped 多进程 claim fixture |
+| `sqlite-runtime-schema.test.ts` | schema 6 migration 与 capability |
+
+#### Runtime
+
+| 文件 | PR B 职责 |
+|---|---|
+| `continuation-replay.ts` | 每个 lineage segment 的唯一 provider replay materializer |
+| `model-history.ts` | 冻结 `PROVIDER_REPLAY_PROJECTION_VERSION = 1` |
+| `runtime-resume.ts` | immutable lineage planner、cycle/depth/edge/T1 校验、claim 只读分类 |
+| `runtime-kernel.ts` | 执行前重建 boundary/replay、原子 claim、provider T1 顺序 |
+| `agent-run.ts` | Run create 与 backend reservation 之间提交 continuation-start |
+| `runtime-runner.ts` | 不再伪造 legacy continuation-start |
+| `session-manager.ts` | 主 resume 与 linked/legacy child provider retry 共用 immutable planner；只向具备 continuation authority 的 store 开放执行 |
+| `runtime-event-read-model.ts` | continuation-start 是消息不可见的 canonical audit fact |
+| `runtime-continuation*.test.ts` | lineage、claim、T1、SIGKILL crash matrix |
+| `session-manager.test.ts` | production-shaped plan/execute/race/failure/stop，以及 linked/legacy child retry 的 V2 claim/start |
+
+#### UI 与文档
+
+| 文件 | PR B 职责 |
+|---|---|
+| `runtime-resume-copy.ts` | claim repair、started-indeterminate、authority unavailable 文案 |
+| 本 extraction ledger | 记录平铺来源、文件归属、测试和未迁移能力 |
+| Phase 3–4 设计文档 | 记录实际协议、时序、schema 与 crash matrix |
+
+### 8.3 已覆盖测试
+
+| 场景 | 结果 |
+|---|---|
+| canonical-equivalent JSON 产生同 prefix digest | covered |
+| `event_seq` gap、identity drift、mutable partial、伪造 digest/position | fail closed |
+| ancestor segment 顺序改变 | manifest digest 改变 |
+| interrupted text/thinking suffix | 截到最近 user/tool stable boundary |
+| unmatched call 后仍有 provider-visible 内容 | `provider_replay_non_suffix_gap` |
+| A→B→C continuation | A 被裁掉的 suffix 不会在 C 重现 |
+| cycle / lineage depth / missing ancestor | stable park |
+| V2 source prefix、manifest、header/start T1 不一致 | stable park |
+| exact claim retry | existing，不产生第二个 target |
+| target identity、source boundary、claim id 冲突 | conflict |
+| 两进程同时 claim 同一 boundary | 1 acquired + 1 existing |
+| claim insert 后事务失败 | 无 durable claim |
+| start event insert 后事务失败 | claim 保留、target prefix 为空 |
+| claim SQL columns 与 canonical payload 不一致 | fail closed |
+| continuation-start generic SQLite/JSONL append | rejected |
+| start writer exact retry | 同一个物理 `event_seq=1` |
+| start writer 失败 | provider 0 次、target Run 保持 repairable |
+| stop after durable start | provider dispatch 被 fence |
+| linked child 与 legacy child provider retry | 不读 mutable replay；写入 V2 lineage + continuation-start 后才调用 provider |
+| SIGKILL after Run create/start/terminal event/terminal header | reopen 后稳定分类并修复 |
+
+### 8.4 明确不进入 PR B
+
+- Write/Edit file checkpoint、observer、reconciler；
+- workspace checkpoint、Git tree/worktree、rebaseline；
+- Bash retry、ShellRun reattach 或 typed branch；
+- clone conversation 时的 recovery ref 改写；
+- JSONL durable continuation claim；
+- Desktop 设置或默认开启自动续跑；
+- #1346 未发布实验数据库兼容。
+
+### 8.5 验证记录
+
+- `@maka/core` 全量：1233/1233；
+- PR B runtime 相关集合：338/338；
+- process SIGKILL crash harness：4 个 durable boundary 全部通过；
+- SQLite prefix/claim/start、schema、并发定向集合全部通过；
+- `@maka/storage` 全量在 Windows 上仍有与本切片无关的既有平台/fixture 失败：
+  symlink 需要 Developer Mode、部分测试依赖 POSIX cwd、其他 execution-store fixture 未及时关闭
+  `sessions.sqlite`。PR B 所属的 `runtime.sqlite` 定向与多进程测试没有失败；
+- `@maka/runtime` 全量命令在本机超过 5 分钟测试预算；受影响路径已用上述 338 项集合完整覆盖。
+
+## 9. #1346 的关闭条件
 
 PR A–C 合并后：
 
