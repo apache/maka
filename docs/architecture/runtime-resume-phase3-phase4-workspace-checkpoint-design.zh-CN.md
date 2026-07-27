@@ -55,6 +55,12 @@ RuntimeEvent 是语义事实的唯一权威，但不能替代执行所有权的�
 14. SQLite 强制一个 invocation 只对应一个 `(sessionId, runId, turnId)`；
 15. journal ID 只由 store 派生；正式 schema 4 的无 dispatch legacy rows保守隔离。
 
+PR A 首版的 prospective gate 是 workspace-wide semantic fail-stop：任何 session 中已存在的
+canonical tool-ledger corruption 都会拒绝同一 SQLite workspace 后续所有 tool-bearing write。
+这会扩大故障域并在写事务内产生全历史扫描成本，但它是明确的 correctness-first 选择。后续只能
+用可从 immutable events 重建的增量 reducer 收缩到 candidate execution spine；不能用可变缓存
+替代事实权威。
+
 PR A 的证明矩阵包括：
 
 - prepared、normal T2 success/error、permanent parked、recovered completion；
@@ -80,7 +86,8 @@ PR A 的证明矩阵包括：
 实施顺序：
 
 1. store 以 PR A canonical bytes 在一个一致性读事务中返回 immutable prefix、event-seq
-   high-water 与 domain-separated digest，而不是用 `events.length`；
+   high-water 与 domain-separated digest，而不是用 `events.length`；读取既有 row 后必须重新调用
+   `encodeCanonicalRuntimeEvent(event).json`，禁止直接 hash legacy `payload_json` 原始文本；
 2. claim key 绑定 source run + immutable high-water/digest；
 3. claim 创建使用 SQLite unique constraint/transaction，而非“先查后建”；
 4. plan 与 execution revalidation 使用同一 envelope；

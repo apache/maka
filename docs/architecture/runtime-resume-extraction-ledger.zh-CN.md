@@ -49,6 +49,9 @@ Phase 3B/4A 的 workspace checkpoint 是后续独立切片，不进入 PR A。
 - resume 对 terminal parked 和任意 scanner corruption 设独立硬闸门；diagnostic 只负责解释，
   不能成为唯一安全条件；
 - tool-bearing writer 在事务内用同一 prospective transition validator 证明候选 prefix；
+- PR A 首版刻意采用 workspace-wide semantic fail-stop：任一 session 的 canonical tool-ledger
+  corruption 都会阻止该 SQLite workspace 后续所有 tool-bearing boundary；普通非工具事件仍可写。
+  这是 correctness-first 的隔离取舍，不是偶然副作用；
 - SQLite 与 JSONL 共享唯一 lossless canonical RuntimeEvent codec；validator 消费 codec
   返回的 event，store 持久化同一次编码返回的稳定 JSON bytes；
 - SQLite 对每个 invocation 强制唯一 `(sessionId, runId, turnId)` execution spine；
@@ -141,8 +144,10 @@ future newer schema            -> fail closed
 | JSONL ordinary/tool exact retry 与 conflicting retry | JSONL storage test | 已覆盖 |
 | JSONL event 与目标 Run header identity | JSONL storage test | 已覆盖 |
 | invocation 跨 session/run/turn 漂移 | core scanner + SQLite authority test | 已覆盖 |
+| unrelated session corruption 阻断新 session tool boundary | storage authority test | 已覆盖 |
 | corrupt ledger 上的 T1/T2/recovery exact retry | storage authority test | 已覆盖 |
 | SQLite terminal raw/canonical-equivalent retry | SQLite storage test | 已覆盖 |
+| JSONL terminal target Run identity 与 exact retry post-effect 收敛 | JSONL storage test | 已覆盖 |
 | journal ID online/rebuild 同源派生 | storage authority test | 已覆盖 |
 | audit fact 不产生 message row | runtime read-model test | 已覆盖 |
 
@@ -206,6 +211,9 @@ PR A 后续清偿项不阻塞当前 correctness merge gate：
 
 - 从 public commit input 删除冗余 `journalEventId`，完全由 store 派生；
 - 为全局 prospective scan 增加 event count / duration 指标，再演进为可重建的增量 reducer；
+- 增量 reducer 落地后，把 transition scan 缩到 candidate execution spine；event、invocation、
+  operation 的全局唯一性由 SQL identity constraints/projection 承担，full scan 移到 store open
+  或显式 integrity check；
 - JSONL 是 legacy/readable fallback，不承担跨进程的全局 invocation uniqueness；恢复 authority
   需要 SQLite。
 
