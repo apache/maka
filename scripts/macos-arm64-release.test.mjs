@@ -33,11 +33,13 @@ test('desktop packager has signed macOS arm64 install and update targets', async
   assert.equal(config.mac.entitlementsInherit, 'build/entitlements.mac.inherit.plist');
   assert.deepEqual(config.mac.binaries, ['Contents/Resources/tools/officecli']);
   assert.deepEqual(config.dmg, { writeUpdateInfo: true });
-  assert.deepEqual(config.publish, [{
-    provider: 'github',
-    owner: 'Maka-Agent',
-    repo: 'maka-agent',
-  }]);
+  assert.deepEqual(config.publish, [
+    {
+      provider: 'github',
+      owner: 'Maka-Agent',
+      repo: 'maka-agent',
+    },
+  ]);
   assert.ok(config.files.includes('!**/__tests__/**'));
 });
 
@@ -181,11 +183,14 @@ test('release package script runs the single arm64 pipeline in order', async () 
   assert.ok(removed[1][0].endsWith('/apps/desktop/release/mac-arm64'));
   assert.equal(removed[1][1].recursive, true);
   assert.equal(removed[1][1].force, true);
-  assert.deepEqual(asserted.map((path) => path.replaceAll('\\', '/')), [
-    `${desktopRoot.pathname.replace(/\/$/, '')}/release/Maka-${desktopManifest.version}-mac-arm64.dmg`,
-    `${desktopRoot.pathname.replace(/\/$/, '')}/release/Maka-${desktopManifest.version}-mac-arm64.zip`,
-    `${desktopRoot.pathname.replace(/\/$/, '')}/release/latest-mac.yml`,
-  ]);
+  assert.deepEqual(
+    asserted.map((path) => path.replaceAll('\\', '/')),
+    [
+      `${desktopRoot.pathname.replace(/\/$/, '')}/release/Maka-${desktopManifest.version}-mac-arm64.dmg`,
+      `${desktopRoot.pathname.replace(/\/$/, '')}/release/Maka-${desktopManifest.version}-mac-arm64.zip`,
+      `${desktopRoot.pathname.replace(/\/$/, '')}/release/latest-mac.yml`,
+    ],
+  );
   assert.ok(result.endsWith(`/apps/desktop/release/Maka-${desktopManifest.version}-mac-arm64.dmg`));
 });
 
