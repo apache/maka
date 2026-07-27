@@ -20,23 +20,95 @@ const OBSERVATION_DIGEST =
   'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as const;
 
 describe('SQLite recovery persistence authority', () => {
-  it('upgrades a populated mainline schema 4 database without losing immutable events', async () => {
+  it('upgrades and quarantines populated mainline schema 4 tool projections', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-recovery-mainline-upgrade-'));
     const dbPath = join(root, 'runtime.sqlite');
     const store = createSqliteRuntimeStore(dbPath);
-    await store.appendRuntimeEvent('session-1', 'run-1', userEvent());
+    const preparedCall = callEvent();
+    preparedCall.id = 'legacy-prepared-call';
+    preparedCall.content = {
+      kind: 'function_call',
+      id: 'legacy-prepared-provider-call',
+      name: 'Read',
+      args: { path: 'prepared.txt' },
+    };
+    const completedCall = callEvent();
+    completedCall.id = 'legacy-completed-call';
+    completedCall.content = {
+      kind: 'function_call',
+      id: 'legacy-completed-provider-call',
+      name: 'Read',
+      args: { path: 'completed.txt' },
+    };
+    const completedResponse = outcomeEvent();
+    completedResponse.id = 'legacy-completed-response';
+    completedResponse.content = {
+      kind: 'function_response',
+      id: 'legacy-completed-provider-call',
+      name: 'Read',
+      result: 'contents',
+    };
+    completedResponse.refs = { toolCallId: 'legacy-completed-provider-call' };
+    await store.importRuntimeEventsBatch({
+      sessionId: 'session-1',
+      runId: 'run-1',
+      events: [preparedCall, completedCall, completedResponse],
+    });
     store.close();
 
     const db = new DatabaseSync(dbPath);
+    const insertOperation = db.prepare(`
+      INSERT INTO tool_operations(
+        operation_id, invocation_id, run_id, turn_id, provider_tool_call_id,
+        tool_name, canonical_args_hash, recovery_mode, current_state,
+        call_event_id, dispatch_event_id, result_event_id, version
+      ) VALUES (?, 'invocation-1', 'run-1', 'turn-1', ?, 'Read', ?, 'replay_safe', ?, ?, NULL, ?, ?)
+    `);
+    insertOperation.run(
+      'legacy-prepared-operation',
+      'legacy-prepared-provider-call',
+      canonicalToolArgsHash('Read', { path: 'prepared.txt' }),
+      'prepared',
+      'legacy-prepared-call',
+      null,
+      1,
+    );
+    insertOperation.run(
+      'legacy-completed-operation',
+      'legacy-completed-provider-call',
+      canonicalToolArgsHash('Read', { path: 'completed.txt' }),
+      'outcome_committed',
+      'legacy-completed-call',
+      'legacy-completed-response',
+      2,
+    );
     db.exec('DROP TABLE runtime_capabilities; PRAGMA user_version = 4;');
     db.close();
 
     try {
       const upgraded = createSqliteRuntimeStore(dbPath);
       try {
-        assert.deepEqual(await upgraded.readImmutableRuntimeEvents('session-1', 'run-1'), [
-          userEvent(),
-        ]);
+        assert.equal(
+          (await upgraded.readToolOperation('legacy-prepared-operation'))?.currentState,
+          'prepared',
+        );
+        assert.equal(
+          (await upgraded.readToolOperation('legacy-completed-operation'))?.currentState,
+          'outcome_committed',
+        );
+        assert.deepEqual(await upgraded.listUnsettledToolOperations(), []);
+        assert.deepEqual(await upgraded.rebuildToolProjectionsFromRuntimeEvents(), {
+          operations: 0,
+          journalEvents: 0,
+        });
+        assert.equal(
+          (await upgraded.readToolOperation('legacy-prepared-operation'))?.currentState,
+          'prepared',
+        );
+        assert.equal(
+          (await upgraded.readToolOperation('legacy-completed-operation'))?.currentState,
+          'outcome_committed',
+        );
         assert.equal(upgraded.recoveryBundleCapability, TOOL_RECOVERY_BUNDLE_CAPABILITY_V1);
       } finally {
         upgraded.close();
@@ -100,7 +172,7 @@ describe('SQLite recovery persistence authority', () => {
       await assert.rejects(
         store.commitToolPrepared({
           operationId: 'operation-1',
-          journalEventId: 'journal-prepared-1',
+          journalEventId: 'operation-1_prepared',
           runtimeEvent: callEvent(),
           dispatchRuntimeEvent: dispatch,
           providerToolCallId: 'provider-call-1',
@@ -110,6 +182,101 @@ describe('SQLite recovery persistence authority', () => {
           committedAt: 10,
         }),
         /canonical function call/,
+      );
+      assert.deepEqual(await store.readImmutableRuntimeEvents('session-1', 'run-1'), []);
+    });
+  });
+
+  it('derives projection-local journal identities instead of trusting callers', async () => {
+    await withStore(async (store) => {
+      await assert.rejects(
+        store.commitToolPrepared({
+          operationId: 'operation-1',
+          journalEventId: 'caller-selected-id',
+          runtimeEvent: callEvent(),
+          dispatchRuntimeEvent: dispatchEvent(),
+          providerToolCallId: 'provider-call-1',
+          toolName: 'Write',
+          canonicalArgsHash: ARGS_HASH,
+          recoveryMode: 'reconcile',
+          committedAt: 10,
+        }),
+        /journal identity/,
+      );
+      assert.deepEqual(await store.readImmutableRuntimeEvents('session-1', 'run-1'), []);
+    });
+  });
+
+  it('rejects duplicate call identities through the generic writer', async () => {
+    await withStore(async (store) => {
+      await store.appendRuntimeEvent('session-1', 'run-1', callEvent());
+      await assert.rejects(
+        store.appendRuntimeEvent('session-1', 'run-1', {
+          ...callEvent(),
+          id: 'call-event-duplicate',
+        }),
+        /duplicate_call/,
+      );
+      assert.deepEqual(
+        (await store.readImmutableRuntimeEvents('session-1', 'run-1')).map(({ id }) => id),
+        ['call-event-1'],
+      );
+    });
+  });
+
+  it('rejects an unbound generic response after T1', async () => {
+    await withStore(async (store) => {
+      await prepare(store);
+      const unboundResponse = outcomeEvent();
+      unboundResponse.refs = { toolCallId: 'provider-call-1' };
+
+      await assert.rejects(
+        store.appendRuntimeEvent('session-1', 'run-1', unboundResponse),
+        /identity_conflict/,
+      );
+      assert.equal((await store.readToolOperation('operation-1'))?.currentState, 'prepared');
+    });
+  });
+
+  it('rejects a T1 dispatch after a pre-T1 synthetic response settled the call', async () => {
+    await withStore(async (store) => {
+      const unboundResponse = outcomeEvent();
+      unboundResponse.refs = { toolCallId: 'provider-call-1' };
+      await store.importRuntimeEventsBatch({
+        sessionId: 'session-1',
+        runId: 'run-1',
+        events: [callEvent(), unboundResponse],
+      });
+
+      await assert.rejects(
+        store.commitToolPrepared({
+          operationId: 'operation-1',
+          journalEventId: 'operation-1_prepared',
+          runtimeEvent: callEvent(),
+          dispatchRuntimeEvent: dispatchEvent(),
+          providerToolCallId: 'provider-call-1',
+          toolName: 'Write',
+          canonicalArgsHash: ARGS_HASH,
+          recoveryMode: 'reconcile',
+          committedAt: 10,
+        }),
+        /event_order_conflict/,
+      );
+      assert.equal(await store.readToolOperation('operation-1'), undefined);
+    });
+  });
+
+  it('rejects an out-of-order tool-bearing batch import atomically', async () => {
+    await withStore(async (store) => {
+      const unboundResponse = outcomeEvent();
+      unboundResponse.refs = { toolCallId: 'provider-call-1' };
+      await assert.rejects(
+        store.importRuntimeEventsBatch({
+          sessionId: 'session-1',
+          runId: 'run-1',
+          events: [unboundResponse, callEvent()],
+        }),
+        /orphan_response/,
       );
       assert.deepEqual(await store.readImmutableRuntimeEvents('session-1', 'run-1'), []);
     });
@@ -171,6 +338,91 @@ describe('SQLite recovery persistence authority', () => {
       } finally {
         reopened.close();
       }
+    });
+  });
+
+  it('rebuilds interleaved operations to the same projections and journal identities', async () => {
+    await withStore(async (store) => {
+      await prepare(store);
+      const secondHash = canonicalToolArgsHash('Write', {
+        path: 'other.txt',
+        content: 'after',
+      });
+      const secondCall = callEvent();
+      secondCall.id = 'call-event-2';
+      secondCall.content = {
+        kind: 'function_call',
+        id: 'provider-call-2',
+        name: 'Write',
+        args: { path: 'other.txt', content: 'after' },
+      };
+      const secondDispatch = dispatchEvent();
+      secondDispatch.id = 'dispatch-event-2';
+      secondDispatch.actions!.toolDispatch = {
+        protocol: 't1_after_preflight_v1',
+        operationId: 'operation-2',
+        providerToolCallId: 'provider-call-2',
+        toolName: 'Write',
+        canonicalArgsHash: secondHash,
+        recoveryMode: 'reconcile',
+      };
+      secondDispatch.refs = { operationId: 'operation-2', toolCallId: 'provider-call-2' };
+      await store.commitToolPrepared({
+        operationId: 'operation-2',
+        journalEventId: 'operation-2_prepared',
+        runtimeEvent: secondCall,
+        dispatchRuntimeEvent: secondDispatch,
+        providerToolCallId: 'provider-call-2',
+        toolName: 'Write',
+        canonicalArgsHash: secondHash,
+        recoveryMode: 'reconcile',
+        committedAt: 11,
+      });
+      const secondOutcome = outcomeEvent();
+      secondOutcome.id = 'outcome-event-2';
+      secondOutcome.content = {
+        kind: 'function_response',
+        id: 'provider-call-2',
+        name: 'Write',
+        result: 'ok',
+      };
+      secondOutcome.refs = { operationId: 'operation-2', toolCallId: 'provider-call-2' };
+      await store.commitToolOutcome({
+        operationId: 'operation-2',
+        journalEventId: 'operation-2_outcome',
+        runtimeEvent: secondOutcome,
+        committedAt: 20,
+      });
+      await store.commitToolOutcome({
+        operationId: 'operation-1',
+        journalEventId: 'operation-1_outcome',
+        runtimeEvent: outcomeEvent(),
+        committedAt: 21,
+      });
+
+      const onlineOperations = await Promise.all([
+        store.readToolOperation('operation-1'),
+        store.readToolOperation('operation-2'),
+      ]);
+      const onlineJournals = await Promise.all([
+        store.readToolJournal('operation-1'),
+        store.readToolJournal('operation-2'),
+      ]);
+      await store.rebuildToolProjectionsFromRuntimeEvents();
+      assert.deepEqual(
+        await Promise.all([
+          store.readToolOperation('operation-1'),
+          store.readToolOperation('operation-2'),
+        ]),
+        onlineOperations,
+      );
+      assert.deepEqual(
+        await Promise.all([
+          store.readToolJournal('operation-1'),
+          store.readToolJournal('operation-2'),
+        ]),
+        onlineJournals,
+      );
     });
   });
 
@@ -267,6 +519,38 @@ describe('SQLite recovery persistence authority', () => {
       } finally {
         reopened.close();
       }
+    });
+  });
+
+  it('persists the decoder canonical RuntimeEvent and makes raw retries idempotent', async () => {
+    await withStore(async (store) => {
+      const raw = userEvent();
+      raw.content = {
+        kind: 'text',
+        text: 'write it',
+        displayText: 'write it',
+        attachments: [],
+        quotes: [],
+      };
+
+      await store.appendRuntimeEvent('session-1', 'run-1', raw);
+      await store.appendRuntimeEvent('session-1', 'run-1', raw);
+
+      assert.deepEqual(await store.readImmutableRuntimeEvents('session-1', 'run-1'), [userEvent()]);
+    });
+  });
+
+  it('rejects RuntimeEvents that lose required fields during JSON serialization', async () => {
+    await withStore(async (store) => {
+      const lossy = callEvent();
+      if (lossy.content?.kind !== 'function_call') throw new Error('invalid fixture');
+      lossy.content.args = undefined;
+
+      await assert.rejects(
+        store.appendRuntimeEvent('session-1', 'run-1', lossy),
+        /RuntimeEvent schema/,
+      );
+      assert.deepEqual(await store.readImmutableRuntimeEvents('session-1', 'run-1'), []);
     });
   });
 

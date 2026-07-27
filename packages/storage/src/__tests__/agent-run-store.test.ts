@@ -701,6 +701,38 @@ describe('AgentRunStore', () => {
     });
   });
 
+  it('rejects a duplicate provider call identity in the JSONL ledger', async () => {
+    await withStores(async (runStore, runtimeEventStore) => {
+      await runStore.createRun(makeHeader());
+      const call = makeRuntimeEvent({
+        id: 'call-event-1',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'provider-call-1',
+          name: 'Write',
+          args: { path: 'notes.txt', content: 'after' },
+        },
+      });
+      await runtimeEventStore.appendRuntimeEvent('session-1', 'run-1', call);
+
+      await assert.rejects(
+        runtimeEventStore.appendRuntimeEvent('session-1', 'run-1', {
+          ...call,
+          id: 'call-event-duplicate',
+        }),
+        /duplicate_call/,
+      );
+      assert.deepEqual(
+        (await runtimeEventStore.readImmutableRuntimeEvents('session-1', 'run-1')).map(
+          ({ id }) => id,
+        ),
+        ['call-event-1'],
+      );
+    });
+  });
+
   it('returns an empty runtime event list when the runtime ledger is missing', async () => {
     await withStores(async (runStore, runtimeEventStore) => {
       await runStore.createRun(makeHeader());
@@ -879,6 +911,22 @@ describe('AgentRunStore', () => {
   it('coalesces tool stream heartbeats until the durable tool result arrives', async () => {
     await withStores(async (runStore, runtimeEventStore) => {
       await runStore.createRun(makeHeader());
+      await runtimeEventStore.appendRuntimeEvent(
+        'session-1',
+        'run-1',
+        makeRuntimeEvent({
+          id: 'runtime-tool-call',
+          role: 'model',
+          author: 'agent',
+          content: {
+            kind: 'function_call',
+            id: 'tool-call-1',
+            name: 'Bash',
+            args: { command: 'echo done' },
+          },
+          refs: { toolCallId: 'tool-call-1' },
+        }),
+      );
       for (let index = 0; index < 100; index += 1) {
         await runtimeEventStore.appendRuntimeEvent(
           'session-1',
@@ -894,7 +942,7 @@ describe('AgentRunStore', () => {
         );
       }
 
-      assert.equal((await runtimeEventStore.readRuntimeEvents('session-1', 'run-1')).length, 1);
+      assert.equal((await runtimeEventStore.readRuntimeEvents('session-1', 'run-1')).length, 2);
 
       await runtimeEventStore.appendRuntimeEvent(
         'session-1',
@@ -917,7 +965,7 @@ describe('AgentRunStore', () => {
       const events = await runtimeEventStore.readRuntimeEvents('session-1', 'run-1');
       assert.deepEqual(
         events.map((event) => event.id),
-        ['runtime-tool-result'],
+        ['runtime-tool-call', 'runtime-tool-result'],
       );
     });
   });

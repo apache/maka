@@ -13,6 +13,7 @@ import {
   TOOL_RECOVERY_BUNDLE_CAPABILITY_V1,
   validateGenericToolLedgerAppend,
   validateToolLedgerEventLane,
+  validateToolLedgerTransition,
   type RuntimeEvent,
   type RuntimeRecoveryBundleCommit,
   type RuntimeRecoveryBundleStore,
@@ -249,6 +250,14 @@ export class SqliteRuntimeStore implements RuntimeRecoveryBundleStore {
           return { created: [], sourceAlreadyImported: true };
         }
       }
+      if (input.events.some(isToolLedgerBearingEvent)) {
+        this.assertToolLedgerTransition(
+          input.sessionId,
+          input.runId,
+          input.events,
+          'generic_append',
+        );
+      }
       const created = input.events.map((event) => this.importRuntimeEventSync(event));
       if (input.source) {
         this.db
@@ -366,6 +375,12 @@ export class SqliteRuntimeStore implements RuntimeRecoveryBundleStore {
           runtimeEventSeq: this.runtimeEventSeq(input.dispatchRuntimeEvent.id),
         };
       }
+      this.assertToolLedgerTransition(
+        input.runtimeEvent.sessionId,
+        input.runtimeEvent.runId,
+        [input.runtimeEvent, input.dispatchRuntimeEvent],
+        't1_prepare',
+      );
       this.insertRuntimeEvent(input.runtimeEvent, input.committedAt, true);
       const runtimeEventSeq = this.insertRuntimeEvent(
         input.dispatchRuntimeEvent,
@@ -441,11 +456,20 @@ export class SqliteRuntimeStore implements RuntimeRecoveryBundleStore {
         this.runtimeEventSeq(operation.callEventId),
         this.runtimeEventSeq(operation.dispatchEventId),
       ]);
-
       if (operation.currentState !== 'prepared' || operation.resultEventId !== undefined) {
         this.assertExactRecoveryBundleAlreadyCommitted(input, operation);
         return;
       }
+      this.assertToolLedgerTransition(
+        input.reconcileRuntimeEvent.sessionId,
+        input.reconcileRuntimeEvent.runId,
+        [
+          input.reconcileRuntimeEvent,
+          ...(input.outcomeRuntimeEvent ? [input.outcomeRuntimeEvent] : []),
+          input.decisionRuntimeEvent,
+        ],
+        'recovery_bundle',
+      );
 
       this.commitRecoveryFactSync(operation, input.reconcileRuntimeEvent, 'reconcile_observed');
       this.options.failpoint?.('after_recovery_reconcile');
@@ -486,7 +510,9 @@ export class SqliteRuntimeStore implements RuntimeRecoveryBundleStore {
         tool_name, canonical_args_hash, recovery_mode, current_state,
         call_event_id, dispatch_event_id, result_event_id, version
       FROM tool_operations
-      WHERE current_state = 'prepared' AND result_event_id IS NULL
+      WHERE current_state = 'prepared'
+        AND result_event_id IS NULL
+        AND dispatch_event_id IS NOT NULL
       ORDER BY invocation_id ASC, operation_id ASC
     `)
       .all() as unknown as ToolOperationRow[];
@@ -509,18 +535,6 @@ export class SqliteRuntimeStore implements RuntimeRecoveryBundleStore {
 
   async rebuildToolProjectionsFromRuntimeEvents(): Promise<ToolProjectionRebuildResult> {
     return this.transaction(() => {
-      const legacy = this.db
-        .prepare(`
-        SELECT operation_id FROM tool_operations
-        WHERE dispatch_event_id IS NULL
-        LIMIT 1
-      `)
-        .get() as { operation_id: string } | undefined;
-      if (legacy) {
-        throw new Error(
-          `Cannot rebuild legacy tool operation ${legacy.operation_id} without a dispatch RuntimeEvent`,
-        );
-      }
       const rows = this.db
         .prepare(`
         SELECT event_id, session_id, invocation_id, run_id, turn_id,
@@ -545,7 +559,16 @@ export class SqliteRuntimeStore implements RuntimeRecoveryBundleStore {
       }
       const projected = scan.operations.filter((operation) => operation.dispatchEvent);
 
-      this.db.exec('DELETE FROM tool_journal_events; DELETE FROM tool_operations;');
+      // Mainline schema 4 can contain pre-authority projections without a
+      // dispatch RuntimeEvent. They remain readable but quarantined from
+      // recovery; only projections backed by canonical T1 facts are rebuilt.
+      this.db.exec(`
+        DELETE FROM tool_journal_events
+        WHERE operation_id IN (
+          SELECT operation_id FROM tool_operations WHERE dispatch_event_id IS NOT NULL
+        );
+        DELETE FROM tool_operations WHERE dispatch_event_id IS NOT NULL;
+      `);
       let journalEvents = 0;
       for (const operation of projected) {
         const call = operation.callEvent;
@@ -679,6 +702,12 @@ export class SqliteRuntimeStore implements RuntimeRecoveryBundleStore {
       );
       return { created: false, runtimeEventSeq: this.runtimeEventSeq(input.runtimeEvent.id) };
     }
+    this.assertToolLedgerTransition(
+      input.runtimeEvent.sessionId,
+      input.runtimeEvent.runId,
+      [input.runtimeEvent],
+      't2_outcome',
+    );
     const runtimeEventSeq = this.insertRuntimeEvent(input.runtimeEvent, input.committedAt, false);
     this.options.failpoint?.('after_runtime_event_insert');
     this.insertToolJournalEvent(
@@ -686,6 +715,7 @@ export class SqliteRuntimeStore implements RuntimeRecoveryBundleStore {
       input.runtimeEvent,
       'outcome_committed',
       input.journalEventId,
+      input.committedAt,
     );
     const updated = this.db
       .prepare(`
@@ -756,6 +786,7 @@ export class SqliteRuntimeStore implements RuntimeRecoveryBundleStore {
     event: RuntimeEvent,
     state: ToolJournalState,
     journalEventId = `${event.id}_journal`,
+    committedAt = event.ts,
   ): void {
     this.db
       .prepare(`
@@ -775,7 +806,7 @@ export class SqliteRuntimeStore implements RuntimeRecoveryBundleStore {
         operation.canonicalArgsHash,
         operation.recoveryMode,
         event.actions?.toolRecovery ? JSON.stringify(event.actions.toolRecovery) : null,
-        event.ts,
+        committedAt,
       );
     this.options.failpoint?.('after_journal_event_insert');
   }
@@ -829,11 +860,46 @@ export class SqliteRuntimeStore implements RuntimeRecoveryBundleStore {
     }
   }
 
+  private assertToolLedgerTransition(
+    sessionId: string,
+    runId: string,
+    candidateEvents: readonly RuntimeEvent[],
+    expectedTransition: Parameters<typeof validateToolLedgerTransition>[0]['expectedTransition'],
+  ): void {
+    const rows = this.db
+      .prepare(`
+        SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
+        FROM runtime_events
+        WHERE session_id = ? AND run_id = ?
+        ORDER BY event_seq ASC, event_id ASC
+      `)
+      .all(sessionId, runId) as unknown as RuntimeEventStorageRow[];
+    const validation = validateToolLedgerTransition({
+      existingEvents: rows.map(decodeRuntimeEventStorageRow),
+      candidateEvents: candidateEvents.map(canonicalizeRuntimeEventForStorage),
+      expectedTransition,
+    });
+    if (!validation.ok) {
+      throw new Error(
+        `Tool ledger transition rejected: ${validation.code} at ${validation.eventId}`,
+      );
+    }
+  }
+
   private importRuntimeEventSync(event: RuntimeEvent): boolean {
-    const partial = partialRuntimeStream(event);
-    if (partial) return this.upsertRuntimePartial(event, partial);
-    const existing = this.readRuntimeEventJson(event.id) !== undefined;
-    this.insertRuntimeEvent(event, event.ts, true);
+    const canonicalEvent = canonicalizeRuntimeEventForStorage(event);
+    const partial = partialRuntimeStream(canonicalEvent);
+    if (partial) return this.upsertRuntimePartial(canonicalEvent, partial);
+    if (isToolLedgerBearingEvent(canonicalEvent)) {
+      this.assertToolLedgerTransition(
+        canonicalEvent.sessionId,
+        canonicalEvent.runId,
+        [canonicalEvent],
+        'generic_append',
+      );
+    }
+    const existing = this.readRuntimeEventJson(canonicalEvent.id) !== undefined;
+    this.insertRuntimeEvent(canonicalEvent, canonicalEvent.ts, true);
     return !existing;
   }
 
@@ -842,36 +908,39 @@ export class SqliteRuntimeStore implements RuntimeRecoveryBundleStore {
     committedAt: number,
     allowExactDuplicate: boolean,
   ): number {
-    assertRuntimeEventIdentity(event);
-    const existingJson = this.readRuntimeEventJson(event.id);
+    const canonicalEvent = canonicalizeRuntimeEventForStorage(event);
+    assertRuntimeEventIdentity(canonicalEvent);
+    const existingJson = this.readRuntimeEventJson(canonicalEvent.id);
     if (existingJson !== undefined) {
-      assertStoredRuntimeEventEquals(event, existingJson);
-      this.deleteCompletedPartialSnapshot(event);
+      assertStoredRuntimeEventEquals(canonicalEvent, existingJson);
+      this.deleteCompletedPartialSnapshot(canonicalEvent);
       if (!allowExactDuplicate) {
-        throw new Error(`RuntimeEvent ${event.id} already exists outside this tool transaction`);
+        throw new Error(
+          `RuntimeEvent ${canonicalEvent.id} already exists outside this tool transaction`,
+        );
       }
-      return this.runtimeEventSeq(event.id);
+      return this.runtimeEventSeq(canonicalEvent.id);
     }
-    const next = this.nextRuntimeEventSeq(event.invocationId);
+    const next = this.nextRuntimeEventSeq(canonicalEvent.invocationId);
     this.db
       .prepare(`
       INSERT INTO runtime_events (
         event_id, session_id, invocation_id, run_id, turn_id, event_seq,
         event_kind, payload_json, committed_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `)
+      `)
       .run(
-        event.id,
-        event.sessionId,
-        event.invocationId,
-        event.runId,
-        event.turnId,
+        canonicalEvent.id,
+        canonicalEvent.sessionId,
+        canonicalEvent.invocationId,
+        canonicalEvent.runId,
+        canonicalEvent.turnId,
         next,
-        runtimeEventKind(event),
-        JSON.stringify(event),
+        runtimeEventKind(canonicalEvent),
+        JSON.stringify(canonicalEvent),
         committedAt,
       );
-    this.deleteCompletedPartialSnapshot(event);
+    this.deleteCompletedPartialSnapshot(canonicalEvent);
     return next;
   }
 
@@ -1061,6 +1130,9 @@ function toolJournalRecordFromRow(row: ToolJournalRow): ToolJournalEventRecord {
 }
 
 function assertPreparedInput(input: CommitToolPreparedInput): void {
+  if (input.journalEventId !== `${input.operationId}_prepared`) {
+    throw new Error('T1 journal identity must be derived from the tool operation');
+  }
   assertNoReservedRecoveryFact(input.runtimeEvent);
   assertNoReservedRecoveryFact(input.dispatchRuntimeEvent);
   const content = input.runtimeEvent.content;
@@ -1099,6 +1171,9 @@ function assertPreparedInput(input: CommitToolPreparedInput): void {
 }
 
 function assertOutcomeInput(input: CommitToolOutcomeInput): void {
+  if (input.journalEventId !== `${input.operationId}_outcome`) {
+    throw new Error('T2 journal identity must be derived from the tool operation');
+  }
   assertNoReservedRecoveryFact(input.runtimeEvent);
   const content = input.runtimeEvent.content;
   if (content?.kind !== 'function_response') {
@@ -1180,9 +1255,17 @@ function assertRuntimeEventIdentity(event: RuntimeEvent): void {
 function assertStoredRuntimeEventEquals(event: RuntimeEvent, storedJson: string | undefined): void {
   if (storedJson === undefined) return;
   const stored = decodeStoredRuntimeEvent(storedJson);
-  if (!isDeepStrictEqual(stored, event)) {
+  if (!isDeepStrictEqual(stored, canonicalizeRuntimeEventForStorage(event))) {
     throw new Error(`RuntimeEvent identity conflict for ${event.id}`);
   }
+}
+
+function canonicalizeRuntimeEventForStorage(event: RuntimeEvent): RuntimeEvent {
+  // Decoder normalization is the canonical persisted representation. The
+  // second decode proves that JSON serialization did not erase any field that
+  // the RuntimeEvent schema requires (for example function-call args).
+  const decoded = decodeRuntimeEvent(event);
+  return decodeRuntimeEvent(JSON.parse(JSON.stringify(decoded)));
 }
 
 function assertNoReservedRecoveryFact(event: RuntimeEvent): void {
@@ -1201,6 +1284,15 @@ function assertNoReservedToolLedgerFact(event: RuntimeEvent): void {
     throw new Error('Durable tool facts require the atomic tool boundary writer');
   }
   throw new Error(`RuntimeEvent ${event.id} violates its semantic lane`);
+}
+
+function isToolLedgerBearingEvent(event: RuntimeEvent): boolean {
+  return (
+    event.content?.kind === 'function_call' ||
+    event.content?.kind === 'function_response' ||
+    event.actions?.toolDispatch !== undefined ||
+    event.actions?.toolRecovery !== undefined
+  );
 }
 
 function recoveryOperationIdentity(operation: ToolOperationRecord) {

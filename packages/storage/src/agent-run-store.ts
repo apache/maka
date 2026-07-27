@@ -24,6 +24,7 @@ import { syncDirectory, syncDirectoryChain, syncFile } from './stable-storage.js
 import { chainWrite } from './write-queue.js';
 import {
   DurableStoreWriteError,
+  decodeRuntimeEvent as decodeCanonicalRuntimeEvent,
   decodeMessageContent,
   isCanonicalAttachmentRef,
   isTerminalRuntimeEvent,
@@ -31,6 +32,7 @@ import {
   MAX_ATTACHMENT_COUNT,
   messageContentsEqual,
   validateGenericToolLedgerAppend,
+  validateToolLedgerTransition,
   type AgentRunEvent,
   type AgentRunEventType,
   type AgentRunHeader,
@@ -834,6 +836,22 @@ function assertNoReservedToolLedgerFact(event: RuntimeEvent): void {
   throw new Error(`RuntimeEvent ${event.id} violates its semantic lane`);
 }
 
+function canonicalizeRuntimeEventForStorage(event: RuntimeEvent): RuntimeEvent {
+  // Persist the decoder's normalized value, then decode the JSON round-trip
+  // again so schema-invalid serialization loss cannot enter the ledger.
+  const decoded = decodeCanonicalRuntimeEvent(event);
+  return decodeCanonicalRuntimeEvent(JSON.parse(JSON.stringify(decoded, sanitizeJson)));
+}
+
+function isToolLedgerBearingEvent(event: RuntimeEvent): boolean {
+  return (
+    event.content?.kind === 'function_call' ||
+    event.content?.kind === 'function_response' ||
+    event.actions?.toolDispatch !== undefined ||
+    event.actions?.toolRecovery !== undefined
+  );
+}
+
 function historyCompactProjectionCoverage(event: AgentRunEvent): number | undefined {
   const checkpoint = event.data?.checkpoint;
   if (!checkpoint || typeof checkpoint !== 'object') return undefined;
@@ -862,18 +880,19 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
     event: RuntimeEvent,
     options: { durable?: boolean } = {},
   ): Promise<void> {
+    const canonicalEvent = canonicalizeRuntimeEventForStorage(event);
     assertSafeId(sessionId, 'Invalid session id');
     assertSafeId(runId, 'Invalid run id');
-    assertNoReservedToolLedgerFact(event);
-    const steeringMessageId = immutableSteeringMessageId(event);
+    assertNoReservedToolLedgerFact(canonicalEvent);
+    const steeringMessageId = immutableSteeringMessageId(canonicalEvent);
     if (steeringMessageId) {
       await this.withImmutableSteeringQueue(sessionId, async () => {
-        if (await this.preflightImmutableSteeringMessage(event, steeringMessageId)) return;
-        await this.appendRuntimeEventForRun(sessionId, runId, event, options);
+        if (await this.preflightImmutableSteeringMessage(canonicalEvent, steeringMessageId)) return;
+        await this.appendRuntimeEventForRun(sessionId, runId, canonicalEvent, options);
       });
       return;
     }
-    await this.appendRuntimeEventForRun(sessionId, runId, event, options);
+    await this.appendRuntimeEventForRun(sessionId, runId, canonicalEvent, options);
   }
 
   private async appendRuntimeEventForRun(
@@ -919,6 +938,22 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
         }
         return;
       }
+      if (isToolLedgerBearingEvent(event)) {
+        const existingEvents = await readRuntimeEventJsonl(
+          this.runtimeEventsPath(sessionId, runId),
+          await this.readRunHeader(sessionId, runId),
+        );
+        const validation = validateToolLedgerTransition({
+          existingEvents,
+          candidateEvents: [event],
+          expectedTransition: 'generic_append',
+        });
+        if (!validation.ok) {
+          throw new Error(
+            `Tool ledger transition rejected: ${validation.code} at ${validation.eventId}`,
+          );
+        }
+      }
       const steeringMessageId = immutableSteeringMessageId(event);
       await appendJsonl(
         this.runtimeEventsPath(sessionId, runId),
@@ -956,10 +991,11 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
     runId: string,
     event: RuntimeEvent,
   ): Promise<void> {
+    const canonicalEvent = canonicalizeRuntimeEventForStorage(event);
     assertSafeId(sessionId, 'Invalid session id');
     assertSafeId(runId, 'Invalid run id');
-    assertNoReservedToolLedgerFact(event);
-    if (event.partial || !isTerminalRuntimeEvent(event)) {
+    assertNoReservedToolLedgerFact(canonicalEvent);
+    if (canonicalEvent.partial || !isTerminalRuntimeEvent(canonicalEvent)) {
       throw new Error(
         'Only a final terminal RuntimeEvent can cross the terminal durability barrier',
       );
@@ -968,14 +1004,15 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
       const path = this.runtimeEventsPath(sessionId, runId);
       const header = await this.readRunHeader(sessionId, runId);
       const existing = await readRuntimeEventJsonl(path, header);
-      const matching = existing.filter((candidate) => candidate.id === event.id);
+      const matching = existing.filter((candidate) => candidate.id === canonicalEvent.id);
       if (matching.length > 1) {
-        throw new Error(`RuntimeEvent ${event.id} appears more than once in run ${runId}`);
+        throw new Error(`RuntimeEvent ${canonicalEvent.id} appears more than once in run ${runId}`);
       }
       if (matching.length === 1) {
-        const canonical = JSON.parse(JSON.stringify(event, sanitizeJson)) as RuntimeEvent;
-        if (!isDeepStrictEqual(matching[0], canonical)) {
-          throw new Error(`RuntimeEvent ${event.id} does not match the durable ledger record`);
+        if (!isDeepStrictEqual(matching[0], canonicalEvent)) {
+          throw new Error(
+            `RuntimeEvent ${canonicalEvent.id} does not match the durable ledger record`,
+          );
         }
         try {
           await syncFile(path);
@@ -992,7 +1029,7 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
       if (existingTerminal) {
         throw new Error(`Run ${runId} already has terminal RuntimeEvent ${existingTerminal.id}`);
       }
-      await appendJsonl(path, JSON.stringify(event, sanitizeJson) + '\n', {
+      await appendJsonl(path, JSON.stringify(canonicalEvent, sanitizeJson) + '\n', {
         durable: true,
         durabilityRoot: this.durabilityRoot,
       });

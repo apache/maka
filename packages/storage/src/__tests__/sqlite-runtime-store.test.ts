@@ -35,7 +35,7 @@ describe('SqliteRuntimeStore', () => {
 
       const input = {
         operationId: 'operation-1',
-        journalEventId: 'journal-prepared-1',
+        journalEventId: 'operation-1_prepared',
         runtimeEvent: call,
         dispatchRuntimeEvent: dispatch,
         providerToolCallId: 'provider-call-1',
@@ -99,7 +99,7 @@ describe('SqliteRuntimeStore', () => {
       await assert.rejects(
         store.commitToolPrepared({
           operationId: 'operation-t1-failure',
-          journalEventId: 'journal-t1-failure',
+          journalEventId: 'operation-t1-failure_prepared',
           runtimeEvent: functionCallEvent({ id: 'call-t1-failure' }),
           dispatchRuntimeEvent: toolDispatchEvent({
             id: 'dispatch-t1-failure',
@@ -138,7 +138,7 @@ describe('SqliteRuntimeStore', () => {
 
       const result = await store.commitToolOutcome({
         operationId: 'operation-1',
-        journalEventId: 'journal-outcome-1',
+        journalEventId: 'operation-1_outcome',
         runtimeEvent: outcome,
         committedAt: 20,
       });
@@ -182,7 +182,7 @@ describe('SqliteRuntimeStore', () => {
       await assert.rejects(
         store.commitToolOutcome({
           operationId: 'operation-1',
-          journalEventId: 'journal-outcome-failure',
+          journalEventId: 'operation-1_outcome',
           runtimeEvent: functionResponseEvent({ id: 'response-t2-failure' }),
           committedAt: 21,
         }),
@@ -211,13 +211,13 @@ describe('SqliteRuntimeStore', () => {
 
       const firstOutcome = await store.commitToolOutcome({
         operationId: 'operation-1',
-        journalEventId: 'journal-outcome-1',
+        journalEventId: 'operation-1_outcome',
         runtimeEvent: functionResponseEvent(),
         committedAt: 20,
       });
       const duplicateOutcome = await store.commitToolOutcome({
         operationId: 'operation-1',
-        journalEventId: 'journal-outcome-1',
+        journalEventId: 'operation-1_outcome',
         runtimeEvent: functionResponseEvent(),
         committedAt: 20,
       });
@@ -229,7 +229,7 @@ describe('SqliteRuntimeStore', () => {
       await assert.rejects(
         store.commitToolPrepared({
           operationId: 'operation-1',
-          journalEventId: 'journal-prepared-drift',
+          journalEventId: 'operation-1_prepared',
           runtimeEvent: functionCallEvent({
             content: {
               kind: 'function_call',
@@ -266,7 +266,7 @@ describe('SqliteRuntimeStore', () => {
       await commitPrepared(store);
       await store.commitToolOutcome({
         operationId: 'operation-1',
-        journalEventId: 'journal-outcome-1',
+        journalEventId: 'operation-1_outcome',
         runtimeEvent: functionResponseEvent(),
         committedAt: 20,
       });
@@ -356,6 +356,7 @@ describe('SqliteRuntimeStore', () => {
           refs: { providerEventId: 'message-1' },
         }),
       );
+      await store.appendRuntimeEvent('session-1', 'run-1', functionCallEvent());
       await store.appendRuntimeEvent(
         'session-1',
         'run-1',
@@ -366,9 +367,9 @@ describe('SqliteRuntimeStore', () => {
 
       assert.deepEqual(
         (await store.readRuntimeEvents('session-1', 'run-1')).map((event) => event.id),
-        ['text-final', 'response-event-1'],
+        ['text-final', 'call-event-1', 'response-event-1'],
       );
-      assert.equal((await store.readImmutableRuntimeEvents('session-1', 'run-1')).length, 2);
+      assert.equal((await store.readImmutableRuntimeEvents('session-1', 'run-1')).length, 3);
     });
   });
 });
@@ -472,7 +473,7 @@ function toolDispatchEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent 
 function commitPrepared(store: Store) {
   return store.commitToolPrepared({
     operationId: 'operation-1',
-    journalEventId: 'journal-prepared-1',
+    journalEventId: 'operation-1_prepared',
     runtimeEvent: functionCallEvent(),
     dispatchRuntimeEvent: toolDispatchEvent(),
     providerToolCallId: 'provider-call-1',
