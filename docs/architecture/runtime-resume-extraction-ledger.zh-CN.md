@@ -49,7 +49,10 @@ Phase 3B/4A 的 workspace checkpoint 是后续独立切片，不进入 PR A。
 - resume 对 terminal parked 和任意 scanner corruption 设独立硬闸门；diagnostic 只负责解释，
   不能成为唯一安全条件；
 - tool-bearing writer 在事务内用同一 prospective transition validator 证明候选 prefix；
-- SQLite 只持久化 decoder + JSON round-trip 后的 canonical RuntimeEvent；
+- SQLite 与 JSONL 共享唯一 lossless canonical RuntimeEvent codec；validator 消费 codec
+  返回的 event，store 持久化同一次编码返回的稳定 JSON bytes；
+- SQLite 对每个 invocation 强制唯一 `(sessionId, runId, turnId)` execution spine；
+- JSONL immutable append 对 exact retry 物理去重，并在落盘前验证目标 Run header；
 - projection-local journal ID 由 operation/event 派生，调用者不能选择；
 - schema 4 的 nullable-dispatch legacy projection 可读但隔离，不进入 recovery 或 canonical rebuild。
 
@@ -82,6 +85,7 @@ future newer schema            -> fail closed
 | 文件 | 归属 | 处理 |
 |---|---|---|
 | `runtime-event.ts` | PR A | 增加 exact recovery fact envelope decoder |
+| `canonical-runtime-event.ts` | PR A | 唯一 lossless decoder、strict JSON 与稳定 bytes owner |
 | `runtime-event-store.ts` | PR A | 增加单一 bundle capability |
 | `tool-args-identity.ts` | PR A | strict JSON + domain separation |
 | `tool-ledger-scanner.ts` | PR A | 共享 exact lane、duplicate/order/identity scanner 与 prospective transition validator |
@@ -93,8 +97,8 @@ future newer schema            -> fail closed
 | 文件 | 归属 | 处理 |
 |---|---|---|
 | `sqlite-runtime-schema.ts` | PR A | schema 5 + `runtime_recovery_authority@1` |
-| `sqlite-runtime-store.ts` | PR A | T1/T2 gate、atomic recovery bundle、projection rebuild |
-| `agent-run-store.ts` | PR A | JSONL generic writer 拒绝保留 tool facts |
+| `sqlite-runtime-store.ts` | PR A | 全局 prospective gate、invocation spine、atomic recovery bundle、projection rebuild |
+| `agent-run-store.ts` | PR A | JSONL authority gate、header identity 与 immutable exact retry 去重 |
 
 ### Runtime
 
@@ -133,6 +137,12 @@ future newer schema            -> fail closed
 | parked 不再进入 reconcile | storage + runtime equivalence test | 已覆盖 |
 | parked / orphan corruption 不得产生 safe replay | runtime planner test | 已覆盖 |
 | decoder canonical persistence 与有损 JSON 拒绝 | storage authority test | 已覆盖 |
+| nested undefined、provider `toJSON`、recovery evidence 改写 | storage authority test | 已覆盖 |
+| JSONL ordinary/tool exact retry 与 conflicting retry | JSONL storage test | 已覆盖 |
+| JSONL event 与目标 Run header identity | JSONL storage test | 已覆盖 |
+| invocation 跨 session/run/turn 漂移 | core scanner + SQLite authority test | 已覆盖 |
+| corrupt ledger 上的 T1/T2/recovery exact retry | storage authority test | 已覆盖 |
+| SQLite terminal raw/canonical-equivalent retry | SQLite storage test | 已覆盖 |
 | journal ID online/rebuild 同源派生 | storage authority test | 已覆盖 |
 | audit fact 不产生 message row | runtime read-model test | 已覆盖 |
 
@@ -185,9 +195,19 @@ PR A 没带入 file checkpoint、continuation 或 host lifecycle。
 - 三个包完整测试通过，或明确记录与本改动无关的平台既有失败；
 - SQLite transaction crash matrix 通过；
 - 所有成功接受的 tool-bearing transition 均满足 `scan.hasCorruption === false`；
+- JSONL exact retry 不增加物理行，冲突 retry 不改变原 ledger；
+- 一个 SQLite invocation 只能对应一个 `(sessionId, runId, turnId)`；
+- canonical codec 拒绝任何 nested loss、accessor/custom prototype 或 `toJSON` 改写；
 - `recovery.hasCorruption` 与 terminal parked 均独立阻断 provider continuation；
 - 文档中的能力边界与代码一致；
 - 工作树不包含用户的 workspace/测试文件。
+
+PR A 后续清偿项不阻塞当前 correctness merge gate：
+
+- 从 public commit input 删除冗余 `journalEventId`，完全由 store 派生；
+- 为全局 prospective scan 增加 event count / duration 指标，再演进为可重建的增量 reducer；
+- JSONL 是 legacy/readable fallback，不承担跨进程的全局 invocation uniqueness；恢复 authority
+  需要 SQLite。
 
 ## 8. #1346 的关闭条件
 

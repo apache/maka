@@ -44,13 +44,16 @@ RuntimeEvent 是语义事实的唯一权威，但不能替代执行所有权的�
 7. scanner 和 recovery interpreter 由 writer、rebuild、Resolver 共享；
 8. `parked` 和 `recovery.hasCorruption` 是 resume 的硬闸门，不能依赖 diagnostic switch
    间接阻断；
-9. generic、batch、T1、T2、recovery bundle writer 在事务内对
-   `existing + candidates` 运行同一个 prospective transition validator；
+9. generic、batch、T1、T2、recovery bundle writer 在事务内对全局 immutable ledger
+   与 candidates 运行同一个 prospective transition validator；exact retry 也必须先过此闸门；
 10. function call/response 只允许各自白名单内的 state delta；artifact、continuation marker、
     terminal status 或 branch 不能夹带进 tool authority lane；
 11. strict args identity 明确处理 `__proto__` 并拒绝 sparse/accessor/custom array；
-12. SQLite 保存 decoder canonical value，journal ID 只由 store 派生；
-13. 正式 schema 4 的无 dispatch legacy rows 保守隔离，不参与 recovery/rebuild。
+12. 唯一 canonical RuntimeEvent codec 负责 decode、normalization、strict JSON、稳定 bytes 与
+    lossless round-trip；SQLite/JSONL、未来 prefix digest 均复用它；
+13. JSONL immutable exact retry 物理去重，写前验证 Run header identity；
+14. SQLite 强制一个 invocation 只对应一个 `(sessionId, runId, turnId)`；
+15. journal ID 只由 store 派生；正式 schema 4 的无 dispatch legacy rows保守隔离。
 
 PR A 的证明矩阵包括：
 
@@ -59,6 +62,10 @@ PR A 的证明矩阵包括：
 - online、reopen、rebuild、Resolver 等价；
 - recovery bundle 三个事务内部 SIGKILL 边界与 COMMIT 后 SIGKILL；
 - exact bundle、completed-vs-parked、rebuild-vs-commit 多进程竞争。
+- JSONL ordinary/tool exact retry、conflicting retry、path/header identity；
+- nested undefined / `toJSON` 有损改写与 SQLite terminal canonical retry；
+- invocation 跨 session/run/turn 漂移；
+- corrupt immutable ledger 上 T1/T2/recovery exact retry 均 fail closed。
 
 进程 crash harness 以 Linux/macOS 为发布证明平台；Windows 仍为有限支持，不能用其 skip
 反向宣称跨平台 durability。
@@ -72,7 +79,8 @@ PR A 的证明矩阵包括：
 
 实施顺序：
 
-1. store 提供 immutable prefix cursor，而不是用 `events.length`；
+1. store 以 PR A canonical bytes 在一个一致性读事务中返回 immutable prefix、event-seq
+   high-water 与 domain-separated digest，而不是用 `events.length`；
 2. claim key 绑定 source run + immutable high-water/digest；
 3. claim 创建使用 SQLite unique constraint/transaction，而非“先查后建”；
 4. plan 与 execution revalidation 使用同一 envelope；
@@ -111,6 +119,7 @@ Crash matrix：
 
 - trusted workspace identity 与 canonical target；
 - operation/call/dispatch identity；
+- recovery contract id、version、evidence kind 与 evidence digest；
 - before identity 与 expected-after identity；
 - transform/algorithm version；
 - worker 生成的 production-shaped result；
@@ -118,6 +127,10 @@ Crash matrix：
 
 正常执行与 prepare 必须共用 Write/Edit transform；filesystem worker 保持 permission profile、
 sandbox、one-call grant 和 abort boundary 的执行所有权。
+
+PR C 沿用 PR A 的 durable vocabulary：`matches_expected_state` 可 finalize；
+`matches_prior_state`、`diverged`、`unreadable` 均提交 terminal parked decision。UI 可以把
+`matches_prior_state` 映射为 `redo_disabled_pending_cas`，但不新增第二套 durable fact 名称。
 
 ### PR D — Host owner lifecycle
 
@@ -135,6 +148,11 @@ PR D 不改变 recovery semantics。它覆盖：
 - in-flight recovery 时退出；
 - double close；
 - Desktop 与 CLI 同 workspace 的 owner 冲突策略。
+
+Host owner 使用显式 `opening -> ready -> closing -> closed` 状态机；`close()` 共享一个
+幂等 Promise。关闭顺序固定为：停止 admission、取消后台 recovery、等待任务收敛、关闭 registry
+与 filesystem worker、关闭 stores，最后释放 workspace owner lock。后台 Promise 在创建时就必须
+登记 rejection owner。
 
 ## 3. Native 与 Git 的能力边界
 
@@ -164,6 +182,11 @@ Git 是 workspace continuity carrier，而不是单文件因果证明的前置�
 ### PR E — Checkpoint contracts
 
 先定义纯语义和 fake provider，不接 Git：
+
+在第一个通用 Phase 3B 审计事实落盘前，先引入 generic invisible `runtimeFact` envelope。
+现有 `actions.toolRecovery` 保持不变，避免返工；workspace transition 与 checkpoint 使用通用
+envelope。旧 read-model 对未知 fact 可跳过展示，但 recovery consumer 必须 fail closed。这个前置
+不追溯阻塞已经存在的 PR A tool recovery facts。
 
 ```ts
 interface WorkspaceBoundary {
