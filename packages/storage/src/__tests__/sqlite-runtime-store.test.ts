@@ -28,6 +28,38 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
+  it('makes a raw canonical-equivalent terminal durability retry idempotent', async () => {
+    await withStore(async (store) => {
+      const terminal: RuntimeEvent = {
+        id: 'terminal-event-1',
+        sessionId: 'session-1',
+        invocationId: 'invocation-1',
+        runId: 'run-1',
+        turnId: 'turn-1',
+        ts: 5,
+        partial: false,
+        role: 'system',
+        author: 'system',
+        status: 'completed',
+        content: {
+          kind: 'text',
+          text: 'done',
+          displayText: 'done',
+          attachments: [],
+          quotes: [],
+        },
+        actions: { endInvocation: true },
+      };
+
+      await store.appendRuntimeEvent('session-1', 'run-1', terminal);
+      await store.ensureTerminalRuntimeEventDurable('session-1', 'run-1', terminal);
+
+      const events = await store.readImmutableRuntimeEvents('session-1', 'run-1');
+      assert.equal(events.length, 1);
+      assert.deepEqual(events[0]?.content, { kind: 'text', text: 'done' });
+    });
+  });
+
   it('commits function_call, dispatch fact, and operation projection atomically in T1', async () => {
     await withStore(async (store) => {
       const call = functionCallEvent();
@@ -256,7 +288,7 @@ describe('SqliteRuntimeStore', () => {
           recoveryMode: 'replay_safe',
           committedAt: 30,
         }),
-        /operation identity conflict/,
+        /duplicate_event_id/,
       );
     });
   });

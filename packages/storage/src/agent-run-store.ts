@@ -24,8 +24,8 @@ import { syncDirectory, syncDirectoryChain, syncFile } from './stable-storage.js
 import { chainWrite } from './write-queue.js';
 import {
   DurableStoreWriteError,
-  decodeRuntimeEvent as decodeCanonicalRuntimeEvent,
   decodeMessageContent,
+  encodeCanonicalRuntimeEvent,
   isCanonicalAttachmentRef,
   isTerminalRuntimeEvent,
   MAX_ATTACHMENT_BYTES,
@@ -837,10 +837,7 @@ function assertNoReservedToolLedgerFact(event: RuntimeEvent): void {
 }
 
 function canonicalizeRuntimeEventForStorage(event: RuntimeEvent): RuntimeEvent {
-  // Persist the decoder's normalized value, then decode the JSON round-trip
-  // again so schema-invalid serialization loss cannot enter the ledger.
-  const decoded = decodeCanonicalRuntimeEvent(event);
-  return decodeCanonicalRuntimeEvent(JSON.parse(JSON.stringify(decoded, sanitizeJson)));
+  return encodeCanonicalRuntimeEvent(event).event;
 }
 
 function isToolLedgerBearingEvent(event: RuntimeEvent): boolean {
@@ -902,7 +899,8 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
     options: { durable?: boolean },
   ): Promise<void> {
     await this.withQueue(sessionId, runId, async () => {
-      await mkdir(this.runDir(sessionId, runId), { recursive: true });
+      const header = await this.readRunHeader(sessionId, runId);
+      decodeRuntimeEvent(event, header);
       const partial = partialRuntimeStream(event);
       if (partial) {
         const partialPath = this.runtimePartialPath(sessionId, runId, partial.key);
@@ -912,7 +910,7 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
           if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
           const immutableEvents = await readRuntimeEventJsonl(
             this.runtimeEventsPath(sessionId, runId),
-            await this.readRunHeader(sessionId, runId),
+            header,
           );
           if (
             immutableEvents.some((item) => completedPartialRuntimeStreamKey(item) === partial.key)
@@ -938,11 +936,19 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
         }
         return;
       }
+      const existingEvents = await readRuntimeEventJsonl(
+        this.runtimeEventsPath(sessionId, runId),
+        header,
+      );
+      const matching = existingEvents.filter((item) => item.id === event.id);
+      if (matching.length > 1) {
+        throw new Error(`RuntimeEvent ${event.id} appears more than once in run ${runId}`);
+      }
+      if (matching.length === 1) {
+        if (isDeepStrictEqual(matching[0], event)) return;
+        throw new Error(`RuntimeEvent identity conflict for ${event.id}`);
+      }
       if (isToolLedgerBearingEvent(event)) {
-        const existingEvents = await readRuntimeEventJsonl(
-          this.runtimeEventsPath(sessionId, runId),
-          await this.readRunHeader(sessionId, runId),
-        );
         const validation = validateToolLedgerTransition({
           existingEvents,
           candidateEvents: [event],
@@ -957,7 +963,7 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
       const steeringMessageId = immutableSteeringMessageId(event);
       await appendJsonl(
         this.runtimeEventsPath(sessionId, runId),
-        JSON.stringify(event, sanitizeJson) + '\n',
+        encodeCanonicalRuntimeEvent(event).json + '\n',
         {
           ...options,
           ...(steeringMessageId ? { durable: true } : {}),
@@ -1029,7 +1035,7 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
       if (existingTerminal) {
         throw new Error(`Run ${runId} already has terminal RuntimeEvent ${existingTerminal.id}`);
       }
-      await appendJsonl(path, JSON.stringify(canonicalEvent, sanitizeJson) + '\n', {
+      await appendJsonl(path, encodeCanonicalRuntimeEvent(canonicalEvent).json + '\n', {
         durable: true,
         durabilityRoot: this.durabilityRoot,
       });

@@ -701,6 +701,92 @@ describe('AgentRunStore', () => {
     });
   });
 
+  it('keeps an exact ordinary RuntimeEvent retry idempotent in JSONL', async () => {
+    await withStores(async (runStore, runtimeEventStore) => {
+      await runStore.createRun(makeHeader());
+      const event = makeRuntimeEvent({ id: 'ordinary-event-1' });
+
+      await runtimeEventStore.appendRuntimeEvent('session-1', 'run-1', event);
+      await runtimeEventStore.appendRuntimeEvent('session-1', 'run-1', event);
+
+      assert.deepEqual(
+        (await runtimeEventStore.readImmutableRuntimeEvents('session-1', 'run-1')).map(
+          (item) => item.id,
+        ),
+        ['ordinary-event-1'],
+      );
+    });
+  });
+
+  it('keeps an exact tool call retry idempotent in JSONL', async () => {
+    await withStores(async (runStore, runtimeEventStore) => {
+      await runStore.createRun(makeHeader());
+      const call = makeRuntimeEvent({
+        id: 'call-event-1',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'provider-call-1',
+          name: 'Write',
+          args: { path: 'note.txt', content: 'hello' },
+        },
+        refs: { toolCallId: 'provider-call-1' },
+      });
+
+      await runtimeEventStore.appendRuntimeEvent('session-1', 'run-1', call);
+      await runtimeEventStore.appendRuntimeEvent('session-1', 'run-1', call);
+
+      assert.deepEqual(
+        (await runtimeEventStore.readImmutableRuntimeEvents('session-1', 'run-1')).map(
+          (item) => item.id,
+        ),
+        ['call-event-1'],
+      );
+    });
+  });
+
+  it('rejects a conflicting RuntimeEvent retry without changing JSONL', async () => {
+    await withStores(async (runStore, runtimeEventStore) => {
+      await runStore.createRun(makeHeader());
+      const original = makeRuntimeEvent({ id: 'ordinary-event-1' });
+      await runtimeEventStore.appendRuntimeEvent('session-1', 'run-1', original);
+
+      await assert.rejects(
+        runtimeEventStore.appendRuntimeEvent('session-1', 'run-1', {
+          ...original,
+          ts: original.ts + 1,
+        }),
+        /RuntimeEvent identity conflict/,
+      );
+      assert.deepEqual(await runtimeEventStore.readImmutableRuntimeEvents('session-1', 'run-1'), [
+        original,
+      ]);
+    });
+  });
+
+  it('rejects a RuntimeEvent whose identity does not match the target run header', async () => {
+    await withStores(async (runStore, runtimeEventStore) => {
+      await runStore.createRun(makeHeader({ invocationId: 'turn-1' }));
+
+      for (const event of [
+        makeRuntimeEvent({ sessionId: 'other-session' }),
+        makeRuntimeEvent({ runId: 'other-run' }),
+        makeRuntimeEvent({ turnId: 'other-turn' }),
+        makeRuntimeEvent({ invocationId: 'other-invocation' }),
+      ]) {
+        await assert.rejects(
+          runtimeEventStore.appendRuntimeEvent('session-1', 'run-1', event),
+          /RuntimeEvent identity does not match its run/,
+        );
+      }
+      assert.deepEqual(
+        await runtimeEventStore.readImmutableRuntimeEvents('session-1', 'run-1'),
+        [],
+      );
+    });
+  });
+
   it('rejects a duplicate provider call identity in the JSONL ledger', async () => {
     await withStores(async (runStore, runtimeEventStore) => {
       await runStore.createRun(makeHeader());
