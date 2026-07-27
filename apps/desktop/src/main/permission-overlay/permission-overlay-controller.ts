@@ -20,7 +20,7 @@
  * `node --test` with no Electron runtime and no real timers.
  */
 
-import type { DragGrantPermissionId, OsPermissionId } from '@maka/core';
+import type { DragGrantPermissionId } from '@maka/core';
 import { isDragGrantPermissionId } from '@maka/core';
 
 // The id list lives in @maka/core so the Permission Center row and this
@@ -203,9 +203,4 @@ export function createPermissionOverlayController(
       return active;
     },
   };
-}
-
-/** Narrowing helper for the IPC boundary. */
-export function asOsPermissionId(id: DragGrantPermissionId): OsPermissionId {
-  return id;
 }

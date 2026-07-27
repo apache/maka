@@ -79,7 +79,10 @@ export async function buildPermissionOverlay({ logLevel = 'info' } = {}) {
     outfile: join(outDir, 'permission-overlay-preload.cjs'),
     logLevel,
   });
-  await copyFile(join(srcOverlay, 'permission-overlay.html'), join(outDir, 'permission-overlay.html'));
+  await copyFile(
+    join(srcOverlay, 'permission-overlay.html'),
+    join(outDir, 'permission-overlay.html'),
+  );
   return outDir;
 }
 

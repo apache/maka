@@ -8,6 +8,8 @@
         "src/main/main.ts",
         "src/overlay/cursor-overlay.ts",
         "src/overlay/cursor-overlay-preload.ts",
+        "src/overlay/permission-overlay.ts",
+        "src/overlay/permission-overlay-preload.ts",
         "src/main/**/*.test.ts",
         "e2e/**/*.spec.ts",
         ".storybook/preview.@(ts|tsx)",

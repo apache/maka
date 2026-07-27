@@ -52,6 +52,10 @@ const ALLOW = new Map([
     'real-window smoke diagnostics are dev/test gated and stdout-parsed by capture tooling.',
   ],
   [
+    'apps/desktop/src/main/permission-overlay/permission-overlay-main.ts',
+    '#1515 drag-grant diagnostics (locale fallback, missing .app bundle, controller log sink); main-process only, paths not secrets.',
+  ],
+  [
     'apps/desktop/src/main/oauth-model-connections-main.ts',
     'OAuth model sync logs provider-level failure reason only; no tokens or raw provider bodies.',
   ],

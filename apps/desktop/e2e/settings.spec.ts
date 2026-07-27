@@ -144,22 +144,29 @@ test('permission rows keep their text at the window floor', async ({ permissionS
   await expect(settings.getByRole('heading', { name: '系统权限' })).toBeVisible();
 
   // Prove the fixture renders the shape this contract is about before measuring
-  // it: only a requestable + openable permission draws BOTH grant buttons, and
-  // that is the row whose body the `auto` actions track used to squeeze to 0px.
-  // Reading the host's real TCC state would silently skip this — see
-  // `main/permission-snapshot-e2e-fixture.ts`.
+  // it: a row carrying MORE THAN ONE grant button is the one whose body the
+  // `auto` actions track used to squeeze to 0px. Reading the host's real TCC
+  // state would silently skip this — see `main/permission-snapshot-e2e-fixture.ts`.
+  //
+  // The count is `>= 2`, not `=== 2`: #1515 gave the drag-grantable permissions
+  // a third button (前往系统设置 + 拖拽授权 + 请求授权), so the fixture's
+  // `screen_recording` row — requestable, openable AND drag-grantable — now
+  // draws three. Pinning the exact number matched zero rows and turned this
+  // guard off silently, which is the failure mode the assertion exists to
+  // prevent. Widening the actions track only makes the squeeze worse, so the
+  // wider row is strictly the better subject.
   const rows = settings.locator('.settingsOsPermissionRow');
   await expect(rows).toHaveCount(5);
-  const twoButtonRows = await rows.evaluateAll((elements) =>
+  const multiButtonRows = await rows.evaluateAll((elements) =>
     elements
       .map((element, index) => ({
         index,
         buttons: element.querySelectorAll('.settingsOsPermissionActions button').length,
       }))
-      .filter((row) => row.buttons === 2)
+      .filter((row) => row.buttons >= 2)
       .map((row) => row.index),
   );
-  expect(twoButtonRows.length).toBeGreaterThan(0);
+  expect(multiButtonRows.length).toBeGreaterThan(0);
 
   await expect.poll(
     () =>
