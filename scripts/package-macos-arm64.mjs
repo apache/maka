@@ -66,6 +66,7 @@ export async function packageMacosArm64({
   await remove(releaseDirectory, { recursive: true, force: true });
   await run('npm', ['--workspace', '@maka/desktop', 'run', 'package:macos-arm64']);
   await assertFile(dmgPath);
+  await remove(join(releaseDirectory, 'mac-arm64'), { recursive: true, force: true });
 
   return dmgPath;
 }

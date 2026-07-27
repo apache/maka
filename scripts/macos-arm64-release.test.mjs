@@ -163,9 +163,13 @@ test('release package script runs the single arm64 pipeline in order', async () 
     ['npm', ['run', 'check:release']],
     ['npm', ['--workspace', '@maka/desktop', 'run', 'package:macos-arm64']],
   ]);
-  assert.equal(removed.length, 1);
+  assert.equal(removed.length, 2);
+  assert.ok(removed[0][0].endsWith('/apps/desktop/release'));
   assert.equal(removed[0][1].recursive, true);
   assert.equal(removed[0][1].force, true);
+  assert.ok(removed[1][0].endsWith('/apps/desktop/release/mac-arm64'));
+  assert.equal(removed[1][1].recursive, true);
+  assert.equal(removed[1][1].force, true);
   assert.ok(result.endsWith(`/apps/desktop/release/Maka-${desktopManifest.version}-mac-arm64.dmg`));
 });
 
