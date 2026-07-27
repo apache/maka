@@ -62,7 +62,6 @@ describe('session startup recovery contract', () => {
 
     assert.doesNotMatch(main, /^await migrateSessionProjects\(/m);
     assert.match(backgroundBlock, /await migrateSessionProjectsOnStartup\(\);/);
-    assert.match(migration, /try \{[\s\S]*await migrateSessionProjects\(/);
-    assert.match(migration, /catch \(error\) \{[\s\S]*console\.error/);
+    assert.match(migration, /await runProjectStartupMigration\(/);
   });
 });

@@ -532,6 +532,7 @@ function isSubagentCategoryPolicy(
 
 export type SessionChangedReason =
   | 'created'
+  | 'migrated'
   | 'updated'
   | 'archived'
   | 'deleted'

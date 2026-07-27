@@ -219,10 +219,10 @@ export function useAppShellBootstrapSubscriptions(options: {
   });
   const handleSessionChange = useEffectEvent(
     (event: { reason: string; sessionId?: string; ts: number; modelId?: string }) => {
-    void options.refreshSessions();
-    if (event.reason === 'created') {
-      void options.refreshProjects();
-    }
+      void options.refreshSessions();
+      if (event.reason === 'created' || event.reason === 'migrated') {
+        void options.refreshProjects();
+      }
     if (event.sessionId) {
       options.setSessionEventHealthBySession((current) => {
         const previous = current[event.sessionId!];

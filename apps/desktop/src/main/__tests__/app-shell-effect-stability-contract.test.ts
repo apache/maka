@@ -92,6 +92,33 @@ describe('AppShell effect stability contract', () => {
     assert.equal(projectRefreshes, 1);
   });
 
+  it('refreshes the project catalog after startup migration changes session associations', async () => {
+    const effects = await importAppShellEffects();
+    const refs = createBootstrapRefs();
+    const captured = createCapturedSubscriptions();
+    const root = installReactRenderer(captured);
+    let projectRefreshes = 0;
+
+    await render(
+      root,
+      createElement(BootstrapSubscriptionProbe, {
+        effects,
+        onConnectionEvent: () => {},
+        onProjectRefresh: () => {
+          projectRefreshes += 1;
+        },
+        refs,
+      }),
+    );
+
+    await act(async () => {
+      captured.sessionChange?.({ reason: 'migrated', ts: 1 });
+      await Promise.resolve();
+    });
+
+    assert.equal(projectRefreshes, 1);
+  });
+
   it('keeps bootstrap subscriptions stable while invoking the latest connection handler', async () => {
     const effects = await importAppShellEffects();
     const refs = createBootstrapRefs();

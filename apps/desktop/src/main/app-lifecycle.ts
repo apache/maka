@@ -2,7 +2,6 @@ import { app, nativeImage, safeStorage } from 'electron';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { buildPricingLookup, setActiveProxy } from '@maka/runtime';
-import { migrateSessionProjects } from '@maka/storage';
 import type { BotRegistry, SessionManager, ShellRunProcessManager } from '@maka/runtime';
 import type { McpClientManager } from '@maka/mcp';
 import type {
@@ -29,6 +28,7 @@ import type { createMainWindowController } from './main-window.js';
 import type { assembleDesktopTools } from './tool-assembly.js';
 import type { StreamEvents } from './session-stream.js';
 import type { SettingsIpcHandle } from './settings-ipc-main.js';
+import { runProjectStartupMigration } from './project-startup-migration.js';
 
 type AssembledTools = ReturnType<typeof assembleDesktopTools>;
 type PricingLookup = ReturnType<typeof buildPricingLookup>;
@@ -62,6 +62,7 @@ export interface AppLifecycleDeps {
    *  controller and is registered here on `second-instance` / `activate`. */
   focusOrCreateMainWindow: () => void;
   emitConnectionListChanged: () => void;
+  emitSessionsChanged: (reason: 'migrated') => void;
   handleExternalSettingsChange: () => Promise<void>;
   /** Accessor for the settings IPC handle, which is assigned inside
    *  main.ts's `registerIpc()`; teardown disposes it if present. */
@@ -111,6 +112,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     streamEvents,
     focusOrCreateMainWindow,
     emitConnectionListChanged,
+    emitSessionsChanged,
     handleExternalSettingsChange,
     getSettingsIpc,
     setLookupPricing,
@@ -138,14 +140,12 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
   }
 
   async function migrateSessionProjectsOnStartup(): Promise<void> {
-    try {
-      const result = await migrateSessionProjects({ sessions: sessionStore, catalog: projectCatalog });
-      if (result.failed > 0) {
-        console.error(`[projects] skipped ${result.failed} legacy session migration(s)`);
-      }
-    } catch (error) {
-      console.error('[projects] legacy session migration failed:', error);
-    }
+    await runProjectStartupMigration({
+      sessions: sessionStore,
+      catalog: projectCatalog,
+      emitSessionsChanged,
+      logError: console.error,
+    });
   }
 
   async function ensureBootstrapConnection(): Promise<void> {

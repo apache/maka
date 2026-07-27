@@ -1322,6 +1322,7 @@ wireAppLifecycle({
   streamEvents,
   focusOrCreateMainWindow,
   emitConnectionListChanged,
+  emitSessionsChanged,
   handleExternalSettingsChange,
   getSettingsIpc: () => settingsIpc,
   setLookupPricing: (value) => {
