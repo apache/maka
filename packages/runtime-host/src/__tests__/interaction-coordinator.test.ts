@@ -361,7 +361,7 @@ describe('HostInteractionCoordinator', () => {
       const request: PermissionRequestEvent = {
         ...permissionEvent('permission_assignment_secret', 'tool_assignment_secret', 36),
         args: {
-          command: `API_TOKEN+=${secret} deploy`,
+          command: `API_TOKEN=${secret} deploy`,
           cwd: '/repo',
         },
       };
