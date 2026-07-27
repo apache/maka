@@ -4,6 +4,7 @@ import { writeFile } from 'node:fs/promises';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { canonicalToolArgsHash, scanToolLedger, type RuntimeEvent } from '@maka/core';
@@ -102,6 +103,30 @@ describe('SQLite recovery authority multi-process races', () => {
         results.map(({ code }) => code),
         [0, 0],
       );
+    });
+  });
+
+  it('serializes concurrent schema 4 to 5 upgrades', async () => {
+    await withPreparedDatabase(async ({ dbPath, startPath }) => {
+      const db = new DatabaseSync(dbPath);
+      try {
+        db.exec('DROP TABLE runtime_capabilities; PRAGMA user_version = 4;');
+      } finally {
+        db.close();
+      }
+
+      const results = await runOpenWorkers(dbPath, startPath);
+      assert.deepEqual(
+        results.map(({ code }) => code),
+        [0, 0],
+      );
+
+      const upgraded = createSqliteRuntimeStore(dbPath);
+      try {
+        assert.equal(upgraded.schemaVersion(), 5);
+      } finally {
+        upgraded.close();
+      }
     });
   });
 

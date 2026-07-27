@@ -14,12 +14,12 @@ import {
 } from '../tool-recovery-bundle.js';
 
 const EXPECTED_ARGS_HASH =
-  'sha256:6d6986f1e1432963178ce8c64f6fb4a1ba30f6176991750cc70558e417d93058';
+  'sha256:763712445cbfb7feebe3bd4ba14e29425f05e40b8cd14aef0896853dca24b4d9';
 const OBSERVATION_DIGEST =
   'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as const;
 
 describe('recovery persistence authority', () => {
-  it('derives one domain-separated identity from strict JSON tool arguments', () => {
+  it('preserves the mainline T1 identity bytes for strict JSON tool arguments', () => {
     assert.equal(
       canonicalToolArgsHash('Write', { content: 'after', path: 'notes.txt' }),
       EXPECTED_ARGS_HASH,

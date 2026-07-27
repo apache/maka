@@ -16,10 +16,112 @@ const ARGS_HASH = canonicalToolArgsHash('Write', {
   path: 'notes.txt',
   content: 'after',
 });
+// Mainline schema 4 persisted stableHash({ toolName, args }) for this exact
+// provider call. Keep the literal independent from the current hash helper so
+// an accidental identity-epoch change remains observable during migration.
+const MAINLINE_SCHEMA_4_READ_ARGS_HASH =
+  'sha256:5949a5bf23e5928b160ea0444cd16391f47365c3cd8b6d33a7381d585baf1db2';
 const OBSERVATION_DIGEST =
   'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as const;
 
 describe('SQLite recovery persistence authority', () => {
+  it('rebuilds a real schema 4 T1 dispatch written with the mainline args identity', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-recovery-mainline-t1-upgrade-'));
+    const dbPath = join(root, 'runtime.sqlite');
+    const store = createSqliteRuntimeStore(dbPath);
+    store.close();
+
+    const call = baseEvent({
+      id: 'schema-4-call',
+      role: 'model',
+      author: 'agent',
+      content: {
+        kind: 'function_call',
+        id: 'schema-4-provider-call',
+        name: 'Read',
+        args: { path: 'prepared.txt' },
+      },
+    });
+    const dispatch = baseEvent({
+      id: 'schema-4-dispatch',
+      ts: 2,
+      actions: {
+        toolDispatch: {
+          protocol: 't1_after_preflight_v1',
+          operationId: 'schema-4-operation',
+          providerToolCallId: 'schema-4-provider-call',
+          toolName: 'Read',
+          canonicalArgsHash: MAINLINE_SCHEMA_4_READ_ARGS_HASH,
+          recoveryMode: 'replay_safe',
+        },
+      },
+      refs: {
+        operationId: 'schema-4-operation',
+        toolCallId: 'schema-4-provider-call',
+      },
+    });
+
+    const db = new DatabaseSync(dbPath);
+    const insertEvent = db.prepare(`
+      INSERT INTO runtime_events(
+        event_id, session_id, invocation_id, run_id, turn_id,
+        event_seq, event_kind, payload_json, committed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    insertEvent.run(
+      call.id,
+      call.sessionId,
+      call.invocationId,
+      call.runId,
+      call.turnId,
+      1,
+      'function_call',
+      JSON.stringify(call),
+      call.ts,
+    );
+    insertEvent.run(
+      dispatch.id,
+      dispatch.sessionId,
+      dispatch.invocationId,
+      dispatch.runId,
+      dispatch.turnId,
+      2,
+      'tool_dispatch',
+      JSON.stringify(dispatch),
+      dispatch.ts,
+    );
+    db.exec('DROP TABLE runtime_capabilities; PRAGMA user_version = 4;');
+    db.close();
+
+    try {
+      const upgraded = createSqliteRuntimeStore(dbPath);
+      try {
+        assert.deepEqual(await upgraded.rebuildToolProjectionsFromRuntimeEvents(), {
+          operations: 1,
+          journalEvents: 1,
+        });
+        assert.deepEqual(await upgraded.readToolOperation('schema-4-operation'), {
+          operationId: 'schema-4-operation',
+          invocationId: 'invocation-1',
+          runId: 'run-1',
+          turnId: 'turn-1',
+          providerToolCallId: 'schema-4-provider-call',
+          toolName: 'Read',
+          canonicalArgsHash: MAINLINE_SCHEMA_4_READ_ARGS_HASH,
+          recoveryMode: 'replay_safe',
+          currentState: 'prepared',
+          callEventId: 'schema-4-call',
+          dispatchEventId: 'schema-4-dispatch',
+          version: 1,
+        });
+      } finally {
+        upgraded.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('upgrades and quarantines populated mainline schema 4 tool projections', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-recovery-mainline-upgrade-'));
     const dbPath = join(root, 'runtime.sqlite');

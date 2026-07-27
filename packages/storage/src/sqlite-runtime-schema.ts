@@ -130,24 +130,36 @@ export function configureSqliteRuntimeDatabase(db: DatabaseSync): void {
 }
 
 export function migrateSqliteRuntimeDatabase(db: DatabaseSync): void {
-  const current = readUserVersion(db);
-  if (current > SQLITE_RUNTIME_SCHEMA_VERSION) {
+  const observedVersion = readUserVersion(db);
+  if (observedVersion > SQLITE_RUNTIME_SCHEMA_VERSION) {
     throw new Error(
-      `SQLite runtime schema ${current} is newer than supported version ${SQLITE_RUNTIME_SCHEMA_VERSION}`,
+      `SQLite runtime schema ${observedVersion} is newer than supported version ${SQLITE_RUNTIME_SCHEMA_VERSION}`,
     );
   }
-  for (let version = current + 1; version <= SQLITE_RUNTIME_SCHEMA_VERSION; version += 1) {
-    const sql = MIGRATIONS.get(version);
-    if (!sql) throw new Error(`Missing SQLite runtime migration ${version}`);
-    db.exec('BEGIN IMMEDIATE');
-    try {
+  if (observedVersion === SQLITE_RUNTIME_SCHEMA_VERSION) return;
+
+  // The optimistic read keeps established databases on a read-only open path.
+  // Any pending upgrade is serialized by one write transaction, then re-reads
+  // user_version under that lock so a concurrent opener cannot apply a
+  // migration another process just committed.
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const current = readUserVersion(db);
+    if (current > SQLITE_RUNTIME_SCHEMA_VERSION) {
+      throw new Error(
+        `SQLite runtime schema ${current} is newer than supported version ${SQLITE_RUNTIME_SCHEMA_VERSION}`,
+      );
+    }
+    for (let version = current + 1; version <= SQLITE_RUNTIME_SCHEMA_VERSION; version += 1) {
+      const sql = MIGRATIONS.get(version);
+      if (!sql) throw new Error(`Missing SQLite runtime migration ${version}`);
       db.exec(sql);
       db.exec(`PRAGMA user_version = ${version}`);
-      db.exec('COMMIT');
-    } catch (error) {
-      rollback(db);
-      throw error;
     }
+    db.exec('COMMIT');
+  } catch (error) {
+    rollback(db);
+    throw error;
   }
 }
 

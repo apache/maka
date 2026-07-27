@@ -1,9 +1,13 @@
 import { createHash } from 'node:crypto';
 
-const TOOL_ARGS_IDENTITY_DOMAIN = 'canonical_tool_args_v1';
-
 /**
  * Returns the identity of the exact provider-visible tool name and arguments.
+ *
+ * `t1_after_preflight_v1` already persists the mainline identity bytes for
+ * stableHash({ toolName, args }). Keep that wire identity stable while using
+ * strict JSON canonicalization to reject values that mainline would otherwise
+ * coerce ambiguously. A different hash domain requires a versioned dispatch
+ * protocol rather than an in-place change to this function.
  *
  * Only JSON values are accepted. Silently coercing `undefined`, bigint, Date,
  * non-finite numbers, accessors, or custom prototypes would create collisions
@@ -12,7 +16,6 @@ const TOOL_ARGS_IDENTITY_DOMAIN = 'canonical_tool_args_v1';
 export function canonicalToolArgsHash(toolName: string, args: unknown): `sha256:${string}` {
   if (toolName.length === 0) throw new Error('Tool argument identity requires a tool name');
   const body = stableJsonStringify({
-    protocol: TOOL_ARGS_IDENTITY_DOMAIN,
     toolName,
     args,
   });
