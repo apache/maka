@@ -25,6 +25,13 @@ export function isProjectPathMismatchError(error: unknown): error is ProjectPath
   return error instanceof ProjectPathMismatchError;
 }
 
+export interface ProjectRelinkContext {
+  projectId: string;
+  destinationPath: string;
+  previousLocations: ProjectLocation[];
+  conflictingProjectId?: string;
+}
+
 export interface ProjectCatalog {
   list(): Promise<ProjectRecord[]>;
   register(path: string): Promise<ProjectRecord>;
@@ -34,7 +41,7 @@ export interface ProjectCatalog {
   relink(
     projectId: string,
     path: string,
-    mergeConflict?: (conflictingProjectId: string) => Promise<void>,
+    beforeCommit?: (context: ProjectRelinkContext) => Promise<void>,
   ): Promise<ProjectRecord>;
   rename(projectId: string, name: string): Promise<ProjectRecord>;
   archive(projectId: string): Promise<ProjectRecord>;
@@ -273,7 +280,7 @@ class FileProjectCatalog implements ProjectCatalog {
   async relink(
     projectId: string,
     path: string,
-    mergeConflict?: (conflictingProjectId: string) => Promise<void>,
+    beforeCommit?: (context: ProjectRelinkContext) => Promise<void>,
   ): Promise<ProjectRecord> {
     const resolved = await resolveProjectLocation({ path });
     const timestamp = this.now();
@@ -285,25 +292,36 @@ class FileProjectCatalog implements ProjectCatalog {
       const conflict = file.projects.find(
         (item) => item.id !== projectId && item.identity === resolved.identity,
       );
-      if (conflict) {
-        if (!mergeConflict) {
-          throw new Error(`Project path already belongs to project: ${conflict.id}`);
-        }
-        await mergeConflict(conflict.id);
-        file.projects = file.projects.filter((item) => item.id !== conflict.id);
+      if (conflict && !beforeCommit) {
+        throw new Error(`Project path already belongs to project: ${conflict.id}`);
       }
       const locationPath =
         resolved.kind === 'git' ? resolved.git!.worktreeRoot : resolved.canonicalPath;
+      await beforeCommit?.({
+        projectId,
+        destinationPath: locationPath,
+        previousLocations: project.locations.map((location) => ({ ...location })),
+        ...(conflict ? { conflictingProjectId: conflict.id } : {}),
+      });
+      if (conflict) {
+        file.projects = file.projects.filter((item) => item.id !== conflict.id);
+      }
       project.identity = resolved.identity;
       project.kind = resolved.kind;
+      const existingDestination = conflict?.locations.find(
+        (location) => location.path === locationPath,
+      );
       project.locations = [
         {
           path: locationPath,
           ...(resolved.git?.branch ? { branch: resolved.git.branch } : {}),
           isWorktree: resolved.git?.isWorktree ?? false,
-          addedAt: timestamp,
+          addedAt: existingDestination?.addedAt ?? timestamp,
           lastUsedAt: timestamp,
         },
+        ...(conflict?.locations
+          .filter((location) => location.path !== locationPath)
+          .map((location) => ({ ...location })) ?? []),
       ];
       project.lastUsedAt = Math.max(timestamp, conflict?.lastUsedAt ?? 0);
       project.updatedAt = timestamp;

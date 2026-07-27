@@ -21,6 +21,7 @@ export function createProjectManagementService(deps: {
   catalog: ProjectCatalog;
   sessions: Pick<SessionStore, 'listHeaders' | 'updateHeader'>;
   chooseDirectory(): Promise<string | undefined>;
+  getSelectedPath(): Promise<string>;
   setSelectedPath(path: string): void;
 }): ProjectManagementService {
   return {
@@ -45,14 +46,31 @@ export function createProjectManagementService(deps: {
       const id = requireProjectId(projectId);
       const path = await deps.chooseDirectory();
       if (!path) return { ok: false, reason: 'cancelled' };
-      const mergeSessions = async (conflictingProjectId: string) => {
+      let selectedProjectWasRelinked = false;
+      const prepareSessions = async (context: {
+        destinationPath: string;
+        previousLocations: Array<{ path: string }>;
+        conflictingProjectId?: string;
+      }) => {
+        const selectedPath = await deps.getSelectedPath();
+        selectedProjectWasRelinked = context.previousLocations.some(
+          (location) => location.path === selectedPath,
+        );
         for (const header of await deps.sessions.listHeaders()) {
-          if (header.projectId === conflictingProjectId) {
+          if (header.projectId === id) {
+            await deps.sessions.updateHeader(header.id, { cwd: context.destinationPath });
+          } else if (
+            context.conflictingProjectId &&
+            header.projectId === context.conflictingProjectId
+          ) {
             await deps.sessions.updateHeader(header.id, { projectId: id });
           }
         }
       };
-      const project = await deps.catalog.relink(id, path, mergeSessions);
+      const project = await deps.catalog.relink(id, path, prepareSessions);
+      if (selectedProjectWasRelinked && project.preferredPath) {
+        deps.setSelectedPath(project.preferredPath);
+      }
       return { ok: true, project };
     },
 

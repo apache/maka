@@ -27,6 +27,7 @@ test('project management service owns selection and reversible lifecycle actions
       },
     },
     chooseDirectory: async () => nextDirectory,
+    getSelectedPath: async () => selectedPaths.at(-1) ?? (await realpath(firstPath)),
     setSelectedPath: (path) => selectedPaths.push(path),
   });
 
@@ -52,9 +53,10 @@ test('project management service owns selection and reversible lifecycle actions
     assert.equal(relinked.project.preferredPath, await realpath(relocatedPath));
     assert.equal(
       selectedPaths.length,
-      selectionCountBeforeRelink,
-      'relinking updates the catalog without silently changing the selected project',
+      selectionCountBeforeRelink + 1,
+      'relinking the selected project keeps the current working directory usable',
     );
+    assert.equal(selectedPaths.at(-1), await realpath(relocatedPath));
 
     const selected = await service.select('project-1');
     assert.equal(selected.project.id, 'project-1');
@@ -79,6 +81,7 @@ test('project management service rejects malformed IPC identities before catalog
       },
     },
     chooseDirectory: async () => undefined,
+    getSelectedPath: async () => base,
     setSelectedPath: () => {},
   });
 
@@ -103,10 +106,22 @@ test('relinking merges a project that was accidentally added from its new path',
     createId: () => `project-${++nextId}`,
   });
   const sessions = createSessionStore(storage);
+  let failUpdateNumber: number | undefined;
+  let updateCount = 0;
   const service = createProjectManagementService({
     catalog,
-    sessions,
+    sessions: {
+      listHeaders: () => sessions.listHeaders(),
+      updateHeader: async (sessionId, patch) => {
+        updateCount += 1;
+        if (updateCount === failUpdateNumber) {
+          throw new Error('injected session reassignment failure');
+        }
+        return sessions.updateHeader(sessionId, patch);
+      },
+    },
     chooseDirectory: async () => nextDirectory,
+    getSelectedPath: async () => (nextDirectory ? await realpath(nextDirectory) : base),
     setSelectedPath: () => {},
   });
 
@@ -128,6 +143,18 @@ test('relinking merges a project that was accidentally added from its new path',
       makeSessionInput(newPath, duplicate.project.id, 'New history'),
     );
 
+    failUpdateNumber = 2;
+    await assert.rejects(
+      () => service.relink(original.project.id),
+      /injected session reassignment failure/,
+    );
+    assert.deepEqual(
+      (await catalog.list()).map((project) => project.id).sort(),
+      [original.project.id, duplicate.project.id].sort(),
+    );
+
+    failUpdateNumber = undefined;
+    updateCount = 0;
     const merged = await service.relink(original.project.id);
 
     assert.equal(merged.ok, true);
@@ -142,6 +169,10 @@ test('relinking merges a project that was accidentally added from its new path',
     assert.equal(
       (await sessions.readHeaderSnapshot(oldSession.id)).projectId,
       original.project.id,
+    );
+    assert.equal(
+      (await sessions.readHeaderSnapshot(oldSession.id)).cwd,
+      await realpath(newPath),
     );
     assert.equal(
       (await sessions.readHeaderSnapshot(newSession.id)).projectId,

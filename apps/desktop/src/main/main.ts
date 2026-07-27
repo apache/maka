@@ -724,6 +724,7 @@ const projectManagement = createProjectManagementService({
     });
     return result.canceled ? undefined : result.filePaths[0];
   },
+  getSelectedPath: () => projectRootController.current(),
   setSelectedPath: (path) => projectRootController.setSelected(path),
 });
 const resolveCurrentProjectRoot: () => Promise<string> = () => projectRootController.current();

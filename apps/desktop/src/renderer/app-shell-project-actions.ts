@@ -215,7 +215,18 @@ export function createAppShellProjectActions(deps: {
       const result = await window.maka.projects.relink(projectId);
       if (!result.ok) return null;
       if (selectAfter) await selectProjectRecord(result.project, true);
-      else await refreshProjects();
+      else {
+        if (
+          selectedProjectId !== null &&
+          (selectedProjectId === projectId ||
+            result.project.locations.some(
+              (location) => location.path === projectInfo?.projectPath,
+            ))
+        ) {
+          setSelectedProjectId(result.project.id);
+        }
+        await refreshProjects();
+      }
       return result.project;
     } catch (error) {
       toastApi.error(copy.selectDirectoryFailedTitle, localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale));

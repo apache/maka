@@ -297,8 +297,8 @@ test('conflicting relink waits for a retryable merge before removing the duplica
     );
 
     let mergedProjectId: string | undefined;
-    const merged = await catalog.relink(original.id, relocated, async (conflictingProjectId) => {
-      mergedProjectId = conflictingProjectId;
+    const merged = await catalog.relink(original.id, relocated, async (context) => {
+      mergedProjectId = context.conflictingProjectId;
     });
 
     assert.equal(mergedProjectId, duplicate.id);
@@ -307,6 +307,54 @@ test('conflicting relink waits for a retryable merge before removing the duplica
     assert.deepEqual(
       (await catalog.list()).map((project) => project.id),
       [original.id],
+    );
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('conflicting relink preserves every available worktree location from the merged project', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-relink-worktrees-'));
+  try {
+    const repository = join(base, 'repository');
+    const linkedWorktree = join(base, 'linked');
+    await mkdir(repository);
+    await execFileAsync('git', ['init', '--quiet'], { cwd: repository });
+    await writeFile(join(repository, 'tracked.txt'), 'tracked\n', 'utf8');
+    await execFileAsync('git', ['add', 'tracked.txt'], { cwd: repository });
+    await execFileAsync(
+      'git',
+      [
+        '-c',
+        'user.name=Maka Test',
+        '-c',
+        'user.email=test@maka.invalid',
+        'commit',
+        '--quiet',
+        '-m',
+        'init',
+      ],
+      { cwd: repository },
+    );
+    await execFileAsync(
+      'git',
+      ['worktree', 'add', '--quiet', '-b', 'relink-linked', linkedWorktree],
+      { cwd: repository },
+    );
+    let id = 0;
+    const catalog = createProjectCatalog(join(base, 'storage'), {
+      now: () => 1_000,
+      createId: () => `project-${++id}`,
+    });
+    const original = await catalog.importLegacyPath(join(base, 'missing-original'));
+    await catalog.register(repository);
+    await catalog.register(linkedWorktree);
+
+    const relinked = await catalog.relink(original.id, repository, async () => {});
+
+    assert.deepEqual(
+      relinked.locations.map((location) => location.path).sort(),
+      [await realpath(repository), await realpath(linkedWorktree)].sort(),
     );
   } finally {
     await rm(base, { recursive: true, force: true });
