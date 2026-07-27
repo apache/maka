@@ -21,6 +21,7 @@ import { validateConnectionBaseUrl } from '../llm-connections.js';
 import {
   CATALOG_PROVIDER_TYPES,
   PROVIDER_REGISTRY,
+  isWiredOAuthProvider,
   type ProviderCatalogGroup,
 } from '../provider-registry.js';
 
@@ -38,6 +39,20 @@ const CATALOG_TAB_GROUPS: ReadonlySet<ProviderCatalogGroup> = new Set([
   'aggregators',
   'local',
 ]);
+
+describe('provider OAuth wiring contract', () => {
+  it('derives runnable account providers from the registry adapter boundary', () => {
+    for (const type of [
+      'claude-subscription',
+      'openai-codex',
+      'github-copilot',
+      'xai-oauth',
+    ] as const) {
+      assert.equal(isWiredOAuthProvider(type), true, `${type} must be wired`);
+    }
+    assert.equal(isWiredOAuthProvider('gemini-cli'), false);
+  });
+});
 
 describe('provider catalog contract — structural invariants over CATALOG_PROVIDER_TYPES', () => {
   it('gives every catalog provider a non-empty label and description', () => {

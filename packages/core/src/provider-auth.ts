@@ -1,5 +1,6 @@
 import {
   PROVIDER_DEFAULTS,
+  isWiredOAuthProvider,
   providerAuthRequiresSecret,
   type ConnectionAuth,
   type ConnectionLastTestStatus,
@@ -59,12 +60,6 @@ export interface ProviderAuthContract {
   };
 }
 
-const WIRED_OAUTH_PROVIDERS = new Set<ProviderType>([
-  'claude-subscription',
-  'openai-codex',
-  'github-copilot',
-]);
-
 export function deriveProviderAuthContract(input: ProviderAuthContractInput): ProviderAuthContract {
   const defaults = PROVIDER_DEFAULTS[input.providerType];
   const enabled = input.enabled ?? true;
@@ -111,7 +106,7 @@ export function deriveProviderAuthContract(input: ProviderAuthContractInput): Pr
   }
 
   if (defaults.authKind === 'oauth_token') {
-    if (WIRED_OAUTH_PROVIDERS.has(input.providerType)) {
+    if (isWiredOAuthProvider(input.providerType)) {
       const validationStatus = input.lastTestStatus ?? 'not_run';
       const state: ProviderAuthState = authStateFromSecretAndTest(hasSecret, input.lastTestStatus);
       return {
@@ -258,7 +253,7 @@ function setupModeForAuthKind(authKind: ConnectionAuth['kind']): ProviderAuthSet
 
 function setupModeForProvider(providerType: ProviderType): ProviderAuthSetupMode {
   const authKind = PROVIDER_DEFAULTS[providerType]?.authKind;
-  if (authKind === 'oauth_token' && WIRED_OAUTH_PROVIDERS.has(providerType)) return 'oauth';
+  if (authKind === 'oauth_token' && isWiredOAuthProvider(providerType)) return 'oauth';
   return setupModeForAuthKind(authKind);
 }
 

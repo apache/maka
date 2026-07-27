@@ -1,8 +1,7 @@
 import { ChevronRight } from '@maka/ui/icons';
-import { PROVIDER_DEFAULTS, type ProviderType } from '@maka/core';
+import { PROVIDER_DEFAULTS, isWiredOAuthProvider, type ProviderType } from '@maka/core';
 import { Chip, Item, ItemActions, ItemContent, ItemDescription, ItemMedia, ItemTitle, useUiLocale } from '@maka/ui';
 import { ProviderLogo, providerDisplay } from './provider-display';
-import { isWiredOAuthProvider } from './provider-panel-shared';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 
 export function ProviderCatalogCard(props: { type: ProviderType; count: number; onSelect(): void }) {

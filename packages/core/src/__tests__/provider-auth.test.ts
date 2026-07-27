@@ -412,6 +412,19 @@ describe('ProviderAuth contract', () => {
     expect(contract.copy.detail).toContain('用于聊天发送');
   });
 
+  test('xAI OAuth exposes the runnable account-login contract', () => {
+    const contract = deriveProviderAuthContract({
+      providerType: 'xai-oauth',
+      hasSecret: false,
+    });
+
+    expect(contract.setupMode).toBe('oauth');
+    expect(contract.state).toBe('not_configured');
+    expect(contract.actionAvailability.start_oauth).toBe('available');
+    expect(contract.actionAvailability.refresh_oauth).toBe('hidden');
+    expect(contract.actionAvailability.revoke_auth).toBe('hidden');
+  });
+
   test('unwired OAuth providers stay preview-only and do not expose live actions', () => {
     const contract = deriveProviderAuthContract({
       providerType: 'gemini-cli',

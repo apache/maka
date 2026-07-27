@@ -26,6 +26,7 @@
 import {
   CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
   PROVIDER_DEFAULTS,
+  isWiredOAuthProvider,
   providerAuthRequiresSecret,
   type LlmConnection,
 } from './llm-connections.js';
@@ -106,12 +107,7 @@ export function isConnectionReady(input: IsConnectionReadyInput): IsConnectionRe
     return { ready: false, reason: 'connection_disabled' };
   }
   const authKind = PROVIDER_DEFAULTS[connection.providerType].authKind;
-  if (
-    authKind === 'oauth_token' &&
-    connection.providerType !== 'claude-subscription' &&
-    connection.providerType !== 'openai-codex' &&
-    connection.providerType !== 'github-copilot'
-  ) {
+  if (authKind === 'oauth_token' && !isWiredOAuthProvider(connection.providerType)) {
     return { ready: false, reason: 'oauth_subscription_not_wired' };
   }
   if (providerAuthRequiresSecret(connection.providerType) && !hasSecret) {

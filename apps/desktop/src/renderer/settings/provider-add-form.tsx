@@ -1,5 +1,10 @@
 import { useState, type FormEvent } from 'react';
-import { PROVIDER_DEFAULTS, validateSlug, type ProviderType } from '@maka/core';
+import {
+  PROVIDER_DEFAULTS,
+  isWiredOAuthProvider,
+  validateSlug,
+  type ProviderType,
+} from '@maka/core';
 import { providerAuthRequiresSecret, providerAuthSupportsApiKey } from '@maka/core/llm-connections';
 import { Alert, AlertDescription, AlertTitle, Button, Chip, Input, useMountedRef, useUiLocale } from '@maka/ui';
 import { buildCatalogRecommendedDefaultModel } from '../model-catalog-choices';
@@ -8,7 +13,6 @@ import { providerDisplay } from './provider-display';
 import { useActionGuard } from './use-action-guard';
 import {
   categoryLabel,
-  isWiredOAuthProvider,
   nextSlug,
   providerPanelActionErrorMessage,
   type ConnectionsBridge,

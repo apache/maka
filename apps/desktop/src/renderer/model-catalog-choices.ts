@@ -3,6 +3,7 @@ import {
   PROVIDER_DEFAULTS,
   buildConnectionModelCatalogEntries,
   connectionEnabledModelIds,
+  isWiredOAuthProvider,
   type LlmConnection,
   type ModelCatalogEntry,
   type ProviderType,
@@ -185,12 +186,7 @@ function isModelConsumerConnection(connection: Pick<LlmConnection, 'enabled' | '
   // Mirrors `isFakeBackend` in connection-readiness.ts; without this guard the
   // `.backendKind` read below throws on load for an orphan connection.
   if (!connection.enabled || !defaults || defaults.backendKind !== 'ai-sdk') return false;
-  if (
-    defaults.authKind === 'oauth_token' &&
-    connection.providerType !== 'claude-subscription' &&
-    connection.providerType !== 'openai-codex' &&
-    connection.providerType !== 'github-copilot'
-  ) {
+  if (defaults.authKind === 'oauth_token' && !isWiredOAuthProvider(connection.providerType)) {
     return false;
   }
   return true;

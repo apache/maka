@@ -1695,6 +1695,16 @@ export const CATALOG_PROVIDER_TYPES = providerTypesByOrder('catalogOrder');
 export const RECOMMENDED_PROVIDER_TYPES = providerTypesByOrder('recommendedOrder');
 
 /**
+ * An OAuth provider is product-wired when its registry entry has both the
+ * OAuth credential contract and a runnable model adapter. OAuth entries whose
+ * adapter is unavailable remain preview-only.
+ */
+export function isWiredOAuthProvider(providerType: ProviderType): boolean {
+  const provider = PROVIDER_REGISTRY[providerType];
+  return provider.authKind === 'oauth_token' && provider.runtimeAdapter.kind !== 'unavailable';
+}
+
+/**
  * Persisted providerType aliases renamed away in the current registry. Each
  * entry maps a legacy persisted id to its current id so connections stored
  * before a rename keep working without a destructive on-disk migration.

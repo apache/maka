@@ -86,10 +86,6 @@ export function connectionLastTestMessageDisplay(message: string | undefined, lo
   return classified || copy.statusUnavailable;
 }
 
-export function isWiredOAuthProvider(type: ProviderType): boolean {
-  return type === 'claude-subscription' || type === 'openai-codex';
-}
-
 export function categoryLabel(category: ProviderCategory, locale: UiLocale = 'zh'): string {
   return getProviderSettingsCopy(locale).shared.categories[category];
 }
