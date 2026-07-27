@@ -4,7 +4,7 @@
 - 更新日期：2026-07-27
 - 集成实验来源：`origin/codex/runtime-resume-phase3a@24bb5f33`
 - PR A 旧重写来源：`codex/runtime-recovery-authority@c843519e`
-- 当前平铺基线：`upstream/main@9d9a47b9`
+- 当前平铺基线：`upstream/main@0e80fe18`
 - 当前平铺分支：`codex/runtime-recovery-authority-v2`
 
 ## 1. 目的
@@ -130,6 +130,7 @@ future newer schema            -> fail closed
 | reconcile/outcome/decision exception rollback | storage authority test | 已覆盖 |
 | reconcile/outcome/decision SIGKILL rollback + post-COMMIT | storage process crash test | POSIX 覆盖；Windows 按有限支持跳过 |
 | exact/conflicting bundle、rebuild/commit 多进程竞争 | storage multi-process test | 已覆盖 |
+| 多进程同时打开并持有同一 WAL 数据库、初始化失败有界退出 | storage multi-process test | 已覆盖 |
 | populated mainline schema 4 prepared/completed tool rows | storage authority test | 已覆盖并隔离 |
 | #1346 capability rejection | storage authority test | 已覆盖 |
 | immutable row/payload mismatch | storage authority test | 已覆盖 |
@@ -186,12 +187,15 @@ PR A 没带入 file checkpoint、continuation 或 host lifecycle。
 2026-07-27 本轮结果：
 
 - 旧 PR A 的 8 个 commit 全部显示为 removed；
-- 新平铺 PR A 的 4 个 commit 全部显示为 added；
+- 新平铺 PR A 最初的 4 个实现 commit 与后续 10 个审查收敛 commit 全部显示为 added；
 - 没有 commit 被错误标记为等价 cherry-pick；
 - `upstream/main...HEAD` 只涉及 core recovery contract、SQLite/JSONL authority、
   Runtime Resolver/read-model/resume diagnostics、对应测试与本路线文档；
 - 未出现 file checkpoint carrier、filesystem worker、SessionManager/Desktop/CLI host wiring
   或 Git carrier 路径。
+- 分支已重放到 `upstream/main@0e80fe18` 的 interaction authority 之后；唯一内容冲突位于
+  RuntimeEvent read-model 测试，同时保留了上游 question-answer acknowledgement 与 PR A
+  recovery audit fact 的不可见投影契约。
 
 合并门槛：
 
