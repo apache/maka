@@ -688,6 +688,45 @@ test('validates every request across same-session continuation executions', asyn
   );
 });
 
+test('reads autonomous retry traces across distinct session identities', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-provider-trace-retries-'));
+  const traceEventsPath = join(dir, 'events.jsonl');
+  const identities = [
+    { runId: 'run-retry-1', sessionId: 'session-retry-1', turnId: 'turn-retry-1' },
+    { runId: 'run-retry-2', sessionId: 'session-retry-2', turnId: 'turn-retry-2' },
+  ];
+  const rows = identities.flatMap((identity, index) => {
+    const suffix = String(index + 1);
+    const { capture, attempt } = completeTraceRows(identity.runId);
+    Object.assign(capture, identity, { id: `capture-event-retry-${suffix}` });
+    Object.assign(attempt, identity, { id: `attempt-event-retry-${suffix}` });
+    capture.data.captureId = `capture-retry-${suffix}`;
+    capture.data.artifactId = `artifact-retry-${suffix}`;
+    capture.data.turnId = identity.turnId;
+    attempt.data.attemptId = `attempt-retry-${suffix}`;
+    attempt.data.captureId = capture.data.captureId;
+    attempt.data.captureArtifactId = capture.data.artifactId;
+    attempt.data.turnId = identity.turnId;
+    return [capture, attempt];
+  });
+  await writeFile(traceEventsPath, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`);
+
+  const result = await traceAnalysis.readProviderRequestTrace(traceEventsPath);
+
+  assert.deepEqual(result.identities, identities);
+  assert.deepEqual(result.diagnostics, []);
+  assert.doesNotThrow(() =>
+    traceAnalysis.assertProviderRequestTraceComplete(result, { expectedIdentities: identities }),
+  );
+  assert.throws(
+    () =>
+      traceAnalysis.assertProviderRequestTraceComplete(result, {
+        expectedIdentities: [identities[1]!],
+      }),
+    /execution identity set.*run-retry-1/i,
+  );
+});
+
 test('fails completeness when a later request attempt record is torn', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'maka-provider-trace-'));
   const traceEventsPath = join(dir, 'events.jsonl');

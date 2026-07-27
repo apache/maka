@@ -48,7 +48,7 @@ export interface ProviderRequestTraceDiagnostic {
 
 export interface ProviderRequestTraceAnalysis {
   identity?: ProviderRequestTraceIdentity;
-  /** Every coherent execution represented by a continuation-aware task trace. */
+  /** Every exported top-level execution represented by this task trace. */
   identities?: ProviderRequestTraceIdentity[];
   traceId?: string;
   captures: ProviderRequestTraceCaptureAnalysis[];
@@ -58,6 +58,7 @@ export interface ProviderRequestTraceAnalysis {
 
 export interface AssertProviderRequestTraceCompleteOptions {
   expectedIdentity?: ProviderRequestTraceIdentity;
+  expectedIdentities?: readonly ProviderRequestTraceIdentity[];
   label?: string;
 }
 
@@ -116,9 +117,7 @@ export async function readProviderRequestTrace(
       identity = eventIdentity;
     }
     const conflictingIdentity =
-      identity && identity.sessionId !== eventIdentity.sessionId
-        ? identity
-        : (identityByRunId.get(eventIdentity.runId) ?? identityByTurnId.get(eventIdentity.turnId));
+      identityByRunId.get(eventIdentity.runId) ?? identityByTurnId.get(eventIdentity.turnId);
     if (conflictingIdentity && !sameIdentity(conflictingIdentity, eventIdentity)) {
       diagnostics.push({
         code: 'mixed_identity',
@@ -180,9 +179,10 @@ export async function readProviderRequestTrace(
 }
 
 /**
- * Validate evidence for a completed execution that was expected to dispatch at
- * least one provider request. A pre-dispatch cancellation is intentionally
- * incomplete here because it is indistinguishable from a missing attempt row.
+ * Validate tracked requests for exported top-level Harbor invocations.
+ * Semantic-compaction and child-agent provider dispatches are outside this
+ * artifact contract. A pre-dispatch cancellation is intentionally incomplete
+ * because it is indistinguishable from a missing attempt row.
  */
 export function assertProviderRequestTraceComplete(
   trace: ProviderRequestTraceAnalysis,
@@ -201,7 +201,25 @@ export function assertProviderRequestTraceComplete(
         ? [trace.identity]
         : fail('has no execution identity');
   const identity = trace.identity ?? identities[0]!;
-  if (options.expectedIdentity) {
+  if (options.expectedIdentity && options.expectedIdentities) {
+    fail('cannot validate both expectedIdentity and expectedIdentities');
+  }
+  if (options.expectedIdentities) {
+    const missing = options.expectedIdentities.find(
+      (expected) => !identities.some((candidate) => sameIdentity(candidate, expected)),
+    );
+    const unexpected = identities.find(
+      (candidate) =>
+        !options.expectedIdentities!.some((expected) => sameIdentity(candidate, expected)),
+    );
+    if (missing || unexpected || identities.length !== options.expectedIdentities.length) {
+      fail(
+        `execution identity set differs from expected; observed ${identities
+          .map(formatIdentity)
+          .join(', ')}`,
+      );
+    }
+  } else if (options.expectedIdentity) {
     if (identities.length === 1) {
       for (const key of ['runId', 'sessionId', 'turnId'] as const) {
         if (identity[key] !== options.expectedIdentity[key]) {

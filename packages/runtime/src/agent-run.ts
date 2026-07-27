@@ -163,6 +163,7 @@ export class AgentRun {
   private runStoreAvailable = true;
   private runtimeEventStoreAvailable = true;
   private runtimeEventStoreFailure: unknown;
+  private traceWriteError: string | undefined;
   private failureClass: string | undefined;
   private failureMessage: string | undefined;
   private lastTs = 0;
@@ -1204,6 +1205,7 @@ export class AgentRun {
           ? { failureClass: this.failureClass ?? finalStatus?.blockedReason }
           : {}),
         ...(this.failureMessage ? { failureMessage: this.failureMessage } : {}),
+        ...(this.traceWriteError ? { traceWriteError: this.traceWriteError } : {}),
         ...(this.abortSource || fallbackStatus === 'cancelled'
           ? { abortSource: this.abortSource ?? 'user_stop' }
           : {}),
@@ -1343,11 +1345,16 @@ export class AgentRun {
     label = 'agent run store write',
   ): Promise<void> {
     const message = errorMessage(error);
+    this.traceWriteError ??= `${label}: ${message}`;
     try {
       await this.input.runStore?.updateRun(this.sessionId, this.runId, {
-        traceWriteError: `${label}: ${message}`,
+        traceWriteError: this.traceWriteError,
         updatedAt: this.input.now(),
       });
+    } catch {
+      // The terminal header commit retries the in-memory latch.
+    }
+    try {
       await this.input.runStore?.appendEvent(this.sessionId, this.runId, {
         type: 'trace_write_failed',
         id: this.input.newId(),
@@ -1358,7 +1365,7 @@ export class AgentRun {
         message,
       });
     } catch {
-      // Diagnostic persistence failed too; never perturb model/tool execution.
+      // Diagnostic persistence is best effort; never perturb model/tool execution.
     }
   }
 }

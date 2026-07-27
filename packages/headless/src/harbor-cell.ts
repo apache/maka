@@ -547,6 +547,7 @@ async function readHarborCellUsageCheckpoint(
   }
 }
 
+/** Export top-level invocation ledgers for provider-request benchmark evidence. */
 export async function writeHarborTaskRunTrace(input: {
   outputDir: string;
   storage: HeadlessStorageWriter;
