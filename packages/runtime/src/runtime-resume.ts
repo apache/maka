@@ -13,6 +13,7 @@ export type ToolOperationStatus =
   | 'failed'
   | 'indeterminate'
   | 'not_dispatched'
+  | 'parked'
   | 'corruption';
 
 export interface ToolOperation {
@@ -79,6 +80,8 @@ export type ResumePlanDiagnosticCode =
   | 'resume_candidate_missing'
   | 'tool_not_dispatched'
   | 'tool_recovery_corruption'
+  | 'duplicate_event_id'
+  | 'semantic_lane_conflict'
   | 'protocol_marker_invalid';
 
 export type ResumeRejectionReason =
@@ -843,11 +846,25 @@ function collectResumeDiagnostics(
   }
 
   for (const issue of recovery.issues) {
-    diagnostics.push({
-      code: 'protocol_marker_invalid',
-      message: 'runtime protocol marker is only valid on the first canonical event',
-      eventId: issue.eventId,
-    });
+    if (issue.code === 'protocol_marker_invalid') {
+      diagnostics.push({
+        code: issue.code,
+        message: 'runtime protocol marker is only valid on the first canonical event',
+        eventId: issue.eventId,
+      });
+    } else if (issue.code === 'duplicate_event_id') {
+      diagnostics.push({
+        code: issue.code,
+        message: 'immutable RuntimeEvent identity is duplicated',
+        eventId: issue.eventId,
+      });
+    } else if (issue.code === 'semantic_lane_conflict') {
+      diagnostics.push({
+        code: issue.code,
+        message: 'RuntimeEvent claims more than one authoritative tool semantic lane',
+        eventId: issue.eventId,
+      });
+    }
   }
 
   for (const decision of recovery.decisions) {
@@ -911,6 +928,8 @@ function deriveRejectionReasons(
       case 'pending_tool_result':
       case 'tool_not_dispatched':
       case 'tool_recovery_corruption':
+      case 'duplicate_event_id':
+      case 'semantic_lane_conflict':
       case 'protocol_marker_invalid':
       case 'unmatched_tool_result':
       case 'tool_name_mismatch':

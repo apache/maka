@@ -893,6 +893,56 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     expect(out.diagnostics).toEqual([]);
   });
 
+  test('terminal recovery bundle facts are accepted without creating legacy message rows', () => {
+    const out = projectRuntimeEventsToStoredMessages(
+      [
+        ev({
+          id: 'toolop-1-reconcile',
+          role: 'system',
+          author: 'system',
+          actions: {
+            toolRecovery: {
+              kind: 'maka.tool.reconcile_result',
+              version: 1,
+              payload: {
+                protocol: 'tool_reconcile_v1',
+                operationId: 'toolop-1',
+                observation: 'unreadable',
+                observationSchema: 'state_identity_v1',
+                observationDigest:
+                  'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+              },
+            },
+          },
+          refs: { toolCallId: 'tool-1', operationId: 'toolop-1' },
+        }),
+        ev({
+          id: 'toolop-1-decision',
+          role: 'system',
+          author: 'system',
+          actions: {
+            toolRecovery: {
+              kind: 'maka.tool.recovery_decision',
+              version: 1,
+              payload: {
+                protocol: 'tool_recovery_v1',
+                operationId: 'toolop-1',
+                disposition: 'parked',
+                reasonCode: 'reconcile_unreadable',
+                evidenceEventIds: ['call-1', 'dispatch-1', 'toolop-1-reconcile'],
+              },
+            },
+          },
+          refs: { toolCallId: 'tool-1', operationId: 'toolop-1' },
+        }),
+      ],
+      { runHeaders: [header] },
+    );
+
+    expect(out.messages).toEqual([]);
+    expect(out.diagnostics).toEqual([]);
+  });
+
   test('continuation-start recovery facts are accepted without creating legacy message rows', () => {
     const out = projectRuntimeEventsToStoredMessages(
       [

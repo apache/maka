@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
-import type { RuntimeEvent, ToolRecoveryMode } from '@maka/core';
-import { stableHash } from './request-shape.js';
+import {
+  canonicalToolArgsHash as canonicalToolArgsHashCore,
+  type RuntimeEvent,
+  type ToolRecoveryMode,
+} from '@maka/core';
 
 export type { ToolRecoveryMode } from '@maka/core';
 
@@ -54,6 +57,5 @@ export function buildToolOperationId(input: ToolOperationIdInput): string {
 }
 
 export function canonicalToolArgsHash(toolName: string, normalizedArgs: unknown): string {
-  if (!toolName) throw new Error('Tool argument identity requires a tool name');
-  return stableHash({ toolName, args: normalizedArgs });
+  return canonicalToolArgsHashCore(toolName, normalizedArgs);
 }

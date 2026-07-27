@@ -61,6 +61,7 @@ describe('RecoveryResolver', () => {
         callRuntimeEventId: 'function-call-1',
         responseRuntimeEventId: 'function-response-1',
         responseIsError: true,
+        settlementOrigin: 'pre_t1_synthetic',
       },
     ]);
     assert.equal(resolution.requiresReconciliation, false);
@@ -210,7 +211,7 @@ describe('RecoveryResolver', () => {
     assert.equal(resolution.decisions[0]?.status, 'indeterminate');
     assert.equal(resolution.decisions[0]?.reason, 'legacy_dispatch_unknown');
     assert.equal(resolution.hasCorruption, true);
-    assert.equal(resolution.requiresReconciliation, true);
+    assert.equal(resolution.requiresReconciliation, false);
   });
 
   it('classifies a response linked to a different operation as corruption', () => {

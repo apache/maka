@@ -206,6 +206,12 @@ export function projectRuntimeEventsToStoredMessages(
       projected = true;
     }
 
+    if (event.actions?.toolRecovery) {
+      // Recovery observations and decisions are canonical audit facts. The
+      // matching function_call/function_response own any provider-visible row.
+      projected = true;
+    }
+
     if (event.actions?.stateDelta?.continuationStart === true) {
       // Continuation start is a canonical lineage/recovery fact with no
       // legacy chat row. Its following model events own the visible output.
