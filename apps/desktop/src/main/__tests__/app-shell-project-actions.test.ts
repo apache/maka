@@ -61,6 +61,60 @@ test('relink adopts the surviving project when the selected duplicate is merged'
   }
 });
 
+test('preparing a default task preserves an explicit no-project selection', async () => {
+  const actionsModule = await importProjectActions();
+  const project = makeProject('project-1', '/workspace/project');
+  let selectCalls = 0;
+  const previousWindow = globalThis.window;
+  globalThis.window = {
+    maka: {
+      projects: {
+        list: async () => [project],
+        select: async () => {
+          selectCalls += 1;
+          return { project, path: project.preferredPath };
+        },
+      },
+      app: {
+        resolveProjectGitInfo: async () => ({
+          ok: true,
+          projectPath: project.preferredPath,
+          projectGit: { isGitRepo: false },
+        }),
+      },
+    },
+  } as unknown as Window & typeof globalThis;
+
+  try {
+    const actions = actionsModule.createAppShellProjectActions({
+      uiLocale: 'zh',
+      projectPickerPendingRef: { current: false },
+      projectPickerRequestRef: { current: 0 },
+      rendererMountedRef: { current: true },
+      setAppInfo: () => {},
+      setSessionProjectInfo: () => {},
+      setProjectPickerPending: () => {},
+      setBranchPending: () => {},
+      setBranchList: () => {},
+      setProjects: () => {},
+      setSelectedProjectId: () => {},
+      selectedProjectId: null,
+      projects: [project],
+      projectInfo: null,
+      onProjectSelected: () => {},
+      toastApi: {
+        success: () => {},
+        error: () => {},
+      },
+    });
+
+    assert.equal(await actions.prepareDefaultProject(), true);
+    assert.equal(selectCalls, 0);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
 function makeProject(id: string, path: string): ProjectRecord {
   return {
     id,

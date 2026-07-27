@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, parse } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
 
@@ -304,6 +304,7 @@ test('conflicting relink waits for a retryable merge before removing the duplica
     assert.equal(mergedProjectId, duplicate.id);
     assert.equal(merged.id, original.id);
     assert.equal(merged.name, original.name);
+    assert.deepEqual((merged as typeof merged & { aliases?: string[] }).aliases, [duplicate.id]);
     assert.deepEqual(
       (await catalog.list()).map((project) => project.id),
       [original.id],
@@ -459,6 +460,40 @@ test('a malformed project catalog fails closed without overwriting it', async ()
 
     await assert.rejects(() => catalog.register(workspace), /Invalid project catalog/);
     assert.equal(await readFile(catalogPath, 'utf8'), original);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('registering a filesystem root writes a project that a fresh catalog can read', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-root-'));
+  const storage = join(base, 'storage');
+  try {
+    const root = parse(base).root;
+    const catalog = createProjectCatalog(storage, {
+      createId: () => 'project-root',
+    });
+
+    const project = await catalog.register(root);
+    const reopened = createProjectCatalog(storage);
+
+    assert.ok(project.name.length > 0);
+    assert.equal((await reopened.list())[0]?.id, project.id);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('catalog validates generated state before publishing it', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-write-validation-'));
+  const workspace = join(base, 'workspace');
+  await mkdir(workspace);
+  try {
+    const catalog = createProjectCatalog(join(base, 'storage'), {
+      createId: () => '',
+    });
+
+    await assert.rejects(() => catalog.register(workspace), /Invalid project catalog/);
   } finally {
     await rm(base, { recursive: true, force: true });
   }

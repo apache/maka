@@ -105,6 +105,31 @@ test('new sessions persist the catalog canonical path instead of a symlink alias
   }
 });
 
+test('new sessions resolve a merged project alias to the surviving project id', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-new-session-project-merged-alias-'));
+  const cwd = join(base, 'relocated');
+  await mkdir(cwd);
+  let id = 0;
+  const catalog = createProjectCatalog(join(base, 'storage'), {
+    createId: () => `project-${++id}`,
+  });
+
+  try {
+    const original = await catalog.importLegacyPath(join(base, 'missing-original'));
+    const duplicate = await catalog.register(cwd);
+    await catalog.relink(original.id, cwd, async () => {});
+
+    const resolved = await resolveNewSessionProjectInput(
+      makeInput(cwd, { projectId: duplicate.id }),
+      catalog,
+    );
+
+    assert.equal(resolved.projectId, original.id);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 function makeInput(
   cwd: string,
   overrides: Partial<CreateSessionInput> = {},

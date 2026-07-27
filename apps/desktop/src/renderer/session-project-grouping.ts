@@ -10,17 +10,24 @@ export function deriveProjectGroups(
   locale: UiLocale = 'zh',
 ): SessionHistoryGroup[] {
   const sessionsByProject = new Map<string, SessionSummary[]>();
-  const knownProjectIds = new Set(projects.map((project) => project.id));
+  const canonicalProjectIds = new Map<string, string>();
+  for (const project of projects) {
+    canonicalProjectIds.set(project.id, project.id);
+    for (const alias of project.aliases ?? []) canonicalProjectIds.set(alias, project.id);
+  }
   const ungrouped: SessionSummary[] = [];
 
   for (const session of sessions) {
-    if (!session.projectId || !knownProjectIds.has(session.projectId)) {
+    const canonicalProjectId = session.projectId
+      ? canonicalProjectIds.get(session.projectId)
+      : undefined;
+    if (!canonicalProjectId) {
       ungrouped.push(session);
       continue;
     }
-    const bucket = sessionsByProject.get(session.projectId) ?? [];
+    const bucket = sessionsByProject.get(canonicalProjectId) ?? [];
     bucket.push(session);
-    sessionsByProject.set(session.projectId, bucket);
+    sessionsByProject.set(canonicalProjectId, bucket);
   }
 
   const groups: SessionHistoryGroup[] = projects.map((project) => ({
@@ -44,7 +51,11 @@ export function deriveWorktreeSessionIds(
   sessions: ReadonlyArray<SessionSummary>,
   projects: ReadonlyArray<ProjectRecord>,
 ): Set<string> {
-  const projectsById = new Map(projects.map((project) => [project.id, project]));
+  const projectsById = new Map<string, ProjectRecord>();
+  for (const project of projects) {
+    projectsById.set(project.id, project);
+    for (const alias of project.aliases ?? []) projectsById.set(alias, project);
+  }
   const ids = new Set<string>();
   for (const session of sessions) {
     if (!session.projectId || !session.cwd) continue;

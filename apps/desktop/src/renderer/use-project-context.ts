@@ -89,7 +89,9 @@ export function useAppShellProjectContext(options: {
           return (
             next.find((project) =>
               persistedPath
-                ? project.locations.some((location) => location.path === persistedPath)
+                ? project.archivedAt === undefined &&
+                  project.available &&
+                  project.locations.some((location) => location.path === persistedPath)
                 : false,
             )?.id ??
             next.find((project) => project.archivedAt === undefined && project.available)?.id ??

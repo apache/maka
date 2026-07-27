@@ -192,6 +192,7 @@ export function createAppShellProjectActions(deps: {
 
   async function prepareDefaultProject(): Promise<boolean> {
     try {
+      if (selectedProjectId === null) return true;
       const candidates = projects.length > 0 ? projects : await refreshProjects();
       const project = candidates.find(
         (candidate) => candidate.archivedAt === undefined && candidate.available,

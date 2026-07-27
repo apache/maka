@@ -62,6 +62,27 @@ describe('sidebar project view mode', () => {
     assert.deepEqual([...deriveWorktreeSessionIds(sessions, projects)], ['worktree-session']);
   });
 
+  it('keeps a concurrently created session grouped through a merged project alias', () => {
+    const surviving = {
+      ...project('project-original', 'Original', [
+        { path: '/work/relocated', isWorktree: true },
+      ]),
+      aliases: ['project-duplicate'],
+    };
+    const session = makeSessionSummary({
+      id: 'late-session',
+      projectId: 'project-duplicate',
+      cwd: '/work/relocated',
+    });
+
+    const groups = deriveProjectGroups([session], [surviving], 'zh');
+
+    assert.deepEqual(groups.map((group) => group.sessions.map((item) => item.id)), [
+      ['late-session'],
+    ]);
+    assert.deepEqual([...deriveWorktreeSessionIds([session], [surviving])], ['late-session']);
+  });
+
   it('renders compact project rows, lifecycle menus, archived disclosure, and one worktree icon', async () => {
     const active = project('project-active', 'Active project', [
       { path: '/work/active', isWorktree: false },

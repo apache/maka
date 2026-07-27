@@ -10,13 +10,20 @@ export async function resolveNewSessionProjectInput(
   }
 
   if (input.projectId) {
-    const project = (await catalog.list()).find((candidate) => candidate.id === input.projectId);
+    const project = (await catalog.list()).find(
+      (candidate) =>
+        candidate.id === input.projectId || candidate.aliases?.includes(input.projectId!),
+    );
     if (!project) throw new Error(`Project does not match the selected directory: ${input.projectId}`);
     if (project.archivedAt !== undefined) throw new Error(`Project is archived: ${input.projectId}`);
     if (!project.available) throw new Error(`Project is unavailable: ${input.projectId}`);
     try {
       const touched = await catalog.touch(project.id, input.cwd);
-      return { ...input, cwd: touched.preferredPath ?? input.cwd };
+      return {
+        ...input,
+        cwd: touched.preferredPath ?? input.cwd,
+        projectId: touched.id,
+      };
     } catch (error) {
       if (!isProjectPathMismatchError(error)) throw error;
       throw new Error(`Project does not match the selected directory: ${input.projectId}`);

@@ -10,6 +10,8 @@ export interface ProjectLocation {
 
 export interface ProjectRecord {
   id: string;
+  /** Durable IDs absorbed by this project during conflict-safe relinking. */
+  aliases?: string[];
   name: string;
   kind: ProjectKind;
   locations: ProjectLocation[];

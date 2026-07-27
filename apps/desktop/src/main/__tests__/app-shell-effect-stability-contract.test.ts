@@ -3,12 +3,19 @@ import { mkdir, mkdtemp } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, it } from 'node:test';
-import type { ConnectionEvent, PlanReminder, SessionEvent, StoredMessage } from '@maka/core';
+import type {
+  ConnectionEvent,
+  PlanReminder,
+  ProjectRecord,
+  SessionEvent,
+  StoredMessage,
+} from '@maka/core';
 import { build } from 'esbuild';
 import { act, createElement, type ReactElement, useEffect } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type * as AppShellEffects from '../../renderer/app-shell-effects.js';
 import type * as KeepSystemAwake from '../../renderer/use-keep-system-awake.js';
+import type * as ProjectContext from '../../renderer/use-project-context.js';
 import { readRendererShellSource } from './renderer-shell-source-helpers.js';
 
 const REPO_ROOT = resolve(import.meta.dirname, '../../../../..');
@@ -20,6 +27,7 @@ type AppShellEffectsModule = Pick<
   'useActiveSessionEvents' | 'useAppShellBootstrapSubscriptions'
 >;
 type KeepSystemAwakeModule = Pick<typeof KeepSystemAwake, 'useKeepSystemAwake'>;
+type ProjectContextModule = Pick<typeof ProjectContext, 'useAppShellProjectContext'>;
 type CapturedSubscriptions = {
   activeSessionEvent?: (event: SessionEvent) => void;
   activeSessionSubscribeCount: number;
@@ -41,6 +49,9 @@ type RendererMakaStub = {
   plans: {
     subscribeChanges(callback: () => void): () => void;
     subscribeDue(callback: (reminder: never) => void): () => void;
+  };
+  projects: {
+    list(): Promise<ProjectRecord[]>;
   };
   sessions: {
     readMessages(sessionId: string): Promise<StoredMessage[]>;
@@ -306,6 +317,28 @@ describe('AppShell effect stability contract', () => {
 
     assert.equal(snapshots.at(-1), false);
   });
+
+  it('does not restore an archived project from the persisted working path', async () => {
+    const context = await importProjectContext();
+    const captured = createCapturedSubscriptions();
+    const root = installReactRenderer(captured);
+    const archived = makeProject('archived-project', '/workspace/archived', 2);
+    window.maka.projects.list = async () => [archived];
+    const snapshots: Array<string | null | undefined> = [];
+
+    await render(
+      root,
+      createElement(ProjectContextProbe, {
+        context,
+        onSelectedProjectId: (projectId) => snapshots.push(projectId),
+      }),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    assert.equal(snapshots.at(-1), null);
+  });
 });
 
 function BootstrapSubscriptionProbe(props: {
@@ -397,6 +430,26 @@ function KeepSystemAwakeProbe(props: {
   return null;
 }
 
+function ProjectContextProbe(props: {
+  context: ProjectContextModule;
+  onSelectedProjectId(projectId: string | null | undefined): void;
+}) {
+  const state = props.context.useAppShellProjectContext({
+    uiLocale: 'zh',
+    persistedComposerDefaults: { projectPath: '/workspace/archived', model: null },
+    rendererMountedRef: { current: true },
+    onProjectSelected: () => {},
+    toastApi: {
+      success: () => {},
+      error: () => {},
+    },
+  });
+  useEffect(() => {
+    props.onSelectedProjectId(state.selectedProjectId);
+  }, [props, state.selectedProjectId]);
+  return null;
+}
+
 async function importAppShellEffects(): Promise<AppShellEffectsModule> {
   const outdir = await mkdtemp(resolve(REPO_ROOT, 'apps/desktop/dist/main/__tests__/app-shell-effects-'));
   const outfile = resolve(outdir, 'app-shell-effects.mjs');
@@ -432,6 +485,23 @@ async function importKeepSystemAwake(): Promise<KeepSystemAwakeModule> {
     logLevel: 'silent',
   });
   return (await import(`${pathToFileURL(outfile).href}?t=${Date.now()}`)) as KeepSystemAwakeModule;
+}
+
+async function importProjectContext(): Promise<ProjectContextModule> {
+  const outdir = await mkdtemp(resolve(REPO_ROOT, 'apps/desktop/dist/main/__tests__/project-context-'));
+  const outfile = resolve(outdir, 'use-project-context.mjs');
+  await mkdir(dirname(outfile), { recursive: true });
+  await build({
+    entryPoints: [resolve(REPO_ROOT, 'apps/desktop/src/renderer/use-project-context.ts')],
+    outfile,
+    bundle: true,
+    external: ['react'],
+    platform: 'node',
+    format: 'esm',
+    target: 'node20',
+    logLevel: 'silent',
+  });
+  return (await import(`${pathToFileURL(outfile).href}?t=${Date.now()}`)) as ProjectContextModule;
 }
 
 function createCapturedSubscriptions(
@@ -515,6 +585,9 @@ function installFakeMaka(captured: CapturedSubscriptions): void {
         return noop;
       },
     },
+    projects: {
+      list: async () => [],
+    },
     sessions: {
       readMessages: async () => [],
       subscribeChanges(callback: (event: { reason: string; sessionId?: string; ts: number }) => void) {
@@ -538,6 +611,21 @@ function installFakeMaka(captured: CapturedSubscriptions): void {
       }),
     },
   } as unknown as RendererWindow['maka'];
+}
+
+function makeProject(id: string, path: string, archivedAt?: number): ProjectRecord {
+  return {
+    id,
+    name: id,
+    kind: 'folder',
+    locations: [{ path, isWorktree: false, addedAt: 1, lastUsedAt: 1 }],
+    createdAt: 1,
+    updatedAt: 1,
+    lastUsedAt: 1,
+    ...(archivedAt !== undefined ? { archivedAt } : {}),
+    available: true,
+    preferredPath: path,
+  };
 }
 
 function installFakeDom(): void {

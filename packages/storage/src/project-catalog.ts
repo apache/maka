@@ -213,7 +213,7 @@ class FileProjectCatalog implements ProjectCatalog {
     let selectedPath: string | undefined;
     await this.withQueue(async () => {
       const file = await this.read();
-      const project = file.projects.find((item) => item.id === projectId);
+      const project = findProjectById(file.projects, projectId);
       if (!project) throw new Error(`No such project: ${projectId}`);
       if (project.archivedAt !== undefined) {
         throw new Error(`Project is archived: ${projectId}`);
@@ -256,7 +256,7 @@ class FileProjectCatalog implements ProjectCatalog {
     let touched: PersistedProject | undefined;
     await this.withQueue(async () => {
       const file = await this.read();
-      const project = file.projects.find((item) => item.id === projectId);
+      const project = findProjectById(file.projects, projectId);
       if (!project) throw new Error(`No such project: ${projectId}`);
       const location = resolvedPath
         ? project.locations.find((item) => item.path === resolvedPath)
@@ -287,10 +287,10 @@ class FileProjectCatalog implements ProjectCatalog {
     let relinked: PersistedProject | undefined;
     await this.withQueue(async () => {
       const file = await this.read();
-      const project = file.projects.find((item) => item.id === projectId);
+      const project = findProjectById(file.projects, projectId);
       if (!project) throw new Error(`No such project: ${projectId}`);
       const conflict = file.projects.find(
-        (item) => item.id !== projectId && item.identity === resolved.identity,
+        (item) => item.id !== project.id && item.identity === resolved.identity,
       );
       if (conflict && !beforeCommit) {
         throw new Error(`Project path already belongs to project: ${conflict.id}`);
@@ -298,12 +298,15 @@ class FileProjectCatalog implements ProjectCatalog {
       const locationPath =
         resolved.kind === 'git' ? resolved.git!.worktreeRoot : resolved.canonicalPath;
       await beforeCommit?.({
-        projectId,
+        projectId: project.id,
         destinationPath: locationPath,
         previousLocations: project.locations.map((location) => ({ ...location })),
         ...(conflict ? { conflictingProjectId: conflict.id } : {}),
       });
       if (conflict) {
+        project.aliases = [
+          ...new Set([...(project.aliases ?? []), conflict.id, ...(conflict.aliases ?? [])]),
+        ];
         file.projects = file.projects.filter((item) => item.id !== conflict.id);
       }
       project.identity = resolved.identity;
@@ -338,7 +341,7 @@ class FileProjectCatalog implements ProjectCatalog {
     let renamed: PersistedProject | undefined;
     await this.withQueue(async () => {
       const file = await this.read();
-      const project = file.projects.find((item) => item.id === projectId);
+      const project = findProjectById(file.projects, projectId);
       if (!project) throw new Error(`No such project: ${projectId}`);
       project.name = trimmed;
       project.updatedAt = this.now();
@@ -353,7 +356,7 @@ class FileProjectCatalog implements ProjectCatalog {
     let archived: PersistedProject | undefined;
     await this.withQueue(async () => {
       const file = await this.read();
-      const project = file.projects.find((item) => item.id === projectId);
+      const project = findProjectById(file.projects, projectId);
       if (!project) throw new Error(`No such project: ${projectId}`);
       const timestamp = this.now();
       project.archivedAt = timestamp;
@@ -369,7 +372,7 @@ class FileProjectCatalog implements ProjectCatalog {
     let restored: PersistedProject | undefined;
     await this.withQueue(async () => {
       const file = await this.read();
-      const project = file.projects.find((item) => item.id === projectId);
+      const project = findProjectById(file.projects, projectId);
       if (!project) throw new Error(`No such project: ${projectId}`);
       const timestamp = this.now();
       delete project.archivedAt;
@@ -417,9 +420,10 @@ class FileProjectCatalog implements ProjectCatalog {
   }
 
   private async write(file: ProjectCatalogFile): Promise<void> {
+    const normalized = normalizeProjectCatalogFile(file);
     await mkdir(dirname(this.path), { recursive: true });
     const tempPath = `${this.path}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tempPath, `${JSON.stringify(file, null, 2)}\n`, 'utf8');
+    await writeFile(tempPath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
     await rename(tempPath, this.path);
   }
 
@@ -438,7 +442,7 @@ function defaultProjectName(location: ResolvedProjectLocation): string {
         : basename(location.git.commonDir).replace(/\.git$/i, '');
     if (gitName) return gitName;
   }
-  return basename(location.canonicalPath);
+  return basename(location.canonicalPath) || location.canonicalPath;
 }
 
 function normalizeProjectCatalogFile(value: unknown): ProjectCatalogFile {
@@ -450,8 +454,9 @@ function normalizeProjectCatalogFile(value: unknown): ProjectCatalogFile {
     throw new TypeError('Invalid project catalog.');
   }
   const projects = record.projects.map(normalizePersistedProject);
+  const projectIds = projects.flatMap((project) => [project.id, ...(project.aliases ?? [])]);
   if (
-    new Set(projects.map((project) => project.id)).size !== projects.length ||
+    new Set(projectIds).size !== projectIds.length ||
     new Set(projects.map((project) => project.identity)).size !== projects.length
   ) {
     throw new TypeError('Invalid project catalog.');
@@ -464,6 +469,12 @@ function normalizePersistedProject(value: unknown): PersistedProject {
     throw new TypeError('Invalid project catalog.');
   }
   const project = value as Record<string, unknown>;
+  const aliases =
+    project.aliases === undefined
+      ? []
+      : Array.isArray(project.aliases) && project.aliases.every(isNonEmptyString)
+        ? project.aliases
+        : undefined;
   if (
     !isNonEmptyString(project.id) ||
     !isNonEmptyString(project.name) ||
@@ -474,12 +485,16 @@ function normalizePersistedProject(value: unknown): PersistedProject {
     !isTimestamp(project.createdAt) ||
     !isTimestamp(project.updatedAt) ||
     !isTimestamp(project.lastUsedAt) ||
+    aliases === undefined ||
+    new Set(aliases).size !== aliases.length ||
+    aliases.includes(project.id as string) ||
     (project.archivedAt !== undefined && !isTimestamp(project.archivedAt))
   ) {
     throw new TypeError('Invalid project catalog.');
   }
   return {
     id: project.id,
+    ...(aliases.length > 0 ? { aliases } : {}),
     name: project.name,
     identity: project.identity,
     kind: project.kind,
@@ -489,6 +504,15 @@ function normalizePersistedProject(value: unknown): PersistedProject {
     lastUsedAt: project.lastUsedAt,
     ...(project.archivedAt !== undefined ? { archivedAt: project.archivedAt } : {}),
   };
+}
+
+function findProjectById(
+  projects: readonly PersistedProject[],
+  projectId: string,
+): PersistedProject | undefined {
+  return projects.find(
+    (project) => project.id === projectId || project.aliases?.includes(projectId),
+  );
 }
 
 function normalizeProjectLocation(value: unknown): ProjectLocation {
