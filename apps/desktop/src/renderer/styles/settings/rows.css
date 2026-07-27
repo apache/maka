@@ -402,6 +402,13 @@
     row-gap: var(--space-2-5);
   }
 
+  /* Repeat the control-width variants so the narrow track has enough
+     specificity to beat their wide declarations above. */
+  .settingsRow[data-control-width="compact"],
+  .settingsRow[data-control-width="select"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   /* #1363 review: the exception applies only when the switch is the row's
      ONLY control (label + switch, nothing else). A three-part row — e.g.
      Memory's label + status Chip + switch — held horizontal would crush
