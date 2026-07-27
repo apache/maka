@@ -519,6 +519,28 @@ describe('HostInteractionCoordinator', () => {
     });
   });
 
+  test('terminal fence reaps an exact settled unbound closure-only Run', async () => {
+    await withStore(async ({ store }) => {
+      const poison: RuntimeInteractionFailStopError[] = [];
+      const gate = new SessionAdmissionGate();
+      const coordinator = createCoordinator(store, {
+        sessionAdmission: gate,
+        onPoison: (error) => poison.push(error),
+      });
+      coordinator.beginDrain();
+
+      await gate.run(RUN.sessionId, (admission) =>
+        coordinator.claimRunClosure(RUN, 'turn_stopped', admission),
+      );
+      await gate.run(RUN.sessionId, (admission) => coordinator.assertTerminalFence(RUN, admission));
+
+      assert.equal(coordinator.isPoisoned(), false);
+      assert.deepEqual(poison, []);
+      assert.deepEqual(await store.listPending(RUN), []);
+      await coordinator.close();
+    });
+  });
+
   test('close fails closed while an unbound closure claim is unsettled', async () => {
     await withStore(async ({ store }) => {
       const poison: RuntimeInteractionFailStopError[] = [];

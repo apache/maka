@@ -196,34 +196,32 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     identity: RuntimeInteractionRunIdentity,
     admission: SessionAdmissionLease,
   ): Promise<void> {
-    this.#throwIfPoisoned();
-    if (this.#runs.has(runKey(identity))) {
-      throw this.#poison(
-        new RuntimeInteractionInvariantError(
-          `Interaction Run ${identity.runId} reached its terminal fence before release`,
-        ),
-      );
-    }
-    for (const entry of this.#live.values()) {
-      if (sameRun(entry.request, identity)) {
-        throw this.#poison(
-          new RuntimeInteractionInvariantError(
-            `Interaction Run ${identity.runId} reached its terminal fence with a live continuation`,
-          ),
-        );
-      }
-    }
     return observed(
       this.#sessionAdmission.runAdmitted(identity.sessionId, admission, async () => {
         this.#throwIfPoisoned();
-        const pending = await this.#readPending(identity);
-        if (pending.length !== 0) {
+        this.#reapSettledUnboundClosureRun(identity);
+        if (this.#runs.has(runKey(identity))) {
           throw this.#poison(
             new RuntimeInteractionInvariantError(
-              `Interaction Run ${identity.runId} reached its terminal fence with durable pending requests`,
+              `Interaction Run ${identity.runId} reached its terminal fence before release`,
             ),
           );
         }
+        for (const entry of this.#live.values()) {
+          if (!sameRun(entry.request, identity)) continue;
+          throw this.#poison(
+            new RuntimeInteractionInvariantError(
+              `Interaction Run ${identity.runId} reached its terminal fence with a live continuation`,
+            ),
+          );
+        }
+        const pending = await this.#readPending(identity);
+        if (pending.length === 0) return;
+        throw this.#poison(
+          new RuntimeInteractionInvariantError(
+            `Interaction Run ${identity.runId} reached its terminal fence with durable pending requests`,
+          ),
+        );
       }),
     );
   }
@@ -286,6 +284,12 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
       if (run.bound || run.closure?.phase !== 'settled') continue;
       this.#releaseRun(run);
     }
+  }
+
+  #reapSettledUnboundClosureRun(identity: RuntimeInteractionRunIdentity): void {
+    const run = this.#runs.get(runKey(identity));
+    if (!run || run.bound || run.closure?.phase !== 'settled') return;
+    this.#releaseRun(run);
   }
 
   #acceptPermissionRequest(
