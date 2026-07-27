@@ -269,6 +269,25 @@ describe('recovery persistence authority', () => {
     assert.equal(scan.operations.length, 2);
   });
 
+  it('rejects one invocation identity spanning multiple execution spines', () => {
+    const otherRun = callEvent({
+      id: 'call-event-2',
+      runId: 'run-2',
+      turnId: 'turn-2',
+      content: {
+        kind: 'function_call',
+        id: 'provider-call-2',
+        name: 'Read',
+        args: {},
+      },
+    });
+
+    const scan = scanToolLedger([callEvent(), otherRun]);
+
+    assert.equal(scan.hasCorruption, true);
+    assert.ok(scan.issues.some(({ code }) => code === 'invocation_identity_conflict'));
+  });
+
   it('rejects prospective generic transitions that would corrupt a clean ledger', () => {
     const duplicateCall = callEvent({ id: 'call-event-duplicate' });
     assert.deepEqual(

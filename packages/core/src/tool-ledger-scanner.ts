@@ -20,6 +20,7 @@ export type ToolLedgerIssueCode =
   | 'orphan_dispatch'
   | 'orphan_response'
   | 'canonical_args_hash_conflict'
+  | 'invocation_identity_conflict'
   | 'identity_conflict'
   | 'event_order_conflict';
 
@@ -175,6 +176,7 @@ export function scanToolLedger(events: readonly RuntimeEvent[]): ToolLedgerScanR
   const seenEventIds = new Set<string>();
   const byToolCall = new Map<string, ToolLedgerScanOperation>();
   const byOperation = new Map<string, ToolLedgerScanOperation>();
+  const invocationSpines = new Map<string, string>();
 
   const addIssue = (operation: ToolLedgerScanOperation | undefined, issue: ToolLedgerIssue) => {
     issues.push(issue);
@@ -187,6 +189,16 @@ export function scanToolLedger(events: readonly RuntimeEvent[]): ToolLedgerScanR
       continue;
     }
     seenEventIds.add(event.id);
+    const spine = JSON.stringify([event.sessionId, event.runId, event.turnId]);
+    const existingSpine = invocationSpines.get(event.invocationId);
+    if (existingSpine !== undefined && existingSpine !== spine) {
+      addIssue(undefined, {
+        code: 'invocation_identity_conflict',
+        eventId: event.id,
+      });
+    } else {
+      invocationSpines.set(event.invocationId, spine);
+    }
     const lane = validateToolLedgerEventLane(event);
     if (!lane.ok) {
       addIssue(undefined, { code: lane.code, eventId: lane.eventId });

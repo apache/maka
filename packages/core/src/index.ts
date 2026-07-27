@@ -232,6 +232,10 @@ export {
   validateToolRecoveryEventBundle,
 } from './tool-recovery-bundle.js';
 export { canonicalToolArgsHash, stableJsonStringify } from './tool-args-identity.js';
+export {
+  encodeCanonicalRuntimeEvent,
+  type CanonicalRuntimeEventEncoding,
+} from './canonical-runtime-event.js';
 
 // session.ts
 export type {
