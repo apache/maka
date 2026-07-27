@@ -5,15 +5,23 @@ import { createSqliteRuntimeStore } from '../../sqlite-runtime-store.js';
 const mode = requiredEnv('MAKA_SQLITE_RECOVERY_CONCURRENCY_MODE');
 const dbPath = requiredEnv('MAKA_SQLITE_RECOVERY_CONCURRENCY_DB');
 const startPath = requiredEnv('MAKA_SQLITE_RECOVERY_CONCURRENCY_START');
-const store = createSqliteRuntimeStore(dbPath);
+const stopPath = process.env.MAKA_SQLITE_RECOVERY_CONCURRENCY_STOP;
 
 writeSync(1, 'READY\n');
 while (!existsSync(startPath)) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
 }
 
+let store: ReturnType<typeof createSqliteRuntimeStore> | undefined;
 try {
-  if (mode === 'completed') {
+  store = createSqliteRuntimeStore(dbPath);
+  writeSync(1, 'OPENED\n');
+  if (mode === 'open_only') {
+    if (!stopPath) throw new Error('Missing MAKA_SQLITE_RECOVERY_CONCURRENCY_STOP');
+    while (!existsSync(stopPath)) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+    }
+  } else if (mode === 'completed') {
     await store.commitToolRecoveryBundle(completedBundle());
   } else if (mode === 'parked') {
     await store.commitToolRecoveryBundle(parkedBundle());
@@ -27,7 +35,7 @@ try {
   writeSync(2, `RESULT error ${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 2;
 } finally {
-  store.close();
+  store?.close();
 }
 
 function completedBundle() {

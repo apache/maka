@@ -117,10 +117,16 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
 ]);
 
 export function configureSqliteRuntimeDatabase(db: DatabaseSync): void {
-  db.exec('PRAGMA journal_mode = WAL');
+  // Bound lock acquisition before touching persistent journal state. WAL mode is
+  // database-persistent, so established workspaces only need to verify it rather
+  // than making every concurrent opener execute the setting form of the pragma.
+  db.exec('PRAGMA busy_timeout = 5000');
+  const journalMode = readJournalMode(db);
+  if (journalMode !== 'wal') {
+    db.exec('PRAGMA journal_mode = WAL');
+  }
   db.exec('PRAGMA synchronous = FULL');
   db.exec('PRAGMA foreign_keys = ON');
-  db.exec('PRAGMA busy_timeout = 5000');
 }
 
 export function migrateSqliteRuntimeDatabase(db: DatabaseSync): void {
@@ -152,6 +158,14 @@ export function readUserVersion(db: DatabaseSync): number {
     throw new Error('Invalid SQLite runtime schema version');
   }
   return value;
+}
+
+function readJournalMode(db: DatabaseSync): string {
+  const row = db.prepare('PRAGMA journal_mode').get() as { journal_mode?: unknown } | undefined;
+  if (typeof row?.journal_mode !== 'string') {
+    throw new Error('Invalid SQLite runtime journal mode');
+  }
+  return row.journal_mode.toLowerCase();
 }
 
 function rollback(db: DatabaseSync): void {
