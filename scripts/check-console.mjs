@@ -48,6 +48,10 @@ const ALLOW = new Map([
     'scheduler failures are main-process diagnostics and do not expose secrets.',
   ],
   [
+    'apps/desktop/src/main/permission-overlay/permission-overlay-main.ts',
+    'TCC overlay diagnostics (locale lookup, missing .app bundle); no secrets (#1515).',
+  ],
+  [
     'apps/desktop/src/main/main-window.ts',
     'real-window smoke diagnostics are dev/test gated and stdout-parsed by capture tooling.',
   ],
