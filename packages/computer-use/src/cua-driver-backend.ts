@@ -36,12 +36,10 @@ import type {
   CuAppSummary,
   CuDispatchBackend,
   CuObservation,
-  CuObservedElement,
   CuRunContext,
   CuRunResult,
   CuScreenshot,
   CuSemanticAction,
-  CuaBoundAction,
 } from '@maka/runtime';
 import { normalizeCuaDriverOutcome } from './cua-driver-result.js';
 import {
@@ -73,7 +71,15 @@ import {
   type CuaSnapshotElement,
   type CuaWindowRecord,
 } from './cua-driver-snapshot.js';
-
+import {
+  consumeSemanticObservation,
+  coordinateTarget,
+  refetchSemanticElement,
+  validateSemanticElementVisibility,
+  validateStoredWindow,
+  type CuaStoredObservation,
+  type CuaTargetResolutionDeps,
+} from './cua-driver-target-resolution.js';
 // Frames larger than this get compressed (to JPEG) before the cap check. Small
 // crisp PNGs (simple screens) pass through untouched.
 const COMPRESS_FRAME_THRESHOLD = 1.5 * 1024 * 1024;
@@ -306,18 +312,7 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
   }
   const targetsBySession = new Map<string, { turnId: string; target: KeyboardTarget }>();
   const sessionGenerations = new Map<string, number>();
-  interface StoredObservation {
-    context: Pick<CuRunContext, 'sessionId' | 'turnId'>;
-    appId: string;
-    window: CuaResolvedWindow;
-    elements: Map<string, NonNullable<ReturnType<typeof normalizeCuaSnapshotElement>>>;
-    contentFingerprint: string;
-    page?: ComputerUsePageIdentity;
-    screenshotWidthPx?: number;
-    screenshotHeightPx?: number;
-    displays?: ComputerUseDisplayIdentity[];
-  }
-  const observations = new Map<string, StoredObservation>();
+  const observations = new Map<string, CuaStoredObservation>();
   const observationIdsBySession = new Map<string, string[]>();
   const operationQueues = new Map<string, Promise<void>>();
   let sessionClearReleaseEvents: CuaDriverReleaseEvent[] | undefined;
@@ -371,7 +366,7 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
     return createHash('sha256').update(JSON.stringify(structural)).digest('hex');
   }
 
-  function storeObservation(observationId: string, observation: StoredObservation): void {
+  function storeObservation(observationId: string, observation: CuaStoredObservation): void {
     const sessionId = observation.context.sessionId;
     const ids = observationIdsBySession.get(sessionId) ?? [];
     while (ids.length >= MAX_OBSERVATIONS_PER_SESSION) {
@@ -718,32 +713,6 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
     return (result?.structuredContent?.windows ?? []) as CuaWindowRecord[];
   }
 
-  function sameBounds(
-    left: CuaResolvedWindow['bounds'] | undefined,
-    right: CuaResolvedWindow['bounds'] | undefined,
-  ): boolean {
-    return (
-      !!left &&
-      !!right &&
-      left.x === right.x &&
-      left.y === right.y &&
-      left.width === right.width &&
-      left.height === right.height
-    );
-  }
-
-  function sameDisplay(
-    left: ComputerUseDisplayIdentity,
-    right: ComputerUseDisplayIdentity,
-  ): boolean {
-    return (
-      left.displayId === right.displayId &&
-      left.scaleFactor === right.scaleFactor &&
-      sameBounds(left.logicalBounds, right.logicalBounds) &&
-      sameBounds(left.sourceBoundsPx, right.sourceBoundsPx)
-    );
-  }
-
   async function pageIdentity(
     window: CuaResolvedWindow,
     target: CuaResolvedPageTextTarget,
@@ -914,6 +883,36 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
     };
   }
 
+  const targetResolutionDeps: CuaTargetResolutionDeps = {
+    listWindowRecords,
+    getWindowState: (input, signal) =>
+      actionClient.callTool(
+        'get_window_state',
+        {
+          pid: input.pid,
+          window_id: input.windowId,
+          include_screenshot: input.includeScreenshot,
+          max_elements: input.maxElements,
+          max_depth: input.maxDepth,
+        },
+        signal,
+      ),
+    resolveWindowAt,
+    resolveObservedWindow,
+    resolveObservedPage,
+    samePage,
+    resolveContentFingerprint: (elements) =>
+      opts.resolveContentFingerprint
+        ? opts.resolveContentFingerprint(elements)
+        : contentFingerprint(elements),
+    takeObservation: (observationId) => {
+      const observation = observations.get(observationId);
+      deleteObservation(observationId);
+      return observation;
+    },
+    traceOcclusion: (event) => trace({ type: 'occlusion', ...event }),
+  };
+
   async function observeWindow(
     input: { app?: string; windowId?: number; includeScreenshot: boolean },
     signal: AbortSignal,
@@ -1034,485 +1033,6 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
         },
       })),
       ...(screenshot ? { screenshot } : {}),
-    };
-  }
-
-  function elementMatchesIdentity(
-    element: NonNullable<ReturnType<typeof normalizeCuaSnapshotElement>>,
-    identity: CuObservedElement['identity'] | undefined,
-    original?: NonNullable<ReturnType<typeof normalizeCuaSnapshotElement>>,
-  ): boolean {
-    if (!identity) return false;
-    if (element.role !== identity.role) return false;
-    const label = identity.label?.trim();
-    return (
-      (!label || element.label === identity.label) &&
-      !!original &&
-      element.depth === original.depth &&
-      element.frame.x === original.frame.x &&
-      element.frame.y === original.frame.y &&
-      element.frame.w === original.frame.w &&
-      element.frame.h === original.frame.h &&
-      element.value === original.value
-    );
-  }
-
-  function dedupeSemanticElements(
-    elements: NonNullable<ReturnType<typeof normalizeCuaSnapshotElement>>[],
-  ): NonNullable<ReturnType<typeof normalizeCuaSnapshotElement>>[] {
-    const seen = new Set<string>();
-    return elements.filter((element) => {
-      const key = JSON.stringify({
-        role: element.role,
-        label: element.label,
-        value: element.value,
-        frame: element.frame,
-        depth: element.depth,
-      });
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  }
-
-  async function validateSemanticElementVisibility(
-    window: CuaResolvedWindow,
-    element: NonNullable<ReturnType<typeof normalizeCuaSnapshotElement>>,
-    signal: AbortSignal,
-  ): Promise<CuRunResult | undefined> {
-    const point = {
-      x: element.frame.x + element.frame.w / 2,
-      y: element.frame.y + element.frame.h / 2,
-    };
-    if (
-      point.x < window.bounds.x ||
-      point.x >= window.bounds.x + window.bounds.width ||
-      point.y < window.bounds.y ||
-      point.y >= window.bounds.y + window.bounds.height
-    ) {
-      return {
-        outcome: {
-          ok: false,
-          error: 'target_changed',
-          message: 'semantic element moved outside the observed target window',
-        },
-      };
-    }
-    const winner = (await listWindowRecords(signal))
-      .flatMap((candidate) => {
-        if (
-          candidate.layer !== 0 ||
-          candidate.is_on_screen === false ||
-          typeof candidate.pid !== 'number' ||
-          typeof candidate.window_id !== 'number' ||
-          !candidate.bounds ||
-          typeof candidate.bounds !== 'object'
-        )
-          return [];
-        const bounds = candidate.bounds as Record<string, unknown>;
-        if (
-          typeof bounds.x !== 'number' ||
-          typeof bounds.y !== 'number' ||
-          typeof bounds.width !== 'number' ||
-          typeof bounds.height !== 'number'
-        )
-          return [];
-        const inside =
-          point.x >= bounds.x &&
-          point.x < bounds.x + bounds.width &&
-          point.y >= bounds.y &&
-          point.y < bounds.y + bounds.height;
-        return inside
-          ? [
-              {
-                pid: candidate.pid,
-                windowId: candidate.window_id,
-                zIndex: Number(candidate.z_index) || 0,
-              },
-            ]
-          : [];
-      })
-      .sort((left, right) => right.zIndex - left.zIndex)[0];
-    if (!winner || winner.pid !== window.pid || winner.windowId !== window.windowId) {
-      trace({
-        type: 'occlusion',
-        expectedPid: window.pid,
-        expectedWindowId: window.windowId,
-        ...(winner
-          ? {
-              winnerPid: winner.pid,
-              winnerWindowId: winner.windowId,
-              winnerZIndex: winner.zIndex,
-            }
-          : {}),
-      });
-      return {
-        outcome: {
-          ok: false,
-          error: 'target_occluded',
-          message: 'another window now owns the semantic element position',
-        },
-      };
-    }
-    return undefined;
-  }
-
-  async function validateStoredWindow(
-    observation: StoredObservation,
-    bound: CuaBoundAction | undefined,
-    signal: AbortSignal,
-    mode: 'coordinate' | 'semantic',
-  ): Promise<CuaResolvedWindow | CuRunResult> {
-    if (
-      bound?.target &&
-      (bound.target.pid !== observation.window.pid ||
-        bound.target.windowId !== observation.window.windowId)
-    ) {
-      return {
-        outcome: {
-          ok: false,
-          error: 'target_changed',
-          message: 'bound target does not match the stored observation',
-        },
-      };
-    }
-    const windows = await listWindowRecords(signal);
-    const current = windows.find(
-      (window) =>
-        window.pid === observation.window.pid && window.window_id === observation.window.windowId,
-    );
-    if (!current) {
-      return {
-        outcome: {
-          ok: false,
-          error: 'target_missing',
-          message: 'observed target window no longer exists',
-        },
-      };
-    }
-    const resolved = resolveObservedWindow(
-      windows,
-      `pid:${observation.window.pid}`,
-      observation.window.windowId,
-    );
-    if (
-      !sameBounds(resolved.bounds, observation.window.bounds) ||
-      resolved.appName !== observation.window.appName ||
-      resolved.title !== observation.window.title
-    ) {
-      return {
-        outcome: {
-          ok: false,
-          error: 'target_changed',
-          message: 'observed target identity or geometry changed',
-        },
-      };
-    }
-    if (observation.page) {
-      const page = await resolveObservedPage(resolved, signal);
-      if (!samePage(observation.page, page)) {
-        return {
-          outcome: {
-            ok: false,
-            error: 'page_target_changed',
-            message: 'observed Electron page identity changed',
-          },
-        };
-      }
-    }
-    if (mode === 'coordinate') {
-      const currentState = await actionClient.callTool(
-        'get_window_state',
-        {
-          pid: resolved.pid,
-          window_id: resolved.windowId,
-          include_screenshot: false,
-          max_elements: 500,
-          max_depth: 25,
-        },
-        signal,
-      );
-      const currentOutcome = normalizeCuaDriverOutcome(currentState);
-      if (!currentOutcome.ok) return { outcome: currentOutcome };
-      const currentElements = (
-        (currentState?.structuredContent?.elements ?? []) as CuaSnapshotElement[]
-      ).flatMap((candidate) => {
-        const element = normalizeCuaSnapshotElement(candidate);
-        return element ? [element] : [];
-      });
-      const currentFingerprint = opts.resolveContentFingerprint
-        ? opts.resolveContentFingerprint(currentElements)
-        : contentFingerprint(currentElements);
-      if (currentFingerprint !== observation.contentFingerprint) {
-        return {
-          outcome: {
-            ok: false,
-            error: 'target_changed',
-            message: 'observed native element structure changed',
-          },
-        };
-      }
-    }
-    if (bound?.display && observation.displays) {
-      const display = observation.displays.find(
-        (candidate) => candidate.displayId === bound.display?.displayId,
-      );
-      if (!display || !sameDisplay(display, bound.display)) {
-        return {
-          outcome: {
-            ok: false,
-            error: 'target_changed',
-            message: 'observed coordinate transform changed',
-          },
-        };
-      }
-    }
-    return resolved;
-  }
-
-  function boundWindowPoint(
-    bound: CuaBoundAction,
-    target: CuaResolvedWindow,
-    start = false,
-  ): { windowPoint: { x: number; y: number }; screenPoint: { x: number; y: number } } | undefined {
-    if (bound.coordinateSpace !== 'window-screenshot-local') return undefined;
-    const source = start ? bound.sourceStartCoordinate : bound.sourceCoordinate;
-    const windowPoint = start ? bound.windowStartCoordinate : bound.windowCoordinate;
-    const sourceBounds = bound.target?.sourceBoundsPx;
-    if (!source || !windowPoint || !sourceBounds) return undefined;
-    if (
-      source.x < 0 ||
-      source.y < 0 ||
-      source.x >= sourceBounds.width ||
-      source.y >= sourceBounds.height
-    )
-      return undefined;
-    return {
-      windowPoint,
-      screenPoint: {
-        x: target.bounds.x + (source.x / sourceBounds.width) * target.bounds.width,
-        y: target.bounds.y + (source.y / sourceBounds.height) * target.bounds.height,
-      },
-    };
-  }
-
-  async function validateBoundCoordinate(
-    bound: CuaBoundAction | undefined,
-    signal: AbortSignal,
-    start = false,
-  ): Promise<CuaResolvedWindow | CuRunResult | undefined> {
-    if (!bound?.target) return undefined;
-    if (!bound.target.contentFingerprint) {
-      return {
-        outcome: {
-          ok: false,
-          error: 'target_changed',
-          message: 'bound target is missing native content identity',
-        },
-      };
-    }
-    const stored: StoredObservation = {
-      context: { sessionId: '', turnId: '' },
-      appId: bound.target.appName ?? `pid:${bound.target.pid}`,
-      window: {
-        pid: bound.target.pid,
-        windowId: bound.target.windowId,
-        ...(bound.target.appName ? { appName: bound.target.appName } : {}),
-        ...(bound.target.title ? { title: bound.target.title } : {}),
-        bounds: bound.target.bounds ?? { x: 0, y: 0, width: 0, height: 0 },
-        screenPoint: { x: 0, y: 0 },
-        zIndex: bound.target.zIndex ?? 0,
-      },
-      elements: new Map(),
-      contentFingerprint: bound.target.contentFingerprint,
-      ...(bound.target.page ? { page: bound.target.page } : {}),
-      ...(bound.display ? { displays: [bound.display] } : {}),
-    };
-    const validated = await validateStoredWindow(stored, bound, signal, 'coordinate');
-    if ('outcome' in validated) return validated;
-    const currentState = await actionClient.callTool(
-      'get_window_state',
-      {
-        pid: validated.pid,
-        window_id: validated.windowId,
-        include_screenshot: false,
-        max_elements: 0,
-        max_depth: 0,
-      },
-      signal,
-    );
-    const currentOutcome = normalizeCuaDriverOutcome(currentState);
-    if (!currentOutcome.ok) return { outcome: currentOutcome };
-    const currentStructured = currentState?.structuredContent ?? {};
-    const currentWidth = Number(currentStructured.screenshot_width);
-    const currentHeight = Number(currentStructured.screenshot_height);
-    if (
-      !bound.target.sourceBoundsPx ||
-      (currentWidth > 0 &&
-        currentHeight > 0 &&
-        (currentWidth !== bound.target.sourceBoundsPx.width ||
-          currentHeight !== bound.target.sourceBoundsPx.height))
-    ) {
-      return {
-        outcome: {
-          ok: false,
-          error: 'target_changed',
-          message: 'window screenshot scale or layout changed after observation',
-        },
-      };
-    }
-    const point = boundWindowPoint(bound, validated, start);
-    if (!point) {
-      return {
-        outcome: {
-          ok: false,
-          error: 'invalid_coordinate',
-          message: 'bound coordinate is outside its window screenshot space',
-        },
-      };
-    }
-    const windows = await listWindowRecords(signal);
-    const winner = windows
-      .flatMap((window) => {
-        if (
-          window.layer !== 0 ||
-          window.is_on_screen === false ||
-          typeof window.pid !== 'number' ||
-          typeof window.window_id !== 'number' ||
-          !window.bounds ||
-          typeof window.bounds !== 'object'
-        )
-          return [];
-        const bounds = window.bounds as Record<string, unknown>;
-        if (
-          typeof bounds.x !== 'number' ||
-          typeof bounds.y !== 'number' ||
-          typeof bounds.width !== 'number' ||
-          typeof bounds.height !== 'number'
-        )
-          return [];
-        const inside =
-          point.screenPoint.x >= bounds.x &&
-          point.screenPoint.x < bounds.x + bounds.width &&
-          point.screenPoint.y >= bounds.y &&
-          point.screenPoint.y < bounds.y + bounds.height;
-        return inside
-          ? [
-              {
-                pid: window.pid,
-                windowId: window.window_id,
-                zIndex: Number(window.z_index) || 0,
-              },
-            ]
-          : [];
-      })
-      .sort((left, right) => right.zIndex - left.zIndex)[0];
-    if (!winner || winner.pid !== validated.pid || winner.windowId !== validated.windowId) {
-      trace({
-        type: 'occlusion',
-        expectedPid: validated.pid,
-        expectedWindowId: validated.windowId,
-        ...(winner
-          ? {
-              winnerPid: winner.pid,
-              winnerWindowId: winner.windowId,
-              winnerZIndex: winner.zIndex,
-            }
-          : {}),
-      });
-      return {
-        outcome: {
-          ok: false,
-          error: 'target_occluded',
-          message: 'another window now owns the bound coordinate',
-        },
-      };
-    }
-    return {
-      ...validated,
-      screenPoint: point.screenPoint,
-    };
-  }
-
-  async function coordinateTarget(
-    bound: CuaBoundAction | undefined,
-    fallback: { x: number; y: number },
-    signal: AbortSignal,
-    start = false,
-  ): Promise<CuaResolvedWindow | CuRunResult | undefined> {
-    if (bound) return validateBoundCoordinate(bound, signal, start);
-    return resolveWindowAt(fallback.x, fallback.y, signal);
-  }
-
-  async function refetchSemanticElement(
-    observation: StoredObservation,
-    action: Exclude<CuSemanticAction, { type: 'press_key' }>,
-    signal: AbortSignal,
-  ): Promise<NonNullable<ReturnType<typeof normalizeCuaSnapshotElement>> | CuRunResult> {
-    const state = await actionClient.callTool(
-      'get_window_state',
-      {
-        pid: observation.window.pid,
-        window_id: observation.window.windowId,
-        include_screenshot: false,
-        max_elements: 500,
-        max_depth: 25,
-      },
-      signal,
-    );
-    const outcome = normalizeCuaDriverOutcome(state);
-    if (!outcome.ok) return { outcome };
-    const fresh = dedupeSemanticElements(
-      ((state?.structuredContent?.elements ?? []) as CuaSnapshotElement[]).flatMap((candidate) => {
-        const element = normalizeCuaSnapshotElement(candidate);
-        return element ? [element] : [];
-      }),
-    );
-    const original = observation.elements.get(action.elementId);
-    const identity =
-      action.elementIdentity ??
-      (original
-        ? {
-            ...(original.element_token ? { token: original.element_token } : {}),
-            role: original.role,
-            ...(original.label ? { label: original.label } : {}),
-            ...(original.value !== undefined ? { value: original.value } : {}),
-          }
-        : undefined);
-    if (!identity) {
-      return {
-        outcome: {
-          ok: false,
-          error: 'stale_frame',
-          message: 'semantic element identity is unavailable',
-        },
-      };
-    }
-    const identityMatches = fresh.filter(
-      (candidate) =>
-        candidate.role === identity.role &&
-        (!identity.label?.trim() || candidate.label === identity.label) &&
-        (identity.value === undefined || candidate.value === identity.value),
-    );
-    if (identityMatches.length > 1) {
-      return {
-        outcome: {
-          ok: false,
-          error: 'stale_frame',
-          message: 'semantic element identity is ambiguous in the fresh observation',
-        },
-      };
-    }
-    const matches = identityMatches.filter((candidate) =>
-      elementMatchesIdentity(candidate, identity, original),
-    );
-    if (matches.length === 1) return matches[0]!;
-    return {
-      outcome: {
-        ok: false,
-        error: 'stale_frame',
-        message: 'semantic element is missing from the fresh observation',
-      },
     };
   }
 
@@ -1947,30 +1467,14 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
         return await withOperationQueue(
           signal,
           async () => {
-            const observation = observations.get(action.observationId);
-            deleteObservation(action.observationId);
-            if (!observation) {
-              return {
-                outcome: {
-                  ok: false,
-                  error: 'stale_frame',
-                  message: 'observation is missing or already consumed',
-                },
-              };
-            }
-            if (
-              observation.context.sessionId !== context.sessionId ||
-              observation.context.turnId !== context.turnId
-            ) {
-              return {
-                outcome: {
-                  ok: false,
-                  error: 'stale_frame',
-                  message: 'observation belongs to another session or turn',
-                },
-              };
-            }
+            const observation = consumeSemanticObservation(
+              targetResolutionDeps,
+              action.observationId,
+              context,
+            );
+            if ('outcome' in observation) return observation;
             const validated = await validateStoredWindow(
+              targetResolutionDeps,
               observation,
               context.boundAction,
               signal,
@@ -2015,9 +1519,15 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
                 },
               };
             }
-            const refetched = await refetchSemanticElement(observation, action, signal);
+            const refetched = await refetchSemanticElement(
+              targetResolutionDeps,
+              observation,
+              action,
+              signal,
+            );
             if ('outcome' in refetched) return refetched;
             const visibilityFailure = await validateSemanticElementVisibility(
+              targetResolutionDeps,
               validated,
               refetched,
               signal,
@@ -2140,7 +1650,12 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
                 // SLEventPostToPid — NO cursor warp (the forbidden pid-less path would
                 // move the REAL cursor). Fail closed when no
                 // app window owns the pixel (empty desktop), where the only path warps.
-                const win = await coordinateTarget(context.boundAction, action.coordinate, signal);
+                const win = await coordinateTarget(
+                  targetResolutionDeps,
+                  context.boundAction,
+                  action.coordinate,
+                  signal,
+                );
                 if (win && 'outcome' in win) return win;
                 if (!win) {
                   return {
@@ -2322,7 +1837,12 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
                 // (no cursor warp — the warp only exists in the empty-desktop click path).
                 // Resolve the window under the point and scroll it window-locally; fail
                 // closed on empty desktop (nothing scrollable there anyway).
-                const win = await coordinateTarget(context.boundAction, action.coordinate, signal);
+                const win = await coordinateTarget(
+                  targetResolutionDeps,
+                  context.boundAction,
+                  action.coordinate,
+                  signal,
+                );
                 if (win && 'outcome' in win) return win;
                 if (!win) {
                   return {
@@ -2385,13 +1905,19 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
                 // delivery_mode is left DEFAULT (Background) — never 'foreground', which
                 // would briefly reorder window z-order/frontmost (a focus disturbance).
                 const from = await coordinateTarget(
+                  targetResolutionDeps,
                   context.boundAction,
                   action.startCoordinate,
                   signal,
                   true,
                 );
                 if (from && 'outcome' in from) return from;
-                const to = await coordinateTarget(context.boundAction, action.coordinate, signal);
+                const to = await coordinateTarget(
+                  targetResolutionDeps,
+                  context.boundAction,
+                  action.coordinate,
+                  signal,
+                );
                 if (to && 'outcome' in to) return to;
                 if (!from || !to) {
                   return {
@@ -2486,6 +2012,7 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
                 const x2 = Math.max(action.region.x1, action.region.x2);
                 const y2 = Math.max(action.region.y1, action.region.y2);
                 const topLeft = await coordinateTarget(
+                  targetResolutionDeps,
                   context.boundAction,
                   { x: x1, y: y1 },
                   signal,
@@ -2493,6 +2020,7 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
                 );
                 if (topLeft && 'outcome' in topLeft) return topLeft;
                 const bottomRight = await coordinateTarget(
+                  targetResolutionDeps,
                   context.boundAction,
                   { x: x2, y: y2 },
                   signal,
@@ -2658,7 +2186,12 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
                 };
               }
               case 'mouse_move': {
-                const win = await coordinateTarget(context.boundAction, action.coordinate, signal);
+                const win = await coordinateTarget(
+                  targetResolutionDeps,
+                  context.boundAction,
+                  action.coordinate,
+                  signal,
+                );
                 if (win && 'outcome' in win) return win;
                 if (!win) {
                   return {
