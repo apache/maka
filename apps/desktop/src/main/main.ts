@@ -1,4 +1,4 @@
-import { app, ipcMain, powerSaveBlocker, shell } from 'electron';
+import { app, dialog, ipcMain, powerSaveBlocker, shell } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { wireAppLifecycle } from './app-lifecycle.js';
@@ -71,7 +71,6 @@ import {
   createShellRunStore,
   createTelemetryRepo,
 } from '@maka/storage';
-import { resolveStorageRoot } from '@maka/storage/root-authority';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
 import { McpClientManager } from '@maka/mcp';
 import { registerMcpIpcMain } from './mcp-ipc-main.js';
@@ -148,6 +147,7 @@ import {
   isSessionWorkspaceUnavailableError,
   resolveProjectContextRoot,
 } from './project-context-root.js';
+import { resolveDesktopStorageRoot } from './storage-root-startup.js';
 
 // E2E switches must never fire in a packaged build, and must never run against
 // the real user data: a stray MAKA_E2E on a build/dev machine would otherwise
@@ -220,7 +220,31 @@ if (e2eFixture) {
   console.log(`[e2e-fixture] scenario=${e2eFixture.scenario} workspace=${workspaceRoot}`);
   await seedE2eFixture({ workspaceRoot, fixture: e2eFixture, credentialStore });
 } else {
-  await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
+  const storageRoot = await resolveDesktopStorageRoot(workspaceRoot, {
+    confirmRepair: confirmDesktopStorageRootRepair,
+  });
+  if (!storageRoot) {
+    app.exit(0);
+    await new Promise<never>(() => {});
+  }
+}
+
+async function confirmDesktopStorageRootRepair(): Promise<boolean> {
+  await app.whenReady();
+  const isChinese = resolveSystemUiLocale(app.getPreferredSystemLanguages()) === 'zh';
+  const { response } = await dialog.showMessageBox({
+    type: 'warning',
+    title: isChinese ? 'Maka 工作区需要修复' : 'Maka workspace needs repair',
+    message: isChinese ? 'Maka 无法验证这个工作区。' : 'Maka cannot verify this workspace.',
+    detail: isChinese
+      ? `系统中的磁盘标识可能发生了变化。仅当这是本机原来的 Maka 工作区、而不是复制出的工作区时，才选择修复。\n\n${workspaceRoot}`
+      : `The disk identity may have changed. Repair only if this is the original Maka workspace on this computer, not a copied workspace.\n\n${workspaceRoot}`,
+    buttons: isChinese ? ['修复工作区', '退出'] : ['Repair Workspace', 'Exit'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+  });
+  return response === 0;
 }
 // 保持系统唤醒 (settings.system.keepSystemAwake): holds an Electron
 // `powerSaveBlocker` so in-process scheduled tasks keep firing while the
