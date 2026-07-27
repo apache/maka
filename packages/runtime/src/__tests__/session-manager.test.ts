@@ -611,6 +611,7 @@ describe('SessionManager child-session runtime primitive', () => {
     const parent = await manager.createSession(
       makeInput({
         cwd: '/tmp/project',
+        projectId: 'project-1',
         llmConnectionSlug: 'connection-1',
         model: 'model-1',
         thinkingLevel: 'medium',
@@ -636,6 +637,7 @@ describe('SessionManager child-session runtime primitive', () => {
 
     const childHeader = await store.readHeader(result.childSessionId);
     expect(childHeader.cwd).toBe('/tmp/project');
+    expect(childHeader.projectId).toBe('project-1');
     expect(childHeader.workspaceRoot).toBe((await store.readHeader(parent.id)).workspaceRoot);
     expect(childHeader.backend).toBe('fake');
     expect(childHeader.llmConnectionSlug).toBe('connection-1');
@@ -14056,7 +14058,9 @@ describe('SessionManager permission mode updates', () => {
       newId: nextId(),
       now: nextNow(15_000),
     });
-    const session = await manager.createSession(makeInput({ name: 'Parent' }));
+    const session = await manager.createSession(
+      makeInput({ name: 'Parent', projectId: 'project-1' }),
+    );
     await drain(manager.sendMessage(session.id, { turnId: 'source', text: 'context' }));
     await drain(manager.sendMessage(session.id, { turnId: 'after', text: 'do not copy' }));
 
@@ -14067,6 +14071,7 @@ describe('SessionManager permission mode updates', () => {
 
     expect(child.parentSessionId).toBe(session.id);
     expect(child.branchOfTurnId).toBe('source');
+    expect(child.projectId).toBe('project-1');
     const childMessages = await store.readMessages(child.id);
     expect(
       childMessages.some((message) => (message as { turnId?: string }).turnId === 'source'),
@@ -14421,6 +14426,7 @@ describe('SessionManager permission mode updates', () => {
     const session = await manager.createSession(
       makeInput({
         name: 'Conversation',
+        projectId: 'project-1',
         collaborationMode: 'plan',
         orchestrationMode: 'swarm',
       }),
@@ -14432,6 +14438,7 @@ describe('SessionManager permission mode updates', () => {
     const version2 = await manager.reviseBeforeTurn(session.id, { sourceTurnId: 'second' });
 
     expect(version2.name).toBe('Conversation');
+    expect(version2.projectId).toBe('project-1');
     expect(version2.isFlagged).toBe(true);
     expect(version2.collaborationMode).toBe('plan');
     expect(version2.orchestrationMode).toBe('swarm');
@@ -14465,6 +14472,7 @@ describe('SessionManager permission mode updates', () => {
     );
 
     const version3 = await manager.reviseBeforeTurn(version2.id, { sourceTurnId: 'first' });
+    expect(version3.projectId).toBe('project-1');
     expect(version3.revisionRootSessionId).toBe(session.id);
     expect(version3.revisionParentSessionId).toBe(version2.id);
     expect(version3.revisionIndex).toBe(3);
@@ -17668,6 +17676,7 @@ class MemorySessionStore implements SessionStore {
       id: `session-${this.headers.size + 1}`,
       workspaceRoot: '/tmp/workspace',
       cwd: input.cwd,
+      ...(input.projectId ? { projectId: input.projectId } : {}),
       createdAt: 1,
       lastUsedAt: 1,
       name: input.name ?? 'New Chat',

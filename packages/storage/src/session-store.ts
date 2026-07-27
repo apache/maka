@@ -375,6 +375,12 @@ class FileSessionStore implements SessionStore {
     input: CreateSessionInput,
     initialRecord: 'legacy-header' | 'transcript-marker',
   ): Promise<SessionHeader> {
+    if (
+      input.projectId !== undefined &&
+      (typeof input.projectId !== 'string' || input.projectId.length === 0)
+    ) {
+      throw new Error('Invalid project id');
+    }
     const now = Date.now();
     const id = randomUUID();
     // PR-UI-IPC-2 (@kenji msg 0474c3fe + @xuan msg 88d96a87):
@@ -399,6 +405,7 @@ class FileSessionStore implements SessionStore {
       id,
       workspaceRoot: this.workspaceRoot,
       cwd: input.cwd,
+      ...(input.projectId ? { projectId: input.projectId } : {}),
       createdAt: now,
       lastUsedAt: now,
       name: resolvedName,
@@ -1127,6 +1134,8 @@ export function normalizeSessionHeader(
     header.id === sessionId &&
     typeof header.workspaceRoot === 'string' &&
     typeof header.cwd === 'string' &&
+    (header.projectId === undefined ||
+      (typeof header.projectId === 'string' && header.projectId.length > 0)) &&
     isFiniteNumber(header.createdAt) &&
     isFiniteNumber(header.lastUsedAt) &&
     (header.lastMessageAt === undefined || isFiniteNumber(header.lastMessageAt)) &&
@@ -1240,6 +1249,7 @@ function toSummary(header: SessionHeader, messages: StoredMessage[] = []): Sessi
   return {
     id: header.id,
     cwd: header.cwd,
+    ...(header.projectId ? { projectId: header.projectId } : {}),
     name: normalizeSessionName(header.name),
     isFlagged: header.isFlagged,
     isArchived: header.isArchived,

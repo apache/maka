@@ -72,6 +72,16 @@ describe('FileSessionStore CRUD', () => {
     });
   });
 
+  test('persists the stable project association in headers and summaries', async () => {
+    await withStore(async (store) => {
+      const header = await store.create(makeInput({ projectId: 'project-1' }));
+
+      assert.equal(header.projectId, 'project-1');
+      assert.equal((await store.readHeader(header.id)).projectId, 'project-1');
+      assert.equal((await store.list())[0]?.projectId, 'project-1');
+    });
+  });
+
   test('readHeaderSnapshot is observational and does not lock the connection', async () => {
     await withStore(async (store) => {
       const header = await store.create(makeInput({ name: 'Inspect me' }));

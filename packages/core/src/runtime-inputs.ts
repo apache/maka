@@ -22,6 +22,8 @@ export type { TurnOrchestration } from './orchestration.js';
 export interface CreateSessionInput {
   /** Absolute path to the session's working dir (project root). */
   cwd: string;
+  /** Stable project-catalog association. Omit for an explicit no-project session. */
+  projectId?: string;
   /** If omitted, runtime auto-derives a placeholder; users may rename later. */
   name?: string;
   backend: BackendKind;

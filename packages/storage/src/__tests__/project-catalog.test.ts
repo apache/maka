@@ -210,6 +210,36 @@ test('a missing project directory remains in the catalog as unavailable', async 
   }
 });
 
+test('importing a missing legacy path preserves it as an unavailable project', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-legacy-missing-'));
+  try {
+    const missingPath = join(base, 'moved-project');
+    const catalog = createProjectCatalog(join(base, 'storage'), {
+      now: () => 1_000,
+      createId: () => 'project-1',
+    });
+
+    const project = await catalog.importLegacyPath(missingPath);
+
+    assert.equal(project.id, 'project-1');
+    assert.equal(project.name, 'moved-project');
+    assert.equal(project.available, false);
+    assert.equal(project.preferredPath, undefined);
+    assert.deepEqual(project.locations, [
+      {
+        path: missingPath,
+        isWorktree: false,
+        addedAt: 1_000,
+        lastUsedAt: 1_000,
+      },
+    ]);
+    assert.equal((await catalog.importLegacyPath(missingPath)).id, project.id);
+    assert.equal((await catalog.list()).length, 1);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 test('relinking an unavailable project preserves its id and adopts the new directory', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-relink-'));
   try {

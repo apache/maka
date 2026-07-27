@@ -163,6 +163,8 @@ export interface SessionHeader {
   id: string;
   workspaceRoot: string;
   cwd: string;
+  /** Stable project-catalog association. Absent for explicit no-project sessions. */
+  projectId?: string;
 
   // Lifecycle timestamps
   createdAt: number;
@@ -228,6 +230,7 @@ export type BackendKind = 'ai-sdk' | 'fake' | 'pi-agent';
 export interface SessionSummary {
   id: string;
   cwd?: string;
+  projectId?: string;
   name: string;
   isFlagged: boolean;
   isArchived: boolean;

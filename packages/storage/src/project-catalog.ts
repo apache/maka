@@ -12,6 +12,7 @@ const execFileAsync = promisify(execFile);
 export interface ProjectCatalog {
   list(): Promise<ProjectRecord[]>;
   register(path: string): Promise<ProjectRecord>;
+  importLegacyPath(path: string): Promise<ProjectRecord>;
   touch(projectId: string, path?: string): Promise<ProjectRecord>;
   relink(projectId: string, path: string): Promise<ProjectRecord>;
   rename(projectId: string, name: string): Promise<ProjectRecord>;
@@ -118,6 +119,62 @@ class FileProjectCatalog implements ProjectCatalog {
     });
     if (!registered) throw new Error(`Failed to register project: ${path}`);
     return this.present(registered);
+  }
+
+  async importLegacyPath(path: string): Promise<ProjectRecord> {
+    try {
+      return await this.register(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+
+    const canonicalPath = normalize(resolve(path));
+    const identity = `folder:${canonicalPath}`;
+    const timestamp = this.now();
+    let imported: PersistedProject | undefined;
+    await this.withQueue(async () => {
+      const file = await this.read();
+      const existing = file.projects.find((project) => project.identity === identity);
+      if (existing) {
+        const location = existing.locations.find((item) => item.path === canonicalPath);
+        if (location) {
+          location.lastUsedAt = timestamp;
+        } else {
+          existing.locations.push({
+            path: canonicalPath,
+            isWorktree: false,
+            addedAt: timestamp,
+            lastUsedAt: timestamp,
+          });
+        }
+        existing.lastUsedAt = timestamp;
+        existing.updatedAt = timestamp;
+        imported = existing;
+      } else {
+        const project: PersistedProject = {
+          id: this.createId(),
+          name: basename(canonicalPath) || canonicalPath,
+          identity,
+          kind: 'folder',
+          locations: [
+            {
+              path: canonicalPath,
+              isWorktree: false,
+              addedAt: timestamp,
+              lastUsedAt: timestamp,
+            },
+          ],
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          lastUsedAt: timestamp,
+        };
+        file.projects.push(project);
+        imported = project;
+      }
+      await this.write(file);
+    });
+    if (!imported) throw new Error(`Failed to import legacy project: ${path}`);
+    return this.present(imported);
   }
 
   async touch(projectId: string, path?: string): Promise<ProjectRecord> {

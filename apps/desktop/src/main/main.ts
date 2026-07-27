@@ -65,12 +65,14 @@ import {
   createConnectionStore,
   createPlanReminderStore,
   createPlanStore,
+  createProjectCatalog,
   openRuntimeEventPersistence,
   createSessionStore,
   createSettingsStore,
   createMcpConfigStore,
   createShellRunStore,
   createTelemetryRepo,
+  migrateSessionProjects,
 } from '@maka/storage';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
 import { McpClientManager } from '@maka/mcp';
@@ -254,6 +256,8 @@ async function confirmDesktopStorageRootRepair(): Promise<boolean> {
 // process, so quit needs no special teardown.
 const keepSystemAwake = createKeepSystemAwakeController(powerSaveBlocker);
 const store = createSessionStore(workspaceRoot);
+const projectCatalog = createProjectCatalog(workspaceRoot);
+await migrateSessionProjects({ sessions: store, catalog: projectCatalog });
 const planStore = createPlanStore(workspaceRoot);
 const runStore = createAgentRunStore(workspaceRoot);
 const runtimePersistence = await openRuntimeEventPersistence({
