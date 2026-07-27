@@ -9,6 +9,7 @@ import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
 import { CanonicalSessionProjectionReader } from './canonical-session-projection.js';
+import { HostCanonicalPermissionOutcomeReader } from './canonical-permission-outcome-reader.js';
 import type { RuntimeHostComposition, RuntimeHostCompositionContext } from './host-kernel.js';
 import { HostInteractionCoordinator } from './interaction-coordinator.js';
 import { type HostMessageRootPort, HostMessageCoordinator } from './message-coordinator.js';
@@ -106,10 +107,13 @@ export async function createExecutionRuntimeHostComposition(
       onPoison: (error) => {
         if (poisonFailure) return;
         poisonFailure = error;
-        context.acquireResidency();
+        context.retainUntilProcessExit();
         beginDrain();
         context.requestDrain();
       },
+    });
+    const canonicalPermissionOutcomes = new HostCanonicalPermissionOutcomeReader({
+      store: stores.interactionStore,
     });
     const runtimeAuthority: RuntimeHostedRootAuthority = {
       bindRun: (identity) => messages.bindRun(identity),
@@ -129,7 +133,7 @@ export async function createExecutionRuntimeHostComposition(
       runBackendActivation: (operation) => runtimePolicyActivation.runBackendActivation(operation),
       messageAuthority: runtimeAuthority,
       interactionAuthority: interactions,
-      canonicalPermissionOutcomes: interactions,
+      canonicalPermissionOutcomes,
     });
     rootCoordinator = new RootTurnCoordinator(
       manager,

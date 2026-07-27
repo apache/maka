@@ -97,6 +97,7 @@ export function permissionCanonicalOutcome(
     decision: answer.decision,
     rememberForTurn: answer.rememberForTurn ?? false,
     reviewer: answer.reviewer ?? 'user',
+    ...(answer.rationale === undefined ? {} : { rationale: answer.rationale }),
     ...(answer.riskLevel === undefined ? {} : { riskLevel: answer.riskLevel }),
     committedAt,
   });
@@ -145,6 +146,7 @@ export function runtimePermissionOutcome(
       decision: outcome.decision,
       rememberForTurn: outcome.rememberForTurn,
       reviewer: outcome.reviewer,
+      ...(outcome.rationale === undefined ? {} : { rationale: outcome.rationale }),
       ...(outcome.riskLevel === undefined ? {} : { riskLevel: outcome.riskLevel }),
     },
   };

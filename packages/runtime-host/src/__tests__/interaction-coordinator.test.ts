@@ -3,7 +3,11 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import type { AnyPermissionRequestEvent, UserQuestionRequestEvent } from '@maka/core/events';
+import type {
+  AnyPermissionRequestEvent,
+  PermissionRequestEvent,
+  UserQuestionRequestEvent,
+} from '@maka/core/events';
 import {
   RuntimeInteractionAdmissionRejectedError,
   RuntimeInteractionFailStopError,
@@ -23,6 +27,7 @@ import {
 } from '@maka/storage/root-authority';
 import type { SessionInteractionProjection } from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
+import { HostCanonicalPermissionOutcomeReader } from '../server/canonical-permission-outcome-reader.js';
 import {
   HostInteractionCoordinator,
   type HostInteractionCoordinatorOptions,
@@ -153,7 +158,9 @@ describe('HostInteractionCoordinator', () => {
       ]);
       assert.equal(first?.outcome?.outcome.kind, 'permission_answer');
       assert.equal(second?.outcome?.outcome.kind, 'permission_answer');
-      const canonical = await coordinator.readPermissionOutcome('permission_later');
+      const canonical = await new HostCanonicalPermissionOutcomeReader({
+        store,
+      }).readPermissionOutcome('permission_later');
       assert.equal(canonical?.requestId, 'permission_later');
       assert.equal(canonical?.request.toolUseId, 'tool_later');
       assert.equal(canonical?.request.prompt.toolName, 'Bash');
@@ -339,6 +346,40 @@ describe('HostInteractionCoordinator', () => {
         durableReview,
         /mcp-client-secret|mcp-private-key|mcp-refresh-token|mcp-service-account-key|mcp-session-token|mcp-ssh-private-key/,
       );
+
+      await owner.close('turn_terminal');
+      owner.release();
+      await coordinator.close();
+    });
+  });
+
+  test('removes assignment secrets before durable Interaction admission', async () => {
+    await withStore(async ({ store }) => {
+      const coordinator = createCoordinator(store);
+      const owner = coordinator.bindRun(RUN);
+      const secret = 'host-durable-secret';
+      const request: PermissionRequestEvent = {
+        ...permissionEvent('permission_assignment_secret', 'tool_assignment_secret', 36),
+        args: {
+          command: `API_TOKEN+=${secret} deploy`,
+          cwd: '/repo',
+        },
+      };
+
+      assert.deepEqual(
+        await owner.acceptPermissionRequest({
+          request,
+          continuation: permissionContinuation(request.requestId, []),
+        }),
+        { state: 'pending' },
+      );
+      const record = await store.readInteraction(request.requestId);
+      assert.equal(record?.request.request.kind, 'permission');
+      if (record?.request.request.kind !== 'permission') return;
+      assert.equal(record.request.request.prompt.review.kind, 'command');
+      if (record.request.request.prompt.review.kind !== 'command') return;
+      assert.match(record.request.request.prompt.review.command, /\[redacted\]/);
+      assert.doesNotMatch(record.request.request.prompt.review.command, new RegExp(secret));
 
       await owner.close('turn_terminal');
       owner.release();
@@ -566,11 +607,7 @@ function questionEvent(requestId: string, ts: number): UserQuestionRequestEvent 
   };
 }
 
-function permissionEvent(
-  requestId: string,
-  toolUseId: string,
-  ts: number,
-): AnyPermissionRequestEvent {
+function permissionEvent(requestId: string, toolUseId: string, ts: number): PermissionRequestEvent {
   return {
     id: `event_${requestId}`,
     type: 'permission_request',

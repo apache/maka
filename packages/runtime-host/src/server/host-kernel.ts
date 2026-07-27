@@ -59,6 +59,8 @@ export interface RuntimeHostCompositionContext {
   owner: InteractiveRootOwner;
   hostEpoch: string;
   acquireResidency(): RuntimeHostResidency;
+  /** Irreversible fail-stop latch; normal residency still uses acquireResidency(). */
+  retainUntilProcessExit(): void;
   requestDrain(): void;
 }
 
@@ -100,6 +102,7 @@ export class RuntimeHostKernel {
   #activeOperations = 0;
   #activeCommandOperations = 0;
   #activeResidencies = 0;
+  #retainedUntilProcessExit = false;
   #composition: RuntimeHostComposition | undefined;
   #compositionDrainBegun = false;
   #compositionStartup: Promise<void> | undefined;
@@ -217,6 +220,7 @@ export class RuntimeHostKernel {
             owner: this.#options.owner,
             hostEpoch: this.hostEpoch,
             acquireResidency: () => this.#acquireResidency(),
+            retainUntilProcessExit: () => this.#retainUntilProcessExit(),
             requestDrain: () => this.#requestDrain(),
           });
           if (this.#shutdownRequested) this.#beginCompositionDrain();
@@ -418,6 +422,13 @@ export class RuntimeHostKernel {
         this.#settleLifecycleAfterWork();
       },
     };
+  }
+
+  #retainUntilProcessExit(): void {
+    if (this.#retainedUntilProcessExit) return;
+    this.#retainedUntilProcessExit = true;
+    this.#activeResidencies += 1;
+    this.#cancelIdle();
   }
 
   #createOperationHandlers(domainHandlers: DomainOperationHandlerMap): OperationHandlerMap {

@@ -225,6 +225,37 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
+  test('composition process-exit retention requires termination without releasing ownership', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      const host = await RuntimeHostKernel.start({
+        owner,
+        idleGraceMs: 10_000,
+        shutdownGraceMs: 50,
+        compositionFactory: async (context) => {
+          context.retainUntilProcessExit();
+          context.retainUntilProcessExit();
+          context.requestDrain();
+          return testComposition();
+        },
+      });
+
+      try {
+        await assert.rejects(
+          host.closed,
+          (error: unknown) =>
+            error instanceof RuntimeHostProcessTerminationRequiredError &&
+            error.code === 'process_termination_required',
+        );
+        assert.equal(await tryAcquireInteractiveRootOwner(capability), undefined);
+      } finally {
+        await owner.close();
+      }
+    });
+  });
+
   test('drain requested before factory completion begins drain before recovery exactly once', async () => {
     await withHostPaths(async (paths) => {
       const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });

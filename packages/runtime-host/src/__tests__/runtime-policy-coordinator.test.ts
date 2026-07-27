@@ -72,6 +72,7 @@ test('production composition shares one gate across mutation and backend activat
       owner,
       hostEpoch: context.hostEpoch,
       acquireResidency: context.acquireResidency,
+      retainUntilProcessExit: () => undefined,
       requestDrain: () => undefined,
     });
     await composition.recover();
@@ -162,6 +163,7 @@ test('production policy mutation drains and poisons activation when cached backe
       owner,
       hostEpoch: context.hostEpoch,
       acquireResidency: context.acquireResidency,
+      retainUntilProcessExit: () => undefined,
       requestDrain: () => {
         drainRequests += 1;
       },
