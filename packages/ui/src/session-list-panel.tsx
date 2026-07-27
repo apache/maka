@@ -1,7 +1,7 @@
 import type { PlanReminder, SessionSummary } from '@maka/core';
 import type { NavModuleMemory, NavSelection } from './nav-selection.js';
 import { SessionHistoryList, type SessionHistoryGroup, type SessionRowActions } from './session-history-list.js';
-import { SessionSidebarFooter, SessionSidebarNav } from './session-sidebar-nav.js';
+import { SessionSidebarFooter, SessionSidebarNav, type SidebarUpdateReminder } from './session-sidebar-nav.js';
 import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from './primitives/menu.js';
 import { Button as UiButton } from './ui.js';
 import { ListTodo } from './icons.js';
@@ -25,6 +25,8 @@ export function SessionListPanel(props: {
   moduleMemory?: NavModuleMemory;
   onSelect(selection: NavSelection): void;
   onOpenSettings(): void;
+  updateReminder?: SidebarUpdateReminder;
+  onOpenUpdate?(): void;
   onNew(): void;
   rowActions?: SessionRowActions;
 }) {
@@ -82,7 +84,11 @@ export function SessionListPanel(props: {
         onSelectSession={props.onSelectSession}
         rowActions={props.rowActions}
       />
-      <SessionSidebarFooter onOpenSettings={props.onOpenSettings} />
+      <SessionSidebarFooter
+        updateReminder={props.updateReminder}
+        onOpenSettings={props.onOpenSettings}
+        onOpenUpdate={props.onOpenUpdate}
+      />
     </aside>
   );
 }

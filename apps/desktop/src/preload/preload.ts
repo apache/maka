@@ -8,6 +8,7 @@ import type {
   PermissionActionResult,
   PermissionOverlayStartResult,
   RendererIngestInput,
+  AppUpdateStatus,
   WorkspaceInstructionsState,
 } from './bridge-contract.js';
 import type {
@@ -942,6 +943,26 @@ const makaBridge = {
       buildCommit: string | null;
     }> {
       return ipcRenderer.invoke('app:info');
+    },
+    subscribeUpdateStatus(handler: (status: AppUpdateStatus) => void): () => void {
+      const listener = (_event: Electron.IpcRendererEvent, status: AppUpdateStatus) => handler(status);
+      ipcRenderer.on('app:updateStatusChanged', listener);
+      return () => ipcRenderer.off('app:updateStatusChanged', listener);
+    },
+    updateStatus(): Promise<AppUpdateStatus> {
+      return ipcRenderer.invoke('app:updateStatus');
+    },
+    checkForUpdates(): Promise<AppUpdateStatus> {
+      return ipcRenderer.invoke('app:checkForUpdates');
+    },
+    downloadUpdate(): Promise<AppUpdateStatus> {
+      return ipcRenderer.invoke('app:downloadUpdate');
+    },
+    installUpdate(): Promise<{ ok: true } | { ok: false; reason: 'not_downloaded' | 'install_failed' }> {
+      return ipcRenderer.invoke('app:installUpdate');
+    },
+    openUpdateDownload(): Promise<{ ok: true } | { ok: false; reason: 'not_available' | 'open_failed' }> {
+      return ipcRenderer.invoke('app:openUpdateDownload');
     },
     sessionProjectInfo(sessionId: string): Promise<{
       projectPath: string;

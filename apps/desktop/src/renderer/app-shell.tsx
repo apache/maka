@@ -57,7 +57,7 @@ import {
 } from './plan-mode-panel';
 import { McpPage } from './mcp-page';
 import { useOnboardingSnapshot } from './use-onboarding-snapshot';
-import type { OnboardingSnapshot } from '../preload/bridge-contract.js';
+import type { AppUpdateStatus, OnboardingSnapshot } from '../preload/bridge-contract.js';
 import { ProviderLogo } from './settings/provider-display';
 import { ProviderBrandMark } from './settings/provider-brand-marks';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy';
@@ -146,6 +146,7 @@ type ComposerImportOwner = {
  * visible tail is never cut mid-typewriter.
  */
 const SETTLE_FALLBACK_GRACE_MS = 1000;
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 type AppShellProps = {
   /** Pre-mount snapshot prefetched by main.tsx — see prefetchOnboardingSnapshot. */
@@ -189,6 +190,7 @@ function AppShellContent({
   setUiLocalePreference: Dispatch<SetStateAction<UiLocalePreference>>;
 }) {
   const toastApi = useToast();
+  const [appUpdateStatus, setAppUpdateStatus] = useState<AppUpdateStatus | null>(null);
   const {
     sessions,
     sessionsRef,
@@ -308,6 +310,97 @@ function AppShellContent({
     setUiLocalePreference,
   });
   const shellCopy = getShellCopy(uiLocale).app;
+  useEffect(() => {
+    let cancelled = false;
+    const refreshUpdateStatus = () => {
+      void window.maka.app
+        .checkForUpdates()
+        .then((next) => {
+          if (!cancelled) setAppUpdateStatus(next);
+        })
+        .catch(() => {
+          if (!cancelled) setAppUpdateStatus(null);
+        });
+    };
+
+    void window.maka.app
+      .updateStatus()
+      .then((next) => {
+        if (!cancelled) setAppUpdateStatus(next);
+      })
+      .catch(() => {});
+    const unsubscribeUpdateStatus = window.maka.app.subscribeUpdateStatus((next) => {
+      if (!cancelled) setAppUpdateStatus(next);
+    });
+    refreshUpdateStatus();
+    const interval = window.setInterval(refreshUpdateStatus, UPDATE_CHECK_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      unsubscribeUpdateStatus();
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  const updateReminder =
+    appUpdateStatus?.state === 'available' ||
+    appUpdateStatus?.state === 'downloading' ||
+    appUpdateStatus?.state === 'downloaded' ||
+    (appUpdateStatus?.state === 'error' && Boolean(appUpdateStatus.latestVersion))
+    ? {
+        state: appUpdateStatus.state,
+        latestVersion: appUpdateStatus.latestVersion ?? appUpdateStatus.currentVersion,
+        progressPercent: appUpdateStatus.state === 'downloading' ? appUpdateStatus.progress.percent : undefined,
+      }
+    : undefined;
+  const openUpdateDownload = useCallback(() => {
+    if (appUpdateStatus?.state === 'downloaded') {
+      void window.maka.app
+        .installUpdate()
+        .then((result) => {
+          if (result.ok) return;
+          toastApi.error(
+            uiLocale === 'zh' ? '无法安装更新' : 'Could not install update',
+            uiLocale === 'zh' ? '请稍后重试，或手动下载最新版本。' : 'Try again later, or download the latest version manually.',
+          );
+        })
+        .catch((error) => {
+          toastApi.error(
+            uiLocale === 'zh' ? '无法安装更新' : 'Could not install update',
+            localizedShellErrorMessage(error, uiLocale === 'zh' ? '请稍后重试。' : 'Try again later.', uiLocale),
+          );
+        });
+      return;
+    }
+    if (appUpdateStatus?.state === 'available' || appUpdateStatus?.state === 'error') {
+      void window.maka.app
+        .downloadUpdate()
+        .then((next) => setAppUpdateStatus(next))
+        .catch((error) => {
+          toastApi.error(
+            uiLocale === 'zh' ? '无法下载更新' : 'Could not download update',
+            localizedShellErrorMessage(error, uiLocale === 'zh' ? '请稍后重试。' : 'Try again later.', uiLocale),
+          );
+        });
+      return;
+    }
+    void window.maka.app
+      .openUpdateDownload()
+      .then((result) => {
+        if (result.ok) return;
+        toastApi.error(
+          uiLocale === 'zh' ? '无法打开更新' : 'Could not open update',
+          uiLocale === 'zh'
+            ? '请稍后重试，或前往 GitHub Releases 下载最新版本。'
+            : 'Try again later, or download the latest version from GitHub Releases.',
+        );
+      })
+      .catch((error) => {
+        toastApi.error(
+          uiLocale === 'zh' ? '无法打开更新' : 'Could not open update',
+          localizedShellErrorMessage(error, uiLocale === 'zh' ? '请稍后重试。' : 'Try again later.', uiLocale),
+        );
+      });
+  }, [appUpdateStatus, toastApi, uiLocale]);
   const moduleHubCopy = getSharedUiCopy(uiLocale).moduleHubs;
   const extensionsHubHeader = {
     title: moduleHubCopy.extensions.title,
@@ -1637,6 +1730,8 @@ function AppShellContent({
             onSelect={setNavSelection}
             onSelectSession={sessionListSelectSession}
             onOpenSettings={openSettings}
+            updateReminder={updateReminder}
+            onOpenUpdate={openUpdateDownload}
             onNew={createSession}
             rowActions={sessionRowActions}
           />

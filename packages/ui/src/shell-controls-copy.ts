@@ -10,6 +10,11 @@ type ShellControlsCopy = {
     automations: string;
     extensions: string;
     settings: string;
+    update: string;
+    restartUpdate: string;
+    downloadingUpdate(percent: number): string;
+    updateAvailable(version: string): string;
+    updateDownloaded(version: string): string;
     pendingReminders(count: number): string;
   };
   search: {
@@ -41,6 +46,11 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
       automations: '定时任务',
       extensions: '扩展',
       settings: '设置',
+      update: '更新',
+      restartUpdate: '重启',
+      downloadingUpdate: (percent: number) => `正在下载更新，${percent}%`,
+      updateAvailable: (version: string) => `发现新版本 ${version}`,
+      updateDownloaded: (version: string) => `新版本 ${version} 已下载，重启后安装`,
       pendingReminders: (count: number) => `定时任务，${count} 个未完成提醒`,
     },
     search: {
@@ -70,6 +80,11 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
       automations: 'Scheduled tasks',
       extensions: 'Extensions',
       settings: 'Settings',
+      update: 'Update',
+      restartUpdate: 'Restart',
+      downloadingUpdate: (percent: number) => `Downloading update, ${percent}%`,
+      updateAvailable: (version: string) => `Update available: ${version}`,
+      updateDownloaded: (version: string) => `Update ${version} downloaded. Restart to install.`,
       pendingReminders: (count: number) => `Scheduled tasks, ${count} unfinished ${count === 1 ? 'reminder' : 'reminders'}`,
     },
     search: {

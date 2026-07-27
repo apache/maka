@@ -53,6 +53,8 @@ jobs:
           version="$(node -p "require('./apps/desktop/package.json').version")"
           tag="v${version}"
           dmg="apps/desktop/release/Maka-${version}-mac-arm64.dmg"
+          zip="apps/desktop/release/Maka-${version}-mac-arm64.zip"
+          update_yml="apps/desktop/release/latest-mac.yml"
 
           if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
             echo "Tag ${tag} already exists." >&2
@@ -67,6 +69,8 @@ jobs:
             echo "version=${version}"
             echo "tag=${tag}"
             echo "dmg=${dmg}"
+            echo "zip=${zip}"
+            echo "update_yml=${update_yml}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Package signed and notarized DMG
@@ -100,6 +104,8 @@ jobs:
           gh release create "$RELEASE_TAG" \
             "$DMG_PATH" \
             "${DMG_PATH}.sha256" \
+            "${{ steps.release.outputs.zip }}" \
+            "${{ steps.release.outputs.update_yml }}" \
             --draft \
             --target "$GITHUB_SHA" \
             --title "Maka ${RELEASE_VERSION}" \

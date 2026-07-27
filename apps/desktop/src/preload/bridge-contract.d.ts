@@ -168,6 +168,38 @@ export type PermissionOverlayStartResult =
       message?: string;
     };
 
+export type AppUpdateStatus =
+  | { state: 'idle'; currentVersion: string }
+  | { state: 'checking'; currentVersion: string }
+  | { state: 'not-available'; currentVersion: string; latestVersion?: string }
+  | {
+      state: 'available';
+      currentVersion: string;
+      latestVersion: string;
+      releaseName?: string;
+      releaseUrl?: string;
+      publishedAt?: string;
+    }
+  | {
+      state: 'downloading';
+      currentVersion: string;
+      latestVersion: string;
+      progress: {
+        percent: number;
+        bytesPerSecond?: number;
+        transferred?: number;
+        total?: number;
+      };
+    }
+  | {
+      state: 'downloaded';
+      currentVersion: string;
+      latestVersion: string;
+      releaseName?: string;
+      downloadedFile?: string;
+    }
+  | { state: 'error'; currentVersion: string; message: string; latestVersion?: string };
+
 export interface MakaBridge {
 
   tasks: {
@@ -589,6 +621,12 @@ export interface MakaBridge {
       buildMode: 'dev' | 'packaged';
       buildCommit: string | null;
     }>;
+    subscribeUpdateStatus(handler: (status: AppUpdateStatus) => void): () => void;
+    updateStatus(): Promise<AppUpdateStatus>;
+    checkForUpdates(): Promise<AppUpdateStatus>;
+    downloadUpdate(): Promise<AppUpdateStatus>;
+    installUpdate(): Promise<{ ok: true } | { ok: false; reason: 'not_downloaded' | 'install_failed' }>;
+    openUpdateDownload(): Promise<{ ok: true } | { ok: false; reason: 'not_available' | 'open_failed' }>;
     sessionProjectInfo(sessionId: string): Promise<{
       projectPath: string;
       projectGit: { isGitRepo: boolean; branch?: string };

@@ -1,5 +1,6 @@
 import type { PlanReminder } from '@maka/core';
-import { Blocks, Settings, SquarePen, Timer } from './icons.js';
+import type { CSSProperties } from 'react';
+import { Blocks, Download, RotateCw, Settings, SquarePen, Timer } from './icons.js';
 import type { NavModuleMemory, NavSelection } from './nav-selection.js';
 import { cn } from './ui.js';
 import { cva } from 'class-variance-authority';
@@ -104,9 +105,33 @@ export function SessionSidebarNav(props: {
   );
 }
 
-export function SessionSidebarFooter(props: { onOpenSettings(): void }) {
+export type SidebarUpdateReminder = {
+  state: 'available' | 'downloading' | 'downloaded' | 'error';
+  latestVersion: string;
+  progressPercent?: number;
+};
+
+export function SessionSidebarFooter(props: {
+  updateReminder?: SidebarUpdateReminder;
+  onOpenSettings(): void;
+  onOpenUpdate?(): void;
+}) {
   const locale = useUiLocale();
   const copy = getShellControlsCopy(locale).navigation;
+  const updatePercent = Math.round(props.updateReminder?.progressPercent ?? 0);
+  const updateLabel = props.updateReminder?.state === 'downloaded'
+    ? copy.restartUpdate
+    : props.updateReminder?.state === 'downloading'
+      ? `${updatePercent}%`
+      : copy.update;
+  const updateTitle = props.updateReminder?.state === 'downloaded'
+    ? copy.updateDownloaded(props.updateReminder.latestVersion)
+    : props.updateReminder?.state === 'downloading'
+      ? copy.downloadingUpdate(updatePercent)
+      : props.updateReminder
+        ? copy.updateAvailable(props.updateReminder.latestVersion)
+        : copy.update;
+  const UpdateIcon = props.updateReminder?.state === 'downloaded' ? RotateCw : Download;
   return (
     <footer className="maka-session-panel-footer">
       <BaseButton
@@ -119,6 +144,22 @@ export function SessionSidebarFooter(props: { onOpenSettings(): void }) {
         <Settings className="maka-nav-icon" aria-hidden="true" />
         <span>{copy.settings}</span>
       </BaseButton>
+      {props.updateReminder && props.onOpenUpdate && (
+        <BaseButton
+          className="maka-sidebar-update-button"
+          data-update-state={props.updateReminder.state}
+          style={{ '--maka-update-progress': String(Math.max(0, Math.min(100, props.updateReminder.progressPercent ?? 0)) / 100) } as CSSProperties}
+          type="button"
+          onClick={props.onOpenUpdate}
+          disabled={props.updateReminder.state === 'downloading'}
+          aria-label={updateTitle}
+          title={updateTitle}
+        >
+          {props.updateReminder.state === 'downloading' && <span className="maka-sidebar-update-progress" aria-hidden="true" />}
+          <UpdateIcon className="maka-nav-icon" aria-hidden="true" />
+          <span>{updateLabel}</span>
+        </BaseButton>
+      )}
     </footer>
   );
 }

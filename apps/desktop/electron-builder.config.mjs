@@ -58,7 +58,10 @@ export default {
     },
   ],
   mac: {
-    target: [{ target: 'dmg', arch: ['arm64'] }],
+    target: [
+      { target: 'dmg', arch: ['arm64'] },
+      { target: 'zip', arch: ['arm64'] },
+    ],
     category: 'public.app-category.productivity',
     icon: 'assets/icon.png',
     forceCodeSigning: true,
@@ -75,6 +78,13 @@ export default {
     },
   },
   dmg: {
-    writeUpdateInfo: false,
+    writeUpdateInfo: true,
   },
+  publish: [
+    {
+      provider: 'github',
+      owner: 'Maka-Agent',
+      repo: 'maka-agent',
+    },
+  ],
 };

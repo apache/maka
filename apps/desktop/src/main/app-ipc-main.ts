@@ -7,6 +7,7 @@ import type { ProjectRootController } from './project-root-controller.js';
 import { resolveOpenPath, type OpenPathResult } from './open-path-guard.js';
 import { getE2eFixtureState, type resolveE2eFixture } from './e2e-fixture.js';
 import type { resolveBuildInfo } from './build-info.js';
+import { createAppUpdateService, type AppUpdateService, type AppUpdateStatus } from './app-update-service.js';
 
 type MainWindowController = ReturnType<typeof createMainWindowController>;
 type E2eFixture = ReturnType<typeof resolveE2eFixture>;
@@ -20,10 +21,25 @@ export interface AppIpcDeps {
   workspaceRoot: string;
   buildInfo: BuildInfo;
   e2eFixture: E2eFixture;
+  updateService?: AppUpdateService;
 }
 
 export function registerAppIpc(deps: AppIpcDeps): void {
   const { mainWindowController, projectRoot, workspaceRoot, buildInfo, e2eFixture } = deps;
+  const updateService = deps.updateService ?? createAppUpdateService({
+    currentVersion: app.getVersion(),
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+    arch: process.arch,
+    openExternal: (url) => shell.openExternal(url),
+    mockLatestVersion: process.env.MAKA_UPDATE_MOCK_VERSION,
+    mockState: process.env.MAKA_UPDATE_MOCK_STATE === 'available' ||
+      process.env.MAKA_UPDATE_MOCK_STATE === 'downloading' ||
+      process.env.MAKA_UPDATE_MOCK_STATE === 'downloaded'
+      ? process.env.MAKA_UPDATE_MOCK_STATE
+      : undefined,
+    onStatusChange: (status) => mainWindowController.send('app:updateStatusChanged', status),
+  });
   // Call-time read of the shared project-root authority: every handler must
   // observe the latest selection, not a snapshot taken at registration.
   const currentProjectRoot = (): Promise<string> => projectRoot.current();
@@ -65,6 +81,11 @@ export function registerAppIpc(deps: AppIpcDeps): void {
       buildCommit: buildInfo.commit,
     };
   });
+  ipcMain.handle('app:updateStatus', (): AppUpdateStatus => updateService.getStatus());
+  ipcMain.handle('app:checkForUpdates', (): Promise<AppUpdateStatus> => updateService.checkForUpdates());
+  ipcMain.handle('app:downloadUpdate', (): Promise<AppUpdateStatus> => updateService.downloadUpdate());
+  ipcMain.handle('app:installUpdate', () => updateService.installUpdate());
+  ipcMain.handle('app:openUpdateDownload', () => updateService.openUpdateDownload());
   ipcMain.handle('app:sessionProjectInfo', async (_event, sessionId: unknown) => {
     if (typeof sessionId !== 'string' || !sessionId) {
       throw new Error('Invalid project-context session id.');

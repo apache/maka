@@ -58,6 +58,8 @@ export async function packageMacosArm64({
 
   const manifest = JSON.parse(await readFile(join(desktopRoot, 'package.json'), 'utf8'));
   const dmgPath = join(releaseDirectory, `Maka-${manifest.version}-mac-arm64.dmg`);
+  const zipPath = join(releaseDirectory, `Maka-${manifest.version}-mac-arm64.zip`);
+  const updateMetadataPath = join(releaseDirectory, 'latest-mac.yml');
 
   await run('npm', ['run', 'clean']);
   await run('npm', ['run', 'prepare:officecli', '--', '--platform', 'darwin', '--arch', 'arm64']);
@@ -66,6 +68,8 @@ export async function packageMacosArm64({
   await remove(releaseDirectory, { recursive: true, force: true });
   await run('npm', ['--workspace', '@maka/desktop', 'run', 'package:macos-arm64']);
   await assertFile(dmgPath);
+  await assertFile(zipPath);
+  await assertFile(updateMetadataPath);
   await remove(join(releaseDirectory, 'mac-arm64'), { recursive: true, force: true });
 
   return dmgPath;

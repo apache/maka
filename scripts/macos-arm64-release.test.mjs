@@ -15,21 +15,29 @@ const signingEnvironment = {
   APPLE_API_ISSUER: '00000000-0000-0000-0000-000000000000',
 };
 
-test('desktop packager has one explicit signed macOS arm64 DMG target', async () => {
+test('desktop packager has signed macOS arm64 install and update targets', async () => {
   const { default: config } = await import(new URL('electron-builder.config.mjs', desktopRoot));
 
   assert.equal(config.appId, 'com.maka.desktop');
   assert.equal(config.productName, 'Maka');
   assert.equal(config.asar, true);
   assert.equal(config.artifactName, 'Maka-${version}-mac-${arch}.${ext}');
-  assert.deepEqual(config.mac.target, [{ target: 'dmg', arch: ['arm64'] }]);
+  assert.deepEqual(config.mac.target, [
+    { target: 'dmg', arch: ['arm64'] },
+    { target: 'zip', arch: ['arm64'] },
+  ]);
   assert.equal(config.mac.forceCodeSigning, true);
   assert.equal(config.mac.hardenedRuntime, true);
   assert.equal(config.mac.notarize, true);
   assert.equal(config.mac.entitlements, 'build/entitlements.mac.plist');
   assert.equal(config.mac.entitlementsInherit, 'build/entitlements.mac.inherit.plist');
   assert.deepEqual(config.mac.binaries, ['Contents/Resources/tools/officecli']);
-  assert.deepEqual(config.dmg, { writeUpdateInfo: false });
+  assert.deepEqual(config.dmg, { writeUpdateInfo: true });
+  assert.deepEqual(config.publish, [{
+    provider: 'github',
+    owner: 'Maka-Agent',
+    repo: 'maka-agent',
+  }]);
   assert.ok(config.files.includes('!**/__tests__/**'));
 });
 
@@ -142,6 +150,7 @@ test('release package script runs the single arm64 pipeline in order', async () 
   const { packageMacosArm64 } = await import(new URL('package-macos-arm64.mjs', import.meta.url));
   const calls = [];
   const removed = [];
+  const asserted = [];
 
   const result = await packageMacosArm64({
     platform: 'darwin',
@@ -153,7 +162,9 @@ test('release package script runs the single arm64 pipeline in order', async () 
     remove: async (path, options) => {
       removed.push([path, options]);
     },
-    assertFile: async () => {},
+    assertFile: async (path) => {
+      asserted.push(path);
+    },
   });
 
   assert.deepEqual(calls, [
@@ -170,6 +181,11 @@ test('release package script runs the single arm64 pipeline in order', async () 
   assert.ok(removed[1][0].endsWith('/apps/desktop/release/mac-arm64'));
   assert.equal(removed[1][1].recursive, true);
   assert.equal(removed[1][1].force, true);
+  assert.deepEqual(asserted.map((path) => path.replaceAll('\\', '/')), [
+    `${desktopRoot.pathname.replace(/\/$/, '')}/release/Maka-${desktopManifest.version}-mac-arm64.dmg`,
+    `${desktopRoot.pathname.replace(/\/$/, '')}/release/Maka-${desktopManifest.version}-mac-arm64.zip`,
+    `${desktopRoot.pathname.replace(/\/$/, '')}/release/latest-mac.yml`,
+  ]);
   assert.ok(result.endsWith(`/apps/desktop/release/Maka-${desktopManifest.version}-mac-arm64.dmg`));
 });
 
@@ -397,6 +413,8 @@ test('one manual workflow packages, verifies, then creates one draft release fro
   assert.match(workflow, /gh release create[\s\S]*--draft/);
   assert.match(workflow, /--target "\$GITHUB_SHA"/);
   assert.match(workflow, /\$\{DMG_PATH\}\.sha256/);
+  assert.match(workflow, /\$\{\{ steps\.release\.outputs\.zip \}\}/);
+  assert.match(workflow, /\$\{\{ steps\.release\.outputs\.update_yml \}\}/);
 });
 
 test('the distributable includes OfficeCLI Apache-2.0 attribution', async () => {
