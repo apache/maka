@@ -1338,12 +1338,20 @@ export class AgentRun {
     this.traceQueue = next.catch(() => {});
   }
 
-  /** Serialize a required Run-store write without consulting the best-effort latch. */
+  /**
+   * Serialize a required Run-store write without consulting the best-effort
+   * latch. A successful required write proves the store is available again;
+   * a failed operation rejects its caller without changing the general latch.
+   */
   private enqueueRequiredRunStoreWrite(
     label: string,
     operation: () => Promise<void>,
   ): Promise<void> {
-    const next = this.traceQueue.then(operation, operation).catch(async (error) => {
+    const probe = async (): Promise<void> => {
+      await operation();
+      this.runStoreAvailable = true;
+    };
+    const next = this.traceQueue.then(probe, probe).catch(async (error) => {
       await this.enqueueTraceWriteFailure(error, label);
       throw error;
     });

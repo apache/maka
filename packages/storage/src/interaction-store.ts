@@ -186,21 +186,23 @@ export async function openInteractiveInteractionStoreForWrite(
     const run = <T>(operation: () => Promise<T>) =>
       runWithStorageRootLease(lease, 'interactive', 'write', operation);
     await run(() => store.recover());
-    const recoveredExisting = writersByLease.get(lease);
-    if (recoveredExisting) return recoveredExisting;
-    const facade = Object.freeze({
-      kind: 'interactive' as const,
-      access: 'write' as const,
-      readInteraction: (requestId: string) => store.readInteraction(requestId, run),
-      listSessionPending: (sessionId: string) => run(() => store.listSessionPending(sessionId)),
-      listPending: (filter?: PendingInteractionFilter) => run(() => store.listPending(filter)),
-      establishRequest: (input: StoredInteractionRequest) => store.establishRequest(input, run),
-      commitOutcome: (requestId: string, outcome: InteractionCanonicalOutcome) =>
-        store.commitOutcome(requestId, outcome, run),
+    return run(async () => {
+      const recoveredExisting = writersByLease.get(lease);
+      if (recoveredExisting) return recoveredExisting;
+      const facade = Object.freeze({
+        kind: 'interactive' as const,
+        access: 'write' as const,
+        readInteraction: (requestId: string) => store.readInteraction(requestId, run),
+        listSessionPending: (sessionId: string) => run(() => store.listSessionPending(sessionId)),
+        listPending: (filter?: PendingInteractionFilter) => run(() => store.listPending(filter)),
+        establishRequest: (input: StoredInteractionRequest) => store.establishRequest(input, run),
+        commitOutcome: (requestId: string, outcome: InteractionCanonicalOutcome) =>
+          store.commitOutcome(requestId, outcome, run),
+      });
+      writers.add(facade);
+      writersByLease.set(lease, facade);
+      return facade;
     });
-    writers.add(facade);
-    writersByLease.set(lease, facade);
-    return facade;
   });
   writerOpeningsByLease.set(lease, pending);
   try {

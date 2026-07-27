@@ -2184,6 +2184,7 @@ describe('SessionManager manual compaction', () => {
         (event) => event.actions?.tokenUsage?.contextBudget,
       ),
     ).toBe(true);
+    await manager.stopSession(session.id, { source: 'stop_button' });
   });
 
   test('persists one visible warning when manual compaction fails open', async () => {
@@ -2248,8 +2249,17 @@ describe('SessionManager manual compaction', () => {
       manager.compactSession(session.id, { turnId: 'turn-compact' }),
     );
     await readStarted.promise;
-    await manager.stopSession(session.id, { source: 'stop_button' });
+    let stopSettled = false;
+    const stop = manager.stopSession(session.id, { source: 'stop_button' }).finally(() => {
+      stopSettled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(stopSettled).toBe(false);
+    expect(compactCalls).toEqual([]);
+
     readGate.release();
+    await stop;
     const compactEvents = await compactPromise.catch(() => []);
 
     expect(compactCalls).toEqual([]);
@@ -2258,6 +2268,46 @@ describe('SessionManager manual compaction', () => {
       (run) => run.turnId === 'turn-compact',
     );
     expect(compactRun?.status).toBe('cancelled');
+  });
+
+  test('manual compaction begin failure after reservation has no unhandled claim rejection', async () => {
+    const store = new MemorySessionStore();
+    const updateHeader = store.updateHeader.bind(store);
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    const compactCalls: Array<{ turnId: string; runtimeContextCount: number }> = [];
+    backends.register('fake', (ctx) => new CompactingTestBackend(ctx, compactCalls));
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      newId: nextId(),
+      now: nextNow(16_000),
+    });
+    const session = await manager.createSession(
+      makeInput({ backend: 'fake', permissionMode: 'bypass' }),
+    );
+    await drain(manager.sendMessage(session.id, { turnId: 'turn-1', text: 'hello' }));
+
+    const beginFailure = new Error('compact running status rejected after reservation');
+    let failCompactStart = true;
+    store.updateHeader = async (sessionId, patch) => {
+      if (failCompactStart && patch.status === 'running') {
+        failCompactStart = false;
+        throw beginFailure;
+      }
+      return await updateHeader(sessionId, patch);
+    };
+
+    await expectRejects(
+      collectSessionEvents(
+        manager.compactSession(session.id, { turnId: 'turn-compact-begin-failure' }),
+      ),
+      /compact running status rejected after reservation/,
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(compactCalls).toEqual([]);
   });
 
   test('stopSession waits for compaction blocked before Run reservation', async () => {

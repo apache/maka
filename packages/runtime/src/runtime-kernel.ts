@@ -85,6 +85,7 @@ import {
 } from './message-authority.js';
 import {
   RuntimeInteractionFailStopError,
+  RuntimeInteractionInvariantError,
   bindRuntimeInteractionRun,
   type RuntimeInteractionAuthority,
   type RuntimeInteractionRunBinding,
@@ -355,6 +356,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
       resolveSettled = resolve;
       rejectSettled = reject;
     });
+    // A failed claim may have no concurrent stop subscriber; stop still observes this same promise.
+    void settled.catch(() => undefined);
     const handle: RuntimeExecutionClaim = {
       sessionId,
       isStopRequested: () => state.stopIntent !== undefined,
@@ -420,7 +423,25 @@ export class RuntimeKernel implements RuntimeKernelLike {
       throw error;
     }
     execution.phase = 'reserved';
-    this.settleExecutionClaim(execution, { ok: true });
+  }
+
+  private settleReservedExecutionClaim(
+    execution: PendingExecutionClaim,
+    run: AgentRun,
+    outcome: ExecutionClaimOutcome,
+  ): void {
+    if (
+      (execution.phase === 'attached' || execution.phase === 'failed') &&
+      execution.run === run &&
+      !outcome.ok
+    ) {
+      return;
+    }
+    if (execution.phase !== 'reserved' || execution.run !== run) {
+      throw new Error(`Execution claim cannot settle reserved Run ${run.runId}`);
+    }
+    execution.phase = outcome.ok ? 'released' : 'failed';
+    this.settleExecutionClaim(execution, outcome);
   }
 
   private releaseExecutionClaim(execution: PendingExecutionClaim): void {
@@ -731,7 +752,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
     let begin: Awaited<ReturnType<typeof run.beginOperation>>;
     try {
       begin = await this.runBackendActivation(() => run.beginOperation());
+      this.settleReservedExecutionClaim(execution, run, { ok: true });
     } catch (error) {
+      this.settleReservedExecutionClaim(execution, run, { ok: false, error });
       await run.recordFailure(error);
       await this.finalizeExecutionClaimRun(execution, run, () => run.finalize());
       throw error;
@@ -1233,10 +1256,15 @@ export class RuntimeKernel implements RuntimeKernelLike {
       .then(
         async (result) => {
           if (!flowDone) {
-            flowDone = true;
-            await owners.finalize();
-            owners.releaseMessage();
-            sessionEvents.close();
+            try {
+              flowDone = true;
+              await owners.finalize();
+              owners.releaseMessage();
+              sessionEvents.close();
+            } catch (error) {
+              sessionEvents.fail(error);
+              throw error;
+            }
           }
           await this.deps.runtimeInvocationObserver?.(result);
           return result;
@@ -1364,10 +1392,16 @@ export class RuntimeKernel implements RuntimeKernelLike {
       .then(
         async (result) => {
           if (!flowDone) {
-            flowDone = true;
-            await owners.finalize();
-            owners.releaseMessage();
-            sessionEvents.close();
+            try {
+              flowDone = true;
+              await owners.finalize();
+              owners.releaseMessage();
+              sessionEvents.close();
+            } catch (error) {
+              runnerFailure = error;
+              sessionEvents.fail(error);
+              throw error;
+            }
           }
           await this.deps.runtimeInvocationObserver?.(result);
           return result;
@@ -1407,6 +1441,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
     return new RuntimeRunOwnerScope(run, {
       registerInteraction: (binding) => this.registerInteractionRun(run, binding),
       releaseInteraction: (binding) => this.releaseInteractionRun(run, binding),
+      settleReservedExecution: (outcome) =>
+        this.settleReservedExecutionClaim(execution, run, outcome),
       finalizeExecution: (operation) => this.finalizeExecutionClaimRun(execution, run, operation),
     });
   }
@@ -1771,6 +1807,11 @@ export class RuntimeKernel implements RuntimeKernelLike {
   }
 
   async respondToUserQuestion(sessionId: string, response: UserQuestionResponse): Promise<void> {
+    if (this.deps.interactionAuthority) {
+      throw new RuntimeInteractionInvariantError(
+        'Hosted user questions must settle through their captured continuation',
+      );
+    }
     const generations = this.backendGenerationsFor(sessionId);
     await Promise.all(
       generations.map((active) => active.backend.respondToUserQuestion?.(response)),
@@ -2867,6 +2908,7 @@ function assertContinuationSafetyUnchanged(
 interface RuntimeRunOwnerScopeCallbacks {
   registerInteraction(binding: RuntimeInteractionRunBinding): void;
   releaseInteraction(binding: RuntimeInteractionRunBinding): void;
+  settleReservedExecution(outcome: ExecutionClaimOutcome): void;
   finalizeExecution(operation: () => Promise<void>): Promise<void>;
 }
 
@@ -2875,6 +2917,7 @@ class RuntimeRunOwnerScope {
   messageOwner: RuntimeMessageRunOwner | undefined;
 
   private messageReleased = false;
+  private reservedExecutionSettled = false;
   private finalizePromise: Promise<void> | undefined;
 
   constructor(
@@ -2886,9 +2929,16 @@ class RuntimeRunOwnerScope {
     authority: RuntimeInteractionAuthority | undefined,
     identity: { sessionId: string; turnId: string; runId: string },
   ): Promise<void> {
-    if (!authority) return;
-    this.interactionRun = await bindRuntimeInteractionRun(authority, identity);
-    this.callbacks.registerInteraction(this.interactionRun);
+    try {
+      if (authority) {
+        this.interactionRun = await bindRuntimeInteractionRun(authority, identity);
+        this.callbacks.registerInteraction(this.interactionRun);
+      }
+    } catch (error) {
+      this.settleReservedExecution({ ok: false, error });
+      throw error;
+    }
+    this.settleReservedExecution({ ok: true });
   }
 
   bindMessage(
@@ -2900,6 +2950,7 @@ class RuntimeRunOwnerScope {
   }
 
   async failStart(error: unknown): Promise<never> {
+    this.settleReservedExecution({ ok: false, error });
     let failure = error;
     if (this.interactionRun) {
       try {
@@ -2932,6 +2983,12 @@ class RuntimeRunOwnerScope {
     if (!this.messageOwner || this.messageReleased) return;
     this.messageReleased = true;
     this.messageOwner.release();
+  }
+
+  private settleReservedExecution(outcome: ExecutionClaimOutcome): void {
+    if (this.reservedExecutionSettled) return;
+    this.reservedExecutionSettled = true;
+    this.callbacks.settleReservedExecution(outcome);
   }
 
   private async finalizeOwnedRun(): Promise<void> {

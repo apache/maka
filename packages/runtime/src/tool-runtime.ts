@@ -528,6 +528,19 @@ export class ToolRuntime {
       .entries(turnId)
       .find(([requestId]) => requestId === response.requestId)?.[1];
     if (!pending) return false;
+    if (pending.hosted) {
+      throw new RuntimeInteractionInvariantError(
+        `Hosted question ${response.requestId} must settle through its captured continuation`,
+      );
+    }
+    return this.settleUserQuestionAnswer(turnId, response, pending);
+  }
+
+  private settleUserQuestionAnswer(
+    turnId: string,
+    response: UserQuestionResponse,
+    pending: { toolUseId: string; questions: UserQuestion[]; hosted: boolean },
+  ): boolean {
     if (
       response.answers.length !== pending.questions.length ||
       response.answers.some(
@@ -2416,11 +2429,16 @@ export class ToolRuntime {
             `Question settlement ${requestId} received a routed answer`,
           );
         }
+        const pending = this.userQuestions
+          .entries(turnId)
+          .find(([candidateId]) => candidateId === requestId)?.[1];
         if (
-          !this.respondToUserQuestion(turnId, {
-            requestId,
-            answers: [...answer.answers],
-          })
+          !pending ||
+          !this.settleUserQuestionAnswer(
+            turnId,
+            { requestId, answers: [...answer.answers] },
+            pending,
+          )
         ) {
           throw new RuntimeInteractionInvariantError(
             `Question settlement did not take ${requestId} from turn ${turnId}`,

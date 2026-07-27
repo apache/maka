@@ -15,7 +15,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { describe, test } from 'node:test';
+import { describe, mock, test } from 'node:test';
 import {
   projectInteractionQuestionRequest,
   type InteractionCanonicalOutcome,
@@ -43,6 +43,59 @@ import {
 const execFileAsync = promisify(execFile);
 
 describe('Interaction Store', () => {
+  test('rejects an open whose owner closes while recovery is blocked without caching a facade', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-interaction-open-close-race-'));
+    const root = join(base, 'root');
+    await mkdir(root);
+    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    if (!owner) return;
+
+    const probe = await open(root, 'r');
+    const fileHandlePrototype = Object.getPrototypeOf(probe) as {
+      sync: typeof probe.sync;
+    };
+    const originalSync = fileHandlePrototype.sync;
+    await probe.close();
+    const recoveryBlocked = deferred<void>();
+    const releaseRecovery = deferred<void>();
+    let blocked = false;
+    const syncMock = mock.method(fileHandlePrototype, 'sync', async function (this: typeof probe) {
+      if (!blocked) {
+        blocked = true;
+        recoveryBlocked.resolve();
+        await releaseRecovery.promise;
+      }
+      return originalSync.call(this);
+    });
+
+    let opening: Promise<InteractiveInteractionStoreWriterFacade> | undefined;
+    let closing: Promise<void> | undefined;
+    try {
+      opening = openInteractiveInteractionStoreForWrite(owner.lease);
+      await recoveryBlocked.promise;
+      closing = owner.close();
+      assert.equal(owner.closed, true);
+      releaseRecovery.resolve();
+
+      await assert.rejects(opening, { code: 'invalid_lease' });
+      await closing;
+      await assert.rejects(openInteractiveInteractionStoreForWrite(owner.lease), {
+        code: 'invalid_lease',
+      });
+    } finally {
+      releaseRecovery.resolve();
+      await Promise.allSettled([opening, closing].filter((task) => task !== undefined));
+      syncMock.mock.restore();
+      if (!owner.closed) await owner.close();
+      await rm(owner.controlDirectory, { recursive: true, force: true });
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
   test('keeps one immutable winner across concurrent calls on the same lease facade', async () => {
     await withStore(async ({ owner, store }) => {
       const sameLeaseStore = await openInteractiveInteractionStoreForWrite(owner.lease);

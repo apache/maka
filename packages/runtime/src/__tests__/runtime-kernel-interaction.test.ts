@@ -11,12 +11,124 @@ import type {
 
 import {
   RuntimeInteractionFailStopError,
+  RuntimeInteractionInvariantError,
   type RuntimeInteractionAuthority,
 } from '../interaction-authority.js';
 import { RuntimeKernel, type RuntimeKernelDeps } from '../runtime-kernel.js';
 import { BackendRegistry, type SessionStore } from '../session-manager.js';
 
 describe('RuntimeKernel Interaction close cleanup', () => {
+  test('reserve followed by begin failure settles a concurrent stop claim', async () => {
+    const store = memoryStore();
+    const updateHeader = store.updateHeader;
+    const backends = new BackendRegistry();
+    const backend = new BlockingBackend(SESSION_ID, {});
+    backends.register('fake', () => backend);
+    const startupFailure = new Error('mark running rejected after reservation');
+    let stoppedFailure: Promise<unknown> | undefined;
+    let kernel!: RuntimeKernel;
+    store.updateHeader = async (sessionId, patch) => {
+      if (patch.status === 'running') {
+        stoppedFailure = rejectionOf(kernel.stopSession(SESSION_ID, { source: 'stop_button' }));
+        throw startupFailure;
+      }
+      return await updateHeader(sessionId, patch);
+    };
+    let id = 0;
+    kernel = new RuntimeKernel({
+      store,
+      backends,
+      newId: () => `begin-failure-id-${++id}`,
+      now: () => id,
+    });
+    const iterator = kernel
+      .startTurn(SESSION_ID, { turnId: 'turn-begin-failure', text: 'start' })
+      [Symbol.asyncIterator]();
+    const startFailure = rejectionOf(iterator.next());
+
+    await waitFor(() => stoppedFailure !== undefined);
+    const ownershipFailure = await within(stoppedFailure!, 'concurrent stop ownership');
+    assert.equal(containsFailure(ownershipFailure, startupFailure), true);
+    assert.equal(backend.sendCalls, 0);
+    assert.equal(
+      containsFailure(await within(startFailure, 'failed Run start'), startupFailure),
+      true,
+    );
+    await iterator.return?.(undefined).catch(() => undefined);
+  });
+
+  test('stop during owner bind waits for exact close and reports its failure once', async () => {
+    const store = memoryStore();
+    const backends = new BackendRegistry();
+    const backend = new BlockingBackend(SESSION_ID, {});
+    backends.register('fake', () => backend);
+    const closeFailure = new Error('bind-race close rejected');
+    const closeStarted = deferred<void>();
+    const releaseClose = deferred<void>();
+    let closeCalls = 0;
+    let stopped: Promise<void> | undefined;
+    let stoppedFailure: Promise<unknown> | undefined;
+    let kernel!: RuntimeKernel;
+    const interactionAuthority: RuntimeInteractionAuthority = {
+      bindRun: (identity) => {
+        stopped = kernel.stopSession(SESSION_ID, { source: 'stop_button' });
+        stoppedFailure = rejectionOf(stopped);
+        return {
+          ...identity,
+          acceptPermissionRequest: async () => ({ state: 'pending' }),
+          commitPermissionAnswer: async ({ answer }) => ({
+            kind: 'permission_answer',
+            answer,
+          }),
+          commitPermissionTimeout: async () => ({ kind: 'closure', reason: 'timed_out' }),
+          acceptUserQuestionRequest: async () => {},
+          close: async () => {
+            closeCalls += 1;
+            closeStarted.resolve();
+            await releaseClose.promise;
+            throw closeFailure;
+          },
+          release: () => assert.fail('failed close must retain the owner'),
+        };
+      },
+    };
+    let id = 0;
+    kernel = new RuntimeKernel({
+      store,
+      backends,
+      interactionAuthority,
+      newId: () => `bind-race-id-${++id}`,
+      now: () => id,
+    });
+    const iterator = kernel
+      .startTurn(SESSION_ID, { turnId: 'turn-bind-race', text: 'start' })
+      [Symbol.asyncIterator]();
+    const firstFailure = rejectionOf(iterator.next());
+
+    await waitFor(() => stopped !== undefined && stoppedFailure !== undefined);
+    await closeStarted.promise;
+    releaseClose.resolve();
+    const failure = await stoppedFailure!;
+    assert.equal(containsFailure(failure, closeFailure), true);
+    assert.equal(closeCalls, 1);
+    assert.equal(backend.stopCalls.length, 1);
+
+    await firstFailure;
+    await iterator.return?.(undefined).catch(() => undefined);
+    assert.equal(closeCalls, 1);
+  });
+
+  test('legacy question responder fails closed when hosted authority is configured', async () => {
+    const fixture = runtimeFixture({ closeSucceeds: true });
+    await assert.rejects(
+      fixture.kernel.respondToUserQuestion(SESSION_ID, {
+        requestId: 'hosted-question',
+        answers: ['Yes'],
+      }),
+      RuntimeInteractionInvariantError,
+    );
+  });
+
   test('explicit stop starts backend cleanup before deferred close settles and reports both failures', async () => {
     const stopFailure = new Error('backend stop rejected');
     const fixture = runtimeFixture({ deferredClose: true, stopFailure });
@@ -554,4 +666,26 @@ function deferred<T>(): {
     resolve = resolvePromise;
   });
   return { promise, resolve };
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (predicate()) return;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  assert.fail('condition was not met');
+}
+
+async function within<T>(promise: Promise<T>, operation: string): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error(`${operation} timed out`)), 1_000);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }

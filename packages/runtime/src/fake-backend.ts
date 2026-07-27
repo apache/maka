@@ -174,8 +174,12 @@ export class FakeBackend implements AgentBackend {
 
   async respondToUserQuestion(response: UserQuestionResponse): Promise<void> {
     if (this.pendingQuestion?.requestId !== response.requestId) return;
-    const pending = this.takePendingQuestion(this.pendingQuestion.turnId, response.requestId);
-    pending.resolve(response);
+    if (this.pendingQuestion.hosted) {
+      throw new RuntimeInteractionInvariantError(
+        `Hosted fake question ${response.requestId} must settle through its captured continuation`,
+      );
+    }
+    this.settleQuestionAnswer(this.pendingQuestion.turnId, response.requestId, response.answers);
   }
 
   async dispose(): Promise<void> {}
@@ -345,10 +349,7 @@ export class FakeBackend implements AgentBackend {
             `Fake question settlement ${requestId} received a routed answer`,
           );
         }
-        this.takePendingQuestion(turnId, requestId).resolve({
-          requestId,
-          answers: [...answer.answers],
-        });
+        this.settleQuestionAnswer(turnId, requestId, answer.answers);
       },
       applyClosure: async (_reason: RuntimeUserQuestionClosureReason): Promise<void> => {
         this.takePendingQuestion(turnId, requestId).resolve(null);
@@ -365,5 +366,16 @@ export class FakeBackend implements AgentBackend {
     }
     this.pendingQuestion = undefined;
     return pending;
+  }
+
+  private settleQuestionAnswer(
+    turnId: string,
+    requestId: string,
+    answers: readonly (string | null)[],
+  ): void {
+    this.takePendingQuestion(turnId, requestId).resolve({
+      requestId,
+      answers: [...answers],
+    });
   }
 }

@@ -474,6 +474,15 @@ describe('Runtime Interaction authority seam', () => {
     });
     await immediate();
     assert.equal(settled, false);
+    assert.throws(
+      () =>
+        runtime.respondToUserQuestion(RUN.turnId, {
+          requestId: question!.requestId,
+          answers: ['Yes'],
+        }),
+      RuntimeInteractionInvariantError,
+    );
+    assert.equal(runtime.pendingUserQuestionCount(RUN.turnId), 1);
     await question!.applyAnswer({ answers: ['Yes'] });
     assert.deepEqual(await pending, {
       answers: [{ question: 'Continue?', answer: 'Yes' }],

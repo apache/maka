@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import type { SessionEvent, SessionHeader, StoredMessage } from '@maka/core';
 import { FAKE_ASK_USER_QUESTION_PROMPT, FakeBackend } from '../fake-backend.js';
 import {
+  RuntimeInteractionInvariantError,
   bindRuntimeInteractionRun,
   type RuntimeUserQuestionContinuation,
 } from '../interaction-authority.js';
@@ -129,6 +130,13 @@ test('Fake question publication waits for exact hosted admission', async () => {
   assert.equal(request?.type, 'user_question_request');
   if (request?.type !== 'user_question_request') assert.fail('expected hosted fake question');
   binding.assertPendingAdmission(request);
+  await assert.rejects(
+    backend.respondToUserQuestion({
+      requestId: request.requestId,
+      answers: ['邀请制', null, '本周'],
+    }),
+    RuntimeInteractionInvariantError,
+  );
   await continuation!.applyAnswer({ answers: ['邀请制', null, '本周'] });
   for await (const _event of { [Symbol.asyncIterator]: () => iterator }) {
     // Drain the real Fake question result and terminal path.
