@@ -41,7 +41,27 @@ RuntimeEvent 是语义事实的唯一权威，但不能替代执行所有权的�
 4. T1 从真实 function call 重新计算 canonical args identity；
 5. recovery bundle 在一个 SQLite transaction 中写 reconcile、可选 outcome、terminal decision；
 6. completed 和 parked 都是 v1 terminal；parked 不存在第二次 attempt；
-7. scanner 和 recovery interpreter 由 writer、rebuild、Resolver 共享。
+7. scanner 和 recovery interpreter 由 writer、rebuild、Resolver 共享；
+8. `parked` 和 `recovery.hasCorruption` 是 resume 的硬闸门，不能依赖 diagnostic switch
+   间接阻断；
+9. generic、batch、T1、T2、recovery bundle writer 在事务内对
+   `existing + candidates` 运行同一个 prospective transition validator；
+10. function call/response 只允许各自白名单内的 state delta；artifact、continuation marker、
+    terminal status 或 branch 不能夹带进 tool authority lane；
+11. strict args identity 明确处理 `__proto__` 并拒绝 sparse/accessor/custom array；
+12. SQLite 保存 decoder canonical value，journal ID 只由 store 派生；
+13. 正式 schema 4 的无 dispatch legacy rows 保守隔离，不参与 recovery/rebuild。
+
+PR A 的证明矩阵包括：
+
+- prepared、normal T2 success/error、permanent parked、recovered completion；
+- 多 operation 交错；
+- online、reopen、rebuild、Resolver 等价；
+- recovery bundle 三个事务内部 SIGKILL 边界与 COMMIT 后 SIGKILL；
+- exact bundle、completed-vs-parked、rebuild-vs-commit 多进程竞争。
+
+进程 crash harness 以 Linux/macOS 为发布证明平台；Windows 仍为有限支持，不能用其 skip
+反向宣称跨平台 durability。
 
 ### PR B — Continuation correctness
 

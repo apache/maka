@@ -46,6 +46,12 @@ Phase 3B/4A 的 workspace checkpoint 是后续独立切片，不进入 PR A。
 - mutable partial corruption fail-soft，immutable corruption fail-closed；
 - SQL row identity 与 payload identity 交叉校验；
 - online、close/reopen、rebuild、Resolver 的黄金等价性。
+- resume 对 terminal parked 和任意 scanner corruption 设独立硬闸门；diagnostic 只负责解释，
+  不能成为唯一安全条件；
+- tool-bearing writer 在事务内用同一 prospective transition validator 证明候选 prefix；
+- SQLite 只持久化 decoder + JSON round-trip 后的 canonical RuntimeEvent；
+- projection-local journal ID 由 operation/event 派生，调用者不能选择；
+- schema 4 的 nullable-dispatch legacy projection 可读但隔离，不进入 recovery 或 canonical rebuild。
 
 ### 3.2 明确不带入 PR A
 
@@ -78,7 +84,7 @@ future newer schema            -> fail closed
 | `runtime-event.ts` | PR A | 增加 exact recovery fact envelope decoder |
 | `runtime-event-store.ts` | PR A | 增加单一 bundle capability |
 | `tool-args-identity.ts` | PR A | strict JSON + domain separation |
-| `tool-ledger-scanner.ts` | PR A | 共享 lane、duplicate/order/identity scanner |
+| `tool-ledger-scanner.ts` | PR A | 共享 exact lane、duplicate/order/identity scanner 与 prospective transition validator |
 | `tool-recovery-fact.ts` | PR A | truthful observation 与 terminal decision |
 | `tool-recovery-bundle.ts` | PR A | writer/rebuild/Resolver 共享 bundle 与 causal interpreter |
 
@@ -104,20 +110,30 @@ future newer schema            -> fail closed
 | 场景 | 新测试位置 | 状态 |
 |---|---|---|
 | strict JSON hash / domain separation | core authority test | 已覆盖 |
+| `__proto__`、sparse/accessor/custom array identity | core authority test | 已覆盖 |
 | semantic lane smuggling | core + storage authority test | 已覆盖 |
+| partial authority、branch-qualified authority | core authority test | 已覆盖 |
 | generic SQLite/JSONL writer bypass | storage tests | 已覆盖 |
+| duplicate call、早到 response、unbound T2 的 prospective rejection | core + storage tests | 已覆盖 |
 | T1 wrong hash | storage authority test | 已覆盖 |
 | duplicate call / operation / event | core + rebuild tests | 已覆盖 |
 | dispatch-before-call | core + rebuild tests | 已覆盖 |
 | completed missing/mismatched outcome | core bundle validator | 已覆盖 |
 | completed/parked exact retry | storage authority test | 已覆盖 |
-| reconcile/outcome/decision crash rollback | storage authority test | 已覆盖 |
-| populated mainline schema 4 upgrade | storage authority test | 已覆盖 |
+| reconcile/outcome/decision exception rollback | storage authority test | 已覆盖 |
+| reconcile/outcome/decision SIGKILL rollback + post-COMMIT | storage process crash test | POSIX 覆盖；Windows 按有限支持跳过 |
+| exact/conflicting bundle、rebuild/commit 多进程竞争 | storage multi-process test | 已覆盖 |
+| populated mainline schema 4 prepared/completed tool rows | storage authority test | 已覆盖并隔离 |
 | #1346 capability rejection | storage authority test | 已覆盖 |
 | immutable row/payload mismatch | storage authority test | 已覆盖 |
 | corrupt mutable partial | storage authority test | 已覆盖 |
 | online = reopen = rebuild = Resolver | runtime equivalence test | 已覆盖 |
+| prepared、normal T2 success/error、parked、recovered completion | runtime equivalence test | 已覆盖 |
+| 多 operation 交错后 journal/projection rebuild | storage authority test | 已覆盖 |
 | parked 不再进入 reconcile | storage + runtime equivalence test | 已覆盖 |
+| parked / orphan corruption 不得产生 safe replay | runtime planner test | 已覆盖 |
+| decoder canonical persistence 与有损 JSON 拒绝 | storage authority test | 已覆盖 |
+| journal ID online/rebuild 同源派生 | storage authority test | 已覆盖 |
 | audit fact 不产生 message row | runtime read-model test | 已覆盖 |
 
 ## 6. 旧 commit 去向
@@ -168,6 +184,8 @@ PR A 没带入 file checkpoint、continuation 或 host lifecycle。
 - PR A 定向测试全部通过；
 - 三个包完整测试通过，或明确记录与本改动无关的平台既有失败；
 - SQLite transaction crash matrix 通过；
+- 所有成功接受的 tool-bearing transition 均满足 `scan.hasCorruption === false`；
+- `recovery.hasCorruption` 与 terminal parked 均独立阻断 provider continuation；
 - 文档中的能力边界与代码一致；
 - 工作树不包含用户的 workspace/测试文件。
 
