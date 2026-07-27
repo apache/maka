@@ -1,6 +1,8 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_RUNTIME_SCHEMA_VERSION = 4;
+export const SQLITE_RUNTIME_SCHEMA_VERSION = 5;
+export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY = 'runtime_recovery_authority';
+export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY_VERSION = 1;
 
 const MIGRATIONS: ReadonlyMap<number, string> = new Map([
   [
@@ -98,6 +100,18 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
     `
     ALTER TABLE tool_operations ADD COLUMN dispatch_event_id TEXT
       REFERENCES runtime_events(event_id);
+  `,
+  ],
+  [
+    5,
+    `
+    CREATE TABLE runtime_capabilities (
+      capability TEXT PRIMARY KEY,
+      version INTEGER NOT NULL CHECK (version > 0)
+    );
+
+    INSERT INTO runtime_capabilities(capability, version)
+      VALUES ('runtime_recovery_authority', 1);
   `,
   ],
 ]);

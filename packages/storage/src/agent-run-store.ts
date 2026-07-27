@@ -30,6 +30,7 @@ import {
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENT_COUNT,
   messageContentsEqual,
+  validateGenericToolLedgerAppend,
   type AgentRunEvent,
   type AgentRunEventType,
   type AgentRunHeader,
@@ -821,6 +822,18 @@ function historyCompactProjectionIsSourceBound(event: AgentRunEvent): boolean {
   return (source as { kind?: unknown }).kind === 'runtime_event_projection';
 }
 
+function assertNoReservedToolLedgerFact(event: RuntimeEvent): void {
+  const validation = validateGenericToolLedgerAppend(event);
+  if (validation.ok) return;
+  if (validation.code === 'reserved_recovery_fact') {
+    throw new Error('Tool recovery facts require the atomic recovery bundle writer');
+  }
+  if (validation.code === 'reserved_tool_boundary_fact') {
+    throw new Error('Durable tool facts require the atomic tool boundary writer');
+  }
+  throw new Error(`RuntimeEvent ${event.id} violates its semantic lane`);
+}
+
 function historyCompactProjectionCoverage(event: AgentRunEvent): number | undefined {
   const checkpoint = event.data?.checkpoint;
   if (!checkpoint || typeof checkpoint !== 'object') return undefined;
@@ -851,6 +864,7 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
   ): Promise<void> {
     assertSafeId(sessionId, 'Invalid session id');
     assertSafeId(runId, 'Invalid run id');
+    assertNoReservedToolLedgerFact(event);
     const steeringMessageId = immutableSteeringMessageId(event);
     if (steeringMessageId) {
       await this.withImmutableSteeringQueue(sessionId, async () => {
@@ -944,6 +958,7 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
   ): Promise<void> {
     assertSafeId(sessionId, 'Invalid session id');
     assertSafeId(runId, 'Invalid run id');
+    assertNoReservedToolLedgerFact(event);
     if (event.partial || !isTerminalRuntimeEvent(event)) {
       throw new Error(
         'Only a final terminal RuntimeEvent can cross the terminal durability barrier',

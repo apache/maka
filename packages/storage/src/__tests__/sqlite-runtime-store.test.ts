@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import type { RuntimeEvent } from '@maka/core';
+import { canonicalToolArgsHash, type RuntimeEvent } from '@maka/core';
 import {
   SQLITE_RUNTIME_SCHEMA_VERSION,
   createSqliteRuntimeStore,
@@ -40,7 +40,7 @@ describe('SqliteRuntimeStore', () => {
         dispatchRuntimeEvent: dispatch,
         providerToolCallId: 'provider-call-1',
         toolName: 'Read',
-        canonicalArgsHash: 'sha256:args-1',
+        canonicalArgsHash: READ_ARGS_HASH,
         recoveryMode: 'replay_safe',
         committedAt: 10,
       } as const;
@@ -56,7 +56,7 @@ describe('SqliteRuntimeStore', () => {
         turnId: 'turn-1',
         providerToolCallId: 'provider-call-1',
         toolName: 'Read',
-        canonicalArgsHash: 'sha256:args-1',
+        canonicalArgsHash: READ_ARGS_HASH,
         recoveryMode: 'replay_safe',
         currentState: 'prepared',
         callEventId: 'call-event-1',
@@ -110,14 +110,14 @@ describe('SqliteRuntimeStore', () => {
                 operationId: 'operation-t1-failure',
                 providerToolCallId: 'provider-call-1',
                 toolName: 'Read',
-                canonicalArgsHash: 'sha256:t1-failure',
+                canonicalArgsHash: READ_ARGS_HASH,
                 recoveryMode: 'replay_safe',
               },
             },
           }),
           providerToolCallId: 'provider-call-1',
           toolName: 'Read',
-          canonicalArgsHash: 'sha256:t1-failure',
+          canonicalArgsHash: READ_ARGS_HASH,
           recoveryMode: 'replay_safe',
           committedAt: 11,
         }),
@@ -158,7 +158,7 @@ describe('SqliteRuntimeStore', () => {
         turnId: 'turn-1',
         providerToolCallId: 'provider-call-1',
         toolName: 'Read',
-        canonicalArgsHash: 'sha256:args-1',
+        canonicalArgsHash: READ_ARGS_HASH,
         recoveryMode: 'replay_safe',
         currentState: 'outcome_committed',
         callEventId: 'call-event-1',
@@ -230,7 +230,14 @@ describe('SqliteRuntimeStore', () => {
         store.commitToolPrepared({
           operationId: 'operation-1',
           journalEventId: 'journal-prepared-drift',
-          runtimeEvent: functionCallEvent(),
+          runtimeEvent: functionCallEvent({
+            content: {
+              kind: 'function_call',
+              id: 'provider-call-1',
+              name: 'Read',
+              args: { path: '/workspace/repo/OTHER.md' },
+            },
+          }),
           dispatchRuntimeEvent: toolDispatchEvent({
             actions: {
               toolDispatch: {
@@ -238,14 +245,14 @@ describe('SqliteRuntimeStore', () => {
                 operationId: 'operation-1',
                 providerToolCallId: 'provider-call-1',
                 toolName: 'Read',
-                canonicalArgsHash: 'sha256:different-args',
+                canonicalArgsHash: DIFFERENT_READ_ARGS_HASH,
                 recoveryMode: 'replay_safe',
               },
             },
           }),
           providerToolCallId: 'provider-call-1',
           toolName: 'Read',
-          canonicalArgsHash: 'sha256:different-args',
+          canonicalArgsHash: DIFFERENT_READ_ARGS_HASH,
           recoveryMode: 'replay_safe',
           committedAt: 30,
         }),
@@ -453,7 +460,7 @@ function toolDispatchEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent 
         operationId: 'operation-1',
         providerToolCallId: 'provider-call-1',
         toolName: 'Read',
-        canonicalArgsHash: 'sha256:args-1',
+        canonicalArgsHash: READ_ARGS_HASH,
         recoveryMode: 'replay_safe',
       },
     },
@@ -470,8 +477,15 @@ function commitPrepared(store: Store) {
     dispatchRuntimeEvent: toolDispatchEvent(),
     providerToolCallId: 'provider-call-1',
     toolName: 'Read',
-    canonicalArgsHash: 'sha256:args-1',
+    canonicalArgsHash: READ_ARGS_HASH,
     recoveryMode: 'replay_safe',
     committedAt: 10,
   });
 }
+
+const READ_ARGS_HASH = canonicalToolArgsHash('Read', {
+  path: '/workspace/repo/README.md',
+});
+const DIFFERENT_READ_ARGS_HASH = canonicalToolArgsHash('Read', {
+  path: '/workspace/repo/OTHER.md',
+});

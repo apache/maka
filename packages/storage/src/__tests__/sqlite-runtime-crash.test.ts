@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import type { RuntimeEvent } from '@maka/core';
+import { canonicalToolArgsHash, type RuntimeEvent } from '@maka/core';
 import {
   createSqliteRuntimeStore,
   type SqliteRuntimeStoreFailpoint,
@@ -166,7 +166,7 @@ function preparedCommit() {
     dispatchRuntimeEvent: toolDispatchEvent(),
     providerToolCallId: 'provider-call-1',
     toolName: 'Read',
-    canonicalArgsHash: 'sha256:args-1',
+    canonicalArgsHash: CRASH_READ_ARGS_HASH,
     recoveryMode: 'replay_safe' as const,
     committedAt: 1,
   };
@@ -198,7 +198,7 @@ function toolDispatchEvent(): RuntimeEvent {
         operationId: 'operation-1',
         providerToolCallId: 'provider-call-1',
         toolName: 'Read',
-        canonicalArgsHash: 'sha256:args-1',
+        canonicalArgsHash: CRASH_READ_ARGS_HASH,
         recoveryMode: 'replay_safe',
       },
     },
@@ -246,3 +246,7 @@ function functionResponseEvent(): RuntimeEvent {
     refs: { operationId: 'operation-1', toolCallId: 'provider-call-1' },
   };
 }
+
+const CRASH_READ_ARGS_HASH = canonicalToolArgsHash('Read', {
+  path: '/workspace/README.md',
+});

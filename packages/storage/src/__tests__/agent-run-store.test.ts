@@ -634,6 +634,73 @@ describe('AgentRunStore', () => {
     });
   });
 
+  it('keeps authoritative tool facts out of the JSONL generic writer', async () => {
+    await withStores(async (runStore, runtimeEventStore) => {
+      await runStore.createRun(makeHeader());
+      const dispatch = makeRuntimeEvent({
+        id: 'dispatch-reserved',
+        role: 'system',
+        author: 'system',
+        content: undefined,
+        actions: {
+          toolDispatch: {
+            protocol: 't1_after_preflight_v1',
+            operationId: 'operation-1',
+            providerToolCallId: 'call-1',
+            toolName: 'Write',
+            canonicalArgsHash: 'sha256:reserved',
+            recoveryMode: 'reconcile',
+          },
+        },
+        refs: { operationId: 'operation-1', toolCallId: 'call-1' },
+      });
+      const outcome = makeRuntimeEvent({
+        id: 'outcome-reserved',
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'call-1',
+          name: 'Write',
+          result: 'ok',
+        },
+        refs: { operationId: 'operation-1', toolCallId: 'call-1' },
+      });
+      const recovery = makeRuntimeEvent({
+        id: 'recovery-reserved',
+        role: 'system',
+        author: 'system',
+        content: undefined,
+        actions: {
+          toolRecovery: {
+            kind: 'maka.tool.reconcile_result',
+            version: 1,
+            payload: {
+              protocol: 'tool_reconcile_v1',
+              operationId: 'operation-1',
+              observation: 'unreadable',
+              observationSchema: 'state_identity_v1',
+              observationDigest:
+                'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            },
+          },
+        },
+        refs: { operationId: 'operation-1', toolCallId: 'call-1' },
+      });
+
+      for (const event of [dispatch, outcome, recovery]) {
+        await assert.rejects(
+          runtimeEventStore.appendRuntimeEvent('session-1', 'run-1', event),
+          /atomic tool|atomic recovery/,
+        );
+      }
+      assert.deepEqual(
+        await runtimeEventStore.readImmutableRuntimeEvents('session-1', 'run-1'),
+        [],
+      );
+    });
+  });
+
   it('returns an empty runtime event list when the runtime ledger is missing', async () => {
     await withStores(async (runStore, runtimeEventStore) => {
       await runStore.createRun(makeHeader());
