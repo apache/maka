@@ -171,7 +171,7 @@ export class BotRegistry extends EventEmitter {
                             ? join(this.deps.botDataDir, 'whatsapp', 'default')
                             : undefined,
                         )
-                  : new SimpleBotBridge(platform, settings);
+                      : new SimpleBotBridge(platform, settings);
     this.wire(bridge);
     this.bridges.set(platform, bridge);
     await bridge

@@ -52,7 +52,10 @@ export function whatsappMessageToEvent(message: WhatsAppMessageLike, now: number
   };
 }
 
-export function whatsappTimestampMs(value: WhatsAppMessageLike['messageTimestamp'], fallback: number) {
+export function whatsappTimestampMs(
+  value: WhatsAppMessageLike['messageTimestamp'],
+  fallback: number,
+) {
   if (typeof value === 'number' && Number.isFinite(value)) return value * 1_000;
   if (value && typeof value === 'object' && typeof value.toNumber === 'function') {
     return value.toNumber() * 1_000;
@@ -162,9 +165,7 @@ export class WhatsAppBotBridge extends BaseBotAdapter implements SendCapable {
         this.readiness = 'degraded';
         const error = update.lastDisconnect?.error;
         const loggedOut = connectionStatusCode(error) === 401;
-        this.reason = loggedOut
-          ? 'whatsapp-session-expired'
-          : connectionErrorMessage(error);
+        this.reason = loggedOut ? 'whatsapp-session-expired' : connectionErrorMessage(error);
         this.emitStatusChange();
         clearTimeout(startTimeout);
         settleStart?.(new Error(this.reason));

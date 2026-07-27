@@ -125,8 +125,7 @@ const BOT_PLATFORM_PROMPT_HINTS: Record<BotProvider, BotPlatformPromptHint> = {
     formattingProfile: 'plain_text',
     deliveryFormat: 'mobile chat message over a linked-device session',
     mediaSupport: ['text', 'image/file/voice metadata only unless tools provide extracted content'],
-    capabilityCaveat:
-      'WhatsApp replies are sent as plain text through the locally linked device.',
+    capabilityCaveat: 'WhatsApp replies are sent as plain text through the locally linked device.',
     systemPromptBullets: [
       'Reply in short plain-text paragraphs suitable for a mobile chat.',
       'Do not assume rich cards, desktop panes, or unavailable platform actions.',

@@ -1,9 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import {
-  whatsappMessageToEvent,
-  whatsappTimestampMs,
-} from '../whatsapp-bridge.js';
+import { whatsappMessageToEvent, whatsappTimestampMs } from '../whatsapp-bridge.js';
 
 describe('WhatsApp bridge message mapping', () => {
   test('maps group text with participant identity and seconds timestamp', () => {

@@ -91,10 +91,10 @@ export async function startWhatsAppQrLogin(
         rejectInitialQr?.(new Error('WhatsApp session connected without a QR challenge'));
       }
     } else if (
-      update.connection === 'close'
-      && !connected
-      && status.status !== 'confirmed'
-      && !signal.aborted
+      update.connection === 'close' &&
+      !connected &&
+      status.status !== 'confirmed' &&
+      !signal.aborted
     ) {
       const error = connectionErrorMessage(update.lastDisconnect?.error);
       status = { status: 'error', error };
@@ -154,10 +154,7 @@ export async function startWhatsAppQrLogin(
  * Replace the active session only after the new device link is confirmed.
  * A failed or cancelled scan therefore cannot destroy a working session.
  */
-export async function promoteWhatsAppAuthState(
-  stagingDir: string,
-  authDir: string,
-): Promise<void> {
+export async function promoteWhatsAppAuthState(stagingDir: string, authDir: string): Promise<void> {
   const parentDir = dirname(authDir);
   const backupDir = join(parentDir, `.${basename(authDir)}.backup-${randomUUID()}`);
   let hasBackup = false;
