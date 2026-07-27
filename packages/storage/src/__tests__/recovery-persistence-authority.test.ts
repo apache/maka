@@ -19,8 +19,8 @@ const ARGS_HASH = canonicalToolArgsHash('Write', {
 // Mainline schema 4 persisted stableHash({ toolName, args }) for this exact
 // provider call. Keep the literal independent from the current hash helper so
 // an accidental identity-epoch change remains observable during migration.
-const MAINLINE_SCHEMA_4_READ_ARGS_HASH =
-  'sha256:5949a5bf23e5928b160ea0444cd16391f47365c3cd8b6d33a7381d585baf1db2';
+const MAINLINE_SCHEMA_4_SPECIAL_ARGS_HASH =
+  'sha256:0002fcd132216e3442d4ab7579d9659019019c6b7000456fbef198b7ae53ee43';
 const OBSERVATION_DIGEST =
   'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as const;
 
@@ -38,8 +38,8 @@ describe('SQLite recovery persistence authority', () => {
       content: {
         kind: 'function_call',
         id: 'schema-4-provider-call',
-        name: 'Read',
-        args: { path: 'prepared.txt' },
+        name: 'X',
+        args: { required: ['b', 'a'] },
       },
     });
     const dispatch = baseEvent({
@@ -50,8 +50,8 @@ describe('SQLite recovery persistence authority', () => {
           protocol: 't1_after_preflight_v1',
           operationId: 'schema-4-operation',
           providerToolCallId: 'schema-4-provider-call',
-          toolName: 'Read',
-          canonicalArgsHash: MAINLINE_SCHEMA_4_READ_ARGS_HASH,
+          toolName: 'X',
+          canonicalArgsHash: MAINLINE_SCHEMA_4_SPECIAL_ARGS_HASH,
           recoveryMode: 'replay_safe',
         },
       },
@@ -106,8 +106,8 @@ describe('SQLite recovery persistence authority', () => {
           runId: 'run-1',
           turnId: 'turn-1',
           providerToolCallId: 'schema-4-provider-call',
-          toolName: 'Read',
-          canonicalArgsHash: MAINLINE_SCHEMA_4_READ_ARGS_HASH,
+          toolName: 'X',
+          canonicalArgsHash: MAINLINE_SCHEMA_4_SPECIAL_ARGS_HASH,
           recoveryMode: 'replay_safe',
           currentState: 'prepared',
           callEventId: 'schema-4-call',

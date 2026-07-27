@@ -4,6 +4,34 @@ import { describe, it } from 'node:test';
 import { migrateSqliteRuntimeDatabase } from '../sqlite-runtime-schema.js';
 
 describe('SQLite runtime schema migration', () => {
+  it('uses the locked current version after an optimistic stale read', () => {
+    const executed: string[] = [];
+    let versionReads = 0;
+    const db = {
+      prepare(sql: string) {
+        assert.equal(sql, 'PRAGMA user_version');
+        return {
+          get() {
+            versionReads += 1;
+            return { user_version: versionReads === 1 ? 4 : 5 };
+          },
+        };
+      },
+      exec(sql: string) {
+        executed.push(sql);
+      },
+    } as unknown as DatabaseSync;
+
+    migrateSqliteRuntimeDatabase(db);
+
+    assert.equal(versionReads, 2);
+    assert.deepEqual(executed, ['BEGIN IMMEDIATE', 'COMMIT']);
+    assert.equal(
+      executed.some((sql) => sql.includes('runtime_capabilities')),
+      false,
+    );
+  });
+
   it('re-reads user_version under the write lock before applying migrations', () => {
     const real = new DatabaseSync(':memory:');
     let migrationLocked = false;

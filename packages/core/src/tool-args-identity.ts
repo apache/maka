@@ -15,10 +15,11 @@ import { createHash } from 'node:crypto';
  */
 export function canonicalToolArgsHash(toolName: string, args: unknown): `sha256:${string}` {
   if (toolName.length === 0) throw new Error('Tool argument identity requires a tool name');
-  const body = stableJsonStringify({
-    toolName,
-    args,
-  });
+  // Validation and identity serialization are deliberately separate. Runtime
+  // events need the strict, lossless serializer below; the persisted v1 T1
+  // protocol must retain mainline's historical stableHash byte semantics.
+  stableJsonStringify(args);
+  const body = stringifyMainlineV1ToolArgsIdentity(toolName, args);
   return `sha256:${createHash('sha256').update(body).digest('hex')}`;
 }
 
@@ -90,4 +91,42 @@ function isCanonicalArrayIndex(key: string, length: number): boolean {
   if (!/^(0|[1-9]\d*)$/.test(key)) return false;
   const index = Number(key);
   return Number.isSafeInteger(index) && index >= 0 && index < length && String(index) === key;
+}
+
+function stringifyMainlineV1ToolArgsIdentity(toolName: string, args: unknown): string {
+  return JSON.stringify(canonicalizeMainlineV1({ toolName, args }));
+}
+
+function canonicalizeMainlineV1(value: unknown, parentKey?: string): unknown {
+  if (
+    value === null ||
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  ) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    const items = value.map((item) => canonicalizeMainlineV1(item));
+    return parentKey === 'required' || parentKey === 'enum'
+      ? items
+          .slice()
+          .sort((a, b) =>
+            JSON.stringify(canonicalizeMainlineV1(a)).localeCompare(
+              JSON.stringify(canonicalizeMainlineV1(b)),
+            ),
+          )
+      : items;
+  }
+
+  const record = value as Record<string, unknown>;
+  const result: Record<string, unknown> = {};
+  for (const key of Object.keys(record).sort()) {
+    // Mainline v1 assigned into a normal object, so this key invoked the
+    // legacy Object.prototype setter and was absent from the serialized bytes.
+    // Skip it explicitly to freeze those bytes without mutating a prototype.
+    if (key === '__proto__') continue;
+    result[key] = canonicalizeMainlineV1(record[key], key);
+  }
+  return result;
 }

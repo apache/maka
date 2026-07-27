@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { decodeRuntimeEvent, type RuntimeEvent } from '../runtime-event.js';
-import { canonicalToolArgsHash } from '../tool-args-identity.js';
+import { canonicalToolArgsHash, stableJsonStringify } from '../tool-args-identity.js';
 import {
   scanToolLedger,
   validateGenericToolLedgerAppend,
@@ -15,6 +15,28 @@ import {
 
 const EXPECTED_ARGS_HASH =
   'sha256:763712445cbfb7feebe3bd4ba14e29425f05e40b8cd14aef0896853dca24b4d9';
+const MAINLINE_V1_HASH_VECTORS = [
+  [
+    { path: 'prepared.txt' },
+    'sha256:b10a9dfa507aac2940a27bdd3670fd7582d52705de906eb13c1ab37b553031e1',
+  ],
+  [
+    { required: ['b', 'a'] },
+    'sha256:0002fcd132216e3442d4ab7579d9659019019c6b7000456fbef198b7ae53ee43',
+  ],
+  [
+    { nested: { enum: ['z', 'a'] } },
+    'sha256:a1545a7c4bb9197d99d49327067d31da23188091e1bf6641e2a1698d9a906eca',
+  ],
+  [
+    JSON.parse('{"__proto__":{"admin":true}}') as unknown,
+    'sha256:ad5ecbd9c66b763ad3505d4ac9ddc7a86cffcecd8fd7f2c0ffb342c34da285e9',
+  ],
+  [
+    { ordinaryArray: ['b', 'a'] },
+    'sha256:4b6be45e18e1a7c6566dd72a0fa0c01b0f059bb3128ecd7a3265d5221f7b8351',
+  ],
+] as const;
 const OBSERVATION_DIGEST =
   'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as const;
 
@@ -37,19 +59,25 @@ describe('recovery persistence authority', () => {
     );
   });
 
-  it('keeps __proto__ JSON properties distinct from an empty object', () => {
-    const empty = canonicalToolArgsHash('Write', {});
-    const withPrototypeNamedProperty = canonicalToolArgsHash(
-      'Write',
-      JSON.parse('{"__proto__":{"admin":true}}'),
-    );
-    const nestedPrototypeNamedProperty = canonicalToolArgsHash(
-      'Write',
-      JSON.parse('{"nested":{"__proto__":{"admin":true}}}'),
-    );
+  it('matches frozen mainline v1 hashes for special and ordinary array fields', () => {
+    for (const [args, expected] of MAINLINE_V1_HASH_VECTORS) {
+      assert.equal(canonicalToolArgsHash('X', args), expected);
+    }
+  });
 
-    assert.notEqual(withPrototypeNamedProperty, empty);
-    assert.notEqual(nestedPrototypeNamedProperty, canonicalToolArgsHash('Write', { nested: {} }));
+  it('keeps strict event JSON lossless while freezing the mainline v1 __proto__ hash', () => {
+    const empty = canonicalToolArgsHash('Write', {});
+    const withPrototypeNamedProperty = JSON.parse('{"__proto__":{"admin":true}}') as unknown;
+    const nestedPrototypeNamedProperty = JSON.parse(
+      '{"nested":{"__proto__":{"admin":true}}}',
+    ) as unknown;
+
+    assert.notEqual(stableJsonStringify(withPrototypeNamedProperty), stableJsonStringify({}));
+    assert.equal(canonicalToolArgsHash('Write', withPrototypeNamedProperty), empty);
+    assert.equal(
+      canonicalToolArgsHash('Write', nestedPrototypeNamedProperty),
+      canonicalToolArgsHash('Write', { nested: {} }),
+    );
   });
 
   it('rejects arrays that cannot be represented as exact strict JSON arrays', () => {

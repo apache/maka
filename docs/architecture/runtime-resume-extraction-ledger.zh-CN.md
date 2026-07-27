@@ -4,7 +4,7 @@
 - 更新日期：2026-07-27
 - 集成实验来源：`origin/codex/runtime-resume-phase3a@24bb5f33`
 - PR A 旧重写来源：`codex/runtime-recovery-authority@c843519e`
-- 当前平铺基线：`upstream/main@0e80fe18`
+- 当前平铺基线：`upstream/main@466f238b`
 - 当前平铺分支：`codex/runtime-recovery-authority-v2`
 
 ## 1. 目的
@@ -36,7 +36,8 @@ Phase 3B/4A 的 workspace checkpoint 是后续独立切片，不进入 PR A。
 ### 3.1 保留并重写的能力
 
 - 精确的 reconcile-result / recovery-decision v1 schema；
-- domain-separated、strict-JSON tool args identity；
+- strict-JSON admissibility 与冻结的 mainline v1 tool args hash bytes；未来的 domain separation
+  必须由显式 dispatch/hash v2 引入，不能原地改变 `t1_after_preflight_v1`；
 - call、dispatch、outcome、reconcile、decision semantic lane；
 - generic append/import 对保留事实的 authority gate；
 - 一个 SQLite recovery bundle transaction；
@@ -90,7 +91,7 @@ future newer schema            -> fail closed
 | `runtime-event.ts` | PR A | 增加 exact recovery fact envelope decoder |
 | `canonical-runtime-event.ts` | PR A | 唯一 lossless decoder、strict JSON 与稳定 bytes owner |
 | `runtime-event-store.ts` | PR A | 增加单一 bundle capability |
-| `tool-args-identity.ts` | PR A | strict JSON + domain separation |
+| `tool-args-identity.ts` | PR A | strict JSON 校验 + mainline v1 hash 字节兼容；v2 才允许 domain separation |
 | `tool-ledger-scanner.ts` | PR A | 共享 exact lane、duplicate/order/identity scanner 与 prospective transition validator |
 | `tool-recovery-fact.ts` | PR A | truthful observation 与 terminal decision |
 | `tool-recovery-bundle.ts` | PR A | writer/rebuild/Resolver 共享 bundle 与 causal interpreter |
@@ -116,8 +117,10 @@ future newer schema            -> fail closed
 
 | 场景 | 新测试位置 | 状态 |
 |---|---|---|
-| strict JSON hash / domain separation | core authority test | 已覆盖 |
-| `__proto__`、sparse/accessor/custom array identity | core authority test | 已覆盖 |
+| strict JSON admissibility + mainline v1 hash compatibility | core authority test | 已覆盖 |
+| `required` / `enum` 特殊排序与 ordinary array 的 mainline v1 literal vectors | core authority test | 已覆盖 |
+| 历史 `__proto__` hash omission 与 strict RuntimeEvent JSON data-property 保留 | core authority test | 已覆盖 |
+| sparse/accessor/custom array identity rejection | core authority test | 已覆盖 |
 | semantic lane smuggling | core + storage authority test | 已覆盖 |
 | partial authority、branch-qualified authority | core authority test | 已覆盖 |
 | generic SQLite/JSONL writer bypass | storage tests | 已覆盖 |
@@ -132,6 +135,9 @@ future newer schema            -> fail closed
 | exact/conflicting bundle、rebuild/commit 多进程竞争 | storage multi-process test | 已覆盖 |
 | 多进程同时打开并持有同一 WAL 数据库、初始化失败有界退出 | storage multi-process test | 已覆盖 |
 | populated mainline schema 4 prepared/completed tool rows | storage authority test | 已覆盖并隔离 |
+| populated mainline schema 4 T1 dispatch + special args hash | storage authority test | 已覆盖并可重建 |
+| schema 4→5 optimistic stale read 后锁内重读 | storage schema test | 确定性覆盖 |
+| schema 4→5 多进程并发打开升级 | storage multi-process test | 已覆盖 smoke path |
 | #1346 capability rejection | storage authority test | 已覆盖 |
 | immutable row/payload mismatch | storage authority test | 已覆盖 |
 | corrupt mutable partial | storage authority test | 已覆盖 |
@@ -193,9 +199,9 @@ PR A 没带入 file checkpoint、continuation 或 host lifecycle。
   Runtime Resolver/read-model/resume diagnostics、对应测试与本路线文档；
 - 未出现 file checkpoint carrier、filesystem worker、SessionManager/Desktop/CLI host wiring
   或 Git carrier 路径。
-- 分支已重放到 `upstream/main@0e80fe18` 的 interaction authority 之后；唯一内容冲突位于
-  RuntimeEvent read-model 测试，同时保留了上游 question-answer acknowledgement 与 PR A
-  recovery audit fact 的不可见投影契约。
+- 分支已再次重放到 `upstream/main@466f238b`；本轮唯一内容冲突位于 Desktop settings E2E，
+  保留上游当前更精确的三按钮 permission fixture，因此该文件最终不出现在 PR A 的重放提交中；
+  recovery authority 的 18 个其余提交以及两个 schema 4 blocker 修复均由 range-diff 证明语义等价。
 
 合并门槛：
 
