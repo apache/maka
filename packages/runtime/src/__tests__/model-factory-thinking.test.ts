@@ -192,12 +192,33 @@ describe('buildProviderOptions: thinking level', () => {
     assert.deepEqual(buildProviderOptions(conn('deepseek'), 'deepseek-chat', 'high'), {});
   });
 
-  test('xAI Grok 4.5 sends its declared reasoning effort under the xai namespace', () => {
+  test('xAI Grok 4.5 requests encrypted Responses reasoning under the native OpenAI namespace', () => {
     assert.deepEqual([...thinkingVariantsForModel('xai', 'grok-4.5')], ['low', 'medium', 'high']);
-    assert.deepEqual(buildProviderOptions(conn('xai'), 'grok-4.5', 'high'), {
-      xai: { reasoningEffort: 'high' },
+    assert.deepEqual(buildProviderOptions(conn('xai'), 'grok-4.5'), {
+      openai: {
+        store: false,
+        forceReasoning: true,
+        reasoningSummary: null,
+        include: ['reasoning.encrypted_content'],
+      },
     });
-    assert.deepEqual(buildProviderOptions(conn('xai'), 'grok-4.5', 'off'), {});
+    assert.deepEqual(buildProviderOptions(conn('xai'), 'grok-4.5', 'high'), {
+      openai: {
+        store: false,
+        forceReasoning: true,
+        reasoningSummary: null,
+        include: ['reasoning.encrypted_content'],
+        reasoningEffort: 'high',
+      },
+    });
+    assert.deepEqual(buildProviderOptions(conn('xai'), 'grok-4.5', 'off'), {
+      openai: {
+        store: false,
+        forceReasoning: true,
+        reasoningSummary: null,
+        include: ['reasoning.encrypted_content'],
+      },
+    });
   });
 
   test('Cloudflare Workers AI sends Kimi K2.6 reasoning effort and its real thinking-off wire', () => {
@@ -385,6 +406,22 @@ describe('getAIModel: models.dev registry providers', () => {
       assert.equal(model.provider, expectedProvider, `${providerType}/${modelId}`);
       assert.equal(model.modelId, modelId);
     }
+  });
+
+  test('routes only xAI Grok 4.5 through Responses', () => {
+    const responses = getAIModel({
+      connection: conn('xai'),
+      apiKey: 'xai-test-key',
+      modelId: 'grok-4.5',
+    });
+    const chat = getAIModel({
+      connection: conn('xai'),
+      apiKey: 'xai-test-key',
+      modelId: 'grok-4.3',
+    });
+
+    assert.equal(responses.provider, 'openai.responses');
+    assert.equal(chat.provider, 'openai.chat');
   });
 
   test('routes each exact GitHub Copilot model through its account-advertised wire', () => {

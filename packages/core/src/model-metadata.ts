@@ -48,16 +48,20 @@ export function lookupModelProviderOverride(
 /**
  * The request wire a model served over the OpenAI adapter must use.
  *
- * OpenAI's `gpt-5*` families are served only over the Responses API; every other
- * model on the OpenAI adapter uses Chat Completions. This is the single declared
- * source of that protocol split, expressed through the {@link ModelInfo.apiProtocol}
- * seam. It is consumed by the runtime model factory (to pick `.responses()` vs
- * `.chat()`) and by the conformance matrix (to keep `gpt-5*` off the generated
- * default-Chat wire), replacing the `/^gpt-5/i` routing regex that was previously
- * hard-coded in both places.
+ * OpenAI's `gpt-5*` families and xAI's `grok-4.5` are served only over the
+ * Responses API; every other model on the native OpenAI adapter uses Chat
+ * Completions. This is the single declared source of that protocol split,
+ * expressed through the {@link ModelInfo.apiProtocol} seam. It is consumed by
+ * the runtime model factory and the conformance matrix.
  */
-export function openAiAdapterApiProtocol(modelId: string): 'openai-responses' | 'openai-chat' {
-  return /^gpt-5/i.test(modelId.trim()) ? 'openai-responses' : 'openai-chat';
+export function openAiAdapterApiProtocol(
+  modelId: string,
+  providerType?: ProviderType,
+): 'openai-responses' | 'openai-chat' {
+  const id = modelId.trim();
+  return /^gpt-5/i.test(id) || (providerType === 'xai' && id === 'grok-4.5')
+    ? 'openai-responses'
+    : 'openai-chat';
 }
 
 /**

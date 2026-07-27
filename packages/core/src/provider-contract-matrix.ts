@@ -184,7 +184,10 @@ function wireForProtocol(protocol: ProviderDefaults['protocol']): ProviderContra
 function sampleModelIdFor(providerType: ProviderType, def: ProviderDefaults): string {
   const usesDefaultWire = (id: string): boolean => {
     if (lookupModelProviderOverride(providerType, id)) return false;
-    if (def.runtimeAdapter.kind === 'openai' && openAiAdapterApiProtocol(id) === 'openai-responses')
+    if (
+      def.runtimeAdapter.kind === 'openai' &&
+      openAiAdapterApiProtocol(id, providerType) === 'openai-responses'
+    )
       return false;
     return true;
   };
@@ -238,7 +241,7 @@ function edgeWireSamplesFor(
     }
     if (
       def.runtimeAdapter.kind === 'openai' &&
-      openAiAdapterApiProtocol(modelId) === 'openai-responses'
+      openAiAdapterApiProtocol(modelId, providerType) === 'openai-responses'
     ) {
       throw new Error(
         `edge wire sample ${providerType}/${modelId} routes to the OpenAI Responses wire, which has no ` +

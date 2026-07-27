@@ -96,7 +96,7 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
       const apiProtocol =
         adapter.apiProtocol ??
         connection.models?.find((model) => model.id === modelId)?.apiProtocol ??
-        openAiAdapterApiProtocol(modelId);
+        openAiAdapterApiProtocol(modelId, connection.providerType);
       return apiProtocol === 'openai-responses' ? openai.responses(modelId) : openai.chat(modelId);
     }
 
@@ -368,6 +368,18 @@ export function buildProviderOptions(
           ...(level ? { reasoningEffort: level === 'off' ? 'none' : level } : {}),
         },
       };
+    case 'xai':
+      return modelId === 'grok-4.5'
+        ? {
+            openai: {
+              store: false,
+              forceReasoning: true,
+              reasoningSummary: null,
+              include: ['reasoning.encrypted_content'],
+              ...(level ? { reasoningEffort: level } : {}),
+            },
+          }
+        : {};
     case 'cohere':
       return {
         cohere:
@@ -439,7 +451,6 @@ export function buildProviderOptions(
     case 'groq':
     case 'deepseek':
     case 'moonshot':
-    case 'xai':
     case 'tencent-token-plan':
     case 'zai-coding-plan':
     case 'stepfun-step-plan':

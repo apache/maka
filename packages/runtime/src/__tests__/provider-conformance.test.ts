@@ -65,6 +65,114 @@ describe('models.dev provider conformance', () => {
     assert.deepEqual(requestBody?.cache_control, { type: 'ephemeral' });
   });
 
+  test('xAI Grok 4.5 completes a Responses reasoning tool loop without affecting its exact model id', async () => {
+    const modelId = 'grok-4.5';
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const server = await startJsonServer(async (request, response) => {
+      assert.equal(request.method, 'POST');
+      assert.equal(request.url, '/v1/responses');
+      assert.equal(request.headers.authorization, 'Bearer xai-test-key');
+      requestBodies.push(JSON.parse(await readBody(request)) as Record<string, unknown>);
+      if (requestBodies.length === 1) {
+        respondJson(response, 200, {
+          id: 'resp_xai_tool',
+          object: 'response',
+          created_at: 1,
+          status: 'completed',
+          model: modelId,
+          output: [
+            {
+              type: 'reasoning',
+              id: 'rs_xai_encrypted',
+              summary: [],
+              encrypted_content: 'encrypted-reasoning',
+            },
+            {
+              type: 'function_call',
+              id: 'fc_xai_echo',
+              call_id: 'call_xai_echo',
+              name: 'echo',
+              arguments: '{"text":"hello"}',
+              status: 'completed',
+            },
+          ],
+          usage: { input_tokens: 8, output_tokens: 4, total_tokens: 12 },
+        });
+        return;
+      }
+      respondJson(response, 200, {
+        id: 'resp_xai_final',
+        object: 'response',
+        created_at: 2,
+        status: 'completed',
+        model: modelId,
+        output: [
+          {
+            type: 'message',
+            id: 'msg_xai_final',
+            status: 'completed',
+            role: 'assistant',
+            content: [
+              { type: 'output_text', text: 'Echoed hello.', annotations: [], logprobs: [] },
+            ],
+          },
+        ],
+        usage: { input_tokens: 14, output_tokens: 3, total_tokens: 17 },
+      });
+    });
+    const connection: LlmConnection = {
+      slug: 'xai',
+      name: 'xAI',
+      providerType: 'xai',
+      baseUrl: `${server.url}/v1`,
+      defaultModel: modelId,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    const result = await generateText({
+      model: getAIModel({ connection, apiKey: 'xai-test-key', modelId }),
+      prompt: 'Call echo with hello.',
+      providerOptions: buildProviderOptions(connection, modelId, 'high'),
+      stopWhen: isStepCount(2),
+      tools: {
+        echo: tool({
+          description: 'Echo text',
+          inputSchema: z.object({ text: z.string() }),
+          execute: async ({ text }) => ({ echoed: text }),
+        }),
+      },
+    });
+
+    assert.deepEqual(
+      requestBodies.map((body) => body.model),
+      [modelId, modelId],
+    );
+    assert.equal(requestBodies[0]?.store, false);
+    assert.deepEqual(requestBodies[0]?.include, ['reasoning.encrypted_content']);
+    assert.deepEqual(requestBodies[0]?.reasoning, { effort: 'high' });
+    const secondInput = requestBodies[1]?.input as Array<Record<string, unknown>>;
+    assert.deepEqual(
+      secondInput.find(({ type }) => type === 'reasoning'),
+      {
+        type: 'reasoning',
+        id: 'rs_xai_encrypted',
+        encrypted_content: 'encrypted-reasoning',
+        summary: [],
+      },
+    );
+    assert.deepEqual(
+      secondInput.find(({ type }) => type === 'function_call_output'),
+      {
+        type: 'function_call_output',
+        call_id: 'call_xai_echo',
+        output: '{"echoed":"hello"}',
+      },
+    );
+    assert.equal(result.text, 'Echoed hello.');
+  });
+
   test('GitHub Copilot connection probe validates the selected account model without inference', async () => {
     const server = await startJsonServer((request, response) => {
       assert.equal(request.method, 'GET');

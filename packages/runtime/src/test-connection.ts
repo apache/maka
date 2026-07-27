@@ -4,6 +4,7 @@ import {
   type ConnectionTestResult,
   type LlmConnection,
 } from '@maka/core/llm-connections';
+import { openAiAdapterApiProtocol } from '@maka/core/model-metadata';
 import { proxiedFetch } from './bots/proxied-fetch.js';
 import { anthropicV1Url, googleApiUrl } from './provider-urls.js';
 import { resolveModelRuntime } from './model-runtime.js';
@@ -74,7 +75,7 @@ export async function testConnection(
         const resolvedApiProtocol =
           adapter.apiProtocol ??
           apiProtocol ??
-          (/^gpt-5/i.test(testModel) ? 'openai-responses' : 'openai-chat');
+          openAiAdapterApiProtocol(testModel, connection.providerType);
         return resolvedApiProtocol === 'openai-responses'
           ? await probeOpenAIResponses(baseUrl, secret, testModel, t0)
           : await probeOpenAI(connection, baseUrl, secret, testModel, t0);

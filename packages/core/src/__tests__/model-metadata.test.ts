@@ -174,4 +174,10 @@ describe('openAiAdapterApiProtocol', () => {
       assert.equal(openAiAdapterApiProtocol(modelId), 'openai-chat', modelId);
     }
   });
+
+  it('routes only xAI Grok 4.5 through Responses', () => {
+    assert.equal(openAiAdapterApiProtocol('grok-4.5', 'xai'), 'openai-responses');
+    assert.equal(openAiAdapterApiProtocol('grok-4.3', 'xai'), 'openai-chat');
+    assert.equal(openAiAdapterApiProtocol('grok-4.5', 'openai'), 'openai-chat');
+  });
 });

@@ -863,7 +863,7 @@ const providerRegistry = {
     fallbackModels: xaiModelIds,
     status: 'ready',
     protocol: 'openai',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: { kind: 'openai' },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
