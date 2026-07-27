@@ -29,6 +29,7 @@ export type ToolRecoveryDecisionReason =
   | 'duplicate_operation'
   | 'duplicate_dispatch'
   | 'duplicate_response'
+  | 'canonical_args_hash_conflict'
   | 'identity_conflict'
   | 'event_order_conflict'
   | 'protocol_marker_invalid'
@@ -182,6 +183,7 @@ function operationCorruptionReason(
     ['duplicate_dispatch', 'duplicate_dispatch'],
     ['duplicate_response', 'duplicate_response'],
     ['orphan_response', 'orphan_response'],
+    ['canonical_args_hash_conflict', 'canonical_args_hash_conflict'],
     ['identity_conflict', 'identity_conflict'],
     ['event_order_conflict', 'event_order_conflict'],
   ];

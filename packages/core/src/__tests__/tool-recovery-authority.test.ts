@@ -5,6 +5,7 @@ import { canonicalToolArgsHash } from '../tool-args-identity.js';
 import {
   scanToolLedger,
   validateGenericToolLedgerAppend,
+  validateToolLedgerTransition,
   validateToolLedgerEventLane,
 } from '../tool-ledger-scanner.js';
 import {
@@ -34,6 +35,47 @@ describe('recovery persistence authority', () => {
       () => canonicalToolArgsHash('Write', { [Symbol('hidden')]: 'value' }),
       /strict JSON/,
     );
+  });
+
+  it('keeps __proto__ JSON properties distinct from an empty object', () => {
+    const empty = canonicalToolArgsHash('Write', {});
+    const withPrototypeNamedProperty = canonicalToolArgsHash(
+      'Write',
+      JSON.parse('{"__proto__":{"admin":true}}'),
+    );
+    const nestedPrototypeNamedProperty = canonicalToolArgsHash(
+      'Write',
+      JSON.parse('{"nested":{"__proto__":{"admin":true}}}'),
+    );
+
+    assert.notEqual(withPrototypeNamedProperty, empty);
+    assert.notEqual(nestedPrototypeNamedProperty, canonicalToolArgsHash('Write', { nested: {} }));
+  });
+
+  it('rejects arrays that cannot be represented as exact strict JSON arrays', () => {
+    const sparse = new Array(1);
+    const withExtraProperty = [1] as number[] & { extra?: number };
+    withExtraProperty.extra = 2;
+    const withAccessor = [1];
+    Object.defineProperty(withAccessor, '0', {
+      enumerable: true,
+      configurable: true,
+      get: () => 1,
+    });
+    const withCustomPrototype = [1];
+    Object.setPrototypeOf(withCustomPrototype, Object.create(Array.prototype));
+
+    for (const value of [sparse, withExtraProperty, withAccessor, withCustomPrototype]) {
+      assert.throws(() => canonicalToolArgsHash('Write', value), /strict JSON/);
+    }
+  });
+
+  it('accepts null-prototype records as exact JSON objects', () => {
+    const value = Object.create(null) as Record<string, unknown>;
+    value.path = 'notes.txt';
+    value.content = 'after';
+
+    assert.equal(canonicalToolArgsHash('Write', value), EXPECTED_ARGS_HASH);
   });
 
   it('rejects RuntimeEvents that claim more than one tool-ledger semantic lane', () => {
@@ -70,6 +112,22 @@ describe('recovery persistence authority', () => {
       ok: false,
       code: 'semantic_lane_conflict',
       eventId: 'outcome-event-1',
+    });
+
+    const outcomeWithContinuation = outcomeEvent();
+    outcomeWithContinuation.actions = { stateDelta: { continuationStart: true } };
+    assert.deepEqual(validateToolLedgerEventLane(outcomeWithContinuation), {
+      ok: false,
+      code: 'semantic_lane_conflict',
+      eventId: 'outcome-event-1',
+    });
+
+    const callWithArtifact = callEvent();
+    callWithArtifact.actions = { artifactDelta: { bytes: 10 } };
+    assert.deepEqual(validateToolLedgerEventLane(callWithArtifact), {
+      ok: false,
+      code: 'semantic_lane_conflict',
+      eventId: 'call-event-1',
     });
   });
 
@@ -136,6 +194,113 @@ describe('recovery persistence authority', () => {
       ['event_order_conflict', 'duplicate_call', 'duplicate_operation'],
     );
     assert.equal(scan.hasCorruption, true);
+  });
+
+  it('revalidates an earlier response when a later dispatch binds the operation', () => {
+    const unboundResponse = outcomeEvent();
+    unboundResponse.refs = { toolCallId: 'provider-call-1' };
+
+    const scan = scanToolLedger([callEvent(), unboundResponse, dispatchEvent()]);
+
+    assert.equal(scan.hasCorruption, true);
+    assert.ok(scan.issues.some(({ code }) => code === 'event_order_conflict'));
+    assert.ok(scan.issues.some(({ code }) => code === 'identity_conflict'));
+  });
+
+  it('authenticates every dispatch hash against the canonical call arguments', () => {
+    const dispatch = dispatchEvent();
+    dispatch.actions!.toolDispatch!.canonicalArgsHash = 'sha256:wrong';
+
+    const scan = scanToolLedger([callEvent(), dispatch]);
+
+    assert.equal(scan.hasCorruption, true);
+    assert.ok(scan.issues.some(({ code }) => code === 'canonical_args_hash_conflict'));
+  });
+
+  it('rejects partial events that carry an authoritative tool fact', () => {
+    const partialDispatch = dispatchEvent();
+    partialDispatch.partial = true;
+
+    const scan = scanToolLedger([partialDispatch]);
+
+    assert.deepEqual(scan.issues, [
+      {
+        code: 'semantic_lane_conflict',
+        eventId: 'dispatch-event-1',
+      },
+    ]);
+  });
+
+  it('rejects branch-qualified tool authority until branch is part of durable identity', () => {
+    const branchedCall = callEvent();
+    branchedCall.branch = 'child-1';
+
+    assert.deepEqual(validateToolLedgerEventLane(branchedCall), {
+      ok: false,
+      code: 'semantic_lane_conflict',
+      eventId: 'call-event-1',
+    });
+  });
+
+  it('uses unambiguous tuple identity for provider call keys', () => {
+    const first = callEvent({
+      id: 'call-a',
+      invocationId: 'a\0b',
+      content: {
+        kind: 'function_call',
+        id: 'c',
+        name: 'Read',
+        args: {},
+      },
+    });
+    const second = callEvent({
+      id: 'call-b',
+      invocationId: 'a',
+      content: {
+        kind: 'function_call',
+        id: 'b\0c',
+        name: 'Read',
+        args: {},
+      },
+    });
+
+    const scan = scanToolLedger([first, second]);
+    assert.equal(scan.hasCorruption, false);
+    assert.equal(scan.operations.length, 2);
+  });
+
+  it('rejects prospective generic transitions that would corrupt a clean ledger', () => {
+    const duplicateCall = callEvent({ id: 'call-event-duplicate' });
+    assert.deepEqual(
+      validateToolLedgerTransition({
+        existingEvents: [callEvent()],
+        candidateEvents: [duplicateCall],
+        expectedTransition: 'generic_append',
+      }),
+      {
+        ok: false,
+        code: 'duplicate_call',
+        eventId: 'call-event-duplicate',
+        toolCallId: 'provider-call-1',
+      },
+    );
+
+    const unboundResponse = outcomeEvent();
+    unboundResponse.refs = { toolCallId: 'provider-call-1' };
+    assert.deepEqual(
+      validateToolLedgerTransition({
+        existingEvents: [callEvent(), dispatchEvent()],
+        candidateEvents: [unboundResponse],
+        expectedTransition: 'generic_append',
+      }),
+      {
+        ok: false,
+        code: 'identity_conflict',
+        eventId: 'outcome-event-1',
+        operationId: 'operation-1',
+        toolCallId: 'provider-call-1',
+      },
+    );
   });
 
   it('rejects a recovery bundle whose T1 hash authenticates itself instead of the call args', () => {

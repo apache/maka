@@ -1,4 +1,6 @@
+import { isDeepStrictEqual } from 'node:util';
 import type { RuntimeEvent } from './runtime-event.js';
+import { canonicalToolArgsHash } from './tool-args-identity.js';
 
 export type ToolLedgerLane =
   | 'ordinary'
@@ -17,6 +19,7 @@ export type ToolLedgerIssueCode =
   | 'duplicate_response'
   | 'orphan_dispatch'
   | 'orphan_response'
+  | 'canonical_args_hash_conflict'
   | 'identity_conflict'
   | 'event_order_conflict';
 
@@ -55,6 +58,27 @@ export type GenericToolLedgerAppendValidation =
       ok: false;
       code: 'semantic_lane_conflict' | 'reserved_tool_boundary_fact' | 'reserved_recovery_fact';
       eventId: string;
+    };
+
+export type ToolLedgerTransitionKind =
+  | 'generic_append'
+  | 't1_prepare'
+  | 't2_outcome'
+  | 'recovery_bundle';
+
+export type ToolLedgerTransitionValidation =
+  | { ok: true }
+  | {
+      ok: false;
+      code:
+        | ToolLedgerIssueCode
+        | 'semantic_lane_conflict'
+        | 'reserved_tool_boundary_fact'
+        | 'reserved_recovery_fact'
+        | 'transition_shape_conflict';
+      eventId: string;
+      operationId?: string;
+      toolCallId?: string;
     };
 
 /**
@@ -105,6 +129,42 @@ export function validateGenericToolLedgerAppend(
 }
 
 /**
+ * Validates the ledger that would exist after one writer transaction.
+ *
+ * Event-local lane checks cannot detect duplicate calls, a response that
+ * becomes invalid when a later dispatch binds the operation, or other
+ * prefix-dependent corruption. Every tool-bearing writer uses this function
+ * before committing its candidate events.
+ */
+export function validateToolLedgerTransition(input: {
+  existingEvents: readonly RuntimeEvent[];
+  candidateEvents: readonly RuntimeEvent[];
+  expectedTransition: ToolLedgerTransitionKind;
+}): ToolLedgerTransitionValidation {
+  const existing = scanToolLedger(input.existingEvents);
+  if (existing.hasCorruption) return issueValidation(existing.issues[0]!);
+
+  const existingById = new Map(input.existingEvents.map((event) => [event.id, event]));
+  const candidates: RuntimeEvent[] = [];
+  for (const candidate of input.candidateEvents) {
+    const prior = existingById.get(candidate.id);
+    if (!prior) {
+      candidates.push(candidate);
+      continue;
+    }
+    if (!isDeepStrictEqual(prior, candidate)) {
+      return { ok: false, code: 'duplicate_event_id', eventId: candidate.id };
+    }
+  }
+  const shape = validateTransitionShape(candidates, input.expectedTransition);
+  if (!shape.ok) return shape;
+
+  const prospective = scanToolLedger([...input.existingEvents, ...candidates]);
+  if (prospective.hasCorruption) return issueValidation(prospective.issues[0]!);
+  return { ok: true };
+}
+
+/**
  * Scans immutable RuntimeEvents once, in physical ledger order. It owns the
  * duplicate/order/identity interpretation shared by Resolver and projection
  * rebuild; neither consumer may rebuild these maps independently.
@@ -127,13 +187,12 @@ export function scanToolLedger(events: readonly RuntimeEvent[]): ToolLedgerScanR
       continue;
     }
     seenEventIds.add(event.id);
-    if (event.partial) continue;
-
     const lane = validateToolLedgerEventLane(event);
     if (!lane.ok) {
-      addIssue(undefined, lane);
+      addIssue(undefined, { code: lane.code, eventId: lane.eventId });
       continue;
     }
+    if (event.partial) continue;
 
     if (lane.lane === 'function_call') {
       const content = event.content;
@@ -237,6 +296,43 @@ export function scanToolLedger(events: readonly RuntimeEvent[]): ToolLedgerScanR
           toolCallId: dispatch.providerToolCallId,
         });
       }
+      const callContent = operation.callEvent?.content;
+      if (callContent?.kind === 'function_call') {
+        let canonicalArgsHash: string | undefined;
+        try {
+          canonicalArgsHash = canonicalToolArgsHash(callContent.name, callContent.args);
+        } catch {
+          // A provider call that is not strict JSON cannot authenticate T1.
+        }
+        if (canonicalArgsHash !== dispatch.canonicalArgsHash) {
+          addIssue(operation, {
+            code: 'canonical_args_hash_conflict',
+            eventId: event.id,
+            operationId: dispatch.operationId,
+            toolCallId: dispatch.providerToolCallId,
+          });
+        }
+      }
+      if (operation.responseEvent) {
+        addIssue(operation, {
+          code: 'event_order_conflict',
+          eventId: event.id,
+          operationId: dispatch.operationId,
+          toolCallId: dispatch.providerToolCallId,
+        });
+        if (
+          operation.responseEvent.refs?.operationId !== dispatch.operationId ||
+          operation.responseEvent.refs?.toolCallId !== dispatch.providerToolCallId ||
+          !sameExecutionIdentity(event, operation.responseEvent)
+        ) {
+          addIssue(operation, {
+            code: 'identity_conflict',
+            eventId: operation.responseEvent.id,
+            operationId: dispatch.operationId,
+            toolCallId: dispatch.providerToolCallId,
+          });
+        }
+      }
       continue;
     }
 
@@ -315,19 +411,19 @@ function matchesLaneEnvelope(
   event: RuntimeEvent,
   lane: Exclude<ToolLedgerLane, 'ordinary'>,
 ): boolean {
-  if (event.partial || event.status !== undefined) return false;
+  if (event.partial || event.status !== undefined || event.branch !== undefined) return false;
   switch (lane) {
     case 'function_call':
       return (
         event.role === 'model' &&
         event.author === 'agent' &&
-        hasNoAuthoritativeToolActions(event.actions)
+        matchesFunctionCallActions(event.actions)
       );
     case 'function_response':
       return (
         event.role === 'tool' &&
         event.author === 'tool' &&
-        hasNoAuthoritativeToolActions(event.actions)
+        matchesFunctionResponseActions(event.actions)
       );
     case 'tool_dispatch':
       return (
@@ -349,6 +445,58 @@ function matchesLaneEnvelope(
   }
 }
 
+function validateTransitionShape(
+  events: readonly RuntimeEvent[],
+  expectedTransition: ToolLedgerTransitionKind,
+): ToolLedgerTransitionValidation {
+  if (events.length === 0) return { ok: true };
+  const lanes = events.map((event) => validateToolLedgerEventLane(event));
+  const invalid = lanes.find((lane) => !lane.ok);
+  if (invalid && !invalid.ok) return invalid;
+
+  if (expectedTransition === 'generic_append') {
+    for (const event of events) {
+      const validation = validateGenericToolLedgerAppend(event);
+      if (!validation.ok) return validation;
+    }
+    return { ok: true };
+  }
+
+  const actual = lanes.map((lane) => (lane.ok ? lane.lane : 'ordinary'));
+  const valid =
+    (expectedTransition === 't1_prepare' &&
+      ((actual.length === 2 && actual[0] === 'function_call' && actual[1] === 'tool_dispatch') ||
+        (actual.length === 1 && actual[0] === 'tool_dispatch'))) ||
+    (expectedTransition === 't2_outcome' &&
+      actual.length === 1 &&
+      actual[0] === 'function_response' &&
+      events[0]?.refs?.operationId !== undefined) ||
+    (expectedTransition === 'recovery_bundle' &&
+      ((actual.length === 2 &&
+        actual[0] === 'reconcile_result' &&
+        actual[1] === 'recovery_decision') ||
+        (actual.length === 3 &&
+          actual[0] === 'reconcile_result' &&
+          actual[1] === 'function_response' &&
+          actual[2] === 'recovery_decision')));
+  if (valid) return { ok: true };
+  return {
+    ok: false,
+    code: 'transition_shape_conflict',
+    eventId: events[0]?.id ?? 'unknown',
+  };
+}
+
+function issueValidation(issue: ToolLedgerIssue): ToolLedgerTransitionValidation {
+  return {
+    ok: false,
+    code: issue.code,
+    eventId: issue.eventId,
+    ...(issue.operationId ? { operationId: issue.operationId } : {}),
+    ...(issue.toolCallId ? { toolCallId: issue.toolCallId } : {}),
+  };
+}
+
 function sameExecutionIdentity(first: RuntimeEvent | undefined, second: RuntimeEvent): boolean {
   return (
     first !== undefined &&
@@ -365,13 +513,34 @@ function hasOnlyKeys(value: object | undefined, expected: readonly string[]): bo
   return keys.length === expected.length && expected.every((key) => Object.hasOwn(value, key));
 }
 
-function hasNoAuthoritativeToolActions(actions: RuntimeEvent['actions']): boolean {
+function matchesFunctionCallActions(actions: RuntimeEvent['actions']): boolean {
   if (!actions) return true;
-  return Object.keys(actions).every((key) =>
-    ['stateDelta', 'artifactDelta', 'tokenUsage'].includes(key),
+  if (!hasOnlyKeys(actions, ['stateDelta'])) return false;
+  const stateDelta = actions.stateDelta;
+  if (!stateDelta) return false;
+  const keys = Object.keys(stateDelta);
+  return (
+    keys.length > 0 &&
+    keys.every(
+      (key) =>
+        ['activityKind', 'displayName', 'intent'].includes(key) &&
+        typeof stateDelta[key] === 'string',
+    )
+  );
+}
+
+function matchesFunctionResponseActions(actions: RuntimeEvent['actions']): boolean {
+  if (!actions) return true;
+  if (!hasOnlyKeys(actions, ['stateDelta'])) return false;
+  const stateDelta = actions.stateDelta;
+  return (
+    stateDelta !== undefined &&
+    hasOnlyKeys(stateDelta, ['durationMs']) &&
+    typeof stateDelta.durationMs === 'number' &&
+    Number.isFinite(stateDelta.durationMs)
   );
 }
 
 function toolCallIdentity(invocationId: string, toolCallId: string): string {
-  return `${invocationId}\0${toolCallId}`;
+  return JSON.stringify([invocationId, toolCallId]);
 }

@@ -2780,7 +2780,7 @@ function isAmbiguousComputerFailure(raw: unknown): boolean {
 }
 
 function durableAttemptKey(turnId: string, toolUseId: string): string {
-  return `${turnId}\0${toolUseId}`;
+  return JSON.stringify([turnId, toolUseId]);
 }
 
 function providerToolErrorMessage(output: unknown): string | undefined {

@@ -192,11 +192,14 @@ export type {
   ToolLedgerLaneValidation,
   ToolLedgerScanOperation,
   ToolLedgerScanResult,
+  ToolLedgerTransitionKind,
+  ToolLedgerTransitionValidation,
 } from './tool-ledger-scanner.js';
 export {
   scanToolLedger,
   validateGenericToolLedgerAppend,
   validateToolLedgerEventLane,
+  validateToolLedgerTransition,
 } from './tool-ledger-scanner.js';
 export type {
   ToolReconcileObservation,

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { canonicalToolArgsHash } from '@maka/core';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { resolveRuntimeRecovery } from '../recovery-resolver.js';
 
@@ -257,7 +258,7 @@ function toolDispatchEvent(overrides: { toolName?: string } = {}): RuntimeEvent 
         operationId: 'operation-1',
         providerToolCallId: 'call-1',
         toolName: overrides.toolName ?? 'Bash',
-        canonicalArgsHash: 'args-hash-1',
+        canonicalArgsHash: canonicalToolArgsHash('Bash', { command: 'do-it' }),
         recoveryMode: 'never_auto_retry',
       },
     },

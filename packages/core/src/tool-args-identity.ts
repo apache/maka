@@ -29,7 +29,31 @@ function canonicalizeStrictJson(value: unknown): unknown {
     if (!Number.isFinite(value)) throw new Error('Tool arguments must be strict JSON values');
     return value;
   }
-  if (Array.isArray(value)) return value.map(canonicalizeStrictJson);
+  if (Array.isArray(value)) {
+    if (Object.getPrototypeOf(value) !== Array.prototype) {
+      throw new Error('Tool arguments must be strict JSON values');
+    }
+    const ownKeys = Reflect.ownKeys(value);
+    if (
+      ownKeys.length !== value.length + 1 ||
+      ownKeys.some(
+        (key) =>
+          typeof key !== 'string' ||
+          (key !== 'length' && !isCanonicalArrayIndex(key, value.length)),
+      )
+    ) {
+      throw new Error('Tool arguments must be strict JSON values');
+    }
+    const result: unknown[] = [];
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) {
+        throw new Error('Tool arguments must be strict JSON values');
+      }
+      result.push(canonicalizeStrictJson(descriptor.value));
+    }
+    return result;
+  }
   if (typeof value !== 'object') throw new Error('Tool arguments must be strict JSON values');
 
   const prototype = Object.getPrototypeOf(value);
@@ -37,7 +61,10 @@ function canonicalizeStrictJson(value: unknown): unknown {
     throw new Error('Tool arguments must be strict JSON values');
   }
   const record = value as Record<string, unknown>;
-  const result: Record<string, unknown> = {};
+  // A null prototype keeps JSON property names such as "__proto__" as data.
+  // Assigning that key to a normal object would invoke Object.prototype's
+  // legacy setter and collapse distinct provider arguments to the same hash.
+  const result = Object.create(null) as Record<string, unknown>;
   const keys = Object.keys(record);
   if (
     Reflect.ownKeys(record).some(
@@ -54,4 +81,10 @@ function canonicalizeStrictJson(value: unknown): unknown {
     result[key] = canonicalizeStrictJson(descriptor.value);
   }
   return result;
+}
+
+function isCanonicalArrayIndex(key: string, length: number): boolean {
+  if (!/^(0|[1-9]\d*)$/.test(key)) return false;
+  const index = Number(key);
+  return Number.isSafeInteger(index) && index >= 0 && index < length && String(index) === key;
 }

@@ -48,9 +48,7 @@ export function buildToolOperationId(input: ToolOperationIdInput): string {
     throw new Error('Tool operation identity requires invocationId and providerToolCallId');
   }
   const digest = createHash('sha256')
-    .update(input.invocationId)
-    .update('\0')
-    .update(input.providerToolCallId)
+    .update(JSON.stringify([input.invocationId, input.providerToolCallId]))
     .digest('hex')
     .slice(0, 32);
   return `toolop_${digest}`;

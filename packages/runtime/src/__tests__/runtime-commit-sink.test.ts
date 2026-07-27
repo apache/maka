@@ -22,6 +22,19 @@ describe('RuntimeCommitSink identities', () => {
     assert.match(first, /^toolop_[a-f0-9]{32}$/);
   });
 
+  it('keeps tuple identity unambiguous when provider strings contain NUL', () => {
+    assert.notEqual(
+      buildToolOperationId({
+        invocationId: 'a\0b',
+        providerToolCallId: 'c',
+      }),
+      buildToolOperationId({
+        invocationId: 'a',
+        providerToolCallId: 'b\0c',
+      }),
+    );
+  });
+
   it('hashes stable-json tool identity while preserving semantic argument differences', () => {
     assert.equal(
       canonicalToolArgsHash('Read', { path: '/workspace/a', offset: 1 }),
