@@ -12,6 +12,9 @@ import {
   type SqliteRuntimeStoreFailpoint,
 } from '../sqlite-runtime-store.js';
 
+const CRASH_READ_ARGS_HASH = canonicalToolArgsHash('Read', {
+  path: '/workspace/README.md',
+});
 const childMode = process.env.MAKA_SQLITE_CRASH_CHILD;
 
 if (childMode) {
@@ -300,10 +303,6 @@ function functionResponseEvent(): RuntimeEvent {
     refs: { operationId: 'operation-1', toolCallId: 'provider-call-1' },
   };
 }
-
-const CRASH_READ_ARGS_HASH = canonicalToolArgsHash('Read', {
-  path: '/workspace/README.md',
-});
 
 function recoveryCommit() {
   return {

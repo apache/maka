@@ -3,8 +3,8 @@ import { appendFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import type { RuntimeEvent } from '@maka/core';
-import { createRuntimeEventStore } from '../agent-run-store.js';
+import type { AgentRunHeader, RuntimeEvent } from '@maka/core';
+import { createAgentRunStore, createRuntimeEventStore } from '../agent-run-store.js';
 import { createSqliteRuntimeStore } from '../sqlite-runtime-store.js';
 import {
   exportRuntimeEventsToJsonl,
@@ -19,6 +19,9 @@ describe('runtime event JSONL compatibility transfer', () => {
     const legacy = createRuntimeEventStore(root);
     const sqlite = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
     try {
+      const runs = createAgentRunStore(root);
+      await runs.createRun(runHeader());
+      await runs.createRun(runHeader({ runId: 'run-2', invocationId: 'run-2', turnId: 'turn-2' }));
       await legacy.appendRuntimeEvent('session-1', 'run-1', runtimeEvent('event-1'));
       await legacy.appendRuntimeEvent('session-1', 'run-1', runtimeEvent('event-2', { ts: 2 }));
       await legacy.appendRuntimeEvent(
@@ -68,6 +71,7 @@ describe('runtime event JSONL compatibility transfer', () => {
     const legacy = createRuntimeEventStore(root);
     const sqlite = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
     try {
+      await createAgentRunStore(root).createRun(runHeader());
       await legacy.appendRuntimeEvent('session-1', 'run-1', runtimeEvent('event-1'));
       await legacy.appendRuntimeEvent('session-1', 'run-1', runtimeEvent('event-2', { ts: 2 }));
       // Older versions wrote stream partial snapshots straight into the JSONL
@@ -186,6 +190,7 @@ describe('runtime event JSONL compatibility transfer', () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-runtime-persistence-'));
     const legacy = createRuntimeEventStore(root);
     try {
+      await createAgentRunStore(root).createRun(runHeader());
       await legacy.appendRuntimeEvent('session-1', 'run-1', runtimeEvent('event-1'));
 
       const opened = await openRuntimeEventPersistence({
@@ -253,6 +258,24 @@ function runtimeEvent(id: string, overrides: Partial<RuntimeEvent> = {}): Runtim
     role: 'user',
     author: 'user',
     content: { kind: 'text', text: id },
+    ...overrides,
+  };
+}
+
+function runHeader(overrides: Partial<AgentRunHeader> = {}): AgentRunHeader {
+  return {
+    runId: 'run-1',
+    invocationId: 'run-1',
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    status: 'created',
+    backendKind: 'fake',
+    llmConnectionSlug: 'fake',
+    modelId: 'fake-model',
+    cwd: '/workspace',
+    permissionMode: 'ask',
+    createdAt: 1,
+    updatedAt: 1,
     ...overrides,
   };
 }

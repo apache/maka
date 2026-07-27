@@ -85,10 +85,16 @@ describe('ToolRuntime with real SQLite boundary', () => {
         (event) => event.type === 'tool_start' || event.type === 'tool_result',
       );
       assert.equal(durableEvents.length, 2);
-      for (const event of durableEvents) {
-        const mapped = mapSessionEventToRuntimeEvent(event, context, memory);
-        await store.appendRuntimeEvent('session-1', 'run-1', mapped);
-      }
+      const mappedEvents = durableEvents.map((event) =>
+        mapSessionEventToRuntimeEvent(event, context, memory),
+      );
+      assert.deepEqual(
+        mappedEvents,
+        events.filter(
+          (event) =>
+            event.content?.kind === 'function_call' || event.content?.kind === 'function_response',
+        ),
+      );
 
       assert.equal((await store.readRuntimeEvents('session-1', 'run-1')).length, 3);
       assert.equal((await store.readImmutableRuntimeEvents('session-1', 'run-1')).length, 3);
@@ -145,16 +151,17 @@ describe('ToolRuntime with real SQLite boundary', () => {
       });
 
       const memory = createSessionEventMapMemory();
-      for (const event of published.filter(
-        (item) => item.type === 'tool_start' || item.type === 'tool_result',
-      )) {
-        await store.appendRuntimeEvent(
-          'session-1',
-          'run-1',
-          mapSessionEventToRuntimeEvent(event, invocationContext(), memory),
-        );
-      }
+      const mappedEvents = published
+        .filter((item) => item.type === 'tool_start' || item.type === 'tool_result')
+        .map((event) => mapSessionEventToRuntimeEvent(event, invocationContext(), memory));
       const events = await store.readRuntimeEvents('session-1', 'run-1');
+      assert.deepEqual(
+        mappedEvents,
+        events.filter(
+          (event) =>
+            event.content?.kind === 'function_call' || event.content?.kind === 'function_response',
+        ),
+      );
       assert.equal(events.length, 3);
       assert.equal(events[2]?.content?.kind, 'function_response');
       assert.equal(
