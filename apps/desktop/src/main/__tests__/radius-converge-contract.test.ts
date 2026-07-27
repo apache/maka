@@ -142,8 +142,31 @@ function isAllowedCorner(corner: string): boolean {
  * declaration: `;` and `}` are still excluded, so it stops at the first
  * declaration terminator or the end of the rule body either way.
  */
-const RADIUS_DECL_RE = /border-radius\s*:\s*([^;}]+)\s*[;}]/gi;
-const RADIUS_LONGHAND_RE = /border-(?:top-left|top-right|bottom-left|bottom-right|start-start|start-end|end-start|end-end)-radius\s*:\s*([^;}]+)\s*[;}]/gi;
+/**
+ * Custom properties are IN SCOPE, on purpose.
+ *
+ * `--os-track-border-radius: var(--radius-surface)` in base.css is
+ * OverlayScrollbars' theming API — the library's own CSS consumes it and
+ * renders a real scrollbar corner. A radius that reaches the screen is
+ * governed no matter which declaration spells it, so the optional
+ * `--<name>-` prefix below is deliberate rather than tolerated.
+ *
+ * It also used to be accidental: the property name was matched as a bare
+ * substring, so these declarations were scanned but reported under the
+ * name `border-radius`, which does not exist in the stylesheet. Capturing
+ * the whole property name keeps the coverage and makes the offender
+ * message name something the reader can actually search for.
+ *
+ * The lookbehind is what stops `--os-track-border-radius` from ALSO
+ * matching at the inner `border-radius` and being reported twice. A `\b`
+ * would not work here: `-` is a non-word character, so a word boundary
+ * already exists between `-` and `border`.
+ */
+const RADIUS_PROP = String.raw`(?<![-\w])((?:--[\w-]+-)?border-radius)`;
+const RADIUS_LONGHAND_PROP = String.raw`(?<![-\w])((?:--[\w-]+-)?border-(?:top-left|top-right|bottom-left|bottom-right|start-start|start-end|end-start|end-end)-radius)`;
+
+const RADIUS_DECL_RE = new RegExp(String.raw`${RADIUS_PROP}\s*:\s*([^;}]+)\s*[;}]`, 'gi');
+const RADIUS_LONGHAND_RE = new RegExp(String.raw`${RADIUS_LONGHAND_PROP}\s*:\s*([^;}]+)\s*[;}]`, 'gi');
 
 /**
  * Split a `border-radius` value into its corner tokens.
@@ -178,7 +201,9 @@ function findCssOffenders(css: string, label: string): string[] {
   const offenders: string[] = [];
   for (const re of [RADIUS_DECL_RE, RADIUS_LONGHAND_RE]) {
     for (const m of stripped.matchAll(re)) {
-      const raw = m[1].trim();
+      // m[1] is the full property name (with any custom-property prefix),
+      // m[2] is the value.
+      const raw = m[2].trim();
       const cleaned = raw.replace(/!\s*important$/, '').trim();
       const corners = splitCorners(cleaned);
       if (corners.length > 0 && corners.every(isAllowedCorner)) continue;
@@ -706,6 +731,48 @@ describe('radius whitelist negative cases', () => {
   });
 
   /**
+   * A radius-bearing custom property renders a real corner (base.css themes
+   * OverlayScrollbars this way), so it is governed — and must be reported
+   * under a property name that exists in the stylesheet.
+   */
+  it('scans radius custom properties and names them truthfully', () => {
+    RADIUS_DECL_RE.lastIndex = 0;
+    RADIUS_LONGHAND_RE.lastIndex = 0;
+    const offenders = findCssOffenders('.os-theme-maka { --os-track-border-radius: 4px; }', 'test');
+    assert.equal(offenders.length, 1, 'a bare px in a radius custom property must be reported');
+    assert.match(
+      offenders[0],
+      /--os-track-border-radius/,
+      'the offender must name the real property; reporting it as plain "border-radius" sends the reader looking for a declaration that does not exist',
+    );
+
+    // The real base.css spelling passes — it defers to a whitelisted token.
+    RADIUS_DECL_RE.lastIndex = 0;
+    RADIUS_LONGHAND_RE.lastIndex = 0;
+    assert.deepEqual(
+      findCssOffenders('.os-theme-maka { --os-handle-border-radius: var(--radius-control); }', 'test'),
+      [],
+    );
+
+    // Longhand custom properties are covered by the same rule.
+    RADIUS_DECL_RE.lastIndex = 0;
+    RADIUS_LONGHAND_RE.lastIndex = 0;
+    assert.match(
+      findCssOffenders('--x-border-top-left-radius: 10px;', 'test')[0] ?? '',
+      /--x-border-top-left-radius/,
+    );
+
+    // And the prefixed property must not ALSO match at its inner
+    // `border-radius`, which would report the same declaration twice.
+    RADIUS_DECL_RE.lastIndex = 0;
+    assert.equal(
+      [...'--os-track-border-radius: 4px;'.matchAll(RADIUS_DECL_RE)].length,
+      1,
+      'one declaration must produce exactly one match',
+    );
+  });
+
+  /**
    * Widening the value class must not let one match swallow the declaration
    * after it, or run past the end of its own rule body — that would turn the
    * fix into a false-positive machine.
@@ -726,7 +793,7 @@ describe('radius whitelist negative cases', () => {
     assert.deepEqual(findCssOffenders(css, 'test'), [], 'valid declarations must not bleed into each other');
 
     RADIUS_DECL_RE.lastIndex = 0;
-    const matched = [...css.matchAll(RADIUS_DECL_RE)].map((m) => m[1].trim());
+    const matched = [...css.matchAll(RADIUS_DECL_RE)].map((m) => m[2].trim());
     assert.deepEqual(
       matched,
       ['var(--radius-control)', 'var(--radius-surface)', 'var(--radius-modal)'],
