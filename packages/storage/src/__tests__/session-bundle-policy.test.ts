@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import {
+  link,
+  lstat,
   mkdtemp,
   mkdir,
   readFile,
@@ -19,6 +22,7 @@ import {
   planSessionBundleExport,
   type SessionBundleExportError,
 } from '../session-bundle-policy.js';
+import { createArtifactStore } from '../artifact-store.js';
 import { createSessionStore } from '../session-store.js';
 import { createSqliteRuntimeStore } from '../sqlite-runtime-store.js';
 
@@ -53,23 +57,25 @@ test('exports one session only and excludes credential/config canaries', async (
       await mkdir(dirname(path), { recursive: true });
       await writeFile(path, contents);
     }
-    await mkdir(join(stateRoot, 'artifacts', selected.id), { recursive: true });
-    await mkdir(join(stateRoot, 'artifacts', other.id), { recursive: true });
-    await writeFile(join(stateRoot, 'artifacts', selected.id, 'output.txt'), 'session output\n');
-    await writeFile(join(stateRoot, 'artifacts', other.id, 'other-output.txt'), 'other output\n');
-    await writeFile(
-      join(stateRoot, 'artifacts', 'metadata.jsonl'),
-      [
-        JSON.stringify({
-          sessionId: selected.id,
-          relativePath: `${selected.id}/output.txt`,
-        }),
-        JSON.stringify({
-          sessionId: other.id,
-          relativePath: `${other.id}/other-output.txt`,
-        }),
-      ].join('\n') + '\n',
-    );
+    const artifacts = createArtifactStore(stateRoot);
+    const selectedArtifact = await artifacts.create({
+      id: 'selected-output',
+      sessionId: selected.id,
+      turnId: 'turn-1',
+      name: 'output.txt',
+      kind: 'file',
+      content: 'session output\n',
+      now: 10,
+    });
+    const otherArtifact = await artifacts.create({
+      id: 'other-output',
+      sessionId: other.id,
+      turnId: 'turn-1',
+      name: 'other-output.txt',
+      kind: 'file',
+      content: 'other output\n',
+      now: 11,
+    });
     const runtime = createSqliteRuntimeStore(join(stateRoot, 'runtime.sqlite'));
     await runtime.appendRuntimeEvent(
       selected.id,
@@ -103,6 +109,7 @@ test('exports one session only and excludes credential/config canaries', async (
       [...plan.excludedEntries].sort(),
       [
         '.maka_cli_claude_device_id',
+        '.maka-artifact-writer.lock',
         'credentials.json',
         'llm-connections.json',
         'sessions.sqlite',
@@ -130,9 +137,7 @@ test('exports one session only and excludes credential/config canaries', async (
     }
     await assert.rejects(readFile(join(destinationRoot, 'sessions', other.id, 'session.jsonl')));
     await assert.rejects(readFile(join(destinationRoot, 'sessions.sqlite')));
-    await assert.rejects(
-      readFile(join(destinationRoot, 'artifacts', other.id, 'other-output.txt')),
-    );
+    await assert.rejects(readFile(join(destinationRoot, 'artifacts', otherArtifact.relativePath)));
     assert.match(
       await readFile(join(destinationRoot, 'artifacts', 'metadata.jsonl'), 'utf8'),
       new RegExp(`"sessionId":"${selected.id}"`),
@@ -141,6 +146,13 @@ test('exports one session only and excludes credential/config canaries', async (
       await readFile(join(destinationRoot, 'artifacts', 'metadata.jsonl'), 'utf8'),
       new RegExp(other.id),
     );
+    const reopenedArtifacts = createArtifactStore(destinationRoot);
+    assert.deepEqual(await reopenedArtifacts.list(selected.id), [selectedArtifact]);
+    assert.deepEqual(await reopenedArtifacts.list(other.id), []);
+    assert.deepEqual(await reopenedArtifacts.readText(selectedArtifact.id), {
+      ok: true,
+      text: 'session output\n',
+    });
     const exportedRuntime = createSqliteRuntimeStore(join(destinationRoot, 'runtime.sqlite'));
     try {
       assert.equal((await exportedRuntime.readSessionRuntimeEvents(selected.id)).length, 1);
@@ -151,6 +163,7 @@ test('exports one session only and excludes credential/config canaries', async (
     await assert.rejects(readFile(join(destinationRoot, 'credentials.json'), 'utf8'));
     await assert.rejects(readFile(join(destinationRoot, 'llm-connections.json'), 'utf8'));
     await assert.rejects(readFile(join(destinationRoot, '.maka_cli_claude_device_id'), 'utf8'));
+    await assert.rejects(readFile(join(destinationRoot, '.maka-artifact-writer.lock'), 'utf8'));
     assert.equal(
       await readFile(join(configRoot, 'credentials.json'), 'utf8'),
       'config-secret-canary',
@@ -218,6 +231,241 @@ test('fails closed on unknown top-level state entries', async () => {
   });
 });
 
+test('requires Artifact authority recovery for selected-session payloads absent from metadata', async () => {
+  await withBundleRoots(async ({ stateRoot, configRoot, destinationRoot }) => {
+    const sessionId = await createSelectedSession(stateRoot);
+    const artifacts = createArtifactStore(stateRoot);
+    await artifacts.create({
+      id: 'canonical-artifact',
+      sessionId,
+      turnId: 'turn-1',
+      name: 'canonical.txt',
+      kind: 'file',
+      content: 'canonical payload\n',
+      now: 1,
+    });
+    const orphanRelativePath = `artifacts/${sessionId}/orphan-payload.txt`;
+    await writeFile(join(stateRoot, orphanRelativePath), 'orphan payload\n');
+
+    await assertArtifactRecoveryRequired(
+      exportSessionBundleState({
+        stateRoot,
+        configRoot,
+        destinationRoot,
+        sessionId,
+      }),
+      orphanRelativePath,
+    );
+  });
+});
+
+test('fails closed on unknown directories in the selected Artifact payload root', async () => {
+  await withBundleRoots(async ({ stateRoot, configRoot, destinationRoot }) => {
+    const sessionId = await createSelectedSession(stateRoot);
+    const artifacts = createArtifactStore(stateRoot);
+    await artifacts.create({
+      id: 'canonical-artifact',
+      sessionId,
+      turnId: 'turn-1',
+      name: 'canonical.txt',
+      kind: 'file',
+      content: 'canonical payload\n',
+      now: 1,
+    });
+    await mkdir(join(stateRoot, 'artifacts', sessionId, 'unclassified-directory'));
+
+    await assertExportError(
+      planSessionBundleExport({ stateRoot, configRoot, destinationRoot, sessionId }),
+      'unknown_entry',
+    );
+  });
+});
+
+test('requires Artifact authority recovery for canonical transaction residue', async (t) => {
+  const residueStates = [
+    'publication staging with linked target',
+    'purge intent with live payload and metadata',
+    'purge intent temp with live payload and metadata',
+    'metadata temp with uncommitted target metadata',
+  ] as const;
+
+  for (const residueState of residueStates) {
+    await t.test(residueState, async () => {
+      await withBundleRoots(async ({ stateRoot, configRoot, destinationRoot }) => {
+        const sessionId = await createSelectedSession(stateRoot);
+        const residuePath = await createArtifactTransactionResidue(
+          stateRoot,
+          sessionId,
+          residueState,
+        );
+
+        const expectedResidue =
+          residueState === 'metadata temp with uncommitted target metadata'
+            ? undefined
+            : residuePath;
+        await assertArtifactRecoveryRequired(
+          planSessionBundleExport({ stateRoot, configRoot, destinationRoot, sessionId }),
+          expectedResidue,
+        );
+        await assertArtifactRecoveryRequired(
+          exportSessionBundleState({ stateRoot, configRoot, destinationRoot, sessionId }),
+          expectedResidue,
+        );
+        await assert.rejects(readdir(destinationRoot), { code: 'ENOENT' });
+      });
+    });
+  }
+});
+
+test('requires Artifact authority recovery for publication residue in another session', async () => {
+  await withBundleRoots(async ({ stateRoot, configRoot, destinationRoot }) => {
+    const selectedSessionId = await createSelectedSession(stateRoot);
+    const otherSessionId = await createSelectedSession(stateRoot);
+    const residuePath = await createArtifactTransactionResidue(
+      stateRoot,
+      otherSessionId,
+      'publication staging with linked target',
+    );
+
+    await assertArtifactRecoveryRequired(
+      planSessionBundleExport({
+        stateRoot,
+        configRoot,
+        destinationRoot,
+        sessionId: selectedSessionId,
+      }),
+      residuePath,
+    );
+  });
+});
+
+test('fails closed on Artifact residue lookalikes with invalid names', async () => {
+  const invalidEntries = [
+    {
+      relativePath: 'artifacts/.artifact-purge-intent.json.123.not-a-uuid.tmp',
+      insideSelectedSession: false,
+    },
+    {
+      relativePath: 'artifacts/metadata.jsonl.123.not-a-uuid.tmp',
+      insideSelectedSession: false,
+    },
+    {
+      relativePath: `.artifact-publish.${'a'.repeat(64)}.not-a-uuid.tmp`,
+      insideSelectedSession: true,
+    },
+  ] as const;
+
+  for (const invalid of invalidEntries) {
+    await withBundleRoots(async ({ stateRoot, configRoot, destinationRoot }) => {
+      const sessionId = await createSelectedSession(stateRoot);
+      const artifactRoot = join(stateRoot, 'artifacts');
+      const relativePath = invalid.insideSelectedSession
+        ? `artifacts/${sessionId}/${invalid.relativePath}`
+        : invalid.relativePath;
+      await mkdir(dirname(join(stateRoot, relativePath)), { recursive: true });
+      await writeFile(join(stateRoot, relativePath), 'not valid residue\n');
+
+      await assertExportError(
+        planSessionBundleExport({ stateRoot, configRoot, destinationRoot, sessionId }),
+        'unknown_entry',
+      );
+    });
+  }
+});
+
+test('rejects every Artifact metadata file that the Artifact store cannot reopen', async (t) => {
+  const corruptions: ReadonlyArray<{
+    name: string;
+    apply: (records: Array<Record<string, unknown>>) => unknown[];
+  }> = [
+    {
+      name: 'unknown field in an unselected session',
+      apply: (records) => [records[0], { ...records[1], hostSecret: 'must-not-export' }],
+    },
+    {
+      name: 'invalid kind in an unselected session',
+      apply: (records) => [records[0], { ...records[1], kind: 'archive' }],
+    },
+    {
+      name: 'path that does not match the record identity',
+      apply: (records) => [
+        { ...records[0], relativePath: `${String(records[0]?.sessionId)}/wrong-name.txt` },
+        records[1],
+      ],
+    },
+    {
+      name: 'name that the Artifact writer could not persist',
+      apply: (records) => {
+        const selected = records[0]!;
+        return [
+          {
+            ...selected,
+            name: 'invalid/name.txt',
+            relativePath: `${String(selected.sessionId)}/${String(selected.id)}-invalid/name.txt`,
+          },
+          records[1],
+        ];
+      },
+    },
+    {
+      name: 'duplicate artifact id',
+      apply: (records) => [records[0], records[1], { ...records[0] }],
+    },
+  ];
+
+  for (const corruption of corruptions) {
+    await t.test(corruption.name, async () => {
+      await withBundleRoots(async ({ stateRoot, configRoot, destinationRoot }) => {
+        const selectedSessionId = await createSelectedSession(stateRoot);
+        const otherSessionId = await createSelectedSession(stateRoot);
+        const artifacts = createArtifactStore(stateRoot);
+        await artifacts.create({
+          id: 'selected-artifact',
+          sessionId: selectedSessionId,
+          turnId: 'turn-1',
+          name: 'selected.txt',
+          kind: 'file',
+          content: 'selected\n',
+          now: 1,
+        });
+        await artifacts.create({
+          id: 'other-artifact',
+          sessionId: otherSessionId,
+          turnId: 'turn-1',
+          name: 'other.txt',
+          kind: 'file',
+          content: 'other\n',
+          now: 2,
+        });
+
+        const metadataPath = join(stateRoot, 'artifacts', 'metadata.jsonl');
+        const records = (await readFile(metadataPath, 'utf8'))
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line) as Record<string, unknown>);
+        const corrupted = corruption.apply(records);
+        await writeFile(
+          metadataPath,
+          `${corrupted.map((record) => JSON.stringify(record)).join('\n')}\n`,
+        );
+
+        await assert.rejects(
+          () => createArtifactStore(stateRoot).list(selectedSessionId),
+          /Invalid artifact metadata line/,
+        );
+        await assertArtifactMetadataRejected(
+          exportSessionBundleState({
+            stateRoot,
+            configRoot,
+            destinationRoot,
+            sessionId: selectedSessionId,
+          }),
+        );
+      });
+    });
+  }
+});
+
 test('fails closed on unknown entries inside the selected session', async () => {
   await withBundleRoots(async ({ stateRoot, configRoot, destinationRoot }) => {
     const sessionId = await createSelectedSession(stateRoot);
@@ -244,6 +492,42 @@ test('fails closed on symlinked state entries and path escape', async () => {
       planSessionBundleExport({ stateRoot, configRoot, destinationRoot, sessionId }),
       'symlink',
     );
+  });
+});
+
+test('rejects a missing state root without creating it', async () => {
+  await withBundleRoots(async ({ root, configRoot, destinationRoot }) => {
+    const stateRoot = join(root, 'missing-state');
+
+    await assertExportError(
+      exportSessionBundleState({
+        stateRoot,
+        configRoot,
+        destinationRoot,
+        sessionId: 'missing-session',
+      }),
+      'invalid_root',
+    );
+    await assert.rejects(lstat(stateRoot), { code: 'ENOENT' });
+  });
+});
+
+test('rejects a symlinked state root without modifying its target', async () => {
+  await withBundleRoots(async ({ root, stateRoot, configRoot, destinationRoot }) => {
+    await createSelectedSession(stateRoot);
+    const linkedRoot = join(root, 'linked-state');
+    await symlink(stateRoot, linkedRoot);
+
+    await assertExportError(
+      exportSessionBundleState({
+        stateRoot: linkedRoot,
+        configRoot,
+        destinationRoot,
+        sessionId: 'missing-session',
+      }),
+      'symlink',
+    );
+    await assert.rejects(lstat(join(stateRoot, '.maka-artifact-writer.lock')), { code: 'ENOENT' });
   });
 });
 
@@ -318,6 +602,97 @@ async function assertExportError(
     assert.equal((error as SessionBundleExportError).code, code);
     return true;
   });
+}
+
+async function assertArtifactRecoveryRequired(
+  operation: Promise<unknown>,
+  relativePath?: string,
+): Promise<void> {
+  await assert.rejects(operation, (error: unknown) => {
+    const exportError = error as SessionBundleExportError;
+    assert.equal(exportError.code, 'unsupported_entry');
+    assert.match(exportError.message, /Artifact write authority recovery is required/);
+    if (relativePath !== undefined) {
+      assert.match(exportError.message, new RegExp(escapeRegExp(relativePath)));
+    }
+    return true;
+  });
+}
+
+async function assertArtifactMetadataRejected(operation: Promise<unknown>): Promise<void> {
+  await assert.rejects(operation, (error: unknown) => {
+    const exportError = error as SessionBundleExportError;
+    assert.equal(exportError.code, 'unsupported_entry');
+    assert.match(exportError.message, /cannot be reopened by the Artifact store/);
+    assert.match(
+      String((exportError as Error & { cause?: unknown }).cause),
+      /Invalid artifact metadata line \d+/,
+    );
+    return true;
+  });
+}
+
+async function createArtifactTransactionResidue(
+  stateRoot: string,
+  sessionId: string,
+  residueState:
+    | 'publication staging with linked target'
+    | 'purge intent with live payload and metadata'
+    | 'purge intent temp with live payload and metadata'
+    | 'metadata temp with uncommitted target metadata',
+): Promise<string> {
+  const artifactRoot = join(stateRoot, 'artifacts');
+  const sessionArtifactRoot = join(artifactRoot, sessionId);
+  const targetName = 'artifact-1-output.txt';
+  const targetPath = join(sessionArtifactRoot, targetName);
+  const relativeTargetPath = `${sessionId}/${targetName}`;
+  const payload = 'transactional artifact\n';
+  const metadata = `${JSON.stringify({
+    id: 'artifact-1',
+    sessionId,
+    turnId: 'turn-1',
+    createdAt: 1,
+    name: 'output.txt',
+    kind: 'file',
+    relativePath: relativeTargetPath,
+    sizeBytes: Buffer.byteLength(payload),
+    status: 'live',
+  })}\n`;
+  const uuid = '00000000-0000-4000-8000-000000000000';
+  await mkdir(sessionArtifactRoot, { recursive: true });
+
+  if (residueState === 'publication staging with linked target') {
+    const targetHash = createHash('sha256').update(targetName).digest('hex');
+    const stagingName = `.artifact-publish.${targetHash}.${uuid}.tmp`;
+    const stagingPath = join(sessionArtifactRoot, stagingName);
+    await writeFile(stagingPath, payload);
+    await link(stagingPath, targetPath);
+    await writeFile(join(artifactRoot, 'metadata.jsonl'), '');
+    return `artifacts/${sessionId}/${stagingName}`;
+  }
+
+  await writeFile(targetPath, payload);
+  if (residueState === 'metadata temp with uncommitted target metadata') {
+    const metadataTempName = `metadata.jsonl.123.${uuid}.tmp`;
+    await writeFile(join(artifactRoot, 'metadata.jsonl'), '');
+    await writeFile(join(artifactRoot, metadataTempName), metadata);
+    return `artifacts/${metadataTempName}`;
+  }
+
+  await writeFile(join(artifactRoot, 'metadata.jsonl'), metadata);
+  const purgeIntent = JSON.stringify({ schemaVersion: 1, artifactIds: ['artifact-1'] });
+  if (residueState === 'purge intent with live payload and metadata') {
+    await writeFile(join(artifactRoot, '.artifact-purge-intent.json'), purgeIntent);
+    return 'artifacts/.artifact-purge-intent.json';
+  }
+
+  const purgeIntentTempName = `.artifact-purge-intent.json.123.${uuid}.tmp`;
+  await writeFile(join(artifactRoot, purgeIntentTempName), purgeIntent);
+  return `artifacts/${purgeIntentTempName}`;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function runtimeEvent(id: string, overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {

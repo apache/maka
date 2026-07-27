@@ -18,12 +18,32 @@ import { ARTIFACT_ENTITY_ID_MAX_CHARS, type ArtifactRecord } from '@maka/core/ar
 import {
   ARTIFACT_TEXT_PREVIEW_LIMIT_BYTES,
   createArtifactStore,
+  createArtifactStoreWriteAuthority,
   isSafeRelativeArtifactPath,
   resolveArtifactPath,
   sanitizeArtifactName,
 } from '../artifact-store.js';
 
 describe('FileArtifactStore', () => {
+  test('creates a missing workspace root before acquiring the writer lock', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'maka-artifact-missing-root-'));
+    const root = join(parent, 'nested', 'workspace');
+    try {
+      const created = await createArtifactStore(root).create(
+        artifactInput('missing-root', 'created', 1),
+      );
+
+      assert.equal((await stat(root)).isDirectory(), true);
+      assert.equal(created.id, 'missing-root');
+      assert.deepEqual(
+        (await createArtifactStore(root).list('session-1')).map((record) => record.id),
+        ['missing-root'],
+      );
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
   test('publishes stable identities and persists canonical records', async () => {
     await withWorkspace(async (root) => {
       const store = createArtifactStore(root);
@@ -50,6 +70,104 @@ describe('FileArtifactStore', () => {
         /Artifact artifact-1 already exists/,
       );
       assert.deepEqual(await reopened.readText('artifact-1'), { ok: true, text: '# Notes' });
+    });
+  });
+
+  test('owns stable session revisions across paging, reopen, mutations, and no-ops', async () => {
+    await withWorkspace(async (root) => {
+      const authority = createArtifactStoreWriteAuthority(root);
+      await authority.recover();
+      const { store } = authority;
+      const empty = await store.listPage('session-1', { offset: 0, limit: 2 });
+      assert.equal(empty.total, 0);
+      assert.deepEqual(empty.records, []);
+      assert.equal((await store.getInSession('session-1', 'missing')).revision, empty.revision);
+      assert.equal(
+        (await store.listPage('another-empty-session', { offset: 0, limit: 1 })).revision,
+        empty.revision,
+      );
+
+      const firstInput = artifactInput('first', 'first', 10);
+      await store.create(firstInput);
+      await store.create(artifactInput('second', 'second', 20));
+      const created = await store.listPage('session-1', { offset: 0, limit: 1 });
+      assert.equal(created.total, 2);
+      assert.deepEqual(
+        created.records.map((record) => record.id),
+        ['second'],
+      );
+      assert.equal((await store.getInSession('session-1', 'first')).revision, created.revision);
+
+      const reopenedAuthority = createArtifactStoreWriteAuthority(root);
+      await reopenedAuthority.recover();
+      const reopenedPage = await reopenedAuthority.store.listPage('session-1', {
+        offset: 0,
+        limit: 2,
+      });
+      assert.equal(reopenedPage.revision, created.revision);
+      assert.deepEqual(
+        reopenedPage.records.map((record) => record.id),
+        ['second', 'first'],
+      );
+
+      await store.create({
+        ...artifactInput('other-session', 'other', 30),
+        sessionId: 'session-2',
+      });
+      assert.equal(
+        (await store.listPage('session-1', { offset: 0, limit: 2 })).revision,
+        created.revision,
+      );
+      await store.create(firstInput);
+      assert.equal(
+        (await store.listPage('session-1', { offset: 0, limit: 2 })).revision,
+        created.revision,
+      );
+
+      await store.create(artifactInput('revision-race', 'race', 25));
+      const currentBeforeDelete = await store.getInSession('session-1', 'first');
+      assert.ok(currentBeforeDelete.record);
+      const deletedResult = await store.deleteInSession({
+        sessionId: 'session-1',
+        expected: currentBeforeDelete.record,
+      });
+      assert.equal(deletedResult.kind, 'deleted');
+      const deleted = await store.listPage('session-1', { offset: 0, limit: 3 });
+      assert.notEqual(deleted.revision, created.revision);
+      assert.equal(deleted.records.find((record) => record.id === 'first')?.status, 'deleted');
+      const deletedEntry = await store.getInSession('session-1', 'first');
+      assert.ok(deletedEntry.record);
+      await store.deleteInSession({
+        sessionId: 'session-1',
+        expected: deletedEntry.record,
+      });
+      assert.equal(
+        (await store.listPage('session-1', { offset: 0, limit: 3 })).revision,
+        deleted.revision,
+      );
+
+      await store.create(firstInput);
+      const revived = await store.listPage('session-1', { offset: 0, limit: 3 });
+      assert.notEqual(revived.revision, deleted.revision);
+      assert.equal(revived.records.find((record) => record.id === 'first')?.status, 'live');
+
+      const staleEntry = await store.getInSession('session-1', 'first');
+      assert.ok(staleEntry.record);
+      await store.purge(['first']);
+      await store.create({
+        ...artifactInput('first', 'replacement', 30),
+        source: 'fixture',
+      });
+      const staleDelete = await store.deleteInSession({
+        sessionId: 'session-1',
+        expected: staleEntry.record,
+      });
+      assert.equal(staleDelete.kind, 'record_changed');
+
+      await store.purge(['first', 'second', 'revision-race']);
+      const purged = await store.listPage('session-1', { offset: 0, limit: 2 });
+      assert.equal(purged.revision, empty.revision);
+      assert.equal(purged.total, 0);
     });
   });
 
@@ -92,6 +210,96 @@ describe('FileArtifactStore', () => {
         });
         assert.deepEqual(await reopened.create(input), created);
       }
+    });
+  });
+
+  test('reads merge-base names and replays the same legacy inputs without renaming', async () => {
+    await withWorkspace(async (root) => {
+      const fixtures = [
+        { id: 'legacy-dotfile', inputName: '-.gitignore', storedName: '.gitignore' },
+        {
+          id: 'legacy-leading-hyphen',
+          inputName: '. -report.txt',
+          storedName: '-report.txt',
+        },
+        { id: 'legacy-hyphen', inputName: 'report-', storedName: 'report-' },
+        { id: 'legacy-dot', inputName: 'report.', storedName: 'report.' },
+        {
+          id: 'legacy-surrogate',
+          inputName: `${'a'.repeat(119)}😀tail`,
+          storedName: `${'a'.repeat(119)}\ud83d`,
+        },
+        {
+          id: 'legacy-trailing-space',
+          inputName: `${'a'.repeat(119)} tail`,
+          storedName: `${'a'.repeat(119)} `,
+        },
+      ];
+      const records = fixtures.map(({ id, storedName }) =>
+        canonicalRecord({
+          id,
+          sessionId: 'session-1',
+          name: storedName,
+          sizeBytes: Buffer.byteLength(id),
+        }),
+      );
+      for (const record of records) {
+        const payloadPath = join(root, 'artifacts', record.relativePath);
+        await mkdir(dirname(payloadPath), { recursive: true });
+        await writeFile(payloadPath, record.id, 'utf8');
+      }
+      await writeArtifactMetadata(root, records);
+
+      const reopened = createArtifactStore(root);
+      for (const [index, fixture] of fixtures.entries()) {
+        const record = records[index]!;
+        assert.deepEqual(await reopened.get(record.id), record);
+        assert.deepEqual(await reopened.readText(record.id), { ok: true, text: record.id });
+        assert.deepEqual(
+          await reopened.create({
+            ...artifactInput(fixture.id, fixture.id, 1),
+            name: fixture.inputName,
+          }),
+          record,
+        );
+      }
+    });
+  });
+
+  test('rejects metadata names that neither writer could have produced', async () => {
+    for (const name of ['short ', 'embedded\ttab', 'embedded\nnewline']) {
+      await withWorkspace(async (root) => {
+        await writeArtifactMetadata(root, [
+          canonicalRecord({ id: 'invalid-name', sessionId: 'session-1', name, sizeBytes: 0 }),
+        ]);
+        await assert.rejects(
+          () => createArtifactStore(root).list('session-1', { includeDeleted: true }),
+          /Invalid artifact metadata line 1/,
+        );
+      });
+    }
+  });
+
+  test('does not split a surrogate pair at the persisted name boundary', async () => {
+    await withWorkspace(async (root) => {
+      const input = {
+        ...artifactInput('unicode-boundary', 'boundary', 1),
+        name: `${'a'.repeat(119)}😀tail`,
+      };
+      assert.equal(sanitizeArtifactName(input.name), 'a'.repeat(119));
+
+      const created = await createArtifactStore(root).create(input);
+      assert.equal(created.name, 'a'.repeat(119));
+      const targetPath = join(root, 'artifacts', created.relativePath);
+      const stagingPath = publicationStagingPath(targetPath);
+      await writeFile(stagingPath, input.content, { flag: 'wx' });
+
+      const authority = createArtifactStoreWriteAuthority(root);
+      const reopened = authority.store;
+      await authority.recover();
+      await assert.rejects(() => stat(stagingPath), { code: 'ENOENT' });
+      assert.deepEqual(await reopened.create(input), created);
+      assert.deepEqual(await reopened.readText(created.id), { ok: true, text: input.content });
     });
   });
 
@@ -240,6 +448,23 @@ describe('FileArtifactStore', () => {
     });
   });
 
+  test('serializes independent legacy stores without dropping metadata', async () => {
+    await withWorkspace(async (root) => {
+      const first = createArtifactStore(root);
+      const second = createArtifactStore(root);
+      await Promise.all([
+        first.create(artifactInput('independent-first', 'first', 1)),
+        second.create(artifactInput('independent-second', 'second', 2)),
+      ]);
+
+      const rows = await createArtifactStore(root).list('session-1', { includeDeleted: true });
+      assert.deepEqual(rows.map((record) => record.id).sort(), [
+        'independent-first',
+        'independent-second',
+      ]);
+    });
+  });
+
   test('does not publish a payload when metadata publication fails', async () => {
     await withWorkspace(async (root) => {
       const store = createArtifactStore(root);
@@ -264,9 +489,23 @@ describe('FileArtifactStore', () => {
   test('explicit write recovery removes an uncommitted publication and permits stable-id retry', async () => {
     await withWorkspace(async (root) => {
       const residue = await createPublicationResidue(root, 'stable-retry', 'retry.txt', 'old');
-      const store = createArtifactStore(root);
+      const authority = createArtifactStoreWriteAuthority(root);
+      const { store } = authority;
 
-      await store.recoverForWrite();
+      await assert.rejects(
+        () =>
+          store.create({
+            ...artifactInput('stable-retry', 'new', 1),
+            name: 'retry.txt',
+          }),
+        /Artifact write recovery is required/,
+      );
+      await assert.rejects(() => store.delete('missing'), /Artifact write recovery is required/);
+      await assert.rejects(() => store.purge(['missing']), /Artifact write recovery is required/);
+      assert.equal(await readFile(residue.stagingPath, 'utf8'), 'old');
+      assert.equal(await readFile(residue.targetPath, 'utf8'), 'old');
+
+      await authority.recover();
       await assert.rejects(() => stat(residue.stagingPath), { code: 'ENOENT' });
       await assert.rejects(() => stat(residue.targetPath), { code: 'ENOENT' });
 
@@ -285,14 +524,97 @@ describe('FileArtifactStore', () => {
       const record = await first.create(artifactInput('committed', 'durable', 1));
       const targetPath = join(root, 'artifacts', record.relativePath);
       const stagingPath = publicationStagingPath(targetPath);
-      await link(targetPath, stagingPath);
+      await writeFile(stagingPath, await readFile(targetPath));
+      assert.notEqual((await stat(targetPath)).ino, (await stat(stagingPath)).ino);
 
-      const reopened = createArtifactStore(root);
-      await reopened.recoverForWrite();
+      const authority = createArtifactStoreWriteAuthority(root);
+      const reopened = authority.store;
+      await authority.recover();
 
       await assert.rejects(() => stat(stagingPath), { code: 'ENOENT' });
       assert.equal(await readFile(targetPath, 'utf8'), 'durable');
       assert.deepEqual(await reopened.readText(record.id), { ok: true, text: 'durable' });
+    });
+  });
+
+  test('legacy mutation adopts an exact stable-id target-only orphan', async () => {
+    await withWorkspace(async (root) => {
+      const input = {
+        ...artifactInput('legacy-orphan', 'orphan bytes', 1),
+        name: '-.gitignore',
+      };
+      const orphanPath = join(root, 'artifacts', 'session-1', 'legacy-orphan-.gitignore');
+      await mkdir(dirname(orphanPath), { recursive: true });
+      await writeFile(orphanPath, input.content, { flag: 'wx' });
+
+      const bare = createArtifactStore(root);
+      const adopted = await bare.create(input);
+      assert.equal(adopted.name, '.gitignore');
+      assert.equal(adopted.relativePath, 'session-1/legacy-orphan-.gitignore');
+      assert.deepEqual(await createArtifactStore(root).readText(adopted.id), {
+        ok: true,
+        text: input.content,
+      });
+    });
+  });
+
+  test('authority recovery adopts only its pre-existing exact stable-id orphan snapshot', async () => {
+    await withWorkspace(async (root) => {
+      const input = artifactInput('drifted-orphan', 'expected bytes', 1);
+      const orphanPath = join(root, 'artifacts', 'session-1', 'drifted-orphan-drifted-orphan.txt');
+      await mkdir(dirname(orphanPath), { recursive: true });
+      await writeFile(orphanPath, 'drifted bytes!', { flag: 'wx' });
+      const authority = createArtifactStoreWriteAuthority(root);
+      const authorized = authority.store;
+      await authority.recover();
+      await rm(orphanPath);
+      await writeFile(orphanPath, input.content, { flag: 'wx' });
+
+      await assert.rejects(
+        () => authorized.create(input),
+        /already exists with different metadata or content/,
+      );
+      assert.equal(await readFile(orphanPath, 'utf8'), input.content);
+      await assert.rejects(() => stat(join(root, 'artifacts', 'metadata.jsonl')), {
+        code: 'ENOENT',
+      });
+    });
+
+    await withWorkspace(async (root) => {
+      const input = {
+        ...artifactInput('legacy-surrogate-orphan', 'surrogate bytes', 1),
+        name: `${'a'.repeat(119)}😀tail`,
+      };
+      const legacyName = `${'a'.repeat(119)}\ud83d`;
+      const orphanPath = join(root, 'artifacts', 'session-1', `${input.id}-${legacyName}`);
+      await mkdir(dirname(orphanPath), { recursive: true });
+      await writeFile(orphanPath, input.content, { flag: 'wx' });
+
+      const authority = createArtifactStoreWriteAuthority(root);
+      await authority.recover();
+      const adopted = await authority.store.create(input);
+      assert.equal(adopted.name, legacyName);
+      assert.deepEqual(await authority.store.readText(adopted.id), {
+        ok: true,
+        text: input.content,
+      });
+    });
+
+    await withWorkspace(async (root) => {
+      const input = artifactInput('late-payload', 'same bytes', 1);
+      const authority = createArtifactStoreWriteAuthority(root);
+      const store = authority.store;
+      await authority.recover();
+      const residue = await createPublicationResidue(
+        root,
+        input.id,
+        input.name,
+        input.content as string,
+      );
+
+      await assert.rejects(() => store.create(input), /Artifact write recovery is required/);
+      assert.equal(await readFile(residue.stagingPath, 'utf8'), input.content);
+      assert.equal(await readFile(residue.targetPath, 'utf8'), input.content);
     });
   });
 
@@ -311,7 +633,7 @@ describe('FileArtifactStore', () => {
       await writeFile(staleTemp, 'stale', 'utf8');
       for (const path of unknownFiles) await writeFile(path, 'keep', 'utf8');
 
-      await createArtifactStore(root).recoverForWrite();
+      await createArtifactStoreWriteAuthority(root).recover();
 
       await assert.rejects(() => stat(staleTemp), { code: 'ENOENT' });
       for (const path of unknownFiles) assert.equal(await readFile(path, 'utf8'), 'keep');
@@ -334,7 +656,7 @@ describe('FileArtifactStore', () => {
       await rm(residue.targetPath);
       await writeFile(residue.targetPath, 'different inode', 'utf8');
       await assert.rejects(
-        () => createArtifactStore(root).recoverForWrite(),
+        () => createArtifactStoreWriteAuthority(root).recover(),
         /Artifact publication residue does not match canonical state/,
       );
       assert.equal(await readFile(residue.stagingPath, 'utf8'), 'payload');
@@ -380,7 +702,7 @@ describe('FileArtifactStore', () => {
         );
 
         await assert.rejects(
-          () => createArtifactStore(root).recoverForWrite(),
+          () => createArtifactStoreWriteAuthority(root).recover(),
           /Invalid artifact purge intent/,
         );
         assert.equal((await stat(intentPath)).isFile(), true);
@@ -536,46 +858,71 @@ describe('FileArtifactStore', () => {
 
   test('startup recovery completes purge after payload removal but before metadata commit', async () => {
     await withWorkspace(async (root) => {
-      const store = createArtifactStore(root);
+      const authority = createArtifactStoreWriteAuthority(root);
+      const store = authority.store;
+      await authority.recover();
       const record = await store.create(artifactInput('purge-retry', 'remove me', 1));
       const payloadPath = join(root, 'artifacts', record.relativePath);
       const metadataPath = join(root, 'artifacts', 'metadata.jsonl');
       const purgeIntentPath = join(root, 'artifacts', '.artifact-purge-intent.json');
-      const metadata = await readFile(metadataPath, 'utf8');
-      await rm(metadataPath);
-      await mkdir(metadataPath);
-
-      await assert.rejects(() => store.purge([record.id]));
+      await rm(payloadPath);
+      await writeFile(
+        purgeIntentPath,
+        JSON.stringify({ schemaVersion: 1, artifactIds: [record.id] }),
+        'utf8',
+      );
       await assert.rejects(() => stat(payloadPath), { code: 'ENOENT' });
       assert.equal((await store.get(record.id))?.id, record.id);
       assert.deepEqual(JSON.parse(await readFile(purgeIntentPath, 'utf8')), {
         schemaVersion: 1,
         artifactIds: [record.id],
       });
+      await assert.rejects(
+        () => store.create(artifactInput('same-instance-blocked', 'blocked', 2)),
+        /Artifact write recovery is required/,
+      );
 
-      await rm(metadataPath, { recursive: true });
-      await writeFile(metadataPath, metadata, 'utf8');
-      const reopened = createArtifactStore(root);
-      await reopened.recoverForWrite();
-      await reopened.recoverForWrite();
+      await authority.recover();
+      await authority.recover();
 
-      assert.equal(await reopened.get(record.id), null);
+      assert.equal(await store.get(record.id), null);
       assert.equal(await readFile(metadataPath, 'utf8'), '');
       await assert.rejects(() => stat(purgeIntentPath), { code: 'ENOENT' });
-      await reopened.purge([record.id]);
+      await store.purge([record.id]);
 
       await writeFile(
         purgeIntentPath,
         JSON.stringify({ schemaVersion: 1, artifactIds: [record.id] }),
         'utf8',
       );
-      await createArtifactStore(root).recoverForWrite();
+      await createArtifactStoreWriteAuthority(root).recover();
       assert.equal(await readFile(metadataPath, 'utf8'), '');
       await assert.rejects(() => stat(purgeIntentPath), { code: 'ENOENT' });
     });
   });
 
-  test('durable attachment reads authenticate the owning session and retain tombstoned bytes', async () => {
+  test('legacy production stores recover their own interrupted purge before the next write', async () => {
+    await withWorkspace(async (root) => {
+      const store = createArtifactStore(root);
+      const record = await store.create(artifactInput('legacy-purge', 'remove me', 1));
+      await rm(join(root, 'artifacts', record.relativePath));
+      await writeFile(
+        join(root, 'artifacts', '.artifact-purge-intent.json'),
+        JSON.stringify({ schemaVersion: 1, artifactIds: [record.id] }),
+        'utf8',
+      );
+
+      const reopened = createArtifactStore(root);
+      const next = await reopened.create(artifactInput('after-recovery', 'kept', 2));
+      assert.equal(next.id, 'after-recovery');
+      assert.equal(await reopened.get(record.id), null);
+      await assert.rejects(() => stat(join(root, 'artifacts', '.artifact-purge-intent.json')), {
+        code: 'ENOENT',
+      });
+    });
+  });
+
+  test('durable attachment reads authenticate the owning session and reject tombstoned bytes', async () => {
     await withWorkspace(async (root) => {
       const store = createArtifactStore(root);
       const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -590,12 +937,13 @@ describe('FileArtifactStore', () => {
         }),
         { ok: false, reason: 'session_mismatch' },
       );
-      const result = await store.readDurableAttachmentBinary({
-        artifactId: 'image',
-        sessionId: 'session-1',
-      });
-      assert.equal(result.ok, true);
-      if (result.ok) assert.deepEqual(Buffer.from(result.base64, 'base64'), Buffer.from(png));
+      assert.deepEqual(
+        await store.readDurableAttachmentBinary({
+          artifactId: 'image',
+          sessionId: 'session-1',
+        }),
+        { ok: false, reason: 'deleted' },
+      );
     });
   });
 

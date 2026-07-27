@@ -1,15 +1,13 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { link, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { describe, test } from 'node:test';
 import {
-  ArtifactStoreLifecycleError,
-  authenticateInteractiveArtifactStoreReader,
   authenticateInteractiveArtifactStoreWriter,
-  openInteractiveArtifactStoreForRead,
+  openHeadlessArtifactStoreForWrite,
   openInteractiveArtifactStoreForWrite,
-  type InteractiveArtifactStoreReader,
   type InteractiveArtifactStoreWriter,
 } from '../artifact-stores.js';
 import {
@@ -17,12 +15,11 @@ import {
   resolveStorageRoot,
   StorageRootAuthorityError,
   tryAcquireInteractiveRootOwner,
-  tryAcquireInteractiveRootReader,
   type StorageRootLease,
 } from '../root-authority.js';
 
 describe('interactive artifact store authority', () => {
-  test('requires authentic leases and facades', async () => {
+  test('requires authentic leases and writer facades', async () => {
     await withTemporaryRoot('headless', async (root) => {
       const capability = await resolveStorageRoot({ path: root, kind: 'headless' });
       const lease = createHeadlessRootLease(capability, 'write');
@@ -33,13 +30,10 @@ describe('interactive artifact store authority', () => {
           ),
         invalidLease,
       );
+      const headless = await openHeadlessArtifactStoreForWrite(lease);
+      assert.equal((await headless.create(artifactInput('headless', 'leased'))).id, 'headless');
     });
 
-    assert.throws(
-      () =>
-        authenticateInteractiveArtifactStoreReader({} as unknown as InteractiveArtifactStoreReader),
-      invalidLease,
-    );
     assert.throws(
       () =>
         authenticateInteractiveArtifactStoreWriter({} as unknown as InteractiveArtifactStoreWriter),
@@ -47,7 +41,7 @@ describe('interactive artifact store authority', () => {
     );
   });
 
-  test('returns one authenticated writer per lease and keeps close terminal', async () => {
+  test('returns one authenticated writer per lease and preserves mutation operations', async () => {
     await withInteractiveOwner(async (owner) => {
       const [first, second] = await Promise.all([
         openInteractiveArtifactStoreForWrite(owner.lease),
@@ -57,30 +51,30 @@ describe('interactive artifact store authority', () => {
       assert.strictEqual(first, second);
       assert.strictEqual(authenticateInteractiveArtifactStoreWriter(first), first);
       await first.recover();
-      await first.close();
+      await first.create(artifactInput('deleted', 'delete me'));
+      const beforeDelete = await first.getInSession('session-1', 'deleted');
+      const deleted = await first.deleteInSession({
+        sessionId: 'session-1',
+        expected: beforeDelete.record!,
+      });
+
       assert.strictEqual(await openInteractiveArtifactStoreForWrite(owner.lease), first);
-      await assert.rejects(
-        () => first.create(artifactInput('after-close', 'not published')),
-        lifecycleError('closed'),
-      );
-      assert.throws(() => first.get('after-close'), lifecycleError('closed'));
-    });
-  });
-
-  test('drain rejects new mutations and waits for an accepted publication', async () => {
-    await withInteractiveOwner(async (owner) => {
-      const writer = await openInteractiveArtifactStoreForWrite(owner.lease);
-      await writer.recover();
-      const accepted = writer.create(
-        artifactInput('accepted', new Uint8Array(8 * 1024 * 1024).fill(0x61)),
-      );
-      const drained = writer.beginDrain();
-
-      await assert.rejects(() => writer.delete('accepted'), lifecycleError('draining'));
-      await drained;
-      const record = await accepted;
-      assert.equal(record.sizeBytes, 8 * 1024 * 1024);
-      assert.equal((await writer.get(record.id))?.id, record.id);
+      assert.equal(deleted.kind, 'deleted');
+      const page = await first.listPage('session-1', { offset: 0, limit: 1 });
+      assert.equal(page.total, 1);
+      assert.equal(page.records[0]?.status, 'deleted');
+      assert.deepEqual(await first.getInSession('session-1', 'deleted'), {
+        revision: page.revision,
+        record: page.records[0],
+      });
+      assert.deepEqual(await first.readTextInSession('session-1', 'deleted'), {
+        ok: false,
+        reason: 'deleted',
+      });
+      assert.deepEqual(await first.readTextInSession('other-session', 'deleted'), {
+        ok: false,
+        reason: 'not_found',
+      });
     });
   });
 
@@ -97,33 +91,65 @@ describe('interactive artifact store authority', () => {
 
       await owner.close();
       assert.equal((await accepted).id, 'accepted');
-      await assert.rejects(() => writer.list('session-1'), invalidLease);
+      await assert.rejects(
+        () => writer.listPage('session-1', { offset: 0, limit: 1 }),
+        invalidLease,
+      );
+    });
+  });
+});
+
+describe('headless artifact store authority', () => {
+  test('returns one facade per lease and preserves concurrent writes', async () => {
+    await withTemporaryRoot('headless', async (root) => {
+      const capability = await resolveStorageRoot({ path: root, kind: 'headless' });
+      const lease = createHeadlessRootLease(capability, 'write');
+      const [first, second] = await Promise.all([
+        openHeadlessArtifactStoreForWrite(lease),
+        openHeadlessArtifactStoreForWrite(lease),
+      ]);
+
+      assert.strictEqual(first, second);
+      await Promise.all([
+        first.create(artifactInput('same-lease-first', 'first')),
+        second.create(artifactInput('same-lease-second', 'second')),
+      ]);
+      assert.deepEqual(
+        (await first.list('session-1', { includeDeleted: true })).map((record) => record.id).sort(),
+        ['same-lease-first', 'same-lease-second'],
+      );
     });
   });
 
-  test('shared reader exposes only live reads under its own lease', async () => {
-    await withTemporaryRoot('interactive', async (root) => {
-      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
-      const owner = await tryAcquireInteractiveRootOwner(capability);
-      assert.ok(owner);
-      const writer = await openInteractiveArtifactStoreForWrite(owner.lease);
-      await writer.recover();
-      await writer.create(artifactInput('published', 'reader-visible'));
-      await writer.close();
-      await owner.close();
+  test('serializes concurrent opener recovery while recovering every authority', async () => {
+    await withTemporaryRoot('headless', async (root) => {
+      const capability = await resolveStorageRoot({ path: root, kind: 'headless' });
+      const firstLease = createHeadlessRootLease(capability, 'write');
+      const secondLease = createHeadlessRootLease(capability, 'write');
+      const residue = await createPublicationResidue(root, 'residue', 'residue.txt', 'stale');
 
-      const readerHandle = await tryAcquireInteractiveRootReader(capability);
-      assert.ok(readerHandle);
-      try {
-        const reader = await openInteractiveArtifactStoreForRead(readerHandle.lease);
-        assert.strictEqual(authenticateInteractiveArtifactStoreReader(reader), reader);
-        assert.deepEqual(await reader.readText('published'), {
-          ok: true,
-          text: 'reader-visible',
-        });
-      } finally {
-        await readerHandle.close();
-      }
+      const [first, second] = await Promise.all([
+        openHeadlessArtifactStoreForWrite(firstLease),
+        openHeadlessArtifactStoreForWrite(secondLease),
+      ]);
+
+      assert.notStrictEqual(first, second);
+      await assert.rejects(() => stat(residue.stagingPath), { code: 'ENOENT' });
+      await assert.rejects(() => stat(residue.targetPath), { code: 'ENOENT' });
+      await first.create(artifactInput('sequential-first', 'first'));
+      await second.create(artifactInput('sequential-second', 'second'));
+      await Promise.all([
+        first.create(artifactInput('concurrent-first', 'first')),
+        second.create(artifactInput('concurrent-second', 'second')),
+      ]);
+      const verificationLease = createHeadlessRootLease(capability, 'write');
+      const verificationStore = await openHeadlessArtifactStoreForWrite(verificationLease);
+      assert.deepEqual(
+        (await verificationStore.list('session-1', { includeDeleted: true }))
+          .map((record) => record.id)
+          .sort(),
+        ['concurrent-first', 'concurrent-second', 'sequential-first', 'sequential-second'],
+      );
     });
   });
 });
@@ -144,8 +170,23 @@ function invalidLease(error: unknown): boolean {
   return error instanceof StorageRootAuthorityError && error.code === 'invalid_lease';
 }
 
-function lifecycleError(code: 'draining' | 'closed') {
-  return (error: unknown) => error instanceof ArtifactStoreLifecycleError && error.code === code;
+async function createPublicationResidue(
+  root: string,
+  id: string,
+  name: string,
+  content: string,
+): Promise<{ stagingPath: string; targetPath: string }> {
+  const sessionDirectory = join(root, 'artifacts', 'session-1');
+  await mkdir(sessionDirectory, { recursive: true });
+  const targetPath = join(sessionDirectory, `${id}-${name}`);
+  const targetHash = createHash('sha256').update(basename(targetPath)).digest('hex');
+  const stagingPath = join(
+    dirname(targetPath),
+    `.artifact-publish.${targetHash}.00000000-0000-4000-8000-000000000000.tmp`,
+  );
+  await writeFile(stagingPath, content, { flag: 'wx' });
+  await link(stagingPath, targetPath);
+  return { stagingPath, targetPath };
 }
 
 async function withInteractiveOwner(

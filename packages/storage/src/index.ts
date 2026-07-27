@@ -22,7 +22,21 @@ export type {
 } from './credential-store.js';
 export * from './settings-store.js';
 export * from './telemetry-repo.js';
-export * from './artifact-store.js';
+export {
+  ARTIFACT_BINARY_PREVIEW_LIMIT_BYTES,
+  ARTIFACT_TEXT_PREVIEW_LIMIT_BYTES,
+  createArtifactStore,
+  isSafeRelativeArtifactPath,
+  resolveArtifactPath,
+  sanitizeArtifactName,
+} from './artifact-store.js';
+export type {
+  ArtifactStore,
+  ArtifactStoreReader,
+  CreateArtifactInput,
+  DurableArtifactAttachmentReader,
+  DurableArtifactBinaryReadResult,
+} from './artifact-store.js';
 export * from './artifact-attachments.js';
 export * from './provider-request-capture-artifact.js';
 export * from './plan-reminder-store.js';

@@ -10,7 +10,7 @@ import { createArtifactStore } from '../artifact-store.js';
 const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 describe('artifact attachment authority', () => {
-  test('resolves a session ref through the store authority, including tombstoned bytes', async () => {
+  test('resolves a live session ref and never forwards tombstoned bytes', async () => {
     await withStore(async (store) => {
       await store.create({
         id: 'image-1',
@@ -21,8 +21,6 @@ describe('artifact attachment authority', () => {
         content: png,
         now: 1,
       });
-      await store.delete('image-1');
-
       const reader = createAttachmentByteReader({
         artifactStore: store,
         sessionId: 'session-1',
@@ -30,6 +28,11 @@ describe('artifact attachment authority', () => {
       assert.deepEqual(await reader(sessionFileRef('image-1')), {
         ok: true,
         bytes: Buffer.from(png),
+      });
+      await store.delete('image-1');
+      assert.deepEqual(await reader(sessionFileRef('image-1')), {
+        ok: false,
+        reason: 'deleted',
       });
       assert.deepEqual(await reader(sessionFileRef('image-1', 'other-session')), {
         ok: false,

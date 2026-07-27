@@ -26,6 +26,8 @@ const CURRENT_PROTOCOL = {
   max: RUNTIME_HOST_PROTOCOL_VERSION,
 } as const;
 const PROCESS_TIMEOUT_MS = 10_000;
+const BULK_ARTIFACT_COUNT = 24;
+const BULK_ARTIFACT_SUMMARY = 's'.repeat(7 * 1024);
 const MAX_ARTIFACT_ID = 'a'.repeat(ARTIFACT_ENTITY_ID_MAX_CHARS);
 const PROTECTED_ARTIFACTS = [
   { id: 'deep-research-evidence', source: 'deep_research' },
@@ -58,23 +60,34 @@ test('production Host recovers Artifact publication and preserves deletes across
       ]);
       assert.deepEqual(tuiPage, desktopPage);
       assert.ok(desktopPage.nextCursor);
-      const [desktopArtifacts, tuiArtifacts] = await Promise.all([
+      assert.equal(desktopPage.nextCursor, String(desktopPage.artifacts.length));
+      assert.ok(desktopPage.artifacts.length < 128, 'first page must be byte limited');
+      const [desktopTraversal, tuiTraversal] = await Promise.all([
         collectArtifacts(desktop, desktopPage),
         collectArtifacts(tui, tuiPage),
       ]);
+      const desktopArtifacts = desktopTraversal.artifacts;
+      const tuiArtifacts = tuiTraversal.artifacts;
       assert.deepEqual(tuiArtifacts, desktopArtifacts);
-      assert.equal(desktopArtifacts.length, 134);
-      assert.equal(new Set(desktopArtifacts.map((artifact) => artifact.id)).size, 134);
+      assert.equal(tuiTraversal.pageCount, desktopTraversal.pageCount);
+      assert.ok(desktopTraversal.pageCount > 3);
+      assert.equal(desktopArtifacts.length, 135 + BULK_ARTIFACT_COUNT);
+      assert.equal(
+        new Set(desktopArtifacts.map((artifact) => artifact.id)).size,
+        135 + BULK_ARTIFACT_COUNT,
+      );
       assert.equal(JSON.stringify(desktopArtifacts).includes('relativePath'), false);
       assert.deepEqual(
-        desktopArtifacts.slice(0, 6).map((artifact) => artifact.id),
+        desktopArtifacts.slice(0, 4 + BULK_ARTIFACT_COUNT).map((artifact) => artifact.id),
         [
           'small-text',
           'small-binary',
           'deep-research-evidence',
           'tool-result-archive',
-          'artifact-000',
-          'artifact-001',
+          ...Array.from(
+            { length: BULK_ARTIFACT_COUNT },
+            (_, index) => `bulk-${index.toString().padStart(3, '0')}`,
+          ),
         ],
       );
 
@@ -102,6 +115,32 @@ test('production Host recovers Artifact publication and preserves deletes across
         assert.equal(binary.preview.mimeType, 'image/png');
         assert.deepEqual(Buffer.from(binary.preview.base64, 'base64'), tinyPng());
       }
+      assert.deepEqual(
+        await desktop.request('artifact.query', {
+          kind: 'read_text',
+          sessionId,
+          artifactId: 'replacement-expanded-text',
+        }),
+        {
+          kind: 'text',
+          sessionId,
+          artifactId: 'replacement-expanded-text',
+          preview: { ok: false, reason: 'too_large' },
+        },
+      );
+      assert.deepEqual(
+        await tui.request('artifact.query', {
+          kind: 'read_text',
+          sessionId: 'different-session',
+          artifactId: 'small-text',
+        }),
+        {
+          kind: 'text',
+          sessionId: 'different-session',
+          artifactId: 'small-text',
+          preview: { ok: false, reason: 'not_found' },
+        },
+      );
 
       assert.equal((await getArtifact(desktop, sessionId, deleteA)).artifact?.id, deleteA);
       const [deletedA, deletedB] = await Promise.all([
@@ -151,6 +190,13 @@ test('production Host recovers Artifact publication and preserves deletes across
         assert.equal(stale.expected, desktopPage.revision);
         assert.notEqual(stale.actual, desktopPage.revision);
       }
+      const staleWithOutOfRangeCursor = await tui.request('artifact.query', {
+        kind: 'list_continue',
+        sessionId,
+        revision: desktopPage.revision,
+        cursor: '999999',
+      });
+      assert.equal(staleWithOutOfRangeCursor.kind, 'revision_changed');
 
       await killHost(firstHost);
       firstHost = undefined;
@@ -270,6 +316,17 @@ async function seedExecutionRoot(
         source: 'fixture',
         now: 19_999,
       }),
+      artifacts.create({
+        id: 'replacement-expanded-text',
+        sessionId: session.id,
+        turnId: 'turn-1',
+        name: 'replacement-expanded.txt',
+        kind: 'file',
+        content: Buffer.alloc(12 * 1024, 0xff),
+        mimeType: 'text/plain',
+        source: 'fixture',
+        now: 9_000,
+      }),
       ...PROTECTED_ARTIFACTS.map((artifact, index) =>
         artifacts.create({
           id: artifact.id,
@@ -283,8 +340,22 @@ async function seedExecutionRoot(
           now: 19_998 - index,
         }),
       ),
+      ...Array.from({ length: BULK_ARTIFACT_COUNT }, (_, index) => {
+        const id = `bulk-${index.toString().padStart(3, '0')}`;
+        return artifacts.create({
+          id,
+          sessionId: session.id,
+          turnId: 'turn-1',
+          name: `${id}.txt`,
+          kind: 'file',
+          content: `bulk artifact payload ${index}`,
+          mimeType: 'text/plain',
+          source: 'fixture',
+          summary: BULK_ARTIFACT_SUMMARY,
+          now: 19_000 - index,
+        });
+      }),
     ]);
-    await artifacts.close();
     return session.id;
   } finally {
     await owner.close();
@@ -386,10 +457,12 @@ async function firstArtifactPage(client: RuntimeHostConnection, sessionId: strin
 async function collectArtifacts(
   client: RuntimeHostConnection,
   first: Page,
-): Promise<Page['artifacts']> {
+): Promise<{ artifacts: Page['artifacts']; pageCount: number }> {
   const artifacts = [...first.artifacts];
+  let pageCount = 1;
   let cursor = first.nextCursor;
   while (cursor !== null) {
+    assert.equal(cursor, String(artifacts.length));
     const result = await client.request('artifact.query', {
       kind: 'list_continue',
       sessionId: first.sessionId,
@@ -398,10 +471,13 @@ async function collectArtifacts(
     });
     assert.equal(result.kind, 'page');
     if (result.kind !== 'page') assert.fail('Stable Artifact continuation must return a page');
+    assert.equal(result.revision, first.revision);
+    assert.ok(result.artifacts.length > 0, 'Artifact continuation must advance the cursor');
     artifacts.push(...result.artifacts);
+    pageCount += 1;
     cursor = result.nextCursor;
   }
-  return artifacts;
+  return { artifacts, pageCount };
 }
 
 async function getArtifact(

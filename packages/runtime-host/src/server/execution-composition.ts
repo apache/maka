@@ -28,14 +28,12 @@ export async function createExecutionRuntimeHostComposition(
   context: RuntimeHostCompositionContext,
 ): Promise<RuntimeHostComposition> {
   const stores = await openInteractiveExecutionStoresForWrite(context.owner.lease);
-  let artifactStore: Awaited<ReturnType<typeof openInteractiveArtifactStoreForWrite>> | undefined;
   try {
     const runtimePolicyStores = await openInteractiveRuntimePolicyStoresForWrite(
       context.owner.lease,
     );
     const taskLedgerStore = await openInteractiveTaskLedgerStoreForWrite(context.owner.lease);
     const openedArtifactStore = await openInteractiveArtifactStoreForWrite(context.owner.lease);
-    artifactStore = openedArtifactStore;
     await stores.messageReceiptStore.beginHostEpoch(context.hostEpoch);
     const backends = new BackendRegistry();
     backends.register('fake', (backendContext) => new FakeBackend(backendContext));
@@ -164,7 +162,7 @@ export async function createExecutionRuntimeHostComposition(
         }
       },
     );
-    const artifacts = new HostArtifactCoordinator(openedArtifactStore);
+    const artifacts = new HostArtifactCoordinator(openedArtifactStore, context.requestDrain);
     const handlers = {
       ...coordinator.handlers,
       ...messages.handlers,
@@ -225,11 +223,6 @@ export async function createExecutionRuntimeHostComposition(
           errors.push(error);
         }
         try {
-          await openedArtifactStore.close();
-        } catch (error) {
-          errors.push(error);
-        }
-        try {
           await stores.sessionStore.close?.();
         } catch (error) {
           errors.push(error);
@@ -249,7 +242,6 @@ export async function createExecutionRuntimeHostComposition(
       close,
     };
   } catch (error) {
-    await artifactStore?.close().catch(() => undefined);
     await stores.sessionStore.close?.();
     throw error;
   }

@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import {
   authenticateInteractiveArtifactStoreWriter,
@@ -29,20 +28,18 @@ export class HostArtifactCoordinator {
   };
 
   readonly #store: InteractiveArtifactStoreWriter;
+  readonly #requestDrain: () => void;
 
-  constructor(store: InteractiveArtifactStoreWriter) {
+  constructor(store: InteractiveArtifactStoreWriter, requestDrain: () => void = () => undefined) {
     this.#store = authenticateInteractiveArtifactStoreWriter(store);
+    this.#requestDrain = requestDrain;
   }
 
   async #query(input: ArtifactQueryInput): Promise<OperationOutcome<'artifact.query'>> {
     try {
       if (input.kind === 'read_text' || input.kind === 'read_binary') {
-        const record = await this.#store.get(input.artifactId);
-        if (!record || record.sessionId !== input.sessionId) {
-          return querySuccess(readUnavailable(input, 'not_found'));
-        }
         if (input.kind === 'read_text') {
-          const preview = await this.#store.readText(input.artifactId, {
+          const preview = await this.#store.readTextInSession(input.sessionId, input.artifactId, {
             maxBytes: ARTIFACT_PREVIEW_MAX_BYTES,
           });
           return querySuccess(
@@ -54,7 +51,7 @@ export class HostArtifactCoordinator {
             }),
           );
         }
-        const preview = await this.#store.readBinary(input.artifactId, {
+        const preview = await this.#store.readBinaryInSession(input.sessionId, input.artifactId, {
           maxBytes: ARTIFACT_PREVIEW_MAX_BYTES,
         });
         return querySuccess(
@@ -67,38 +64,42 @@ export class HostArtifactCoordinator {
         );
       }
 
-      const records = await this.#store.list(input.sessionId, { includeDeleted: true });
-      const artifacts = records.map(projectArtifact);
-      const revision = artifactRevision(artifacts);
       if (input.kind === 'get') {
-        const artifact = artifacts.find((candidate) => candidate.id === input.artifactId) ?? null;
+        const entry = await this.#store.getInSession(input.sessionId, input.artifactId);
         return querySuccess(
           encodeArtifactQueryResult({
             kind: 'artifact',
             sessionId: input.sessionId,
-            revision,
-            artifact,
+            revision: entry.revision,
+            artifact: entry.record ? projectArtifact(entry.record) : null,
           }),
         );
       }
-      if (input.kind === 'list_continue' && input.revision !== revision) {
+
+      const decodedOffset = input.kind === 'list_start' ? 0 : decodeCursor(input.cursor);
+      const offset = decodedOffset ?? 0;
+      const page = await this.#store.listPage(input.sessionId, {
+        offset,
+        limit: ARTIFACT_PAGE_MAX_ITEMS,
+      });
+      if (input.kind === 'list_continue' && input.revision !== page.revision) {
         return querySuccess(
           encodeArtifactQueryResult({
             kind: 'revision_changed',
             expected: input.revision,
-            actual: revision,
+            actual: page.revision,
           }),
         );
       }
-      const offset = input.kind === 'list_start' ? 0 : decodeCursor(input.cursor);
       if (
-        offset === undefined ||
-        offset > artifacts.length ||
-        (input.kind === 'list_continue' && offset === artifacts.length)
+        decodedOffset === undefined ||
+        (input.kind === 'list_continue' && (offset === 0 || offset >= page.total))
       ) {
         return invalidQuery('Artifact cursor is invalid');
       }
-      return querySuccess(createPage(input.sessionId, revision, artifacts, offset));
+      return querySuccess(
+        createPage(input.sessionId, page.revision, page.records, page.total, offset),
+      );
     } catch {
       return persistenceFailure('artifact.query', 'Artifact projection is unavailable');
     }
@@ -109,8 +110,9 @@ export class HostArtifactCoordinator {
     readonly artifactId: string;
   }): Promise<OperationOutcome<'artifact.delete'>> {
     try {
-      const existing = await this.#store.get(input.artifactId);
-      if (!existing || existing.sessionId !== input.sessionId) {
+      const entry = await this.#store.getInSession(input.sessionId, input.artifactId);
+      const existing = entry.record;
+      if (!existing) {
         return {
           ok: false,
           error: { code: 'not_found', message: 'Artifact was not found' },
@@ -125,19 +127,34 @@ export class HostArtifactCoordinator {
           },
         };
       }
-      await this.#store.delete(input.artifactId);
-      const canonical = await this.#store.get(input.artifactId);
-      if (!canonical || canonical.sessionId !== input.sessionId || canonical.status !== 'deleted') {
-        throw new Error('Artifact deletion did not publish a canonical tombstone');
+      const deleted = await this.#store.deleteInSession({
+        sessionId: input.sessionId,
+        expected: existing,
+      });
+      if (deleted.kind === 'not_found') {
+        return {
+          ok: false,
+          error: { code: 'not_found', message: 'Artifact was not found' },
+        };
+      }
+      if (deleted.kind === 'record_changed') {
+        return {
+          ok: false,
+          error: {
+            code: 'operation_conflict',
+            message: 'Artifact changed before deletion could commit',
+          },
+        };
       }
       return {
         ok: true,
         result: encodeArtifactDeleteResult({
           kind: 'deleted',
-          artifact: projectArtifact(canonical),
+          artifact: projectArtifact(deleted.record),
         }),
       };
     } catch {
+      this.#requestDrain();
       return persistenceFailure('artifact.delete', 'Artifact deletion could not be committed');
     }
   }
@@ -167,10 +184,6 @@ function projectArtifact(record: ArtifactRecord): ArtifactProjection {
   };
 }
 
-function artifactRevision(artifacts: readonly ArtifactProjection[]): ArtifactRevision {
-  return `sha256:${createHash('sha256').update(JSON.stringify(artifacts)).digest('hex')}`;
-}
-
 function projectText(value: string, maxBytes: number): string {
   let bytes = 0;
   let projected = '';
@@ -188,22 +201,21 @@ function projectText(value: string, maxBytes: number): string {
 function createPage(
   sessionId: string,
   revision: ArtifactRevision,
-  artifacts: readonly ArtifactProjection[],
+  records: readonly ArtifactRecord[],
+  total: number,
   offset: number,
 ): ArtifactQueryResult {
   const pageArtifacts: ArtifactProjection[] = [];
-  for (let index = offset; index < artifacts.length; index += 1) {
-    if (pageArtifacts.length >= ARTIFACT_PAGE_MAX_ITEMS) break;
-    const artifact = artifacts[index];
-    if (!artifact) break;
+  for (const record of records) {
+    const artifact = projectArtifact(record);
     const candidateArtifacts = [...pageArtifacts, artifact];
-    const nextOffset = index + 1;
+    const nextOffset = offset + candidateArtifacts.length;
     const candidate: ArtifactQueryResult = {
       kind: 'page',
       sessionId,
       revision,
       artifacts: candidateArtifacts,
-      nextCursor: nextOffset < artifacts.length ? String(nextOffset) : null,
+      nextCursor: nextOffset < total ? String(nextOffset) : null,
     };
     if (Buffer.byteLength(JSON.stringify(candidate), 'utf8') > ARTIFACT_RESULT_MAX_BYTES) {
       if (pageArtifacts.length === 0) {
@@ -219,7 +231,7 @@ function createPage(
     sessionId,
     revision,
     artifacts: pageArtifacts,
-    nextCursor: nextOffset < artifacts.length ? String(nextOffset) : null,
+    nextCursor: nextOffset < total ? String(nextOffset) : null,
   });
 }
 
@@ -229,29 +241,18 @@ function decodeCursor(cursor: string): number | undefined {
   return Number.isSafeInteger(offset) ? offset : undefined;
 }
 
-function readUnavailable(
-  input: Extract<ArtifactQueryInput, { kind: 'read_text' | 'read_binary' }>,
-  reason: 'not_found',
-): ArtifactQueryResult {
-  if (input.kind === 'read_text') {
-    return {
-      kind: 'text',
-      sessionId: input.sessionId,
-      artifactId: input.artifactId,
-      preview: { ok: false, reason },
-    };
-  }
-  return {
-    kind: 'binary',
-    sessionId: input.sessionId,
-    artifactId: input.artifactId,
-    preview: { ok: false, reason },
-  };
-}
-
 function encodeTextResult(
   result: Extract<ArtifactQueryResult, { kind: 'text' }>,
 ): ArtifactQueryResult {
+  if (
+    result.preview.ok &&
+    Buffer.byteLength(result.preview.text, 'utf8') > ARTIFACT_PREVIEW_MAX_BYTES
+  ) {
+    return encodeArtifactQueryResult({
+      ...result,
+      preview: { ok: false, reason: 'too_large' },
+    });
+  }
   if (Buffer.byteLength(JSON.stringify(result), 'utf8') <= ARTIFACT_RESULT_MAX_BYTES) {
     return encodeArtifactQueryResult(result);
   }

@@ -18,6 +18,7 @@ const rawStorageWriterFactories = [
   'createArtifactStore',
   'createRuntimeEventStore',
   'createSessionStore',
+  'openHeadlessArtifactStoreForWrite',
 ] as const;
 const compilerApi = new API({ cwd: process.cwd() });
 const projectConfig = join(process.cwd(), 'tsconfig.json');
@@ -60,7 +61,7 @@ test('the boundary recognizes every writer imported by the storage composition',
     .flatMap((reference) => forbiddenWriterSymbols(storageCompositionModule, reference))
     .sort();
   assert.deepEqual(symbols, [
-    'createArtifactStore',
+    'openHeadlessArtifactStoreForWrite',
     'openHeadlessExecutionStoresForWrite',
     'openHeadlessTaskRunWriter',
   ]);
@@ -77,6 +78,10 @@ function forbiddenWriterSymbols(importer: string, reference: ModuleReference): s
     return reference.importedNames.filter((name) =>
       rawStorageWriterFactories.includes(name as (typeof rawStorageWriterFactories)[number]),
     );
+  }
+  if (reference.specifier === '@maka/storage/artifact-stores') {
+    if (reference.importedNames === null) return ['openHeadlessArtifactStoreForWrite'];
+    return reference.importedNames.filter((name) => name === 'openHeadlessArtifactStoreForWrite');
   }
   if (reference.specifier === '@maka/storage/execution-stores') {
     if (reference.importedNames === null) return ['writer opener'];

@@ -12,6 +12,16 @@ import {
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import type { RuntimeEvent } from '@maka/core';
+import type { ArtifactRecord } from '@maka/core/artifacts';
+import {
+  ARTIFACT_METADATA_TEMP_PATTERN,
+  ARTIFACT_PUBLICATION_STAGING_PATTERN,
+  ARTIFACT_PURGE_INTENT_FILE,
+  ARTIFACT_PURGE_INTENT_TEMP_PATTERN,
+  ARTIFACT_WRITER_LOCK_FILE,
+} from './artifact-storage-layout.js';
+import { decodeArtifactMetadata } from './artifact-metadata-codec.js';
+import { withArtifactWriterLock } from './artifact-writer-lock.js';
 import { exportLegacySessionTree } from './session-metadata-maintenance.js';
 import { SQLITE_SESSION_METADATA_DATABASE_NAME } from './session-store.js';
 import { createSqliteRuntimeStore } from './sqlite-runtime-store.js';
@@ -55,6 +65,7 @@ export const SESSION_BUNDLE_PROTECTED_ENTRIES = [
   'activation.json',
   'activation-input.json',
   '.maka',
+  ARTIFACT_WRITER_LOCK_FILE,
   SQLITE_SESSION_METADATA_DATABASE_NAME,
   `${SQLITE_SESSION_METADATA_DATABASE_NAME}-wal`,
   `${SQLITE_SESSION_METADATA_DATABASE_NAME}-shm`,
@@ -121,6 +132,26 @@ export interface SessionBundleExportInput extends SessionBundleRootLayoutInput {
   sessionId: string;
 }
 
+interface ArtifactMetadataSnapshot {
+  artifactRootExists: boolean;
+  metadataExists: boolean;
+  canonicalText: string;
+  selectedRecords: ArtifactRecord[];
+  filteredText: string;
+}
+
+interface PreparedSessionBundleExport {
+  plan: SessionBundleExportPlan;
+  artifactMetadata: ArtifactMetadataSnapshot;
+  requestedDestinationRoot: string;
+}
+
+interface SessionBundleRoots {
+  stateRoot: string;
+  configRoot: string;
+  destinationRoot: string;
+}
+
 /**
  * Validate the state/config split. Identical roots are accepted only for the
  * legacy compatibility path; nested roots are never safe because one root
@@ -142,22 +173,20 @@ export async function assertSessionBundleRootLayout(
 export async function planSessionBundleExport(
   input: SessionBundleExportInput,
 ): Promise<SessionBundleExportPlan> {
-  assertSafeSessionId(input.sessionId);
-  const stateRoot = await canonicalizeExistingRoot(input.stateRoot, 'state');
-  const configRoot = await canonicalizeExistingOrMissingRoot(input.configRoot, 'config');
-  assertRootsDoNotOverlap(stateRoot, configRoot, input.allowShared === true);
+  return (await prepareSessionBundleExport(input)).plan;
+}
 
-  const destinationRoot = await canonicalizeExistingOrMissingRoot(
-    input.destinationRoot,
-    'destination',
-  );
-  assertRootsDoNotOverlap(stateRoot, destinationRoot, false);
-  assertRootsDoNotOverlap(configRoot, destinationRoot, false);
+async function prepareSessionBundleExport(
+  input: SessionBundleExportInput,
+): Promise<PreparedSessionBundleExport> {
+  const { stateRoot, configRoot, destinationRoot } = await resolveSessionBundleRoots(input);
 
   const includedEntries: string[] = [];
   const excludedEntries: string[] = [];
   const entries: SessionBundleExportPlanEntry[] = [];
+  const artifactMetadata = await readArtifactMetadataSnapshot(stateRoot, input.sessionId);
   let sessionsClassified = false;
+  let artifactsClassified = false;
   const topLevelEntries = await readdir(stateRoot, { withFileTypes: true });
   for (const entry of topLevelEntries.sort((a, b) => a.name.localeCompare(b.name))) {
     const sourcePath = resolve(stateRoot, entry.name);
@@ -175,12 +204,14 @@ export async function planSessionBundleExport(
       continue;
     }
     if (entry.name === 'artifacts') {
+      artifactsClassified = true;
       await planSelectedArtifactTree(
         sourcePath,
         input.sessionId,
         stateRoot,
         excludedEntries,
         entries,
+        artifactMetadata,
       );
       includedEntries.push(entry.name);
       continue;
@@ -214,16 +245,41 @@ export async function planSessionBundleExport(
       `Session bundle state root has no sessions tree: ${stateRoot}`,
     );
   }
+  if (artifactsClassified !== artifactMetadata.artifactRootExists) {
+    throw artifactMetadataChanged();
+  }
 
   return {
-    stateRoot,
-    configRoot,
-    destinationRoot,
-    sessionId: input.sessionId,
-    includedEntries,
-    excludedEntries,
-    entries,
+    plan: {
+      stateRoot,
+      configRoot,
+      destinationRoot,
+      sessionId: input.sessionId,
+      includedEntries,
+      excludedEntries,
+      entries,
+    },
+    artifactMetadata,
+    requestedDestinationRoot: input.destinationRoot,
   };
+}
+
+async function resolveSessionBundleRoots(
+  input: SessionBundleExportInput,
+): Promise<SessionBundleRoots> {
+  assertSafeSessionId(input.sessionId);
+  const stateRoot = await canonicalizeExistingRoot(input.stateRoot, 'state');
+  const configRoot = await canonicalizeExistingOrMissingRoot(input.configRoot, 'config');
+  assertRootsDoNotOverlap(stateRoot, configRoot, input.allowShared === true);
+
+  const destinationRoot = await canonicalizeExistingOrMissingRoot(
+    input.destinationRoot,
+    'destination',
+  );
+  assertRootsDoNotOverlap(stateRoot, destinationRoot, false);
+  assertRootsDoNotOverlap(configRoot, destinationRoot, false);
+
+  return { stateRoot, configRoot, destinationRoot };
 }
 
 /**
@@ -234,11 +290,28 @@ export async function planSessionBundleExport(
 export async function exportSessionBundleState(
   input: SessionBundleExportInput,
 ): Promise<SessionBundleExportPlan> {
-  const plan = await planSessionBundleExport(input);
-  await ensureEmptyDestination(input.destinationRoot, plan.destinationRoot);
+  const preflight = await resolveSessionBundleRoots(input);
+  const prepared = await withArtifactWriterLock(preflight.stateRoot, async () => {
+    const current = await prepareSessionBundleExport(input);
+    if (current.plan.stateRoot !== preflight.stateRoot) {
+      throw new SessionBundleExportError(
+        'invalid_root',
+        'Session bundle state root changed before Artifact snapshot export',
+      );
+    }
+    await ensureEmptyDestination(current.requestedDestinationRoot, current.plan.destinationRoot);
+    await exportPreparedArtifactState(current);
+    return current;
+  });
+  await exportPreparedNonArtifactState(prepared.plan);
+  return prepared.plan;
+}
 
-  const directories = plan.entries.filter((entry) => entry.kind === 'directory');
-  const files = plan.entries.filter((entry) => entry.kind === 'file' && entry.source === 'copy');
+async function exportPreparedArtifactState(prepared: PreparedSessionBundleExport): Promise<void> {
+  const { plan, artifactMetadata } = prepared;
+  const artifactEntries = plan.entries.filter((entry) => isArtifactEntry(entry));
+  const directories = artifactEntries.filter((entry) => entry.kind === 'directory');
+  const files = artifactEntries.filter((entry) => entry.kind === 'file' && entry.source === 'copy');
   for (const entry of directories) {
     await mkdir(resolve(plan.destinationRoot, entry.relativePath), { recursive: true });
   }
@@ -248,16 +321,39 @@ export async function exportSessionBundleState(
     await mkdir(dirname(destinationPath), { recursive: true });
     await copyCheckedFile(sourcePath, destinationPath, plan.stateRoot, entry.relativePath);
   }
-  for (const entry of plan.entries) {
+  for (const entry of artifactEntries) {
+    if (entry.source === 'filtered_artifact_metadata') {
+      await exportFilteredArtifactMetadata(plan, entry, artifactMetadata);
+    }
+  }
+  await assertNoCanonicalArtifactTransactionResidue(plan.stateRoot);
+  await assertArtifactMetadataSnapshotUnchanged(plan.stateRoot, artifactMetadata);
+}
+
+async function exportPreparedNonArtifactState(plan: SessionBundleExportPlan): Promise<void> {
+  const entries = plan.entries.filter((entry) => !isArtifactEntry(entry));
+  const directories = entries.filter((entry) => entry.kind === 'directory');
+  const files = entries.filter((entry) => entry.kind === 'file' && entry.source === 'copy');
+  for (const entry of directories) {
+    await mkdir(resolve(plan.destinationRoot, entry.relativePath), { recursive: true });
+  }
+  for (const entry of files) {
+    const sourcePath = resolve(plan.stateRoot, entry.relativePath);
+    const destinationPath = resolve(plan.destinationRoot, entry.relativePath);
+    await mkdir(dirname(destinationPath), { recursive: true });
+    await copyCheckedFile(sourcePath, destinationPath, plan.stateRoot, entry.relativePath);
+  }
+  for (const entry of entries) {
     if (entry.source === 'selected_session_metadata') {
       await exportSelectedSessionMetadata(plan);
-    } else if (entry.source === 'filtered_artifact_metadata') {
-      await exportFilteredArtifactMetadata(plan, entry);
     } else if (entry.source === 'filtered_runtime_sqlite') {
       await exportFilteredRuntimeSqlite(plan, entry);
     }
   }
-  return plan;
+}
+
+function isArtifactEntry(entry: SessionBundleExportPlanEntry): boolean {
+  return entry.relativePath === 'artifacts' || entry.relativePath.startsWith('artifacts/');
 }
 
 async function planSelectedSessionTree(
@@ -373,26 +469,38 @@ async function planSelectedArtifactTree(
   stateRoot: string,
   excludedEntries: string[],
   entries: SessionBundleExportPlanEntry[],
+  artifactMetadata: ArtifactMetadataSnapshot,
 ): Promise<void> {
+  if (!artifactMetadata.artifactRootExists) throw artifactMetadataChanged();
   await assertDirectory(sourcePath, 'artifacts root', stateRoot, 'artifacts');
   entries.push({ relativePath: 'artifacts', kind: 'directory', source: 'copy' });
+  let metadataClassified = false;
+  let selectedSessionDirectoryClassified = false;
   for (const entry of (await readdir(sourcePath, { withFileTypes: true })).sort((a, b) =>
     a.name.localeCompare(b.name),
   )) {
     const childPath = resolve(sourcePath, entry.name);
     assertNoSymlink(entry.isSymbolicLink(), `artifacts/${entry.name}`);
     if (entry.name === sessionId) {
+      selectedSessionDirectoryClassified = true;
       await assertDirectory(
         childPath,
         `artifacts for session ${sessionId}`,
         stateRoot,
         `artifacts/${sessionId}`,
       );
-      await inspectTree(childPath, `artifacts/${sessionId}`, stateRoot, entries, 'copy');
+      await planSelectedArtifactSessionTree(
+        childPath,
+        sessionId,
+        stateRoot,
+        entries,
+        artifactMetadata.selectedRecords,
+      );
       continue;
     }
     if (entry.name === 'metadata.jsonl') {
-      await assertFile(childPath, 'artifact metadata', stateRoot, 'artifacts/metadata.jsonl');
+      metadataClassified = true;
+      if (!artifactMetadata.metadataExists) throw artifactMetadataChanged();
       entries.push({
         relativePath: 'artifacts/metadata.jsonl',
         kind: 'file',
@@ -400,7 +508,15 @@ async function planSelectedArtifactTree(
       });
       continue;
     }
+    if (
+      entry.name === ARTIFACT_PURGE_INTENT_FILE ||
+      ARTIFACT_PURGE_INTENT_TEMP_PATTERN.test(entry.name) ||
+      ARTIFACT_METADATA_TEMP_PATTERN.test(entry.name)
+    ) {
+      throwArtifactRecoveryRequired(`artifacts/${entry.name}`);
+    }
     if (entry.isDirectory() && isSafeSessionId(entry.name)) {
+      await assertNoArtifactPublicationResidue(childPath, entry.name);
       excludedEntries.push(`artifacts/${entry.name}`);
       continue;
     }
@@ -413,6 +529,226 @@ async function planSelectedArtifactTree(
       `Session bundle export encountered an unclassified artifacts entry: ${entry.name}`,
     );
   }
+  if (metadataClassified !== artifactMetadata.metadataExists) throw artifactMetadataChanged();
+  if (!selectedSessionDirectoryClassified && artifactMetadata.selectedRecords.length > 0) {
+    throw new SessionBundleExportError(
+      'invalid_root',
+      `Artifact metadata references a missing selected-session payload directory: artifacts/${sessionId}`,
+    );
+  }
+}
+
+async function planSelectedArtifactSessionTree(
+  sourcePath: string,
+  sessionId: string,
+  stateRoot: string,
+  entries: SessionBundleExportPlanEntry[],
+  selectedRecords: readonly ArtifactRecord[],
+): Promise<void> {
+  const sessionRelativePath = `artifacts/${sessionId}`;
+  const expectedByName = new Map(
+    selectedRecords.map((record) => [basename(record.relativePath), record] as const),
+  );
+  const foundExpectedNames = new Set<string>();
+  for (const entry of (await readdir(sourcePath, { withFileTypes: true })).sort((a, b) =>
+    a.name.localeCompare(b.name),
+  )) {
+    const relativePath = `${sessionRelativePath}/${entry.name}`;
+    assertNoSymlink(entry.isSymbolicLink(), relativePath);
+    assertArtifactPublicationEntryIsPortable(entry.name, relativePath);
+    const expected = expectedByName.get(entry.name);
+    if (expected) {
+      await assertFile(
+        resolve(sourcePath, entry.name),
+        `artifact payload ${expected.id}`,
+        stateRoot,
+        relativePath,
+      );
+      foundExpectedNames.add(entry.name);
+      continue;
+    }
+    if (entry.isFile()) {
+      throwArtifactRecoveryRequired(relativePath);
+    }
+    if (entry.isDirectory()) {
+      throw new SessionBundleExportError(
+        'unknown_entry',
+        `Session bundle export encountered an unclassified selected-session artifact entry: ${relativePath}`,
+      );
+    }
+    throw new SessionBundleExportError(
+      'unsupported_entry',
+      `Session bundle export cannot classify selected-session artifact entry: ${relativePath}`,
+    );
+  }
+  for (const [name, record] of expectedByName) {
+    if (foundExpectedNames.has(name)) continue;
+    throw new SessionBundleExportError(
+      'invalid_root',
+      `Artifact metadata references a missing payload: artifacts/${record.relativePath}`,
+    );
+  }
+  if (selectedRecords.length === 0) return;
+  entries.push({ relativePath: sessionRelativePath, kind: 'directory', source: 'copy' });
+  for (const record of selectedRecords) {
+    entries.push({
+      relativePath: `artifacts/${record.relativePath}`,
+      kind: 'file',
+      source: 'copy',
+    });
+  }
+}
+
+async function assertNoArtifactPublicationResidue(
+  sessionArtifactRoot: string,
+  sessionId: string,
+): Promise<void> {
+  for (const entry of await readdir(sessionArtifactRoot, { withFileTypes: true })) {
+    if (!entry.name.startsWith('.artifact-publish.')) continue;
+    const relativePath = `artifacts/${sessionId}/${entry.name}`;
+    assertNoSymlink(entry.isSymbolicLink(), relativePath);
+    assertArtifactPublicationEntryIsPortable(entry.name, relativePath);
+  }
+}
+
+async function assertNoCanonicalArtifactTransactionResidue(stateRoot: string): Promise<void> {
+  const artifactRoot = resolve(stateRoot, 'artifacts');
+  let rootEntries;
+  try {
+    rootEntries = await readdir(artifactRoot, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  for (const entry of rootEntries) {
+    const relativePath = `artifacts/${entry.name}`;
+    assertNoSymlink(entry.isSymbolicLink(), relativePath);
+    if (
+      entry.name === ARTIFACT_PURGE_INTENT_FILE ||
+      ARTIFACT_PURGE_INTENT_TEMP_PATTERN.test(entry.name) ||
+      ARTIFACT_METADATA_TEMP_PATTERN.test(entry.name)
+    ) {
+      throwArtifactRecoveryRequired(relativePath);
+    }
+    if (entry.isDirectory() && isSafeSessionId(entry.name)) {
+      await assertNoArtifactPublicationResidue(resolve(artifactRoot, entry.name), entry.name);
+    }
+  }
+}
+
+function assertArtifactPublicationEntryIsPortable(entryName: string, relativePath: string): void {
+  if (ARTIFACT_PUBLICATION_STAGING_PATTERN.test(entryName)) {
+    throwArtifactRecoveryRequired(relativePath);
+  }
+  if (entryName.startsWith('.artifact-publish.')) {
+    throw new SessionBundleExportError(
+      'unknown_entry',
+      `Session bundle export encountered an unclassified artifact entry: ${relativePath}`,
+    );
+  }
+}
+
+function throwArtifactRecoveryRequired(relativePath: string): never {
+  throw new SessionBundleExportError(
+    'unsupported_entry',
+    `Artifact write authority recovery is required before session bundle export: ${relativePath}`,
+  );
+}
+
+async function readArtifactMetadataSnapshot(
+  stateRoot: string,
+  sessionId: string,
+): Promise<ArtifactMetadataSnapshot> {
+  const source = await readArtifactMetadataSource(stateRoot);
+  let records: ArtifactRecord[];
+  try {
+    records = decodeArtifactMetadata(source.canonicalText);
+  } catch (error) {
+    throw new SessionBundleExportError(
+      'unsupported_entry',
+      'Artifact metadata cannot be reopened by the Artifact store',
+      { cause: error },
+    );
+  }
+  const selectedRecords = records.filter((record) => record.sessionId === sessionId);
+  return {
+    ...source,
+    selectedRecords,
+    filteredText:
+      selectedRecords.length > 0
+        ? `${selectedRecords.map((record) => JSON.stringify(record)).join('\n')}\n`
+        : '',
+  };
+}
+
+async function readArtifactMetadataSource(
+  stateRoot: string,
+): Promise<
+  Pick<ArtifactMetadataSnapshot, 'artifactRootExists' | 'metadataExists' | 'canonicalText'>
+> {
+  const artifactRoot = resolve(stateRoot, 'artifacts');
+  let artifactRootMetadata;
+  try {
+    artifactRootMetadata = await lstat(artifactRoot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { artifactRootExists: false, metadataExists: false, canonicalText: '' };
+    }
+    throw error;
+  }
+  assertNoSymlink(artifactRootMetadata.isSymbolicLink(), 'artifacts');
+  await assertCanonicalPathInside(artifactRoot, stateRoot, 'artifacts');
+  if (!artifactRootMetadata.isDirectory()) {
+    throw new SessionBundleExportError(
+      'unsupported_entry',
+      `Session bundle artifacts root is not a directory: ${artifactRoot}`,
+    );
+  }
+
+  const metadataPath = resolve(artifactRoot, 'metadata.jsonl');
+  let metadata;
+  try {
+    metadata = await lstat(metadataPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { artifactRootExists: true, metadataExists: false, canonicalText: '' };
+    }
+    throw error;
+  }
+  assertNoSymlink(metadata.isSymbolicLink(), 'artifacts/metadata.jsonl');
+  await assertCanonicalPathInside(metadataPath, stateRoot, 'artifacts/metadata.jsonl');
+  if (!metadata.isFile()) {
+    throw new SessionBundleExportError(
+      'unsupported_entry',
+      `Session bundle artifact metadata is not a regular file: ${metadataPath}`,
+    );
+  }
+  return {
+    artifactRootExists: true,
+    metadataExists: true,
+    canonicalText: await readFile(metadataPath, 'utf8'),
+  };
+}
+
+async function assertArtifactMetadataSnapshotUnchanged(
+  stateRoot: string,
+  snapshot: ArtifactMetadataSnapshot,
+): Promise<void> {
+  const current = await readArtifactMetadataSource(stateRoot);
+  if (
+    current.artifactRootExists !== snapshot.artifactRootExists ||
+    current.metadataExists !== snapshot.metadataExists ||
+    current.canonicalText !== snapshot.canonicalText
+  ) {
+    throw artifactMetadataChanged();
+  }
+}
+
+function artifactMetadataChanged(): SessionBundleExportError {
+  return new SessionBundleExportError(
+    'unsupported_entry',
+    'Artifact metadata changed during session bundle export',
+  );
 }
 
 async function assertDirectory(
@@ -524,48 +860,11 @@ async function copyCheckedFile(
 async function exportFilteredArtifactMetadata(
   plan: SessionBundleExportPlan,
   entry: SessionBundleExportPlanEntry,
+  snapshot: ArtifactMetadataSnapshot,
 ): Promise<void> {
-  const sourcePath = resolve(plan.stateRoot, entry.relativePath);
-  await assertCanonicalPathInside(sourcePath, plan.stateRoot, entry.relativePath);
-  const metadata = await lstat(sourcePath);
-  assertNoSymlink(metadata.isSymbolicLink(), entry.relativePath);
-  if (!metadata.isFile()) {
-    throw new SessionBundleExportError(
-      'unsupported_entry',
-      `Artifact metadata source changed before export: ${entry.relativePath}`,
-    );
-  }
-  const selectedLines: string[] = [];
-  for (const [index, line] of (await readFile(sourcePath, 'utf8')).split('\n').entries()) {
-    if (!line.trim()) continue;
-    let record: unknown;
-    try {
-      record = JSON.parse(line);
-    } catch (error) {
-      throw new SessionBundleExportError(
-        'unsupported_entry',
-        `Artifact metadata contains invalid JSON at line ${index + 1}`,
-        { cause: error },
-      );
-    }
-    if (!isArtifactMetadataRecord(record)) {
-      throw new SessionBundleExportError(
-        'unsupported_entry',
-        `Artifact metadata contains an invalid record at line ${index + 1}`,
-      );
-    }
-    if (record.sessionId !== plan.sessionId) continue;
-    if (!isArtifactPathForSession(record.relativePath, plan.sessionId)) {
-      throw new SessionBundleExportError(
-        'path_escape',
-        `Artifact metadata path does not belong to session ${plan.sessionId}: ${record.relativePath}`,
-      );
-    }
-    selectedLines.push(line);
-  }
   const destinationPath = resolve(plan.destinationRoot, entry.relativePath);
   await mkdir(dirname(destinationPath), { recursive: true });
-  await writeFile(destinationPath, selectedLines.length > 0 ? `${selectedLines.join('\n')}\n` : '');
+  await writeFile(destinationPath, snapshot.filteredText);
 }
 
 async function exportFilteredRuntimeSqlite(
@@ -770,8 +1069,7 @@ function isKnownProtectedEntry(name: string): boolean {
     protectedEntries.has(name) ||
     name === 'tmp' ||
     name === 'activation-input' ||
-    name.endsWith('.log') ||
-    name.startsWith('metadata.jsonl.')
+    name.endsWith('.log')
   );
 }
 
@@ -783,14 +1081,6 @@ function assertSafeSessionId(sessionId: string): void {
 
 function isSafeSessionId(sessionId: string): boolean {
   return /^[A-Za-z0-9_-]{1,128}$/.test(sessionId);
-}
-
-function isArtifactMetadataRecord(
-  value: unknown,
-): value is { sessionId: string; relativePath: string } {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Record<string, unknown>;
-  return typeof record.sessionId === 'string' && typeof record.relativePath === 'string';
 }
 
 export function isArtifactPathForSession(relativePath: string, sessionId: string): boolean {
