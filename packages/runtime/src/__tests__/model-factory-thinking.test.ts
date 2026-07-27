@@ -511,4 +511,13 @@ describe('changesBackendConfig', () => {
     assert.equal(changesBackendConfig({ llmConnectionSlug: 'a' }), true);
     assert.equal(changesBackendConfig({ model: 'm' }), true);
   });
+
+  test('permissionMode triggers, so a mode change is enforced and not merely stored', () => {
+    // The backend snapshots the header at construction and decides every
+    // tool call against that snapshot. Persisting a lower mode without
+    // rebuilding leaves the live session enforcing the OLD one — which is
+    // how the bot guard's re-pin to `explore` became advisory.
+    assert.equal(changesBackendConfig({ permissionMode: 'explore' }), true);
+    assert.equal(changesBackendConfig({ permissionMode: 'bypass' }), true);
+  });
 });

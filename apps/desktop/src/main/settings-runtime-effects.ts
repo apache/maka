@@ -90,6 +90,24 @@ export function createSettingsRuntimeEffects(
     const sessions = await runtime.listSessions();
     await Promise.all(sessions.map(async (session) => {
       if (session.permissionMode === mode) return;
+      // A conferred boundary is not the user's styling choice to overwrite.
+      //
+      // `explore` is structurally unreachable as a global default
+      // (`ChatDefaultPermissionMode` excludes it) and the picker never
+      // offers it, so a session sitting in `explore` was put there by a
+      // deliberate seed: Deep Research, a bot conversation, an expert-team
+      // review crew, a cron automation. Each one chose read-only as its
+      // security boundary. Flipping the global default is the user
+      // restyling their own chats; it must not silently dissolve a
+      // boundary they never set and cannot see from here.
+      //
+      // Only Deep Research was exempt before, by label — so bot,
+      // expert-team and cron sessions were all being escalated, and only
+      // bot self-healed (on its next inbound message).
+      if (session.permissionMode === 'explore') return;
+      // Kept alongside the check above: this one says "Deep Research is
+      // always exempt", which still holds if such a session is ever moved
+      // off `explore` by some other path.
       if (isDeepResearchSession(session.labels)) return;
       if (session.status === 'running' || session.status === 'waiting_for_user') return;
       try {

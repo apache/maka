@@ -4102,7 +4102,18 @@ export function changesBackendConfig(patch: Partial<SessionHeader>): boolean {
     'model' in patch ||
     'thinkingLevel' in patch ||
     'cwd' in patch ||
-    'collaborationMode' in patch
+    'collaborationMode' in patch ||
+    // AiSdkBackend snapshots the header at construction and ToolRuntime
+    // reads `header.permissionMode` at every decision, so a mode change
+    // that does not rebuild the backend is persisted but NOT enforced —
+    // the live session keeps deciding with the old mode.
+    //
+    // `setPermissionMode` disposes the backend for exactly this reason.
+    // `updateSession` did not, so every other path that lowers a mode was
+    // advisory: notably the bot-incoming guard re-pinning a conversation
+    // to `explore`, which left an already-built `execute`/`bypass` backend
+    // serving the remote sender.
+    'permissionMode' in patch
   );
 }
 
