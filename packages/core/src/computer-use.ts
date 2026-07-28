@@ -266,10 +266,20 @@ const POINTER_ACTIONS = new Set([
 ]);
 
 const KEYBOARD_ACTIONS = new Set(['type', 'key', 'hold_key', 'press_key']);
-const SEMANTIC_ACTIONS = new Set(['click_element', 'set_value', 'select_text', 'secondary_action']);
+const SEMANTIC_ACTIONS = new Set([
+  'click_element',
+  'set_value',
+  'select_text',
+  'secondary_action',
+  // Starting an app changes what is on screen. It touches no element, but it
+  // is not a read, and letting it fall through to the default would have
+  // classified it correctly by accident rather than on purpose.
+  'launch_app',
+]);
 
 const APPROVAL_ACTIONS = new Set([
   'list_apps',
+  'launch_app',
   'observe',
   'click_element',
   'set_value',

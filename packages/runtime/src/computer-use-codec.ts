@@ -21,6 +21,15 @@ export const computerParams = z.discriminatedUnion('action', [
   z.object({ action: z.literal('list_apps') }).strict(),
   z
     .object({
+      action: z.literal('launch_app'),
+      // The model names an app; everything else about how it is launched stays
+      // host-controlled. The driver also accepts arbitrary argv and a WebKit
+      // inspector port, neither of which the model gets to set.
+      app: z.string().min(1).max(512),
+    })
+    .strict(),
+  z
+    .object({
       action: z.literal('observe'),
       app: z.string().min(1).max(512).optional(),
       window_id: z.number().int().positive().optional(),
@@ -210,6 +219,7 @@ export function adaptToCuAction(args: ComputerParams): CuAction {
   };
   switch (args.action) {
     case 'list_apps':
+    case 'launch_app':
     case 'observe':
     case 'click_element':
     case 'set_value':

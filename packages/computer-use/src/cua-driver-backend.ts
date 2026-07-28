@@ -421,10 +421,7 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
    * ends the wait rather than blocking it: the real capture that follows will
    * surface the error properly.
    */
-  async function settleWindow(
-    window: CuaResolvedWindow,
-    signal: AbortSignal,
-  ): Promise<void> {
+  async function settleWindow(window: CuaResolvedWindow, signal: AbortSignal): Promise<void> {
     if (opts.settleAfterAction === false) return;
     await abortableDelay(SETTLE_FLOOR_MS, signal);
     const deadline = Date.now() + SETTLE_CEILING_MS;
@@ -1538,6 +1535,50 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
         }
         return [...apps.values()];
       });
+    },
+
+    async launchApp(input, signal, context) {
+      return withOperationQueue(
+        signal,
+        async () => {
+          // bundle_id is unambiguous where a display name is not, but the
+          // model only ever supplies one string. Treat anything shaped like a
+          // reverse-DNS identifier as one and let the driver resolve the rest.
+          const isBundleId = /^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/.test(input.app);
+          const result = await actionClient.callTool(
+            'launch_app',
+            isBundleId ? { bundle_id: input.app } : { name: input.app },
+            signal,
+          );
+          const outcome = normalizeCuaDriverOutcome(result);
+          if (!outcome.ok) throw new Error(outcome.message);
+          const structured = result?.structuredContent ?? {};
+          const pid = Number(structured.pid);
+          if (!Number.isInteger(pid) || pid <= 0) {
+            throw new Error('cua-driver launched an app without reporting a usable pid');
+          }
+          const windows = ((structured.windows ?? []) as CuaWindowRecord[]).flatMap((window) =>
+            typeof window.window_id === 'number'
+              ? [
+                  {
+                    windowId: window.window_id,
+                    ...(typeof window.title === 'string' ? { title: window.title } : {}),
+                  },
+                ]
+              : [],
+          );
+          return {
+            pid,
+            ...(typeof structured.bundle_id === 'string' ? { bundleId: structured.bundle_id } : {}),
+            ...(typeof structured.name === 'string' ? { name: structured.name } : {}),
+            windows,
+            ...(typeof structured.self_activation_suppressed === 'boolean'
+              ? { focusHeld: structured.self_activation_suppressed }
+              : {}),
+          };
+        },
+        context.sessionId,
+      );
     },
 
     async observeApp(input, signal, context) {

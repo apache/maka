@@ -51,6 +51,7 @@ import type {
   CuDispatchBackend,
   CuDispatchOutcome,
   CuObservation,
+  CuLaunchedApp,
   CuObservedElement,
   CuOverlayHook,
   CuOverlayHookContext,
@@ -88,6 +89,7 @@ const computerWireParams = z
     action: z
       .enum([
         'list_apps',
+        'launch_app',
         'observe',
         'click_element',
         'set_value',
@@ -97,7 +99,7 @@ const computerWireParams = z
         ...CU_ACTION_TYPES,
       ] as [string, ...string[]])
       .describe(
-        'Operation to perform. Required fields by action: observe/screenshot require app or window_id; click_element requires observation_id and element_id; set_value requires observation_id, element_id, and value; select_text/secondary_action require observation_id, element_id, and text; press_key requires observation_id and text; coordinate actions require observation_id plus their coordinate fields.',
+        'Operation to perform. Required fields by action: launch_app requires app; observe/screenshot require app or window_id; click_element requires observation_id and element_id; set_value requires observation_id, element_id, and value; select_text/secondary_action require observation_id, element_id, and text; press_key requires observation_id and text; coordinate actions require observation_id plus their coordinate fields.',
       ),
     app: z
       .string()
@@ -798,6 +800,9 @@ export function buildComputerUseTools(deps: {
     permissionArgs: (args, context) => {
       const input = snapshotComputerParams(computerParams.parse(args));
       if (input.action === 'list_apps' || input.action === 'wait') return input;
+      // launch_app names an app rather than an element, so there is no frame
+      // for it to be bound to.
+      if (input.action === 'launch_app') return input;
       if (input.action === 'observe') return input;
       const record = observations.get(context.sessionId);
       const active =
@@ -840,6 +845,7 @@ export function buildComputerUseTools(deps: {
             input.action === 'observe' ||
             input.action === 'screenshot' ||
             input.action === 'list_apps' ||
+            input.action === 'launch_app' ||
             input.action === 'cursor_position' ||
             input.action === 'wait';
           const observationLease = requiresObservationLease ? state.beforeObservation() : undefined;
@@ -880,6 +886,31 @@ export function buildComputerUseTools(deps: {
             };
           }
           const runCtx: CuRunContext = { sessionId, turnId, toolCallId };
+          if (input.action === 'launch_app') {
+            if (!deps.backend.launchApp) {
+              return { text: 'maka_computer.launch_app failed: unsupported_action' };
+            }
+            const launched = await deps.backend.launchApp({ app: input.app }, abortSignal, runCtx);
+            // A launch changes the window set and z-order, so every frame the
+            // model is holding now describes a desktop that has moved on.
+            state.reobserveRequired();
+            return {
+              text: JSON.stringify({
+                pid: launched.pid,
+                window_count: launched.windows.length,
+              }),
+              modelText: JSON.stringify({
+                pid: launched.pid,
+                ...(launched.bundleId ? { bundle_id: launched.bundleId } : {}),
+                ...(launched.name ? { name: launched.name } : {}),
+                windows: launched.windows.map((window) => ({
+                  window_id: window.windowId,
+                  ...(window.title ? { title: window.title } : {}),
+                })),
+                ...(launched.focusHeld === false ? { took_foreground: true } : {}),
+              }),
+            };
+          }
           if (input.action === 'list_apps') {
             if (!deps.backend.listApps) {
               return { text: 'maka_computer.list_apps failed: unsupported_action' };

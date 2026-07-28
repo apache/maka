@@ -10,9 +10,17 @@ const EVIDENCE_CLASSES = new Set([
   'static-contract',
 ]);
 const REAL_REPORT_PRODUCERS = new Set(['cu-real-model-launcher', 'cu-real-ax-model-e2e']);
-const ACTIONS_WITHOUT_TARGET_OWNERSHIP = new Set(['list_apps', 'wait', 'cursor_position']);
+const ACTIONS_WITHOUT_TARGET_OWNERSHIP = new Set([
+  'list_apps',
+  'launch_app',
+  'wait',
+  'cursor_position',
+]);
 const ACTIONS_WITHOUT_OBSERVATION_LINEAGE = new Set([
   'list_apps',
+  // launch_app names an app rather than an element, so it descends from no
+  // observation — it is what produces the window a later observe will read.
+  'launch_app',
   'observe',
   'screenshot',
   'wait',

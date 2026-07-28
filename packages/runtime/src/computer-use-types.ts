@@ -56,6 +56,18 @@ export interface CuAppSummary {
   windows?: Array<{ windowId: number; title?: string }>;
 }
 
+export interface CuLaunchedApp {
+  pid: number;
+  bundleId?: string;
+  name?: string;
+  windows: Array<{ windowId: number; title?: string }>;
+  /**
+   * False when the launched app took the foreground despite the driver's
+   * demotion attempt. Absent when the driver did not run that check.
+   */
+  focusHeld?: boolean;
+}
+
 export interface CuObservedElement {
   elementId: string;
   role: string;
@@ -165,6 +177,15 @@ export interface CuDispatchBackend {
    *  insufficient because the user can revoke at any time (S12). */
   preflight(signal: AbortSignal): Promise<{ accessibility: boolean; screenRecording: boolean }>;
   listApps?(signal: AbortSignal): Promise<CuAppSummary[]>;
+  /**
+   * Start an app in the background. The launched app must not take focus —
+   * the whole point of a background launch is that the user keeps theirs.
+   */
+  launchApp?(
+    input: { app: string },
+    signal: AbortSignal,
+    context: CuRunContext,
+  ): Promise<CuLaunchedApp>;
   observeApp?(
     input: { app?: string; windowId?: number; includeScreenshot: boolean },
     signal: AbortSignal,

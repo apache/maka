@@ -2,6 +2,8 @@ import type { ComputerUseToolSet, MakaTool } from '@maka/runtime';
 
 const ACTIONS_WITHOUT_OBSERVATION_OWNERSHIP = new Set([
   'list_apps',
+  // launch_app names an app, not an element in an observation.
+  'launch_app',
   'wait',
   'cursor_position',
 ]);
