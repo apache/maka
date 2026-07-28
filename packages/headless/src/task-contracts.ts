@@ -90,7 +90,16 @@ export function taxonomyFromResultRecord(record: ResultRecord): AutonomousResult
   }
   if (includesAny(failureText, ['blocked', 'waiting_for_user', 'waiting_permission']))
     return 'blocked';
-  if (includesAny(failureText, ['policy', 'permission', 'denied'])) return 'policy_denied';
+  if (
+    includesAny(failureText, [
+      'policy',
+      'permission',
+      'denied',
+      'requires_bypass',
+      'sandbox_boundary_required',
+    ])
+  )
+    return 'policy_denied';
   if (
     includesAny(failureText, [
       'incomplete',

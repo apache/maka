@@ -15,6 +15,22 @@ const submittedSnapshot: SubmittedSnapshot = {
 };
 
 describe('defaultFinalScorer', () => {
+  test('classifies sandbox boundary failures as non-retryable policy denials', () => {
+    for (const failureClass of ['requires_bypass', 'sandbox_boundary_required']) {
+      const score = defaultFinalScorer({
+        config,
+        task,
+        runnerCompleted: false,
+        runnerStatus: 'failed',
+        invocationFailure: { class: failureClass },
+        submittedSnapshot,
+      });
+
+      assert.equal(score.taxonomy, 'policy_denied');
+      assert.equal(score.errorClass, failureClass);
+    }
+  });
+
   test('does not let a non-authoritative placeholder mask runner failure taxonomy', () => {
     const verifierResult: VerifierResult = {
       id: 'verifier',

@@ -117,7 +117,9 @@ function taxonomyFromFailureClass(errorClass: string | undefined): AutonomousRes
   if (
     normalized.includes('policy') ||
     normalized.includes('permission') ||
-    normalized.includes('denied')
+    normalized.includes('denied') ||
+    normalized.includes('requires_bypass') ||
+    normalized.includes('sandbox_boundary_required')
   )
     return 'policy_denied';
   if (
