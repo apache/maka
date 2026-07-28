@@ -129,7 +129,7 @@ export function buildForegroundBashTool(options: BuildForegroundBashToolOptions)
       command: z.string().describe('The shell command to execute'),
       timeout_ms: z.number().int().positive().max(maxTimeoutMs).optional(),
     }),
-    permissionRequired: true,
+    permissionRequired: false,
     toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     ...(options.executionFacts ? { executionFacts: options.executionFacts } : {}),
     impl: async ({ command, timeout_ms }, ctx) => {
@@ -256,7 +256,7 @@ export function buildManagedBashTool(
           });
         }
       }),
-    permissionRequired: true,
+    permissionRequired: false,
     toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     ...(options.executionFacts ? { executionFacts: options.executionFacts } : {}),
     ...(options.sandbox ? { sandbox: options.sandbox } : {}),
@@ -379,7 +379,7 @@ export function buildWriteStdinTool(ptyControls: PtyControlWriter): MakaTool {
       'No newline is added: use \\r for Enter and \\u0003 for Ctrl-C. Input is ordinary audited tool-call data, not a secure secret channel. ' +
       'The returned output is the terminal state at that cut, not output attributed to this input; use Read on the ref to observe later output.',
     parameters,
-    permissionRequired: true,
+    permissionRequired: false,
     impl: ({ ref, input, size }, ctx) =>
       ptyControls.writeStdin({
         sessionId: ctx.sessionId,

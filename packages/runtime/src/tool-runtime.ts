@@ -1115,12 +1115,7 @@ export class ToolRuntime {
     }
 
     const permissionRules = this.permissionRulesFor(tool.name);
-    if (
-      tool.permissionRequired !== false ||
-      permissionRules.length > 0 ||
-      additionalPlan.kind === 'request' ||
-      escalationPlan.kind === 'request'
-    ) {
+    if (additionalPlan.kind === 'request' || escalationPlan.kind === 'request') {
       const hostedInteraction = this.interactionRun(turnId);
       const currentRunId = hostedInteraction?.runId ?? this.input.getCurrentRunId?.();
       const verdict = this.input.permissionEngine.evaluate({

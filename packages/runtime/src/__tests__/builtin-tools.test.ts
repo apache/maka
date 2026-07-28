@@ -23,12 +23,10 @@ import {
 } from '@maka/core/permission-profile';
 import { expect } from '../test-helpers.js';
 import { buildBuiltinTools } from '../builtin-tools.js';
-import { assertAdditionalPermissionProposal } from '../additional-permissions.js';
 import { SandboxManager } from '../sandbox/sandbox-manager.js';
 import { LinuxBubblewrapBackend } from '../sandbox/linux-sandbox.js';
 import { MacosSeatbeltBackend } from '../sandbox/macos-seatbelt.js';
 import { SandboxCommandError } from '../sandbox/errors.js';
-import { sandboxEscalationCommandHash } from '../sandbox-escalation.js';
 import type { ShellRunLauncher } from '../shell-tools.js';
 import {
   MAX_SHELL_RUN_RESOURCE_REF_CHARS,
@@ -249,7 +247,7 @@ describe('builtin Bash description declares the executing shell', () => {
 });
 
 describe('builtin Bash streaming output', () => {
-  test('requires a sandbox manager and supports Linux Bash one-shot permissions', () => {
+  test('requires a sandbox manager but exposes no one-shot permission schema', () => {
     assert.throws(
       () => buildBuiltinTools({ enableBashAdditionalPermissions: true }),
       /require a sandbox manager/,
@@ -260,8 +258,9 @@ describe('builtin Bash streaming output', () => {
       sandboxPlatform: 'linux',
       enableBashAdditionalPermissions: true,
     }).find((tool) => tool.name === 'Bash');
-    assert.ok(linuxBash?.planAdditionalPermissions);
-    assert.ok(linuxBash.planSandboxEscalation);
+    assert.ok(linuxBash);
+    assert.equal(linuxBash?.planAdditionalPermissions, undefined);
+    assert.equal(linuxBash?.planSandboxEscalation, undefined);
     assert.equal(
       (linuxBash.parameters as z.ZodTypeAny).safeParse({
         command: 'echo unsafe',
@@ -270,7 +269,7 @@ describe('builtin Bash streaming output', () => {
           justification: 'The sandbox cannot perform this action.',
         },
       }).success,
-      true,
+      false,
     );
 
     assert.throws(
@@ -656,7 +655,7 @@ describe('builtin Bash streaming output', () => {
     }
   });
 
-  test('fails closed for sandbox-required PTY Bash unless exact host execution was approved', async () => {
+  test('reports requires_bypass for managed PTY Bash and runs it only at a bypass boundary', async () => {
     const calls: any[] = [];
     const shellRuns = {
       async runForegroundBash() {
@@ -686,17 +685,25 @@ describe('builtin Bash streaming output', () => {
     if (!bash) throw new Error('Bash tool missing');
 
     const ptyArgs = { command: 'bash', run_in_background: true, pty: true };
-    await assert.rejects(async () => {
-      await bash.impl(ptyArgs, {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        toolCallId: 'tool-1',
-        cwd: '/workspace',
-        permissionMode: 'execute',
-        abortSignal: new AbortController().signal,
-        emitOutput: () => {},
-      });
-    }, /PTY Bash is unavailable/);
+    await assert.rejects(
+      async () => {
+        await bash.impl(ptyArgs, {
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          toolCallId: 'tool-1',
+          cwd: '/workspace',
+          permissionMode: 'execute',
+          abortSignal: new AbortController().signal,
+          emitOutput: () => {},
+          executionBoundary: {
+            kind: 'managed',
+            revision: 0,
+            profile: createWorkspaceWritePermissionProfile(),
+          },
+        });
+      },
+      (error) => error instanceof SandboxCommandError && error.reason === 'requires_bypass',
+    );
     expect(calls.length).toBe(0);
 
     await bash.impl(ptyArgs, {
@@ -707,33 +714,13 @@ describe('builtin Bash streaming output', () => {
       permissionMode: 'execute',
       abortSignal: new AbortController().signal,
       emitOutput: () => {},
-      permissionContext: {
-        sandboxEscalationGrant: {
-          grantId: 'grant-pty',
-          sessionId: 'session-1',
-          turnId: 'turn-1',
-          toolUseId: 'tool-2',
-          toolName: 'Bash',
-          intentHash: 'intent',
-          commandHash: sandboxEscalationCommandHash('bash', '/workspace'),
-          command: 'bash',
-          cwd: '/workspace',
-          risk: {
-            unsandboxedExecution: true,
-            unrestrictedFileSystem: true,
-            unrestrictedNetwork: true,
-            protectedMetadataExposed: true,
-          },
-          issuedAt: 1,
-          expiresAt: 2,
-        },
-      },
+      executionBoundary: { kind: 'bypass', revision: 1 },
     });
 
     expect(calls[0]?.argv).toBe(undefined);
     expect(calls[0]?.fdInputs).toBe(undefined);
     expect(Boolean(calls[0]?.shell)).toBe(true);
-    expect(calls[0]?.sandboxType).toBe('none');
+    expect(calls[0]?.sandboxType).toBe(undefined);
     expect(typeof bash.sandbox).toBe('function');
     if (typeof bash.sandbox !== 'function') throw new Error('dynamic sandbox metadata missing');
     expect(
@@ -805,7 +792,7 @@ describe('builtin Bash streaming output', () => {
     ).toEqual({ platformSandboxAvailable: false });
   });
 
-  test('plans and applies one-call Bash permissions to the macOS sandbox argv', async () => {
+  test('applies the session boundary to the macOS sandbox argv without one-call permission arguments', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-bash-additional-'));
     try {
       const workspace = join(root, 'workspace');
@@ -830,75 +817,27 @@ describe('builtin Bash streaming output', () => {
         },
       });
       const sandboxManager = new SandboxManager([new MacosSeatbeltBackend()]);
-      const disabledBash = buildBuiltinTools({
-        executor,
-        permissionProfile: profile,
-        sandboxManager,
-        sandboxPlatform: 'darwin',
-      }).find((candidate) => candidate.name === 'Bash');
-      assert.equal(disabledBash?.planAdditionalPermissions, undefined);
-      assert.equal(
-        (disabledBash!.parameters as z.ZodTypeAny).safeParse({
-          command: 'echo unchanged',
-          sandbox_permissions: { mode: 'use_default' },
-        }).success,
-        false,
-      );
-
       const bash = buildBuiltinTools({
         executor,
         permissionProfile: profile,
         sandboxManager,
-        enableBashAdditionalPermissions: true,
         sandboxPlatform: 'darwin',
       }).find((candidate) => candidate.name === 'Bash');
-      if (!bash?.planAdditionalPermissions)
-        throw new Error('Bash additional permission planner missing');
-      if (!bash.planSandboxEscalation) throw new Error('Bash sandbox escalation planner missing');
-
+      if (!bash) throw new Error('Bash tool missing');
+      assert.equal(bash?.planAdditionalPermissions, undefined);
+      assert.equal(bash?.planSandboxEscalation, undefined);
+      assert.equal(
+        (bash!.parameters as z.ZodTypeAny).safeParse({
+          command: 'echo unsafe',
+          sandbox_permissions: { mode: 'use_default' },
+        }).success,
+        false,
+      );
       const args = {
         command: `printf ok > ${JSON.stringify(target)}`,
-        sandbox_permissions: {
-          mode: 'with_additional_permissions' as const,
-          file_system: {
-            entries: [{ path: target, access: 'write' as const, scope: 'exact' as const }],
-          },
-          network: true as const,
-          justification: 'Write the selected output and notify a service.',
-        },
       };
       const parameters = bash.parameters as z.ZodTypeAny;
       expect(parameters.safeParse(args).success).toBe(true);
-      expect(
-        parameters.safeParse({
-          command: 'echo unsafe',
-          sandbox_permissions: {
-            mode: 'require_escalated',
-            justification: 'The sandbox cannot perform this action.',
-          },
-        }).success,
-      ).toBe(true);
-
-      const plannerContext = {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        toolUseId: 'tool-1',
-        toolName: 'Bash',
-        category: 'shell_unsafe' as const,
-        cwd: canonicalWorkspace,
-        mode: 'execute' as const,
-        args,
-      };
-      const plan = await bash.planAdditionalPermissions(args, plannerContext);
-      assert.equal(plan.kind, 'request');
-      if (plan.kind !== 'request') throw new Error('Additional permission request missing');
-      assert.doesNotThrow(() =>
-        assertAdditionalPermissionProposal({
-          proposal: plan.proposal,
-          toolName: 'Bash',
-          args,
-        }),
-      );
 
       await bash.impl(args, {
         sessionId: 'session-1',
@@ -908,20 +847,20 @@ describe('builtin Bash streaming output', () => {
         permissionMode: 'execute',
         abortSignal: new AbortController().signal,
         emitOutput: () => {},
-        permissionContext: {
-          additionalGrant: {
-            grantId: 'grant-1',
-            sessionId: 'session-1',
-            turnId: 'turn-1',
-            toolUseId: 'tool-1',
-            toolName: 'Bash',
-            intentHash: plan.proposal.intentHash,
-            permissionsHash: plan.proposal.permissionsHash,
-            profile: plan.proposal.profile,
-            normalizedPaths: plan.proposal.normalizedPaths,
-            risk: plan.proposal.risk,
-            issuedAt: 1,
-            expiresAt: 2,
+        executionBoundary: {
+          kind: 'managed',
+          revision: 1,
+          profile: {
+            type: 'managed',
+            name: 'expanded',
+            fileSystem: {
+              kind: 'restricted',
+              entries: [
+                { kind: 'path', access: 'write', path: canonicalWorkspace },
+                { kind: 'path', access: 'write', path: target },
+              ],
+            },
+            network: { kind: 'enabled' },
           },
         },
       });
@@ -931,56 +870,9 @@ describe('builtin Bash streaming output', () => {
       assert.equal(argv[0], '/usr/bin/sandbox-exec');
       assert.deepEqual(argv.slice(-3), ['/bin/sh', '-c', args.command]);
       const policy = argv.find((value) => value.includes('(version 1)')) ?? '';
-      assert.match(policy, /\(literal \(param "WRITABLE_ROOT_1"\)\)/);
+      assert.match(policy, /\(subpath \(param "WRITABLE_ROOT_1"\)\)/);
       assert.match(policy, /\(allow network\*\)/);
       assert.equal(profile.network.kind, 'restricted');
-
-      const ptyPlan = await bash.planAdditionalPermissions(
-        { ...args, run_in_background: true, pty: true },
-        { ...plannerContext, args: { ...args, run_in_background: true, pty: true } },
-      );
-      assert.equal(ptyPlan.kind, 'block');
-      if (ptyPlan.kind === 'block') assert.match(ptyPlan.message, /PTY/);
-
-      const escalatedArgs = {
-        command: `printf escalated > ${JSON.stringify(target)}`,
-        sandbox_permissions: {
-          mode: 'require_escalated' as const,
-          justification: 'The exact command requires host execution.',
-        },
-      };
-      const escalationPlan = await bash.planSandboxEscalation(escalatedArgs, {
-        ...plannerContext,
-        args: escalatedArgs,
-      });
-      assert.equal(escalationPlan.kind, 'request');
-      if (escalationPlan.kind !== 'request') throw new Error('Sandbox escalation request missing');
-      await bash.impl(escalatedArgs, {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        toolCallId: 'tool-2',
-        cwd: canonicalWorkspace,
-        permissionMode: 'execute',
-        abortSignal: new AbortController().signal,
-        emitOutput: () => {},
-        permissionContext: {
-          sandboxEscalationGrant: {
-            grantId: 'grant-2',
-            sessionId: 'session-1',
-            turnId: 'turn-1',
-            toolUseId: 'tool-2',
-            toolName: 'Bash',
-            intentHash: escalationPlan.proposal.intentHash,
-            commandHash: escalationPlan.proposal.commandHash,
-            command: escalationPlan.proposal.command,
-            cwd: escalationPlan.proposal.cwd,
-            risk: escalationPlan.proposal.risk,
-            issuedAt: 1,
-            expiresAt: 2,
-          },
-        },
-      });
-      assert.deepEqual(execInput?.argv, ['/bin/sh', '-c', escalatedArgs.command]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

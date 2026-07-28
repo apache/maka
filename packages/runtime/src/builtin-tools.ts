@@ -206,21 +206,6 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       'File tool additional permissions are currently supported only on macOS and Linux.',
     );
   }
-  const bashAdditionalPermissionPlanner =
-    options.sandboxManager && options.enableBashAdditionalPermissions
-      ? createBashAdditionalPermissionPlanner(
-          options.sandboxManager,
-          options.permissionProfile,
-          sandboxPlatform,
-        )
-      : undefined;
-  const bashSandboxEscalationPlanner =
-    options.sandboxManager && options.enableBashAdditionalPermissions
-      ? createBashSandboxEscalationPlanner()
-      : undefined;
-  const filePermissionPlanner = options.enableFileToolAdditionalPermissions
-    ? createFileToolAdditionalPermissionPlanner(options.permissionProfile)
-    : undefined;
   const bashTools = options.shellRuns
     ? [
         buildManagedBashTool(options.shellRuns, {
@@ -245,24 +230,12 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
                   ),
               }
             : {}),
-          ...(bashAdditionalPermissionPlanner
-            ? { planAdditionalPermissions: bashAdditionalPermissionPlanner }
-            : {}),
-          ...(bashSandboxEscalationPlanner
-            ? { planSandboxEscalation: bashSandboxEscalationPlanner }
-            : {}),
         }),
       ]
     : [
         buildExecutorBashTool(executor, shell, {
           ...(options.permissionProfile ? { permissionProfile: options.permissionProfile } : {}),
           ...(options.sandboxManager ? { sandboxManager: options.sandboxManager } : {}),
-          ...(bashAdditionalPermissionPlanner
-            ? { planAdditionalPermissions: bashAdditionalPermissionPlanner }
-            : {}),
-          ...(bashSandboxEscalationPlanner
-            ? { planSandboxEscalation: bashSandboxEscalationPlanner }
-            : {}),
           sandboxPlatform,
         }),
       ];
@@ -281,15 +254,6 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       parameters: readParameters,
       permissionRequired: false,
       executionFacts,
-      ...(filePermissionPlanner
-        ? {
-            planAdditionalPermissions: filePermissionPlanner('Read', (args) =>
-              typeof args.path === 'string' && classifyRuntimeResourceRef(args.path) === 'file'
-                ? args.path
-                : undefined,
-            ),
-          }
-        : {}),
       impl: async (input, ctx) => {
         const { cwd, sessionId, abortSignal } = ctx;
         if ('ref' in input) {
@@ -374,13 +338,8 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       activityKind: 'edit',
       description: 'Write content to a file (creates or overwrites). Subject to permission policy.',
       parameters: z.object({ path: z.string(), content: z.string() }),
-      permissionRequired: true,
+      permissionRequired: false,
       executionFacts,
-      ...(filePermissionPlanner
-        ? {
-            planAdditionalPermissions: filePermissionPlanner('Write', (args) => args.path),
-          }
-        : {}),
       impl: async ({ path, content }, ctx) => {
         const { cwd } = ctx;
         const canonicalCwd = options.filesystemWorker ? canonicalExistingPath(cwd) : cwd;
@@ -429,13 +388,8 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         old_string: z.string(),
         new_string: z.string(),
       }),
-      permissionRequired: true,
+      permissionRequired: false,
       executionFacts,
-      ...(filePermissionPlanner
-        ? {
-            planAdditionalPermissions: filePermissionPlanner('Edit', (args) => args.path),
-          }
-        : {}),
       impl: async ({ path, old_string, new_string }, ctx) => {
         const { cwd } = ctx;
         const canonicalCwd = options.filesystemWorker ? canonicalExistingPath(cwd) : cwd;
@@ -515,13 +469,8 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
           .optional()
           .describe('Sort object keys lexicographically; default false.'),
       }),
-      permissionRequired: true,
+      permissionRequired: false,
       executionFacts,
-      ...(filePermissionPlanner
-        ? {
-            planAdditionalPermissions: filePermissionPlanner('FormatJson', (args) => args.path),
-          }
-        : {}),
       impl: async ({ path, sort_keys }, ctx) => {
         const { cwd } = ctx;
         const canonicalCwd = options.filesystemWorker ? canonicalExistingPath(cwd) : cwd;
@@ -601,11 +550,6 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       }),
       permissionRequired: false,
       executionFacts,
-      ...(filePermissionPlanner
-        ? {
-            planAdditionalPermissions: filePermissionPlanner('Glob', (args) => args.cwd ?? '.'),
-          }
-        : {}),
       impl: async ({ pattern, cwd: relCwd }, ctx) => {
         const { cwd } = ctx;
         assertRelativeGlobPattern(pattern);
@@ -645,11 +589,6 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       }),
       permissionRequired: false,
       executionFacts,
-      ...(filePermissionPlanner
-        ? {
-            planAdditionalPermissions: filePermissionPlanner('Grep', (args) => args.path ?? '.'),
-          }
-        : {}),
       impl: async ({ pattern, path, glob }, ctx) => {
         const { cwd, abortSignal } = ctx;
         if (options.filesystemWorker) {
@@ -749,9 +688,18 @@ function buildExecutorBashTool(
           : {}),
       })
       .strict(),
-    permissionRequired: true,
+    permissionRequired: false,
     toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     executionFacts: executor.facts,
+    ...(sandboxOptions.sandboxManager
+      ? {
+          sandbox: sandboxAvailabilityResolver(
+            sandboxOptions.sandboxManager,
+            sandboxOptions.permissionProfile,
+            sandboxOptions.sandboxPlatform,
+          ),
+        }
+      : {}),
     ...(sandboxOptions.planAdditionalPermissions
       ? { planAdditionalPermissions: sandboxOptions.planAdditionalPermissions }
       : {}),
@@ -858,10 +806,15 @@ function sandboxCommand(
     }
   | undefined {
   const cwd = canonicalExistingPath(ctx.cwd);
-  const effective = effectivePermissionProfile(explicitProfile, ctx.permissionMode ?? 'ask', cwd);
+  const boundary = ctx.executionBoundary;
+  if (boundary?.kind === 'bypass' || boundary?.kind === 'external') return undefined;
+  const effective =
+    boundary?.kind === 'managed'
+      ? { profile: boundary.profile, workspaceRoots: [cwd] }
+      : effectivePermissionProfile(explicitProfile, ctx.permissionMode ?? 'ask', cwd);
   const env = { ...process.env };
-  const additionalGrant = ctx.permissionContext?.additionalGrant;
-  const escalationGrant = ctx.permissionContext?.sandboxEscalationGrant;
+  const additionalGrant = boundary ? undefined : ctx.permissionContext?.additionalGrant;
+  const escalationGrant = boundary ? undefined : ctx.permissionContext?.sandboxEscalationGrant;
   if (additionalGrant && escalationGrant) {
     throw new SandboxCommandError({
       domain,
@@ -881,7 +834,7 @@ function sandboxCommand(
       throw new SandboxCommandError({
         domain,
         stage: 'capability',
-        reason: 'pty_sandbox_unavailable',
+        reason: boundary ? 'requires_bypass' : 'pty_sandbox_unavailable',
         recoverable: false,
         profileName: effective.profile.name ?? effective.profile.type,
         message:

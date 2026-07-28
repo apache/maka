@@ -16,7 +16,7 @@ afterEach(async () => {
 });
 
 describe('builtin file tools use the sandboxed worker', () => {
-  test('requires a sandboxed worker and supports Linux one-call file permissions', () => {
+  test('requires a sandboxed worker but does not attach one-call permission planners', () => {
     assert.throws(
       () => buildBuiltinTools({ enableFileToolAdditionalPermissions: true }),
       /require a sandboxed filesystem worker/,
@@ -27,7 +27,10 @@ describe('builtin file tools use the sandboxed worker', () => {
       enableFileToolAdditionalPermissions: true,
       sandboxPlatform: 'linux',
     });
-    assert.ok(linuxTools.find((tool) => tool.name === 'Write')?.planAdditionalPermissions);
+    assert.equal(
+      linuxTools.find((tool) => tool.name === 'Write')?.planAdditionalPermissions,
+      undefined,
+    );
 
     assert.throws(
       () =>
@@ -38,40 +41,6 @@ describe('builtin file tools use the sandboxed worker', () => {
         }),
       /supported only on macOS and Linux/,
     );
-  });
-
-  test('plans the minimum one-call permission for an outside Write', async () => {
-    const cwd = await temporaryDirectory('maka-file-plan-cwd-');
-    const path = join(parse(cwd).root, `maka-file-plan-outside-${process.pid}`, 'created.txt');
-    const write = buildBuiltinTools({
-      filesystemWorker: { execute: async () => ({ kind: 'read', content: '' }) },
-      enableFileToolAdditionalPermissions: true,
-      sandboxPlatform: 'darwin',
-    }).find((tool) => tool.name === 'Write');
-    assert.ok(write?.planAdditionalPermissions);
-
-    const args = { path, content: 'created' };
-    const plan = await write.planAdditionalPermissions(args, {
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      toolUseId: 'tool-1',
-      toolName: 'Write',
-      category: 'file_write',
-      cwd,
-      mode: 'ask',
-      args,
-    });
-    assert.equal(plan.kind, 'request');
-    if (plan.kind === 'request') {
-      assert.deepEqual(plan.proposal.profile.fileSystem?.entries, [
-        {
-          path,
-          access: 'write',
-          scope: 'exact',
-        },
-      ]);
-      assert.equal(plan.proposal.risk.outsideWorkspace, true);
-    }
   });
 
   test('forwards the consumed grant only to the current worker operation', async () => {
@@ -175,81 +144,6 @@ describe('builtin file tools use the sandboxed worker', () => {
     assert.deepEqual(calls[0]?.operation, { kind: 'read', path: 'image.png', offset: 1, limit: 1 });
   });
 
-  test('plans Grep with exact file and subtree directory permissions', async () => {
-    const root = await temporaryDirectory('maka-file-grep-plan-');
-    const workspace = join(root, 'workspace');
-    const outside = join(root, 'outside');
-    await Promise.all([mkdir(workspace), mkdir(outside)]);
-    await Promise.all([
-      writeFile(join(workspace, 'inside.ts'), 'inside', 'utf8'),
-      writeFile(join(outside, 'outside.ts'), 'outside', 'utf8'),
-    ]);
-    const grep = buildBuiltinTools({
-      filesystemWorker: { execute: async () => ({ kind: 'grep', matches: [] }) },
-      permissionProfile: createReadOnlyPermissionProfile(),
-      enableFileToolAdditionalPermissions: true,
-      sandboxPlatform: 'darwin',
-    }).find((tool) => tool.name === 'Grep');
-    assert.ok(grep?.planAdditionalPermissions);
-
-    const insideArgs = { pattern: 'inside', path: 'inside.ts' };
-    const insidePlan = await planFileTool(grep, insideArgs, workspace, 'explore');
-    assert.equal(insidePlan.kind, 'not_required');
-
-    const fileArgs = { pattern: 'outside', path: join(outside, 'outside.ts') };
-    const filePlan = await planFileTool(grep, fileArgs, workspace, 'ask');
-    assert.equal(filePlan.kind, 'request');
-    if (filePlan.kind === 'request') {
-      assert.deepEqual(filePlan.proposal.profile.fileSystem?.entries, [
-        {
-          path: join(outside, 'outside.ts'),
-          access: 'read',
-          scope: 'exact',
-        },
-      ]);
-    }
-
-    const directoryArgs = { pattern: 'outside', path: outside };
-    const directoryPlan = await planFileTool(grep, directoryArgs, workspace, 'ask');
-    assert.equal(directoryPlan.kind, 'request');
-    if (directoryPlan.kind === 'request') {
-      assert.deepEqual(directoryPlan.proposal.profile.fileSystem?.entries, [
-        {
-          path: outside,
-          access: 'read',
-          scope: 'subtree',
-        },
-      ]);
-    }
-  });
-
-  test('uses canonical workspace roots when planning through a symlinked cwd', async () => {
-    const root = await temporaryDirectory('maka-file-plan-alias-');
-    const workspace = join(root, 'workspace');
-    const alias = join(root, 'workspace-alias');
-    await mkdir(workspace);
-    await writeFile(join(workspace, 'inside.ts'), 'inside', 'utf8');
-    await symlink(workspace, alias, 'dir');
-    const tools = buildBuiltinTools({
-      filesystemWorker: { execute: async () => ({ kind: 'read', content: '' }) },
-      enableFileToolAdditionalPermissions: true,
-      sandboxPlatform: 'darwin',
-    });
-    const read = tools.find((tool) => tool.name === 'Read');
-    const grep = tools.find((tool) => tool.name === 'Grep');
-    assert.ok(read?.planAdditionalPermissions);
-    assert.ok(grep?.planAdditionalPermissions);
-
-    assert.equal(
-      (await planFileTool(read, { path: 'inside.ts' }, alias, 'explore')).kind,
-      'not_required',
-    );
-    assert.equal(
-      (await planFileTool(grep, { pattern: 'inside', path: 'inside.ts' }, alias, 'explore')).kind,
-      'not_required',
-    );
-  });
-
   test('serializes writes through real and symlinked cwd paths', async () => {
     const root = await temporaryDirectory('maka-file-lock-alias-');
     const workspace = join(root, 'workspace');
@@ -304,25 +198,6 @@ describe('builtin file tools use the sandboxed worker', () => {
     );
   });
 });
-
-async function planFileTool(
-  tool: NonNullable<ReturnType<typeof buildBuiltinTools>[number]>,
-  args: Record<string, unknown>,
-  cwd: string,
-  mode: 'explore' | 'ask',
-) {
-  if (!tool.planAdditionalPermissions) throw new Error(`${tool.name} planner missing`);
-  return await tool.planAdditionalPermissions(args, {
-    sessionId: 'session-1',
-    turnId: 'turn-1',
-    toolUseId: `tool-${tool.name}`,
-    toolName: tool.name,
-    category: 'read',
-    cwd,
-    mode,
-    args,
-  });
-}
 
 async function runTool(
   tools: ReturnType<typeof buildBuiltinTools>,
