@@ -5,6 +5,14 @@ import { resolve } from 'node:path';
 import { readMainProcessCombinedSource } from './main-process-contract-source-helpers.js';
 
 const MAIN_TS = resolve(import.meta.dirname, '../../../../../apps/desktop/src/main/main.ts');
+const APP_LIFECYCLE_TS = resolve(
+  import.meta.dirname,
+  '../../../../../apps/desktop/src/main/app-lifecycle.ts',
+);
+const MAIN_WINDOW_TS = resolve(
+  import.meta.dirname,
+  '../../../../../apps/desktop/src/main/main-window.ts',
+);
 
 describe('single-instance lock contract', () => {
   it('requests the lock before any workspace/store setup, and exits the losing process immediately', async () => {
@@ -41,22 +49,26 @@ describe('single-instance lock contract', () => {
     // dock) must not be a silent no-op. `focus()` alone is a no-op with no
     // window -- the handler must fall back to createWindow().
     const helperMatch = src.match(
-      /function focusOrCreateMainWindow\(\): void \{([\s\S]*?)\n\}/,
+      /function focusOrCreateMainWindow\(signal: AbortSignal\): void \{([\s\S]*?)\n\}/,
     );
     assert.ok(helperMatch, 'a focusOrCreateMainWindow (or equivalently named) helper must exist');
     const helperBody = helperMatch![1];
     assert.match(helperBody, /hasOpenWindows\(\)/, 'helper must branch on whether a window currently exists');
     assert.match(helperBody, /mainWindowController\.focus\(\)/, 'helper must focus the existing window when one exists');
-    assert.match(helperBody, /mainWindowController\.createWindow\(\)/, 'helper must create a window when none exists');
+    assert.match(
+      helperBody,
+      /void mainWindowController\s*\.createWindow\(signal\)\s*\.catch\(/,
+      'helper must create a window with the quit signal and handle event-listener failures locally',
+    );
 
     assert.match(
       src,
-      /app\.on\('second-instance', focusOrCreateMainWindow\)/,
-      'second-instance must be wired to the shared focus-or-create helper, not a bare focus() call',
+      /app\.on\('second-instance', quitCoordinator\.focusOrCreateWindow\)/,
+      'second-instance must be wired to the shared quit-aware focus-or-create helper, not a bare focus() call',
     );
     assert.match(
       src,
-      /app\.on\('activate', focusOrCreateMainWindow\)/,
+      /app\.on\('activate', quitCoordinator\.focusOrCreateWindow\)/,
       'activate should share the exact same behavior as second-instance',
     );
   });
@@ -69,5 +81,43 @@ describe('single-instance lock contract', () => {
     const hasOpenWindows = mainWindow.match(/hasOpenWindows\(\) \{([\s\S]*?)\n    \}/)?.[1] ?? '';
     assert.match(hasOpenWindows, /mainWindow !== null && !mainWindow\.isDestroyed\(\)/);
     assert.doesNotMatch(hasOpenWindows, /BrowserWindow\.getAllWindows/);
+  });
+
+  it('routes every window creation through the quit signal before constructing BrowserWindow', async () => {
+    const [lifecycle, mainWindow] = await Promise.all([
+      readFile(APP_LIFECYCLE_TS, 'utf8'),
+      readFile(MAIN_WINDOW_TS, 'utf8'),
+    ]);
+
+    assert.match(
+      lifecycle,
+      /const initialWindowSignal = quitCoordinator\.getWindowCreationSignal\(\);[\s\S]*if \(!initialWindowSignal\) return;[\s\S]*await mainWindowController\.createWindow\(initialWindowSignal\)/,
+      'the initial window must carry the same quit signal and stop if cleanup already started',
+    );
+    assert.doesNotMatch(
+      lifecycle,
+      /await mainWindowController\.createWindow\(\)/,
+      'startup must not bypass the quit coordinator',
+    );
+
+    const createWindowBody =
+      mainWindow.match(
+        /async function createWindow\(signal: AbortSignal\): Promise<void> \{([\s\S]*?)\n  \}/,
+      )?.[1] ?? '';
+    const constructWindow = createWindowBody.indexOf('new BrowserWindow(');
+    const lastAwaitBeforeConstruction = createWindowBody
+      .slice(0, constructWindow)
+      .lastIndexOf('await ');
+    const abortGate = createWindowBody.indexOf(
+      'if (signal.aborted) return;',
+      lastAwaitBeforeConstruction,
+    );
+    assert.notEqual(lastAwaitBeforeConstruction, -1, 'window creation must retain asynchronous preparation');
+    assert.notEqual(abortGate, -1, 'window creation must re-check the quit signal after preparation');
+    assert.notEqual(constructWindow, -1, 'the contract must locate BrowserWindow construction');
+    assert.ok(
+      lastAwaitBeforeConstruction < abortGate && abortGate < constructWindow,
+      'an in-flight request must re-check the quit signal after awaits and immediately before BrowserWindow construction',
+    );
   });
 });

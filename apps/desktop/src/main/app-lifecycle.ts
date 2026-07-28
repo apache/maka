@@ -36,6 +36,7 @@ import type { assembleDesktopTools } from './tool-assembly.js';
 import type { StreamEvents } from './session-stream.js';
 import type { SettingsIpcHandle } from './settings-ipc-main.js';
 import { runProjectStartupMigration } from './project-startup-migration.js';
+import { createAppQuitCoordinator } from './app-quit-coordinator.js';
 
 type AssembledTools = ReturnType<typeof assembleDesktopTools>;
 type PricingLookup = ReturnType<typeof buildPricingLookup>;
@@ -70,7 +71,7 @@ export interface AppLifecycleDeps {
   streamEvents: StreamEvents;
   /** Focus-or-create for the main window; stays in main.ts next to the
    *  controller and is registered here on `second-instance` / `activate`. */
-  focusOrCreateMainWindow: () => void;
+  focusOrCreateMainWindow: (signal: AbortSignal) => void;
   emitConnectionListChanged: () => void;
   emitSessionsChanged: (reason: 'migrated') => void;
   handleExternalSettingsChange: () => Promise<void>;
@@ -131,7 +132,14 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     setLookupPricing,
   } = deps;
 
+  let backgroundStartup: Promise<void> | undefined;
   let configWatcher: ConfigFileWatcher | undefined;
+  const quitCoordinator = createAppQuitCoordinator({
+    cleanup: runBeforeQuitCleanup,
+    focusOrCreateWindow: focusOrCreateMainWindow,
+    onCleanupError: (error) => console.error('[shutdown] cleanup failed:', error),
+    resumeQuit: () => app.quit(),
+  });
 
   async function recoverInterruptedSessionsOnStartup(): Promise<void> {
     try {
@@ -237,10 +245,12 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     // main.ts. SQLite keeps live file handles, so resetting the workspace
     // here after store construction would detach the canonical database.
     await runCredentialStartup();
-    app.on('second-instance', focusOrCreateMainWindow);
-    app.on('activate', focusOrCreateMainWindow);
-    const backgroundStartup = runBackgroundStartup();
-    await mainWindowController.createWindow();
+    const initialWindowSignal = quitCoordinator.getWindowCreationSignal();
+    if (!initialWindowSignal) return;
+    app.on('second-instance', quitCoordinator.focusOrCreateWindow);
+    app.on('activate', quitCoordinator.focusOrCreateWindow);
+    backgroundStartup = runBackgroundStartup();
+    await mainWindowController.createWindow(initialWindowSignal);
     // Keep the process alive until background work settles so schedulers
     // / bridges aren't torn down mid-start by a fast window-all-closed.
     await backgroundStartup;
@@ -321,21 +331,14 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     if (process.platform !== 'darwin') app.quit();
   });
 
-  let beforeQuitCleanupComplete = false;
-  let beforeQuitCleanupStarted = false;
-
-  app.on('before-quit', (event) => {
-    if (beforeQuitCleanupComplete) return;
-    event.preventDefault();
-    if (beforeQuitCleanupStarted) return;
-    beforeQuitCleanupStarted = true;
-    void runBeforeQuitCleanup().finally(() => {
-      beforeQuitCleanupComplete = true;
-      app.quit();
-    });
-  });
+  app.on('before-quit', quitCoordinator.handleBeforeQuit);
 
   async function runBeforeQuitCleanup(): Promise<void> {
+    try {
+      await backgroundStartup;
+    } catch (error) {
+      console.error('[shutdown] background startup failed:', error);
+    }
     automationWiring.scheduler.dispose();
     goalWiring.coordinator.dispose();
     goalWiring.manager.dispose();

@@ -16,7 +16,7 @@ type SettingsReader = {
 };
 
 export interface MainWindowController {
-  createWindow(): Promise<void>;
+  createWindow(signal: AbortSignal): Promise<void>;
   send(channel: string, ...args: unknown[]): void;
   // PR-SHOW-AFTER-FIRST-COMMIT: reveal the hidden window after the renderer's
   // first React commit. Idempotent + e2e-fixture-safe (see notifyRendererReady).
@@ -143,7 +143,8 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     await browserViews?.disposeAll();
   }
 
-  async function createWindow(): Promise<void> {
+  async function createWindow(signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return;
     await mkdir(workspaceRoot, { recursive: true });
     installApplicationMenu();
     // Restore previously-saved bounds when available; first launch and
@@ -167,6 +168,10 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     // theme variant we're about to screenshot, so the very first frame
     // doesn't capture a light-on-dark or dark-on-light flash.
     const persistedTheme = (await settingsStore.get()).appearance?.theme ?? 'auto';
+    // Quit cleanup permanently closes process-scoped stores. Re-check after
+    // asynchronous preparation so an in-flight request cannot attach a new
+    // renderer to resources that teardown has already started closing.
+    if (signal.aborted) return;
     const themePref = e2eFixture?.theme ?? persistedTheme;
     const isDark =
       themePref === 'dark' ||

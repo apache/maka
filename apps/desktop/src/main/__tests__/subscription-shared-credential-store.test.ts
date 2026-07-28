@@ -538,14 +538,22 @@ describe('OAuth subscription token authority (shared CredentialStore)', () => {
   it('finishes credential migration before the first window can issue OAuth mutations', async () => {
     const src = await readMainProcessCombinedSource();
     const credentialStartup = src.indexOf('await runCredentialStartup();');
-    const backgroundStartup = src.indexOf('const backgroundStartup = runBackgroundStartup();');
-    const createWindow = src.indexOf('await mainWindowController.createWindow();', backgroundStartup);
-    const secondInstance = src.indexOf("app.on('second-instance', focusOrCreateMainWindow);");
-    const activate = src.indexOf("app.on('activate', focusOrCreateMainWindow);");
+    const initialWindowSignal = src.indexOf(
+      'const initialWindowSignal = quitCoordinator.getWindowCreationSignal();',
+    );
+    const backgroundStartup = src.indexOf('backgroundStartup = runBackgroundStartup();');
+    const createWindow = src.indexOf(
+      'await mainWindowController.createWindow(initialWindowSignal);',
+      backgroundStartup,
+    );
+    const secondInstance = src.indexOf("app.on('second-instance'");
+    const activate = src.indexOf("app.on('activate'");
 
     assert.notEqual(credentialStartup, -1, 'startup must expose an awaited credential migration phase');
     assert.ok(
-      credentialStartup < backgroundStartup && backgroundStartup < createWindow,
+      credentialStartup < initialWindowSignal &&
+        initialWindowSignal < backgroundStartup &&
+        backgroundStartup < createWindow,
       'credential migration must finish before background startup opens the interactive window',
     );
     assert.ok(

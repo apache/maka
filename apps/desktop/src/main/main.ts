@@ -598,11 +598,13 @@ const mainWindowController = createMainWindowController({
 // Shared by 'second-instance' and 'activate': focus the existing window, or
 // create one if all windows were closed while the app (macOS: still in the
 // dock) stayed running -- a second launch attempt must not be a silent no-op.
-function focusOrCreateMainWindow(): void {
+function focusOrCreateMainWindow(signal: AbortSignal): void {
   if (mainWindowController.hasOpenWindows()) {
     mainWindowController.focus();
   } else {
-    void mainWindowController.createWindow();
+    void mainWindowController
+      .createWindow(signal)
+      .catch((error) => console.error('[window] failed to create:', error));
   }
 }
 const safeSendToRenderer = mainWindowController.send;
