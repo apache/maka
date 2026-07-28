@@ -1,43 +1,18 @@
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, parse } from 'node:path';
 import { test } from 'node:test';
-import { promisify } from 'node:util';
 
 import { createProjectCatalog, resolveProjectLocation } from '../project-catalog.js';
-
-const execFileAsync = promisify(execFile);
+import { createGitRepositoryWithWorktree } from './fixtures/git-repository.js';
 
 test('a repository and its linked worktree resolve to one project identity', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-location-'));
   try {
     const repository = join(base, 'repository');
     const linkedWorktree = join(base, 'linked');
-    await mkdir(repository);
-    await execFileAsync('git', ['init', '--quiet'], { cwd: repository });
-    await writeFile(join(repository, 'tracked.txt'), 'tracked\n', 'utf8');
-    await execFileAsync('git', ['add', 'tracked.txt'], { cwd: repository });
-    await execFileAsync(
-      'git',
-      [
-        '-c',
-        'user.name=Maka Test',
-        '-c',
-        'user.email=test@maka.invalid',
-        'commit',
-        '--quiet',
-        '-m',
-        'init',
-      ],
-      { cwd: repository },
-    );
-    await execFileAsync(
-      'git',
-      ['worktree', 'add', '--quiet', '-b', 'project-catalog-test', linkedWorktree],
-      { cwd: repository },
-    );
+    await createGitRepositoryWithWorktree(repository, linkedWorktree, 'project-catalog-test');
 
     const main = await resolveProjectLocation({ path: repository });
     const linked = await resolveProjectLocation({ path: linkedWorktree });
@@ -58,29 +33,7 @@ test('registering a repository and its linked worktree creates one project with 
   try {
     const repository = join(base, 'repository');
     const linkedWorktree = join(base, 'linked');
-    await mkdir(repository);
-    await execFileAsync('git', ['init', '--quiet'], { cwd: repository });
-    await writeFile(join(repository, 'tracked.txt'), 'tracked\n', 'utf8');
-    await execFileAsync('git', ['add', 'tracked.txt'], { cwd: repository });
-    await execFileAsync(
-      'git',
-      [
-        '-c',
-        'user.name=Maka Test',
-        '-c',
-        'user.email=test@maka.invalid',
-        'commit',
-        '--quiet',
-        '-m',
-        'init',
-      ],
-      { cwd: repository },
-    );
-    await execFileAsync(
-      'git',
-      ['worktree', 'add', '--quiet', '-b', 'catalog-linked', linkedWorktree],
-      { cwd: repository },
-    );
+    await createGitRepositoryWithWorktree(repository, linkedWorktree, 'catalog-linked');
     const catalog = createProjectCatalog(join(base, 'storage'), {
       now: () => 1_000,
       createId: () => 'project-1',
@@ -314,29 +267,7 @@ test('conflicting relink preserves every available worktree location from the me
   try {
     const repository = join(base, 'repository');
     const linkedWorktree = join(base, 'linked');
-    await mkdir(repository);
-    await execFileAsync('git', ['init', '--quiet'], { cwd: repository });
-    await writeFile(join(repository, 'tracked.txt'), 'tracked\n', 'utf8');
-    await execFileAsync('git', ['add', 'tracked.txt'], { cwd: repository });
-    await execFileAsync(
-      'git',
-      [
-        '-c',
-        'user.name=Maka Test',
-        '-c',
-        'user.email=test@maka.invalid',
-        'commit',
-        '--quiet',
-        '-m',
-        'init',
-      ],
-      { cwd: repository },
-    );
-    await execFileAsync(
-      'git',
-      ['worktree', 'add', '--quiet', '-b', 'relink-linked', linkedWorktree],
-      { cwd: repository },
-    );
+    await createGitRepositoryWithWorktree(repository, linkedWorktree, 'relink-linked');
     let id = 0;
     const catalog = createProjectCatalog(join(base, 'storage'), {
       now: () => 1_000,

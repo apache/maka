@@ -1,16 +1,13 @@
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
-import { appendFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { promisify } from 'node:util';
 import type { CreateSessionInput } from '@maka/core';
 import { createProjectCatalog } from '../project-catalog.js';
 import { migrateSessionProjects } from '../project-session-migration.js';
 import { createLegacyFileSessionStore, createSessionStore } from '../session-store.js';
-
-const execFileAsync = promisify(execFile);
+import { createGitRepositoryWithWorktree } from './fixtures/git-repository.js';
 
 test('migrates legacy sessions into stable projects once without losing missing paths', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-session-migration-'));
@@ -18,29 +15,7 @@ test('migrates legacy sessions into stable projects once without losing missing 
   const linkedWorktree = join(base, 'linked');
   const missingPath = join(base, 'moved-project');
   const storage = join(base, 'storage');
-  await mkdir(repository);
-  await execFileAsync('git', ['init', '--quiet'], { cwd: repository });
-  await writeFile(join(repository, 'tracked.txt'), 'tracked\n', 'utf8');
-  await execFileAsync('git', ['add', 'tracked.txt'], { cwd: repository });
-  await execFileAsync(
-    'git',
-    [
-      '-c',
-      'user.name=Maka Test',
-      '-c',
-      'user.email=test@maka.invalid',
-      'commit',
-      '--quiet',
-      '-m',
-      'init',
-    ],
-    { cwd: repository },
-  );
-  await execFileAsync(
-    'git',
-    ['worktree', 'add', '--quiet', '-b', 'migration-linked', linkedWorktree],
-    { cwd: repository },
-  );
+  await createGitRepositoryWithWorktree(repository, linkedWorktree, 'migration-linked');
 
   const sessions = createLegacyFileSessionStore(storage);
   let id = 0;
