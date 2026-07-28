@@ -17,6 +17,32 @@ function log(value) { fs.appendFileSync(LOG, JSON.stringify(value) + '\n'); }
 function reply(id, result) {
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
 }
+// cua-driver >= 0.12 hosts embedded callers as two processes: a "serve"
+// daemon owning the runtime plus an "mcp" stdio proxy. The daemon only has to
+// publish its socket for the service under test to proceed, so the mock binds
+// the path and idles.
+if (process.argv[2] === 'serve') {
+  const socketIndex = process.argv.indexOf('--socket');
+  const socketPath = socketIndex >= 0 ? process.argv[socketIndex + 1] : undefined;
+  log({ kind: 'serve_start', pid: process.pid, socketPath });
+  if (MODE === 'daemon_fail') process.exit(1);
+  const net = require('net');
+  const server = net.createServer(() => {});
+  server.listen(socketPath, () => log({ kind: 'serve_listening', socketPath }));
+  // The proxy exits on stdin EOF; the daemon's stdin is 'ignore', so it watches
+  // its parent instead. Without this a daemon that outlives a disposed service
+  // holds its stdio pipes open and the test runner never exits.
+  const parentPid = process.ppid;
+  setInterval(() => {
+    if (process.ppid !== parentPid) process.exit(0);
+    try {
+      process.kill(parentPid, 0);
+    } catch {
+      process.exit(0);
+    }
+  }, 100);
+  return;
+}
 log({ kind: 'start', pid: process.pid });
 let buffer = '';
 process.stdin.setEncoding('utf8');
@@ -42,7 +68,7 @@ process.stdin.on('data', (chunk) => {
     }
     if (message.method !== 'tools/call') continue;
     const name = message.params.name;
-    if (name === 'set_config') {
+    if (name === 'start_session') {
       reply(message.id, MODE === 'config_error' ? { isError: true } : {});
       continue;
     }
@@ -315,9 +341,9 @@ describe('cua-driver service lifecycle', () => {
     );
   });
 
-  it('rejects set_config tool errors instead of entering ready state', async () => {
+  it('rejects start_session tool errors instead of entering ready state', async () => {
     const { instance } = service('config_error');
-    await assert.rejects(instance.callTool('ok', {}), /set_config/i);
+    await assert.rejects(instance.callTool('ok', {}), /start_session/i);
     assert.notEqual(instance.snapshot().state, 'ready');
   });
 });

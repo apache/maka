@@ -25,15 +25,22 @@ const cua = manifest.cuaDriver;
 test('cua-driver release pins archive, binary, source, and license independently', () => {
   assertPinnedCuaDriverChecksums(cua);
   assert.notEqual(cua.archiveSha256, cua.binarySha256);
-  assert.match(cua.sourceCommit, /^[a-f0-9]{40}$/);
+  // An upstream release is pinned by the tag and commit it was built from. A
+  // fork build additionally pins sourceCommit / upstreamMergeCommit, which
+  // have no meaning here — there is no merge to name.
+  assert.equal(cua.buildProvenance, 'upstream-release');
+  assert.equal(cua.upstreamTag, cua.tag);
+  assert.equal(cua.sourceCommit, undefined);
+  assert.equal(cua.upstreamMergeCommit, undefined);
   assert.match(cua.upstreamCommit, /^[a-f0-9]{40}$/);
-  assert.match(cua.upstreamMergeCommit, /^[a-f0-9]{40}$/);
   assert.deepEqual(cua.architectures, ['arm64', 'x86_64']);
-  assert.equal(cua.signature, 'adhoc');
-  assert.equal(cua.archiveSizeBytes, 10473137);
-  assert.equal(cua.binarySizeBytes, 25270080);
+  // Developer ID rather than ad-hoc: TCC grants anchor to the signing
+  // identity, so this is what makes the bundled binary's grants stable.
+  assert.equal(cua.signature, 'developer-id');
+  assert.equal(cua.archiveSizeBytes, 32831352);
+  assert.equal(cua.binarySizeBytes, 49466304);
   assert.equal(cua.licenseSizeBytes, 1069);
-  assert.equal(cua.sourceSizeBytes, 542);
+  assert.equal(cua.sourceSizeBytes, 509);
   assert.equal(
     cuaDriverDownloadUrl(cua.tag, cua.asset),
     `https://github.com/${cua.repo}/releases/download/${cua.tag}/${cua.asset}`,
@@ -179,8 +186,10 @@ test('artifact checks remain separate from the distribution release gate', async
     `${checkSource}\n${prepareSource}`,
     /notarytool|stapler|Developer ID Application/,
   );
+  // The pinned binary is Developer ID signed by Cua AI, Inc., so that blocker
+  // is cleared. The rest still stand: Maka does not notarize, attest, or
+  // otherwise take distribution responsibility for a third-party binary.
   assert.deepEqual(cuaDriverDistributionBlockers(cua), [
-    'developer_id_signature',
     'notarization',
     'artifact_attestation',
     'build_provenance',

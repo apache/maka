@@ -154,6 +154,25 @@ logRec({
     CUA_DRIVER_RS_UPDATE_CHECK: process.env.CUA_DRIVER_RS_UPDATE_CHECK,
   },
 });
+// Two-process embedded model (cua-driver >= 0.12): the service first spawns
+// 'serve --embedded --socket <path>' as a daemon and waits for that socket to
+// appear, then spawns 'mcp --embedded --socket <path>' as the stdio proxy. The
+// daemon speaks no JSON-RPC on stdio, so it must publish the socket and then
+// stay alive; its stdin is 'ignore', which would EOF this script immediately.
+var ARGV = process.argv.slice(2);
+if (ARGV[0] === 'serve') {
+  var sockAt = ARGV.indexOf('--socket');
+  var sockPath = sockAt >= 0 ? ARGV[sockAt + 1] : '';
+  if (sockPath) { try { fs.writeFileSync(sockPath, ''); } catch (e) {} }
+  // The proxy exits on stdin EOF; the daemon has no stdin, so it watches its
+  // parent instead. Without this a leaked daemon keeps the test runner alive.
+  var PPID = process.ppid;
+  setInterval(function () {
+    if (process.ppid !== PPID) { process.exit(0); }
+    try { process.kill(PPID, 0); } catch (e) { process.exit(0); }
+  }, 100);
+  return;
+}
 function send(obj) { process.stdout.write(JSON.stringify(obj) + '\n'); }
 function reply(id, result) { send({ jsonrpc: '2.0', id: id, result: result }); }
 function handle(msg) {
@@ -190,6 +209,9 @@ function handle(msg) {
     };
     switch (name) {
       case 'set_config':
+        reply(id, { content: [], structuredContent: {} });
+        return;
+      case 'start_session':
         reply(id, { content: [], structuredContent: {} });
         return;
       case 'check_permissions':
@@ -581,7 +603,7 @@ after(async () => {
 });
 
 describe('cua-driver backend', () => {
-  it('performs the initialize → initialized → set_config{window} action-client handshake and spawns with the right env/args', async () => {
+  it('performs the initialize → initialized → start_session{window} action-client handshake and spawns a daemon plus a socket-bound proxy', async () => {
     const { backend, logPath } = makeBackend();
     // Any call triggers lazy spawn + handshake.
     const pf = await backend.preflight(new AbortController().signal);
@@ -589,30 +611,36 @@ describe('cua-driver backend', () => {
 
     const records = await readRecords(logPath);
 
-    // Handshake ordering.
+    // Handshake ordering. cua-driver 0.12 retired `set_config capture_scope`
+    // in favour of declaring the scope when the session is opened.
     const trace = methodTrace(records);
     assert.deepEqual(trace.slice(0, 3), [
       'initialize',
       'notifications/initialized',
-      'tools/call:set_config',
+      'tools/call:start_session',
     ]);
-    assert.equal(toolCall(records, 'set_config')?.capture_scope, 'window');
+    assert.equal(toolCall(records, 'start_session')?.capture_scope, 'window');
 
-    // Spawn contract: args + env.
-    const start = records.find((r) => r.kind === 'start');
-    assert.ok(start, 'mock recorded a start line');
-    assert.deepEqual(start!.argv, [
-      'mcp',
-      '--embedded',
-      '--no-daemon-relaunch',
-      '--no-overlay',
-      '--host-bundle-id',
-      HOST_BUNDLE_ID,
-    ]);
-    assert.equal(start!.env.CUA_DRIVER_EMBEDDED, '1');
-    assert.equal(start!.env.CUA_DRIVER_RS_TELEMETRY_ENABLED, 'false');
-    assert.equal(start!.env.CUA_DRIVER_RS_UPDATE_CHECK, 'false');
-    assert.equal(start!.env.CUA_DRIVER_HOST_BUNDLE_ID, HOST_BUNDLE_ID);
+    // Spawn contract: a `serve` daemon publishes the socket, and the stdio
+    // `mcp` proxy binds to that same socket. Both carry the host identity.
+    const starts = records.filter((r) => r.kind === 'start');
+    const daemon = starts.find((r) => r.argv[0] === 'serve');
+    const proxy = starts.find((r) => r.argv[0] === 'mcp');
+    assert.ok(daemon, 'mock recorded a serve daemon start');
+    assert.ok(proxy, 'mock recorded an mcp proxy start');
+
+    assert.deepEqual(daemon!.argv.slice(0, 3), ['serve', '--embedded', '--socket']);
+    assert.deepEqual(proxy!.argv.slice(0, 3), ['mcp', '--embedded', '--socket']);
+    // The proxy must talk to the socket this daemon published, not another one.
+    assert.equal(proxy!.argv[3], daemon!.argv[3]);
+    assert.deepEqual(proxy!.argv.slice(4), ['--no-overlay', '--host-bundle-id', HOST_BUNDLE_ID]);
+
+    for (const rec of [daemon!, proxy!]) {
+      assert.equal(rec.env.CUA_DRIVER_EMBEDDED, '1');
+      assert.equal(rec.env.CUA_DRIVER_RS_TELEMETRY_ENABLED, 'false');
+      assert.equal(rec.env.CUA_DRIVER_RS_UPDATE_CHECK, 'false');
+      assert.equal(rec.env.CUA_DRIVER_HOST_BUNDLE_ID, HOST_BUNDLE_ID);
+    }
   });
 
   it('preflight maps check_permissions{prompt:false} to {accessibility, screenRecording}', async () => {
@@ -653,15 +681,25 @@ describe('cua-driver backend', () => {
 
     const records = await readRecords(logPath);
     const starts = records.filter((record) => record.kind === 'start');
-    assert.equal(starts.length, 2, 'capture and action clients spawn distinct children');
-    assert.notEqual(starts[0]!.pid, starts[1]!.pid);
-    assert.notEqual(starts[0]!.home, starts[1]!.home);
+    // Each role runs a `serve` daemon plus its own `mcp` stdio proxy, so what
+    // isolation means here is two distinct proxies on two distinct sockets —
+    // not two processes total.
+    const proxies = starts.filter((record) => record.argv[0] === 'mcp');
+    const daemons = starts.filter((record) => record.argv[0] === 'serve');
+    assert.equal(proxies.length, 2, 'capture and action clients spawn distinct proxies');
+    assert.equal(daemons.length, 2, 'each role gets its own daemon');
+    assert.notEqual(proxies[0]!.pid, proxies[1]!.pid);
+    assert.notEqual(proxies[0]!.home, proxies[1]!.home);
+    assert.notEqual(
+      proxies[0]!.argv[proxies[0]!.argv.indexOf('--socket') + 1],
+      proxies[1]!.argv[proxies[1]!.argv.indexOf('--socket') + 1],
+    );
     const scopes = records
       .filter(
         (record) =>
           record.kind === 'recv' &&
           record.method === 'tools/call' &&
-          record.params?.name === 'set_config',
+          record.params?.name === 'start_session',
       )
       .map((record) => record.params.arguments.capture_scope)
       .sort();
@@ -2877,9 +2915,11 @@ describe('cua-driver backend', () => {
       new AbortController().signal,
     );
     assert.equal(retry.outcome.ok, true);
-    const starts = (await readRecords(logPath)).filter((record) => record.kind === 'start');
-    assert.equal(starts.length, 2);
-    assert.notEqual(starts[0]!.pid, starts[1]!.pid);
+    const proxies = (await readRecords(logPath))
+      .filter((record) => record.kind === 'start')
+      .filter((record) => record.argv[0] === 'mcp');
+    assert.equal(proxies.length, 2);
+    assert.notEqual(proxies[0]!.pid, proxies[1]!.pid);
     assert.equal(toolCalls(await readRecords(logPath), 'get_desktop_state').length, 2);
   });
 
@@ -3118,7 +3158,7 @@ describe('cua-driver backend', () => {
 
     const records = await readRecords(logPath);
     assert.equal(
-      records.filter((record) => record.kind === 'start').length,
+      records.filter((record) => record.kind === 'start' && record.argv[0] === 'mcp').length,
       2,
       'the queued second session starts on a fresh child after the shared request aborts',
     );
@@ -3144,13 +3184,16 @@ describe('cua-driver backend', () => {
   });
 
   it('a hung handshake times out, kills the child, and fails closed (no deadlock)', async () => {
-    // set_config never answers → the bounded handshake must time out instead of
-    // wedging every future action forever (the deadlock the review confirmed).
-    const { backend, logPath } = makeBackend({ hangTool: 'set_config', handshakeTimeoutMs: 250 });
+    // start_session never answers → the bounded handshake must time out instead
+    // of wedging every future action forever (the deadlock the review confirmed).
+    const { backend, logPath } = makeBackend({
+      hangTool: 'start_session',
+      handshakeTimeoutMs: 250,
+    });
     await assert.rejects(backend.preflight(new AbortController().signal), /timeout/i);
 
     const records = await readRecords(logPath);
-    const start = records.find((r) => r.kind === 'start');
+    const start = records.find((r) => r.kind === 'start' && r.argv[0] === 'mcp');
     assert.ok(start, 'mock started');
     const pid: number = start!.pid;
     let dead = false;
@@ -3165,10 +3208,10 @@ describe('cua-driver backend', () => {
     assert.ok(dead, 'child killed after handshake timeout');
   });
 
-  it('a set_config RPC error rejects startup (fail closed — no warn-and-continue)', async () => {
+  it('a start_session RPC error rejects startup (fail closed — no warn-and-continue)', async () => {
     // The old code swallowed this with console.warn and reported startup ok,
     // letting later scope:desktop actions run against an unconfigured scope.
-    const { backend } = makeBackend({ rpcErrTool: 'set_config' });
-    await assert.rejects(backend.preflight(new AbortController().signal), /set_config/i);
+    const { backend } = makeBackend({ rpcErrTool: 'start_session' });
+    await assert.rejects(backend.preflight(new AbortController().signal), /start_session/i);
   });
 });
