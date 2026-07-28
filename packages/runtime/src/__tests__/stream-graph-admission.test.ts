@@ -5,7 +5,10 @@ import type {
   AgentGraphIntentClaimRequest,
   AgentGraphIntentClaimStore,
 } from '@maka/core/agent-graph-control';
-import { claimAgentGraphRunnableIntent } from '../stream-graph-admission.js';
+import {
+  claimAgentGraphRunnableIntent,
+  fingerprintAgentGraphRunnableIntent,
+} from '../stream-graph-admission.js';
 import type { AgentGraphRunnableIntent } from '../stream-graph-readiness.js';
 
 describe('stream graph admission', () => {
@@ -59,6 +62,13 @@ describe('stream graph admission', () => {
 
     assert.equal(first.claim.intentFingerprint, same.claim.intentFingerprint);
     assert.notEqual(first.claim.intentFingerprint, drifted.claim.intentFingerprint);
+    assert.equal(
+      first.claim.intentFingerprint,
+      fingerprintAgentGraphRunnableIntent({
+        intent: runnableIntent(),
+        executionInput: { prompt: 'summarize the committed record' },
+      }),
+    );
     assert.throws(
       () =>
         claimAgentGraphRunnableIntent({

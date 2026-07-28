@@ -11,6 +11,7 @@ import type {
   AgentGraphIntentExecutor,
   AgentGraphSupervisorObservation,
 } from '../stream-graph-dispatch.js';
+import { fingerprintAgentGraphRunnableIntent } from '../stream-graph-admission.js';
 import { runAgentGraphToQuiescence } from '../stream-graph-dispatch.js';
 import type { AgentGraphReadinessPolicy } from '../stream-graph-readiness.js';
 import type { AgentGraphTraceTopology } from '../stream-graph-trace.js';
@@ -316,6 +317,20 @@ class MemoryGraphExecutor implements AgentGraphIntentExecutor {
   ): ReturnType<AgentGraphIntentExecutor['runClaimedAgentGraphIntent']> {
     const claim = await this.claims.readAgentGraphIntentClaim(input.graphId, input.intentId);
     if (!claim) throw new Error('missing claim');
+    if (
+      claim.graphId !== input.intent.graphId ||
+      claim.intentId !== input.intent.intentId ||
+      claim.readinessContextFingerprint !== input.intent.readinessContextFingerprint ||
+      claim.targetOperatorId !== input.intent.operatorId ||
+      claim.targetSessionId !== input.intent.targetSessionId ||
+      claim.intentFingerprint !==
+        fingerprintAgentGraphRunnableIntent({
+          intent: input.intent,
+          executionInput: { prompt: input.prompt },
+        })
+    ) {
+      throw new Error('claimed graph intent execution does not match its durable claim');
+    }
     if (this.failingOperators.has(claim.targetOperatorId)) {
       throw new Error(`${claim.targetOperatorId} execution failed`);
     }

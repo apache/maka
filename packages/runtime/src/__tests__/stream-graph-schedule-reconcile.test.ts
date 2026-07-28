@@ -12,6 +12,7 @@ import type {
   AgentGraphIntentExecutor,
   AgentGraphSupervisorObservation,
 } from '../stream-graph-dispatch.js';
+import { fingerprintAgentGraphRunnableIntent } from '../stream-graph-admission.js';
 import { reconcileAgentGraphSchedule } from '../stream-graph-schedule-reconcile.js';
 import {
   compileAgentGraphScheduleUpdate,
@@ -643,6 +644,20 @@ class MemoryScheduleExecutor implements AgentGraphIntentExecutor {
     }
     const claim = await this.claims.readAgentGraphIntentClaim(input.graphId, input.intentId);
     if (!claim) throw new Error('missing schedule claim');
+    if (
+      claim.graphId !== input.intent.graphId ||
+      claim.intentId !== input.intent.intentId ||
+      claim.readinessContextFingerprint !== input.intent.readinessContextFingerprint ||
+      claim.targetOperatorId !== input.intent.operatorId ||
+      claim.targetSessionId !== input.intent.targetSessionId ||
+      claim.intentFingerprint !==
+        fingerprintAgentGraphRunnableIntent({
+          intent: input.intent,
+          executionInput: { prompt: input.prompt },
+        })
+    ) {
+      throw new Error('scheduled graph execution does not match its durable claim');
+    }
     this.backendInvocations += 1;
     this.observation.setActivation(claim.targetSessionId, claim.targetRunId, this.status);
     await input.onReady?.({

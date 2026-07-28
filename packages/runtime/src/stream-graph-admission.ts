@@ -8,6 +8,15 @@ import type { AgentGraphRunnableIntent } from './stream-graph-readiness.js';
 
 const AGENT_GRAPH_EXECUTION_INPUT_SCHEMA_VERSION = 1 as const;
 
+export interface AgentGraphRunnableIntentExecutionInput {
+  prompt: string;
+}
+
+export interface FingerprintAgentGraphRunnableIntentInput {
+  intent: AgentGraphRunnableIntent;
+  executionInput: AgentGraphRunnableIntentExecutionInput;
+}
+
 export interface ClaimAgentGraphRunnableIntentInput {
   intent: AgentGraphRunnableIntent;
   store: Pick<AgentGraphIntentClaimStore, 'claimAgentGraphIntent'>;
@@ -22,9 +31,26 @@ export interface ClaimAgentGraphRunnableIntentInput {
    * admission but before the Runtime message is durable cannot retry the same
    * intent with different work.
    */
-  executionInput: {
-    prompt: string;
-  };
+  executionInput: AgentGraphRunnableIntentExecutionInput;
+}
+
+/**
+ * Binds the complete runnable intent to its resolved execution input.
+ *
+ * Claim and execution must both use this helper so the durable claim remains
+ * authoritative for the first execution as well as retries.
+ */
+export function fingerprintAgentGraphRunnableIntent(
+  input: FingerprintAgentGraphRunnableIntentInput,
+): string {
+  if (!input.executionInput.prompt.trim()) {
+    throw new Error('Agent graph execution prompt must not be empty');
+  }
+  return stableHash({
+    schemaVersion: AGENT_GRAPH_EXECUTION_INPUT_SCHEMA_VERSION,
+    intent: input.intent,
+    executionInput: input.executionInput,
+  });
 }
 
 /**
@@ -36,11 +62,7 @@ export interface ClaimAgentGraphRunnableIntentInput {
 export function claimAgentGraphRunnableIntent(
   input: ClaimAgentGraphRunnableIntentInput,
 ): Promise<AgentGraphIntentClaimResult> {
-  if (!input.executionInput.prompt.trim()) {
-    throw new Error('Agent graph execution prompt must not be empty');
-  }
-  const intentFingerprint = stableHash({
-    schemaVersion: AGENT_GRAPH_EXECUTION_INPUT_SCHEMA_VERSION,
+  const intentFingerprint = fingerprintAgentGraphRunnableIntent({
     intent: input.intent,
     executionInput: input.executionInput,
   });

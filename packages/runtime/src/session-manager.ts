@@ -23,6 +23,7 @@ import type {
   QueueEnqueueOutcome,
   ShellRunUpdate,
 } from '@maka/core/events';
+import { messageContentsEqual } from '@maka/core/events';
 import type {
   SessionHeader,
   SessionBlockedReason,
@@ -140,6 +141,8 @@ import {
 } from './runtime-kernel.js';
 import { fallbackSessionTitle, sessionTitleSource } from './session-title.js';
 import type { HistoryCompactCleanupRequest } from './runtime-kernel.js';
+import { fingerprintAgentGraphRunnableIntent } from './stream-graph-admission.js';
+import type { AgentGraphRunnableIntent } from './stream-graph-readiness.js';
 import {
   buildStatusPatch,
   buildTurnStateMessage,
@@ -243,6 +246,8 @@ export interface RunClaimedAgentGraphIntentInput {
    * re-reads the claim through its trusted composition capability.
    */
   claimStore: AgentGraphIntentClaimStore;
+  /** Complete control-plane input used to verify the durable claim fingerprint. */
+  intent: AgentGraphRunnableIntent;
   graphId: string;
   intentId: string;
   prompt: string;
@@ -1720,11 +1725,10 @@ export class SessionManager {
     if (claim.graphId !== input.graphId || claim.intentId !== input.intentId) {
       throw new Error('Graph intent claim store returned a mismatched identity');
     }
-    if (!input.prompt.trim()) {
-      throw new Error('Claimed graph intent prompt must not be empty');
-    }
+    assertAgentGraphIntentExecutionMatchesClaim(claim, input.intent, input.prompt);
     const resolved: ResolvedClaimedAgentGraphIntentInput = {
       claim,
+      intent: input.intent,
       prompt: input.prompt,
       ...(input.admitExecution ? { admitExecution: input.admitExecution } : {}),
       ...(hostedGraphExecution ? { hostedGraphExecution } : {}),
@@ -1825,6 +1829,12 @@ export class SessionManager {
     ) {
       throw new Error('Claimed graph execution target must be a linked child session');
     }
+    const rootExecution: RootExecutionDescriptor = {
+      kind: 'claimed_agent_graph_intent',
+      claim,
+      agentId: snapshot.agentId,
+      agentName: snapshot.agentName,
+    };
     const readyInfo = {
       claimId: claim.claimId,
       graphId: claim.graphId,
@@ -1852,6 +1862,38 @@ export class SessionManager {
     });
     if (run) {
       this.assertClaimedAgentGraphRun(child, snapshot, claim, run);
+      if (input.hostedGraphExecution) {
+        const admission = await this.requireClaimedGraphAdmissionIdentity(
+          claim,
+          input.hostedGraphExecution,
+        );
+        await this.consumeLinkedRootExecution({
+          sessionId: child.id,
+          turnId: claim.targetTurnId,
+          runId: claim.targetRunId,
+          userMessageId: admission.userMessageId,
+          execution: rootExecution,
+          content: { text: input.prompt },
+          start: () => {
+            throw new RuntimeMessageAuthorityInvariantError(
+              'Hosted retry attempted to start an existing claimed graph Run',
+            );
+          },
+        });
+        run = await this.deps.runStore.readRun(child.id, claim.targetRunId);
+        this.assertClaimedAgentGraphRun(child, snapshot, claim, run);
+        await this.assertClaimedAgentGraphPrompt(
+          child.id,
+          claim.targetTurnId,
+          input.prompt,
+          admission.userMessageId,
+        );
+        await notifyReady();
+        return claimedAgentGraphIntentResult(
+          claim,
+          await this.projectExistingChildSpawn(child, run),
+        );
+      }
       await this.assertClaimedAgentGraphPrompt(child.id, claim.targetTurnId, input.prompt);
       await notifyReady();
       while (
@@ -1904,12 +1946,7 @@ export class SessionManager {
     const execution = this.consumeLinkedRootExecution({
       ...identity,
       userMessageId,
-      execution: {
-        kind: 'claimed_agent_graph_intent',
-        claim,
-        agentId: snapshot.agentId,
-        agentName: snapshot.agentName,
-      },
+      execution: rootExecution,
       ...(admitExecution ? { admitExecution } : {}),
       content: { text: input.prompt },
       start: ({ runId, userMessageId, onRunStarted }) =>
@@ -2013,6 +2050,32 @@ export class SessionManager {
     return admission.userMessageId;
   }
 
+  private async requireClaimedGraphAdmissionIdentity(
+    claim: AgentGraphIntentClaim,
+    hostedGraphExecution: RuntimeHostedAgentGraphExecutionCapability,
+  ): Promise<{ runId: string; userMessageId: string }> {
+    const admission = await hostedGraphExecution.readRootTurnAdmissionIdentity(
+      claim.targetSessionId,
+      claim.targetTurnId,
+    );
+    if (!admission) {
+      throw new RuntimeMessageAuthorityInvariantError(
+        'Existing claimed graph Run is missing its durable RootTurn admission',
+      );
+    }
+    if (admission.runId !== claim.targetRunId) {
+      throw new RuntimeMessageAuthorityInvariantError(
+        'Claimed graph RootTurn admission has a mismatched run identity',
+      );
+    }
+    if (admission.userMessageId === null) {
+      throw new RuntimeMessageAuthorityInvariantError(
+        'Claimed graph RootTurn admission is missing its user message identity',
+      );
+    }
+    return { runId: admission.runId, userMessageId: admission.userMessageId };
+  }
+
   private assertClaimedAgentGraphRun(
     child: SessionHeader,
     snapshot: NonNullable<SessionHeader['subagentRuntime']>,
@@ -2035,11 +2098,24 @@ export class SessionManager {
     sessionId: string,
     turnId: string,
     prompt: string,
+    expectedUserMessageId?: string,
   ): Promise<void> {
     const messages = await this.deps.store.readMessages(sessionId);
     const userMessages = messages.filter(
       (message): message is UserMessage => message.type === 'user' && message.turnId === turnId,
     );
+    if (expectedUserMessageId !== undefined) {
+      if (
+        userMessages.length !== 1 ||
+        userMessages[0]?.id !== expectedUserMessageId ||
+        !messageContentsEqual(userMessages[0], { text: prompt })
+      ) {
+        throw new RuntimeMessageAuthorityInvariantError(
+          'Existing claimed graph Run does not match its durable UserMessage',
+        );
+      }
+      return;
+    }
     if (userMessages.length > 1 || (userMessages[0] && userMessages[0].text !== prompt)) {
       throw new Error('Graph intent claim identity was reused for different execution input');
     }
@@ -4447,6 +4523,26 @@ function claimedAgentGraphIntentRequestFingerprint(
   return createHash('sha256')
     .update(JSON.stringify([1, input.claim, input.prompt]))
     .digest('hex');
+}
+
+function assertAgentGraphIntentExecutionMatchesClaim(
+  claim: AgentGraphIntentClaim,
+  intent: AgentGraphRunnableIntent,
+  prompt: string,
+): void {
+  if (
+    intent.graphId !== claim.graphId ||
+    intent.intentId !== claim.intentId ||
+    intent.readinessContextFingerprint !== claim.readinessContextFingerprint ||
+    intent.operatorId !== claim.targetOperatorId ||
+    intent.targetSessionId !== claim.targetSessionId ||
+    fingerprintAgentGraphRunnableIntent({
+      intent,
+      executionInput: { prompt },
+    }) !== claim.intentFingerprint
+  ) {
+    throw new Error('Claimed graph intent execution does not match its durable claim');
+  }
 }
 
 function claimedAgentGraphIntentResult(

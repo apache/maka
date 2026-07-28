@@ -346,6 +346,7 @@ async function dispatchIntent(
     admission = claimed;
     const result = await input.executor.runClaimedAgentGraphIntent({
       claimStore: input.claimStore,
+      intent: prepared.intent,
       graphId: prepared.intent.graphId,
       intentId: prepared.intent.intentId,
       prompt: prepared.prompt,

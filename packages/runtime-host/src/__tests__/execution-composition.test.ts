@@ -12,7 +12,9 @@ import {
   LOCAL_READ_AGENT_DEFINITION,
   SessionManager,
 } from '@maka/runtime';
-import { openInteractiveAgentGraphClaimStoreForWrite } from '@maka/storage/agent-graph-claim-authority';
+import { fingerprintAgentGraphRunnableIntent } from '@maka/runtime/stream-graph-admission';
+import type { AgentGraphRunnableIntent } from '@maka/runtime/stream-graph-readiness';
+import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import {
   resolveStorageRoot,
@@ -21,36 +23,10 @@ import {
 } from '@maka/storage/root-authority';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
 
-test('execution composition owns and closes the independent graph claim writer', async () => {
-  await withCompositionRoot(async ({ owner }) => {
-    const graphClaims = await openInteractiveAgentGraphClaimStoreForWrite(owner.lease);
-    const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
-
-    assert.equal(graphClaims.closed, false);
-    await composition.close();
-    assert.equal(graphClaims.closed, true);
-  });
-});
-
-test('execution composition closes the graph claim writer when later creation fails', async () => {
-  await withCompositionRoot(async ({ owner }) => {
-    const graphClaims = await openInteractiveAgentGraphClaimStoreForWrite(owner.lease);
-
-    await assert.rejects(
-      createExecutionRuntimeHostComposition({
-        ...compositionContext(owner),
-        hostEpoch: 'invalid/host/epoch',
-      }),
-      /Invalid Host Epoch/,
-    );
-    assert.equal(graphClaims.closed, true);
-  });
-});
-
 test('production execution composition owns claimed graph activation retry and exact abort', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
-    const claims = await openInteractiveAgentGraphClaimStoreForWrite(owner.lease);
+    const claims = createAgentGraphControlStore(root);
     const parent = await stores.sessionStore.create({
       cwd: root,
       backend: 'fake',
@@ -58,29 +34,33 @@ test('production execution composition owns claimed graph activation retry and e
       model: 'fake-model',
       permissionMode: 'ask',
     });
-    const completedRequest = await createClaimedGraphChild({
+    const completedPrompt = 'execute the canonical claimed graph activation';
+    const completed = await createClaimedGraphChild({
       root,
       parentSessionId: parent.id,
       suffix: 'a',
       stores,
+      prompt: completedPrompt,
     });
-    const completedClaim = (await claims.claimAgentGraphIntent(completedRequest)).claim;
-    const abortedRequest = await createClaimedGraphChild({
+    const completedClaim = (await claims.claimAgentGraphIntent(completed.request)).claim;
+    const abortedFixture = await createClaimedGraphChild({
       root,
       parentSessionId: parent.id,
       suffix: 'e',
       stores,
+      prompt: FAKE_ASK_USER_QUESTION_PROMPT,
     });
-    const abortedClaim = (await claims.claimAgentGraphIntent(abortedRequest)).claim;
+    const abortedClaim = (await claims.claimAgentGraphIntent(abortedFixture.request)).claim;
+    claims.close();
     const { composition, manager } = await createCapturedExecutionComposition(owner);
     let journeyError: unknown;
     try {
-      const prompt = 'execute the canonical claimed graph activation';
       const first = await manager.runClaimedAgentGraphIntent({
         claimStore: claims,
+        intent: completed.intent,
         graphId: completedClaim.graphId,
         intentId: completedClaim.intentId,
-        prompt,
+        prompt: completedPrompt,
       });
       assert.equal(first.status, 'completed');
 
@@ -91,13 +71,14 @@ test('production execution composition owns claimed graph activation retry and e
       assert.ok(admission);
       assert.ok(admission.userMessageId);
       assert.deepEqual(admission.execution, graphExecutionDescriptor(completedClaim));
-      assert.deepEqual(admission.normalizedInput, { text: prompt });
+      assert.deepEqual(admission.normalizedInput, { text: completedPrompt });
 
       const retry = await manager.runClaimedAgentGraphIntent({
         claimStore: claims,
+        intent: completed.intent,
         graphId: completedClaim.graphId,
         intentId: completedClaim.intentId,
-        prompt,
+        prompt: completedPrompt,
       });
       assert.deepEqual(
         {
@@ -131,6 +112,7 @@ test('production execution composition owns claimed graph activation retry and e
       });
       const aborting = manager.runClaimedAgentGraphIntent({
         claimStore: claims,
+        intent: abortedFixture.intent,
         graphId: abortedClaim.graphId,
         intentId: abortedClaim.intentId,
         prompt: FAKE_ASK_USER_QUESTION_PROMPT,
@@ -222,7 +204,8 @@ async function createClaimedGraphChild(input: {
   parentSessionId: string;
   suffix: string;
   stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>>;
-}): Promise<AgentGraphIntentClaimRequest> {
+  prompt: string;
+}): Promise<{ request: AgentGraphIntentClaimRequest; intent: AgentGraphRunnableIntent }> {
   const turnId = `graph-turn-${input.suffix}`;
   const runId = `graph-run-${input.suffix}`;
   const child = await input.stores.sessionStore.createSubagent({
@@ -263,17 +246,36 @@ async function createClaimedGraphChild(input: {
     },
   });
   assert.equal(child.created, true);
-  return {
+  const intent: AgentGraphRunnableIntent = {
     schemaVersion: 1,
-    claimId: `graph_claim_${input.suffix.repeat(32)}`,
-    graphId: `graph-${input.suffix}`,
     intentId: `graph_intent_${input.suffix.repeat(32)}`,
-    intentFingerprint: `sha256:${input.suffix.repeat(64)}`,
+    graphId: `graph-${input.suffix}`,
     readinessContextFingerprint: `sha256:${nextHex(input.suffix).repeat(64)}`,
-    targetOperatorId: LOCAL_READ_AGENT_DEFINITION.id,
+    policyFingerprint: `sha256:${nextHex(nextHex(input.suffix)).repeat(64)}`,
+    readinessId: `readiness-${input.suffix}`,
+    operatorId: LOCAL_READ_AGENT_DEFINITION.id,
     targetSessionId: child.header.id,
-    targetTurnId: turnId,
-    targetRunId: runId,
+    policyKind: 'map',
+    triggerRouteIds: [`route-${input.suffix}`],
+    triggerRecordIds: [`record-${input.suffix}`],
+  };
+  return {
+    intent,
+    request: {
+      schemaVersion: 1,
+      claimId: `graph_claim_${input.suffix.repeat(32)}`,
+      graphId: intent.graphId,
+      intentId: intent.intentId,
+      intentFingerprint: fingerprintAgentGraphRunnableIntent({
+        intent,
+        executionInput: { prompt: input.prompt },
+      }),
+      readinessContextFingerprint: intent.readinessContextFingerprint,
+      targetOperatorId: LOCAL_READ_AGENT_DEFINITION.id,
+      targetSessionId: child.header.id,
+      targetTurnId: turnId,
+      targetRunId: runId,
+    },
   };
 }
 

@@ -607,6 +607,7 @@ async function dispatchScheduledWork(
     });
     const result = await input.executor.runClaimedAgentGraphIntent({
       claimStore: input.controlStore,
+      intent: prepared.intent,
       graphId: prepared.intent.graphId,
       intentId: prepared.intent.intentId,
       prompt: prepared.prompt,
