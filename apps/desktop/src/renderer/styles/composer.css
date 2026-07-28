@@ -1,4 +1,4 @@
-/* Composer — outer container, controls, pickers, tool buttons, send/workspace/branch/streaming. Composer block merged in from tool-output.css (was misplaced there) — issue #546 PR3. Runtime permission prompt styles live in permission-dialog.css. */
+/* Composer — outer container, controls, pickers, tool buttons, send/workspace/branch/streaming. Composer block merged in from tool-output.css (was misplaced there) — issue #546 PR3. Runtime interaction prompt styles live in interaction-prompts.css. */
 .composer {
   flex: 0 0 auto;
   display: flex;

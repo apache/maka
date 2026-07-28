@@ -12,8 +12,8 @@ Four export surfaces, in the order to look:
 |---|---|---|
 | `src/primitives/` | One file per primitive (e.g. `accordion`, `badge`, `chip`, `dialog-header`, `input`, `page-header`, `tabs`, `textarea`, `toolbar`, `tooltip`, …). **New primitives go here.** | target layer |
 | `src/ui.tsx` | Earlier Base UI wrappers + `buttonVariants` (cva) in one file (Button, Checkbox, Dialog/AlertDialog, Select, Switch, Toggle, Radio, Progress, Separator, Field/Label). | transitional — wrappers migrate into `primitives/` as touched (Badge moved to `primitives/badge.tsx` earlier; Button/Select/etc. still live here) |
-| `src/*.tsx` / `src/*.ts` (top-level) | Feature components + pure logic (e.g. `chat-view.tsx`, `composer.tsx`, `permission-dialog.tsx`, `session-list-panel.tsx`, plus pure helpers like `materialize.ts`, `redact.ts`, `smooth-stream.ts`). | stable |
-| `src/components.tsx` | Re-export barrel for the feature components above (ChatView, Composer, PermissionPrompt, …). | stable |
+| `src/*.tsx` / `src/*.ts` (top-level) | Feature components + pure logic (e.g. `chat-view.tsx`, `composer.tsx`, `sandbox-boundary-prompt.tsx`, `session-list-panel.tsx`, plus pure helpers like `materialize.ts`, `redact.ts`, `smooth-stream.ts`). | stable |
+| `src/components.tsx` | Re-export barrel for the feature components above (ChatView, Composer, SandboxBoundaryPrompt, …). | stable |
 
 `src/index.ts` is the package barrel. It follows an **off-barrel convention**: some styling tables and per-surface helpers are deliberately *not* re-exported, so they stay renamable/removable without a public-API break. A symbol earns barrel export when it has a **cross-package consumer or an explicit public-API need** — not merely a second in-package consumer (`attachment-file-card` has two in-package consumers, `chat-view` and `composer`, but stays off-barrel). Don't add to the barrel speculatively. This README is the source of truth for the barrel promotion rule.
 

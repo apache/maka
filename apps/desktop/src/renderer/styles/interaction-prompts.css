@@ -1,5 +1,5 @@
-/* Turn-scoped permission prompt. It takes over the composer's in-flow slot so
-   the conversation and any live browser remain visible while Maka waits. */
+/* Turn-scoped interactions take over the composer's in-flow slot so the
+   conversation and any live browser remain visible while Maka waits. */
 .maka-composer-interaction-slot {
   display: contents;
 }
@@ -231,7 +231,7 @@
   opacity: var(--opacity-muted);
 }
 
-.permissionActions.maka-question-actions {
+.maka-interaction-actions.maka-question-actions {
   display: grid;
   grid-template-columns: auto auto minmax(0, 1fr) auto;
 }
@@ -240,11 +240,11 @@
   grid-column: 4;
 }
 
-.maka-permission-header {
+.maka-interaction-header {
   min-width: 0;
 }
 
-.maka-permission-title-row {
+.maka-interaction-title-row {
   min-width: 0;
   display: flex;
   align-items: baseline;
@@ -252,7 +252,7 @@
   gap: var(--space-2);
 }
 
-.maka-permission-title {
+.maka-interaction-title {
   min-width: 0;
   margin: 0;
   color: var(--foreground);
@@ -261,195 +261,7 @@
   line-height: var(--leading-tight);
 }
 
-.maka-permission-prompt[data-tone="destructive"] .maka-permission-prompt-inner {
-  border: var(--border-width-hairline) solid oklch(from var(--destructive) l c h / 0.32);
-}
-
-.maka-permission-age {
-  color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  white-space: nowrap;
-}
-
-.maka-permission-age[data-status="stale"] {
-  color: var(--warning-text);
-}
-
-.maka-permission-age[data-status="expired"] {
-  color: var(--destructive-text);
-}
-
-.maka-permission-body {
-  display: grid;
-  gap: var(--space-1);
-}
-
-.maka-permission-summary {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: var(--space-2);
-  align-content: center;
-  min-height: var(--h-control-lg);
-  box-sizing: border-box;
-  padding: var(--space-2) var(--space-2-5);
-  overflow: hidden;
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--foreground-2);
-}
-
-.maka-permission-summary .maka-code {
-  grid-column: 1 / -1;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-}
-
-.maka-permission-line {
-  grid-column: 1 / -1;
-  margin: 0;
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-}
-
-.maka-permission-path {
-  min-width: 0;
-  margin: 0;
-}
-
-.maka-permission-summary .maka-permission-path code {
-  min-width: 0;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-ui);
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--foreground);
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.maka-permission-command {
-  margin: 0;
-  max-height: 64px;
-  overflow: auto;
-}
-
-.maka-permission-preview {
-  margin: 0;
-}
-
-.maka-permission-meta {
-  margin: 0;
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  white-space: nowrap;
-}
-
-.maka-permission-context {
-  margin: 0;
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
-}
-
-.maka-permission-diff {
-  display: grid;
-  gap: 0;
-  overflow: hidden;
-  border-radius: var(--radius-control);
-  background: var(--foreground-2);
-}
-
-.maka-permission-diff-lines {
-  margin: 0;
-  padding: var(--space-1) var(--space-2);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  color: var(--foreground);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
-}
-
-.maka-permission-diff-lines[data-side="old"] {
-  background: oklch(from var(--destructive) l c h / 0.10);
-}
-
-.maka-permission-diff-lines[data-side="new"] {
-  background: oklch(from var(--success) l c h / 0.10);
-}
-
-.maka-permission-raw {
-  display: grid;
-  gap: var(--space-2);
-}
-
-.maka-permission-raw [data-slot="collapsible-panel"] {
-  max-height: min(32vh, 220px);
-  overflow: auto;
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--foreground-2);
-}
-
-.maka-permission-raw [data-slot="collapsible-trigger"] {
-  width: auto;
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  min-height: var(--h-control-sm);
-  padding: 0 var(--space-1);
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  border-radius: var(--radius-control);
-}
-
-/* Rotating disclosure triangle (same recipe as .maka-turn-thinking):
-   without it the bordered trigger row read as a text input, not a
-   collapsible section. */
-.maka-permission-raw [data-slot="collapsible-trigger"]::before {
-  content: '';
-  flex-shrink: 0;
-  width: 0;
-  height: 0;
-  border-style: solid;
-  border-width: 4px 0 4px 5px;
-  border-color: transparent transparent transparent currentColor;
-  transition: transform var(--duration-base) var(--ease-out-strong);
-}
-
-.maka-permission-raw [data-slot="collapsible-trigger"][data-panel-open]::before {
-  transform: rotate(90deg);
-}
-
-.maka-permission-raw [data-slot="collapsible-trigger"]:hover {
-  color: var(--foreground);
-  background: var(--state-hover-bg);
-}
-
-.maka-permission-raw .maka-code {
-  margin: 0;
-  border: 0;
-  border-radius: 0 0 var(--radius-control) var(--radius-control);
-  background: var(--foreground-2);
-  max-height: none;
-  overflow: visible;
-}
-
-.maka-permission-details {
-  display: grid;
-  gap: var(--space-2);
-  padding: var(--space-2-5);
-  border-bottom: var(--border-width-hairline) solid var(--border);
-}
-
-.permissionActions {
+.maka-interaction-actions {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -458,53 +270,13 @@
   border-top: var(--border-width-hairline) solid var(--border);
 }
 
-.maka-permission-utility-actions {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  flex-wrap: nowrap;
-}
-
-.permissionRemember {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-snug);
-  white-space: nowrap;
-}
-
-.maka-permission-decision-actions {
-  flex: 0 0 auto;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(88px, 1fr));
-  align-items: center;
-  gap: var(--space-1);
-}
-
 @container (max-width: 460px) {
-  .permissionActions {
+  .maka-interaction-actions {
     align-items: flex-start;
     flex-direction: column;
   }
 
-  .maka-permission-utility-actions,
-  .maka-permission-decision-actions {
-    width: 100%;
-  }
-
-  .maka-permission-utility-actions {
-    flex-wrap: wrap;
-  }
-
-  .maka-permission-decision-actions {
-    grid-template-columns: repeat(3, 1fr);
-  }
-
-  .permissionActions.maka-question-actions {
+  .maka-interaction-actions.maka-question-actions {
     grid-template-columns: repeat(3, minmax(0, 1fr));
     flex-direction: initial;
   }

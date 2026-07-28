@@ -37,7 +37,7 @@
 @import "./styles/chat-detail.css";
 @import "./styles/settings.css";
 @import "./styles/markdown-link.css" layer(components);
-@import "./styles/permission-dialog.css";
+@import "./styles/interaction-prompts.css";
 @import "./styles/daily-review.css";
 @import "./styles/theme-glass.css";
 @import "./styles/prompt-rail.css";

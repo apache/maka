@@ -82,9 +82,9 @@ export function UserQuestionPrompt(props: {
       aria-labelledby={titleId}
     >
       <div className="maka-composer-interaction-inner agents-parchment-paper-surface">
-        <header className="maka-permission-header">
-          <div className="maka-permission-title-row">
-            <h2 className="maka-permission-title" id={titleId}>{question.question}</h2>
+        <header className="maka-interaction-header">
+          <div className="maka-interaction-title-row">
+            <h2 className="maka-interaction-title" id={titleId}>{question.question}</h2>
             <span className="maka-question-progress">{questionIndex + 1} / {props.request.questions.length}</span>
           </div>
         </header>
@@ -129,7 +129,7 @@ export function UserQuestionPrompt(props: {
           </label>
         </div>
 
-        <footer className="permissionActions maka-question-actions">
+        <footer className="maka-interaction-actions maka-question-actions">
           <Button
             type="button"
             variant="ghost"

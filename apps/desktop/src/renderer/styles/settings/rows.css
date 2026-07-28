@@ -30,7 +30,7 @@
      the settings content column is narrower than the window by the nav
      sidebar, so viewport @media blocks systematically fire too late/early
      (the #1361 540px and #1364 900px lessons). Same mechanism as the
-     permission dialog's inline-size container in permission-dialog.css. */
+     interaction prompt's inline-size container in interaction-prompts.css. */
   container: settings-rows / inline-size;
 }
 
@@ -411,7 +411,7 @@
 /* THE row-wrapping decision for every form-row page (#1303 tracking):
    below 460px of CARD width — not viewport width — label/control rows
    stack vertically. 460px is the app's one container breakpoint (shared
-   with permission-dialog.css) and sits just above the widest one-line
+   with interaction-prompts.css) and sits just above the widest one-line
    row minimum (150px label floor + gap + a ~180px intrinsic-width input
    + 48px row padding ≈ 394px), with margin for the select triggers'
    320px cap to stay usable. Switch rows are the exception: a switch is
