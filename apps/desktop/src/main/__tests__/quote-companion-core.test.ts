@@ -296,7 +296,11 @@ describe('isCompanionTurnTerminal', () => {
 });
 
 describe('applyCompanionInteractionEvent', () => {
-  const req = { type: 'permission_request', requestId: 'r1', toolUseId: 'tu1' } as unknown as SessionEvent;
+  const req = {
+    type: 'sandbox_boundary_request',
+    requestId: 'r1',
+    toolUseId: 'tu1',
+  } as unknown as SessionEvent;
 
   it('enqueues a request and ignores a duplicate requestId', () => {
     let queues = applyCompanionInteractionEvent({}, 'S', req);
@@ -316,7 +320,7 @@ describe('applyCompanionInteractionEvent', () => {
     const afterAck = applyCompanionInteractionEvent(
       afterHandoff,
       'S',
-      { type: 'permission_decision_ack', requestId: 'r1' } as SessionEvent,
+      { type: 'sandbox_boundary_decision_ack', requestId: 'r1' } as SessionEvent,
     );
     assert.equal(afterAck.S.length, 0);
   });

@@ -211,7 +211,7 @@ export async function performCompanionTurn(
 
 /**
  * A `complete` with `stopReason === 'permission_handoff'` is NOT terminal — the
- * turn resumes once the pending approval is resolved, so the live turn and the
+ * turn resumes once the pending interaction is resolved, so the live turn and the
  * interaction queue must survive it.
  */
 export function isCompanionTurnTerminal(event: SessionEvent): boolean {
@@ -224,7 +224,7 @@ export function isCompanionTurnTerminal(event: SessionEvent): boolean {
 
 /**
  * Route a companion event into its interaction queue, mirroring the main shell:
- * permission / question requests enqueue, their acks / tool results dequeue, and
+ * boundary / question requests enqueue, their acks / tool results dequeue, and
  * a terminal event clears the queue (a permission handoff does not).
  */
 export function applyCompanionInteractionEvent(
@@ -233,11 +233,9 @@ export function applyCompanionInteractionEvent(
   event: SessionEvent,
 ): InteractionQueues {
   switch (event.type) {
-    case 'permission_request':
     case 'sandbox_boundary_request':
     case 'user_question_request':
       return enqueueInteraction(queues, sessionId, event);
-    case 'permission_decision_ack':
     case 'sandbox_boundary_decision_ack':
       return dequeueInteractionByRequestId(queues, sessionId, event.requestId);
     case 'tool_result':

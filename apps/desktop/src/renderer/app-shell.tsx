@@ -518,7 +518,6 @@ function AppShellContent({
     toastApi,
   });
   const activeInteraction = activeInteractionFor(interactionBySession, activeId);
-  const activePermission = activeInteraction?.type === 'permission_request' ? activeInteraction : undefined;
   const activeSandboxBoundary =
     activeInteraction?.type === 'sandbox_boundary_request' ? activeInteraction : undefined;
   const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
@@ -2110,7 +2109,6 @@ function AppShellContent({
                 activeInteraction={activeInteraction}
                 activeId={activeId}
                 stopPendingBySession={stopPendingBySession}
-                activePermission={activePermission}
                 activeSandboxBoundary={activeSandboxBoundary}
                 respondToSandboxBoundary={respondToSandboxBoundary}
                 activeQuestion={activeQuestion}

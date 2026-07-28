@@ -117,17 +117,11 @@ export function createAppShellSessionEventHandlers(options: {
       case 'text_complete':
         void refreshMessages(sessionId, { requiredAssistantMessageId: event.messageId }).catch(() => false);
         break;
-      case 'permission_request':
-        setInteractionBySession((current) => enqueueInteraction(current, sessionId, event));
-        break;
       case 'sandbox_boundary_request':
         setInteractionBySession((current) => enqueueInteraction(current, sessionId, event));
         break;
       case 'user_question_request':
         setInteractionBySession((current) => enqueueInteraction(current, sessionId, event));
-        break;
-      case 'permission_decision_ack':
-        setInteractionBySession((current) => dequeueInteractionByRequestId(current, sessionId, event.requestId));
         break;
       case 'sandbox_boundary_decision_ack':
         setInteractionBySession((current) =>

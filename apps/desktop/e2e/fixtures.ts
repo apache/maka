@@ -325,7 +325,7 @@ export const test = base.extend<{
   // are covered without a provider or test-only renderer state path.
   permissionWindow: async ({}, use) => {
     await withE2eWindow(
-      { seed: false, readinessSelector: '.maka-permission-prompt', e2eFixtureScenario: 'permission-destructive', locale: 'zh' },
+      { seed: false, readinessSelector: '.maka-sandbox-boundary-prompt', e2eFixtureScenario: 'sandbox-boundary', locale: 'zh' },
       use,
     );
   },

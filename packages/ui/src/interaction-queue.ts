@@ -1,11 +1,9 @@
 import type {
-  AnyPermissionRequestEvent,
   SandboxBoundaryRequestEvent,
   UserQuestionRequestEvent,
 } from '@maka/core';
 
 export type ComposerInteraction =
-  | AnyPermissionRequestEvent
   | SandboxBoundaryRequestEvent
   | UserQuestionRequestEvent;
 export type InteractionQueues = Record<string, ComposerInteraction[]>;

@@ -1,7 +1,6 @@
 import type { ComponentProps, Ref } from 'react';
 import {
   Composer,
-  PermissionPrompt,
   SandboxBoundaryPrompt,
   UserQuestionPrompt,
 } from '@maka/ui';
@@ -29,12 +28,11 @@ interface ChatComposerRegionProps extends Omit<ComponentProps<typeof Composer>, 
   activeInteraction: ComposerInteraction | undefined;
   activeId: string | undefined;
   stopPendingBySession: Record<string, boolean>;
-  activePermission: ComponentProps<typeof PermissionPrompt>['request'] | undefined;
-  respondToSandboxBoundary: ComponentProps<typeof PermissionPrompt>['onRespond'];
+  respondToSandboxBoundary: ComponentProps<typeof SandboxBoundaryPrompt>['onRespond'];
   activeSandboxBoundary: ComponentProps<typeof SandboxBoundaryPrompt>['request'] | undefined;
   activeQuestion: ComponentProps<typeof UserQuestionPrompt>['request'] | undefined;
   respondToUserQuestion: ComponentProps<typeof UserQuestionPrompt>['onRespond'];
-  stop: ComponentProps<typeof PermissionPrompt>['onStop'];
+  stop: ComponentProps<typeof UserQuestionPrompt>['onStop'];
 }
 
 export function ChatComposerRegion({
@@ -44,7 +42,6 @@ export function ChatComposerRegion({
   activeInteraction,
   activeId,
   stopPendingBySession,
-  activePermission,
   respondToSandboxBoundary,
   activeSandboxBoundary,
   activeQuestion,
@@ -55,14 +52,6 @@ export function ChatComposerRegion({
   return (
     <>
       <div className="maka-composer-interaction-slot">
-        {activePermission && (
-          <PermissionPrompt
-            request={activePermission}
-            onRespond={respondToSandboxBoundary}
-            onStop={stop}
-            stopPending={activeId ? stopPendingBySession[activeId] === true : false}
-          />
-        )}
         {activeSandboxBoundary && (
           <SandboxBoundaryPrompt
             request={activeSandboxBoundary}

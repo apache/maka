@@ -2,7 +2,7 @@ import { useRef } from 'react';
 import {
   ChatView,
   Composer,
-  PermissionPrompt,
+  SandboxBoundaryPrompt,
   UserQuestionPrompt,
   useUiLocale,
   type ChatModelChoice,
@@ -55,7 +55,7 @@ export function QuoteCompanionPanel(props: {
         )?.label
       : undefined) ?? activeModel?.model;
 
-  const activeInteraction = companion.activePermission ?? companion.activeQuestion;
+  const activeInteraction = companion.activeSandboxBoundary ?? companion.activeQuestion;
 
   return (
     <div className="maka-quote-companion">
@@ -77,15 +77,12 @@ export function QuoteCompanionPanel(props: {
         onNew={() => {}}
       />
       {companion.error && <div className="maka-quote-companion-error">{companion.error}</div>}
-      {/* `explore` blocks writes, but a web/custom-tool call still prompts — it
-          must be resolvable here since the companion forks a real run. */}
-      {(companion.activePermission || companion.activeQuestion) && (
+      {(companion.activeSandboxBoundary || companion.activeQuestion) && (
         <div className="maka-composer-interaction-slot">
-          {companion.activePermission && (
-            <PermissionPrompt
-              request={companion.activePermission}
+          {companion.activeSandboxBoundary && (
+            <SandboxBoundaryPrompt
+              request={companion.activeSandboxBoundary}
               onRespond={companion.respondToSandboxBoundary}
-              onStop={() => void companion.stop()}
             />
           )}
           {companion.activeQuestion && (

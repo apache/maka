@@ -9,7 +9,7 @@ import {
   type LiveTurnProjection,
 } from '@maka/ui';
 import type {
-  AnyPermissionRequestEvent,
+  SandboxBoundaryRequestEvent,
   SandboxBoundaryResponse,
   QuoteRef,
   SessionEvent,
@@ -57,10 +57,8 @@ export interface UseQuoteCompanionResult {
   error: string | null;
   /** The model the companion inherited from the source (shown read-only). */
   activeModel: { llmConnectionSlug: string; model: string } | undefined;
-  /** Pending permission / user-question prompt raised by the companion's run.
-   *  `explore` hard-blocks writes/shell, but web / custom tools still follow the
-   *  normal permission path, so the panel surfaces these to resolve them. */
-  activePermission: AnyPermissionRequestEvent | undefined;
+  /** Pending sandbox-boundary / user-question prompt raised by the companion's run. */
+  activeSandboxBoundary: SandboxBoundaryRequestEvent | undefined;
   activeQuestion: UserQuestionRequestEvent | undefined;
   /** Returns whether the send was accepted; false leaves the draft + staged
    *  quotes in place so the user can retry. */
@@ -124,7 +122,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
 
   // Subscribe to the fork's event stream + load its transcript. Called
   // synchronously the moment the fork is committed, BEFORE the run starts, so
-  // no permission_request / complete can be missed (the stream has no replay).
+  // no boundary request / complete can be missed (the stream has no replay).
   const subscribeToFork = useCallback((forkId: string) => {
     void readSettledMessages(forkId)
       .then(({ messages }) => {
@@ -132,12 +130,12 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       })
       .catch(() => {});
     unsubscribeRef.current = window.maka.sessions.subscribeEvents(forkId, (event: SessionEvent) => {
-      // Interaction queue (so a web/custom-tool approval surfaces) + live stream.
+      // Interaction queue (so a boundary expansion surfaces) + live stream.
       setInteractions((current) => applyCompanionInteractionEvent(current, forkId, event));
       setLiveTurn((prev) => applyLiveTurnEvent(prev, event, localeRef.current));
       if (event.type === 'error') setError(copyRef.current.errors.runError);
       // A `permission_handoff` complete is NOT terminal — the turn resumes once
-      // the pending approval is resolved, so keep the interaction + live turn.
+      // the pending interaction is resolved, so keep the interaction + live turn.
       if (isCompanionTurnTerminal(event)) {
         // Settlement: wait for the assistant message to persist before handing
         // off from the live projection, then reconcile (shared with the main chat)
@@ -302,8 +300,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const activeInteraction = companionIdRef.current
     ? activeInteractionFor(interactions, companionIdRef.current)
     : undefined;
-  const activePermission =
-    activeInteraction?.type === 'permission_request' ? activeInteraction : undefined;
+  const activeSandboxBoundary =
+    activeInteraction?.type === 'sandbox_boundary_request' ? activeInteraction : undefined;
   const activeQuestion =
     activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
 
@@ -315,7 +313,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     processing,
     error,
     activeModel,
-    activePermission,
+    activeSandboxBoundary,
     activeQuestion,
     send,
     stop,

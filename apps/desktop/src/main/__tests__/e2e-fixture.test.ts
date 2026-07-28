@@ -289,7 +289,7 @@ describe('e2e-fixture mode', () => {
     assert.equal(state?.now, Date.UTC(2026, 4, 22, 3, 0, 0));
     assert.equal(state?.activeSessionId, undefined);
     assert.equal(state?.liveTurnBySession, undefined);
-    assert.equal(state?.permissionBySession, undefined);
+    assert.equal(state?.sandboxBoundaryBySession, undefined);
   });
 
   it('all fixture exposes transient streaming and permission state without persistence', () => {
@@ -300,12 +300,13 @@ describe('e2e-fixture mode', () => {
     const liveTurns = state?.liveTurnBySession;
     assert.equal(liveTurns?.['e2e-fixture-streaming']?.turnId, 'turn-streaming');
     assert.equal(liveTurns?.['e2e-fixture-streaming']?.steps[0]?.tools[0]?.status, 'running');
-    assert.equal(liveTurns?.['e2e-fixture-permission']?.turnId, 'turn-permission');
+    assert.equal(liveTurns?.['e2e-fixture-permission']?.turnId, 'turn-sandbox-boundary');
     assert.equal(liveTurns?.['e2e-fixture-permission']?.steps[0]?.tools[0]?.status, 'waiting_permission');
-    const permission = state?.permissionBySession?.['e2e-fixture-permission'];
-    assert.ok(permission);
-    assert.equal((permission.args as { command?: unknown }).command, 'rm -rf ./dist');
-    assert.equal(Object.hasOwn(permission.args as object, 'cmd'), false, 'fixture must match the current Bash input schema');
+    const request = state?.sandboxBoundaryBySession?.['e2e-fixture-permission'];
+    assert.ok(request);
+    assert.deepEqual(request.expansion.filesystem?.entries, [
+      { path: '/outside/dist', access: 'write', scope: 'subtree' },
+    ]);
   });
 
   it('task-ledger fixture seeds the hierarchical desktop read model', async () => {

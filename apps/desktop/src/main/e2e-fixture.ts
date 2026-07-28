@@ -28,10 +28,10 @@ import {
 import {
   errorMessages,
   errorSession,
-  permissionLiveTurns,
+  sandboxBoundaryLiveTurns,
   permissionMessages,
   permissionSession,
-  permissionState,
+  sandboxBoundaryState,
   processingLiveTurns,
   processingMessages,
   processingSession,
@@ -98,7 +98,7 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   // #646: a running session with an armed turn but nothing streaming yet —
   // captures the "正在处理…" model-wait indicator + composer Stop.
   'model-processing',
-  'permission-destructive',
+  'sandbox-boundary',
   'stale-sessions',
   // PR108j: per-Settings-section fixtures so each Settings sub-page can
   // be opened deterministically over the standard seed. Each scenario
@@ -448,12 +448,12 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
         activeSessionId: PROCESSING_SESSION_ID,
         liveTurnBySession: processingLiveTurns(),
       };
-    case 'permission-destructive':
+    case 'sandbox-boundary':
       return {
         ...state,
         activeSessionId: PERMISSION_SESSION_ID,
-        permissionBySession: permissionState(),
-        liveTurnBySession: permissionLiveTurns(),
+        sandboxBoundaryBySession: sandboxBoundaryState(),
+        liveTurnBySession: sandboxBoundaryLiveTurns(),
       };
     case 'stale-sessions':
       // Active session intentionally a stale one — verifies the @kenji
@@ -605,10 +605,10 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
       return {
         ...state,
         activeSessionId: TURN_SESSION_ID,
-        permissionBySession: permissionState(),
+        sandboxBoundaryBySession: sandboxBoundaryState(),
         liveTurnBySession: {
           ...streamingLiveTurns(),
-          ...permissionLiveTurns(),
+          ...sandboxBoundaryLiveTurns(),
         },
       };
   }
