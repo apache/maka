@@ -85,6 +85,21 @@ import {
 const COMPRESS_FRAME_THRESHOLD = 1.5 * 1024 * 1024;
 const CUA_DRIVER_FRAME_MAX_BYTES = 8 * 1024 * 1024;
 const MAX_OBSERVATIONS_PER_SESSION = 16;
+/**
+ * How long to let a window settle after an action before capturing the
+ * observation the model will act on.
+ *
+ * The driver returns once it has dispatched, not once the app has finished
+ * reacting. Capturing immediately hands the model a UI mid-transition — a menu
+ * halfway open, a list not yet repopulated — and the element indices it derives
+ * from that snapshot describe a screen that no longer exists by the time it
+ * acts on them. The floor covers the common case; the poll catches slower
+ * redraws; the ceiling keeps a permanently animating window from stalling the
+ * turn, since capturing something is better than capturing nothing.
+ */
+const SETTLE_FLOOR_MS = 120;
+const SETTLE_POLL_MS = 120;
+const SETTLE_CEILING_MS = 1_500;
 
 function exceedsCuaDriverFrameCap(byteLength: number): boolean {
   return byteLength > CUA_DRIVER_FRAME_MAX_BYTES;
@@ -144,6 +159,11 @@ export interface CuaDriverBackendOptions {
   resolveContentFingerprint?: (
     elements: readonly NonNullable<ReturnType<typeof normalizeCuaSnapshotElement>>[],
   ) => string;
+  /**
+   * Skip the post-action settle wait. Tests that assert an exact driver call
+   * sequence set this; production leaves it on.
+   */
+  settleAfterAction?: boolean;
   resolveDisplays?: (input: {
     screenshotWidthPx: number;
     screenshotHeightPx: number;
@@ -364,6 +384,80 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
       ),
     ].sort();
     return createHash('sha256').update(JSON.stringify(structural)).digest('hex');
+  }
+
+  /**
+   * Sleep that honours an abort signal.
+   *
+   * The model-facing `wait` action used a bare setTimeout, so a user stop
+   * during a long wait was ignored until the timer fired on its own.
+   */
+  function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+    if (ms <= 0) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      if (signal.aborted) {
+        reject(signal.reason ?? new Error('aborted'));
+        return;
+      }
+      const onAbort = (): void => {
+        clearTimeout(timer);
+        reject(signal.reason ?? new Error('aborted'));
+      };
+      const timer = setTimeout(() => {
+        signal.removeEventListener('abort', onAbort);
+        resolve();
+      }, ms);
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+  }
+
+  /**
+   * Hold until a window stops changing, so the observation captured after an
+   * action describes the UI the model will actually be acting on.
+   *
+   * Polls the AX tree without a screenshot — the expensive part of a capture is
+   * the image, and structure is what the fingerprint compares. Two consecutive
+   * identical fingerprints mean the window has come to rest. A probe that fails
+   * ends the wait rather than blocking it: the real capture that follows will
+   * surface the error properly.
+   */
+  async function settleWindow(
+    window: CuaResolvedWindow,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (opts.settleAfterAction === false) return;
+    await abortableDelay(SETTLE_FLOOR_MS, signal);
+    const deadline = Date.now() + SETTLE_CEILING_MS;
+    let previous: string | undefined;
+    while (Date.now() < deadline) {
+      let fingerprint: string;
+      try {
+        const state = await actionClient.callTool(
+          'get_window_state',
+          {
+            pid: window.pid,
+            window_id: window.windowId,
+            include_screenshot: false,
+            max_elements: 500,
+            max_depth: 25,
+          },
+          signal,
+        );
+        const outcome = normalizeCuaDriverOutcome(state);
+        if (!outcome.ok) return;
+        const elements = ((state?.structuredContent?.elements ?? []) as CuaSnapshotElement[])
+          .map((candidate) => normalizeCuaSnapshotElement(candidate))
+          .filter((element): element is NonNullable<typeof element> => element !== undefined);
+        fingerprint = opts.resolveContentFingerprint
+          ? opts.resolveContentFingerprint(elements)
+          : contentFingerprint(elements);
+      } catch {
+        return;
+      }
+      if (fingerprint === previous) return;
+      previous = fingerprint;
+      await abortableDelay(SETTLE_POLL_MS, signal);
+    }
   }
 
   function storeObservation(observationId: string, observation: CuaStoredObservation): void {
@@ -1500,6 +1594,7 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
               if (!outcome.ok) return { outcome };
               let fresh: CuObservation;
               try {
+                await settleWindow(validated, signal);
                 fresh = await observeResolvedWindow(validated, true, signal, context);
               } catch {
                 return deliveredVerificationFailure('press_key', 'ax');
@@ -1573,6 +1668,7 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
             if (!outcome.ok) return { outcome };
             let fresh: CuObservation;
             try {
+              await settleWindow(validated, signal);
               fresh = await observeResolvedWindow(validated, true, signal, context);
             } catch {
               return deliveredVerificationFailure(action.type, 'ax');
@@ -2160,7 +2256,7 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
                 };
               }
               case 'wait':
-                await new Promise((res) => setTimeout(res, Math.min(action.durationMs, 10_000)));
+                await abortableDelay(Math.min(action.durationMs, 10_000), signal);
                 return { outcome: { ok: true, tier: 'coordinate-background' } };
               case 'cursor_position': {
                 const result = await actionClient.callTool('get_cursor_position', {}, signal);
