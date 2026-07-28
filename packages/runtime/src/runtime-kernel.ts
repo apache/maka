@@ -145,8 +145,17 @@ export interface TurnStartOptions {
 
 export interface RuntimeExecutionClaim {
   readonly sessionId: string;
+  readonly stopSignal: AbortSignal;
   isStopRequested(): boolean;
   release(): void;
+}
+
+export class RuntimeOwnerCleanupError extends Error {
+  readonly name = 'RuntimeOwnerCleanupError';
+
+  constructor(message: string, cause: unknown) {
+    super(message, { cause });
+  }
 }
 
 export interface ChildAgentRetryInput {
@@ -369,6 +378,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     const cancellation = new RuntimeExecutionCancellation(sessionId);
     const handle: RuntimeExecutionClaim = {
       sessionId,
+      stopSignal: abortController.signal,
       isStopRequested: () => state.stopIntent !== undefined,
       release: () => this.releaseExecutionClaim(state),
     };
@@ -771,7 +781,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       this.settleReservedExecutionClaim(execution, run, { ok: false, error });
       await run.recordFailure(error);
       await this.finalizeExecutionClaimRun(execution, run, () => run.finalize());
-      if (run.isStopped() && isExecutionCancellation(error)) return;
+      if (run.isStopped() && isExecutionCancellation(error, execution.cancellation)) return;
       throw error;
     }
 
@@ -1114,7 +1124,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       if (onRunStarted && initialHeader) await onRunStarted(run.runId, initialHeader);
     } catch (error) {
       releaseExecutionAbort();
-      await this.finalizeFailedRunStart(owners, run, error);
+      await this.finalizeFailedRunStart(owners, run, execution, error);
       return;
     }
 
@@ -1354,7 +1364,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       await onRunStarted?.();
     } catch (error) {
       releaseExecutionAbort();
-      await this.finalizeFailedRunStart(owners, run, error);
+      await this.finalizeFailedRunStart(owners, run, execution, error);
       return;
     }
 
@@ -1478,12 +1488,13 @@ export class RuntimeKernel implements RuntimeKernelLike {
   private async finalizeFailedRunStart(
     owners: RuntimeRunOwnerScope,
     run: AgentRun,
+    execution: PendingExecutionClaim,
     error: unknown,
   ): Promise<void> {
     try {
       await owners.failStart(error);
     } catch (failure) {
-      if (run.isStopped() && isExecutionCancellation(failure)) return;
+      if (run.isStopped() && isExecutionCancellation(failure, execution.cancellation)) return;
       throw failure;
     }
   }
@@ -1538,7 +1549,15 @@ export class RuntimeKernel implements RuntimeKernelLike {
     await input.runnerResult.catch(() => undefined);
     await failures.capture(input.finalizeRun);
     await failures.capture(input.releaseOwner);
-    failures.throwIfAny(`Run cleanup failed for ${input.run.runId}`);
+    const message = `Run cleanup failed for ${input.run.runId}`;
+    try {
+      failures.throwIfAny(message);
+    } catch (error) {
+      if (input.flowDone && containsRuntimeOwnerCleanupFailure(error)) {
+        throw runtimeOwnerCleanupFailure(message, error);
+      }
+      throw error;
+    }
   }
 
   private registerInteractionRun(run: AgentRun, binding: RuntimeInteractionRunBinding): void {
@@ -2390,7 +2409,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         shellRunContextSummary: () =>
           this.deps.shellRuns?.buildContextSummary(sessionId) ?? Promise.resolve(undefined),
       });
-      await this.rejectCancelledBackendActivation(backend, execution);
+      await this.rejectCancelledBackendActivation(backend, header, { kind: 'parent' }, execution);
       const generation = this.createBackendGeneration(sessionId, backend, header, {
         kind: 'parent',
       });
@@ -2546,7 +2565,12 @@ export class RuntimeKernel implements RuntimeKernelLike {
           run?.recordSemanticCompactBlock(block);
         },
       });
-      await this.rejectCancelledBackendActivation(backend, execution);
+      await this.rejectCancelledBackendActivation(
+        backend,
+        header,
+        { kind: 'child', activeKey },
+        execution,
+      );
       const generation = this.createBackendGeneration(sessionId, backend, header, {
         kind: 'child',
         activeKey,
@@ -2617,14 +2641,16 @@ export class RuntimeKernel implements RuntimeKernelLike {
 
   private async rejectCancelledBackendActivation(
     backend: AgentBackend,
+    header: SessionHeader,
+    route: BackendGeneration['route'],
     execution: PendingExecutionClaim,
   ): Promise<void> {
     if (!execution.abortController.signal.aborted) return;
-    try {
-      await backend.dispose();
-    } catch (error) {
+    const generation = this.createBackendGeneration(execution.sessionId, backend, header, route);
+    const disposal = await this.quarantineBackendGeneration(generation);
+    if (!disposal.ok) {
       throw new AggregateError(
-        [execution.cancellation, error],
+        [execution.cancellation, disposal.error],
         `Cancelled backend activation disposal failed for session ${execution.sessionId}`,
       );
     }
@@ -3063,7 +3089,11 @@ class RuntimeRunOwnerScope {
   releaseMessage(): void {
     if (!this.messageOwner || this.messageReleased) return;
     this.messageReleased = true;
-    this.messageOwner.release();
+    try {
+      this.messageOwner.release();
+    } catch (error) {
+      throw runtimeOwnerCleanupFailure(`Message owner release failed for ${this.run.runId}`, error);
+    }
   }
 
   private settleReservedExecution(outcome: ExecutionClaimOutcome): void {
@@ -3086,7 +3116,12 @@ class RuntimeRunOwnerScope {
     if (!failures.hasFailures && interactionRun) {
       await failures.capture(() => this.callbacks.releaseInteraction(interactionRun));
     }
-    failures.throwIfAny(`Interaction and Run finalization failed for ${this.run.runId}`);
+    const message = `Interaction and Run finalization failed for ${this.run.runId}`;
+    try {
+      failures.throwIfAny(message);
+    } catch (error) {
+      throw runtimeOwnerCleanupFailure(message, error);
+    }
   }
 }
 
@@ -3156,6 +3191,30 @@ function interactionFailStop(message: string, error: unknown): Error {
     : new RuntimeInteractionFailStopError(message, error);
 }
 
+function runtimeOwnerCleanupFailure(message: string, error: unknown): Error {
+  return error instanceof RuntimeOwnerCleanupError ||
+    error instanceof RuntimeMessageAuthorityInvariantError ||
+    error instanceof RuntimeInteractionInvariantError ||
+    error instanceof RuntimeInteractionFailStopError
+    ? error
+    : new RuntimeOwnerCleanupError(message, error);
+}
+
+function containsRuntimeOwnerCleanupFailure(error: unknown): boolean {
+  if (
+    error instanceof RuntimeOwnerCleanupError ||
+    error instanceof RuntimeMessageAuthorityInvariantError ||
+    error instanceof RuntimeInteractionInvariantError ||
+    error instanceof RuntimeInteractionFailStopError
+  ) {
+    return true;
+  }
+  return (
+    error instanceof AggregateError &&
+    error.errors.some((nested) => containsRuntimeOwnerCleanupFailure(nested))
+  );
+}
+
 class RuntimeExecutionCancellation extends Error {
   constructor(sessionId: string) {
     super(`Execution for session ${sessionId} was cancelled before dispatch`);
@@ -3163,8 +3222,19 @@ class RuntimeExecutionCancellation extends Error {
   }
 }
 
-function isExecutionCancellation(error: unknown): boolean {
-  return error instanceof RuntimeExecutionCancellation;
+function isExecutionCancellation(
+  error: unknown,
+  cancellation: RuntimeExecutionCancellation,
+): boolean {
+  const seen = new Set<unknown>();
+  let current = error;
+  while (current !== null && (typeof current === 'object' || typeof current === 'function')) {
+    if (current === cancellation) return true;
+    if (seen.has(current)) return false;
+    seen.add(current);
+    current = 'cause' in current ? current.cause : undefined;
+  }
+  return false;
 }
 
 class FailureCollector {

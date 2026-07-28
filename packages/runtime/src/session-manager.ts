@@ -1763,12 +1763,22 @@ export class SessionManager {
   ): Promise<ClaimedAgentGraphIntentResult> {
     const sessionId = input.claim.targetSessionId;
     const previous = this.claimedAgentGraphSessionTails.get(sessionId) ?? Promise.resolve();
-    const execution = previous
+    let enteredQueue = false;
+    const queuedExecution = previous
       .catch(() => {
         // A failed predecessor releases the Session slot for the next claim.
       })
-      .then(() => this.runClaimedAgentGraphIntentOnce(input, runtimeExecution));
-    const tail = execution.then(
+      .then(() => {
+        if (input.abortSignal?.aborted) {
+          throw new Error('Claimed graph execution was cancelled before runtime admission');
+        }
+        if (runtimeExecution.stopSignal.aborted) {
+          throw runtimeExecution.stopSignal.reason;
+        }
+        enteredQueue = true;
+        return this.runClaimedAgentGraphIntentOnce(input, runtimeExecution);
+      });
+    const tail = queuedExecution.then(
       () => {},
       () => {},
     );
@@ -1778,7 +1788,19 @@ export class SessionManager {
         this.claimedAgentGraphSessionTails.delete(sessionId);
       }
     });
-    return execution;
+
+    let rejectStopped!: (reason?: unknown) => void;
+    const stopped = new Promise<never>((_resolve, reject) => {
+      rejectStopped = reject;
+    });
+    const onRuntimeStop = (): void => {
+      if (!enteredQueue) rejectStopped(runtimeExecution.stopSignal.reason);
+    };
+    runtimeExecution.stopSignal.addEventListener('abort', onRuntimeStop, { once: true });
+    if (runtimeExecution.stopSignal.aborted) onRuntimeStop();
+    return Promise.race([queuedExecution, stopped]).finally(() => {
+      runtimeExecution.stopSignal.removeEventListener('abort', onRuntimeStop);
+    });
   }
 
   private async runClaimedAgentGraphIntentOnce(

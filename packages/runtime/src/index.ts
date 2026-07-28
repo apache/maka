@@ -1217,7 +1217,7 @@ export type {
   RuntimeReadModelProjectionCache,
   RuntimeReadModelSessionView,
 } from './runtime-read-model.js';
-export { RuntimeKernel } from './runtime-kernel.js';
+export { RuntimeKernel, RuntimeOwnerCleanupError } from './runtime-kernel.js';
 export type {
   RuntimeExecutionClaim,
   RuntimeKernelDeps,

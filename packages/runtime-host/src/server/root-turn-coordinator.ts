@@ -20,6 +20,7 @@ import {
   RuntimeInteractionFailStopError,
   RuntimeInteractionInvariantError,
   RuntimeMessageAuthorityInvariantError,
+  RuntimeOwnerCleanupError,
   type RuntimeHostedRootExecutionInput,
   type RuntimeMessageRunIdentity,
   type SessionManager,
@@ -1001,15 +1002,7 @@ export class RootTurnCoordinator {
         input.turnId,
         active.runId,
       );
-      if (active.execution) {
-        const completedRun = await this.readRunIfPresent(input.sessionId, active.runId);
-        if (!completedRun) {
-          throw new RuntimeMessageAuthorityInvariantError(
-            'Hosted root execution completed without its admitted Run',
-          );
-        }
-        assertRunMatchesExecution(completedRun, input.turnId, active.execution.execution);
-      }
+      await this.assertCompletedExecutionIdentity(input, active);
       if (!isTerminalSnapshot(snapshot)) {
         throw new Error('Runtime Turn drained without a canonical terminal fact');
       }
@@ -1020,6 +1013,7 @@ export class RootTurnCoordinator {
       await this.completeTerminalTransition(input.sessionId, active);
     } catch (error) {
       let containedRunFailure = false;
+      let executionAuditFailure: unknown;
       if (!terminalTransitionStarted) {
         try {
           const snapshot = await this.readCanonicalSnapshot(
@@ -1028,23 +1022,29 @@ export class RootTurnCoordinator {
             active.runId,
           );
           if (isTerminalSnapshot(snapshot)) {
+            try {
+              await this.assertCompletedExecutionIdentity(input, active);
+            } catch (auditFailure) {
+              executionAuditFailure = auditFailure;
+            }
             terminalTransitionStarted = true;
             await this.completeTerminalTransition(input.sessionId, active);
             containedRunFailure =
-              active.execution === undefined &&
+              executionAuditFailure === undefined &&
               startSettled.phase === 'resolved' &&
               !active.stopRequested &&
               snapshot.status === 'failed' &&
               isContainableRunFailure(error);
           }
         } catch {
-          // The original execution error remains the command failure.
+          // Preserve the execution error unless identity audit found a stronger failure.
         }
       }
       if (containedRunFailure) return;
-      startSettled.reject(error);
+      const commandFailure = executionAuditFailure ?? error;
+      startSettled.reject(commandFailure);
       this.requestHostDrain();
-      throw error;
+      throw commandFailure;
     } finally {
       let releaseRootOwnership = active.messageTransitionCommitted;
       if (!active.messageTransitionCommitted) {
@@ -1242,6 +1242,20 @@ export class RootTurnCoordinator {
     }
   }
 
+  private async assertCompletedExecutionIdentity(
+    input: TurnStartInput,
+    active: ActiveRootTurn,
+  ): Promise<void> {
+    if (!active.execution) return;
+    const completedRun = await this.readRunIfPresent(input.sessionId, active.runId);
+    if (!completedRun) {
+      throw new RuntimeMessageAuthorityInvariantError(
+        'Hosted root execution completed without its admitted Run',
+      );
+    }
+    assertRunMatchesExecution(completedRun, input.turnId, active.execution.execution);
+  }
+
   private async runCommand<T>(operation: () => Promise<T>): Promise<T> {
     try {
       return await operation();
@@ -1295,7 +1309,9 @@ function assertRunMatchesExecution(
   execution: RootTurnAdmission['execution'],
 ): void {
   if (run.turnId !== turnId) {
-    throw new Error(`Admitted Turn ${turnId} does not match Run ${run.runId}`);
+    throw new RuntimeMessageAuthorityInvariantError(
+      `Admitted Turn ${turnId} does not match Run ${run.runId}`,
+    );
   }
   switch (execution.kind) {
     case 'external_message':
@@ -1320,7 +1336,9 @@ function assertRunMatchesExecution(
     default:
       assertNever(execution);
   }
-  throw new Error(`Admitted Turn ${turnId} changed its child execution lineage`);
+  throw new RuntimeMessageAuthorityInvariantError(
+    `Admitted Turn ${turnId} changed its child execution lineage`,
+  );
 }
 
 function assertTrustedAgentIdentity(
@@ -1329,7 +1347,9 @@ function assertTrustedAgentIdentity(
   execution: Exclude<RootTurnAdmission['execution'], { kind: 'external_message' }>,
 ): void {
   if (run.agentId !== execution.agentId || run.agentName !== execution.agentName) {
-    throw new Error(`Admitted Turn ${turnId} changed its trusted agent identity`);
+    throw new RuntimeMessageAuthorityInvariantError(
+      `Admitted Turn ${turnId} changed its trusted agent identity`,
+    );
   }
 }
 
@@ -1455,7 +1475,7 @@ function isTerminalSnapshot(snapshot: TurnSnapshot): boolean {
 function isContainableRunFailure(error: unknown): error is Error {
   return (
     error instanceof Error &&
-    !(error instanceof AggregateError) &&
+    !(error instanceof RuntimeOwnerCleanupError) &&
     !(error instanceof RuntimeMessageAuthorityInvariantError) &&
     !(error instanceof RuntimeInteractionInvariantError) &&
     !(error instanceof RuntimeInteractionFailStopError)

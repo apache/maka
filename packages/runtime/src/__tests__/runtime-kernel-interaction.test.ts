@@ -14,7 +14,11 @@ import {
   RuntimeInteractionInvariantError,
   type RuntimeInteractionAuthority,
 } from '../interaction-authority.js';
-import { RuntimeKernel, type RuntimeKernelDeps } from '../runtime-kernel.js';
+import {
+  RuntimeKernel,
+  type RuntimeKernelDeps,
+  RuntimeOwnerCleanupError,
+} from '../runtime-kernel.js';
 import { BackendRegistry, type SessionStore } from '../session-manager.js';
 
 describe('RuntimeKernel Interaction close cleanup', () => {
@@ -164,6 +168,23 @@ describe('RuntimeKernel Interaction close cleanup', () => {
 
     const failure = await rejectionOf(abandoned);
     assertCanonicalCloseFailure(failure, fixture.closeFailure);
+  });
+
+  test('multiple owner cleanup failures retain one fail-stop marker', async () => {
+    const messageReleaseFailure = new Error('message owner release rejected');
+    const fixture = runtimeFixture({ messageReleaseFailure });
+    const iterator = fixture.kernel
+      .startTurn(SESSION_ID, { turnId: 'turn-multiple-owner-failures', text: 'start' })
+      [Symbol.asyncIterator]();
+    const draining = drainIterator(iterator);
+    await waitFor(() => fixture.backend.sendCalls === 1);
+
+    fixture.backend.releaseBlockedSend();
+    const failure = await rejectionOf(draining);
+
+    assert.ok(failure instanceof RuntimeOwnerCleanupError);
+    assert.equal(containsFailure(failure, fixture.closeFailure), true);
+    assert.equal(containsFailure(failure, messageReleaseFailure), true);
   });
 
   test('explicit stop and iterator cleanup share one pending backend stop attempt', async () => {
@@ -428,6 +449,7 @@ interface RuntimeFixtureOptions {
   disposeFailure?: Error;
   releaseSendOnDispose?: boolean;
   releaseSendOnStop?: boolean;
+  messageReleaseFailure?: Error;
   runBackendActivation?: RuntimeKernelDeps['runBackendActivation'];
 }
 
@@ -480,6 +502,21 @@ function runtimeFixture(options: RuntimeFixtureOptions = {}): {
       store,
       backends,
       interactionAuthority,
+      ...(options.messageReleaseFailure
+        ? {
+            messageAuthority: {
+              bindRun: (identity) => ({
+                ...identity,
+                pull: () => [],
+                ack: () => {},
+                nack: () => {},
+                release: () => {
+                  throw options.messageReleaseFailure;
+                },
+              }),
+            },
+          }
+        : {}),
       newId: () => `id-${++id}`,
       now: () => id,
       ...(options.runBackendActivation
@@ -645,6 +682,9 @@ function assertCanonicalCloseFailure(failure: unknown, closeFailure: Error): voi
 
 function containsFailure(failure: unknown, expected: unknown): boolean {
   if (failure === expected) return true;
+  if (failure instanceof RuntimeOwnerCleanupError && containsFailure(failure.cause, expected)) {
+    return true;
+  }
   if (
     failure instanceof RuntimeInteractionFailStopError &&
     containsFailure(failure.authorityFailure, expected)

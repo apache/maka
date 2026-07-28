@@ -12,10 +12,12 @@ import {
   LOCAL_READ_AGENT_PROFILE,
   RuntimeHostedRootConflictError,
   RuntimeInteractionAdmissionRejectedError,
+  RuntimeMessageAuthorityInvariantError,
   SessionManager,
   type RuntimeHostedRootAuthority,
   type RuntimeInteractionAuthority,
   type RuntimeInteractionRunClosureReason,
+  type RuntimeMessageAuthority,
 } from '@maka/runtime';
 import type { AgentBackend, BackendSendInput, PermissionDecision } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
@@ -1311,14 +1313,116 @@ test('post-start backend failure closes its owner without draining an unrelated 
   }
 });
 
-test('post-start aggregate cleanup failure still drains after its failed terminal transition', {
+test('claimed graph backend failure is contained after its failed terminal transition', {
   timeout: 20_000,
 }, async () => {
-  const executionFailure = new Error('backend failed after question admission');
-  const disposeFailure = new Error('backend disposal failed after execution');
+  let backend: AdmissionThenFailureBackend | undefined;
+  const backendReady = deferred<AdmissionThenFailureBackend>();
+  const fixture = await createFailureFixture({
+    withInteractions: true,
+    registerBackend: (backends) => {
+      backends.register('fake', (context) => {
+        backend = new AdmissionThenFailureBackend(context.sessionId);
+        backendReady.resolve(backend);
+        return backend;
+      });
+    },
+  });
+
+  try {
+    const { turnId, runId, execution } = executeClaimedGraphRoot(fixture, {
+      key: 'backend-failure',
+      claimChar: 'a',
+      intentChar: 'b',
+      prompt: 'fail this claimed graph execution after start',
+    });
+    const activeBackend = await completesWithin(
+      backendReady.promise,
+      2_000,
+      'claimed graph backend construction',
+    );
+    await completesWithin(
+      activeBackend.admitted.promise,
+      2_000,
+      'question admission before claimed graph backend failure',
+    );
+
+    activeBackend.releaseFailure();
+    await completesWithin(execution, 2_000, 'claimed graph failure containment');
+    const queried = await fixture.coordinator.handlers['turn.query'](
+      { sessionId: fixture.sessionId, turnId },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+
+    assert.equal(queried.ok, true);
+    if (queried.ok) {
+      assert.equal(queried.result.runId, runId);
+      assert.equal(queried.result.status, 'failed');
+    }
+    assert.deepEqual(activeBackend.closureReasons, ['turn_terminal']);
+    assert.equal(fixture.interactions?.isPoisoned(), false);
+    assert.equal(fixture.drainRequested(), false);
+
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.interactions?.close();
+  } finally {
+    backend?.releaseFailure();
+    await fixture.dispose();
+  }
+});
+
+test('failed claimed graph Run identity mismatch drains instead of being contained', {
+  timeout: 20_000,
+}, async () => {
+  let backend: AdmissionThenFailureBackend | undefined;
+  const fixture = await createFailureFixture({
+    withInteractions: true,
+    registerBackend: (backends) => {
+      backends.register('fake', (context) => {
+        backend = new AdmissionThenFailureBackend(context.sessionId);
+        return backend;
+      });
+    },
+  });
+
+  try {
+    const { execution } = executeClaimedGraphRoot(fixture, {
+      key: 'identity-mismatch',
+      claimChar: 'e',
+      intentChar: 'f',
+      prompt: 'throw a backend failure after identity drift',
+      runtimeAgentName: 'Drifted Agent Name',
+    });
+
+    await waitUntil(() => backend !== undefined);
+    await completesWithin(
+      backend!.admitted.promise,
+      2_000,
+      'question admission before identity-drift backend failure',
+    );
+    backend!.releaseFailure();
+    await assert.rejects(execution, RuntimeMessageAuthorityInvariantError);
+    await waitUntil(() => fixture.drainRequested());
+    await waitUntil(() => fixture.coordinator.readRootState(fixture.sessionId).kind === 'idle');
+
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.interactions?.close();
+  } finally {
+    backend?.releaseFailure();
+    await fixture.dispose();
+  }
+});
+
+test('post-start backend AggregateError is contained after its failed terminal transition', {
+  timeout: 20_000,
+}, async () => {
+  const firstProviderFailure = new Error('provider request failed');
+  const secondProviderFailure = new Error('provider response also failed');
   const aggregateFailure = new AggregateError(
-    [executionFailure, disposeFailure],
-    'backend execution cleanup failed',
+    [firstProviderFailure, secondProviderFailure],
+    'provider returned multiple failures',
   );
   let backend: AdmissionThenFailureBackend | undefined;
   const fixture = await createFailureFixture({
@@ -1345,19 +1449,19 @@ test('post-start aggregate cleanup failure still drains after its failed termina
     await completesWithin(
       backend!.admitted.promise,
       2_000,
-      'question admission before aggregate cleanup failure',
+      'question admission before provider aggregate failure',
     );
     const started = await completesWithin(
       starting,
       2_000,
-      'turn start before aggregate cleanup failure',
+      'turn start before provider aggregate failure',
     );
     assert.equal(started.ok, true);
     if (!started.ok) return;
 
     backend!.releaseFailure();
-    await waitUntil(() => fixture.drainRequested());
     await waitUntil(() => fixture.coordinator.readRootState(fixture.sessionId).kind === 'idle');
+    assert.equal(fixture.drainRequested(), false);
 
     const run = await fixture.stores.agentRunStore.readRun(fixture.sessionId, started.result.runId);
     const events = await fixture.stores.runtimeEventStore.readImmutableRuntimeEvents(
@@ -1373,6 +1477,67 @@ test('post-start aggregate cleanup failure still drains after its failed termina
     await fixture.interactions?.close();
   } finally {
     backend?.releaseFailure();
+    await fixture.dispose();
+  }
+});
+
+test('post-start message owner cleanup failure drains after its failed terminal transition', {
+  timeout: 20_000,
+}, async () => {
+  let backend: LinkedChildAuthorityBackend | undefined;
+  const cleanupFailure = new Error('message owner release failed');
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => {
+      backends.register('fake', (context) => {
+        backend = new LinkedChildAuthorityBackend(context.sessionId);
+        return backend;
+      });
+    },
+    wrapMessageAuthority: (authority) => ({
+      bindRun: (identity) => {
+        const owner = authority.bindRun(identity);
+        return {
+          ...owner,
+          pull: () => owner.pull(),
+          ack: (leaseIds) => owner.ack(leaseIds),
+          nack: (leaseIds) => owner.nack(leaseIds),
+          release: () => {
+            owner.release();
+            throw cleanupFailure;
+          },
+        };
+      },
+    }),
+  });
+
+  try {
+    const turnId = 'turn-message-owner-cleanup-failure';
+    const started = await fixture.coordinator.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId,
+        content: { text: 'surface rate limit with owner cleanup failure' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    if (!started.ok) return;
+
+    await waitUntil(() => fixture.drainRequested());
+    await waitUntil(() => fixture.coordinator.readRootState(fixture.sessionId).kind === 'idle');
+    const run = await fixture.stores.agentRunStore.readRun(fixture.sessionId, started.result.runId);
+    const events = await fixture.stores.runtimeEventStore.readImmutableRuntimeEvents(
+      fixture.sessionId,
+      started.result.runId,
+    );
+    const terminal = classifyTerminalRuntimeLedger(run, events);
+    assert.equal(terminal.kind, 'fact');
+    if (terminal.kind === 'fact') assert.equal(terminal.fact.runStatus, 'failed');
+
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+  } finally {
+    backend?.release();
     await fixture.dispose();
   }
 });
@@ -1626,9 +1791,68 @@ test('public turn.stop takes over an earlier closure claim queued behind its lea
   }
 });
 
+function executeClaimedGraphRoot(
+  fixture: Awaited<ReturnType<typeof createFailureFixture>>,
+  input: {
+    key: string;
+    claimChar: string;
+    intentChar: string;
+    prompt: string;
+    runtimeAgentName?: string;
+  },
+) {
+  const turnId = `turn-claimed-graph-${input.key}`;
+  const runId = `run-claimed-graph-${input.key}`;
+  const agentId = 'claimed-graph-operator';
+  const agentName = 'Claimed Graph Operator';
+  const execution = fixture.coordinator.executeRoot({
+    sessionId: fixture.sessionId,
+    turnId,
+    runId,
+    userMessageId: `message-claimed-graph-${input.key}`,
+    execution: {
+      kind: 'claimed_agent_graph_intent',
+      claim: {
+        schemaVersion: 1,
+        claimId: `graph_claim_${input.claimChar.repeat(32)}`,
+        graphId: `graph-${input.key}`,
+        intentId: `graph_intent_${input.intentChar.repeat(32)}`,
+        intentFingerprint: `sha256:${'c'.repeat(64)}`,
+        readinessContextFingerprint: `sha256:${'d'.repeat(64)}`,
+        targetOperatorId: agentId,
+        targetSessionId: fixture.sessionId,
+        targetTurnId: turnId,
+        targetRunId: runId,
+        claimedAt: Date.now(),
+      },
+      agentId,
+      agentName,
+    },
+    content: { text: input.prompt },
+    start: ({ runId: admittedRunId, userMessageId, onRunStarted }) =>
+      fixture.manager.sendMessage(
+        fixture.sessionId,
+        {
+          turnId,
+          text: input.prompt,
+          agentId,
+          agentName: input.runtimeAgentName ?? agentName,
+        },
+        {
+          runId: admittedRunId,
+          userMessageId: userMessageId ?? undefined,
+          durability: 'required',
+          onRunStarted,
+        },
+      ),
+  });
+  return { turnId, runId, execution };
+}
+
 async function createFailureFixture(options: {
   registerBackend(backends: BackendRegistry): void;
   wrapAdmissionStore?(store: RootTurnAdmissionStore): RootTurnAdmissionStore;
+  wrapMessageAuthority?(authority: RuntimeMessageAuthority): RuntimeMessageAuthority;
   withInteractions?: boolean;
   beforeInteractionPreflight?(): Promise<void>;
 }) {
@@ -1742,7 +1966,7 @@ async function createFailureFixture(options: {
     backends,
     newId: randomUUID,
     now: Date.now,
-    messageAuthority: messages,
+    messageAuthority: options.wrapMessageAuthority?.(messages) ?? messages,
   };
   const manager = interactions
     ? new SessionManager({

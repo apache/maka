@@ -1,6 +1,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { setTimeout as timerDelay } from 'node:timers/promises';
 import { createHash } from 'node:crypto';
 import {
   DEEP_RESEARCH_SESSION_LABEL,
@@ -723,47 +724,9 @@ describe('SessionManager claimed graph intent execution', () => {
   });
 
   test('serializes different claims per child session without letting a queued abort stop active work', async () => {
-    const store = new MemorySessionStore();
-    const runStore = new MemoryAgentRunStore();
-    const backends = new BackendRegistry();
-    const firstGate = makeGate();
-    const firstReady = makeGate();
-    let backend: TestBackend | undefined;
-    backends.register('fake', (ctx) => {
-      backend = new TestBackend(ctx, firstGate);
-      return backend;
-    });
-    const manager = new SessionManager({
-      store,
-      runStore,
-      runtimeEventStore: runStore,
-      backends,
-      childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
-      newId: nextId(),
-      now: nextNow(70),
-    });
-    const parent = await manager.createSession(makeInput());
-    const child = await createGraphOperatorSession(store, parent.id);
-    const firstClaim = graphIntentClaim({ targetSessionId: child.id });
-    const secondClaim = graphIntentClaim({
-      claimId: `graph_claim_${'e'.repeat(32)}`,
-      intentId: `graph_intent_${'f'.repeat(32)}`,
-      targetSessionId: child.id,
-      targetTurnId: 'graph-turn-2',
-      targetRunId: 'graph-run-2',
-    });
-    const thirdClaim = graphIntentClaim({
-      claimId: `graph_claim_${'1'.repeat(32)}`,
-      intentId: `graph_intent_${'2'.repeat(32)}`,
-      targetSessionId: child.id,
-      targetTurnId: 'graph-turn-3',
-      targetRunId: 'graph-run-3',
-    });
-    const first = manager.runClaimedAgentGraphIntent({
-      ...graphExecutionInput(firstClaim, 'first activation'),
-      onReady: () => firstReady.release(),
-    });
-    await firstReady.promise;
+    const { store, runStore, manager, child, backend, activeGate, first, claims } =
+      await createQueuedGraphScenario();
+    const [firstClaim, secondClaim, thirdClaim] = claims;
 
     const queuedAbort = new AbortController();
     let secondReadyCount = 0;
@@ -783,7 +746,7 @@ describe('SessionManager claimed graph intent execution', () => {
     expect(backend?.stopCalls).toBe(0);
     expect((await runStore.listSessionRuns(child.id)).length).toBe(1);
 
-    firstGate.release();
+    activeGate.release();
     expect((await first).status).toBe('completed');
     await expectRejects(second, /cancelled before runtime admission/);
     expect(secondReadyCount).toBe(0);
@@ -909,6 +872,59 @@ describe('SessionManager claimed graph intent execution', () => {
     expect(backend?.stopCalls).toBe(1);
     expect(backend?.sendInputs).toHaveLength(1);
     expect((await runStore.readRun(child.id, claim.targetRunId)).status).toBe('cancelled');
+  });
+
+  test('runtime stop settles queued graph claims without letting their slots pass the active claim', async () => {
+    const firstAbort = new AbortController();
+    const { store, runStore, manager, child, backend, stopStarted, first, claims } =
+      await createQueuedGraphScenario(firstAbort.signal);
+    const [firstClaim, secondClaim, thirdClaim] = claims;
+    let queuedReady = 0;
+    const second = manager.runClaimedAgentGraphIntent({
+      ...graphExecutionInput(secondClaim, 'queued graph execution'),
+      onReady: () => {
+        queuedReady += 1;
+      },
+    });
+    const third = manager.runClaimedAgentGraphIntent({
+      ...graphExecutionInput(thirdClaim, 'third graph execution'),
+      onReady: () => {
+        queuedReady += 1;
+      },
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    firstAbort.abort();
+    await stopStarted.promise;
+    const bound = new AbortController();
+    let results: Awaited<ReturnType<typeof Promise.allSettled>>;
+    try {
+      results = await Promise.race([
+        Promise.allSettled([first, second, third]),
+        timerDelay(2_000, undefined, { signal: bound.signal }).then(() => {
+          throw new Error('graph stop composition did not settle within the bound');
+        }),
+      ]);
+    } finally {
+      bound.abort();
+    }
+
+    expect(results[0]?.status).toBe('fulfilled');
+    expect(results[1]?.status).toBe('rejected');
+    expect(results[2]?.status).toBe('rejected');
+    expect(queuedReady).toBe(0);
+    expect(backend?.sendInputs.map((input) => input.turnId)).toEqual([firstClaim.targetTurnId]);
+    expect((await runStore.listSessionRuns(child.id)).map((run) => run.turnId)).toEqual([
+      firstClaim.targetTurnId,
+    ]);
+    expect(
+      (await store.readMessages(child.id)).filter(
+        (message) =>
+          'turnId' in message &&
+          (message.turnId === secondClaim.targetTurnId ||
+            message.turnId === thirdClaim.targetTurnId),
+      ),
+    ).toEqual([]);
   });
 
   test('recovers an existing nonterminal claimed run without invoking the backend again', async () => {
@@ -10792,6 +10808,44 @@ describe('SessionManager permission mode updates', () => {
     expect(run?.status).toBe('cancelled');
   });
 
+  test('node timers AbortError is cancellation only when its cause is this execution stop', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    const buildStarted = makeGate();
+    backends.register('fake', async (ctx) => {
+      if (!ctx.abortSignal) throw new Error('backend factory did not receive an abort signal');
+      buildStarted.release();
+      await timerDelay(60_000, undefined, { signal: ctx.abortSignal });
+      return new TestBackend(ctx);
+    });
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      newId: nextId(),
+      now: nextNow(6_845),
+      runtimeSource: 'test',
+    });
+    const session = await manager.createSession(makeInput({ permissionMode: 'ask' }));
+    const turn = manager
+      .sendMessage(session.id, {
+        turnId: 'native-abort-wrapper-stop',
+        text: 'native AbortError should retain exact cancellation cause',
+      })
+      [Symbol.asyncIterator]();
+    const firstEvent = turn.next();
+    await buildStarted.promise;
+
+    await manager.stopSession(session.id, { source: 'stop_button' });
+
+    expect((await firstEvent).done).toBe(true);
+    const [run] = await runStore.listSessionRuns(session.id);
+    expect(run?.status).toBe('cancelled');
+    expect(run?.failureClass).toBe(undefined);
+  });
+
   test('late ignored-signal backend is disposed once and never cached or dispatched', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -10866,8 +10920,10 @@ describe('SessionManager permission mode updates', () => {
     const backends = new BackendRegistry();
     const buildStarted = makeGate();
     const releaseBuild = makeGate();
+    let builds = 0;
     let disposeCalls = 0;
     backends.register('fake', async (ctx) => {
+      builds += 1;
       buildStarted.release();
       await releaseBuild.promise;
       return {
@@ -10920,6 +10976,18 @@ describe('SessionManager permission mode updates', () => {
     expect(disposeCalls).toBe(1);
     const [run] = await runStore.listSessionRuns(session.id);
     expect(run?.status).toBe('cancelled');
+
+    await expectRejects(
+      drain(
+        manager.sendMessage(session.id, {
+          turnId: 'late-disposal-next-turn',
+          text: 'must not create a second backend after quarantine failure',
+        }),
+      ),
+      /permanently quarantined/,
+    );
+    expect(builds).toBe(1);
+    expect(disposeCalls).toBe(1);
   });
 
   test('stopSession keeps a rejected backend generation quarantined across retries', async () => {
@@ -16956,8 +17024,10 @@ class DelegatingRuntimeKernel implements RuntimeKernelLike {
   constructor(private readonly events: readonly SessionEvent[] = []) {}
 
   claimExecution(sessionId: string): ReturnType<RuntimeKernelLike['claimExecution']> {
+    const stopController = new AbortController();
     return {
       sessionId,
+      stopSignal: stopController.signal,
       isStopRequested: () => false,
       release: () => {},
     };
@@ -19262,6 +19332,72 @@ function graphExecutionInput(claim: AgentGraphIntentClaim, prompt: string) {
     graphId: claim.graphId,
     intentId: claim.intentId,
     prompt,
+  };
+}
+
+async function createQueuedGraphScenario(firstAbortSignal?: AbortSignal) {
+  const store = new MemorySessionStore();
+  const runStore = new MemoryAgentRunStore();
+  const backends = new BackendRegistry();
+  const activeGate = makeGate();
+  const firstReady = makeGate();
+  const stopStarted = makeGate();
+  let backend!: TestBackend;
+  backends.register('fake', (ctx) => {
+    backend = new (class extends TestBackend {
+      override async stop(
+        reason: 'user_stop' | 'redirect',
+        mode: BackendStopMode = 'immediate',
+      ): Promise<void> {
+        await super.stop(reason, mode);
+        stopStarted.release();
+        activeGate.release();
+      }
+    })(ctx, activeGate);
+    return backend;
+  });
+  const manager = new SessionManager({
+    store,
+    runStore,
+    runtimeEventStore: runStore,
+    backends,
+    childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+    newId: nextId(),
+    now: nextNow(70),
+  });
+  const parent = await manager.createSession(makeInput());
+  const child = await createGraphOperatorSession(store, parent.id);
+  const firstClaim = graphIntentClaim({ targetSessionId: child.id });
+  const secondClaim = graphIntentClaim({
+    claimId: `graph_claim_${'e'.repeat(32)}`,
+    intentId: `graph_intent_${'f'.repeat(32)}`,
+    targetSessionId: child.id,
+    targetTurnId: 'graph-turn-2',
+    targetRunId: 'graph-run-2',
+  });
+  const thirdClaim = graphIntentClaim({
+    claimId: `graph_claim_${'1'.repeat(32)}`,
+    intentId: `graph_intent_${'2'.repeat(32)}`,
+    targetSessionId: child.id,
+    targetTurnId: 'graph-turn-3',
+    targetRunId: 'graph-run-3',
+  });
+  const first = manager.runClaimedAgentGraphIntent({
+    ...graphExecutionInput(firstClaim, 'first activation'),
+    ...(firstAbortSignal ? { abortSignal: firstAbortSignal } : {}),
+    onReady: () => firstReady.release(),
+  });
+  await firstReady.promise;
+  return {
+    store,
+    runStore,
+    manager,
+    child,
+    backend,
+    activeGate,
+    stopStarted,
+    first,
+    claims: [firstClaim, secondClaim, thirdClaim] as const,
   };
 }
 
