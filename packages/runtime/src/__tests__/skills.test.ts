@@ -31,6 +31,7 @@ import {
   type HostCapabilities,
   type ScannedSkill,
 } from '../skills.js';
+import { resolveSkillInvocations } from '../skill-invocation.js';
 import type { MakaToolContext } from '../tool-runtime.js';
 
 describe('runtime skills', () => {
@@ -1344,6 +1345,107 @@ Body.`,
       const skill = (await scanWorkspaceSkills(workspaceRoot))[0];
       assert.equal(skill.ref, ref);
       assert.equal(skill.pinned, true);
+    });
+  });
+
+  it('applies case-only legacy preferences across real multi-scope consumers', async () => {
+    await withWorkspace(async (workspaceRoot) => {
+      const projectRoot = join(workspaceRoot, 'project');
+      const homeDir = join(workspaceRoot, 'home');
+      await mkdir(projectRoot, { recursive: true });
+      await mkdir(homeDir);
+      await writeSkillInDirectory(
+        join(projectRoot, '.maka', 'skills'),
+        'Writer',
+        'Writer',
+        'Draft project prose.',
+      );
+      await mkdir(join(workspaceRoot, '.maka'), { recursive: true });
+      await writeFile(
+        join(workspaceRoot, '.maka', 'skills-state.json'),
+        JSON.stringify({ schemaVersion: 1, skills: { writer: { enabled: false } } }),
+        'utf8',
+      );
+
+      const source = resolveSkillDiscoveryPaths(projectRoot, workspaceRoot, homeDir);
+      const scan = await scanSkillsWithDiagnostics(source);
+      assert.equal(scan.inventory[0].ref, 'project:maka:Writer');
+      assert.equal(scan.inventory[0].runtimeStatus, 'disabled');
+      assert.equal(await buildSkillsPromptFragment(source), undefined);
+
+      const context = {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        cwd: projectRoot,
+      } as MakaToolContext;
+      const skillTool = buildSkillAgentTool(source);
+      const loaded = await skillTool.impl({ name: 'Writer' }, context);
+      assert.deepEqual(
+        { ok: loaded.ok, reason: loaded.ok ? undefined : loaded.reason },
+        { ok: false, reason: 'disabled' },
+      );
+
+      const searchTool = buildSkillSearchAgentTool(source);
+      const searched = await searchTool.impl({ query: 'project prose' }, context);
+      assert.equal(searched.matches.length, 0);
+      assert.equal(searched.totalEligible, 0);
+
+      const [invoked] = await resolveSkillInvocations(source, undefined, ['Writer']);
+      assert.deepEqual(
+        {
+          ok: invoked.result.ok,
+          reason: invoked.result.ok ? undefined : invoked.result.reason,
+        },
+        { ok: false, reason: 'disabled' },
+      );
+    });
+  });
+
+  it('re-evaluates zero-match schema v2 bare preferences after multi-scope discovery changes', async () => {
+    await withWorkspace(async (workspaceRoot) => {
+      const projectRoot = join(workspaceRoot, 'project');
+      const homeDir = join(workspaceRoot, 'home');
+      await mkdir(projectRoot, { recursive: true });
+      await mkdir(homeDir);
+      await mkdir(join(workspaceRoot, '.maka'), { recursive: true });
+      await writeFile(
+        join(workspaceRoot, '.maka', 'skills-state.json'),
+        JSON.stringify({
+          schemaVersion: 2,
+          skills: { Future: { enabled: false, pinned: true } },
+        }),
+        'utf8',
+      );
+      const source = resolveSkillDiscoveryPaths(projectRoot, workspaceRoot, homeDir);
+
+      const beforeDiscovery = await scanSkillsWithDiagnostics(source);
+      assert.equal(beforeDiscovery.runtimeState.ok, true);
+      if (!beforeDiscovery.runtimeState.ok) return;
+      assert.equal(beforeDiscovery.runtimeState.preferences.has('Future'), true);
+      assert.equal(beforeDiscovery.runtimeState.needsReview.size, 0);
+
+      await writeSkillInDirectory(
+        join(projectRoot, '.maka', 'skills'),
+        'future',
+        'Project Future',
+        'Project future workflow.',
+      );
+      await writeSkillInDirectory(
+        join(homeDir, '.agents', 'skills'),
+        'Future',
+        'User Future',
+        'User future workflow.',
+      );
+
+      const afterDiscovery = await scanSkillsWithDiagnostics(source);
+      assert.equal(afterDiscovery.runtimeState.ok, true);
+      if (!afterDiscovery.runtimeState.ok) return;
+      assert.deepEqual([...afterDiscovery.runtimeState.needsReview], ['Future']);
+      assert.equal(afterDiscovery.inventory.length, 2);
+      assert.equal(
+        afterDiscovery.inventory.every((skill) => !skill.enabled && skill.pinned),
+        true,
+      );
     });
   });
 

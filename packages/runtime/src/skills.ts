@@ -85,6 +85,7 @@ export {
   getBundledSkillSource,
   invalidSkillLockStatus,
   isCurrentBundledSkillLock,
+  MANAGED_SKILL_BASELINE_RELATIVE_PATH,
   missingSkillLockStatus,
   validateSkillLock,
 } from './skills-governance.js';

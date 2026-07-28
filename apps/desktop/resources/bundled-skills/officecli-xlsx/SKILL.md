@@ -1,6 +1,7 @@
 ---
 name: OfficeCLI XLSX
 description: Use when a .xlsx, Excel workbook, spreadsheet, CSV/TSV import, tracker, dashboard, financial model, formula, chart, pivot table, or worksheet template is involved.
+category: 效率工具
 allowed-tools:
   - OfficeDocument
   - OfficeDocumentEdit

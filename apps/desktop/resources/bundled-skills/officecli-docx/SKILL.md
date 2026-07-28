@@ -1,6 +1,7 @@
 ---
 name: OfficeCLI DOCX
 description: Use when a .docx, Word document, report, memo, proposal, letter, tracked changes, comments, header/footer, table of contents, or Word template is involved.
+category: 效率工具
 allowed-tools:
   - OfficeDocument
   - OfficeDocumentEdit

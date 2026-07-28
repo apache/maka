@@ -6,6 +6,8 @@ import { isPathInside, readContainedRegularFile } from './path-containment.js';
 import { validateSkillMetadata } from './skills-metadata.js';
 import type { SkillValidationIssue } from './skills-metadata.js';
 import {
+  getSkillRuntimePreference,
+  migrateSkillRuntimePreferences,
   readSkillRuntimeState,
   type SkillRuntimeStatus,
   type SkillRuntimeStateReadResult,
@@ -201,7 +203,7 @@ export function resolveSkillDiscoveryPaths(
  */
 export async function scanSkillsWithDiagnostics(source: SkillSource): Promise<SkillScanResult> {
   const { entries, stateRoot } = normalizeSkillSource(source);
-  const runtimeState = await readSkillRuntimeState(stateRoot);
+  let runtimeState = await readSkillRuntimeState(stateRoot);
   const seenIds = new Map<string, ScannedSkill>();
   const seenNames = new Map<string, ScannedSkill>();
   const out: ScannedSkill[] = [];
@@ -253,6 +255,23 @@ export async function scanSkillsWithDiagnostics(source: SkillSource): Promise<Sk
       }
       out.push(skill);
     }
+  }
+  if (runtimeState.ok) {
+    const migration = migrateSkillRuntimePreferences(runtimeState, inventory);
+    for (const skill of inventory) {
+      const preference = getSkillRuntimePreference(migration, skill);
+      skill.enabled = preference.enabled;
+      skill.pinned = preference.pinned;
+      skill.runtimeStatus = preference.enabled ? 'enabled' : 'disabled';
+    }
+    runtimeState = {
+      ...runtimeState,
+      states: new Map(
+        [...migration.preferences].map(([key, preference]) => [key, preference.enabled]),
+      ),
+      preferences: migration.preferences,
+      needsReview: migration.needsReview,
+    };
   }
   return {
     skills: out,

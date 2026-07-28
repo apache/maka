@@ -41,7 +41,17 @@ describe('shared bundled skill catalog', () => {
     ]);
     for (const skill of office) {
       assert.equal(skill.sourceVersion, '1');
-      assert.equal(skill.legacyContentSha256.length, 2);
+      assert.ok(skill.legacyContentSha256.length > 0);
+      assert.equal(
+        new Set(skill.legacyContentSha256).size,
+        skill.legacyContentSha256.length,
+        `${skill.id} legacy trust must not contain duplicate hashes`,
+      );
+      assert.equal(
+        skill.legacyContentSha256.every((hash) => /^sha256:[a-f0-9]{64}$/.test(hash)),
+        true,
+        `${skill.id} legacy trust must contain canonical SHA-256 hashes`,
+      );
       const currentLock = createBundledSkillLock(skill, '2026-01-02T03:04:05.000Z');
       assert.equal(
         validateSkillLock({
@@ -52,17 +62,15 @@ describe('shared bundled skill catalog', () => {
         'ok',
       );
 
-      const legacyLock = {
-        ...currentLock,
-        contentSha256: skill.legacyContentSha256[0],
-      };
-      const legacy = validateSkillLock({
-        lock: legacyLock,
-        skillId: skill.id,
-        currentContentSha256: skill.contentSha256,
-      });
-      assert.equal(legacy.sourceType, 'bundled');
-      assert.equal(legacy.validationStatus, 'modified');
+      for (const legacyContentSha256 of skill.legacyContentSha256) {
+        const legacy = validateSkillLock({
+          lock: { ...currentLock, contentSha256: legacyContentSha256 },
+          skillId: skill.id,
+          currentContentSha256: skill.contentSha256,
+        });
+        assert.equal(legacy.sourceType, 'bundled');
+        assert.equal(legacy.validationStatus, 'modified');
+      }
     }
   });
 
@@ -359,6 +367,38 @@ describe('shared skill preference semantics', () => {
     assert.equal(second.preferences.has('shared'), false);
     assert.equal(second.preferences.has(caseInventory[0].ref), true);
     assert.equal(second.preferences.has(caseInventory[1].ref), true);
+  });
+
+  it('re-evaluates unresolved schema v2 bare ids without migrating stable refs', () => {
+    const stablePreference = { enabled: true, pinned: true };
+    const unresolvedPreference = { enabled: false, pinned: false };
+    const state: Extract<SkillRuntimeStateReadResult, { ok: true }> = {
+      ok: true,
+      states: new Map([
+        ['Future', false],
+        ['project:maka:Shared', true],
+      ]),
+      preferences: new Map([
+        ['Future', unresolvedPreference],
+        ['project:maka:Shared', stablePreference],
+      ]),
+      needsReview: new Set(),
+      schemaVersion: 2,
+    };
+
+    const beforeDiscovery = migrateSkillRuntimePreferences(state, []);
+    assert.equal(beforeDiscovery.preferences.get('Future'), unresolvedPreference);
+    assert.equal(beforeDiscovery.needsReview.size, 0);
+
+    const afterDiscovery = migrateSkillRuntimePreferences(state, [
+      { ref: 'project:maka:future', id: 'future' },
+      { ref: 'user:agents:Future', id: 'Future' },
+      { ref: 'project:maka:shared', id: 'shared' },
+    ]);
+    assert.deepEqual([...afterDiscovery.needsReview], ['Future']);
+    assert.equal(afterDiscovery.preferences.get('Future'), unresolvedPreference);
+    assert.equal(afterDiscovery.preferences.get('project:maka:Shared'), stablePreference);
+    assert.equal(afterDiscovery.preferences.has('project:maka:shared'), false);
   });
 
   it('resolves case-only stable refs exactly while keeping bare ids normalized', () => {

@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import {
   decodeClientFrame,
@@ -7,15 +10,50 @@ import {
   SKILL_CATALOG_PAGE_MAX_BYTES,
   SKILL_CATALOG_PAGE_MAX_ITEMS,
   SKILL_CATALOG_PREVIEW_RESULT_MAX_BYTES,
+  type SkillCatalogBundledItem,
   type SkillCatalogGovernanceItem,
+  type SkillCatalogMutation,
   type SkillCatalogPreviewUpdateResult,
   type SkillCatalogRevision,
 } from '../protocol/index.js';
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
+import { SkillCatalogRepository } from '../server/skill-catalog-repository.js';
 
 const REVISION = `sha256:${'a'.repeat(64)}` as SkillCatalogRevision;
 const NEXT_REVISION = `sha256:${'b'.repeat(64)}` as SkillCatalogRevision;
-const CONTEXT = { projectRoot: '/workspace/project' };
+const CONTEXT = {
+  projectRoot: process.platform === 'win32' ? 'C:\\workspace\\project' : '/workspace/project',
+};
+
+type IsAssignable<From, To> = [From] extends [To] ? true : false;
+type AssertFalse<Value extends false> = Value;
+
+export type SkillCatalogManagedUpdateMutationTypeContract = [
+  AssertFalse<
+    IsAssignable<
+      {
+        kind: 'update_managed';
+        ref: 'workspace:legacy:research-brief';
+        force: true;
+        expectedCurrentSha256: null;
+        expectedSourceSha256: null;
+      },
+      SkillCatalogMutation
+    >
+  >,
+  AssertFalse<
+    IsAssignable<
+      {
+        kind: 'update_managed';
+        ref: 'workspace:legacy:research-brief';
+        force: false;
+        expectedCurrentSha256: SkillCatalogRevision;
+        expectedSourceSha256: SkillCatalogRevision;
+      },
+      SkillCatalogMutation
+    >
+  >,
+];
 
 describe('Runtime Host Skill catalog protocol', () => {
   test('declares only the three frozen ready operations and their error sets', () => {
@@ -89,6 +127,37 @@ describe('Runtime Host Skill catalog protocol', () => {
       context: { projectRoot: '界'.repeat(1366) },
       view: 'governance',
     });
+    for (const projectRoot of ['.', 'project', 'workspace/project']) {
+      assertInvalidRequest('skill.catalog.query', {
+        kind: 'start',
+        context: { projectRoot },
+        view: 'governance',
+      });
+    }
+    for (const [projectRoot, acceptedPlatform] of [
+      ['/workspace/project', 'posix'],
+      ['C:\\workspace\\project', 'win32'],
+      ['\\\\server\\share\\project', 'win32'],
+    ] as const) {
+      const input = { kind: 'start', context: { projectRoot }, view: 'governance' };
+      if (
+        process.platform === 'win32' ? acceptedPlatform === 'win32' : acceptedPlatform === 'posix'
+      ) {
+        const frame = request('skill.catalog.query', input);
+        assert.deepEqual(decodeClientFrame(frame), frame);
+      } else {
+        assertInvalidRequest('skill.catalog.query', input);
+      }
+    }
+    if (process.platform === 'win32') {
+      for (const projectRoot of ['\\workspace\\project', 'C:workspace\\project']) {
+        assertInvalidRequest('skill.catalog.query', {
+          kind: 'start',
+          context: { projectRoot },
+          view: 'governance',
+        });
+      }
+    }
     assertInvalidRequest('skill.catalog.query', {
       kind: 'continue',
       context: CONTEXT,
@@ -176,7 +245,55 @@ describe('Runtime Host Skill catalog protocol', () => {
         },
       ]),
     );
+    assertInvalidResponse(
+      'skill.catalog.query',
+      page('bundled', [
+        {
+          ...(pages[1].items[0] as Record<string, unknown>),
+          category: '',
+        },
+      ]),
+    );
     assertInvalidResponse('skill.catalog.query', page('bundled', [pages[2].items[0]]));
+  });
+
+  test('encodes actual Office catalog metadata through the Host bundled output codec', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-skill-catalog-protocol-'));
+    const dataRoot = join(base, 'data');
+    const projectRoot = join(base, 'project');
+    const homeDirectory = join(base, 'home');
+    const managedSourcesRoot = join(base, 'managed-sources');
+    await Promise.all([
+      mkdir(dataRoot, { recursive: true }),
+      mkdir(projectRoot, { recursive: true }),
+      mkdir(homeDirectory, { recursive: true }),
+    ]);
+    try {
+      const repository = new SkillCatalogRepository({
+        runWithRoot: (operation) => operation(dataRoot),
+        homeDirectory,
+        managedSourcesRoot,
+      });
+      const result = await repository.query({
+        kind: 'start',
+        context: { projectRoot },
+        view: 'bundled',
+      });
+      assert.equal(result.kind, 'page');
+      if (result.kind !== 'page') return;
+
+      const officeItems = result.items.filter(
+        (item): item is SkillCatalogBundledItem =>
+          item.kind === 'bundled' && OFFICE_IDS.has(item.id),
+      );
+      assert.equal(officeItems.length, OFFICE_IDS.size);
+      assert.deepEqual(new Set(officeItems.map((item) => item.category)), new Set(['效率工具']));
+
+      const frame = response('skill.catalog.query', result);
+      assert.deepEqual(decodeHostFrame(frame), frame);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
   });
 
   test('allows bounded human ids in governance while rejecting control-character identities', () => {
@@ -235,7 +352,7 @@ describe('Runtime Host Skill catalog protocol', () => {
 
   test('decodes all mutation variants and requires preview hashes only for force update', () => {
     const maximumLengthId = `s${'a'.repeat(80)}`;
-    const mutations = [
+    const mutations: readonly SkillCatalogMutation[] = [
       { kind: 'create_starter' },
       { kind: 'install', sourceType: 'bundled', sourceId: 'officecli-docx' },
       { kind: 'install', sourceType: 'managed', sourceId: 'research-brief' },
@@ -266,7 +383,6 @@ describe('Runtime Host Skill catalog protocol', () => {
       });
       assert.deepEqual(decodeClientFrame(frame), frame);
     }
-
     assertInvalidRequest('skill.catalog.mutate', {
       context: CONTEXT,
       expectedRevision: REVISION,
@@ -412,6 +528,8 @@ describe('Runtime Host Skill catalog protocol', () => {
     }
   });
 });
+
+const OFFICE_IDS = new Set(['officecli-docx', 'officecli-pptx', 'officecli-xlsx']);
 
 function governanceItem(
   overrides: Partial<SkillCatalogGovernanceItem> = {},

@@ -4,8 +4,12 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, test } from 'node:test';
-import { BUNDLED_SKILL_CATALOG, buildStarterSkillTemplate } from '@maka/runtime';
-import { decodeHostFrame } from '../protocol/index.js';
+import {
+  BUNDLED_SKILL_CATALOG,
+  buildStarterSkillTemplate,
+  createManagedSkillLock,
+} from '@maka/runtime';
+import { decodeHostFrame, isSkillCatalogProjectRootLexicallyAbsolute } from '../protocol/index.js';
 import type {
   SkillCatalogGovernanceItem,
   SkillCatalogQueryResult,
@@ -379,6 +383,56 @@ test('v1 case-only duplicates share legacy defaults and clear review through exp
   assert.equal(durable.migration, undefined);
 });
 
+test('a zero-match v1 preference persisted by Host enters review on future case-only scopes', async () => {
+  const fixture = await createFixture();
+  await createSkill(
+    join(fixture.project, '.maka', 'skills'),
+    'anchor',
+    skillBody('Anchor', 'preference mutation target'),
+  );
+  await mkdir(join(fixture.root, '.maka'), { recursive: true });
+  const statePath = join(fixture.root, '.maka', 'skills-state.json');
+  await writeFile(
+    statePath,
+    `${JSON.stringify({
+      schemaVersion: 1,
+      skills: { Future: { enabled: false } },
+    })}\n`,
+  );
+  const repository = fixture.repository();
+  const initial = await start(repository, fixture.project, 'governance');
+  const persisted = await repository.mutate({
+    context: { projectRoot: fixture.project },
+    expectedRevision: initial.revision,
+    mutation: { kind: 'set_pinned', ref: 'project:maka:anchor', pinned: true },
+  });
+  assert.equal(persisted.kind, 'committed');
+  const durable = JSON.parse(await readFile(statePath, 'utf8')) as {
+    schemaVersion: number;
+    skills: Record<string, { enabled: boolean }>;
+  };
+  assert.equal(durable.schemaVersion, 2);
+  assert.equal(durable.skills.Future?.enabled, false);
+
+  await createSkill(
+    join(fixture.project, '.maka', 'skills'),
+    'FUTURE',
+    skillBody('Project Future', 'future project copy'),
+  );
+  await createSkill(
+    join(fixture.home, '.agents', 'skills'),
+    'future',
+    skillBody('User Future', 'future user copy'),
+  );
+  const conflicted = await start(repository, fixture.project, 'governance');
+  const projectFuture = governanceItem(conflicted, 'project:maka:FUTURE');
+  const userFuture = governanceItem(conflicted, 'user:agents:future');
+  assert.equal(projectFuture.enabled, false);
+  assert.equal(userFuture.enabled, false);
+  assert.equal(projectFuture.needsReview, true);
+  assert.equal(userFuture.needsReview, true);
+});
+
 test('noncanonical external ids remain wire-safe governance entries', async () => {
   const fixture = await createFixture();
   await createSkill(
@@ -550,6 +604,31 @@ test('managed source read failures are not projected as an empty catalog', async
   }
 });
 
+test('one unreadable managed source child makes the Host catalog fail closed', async () => {
+  if (process.platform === 'win32') return;
+  const fixture = await createFixture();
+  await createSkill(fixture.sources, 'readable', skillBody('Readable', 'valid source'));
+  const unreadable = await createSkill(
+    fixture.sources,
+    'unreadable',
+    skillBody('Unreadable', 'restricted source'),
+  );
+  const unreadableFile = join(unreadable, 'SKILL.md');
+  await chmod(unreadableFile, 0o000);
+  try {
+    await assert.rejects(
+      start(fixture.repository(), fixture.project, 'managed_sources'),
+      (error: unknown) => {
+        assert.ok(error instanceof SkillCatalogRepositoryError);
+        assert.equal(error.code, 'persistence_failed');
+        return true;
+      },
+    );
+  } finally {
+    await chmod(unreadableFile, 0o600);
+  }
+});
+
 test('starter creation uses the shared template and reuses the lowest valid starter', async () => {
   const fixture = await createFixture();
   const repository = fixture.repository();
@@ -712,7 +791,7 @@ test('starter creation reuses the lowest ordinal valid Data Root starter', async
   );
   await createSkill(
     join(fixture.root, 'skills'),
-    'starter-skill-2',
+    'Starter-Skill-2',
     skillBody('Existing Starter 2', 'existing'),
   );
   const repository = fixture.repository();
@@ -724,7 +803,7 @@ test('starter creation reuses the lowest ordinal valid Data Root starter', async
   });
   assert.equal(result.kind, 'unchanged');
   if (result.kind === 'unchanged') {
-    assert.equal(result.entry?.ref, 'workspace:legacy:starter-skill-2');
+    assert.equal(result.entry?.ref, 'workspace:legacy:Starter-Skill-2');
   }
   await assert.rejects(readFile(join(fixture.root, 'skills', 'starter-skill', 'SKILL.md')), {
     code: 'ENOENT',
@@ -780,6 +859,61 @@ test('managed preview is bounded and hash-bound, then a force update commits the
   });
   assert.equal(updated.kind, 'committed');
   assert.equal(await readFile(installedPath, 'utf8'), sourceContent);
+});
+
+test('Host previews, updates, and recovers the canonical Desktop managed-install layout', async () => {
+  const fixture = await createFixture();
+  const sourceId = 'desktop-managed';
+  const versionOne = skillBody('Desktop Managed', 'version one');
+  const versionTwo = skillBody('Desktop Managed', 'version two');
+  await createSkill(fixture.sources, sourceId, versionTwo);
+  const skillDirectory = join(fixture.root, 'skills', sourceId);
+  await mkdir(join(skillDirectory, '.maka', 'baseline'), { recursive: true });
+  await writeFile(join(skillDirectory, 'SKILL.md'), versionOne);
+  await writeFile(
+    join(skillDirectory, 'skill.lock.json'),
+    `${JSON.stringify(createManagedSkillLock(sourceId, sha256(versionOne), sha256(versionOne)), null, 2)}\n`,
+  );
+  await writeFile(join(skillDirectory, '.maka', 'baseline', 'SKILL.md'), versionOne);
+
+  let armed = true;
+  const repository = fixture.repository({
+    failpoint(point) {
+      if (armed && point === 'after_managed_freeze') {
+        armed = false;
+        throw new Error('simulated process loss after directory freeze');
+      }
+    },
+  });
+  const snapshot = await start(repository, fixture.project, 'governance');
+  const preview = await repository.previewUpdate({
+    context: { projectRoot: fixture.project },
+    expectedRevision: snapshot.revision,
+    ref: `workspace:legacy:${sourceId}`,
+  });
+  assert.equal(preview.kind, 'preview');
+
+  await assert.rejects(
+    repository.mutate({
+      context: { projectRoot: fixture.project },
+      expectedRevision: snapshot.revision,
+      mutation: {
+        kind: 'update_managed',
+        ref: `workspace:legacy:${sourceId}`,
+        force: false,
+        expectedCurrentSha256: null,
+        expectedSourceSha256: null,
+      },
+    }),
+    (error: unknown) =>
+      error instanceof SkillCatalogRepositoryError && error.code === 'commit_outcome_unknown',
+  );
+  await start(repository, fixture.project, 'governance');
+  assert.equal(await readFile(join(skillDirectory, 'SKILL.md'), 'utf8'), versionTwo);
+  assert.equal(
+    await readFile(join(skillDirectory, '.maka', 'baseline', 'SKILL.md'), 'utf8'),
+    versionTwo,
+  );
 });
 
 test('managed install and update reject source changes after their revision snapshot', async () => {
@@ -943,7 +1077,7 @@ test('revision covers exact managed lock and baseline bytes and rejects post-sna
   await createSkill(fixture.sources, sourceId, versionOne);
   let editBaselineBeforeRead = false;
   const skillDirectory = join(fixture.root, 'skills', sourceId);
-  const baselinePath = join(skillDirectory, 'skill.baseline.md');
+  const baselinePath = join(skillDirectory, '.maka', 'baseline', 'SKILL.md');
   const lockPath = join(skillDirectory, 'skill.lock.json');
   const repository = fixture.repository(undefined, {
     beforeManagedInstalledArtifactsRead: async () => {
@@ -1000,7 +1134,7 @@ test('malformed installed artifacts retain raw revision hashes but cannot enter 
   const skillDirectory = join(fixture.root, 'skills', sourceId);
   const installedPath = join(skillDirectory, 'SKILL.md');
   const lockPath = join(skillDirectory, 'skill.lock.json');
-  const baselinePath = join(skillDirectory, 'skill.baseline.md');
+  const baselinePath = join(skillDirectory, '.maka', 'baseline', 'SKILL.md');
   const malformedA = Buffer.from([0x80]);
   const malformedB = Buffer.from([0x81]);
   await createSkill(fixture.sources, sourceId, versionOne);
@@ -1104,6 +1238,10 @@ test('install rejects invalid and case-only workspace occupants', async () => {
   );
   const caseRepository = caseFixture.repository();
   const caseSnapshot = await start(caseRepository, caseFixture.project, 'bundled');
+  const caseProjection = caseSnapshot.items.find(
+    (item) => item.kind === 'bundled' && item.id === source.id,
+  );
+  assert.equal(caseProjection?.kind === 'bundled' && caseProjection.installed, true);
   assert.deepEqual(
     await caseRepository.mutate({
       context: { projectRoot: caseFixture.project },
@@ -1111,6 +1249,37 @@ test('install rejects invalid and case-only workspace occupants', async () => {
       mutation: { kind: 'install', sourceType: 'bundled', sourceId: source.id },
     }),
     { kind: 'rejected', reason: 'already_exists' },
+  );
+});
+
+test('managed source projection uses case-insensitive publication occupancy', async () => {
+  const fixture = await createFixture();
+  const sourceId = 'managed-occupant';
+  await createSkill(fixture.sources, sourceId, skillBody('Managed Source', 'source'));
+  await createSkill(
+    join(fixture.root, 'skills'),
+    sourceId.toUpperCase(),
+    skillBody('Case Occupant', 'existing'),
+  );
+  const page = await start(fixture.repository(), fixture.project, 'managed_sources');
+  const projected = page.items.find(
+    (item) => item.kind === 'managed_source' && item.id === sourceId,
+  );
+  assert.equal(projected?.kind === 'managed_source' && projected.installed, true);
+});
+
+test('repository rejects relative project roots before filesystem canonicalization', async () => {
+  assert.equal(isSkillCatalogProjectRootLexicallyAbsolute('C:\\project', 'win32'), true);
+  assert.equal(isSkillCatalogProjectRootLexicallyAbsolute('\\\\server\\share', 'win32'), true);
+  assert.equal(isSkillCatalogProjectRootLexicallyAbsolute('\\project', 'win32'), false);
+  assert.equal(isSkillCatalogProjectRootLexicallyAbsolute('/project', 'win32'), false);
+  assert.equal(isSkillCatalogProjectRootLexicallyAbsolute('C:project', 'win32'), false);
+
+  const fixture = await createFixture();
+  await assert.rejects(
+    start(fixture.repository(), '.', 'governance'),
+    (error: unknown) =>
+      error instanceof SkillCatalogRepositoryError && error.code === 'invalid_request',
   );
 });
 

@@ -65,8 +65,22 @@ export function resolveManagedSkillSourcesRoot(homeDir = homedir()): string {
 export async function listManagedSkillSources(
   root = resolveManagedSkillSourcesRoot(),
 ): Promise<ManagedSkillSourceRecord[]> {
-  const result = await readManagedSkillSources(root);
-  return result.ok ? result.sources : [];
+  const sourceRoot = await resolveExistingSourceRoot(root);
+  if (!sourceRoot.ok) return [];
+
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const sources: ManagedSkillSourceRecord[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.isSymbolicLink() || !isSafeSkillId(entry.name)) continue;
+    const source = await readManagedSkillSource(root, entry.name);
+    if (source.ok) sources.push(source.source);
+  }
+  return sources.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export async function readManagedSkillSources(

@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { closeSync, fsyncSync, openSync, writeSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { afterEach, test } from 'node:test';
 import {
   SkillCatalogTransactionError,
@@ -47,6 +49,25 @@ test('publish recovers a durable intent before the directory rename', async () =
   await assert.rejects(readFile(join(root, 'skills', 'starter', 'SKILL.md')), {
     code: 'ENOENT',
   });
+
+  await writer(root).recover();
+  assert.equal(
+    await readFile(join(root, 'skills', 'starter', 'SKILL.md'), 'utf8'),
+    artifacts.skill,
+  );
+  assert.deepEqual(await transactionEntries(root), []);
+});
+
+test('publish recovers after atomic intent rename and before transaction directory sync', async () => {
+  const root = await tempRoot();
+  const artifacts = { skill: '# Starter\n' };
+
+  await assert.rejects(
+    writer(root, 'after_intent_rename_before_directory_sync').publishSkill('starter', artifacts),
+    isTransactionError('commit_outcome_unknown'),
+  );
+  const transaction = await onlyTransaction(root);
+  assert.ok((await readdir(transaction)).includes('intent.json'));
 
   await writer(root).recover();
   assert.equal(
@@ -121,38 +142,43 @@ test('intent body write failure cleans staging and does not poison recovery', as
   assert.deepEqual(await transactionEntries(root), []);
 });
 
-for (const { failpoint, partial } of [
-  {
-    failpoint: 'after_replace_baseline',
-    partial: (
-      expected: ManagedSkillTransactionArtifacts,
-      next: ManagedSkillTransactionArtifacts,
-    ) => ({
-      skill: expected.skill,
-      lock: expected.lock,
-      baseline: next.baseline,
-    }),
-  },
-  {
-    failpoint: 'after_replace_skill',
-    partial: (
-      expected: ManagedSkillTransactionArtifacts,
-      next: ManagedSkillTransactionArtifacts,
-    ) => ({
-      skill: next.skill,
-      lock: expected.lock,
-      baseline: next.baseline,
-    }),
-  },
-  {
-    failpoint: 'after_replace_lock',
-    partial: (
-      _expected: ManagedSkillTransactionArtifacts,
-      next: ManagedSkillTransactionArtifacts,
-    ) => next,
-  },
+test('a process killed before intent publication leaves only a GC-safe pre-intent transaction', async () => {
+  if (process.platform === 'win32') return;
+  const root = await tempRoot();
+  const moduleUrl = new URL('../server/skill-catalog-transaction.js', import.meta.url).href;
+  const script = `
+    import { SkillCatalogTransactionWriter } from ${JSON.stringify(moduleUrl)};
+    const root = process.argv[1];
+    const writer = new SkillCatalogTransactionWriter(
+      async (operation) => operation(root),
+      { failpoint(point) {
+        if (point === 'after_intent_write_before_file_sync') process.kill(process.pid, 'SIGKILL');
+      } },
+    );
+    await writer.publishSkill('killed', { skill: '# killed\\n' });
+  `;
+  const child = spawn(process.execPath, ['--input-type=module', '--eval', script, root], {
+    stdio: 'ignore',
+  });
+  const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+    (resolve, reject) => {
+      child.once('error', reject);
+      child.once('exit', (code, signal) => resolve({ code, signal }));
+    },
+  );
+  assert.equal(exit.signal, 'SIGKILL');
+  const transaction = await onlyTransaction(root);
+  assert.deepEqual((await readdir(transaction)).sort(), ['intent.json.tmp', 'next']);
+  await writer(root).recover();
+  assert.deepEqual(await transactionEntries(root), []);
+  await assert.rejects(readFile(join(root, 'skills', 'killed', 'SKILL.md')), { code: 'ENOENT' });
+});
+
+for (const failpoint of [
+  'after_managed_freeze_rename_before_directory_sync',
+  'after_managed_freeze',
 ] as const) {
-  test(`managed replacement recovers from ${failpoint} including baseline`, async () => {
+  test(`managed replacement recovers from ${failpoint} after freezing the whole directory`, async () => {
     const root = await tempRoot();
     const expected = managedArtifacts('old');
     const next = managedArtifacts('new');
@@ -162,7 +188,9 @@ for (const { failpoint, partial } of [
       writer(root, failpoint).replaceManagedSkill('managed', expected, next),
       isTransactionError('commit_outcome_unknown'),
     );
-    assert.deepEqual(await readManaged(root, 'managed'), partial(expected, next));
+    await assert.rejects(readManaged(root, 'managed'), { code: 'ENOENT' });
+    assert.deepEqual(await readManagedDirectory(await onlyFrozen(root)), expected);
+    assert.equal((await readdir(await onlyTransaction(root))).includes('tombstone'), false);
 
     const reopened = writer(root);
     await reopened.recover();
@@ -172,57 +200,210 @@ for (const { failpoint, partial } of [
   });
 }
 
-test('managed recovery discards a transaction temp fsynced before rename', async () => {
-  const root = await tempRoot();
-  const expected = managedArtifacts('old');
-  const next = managedArtifacts('new');
-  await createManaged(root, 'managed', expected);
+for (const failpoint of [
+  'after_managed_publish_rename_before_directory_sync',
+  'after_managed_publish_skills_directory_sync_before_transaction_sync',
+  'after_managed_publish',
+] as const) {
+  test(`managed replacement recovers from ${failpoint} after publishing one complete directory`, async () => {
+    const root = await tempRoot();
+    const expected = managedArtifacts('old');
+    const next = managedArtifacts('new');
+    await createManaged(root, 'managed', expected);
 
-  await assert.rejects(
-    writer(root, 'after_managed_temp_file_sync_before_rename').replaceManagedSkill(
-      'managed',
-      expected,
-      next,
-    ),
-    isTransactionError('commit_outcome_unknown'),
-  );
-  assert.deepEqual(await readManaged(root, 'managed'), expected);
-  assert.deepEqual((await readdir(join(root, 'skills', 'managed'))).sort(), [
-    'SKILL.md',
-    'skill.baseline.md',
-    'skill.lock.json',
-  ]);
-  assert.ok((await readdir(await onlyTransaction(root))).includes('managed-replacement.tmp'));
+    await assert.rejects(
+      writer(root, failpoint).replaceManagedSkill('managed', expected, next),
+      isTransactionError('commit_outcome_unknown'),
+    );
+    assert.deepEqual(await readManaged(root, 'managed'), next);
+    assert.deepEqual(await readManagedDirectory(await onlyFrozen(root)), expected);
+    assert.equal((await readdir(await onlyTransaction(root))).includes('tombstone'), false);
 
-  await writer(root).recover();
-  assert.deepEqual(await readManaged(root, 'managed'), next);
-  assert.deepEqual(await transactionEntries(root), []);
-});
-
-test('managed recovery accepts baseline rename before directory synchronization', async () => {
-  const root = await tempRoot();
-  const expected = managedArtifacts('old');
-  const next = managedArtifacts('new');
-  await createManaged(root, 'managed', expected);
-
-  await assert.rejects(
-    writer(root, 'after_managed_replace_rename_before_directory_sync').replaceManagedSkill(
-      'managed',
-      expected,
-      next,
-    ),
-    isTransactionError('commit_outcome_unknown'),
-  );
-  assert.deepEqual(await readManaged(root, 'managed'), {
-    skill: expected.skill,
-    lock: expected.lock,
-    baseline: next.baseline,
+    await writer(root).recover();
+    assert.deepEqual(await readManaged(root, 'managed'), next);
+    assert.deepEqual(await transactionEntries(root), []);
   });
+}
 
-  await writer(root).recover();
-  assert.deepEqual(await readManaged(root, 'managed'), next);
+test('managed recovery rolls back a frozen old generation when staged next is missing', async () => {
+  const root = await tempRoot();
+  const expected = managedArtifacts('old');
+  const next = managedArtifacts('new');
+  await createManaged(root, 'managed', expected);
+
+  await assert.rejects(
+    writer(root, 'after_managed_freeze').replaceManagedSkill('managed', expected, next),
+    isTransactionError('commit_outcome_unknown'),
+  );
+  const transaction = await onlyTransaction(root);
+  assert.deepEqual(await readManagedDirectory(await onlyFrozen(root)), expected);
+  await rm(join(transaction, 'next'), { recursive: true });
+
+  const reopened = writer(root);
+  await reopened.recover();
+  await reopened.recover();
+  assert.deepEqual(await readManaged(root, 'managed'), expected);
+  assert.deepEqual(await frozenEntries(root), []);
   assert.deepEqual(await transactionEntries(root), []);
 });
+
+test('managed recovery keeps durable next live when its stale frozen generation is missing', async () => {
+  const root = await tempRoot();
+  const expected = managedArtifacts('old');
+  const next = managedArtifacts('new');
+  await createManaged(root, 'managed', expected);
+
+  await assert.rejects(
+    writer(root, 'after_managed_publish').replaceManagedSkill('managed', expected, next),
+    isTransactionError('commit_outcome_unknown'),
+  );
+  assert.deepEqual(await readManaged(root, 'managed'), next);
+  await rm(await onlyFrozen(root), { recursive: true });
+
+  const reopened = writer(root);
+  await reopened.recover();
+  await reopened.recover();
+  assert.deepEqual(await readManaged(root, 'managed'), next);
+  assert.deepEqual(await frozenEntries(root), []);
+  assert.deepEqual(await transactionEntries(root), []);
+});
+
+test('managed recovery removes a frozen duplicate after tombstone handoff is durable', async () => {
+  const root = await tempRoot();
+  const expected = managedArtifacts('old');
+  const next = managedArtifacts('new');
+  await createManaged(root, 'managed', expected);
+
+  await assert.rejects(
+    writer(root, 'after_managed_publish').replaceManagedSkill('managed', expected, next),
+    isTransactionError('commit_outcome_unknown'),
+  );
+  const transaction = await onlyTransaction(root);
+  const frozen = await onlyFrozen(root);
+  await writeManagedDirectory(join(transaction, 'tombstone'), expected);
+  assert.deepEqual(await readManaged(root, 'managed'), next);
+  assert.deepEqual(await readManagedDirectory(frozen), expected);
+  assert.deepEqual(await readManagedDirectory(join(transaction, 'tombstone')), expected);
+
+  const reopened = writer(root);
+  await reopened.recover();
+  await reopened.recover();
+  assert.deepEqual(await readManaged(root, 'managed'), next);
+  assert.deepEqual(await frozenEntries(root), []);
+  assert.deepEqual(await transactionEntries(root), []);
+});
+
+for (const changed of ['frozen', 'tombstone'] as const) {
+  test(`managed recovery strictly verifies the ${changed} copy when both old generations exist`, async () => {
+    const root = await tempRoot();
+    const expected = managedArtifacts('old');
+    const next = managedArtifacts('new');
+    await createManaged(root, 'managed', expected);
+
+    await assert.rejects(
+      writer(root, 'after_managed_publish').replaceManagedSkill('managed', expected, next),
+      isTransactionError('commit_outcome_unknown'),
+    );
+    const transaction = await onlyTransaction(root);
+    const frozen = await onlyFrozen(root);
+    const tombstone = join(transaction, 'tombstone');
+    await writeManagedDirectory(tombstone, expected);
+    await writeFile(join(changed === 'frozen' ? frozen : tombstone, 'SKILL.md'), '# changed\n');
+
+    await assert.rejects(writer(root).recover(), isTransactionError('persistence_failed'));
+    assert.deepEqual(await readManaged(root, 'managed'), next);
+    assert.equal(
+      await readFile(join(frozen, 'SKILL.md'), 'utf8'),
+      changed === 'frozen' ? '# changed\n' : expected.skill,
+    );
+    assert.equal(
+      await readFile(join(tombstone, 'SKILL.md'), 'utf8'),
+      changed === 'tombstone' ? '# changed\n' : expected.skill,
+    );
+    assert.deepEqual(await frozenEntries(root), [basename(frozen)]);
+    assert.deepEqual(await transactionEntries(root), [basename(transaction)]);
+  });
+}
+
+for (const targetState of ['expected', 'absent'] as const) {
+  test(`managed recovery fails closed for ${targetState} target with both retained old copies`, async () => {
+    const root = await tempRoot();
+    const expected = managedArtifacts('old');
+    const next = managedArtifacts('new');
+    await createManaged(root, 'managed', expected);
+
+    await assert.rejects(
+      writer(root, 'after_managed_publish').replaceManagedSkill('managed', expected, next),
+      isTransactionError('commit_outcome_unknown'),
+    );
+    const transaction = await onlyTransaction(root);
+    const frozen = await onlyFrozen(root);
+    await writeManagedDirectory(join(transaction, 'tombstone'), expected);
+    await rm(join(root, 'skills', 'managed'), { recursive: true });
+    if (targetState === 'expected') await createManaged(root, 'managed', expected);
+
+    await assert.rejects(writer(root).recover(), isTransactionError('persistence_failed'));
+    if (targetState === 'expected') {
+      assert.deepEqual(await readManaged(root, 'managed'), expected);
+    } else {
+      await assert.rejects(readManaged(root, 'managed'), { code: 'ENOENT' });
+    }
+    assert.deepEqual(await readManagedDirectory(frozen), expected);
+    assert.deepEqual(await readManagedDirectory(join(transaction, 'tombstone')), expected);
+    assert.deepEqual(await frozenEntries(root), [basename(frozen)]);
+    assert.deepEqual(await transactionEntries(root), [basename(transaction)]);
+  });
+}
+
+test('managed recovery treats expected target plus tombstone as an uncommitted duplicate', async () => {
+  const root = await tempRoot();
+  const expected = managedArtifacts('old');
+  const next = managedArtifacts('new');
+  await createManaged(root, 'managed', expected);
+
+  await assert.rejects(
+    writer(root, 'after_intent').replaceManagedSkill('managed', expected, next),
+    isTransactionError('commit_outcome_unknown'),
+  );
+  const transaction = await onlyTransaction(root);
+  await writeManagedDirectory(join(transaction, 'tombstone'), expected);
+
+  const reopened = writer(root);
+  await reopened.recover();
+  await reopened.recover();
+  assert.deepEqual(await readManaged(root, 'managed'), expected);
+  assert.deepEqual(await transactionEntries(root), []);
+});
+
+for (const failpoint of [
+  'after_managed_handoff_rename_before_directory_sync',
+  'after_managed_handoff_transaction_sync_before_skills_sync',
+  'after_managed_handoff',
+] as const) {
+  test(`managed recovery completes post-commit stale-old handoff from ${failpoint}`, async () => {
+    const root = await tempRoot();
+    const expected = managedArtifacts('old');
+    const next = managedArtifacts('new');
+    await createManaged(root, 'managed', expected);
+
+    await assert.rejects(
+      writer(root, failpoint).replaceManagedSkill('managed', expected, next),
+      isTransactionError('commit_outcome_unknown'),
+    );
+    assert.deepEqual(await readManaged(root, 'managed'), next);
+    assert.deepEqual(await frozenEntries(root), []);
+    assert.deepEqual(
+      await readManagedDirectory(join(await onlyTransaction(root), 'tombstone')),
+      expected,
+    );
+
+    const reopened = writer(root);
+    await reopened.recover();
+    await reopened.recover();
+    assert.deepEqual(await readManaged(root, 'managed'), next);
+    assert.deepEqual(await transactionEntries(root), []);
+  });
+}
 
 for (const failpoint of [
   'after_gc_handoff_rename_before_directory_sync',
@@ -240,14 +421,16 @@ for (const failpoint of [
       isTransactionError('commit_outcome_unknown'),
     );
     assert.deepEqual(await readManaged(root, 'managed'), next);
+    assert.deepEqual(await frozenEntries(root), []);
     const entries = await transactionEntries(root);
     assert.equal(entries.length, 1);
     assert.match(entries[0], /^gc-/);
+    const gcDirectory = join(root, '.maka', 'skill-transactions', entries[0]);
+    if (failpoint !== 'during_gc_cleanup') {
+      assert.deepEqual(await readManagedDirectory(join(gcDirectory, 'tombstone')), expected);
+    }
     if (failpoint === 'during_gc_cleanup') {
-      assert.equal(
-        await countTreeEntries(join(root, '.maka', 'skill-transactions', entries[0])),
-        8,
-      );
+      assert.equal(await countTreeEntries(gcDirectory), 12);
     }
 
     const reopened = writer(root);
@@ -274,6 +457,47 @@ test('managed recovery fails closed without overwriting a third-party edit', asy
   await assert.rejects(writer(root).recover(), isTransactionError('persistence_failed'));
   assert.equal(await readFile(join(root, 'skills', 'managed', 'SKILL.md'), 'utf8'), edited);
   assert.equal((await readManaged(root, 'managed')).baseline, expected.baseline);
+  const entries = await transactionEntries(root);
+  assert.equal(entries.length, 1);
+  assert.match(entries[0], /^tx-/);
+
+  await assert.rejects(writer(root).recover(), isTransactionError('persistence_failed'));
+  assert.equal(await readFile(join(root, 'skills', 'managed', 'SKILL.md'), 'utf8'), edited);
+  assert.deepEqual(await transactionEntries(root), entries);
+});
+
+test('managed replacement preserves a pre-GC open-fd save and fails before transaction completion', async () => {
+  if (process.platform === 'win32') return;
+  const root = await tempRoot();
+  const expected = managedArtifacts('old');
+  const next = managedArtifacts('new');
+  await createManaged(root, 'managed', expected);
+  const fd = openSync(join(root, 'skills', 'managed', 'SKILL.md'), 'r+');
+  const transactionWriter = new SkillCatalogTransactionWriter(
+    async (operation) => operation(root),
+    {
+      failpoint(point) {
+        if (point !== 'after_managed_publish') return;
+        writeSync(fd, Buffer.from('# open fd edit\n'), 0, 15, 0);
+        fsyncSync(fd);
+      },
+    },
+  );
+  try {
+    await assert.rejects(
+      transactionWriter.replaceManagedSkill('managed', expected, next),
+      isTransactionError('commit_outcome_unknown'),
+    );
+  } finally {
+    closeSync(fd);
+  }
+
+  assert.deepEqual(await readManaged(root, 'managed'), next);
+  const frozen = await onlyFrozen(root);
+  assert.match(await readFile(join(frozen, 'SKILL.md'), 'utf8'), /^# open fd edit/);
+  await assert.rejects(writer(root).recover(), isTransactionError('persistence_failed'));
+  assert.deepEqual(await readManaged(root, 'managed'), next);
+  assert.match(await readFile(join(frozen, 'SKILL.md'), 'utf8'), /^# open fd edit/);
 });
 
 test('managed replacement rejects a stale expected set before creating an intent', async () => {
@@ -304,7 +528,7 @@ test('recovery rejects modified staged artifacts and leaves live files untouched
     isTransactionError('commit_outcome_unknown'),
   );
   const transaction = await onlyTransaction(root);
-  await writeFile(join(transaction, 'next', 'skill.baseline.md'), 'tampered');
+  await writeFile(join(transaction, 'next', '.maka', 'baseline', 'SKILL.md'), 'tampered');
 
   await assert.rejects(writer(root).recover(), isTransactionError('persistence_failed'));
   assert.deepEqual(await readManaged(root, 'managed'), expected);
@@ -540,22 +764,34 @@ async function createManaged(
   id: string,
   artifacts: ManagedSkillTransactionArtifacts,
 ): Promise<void> {
-  const directory = join(root, 'skills', id);
+  await writeManagedDirectory(join(root, 'skills', id), artifacts);
+}
+
+async function writeManagedDirectory(
+  directory: string,
+  artifacts: ManagedSkillTransactionArtifacts,
+): Promise<void> {
   await mkdir(directory, { recursive: true });
   await writeFile(join(directory, 'SKILL.md'), artifacts.skill);
   await writeFile(join(directory, 'skill.lock.json'), artifacts.lock);
-  await writeFile(join(directory, 'skill.baseline.md'), artifacts.baseline);
+  await mkdir(join(directory, '.maka', 'baseline'), { recursive: true });
+  await writeFile(join(directory, '.maka', 'baseline', 'SKILL.md'), artifacts.baseline);
 }
 
 async function readManaged(
   root: string,
   id: string,
 ): Promise<{ skill: string; lock: string; baseline: string }> {
-  const directory = join(root, 'skills', id);
+  return readManagedDirectory(join(root, 'skills', id));
+}
+
+async function readManagedDirectory(
+  directory: string,
+): Promise<{ skill: string; lock: string; baseline: string }> {
   const [skill, lock, baseline] = await Promise.all([
     readFile(join(directory, 'SKILL.md'), 'utf8'),
     readFile(join(directory, 'skill.lock.json'), 'utf8'),
-    readFile(join(directory, 'skill.baseline.md'), 'utf8'),
+    readFile(join(directory, '.maka', 'baseline', 'SKILL.md'), 'utf8'),
   ]);
   return { skill, lock, baseline };
 }
@@ -567,6 +803,23 @@ async function transactionEntries(root: string): Promise<string[]> {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw error;
   }
+}
+
+async function frozenEntries(root: string): Promise<string[]> {
+  try {
+    return (await readdir(join(root, 'skills')))
+      .filter((entry) => entry.startsWith('.maka-frozen-'))
+      .sort();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+async function onlyFrozen(root: string): Promise<string> {
+  const entries = await frozenEntries(root);
+  assert.equal(entries.length, 1);
+  return join(root, 'skills', entries[0]);
 }
 
 async function onlyTransaction(root: string): Promise<string> {

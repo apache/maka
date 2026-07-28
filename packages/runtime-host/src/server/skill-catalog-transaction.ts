@@ -7,23 +7,23 @@ import {
   opendir,
   realpath,
   rename,
-  rm,
   rmdir,
   unlink,
 } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
-import { isPathInside, isSafeSkillId } from '@maka/runtime';
+import { isPathInside, isSafeSkillId, MANAGED_SKILL_BASELINE_RELATIVE_PATH } from '@maka/runtime';
 
 const TRANSACTION_DIRECTORY = join('.maka', 'skill-transactions');
 const INTENT_FILE = 'intent.json';
+const INTENT_TEMP_FILE = 'intent.json.tmp';
 const EXPECTED_DIRECTORY = 'expected';
 const NEXT_DIRECTORY = 'next';
 const TOMBSTONE_DIRECTORY = 'tombstone';
-const MANAGED_REPLACEMENT_TEMP = 'managed-replacement.tmp';
+const MANAGED_FROZEN_PREFIX = '.maka-frozen-';
 
 const SKILL_FILE = 'SKILL.md';
 const LOCK_FILE = 'skill.lock.json';
-const BASELINE_FILE = 'skill.baseline.md';
+const BASELINE_FILE = MANAGED_SKILL_BASELINE_RELATIVE_PATH;
 const MANAGED_FILES = [BASELINE_FILE, SKILL_FILE, LOCK_FILE] as const;
 
 const SKILL_MAX_BYTES = 256 * 1024;
@@ -74,15 +74,19 @@ export interface ManagedSkillTransactionArtifacts {
 
 export type SkillCatalogTransactionFailpoint =
   | 'after_intent_write_before_file_sync'
+  | 'after_intent_rename_before_directory_sync'
   | 'after_intent'
   | 'after_publish_rename_before_directory_sync'
   | 'after_publish_skills_directory_sync_before_transaction_sync'
   | 'after_publish_rename'
-  | 'after_managed_temp_file_sync_before_rename'
-  | 'after_managed_replace_rename_before_directory_sync'
-  | 'after_replace_skill'
-  | 'after_replace_lock'
-  | 'after_replace_baseline'
+  | 'after_managed_freeze_rename_before_directory_sync'
+  | 'after_managed_freeze'
+  | 'after_managed_publish_rename_before_directory_sync'
+  | 'after_managed_publish_skills_directory_sync_before_transaction_sync'
+  | 'after_managed_publish'
+  | 'after_managed_handoff_rename_before_directory_sync'
+  | 'after_managed_handoff_transaction_sync_before_skills_sync'
+  | 'after_managed_handoff'
   | 'after_delete_rename_before_directory_sync'
   | 'after_delete_skills_directory_sync_before_transaction_sync'
   | 'after_gc_handoff_rename_before_directory_sync'
@@ -283,10 +287,12 @@ export class SkillCatalogTransactionWriter {
       await mkdir(directory, { mode: 0o700 });
       await syncDirectory(prepared.transactions);
       if (stage) await stage(transaction);
-      await writeNewDurableFile(directory, INTENT_FILE, intentBytes, () => {
-        this.#failpoint?.('after_intent_write_before_file_sync');
-      });
+      await writeNewDurableFile(directory, INTENT_TEMP_FILE, intentBytes, () =>
+        this.#failpoint?.('after_intent_write_before_file_sync'),
+      );
+      await rename(join(directory, INTENT_TEMP_FILE), join(directory, INTENT_FILE));
       intentPublicationUncertain = true;
+      this.#failpoint?.('after_intent_rename_before_directory_sync');
       await syncDirectory(directory);
       this.#failpoint?.('after_intent');
       await replayTransaction(prepared, transaction, this.#failpoint);
@@ -350,13 +356,13 @@ async function verifyTransactionEntries(transaction: PreparedTransaction): Promi
     transaction.intent.kind === 'publish'
       ? new Set([INTENT_FILE, NEXT_DIRECTORY])
       : transaction.intent.kind === 'replace-managed'
-        ? new Set([INTENT_FILE, EXPECTED_DIRECTORY, NEXT_DIRECTORY, MANAGED_REPLACEMENT_TEMP])
+        ? new Set([INTENT_FILE, EXPECTED_DIRECTORY, NEXT_DIRECTORY, TOMBSTONE_DIRECTORY])
         : new Set([INTENT_FILE, TOMBSTONE_DIRECTORY]);
   for (const entry of await safeReadDirectory(transaction.directory, TRANSACTION_MAX_ENTRIES)) {
     if (entry.isSymbolicLink() || !allowed.has(entry.name)) {
       throw persistenceFailed('Skill transaction contains a modified or unknown artifact');
     }
-    const shouldBeFile = entry.name === INTENT_FILE || entry.name === MANAGED_REPLACEMENT_TEMP;
+    const shouldBeFile = entry.name === INTENT_FILE;
     if (shouldBeFile ? !entry.isFile() : !entry.isDirectory()) {
       throw persistenceFailed('Skill transaction contains an artifact of the wrong type');
     }
@@ -379,12 +385,12 @@ async function replayPublish(
     if (!targetStat.isDirectory() || targetStat.isSymbolicLink()) {
       throw persistenceFailed('Published Skill target is unsafe');
     }
-    await verifyFlatArtifactDirectory(target, intent.next);
+    await verifyArtifactDirectory(target, intent.next);
   } else {
     if (!nextStat || !nextStat.isDirectory() || nextStat.isSymbolicLink()) {
       throw persistenceFailed('Skill publication artifact is missing or unsafe');
     }
-    await verifyFlatArtifactDirectory(next, intent.next);
+    await verifyArtifactDirectory(next, intent.next);
     await rename(next, target);
     failpoint?.('after_publish_rename_before_directory_sync');
     await syncDirectory(root.skills);
@@ -403,42 +409,156 @@ async function replayReplace(
   const intent = transaction.intent as ReplaceIntent;
   const expectedDirectory = join(transaction.directory, EXPECTED_DIRECTORY);
   const nextDirectory = join(transaction.directory, NEXT_DIRECTORY);
-  await cleanupManagedReplacementTemp(transaction.directory);
-  await verifyFlatArtifactDirectory(expectedDirectory, intent.expected);
-  await verifyFlatArtifactDirectory(nextDirectory, intent.next);
-  const target = await requireContainedDirectory(root.skills, join(root.skills, intent.skillId));
+  const target = join(root.skills, intent.skillId);
+  const frozen = join(root.skills, `${MANAGED_FROZEN_PREFIX}${intent.transactionId}`);
+  const tombstone = join(transaction.directory, TOMBSTONE_DIRECTORY);
+  await verifyArtifactDirectory(expectedDirectory, intent.expected);
+  let nextStat = await safeLstat(nextDirectory);
+  if (nextStat) await verifyArtifactDirectory(nextDirectory, intent.next);
 
-  for (let index = 0; index < MANAGED_FILES.length; index += 1) {
-    const states = await inspectManagedSequence(target, intent);
-    if (!states[index]?.next) {
-      await replaceDurableFile(
-        transaction.directory,
-        target,
-        MANAGED_FILES[index],
-        await readVerifiedArtifact(
-          nextDirectory,
-          MANAGED_FILES[index],
-          intent.next[MANAGED_FILES[index]],
-        ),
-        failpoint,
-      );
+  const [initialTargetStat, frozenStat, tombstoneStat] = await Promise.all([
+    safeLstat(target),
+    safeLstat(frozen),
+    safeLstat(tombstone),
+  ]);
+  let targetStat = initialTargetStat;
+  const retainedOld = new Set<'frozen' | 'tombstone'>();
+  if (frozenStat) retainedOld.add('frozen');
+  if (tombstoneStat) retainedOld.add('tombstone');
+  for (const retained of retainedOld) {
+    await verifyArtifactDirectory(retained === 'frozen' ? frozen : tombstone, intent.expected);
+  }
+
+  const targetState = targetStat
+    ? await classifyManagedTarget(target, intent.expected, intent.next)
+    : undefined;
+  if (retainedOld.size === 2) {
+    if (!targetStat || targetState === 'expected') {
+      throw persistenceFailed('Managed Skill has conflicting live and retained old generations');
     }
-    await inspectManagedSequence(target, intent);
-    failpoint?.(replaceFailpointFor(MANAGED_FILES[index]));
+    // Tombstone owns the old generation; the source-parent duplicate can enter recoverable GC.
+    await handoffManagedFrozenDuplicateToGc(root, frozen);
+    retainedOld.delete('frozen');
   }
-  const finalStates = await inspectManagedSequence(target, intent);
-  if (!finalStates.every((state) => state.next)) {
-    throw persistenceFailed('Managed Skill replacement did not reach its staged state');
+
+  if (targetStat && targetState === 'expected') {
+    if (retainedOld.has('frozen')) {
+      throw persistenceFailed('Managed Skill has conflicting live and frozen expected generations');
+    }
+    if (retainedOld.has('tombstone') || !nextStat) {
+      await finishTransaction(root.transactions, transaction.directory);
+      return;
+    }
+  } else if (targetStat && !retainedOld.has('frozen')) {
+    await finishTransaction(root.transactions, transaction.directory);
+    return;
+  } else if (!targetStat && retainedOld.size === 0) {
+    throw persistenceFailed('Managed Skill replacement has no live or retained old generation');
   }
+
+  if (targetStat && targetState === 'expected') {
+    await rename(target, frozen);
+    failpoint?.('after_managed_freeze_rename_before_directory_sync');
+    await syncDirectory(root.skills);
+    failpoint?.('after_managed_freeze');
+    targetStat = undefined;
+    retainedOld.add('frozen');
+  }
+
+  if (!targetStat && !nextStat) {
+    const rollback = retainedOld.has('frozen')
+      ? frozen
+      : retainedOld.has('tombstone')
+        ? tombstone
+        : undefined;
+    if (!rollback) {
+      throw persistenceFailed('Managed Skill replacement cannot restore its old generation');
+    }
+    await rename(rollback, target);
+    await syncDirectory(root.skills);
+    if (rollback === tombstone) await syncDirectory(transaction.directory);
+    await finishTransaction(root.transactions, transaction.directory);
+    return;
+  }
+
+  if (!targetStat) {
+    if (!retainedOld.has('frozen') || retainedOld.has('tombstone')) {
+      throw persistenceFailed('Managed Skill replacement cannot publish from its current state');
+    }
+    await rename(nextDirectory, target);
+    failpoint?.('after_managed_publish_rename_before_directory_sync');
+    await syncDirectory(root.skills);
+    // This destination sync is the durable target=next publication cut.
+    // Everything retained in frozen is now a stale old generation.
+    failpoint?.('after_managed_publish_skills_directory_sync_before_transaction_sync');
+    await syncDirectory(transaction.directory);
+    failpoint?.('after_managed_publish');
+    nextStat = await safeLstat(nextDirectory);
+  }
+
+  await verifyArtifactDirectory(target, intent.next);
+  if (nextStat) await verifyArtifactDirectory(nextDirectory, intent.next);
+
+  if (retainedOld.has('frozen')) {
+    await verifyArtifactDirectory(frozen, intent.expected);
+    await rename(frozen, tombstone);
+    failpoint?.('after_managed_handoff_rename_before_directory_sync');
+    await syncDirectory(transaction.directory);
+    failpoint?.('after_managed_handoff_transaction_sync_before_skills_sync');
+    await syncDirectory(root.skills);
+    failpoint?.('after_managed_handoff');
+    retainedOld.delete('frozen');
+    retainedOld.add('tombstone');
+  }
+  if (!retainedOld.has('tombstone')) {
+    throw persistenceFailed('Managed Skill replacement lost its stale old generation');
+  }
+  // A non-cooperating old fd after this check is beyond the retention guarantee of transaction GC.
+  await verifyArtifactDirectory(tombstone, intent.expected);
   await finishTransaction(root.transactions, transaction.directory, failpoint);
 }
 
-function replaceFailpointFor(
-  file: (typeof MANAGED_FILES)[number],
-): SkillCatalogTransactionFailpoint {
-  if (file === BASELINE_FILE) return 'after_replace_baseline';
-  if (file === SKILL_FILE) return 'after_replace_skill';
-  return 'after_replace_lock';
+async function handoffManagedFrozenDuplicateToGc(
+  root: PreparedRoot,
+  frozen: string,
+): Promise<void> {
+  const gcId = randomUUID();
+  const gcDigest = createHash('sha256').update(gcId).digest('hex');
+  const gcDirectory = join(root.transactions, `gc-${gcId}-${gcDigest}`);
+  await rename(frozen, gcDirectory);
+  await syncDirectory(root.transactions);
+  await syncDirectory(root.skills);
+  await cleanupGcEntry(root.transactions, gcDirectory);
+}
+
+async function classifyManagedTarget(
+  target: string,
+  expected: ManagedManifest,
+  next: ManagedManifest,
+): Promise<'expected' | 'next' | 'both'> {
+  const [expectedResult, nextResult] = await Promise.all([
+    matchArtifactDirectory(target, expected),
+    matchArtifactDirectory(target, next),
+  ]);
+  if (expectedResult.matches && nextResult.matches) return 'both';
+  if (expectedResult.matches) return 'expected';
+  if (nextResult.matches) return 'next';
+  throw persistenceFailed(
+    'Managed Skill live directory conflicts with the durable transaction',
+    new AggregateError([expectedResult.error, nextResult.error]),
+  );
+}
+
+async function matchArtifactDirectory(
+  directory: string,
+  manifest: ManagedManifest,
+): Promise<{ matches: true } | { matches: false; error: unknown }> {
+  try {
+    await verifyArtifactDirectory(directory, manifest);
+    return { matches: true };
+  } catch (error) {
+    return { matches: false, error };
+  }
 }
 
 async function replayDelete(
@@ -474,38 +594,11 @@ async function replayDelete(
   await finishTransaction(root.transactions, transaction.directory, failpoint);
 }
 
-async function inspectManagedSequence(
-  target: string,
-  intent: ReplaceIntent,
-): Promise<readonly { expected: boolean; next: boolean }[]> {
-  const states = await Promise.all(
-    MANAGED_FILES.map(async (file) => {
-      const actual = await digestBoundedFile(target, file, limitForFile(file));
-      return {
-        expected: digestEquals(actual, intent.expected[file]),
-        next: digestEquals(actual, intent.next[file]),
-      };
-    }),
-  );
-  const reachable = Array.from({ length: MANAGED_FILES.length + 1 }, (_, prefix) =>
-    states.every((state, index) => (index < prefix ? state.next : state.expected)),
-  ).some(Boolean);
-  if (!reachable) {
-    throw persistenceFailed('Managed Skill live files conflict with the durable transaction');
-  }
-  return states;
-}
-
 async function verifyManagedExpected(
   target: string,
   expected: Readonly<Record<string, Buffer>>,
 ): Promise<void> {
-  for (const file of MANAGED_FILES) {
-    const actual = await digestBoundedFile(target, file, limitForFile(file));
-    if (!digestEquals(actual, digest(expected[file]))) {
-      throw persistenceFailed('Managed Skill live files do not match the expected artifacts');
-    }
-  }
+  await verifyArtifactDirectory(target, manifestForBuffers(expected));
 }
 
 async function prepareRoot(rootInput: string, create: boolean): Promise<PreparedRoot | undefined> {
@@ -593,8 +686,24 @@ async function writeArtifactDirectory(
 ): Promise<void> {
   const directory = join(transaction, name);
   await mkdir(directory, { mode: 0o700 });
+  const directories = new Set<string>();
+  for (const file of Object.keys(files)) {
+    let parent = dirname(file);
+    while (parent !== '.') {
+      directories.add(parent);
+      parent = dirname(parent);
+    }
+  }
+  for (const relativeDirectory of [...directories].sort(
+    (left, right) => left.split('/').length - right.split('/').length,
+  )) {
+    const path = join(directory, relativeDirectory);
+    await mkdir(path, { mode: 0o700 });
+    await syncDirectory(dirname(path));
+  }
   for (const [file, bytes] of Object.entries(files)) {
     await writeNewDurableFile(directory, file, bytes);
+    await syncDirectory(dirname(join(directory, file)));
   }
   await syncDirectory(directory);
   await syncDirectory(transaction);
@@ -626,49 +735,6 @@ async function writeNewDurableFile(
   if (failure) {
     throw persistenceFailed(`Skill transaction artifact ${file} could not be written`, failure);
   }
-}
-
-async function replaceDurableFile(
-  transaction: string,
-  directory: string,
-  file: string,
-  bytes: Buffer,
-  failpoint?: (point: SkillCatalogTransactionFailpoint) => void,
-): Promise<void> {
-  const temporary = join(transaction, MANAGED_REPLACEMENT_TEMP);
-  let handle;
-  let renamed = false;
-  try {
-    handle = await open(temporary, 'wx', 0o600);
-    await handle.writeFile(bytes);
-    await handle.sync();
-    await handle.close();
-    handle = undefined;
-    failpoint?.('after_managed_temp_file_sync_before_rename');
-    await rename(temporary, join(directory, file));
-    renamed = true;
-    failpoint?.('after_managed_replace_rename_before_directory_sync');
-    await syncDirectory(directory);
-    await syncDirectory(transaction);
-  } catch (error) {
-    throw persistenceFailed(`Managed Skill ${file} could not be durably replaced`, error);
-  } finally {
-    await handle?.close().catch(() => undefined);
-    if (!renamed && !failpoint) {
-      await rm(temporary, { force: true }).catch(() => undefined);
-    }
-  }
-}
-
-async function cleanupManagedReplacementTemp(transaction: string): Promise<void> {
-  const temporary = join(transaction, MANAGED_REPLACEMENT_TEMP);
-  const metadata = await safeLstat(temporary);
-  if (!metadata) return;
-  if (!metadata.isFile() || metadata.isSymbolicLink()) {
-    throw persistenceFailed('Managed Skill replacement temp is unsafe');
-  }
-  await unlink(temporary);
-  await syncDirectory(transaction);
 }
 
 async function readPreparedTransaction(
@@ -704,7 +770,7 @@ function parseIntent(bytes: Buffer): TransactionIntent {
   if (value.kind === 'publish') {
     requireExactKeys(value, ['kind', 'next', 'schemaVersion', 'skillId', 'transactionId']);
     assertSkillIdValue(value.skillId);
-    const next = parseManifest(value.next, new Set([SKILL_FILE, LOCK_FILE, BASELINE_FILE]));
+    const next = parseManifest(value.next, new Set([SKILL_FILE, LOCK_FILE, BASELINE_FILE]), true);
     if (!next[SKILL_FILE]) throw persistenceFailed('Skill publication is missing SKILL.md');
     return { ...value, next } as PublishIntent;
   }
@@ -736,7 +802,7 @@ function parseIntent(bytes: Buffer): TransactionIntent {
 }
 
 function parseManagedManifest(value: unknown): ManagedManifest {
-  const parsed = parseManifest(value, new Set(MANAGED_FILES));
+  const parsed = parseManifest(value, new Set(MANAGED_FILES), true);
   if (Object.keys(parsed).length !== MANAGED_FILES.length) {
     throw persistenceFailed('Managed Skill transaction manifest is incomplete');
   }
@@ -780,26 +846,57 @@ function isSafeTreeFile(value: string): boolean {
   );
 }
 
-async function verifyFlatArtifactDirectory(
+async function verifyArtifactDirectory(
   directory: string,
   manifest: Readonly<Record<string, ArtifactDigest>>,
 ): Promise<void> {
   const resolved = await requireContainedDirectory(dirname(directory), directory);
-  const entries = await safeReadDirectory(resolved, ARTIFACT_MAX_ENTRIES);
-  const names = entries.map((entry) => entry.name).sort();
-  const expectedNames = Object.keys(manifest).sort();
-  if (
-    names.length !== expectedNames.length ||
-    names.some((name, index) => name !== expectedNames[index])
-  ) {
-    throw persistenceFailed('Skill transaction artifact set was modified');
-  }
-  for (const entry of entries) {
-    if (!entry.isFile() || entry.isSymbolicLink()) {
-      throw persistenceFailed('Skill transaction artifact must be a regular file');
+  const expectedFiles = new Set(Object.keys(manifest));
+  const expectedDirectories = new Set<string>();
+  for (const file of expectedFiles) {
+    let parent = dirname(file);
+    while (parent !== '.') {
+      expectedDirectories.add(parent);
+      parent = dirname(parent);
     }
-    await readVerifiedArtifact(resolved, entry.name, manifest[entry.name]);
   }
+  const visit = async (current: string, prefix: string): Promise<void> => {
+    const expectedChildren = new Set<string>();
+    for (const file of expectedFiles) {
+      if (dirname(file) === (prefix || '.')) expectedChildren.add(basename(file));
+    }
+    for (const child of expectedDirectories) {
+      if (dirname(child) === (prefix || '.')) expectedChildren.add(basename(child));
+    }
+    const entries = await safeReadDirectory(
+      current,
+      Math.max(ARTIFACT_MAX_ENTRIES, expectedChildren.size),
+    );
+    if (
+      entries.length !== expectedChildren.size ||
+      entries.some((entry) => !expectedChildren.has(entry.name))
+    ) {
+      throw persistenceFailed('Skill transaction artifact set was modified');
+    }
+    for (const entry of entries) {
+      const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isSymbolicLink()) {
+        throw persistenceFailed('Skill transaction artifact contains a symbolic link');
+      }
+      if (expectedDirectories.has(relative)) {
+        if (!entry.isDirectory()) {
+          throw persistenceFailed('Skill transaction artifact directory has the wrong type');
+        }
+        await visit(join(current, entry.name), relative);
+      } else {
+        if (!entry.isFile()) {
+          throw persistenceFailed('Skill transaction artifact must be a regular file');
+        }
+        await readVerifiedArtifact(resolved, relative, manifest[relative]);
+      }
+    }
+  };
+  await visit(resolved, '');
 }
 
 async function readVerifiedArtifact(
@@ -889,7 +986,7 @@ async function digestBoundedFile(
 }
 
 async function readBoundedFile(directory: string, file: string, maxBytes: number): Promise<Buffer> {
-  if (!isSafeRelativeFile(file)) throw persistenceFailed('Skill file name is unsafe');
+  if (!isSafeTreeFile(file)) throw persistenceFailed('Skill file name is unsafe');
   const path = join(directory, file);
   assertContained(directory, path);
   const flags =

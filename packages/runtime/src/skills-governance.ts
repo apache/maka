@@ -54,6 +54,8 @@ export type ManagedSourceSnapshot =
   | { status: 'available'; contentSha256: string }
   | { status: 'missing' };
 
+export const MANAGED_SKILL_BASELINE_RELATIVE_PATH = '.maka/baseline/SKILL.md';
+
 const bundledById = new Map(BUNDLED_SKILL_CATALOG.map((skill) => [skill.id, skill]));
 
 export function getBundledSkillSource(id: string): BundledSkillSource | undefined {

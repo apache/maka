@@ -1,6 +1,7 @@
 ---
 name: OfficeCLI PPTX
 description: Use when a .pptx, slide deck, presentation, pitch deck, speaker notes, layout, chart, template, or slides file is involved.
+category: 效率工具
 allowed-tools:
   - OfficeDocument
   - OfficeDocumentEdit

@@ -222,10 +222,9 @@ export function migrateSkillRuntimePreferences(
 ): SkillPreferenceMigration {
   const preferences = new Map(state.preferences);
   const needsReview = new Set(state.needsReview);
-  if (state.schemaVersion !== 1) return { preferences, needsReview };
-
   const inventoryByLegacyId = groupPreferenceTargetsByNormalizedId(inventory);
   for (const [legacyId, preference] of state.preferences) {
+    if (legacyId.includes(':')) continue;
     const matches = inventoryByLegacyId.get(normalizeLegacyId(legacyId)) ?? [];
     if (matches.length === 1) {
       if (!preferences.has(matches[0].ref)) preferences.set(matches[0].ref, preference);

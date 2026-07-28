@@ -176,16 +176,26 @@ export type SkillCatalogMutation =
       readonly sourceType: 'bundled' | 'managed';
       readonly sourceId: string;
     }
-  | {
-      readonly kind: 'update_managed';
-      readonly ref: string;
-      readonly force: boolean;
-      readonly expectedCurrentSha256: SkillContentSha256 | null;
-      readonly expectedSourceSha256: SkillContentSha256 | null;
-    }
+  | SkillCatalogManagedUpdateMutation
   | { readonly kind: 'delete'; readonly ref: string }
   | { readonly kind: 'set_enabled'; readonly ref: string; readonly enabled: boolean }
   | { readonly kind: 'set_pinned'; readonly ref: string; readonly pinned: boolean };
+
+export type SkillCatalogManagedUpdateMutation =
+  | {
+      readonly kind: 'update_managed';
+      readonly ref: string;
+      readonly force: false;
+      readonly expectedCurrentSha256: null;
+      readonly expectedSourceSha256: null;
+    }
+  | {
+      readonly kind: 'update_managed';
+      readonly ref: string;
+      readonly force: true;
+      readonly expectedCurrentSha256: SkillContentSha256;
+      readonly expectedSourceSha256: SkillContentSha256;
+    };
 
 export interface SkillCatalogMutateInput {
   readonly context: SkillCatalogLocalContext;
@@ -533,18 +543,27 @@ function mutation(value: unknown): SkillCatalogMutation {
       item.expectedSourceSha256,
       'expected source sha256',
     );
-    if (
-      (force && (expectedCurrentSha256 === null || expectedSourceSha256 === null)) ||
-      (!force && (expectedCurrentSha256 !== null || expectedSourceSha256 !== null))
-    ) {
+    if (force) {
+      if (expectedCurrentSha256 === null || expectedSourceSha256 === null) {
+        throw invalidProtocolFrame('Invalid managed skill update preview confirmation');
+      }
+      return {
+        kind: 'update_managed',
+        ref: ref(item.ref),
+        force: true,
+        expectedCurrentSha256,
+        expectedSourceSha256,
+      };
+    }
+    if (expectedCurrentSha256 !== null || expectedSourceSha256 !== null) {
       throw invalidProtocolFrame('Invalid managed skill update preview confirmation');
     }
     return {
       kind: 'update_managed',
       ref: ref(item.ref),
-      force,
-      expectedCurrentSha256,
-      expectedSourceSha256,
+      force: false,
+      expectedCurrentSha256: null,
+      expectedSourceSha256: null,
     };
   }
   if (record.kind === 'delete') {
@@ -667,13 +686,25 @@ function decodePreviewResult(value: unknown): SkillCatalogPreviewUpdateResult {
 
 function localContext(value: unknown): SkillCatalogLocalContext {
   const record = requireExactRecord(value, 'skill catalog local context', ['projectRoot']);
+  const projectRoot = utf8String(
+    record.projectRoot,
+    'skill catalog project root',
+    PROJECT_ROOT_MAX_BYTES,
+  );
+  if (!isSkillCatalogProjectRootLexicallyAbsolute(projectRoot)) {
+    throw invalidProtocolFrame('Skill catalog project root must be absolute');
+  }
   return {
-    projectRoot: utf8String(
-      record.projectRoot,
-      'skill catalog project root',
-      PROJECT_ROOT_MAX_BYTES,
-    ),
+    projectRoot,
   };
+}
+
+export function isSkillCatalogProjectRootLexicallyAbsolute(
+  value: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (platform !== 'win32') return value.startsWith('/');
+  return /^[A-Za-z]:[\\/]/.test(value) || /^[\\/]{2}[^\\/]+[\\/][^\\/]+(?:[\\/]|$)/.test(value);
 }
 
 function revisionChanged(

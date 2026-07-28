@@ -14,6 +14,7 @@ import {
   isPathInside,
   isSafeSkillId,
   isSkillPreferenceReviewPending,
+  MANAGED_SKILL_BASELINE_RELATIVE_PATH,
   MANAGED_SKILL_CATEGORIES,
   migrateSkillRuntimePreferences,
   missingSkillLockStatus,
@@ -1160,18 +1161,19 @@ async function toSkillGovernanceDetails(skill: InstalledSkill, sourceRoot: strin
 
 async function writeManagedSkillBaseline(skillDir: string, content: string): Promise<boolean> {
   try {
-    const metadataDir = join(skillDir, '.maka');
+    const baselineFile = join(skillDir, MANAGED_SKILL_BASELINE_RELATIVE_PATH);
+    const baselineDir = dirname(baselineFile);
+    const metadataDir = dirname(baselineDir);
     await mkdir(metadataDir, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== 'EEXIST') throw error;
     });
-    const baselineDir = join(metadataDir, 'baseline');
     await mkdir(baselineDir, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== 'EEXIST') throw error;
     });
 
     const resolved = await resolveManagedSkillBaselineDir(skillDir);
     if (!resolved.ok) return false;
-    return writeContainedRegularTextFile(resolved.baselineDir, join(resolved.baselineDir, 'SKILL.md'), content);
+    return writeContainedRegularTextFile(resolved.baselineDir, baselineFile, content);
   } catch {
     return false;
   }
@@ -1180,7 +1182,7 @@ async function writeManagedSkillBaseline(skillDir: string, content: string): Pro
 async function readManagedSkillBaseline(skillDir: string): Promise<string | undefined> {
   const resolved = await resolveManagedSkillBaselineDir(skillDir);
   if (!resolved.ok) return undefined;
-  const baselineFile = join(resolved.baselineDir, 'SKILL.md');
+  const baselineFile = join(skillDir, MANAGED_SKILL_BASELINE_RELATIVE_PATH);
   const baseline = await readContainedRegularTextFile(resolved.baselineDir, baselineFile);
   return baseline.ok ? baseline.content : undefined;
 }
@@ -1188,7 +1190,7 @@ async function readManagedSkillBaseline(skillDir: string): Promise<string | unde
 async function removeManagedSkillBaseline(skillDir: string): Promise<void> {
   const resolved = await resolveManagedSkillBaselineDir(skillDir);
   if (!resolved.ok) return;
-  const baselineFile = join(resolved.baselineDir, 'SKILL.md');
+  const baselineFile = join(skillDir, MANAGED_SKILL_BASELINE_RELATIVE_PATH);
   const [baselineReal, fileStat] = await Promise.all([
     realpath(resolved.baselineDir),
     lstat(baselineFile).catch((error: NodeJS.ErrnoException) => {
@@ -1208,8 +1210,10 @@ async function resolveManagedSkillBaselineDir(skillDir: string): Promise<
   | { ok: false }
 > {
   try {
-    const metadataDir = join(skillDir, '.maka');
-    const baselineDir = join(metadataDir, 'baseline');
+    const baselineDir = dirname(
+      join(skillDir, MANAGED_SKILL_BASELINE_RELATIVE_PATH),
+    );
+    const metadataDir = dirname(baselineDir);
     const [skillReal, metadataStat, baselineStat] = await Promise.all([
       realpath(skillDir),
       lstat(metadataDir),

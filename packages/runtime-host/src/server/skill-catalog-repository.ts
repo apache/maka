@@ -14,6 +14,7 @@ import {
   isPathInside,
   isSafeSkillId,
   isSkillPreferenceReviewPending,
+  MANAGED_SKILL_BASELINE_RELATIVE_PATH,
   migrateSkillRuntimePreferences,
   missingSkillLockStatus,
   patchSkillRuntimePreference,
@@ -49,6 +50,7 @@ import {
   SKILL_CATALOG_REF_MAX_BYTES,
   SKILL_CATALOG_STRING_ARRAY_ITEM_MAX_BYTES,
   SKILL_CATALOG_STRING_ARRAY_MAX_ITEMS,
+  isSkillCatalogProjectRootLexicallyAbsolute,
   type SkillCatalogBundledItem,
   type SkillCatalogGovernanceItem,
   type SkillCatalogLocalContext,
@@ -78,7 +80,7 @@ import {
 
 const SKILL_FILE = 'SKILL.md';
 const LOCK_FILE = 'skill.lock.json';
-const BASELINE_FILE = 'skill.baseline.md';
+const BASELINE_FILE = MANAGED_SKILL_BASELINE_RELATIVE_PATH;
 const STATE_DIRECTORY = '.maka';
 const STATE_FILE = 'skills-state.json';
 const PREVIEW_MAX_LINES = 80;
@@ -406,7 +408,7 @@ export class SkillCatalogRepository {
     if (snapshot.publicationNamespace.status === 'read_failed') {
       return { ok: false, reason: 'blocked_path' };
     }
-    const occupiedIds = new Set(snapshot.publicationNamespace.occupiedIds);
+    const occupiedIds = publicationOccupancy(snapshot.publicationNamespace);
     for (let ordinal = 1; ordinal <= STARTER_MAX_ORDINAL; ordinal += 1) {
       const id = starterId(ordinal);
       if (occupiedIds.has(id.toLowerCase())) continue;
@@ -434,7 +436,7 @@ export class SkillCatalogRepository {
     if (snapshot.publicationNamespace.status === 'read_failed') {
       return { ok: false, reason: 'blocked_path' };
     }
-    if (snapshot.publicationNamespace.occupiedIds.includes(mutation.sourceId.toLowerCase())) {
+    if (publicationOccupancy(snapshot.publicationNamespace).has(publicationId(mutation.sourceId))) {
       return { ok: false, reason: 'already_exists' };
     }
     if (mutation.sourceType === 'bundled') {
@@ -738,11 +740,7 @@ async function buildSnapshot(input: {
   governance.push(...discoveryGovernance(input.scan.discoveryDiagnostics));
   governance.sort(compareGovernance);
 
-  const installedIds = new Set(
-    input.scan.inventory
-      .filter((skill) => skill.scope === 'workspace' && skill.source === 'legacy')
-      .map((skill) => skill.id),
-  );
+  const installedIds = publicationOccupancy(input.publicationNamespace);
   const bundled = BUNDLED_SKILL_CATALOG.map((source) => {
     const metadata = validateSkillMetadata(source.body).manifest;
     const projected = projectMetadata({
@@ -759,7 +757,7 @@ async function buildSnapshot(input: {
       category: projected.category,
       declaredTools: projected.declaredTools,
       metadataTruncated: projected.truncated,
-      installed: installedIds.has(source.id),
+      installed: installedIds.has(publicationId(source.id)),
     });
   }).sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
   const managedSourceItems = managedSources
@@ -777,11 +775,14 @@ async function buildSnapshot(input: {
         description: projected.description,
         category: projected.category,
         metadataTruncated: projected.truncated,
-        installed: [...installedFacts.values()].some(
-          (fact) =>
-            fact.governance.sourceType === 'managed' &&
-            fact.governance.managedSourceId === source.id,
-        ),
+        installed:
+          installedIds.has(publicationId(source.id)) ||
+          [...installedFacts.values()].some(
+            (fact) =>
+              fact.governance.sourceType === 'managed' &&
+              fact.governance.managedSourceId !== undefined &&
+              publicationId(fact.governance.managedSourceId) === publicationId(source.id),
+          ),
       });
     })
     .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
@@ -1294,6 +1295,9 @@ function decodeCursor(cursor: string, view: SkillCatalogView): number | null {
 }
 
 async function canonicalProjectRoot(value: string): Promise<string> {
+  if (!isSkillCatalogProjectRootLexicallyAbsolute(value)) {
+    throw new Error('Project root must be absolute');
+  }
   const candidate = resolve(value);
   const candidateStat = await stat(candidate);
   if (!candidateStat.isDirectory()) throw new Error('blocked');
@@ -1331,7 +1335,7 @@ async function readPublicationNamespace(root: string): Promise<PublicationNamesp
   }
   try {
     const entries = await readdir(skillsRoot, { withFileTypes: true });
-    const occupiedIds = entries.map((entry) => entry.name.toLowerCase()).sort();
+    const occupiedIds = entries.map((entry) => publicationId(entry.name)).sort();
     const deletionFacts = new Map<string, DeletionFact>();
     for (const entry of entries) {
       if (!entry.isDirectory() || entry.isSymbolicLink() || !isSafeSkillId(entry.name)) continue;
@@ -1407,6 +1411,14 @@ function managedArtifacts(
     lock: `${JSON.stringify(createManagedSkillLock(id, contentSha256, contentSha256), null, 2)}\n`,
     baseline: content,
   };
+}
+
+function publicationId(id: string): string {
+  return id.toLowerCase();
+}
+
+function publicationOccupancy(namespace: PublicationNamespace): ReadonlySet<string> {
+  return new Set(namespace.occupiedIds.map(publicationId));
 }
 
 async function readManagedArtifacts(skill: ScannedSkill): Promise<{
@@ -1563,7 +1575,7 @@ function diagnosticIdentity(prefix: string, value: string): string {
 }
 
 function starterOrdinal(id: string): number | null {
-  const match = STARTER_ID_PATTERN.exec(id);
+  const match = STARTER_ID_PATTERN.exec(publicationId(id));
   if (!match) return null;
   return match[1] ? Number(match[1]) : 1;
 }
