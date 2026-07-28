@@ -214,7 +214,7 @@ describe('permission mode transition guard copy', () => {
     assert.match(menuModule, /PERMISSION_MODE_ORDER\.map\(\(mode\) =>/);
   });
 
-  it('persists permission-mode picks as the global default and scrubs failures before toast', async () => {
+  it('updates the active session boundary or the new-session default and scrubs failures before toast', async () => {
     const renderer = await readRendererShellCombinedSource();
     const setPermissionModeBlock = renderer.match(/async function setPermissionMode[\s\S]*?async function setSessionModel/)?.[0] ?? '';
 
@@ -228,19 +228,31 @@ describe('permission mode transition guard copy', () => {
     assert.match(renderer, /const \{[\s\S]*pendingPermissionModeBySession,[\s\S]*\} = sessionUiState;/);
     assert.match(
       setPermissionModeBlock,
-      /if \(mode === 'explore'\) return;[\s\S]*const sessionId = activeIdRef\.current;[\s\S]*const pendingKey = sessionId \?\? '__global_permission_mode__';[\s\S]*pendingPermissionModeChangesRef\.current\.has\(pendingKey\)/,
-      'Permission mode changes must reject explore, capture the active session id, and gate duplicate active/global saves',
+      /if \(mode !== 'ask' && mode !== 'bypass'\) return;[\s\S]*const sessionId = activeIdRef\.current;[\s\S]*const pendingKey = sessionId \?\? '__global_permission_mode__';[\s\S]*pendingPermissionModeChangesRef\.current\.has\(pendingKey\)/,
+      'Boundary changes must accept only Auto or Bypass, capture the active session id, and gate duplicate active/global saves',
+    );
+    assert.match(
+      setPermissionModeBlock,
+      /mode === 'bypass'[\s\S]*toastApi\.confirm\(\{[\s\S]*destructive: true/,
+      'Bypass must require a destructive confirmation before changing the session boundary',
     );
     assert.match(setPermissionModeBlock, /pendingPermissionModeChangesRef\.current\.add\(pendingKey\);[\s\S]*if \(sessionId\)\s*setPendingPermissionModeBySession\(\(current\) => \(\{\s*\.\.\.current,\s*\[sessionId\]: true,?\s*\}\)\);/);
     assert.match(
       setPermissionModeBlock,
-      /window\.maka\.settings\.update\(\{\s*chatDefaults: \{ permissionMode: mode \},?\s*\}\)/,
-      'Permission mode changes must persist the Settings -> General chat default instead of mutating one session',
+      /if \(sessionId\) \{[\s\S]*window\.maka\.sessions\.setPermissionMode\(sessionId, mode\)[\s\S]*\} else \{[\s\S]*window\.maka\.settings\.update\(\{\s*chatDefaults: \{ permissionMode: mode \},?\s*\}\)/,
+      'Boundary changes must update the active session without changing the default, or update the default when no session is active',
     );
-    assert.match(setPermissionModeBlock, /const nextMode = result\.settings\.chatDefaults\.permissionMode;/);
+    assert.match(setPermissionModeBlock, /nextMode = next\.permissionMode === 'bypass' \? 'bypass' : 'ask';/);
+    assert.match(setPermissionModeBlock, /nextMode = result\.settings\.chatDefaults\.permissionMode;/);
     assert.match(setPermissionModeBlock, /setDefaultPermissionMode\(nextMode\);/);
-    assert.match(setPermissionModeBlock, /setSessions\(\(prev\) => prev\.map\(\(session\) => \(\{ \.\.\.session, permissionMode: nextMode \}\)\)\);/);
-    assert.match(setPermissionModeBlock, /toastApi\.success\(copy\.permissionSwitched\(copy\.permissionLabels\[nextMode\]\), copy\.permissionDescriptions\[nextMode\]\);/);
+    assert.match(
+      setPermissionModeBlock,
+      /setSessions\(\(prev\) =>\s*prev\.map\(\(session\) => \(session\.id === sessionId \? next : session\)\),?\s*\);/,
+    );
+    assert.match(
+      setPermissionModeBlock,
+      /toastApi\.success\(\s*copy\.permissionSwitched\(copy\.permissionLabels\[nextMode\]\),\s*copy\.permissionDescriptions\[nextMode\],?\s*\);/,
+    );
     assert.match(setPermissionModeBlock, /await refreshSessions\(\)/, 'Permission mode changes must still refresh the sidebar/session list');
     assert.match(
       setPermissionModeBlock,
@@ -258,7 +270,6 @@ describe('permission mode transition guard copy', () => {
       'Permission mode failures must not render raw thrown Error.message',
     );
     assert.doesNotMatch(setPermissionModeBlock, /setPendingNewChatPermissionMode\(mode\)/);
-    assert.doesNotMatch(setPermissionModeBlock, /window\.maka\.sessions\.setPermissionMode\(sessionId, mode\)/);
     assert.doesNotMatch(setPermissionModeBlock, /window\.maka\.sessions\.setPermissionMode\(activeId, mode\)/);
   });
 
