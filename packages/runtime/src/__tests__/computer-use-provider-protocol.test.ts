@@ -16,7 +16,6 @@ import {
   type CuObservation,
 } from '../computer-use-tools.js';
 import { buildProviderOptions, getAIModel } from '../model-factory.js';
-import { PermissionEngine } from '../permission-engine.js';
 import type {
   ProviderRequestAttemptRecord,
   ProviderRequestCaptureRecord,
@@ -136,10 +135,6 @@ describe('Anthropic-compatible Computer Use product loops', () => {
         connection: providerConnection,
         apiKey: 'test-key',
         modelId: provider.modelId,
-        permissionEngine: new PermissionEngine({
-          newId: () => 'permission-id',
-          now: () => 1,
-        }),
         modelFactory: (input) => getAIModel(input),
         providerOptions: buildProviderOptions(providerConnection, provider.modelId),
         tools: [computerTool],
@@ -277,10 +272,6 @@ describe('Anthropic-compatible Computer Use product loops', () => {
         ),
         apiKey: 'test-key',
         modelId: provider.modelId,
-        permissionEngine: new PermissionEngine({
-          newId: () => 'permission-id',
-          now: () => 1,
-        }),
         modelFactory: (input) => getAIModel(input),
         tools: [computerTool],
         maxSteps: 4,
@@ -413,10 +404,6 @@ describe('Kimi OpenAI-compatible product loop', () => {
       connection: providerConnection,
       apiKey: 'test-key',
       modelId: 'k3',
-      permissionEngine: new PermissionEngine({
-        newId: () => 'permission-id',
-        now: () => 1,
-      }),
       modelFactory: (input) => getAIModel(input),
       providerOptions: buildProviderOptions(providerConnection, 'k3'),
       tools: [],
@@ -501,10 +488,6 @@ describe('Kimi OpenAI-compatible product loop', () => {
         connection: providerConnection,
         apiKey: 'test-key',
         modelId: 'k3',
-        permissionEngine: new PermissionEngine({
-          newId: () => 'permission-id',
-          now: () => 1,
-        }),
         modelFactory: (input) => getAIModel(input),
         providerOptions: buildProviderOptions(providerConnection, 'k3'),
         tools: [],
@@ -622,10 +605,6 @@ describe('Kimi OpenAI-compatible product loop', () => {
       connection: providerConnection,
       apiKey: 'test-key',
       modelId: 'k3',
-      permissionEngine: new PermissionEngine({
-        newId: () => 'permission-id',
-        now: () => 1,
-      }),
       modelFactory: (input) => getAIModel(input),
       providerOptions: buildProviderOptions(providerConnection, 'k3'),
       tools: [computerTool],

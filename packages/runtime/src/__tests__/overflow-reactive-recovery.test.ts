@@ -10,7 +10,6 @@ import { z } from 'zod';
 import { AiSdkBackend } from '../ai-sdk-backend.js';
 import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
 import type { InvocationContext } from '../invocation-context.js';
-import { PermissionEngine } from '../permission-engine.js';
 import type { HistoryCompactCheckpoint } from '../history-compact-checkpoint.js';
 
 const RAW_SPAN_ONE = 'RAW_SPAN_ONE_'.repeat(24);
@@ -401,7 +400,6 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
     connection: { ...connection(), models: [{ id: 'mock-model-id', contextWindow }] },
     apiKey: 'sk-test',
     modelId: 'mock-model-id',
-    permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
     modelFactory: () => model,
     ...(options.maxSteps !== undefined ? { maxSteps: options.maxSteps } : {}),
     tools: [

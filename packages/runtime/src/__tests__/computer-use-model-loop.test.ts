@@ -17,7 +17,6 @@ import {
   type CuObservation,
   type CuSemanticAction,
 } from '../computer-use-tools.js';
-import { PermissionEngine } from '../permission-engine.js';
 import { createDurableTurnHarness, drainWithDurableTurn } from './durable-turn-harness.js';
 
 const ZERO_USAGE: LanguageModelV4Usage = {
@@ -369,10 +368,6 @@ function createRuntime(input: {
     connection: selectedConnection,
     apiKey: 'test-key',
     modelId: 'mock-computer-model',
-    permissionEngine: new PermissionEngine({
-      newId: () => 'permission-id',
-      now: () => 1,
-    }),
     modelFactory: () => input.model,
     tools: [input.computerTool],
     ...(input.durable ? { loadTurnRuntimeEvents: input.durable.loadTurnRuntimeEvents } : {}),

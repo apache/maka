@@ -9,7 +9,6 @@ import type { RuntimeEvent } from '@maka/core/runtime-event';
 
 import { AiSdkBackend } from '../ai-sdk-backend.js';
 import type { MakaTool } from '../tool-runtime.js';
-import { PermissionEngine } from '../permission-engine.js';
 import {
   ToolAvailabilityRuntime,
   LOAD_TOOLS_NAME,
@@ -93,7 +92,6 @@ function backend(
     connection: connection(),
     apiKey: 'sk-test',
     modelId: 'mock-model-id',
-    permissionEngine: new PermissionEngine({ newId: () => 'perm', now: () => 1 }),
     modelFactory: () => model,
     tools: tools(implCalls),
     ...(opts.durable ? { loadTurnRuntimeEvents: opts.durable.loadTurnRuntimeEvents } : {}),
@@ -119,7 +117,6 @@ function agentBackend(
     connection: connection(),
     apiKey: 'sk-test',
     modelId: 'mock-model-id',
-    permissionEngine: new PermissionEngine({ newId: () => 'perm', now: () => 1 }),
     modelFactory: () => model,
     tools: [...buildParentAgentTools(), ...(opts.extraTools ?? [])],
     ...(opts.durable ? { loadTurnRuntimeEvents: opts.durable.loadTurnRuntimeEvents } : {}),

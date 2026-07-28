@@ -35,7 +35,6 @@ import {
 } from '../ai-sdk-backend.js';
 import type { DurableSessionEventSink, MakaTool, ToolRuntime } from '../tool-runtime.js';
 import { LOAD_TOOLS_NAME } from '../tool-availability.js';
-import { PermissionEngine } from '../permission-engine.js';
 import {
   canonicalizeToolSet,
   computeRequestShapeDiagnostic,
@@ -63,7 +62,6 @@ import { buildRuntimeEventModelReplayPlan, buildSteeringEnvelope } from '../mode
 import type { ActiveFullCompactBlock } from '../active-full-compact.js';
 import type { SemanticCompactBlock } from '../semantic-compact.js';
 import { HistoryCompactSummarizerError } from '../history-compact-summarizer.js';
-import type { AutoApprovalReviewContext } from '../approval-reviewer.js';
 import type { SandboxDiagnosticsSnapshot } from '../sandbox/diagnostics.js';
 import { SandboxCommandError } from '../sandbox/errors.js';
 import { FilesystemWorkerClientError } from '../filesystem-worker/client.js';
@@ -88,7 +86,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       sandboxDiagnosticsSnapshot: sandboxSnapshot(),
@@ -109,213 +106,6 @@ describe('AiSdkBackend model history', () => {
     assert.equal(JSON.stringify(contextEvent).includes('/tmp/maka'), false);
   });
 
-  test('passes the active sandbox snapshot into automatic approval review', async () => {
-    let reviewContext: AutoApprovalReviewContext | undefined;
-    const backend = new AiSdkBackend({
-      sessionId: 'session-1',
-      header: header('execute'),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: idGenerator(), now: () => 1 }),
-      autoApprovalReviewer: {
-        review: async ({ context }) => {
-          reviewContext = context;
-          return { outcome: 'allow', riskLevel: 'high', rationale: 'test approval' };
-        },
-      },
-      modelFactory: () => ({}),
-      tools: [],
-      sandboxDiagnosticsSnapshot: sandboxSnapshot(),
-      newId: idGenerator(),
-      now: monotonicClock(),
-    });
-    const tool: MakaTool = {
-      name: 'Bash',
-      description: 'shell',
-      parameters: {},
-      impl: async () => ({ kind: 'text', text: 'ok' }),
-    };
-    const execute = runtimeExecute(backend, tool, 'turn-1', { push: () => {} });
-
-    await execute(
-      { command: 'rm local-file' },
-      { toolCallId: 'tool-1', abortSignal: new AbortController().signal },
-    );
-
-    assert.deepEqual(reviewContext?.sandbox, {
-      platform: 'darwin',
-      profileName: 'workspace-write',
-      fileSystem: 'workspace-write',
-      network: 'restricted',
-      commandSandbox: 'available (macos-seatbelt)',
-      filesystemSandbox: 'available (macos-seatbelt)',
-      commandSandboxSelectionReason: 'platform_sandbox_selected',
-      filesystemSandboxSelectionReason: 'platform_sandbox_selected',
-    });
-  });
-
-  test('does not start hosted automatic review before durable admission', async () => {
-    const admissionStarted = makeGate();
-    const allowAdmission = makeGate();
-    const durable = durableTurnHarness('turn-1', 'write');
-    let reviewStarted = false;
-    const binding = await hostedInteractionBinding({
-      acceptPermissionRequest: async () => {
-        admissionStarted.release();
-        await allowAdmission.promise;
-        return { state: 'pending' };
-      },
-    });
-    const events: SessionEvent[] = [];
-    const messages: StoredMessage[] = [];
-    const model = singlePermissionToolModel();
-    let implementationSawDurableAnswer = false;
-    const backend = new AiSdkBackend({
-      sessionId: 'session-1',
-      header: header('execute'),
-      appendMessage: async (message) => {
-        messages.push(message);
-      },
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: idGenerator(), now: () => 1 }),
-      autoApprovalReviewer: {
-        review: async () => {
-          reviewStarted = true;
-          return { outcome: 'allow', riskLevel: 'low', rationale: 'admitted' };
-        },
-      },
-      modelFactory: () => model,
-      tools: [
-        permissionTool(() => {
-          implementationSawDurableAnswer = durable.ledger.some(
-            (event) => event.actions?.permissionAnswerAccepted !== undefined,
-          );
-        }),
-      ],
-      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
-      newId: idGenerator(),
-      now: monotonicClock(),
-    });
-
-    const running = collectEvents(
-      backend.send(
-        durable.input({
-          runId: 'run-1',
-          hostedInteraction: binding,
-        }),
-      ),
-      events,
-      durable.record,
-    );
-    await admissionStarted.promise;
-    await Promise.resolve();
-    assert.equal(reviewStarted, false);
-    assert.equal(
-      events.some((event) => event.type === 'permission_request'),
-      false,
-    );
-
-    allowAdmission.release();
-    await running;
-    assert.equal(reviewStarted, true);
-    assert.equal(implementationSawDurableAnswer, true);
-    const ack = events.find((event) => event.type === 'permission_answer_ack');
-    assert.ok(ack);
-    assert.equal(JSON.stringify(ack).includes('decision'), false);
-    assert.equal(
-      messages.some((message) => message.type === 'permission_decision'),
-      false,
-    );
-    const accepted = durable.ledger.find(
-      (event) => event.actions?.permissionAnswerAccepted?.requestId === ack.requestId,
-    );
-    assert.ok(accepted);
-    assert.equal(JSON.stringify(accepted).includes('decision'), false);
-
-    await binding.close('turn_terminal');
-    await binding.settleLocalClosures();
-    binding.release();
-  });
-
-  test('does not arm hosted permission timeout before durable admission', async () => {
-    const admissionStarted = makeGate();
-    const allowAdmission = makeGate();
-    const durable = durableTurnHarness('turn-1', 'write');
-    let timeoutCommits = 0;
-    const binding = await hostedInteractionBinding({
-      acceptPermissionRequest: async () => {
-        admissionStarted.release();
-        await allowAdmission.promise;
-        return { state: 'pending' };
-      },
-      commitPermissionTimeout: async ({ continuation }) => {
-        timeoutCommits += 1;
-        await continuation.applyClosure('timed_out');
-        return { kind: 'closure', reason: 'timed_out' };
-      },
-    });
-    const events: SessionEvent[] = [];
-    const model = singlePermissionToolModel();
-    const backend = new AiSdkBackend({
-      sessionId: 'session-1',
-      header: header('ask'),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: idGenerator(), now: () => 1 }),
-      modelFactory: () => model,
-      tools: [permissionTool()],
-      permissionTimeoutMs: 5,
-      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
-      newId: idGenerator(),
-      now: monotonicClock(),
-    });
-
-    const running = collectEvents(
-      backend.send(
-        durable.input({
-          runId: 'run-1',
-          hostedInteraction: binding,
-        }),
-      ),
-      events,
-      durable.record,
-    );
-    await admissionStarted.promise;
-    await new Promise<void>((resolve) => setTimeout(resolve, 20));
-    assert.equal(timeoutCommits, 0);
-    assert.equal(
-      events.some((event) => event.type === 'permission_request'),
-      false,
-    );
-
-    allowAdmission.release();
-    await running;
-    assert.equal(timeoutCommits, 1);
-    const request = events.find((event) => event.type === 'permission_request');
-    if (request?.type !== 'permission_request') assert.fail('expected admitted timeout request');
-    const closureAck = events.find((event) => event.type === 'permission_closure_ack');
-    if (closureAck?.type !== 'permission_closure_ack') {
-      assert.fail('expected a durable permission timeout acknowledgement');
-    }
-    assert.ok(
-      durable.ledger.some(
-        (event) =>
-          event.actions?.permissionClosureAccepted?.requestId === request.requestId &&
-          event.actions.permissionClosureAccepted.reason === 'timed_out',
-      ),
-    );
-
-    await binding.close('turn_terminal');
-    await binding.settleLocalClosures();
-    binding.release();
-  });
-
   test('records structured sandbox failure metadata on tool failure traces', async () => {
     const traces: RunTraceEvent[] = [];
     const messages: ToolResultMessage[] = [];
@@ -328,7 +118,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: idGenerator(), now: () => 1 }),
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
@@ -395,7 +184,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: idGenerator(), now: () => 1 }),
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
@@ -450,7 +238,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: idGenerator(), now: () => 1 }),
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
@@ -492,7 +279,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       systemPrompt: '',
@@ -530,7 +316,6 @@ describe('AiSdkBackend model history', () => {
       },
       apiKey: 'sk-test',
       modelId: 'k3',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -566,7 +351,6 @@ describe('AiSdkBackend model history', () => {
       },
       apiKey: 'sk-test',
       modelId: 'k3',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -608,7 +392,6 @@ describe('AiSdkBackend model history', () => {
       },
       apiKey: 'github-account-token',
       modelId: 'future-claude-model',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -649,7 +432,6 @@ describe('AiSdkBackend model history', () => {
           effort: 'max',
         },
       },
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -685,7 +467,6 @@ describe('AiSdkBackend model history', () => {
       },
       apiKey: 'sk-test',
       modelId: 'mistral-large-latest',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -712,7 +493,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -776,7 +556,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -833,7 +612,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -877,7 +655,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -931,7 +708,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -992,7 +768,6 @@ describe('AiSdkBackend model history', () => {
       connection: { ...connection(), providerType: 'openai' },
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1043,7 +818,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1137,7 +911,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1189,7 +962,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1257,7 +1029,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1317,7 +1088,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1366,7 +1136,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1446,7 +1215,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1527,7 +1295,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1583,7 +1350,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1639,7 +1405,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1691,7 +1456,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1736,7 +1500,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1787,7 +1550,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1877,7 +1639,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       loadTurnRuntimeEvents: async () => [anchor],
@@ -1916,7 +1677,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -2010,7 +1770,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -2113,7 +1872,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -2181,7 +1939,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -2289,7 +2046,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -2425,7 +2181,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [
         {
@@ -2569,7 +2324,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [
         {
@@ -2730,7 +2484,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -3064,7 +2817,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -3147,7 +2899,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -3258,7 +3009,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -3347,7 +3097,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -3493,7 +3242,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -3632,7 +3380,6 @@ describe('AiSdkBackend model history', () => {
         connection: connection(),
         apiKey: 'sk-test',
         modelId: 'mock-model-id',
-        permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
         modelFactory: () => model,
         tools: [],
         newId: idGenerator(),
@@ -3764,7 +3511,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -3891,7 +3637,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -4024,7 +3769,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -4160,7 +3904,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -4226,7 +3969,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -4293,7 +4035,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -4376,7 +4117,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -4456,7 +4196,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -4536,7 +4275,6 @@ describe('AiSdkBackend model history', () => {
         connection: connection(),
         apiKey: 'sk-test',
         modelId: 'mock-model-id',
-        permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
         modelFactory: () => completionModel(),
         tools: [],
         newId: idGenerator(),
@@ -4590,7 +4328,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -4648,7 +4385,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -4709,7 +4445,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -4788,7 +4523,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -4856,7 +4590,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -4899,7 +4632,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -4966,7 +4698,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -5013,7 +4744,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => textCompletionModel('NEXT_OK'),
       tools: [],
       newId: idGenerator(),
@@ -5100,7 +4830,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => textCompletionModel('NEXT_OK'),
       tools: [],
       newId: idGenerator(),
@@ -5183,7 +4912,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => textCompletionModel('NEXT_OK'),
       tools: [],
       newId: idGenerator(),
@@ -5286,7 +5014,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -5343,7 +5070,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => loop.model,
       tools: [stoppingTool],
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
@@ -5382,7 +5108,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => loop.model,
       tools: [testTool('Read', z.object({ path: z.string() }))],
       maxSteps: 1,
@@ -5441,7 +5166,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -5500,7 +5224,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -5627,7 +5350,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => firstModel,
       tools: [],
       newId: idGenerator(),
@@ -5685,7 +5407,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => secondModel,
       tools: [],
       newId: idGenerator(),
@@ -5736,7 +5457,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -5838,7 +5558,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -5922,7 +5641,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -5993,7 +5711,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -6060,7 +5777,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -6165,7 +5881,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -6270,7 +5985,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -6380,7 +6094,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -6447,7 +6160,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       supportsVision: true,
@@ -6520,7 +6232,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -6581,7 +6292,6 @@ describe('AiSdkBackend model history', () => {
       connection: openAiConnection,
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -6647,7 +6357,6 @@ describe('AiSdkBackend model history', () => {
       connection: { ...connection(), providerType: 'openai' },
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -6724,7 +6433,6 @@ describe('AiSdkBackend model history', () => {
       },
       apiKey: 'sk-test',
       modelId: 'k3',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -6800,7 +6508,6 @@ describe('AiSdkBackend model history', () => {
       connection: { ...connection(), providerType: 'openai' },
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -6863,7 +6570,6 @@ describe('AiSdkBackend error surfaces', () => {
       connection: connection(),
       apiKey: 'sk-live-secret-token-value',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => {
         throw new Error('401 Authorization: Bearer sk-live-secret-token-value');
       },
@@ -6950,7 +6656,6 @@ describe('AiSdkBackend error surfaces', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: idGenerator(), now: () => 1 }),
       modelFactory: () => model,
       tools: [
         {
@@ -7014,7 +6719,6 @@ describe('AiSdkBackend error surfaces', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
@@ -7055,7 +6759,6 @@ describe('AiSdkBackend error surfaces', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
@@ -7123,7 +6826,6 @@ describe('AiSdkBackend error surfaces', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
@@ -7138,52 +6840,6 @@ describe('AiSdkBackend error surfaces', () => {
 
     assert.equal(event.message, 'Request timed out');
     assert.equal(event.reason, 'timeout');
-  });
-});
-
-describe('AiSdkBackend stop', () => {
-  test('rejects parked permission requests for the active turn', async () => {
-    const permissionEngine = new PermissionEngine({ newId: () => 'permission-id', now: () => 1 });
-    permissionEngine.beginTurn('turn-1');
-    const verdict = permissionEngine.evaluate({
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      toolUseId: 'tool-1',
-      toolName: 'Write',
-      args: { path: 'notes.md', content: 'hello' },
-      mode: 'ask',
-    });
-    assert.equal(verdict.kind, 'prompt');
-    assert.equal(permissionEngine.pendingCount('turn-1'), 1);
-    const parked =
-      verdict.kind === 'prompt'
-        ? verdict.parked.then(
-            () => 'resolved',
-            (error: Error) => error.message,
-          )
-        : Promise.resolve('not-prompt');
-    const backend = new AiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine,
-      modelFactory: () => ({}),
-      tools: [],
-      newId: idGenerator(),
-      now: () => 1,
-    });
-
-    (backend as unknown as { currentTurnId: string }).currentTurnId = 'turn-1';
-    await backend.stop('user_stop');
-
-    assert.match(
-      await parked,
-      /Turn turn-1 aborted before permission request permission-id was answered/,
-    );
-    assert.equal(permissionEngine.pendingCount('turn-1'), 0);
   });
 });
 
@@ -7224,7 +6880,6 @@ describe('AiSdkBackend usage telemetry', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => loop.model,
       tools: [testTool('Read', z.object({ path: z.string() }))],
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
@@ -7248,7 +6903,6 @@ describe('AiSdkBackend usage telemetry', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => loop.model,
       tools: [
         {
@@ -7286,7 +6940,6 @@ describe('AiSdkBackend usage telemetry', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => loop.model,
       tools: [
         {
@@ -7324,7 +6977,6 @@ describe('AiSdkBackend usage telemetry', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => loop.model,
       tools: [testTool('Read', z.object({ path: z.string() }))],
       maxSteps: 3,
@@ -7396,7 +7048,6 @@ describe('AiSdkBackend usage telemetry', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [testTool('Read', z.object({ path: z.string() }))],
       maxSteps: 2,
@@ -7501,7 +7152,6 @@ describe('AiSdkBackend usage telemetry', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [testTool('Read', z.object({ path: z.string() }))],
       loadTurnRuntimeEvents: async (turnId: string) =>
@@ -7609,7 +7259,6 @@ describe('AiSdkBackend usage telemetry', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -7652,7 +7301,6 @@ describe('AiSdkBackend usage telemetry', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'unpriced-model',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -7743,7 +7391,6 @@ describe('AiSdkBackend usage telemetry', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [
         {
@@ -7863,7 +7510,6 @@ describe('AiSdkBackend usage telemetry', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [
         {
@@ -7983,7 +7629,6 @@ describe('AiSdkBackend usage telemetry', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -8011,7 +7656,6 @@ describe('AiSdkBackend usage telemetry', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -8141,7 +7785,6 @@ describe('AiSdkBackend usage telemetry', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [
         {
@@ -8364,7 +8007,6 @@ describe('AiSdkBackend usage telemetry', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [
         {
@@ -8468,7 +8110,6 @@ describe('AiSdkBackend usage telemetry', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [
         {
@@ -8593,7 +8234,6 @@ describe('AiSdkBackend usage telemetry', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -9000,7 +8640,6 @@ describe('AiSdkBackend request-shape diagnostics', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       // No toolAvailability ⇒ full surface: every tool visible, no connector.
       tools: [
@@ -9036,7 +8675,6 @@ describe('AiSdkBackend request-shape diagnostics', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => {
         const model = completionModel();
         models.push(model);
@@ -9281,7 +8919,6 @@ describe('AiSdkBackend context budget and prompt attribution', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [testTool('Read', z.object({ path: z.string() }))],
       newId: idGenerator(),
@@ -9460,7 +9097,6 @@ describe('AiSdkBackend RunTrace', () => {
         connection: connection(),
         apiKey: 'sk-test',
         modelId: 'mock-model-id',
-        permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
         modelFactory: () => model,
         tools: [testTool('Read', z.object({ path: z.string() }))],
         loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
@@ -9541,7 +9177,6 @@ describe('AiSdkBackend RunTrace', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -9582,7 +9217,6 @@ describe('AiSdkBackend RunTrace', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -9645,7 +9279,6 @@ describe('AiSdkBackend RunTrace', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -9687,7 +9320,6 @@ describe('AiSdkBackend RunTrace', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -9771,7 +9403,6 @@ describe('AiSdkBackend RunTrace', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -9851,7 +9482,6 @@ describe('AiSdkBackend RunTrace', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -9873,124 +9503,8 @@ describe('AiSdkBackend RunTrace', () => {
     );
   });
 
-  test('records permission and tool trace events for denied tools', async () => {
-    const trace: RunTraceEvent[] = [];
-    const events: SessionEvent[] = [];
-    const permissionEngine = new PermissionEngine({ newId: idGenerator(), now: () => 1 });
-    const backend = new AiSdkBackend({
-      sessionId: 'session-1',
-      header: header('ask'),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine,
-      modelFactory: () => ({}),
-      tools: [],
-      newId: idGenerator(),
-      now: monotonicClock(),
-      permissionTimeoutMs: 1_000,
-    });
-    (
-      backend as unknown as {
-        currentRunTrace: {
-          emit(
-            eventPhase: string,
-            eventType: string,
-            message: string,
-            data?: Record<string, unknown>,
-          ): void;
-        };
-        currentWatchdog: { pause(): void; resume(): void };
-      }
-    ).currentRunTrace = {
-      emit: (phase, type, message, data) => {
-        trace.push({
-          id: `trace-${trace.length + 1}`,
-          sessionId: 'session-1',
-          turnId: 'turn-1',
-          ts: trace.length + 1,
-          phase: phase as RunTraceEvent['phase'],
-          type: type as RunTraceEvent['type'],
-          message,
-          ...(data ? { data } : {}),
-        });
-      },
-    };
-    (
-      backend as unknown as {
-        currentWatchdog: { pause(): void; resume(): void };
-      }
-    ).currentWatchdog = { pause() {}, resume() {} };
-    const tool: MakaTool = {
-      name: 'Write',
-      description: 'write file',
-      parameters: {},
-      impl: async () => ({ ok: true }),
-    };
-    const execute = runtimeExecute(backend, tool, 'turn-1', {
-      push: (event) => events.push(event),
-    });
-
-    const pending = execute(
-      { path: 'notes.md', content: 'hello' },
-      { toolCallId: 'tool-1', abortSignal: new AbortController().signal },
-    );
-    await waitFor(() => events.some((event) => event.type === 'permission_request'));
-    const request = events.find((event) => event.type === 'permission_request') as
-      | Extract<SessionEvent, { type: 'permission_request' }>
-      | undefined;
-    assert.ok(request);
-    permissionEngine.recordResponse('turn-1', {
-      requestId: request.requestId,
-      decision: 'deny',
-    });
-    await pending;
-
-    assert.deepEqual(
-      trace.map((event) => event.type),
-      [
-        'tool_started',
-        'approval_routed',
-        'permission_requested',
-        'permission_decided',
-        'tool_failed',
-      ],
-    );
-    assert.deepEqual(
-      trace.map((event) => event.phase),
-      ['tool', 'permission', 'permission', 'permission', 'tool'],
-    );
-    assert.equal(
-      trace.find((event) => event.type === 'permission_decided')?.data?.decision,
-      'deny',
-    );
-    assert.equal(
-      trace.find((event) => event.type === 'tool_failed')?.data?.errorClass,
-      'Permission',
-    );
-  });
-
   test('records abort trace when stop is requested', async () => {
     const trace: RunTraceEvent[] = [];
-    const permissionEngine = new PermissionEngine({ newId: () => 'permission-id', now: () => 1 });
-    permissionEngine.beginTurn('turn-1');
-    const verdict = permissionEngine.evaluate({
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      toolUseId: 'tool-1',
-      toolName: 'Write',
-      args: { path: 'notes.md', content: 'hello' },
-      mode: 'ask',
-    });
-    assert.equal(verdict.kind, 'prompt');
-    const parked =
-      verdict.kind === 'prompt'
-        ? verdict.parked.then(
-            () => 'resolved',
-            (error: Error) => error.message,
-          )
-        : Promise.resolve('not-prompt');
     const backend = new AiSdkBackend({
       sessionId: 'session-1',
       header: header(),
@@ -9998,7 +9512,6 @@ describe('AiSdkBackend RunTrace', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine,
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
@@ -10034,15 +9547,10 @@ describe('AiSdkBackend RunTrace', () => {
     assert.equal(trace.length, 1);
     assert.equal(trace[0]?.type, 'abort_requested');
     assert.equal(trace[0]?.data?.reason, 'redirect');
-    assert.match(
-      await parked,
-      /Turn turn-1 aborted before permission request permission-id was answered/,
-    );
-    assert.equal(permissionEngine.pendingCount('turn-1'), 0);
   });
 });
 
-describe('AiSdkBackend tool permission category hints', () => {
+describe('AiSdkBackend tool execution', () => {
   test('ordinary tool execution preserves tool-call/result ordering and telemetry', async () => {
     const messages: unknown[] = [];
     const events: SessionEvent[] = [];
@@ -10057,7 +9565,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
@@ -10124,298 +9631,6 @@ describe('AiSdkBackend tool permission category hints', () => {
     assert.equal(JSON.stringify(telemetry).includes('correct-horse-battery-staple'), false);
   });
 
-  test('an invocation deny rule blocks a permission-free tool and emits an auditable denial', async () => {
-    const messages: unknown[] = [];
-    const events: SessionEvent[] = [];
-    let implCalled = false;
-    const backend = new AiSdkBackend({
-      sessionId: 'session-1',
-      header: header('bypass'),
-      appendMessage: async (message) => {
-        messages.push(message);
-      },
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: idGenerator(), now: () => 1 }),
-      permissionRules: [{ effect: 'deny', kind: 'category', category: 'read' }],
-      modelFactory: () => ({}),
-      tools: [],
-      newId: idGenerator(),
-      now: monotonicClock(),
-    });
-    const tool: MakaTool = {
-      name: 'Read',
-      description: 'read file',
-      parameters: {},
-      impl: async () => {
-        implCalled = true;
-        return { kind: 'text', text: 'should not run' };
-      },
-    };
-    const execute = runtimeExecute(backend, tool, 'turn-1', {
-      push: (event) => events.push(event),
-    });
-
-    await execute(
-      { path: 'notes.md' },
-      { toolCallId: 'tool-1', abortSignal: new AbortController().signal },
-    );
-
-    assert.equal(implCalled, false);
-    assert.deepEqual(
-      messages.map((message) => (message as { type?: string }).type),
-      ['tool_call', 'permission_decision', 'tool_result'],
-    );
-    assert.deepEqual(
-      events.map((event) => event.type),
-      ['tool_start', 'permission_decision_ack', 'tool_result'],
-    );
-    const decision = events.find((event) => event.type === 'permission_decision_ack');
-    assert.equal(decision?.decision, 'deny');
-  });
-
-  test('a hosted deny rule returns the synthetic denied result without a legacy answer ack', async () => {
-    const messages: unknown[] = [];
-    const events: SessionEvent[] = [];
-    let implCalled = false;
-    const backend = new AiSdkBackend({
-      sessionId: 'session-1',
-      header: header('bypass'),
-      appendMessage: async (message) => {
-        messages.push(message);
-      },
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: idGenerator(), now: () => 1 }),
-      permissionRules: [{ effect: 'deny', kind: 'category', category: 'read' }],
-      modelFactory: () => ({}),
-      tools: [],
-      newId: idGenerator(),
-      now: monotonicClock(),
-    });
-    const runtime = (backend as unknown as { toolRuntime: ToolRuntime }).toolRuntime;
-    const binding = await hostedInteractionBinding({
-      acceptPermissionRequest: async () => {
-        assert.fail('a hosted deny rule must not establish a continuation');
-      },
-    });
-    runtime.beginTurn('turn-1', binding);
-    const tool: MakaTool = {
-      name: 'Read',
-      description: 'read file',
-      parameters: {},
-      impl: async () => {
-        implCalled = true;
-        return { kind: 'text', text: 'should not run' };
-      },
-    };
-
-    const result = await runtimeExecute(backend, tool, 'turn-1', {
-      push: (event) => events.push(event),
-    })({ path: 'notes.md' }, { toolCallId: 'tool-1', abortSignal: new AbortController().signal });
-
-    assert.equal(implCalled, false);
-    assert.match(JSON.stringify(result), /denied/i);
-    assert.deepEqual(
-      messages.map((message) => (message as { type?: string }).type),
-      ['tool_call', 'permission_decision', 'tool_result'],
-    );
-    assert.deepEqual(
-      events.map((event) => event.type),
-      ['tool_start', 'tool_result'],
-    );
-  });
-
-  test('permission prompt timeout expires one request, resumes watchdog, and writes an error result', async () => {
-    const messages: unknown[] = [];
-    const events: SessionEvent[] = [];
-    const permissionEngine = new PermissionEngine({ newId: idGenerator(), now: () => 1 });
-    let implCalled = false;
-    let pauseCount = 0;
-    let resumeCount = 0;
-    const backend = new AiSdkBackend({
-      sessionId: 'session-1',
-      header: header('ask'),
-      appendMessage: async (message) => {
-        messages.push(message);
-      },
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine,
-      modelFactory: () => ({}),
-      tools: [],
-      newId: idGenerator(),
-      now: () => 1,
-      permissionTimeoutMs: 1,
-    });
-    const tool: MakaTool = {
-      name: 'Write',
-      description: 'write file',
-      parameters: {},
-      impl: async () => {
-        implCalled = true;
-        return { ok: true };
-      },
-    };
-    (
-      backend as unknown as {
-        currentWatchdog: { pause(): void; resume(): void };
-      }
-    ).currentWatchdog = {
-      pause: () => {
-        pauseCount += 1;
-      },
-      resume: () => {
-        resumeCount += 1;
-      },
-    };
-
-    const execute = runtimeExecute(backend, tool, 'turn-1', {
-      push: (event) => events.push(event),
-    });
-
-    const result = await execute(
-      { path: 'notes.md', content: 'hello' },
-      { toolCallId: 'tool-1', abortSignal: new AbortController().signal },
-    );
-    const permissionRequest = events.find((event) => event.type === 'permission_request') as
-      | Extract<SessionEvent, { type: 'permission_request' }>
-      | undefined;
-    const toolResult = events.find((event) => event.type === 'tool_result') as
-      | Extract<SessionEvent, { type: 'tool_result' }>
-      | undefined;
-
-    assert.equal(implCalled, false);
-    assert.equal(pauseCount, 1);
-    assert.equal(resumeCount, 1);
-    assert.equal(permissionEngine.pendingCount('turn-1'), 0);
-    assert.equal(
-      permissionEngine.recordResponse('turn-1', {
-        requestId: permissionRequest?.requestId ?? 'missing',
-        decision: 'allow',
-      }),
-      null,
-    );
-    assert.match((result as { error?: string }).error ?? '', /Permission flow aborted/);
-    assert.match((result as { error?: string }).error ?? '', /timed out/);
-    assert.equal(toolResult?.isError, true);
-    assert.equal(
-      messages.some(
-        (message) =>
-          (message as { type?: string; toolUseId?: string; isError?: boolean }).type ===
-            'tool_result' &&
-          (message as { toolUseId?: string }).toolUseId === 'tool-1' &&
-          (message as { isError?: boolean }).isError === true,
-      ),
-      true,
-    );
-  });
-
-  test('permission denial records decision ack, resumes watchdog, and never runs impl', async () => {
-    const messages: unknown[] = [];
-    const events: SessionEvent[] = [];
-    const permissionEngine = new PermissionEngine({ newId: idGenerator(), now: () => 1 });
-    let implCalled = false;
-    let pauseCount = 0;
-    let resumeCount = 0;
-    const backend = new AiSdkBackend({
-      sessionId: 'session-1',
-      header: header('ask'),
-      appendMessage: async (message) => {
-        messages.push(message);
-      },
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine,
-      modelFactory: () => ({}),
-      tools: [],
-      newId: idGenerator(),
-      now: () => 1,
-      permissionTimeoutMs: 1_000,
-    });
-    const tool: MakaTool = {
-      name: 'Write',
-      description: 'write file',
-      parameters: {},
-      impl: async () => {
-        implCalled = true;
-        return { ok: true };
-      },
-    };
-    (
-      backend as unknown as {
-        currentWatchdog: { pause(): void; resume(): void };
-      }
-    ).currentWatchdog = {
-      pause: () => {
-        pauseCount += 1;
-      },
-      resume: () => {
-        resumeCount += 1;
-      },
-    };
-    const execute = runtimeExecute(backend, tool, 'turn-1', {
-      push: (event) => events.push(event),
-    });
-
-    const pending = execute(
-      { path: 'notes.md', content: 'hello' },
-      { toolCallId: 'tool-1', abortSignal: new AbortController().signal },
-    );
-    await waitFor(() => events.some((event) => event.type === 'permission_request'));
-    const request = events.find((event) => event.type === 'permission_request') as
-      | Extract<SessionEvent, { type: 'permission_request' }>
-      | undefined;
-    assert.ok(request);
-
-    const accepted = permissionEngine.recordResponse('turn-1', {
-      requestId: request.requestId,
-      decision: 'deny',
-      rememberForTurn: true,
-    });
-    assert.ok(accepted);
-    const result = await pending;
-
-    assert.equal(implCalled, false);
-    assert.equal(pauseCount, 1);
-    assert.equal(resumeCount, 1);
-    assert.deepEqual(result, { error: '用户已拒绝权限请求' });
-    assert.equal(
-      messages.some((message) => (message as { type?: string }).type === 'tool_call'),
-      true,
-    );
-    assert.equal(
-      messages.some(
-        (message) =>
-          (message as { type?: string; decision?: string; rememberForTurn?: boolean }).type ===
-            'permission_decision' &&
-          (message as { decision?: string }).decision === 'deny' &&
-          (message as { rememberForTurn?: boolean }).rememberForTurn === true,
-      ),
-      true,
-    );
-    assert.equal(
-      events.some(
-        (event) =>
-          event.type === 'permission_decision_ack' &&
-          event.decision === 'deny' &&
-          event.rememberForTurn === true,
-      ),
-      true,
-    );
-    assert.equal(
-      events.some(
-        (event) =>
-          event.type === 'tool_result' && event.toolUseId === 'tool-1' && event.isError === true,
-      ),
-      true,
-    );
-  });
-
   test('tool failure telemetry classifies and redacts generic implementation errors', async () => {
     const messages: unknown[] = [];
     const events: SessionEvent[] = [];
@@ -10429,7 +9644,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
@@ -10484,7 +9698,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
@@ -10541,68 +9754,6 @@ describe('AiSdkBackend tool permission category hints', () => {
     );
   });
 
-  test('passes categoryHint through PermissionEngine before tool execution', async () => {
-    const messages: unknown[] = [];
-    const events: SessionEvent[] = [];
-    const backend = new AiSdkBackend({
-      sessionId: 'session-1',
-      header: header('explore'),
-      appendMessage: async (message) => {
-        messages.push(message);
-      },
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
-      modelFactory: () => ({}),
-      tools: [],
-      newId: idGenerator(),
-      now: () => 1,
-    });
-    const tool: MakaTool = {
-      name: 'ExploreAgent',
-      description: 'read-only worker',
-      parameters: {},
-      categoryHint: 'subagent',
-      impl: async () => ({ ok: true }),
-    };
-
-    const execute = runtimeExecute(backend, tool, 'turn-1', {
-      push: (event) => events.push(event),
-    });
-
-    const result = await execute(
-      { objective: 'map PawWork subagent lifecycle' },
-      {
-        toolCallId: 'tool-1',
-        abortSignal: new AbortController().signal,
-      },
-    );
-
-    assert.deepEqual(result, { ok: true });
-    assert.equal(
-      events.some((event) => event.type === 'permission_request'),
-      false,
-    );
-    assert.equal(
-      messages.some((message) => (message as { type?: string }).type === 'tool_result'),
-      true,
-    );
-    assert.equal(
-      (
-        messages.find((message) => (message as { type?: string }).type === 'tool_call') as
-          | { intent?: string }
-          | undefined
-      )?.intent,
-      '只读探索：map PawWork subagent lifecycle',
-    );
-    assert.equal(
-      (events.find((event) => event.type === 'tool_start') as { intent?: string } | undefined)
-        ?.intent,
-      '只读探索：map PawWork subagent lifecycle',
-    );
-  });
-
   test('pauses stream watchdog while a foreground subagent tool is running', async () => {
     const backend = new AiSdkBackend({
       sessionId: 'session-1',
@@ -10611,7 +9762,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
@@ -10679,7 +9829,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
@@ -10754,7 +9903,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
@@ -10821,7 +9969,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
@@ -10912,7 +10059,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
@@ -11058,7 +10204,6 @@ describe('AiSdkBackend loop-gate turn wiring', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -11127,7 +10272,6 @@ describe('AiSdkBackend thinking persistence', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -11227,7 +10371,6 @@ describe('AiSdkBackend thinking persistence', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -11344,7 +10487,6 @@ describe('AiSdkBackend thinking persistence', () => {
       connection: openCodeClaudeConnection,
       apiKey: 'sk-test',
       modelId: 'claude-opus-4-8',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => firstModel,
       tools: [],
       newId: idGenerator(),
@@ -11392,7 +10534,6 @@ describe('AiSdkBackend thinking persistence', () => {
       connection: openCodeClaudeConnection,
       apiKey: 'sk-test',
       modelId: 'claude-opus-4-8',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => secondModel,
       tools: [],
       newId: idGenerator(),
@@ -11493,7 +10634,6 @@ describe('AiSdkBackend thinking persistence', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => secondModel,
       tools: [],
       newId: idGenerator(),
@@ -11915,7 +11055,6 @@ describe('AiSdkBackend thinking persistence', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => secondModel,
       tools: [],
       newId: idGenerator(),
@@ -12026,7 +11165,6 @@ describe('AiSdkBackend thinking persistence', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => secondModel,
       tools: [],
       newId: idGenerator(),
@@ -12116,7 +11254,6 @@ describe('AiSdkBackend thinking persistence', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => secondModel,
       tools: [],
       newId: idGenerator(),
@@ -12187,7 +11324,6 @@ describe('AiSdkBackend thinking persistence', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => firstModel,
       tools: [],
       newId: idGenerator(),
@@ -12233,7 +11369,6 @@ describe('AiSdkBackend thinking persistence', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => secondModel,
       tools: [],
       newId: idGenerator(),
@@ -12268,7 +11403,6 @@ describe('AiSdkBackend thinking persistence', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -12390,7 +11524,6 @@ describe('AiSdkBackend thinking persistence', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [testTool('Read', z.object({ path: z.string() }))],
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
@@ -12459,7 +11592,6 @@ async function runArchiveGatedReplay(input: {
     connection: connection(),
     apiKey: 'sk-test',
     modelId: 'mock-model-id',
-    permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
     modelFactory: () => model,
     tools: [],
     newId: idGenerator(),
@@ -12574,7 +11706,6 @@ describe('AiSdkBackend steering durability and identity', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -13148,7 +12279,6 @@ function imageReplayBackend(
     connection: connection(),
     apiKey: 'sk-test',
     modelId: 'mock-model-id',
-    permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
     modelFactory: () => model,
     tools: [],
     newId: idGenerator(),

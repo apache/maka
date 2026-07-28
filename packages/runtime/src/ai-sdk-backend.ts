@@ -3,8 +3,8 @@
  *
  * Provides one `streamText` API across Anthropic / OpenAI / Google / DeepSeek /
  * OpenAI-compatible endpoints, while keeping all of our home-grown
- * machinery: PermissionEngine (policy + park/resume), materializer,
- * AsyncEventQueue, SessionStore JSONL persistence.
+ * machinery: session sandbox boundaries, materializer, AsyncEventQueue,
+ * SessionStore JSONL persistence.
  *
  * Maka owns the agent loop. Each ModelAdapter call performs exactly one
  * provider request; returned tool calls settle through ToolRuntime, become
@@ -73,7 +73,6 @@ import type {
   ToolInvocationRecord,
 } from '@maka/core/usage-stats/types';
 import type { ContextBudgetDiagnostic, PromptSegmentEstimate } from '@maka/core/usage-stats/types';
-import type { ToolPermissionRule } from '@maka/core/permission';
 import type {
   JSONValue,
   ModelFinishReason,
@@ -87,7 +86,6 @@ import type {
   UserContent,
 } from './model-protocol.js';
 import { z } from 'zod';
-import type { AutoApprovalReviewer } from './approval-reviewer.js';
 
 import { AsyncEventQueue } from './async-queue.js';
 import { StreamWatchdog, formatStreamWatchdogError } from './stream-watchdog.js';
@@ -273,13 +271,9 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   readExecutionBoundary?: ToolRuntimeInput['readExecutionBoundary'];
   createSandboxBoundaryRequest?: ToolRuntimeInput['createSandboxBoundaryRequest'];
   settleSandboxBoundaryRequest?: ToolRuntimeInput['settleSandboxBoundaryRequest'];
-  /** Legacy constructor input ignored by the session-boundary runtime. */
-  permissionEngine?: unknown;
-  autoApprovalReviewer?: AutoApprovalReviewer;
 
   // ── Process-singleton deps ─────────────────────────────────────────────
-  /** Canonical-named tools available this session. Backend wraps each with
-   *  permission gating before passing to ai-sdk. */
+  /** Canonical-named tools available this session. */
   tools: MakaTool[];
   /** Active profile and enforcement capability snapshot for this session backend. */
   sandboxDiagnosticsSnapshot?: SandboxDiagnosticsSnapshot;
@@ -313,12 +307,10 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   maxSteps?: number;
   /** Timeout before first SDK stream event; default 30s. */
   streamConnectTimeoutMs?: number;
-  /** Timeout between SDK/tool events; paused while waiting on permission. Default 120s. */
+  /** Timeout between SDK/tool events; paused while a tool is active. Default 120s. */
   streamIdleTimeoutMs?: number;
   /** Test seam for the Runtime-owned provider retry clock. */
   providerRetrySleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
-  permissionTimeoutMs?: number;
-  permissionRules?: readonly ToolPermissionRule[];
   /** Optional system prompt (skills + workspace AGENTS.md merged upstream). */
   systemPrompt?:
     | string
