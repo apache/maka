@@ -576,7 +576,7 @@ const localMemory = new LocalMemoryService({
 // session header instead; see resolveDesktopSkillHostForSession below.
 const desktopSessionSkillHosts = new Map<string, HostCapabilities>();
 const resolveDesktopSkillHost: HostCapabilitiesResolver = ({ sessionId }) =>
-  desktopSessionSkillHosts.get(sessionId) ?? desktopHostCapabilities;
+  desktopSessionSkillHosts.get(sessionId) ?? desktopProductToolSurface.hostCapabilities;
 // Window is created hidden for E2E and e2e-fixture runs so it never steals
 // focus. Derived from the same isE2e gate as userData/fake-backend so the
 // hidden-window switch stays in lockstep with the rest of the E2E isolation.
@@ -668,9 +668,8 @@ const {
   computerUseOverlay,
   computerUseTools,
   agentTeamLeadTools,
-  desktopHostCapabilities,
+  desktopProductToolSurface,
   builtinTools,
-  toolAvailability,
   childAgentTools,
   sandboxDiagnosticsProvider,
 } = assembleDesktopTools({
@@ -700,7 +699,7 @@ const desktopBackendToolSurfaceDeps = {
   computerUseTools,
   agentTeamLeadTools,
   builtinTools,
-  toolAvailability,
+  toolEconomy: desktopProductToolSurface.identity.policy.economy,
   planStore,
   getAgentGraphSupervisorTools: (sessionId: string) =>
     agentGraphCoordinator.toolsForSession(sessionId),
@@ -713,7 +712,7 @@ const systemPromptService = createSystemPromptMainService({
   localMemory,
   taskLedger: taskLedgerStore,
   goalManager: goalWiring.manager,
-  hostCapabilities: desktopHostCapabilities,
+  hostCapabilities: desktopProductToolSurface.hostCapabilities,
 });
 let lookupPricing = buildPricingLookup();
 // Track the last status fields that affect persisted diagnostics. The reason
@@ -1054,7 +1053,7 @@ function registerIpc(): void {
     mainWindowController,
     sendToRenderer: safeSendToRenderer,
     listInvocableSkills: listDesktopInvocableSkills,
-    skillHost: desktopHostCapabilities,
+    skillHost: desktopProductToolSurface.hostCapabilities,
     getCurrentProjectRoot: currentProjectRoot,
     getSkillSelectionReport: systemPromptService.getLastSkillSelectionReport,
     invalidateSkillSelectionReport: systemPromptService.invalidateSkillSelectionReport,

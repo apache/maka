@@ -18,7 +18,7 @@ describe('Desktop Computer Use production wiring', () => {
     assert.match(main, /computerUseTools/);
     // Deferred group identity lives in the shared catalog; desktop derives it.
     assert.match(catalog, /id:\s*'computer_use'/);
-    assert.match(main, /buildDeferredToolGroupsFromCatalog\(\s*'desktop'/);
+    assert.match(main, /projectEffectiveProductToolSurface\(\{[\s\S]*host:\s*'desktop'/);
     assert.doesNotMatch(main, /createAnthropicComputerHarness|createKimiComputerHarness|createMiniMaxComputerHarness/);
   });
 
@@ -64,7 +64,7 @@ describe('Desktop Computer Use production wiring', () => {
       readFile(resolve(ROOT, 'apps/desktop/package.json'), 'utf8'),
     ]);
     assert.match(main, /computerUseToolsForModel\([\s\S]*supportsVision/);
-    assert.match(main, /computerUseAvailabilityForModel\([\s\S]*supportsVision/);
+    assert.match(main, /projectEffectiveProductToolSurface\(\{[\s\S]*tools:\s*selectedTools/);
     assert.match(
       packageJson,
       /"smoke:browser":\s*"[^"]*@maka\/computer-use[^"]*build:main/,

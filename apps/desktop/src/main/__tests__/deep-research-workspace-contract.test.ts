@@ -21,7 +21,7 @@ describe('Deep Research durable workspace wiring', () => {
       /const builtinTools: MakaTool\[\] = \[[\s\S]*?\n\];/,
     )?.[0] ?? '';
     const candidateTools = backendToolSurface.match(
-      /const candidateTools = input\.tools[\s\S]*?const candidateToolAvailability/,
+      /const candidateTools = input\.tools[\s\S]*?const toolEconomy/,
     )?.[0] ?? '';
     const preload = await readFile(
       fileURLToPath(new URL('../../../src/preload/preload.ts', import.meta.url)),

@@ -4,8 +4,6 @@ import {
   buildAgentTeamLeadTools,
   buildAskUserQuestionTool,
   buildChildAgentTools,
-  buildDeferredToolGroupsFromCatalog,
-  buildHostCapabilitiesFromBinding,
   buildParentAgentTools,
   assertProductBindingCatalogClean,
   createBuiltinSandboxManager,
@@ -13,16 +11,11 @@ import {
   createSandboxDiagnosticsProvider,
   createFilesystemWorkerLaunchSpecProvider,
   FilesystemWorkerClient,
+  projectEffectiveProductToolSurface,
   resolveSkillDiscoveryPaths,
   ShellRunProcessManager,
-  SKILL_SEARCH_TOOL_NAME,
-  SKILL_TOOL_NAME,
 } from '@maka/runtime';
-import type {
-  HostCapabilitiesResolver,
-  MakaTool,
-  ToolAvailabilityConfig,
-} from '@maka/runtime';
+import type { HostCapabilitiesResolver, MakaTool } from '@maka/runtime';
 import type { WorkspacePrivacyContext } from '@maka/core/incognito';
 import { createAgentMailboxStore, createSettingsStore } from '@maka/storage';
 import { createComputerUseOverlayHook } from '@maka/computer-use';
@@ -243,16 +236,6 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     // group tools just need to be present so they are dispatchable once loaded.
     ...deferredTools,
   ];
-  // Always-on Skill name is part of the host surface even before the tool instance
-  // is built (so requiredTools gates and capability tags stay complete).
-  const desktopBoundToolNames = [
-    ...toolsBeforeSkill.map((tool) => tool.name),
-    SKILL_TOOL_NAME,
-    SKILL_SEARCH_TOOL_NAME,
-    ...toolsAfterSkill.map((tool) => tool.name),
-  ];
-  assertProductBindingCatalogClean('desktop', desktopBoundToolNames);
-  const desktopHostCapabilities = buildHostCapabilitiesFromBinding(desktopBoundToolNames);
   // External reference lazy-skill pattern: the prompt lists available skills,
   // and this read-only tool loads the full SKILL.md only when the task matches.
   // Resolve per-call from the session cwd so skills at all 5 standard paths
@@ -275,10 +258,15 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     skillSearchTool,
     ...toolsAfterSkill,
   ];
-  const toolAvailability: ToolAvailabilityConfig = {
-    economy: economyEnabled,
-    groups: buildDeferredToolGroupsFromCatalog('desktop', desktopBoundToolNames),
-  };
+  assertProductBindingCatalogClean(
+    'desktop',
+    builtinTools.map((tool) => tool.name),
+  );
+  const desktopProductToolSurface = projectEffectiveProductToolSurface({
+    host: 'desktop',
+    tools: builtinTools,
+    policy: { economy: economyEnabled },
+  });
   // Build the union needed by catalog child profiles. SessionManager applies
   // each profile's narrower allowlist; parent-facing runtime refs are omitted.
   const childAgentTools = buildChildAgentTools([
@@ -304,9 +292,8 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     computerUseOverlay,
     computerUseTools,
     agentTeamLeadTools,
-    desktopHostCapabilities,
-    builtinTools,
-    toolAvailability,
+    desktopProductToolSurface,
+    builtinTools: [...desktopProductToolSurface.tools],
     childAgentTools,
     sandboxDiagnosticsProvider,
   };

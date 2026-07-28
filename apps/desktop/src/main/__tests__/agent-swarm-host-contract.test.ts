@@ -50,7 +50,7 @@ describe('AgentSwarm host registration contract', () => {
 
     assert.match(
       desktop,
-      /groups:\s*buildDeferredToolGroupsFromCatalog\(\s*'desktop'/,
+      /projectEffectiveProductToolSurface\(\{[\s\S]*host:\s*'desktop'/,
     );
     assert.match(
       cli,

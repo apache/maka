@@ -106,18 +106,18 @@ Use the Office tools.`);
 
   it('shares one Desktop host capability surface between the prompt and Skill tool', async () => {
     const mainProcess = await readMainProcessCombinedSource();
-    assert.match(mainProcess, /const desktopHostCapabilities = buildHostCapabilitiesFromBinding\(desktopBoundToolNames\)/);
-    assert.match(mainProcess, /hostCapabilities: desktopHostCapabilities/);
+    assert.match(mainProcess, /const desktopProductToolSurface = projectEffectiveProductToolSurface\(\{/);
+    assert.match(mainProcess, /hostCapabilities: desktopProductToolSurface\.hostCapabilities/);
     assert.match(mainProcess, /buildSkillsPromptFragmentWithReport\(\s*skillSource,\s*options\?\.host \?\? deps\.host \?\? deps\.hostCapabilities,\s*options\?\.skillBudget,\s*\)/);
     assert.match(mainProcess, /getSkillSelectionReport: systemPromptService\.getLastSkillSelectionReport/);
     assert.match(mainProcess, /buildSkillAgentTool\([\s\S]*resolveDesktopSkillHost,[\s\S]*shadowTracker/);
     assert.match(mainProcess, /buildSkillSearchAgentTool\([\s\S]*resolveDesktopSkillHost,[\s\S]*shadowTracker/);
-    assert.match(mainProcess, /const backendSkillHost = buildHostCapabilitiesFromBinding\(backendToolNames\)/);
+    assert.match(mainProcess, /const productToolSurface = projectEffectiveProductToolSurface\(\{/);
     assert.doesNotMatch(mainProcess, /const backendCapabilities = new Set<string>\(\)/);
     assert.match(mainProcess, /\.\.\.deps\.builtinTools,[\s\S]*\.\.\.buildMcpTools\(deps\.mcpManager\)/);
     assert.match(mainProcess, /const backendTools = computerUseToolsForModel\(/);
-    assert.match(mainProcess, /const backendToolNames = new Set\(/);
-    assert.match(mainProcess, /selectedTools\.map\(\(tool\) => tool\.name\)/);
+    assert.doesNotMatch(mainProcess, /const backendToolNames = new Set\(/);
+    assert.match(mainProcess, /skillHost: productToolSurface\.hostCapabilities/);
     assert.match(mainProcess, /if \(!ctx\.tools\) desktopSessionSkillHosts\.set\(ctx\.sessionId, backendSkillHost\)/);
     assert.match(mainProcess, /host: backendSkillHost/);
   });

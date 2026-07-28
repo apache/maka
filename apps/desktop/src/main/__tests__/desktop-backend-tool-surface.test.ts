@@ -107,6 +107,11 @@ describe('Desktop backend tool surface', () => {
       },
     });
     assert.deepEqual([...child.skillHost.toolNames], ['Read']);
+    assert.deepEqual(
+      child.selectedTools.map((candidate) => candidate.name),
+      ['Read'],
+    );
+    assert.deepEqual(child.toolAvailability.groups, []);
   });
 
   it('keeps scoped child tools ahead of root-only computer-use and Plan controls', async () => {
@@ -265,7 +270,7 @@ function makeDeps(
     computerUseTools: [computerTool],
     agentTeamLeadTools: [],
     builtinTools: [readTool, writeTool, computerTool],
-    toolAvailability: availability,
+    toolEconomy: availability.economy,
     planStore,
     ...overrides,
   };
