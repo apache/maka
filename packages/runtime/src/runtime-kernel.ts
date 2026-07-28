@@ -1130,10 +1130,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         );
       }
       await this.deps.continuationFailpoint?.('after_continuation_claim_committed');
-      const continuationToolBoundaryProtocol = runtimeToolBoundaryProtocol(
-        this.deps,
-        childHeader,
-      );
+      const continuationToolBoundaryProtocol = runtimeToolBoundaryProtocol(this.deps, childHeader);
       durableAdmission = {
         claimedRunHeader: claim.targetRunHeader,
         commitContinuationStart: async (startedAt) => {
