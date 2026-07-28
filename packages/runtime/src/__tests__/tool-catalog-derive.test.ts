@@ -4,7 +4,232 @@ import {
   assertProductBindingCatalogClean,
   buildDeferredToolGroupsFromCatalog,
   buildHostCapabilitiesFromBinding,
+  projectEffectiveProductToolSurface,
 } from '../tool-catalog-derive.js';
+import type { MakaTool } from '../tool-runtime.js';
+import { LOAD_TOOLS_NAME, ToolAvailabilityRuntime } from '../tool-availability.js';
+
+function tool(name: string): MakaTool {
+  return {
+    name,
+    description: name,
+    parameters: { parse: (value: unknown) => value },
+    permissionRequired: false,
+    impl: async () => null,
+  };
+}
+
+describe('projectEffectiveProductToolSurface', () => {
+  it('removes a disabled surface before deriving the effective binding', () => {
+    const surface = projectEffectiveProductToolSurface({
+      host: 'headless',
+      tools: [
+        tool('Bash'),
+        tool('Read'),
+        tool('agent_spawn'),
+        tool('agent_swarm'),
+        tool('agent_list'),
+        tool('agent_output'),
+        tool('benchmark_progress'),
+        tool('mcp__server__tool'),
+      ],
+      policy: {
+        economy: true,
+        disabledSurfaceIds: ['agent'],
+      },
+    });
+
+    assert.deepEqual(
+      surface.tools.map((candidate) => candidate.name),
+      ['Bash', 'Read', 'benchmark_progress', 'mcp__server__tool'],
+    );
+  });
+
+  it('derives every product-surface consumer from the same effective binding', () => {
+    const surface = projectEffectiveProductToolSurface({
+      host: 'desktop',
+      tools: [
+        tool('Read'),
+        tool('OfficeDocument'),
+        tool('OfficeDocumentEdit'),
+        tool('agent_spawn'),
+        tool('agent_swarm'),
+        tool('agent_list'),
+        tool('agent_output'),
+        tool('benchmark_progress'),
+        tool('mcp__server__tool'),
+      ],
+      policy: {
+        economy: true,
+        disabledSurfaceIds: ['agent', 'agent'],
+      },
+    });
+
+    assert.deepEqual(
+      surface.tools.map((candidate) => candidate.name),
+      ['Read', 'OfficeDocument', 'OfficeDocumentEdit', 'benchmark_progress', 'mcp__server__tool'],
+    );
+    assert.deepEqual([...surface.toolNames].sort(), [
+      'OfficeDocument',
+      'OfficeDocumentEdit',
+      'Read',
+      'benchmark_progress',
+      'mcp__server__tool',
+    ]);
+    assert.deepEqual([...surface.hostCapabilities.toolNames].sort(), [...surface.toolNames].sort());
+    assert.deepEqual([...(surface.hostCapabilities.capabilities ?? [])], ['office']);
+    assert.deepEqual(surface.toolAvailability, {
+      economy: true,
+      groups: [
+        {
+          id: 'office',
+          label: 'Office',
+          description: 'Read and edit Office documents (Word, Excel, PowerPoint, PDF).',
+          toolNames: ['OfficeDocument', 'OfficeDocumentEdit'],
+        },
+      ],
+    });
+    assert.deepEqual(surface.boundSurfaceIds, ['office']);
+    assert.deepEqual(surface.identity, {
+      policy: {
+        economy: true,
+        disabledSurfaceIds: ['agent'],
+      },
+      productToolNames: ['OfficeDocument', 'OfficeDocumentEdit', 'Read'],
+    });
+  });
+
+  it('removes a catalog surface that is unsupported on the selected host', () => {
+    const surface = projectEffectiveProductToolSurface({
+      host: 'headless',
+      tools: [tool('Read'), tool('OfficeDocument'), tool('mcp__server__tool')],
+      policy: { economy: true },
+    });
+
+    assert.deepEqual(
+      surface.tools.map((candidate) => candidate.name),
+      ['Read', 'mcp__server__tool'],
+    );
+  });
+
+  it('does not let a historical load call revive a disabled surface', () => {
+    const surface = projectEffectiveProductToolSurface({
+      host: 'headless',
+      tools: [
+        tool('Read'),
+        tool('agent_spawn'),
+        tool('agent_swarm'),
+        tool('agent_list'),
+        tool('agent_output'),
+      ],
+      policy: {
+        economy: true,
+        disabledSurfaceIds: ['agent'],
+      },
+    });
+    const plan = new ToolAvailabilityRuntime(
+      surface.tools,
+      surface.toolAvailability,
+      tool('invalid'),
+    ).prepare([
+      {
+        content: {
+          kind: 'function_call',
+          name: LOAD_TOOLS_NAME,
+          args: { group: 'agent' },
+        },
+      },
+    ]);
+
+    assert.deepEqual(plan.activeTools, ['Read']);
+    assert.equal(
+      plan.providerTools.some((candidate) => candidate.name === LOAD_TOOLS_NAME),
+      false,
+    );
+    assert.equal(
+      plan.providerTools.some((candidate) => candidate.name.startsWith('agent_')),
+      false,
+    );
+  });
+
+  it('treats a scoped child binding as a hard ceiling', () => {
+    const surface = projectEffectiveProductToolSurface({
+      host: 'desktop',
+      tools: [tool('Read'), tool('Grep')],
+      policy: { economy: true },
+    });
+
+    assert.deepEqual(
+      surface.tools.map((candidate) => candidate.name),
+      ['Read', 'Grep'],
+    );
+    assert.deepEqual(surface.boundSurfaceIds, []);
+    assert.deepEqual(surface.toolAvailability.groups, []);
+    assert.deepEqual(surface.identity.productToolNames, ['Grep', 'Read']);
+  });
+
+  it('rejects unknown surface policy instead of silently weakening it', () => {
+    assert.throws(
+      () =>
+        projectEffectiveProductToolSurface({
+          host: 'headless',
+          tools: [tool('Read')],
+          policy: {
+            economy: true,
+            disabledSurfaceIds: ['agnet'],
+          },
+        }),
+      /Unknown product-tool surface "agnet"/,
+    );
+  });
+
+  it('applies catalog affinity consistently across Desktop, CLI, and Headless', () => {
+    const tools = [
+      tool('Read'),
+      tool('OfficeDocument'),
+      tool('agent_spawn'),
+      tool('agent_swarm'),
+      tool('agent_list'),
+      tool('agent_output'),
+    ];
+    const expected = {
+      desktop: {
+        productToolNames: [
+          'OfficeDocument',
+          'Read',
+          'agent_list',
+          'agent_output',
+          'agent_spawn',
+          'agent_swarm',
+        ],
+        groupIds: ['office', 'agent'],
+      },
+      cli: {
+        productToolNames: ['Read', 'agent_list', 'agent_output', 'agent_spawn', 'agent_swarm'],
+        groupIds: ['agent'],
+      },
+      headless: {
+        productToolNames: ['Read', 'agent_list', 'agent_output', 'agent_spawn', 'agent_swarm'],
+        groupIds: ['agent'],
+      },
+    } as const;
+
+    for (const host of ['desktop', 'cli', 'headless'] as const) {
+      const surface = projectEffectiveProductToolSurface({
+        host,
+        tools,
+        policy: { economy: true },
+      });
+      assert.deepEqual(surface.productToolNames, expected[host].productToolNames);
+      assert.deepEqual(
+        surface.toolAvailability.groups.map((group) => group.id),
+        expected[host].groupIds,
+      );
+      assert.deepEqual(surface.boundSurfaceIds, expected[host].groupIds);
+      assert.deepEqual(surface.identity.productToolNames, expected[host].productToolNames);
+    }
+  });
+});
 
 describe('buildHostCapabilitiesFromBinding', () => {
   it('collects bound tool names and capability tags from catalog rows', () => {

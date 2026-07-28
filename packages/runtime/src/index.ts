@@ -1367,6 +1367,13 @@ export {
   assertProductBindingCatalogClean,
   buildDeferredToolGroupsFromCatalog,
   buildHostCapabilitiesFromBinding,
+  projectEffectiveProductToolSurface,
+} from './tool-catalog-derive.js';
+export type {
+  EffectiveProductToolSurface,
+  NormalizedProductToolSurfacePolicy,
+  ProductToolSurfaceIdentity,
+  ProductToolSurfacePolicy,
 } from './tool-catalog-derive.js';
 
 // ───────────────────────────────────────────────────────────────────────────

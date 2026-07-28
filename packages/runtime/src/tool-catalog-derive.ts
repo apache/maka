@@ -6,12 +6,83 @@
 
 import {
   MAKA_CATALOG_SURFACES,
+  catalogSurfaceById,
   catalogToolByName,
   unknownBoundToolNames,
   type ToolHostId,
 } from '@maka/core/tool-catalog';
 import type { HostCapabilities } from './skills-context.js';
 import type { ToolGroup } from './tool-availability.js';
+import type { MakaTool } from './tool-runtime.js';
+
+export interface ProductToolSurfacePolicy {
+  readonly economy: boolean;
+  readonly disabledSurfaceIds?: Iterable<string>;
+}
+
+export interface NormalizedProductToolSurfacePolicy {
+  readonly economy: boolean;
+  readonly disabledSurfaceIds: readonly string[];
+}
+
+export interface ProductToolSurfaceIdentity {
+  readonly policy: NormalizedProductToolSurfacePolicy;
+  readonly productToolNames: readonly string[];
+}
+
+export interface EffectiveProductToolSurface {
+  readonly tools: readonly MakaTool[];
+  readonly toolNames: ReadonlySet<string>;
+  readonly productToolNames: readonly string[];
+  readonly hostCapabilities: HostCapabilities;
+  readonly toolAvailability: {
+    readonly economy: boolean;
+    readonly groups: readonly ToolGroup[];
+  };
+  readonly boundSurfaceIds: readonly string[];
+  readonly identity: ProductToolSurfaceIdentity;
+}
+
+export function projectEffectiveProductToolSurface(input: {
+  host: ToolHostId;
+  tools: readonly MakaTool[];
+  policy: ProductToolSurfacePolicy;
+}): EffectiveProductToolSurface {
+  const disabledSurfaceIds = [...new Set(input.policy.disabledSurfaceIds ?? [])].sort();
+  const excludedToolNames = new Set<string>();
+  for (const surfaceId of disabledSurfaceIds) {
+    const surface = catalogSurfaceById(surfaceId);
+    if (!surface) throw new Error(`Unknown product-tool surface "${surfaceId}"`);
+    for (const name of surface.toolNames) excludedToolNames.add(name);
+  }
+  for (const surface of MAKA_CATALOG_SURFACES) {
+    if (surface.hosts[input.host] === 'supported') continue;
+    for (const name of surface.toolNames) excludedToolNames.add(name);
+  }
+  const tools = input.tools.filter((tool) => !excludedToolNames.has(tool.name));
+  const toolNames = new Set(tools.map((tool) => tool.name));
+  const productToolNames = [...toolNames].filter((name) => catalogToolByName(name)).sort();
+  const groups = buildDeferredToolGroupsFromCatalog(input.host, toolNames);
+  const policy = Object.freeze({
+    economy: input.policy.economy,
+    disabledSurfaceIds: Object.freeze(disabledSurfaceIds),
+  });
+  return Object.freeze({
+    tools: Object.freeze(tools),
+    toolNames,
+    productToolNames: Object.freeze(productToolNames),
+    hostCapabilities: buildHostCapabilitiesFromBinding(toolNames),
+    toolAvailability: Object.freeze({
+      economy: input.policy.economy,
+      groups: Object.freeze(groups),
+    }),
+    boundSurfaceIds: Object.freeze(groups.map((group) => group.id)),
+    identity: Object.freeze({
+      policy,
+      productToolNames: Object.freeze([...productToolNames]),
+    }),
+  });
+}
 
 /** Build skill-host capability surface from the tools this process actually bound. */
 export function buildHostCapabilitiesFromBinding(
