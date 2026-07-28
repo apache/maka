@@ -65,10 +65,6 @@ import {
   validateRealBackendIsolation,
 } from './isolation.js';
 import {
-  DEFAULT_INTERVENTION_POLICY,
-  handlePermissionIntervention,
-} from './permission-intervention.js';
-import {
   resolveHeadlessSystemPrompt,
   type ResolvedHeadlessSystemPrompt,
 } from './system-prompts.js';
@@ -171,7 +167,6 @@ export async function runTaskOnceWithStorage(
   const attemptId = deps.attemptId ?? `${taskRunId}-attempt-1`;
   const createTaskRun = deps.createTaskRun ?? true;
   const closeTaskRun = deps.closeTaskRun ?? true;
-  const interventionPolicy = deps.interventionPolicy ?? DEFAULT_INTERVENTION_POLICY;
   const taskRunStore = storage.taskRunStore;
   const sessionStore = storage.executionStores.sessionStore;
   const agentRunStore = storage.executionStores.agentRunStore;
@@ -477,32 +472,7 @@ export async function runTaskOnceWithStorage(
       now,
       newId,
     });
-    const permissionHandling = await handlePermissionIntervention({
-      invocation: runtimeInvocation,
-      store: taskRunStore,
-      taskRunId,
-      attemptId,
-      now,
-      newId,
-      policy: interventionPolicy,
-      config,
-      task,
-      sessionId: header.id,
-      startedAt,
-      closeTaskRun,
-      systemPrompt: prompt,
-    });
-    if (permissionHandling.parked) {
-      return {
-        taskRunId,
-        attemptId,
-        resultRecord: permissionHandling.resultRecord,
-        projection: await taskRunStore.project(taskRunId),
-        invocations: [permissionHandling.invocation],
-        settledByDeadline,
-      };
-    }
-    let invocation = permissionHandling.invocation;
+    let invocation = runtimeInvocation;
     const invocations = [invocation];
 
     let runtimeSummary = summarizeRuntime([invocation], deps.realBackendIsolation);
@@ -610,32 +580,7 @@ export async function runTaskOnceWithStorage(
           now,
           newId,
         });
-        const repairPermissionHandling = await handlePermissionIntervention({
-          invocation: repairInvocation,
-          store: taskRunStore,
-          taskRunId,
-          attemptId,
-          now,
-          newId,
-          policy: interventionPolicy,
-          config,
-          task,
-          sessionId: header.id,
-          startedAt,
-          closeTaskRun,
-          systemPrompt: prompt,
-        });
-        if (repairPermissionHandling.parked) {
-          return {
-            taskRunId,
-            attemptId,
-            resultRecord: repairPermissionHandling.resultRecord,
-            projection: await taskRunStore.project(taskRunId),
-            invocations: [...invocations, repairPermissionHandling.invocation],
-            settledByDeadline,
-          };
-        }
-        invocation = repairPermissionHandling.invocation;
+        invocation = repairInvocation;
         invocations.push(invocation);
         const repairSummary = summarizeRuntime([invocation], deps.realBackendIsolation);
         await appendRuntimeFeedback(taskRunStore, taskRunId, attemptId, now, newId, repairSummary);
