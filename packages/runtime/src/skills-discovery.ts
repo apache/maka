@@ -126,6 +126,8 @@ export interface SkillScanResult {
   diagnostics: SkillScanDiagnostic[];
   /** Source-level failures that previously appeared as an empty catalog. */
   discoveryDiagnostics: SkillDiscoveryDiagnostic[];
+  /** State snapshot used to resolve enabled/pinned values during this scan. */
+  runtimeState: SkillRuntimeStateReadResult;
 }
 
 export interface RejectedSkillDefinition {
@@ -258,6 +260,7 @@ export async function scanSkillsWithDiagnostics(source: SkillSource): Promise<Sk
     rejected,
     diagnostics: [...diagnostics.values()],
     discoveryDiagnostics,
+    runtimeState,
   };
 }
 
@@ -345,6 +348,7 @@ async function scanSkillDir(
     rejected: [],
     diagnostics: [],
     discoveryDiagnostics,
+    runtimeState,
   });
   const sourceDiagnostic = (
     reason: SkillDiscoveryDiagnostic['reason'],
@@ -444,7 +448,14 @@ async function scanSkillDir(
     }
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
-  return { skills: out, inventory: out, rejected, diagnostics, discoveryDiagnostics: [] };
+  return {
+    skills: out,
+    inventory: out,
+    rejected,
+    diagnostics,
+    discoveryDiagnostics: [],
+    runtimeState,
+  };
 }
 
 function appendSkillDiagnostic(

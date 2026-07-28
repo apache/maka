@@ -12,6 +12,7 @@
  * @see skills-context.js     – gating, prompt rendering, search, instruction loading
  * @see skills-state.js       – per-workspace enablement state read/write
  * @see skills-agent-tools.js – Skill / SkillSearch tool builders
+ * @see skills-starter.js     – pure starter SKILL.md template
  */
 
 // ── From path-containment (contained I/O moved in #1408) ──────────────────
@@ -41,15 +42,64 @@ export type {
 
 // ── From skills-state ──────────────────────────────────────────────────────
 export {
+  clearResolvedSkillPreferenceReviews,
+  encodeSkillRuntimePreferences,
+  getSkillRuntimePreference,
+  isSkillPreferenceReviewPending,
+  migrateSkillRuntimePreferences,
+  patchSkillRuntimePreference,
   readSkillRuntimeState,
+  resolveSkillPreferenceTarget,
   writeSkillRuntimeState,
   writeSkillRuntimePreferences,
 } from './skills-state.js';
 export type {
+  ResolveSkillPreferenceTargetResult,
+  SkillPreferenceMigration,
+  SkillPreferenceTarget,
   SkillRuntimeStatus,
   SkillRuntimePreference,
   SkillRuntimeStateReadResult,
 } from './skills-state.js';
+
+export {
+  listManagedSkillSources,
+  MANAGED_SKILL_CATEGORIES,
+  normalizeManagedSkillCategory,
+  readManagedSkillSources,
+  readManagedSkillSource,
+  resolveManagedSkillSourcesRoot,
+  toManagedSkillSourceEntry,
+} from './managed-skill-sources.js';
+export type {
+  ManagedSkillCategory,
+  ManagedSkillSourceEntry,
+  ManagedSkillSourceRecord,
+  ReadManagedSkillSourcesResult,
+  ReadManagedSkillSourceResult,
+} from './managed-skill-sources.js';
+
+export {
+  createBundledSkillLock,
+  createManagedSkillLock,
+  getBundledSkillSource,
+  invalidSkillLockStatus,
+  isCurrentBundledSkillLock,
+  missingSkillLockStatus,
+  validateSkillLock,
+} from './skills-governance.js';
+export type {
+  ManagedSkillUpdateStatus,
+  ManagedSourceSnapshot,
+  SkillGovernanceStatus,
+  SkillLockFile,
+  SkillLockValidationCode,
+  SkillSourceType,
+  SkillValidationStatus,
+} from './skills-governance.js';
+
+export { BUNDLED_SKILL_CATALOG } from './bundled-skill-catalog.generated.js';
+export type { BundledSkillSource } from './bundled-skill-catalog.generated.js';
 
 // ── From skills-discovery ──────────────────────────────────────────────────
 export {
@@ -116,3 +166,6 @@ export {
   SKILL_SEARCH_TOOL_NAME,
 } from './skills-agent-tools.js';
 export type { SkillToolOptions } from './skills-agent-tools.js';
+
+// ── From skills-starter ───────────────────────────────────────────────────
+export { buildStarterSkillTemplate } from './skills-starter.js';

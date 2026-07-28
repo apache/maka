@@ -381,6 +381,55 @@ description: Workspace workflow.
     });
   });
 
+  it('projects case-only v1 duplicates from one normalized legacy preference', async () => {
+    await withWorkspace(async (workspaceRoot) => {
+      const projectRoot = join(workspaceRoot, 'project');
+      const homeDir = join(workspaceRoot, 'home');
+      await mkdir(projectRoot, { recursive: true });
+      await mkdir(homeDir, { recursive: true });
+      await writeSkillAt(
+        join(projectRoot, '.maka', 'skills'),
+        'shared',
+        'Project Shared',
+        'Project copy.',
+      );
+      await writeSkillAt(
+        join(homeDir, '.agents', 'skills'),
+        'Shared',
+        'User Shared',
+        'User copy.',
+      );
+      await mkdir(join(workspaceRoot, '.maka'), { recursive: true });
+      await writeFile(
+        join(workspaceRoot, '.maka', 'skills-state.json'),
+        JSON.stringify({ schemaVersion: 1, skills: { Shared: { enabled: false } } }),
+        'utf8',
+      );
+
+      const entries = (
+        await listGovernedSkillEntries(workspaceRoot, {
+          cwd: projectRoot,
+          homeDir,
+        })
+      ).filter((skill) => skill.id.toLowerCase() === 'shared');
+      assert.equal(entries.length, 2);
+      for (const entry of entries) {
+        assert.equal(entry.enabled, false);
+        assert.equal(entry.pinned, false);
+        assert.equal(entry.runtimeStatus, 'disabled');
+        assert.equal(entry.needsReview, true);
+      }
+      assert.equal(
+        entries.find((entry) => entry.scope === 'project')?.contextStatus,
+        'disabled',
+      );
+      assert.equal(
+        entries.find((entry) => entry.scope === 'user')?.contextStatus,
+        'shadowed',
+      );
+    });
+  });
+
   it('surfaces blocked discovery roots as non-actionable inventory diagnostics', async () => {
     await withWorkspace(async (workspaceRoot) => {
       const projectRoot = join(workspaceRoot, 'project');
@@ -616,10 +665,32 @@ ${'A'.repeat(MAX_SKILL_TOOL_BODY_CHARS + 1000)}`);
       });
 
       const text = await readFile(result.filePath, 'utf8');
-      assert.match(text, /name: 示例技能/);
+      assert.equal(
+        text,
+        `---
+name: 示例技能
+description: 把常用工作流写成可复用的本地指令。
+allowed-tools:
+  - Read
+---
 
-      assert.match(text, /allowed-tools:\n  - Read/);
-      assert.match(text, /不会自动获得权限/);
+# 示例技能
+
+当用户要求你按固定流程完成某类任务时，先加载这个技能。
+
+## 使用方式
+
+1. 先确认用户的目标、输入材料和交付格式。
+2. 阅读必要的本地文件或上下文，只收集完成任务需要的信息。
+3. 按步骤输出结果；如果需要改文件，先说明要改哪里和原因。
+
+## 边界
+
+- 这个技能声明的工具只是需求提示，不会自动获得权限。
+- 不要把敏感内容写进这里；它会作为本地技能指令进入模型上下文。
+- 如果这个模板不适合你的工作流，可以直接改名或删除 starter-skill。
+`,
+      );
 
       const skillsDirMode = (await lstat(join(workspaceRoot, 'skills'))).mode & 0o077;
       const fileMode = (await lstat(result.filePath)).mode & 0o077;

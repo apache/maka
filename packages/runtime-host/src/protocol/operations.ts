@@ -12,6 +12,7 @@ import {
 } from './operation-spec.js';
 import { RUNTIME_POLICY_OPERATION_SPECS } from './runtime-policy.js';
 import { SESSION_CONTINUITY_OPERATION_SPECS } from './session-continuity.js';
+import { SKILL_CATALOG_OPERATION_SPECS } from './skill-catalog.js';
 import { TASK_LEDGER_OPERATION_SPECS } from './task-ledger.js';
 import { TURN_OPERATION_SPECS } from './turn.js';
 
@@ -69,6 +70,7 @@ export type {
   TurnStopInput,
 } from './turn.js';
 export * from './runtime-policy.js';
+export * from './skill-catalog.js';
 
 const HOST_AND_TURN_OPERATION_SPECS = composeOperationSpecMaps(
   HOST_STATUS_OPERATION_SPECS,
@@ -101,9 +103,15 @@ const CORE_MESSAGE_TASK_LEDGER_INTERACTION_AND_CONTINUITY_OPERATION_SPECS =
     SESSION_CONTINUITY_OPERATION_SPECS,
   );
 
+const CORE_MESSAGE_TASK_LEDGER_INTERACTION_CONTINUITY_AND_ARTIFACT_OPERATION_SPECS =
+  composeOperationSpecMaps(
+    CORE_MESSAGE_TASK_LEDGER_INTERACTION_AND_CONTINUITY_OPERATION_SPECS,
+    ARTIFACT_OPERATION_SPECS,
+  );
+
 export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
-  CORE_MESSAGE_TASK_LEDGER_INTERACTION_AND_CONTINUITY_OPERATION_SPECS,
-  ARTIFACT_OPERATION_SPECS,
+  CORE_MESSAGE_TASK_LEDGER_INTERACTION_CONTINUITY_AND_ARTIFACT_OPERATION_SPECS,
+  SKILL_CATALOG_OPERATION_SPECS,
 );
 
 export type OperationSpecMap = typeof HOST_OPERATION_SPECS;

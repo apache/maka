@@ -1485,9 +1485,33 @@ export {
   parseSkillFrontMatter,
   validateSkillMetadata,
   // skills-state
+  clearResolvedSkillPreferenceReviews,
+  encodeSkillRuntimePreferences,
+  getSkillRuntimePreference,
+  isSkillPreferenceReviewPending,
+  migrateSkillRuntimePreferences,
+  patchSkillRuntimePreference,
   readSkillRuntimeState,
+  resolveSkillPreferenceTarget,
   writeSkillRuntimeState,
   writeSkillRuntimePreferences,
+  // managed skill sources
+  listManagedSkillSources,
+  MANAGED_SKILL_CATEGORIES,
+  normalizeManagedSkillCategory,
+  readManagedSkillSources,
+  readManagedSkillSource,
+  resolveManagedSkillSourcesRoot,
+  toManagedSkillSourceEntry,
+  // skill governance
+  createBundledSkillLock,
+  createManagedSkillLock,
+  getBundledSkillSource,
+  invalidSkillLockStatus,
+  isCurrentBundledSkillLock,
+  missingSkillLockStatus,
+  validateSkillLock,
+  BUNDLED_SKILL_CATALOG,
   // skills-discovery
   resolveSkillDiscoveryPaths,
   scanSkills,
@@ -1513,6 +1537,8 @@ export {
   SkillShadowSelectionTracker,
   SKILL_TOOL_NAME,
   SKILL_SEARCH_TOOL_NAME,
+  // skills-starter
+  buildStarterSkillTemplate,
 } from './skills.js';
 export {
   // path-containment (contained I/O moved in #1408)
@@ -1547,9 +1573,27 @@ export { isPathInside, isSafeSkillId, toRelative } from './path-containment.js';
 export type { PathInsideApi } from './path-containment.js';
 export type {
   // skills-state
+  ResolveSkillPreferenceTargetResult,
+  SkillPreferenceMigration,
+  SkillPreferenceTarget,
   SkillRuntimeStatus,
   SkillRuntimePreference,
   SkillRuntimeStateReadResult,
+  // managed skill sources
+  ManagedSkillCategory,
+  ManagedSkillSourceEntry,
+  ManagedSkillSourceRecord,
+  ReadManagedSkillSourcesResult,
+  ReadManagedSkillSourceResult,
+  // skill governance
+  BundledSkillSource,
+  ManagedSkillUpdateStatus,
+  ManagedSourceSnapshot,
+  SkillGovernanceStatus,
+  SkillLockFile,
+  SkillLockValidationCode,
+  SkillSourceType,
+  SkillValidationStatus,
   // skills-discovery
   SkillScope,
   SkillDiscoverySource,

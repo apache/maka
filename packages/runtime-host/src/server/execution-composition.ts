@@ -9,6 +9,7 @@ import {
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
+import { runWithStorageRootLease } from '@maka/storage/root-authority';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
 import { CanonicalSessionProjectionReader } from './canonical-session-projection.js';
@@ -24,6 +25,8 @@ import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js
 import { HostRuntimePolicyCoordinator } from './runtime-policy-coordinator.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
 import { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
+import { HostSkillCatalogCoordinator } from './skill-catalog-coordinator.js';
+import { SkillCatalogRepository } from './skill-catalog-repository.js';
 import { HostTaskLedgerCoordinator } from './task-ledger-coordinator.js';
 
 export async function createExecutionRuntimeHostComposition(
@@ -47,6 +50,12 @@ export async function createExecutionRuntimeHostComposition(
       context.owner.capability.canonicalPath,
     );
     graphControlStore = openedGraphControlStore;
+    const skills = new HostSkillCatalogCoordinator(
+      new SkillCatalogRepository({
+        runWithRoot: (operation) =>
+          runWithStorageRootLease(context.owner.lease, 'interactive', 'write', operation),
+      }),
+    );
     let rootCoordinator: RootTurnCoordinator | undefined;
     let continuity: SessionContinuityCoordinator | undefined;
     let canonicalProjection: CanonicalSessionProjectionReader | undefined;
@@ -104,6 +113,7 @@ export async function createExecutionRuntimeHostComposition(
       draining = true;
       messages.beginDrain();
       interactions.beginDrain();
+      skills.beginDrain();
     };
     const interactions = new HostInteractionCoordinator({
       store: stores.interactionStore,
@@ -196,9 +206,11 @@ export async function createExecutionRuntimeHostComposition(
       ...continuityCoordinator.handlers,
       ...taskLedger.handlers,
       ...artifacts.handlers,
+      ...skills.handlers,
     } satisfies DomainOperationHandlerMap;
     const recover = () => {
       recoveryTask ??= (async () => {
+        await skills.recover();
         const sessions = await stores.sessionStore.listForRecovery();
         for (const session of sessions) {
           await stores.runtimeEventStore.repairImmutableSteeringMessageProofsForRecovery(
@@ -255,6 +267,11 @@ export async function createExecutionRuntimeHostComposition(
         }
         try {
           continuityCoordinator.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
+          await skills.close();
         } catch (error) {
           errors.push(error);
         }
