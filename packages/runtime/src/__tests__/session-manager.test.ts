@@ -11129,7 +11129,7 @@ describe('SessionManager permission mode updates', () => {
             firstDispatches += 1;
           },
           async stop(): Promise<void> {},
-          async respondToPermission(): Promise<void> {},
+          async respondToSandboxBoundary(): Promise<void> {},
           async dispose(): Promise<void> {
             firstDisposeCalls += 1;
           },
@@ -11195,7 +11195,7 @@ describe('SessionManager permission mode updates', () => {
           throw new Error('cancelled backend must not dispatch');
         },
         async stop(): Promise<void> {},
-        async respondToPermission(): Promise<void> {},
+        async respondToSandboxBoundary(): Promise<void> {},
         async dispose(): Promise<void> {
           disposeCalls += 1;
           throw new Error('late backend disposal failed');

@@ -2767,7 +2767,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
