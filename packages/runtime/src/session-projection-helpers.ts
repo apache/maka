@@ -134,7 +134,6 @@ export function turnStatusFromEvent(
       if (event.stopReason === 'user_stop') return { status: 'aborted' };
       const errorClass = failureClassFromCompleteStopReason(event.stopReason);
       if (errorClass) return { status: 'failed', errorClass };
-      if (event.stopReason === 'permission_handoff') return { status: 'running' };
       return { status: 'completed' };
     }
     default:

@@ -171,7 +171,7 @@ describe('session projection helpers', () => {
     expect(
       turnStatusFromEvent({ type: 'complete', ts: 1, stopReason: 'permission_handoff' } as never),
     ).toEqual({
-      status: 'running',
+      status: 'completed',
     });
   });
 });

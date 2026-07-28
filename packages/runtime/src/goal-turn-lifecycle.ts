@@ -177,15 +177,6 @@ function observeGoalTurnOutcome(
     return { kind: 'aborted', turnId: event.turnId };
   }
   if (event.type !== 'complete') return current;
-  if (event.stopReason === 'permission_handoff') {
-    return (
-      current ?? {
-        kind: 'suspended',
-        turnId: event.turnId,
-        reason: 'Turn is waiting for user permission.',
-      }
-    );
-  }
   return { kind: 'completed', turnId: event.turnId };
 }
 
