@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { LlmConnection, SessionHeader } from '@maka/core';
 import { ChildAgentRunLimiter } from '../child-agent-run-limiter.js';
-import { PermissionEngine } from '../permission-engine.js';
 import {
   MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN,
   ToolRuntime,
@@ -297,15 +296,12 @@ function childSpec(index: number) {
 function buildRuntime(
   spawnChildAgent: NonNullable<ConstructorParameters<typeof ToolRuntime>[0]['spawnChildAgent']>,
 ): ToolRuntime {
-  const permissionEngine = new PermissionEngine({ newId: nextId(), now: () => 1 });
-  permissionEngine.beginTurn('turn-1');
   return new ToolRuntime({
     sessionId: 'session-1',
     header: testHeader(),
     connection: testConnection(),
     modelId: 'mock-model',
     appendMessage: async () => {},
-    permissionEngine,
     newId: nextId(),
     now: () => 1,
     getPermissionPauseTarget: () => null,

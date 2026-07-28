@@ -300,8 +300,6 @@ export interface ToolRuntimeInput {
   connection: LlmConnection;
   modelId: string;
   appendMessage: AppendMessageFn;
-  /** Deprecated constructor input retained temporarily for embedding compatibility. */
-  permissionEngine?: unknown;
   readExecutionBoundary?: () => Promise<ExecutionBoundary>;
   createSandboxBoundaryRequest?: (
     input: CreateSandboxBoundaryRequest,

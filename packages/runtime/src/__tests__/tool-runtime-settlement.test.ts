@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { LlmConnection, SessionHeader } from '@maka/core';
-import { PermissionEngine } from '../permission-engine.js';
 import { buildForegroundBashTool, buildManagedBashTool } from '../shell-tools.js';
 import { ToolRuntime, type MakaTool, type ToolRuntimeInput } from '../tool-runtime.js';
 
@@ -41,8 +40,6 @@ describe('ToolRuntime settlement', () => {
         stderrTruncated: false,
       }),
     });
-    bash.permissionRequired = false;
-
     const settlement = await runtime.settleToolCall({
       tool: bash,
       turnId: 'turn-1',
@@ -153,7 +150,6 @@ describe('ToolRuntime settlement', () => {
           throw new Error('not used');
         },
       });
-      bash.permissionRequired = false;
       const settlement = await runtime.settleToolCall({
         tool: bash,
         turnId: 'turn-1',
@@ -313,15 +309,12 @@ describe('ToolRuntime settlement', () => {
 function makeRuntime(
   overrides: Pick<ToolRuntimeInput, 'materializeDefaultToolResultOutput'> = {},
 ): ToolRuntime {
-  const permissionEngine = new PermissionEngine({ newId: nextId(), now: () => 1 });
-  permissionEngine.beginTurn('turn-1');
   return new ToolRuntime({
     sessionId: 'session-1',
     header: header(),
     connection: connection(),
     modelId: 'model-1',
     appendMessage: async () => {},
-    permissionEngine,
     newId: nextId(),
     now: () => 1,
     getPermissionPauseTarget: () => null,

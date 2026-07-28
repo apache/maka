@@ -6,7 +6,6 @@ import {
   extractStdoutRedirectPath,
   recordToolArtifactsSafely,
 } from '../tool-artifacts.js';
-import { PermissionEngine } from '../permission-engine.js';
 import { ToolRuntime, type MakaTool, type ToolRuntimeInput } from '../tool-runtime.js';
 import { expect } from '../test-helpers.js';
 
@@ -142,8 +141,6 @@ function makeToolRuntime(overrides: Partial<ToolRuntimeInput> = {}): {
   runtime: ToolRuntime;
   events: SessionEvent[];
 } {
-  const permissionEngine = new PermissionEngine({ newId: nextId(), now: () => 1 });
-  permissionEngine.beginTurn('turn-1');
   const events: SessionEvent[] = [];
   const runtime = new ToolRuntime({
     sessionId: 'session-1',
@@ -151,7 +148,6 @@ function makeToolRuntime(overrides: Partial<ToolRuntimeInput> = {}): {
     connection: testConnection(),
     modelId: 'mock-model',
     appendMessage: async () => {},
-    permissionEngine,
     newId: nextId(),
     now: () => 1,
     getPermissionPauseTarget: () => null,

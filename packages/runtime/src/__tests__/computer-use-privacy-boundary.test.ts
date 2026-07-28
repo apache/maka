@@ -7,16 +7,13 @@ import type {
   StoredMessage,
   ToolInvocationRecord,
 } from '@maka/core';
-import { PermissionEngine } from '../permission-engine.js';
 import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
 
-test('Computer Use snapshots execution args and persists only the approval summary', async () => {
+test('Computer Use snapshots execution args and persists only the privacy summary', async () => {
   const messages: StoredMessage[] = [];
   const events: SessionEvent[] = [];
   const invocations: ToolInvocationRecord[] = [];
   const observedImplArgs: unknown[] = [];
-  const observedSandboxArgs: unknown[] = [];
-  const observedPermissionContexts: unknown[] = [];
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
     release = resolve;
@@ -29,7 +26,6 @@ test('Computer Use snapshots execution args and persists only the approval summa
     appendMessage: async (message) => {
       messages.push(message);
     },
-    permissionEngine: new PermissionEngine({ newId: nextId(), now: () => 1 }),
     newId: nextId(),
     now: () => 1,
     getPermissionPauseTarget: () => null,
@@ -42,18 +38,6 @@ test('Computer Use snapshots execution args and persists only the approval summa
     description: 'test',
     parameters: {},
     categoryHint: 'computer_use',
-    permissionArgs: (permissionInput, permissionContext) => {
-      observedPermissionContexts.push(permissionContext);
-      return {
-        ...(permissionInput as Record<string, unknown>),
-        app: 'Runtime Target',
-        window_id: 42,
-      };
-    },
-    sandbox: ({ args: sandboxArgs }) => {
-      observedSandboxArgs.push(sandboxArgs);
-      return { platformSandboxAvailable: true };
-    },
     impl: async (args) => {
       await gate;
       observedImplArgs.push(args);
@@ -97,28 +81,11 @@ test('Computer Use snapshots execution args and persists only the approval summa
       coordinate: [123, 456],
     },
   ]);
-  assert.deepEqual(observedSandboxArgs, [
-    {
-      action: 'type',
-      app: 'Example',
-      observation_id: 'frame-1',
-      text: 'secret text',
-      coordinate: [123, 456],
-    },
-  ]);
-  assert.deepEqual(observedPermissionContexts, [
-    {
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      toolCallId: 'tool-1',
-    },
-  ]);
   const expectedSummary = {
     action: 'type',
     approvalClass: 'keyboard_mutation',
     rememberForTurnAllowed: true,
-    app: 'Runtime Target',
-    windowId: 42,
+    app: 'Example',
     observationId: 'frame-1',
   };
   const call = messages.find((message) => message.type === 'tool_call');
@@ -142,7 +109,6 @@ test('Computer Use validation failures still persist a redacted call and result'
     appendMessage: async (message) => {
       messages.push(message);
     },
-    permissionEngine: new PermissionEngine({ newId: nextId(), now: () => 1 }),
     newId: nextId(),
     now: () => 1,
     getPermissionPauseTarget: () => null,

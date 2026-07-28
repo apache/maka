@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { LlmConnection, SessionEvent, SessionHeader, StoredMessage } from '@maka/core';
-import { PermissionEngine } from '../permission-engine.js';
 import type {
   RuntimeCommitSink,
   ToolOutcomeCommit,
@@ -205,42 +204,6 @@ describe('ToolRuntime durable boundary', () => {
     });
   });
 
-  it('does not create a prepared journal operation when permission is denied', async () => {
-    let preparedCalls = 0;
-    let implementationCalls = 0;
-    const harness = makeHarness({
-      commitToolPrepared: async () => {
-        preparedCalls += 1;
-        return { created: true, runtimeEventSeq: 1 };
-      },
-      commitToolOutcome: async () => {
-        throw new Error('must not reach T2');
-      },
-    });
-    const execution = harness.execute({
-      ...tool(() => {
-        implementationCalls += 1;
-        return { ok: true };
-      }),
-      name: 'Bash',
-    });
-    while (!harness.events.some((event) => event.type === 'permission_request')) {
-      await Promise.resolve();
-    }
-    const request = harness.events.find((event) => event.type === 'permission_request');
-    if (!request || request.type !== 'permission_request')
-      throw new Error('expected permission request');
-    harness.permissionEngine.recordResponse('turn-1', {
-      requestId: request.requestId,
-      decision: 'deny',
-    });
-
-    await execution;
-
-    assert.equal(preparedCalls, 0);
-    assert.equal(implementationCalls, 0);
-  });
-
   it('does not publish an implementation result when T2 fails', async () => {
     let implementationCalls = 0;
     const harness = makeHarness({
@@ -304,8 +267,6 @@ function makeHarness(
 ) {
   const messages: StoredMessage[] = [];
   const events: SessionEvent[] = [];
-  const permissionEngine = new PermissionEngine({ newId: nextId(), now: () => 1 });
-  permissionEngine.beginTurn('turn-1');
   const runtime = new ToolRuntime({
     sessionId: 'session-1',
     header: header(),
@@ -314,7 +275,6 @@ function makeHarness(
     appendMessage: async (message) => {
       messages.push(message);
     },
-    permissionEngine,
     newId: nextId(),
     now: nextNow(),
     getPermissionPauseTarget: () => null,
@@ -324,7 +284,6 @@ function makeHarness(
   return {
     messages,
     events,
-    permissionEngine,
     execute: async (target: MakaTool, abortSignal: AbortSignal = new AbortController().signal) =>
       (
         await runtime.settleToolCall({

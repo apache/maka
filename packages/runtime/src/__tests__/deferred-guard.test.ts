@@ -4,17 +4,13 @@ import { z } from 'zod';
 import type { SessionEvent } from '@maka/core/events';
 import type { SessionHeader } from '@maka/core/session';
 import type { StoredMessage } from '@maka/core/session';
-import type { ToolExecutionFacts } from '@maka/core/permission';
 import { projectToolActivityArgs } from '@maka/core';
 
 import { ToolRuntime, formatDeferredNotLoadedText, type MakaTool } from '../tool-runtime.js';
 import { mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
-import { PermissionEngine, type EvaluateInput } from '../permission-engine.js';
 
 // The execute-boundary guard rejects a *gated* tool whose name is absent from
-// the current step's active snapshot — before permission eval and before the
-// real impl. These tests drive ToolRuntime directly so the rejection path
-// resolves synchronously (no streaming, no parking).
+// the current step's active snapshot before the real impl.
 
 function header(): SessionHeader {
   return {
@@ -44,25 +40,13 @@ interface Harness {
   runtime: ToolRuntime;
   appended: StoredMessage[];
   pushed: SessionEvent[];
-  evaluateCalls: string[];
-  evaluateInputs: EvaluateInput[];
   invocationArgsSummaries: string[];
 }
 
 function makeHarness(): Harness {
   const appended: StoredMessage[] = [];
   const pushed: SessionEvent[] = [];
-  const evaluateCalls: string[] = [];
-  const evaluateInputs: EvaluateInput[] = [];
   const invocationArgsSummaries: string[] = [];
-  const engine = new PermissionEngine({ newId: () => 'perm', now: () => 1 });
-  const realEvaluate = engine.evaluate.bind(engine);
-  // Spy: record whether the guard let execution reach permission evaluation.
-  engine.evaluate = ((input: EvaluateInput) => {
-    evaluateCalls.push(input.toolName);
-    evaluateInputs.push(input);
-    return realEvaluate(input);
-  }) as typeof engine.evaluate;
   let n = 0;
   const runtime = new ToolRuntime({
     sessionId: 'session-1',
@@ -72,7 +56,6 @@ function makeHarness(): Harness {
     appendMessage: async (m) => {
       appended.push(m);
     },
-    permissionEngine: engine,
     newId: () => `id-${++n}`,
     now: () => 1,
     getPermissionPauseTarget: () => null,
@@ -80,7 +63,7 @@ function makeHarness(): Harness {
       invocationArgsSummaries.push(record.argsSummary ?? '');
     },
   });
-  return { runtime, appended, pushed, evaluateCalls, evaluateInputs, invocationArgsSummaries };
+  return { runtime, appended, pushed, invocationArgsSummaries };
 }
 
 function tool(name: string, implCalls: string[]): MakaTool {
@@ -184,27 +167,7 @@ describe('tool-availability execute-boundary guard', () => {
     );
   });
 
-  test('passes tool execution facts into permission evaluation', async () => {
-    const h = makeHarness();
-    const implCalls: string[] = [];
-    const facts: ToolExecutionFacts = {
-      isolation: 'container',
-      writesAffectHost: false,
-      writeBack: 'diff_review',
-      network: 'sandbox',
-      secrets: 'brokered',
-    };
-    const t = tool('CustomFactsTool', implCalls);
-    t.executionFacts = facts;
-
-    await run(h, t);
-
-    assert.equal(h.evaluateInputs.length, 1);
-    assert.equal(h.evaluateInputs[0]?.executionFacts, facts);
-    assert.deepEqual(implCalls, ['CustomFactsTool']);
-  });
-
-  test('rejects a gated tool absent from the step snapshot — no impl, no permission eval', async () => {
+  test('rejects a gated tool absent from the step snapshot before implementation', async () => {
     const h = makeHarness();
     const implCalls: string[] = [];
     // The same-step trap: the browser group was just requested via load_tools
@@ -217,11 +180,6 @@ describe('tool-availability execute-boundary guard', () => {
     const result = await run(h, tool('browser_click', implCalls));
 
     assert.deepEqual(implCalls, [], 'the real impl must not run');
-    assert.deepEqual(
-      h.evaluateCalls,
-      [],
-      'permission must not be evaluated for a rejected gated call',
-    );
     assert.deepEqual(result, { error: formatDeferredNotLoadedText('browser_click') });
 
     const callMsg = h.appended.find((m) => m.type === 'tool_call');
@@ -231,10 +189,6 @@ describe('tool-availability execute-boundary guard', () => {
     assert.ok(
       h.pushed.some((e) => e.type === 'tool_result' && e.isError && e.toolUseId === 'tc1'),
       'an error tool_result event is emitted to the renderer',
-    );
-    assert.ok(
-      !h.pushed.some((e) => e.type === 'permission_request'),
-      'no permission prompt is emitted',
     );
   });
 

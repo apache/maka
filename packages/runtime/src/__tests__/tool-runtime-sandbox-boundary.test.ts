@@ -9,63 +9,20 @@ import {
   type SessionHeader,
 } from '@maka/core';
 
-import { PermissionEngine } from '../permission-engine.js';
 import { buildRequestSandboxBoundaryTool } from '../sandbox-boundary-tool.js';
 import { FilesystemWorkerClientError } from '../filesystem-worker/client.js';
 import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
 
 describe('ToolRuntime session sandbox boundary', () => {
-  test('does not consult the legacy permission engine for ordinary tools', async () => {
-    let executed = false;
-    const runtime = new ToolRuntime({
-      sessionId: 'session-1',
-      header: header(),
-      connection: { providerType: 'openai', slug: 'test' } as never,
-      modelId: 'test',
-      appendMessage: async () => {},
-      permissionEngine: new Proxy(
-        {},
-        {
-          get() {
-            throw new Error('legacy permission engine must not be consulted');
-          },
-        },
-      ),
-      readExecutionBoundary: async () => ({
-        kind: 'managed',
-        profile: createWorkspaceWritePermissionProfile(),
-        revision: 0,
-      }),
-      newId: nextId(),
-      now: () => 1,
-      getPermissionPauseTarget: () => null,
-    });
-    const tool: MakaTool = {
-      name: 'Write',
-      description: 'test',
-      parameters: {},
-      impl: () => {
-        executed = true;
-        return { ok: true };
-      },
-    };
-
-    await settle(runtime, tool, 'tool-legacy-policy');
-
-    assert.equal(executed, true);
-  });
-
   test('reads the authoritative boundary for every tool invocation', async () => {
     const observed: ExecutionBoundary[] = [];
     let revision = 0;
-    const permissionEngine = new PermissionEngine({ newId: nextId(), now: () => 1 });
     const runtime = new ToolRuntime({
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
       appendMessage: async () => {},
-      permissionEngine,
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),
@@ -103,14 +60,12 @@ describe('ToolRuntime session sandbox boundary', () => {
       revision: 0,
     };
     let created: SandboxBoundaryRequest | undefined;
-    const permissionEngine = new PermissionEngine({ newId: nextId(), now: () => 1 });
     const runtime = new ToolRuntime({
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
       appendMessage: async () => {},
-      permissionEngine,
       readExecutionBoundary: async () => managed,
       createSandboxBoundaryRequest: async (input) => {
         created = {
@@ -172,14 +127,12 @@ describe('ToolRuntime session sandbox boundary', () => {
   });
 
   test('returns a structured boundary requirement to the agent', async () => {
-    const permissionEngine = new PermissionEngine({ newId: nextId(), now: () => 1 });
     const runtime = new ToolRuntime({
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'test' } as never,
       modelId: 'test',
       appendMessage: async () => {},
-      permissionEngine,
       readExecutionBoundary: async () => ({
         kind: 'managed',
         profile: createWorkspaceWritePermissionProfile(),

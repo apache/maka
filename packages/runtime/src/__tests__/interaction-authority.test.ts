@@ -1304,7 +1304,6 @@ function toolRuntime(
     connection: { providerType: 'openai', slug: 'c' } as never,
     modelId: 'm',
     appendMessage: async () => {},
-    permissionEngine: engine,
     newId: () => `runtime-${++id}`,
     now: () => 1,
     getPermissionPauseTarget: () => null,

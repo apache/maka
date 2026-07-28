@@ -2729,7 +2729,6 @@ function testTool(name: string): MakaTool {
     name,
     description: `${name} test tool`,
     parameters: {},
-    permissionRequired: false,
     impl: async () => ({ ok: true }),
   };
 }

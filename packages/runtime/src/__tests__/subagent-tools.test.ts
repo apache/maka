@@ -13,7 +13,6 @@ import type {
 import type { SessionEvent } from '@maka/core/events';
 import { zodSchema } from 'ai';
 import { buildBuiltinTools } from '../builtin-tools.js';
-import { PermissionEngine } from '../permission-engine.js';
 import {
   AGENT_CONTEXT_ISOLATED,
   AGENT_INVOCATION_FOREGROUND,
@@ -744,80 +743,6 @@ describe('subagent tools', () => {
     expect(result).toMatchObject({ kind: 'subagent', runId: 'child-run', status: 'completed' });
   });
 
-  test('agent_spawn permission denial leaves a bound task untouched and never starts a child', async () => {
-    const task: Task = {
-      id: 'task-permission-denied',
-      key: 'T1',
-      subject: 'inspect runtime',
-      status: 'pending',
-      createdAt: 1,
-      updatedAt: 1,
-    };
-    const calls: string[] = [];
-    const events: SessionEvent[] = [];
-    const permissionEngine = new PermissionEngine({ newId: nextId(), now: () => 1 });
-    permissionEngine.beginTurn('parent-turn');
-    const header = childHeader('/tmp/cwd');
-    header.permissionMode = 'ask';
-    let spawned = false;
-    const runtime = new ToolRuntime({
-      sessionId: 'session-1',
-      header,
-      connection: testConnection(),
-      modelId: 'mock-model',
-      appendMessage: async () => {},
-      permissionEngine,
-      newId: nextId(),
-      now: () => 1,
-      getPermissionPauseTarget: () => null,
-      getCurrentRunId: () => 'parent-run',
-      spawnChildSession: async () => {
-        spawned = true;
-        return {};
-      },
-    });
-    const tool = buildSubagentSpawnTool({ taskLedger: taskLedgerStub(task, calls) });
-    const pending = runtime
-      .settleToolCall({
-        tool,
-        turnId: 'parent-turn',
-        toolCallId: 'tool-agent-spawn-denied',
-        input: {
-          profile: LOCAL_READ_AGENT_PROFILE,
-          task: 'Inspect the runtime tests.',
-          task_id: task.key,
-        },
-        abortSignal: new AbortController().signal,
-        eventSink: {
-          push: (event) => events.push(event),
-          pushAndWaitUntilConsumed: async (event) => {
-            events.push(event);
-          },
-        },
-      })
-      .then((settlement) => settlement.result);
-    await waitFor(() => events.some((event) => event.type === 'permission_request'));
-    const request = events.find(
-      (event): event is Extract<SessionEvent, { type: 'permission_request' }> =>
-        event.type === 'permission_request',
-    );
-    expect(request).toBeDefined();
-    expect(calls).toEqual([]);
-    expect(spawned).toBe(false);
-
-    permissionEngine.recordResponse('parent-turn', {
-      requestId: request?.requestId ?? 'missing',
-      decision: 'deny',
-    });
-    const result = await pending;
-
-    expect(result).toMatchObject({ error: '用户已拒绝权限请求' });
-    expect(calls).toEqual([]);
-    expect(spawned).toBe(false);
-    expect(task.status).toBe('pending');
-    expect(task.owner).toBeUndefined();
-  });
-
   test('agent_spawn rejects a forged task reference before starting a child', async () => {
     let spawned = false;
     const ledger = taskLedgerStub(undefined, []);
@@ -1254,15 +1179,12 @@ describe('subagent tools', () => {
 });
 
 function makeChildToolRuntime(cwd: string): ToolRuntime {
-  const permissionEngine = new PermissionEngine({ newId: nextId(), now: () => 1 });
-  permissionEngine.beginTurn('child-turn');
   return new ToolRuntime({
     sessionId: 'session-1',
     header: childHeader(cwd),
     connection: testConnection(),
     modelId: 'mock-model',
     appendMessage: async () => {},
-    permissionEngine,
     newId: nextId(),
     now: () => 1,
     getPermissionPauseTarget: () => null,

@@ -13,7 +13,6 @@ import {
   LOOP_GATE_IDENTICAL_THRESHOLD,
   type MakaTool,
 } from '../tool-runtime.js';
-import { PermissionEngine } from '../permission-engine.js';
 
 type ShellRunToolResult = Extract<ToolResultContent, { kind: 'shell_run' }>;
 type ObservedShellRunStatus = Extract<
@@ -69,7 +68,6 @@ function makeHarness(): Harness {
   const pushed: SessionEvent[] = [];
   const impl: string[] = [];
   const invocations: Array<Pick<ToolInvocationRecord, 'toolName' | 'status'>> = [];
-  const engine = new PermissionEngine({ newId: () => 'perm', now: () => 1 });
   let n = 0;
   const runtime = new ToolRuntime({
     sessionId: 'session-1',
@@ -79,7 +77,6 @@ function makeHarness(): Harness {
     appendMessage: async (m) => {
       appended.push(m);
     },
-    permissionEngine: engine,
     newId: () => `id-${++n}`,
     now: () => 1,
     getPermissionPauseTarget: () => null,

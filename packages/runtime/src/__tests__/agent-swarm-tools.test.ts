@@ -24,7 +24,6 @@ import {
 } from '../agent-catalog.js';
 import { buildChildAgentTools, AGENT_TOOL_NAMES } from '../subagent-tools.js';
 import type { SpawnChildAgentResult } from '../session-manager.js';
-import { PermissionEngine } from '../permission-engine.js';
 import type { RunTraceLike } from '../run-trace.js';
 import {
   MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN,
@@ -1240,44 +1239,6 @@ describe('AgentSwarm adapter', () => {
     );
   });
 
-  test('one denied parent permission starts zero children', async () => {
-    const events: SessionEvent[] = [];
-    let starts = 0;
-    const permissionEngine = new PermissionEngine({
-      newId: nextId(),
-      now: () => 1,
-    });
-    const runtime = buildRuntime(
-      async () => {
-        starts += 1;
-        return childResult(0);
-      },
-      { permissionEngine, permissionMode: 'ask' },
-    );
-    const pending = executeTool(
-      runtime,
-      buildAgentSwarmTool(),
-      { items: [swarmItem(0), swarmItem(1)] },
-      new AbortController(),
-      events,
-      'tool-denied',
-    );
-
-    await waitFor(() => events.some((event) => event.type === 'permission_request'));
-    const requests = events.filter(
-      (event): event is Extract<SessionEvent, { type: 'permission_request' }> =>
-        event.type === 'permission_request',
-    );
-    assert.equal(requests.length, 1);
-    permissionEngine.recordResponse('turn-1', {
-      requestId: requests[0]!.requestId,
-      decision: 'deny',
-    });
-
-    assert.deepEqual(await pending, { error: '用户已拒绝权限请求' });
-    assert.equal(starts, 0);
-  });
-
   test('child tool construction excludes agent_swarm', () => {
     const tools = buildChildAgentTools([
       ...['Read', 'Glob', 'Grep', 'WebSearch'].map((name) => ({
@@ -1487,26 +1448,16 @@ function singleChildProbeTool(): MakaTool {
 function buildRuntime(
   spawnChildSession: NonNullable<ConstructorParameters<typeof ToolRuntime>[0]['spawnChildSession']>,
   options: {
-    permissionEngine?: PermissionEngine;
-    permissionMode?: SessionHeader['permissionMode'];
     traceEvents?: TestTraceEvent[];
     recordToolInvocation?: ConstructorParameters<typeof ToolRuntime>[0]['recordToolInvocation'];
   } = {},
 ): ToolRuntime {
-  const permissionEngine =
-    options.permissionEngine ??
-    new PermissionEngine({
-      newId: nextId(),
-      now: () => 1,
-    });
-  permissionEngine.beginTurn('turn-1');
   return new ToolRuntime({
     sessionId: 'session-1',
-    header: testHeader(options.permissionMode),
+    header: testHeader(),
     connection: testConnection(),
     modelId: 'mock-model',
     appendMessage: async () => {},
-    permissionEngine,
     newId: nextId(),
     now: () => 1,
     getPermissionPauseTarget: () => null,

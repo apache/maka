@@ -4,7 +4,6 @@ import type { SessionEvent } from '@maka/core/events';
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
 
 import { buildAskUserQuestionTool } from '../ask-user-question-tool.js';
-import { PermissionEngine } from '../permission-engine.js';
 import { ToolRuntime } from '../tool-runtime.js';
 
 function header(): SessionHeader {
@@ -44,7 +43,6 @@ describe('AskUserQuestion runtime round trip', () => {
       appendMessage: async (message) => {
         appended.push(message);
       },
-      permissionEngine: new PermissionEngine({ newId: () => `permission-${++id}`, now: () => 1 }),
       newId: () => `id-${++id}`,
       now: () => 1,
       getPermissionPauseTarget: () => null,
@@ -122,7 +120,6 @@ describe('AskUserQuestion runtime round trip', () => {
       connection: { providerType: 'openai', slug: 'c' } as never,
       modelId: 'm',
       appendMessage: async () => {},
-      permissionEngine: new PermissionEngine({ newId: () => `permission-${++id}`, now: () => 1 }),
       newId: () => `id-${++id}`,
       now: () => 1,
       getPermissionPauseTarget: () => null,
