@@ -294,7 +294,9 @@ export interface MakaBridge {
     add(): Promise<
       { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }
     >;
-    select(projectId: string): Promise<{ project: ProjectRecord; path: string }>;
+    select(
+      projectId: string | null,
+    ): Promise<{ project: ProjectRecord | null; path: string }>;
     relink(
       projectId: string,
     ): Promise<{ ok: true; project: ProjectRecord } | { ok: false; reason: 'cancelled' }>;
@@ -649,6 +651,7 @@ export interface MakaBridge {
       arch: string;
       osRelease: string;
       workspacePath: string;
+      projectId?: string | null;
       projectPath: string;
       projectGit: { isGitRepo: boolean; branch?: string };
       buildMode: 'dev' | 'packaged';

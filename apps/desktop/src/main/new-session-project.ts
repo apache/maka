@@ -1,6 +1,41 @@
 import type { CreateSessionInput } from '@maka/core';
 import { isProjectPathMismatchError, type ProjectCatalog } from '@maka/storage';
 
+export type DesktopCreateSessionInput = Omit<CreateSessionInput, 'cwd'> & {
+  cwd?: string;
+};
+
+export async function resolveDesktopSessionSelection(
+  input: DesktopCreateSessionInput,
+  selection: {
+    current(): Promise<{
+      projectId: string | null | undefined;
+      path: string;
+    }>;
+    select(
+      projectId: unknown,
+    ): Promise<{ project: { id: string } | null; path: string }>;
+  },
+): Promise<CreateSessionInput> {
+  if (input.cwd) return { ...input, cwd: input.cwd };
+
+  if (input.projectId !== undefined) {
+    const selected = await selection.select(input.projectId);
+    return {
+      ...input,
+      cwd: selected.path,
+      projectId: selected.project?.id ?? null,
+    };
+  }
+
+  const selected = await selection.current();
+  return {
+    ...input,
+    cwd: selected.path,
+    projectId: selected.projectId,
+  };
+}
+
 export async function resolveNewSessionProjectInput(
   input: CreateSessionInput,
   catalog: Pick<ProjectCatalog, 'list' | 'register' | 'touch'>,

@@ -115,22 +115,21 @@ test('preparing a default task preserves an explicit no-project selection', asyn
   }
 });
 
-test('selecting no project clears the persisted project default', async () => {
+test('selecting no project updates the main-owned selection', async () => {
   const actionsModule = await importProjectActions();
-  const previousLocalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
-  const storage = new Map([
-    [
-      'maka-composer-defaults-v1',
-      JSON.stringify({ projectPath: '/workspace/old-project', model: null }),
-    ],
-  ]);
-  Object.defineProperty(globalThis, 'localStorage', {
-    configurable: true,
-    value: {
-      getItem: (key: string) => storage.get(key) ?? null,
-      setItem: (key: string, value: string) => storage.set(key, value),
+  const previousWindow = globalThis.window;
+  const selectedProjectIds: Array<string | null> = [];
+  const renderedSelections: Array<string | null | undefined> = [];
+  globalThis.window = {
+    maka: {
+      projects: {
+        select: async (projectId: string | null) => {
+          selectedProjectIds.push(projectId);
+          return { project: null, path: '/workspace/current' };
+        },
+      },
     },
-  });
+  } as unknown as Window & typeof globalThis;
 
   try {
     const actions = actionsModule.createAppShellProjectActions({
@@ -144,7 +143,11 @@ test('selecting no project clears the persisted project default', async () => {
       setBranchPending: () => {},
       setBranchList: () => {},
       setProjects: () => {},
-      setSelectedProjectId: () => {},
+      setSelectedProjectId: (value) => {
+        renderedSelections.push(
+          typeof value === 'function' ? value('project-1') : value,
+        );
+      },
       selectedProjectId: 'project-1',
       projects: [],
       projectInfo: null,
@@ -155,18 +158,12 @@ test('selecting no project clears the persisted project default', async () => {
       },
     });
 
-    actions.selectNoProject();
+    await actions.selectNoProject();
 
-    assert.equal(
-      JSON.parse(storage.get('maka-composer-defaults-v1') ?? '{}').projectPath,
-      null,
-    );
+    assert.deepEqual(selectedProjectIds, [null]);
+    assert.equal(renderedSelections.at(-1), null);
   } finally {
-    if (previousLocalStorage) {
-      Object.defineProperty(globalThis, 'localStorage', previousLocalStorage);
-    } else {
-      delete (globalThis as { localStorage?: Storage }).localStorage;
-    }
+    globalThis.window = previousWindow;
   }
 });
 

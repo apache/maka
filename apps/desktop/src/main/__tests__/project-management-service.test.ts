@@ -27,8 +27,13 @@ test('project management service owns selection and reversible lifecycle actions
       },
     },
     chooseDirectory: async () => nextDirectory,
-    getSelectedPath: async () => selectedPaths.at(-1) ?? (await realpath(firstPath)),
-    setSelectedPath: (path) => selectedPaths.push(path),
+    selection: {
+      currentSelection: async () => ({
+        projectId: 'project-1',
+        path: selectedPaths.at(-1) ?? (await realpath(firstPath)),
+      }),
+      setSelection: (_projectId, path) => selectedPaths.push(path),
+    },
   });
 
   try {
@@ -59,6 +64,7 @@ test('project management service owns selection and reversible lifecycle actions
     assert.equal(selectedPaths.at(-1), await realpath(relocatedPath));
 
     const selected = await service.select('project-1');
+    assert.ok(selected.project);
     assert.equal(selected.project.id, 'project-1');
     assert.equal(selectedPaths.at(-1), await realpath(relocatedPath));
 
@@ -81,13 +87,101 @@ test('project management service rejects malformed IPC identities before catalog
       },
     },
     chooseDirectory: async () => undefined,
-    getSelectedPath: async () => base,
-    setSelectedPath: () => {},
+    selection: {
+      currentSelection: async () => ({ projectId: undefined, path: base }),
+      setSelection: () => {},
+    },
   });
 
   try {
     await assert.rejects(() => service.select(''), /Invalid project id/);
     assert.throws(() => service.rename('project-1', ''), /Invalid project name/);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('project management service resolves a legacy path into one canonical selection', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-service-selection-'));
+  const projectPath = join(base, 'project');
+  await mkdir(projectPath);
+  const catalog = createProjectCatalog(join(base, 'storage'), {
+    createId: () => 'project-1',
+  });
+  await catalog.register(projectPath);
+  const savedSelections: Array<{ projectId: string | null; projectPath: string }> = [];
+  const service = createProjectManagementService({
+    catalog,
+    sessions: {
+      listHeaders: async () => [],
+      updateHeader: async () => {
+        throw new Error('No sessions expected');
+      },
+    },
+    chooseDirectory: async () => undefined,
+    selection: {
+      currentSelection: async () => ({
+        projectId: undefined,
+        path: await realpath(projectPath),
+      }),
+      setSelection: (projectId, path) => {
+        savedSelections.push({ projectId, projectPath: path });
+      },
+    },
+  });
+
+  try {
+    assert.deepEqual(await service.current(), {
+      projectId: 'project-1',
+      path: await realpath(projectPath),
+    });
+    assert.deepEqual(savedSelections, [
+      {
+        projectId: 'project-1',
+        projectPath: await realpath(projectPath),
+      },
+    ]);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('project management service persists an explicit no-project selection in main', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-service-no-project-'));
+  const projectPath = join(base, 'project');
+  await mkdir(projectPath);
+  const savedSelections: Array<{ projectId: string | null; projectPath: string }> = [];
+  const service = createProjectManagementService({
+    catalog: createProjectCatalog(join(base, 'storage')),
+    sessions: {
+      listHeaders: async () => [],
+      updateHeader: async () => {
+        throw new Error('No sessions expected');
+      },
+    },
+    chooseDirectory: async () => undefined,
+    selection: {
+      currentSelection: async () => ({
+        projectId: undefined,
+        path: await realpath(projectPath),
+      }),
+      setSelection: (projectId, path) => {
+        savedSelections.push({ projectId, projectPath: path });
+      },
+    },
+  });
+
+  try {
+    assert.deepEqual(await service.select(null), {
+      project: null,
+      path: await realpath(projectPath),
+    });
+    assert.deepEqual(savedSelections, [
+      {
+        projectId: null,
+        projectPath: await realpath(projectPath),
+      },
+    ]);
   } finally {
     await rm(base, { recursive: true, force: true });
   }
@@ -122,8 +216,13 @@ test('relinking merges a project that was accidentally added from its new path',
       },
     },
     chooseDirectory: async () => nextDirectory,
-    getSelectedPath: async () => (nextDirectory ? await realpath(nextDirectory) : base),
-    setSelectedPath: () => {},
+    selection: {
+      currentSelection: async () => ({
+        projectId: undefined,
+        path: nextDirectory ? await realpath(nextDirectory) : base,
+      }),
+      setSelection: () => {},
+    },
   });
 
   try {

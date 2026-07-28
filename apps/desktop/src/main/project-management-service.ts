@@ -1,4 +1,5 @@
 import type { ProjectCatalog, ProjectRecord, SessionStore } from '@maka/storage';
+import type { CurrentProjectSelection } from './project-root-controller.js';
 
 type DirectoryActionResult =
   | { ok: true; project: ProjectRecord }
@@ -8,9 +9,12 @@ type SelectedDirectoryActionResult =
   | { ok: false; reason: 'cancelled' };
 
 export interface ProjectManagementService {
+  current(): Promise<CurrentProjectSelection>;
   list(): Promise<ProjectRecord[]>;
   add(): Promise<SelectedDirectoryActionResult>;
-  select(projectId: unknown): Promise<{ project: ProjectRecord; path: string }>;
+  select(
+    projectId: unknown,
+  ): Promise<{ project: ProjectRecord | null; path: string }>;
   relink(projectId: unknown): Promise<DirectoryActionResult>;
   rename(projectId: unknown, name: unknown): Promise<ProjectRecord>;
   archive(projectId: unknown): Promise<ProjectRecord>;
@@ -21,10 +25,39 @@ export function createProjectManagementService(deps: {
   catalog: ProjectCatalog;
   sessions: Pick<SessionStore, 'listHeaders' | 'updateHeader'>;
   chooseDirectory(): Promise<string | undefined>;
-  getSelectedPath(): Promise<string>;
-  setSelectedPath(path: string): void;
+  selection: {
+    currentSelection(): Promise<CurrentProjectSelection>;
+    setSelection(projectId: string | null, projectPath: string): void;
+  };
 }): ProjectManagementService {
+  async function current(): Promise<CurrentProjectSelection> {
+    const selection = await deps.selection.currentSelection();
+    if (selection.projectId === null) {
+      return selection;
+    }
+    const projects = await deps.catalog.list();
+    const selectedProjectId = selection.projectId;
+    const selected =
+      (typeof selectedProjectId === 'string'
+        ? projects.find(
+            (project) =>
+              project.id === selectedProjectId ||
+              project.aliases?.includes(selectedProjectId),
+          )
+        : projects.find((project) =>
+            project.locations.some((location) => location.path === selection.path),
+          )) ??
+      projects.find((project) => project.archivedAt === undefined && project.available);
+    const path = selected?.preferredPath;
+    if (!selected || selected.archivedAt !== undefined || !selected.available || !path) {
+      return { projectId: undefined, path: selection.path };
+    }
+    deps.selection.setSelection(selected.id, path);
+    return { projectId: selected.id, path };
+  }
+
   return {
+    current,
     list: () => deps.catalog.list(),
 
     async add() {
@@ -32,13 +65,18 @@ export function createProjectManagementService(deps: {
       if (!path) return { ok: false, reason: 'cancelled' };
       const project = await deps.catalog.register(path);
       const selected = await deps.catalog.select(project.id);
-      deps.setSelectedPath(selected.path);
+      deps.selection.setSelection(selected.project.id, selected.path);
       return { ok: true, project: selected.project, path: selected.path };
     },
 
     async select(projectId) {
+      if (projectId === null) {
+        const selection = await deps.selection.currentSelection();
+        deps.selection.setSelection(null, selection.path);
+        return { project: null, path: selection.path };
+      }
       const selected = await deps.catalog.select(requireProjectId(projectId));
-      deps.setSelectedPath(selected.path);
+      deps.selection.setSelection(selected.project.id, selected.path);
       return selected;
     },
 
@@ -55,7 +93,7 @@ export function createProjectManagementService(deps: {
         conflictingProjectId?: string;
         conflictingProjectAliases?: string[];
       }) => {
-        const selectedPath = await deps.getSelectedPath();
+        const selectedPath = (await deps.selection.currentSelection()).path;
         selectedProjectWasRelinked = context.previousLocations.some(
           (location) => location.path === selectedPath,
         );
@@ -79,7 +117,7 @@ export function createProjectManagementService(deps: {
       };
       const project = await deps.catalog.relink(id, path, prepareSessions);
       if (selectedProjectWasRelinked && project.preferredPath) {
-        deps.setSelectedPath(project.preferredPath);
+        deps.selection.setSelection(project.id, project.preferredPath);
       }
       return { ok: true, project };
     },

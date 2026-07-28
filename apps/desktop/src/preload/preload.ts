@@ -309,7 +309,9 @@ const makaBridge = {
     > {
       return ipcRenderer.invoke('projects:add');
     },
-    select(projectId: string): Promise<{ project: ProjectRecord; path: string }> {
+    select(
+      projectId: string | null,
+    ): Promise<{ project: ProjectRecord | null; path: string }> {
       return ipcRenderer.invoke('projects:select', projectId);
     },
     relink(projectId: string): Promise<
@@ -998,6 +1000,7 @@ const makaBridge = {
       arch: string;
       osRelease: string;
       workspacePath: string;
+      projectId?: string | null;
       projectPath: string;
       projectGit: { isGitRepo: boolean; branch?: string };
       buildMode: 'dev' | 'packaged';

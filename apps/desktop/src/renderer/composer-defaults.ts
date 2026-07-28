@@ -11,12 +11,10 @@ import { safeLocalStorageGet, safeLocalStorageSet } from './browser-storage';
 const STORAGE_KEY = 'maka-composer-defaults-v1';
 
 export interface ComposerDefaults {
-  projectPath: string | null;
   model: { llmConnectionSlug: string; model: string } | null;
 }
 
 const EMPTY: ComposerDefaults = {
-  projectPath: null,
   model: null,
 };
 
@@ -34,7 +32,6 @@ function parse(raw: string | null): ComposerDefaults | null {
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     return {
-      projectPath: isString(parsed.projectPath) ? parsed.projectPath : null,
       model: isModel(parsed.model) ? parsed.model : null,
     };
   } catch {
@@ -56,7 +53,6 @@ export function loadComposerDefaults(): ComposerDefaults | null {
 export function saveComposerDefaults(patch: Partial<ComposerDefaults>): void {
   const current = loadComposerDefaults() ?? EMPTY;
   const next: ComposerDefaults = {
-    projectPath: patch.projectPath !== undefined ? patch.projectPath : current.projectPath,
     model: patch.model !== undefined ? patch.model : current.model,
   };
   safeLocalStorageSet(STORAGE_KEY, JSON.stringify(next));

@@ -1141,7 +1141,6 @@ function AppShellContent({
     checkoutGitBranch,
   } = useAppShellProjectContext({
     uiLocale,
-    persistedComposerDefaults,
     rendererMountedRef,
     sessionId: activeId,
     sessionCwd: activeSession?.cwd,

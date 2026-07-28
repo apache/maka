@@ -3,10 +3,10 @@ import type { ProjectRecord, UiLocale } from '@maka/core';
 import { openPathActionErrorMessage } from './app-shell-copy';
 import { openPathActionLabel, openPathFailureCopy } from './open-path';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
-import { saveComposerDefaults } from './composer-defaults';
 import { isSessionWorkspaceUnavailableError, showSessionWorkspaceUnavailableToast } from './session-workspace-errors';
 
 export interface RendererAppInfo {
+  projectId?: string | null;
   projectPath: string;
   projectGit: { isGitRepo: boolean; branch?: string };
 }
@@ -33,7 +33,7 @@ export interface AppShellProjectActions {
   refreshProjects(): Promise<ProjectRecord[]>;
   addProject(): Promise<ProjectRecord | null>;
   selectProject(projectId: string): Promise<boolean>;
-  selectNoProject(): void;
+  selectNoProject(): Promise<void>;
   prepareDefaultProject(): Promise<boolean>;
   prepareProject(projectId: string): Promise<boolean>;
   relinkProject(projectId: string, selectAfter?: boolean): Promise<ProjectRecord | null>;
@@ -91,9 +91,11 @@ export function createAppShellProjectActions(deps: {
     try {
       const next = await window.maka.app.info();
       setAppInfo({
+        projectId: next.projectId,
         projectPath: next.projectPath,
         projectGit: next.projectGit,
       });
+      setSelectedProjectId(next.projectId);
     } catch (error) {
       toastApi.error(
         copy.readPathFailedTitle,
@@ -103,9 +105,18 @@ export function createAppShellProjectActions(deps: {
   }
 
   async function refreshProjects(): Promise<ProjectRecord[]> {
-    const next = await window.maka.projects.list();
-    setProjects(next);
-    return next;
+    const [projects, info] = await Promise.all([
+      window.maka.projects.list(),
+      window.maka.app.info(),
+    ]);
+    setProjects(projects);
+    setAppInfo({
+      projectId: info.projectId,
+      projectPath: info.projectPath,
+      projectGit: info.projectGit,
+    });
+    setSelectedProjectId(info.projectId);
+    return projects;
   }
 
   async function applySelectedProject(
@@ -115,10 +126,13 @@ export function createAppShellProjectActions(deps: {
   ): Promise<boolean> {
     const info = await window.maka.app.resolveProjectGitInfo(path);
     if (!info.ok) throw new Error(copy.selectedPathUnreadable);
-    setAppInfo({ projectPath: info.projectPath, projectGit: info.projectGit });
+    setAppInfo({
+      projectId: project.id,
+      projectPath: info.projectPath,
+      projectGit: info.projectGit,
+    });
     setSelectedProjectId(project.id);
     setBranchList(null);
-    saveComposerDefaults({ projectPath: info.projectPath });
     await refreshProjects();
     if (notify) {
       onProjectSelected(sessionId);
@@ -130,6 +144,7 @@ export function createAppShellProjectActions(deps: {
   async function selectProjectRecord(project: ProjectRecord, notify: boolean): Promise<boolean> {
     if (!project.available || project.archivedAt !== undefined) return false;
     const selected = await window.maka.projects.select(project.id);
+    if (!selected.project) return false;
     return applySelectedProject(selected.project, selected.path, notify);
   }
 
@@ -174,11 +189,23 @@ export function createAppShellProjectActions(deps: {
     }
   }
 
-  function selectNoProject(): void {
-    setSelectedProjectId(null);
-    setBranchList(null);
-    saveComposerDefaults({ projectPath: null });
-    onProjectSelected(sessionId);
+  async function selectNoProject(): Promise<void> {
+    try {
+      const selection = await window.maka.projects.select(null);
+      setSelectedProjectId(null);
+      setAppInfo((current) =>
+        current
+          ? { ...current, projectId: null, projectPath: selection.path }
+          : current,
+      );
+      setBranchList(null);
+      onProjectSelected(sessionId);
+    } catch (error) {
+      toastApi.error(
+        copy.selectDirectoryFailedTitle,
+        localizedShellErrorMessage(error, copy.readPathFailedFallback, uiLocale),
+      );
+    }
   }
 
   async function prepareProject(projectId: string): Promise<boolean> {
@@ -199,7 +226,7 @@ export function createAppShellProjectActions(deps: {
         (candidate) => candidate.archivedAt === undefined && candidate.available,
       );
       if (!project) {
-        setSelectedProjectId(null);
+        await selectNoProject();
         return true;
       }
       return await selectProjectRecord(project, false);
@@ -257,7 +284,7 @@ export function createAppShellProjectActions(deps: {
           (project) => project.archivedAt === undefined && project.available,
         );
         if (fallback) await selectProjectRecord(fallback, false);
-        else setSelectedProjectId(null);
+        else await selectNoProject();
       }
     } catch (error) {
       toastApi.error(

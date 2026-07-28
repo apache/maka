@@ -11,7 +11,6 @@ import {
 import type {
   BotProvider,
   ConnectionEvent,
-  CreateSessionInput,
   SessionChangedEvent,
   SessionChangedReason,
   SessionEvent,
@@ -145,7 +144,11 @@ import {
 } from './session-lifecycle.js';
 import { createProjectRootController } from './project-root-controller.js';
 import { createProjectManagementService } from './project-management-service.js';
-import { resolveNewSessionProjectInput } from './new-session-project.js';
+import {
+  type DesktopCreateSessionInput,
+  resolveDesktopSessionSelection,
+  resolveNewSessionProjectInput,
+} from './new-session-project.js';
 import {
   assertSessionWorkspaceAvailable,
   isSessionWorkspaceUnavailableError,
@@ -424,9 +427,7 @@ const automationWiring = createMainAutomationWiring({
   async createFreshRun(prompt: string, automationId: string) {
     const slug = await connectionStore.getDefault();
     const { connection, model } = await getReadyConnection(slug, undefined);
-    const cwd = await resolveCurrentProjectRoot();
     const session = await createDesktopSession({
-      cwd,
       backend: 'ai-sdk',
       llmConnectionSlug: connection.slug,
       model,
@@ -724,8 +725,7 @@ const projectManagement = createProjectManagementService({
     });
     return result.canceled ? undefined : result.filePaths[0];
   },
-  getSelectedPath: () => projectRootController.current(),
-  setSelectedPath: (path) => projectRootController.setSelected(path),
+  selection: projectRootController,
 });
 const resolveCurrentProjectRoot: () => Promise<string> = () => projectRootController.current();
 const resolveProjectRootForContext = (sessionId: unknown): Promise<string> =>
@@ -915,7 +915,6 @@ botIncoming = createBotIncomingMainService({
   runtime,
   createSession: createDesktopSession,
   botRegistry,
-  getCurrentProjectRoot: () => resolveCurrentProjectRoot(),
   getDefaultConnectionSlug: () => connectionStore.getDefault(),
   getReadyConnection,
   readSessionHeader: async (sessionId) => {
@@ -1015,7 +1014,6 @@ function registerIpc(): void {
     createSession: createDesktopSession,
     getReadyConnection,
     streamEvents,
-    getCurrentProjectRoot: currentProjectRoot,
     getWorkspacePrivacyContext,
     canCreateFakeSession: canCreateFakeSessionFromRenderer,
   });
@@ -1050,7 +1048,6 @@ function registerIpc(): void {
   registerSessionEntryIpc({
     runtime,
     getReadyConnection,
-    getCurrentProjectRoot: currentProjectRoot,
     getOnboardingState: async () => (await onboardingService.getSnapshot()).state,
     emitSessionsChanged,
     ensureSessionCanSend,
@@ -1188,9 +1185,10 @@ async function ensureSessionWorkspaceAvailable(sessionId: string): Promise<void>
   await readAvailableSessionHeader(sessionId);
 }
 
-async function createDesktopSession(input: CreateSessionInput) {
-  await assertSessionWorkspaceAvailable(input.cwd);
-  return runtime.createSession(await resolveNewSessionProjectInput(input, projectCatalog));
+async function createDesktopSession(input: DesktopCreateSessionInput) {
+  const selected = await resolveDesktopSessionSelection(input, projectManagement);
+  await assertSessionWorkspaceAvailable(selected.cwd);
+  return runtime.createSession(await resolveNewSessionProjectInput(selected, projectCatalog));
 }
 
 const readyConnectionDeps = {

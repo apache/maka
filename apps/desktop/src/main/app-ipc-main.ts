@@ -64,7 +64,8 @@ export function registerAppIpc(deps: AppIpcDeps): void {
     mainWindowController.setTitleBarOverlayTheme(event.sender, theme);
   });
   ipcMain.handle('app:info', async () => {
-    const projectPath = await currentProjectRoot();
+    const selection = await deps.projectManagement.current();
+    const projectPath = selection.path;
     return {
       appVersion: app.getVersion(),
       electronVersion: process.versions.electron ?? '',
@@ -77,6 +78,7 @@ export function registerAppIpc(deps: AppIpcDeps): void {
       arch: osArch(),
       osRelease: osRelease(),
       workspacePath: workspaceRoot,
+      projectId: selection.projectId,
       projectPath,
       projectGit: await resolveProjectGitInfo(projectPath),
       buildMode: buildInfo.mode,

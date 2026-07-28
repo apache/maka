@@ -5,7 +5,58 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import type { CreateSessionInput } from '@maka/core';
 import { createProjectCatalog } from '@maka/storage';
-import { resolveNewSessionProjectInput } from '../new-session-project.js';
+import {
+  resolveDesktopSessionSelection,
+  resolveNewSessionProjectInput,
+} from '../new-session-project.js';
+
+test('default sessions inherit the main-owned project selection', async () => {
+  const resolved = await resolveDesktopSessionSelection(
+    {
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+      name: 'Session',
+      labels: [],
+    },
+    {
+      current: async () => ({ projectId: null, path: '/current/root' }),
+      select: async () => {
+        throw new Error('select must not be called');
+      },
+    },
+  );
+
+  assert.equal(resolved.cwd, '/current/root');
+  assert.equal(resolved.projectId, null);
+});
+
+test('an explicit project id resolves its matching path before session creation', async () => {
+  const resolved = await resolveDesktopSessionSelection(
+    {
+      projectId: 'project-2',
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+      name: 'Session',
+      labels: [],
+    },
+    {
+      current: async () => {
+        throw new Error('current must not be called');
+      },
+      select: async (projectId) => ({
+        project: { id: projectId as string },
+        path: '/project-2/root',
+      }),
+    },
+  );
+
+  assert.equal(resolved.cwd, '/project-2/root');
+  assert.equal(resolved.projectId, 'project-2');
+});
 
 test('new sessions auto-register a project while explicit no-project sessions stay unassigned', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-new-session-project-'));

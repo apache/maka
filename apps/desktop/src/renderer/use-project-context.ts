@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ProjectRecord, UiLocale } from '@maka/core';
-import type { ComposerDefaults } from './composer-defaults';
 import {
   createAppShellProjectActions,
   type AppShellProjectActions,
@@ -31,7 +30,6 @@ type ToastApi = {
  */
 export function useAppShellProjectContext(options: {
   uiLocale: UiLocale;
-  persistedComposerDefaults: ComposerDefaults | null;
   rendererMountedRef: RefBox<boolean>;
   sessionId?: string;
   sessionCwd?: string;
@@ -52,7 +50,6 @@ export function useAppShellProjectContext(options: {
 } {
   const {
     uiLocale,
-    persistedComposerDefaults,
     rendererMountedRef,
     sessionId,
     sessionCwd,
@@ -60,14 +57,7 @@ export function useAppShellProjectContext(options: {
     onProjectSelected,
     toastApi,
   } = options;
-  const [appInfo, setAppInfo] = useState<RendererAppInfo | null>(
-    persistedComposerDefaults?.projectPath
-      ? {
-          projectPath: persistedComposerDefaults.projectPath,
-          projectGit: { isGitRepo: false },
-        }
-      : null,
-  );
+  const [appInfo, setAppInfo] = useState<RendererAppInfo | null>(null);
   const [sessionProjectInfo, setSessionProjectInfo] = useState<SessionProjectInfoState | null>(null);
   const [branchListState, setBranchList] = useState<ProjectBranchListState | null>(null);
   const [branchPending, setBranchPending] = useState(false);
@@ -79,26 +69,16 @@ export function useAppShellProjectContext(options: {
 
   useEffect(() => {
     let cancelled = false;
-    void window.maka.projects.list().then(
-      (next) => {
+    void Promise.all([window.maka.projects.list(), window.maka.app.info()]).then(
+      ([next, info]) => {
         if (cancelled) return;
         setProjects(next);
-        setSelectedProjectId((current) => {
-          if (current !== undefined) return current;
-          if (persistedComposerDefaults?.projectPath === null) return null;
-          const persistedPath = persistedComposerDefaults?.projectPath;
-          return (
-            next.find((project) =>
-              persistedPath
-                ? project.archivedAt === undefined &&
-                  project.available &&
-                  project.locations.some((location) => location.path === persistedPath)
-                : false,
-            )?.id ??
-            next.find((project) => project.archivedAt === undefined && project.available)?.id ??
-            null
-          );
+        setAppInfo({
+          projectId: info.projectId,
+          projectPath: info.projectPath,
+          projectGit: info.projectGit,
         });
+        setSelectedProjectId(info.projectId);
       },
       () => {
         // Project management failures surface at the next user action.
@@ -107,7 +87,7 @@ export function useAppShellProjectContext(options: {
     return () => {
       cancelled = true;
     };
-  }, [persistedComposerDefaults?.projectPath]);
+  }, []);
 
   useEffect(() => {
     if (!sessionId) return;

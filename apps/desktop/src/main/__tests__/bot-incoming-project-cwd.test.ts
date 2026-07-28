@@ -4,7 +4,7 @@ import type { BotIncomingMessage, BotRegistry, SessionManager } from '@maka/runt
 import { createBotIncomingMainService } from '../bot-incoming-main.js';
 
 describe('bot incoming new-session cwd', () => {
-  it('creates the bot session with the current project root, not process.cwd()', async () => {
+  it('leaves the cwd to the shared desktop session resolver', async () => {
     let capturedCwd: unknown = undefined;
     let resolveCreated: () => void = () => {};
     const created = new Promise<void>((resolve) => {
@@ -28,7 +28,6 @@ describe('bot incoming new-session cwd', () => {
           return true;
         },
       } as unknown as BotRegistry,
-      getCurrentProjectRoot: async () => '/custom/project/root',
       getDefaultConnectionSlug: async () => 'slug',
       getReadyConnection: async () => ({ connection: { slug: 'slug' }, model: 'm' }),
       readSessionHeader: async () => ({ permissionMode: 'ask', isArchived: false, status: 'active' }),
@@ -57,6 +56,6 @@ describe('bot incoming new-session cwd', () => {
       new Promise<void>((_, reject) => setTimeout(() => reject(new Error('createSession was not called')), 1000)),
     ]);
 
-    assert.equal(capturedCwd, '/custom/project/root');
+    assert.equal(capturedCwd, undefined);
   });
 });

@@ -93,7 +93,10 @@ describe('project context workspace picker', () => {
     const workspacePickerBlock = renderer.match(/workspacePicker=\{\{[\s\S]*?\n\s*\}\}/)?.[0] ?? '';
 
     assert.match(controller, /let selectedProjectRoot: string \| null = null;/);
-    assert.match(controller, /if \(selectedProjectRoot\) return selectedProjectRoot;/);
+    assert.match(
+      controller,
+      /return \{ projectId: selectedProjectId, projectPath: selectedProjectRoot \};/,
+    );
     assert.match(appIpc, /ipcMain\.handle\('projects:list'/);
     assert.match(appIpc, /ipcMain\.handle\('projects:add'/);
     assert.match(appIpc, /ipcMain\.handle\('projects:select'/);
@@ -103,8 +106,8 @@ describe('project context workspace picker', () => {
     assert.match(appIpc, /ipcMain\.handle\('projects:restore'/);
     assert.match(
       controller,
-      /function setSelected\(projectPath: string\): void \{\s*selectedProjectRoot = projectPath;\s*void saveLastProjectPath\(projectPath\);/,
-      'the controller must both select and persist an adopted project root',
+      /function setSelection\(projectId: string \| null, projectPath: string\): void \{[\s\S]*selectedProjectRoot = projectPath;[\s\S]*selectedProjectId = projectId;[\s\S]*void saveLastProjectPath\(projectPath, projectId\);/,
+      'the controller must persist the project association and path together',
     );
     assert.match(preload, /projects:\s*\{/);
     assert.match(preload, /ipcRenderer\.invoke\('projects:list'\)/);
@@ -160,20 +163,21 @@ describe('project context workspace picker', () => {
     const main = await readRepo(MAIN);
     const sessionsIpc = await readRepo(SESSIONS_IPC);
     const sessionEntryIpc = await readRepo('apps/desktop/src/main/session-entry-ipc-main.ts');
+    const botIncoming = await readRepo('apps/desktop/src/main/bot-incoming-main.ts');
     const chatActions = await readRepo('apps/desktop/src/renderer/app-shell-chat-actions.ts');
 
-    assert.match(sessionsIpc, /const cwd = input\?\.cwd \?\? \(await currentProjectRoot\(\)\)/);
-    // #1433 merged `quickChat:start` into `sessions:create`, leaving expert
-    // teams as the only other entry that creates a session — it must resolve
-    // the same main-owned root rather than carrying its own notion of cwd.
-    assert.match(sessionEntryIpc, /cwd:\s*await deps\.getCurrentProjectRoot\(\)/);
+    assert.match(
+      main,
+      /resolveDesktopSessionSelection\(input, projectManagement\)/,
+      'all desktop session entry points must resolve the main-owned selection once',
+    );
     assert.match(
       sessionEntryIpc,
       /\.\.\.\(typeof projectId === 'string' \|\| projectId === null \? \{ projectId \} : \{\}\)/,
     );
-    // The automation trigger is the only session main.ts still creates on its
-    // own; it resolves the same main-owned root.
-    assert.match(main, /const cwd = await resolveCurrentProjectRoot\(\);\s*\n\s*const session = await createDesktopSession\(\{/);
+    assert.doesNotMatch(sessionsIpc, /getCurrentProjectRoot/);
+    assert.doesNotMatch(sessionEntryIpc, /getCurrentProjectRoot/);
+    assert.doesNotMatch(botIncoming, /getCurrentProjectRoot/);
     assert.doesNotMatch(main, /quickChat/, '#1433 merged quickChat:start into sessions:create');
     assert.doesNotMatch(sessionsIpc, /const cwd = input\?\.cwd \?\? process\.cwd\(\)/);
     assert.doesNotMatch(sessionsIpc, /cwd:\s*process\.cwd\(\)/);

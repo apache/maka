@@ -41,6 +41,11 @@ type CapturedSubscriptions = {
 };
 type RendererMakaStub = {
   app: {
+    info(): Promise<{
+      projectId: string | null | undefined;
+      projectPath: string;
+      projectGit: { isGitRepo: boolean };
+    }>;
     sessionProjectInfo(sessionId: string): Promise<{
       projectPath: string;
       projectGit: { isGitRepo: boolean };
@@ -324,7 +329,7 @@ describe('AppShell effect stability contract', () => {
     assert.equal(snapshots.at(-1), false);
   });
 
-  it('does not restore an archived project from the persisted working path', async () => {
+  it('does not claim an archived project when main has no resolved selection', async () => {
     const context = await importProjectContext();
     const captured = createCapturedSubscriptions();
     const root = installReactRenderer(captured);
@@ -343,22 +348,36 @@ describe('AppShell effect stability contract', () => {
       await Promise.resolve();
     });
 
-    assert.equal(snapshots.at(-1), null);
+    assert.equal(snapshots.at(-1), undefined);
   });
 
-  it('preserves an explicitly persisted no-project selection across hydration', async () => {
+  it('hydrates project selection from main instead of legacy composer defaults', async () => {
     const context = await importProjectContext();
     const captured = createCapturedSubscriptions();
     const root = installReactRenderer(captured);
     const project = makeProject('available-project', '/workspace/available');
     window.maka.projects.list = async () => [project];
+    window.maka.app.info = async () => ({
+      appVersion: 'test',
+      electronVersion: 'test',
+      nodeVersion: 'test',
+      chromeVersion: 'test',
+      platform: 'darwin',
+      arch: 'arm64',
+      osRelease: 'test',
+      workspacePath: '/workspace',
+      projectId: project.id,
+      projectPath: '/workspace/available',
+      projectGit: { isGitRepo: false },
+      buildMode: 'dev',
+      buildCommit: null,
+    });
     const snapshots: Array<string | null | undefined> = [];
 
     await render(
       root,
       createElement(ProjectContextProbe, {
         context,
-        persistedComposerDefaults: { projectPath: null, model: null },
         onSelectedProjectId: (projectId) => snapshots.push(projectId),
       }),
     );
@@ -366,7 +385,7 @@ describe('AppShell effect stability contract', () => {
       await Promise.resolve();
     });
 
-    assert.equal(snapshots.at(-1), null);
+    assert.equal(snapshots.at(-1), project.id);
   });
 
   it('resolves a session project alias to the surviving active project', async () => {
@@ -490,7 +509,6 @@ function KeepSystemAwakeProbe(props: {
 
 function ProjectContextProbe(props: {
   context: ProjectContextModule;
-  persistedComposerDefaults?: { projectPath: string | null; model: null } | null;
   sessionId?: string;
   sessionCwd?: string;
   sessionProjectId?: string | null;
@@ -499,10 +517,6 @@ function ProjectContextProbe(props: {
 }) {
   const state = props.context.useAppShellProjectContext({
     uiLocale: 'zh',
-    persistedComposerDefaults:
-      props.persistedComposerDefaults === undefined
-        ? { projectPath: '/workspace/archived', model: null }
-        : props.persistedComposerDefaults,
     rendererMountedRef: { current: true },
     sessionId: props.sessionId,
     sessionCwd: props.sessionCwd,
@@ -640,6 +654,11 @@ async function render(root: Root, element: ReactElement): Promise<void> {
 function installFakeMaka(captured: CapturedSubscriptions): void {
   window.maka = {
     app: {
+      info: async () => ({
+        projectId: undefined,
+        projectPath: '/workspace/relocated',
+        projectGit: { isGitRepo: false },
+      }),
       sessionProjectInfo: async () => ({
         projectPath: '/workspace/relocated',
         projectGit: { isGitRepo: false },
