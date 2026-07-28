@@ -30,6 +30,7 @@ export async function createExecutionRuntimeHostComposition(
   context: RuntimeHostCompositionContext,
 ): Promise<RuntimeHostComposition> {
   const stores = await openInteractiveExecutionStoresForWrite(context.owner.lease);
+  let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
   try {
     const runtimePolicyStores = await openInteractiveRuntimePolicyStoresForWrite(
       context.owner.lease,
@@ -42,6 +43,10 @@ export async function createExecutionRuntimeHostComposition(
     const runtimePolicyActivation = new RuntimePolicyActivationGate();
     const sessionAdmission = new SessionAdmissionGate();
     const taskLedger = new HostTaskLedgerCoordinator(taskLedgerStore, sessionAdmission);
+    const openedGraphControlStore = createAgentGraphControlStore(
+      context.owner.capability.canonicalPath,
+    );
+    graphControlStore = openedGraphControlStore;
     let rootCoordinator: RootTurnCoordinator | undefined;
     let continuity: SessionContinuityCoordinator | undefined;
     let canonicalProjection: CanonicalSessionProjectionReader | undefined;
@@ -137,15 +142,24 @@ export async function createExecutionRuntimeHostComposition(
       now: Date.now,
       runBackendActivation: (operation) => runtimePolicyActivation.runBackendActivation(operation),
       messageAuthority: runtimeAuthority,
+      hostedAgentGraphExecution: {
+        readAgentGraphIntentClaim: (graphId, intentId) =>
+          openedGraphControlStore.readAgentGraphIntentClaim(graphId, intentId),
+        readRootTurnAdmissionIdentity: async (sessionId, turnId) => {
+          const admission = await stores.agentRunStore.readRootTurnAdmission(sessionId, turnId);
+          return admission
+            ? { runId: admission.runId, userMessageId: admission.userMessageId }
+            : undefined;
+        },
+      },
       interactionAuthority: interactions,
       canonicalPermissionOutcomes,
     });
-    const graphControlStore = createAgentGraphControlStore(context.owner.capability.canonicalPath);
     const graphCoordinator = new AgentGraphCoordinator({
       sessionStore: stores.sessionStore,
       runStore: stores.agentRunStore,
       runtimeEventStore: stores.runtimeEventStore,
-      controlStore: graphControlStore,
+      controlStore: openedGraphControlStore,
       runtime: manager,
       newId: randomUUID,
     });
@@ -225,7 +239,7 @@ export async function createExecutionRuntimeHostComposition(
           errors.push(error);
         }
         try {
-          graphControlStore.close();
+          openedGraphControlStore.close();
         } catch (error) {
           errors.push(error);
         }
@@ -264,8 +278,19 @@ export async function createExecutionRuntimeHostComposition(
       close,
     };
   } catch (error) {
-    await stores.sessionStore.close?.();
-    throw error;
+    const errors: unknown[] = [error];
+    try {
+      graphControlStore?.close();
+    } catch (closeError) {
+      errors.push(closeError);
+    }
+    try {
+      await stores.sessionStore.close?.();
+    } catch (closeError) {
+      errors.push(closeError);
+    }
+    if (errors.length === 1) throw error;
+    throw new AggregateError(errors, 'Unable to clean up Runtime Host execution composition');
   }
 }
 

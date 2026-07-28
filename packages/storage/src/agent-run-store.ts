@@ -24,6 +24,7 @@ import { syncDirectory, syncDirectoryChain, syncFile } from './stable-storage.js
 import { chainWrite } from './write-queue.js';
 import {
   DurableStoreWriteError,
+  decodeAgentGraphIntentClaim,
   decodeMessageContent,
   encodeCanonicalRuntimeEvent,
   isCanonicalAttachmentRef,
@@ -1931,6 +1932,22 @@ function assertRootTurnAdmissionContract(admission: RootTurnAdmission): void {
       'Invalid root turn admission contract: linked child execution cannot have source messages',
     );
   }
+  if (execution.kind === 'claimed_agent_graph_intent') {
+    if (
+      execution.claim.targetSessionId !== admission.sessionId ||
+      execution.claim.targetTurnId !== admission.turnId ||
+      execution.claim.targetRunId !== admission.runId
+    ) {
+      throw new Error(
+        'Invalid root turn admission contract: agent graph claim target does not match admission identity',
+      );
+    }
+    if (admission.userMessageId === null) {
+      throw new Error(
+        'Invalid root turn admission contract: agent graph execution requires a UserMessage',
+      );
+    }
+  }
   if (
     (execution.kind === 'linked_child_resume' ||
       execution.kind === 'linked_child_provider_retry') &&
@@ -1954,6 +1971,9 @@ function assertRootTurnAdmissionContract(admission: RootTurnAdmission): void {
 }
 
 function deepFreezeRootTurnAdmission(admission: RootTurnAdmission): RootTurnAdmission {
+  if (admission.execution.kind === 'claimed_agent_graph_intent') {
+    Object.freeze(admission.execution.claim);
+  }
   Object.freeze(admission.execution);
   deepFreezeRootTurnMessageContent(admission.normalizedInput);
   for (const sourceMessage of admission.sourceMessages) {
@@ -1971,6 +1991,31 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
   if (value.kind === 'external_message') {
     if (!hasExactKeys(value, ['kind'])) throw new Error('Invalid root execution descriptor');
     return Object.freeze({ kind: 'external_message' });
+  }
+  if (value.kind === 'claimed_agent_graph_intent') {
+    if (
+      !hasExactKeys(value, ['kind', 'claim', 'agentId', 'agentName']) ||
+      typeof value.agentId !== 'string' ||
+      !isSafeId(value.agentId) ||
+      typeof value.agentName !== 'string' ||
+      value.agentName.length === 0 ||
+      Buffer.byteLength(value.agentName, 'utf8') > 256
+    ) {
+      throw new Error('Invalid root execution descriptor');
+    }
+    let claim;
+    try {
+      claim = decodeAgentGraphIntentClaim(value.claim);
+    } catch {
+      throw new Error('Invalid root execution descriptor');
+    }
+    Object.freeze(claim);
+    return Object.freeze({
+      kind: value.kind,
+      claim,
+      agentId: value.agentId,
+      agentName: value.agentName,
+    });
   }
   if (
     value.kind !== 'linked_child_initial' &&

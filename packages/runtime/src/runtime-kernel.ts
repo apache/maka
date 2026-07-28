@@ -293,6 +293,8 @@ type ExecutionClaimOutcome = { ok: true } | { ok: false; error: unknown };
 interface PendingExecutionClaim {
   readonly handle: RuntimeExecutionClaim;
   readonly sessionId: string;
+  readonly abortController: AbortController;
+  readonly cancellation: RuntimeExecutionCancellation;
   readonly settled: Promise<void>;
   resolveSettled(): void;
   rejectSettled(error: unknown): void;
@@ -363,6 +365,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
     });
     // A failed claim may have no concurrent stop subscriber; stop still observes this same promise.
     void settled.catch(() => undefined);
+    const abortController = new AbortController();
+    const cancellation = new RuntimeExecutionCancellation(sessionId);
     const handle: RuntimeExecutionClaim = {
       sessionId,
       isStopRequested: () => state.stopIntent !== undefined,
@@ -371,6 +375,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
     const state: PendingExecutionClaim = {
       handle,
       sessionId,
+      abortController,
+      cancellation,
       settled,
       resolveSettled,
       rejectSettled,
@@ -765,6 +771,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       this.settleReservedExecutionClaim(execution, run, { ok: false, error });
       await run.recordFailure(error);
       await this.finalizeExecutionClaimRun(execution, run, () => run.finalize());
+      if (run.isStopped() && isExecutionCancellation(error)) return;
       throw error;
     }
 
@@ -1082,11 +1089,19 @@ export class RuntimeKernel implements RuntimeKernelLike {
     initialHeader?: SessionHeader,
   ): AsyncIterable<SessionEvent> {
     const sessionEvents = new AsyncEventQueue<SessionEvent>();
-    const abortController = new AbortController();
+    const { abortController, release: releaseExecutionAbort } =
+      this.inheritExecutionAbort(execution);
     let flowDone = false;
     const owners = this.createRunOwnerScope(run, execution);
     let begin: AgentRunBeginResult;
     try {
+      if (steering) {
+        owners.bindMessage(this.deps.messageAuthority, {
+          sessionId,
+          turnId: run.turnId,
+          runId: run.runId,
+        });
+      }
       begin = await this.runBackendActivation(async () => {
         const started = await run.begin();
         await owners.bindInteraction(this.deps.interactionAuthority, {
@@ -1096,28 +1111,21 @@ export class RuntimeKernel implements RuntimeKernelLike {
         });
         return started;
       });
-      if (steering) {
-        owners.bindMessage(this.deps.messageAuthority, {
-          sessionId,
-          turnId: run.turnId,
-          runId: run.runId,
-        });
-      }
       if (onRunStarted && initialHeader) await onRunStarted(run.runId, initialHeader);
     } catch (error) {
-      throw await owners.failStart(error);
+      releaseExecutionAbort();
+      await this.finalizeFailedRunStart(owners, run, error);
+      return;
     }
 
     const interactionRun = owners.interactionRun;
     const messageOwner = owners.messageOwner;
 
     // Steering is a top-level-turn affordance only; child agent turns run
-    // without a queue. Ownership is established only AFTER run.begin()
-    // succeeds (a failed begin must not leak a live owner into the next turn)
-    // and is bound to this run's turnId: the pull hook re-checks that identity
-    // so a stale or overlapping run can never drain messages queued for the
-    // current owner. Released in the finally below, which covers every path
-    // from here to turn end.
+    // without a queue. Hosted ownership is bound before begin so a pre-start
+    // cancellation can release the exact admitted owner. The pull hook still
+    // re-checks this run's turnId so stale or overlapping runs cannot drain
+    // messages queued for the current owner.
     let pullSteering: (() => readonly SteeringLease[]) | undefined;
     let ackSteering: ((leaseIds: readonly string[]) => void) | undefined;
     let nackSteering: ((leaseIds: readonly string[]) => void) | undefined;
@@ -1289,20 +1297,24 @@ export class RuntimeKernel implements RuntimeKernelLike {
       }
       await runnerResult;
     } finally {
-      await this.cleanupRunExecution({
-        run,
-        flow: aiSdkFlow,
-        flowDone,
-        abortController,
-        sessionEvents,
-        runnerResult,
-        interactionRun,
-        finalizeRun: () => owners.finalize(),
-        releaseOwner: () => {
-          if (messageOwner) owners.releaseMessage();
-          else if (steering) this.releaseSteeringTurn(sessionId, run.turnId);
-        },
-      });
+      try {
+        await this.cleanupRunExecution({
+          run,
+          flow: aiSdkFlow,
+          flowDone,
+          abortController,
+          sessionEvents,
+          runnerResult,
+          interactionRun,
+          finalizeRun: () => owners.finalize(),
+          releaseOwner: () => {
+            if (messageOwner) owners.releaseMessage();
+            else if (steering) this.releaseSteeringTurn(sessionId, run.turnId);
+          },
+        });
+      } finally {
+        releaseExecutionAbort();
+      }
     }
   }
 
@@ -1315,11 +1327,19 @@ export class RuntimeKernel implements RuntimeKernelLike {
     onRunStarted?: () => void | Promise<void>,
   ): AsyncIterable<SessionEvent> {
     const sessionEvents = new AsyncEventQueue<SessionEvent>();
-    const abortController = new AbortController();
+    const { abortController, release: releaseExecutionAbort } =
+      this.inheritExecutionAbort(execution);
     let flowDone = false;
     const owners = this.createRunOwnerScope(run, execution);
     let begin: Awaited<ReturnType<AgentRun['beginContinuation']>>;
     try {
+      if (bindHostedRoot) {
+        owners.bindMessage(this.deps.messageAuthority, {
+          sessionId: continuation.sessionId,
+          turnId: continuation.turnId,
+          runId: continuation.runId,
+        });
+      }
       begin = await this.runBackendActivation(async () => {
         const started = persistContinuationSource
           ? await run.beginContinuation(continuation)
@@ -1331,16 +1351,11 @@ export class RuntimeKernel implements RuntimeKernelLike {
         });
         return started;
       });
-      if (bindHostedRoot) {
-        owners.bindMessage(this.deps.messageAuthority, {
-          sessionId: continuation.sessionId,
-          turnId: continuation.turnId,
-          runId: continuation.runId,
-        });
-      }
       await onRunStarted?.();
     } catch (error) {
-      throw await owners.failStart(error);
+      releaseExecutionAbort();
+      await this.finalizeFailedRunStart(owners, run, error);
+      return;
     }
 
     const interactionRun = owners.interactionRun;
@@ -1427,18 +1442,49 @@ export class RuntimeKernel implements RuntimeKernelLike {
       }
       await runnerResult;
     } finally {
-      await this.cleanupRunExecution({
-        run,
-        flow: aiSdkFlow,
-        flowDone,
-        abortController,
-        sessionEvents,
-        runnerResult,
-        interactionRun,
-        ...(runnerFailure !== undefined ? { runnerFailure } : {}),
-        finalizeRun: () => owners.finalize(),
-        releaseOwner: () => owners.releaseMessage(),
-      });
+      try {
+        await this.cleanupRunExecution({
+          run,
+          flow: aiSdkFlow,
+          flowDone,
+          abortController,
+          sessionEvents,
+          runnerResult,
+          interactionRun,
+          ...(runnerFailure !== undefined ? { runnerFailure } : {}),
+          finalizeRun: () => owners.finalize(),
+          releaseOwner: () => owners.releaseMessage(),
+        });
+      } finally {
+        releaseExecutionAbort();
+      }
+    }
+  }
+
+  private inheritExecutionAbort(execution: PendingExecutionClaim): {
+    abortController: AbortController;
+    release(): void;
+  } {
+    const abortController = new AbortController();
+    const onAbort = (): void => abortController.abort(execution.abortController.signal.reason);
+    execution.abortController.signal.addEventListener('abort', onAbort, { once: true });
+    if (execution.abortController.signal.aborted) onAbort();
+    return {
+      abortController,
+      release: () => execution.abortController.signal.removeEventListener('abort', onAbort),
+    };
+  }
+
+  private async finalizeFailedRunStart(
+    owners: RuntimeRunOwnerScope,
+    run: AgentRun,
+    error: unknown,
+  ): Promise<void> {
+    try {
+      await owners.failStart(error);
+    } catch (failure) {
+      if (run.isStopped() && isExecutionCancellation(failure)) return;
+      throw failure;
     }
   }
 
@@ -1567,10 +1613,14 @@ export class RuntimeKernel implements RuntimeKernelLike {
     if (existing) return existing;
     const intent: SessionStopIntent = { input, claims: new Set() };
     this.stopIntents.set(sessionId, intent);
-    for (const execution of this.executionClaims.get(sessionId) ?? []) {
+    const executions = [...(this.executionClaims.get(sessionId) ?? [])];
+    for (const execution of executions) {
       execution.stopIntent = intent;
       intent.claims.add(execution);
-      execution.run?.stop(input.source);
+    }
+    for (const execution of executions) execution.run?.stop(input.source);
+    for (const execution of executions) {
+      execution.abortController.abort(execution.cancellation);
     }
     const attempt = this.stopSessionAttempt(sessionId, intent).finally(() => {
       if (this.stopAttempts.get(sessionId) === attempt) {
@@ -2269,6 +2319,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         workspaceRoot: header.workspaceRoot,
         header,
         store: this.deps.store,
+        abortSignal: execution.abortController.signal,
         ...(subagent
           ? {
               systemPrompt: subagent.systemPrompt,
@@ -2339,6 +2390,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         shellRunContextSummary: () =>
           this.deps.shellRuns?.buildContextSummary(sessionId) ?? Promise.resolve(undefined),
       });
+      await this.rejectCancelledBackendActivation(backend, execution);
       const generation = this.createBackendGeneration(sessionId, backend, header, {
         kind: 'parent',
       });
@@ -2426,6 +2478,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         workspaceRoot: header.workspaceRoot,
         header,
         store: this.deps.store,
+        abortSignal: execution.abortController.signal,
         appendMessage: async () => {},
         systemPrompt,
         tools,
@@ -2493,6 +2546,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           run?.recordSemanticCompactBlock(block);
         },
       });
+      await this.rejectCancelledBackendActivation(backend, execution);
       const generation = this.createBackendGeneration(sessionId, backend, header, {
         kind: 'child',
         activeKey,
@@ -2559,6 +2613,22 @@ export class RuntimeKernel implements RuntimeKernelLike {
     active.stopBackend = this.createBackendStopOwner(active);
     this.backendGenerations.set(active.generation, active);
     return active;
+  }
+
+  private async rejectCancelledBackendActivation(
+    backend: AgentBackend,
+    execution: PendingExecutionClaim,
+  ): Promise<void> {
+    if (!execution.abortController.signal.aborted) return;
+    try {
+      await backend.dispose();
+    } catch (error) {
+      throw new AggregateError(
+        [execution.cancellation, error],
+        `Cancelled backend activation disposal failed for session ${execution.sessionId}`,
+      );
+    }
+    throw execution.cancellation;
   }
 
   private reserveGenerationRun(active: BackendGeneration, run: AgentRun): void {
@@ -2983,7 +3053,10 @@ class RuntimeRunOwnerScope {
   }
 
   finalize(): Promise<void> {
-    this.finalizePromise ??= this.callbacks.finalizeExecution(() => this.finalizeOwnedRun());
+    if (!this.finalizePromise) {
+      this.interactionRun?.sealPublications();
+      this.finalizePromise = this.callbacks.finalizeExecution(() => this.finalizeOwnedRun());
+    }
     return this.finalizePromise;
   }
 
@@ -3081,6 +3154,17 @@ function interactionFailStop(message: string, error: unknown): Error {
   return error instanceof RuntimeInteractionFailStopError
     ? error
     : new RuntimeInteractionFailStopError(message, error);
+}
+
+class RuntimeExecutionCancellation extends Error {
+  constructor(sessionId: string) {
+    super(`Execution for session ${sessionId} was cancelled before dispatch`);
+    this.name = 'RuntimeExecutionCancellation';
+  }
+}
+
+function isExecutionCancellation(error: unknown): boolean {
+  return error instanceof RuntimeExecutionCancellation;
 }
 
 class FailureCollector {

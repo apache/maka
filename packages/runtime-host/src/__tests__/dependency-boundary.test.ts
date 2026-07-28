@@ -153,6 +153,7 @@ test('the production Candidate dependency graph remains non-serving', () => {
     for (const specifier of moduleSpecifiers(path)) {
       if (
         specifier === '@maka/runtime' ||
+        specifier === '@maka/storage/agent-graph-claim-authority' ||
         specifier === '@maka/storage/execution-stores' ||
         specifier === '@maka/storage/runtime-policy-stores' ||
         specifier === '@maka/storage/task-ledger-authority'

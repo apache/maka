@@ -884,6 +884,7 @@ test('startup recovery canonically closes pending linked child admissions withou
     const initial = await fixture.seedPendingChildAdmission('linked_child_initial');
     const resume = await fixture.seedPendingChildAdmission('linked_child_resume');
     const retry = await fixture.seedPendingChildAdmission('linked_child_provider_retry');
+    const graph = await fixture.seedPendingChildAdmission('claimed_agent_graph_intent');
 
     const firstHost = await fixture.startHost();
     await fixture.stopHost(firstHost);
@@ -895,7 +896,7 @@ test('startup recovery canonically closes pending linked child admissions withou
     if (!reader) throw new Error('Unable to acquire recovery result reader');
     try {
       const stores = await openInteractiveExecutionStoresForRead(reader.lease);
-      for (const recovered of [initial, resume, retry]) {
+      for (const recovered of [initial, resume, retry, graph]) {
         const run = await stores.agentRunStore.readRun(recovered.sessionId, recovered.runId);
         assert.equal(run.status, 'failed');
         assert.equal(run.failureClass, 'app_restarted');
@@ -933,6 +934,14 @@ test('startup recovery canonically closes pending linked child admissions withou
     } finally {
       await reader.close();
     }
+  });
+});
+
+test('startup recovery rejects claimed graph Run lineage drift', async () => {
+  await withExecutionRoot(async (fixture) => {
+    await fixture.seedClaimedGraphRunLineageDrift();
+    await fixture.expectHostStartupFailure();
+    await fixture.assertOwnerAvailable();
   });
 });
 
@@ -1685,9 +1694,17 @@ class ExecutionFixture {
   }
 
   async seedPendingChildAdmission(
-    kind: 'linked_child_initial' | 'linked_child_resume' | 'linked_child_provider_retry',
+    kind:
+      | 'linked_child_initial'
+      | 'linked_child_resume'
+      | 'linked_child_provider_retry'
+      | 'claimed_agent_graph_intent',
   ): Promise<{
-    kind: 'linked_child_initial' | 'linked_child_resume' | 'linked_child_provider_retry';
+    kind:
+      | 'linked_child_initial'
+      | 'linked_child_resume'
+      | 'linked_child_provider_retry'
+      | 'claimed_agent_graph_intent';
     sessionId: string;
     turnId: string;
     runId: string;
@@ -1703,7 +1720,10 @@ class ExecutionFixture {
       const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
       const turnId = randomUUID();
       const runId = randomUUID();
-      const sourceRunId = kind === 'linked_child_initial' ? undefined : randomUUID();
+      const sourceRunId =
+        kind === 'linked_child_resume' || kind === 'linked_child_provider_retry'
+          ? randomUUID()
+          : undefined;
       const agentId = 'local-read';
       const agentName = 'Local Read';
       const child = await stores.sessionStore.createSubagent({
@@ -1742,10 +1762,18 @@ class ExecutionFixture {
             ? 'a'
             : kind === 'linked_child_resume'
               ? 'b'
-              : 'c'
+              : kind === 'linked_child_provider_retry'
+                ? 'c'
+                : 'd'
           ).repeat(64),
-          initialTurnId: kind === 'linked_child_initial' ? turnId : `initial-${kind}`,
-          initialRunId: kind === 'linked_child_initial' ? runId : sourceRunId!,
+          initialTurnId:
+            kind === 'linked_child_initial' || kind === 'claimed_agent_graph_intent'
+              ? turnId
+              : `initial-${kind}`,
+          initialRunId:
+            kind === 'linked_child_initial' || kind === 'claimed_agent_graph_intent'
+              ? runId
+              : sourceRunId!,
         },
       });
       assert.equal(child.created, true);
@@ -1799,7 +1827,26 @@ class ExecutionFixture {
         execution:
           kind === 'linked_child_initial'
             ? { kind, agentId, agentName }
-            : { kind, agentId, agentName, sourceRunId: sourceRunId! },
+            : kind === 'claimed_agent_graph_intent'
+              ? {
+                  kind,
+                  claim: {
+                    schemaVersion: 1,
+                    claimId: `graph_claim_${'a'.repeat(32)}`,
+                    graphId: `graph-${runId}`,
+                    intentId: `graph_intent_${'b'.repeat(32)}`,
+                    intentFingerprint: `sha256:${'c'.repeat(64)}`,
+                    readinessContextFingerprint: `sha256:${'d'.repeat(64)}`,
+                    targetOperatorId: 'local-read',
+                    targetSessionId: child.header.id,
+                    targetTurnId: turnId,
+                    targetRunId: runId,
+                    claimedAt: Date.now(),
+                  },
+                  agentId,
+                  agentName,
+                }
+              : { kind, agentId, agentName, sourceRunId: sourceRunId! },
         previousRootTurnId: null,
         normalizedInput: { text: `pending ${kind}` },
         sourceMessages: [],
@@ -1816,6 +1863,40 @@ class ExecutionFixture {
         agentId,
         agentName,
       };
+    } finally {
+      await owner.close();
+    }
+  }
+
+  async seedClaimedGraphRunLineageDrift(): Promise<void> {
+    const graph = await this.seedPendingChildAdmission('claimed_agent_graph_intent');
+    const owner = await tryAcquireInteractiveRootOwner(this.capability);
+    assert.ok(owner);
+    if (!owner) throw new Error('Unable to acquire execution root for graph lineage setup');
+    try {
+      const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const ts = Date.now();
+      await stores.agentRunStore.createRun(
+        {
+          runId: graph.runId,
+          invocationId: graph.runId,
+          sessionId: graph.sessionId,
+          turnId: graph.turnId,
+          status: 'created',
+          backendKind: 'fake',
+          llmConnectionSlug: 'fake',
+          modelId: 'fake-model',
+          cwd: this.root,
+          permissionMode: 'explore',
+          collaborationMode: 'agent',
+          createdAt: ts,
+          updatedAt: ts,
+          resumedFromRunId: randomUUID(),
+          agentId: graph.agentId,
+          agentName: graph.agentName,
+        },
+        { durable: true },
+      );
     } finally {
       await owner.close();
     }

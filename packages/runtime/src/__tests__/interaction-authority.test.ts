@@ -86,8 +86,26 @@ describe('Runtime Interaction authority seam', () => {
     assert.deepEqual(log, ['close:turn_terminal', 'release']);
   });
 
-  test('fails closed when Run close wins the publication linearization point', async () => {
-    const binding = await bindRuntimeInteractionRun(authority(), RUN);
+  test('lets an entered permission admission publish before Run closure', async () => {
+    const admissionEntered = deferred<void>();
+    const releaseAdmission = deferred<void>();
+    let continuation: RuntimePermissionContinuation | undefined;
+    let ownerCloseStarted = false;
+    const binding = await bindRuntimeInteractionRun(
+      authority({
+        acceptPermissionRequest: async ({ continuation: admitted }) => {
+          continuation = admitted;
+          admissionEntered.resolve();
+          await releaseAdmission.promise;
+          return { state: 'pending' };
+        },
+        close: async (reason) => {
+          ownerCloseStarted = true;
+          await continuation?.applyClosure(reason);
+        },
+      }),
+      RUN,
+    );
     const request = {
       type: 'permission_request',
       id: 'event-close-race',
@@ -95,6 +113,128 @@ describe('Runtime Interaction authority seam', () => {
       ts: 1,
       requestId: 'request-close-race',
       toolUseId: 'tool-close-race',
+      toolName: 'Write',
+      category: 'file_write',
+      args: { path: '/tmp/a' },
+      kind: 'tool_permission',
+      reason: 'file_write',
+      rememberForTurnAllowed: true,
+    } as const;
+    const admitting = binding.admitPermissionRequest({
+      request,
+      settlement: {
+        applyAnswer: async () => {},
+        applyClosure: async () => {},
+      },
+    });
+    await admissionEntered.promise;
+
+    const closing = binding.close('turn_stopped');
+    await immediate();
+    assert.equal(ownerCloseStarted, false);
+    await assert.rejects(
+      binding.admitPermissionRequest({
+        request: {
+          ...request,
+          id: 'event-after-close',
+          requestId: 'request-after-close',
+          toolUseId: 'tool-after-close',
+        },
+        settlement: {
+          applyAnswer: async () => {},
+          applyClosure: async () => {},
+        },
+      }),
+      /started closing/,
+    );
+
+    releaseAdmission.resolve();
+    await admitting;
+    await immediate();
+    assert.equal(ownerCloseStarted, false);
+    binding.assertPendingAdmission(request);
+    await closing;
+    assert.equal(ownerCloseStarted, true);
+    await binding.settleLocalClosures();
+    binding.release();
+  });
+
+  test('releases Run closure when an entered permission admission rejects', async () => {
+    const admissionEntered = deferred<void>();
+    const releaseAdmission = deferred<void>();
+    let ownerCloseStarted = false;
+    const binding = await bindRuntimeInteractionRun(
+      authority({
+        acceptPermissionRequest: async ({ continuation }) => {
+          admissionEntered.resolve();
+          await releaseAdmission.promise;
+          throw new RuntimeInteractionAdmissionRejectedError(
+            continuation.requestId,
+            'invalid_request',
+          );
+        },
+        close: async () => {
+          ownerCloseStarted = true;
+        },
+      }),
+      RUN,
+    );
+    const admitting = binding.admitPermissionRequest({
+      request: {
+        type: 'permission_request',
+        id: 'event-rejected-race',
+        turnId: RUN.turnId,
+        ts: 1,
+        requestId: 'request-rejected-race',
+        toolUseId: 'tool-rejected-race',
+        toolName: 'Write',
+        category: 'file_write',
+        args: { path: '/tmp/a' },
+        kind: 'tool_permission',
+        reason: 'file_write',
+        rememberForTurnAllowed: true,
+      },
+      settlement: {
+        applyAnswer: async () => {},
+        applyClosure: async () => {},
+      },
+    });
+    await admissionEntered.promise;
+
+    const closing = binding.close('turn_stopped');
+    await immediate();
+    assert.equal(ownerCloseStarted, false);
+    releaseAdmission.resolve();
+    await assert.rejects(admitting, RuntimeInteractionAdmissionRejectedError);
+    await closing;
+    assert.equal(ownerCloseStarted, true);
+    await binding.settleLocalClosures();
+    binding.release();
+  });
+
+  test('unknown publication seals pending admissions and lets exact-Run closure finish', async () => {
+    let continuation: RuntimePermissionContinuation | undefined;
+    let ownerCloseCalls = 0;
+    const binding = await bindRuntimeInteractionRun(
+      authority({
+        acceptPermissionRequest: async ({ continuation: admitted }) => {
+          continuation = admitted;
+          return { state: 'pending' };
+        },
+        close: async (reason) => {
+          ownerCloseCalls += 1;
+          await continuation?.applyClosure(reason);
+        },
+      }),
+      RUN,
+    );
+    const request = {
+      type: 'permission_request',
+      id: 'event-before-unknown-publication',
+      turnId: RUN.turnId,
+      ts: 1,
+      requestId: 'request-before-unknown-publication',
+      toolUseId: 'tool-before-unknown-publication',
       toolName: 'Write',
       category: 'file_write',
       args: { path: '/tmp/a' },
@@ -110,9 +250,24 @@ describe('Runtime Interaction authority seam', () => {
       },
     });
 
-    await binding.close('turn_stopped');
+    const closing = binding.close('turn_terminal');
+    await immediate();
+    assert.equal(ownerCloseCalls, 0);
+    assert.throws(
+      () =>
+        binding.assertPendingAdmission({
+          ...request,
+          id: 'event-unknown-publication',
+          requestId: 'request-unknown-publication',
+          toolUseId: 'tool-unknown-publication',
+        }),
+      RuntimeInteractionInvariantError,
+    );
 
-    assert.throws(() => binding.assertPendingAdmission(request), RuntimeInteractionInvariantError);
+    await closing;
+    assert.equal(ownerCloseCalls, 1);
+    await binding.settleLocalClosures();
+    binding.release();
   });
 
   test('fails closed when continuation settlement wins the publication linearization point', async () => {
@@ -382,6 +537,7 @@ describe('Runtime Interaction authority seam', () => {
       ...(prompt.rememberScopeId ? { rememberScopeId: prompt.rememberScopeId } : {}),
       settlement: prompt.settlement,
     });
+    binding.assertPendingAdmission(prompt.event);
 
     let localSettlement: 'pending' | 'resolved' | 'rejected' = 'pending';
     const localOutcome = prompt.parked.then(
@@ -827,7 +983,12 @@ describe('Runtime Interaction authority seam', () => {
       },
       { toolCallId: 'tool-1', abortSignal: new AbortController().signal },
     );
-    await waitFor(() => question !== undefined);
+    await waitFor(() => events.some((event) => event.type === 'user_question_request'));
+    const published = events.find((event) => event.type === 'user_question_request');
+    if (published?.type !== 'user_question_request') {
+      assert.fail('expected a published user question');
+    }
+    binding.assertPendingAdmission(published);
 
     const rejected = assert.rejects(pending, /turn_stopped/);
     currentRunId = undefined;

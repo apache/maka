@@ -17,6 +17,8 @@ import {
 import {
   classifyTerminalRuntimeLedger,
   RuntimeHostedRootConflictError,
+  RuntimeInteractionFailStopError,
+  RuntimeInteractionInvariantError,
   RuntimeMessageAuthorityInvariantError,
   type RuntimeHostedRootExecutionInput,
   type RuntimeMessageRunIdentity,
@@ -65,7 +67,7 @@ interface ActiveRootTurn {
   runId: string;
   userMessageId: string | null;
   execution?: RuntimeHostedRootExecutionInput;
-  started: Deferred;
+  startSettled: Deferred;
   done: Promise<void>;
   residency: RuntimeHostResidency;
   stopRequested: boolean;
@@ -151,14 +153,13 @@ export class RootTurnCoordinator {
         const messageIdOwners = admission.userMessageId
           ? (messageIndex.messagesById.get(admission.userMessageId) ?? [])
           : [];
-        const childExecution = admission.execution.kind !== 'external_message';
-        const retryExecution = admission.execution.kind === 'linked_child_provider_retry';
-        if (childExecution && admission.sourceMessages.length !== 0) {
+        const executionContract = recoveryExecutionContract(admission.execution);
+        if (!executionContract.allowsQueueSources && admission.sourceMessages.length !== 0) {
           throw new Error(
-            `Admitted Turn ${admission.turnId} has child execution with Message queue sources`,
+            `Admitted Turn ${admission.turnId} has queue-independent execution with Message queue sources`,
           );
         }
-        if (retryExecution !== (admission.userMessageId === null)) {
+        if (executionContract.requiresUserMessage !== (admission.userMessageId !== null)) {
           throw new Error(
             `Admitted Turn ${admission.turnId} has an invalid UserMessage execution contract`,
           );
@@ -180,7 +181,7 @@ export class RootTurnCoordinator {
           );
         }
         const messageIdOwner = messageIdOwners[0];
-        if (!run && childExecution) {
+        if (!run && executionContract.pendingWithoutRun === 'child_recovery_closure') {
           if (userMessages.length > 1) {
             throw new Error(`Admitted Turn ${admission.turnId} has multiple UserMessages`);
           }
@@ -397,6 +398,19 @@ export class RootTurnCoordinator {
             'Session already has an active root Turn',
           );
         }
+        if (canonicalInput.admitExecution) {
+          let admission: 'executing' | 'cancelled';
+          try {
+            admission = await canonicalInput.admitExecution();
+          } catch (error) {
+            throw new HostedRootAdmissionGateError(error);
+          }
+          if (admission === 'cancelled') {
+            throw new HostedRootAdmissionGateError(
+              new Error('Turn start was cancelled before runtime admission'),
+            );
+          }
+        }
         const admitted = await this.rootAdmissionOwner.admitRootTurn({
           sessionId: input.sessionId,
           turnId: input.turnId,
@@ -439,8 +453,11 @@ export class RootTurnCoordinator {
         }
         return;
       }
-      await disposition.active.started.promise;
+      await disposition.active.startSettled.promise;
       await disposition.active.done;
+    }).catch((error) => {
+      if (error instanceof HostedRootAdmissionGateError) throw error.cause;
+      throw error;
     });
   }
 
@@ -461,7 +478,7 @@ export class RootTurnCoordinator {
         ),
       );
       await declared?.deliverStop();
-      await declared?.active.started.promise;
+      await declared?.active.startSettled.promise;
       const disposition = await this.sessionAdmission.run(identity.sessionId, (lease) =>
         this.prepareStopDisposition(identity, () => this.messages.commitStopFence(identity), lease),
       );
@@ -496,7 +513,7 @@ export class RootTurnCoordinator {
         );
       });
       await declared?.deliverStop();
-      await declared?.active.started.promise;
+      await declared?.active.startSettled.promise;
       const disposition = await this.sessionAdmission.run(sessionId, async (lease) => {
         if (!declared) return undefined;
         const identity = {
@@ -610,7 +627,7 @@ export class RootTurnCoordinator {
     admission: SessionAdmissionLease,
   ): Promise<HostMessageStopFence> {
     return this.declareStopFence(input, commitQueueFence, admission).then((declared) => ({
-      ready: declared?.active.started.promise ?? Promise.resolve(),
+      ready: declared?.active.startSettled.promise ?? Promise.resolve(),
       deliverStop: declared?.deliverStop ?? (() => Promise.resolve()),
     }));
   }
@@ -725,7 +742,7 @@ export class RootTurnCoordinator {
         this.declareStopFence(input, () => this.messages.commitStopFence(input), lease),
       );
       await declared?.deliverStop();
-      await declared?.active.started.promise;
+      await declared?.active.startSettled.promise;
       const disposition = await this.sessionAdmission.run(input.sessionId, (lease) =>
         this.prepareStopDisposition(input, () => this.messages.commitStopFence(input), lease),
       );
@@ -754,7 +771,7 @@ export class RootTurnCoordinator {
     if (!active || active.turnId !== input.turnId || active.runId !== input.runId) {
       return undefined;
     }
-    if (active.started.phase === 'rejected') {
+    if (active.startSettled.phase === 'rejected') {
       return { active, deliverStop: () => Promise.resolve() };
     }
     commitQueueFence();
@@ -881,13 +898,13 @@ export class RootTurnCoordinator {
       residency.release();
       throw error;
     }
-    const started = deferred();
+    const startSettled = deferred();
     const entry: ActiveRootTurn = {
       turnId: input.turnId,
       runId,
       userMessageId: admission.userMessageId,
       ...(execution ? { execution } : {}),
-      started,
+      startSettled,
       done: Promise.resolve(),
       residency,
       stopRequested: false,
@@ -900,7 +917,7 @@ export class RootTurnCoordinator {
       );
     }
     this.#activeBySession.set(input.sessionId, entry);
-    entry.done = this.drainTurn(input, entry, started);
+    entry.done = this.drainTurn(input, entry, startSettled);
     void entry.done.catch(() => undefined);
     return { kind: 'await_start', active: entry };
   }
@@ -910,7 +927,7 @@ export class RootTurnCoordinator {
     disposition: TurnStartDisposition,
   ): Promise<TurnStartOutcome> {
     if (disposition.kind === 'complete') return disposition.outcome;
-    await disposition.active.started.promise;
+    await disposition.active.startSettled.promise;
     let result = await this.readCanonicalSnapshot(
       input.sessionId,
       input.turnId,
@@ -933,7 +950,7 @@ export class RootTurnCoordinator {
   private async drainTurn(
     input: TurnStartInput,
     active: ActiveRootTurn,
-    started: Deferred,
+    startSettled: Deferred,
   ): Promise<void> {
     let terminalTransitionStarted = false;
     try {
@@ -943,7 +960,7 @@ export class RootTurnCoordinator {
             userMessageId: active.userMessageId,
             onRunStarted: async () => {
               await this.continuity.refreshCanonical(input.sessionId);
-              started.resolve();
+              startSettled.resolve();
               await active.execution?.onReady?.();
             },
           })
@@ -959,7 +976,7 @@ export class RootTurnCoordinator {
                   throw new Error('Runtime started a different Run than the admitted identity');
                 }
                 await this.continuity.refreshCanonical(input.sessionId);
-                started.resolve();
+                startSettled.resolve();
               },
             },
           );
@@ -996,10 +1013,14 @@ export class RootTurnCoordinator {
       if (!isTerminalSnapshot(snapshot)) {
         throw new Error('Runtime Turn drained without a canonical terminal fact');
       }
+      if (snapshot.status === 'cancelled' && active.stopRequested) {
+        startSettled.resolve();
+      }
       terminalTransitionStarted = true;
       await this.completeTerminalTransition(input.sessionId, active);
     } catch (error) {
-      if (started.phase !== 'pending' && !terminalTransitionStarted) {
+      let containedRunFailure = false;
+      if (!terminalTransitionStarted) {
         try {
           const snapshot = await this.readCanonicalSnapshot(
             input.sessionId,
@@ -1009,13 +1030,19 @@ export class RootTurnCoordinator {
           if (isTerminalSnapshot(snapshot)) {
             terminalTransitionStarted = true;
             await this.completeTerminalTransition(input.sessionId, active);
-            return;
+            containedRunFailure =
+              active.execution === undefined &&
+              startSettled.phase === 'resolved' &&
+              !active.stopRequested &&
+              snapshot.status === 'failed' &&
+              isContainableRunFailure(error);
           }
         } catch {
           // The original execution error remains the command failure.
         }
       }
-      started.reject(error);
+      if (containedRunFailure) return;
+      startSettled.reject(error);
       this.requestHostDrain();
       throw error;
     } finally {
@@ -1219,11 +1246,22 @@ export class RootTurnCoordinator {
     try {
       return await operation();
     } catch (error) {
-      if (!(error instanceof RuntimeHostedRootConflictError)) {
+      if (
+        !(error instanceof RuntimeHostedRootConflictError) &&
+        !(error instanceof HostedRootAdmissionGateError)
+      ) {
         this.requestHostDrain();
       }
       throw error;
     }
+  }
+}
+
+class HostedRootAdmissionGateError extends Error {
+  readonly name = 'HostedRootAdmissionGateError';
+
+  constructor(readonly cause: unknown) {
+    super('Hosted root execution was rejected before durable admission', { cause });
   }
 }
 
@@ -1259,20 +1297,79 @@ function assertRunMatchesExecution(
   if (run.turnId !== turnId) {
     throw new Error(`Admitted Turn ${turnId} does not match Run ${run.runId}`);
   }
-  if (execution.kind === 'external_message') return;
+  switch (execution.kind) {
+    case 'external_message':
+      return;
+    case 'linked_child_initial':
+    case 'claimed_agent_graph_intent':
+      assertTrustedAgentIdentity(run, turnId, execution);
+      if (run.resumedFromRunId === undefined && run.retriedFromRunId === undefined) return;
+      break;
+    case 'linked_child_resume':
+      assertTrustedAgentIdentity(run, turnId, execution);
+      if (run.resumedFromRunId === execution.sourceRunId && run.retriedFromRunId === undefined) {
+        return;
+      }
+      break;
+    case 'linked_child_provider_retry':
+      assertTrustedAgentIdentity(run, turnId, execution);
+      if (run.retriedFromRunId === execution.sourceRunId && run.resumedFromRunId === undefined) {
+        return;
+      }
+      break;
+    default:
+      assertNever(execution);
+  }
+  throw new Error(`Admitted Turn ${turnId} changed its child execution lineage`);
+}
+
+function assertTrustedAgentIdentity(
+  run: AgentRunHeader,
+  turnId: string,
+  execution: Exclude<RootTurnAdmission['execution'], { kind: 'external_message' }>,
+): void {
   if (run.agentId !== execution.agentId || run.agentName !== execution.agentName) {
     throw new Error(`Admitted Turn ${turnId} changed its trusted agent identity`);
   }
-  if (
-    (execution.kind === 'linked_child_initial' &&
-      (run.resumedFromRunId !== undefined || run.retriedFromRunId !== undefined)) ||
-    (execution.kind === 'linked_child_resume' &&
-      (run.resumedFromRunId !== execution.sourceRunId || run.retriedFromRunId !== undefined)) ||
-    (execution.kind === 'linked_child_provider_retry' &&
-      (run.retriedFromRunId !== execution.sourceRunId || run.resumedFromRunId !== undefined))
-  ) {
-    throw new Error(`Admitted Turn ${turnId} changed its child execution lineage`);
+}
+
+interface RecoveryExecutionContract {
+  allowsQueueSources: boolean;
+  requiresUserMessage: boolean;
+  pendingWithoutRun: 'root_replay' | 'child_recovery_closure';
+}
+
+function recoveryExecutionContract(
+  execution: RootTurnAdmission['execution'],
+): RecoveryExecutionContract {
+  switch (execution.kind) {
+    case 'external_message':
+      return {
+        allowsQueueSources: true,
+        requiresUserMessage: true,
+        pendingWithoutRun: 'root_replay',
+      };
+    case 'linked_child_initial':
+    case 'linked_child_resume':
+    case 'claimed_agent_graph_intent':
+      return {
+        allowsQueueSources: false,
+        requiresUserMessage: true,
+        pendingWithoutRun: 'child_recovery_closure',
+      };
+    case 'linked_child_provider_retry':
+      return {
+        allowsQueueSources: false,
+        requiresUserMessage: false,
+        pendingWithoutRun: 'child_recovery_closure',
+      };
+    default:
+      return assertNever(execution);
   }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unsupported root execution descriptor: ${JSON.stringify(value)}`);
 }
 
 function indexRecoveryMessages(messages: readonly StoredMessage[]): RecoveryMessageIndex {
@@ -1352,6 +1449,16 @@ function isTerminalSnapshot(snapshot: TurnSnapshot): boolean {
     snapshot.status === 'completed' ||
     snapshot.status === 'failed' ||
     snapshot.status === 'cancelled'
+  );
+}
+
+function isContainableRunFailure(error: unknown): error is Error {
+  return (
+    error instanceof Error &&
+    !(error instanceof AggregateError) &&
+    !(error instanceof RuntimeMessageAuthorityInvariantError) &&
+    !(error instanceof RuntimeInteractionInvariantError) &&
+    !(error instanceof RuntimeInteractionFailStopError)
   );
 }
 

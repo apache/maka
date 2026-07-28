@@ -16,6 +16,7 @@ import {
   isOptionalString,
   isRecord,
 } from './record-schema.js';
+import type { AgentGraphIntentClaim } from './agent-graph-control.js';
 
 export const AGENT_RUN_STATUSES = [
   'created',
@@ -53,6 +54,12 @@ export type RootExecutionDescriptor =
       agentId: string;
       agentName: string;
       sourceRunId: string;
+    }
+  | {
+      kind: 'claimed_agent_graph_intent';
+      claim: AgentGraphIntentClaim;
+      agentId: string;
+      agentName: string;
     };
 
 const AGENT_RUN_CONTINUATION_SOURCE_SHAPE = defineObjectShape<AgentRunContinuationSource>()(

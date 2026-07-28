@@ -178,6 +178,8 @@ type LocalClosureFinalizer = () => void;
 interface TrackedContinuationBase {
   readonly requestId: string;
   readonly request: AnyPermissionRequestEvent | UserQuestionRequestEvent;
+  readonly publicationBarrier: Promise<void>;
+  completePublicationBarrier(): void;
   admissionState: 'pending' | 'settled' | undefined;
   published: boolean;
   settlementStarted: boolean;
@@ -204,6 +206,7 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
   private closePromise: Promise<void> | undefined;
   private localSettlementPromise: Promise<void> | undefined;
   private localClosuresSettled = false;
+  private publicationsSealed = false;
   private released = false;
   private readonly localClosureFinalizers: LocalClosureFinalizer[] = [];
   private readonly continuations = new Map<string, TrackedContinuation>();
@@ -274,26 +277,42 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
         continuation: tracked.continuation,
       });
     } catch (error) {
+      tracked.completePublicationBarrier();
       if (!tracked.settlementStarted) this.continuations.delete(tracked.requestId);
       throw error;
     }
     if (admission?.state !== 'pending' && admission?.state !== 'settled') {
+      tracked.completePublicationBarrier();
       throw new RuntimeInteractionInvariantError(
         `Interaction authority returned an invalid admission for permission ${tracked.requestId}`,
       );
     }
     if (admission.state === 'settled') {
-      await this.requireSettlement(tracked, 'settled permission admission');
-      tracked.admissionState = 'settled';
-      return admission;
+      try {
+        await this.requireSettlement(tracked, 'settled permission admission');
+        tracked.admissionState = 'settled';
+        return admission;
+      } finally {
+        tracked.completePublicationBarrier();
+      }
     }
     if (tracked.settlementStarted) {
-      await tracked.settlementPromise;
-      throw new RuntimeInteractionInvariantError(
-        `Interaction authority admitted settled permission ${tracked.requestId} as pending`,
-      );
+      try {
+        await tracked.settlementPromise;
+        throw new RuntimeInteractionInvariantError(
+          `Interaction authority admitted settled permission ${tracked.requestId} as pending`,
+        );
+      } finally {
+        tracked.completePublicationBarrier();
+      }
     }
     tracked.admissionState = 'pending';
+    if (this.publicationsSealed) {
+      tracked.completePublicationBarrier();
+      throw new RuntimeInteractionInvariantError(
+        `Permission ${tracked.requestId} completed admission after Interaction publication sealed`,
+      );
+    }
     return admission;
   }
 
@@ -333,38 +352,66 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
         continuation: tracked.continuation,
       });
     } catch (error) {
+      tracked.completePublicationBarrier();
       if (!tracked.settlementStarted) this.continuations.delete(tracked.requestId);
       throw error;
     }
     if (tracked.settlementStarted) {
-      await tracked.settlementPromise;
-      throw new RuntimeInteractionInvariantError(
-        `Question ${tracked.requestId} settled during pending-only admission`,
-      );
+      try {
+        await tracked.settlementPromise;
+        throw new RuntimeInteractionInvariantError(
+          `Question ${tracked.requestId} settled during pending-only admission`,
+        );
+      } finally {
+        tracked.completePublicationBarrier();
+      }
     }
     tracked.admissionState = 'pending';
+    if (this.publicationsSealed) {
+      tracked.completePublicationBarrier();
+      throw new RuntimeInteractionInvariantError(
+        `Question ${tracked.requestId} completed admission after Interaction publication sealed`,
+      );
+    }
   }
 
   assertPendingAdmission(request: AnyPermissionRequestEvent | UserQuestionRequestEvent): void {
     const tracked = this.continuations.get(request.requestId);
     const kind = request.type === 'permission_request' ? 'permission' : 'question';
-    // This synchronous guard is the publication linearization point. Close and
-    // settlement synchronously mark their state before starting durable work.
+    // This synchronous guard is the publication linearization point. Close
+    // blocks new tracking but lets its pre-existing exact admissions reach
+    // this point; settlement still invalidates publication synchronously.
     if (
+      this.publicationsSealed ||
       !tracked ||
       tracked.kind !== kind ||
       tracked.admissionState !== 'pending' ||
-      this.closeReason !== undefined ||
       tracked.settlementStarted ||
       tracked.settled ||
       tracked.published ||
       !isDeepStrictEqual(tracked.request, request)
     ) {
+      this.sealPublications();
       throw new RuntimeInteractionInvariantError(
         `Interaction request ${request.requestId} has no exact pending admission for Run ${this.runId}`,
       );
     }
     tracked.published = true;
+    tracked.completePublicationBarrier();
+  }
+
+  sealPublications(): void {
+    if (this.publicationsSealed) return;
+    this.publicationsSealed = true;
+    for (const tracked of this.continuations.values()) {
+      if (
+        tracked.admissionState === 'pending' &&
+        !tracked.published &&
+        !tracked.settlementStarted
+      ) {
+        tracked.completePublicationBarrier();
+      }
+    }
   }
 
   close(reason: RuntimeInteractionRunClosureReason): Promise<void> {
@@ -375,7 +422,10 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
     }
     if (this.closePromise) return this.closePromise;
     this.closeReason = reason;
-    this.closePromise = Promise.resolve()
+    const publicationBarriers = [...this.continuations.values()].map(
+      (tracked) => tracked.publicationBarrier,
+    );
+    this.closePromise = Promise.all(publicationBarriers)
       .then(() => this.owner.close(reason))
       .catch((error: unknown) => {
         if (
@@ -477,6 +527,7 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
       requestId: request.requestId,
       request,
       continuation,
+      ...createInteractionPublicationBarrier(),
       admissionState: undefined,
       published: false,
       settlementStarted: false,
@@ -516,6 +567,7 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
       requestId: request.requestId,
       request,
       continuation,
+      ...createInteractionPublicationBarrier(),
       admissionState: undefined,
       published: false,
       settlementStarted: false,
@@ -528,9 +580,13 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
   private assertNewContinuation(
     request: AnyPermissionRequestEvent | UserQuestionRequestEvent,
   ): void {
-    if (this.closePromise || this.released) {
+    if (this.closeReason !== undefined || this.publicationsSealed || this.released) {
+      const phase =
+        this.closeReason !== undefined
+          ? `Run ${this.runId} started closing`
+          : `Run ${this.runId} sealed Interaction publication`;
       throw new RuntimeInteractionInvariantError(
-        `Interaction request ${request.requestId} registered after Run ${this.runId} started closing`,
+        `Interaction request ${request.requestId} registered after ${phase}`,
       );
     }
     if (request.turnId !== this.turnId) {
@@ -564,7 +620,8 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
       .then(() => {
         tracked.outcome = outcome;
         tracked.settled = true;
-      });
+      })
+      .finally(() => tracked.completePublicationBarrier());
     tracked.settlementPromise = settlement;
     return settlement;
   }
@@ -613,6 +670,20 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
       );
     }
   }
+}
+
+function createInteractionPublicationBarrier(): Pick<
+  TrackedContinuationBase,
+  'publicationBarrier' | 'completePublicationBarrier'
+> {
+  let complete!: () => void;
+  const publicationBarrier = new Promise<void>((resolve) => {
+    complete = resolve;
+  });
+  return {
+    publicationBarrier,
+    completePublicationBarrier: complete,
+  };
 }
 
 function settlementMatchesAck(
