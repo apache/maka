@@ -64,45 +64,21 @@ describe('maka run argument parsing', () => {
     assert.equal(parseMakaRunArgs(['x', '--graph', '--graph']).kind, 'error');
   });
 
-  test('parses a non-interactive permission mode and repeatable exact rules', () => {
-    assert.deepEqual(
-      parseMakaRunArgs([
-        'run tools',
-        '--permission-mode',
-        'execute',
-        '--allow',
-        'category:file_write',
-        '--allow',
-        'tool:WriteStdin',
-        '--deny',
-        'Bash(npm  test)',
-        '--allow',
-        'Bash(npm test)',
-      ]),
-      {
-        kind: 'run',
-        options: {
-          prompt: 'run tools',
-          stdinPrompt: false,
-          permissionMode: 'execute',
-          permissionRules: [
-            { effect: 'allow', kind: 'category', category: 'file_write' },
-            { effect: 'allow', kind: 'tool', toolName: 'WriteStdin' },
-            { effect: 'deny', kind: 'bash_exact', command: 'npm  test' },
-            { effect: 'allow', kind: 'bash_exact', command: 'npm test' },
-          ],
-        },
+  test('accepts only the explicit non-interactive sandbox bypass flag', () => {
+    assert.deepEqual(parseMakaRunArgs(['run tools', '--yolo']), {
+      kind: 'run',
+      options: {
+        prompt: 'run tools',
+        stdinPrompt: false,
+        yolo: true,
       },
-    );
+    });
   });
 
-  test('rejects interactive ask mode and malformed permission rules', () => {
+  test('rejects removed permission modes and rule flags', () => {
     assert.equal(parseMakaRunArgs(['x', '--permission-mode', 'ask']).kind, 'error');
-    assert.equal(parseMakaRunArgs(['x', '--allow', 'category:not-real']).kind, 'error');
-    assert.equal(parseMakaRunArgs(['x', '--allow', 'tool:']).kind, 'error');
-    assert.equal(parseMakaRunArgs(['x', '--allow', 'tool: WriteStdin']).kind, 'error');
-    assert.equal(parseMakaRunArgs(['x', '--deny', 'Bash()']).kind, 'error');
-    assert.equal(parseMakaRunArgs(['x', '--allow', 'Write(*)']).kind, 'error');
+    assert.equal(parseMakaRunArgs(['x', '--allow', 'tool:Read']).kind, 'error');
+    assert.equal(parseMakaRunArgs(['x', '--deny', 'Bash(npm test)']).kind, 'error');
   });
 
   test('parses resume and continue session selectors and rejects combining them', () => {
@@ -210,7 +186,13 @@ describe('maka run process contract', () => {
     const result = await runFixture(['hello'], { scenario: 'permission', input: '' });
     assert.equal(result.code, 1);
     assert.match(result.stderr, /denied permission request for WebSearch/);
-    assert.match(result.stderr, /permission request permission-1 was denied/);
+    assert.equal(result.stdout, '');
+  });
+
+  test('fails closed when a sandbox boundary request reaches non-interactive run', async () => {
+    const result = await runFixture(['hello'], { scenario: 'sandbox-boundary', input: '' });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /sandbox boundary expansion is unavailable/);
     assert.equal(result.stdout, '');
   });
 
@@ -223,38 +205,20 @@ describe('maka run process contract', () => {
     assert.match(result.stdout, /^maxSteps=3;/);
   });
 
-  test('passes permission mode and rules only to this invocation', async () => {
-    const permissionRules = [
-      { effect: 'deny', kind: 'category', category: 'read' },
-      { effect: 'allow', kind: 'bash_exact', command: 'npm test' },
-    ];
-    const result = await runFixture(
-      [
-        'hello',
-        '--permission-mode',
-        'bypass',
-        '--deny',
-        'category:read',
-        '--allow',
-        'Bash(npm test)',
-      ],
-      {
-        input: '',
-        env: {
-          MAKA_RUN_EXPECT_PERMISSION_MODE: 'bypass',
-          MAKA_RUN_EXPECT_PERMISSION_RULES: JSON.stringify(permissionRules),
-        },
-      },
-    );
+  test('creates a bypass boundary only when --yolo is explicit', async () => {
+    const result = await runFixture(['hello', '--yolo'], {
+      input: '',
+      env: { MAKA_RUN_EXPECT_PERMISSION_MODE: 'bypass' },
+    });
 
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, 'prompt=hello\n');
   });
 
-  test('returns exit 2 for ask mode before runtime startup', async () => {
+  test('returns exit 2 for removed permission flags before runtime startup', async () => {
     const result = await runFixture(['hello', '--permission-mode', 'ask'], { input: '' });
     assert.equal(result.code, 2);
-    assert.match(result.stderr, /permission-mode must be explore, execute, or bypass/);
+    assert.match(result.stderr, /unknown option: --permission-mode/);
     assert.equal(result.stdout, '');
   });
 
@@ -276,8 +240,6 @@ describe('maka run process contract', () => {
         resumed.llmConnectionSlug,
         '--model',
         resumed.model,
-        '--permission-mode',
-        resumed.permissionMode,
       ],
       {
         input: '',

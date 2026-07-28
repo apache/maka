@@ -106,6 +106,24 @@ const runtime: MakaRunRuntime = {
       await notify(failedResult('permission_denied', 'permission request permission-1 was denied'));
       return;
     }
+    if (scenario === 'sandbox-boundary') {
+      yield {
+        type: 'sandbox_boundary_request',
+        id: 'event-boundary',
+        turnId: input.turnId,
+        ts: 1,
+        requestId: 'boundary-1',
+        toolUseId: 'tool-boundary',
+        justification: 'Read an external file.',
+        expansion: {
+          filesystem: {
+            entries: [{ path: '/outside/file.txt', access: 'read', scope: 'exact' }],
+          },
+        },
+      };
+      if (!permissionDenied) throw new Error('sandbox boundary request was not denied');
+      return;
+    }
     if (scenario === 'slow') {
       process.stderr.write('fixture-ready\n');
       const keepAlive = setInterval(() => {}, 1_000);
@@ -133,7 +151,9 @@ const runtime: MakaRunRuntime = {
     await notify(completedResult(output));
   },
   async respondToPermission(_sessionId, response) {
-    permissionDenied = response.decision === 'deny' && response.requestId === 'permission-1';
+    permissionDenied =
+      response.decision === 'deny' &&
+      (response.requestId === 'permission-1' || response.requestId === 'boundary-1');
   },
   async stopSession() {
     releaseStop?.();
