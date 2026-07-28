@@ -148,6 +148,7 @@ describe('RuntimeKernel Interaction close cleanup', () => {
     fixture.releaseClose();
 
     const failure = await rejectionOf(stopped);
+    assert.ok(failure instanceof RuntimeOwnerCleanupError);
     assert.equal(containsFailure(failure, fixture.closeFailure), true);
     assert.equal(containsFailure(failure, stopFailure), true);
     await iterator.return?.(undefined).catch(() => undefined);

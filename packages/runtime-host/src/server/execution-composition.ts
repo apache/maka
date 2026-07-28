@@ -225,6 +225,11 @@ export async function createExecutionRuntimeHostComposition(
         } catch (error) {
           errors.push(error);
         }
+        try {
+          await graphCoordinator.close();
+        } catch (error) {
+          errors.push(error);
+        }
         if (recovered && !poisonFailure) {
           try {
             rootCloseTask ??= coordinator.close();
@@ -232,11 +237,6 @@ export async function createExecutionRuntimeHostComposition(
           } catch (error) {
             errors.push(error);
           }
-        }
-        try {
-          await graphCoordinator.close();
-        } catch (error) {
-          errors.push(error);
         }
         try {
           openedGraphControlStore.close();

@@ -1553,7 +1553,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     try {
       failures.throwIfAny(message);
     } catch (error) {
-      if (input.flowDone && containsRuntimeOwnerCleanupFailure(error)) {
+      if (containsRuntimeOwnerCleanupFailure(error)) {
         throw runtimeOwnerCleanupFailure(message, error);
       }
       throw error;
@@ -1676,9 +1676,13 @@ export class RuntimeKernel implements RuntimeKernelLike {
     for (const result of claimResults) {
       if (result.status === 'rejected') failures.push(result.reason);
     }
-    if (failures.length === 1) throw failures[0];
-    if (failures.length > 1) {
-      throw new AggregateError(failures, `Session ${sessionId} stop ownership failed`);
+    if (failures.length > 0) {
+      const message = `Session ${sessionId} stop ownership failed`;
+      const error = failures.length === 1 ? failures[0] : new AggregateError(failures, message);
+      if (containsRuntimeOwnerCleanupFailure(error)) {
+        throw runtimeOwnerCleanupFailure(message, error);
+      }
+      throw error;
     }
 
     operation = this.stopOperations.get(sessionId) ?? operation;
@@ -1814,7 +1818,17 @@ export class RuntimeKernel implements RuntimeKernelLike {
       }
     });
     await Promise.all([...interactionClosures, ...backendStops]);
-    if (newlyFailed) failures.throwIfAny(`Stop cleanup failed for session ${sessionId}`);
+    if (newlyFailed) {
+      const message = `Stop cleanup failed for session ${sessionId}`;
+      try {
+        failures.throwIfAny(message);
+      } catch (error) {
+        if (containsRuntimeOwnerCleanupFailure(error)) {
+          throw runtimeOwnerCleanupFailure(message, error);
+        }
+        throw error;
+      }
+    }
 
     if (!operation.statusProjected) {
       await this.updateStatus(sessionId, 'aborted', undefined, operation.ts);
