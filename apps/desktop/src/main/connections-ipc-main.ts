@@ -10,8 +10,9 @@ import type {
 } from '@maka/core';
 import { PROVIDER_DEFAULTS, providerAuthRequiresSecret } from '@maka/core/llm-connections';
 import type { LlmConnection } from '@maka/core/llm-connections';
-import { fetchProviderModels, testConnection } from '@maka/runtime';
+import { testConnection } from '@maka/runtime';
 import { createConnectionStore } from '@maka/storage';
+import { discoverConnectionModels } from './connection-model-discovery.js';
 import { createFileCredentialStore } from './credential-store.js';
 import { createConnectionWithCredential } from './create-connection-with-credential.js';
 import { connectionTestStatusPatch } from './connection-test-status.js';
@@ -219,28 +220,13 @@ export function registerConnectionsIpc(deps: ConnectionsIpcDeps): void {
   });
   ipcMain.handle('connections:fetchModels', async (_event, slug: string) => {
     slug = normalizeConnectionSlugForIpc(slug, 'connection slug');
-    const connection = await connectionStore.get(slug);
-    if (!connection) throw new Error(`找不到模型连接：${slug}`);
-    const apiKey = await resolveConnectionSecret(slug);
-    if (providerAuthRequiresSecret(connection.providerType) && !apiKey) {
-      throw new Error(PROVIDER_DEFAULTS[connection.providerType].authKind === 'oauth_token'
-        ? '这个 OAuth 模型连接还没有登录'
-        : '这个模型连接还没有保存 API key');
-    }
     try {
-      const fetchedAt = Date.now();
-      const models = await fetchProviderModels(connection, apiKey ?? '');
-      await connectionStore.update(slug, {
-        models,
-        modelSource: 'fetched',
-        modelsFetchedAt: fetchedAt,
-      });
+      const result = await discoverConnectionModels({
+        connectionStore,
+        resolveConnectionSecret,
+      }, slug);
       emitConnectionListChanged();
-      return {
-        models,
-        source: 'fetched',
-        fetchedAt,
-      };
+      return result;
     } catch (error) {
       throw new Error(generalizedErrorMessageChinese(error, '拉取模型列表失败'));
     }

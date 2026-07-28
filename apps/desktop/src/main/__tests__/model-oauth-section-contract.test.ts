@@ -346,6 +346,24 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
       /if \([\s\S]*supportsRemoteDiscovery[\s\S]*&&[\s\S]*\(wroteNewKey \|\| hasBaseUrlChange \|\| models\.length === 0\)[\s\S]*\) \{[\s\S]*refreshModels\(\{ silent: true \}\)/,
       'saving a new credential or endpoint must refresh the remote model catalog',
     );
+
+    const component = await readFile(
+      resolve(
+        REPO_ROOT,
+        'apps',
+        'desktop',
+        'src',
+        'renderer',
+        'settings',
+        'provider-connection-detail.tsx',
+      ),
+      'utf8',
+    );
+    assert.match(
+      component,
+      /\{supportsRemoteDiscovery && \([\s\S]*onClick=\{\(\) => void refreshModels\(\)\}[\s\S]*\)\}/,
+      'fallback-only providers must not render a model-refresh action',
+    );
   });
 
   it('OAuth login uses the same centered connection dialog as API providers', async () => {

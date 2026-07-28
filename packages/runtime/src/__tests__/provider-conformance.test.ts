@@ -1336,7 +1336,8 @@ describe('models.dev provider conformance', () => {
       assert.equal(request.headers.authorization, 'Bearer cloudflare-workers-ai-test-token');
       if (
         request.method === 'GET' &&
-        request.url === '/client/v4/accounts/account-123/ai/models/search?page=1&per_page=50'
+        request.url ===
+          '/client/v4/accounts/account-123/ai/models/search?page=1&per_page=50&task=Text+Generation'
       ) {
         respondJson(response, 200, {
           success: true,

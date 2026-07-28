@@ -103,19 +103,13 @@ class FileConnectionStore implements ConnectionStore {
         Object.prototype.hasOwnProperty.call(patch, 'models') ||
         Object.prototype.hasOwnProperty.call(patch, 'modelSource') ||
         Object.prototype.hasOwnProperty.call(patch, 'modelsFetchedAt');
-      const clearsModelCache =
-        !updatesModelCache && (patch.apiKey !== undefined || patch.baseUrl !== undefined);
       const clearsTestStatus =
         !updatesTestStatus &&
         (patch.apiKey !== undefined ||
           patch.baseUrl !== undefined ||
           patch.defaultModel !== undefined ||
           patch.models !== undefined);
-      const models = updatesModelCache
-        ? patch.models
-        : clearsModelCache
-          ? undefined
-          : current.models;
+      const models = updatesModelCache ? patch.models : current.models;
       let defaultModel = patch.defaultModel ?? current.defaultModel;
       let enabledModelIds = connectionEnabledModelIds({
         defaultModel,
@@ -146,16 +140,8 @@ class FileConnectionStore implements ConnectionStore {
         enabled: patch.enabled ?? current.enabled,
         enabledModelIds,
         models,
-        modelSource: updatesModelCache
-          ? patch.modelSource
-          : clearsModelCache
-            ? undefined
-            : current.modelSource,
-        modelsFetchedAt: updatesModelCache
-          ? patch.modelsFetchedAt
-          : clearsModelCache
-            ? undefined
-            : current.modelsFetchedAt,
+        modelSource: updatesModelCache ? patch.modelSource : current.modelSource,
+        modelsFetchedAt: updatesModelCache ? patch.modelsFetchedAt : current.modelsFetchedAt,
         lastTestStatus: updatesTestStatus
           ? patch.lastTestStatus
           : clearsTestStatus

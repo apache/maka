@@ -11,117 +11,26 @@ after(async () => {
 });
 
 describe('fetchProviderModels', () => {
-  test('Alibaba Coding Plan discovers the current remote catalog instead of returning its bundled snapshot', async () => {
-    const requests: Array<{ url: string; authorization: string | undefined }> = [];
-    const server = await startJsonServer((request, response) => {
-      requests.push({ url: request.url ?? '', authorization: request.headers.authorization });
-      respondJson(response, 200, {
-        object: 'list',
-        data: [{ id: 'qwen-next-after-release', object: 'model' }],
-      });
-    });
-
-    const models = await fetchProviderModels(
-      {
-        slug: 'alibaba-coding-plan',
-        name: 'Alibaba Coding Plan',
-        providerType: 'alibaba-coding-plan',
-        baseUrl: `${server.url}/v1`,
-        defaultModel: 'qwen3-coder-plus',
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
-      },
-      'alibaba-coding-plan-test-key',
-    );
-
-    assert.deepEqual(models, [{ id: 'qwen-next-after-release' }]);
-    assert.deepEqual(requests, [
-      {
-        url: '/v1/models',
-        authorization: 'Bearer alibaba-coding-plan-test-key',
-      },
-    ]);
-  });
-
-  test('fallback-only OpenAI-compatible providers use their inference credential for remote discovery', async () => {
-    const requests: Array<{ url: string; authorization: string | undefined }> = [];
-    const server = await startJsonServer((request, response) => {
-      requests.push({ url: request.url ?? '', authorization: request.headers.authorization });
-      respondJson(response, 200, {
-        object: 'list',
-        data: [{ id: 'provider-model-after-release', object: 'model' }],
-      });
-    });
-    const providerTypes = [
-      'tencent-coding-plan',
-      'volcengine-coding-plan',
-      'tencent-token-plan',
-      'xiaomi-token-plan-cn',
-      'xiaomi-token-plan-sgp',
-      'xiaomi-token-plan-ams',
-      'stepfun-step-plan',
-      'stepfun-ai-step-plan',
-      'alibaba-coding-plan-cn',
-      'alibaba-token-plan-cn',
-      'alibaba-token-plan',
-    ] as const;
-
-    for (const providerType of providerTypes) {
-      const models = await fetchProviderModels(
-        {
-          slug: providerType,
-          name: providerType,
-          providerType,
-          baseUrl: `${server.url}/v1`,
-          defaultModel: 'bundled-model',
-          enabled: true,
-          createdAt: 1,
-          updatedAt: 1,
-        },
-        'provider-inference-key',
-      );
-      assert.deepEqual(models, [{ id: 'provider-model-after-release' }], providerType);
-    }
-
-    assert.equal(requests.length, providerTypes.length);
-    assert.ok(
-      requests.every(
-        (request) =>
-          request.url === '/v1/models' && request.authorization === 'Bearer provider-inference-key',
-      ),
-    );
-  });
-
   test('Cloudflare Workers AI discovers text-generation models through its native paginated API', async () => {
     const requests: Array<{ url: string; authorization: string | undefined }> = [];
     const server = await startJsonServer((request, response) => {
       requests.push({ url: request.url ?? '', authorization: request.headers.authorization });
       const page = new URL(request.url ?? '', 'http://test.local').searchParams.get('page');
+      const result =
+        page === '2'
+          ? [{ name: '@cf/qwen/qwen-next' }]
+          : Array.from({ length: 50 }, (_, index) => ({
+              name: `@cf/example/text-model-${index}`,
+            }));
       respondJson(response, 200, {
         success: true,
-        result:
-          page === '2'
-            ? [
-                {
-                  id: 'numeric-internal-id-2',
-                  name: '@cf/qwen/qwen-next',
-                  task: { id: 'text-generation', name: 'Text Generation' },
-                },
-              ]
-            : [
-                {
-                  id: 'numeric-internal-id-1',
-                  name: '@cf/meta/llama-next',
-                  task: { id: 'text-generation', name: 'Text Generation' },
-                },
-                {
-                  id: 'image-model',
-                  name: '@cf/black-forest-labs/flux-next',
-                  task: { id: 'text-to-image', name: 'Text to Image' },
-                },
-              ],
-        result_info: { page: Number(page), total_pages: 2 },
+        result,
+        result_info: {
+          page: Number(page),
+          per_page: 50,
+          count: result.length,
+          total_count: 51,
+        },
       });
     });
 
@@ -139,17 +48,56 @@ describe('fetchProviderModels', () => {
       'cloudflare-api-token',
     );
 
-    assert.deepEqual(models, [{ id: '@cf/meta/llama-next' }, { id: '@cf/qwen/qwen-next' }]);
+    assert.equal(models.length, 51);
+    assert.equal(models[0]?.id, '@cf/example/text-model-0');
+    assert.equal(models[50]?.id, '@cf/qwen/qwen-next');
     assert.deepEqual(requests, [
       {
-        url: '/client/v4/accounts/account-123/ai/models/search?page=1&per_page=50',
+        url: '/client/v4/accounts/account-123/ai/models/search?page=1&per_page=50&task=Text+Generation',
         authorization: 'Bearer cloudflare-api-token',
       },
       {
-        url: '/client/v4/accounts/account-123/ai/models/search?page=2&per_page=50',
+        url: '/client/v4/accounts/account-123/ai/models/search?page=2&per_page=50&task=Text+Generation',
         authorization: 'Bearer cloudflare-api-token',
       },
     ]);
+  });
+
+  test('Cloudflare Workers AI bounds pagination before an oversized catalog can be persisted', async () => {
+    let requestCount = 0;
+    const server = await startJsonServer((_request, response) => {
+      requestCount += 1;
+      respondJson(response, 200, {
+        success: true,
+        result: Array.from({ length: 50 }, (_, index) => ({
+          name: `@cf/example/page-${requestCount}-model-${index}`,
+        })),
+        result_info: {
+          page: requestCount,
+          per_page: 50,
+          count: 50,
+          total_count: 10_000,
+        },
+      });
+    });
+
+    await assert.rejects(
+      fetchProviderModels(
+        {
+          slug: 'cloudflare-workers-ai',
+          name: 'Cloudflare Workers AI',
+          providerType: 'cloudflare-workers-ai',
+          baseUrl: `${server.url}/client/v4/accounts/account-123/ai/v1`,
+          defaultModel: '@cf/example/default',
+          enabled: true,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        'cloudflare-api-token',
+      ),
+      /Failed to fetch provider models/,
+    );
+    assert.equal(requestCount, 41);
   });
 
   test('OpenCode Zen and Go discover exact account model ids with their shared API-key auth shape', async () => {
@@ -804,14 +752,14 @@ describe('fetchProviderModels', () => {
     );
   });
 
-  test('discovery rejects empty responses so callers preserve the last usable snapshot', async () => {
+  test('normalization leaves empty-catalog policy to the caller that owns persistence', async () => {
     const server = await startJsonServer((_request, response) => {
       respondJson(response, 200, { data: [] });
     });
 
-    await assert.rejects(
-      fetchProviderModels({ ...zaiConnection(), baseUrl: server.url }, 'zai-live-secret'),
-      /Failed to fetch provider models/,
+    assert.deepEqual(
+      await fetchProviderModels({ ...zaiConnection(), baseUrl: server.url }, 'zai-live-secret'),
+      [],
     );
   });
 

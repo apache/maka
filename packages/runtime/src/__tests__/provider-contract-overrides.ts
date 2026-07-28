@@ -90,7 +90,7 @@ async function runCloudflareDiscovery(): Promise<void> {
     assert.equal(request.method, 'GET');
     assert.equal(
       request.url,
-      '/client/v4/accounts/account-123/ai/models/search?page=1&per_page=50',
+      '/client/v4/accounts/account-123/ai/models/search?page=1&per_page=50&task=Text+Generation',
     );
     assert.equal(request.headers.authorization, 'Bearer cloudflare-test-token');
     respondJson(response, 200, {
@@ -99,10 +99,6 @@ async function runCloudflareDiscovery(): Promise<void> {
         {
           name: '@cf/meta/llama-text',
           task: { id: 'text-generation', name: 'Text Generation' },
-        },
-        {
-          name: '@cf/black-forest-labs/flux-image',
-          task: { id: 'text-to-image', name: 'Text to Image' },
         },
       ],
       result_info: { page: 1, total_pages: 1 },

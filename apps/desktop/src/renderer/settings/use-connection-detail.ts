@@ -463,6 +463,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     usesGitHubCopilotLogin,
     oauthLoginService,
     hasFixedOAuthBaseUrl,
+    supportsRemoteDiscovery,
     credentialProbePending,
     hasUsableCredential,
     apiKeyStatusHint,

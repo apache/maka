@@ -60,6 +60,7 @@ export const MAIN_PROCESS_SOURCE_REPO_PATHS: readonly string[] = [
   'apps/desktop/src/main/bot-incoming-main.ts',
   'apps/desktop/src/main/browser-ipc-main.ts',
   'apps/desktop/src/main/config-ipc-main.ts',
+  'apps/desktop/src/main/connection-model-discovery.ts',
   'apps/desktop/src/main/create-connection-with-credential.ts',
   'apps/desktop/src/main/connections-ipc-main.ts',
   'apps/desktop/src/main/daily-review-ipc-main.ts',

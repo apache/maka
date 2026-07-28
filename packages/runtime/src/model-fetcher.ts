@@ -19,6 +19,10 @@ import {
 } from './subscription-credentials.js';
 
 const MODEL_FETCH_TIMEOUT_MS = 10_000;
+const CLOUDFLARE_MODEL_PAGE_SIZE = 50;
+const CLOUDFLARE_MODEL_MAX_PAGES = Math.ceil(
+  CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION / CLOUDFLARE_MODEL_PAGE_SIZE,
+);
 
 type RawProviderModel = {
   id?: string;
@@ -57,10 +61,6 @@ type RawCohereModel = {
 
 type RawCloudflareModel = {
   name?: unknown;
-  task?: {
-    id?: unknown;
-    name?: unknown;
-  };
 };
 
 type RawGitHubCopilotModel = {
@@ -97,7 +97,7 @@ export async function fetchProviderModels(
   apiKey: string,
 ): Promise<ModelInfo[]> {
   try {
-    return validateDiscoveredModels(await fetchProviderModelsStrict(connection, apiKey));
+    return normalizeDiscoveredModels(await fetchProviderModelsStrict(connection, apiKey));
   } catch (error) {
     // Preserve status-bearing discovery errors so the sync layer can classify
     // auth/protocol/network failures; only wrap unknown errors for display.
@@ -220,8 +220,8 @@ async function fetchProviderModelsStrict(
 async function fetchCloudflareModels(baseUrl: string, apiKey: string): Promise<ModelInfo[]> {
   const models: ModelInfo[] = [];
   let page = 1;
-  let totalPages = 1;
-  do {
+  let rawModelCount = 0;
+  while (page <= CLOUDFLARE_MODEL_MAX_PAGES) {
     const url = cloudflareModelsUrl(baseUrl, page);
     const response = await proxiedFetch(url, {
       headers: { authorization: `Bearer ${apiKey}` },
@@ -231,36 +231,24 @@ async function fetchCloudflareModels(baseUrl: string, apiKey: string): Promise<M
     const data = (await response.json()) as {
       success?: unknown;
       result?: unknown;
-      result_info?: { total_pages?: unknown };
     };
     if (data.success !== true || !Array.isArray(data.result)) {
       throw new Error('Invalid Cloudflare models response');
     }
+    rawModelCount += data.result.length;
+    if (rawModelCount > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION) {
+      throw new Error('Provider returned too many models');
+    }
     models.push(
       ...data.result.flatMap((raw) => {
         const model = raw as RawCloudflareModel;
-        const taskId = typeof model.task?.id === 'string' ? model.task.id.trim().toLowerCase() : '';
-        const taskName =
-          typeof model.task?.name === 'string' ? model.task.name.trim().toLowerCase() : '';
-        if (
-          typeof model.name !== 'string' ||
-          (taskId !== 'text-generation' && taskName !== 'text generation')
-        ) {
-          return [];
-        }
-        return [{ id: model.name }];
+        return typeof model.name === 'string' ? [{ id: model.name }] : [];
       }),
     );
-    const reportedTotalPages = data.result_info?.total_pages;
-    totalPages =
-      typeof reportedTotalPages === 'number' &&
-      Number.isInteger(reportedTotalPages) &&
-      reportedTotalPages >= page
-        ? reportedTotalPages
-        : page;
+    if (data.result.length < CLOUDFLARE_MODEL_PAGE_SIZE) return models;
     page += 1;
-  } while (page <= totalPages);
-  return models;
+  }
+  throw new Error('Provider returned too many models');
 }
 
 function cloudflareModelsUrl(baseUrl: string, page: number): string {
@@ -269,11 +257,15 @@ function cloudflareModelsUrl(baseUrl: string, page: number): string {
     throw new Error('Cloudflare Workers AI base URL must end with /ai/v1');
   }
   url.pathname = url.pathname.replace(/\/ai\/v1\/?$/, '/ai/models/search');
-  url.search = new URLSearchParams({ page: String(page), per_page: '50' }).toString();
+  url.search = new URLSearchParams({
+    page: String(page),
+    per_page: String(CLOUDFLARE_MODEL_PAGE_SIZE),
+    task: 'Text Generation',
+  }).toString();
   return url.toString();
 }
 
-function validateDiscoveredModels(models: ModelInfo[]): ModelInfo[] {
+function normalizeDiscoveredModels(models: ModelInfo[]): ModelInfo[] {
   const unique = new Map<string, ModelInfo>();
   for (const model of models) {
     if (typeof model?.id !== 'string') continue;
@@ -290,9 +282,6 @@ function validateDiscoveredModels(models: ModelInfo[]): ModelInfo[] {
     if (unique.size > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION) {
       throw new Error('Provider returned too many models');
     }
-  }
-  if (unique.size === 0) {
-    throw new Error('Provider returned no usable models');
   }
   return [...unique.values()];
 }

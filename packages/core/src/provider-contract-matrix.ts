@@ -109,7 +109,7 @@ export type ProviderContractReverseAssertion = 'must-not-request-models-endpoint
 export interface ProviderContractNotApplicableCell {
   state: 'not-applicable';
   dimension: ProviderContractDimension;
-  /** Machine-readable justification derived from the declaration. */
+  /** Human-readable justification derived from the provider declaration. */
   reason: string;
   /** An assertion the executor must still hold even though the dimension is N/A. */
   reverseAssertion?: ProviderContractReverseAssertion;
