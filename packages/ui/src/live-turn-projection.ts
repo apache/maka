@@ -99,7 +99,7 @@ export function applyLiveTurnEvent(
     return { ...withoutRetry, terminal: true, steps };
   }
   if (event.type === 'complete') {
-    if (event.stopReason === 'permission_handoff' || !current || current.turnId !== event.turnId) return current;
+    if (!current || current.turnId !== event.turnId) return current;
     if (current.steps.length === 0) return undefined;
     const { providerRetry: _providerRetry, ...withoutRetry } = current;
     return {
