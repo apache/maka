@@ -5,6 +5,7 @@ import { lstat, open, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, join, normalize, parse, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
+import { hasEnclosingGitEntry } from './git-entry.js';
 import { publishMarkerFile, readBoundedMarkerFile } from './marker-file.js';
 
 export const WORKSPACE_MARKER_FILE = '.maka-workspace.json';
@@ -186,21 +187,6 @@ async function ensureWorkspaceMarkerIgnored(workspacePath: string): Promise<void
     await handle.sync();
   } finally {
     await handle.close();
-  }
-}
-
-async function hasEnclosingGitEntry(workspacePath: string): Promise<boolean> {
-  let currentPath = workspacePath;
-  while (true) {
-    try {
-      await lstat(join(currentPath, '.git'));
-      return true;
-    } catch (error) {
-      if (!isMissingPathError(error)) throw error;
-    }
-    const parentPath = parse(currentPath).dir;
-    if (parentPath === currentPath) return false;
-    currentPath = parentPath;
   }
 }
 

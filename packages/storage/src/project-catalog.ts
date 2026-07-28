@@ -4,6 +4,7 @@ import { mkdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/prom
 import { basename, dirname, join, normalize, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { ProjectLocation, ProjectRecord } from '@maka/core';
+import { hasEnclosingGitEntry } from './git-entry.js';
 
 export type { ProjectLocation, ProjectRecord } from '@maka/core';
 
@@ -117,6 +118,13 @@ class FileProjectCatalog implements ProjectCatalog {
       resolved = await resolveProjectLocation({ path });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      let pathIsMissing = false;
+      try {
+        await stat(path);
+      } catch (pathError) {
+        pathIsMissing = (pathError as NodeJS.ErrnoException).code === 'ENOENT';
+      }
+      if (!pathIsMissing) throw error;
       const canonicalPath = normalize(resolve(path));
       resolved = {
         canonicalPath,
@@ -525,61 +533,59 @@ export async function resolveProjectLocation(input: {
   path: string;
 }): Promise<ResolvedProjectLocation> {
   const canonicalPath = normalize(await realpath(resolve(input.path)));
-  const git = await resolveGitLocation(canonicalPath);
-  if (git) {
+  if (!(await hasEnclosingGitEntry(canonicalPath))) {
     return {
       canonicalPath,
-      identity: `git:${git.commonDir}`,
-      kind: 'git',
-      git,
+      identity: `folder:${canonicalPath}`,
+      kind: 'folder',
     };
   }
+  const git = await resolveGitLocation(canonicalPath);
   return {
     canonicalPath,
-    identity: `folder:${canonicalPath}`,
-    kind: 'folder',
+    identity: `git:${git.commonDir}`,
+    kind: 'git',
+    git,
   };
 }
 
 async function resolveGitLocation(
   canonicalPath: string,
-): Promise<NonNullable<ResolvedProjectLocation['git']> | undefined> {
+): Promise<NonNullable<ResolvedProjectLocation['git']>> {
   const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
   delete env.GIT_DIR;
   delete env.GIT_WORK_TREE;
   delete env.GIT_INDEX_FILE;
   delete env.GIT_COMMON_DIR;
-  try {
-    const { stdout: locationOutput } = await execFileAsync(
-      'git',
-      [
-        '-C',
-        canonicalPath,
-        'rev-parse',
-        '--path-format=absolute',
-        '--show-toplevel',
-        '--git-dir',
-        '--git-common-dir',
-      ],
-      {
-        env,
-        encoding: 'utf8',
-        maxBuffer: 64 * 1024,
-        timeout: 3_000,
-        windowsHide: true,
-      },
-    );
-    const [worktreeRootRaw, gitDirRaw, commonDirRaw] = locationOutput.trim().split(/\r?\n/);
-    if (!worktreeRootRaw || !gitDirRaw || !commonDirRaw) return undefined;
-    const worktreeRoot = normalize(await realpath(worktreeRootRaw));
-    const gitDir = normalize(await realpath(gitDirRaw));
-    const commonDir = normalize(await realpath(commonDirRaw));
-    return {
-      commonDir,
-      worktreeRoot,
-      isWorktree: gitDir !== commonDir,
-    };
-  } catch {
-    return undefined;
+  const { stdout: locationOutput } = await execFileAsync(
+    'git',
+    [
+      '-C',
+      canonicalPath,
+      'rev-parse',
+      '--path-format=absolute',
+      '--show-toplevel',
+      '--git-dir',
+      '--git-common-dir',
+    ],
+    {
+      env,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024,
+      timeout: 3_000,
+      windowsHide: true,
+    },
+  );
+  const [worktreeRootRaw, gitDirRaw, commonDirRaw] = locationOutput.trim().split(/\r?\n/);
+  if (!worktreeRootRaw || !gitDirRaw || !commonDirRaw) {
+    throw new Error(`Git returned an incomplete project location for: ${canonicalPath}`);
   }
+  const worktreeRoot = normalize(await realpath(worktreeRootRaw));
+  const gitDir = normalize(await realpath(gitDirRaw));
+  const commonDir = normalize(await realpath(commonDirRaw));
+  return {
+    commonDir,
+    worktreeRoot,
+    isWorktree: gitDir !== commonDir,
+  };
 }

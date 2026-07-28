@@ -1,11 +1,50 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, parse } from 'node:path';
 import { test } from 'node:test';
+import { promisify } from 'node:util';
 
-import { createProjectCatalog, resolveProjectLocation } from '../project-catalog.js';
+import {
+  createProjectCatalog,
+  type ResolvedProjectLocation,
+  resolveProjectLocation,
+} from '../project-catalog.js';
 import { createGitRepositoryWithWorktree } from './fixtures/git-repository.js';
+
+const execFileAsync = promisify(execFile);
+
+test('a plain folder resolves without requiring the Git executable', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-folder-no-git-'));
+  try {
+    const folder = join(base, 'folder');
+    await mkdir(folder);
+
+    assert.deepEqual(await resolveProjectLocationWithoutGit(folder), {
+      canonicalPath: await realpath(folder),
+      identity: `folder:${await realpath(folder)}`,
+      kind: 'folder',
+    });
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('a Git probe failure cannot persistently downgrade a repository to a folder', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-repository-no-git-'));
+  try {
+    const repository = join(base, 'repository');
+    const storage = join(base, 'storage');
+    await mkdir(repository);
+    await execFileAsync('git', ['init', '--quiet'], { cwd: repository });
+
+    await assert.rejects(() => importLegacyProjectWithoutGit(repository, storage));
+    await assert.rejects(() => readFile(join(storage, 'projects.json')), { code: 'ENOENT' });
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
 
 test('a repository and its linked worktree resolve to one project identity', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-location-'));
@@ -27,6 +66,34 @@ test('a repository and its linked worktree resolve to one project identity', asy
     await rm(base, { recursive: true, force: true });
   }
 });
+
+async function resolveProjectLocationWithoutGit(path: string): Promise<ResolvedProjectLocation> {
+  const stdout = await runProjectCatalogWithoutGit(
+    'const [moduleUrl, path] = process.argv.slice(1); const { resolveProjectLocation } = await import(moduleUrl); console.log(JSON.stringify(await resolveProjectLocation({ path })));',
+    path,
+  );
+  return JSON.parse(stdout) as ResolvedProjectLocation;
+}
+
+async function importLegacyProjectWithoutGit(path: string, storage: string): Promise<void> {
+  await runProjectCatalogWithoutGit(
+    'const [moduleUrl, path, storage] = process.argv.slice(1); const { createProjectCatalog } = await import(moduleUrl); await createProjectCatalog(storage).importLegacyPath(path);',
+    path,
+    storage,
+  );
+}
+
+async function runProjectCatalogWithoutGit(source: string, ...args: string[]): Promise<string> {
+  const env: NodeJS.ProcessEnv = { ...process.env, PATH: '' };
+  delete env.Path;
+  const moduleUrl = new URL('../project-catalog.js', import.meta.url).href;
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ['--input-type=module', '-e', source, moduleUrl, ...args],
+    { env, encoding: 'utf8' },
+  );
+  return stdout;
+}
 
 test('registering a repository and its linked worktree creates one project with two locations', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-catalog-'));
