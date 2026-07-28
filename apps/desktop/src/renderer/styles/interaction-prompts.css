@@ -17,15 +17,15 @@
 
 .maka-sandbox-boundary-copy h2 {
   color: var(--text-primary);
-  font-size: var(--font-size-sm);
-  font-weight: 650;
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-semibold);
 }
 
 .maka-sandbox-boundary-copy p {
   margin-top: var(--space-1);
   color: var(--text-secondary);
-  font-size: var(--font-size-xs);
-  line-height: 1.45;
+  font-size: var(--font-size-caption);
+  line-height: var(--leading-normal);
 }
 
 .maka-sandbox-boundary-scopes {
@@ -43,10 +43,11 @@
   justify-content: space-between;
   gap: var(--space-3);
   color: var(--text-secondary);
-  font-size: var(--font-size-xs);
+  font-size: var(--font-size-caption);
 }
 
 .maka-sandbox-boundary-scopes code {
+  min-width: 0;
   overflow: hidden;
   color: var(--text-primary);
   text-overflow: ellipsis;
