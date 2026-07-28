@@ -556,6 +556,7 @@ export type {
   SandboxBoundaryExpansionValidationResult,
   SandboxBoundaryFilesystemEntry,
   SandboxBoundaryDecision,
+  SandboxBoundaryResponse,
   SandboxBoundaryRequest,
   SandboxBoundaryRequestStatus,
   SandboxBoundarySettlement,

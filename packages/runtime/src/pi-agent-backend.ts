@@ -15,7 +15,8 @@ import {
   decodeCanonicalToolResultContent,
   TOOL_OUTPUT_DELTA_MAX_CHARS,
 } from '@maka/core';
-import type { BackendSendInput, PermissionDecision } from '@maka/core/backend-types';
+import type { BackendSendInput } from '@maka/core/backend-types';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import { redactSecrets } from '@maka/core/redaction';
 
 import type { AgentBackend } from '@maka/core/backend-types';
@@ -329,7 +330,7 @@ export class PiAgentBackend implements AgentBackend {
     await this.input.transport.stop?.(reason);
   }
 
-  async respondToPermission(decision: PermissionDecision): Promise<void> {
+  async respondToSandboxBoundary(decision: SandboxBoundaryResponse): Promise<void> {
     throw new Error(`No pending sandbox boundary request ${decision.requestId}`);
   }
 

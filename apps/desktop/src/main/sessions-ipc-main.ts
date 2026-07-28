@@ -319,12 +319,12 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
     emitSessionsChanged('turn-status-change', sessionId);
     emitSessionsChanged('message-appended', sessionId);
   });
-  ipcMain.handle('sessions:respondToPermission', async (_event, sessionId: string, response) => {
+  ipcMain.handle('sessions:respondToSandboxBoundary', async (_event, sessionId: string, response) => {
     const normalized = normalizePermissionResponse(response);
     if (normalized.decision === 'allow') {
       await ensureSessionWorkspaceAvailable(sessionId);
     }
-    await runtime.respondToPermission(sessionId, normalized);
+    await runtime.respondToSandboxBoundary(sessionId, normalized);
     notifyAgentGraphPermissionResponse?.(sessionId);
   });
   ipcMain.handle('sessions:respondToUserQuestion', async (_event, sessionId: string, response) => {

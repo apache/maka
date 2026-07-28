@@ -147,7 +147,7 @@ describe('home composer new-chat model picker', () => {
   it('wires composer permission mode picks to the global chat default', async () => {
     const renderer = await readRendererShellCombinedSource();
     const setPermissionModeBlock = renderer.match(/async function setPermissionMode[\s\S]*?async function setSessionModel/)?.[0] ?? '';
-    const sendBlock = renderer.match(/async function send\([\s\S]*?\n  async function respondToPermission/)?.[0] ?? '';
+    const sendBlock = renderer.match(/async function send\([\s\S]*?\n  async function respondToSandboxBoundary/)?.[0] ?? '';
 
     assert.doesNotMatch(
       renderer,
@@ -181,7 +181,7 @@ describe('home composer new-chat model picker', () => {
       'app-shell-chat-actions.ts',
       'app-shell.tsx',
     ]);
-    const sendBlock = renderer.match(/async function send\([\s\S]*?\n  async function respondToPermission/)?.[0] ?? '';
+    const sendBlock = renderer.match(/async function send\([\s\S]*?\n  async function respondToSandboxBoundary/)?.[0] ?? '';
 
     // The three facts this predicate rests on, asserted where each one is now
     // decided rather than re-stated here. The previous version matched the

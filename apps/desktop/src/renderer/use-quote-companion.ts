@@ -10,7 +10,7 @@ import {
 } from '@maka/ui';
 import type {
   AnyPermissionRequestEvent,
-  PermissionResponse,
+  SandboxBoundaryResponse,
   QuoteRef,
   SessionEvent,
   SessionSummary,
@@ -66,7 +66,7 @@ export interface UseQuoteCompanionResult {
    *  quotes in place so the user can retry. */
   send: (text: string) => Promise<boolean>;
   stop: () => Promise<void>;
-  respondToPermission: (response: PermissionResponse) => Promise<void>;
+  respondToSandboxBoundary: (response: SandboxBoundaryResponse) => Promise<void>;
   respondToUserQuestion: (response: UserQuestionResponse) => Promise<void>;
 }
 
@@ -260,15 +260,18 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     }
   }, []);
 
-  const respondToPermission = useCallback(async (response: PermissionResponse): Promise<void> => {
+  const respondToSandboxBoundary = useCallback(
+    async (response: SandboxBoundaryResponse): Promise<void> => {
     const id = companionIdRef.current;
     if (!id) return;
     try {
-      await window.maka.sessions.respondToPermission(id, response);
+      await window.maka.sessions.respondToSandboxBoundary(id, response);
     } catch {
       setError(copyRef.current.errors.respondFailed);
     }
-  }, []);
+    },
+    [],
+  );
 
   const respondToUserQuestion = useCallback(
     async (response: UserQuestionResponse): Promise<void> => {
@@ -316,7 +319,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     activeQuestion,
     send,
     stop,
-    respondToPermission,
+    respondToSandboxBoundary,
     respondToUserQuestion,
   };
 }

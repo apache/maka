@@ -694,7 +694,7 @@ describe('Maka session driver', () => {
     });
 
     await collectPrompt(driver, 'run tests');
-    await driver.respondToPermission({
+    await driver.respondToSandboxBoundary({
       requestId: 'permission-1',
       decision: 'allow',
       rememberForTurn: true,
@@ -1138,7 +1138,7 @@ class RecordingRuntime {
     return this.retractText;
   }
 
-  async respondToPermission(sessionId: string, response: PermissionResponse): Promise<void> {
+  async respondToSandboxBoundary(sessionId: string, response: PermissionResponse): Promise<void> {
     this.permissionResponses.push({ sessionId, response });
   }
 

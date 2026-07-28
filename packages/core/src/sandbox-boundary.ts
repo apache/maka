@@ -65,6 +65,11 @@ export interface CreateSandboxBoundaryRequest {
 
 export type SandboxBoundaryDecision = 'allow' | 'deny';
 
+export interface SandboxBoundaryResponse {
+  readonly requestId: string;
+  readonly decision: SandboxBoundaryDecision;
+}
+
 export interface SettleSandboxBoundaryRequest {
   readonly sessionId: string;
   readonly requestId: string;
@@ -226,9 +231,7 @@ export function sandboxBoundaryExpansionAllowsPath(
     expansion.filesystem?.entries.some(
       (entry) =>
         (access !== 'write' || entry.access === 'write') &&
-        (entry.scope === 'exact'
-          ? samePath(path, entry.path)
-          : pathWithinRoot(path, entry.path)),
+        (entry.scope === 'exact' ? samePath(path, entry.path) : pathWithinRoot(path, entry.path)),
     ) ?? false
   );
 }

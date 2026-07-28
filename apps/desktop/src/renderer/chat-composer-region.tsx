@@ -30,7 +30,7 @@ interface ChatComposerRegionProps extends Omit<ComponentProps<typeof Composer>, 
   activeId: string | undefined;
   stopPendingBySession: Record<string, boolean>;
   activePermission: ComponentProps<typeof PermissionPrompt>['request'] | undefined;
-  respondToPermission: ComponentProps<typeof PermissionPrompt>['onRespond'];
+  respondToSandboxBoundary: ComponentProps<typeof PermissionPrompt>['onRespond'];
   activeSandboxBoundary: ComponentProps<typeof SandboxBoundaryPrompt>['request'] | undefined;
   activeQuestion: ComponentProps<typeof UserQuestionPrompt>['request'] | undefined;
   respondToUserQuestion: ComponentProps<typeof UserQuestionPrompt>['onRespond'];
@@ -45,7 +45,7 @@ export function ChatComposerRegion({
   activeId,
   stopPendingBySession,
   activePermission,
-  respondToPermission,
+  respondToSandboxBoundary,
   activeSandboxBoundary,
   activeQuestion,
   respondToUserQuestion,
@@ -58,7 +58,7 @@ export function ChatComposerRegion({
         {activePermission && (
           <PermissionPrompt
             request={activePermission}
-            onRespond={respondToPermission}
+            onRespond={respondToSandboxBoundary}
             onStop={stop}
             stopPending={activeId ? stopPendingBySession[activeId] === true : false}
           />
@@ -66,7 +66,7 @@ export function ChatComposerRegion({
         {activeSandboxBoundary && (
           <SandboxBoundaryPrompt
             request={activeSandboxBoundary}
-            onRespond={respondToPermission}
+            onRespond={respondToSandboxBoundary}
           />
         )}
         {activeQuestion && (

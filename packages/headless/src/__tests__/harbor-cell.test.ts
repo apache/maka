@@ -143,7 +143,7 @@ class CellReportingBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -187,7 +187,7 @@ class CellChildAdmissionProbeBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -216,7 +216,7 @@ class RunStartOrderingProbeBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -241,7 +241,7 @@ class ThrowingBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -294,7 +294,7 @@ class DeadlineSettlingBackend implements AgentBackend {
     this.releaseStop();
   }
 
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -355,7 +355,7 @@ class NonCooperativeDeadlineBackend implements AgentBackend {
     this.releaseStop();
   }
 
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -421,7 +421,7 @@ class ActiveIsolatedToolDeadlineBackend implements AgentBackend {
     if (mode === 'immediate') this.controller.abort();
   }
 
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -459,7 +459,7 @@ class TerminalClaimBeforeDeadlineBackend implements AgentBackend {
     this.stopCalls += 1;
   }
 
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -537,7 +537,7 @@ class StepCapThenCompleteBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -1303,7 +1303,7 @@ describe('runHarborCell', () => {
         }
 
         async stop(): Promise<void> {}
-        async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+        async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
         async dispose(): Promise<void> {}
       }
 

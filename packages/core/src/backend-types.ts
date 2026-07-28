@@ -18,6 +18,7 @@ import type {
 } from './events.js';
 import type { InteractionClosureReason } from './interaction.js';
 import type { RuntimeEvent } from './runtime-event.js';
+import type { SandboxBoundaryResponse } from './sandbox-boundary.js';
 import type { StoredMessage, BackendKind } from './session.js';
 import type { PermissionResponse } from './permission.js';
 import type { UserQuestionResponse } from './user-question.js';
@@ -189,7 +190,7 @@ export interface AgentBackend {
   send(input: BackendSendInput): AsyncIterable<SessionEvent>;
   compactHistory?(input: BackendCompactHistoryInput): Promise<BackendCompactHistoryResult>;
   stop(reason: 'user_stop' | 'redirect', mode?: BackendStopMode): Promise<void>;
-  respondToPermission(decision: PermissionDecision): Promise<void>;
+  respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion?(response: UserQuestionResponse): Promise<void>;
   dispose(): Promise<void>;
 }

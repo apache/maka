@@ -52,10 +52,10 @@ import type {
   BackendCompactHistoryInput,
   BackendCompactHistoryResult,
   BackendSendInput,
-  PermissionDecision,
 } from '@maka/core/backend-types';
 import type { AgentSpec } from '@maka/core/runtime-inputs';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import {
   resolveEffectiveOrchestration,
@@ -1947,7 +1947,7 @@ export class AiSdkBackend implements AgentBackend {
     this.currentRunTrace?.abortRequested(_reason);
   }
 
-  async respondToPermission(decision: PermissionDecision): Promise<void> {
+  async respondToSandboxBoundary(decision: SandboxBoundaryResponse): Promise<void> {
     if (this.currentTurnId === null) return;
     if (await this.toolRuntime.respondToSandboxBoundaryRequest(this.currentTurnId, decision)) {
       return;

@@ -23,7 +23,7 @@ import type {
   LlmConnection,
   ModelDiscoveryResult,
   ModelInfo,
-  PermissionResponse,
+  SandboxBoundaryResponse,
   UserQuestionResponse,
   PermissionMode,
   CollaborationMode,
@@ -246,8 +246,8 @@ const makaBridge = {
     reviseBeforeTurn(sessionId: string, input: ReviseBeforeTurnInput): Promise<SessionSummary> {
       return ipcRenderer.invoke('sessions:reviseBeforeTurn', sessionId, input);
     },
-    respondToPermission(sessionId: string, response: PermissionResponse): Promise<void> {
-      return ipcRenderer.invoke('sessions:respondToPermission', sessionId, response);
+    respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void> {
+      return ipcRenderer.invoke('sessions:respondToSandboxBoundary', sessionId, response);
     },
     respondToUserQuestion(sessionId: string, response: UserQuestionResponse): Promise<void> {
       return ipcRenderer.invoke('sessions:respondToUserQuestion', sessionId, response);

@@ -47,7 +47,7 @@ import type {
   UserMessageInput,
   SessionListFilter,
 } from '@maka/core/runtime-inputs';
-import type { PermissionResponse } from '@maka/core/permission';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { PermissionMode } from '@maka/core/permission';
 import type {
@@ -3887,13 +3887,16 @@ export class SessionManager {
     return headerToSummary(await this.deps.store.readHeader(next.id));
   }
 
-  async respondToPermission(sessionId: string, response: PermissionResponse): Promise<void> {
+  async respondToSandboxBoundary(
+    sessionId: string,
+    response: SandboxBoundaryResponse,
+  ): Promise<void> {
     if (this.deps.interactionAuthority) {
       throw new RuntimeInteractionInvariantError(
         'Hosted permission answers must use the captured continuation',
       );
     }
-    await this.runtimeKernel.respondToPermission(sessionId, response);
+    await this.runtimeKernel.respondToSandboxBoundary(sessionId, response);
   }
 
   async respondToUserQuestion(sessionId: string, response: UserQuestionResponse): Promise<void> {

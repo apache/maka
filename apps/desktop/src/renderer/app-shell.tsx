@@ -1258,7 +1258,7 @@ function AppShellContent({
 
   const {
     send,
-    respondToPermission,
+    respondToSandboxBoundary,
     respondToUserQuestion,
     refreshMessages,
     retryMessages,
@@ -2112,7 +2112,7 @@ function AppShellContent({
                 stopPendingBySession={stopPendingBySession}
                 activePermission={activePermission}
                 activeSandboxBoundary={activeSandboxBoundary}
-                respondToPermission={respondToPermission}
+                respondToSandboxBoundary={respondToSandboxBoundary}
                 activeQuestion={activeQuestion}
                 respondToUserQuestion={respondToUserQuestion}
                 stop={stop}

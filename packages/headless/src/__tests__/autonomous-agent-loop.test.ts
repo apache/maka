@@ -65,7 +65,7 @@ class PermissionRequestBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -97,7 +97,7 @@ class RuntimeContextCapturingBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -175,7 +175,7 @@ class PromptCapturingProgressBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 

@@ -74,7 +74,7 @@ class TamperBackend implements AgentBackend {
     yield { type: 'complete', id: 'tamper-c', turnId, ts, stopReason: 'end_turn' };
   }
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -114,7 +114,7 @@ class FailingBackend implements AgentBackend {
     yield { type: 'complete', id: 'fail-c', turnId, ts, stopReason: 'error' };
   }
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -157,7 +157,7 @@ class IsolatedRealBackend implements AgentBackend {
     yield { type: 'complete', id: 'isolated-real-c', turnId, ts, stopReason: 'end_turn' };
   }
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -529,7 +529,7 @@ describe('failed runs surface as an error (not a silent ⚠️ + exit 0)', () =>
         yield { type: 'complete', id: 'bare-err-c', turnId, ts, stopReason: 'error' };
       }
       async stop(): Promise<void> {}
-      async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+      async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
       async dispose(): Promise<void> {}
     }
     await withDirs(async (fixtureDir, storageRoot) => {
@@ -791,7 +791,7 @@ describe('Config.systemPrompt (benchmark config variable, not session state)', (
       yield { type: 'complete', id: 'capture-c', turnId, ts, stopReason: 'end_turn' };
     }
     async stop(): Promise<void> {}
-    async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+    async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
     async dispose(): Promise<void> {}
   }
 

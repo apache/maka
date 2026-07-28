@@ -97,10 +97,10 @@ describe('permission response IPC boundary', () => {
     );
   });
 
-  it('routes sessions:respondToPermission through the main-process normalizer', async () => {
+  it('routes sessions:respondToSandboxBoundary through the main-process normalizer', async () => {
     const mainPath = fileURLToPath(new URL('../../../src/main/main.ts', import.meta.url));
     const main = await readMainProcessCombinedSource();
-    const handler = main.match(/ipcMain\.handle\('sessions:respondToPermission'[\s\S]*?\n  \}\);/)?.[0] ?? '';
+    const handler = main.match(/ipcMain\.handle\('sessions:respondToSandboxBoundary'[\s\S]*?\n  \}\);/)?.[0] ?? '';
 
     assert.match(handler, /normalizePermissionResponse\(response\)/);
     assert.match(
@@ -108,10 +108,10 @@ describe('permission response IPC boundary', () => {
       /if \(normalized\.decision === 'allow'\) \{[\s\S]*await ensureSessionWorkspaceAvailable\(sessionId\)/,
       'allow must revalidate the workspace before resuming a parked tool; deny must remain available',
     );
-    assert.doesNotMatch(handler, /runtime\.respondToPermission\(sessionId,\s*response\)/);
+    assert.doesNotMatch(handler, /runtime\.respondToSandboxBoundary\(sessionId,\s*response\)/);
     assert.match(
       handler,
-      /await runtime\.respondToPermission\(sessionId, normalized\);[\s\S]*notifyAgentGraphPermissionResponse\?\.\(sessionId\)/,
+      /await runtime\.respondToSandboxBoundary\(sessionId, normalized\);[\s\S]*notifyAgentGraphPermissionResponse\?\.\(sessionId\)/,
       'graph wake settlement must run only after the normalized permission response is accepted',
     );
   });
@@ -283,13 +283,13 @@ describe('permission response IPC boundary', () => {
     assert.doesNotMatch(sendHandler, /command\.attachments/);
   });
 
-  it('renderer stop() and respondToPermission() surface IPC failures only for the source session', async () => {
+  it('renderer stop() and respondToSandboxBoundary() surface IPC failures only for the source session', async () => {
     // The Composer wires onStop via both the button onClick and the
     // Escape key handler, neither of which awaits the returned
     // promise. If stop() lets the IPC reject without try/catch the
     // failure dies as UnhandledPromiseRejection and the user sees
     // nothing while the model keeps streaming. Same applies to
-    // respondToPermission().
+    // respondToSandboxBoundary().
     const renderer = await readRendererShellSources([
       'app-shell.tsx',
       'app-shell-stop-action.ts',
@@ -317,14 +317,14 @@ describe('permission response IPC boundary', () => {
       'stop failure feedback must not expose raw IPC/provider/storage details',
     );
     assert.match(stop[0], /finally \{[\s\S]*?clearPendingSessionAction\(sessionId, stopPendingRef, setStopPendingBySession\);[\s\S]*?\}/);
-    const respond = renderer.match(/async function respondToPermission\([\s\S]*?\n  \}/);
-    assert.ok(respond, 'respondToPermission() must exist');
+    const respond = renderer.match(/async function respondToSandboxBoundary\([\s\S]*?\n  \}/);
+    assert.ok(respond, 'respondToSandboxBoundary() must exist');
     assert.match(respond[0], /const sessionId = activeIdRef\.current;/);
     assert.match(respond[0], /if \(!sessionId\) return;/);
-    assert.match(respond[0], /try\s*\{[\s\S]*?await window\.maka\.sessions\.respondToPermission\(sessionId, response\);/);
+    assert.match(respond[0], /try\s*\{[\s\S]*?await window\.maka\.sessions\.respondToSandboxBoundary\(sessionId, response\);/);
     assert.doesNotMatch(
       respond[0],
-      /respondToPermission\(activeId, response\)/,
+      /respondToSandboxBoundary\(activeId, response\)/,
       'permission response IPC must use the captured source session, not render-time activeId',
     );
     assert.match(
@@ -381,7 +381,7 @@ describe('permission response IPC boundary', () => {
 
   it('PermissionPrompt submit() awaits onRespond and resets pending in finally (PR-PERMISSION-UI-CLEANUP-0)', async () => {
     // Critical interaction with PR-STOP-ERROR-SURFACE-0: the parent
-    // respondToPermission now swallows IPC errors via toast. If
+    // respondToSandboxBoundary now swallows IPC errors via toast. If
     // submit() doesn't reset pending on resolve OR catch, the
     // prompt buttons lock up forever after a failed IPC.
     const componentsPath = fileURLToPath(new URL('../../../../../packages/ui/src/permission-dialog.tsx', import.meta.url));
@@ -609,7 +609,7 @@ describe('permission response IPC boundary', () => {
       'app-shell.tsx',
     ]);
     const sendBlock = renderer.match(
-      /async function send\([\s\S]*?\n  async function respondToPermission/,
+      /async function send\([\s\S]*?\n  async function respondToSandboxBoundary/,
     )?.[0] ?? '';
     const newSessionBranch = sendBlock.match(/if \(!initialSessionId\) \{[\s\S]*?return true;/)?.[0] ?? '';
     const existingSessionBranch = sendBlock.match(/const sessionId = initialSessionId;[\s\S]*?return true;/)?.[0] ?? '';

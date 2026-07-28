@@ -24,7 +24,7 @@ import type {
 } from '@maka/core/session';
 import { isDeepStrictEqual } from 'node:util';
 import type { ChildAgentTurnInput, UserMessageInput } from '@maka/core/runtime-inputs';
-import type { PermissionResponse } from '@maka/core/permission';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import {
   resolveEffectiveOrchestration,
   type EffectiveOrchestration,
@@ -112,7 +112,7 @@ export interface RuntimeKernelLike {
     execution?: RuntimeExecutionClaim,
   ): AsyncIterable<SessionEvent>;
   stopSession(sessionId: string, input?: StopSessionInput): Promise<void>;
-  respondToPermission(sessionId: string, response: PermissionResponse): Promise<void>;
+  respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion?(sessionId: string, response: UserQuestionResponse): Promise<void>;
   /** Queue a user message for mid-turn injection at the next step boundary. */
   steer(sessionId: string, text: string): QueueEnqueueOutcome;
@@ -1892,9 +1892,14 @@ export class RuntimeKernel implements RuntimeKernelLike {
     await this.deps.store.appendMessage(sessionId, message);
   }
 
-  async respondToPermission(sessionId: string, response: PermissionResponse): Promise<void> {
+  async respondToSandboxBoundary(
+    sessionId: string,
+    response: SandboxBoundaryResponse,
+  ): Promise<void> {
     const generations = this.backendGenerationsFor(sessionId);
-    await Promise.all(generations.map((active) => active.backend.respondToPermission(response)));
+    await Promise.all(
+      generations.map((active) => active.backend.respondToSandboxBoundary(response)),
+    );
   }
 
   async respondToUserQuestion(sessionId: string, response: UserQuestionResponse): Promise<void> {

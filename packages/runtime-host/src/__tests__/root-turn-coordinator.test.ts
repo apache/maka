@@ -2180,7 +2180,7 @@ class LinkedChildAuthorityBackend implements AgentBackend {
     this.releaseWait?.();
   }
 
-  async respondToPermission(): Promise<void> {}
+  async respondToSandboxBoundary(): Promise<void> {}
 
   async dispose(): Promise<void> {
     this.releaseWait?.();
@@ -2262,7 +2262,7 @@ class QueuedAdmissionBackend implements AgentBackend {
     this.admissionTrigger.resolve();
   }
 
-  async respondToPermission(): Promise<void> {}
+  async respondToSandboxBoundary(): Promise<void> {}
 
   async dispose(): Promise<void> {
     this.admissionTrigger.resolve();
@@ -2332,7 +2332,7 @@ class RunningAdmissionBackend implements AgentBackend {
 
   async stop(): Promise<void> {}
 
-  async respondToPermission(): Promise<void> {}
+  async respondToSandboxBoundary(): Promise<void> {}
 
   async dispose(): Promise<void> {
     this.settled.resolve();
@@ -2459,7 +2459,7 @@ class PendingQuestionBackend implements AgentBackend {
     this.settled.resolve();
   }
 
-  async respondToPermission(): Promise<void> {}
+  async respondToSandboxBoundary(): Promise<void> {}
 
   async dispose(): Promise<void> {
     this.settled.resolve();
@@ -2509,7 +2509,7 @@ class TakeoverClosureBackend implements AgentBackend {
     this.stopStarted.resolve();
   }
 
-  async respondToPermission(): Promise<void> {}
+  async respondToSandboxBoundary(): Promise<void> {}
 
   async dispose(): Promise<void> {
     this.sendReleased.resolve();
@@ -2588,7 +2588,7 @@ class PermissionWaitingBackend implements AgentBackend {
     this.releaseAfterDecision?.();
   }
 
-  async respondToPermission(): Promise<void> {}
+  async respondToSandboxBoundary(): Promise<void> {}
 
   async dispose(): Promise<void> {
     await this.stop();
@@ -2709,7 +2709,7 @@ class PermissionTimeoutClosureBackend implements AgentBackend {
     this.providerStepReleased.resolve();
   }
 
-  async respondToPermission(): Promise<void> {}
+  async respondToSandboxBoundary(): Promise<void> {}
 
   async dispose(): Promise<void> {
     await this.stop();

@@ -585,7 +585,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // rejects, the user can retry with y/n instead of being stuck. A resolved
     // call only means the response was submitted; the event stream owns dequeue.
     void input.driver
-      .respondToPermission({
+      .respondToSandboxBoundary({
         requestId: request.requestId,
         decision,
         ...(request.type === 'permission_request' &&

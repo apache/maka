@@ -212,10 +212,9 @@ export async function runExperimentWithStorage(
     })) {
       if ((event as { type?: string }).type === 'permission_request') {
         const { requestId } = event as { requestId: string };
-        await manager.respondToPermission(session.id, {
+        await manager.respondToSandboxBoundary(session.id, {
           requestId,
           decision: 'deny',
-          rememberForTurn: true,
         });
       }
     }

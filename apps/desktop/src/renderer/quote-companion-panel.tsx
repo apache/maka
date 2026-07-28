@@ -84,7 +84,7 @@ export function QuoteCompanionPanel(props: {
           {companion.activePermission && (
             <PermissionPrompt
               request={companion.activePermission}
-              onRespond={companion.respondToPermission}
+              onRespond={companion.respondToSandboxBoundary}
               onStop={() => void companion.stop()}
             />
           )}

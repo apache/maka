@@ -10,7 +10,7 @@ import type {
   LlmConnection,
   ModelDiscoveryResult,
   ModelInfo,
-  PermissionResponse,
+  SandboxBoundaryResponse,
   UserQuestionResponse,
   PermissionMode,
   CollaborationMode,
@@ -273,7 +273,7 @@ export interface MakaBridge {
     regenerateTurn(sessionId: string, input: RegenerateTurnInput): Promise<void>;
     branchFromTurn(sessionId: string, input: BranchFromTurnInput): Promise<SessionSummary>;
     reviseBeforeTurn(sessionId: string, input: ReviseBeforeTurnInput): Promise<SessionSummary>;
-    respondToPermission(sessionId: string, response: PermissionResponse): Promise<void>;
+    respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void>;
     respondToUserQuestion(sessionId: string, response: UserQuestionResponse): Promise<void>;
     saveConversationToFile(input: {
       markdown: string;

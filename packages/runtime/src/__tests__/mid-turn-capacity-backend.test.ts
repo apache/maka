@@ -1131,7 +1131,7 @@ describe('mid-turn capacity compaction flow plumbing', () => {
         };
       },
       stop: async () => {},
-      respondToPermission: async () => {},
+      respondToSandboxBoundary: async () => {},
       dispose: async () => {},
     };
     const flow = new AiSdkFlow({ backend: fakeBackend });

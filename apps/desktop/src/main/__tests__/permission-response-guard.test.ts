@@ -42,7 +42,7 @@ describe('permission prompt response guard', () => {
     // (was try/catch+throw). The single-flight contract is unchanged;
     // only the reset path moved from catch to finally so the pending
     // state clears on success too — necessary because the parent's
-    // `respondToPermission` now swallows IPC errors via toast
+    // `respondToSandboxBoundary` now swallows IPC errors via toast
     // (PR-STOP-ERROR-SURFACE-0).
     const submit = prompt.match(/async function submit\(decision: PermissionResponse\['decision'\]\) \{[\s\S]*?\n  \}/)?.[0] ?? '';
 

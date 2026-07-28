@@ -150,7 +150,7 @@ const runtime: MakaRunRuntime = {
     const output = maxSteps ? `maxSteps=${maxSteps};prompt=${input.text}` : `prompt=${input.text}`;
     await notify(completedResult(output));
   },
-  async respondToPermission(_sessionId, response) {
+  async respondToSandboxBoundary(_sessionId, response) {
     permissionDenied =
       response.decision === 'deny' &&
       (response.requestId === 'permission-1' || response.requestId === 'boundary-1');

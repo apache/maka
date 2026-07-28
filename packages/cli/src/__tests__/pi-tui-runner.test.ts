@@ -8737,7 +8737,7 @@ class RejectingStopDriver implements MakaSessionDriver {
     throw new Error('stop failed');
   }
 
-  async respondToPermission(_response: PermissionResponse): Promise<void> {}
+  async respondToSandboxBoundary(_response: PermissionResponse): Promise<void> {}
   async renameSession(): Promise<void> {}
   async setModel(): Promise<void> {}
   async setPermissionMode(): Promise<void> {}
@@ -8876,7 +8876,7 @@ class PermissionPromptDriver implements MakaSessionDriver {
     this.stopCalls += 1;
   }
 
-  async respondToPermission(response: PermissionResponse): Promise<void> {
+  async respondToSandboxBoundary(response: PermissionResponse): Promise<void> {
     this.permissionResponses.push(response);
     const waiter = this.permissionResponseWaiter;
     this.permissionResponseWaiter = null;
@@ -8944,7 +8944,7 @@ class UserQuestionPromptDriver implements MakaSessionDriver {
     this.stopCalls += 1;
     this.release?.();
   }
-  async respondToPermission(_response: PermissionResponse): Promise<void> {}
+  async respondToSandboxBoundary(_response: PermissionResponse): Promise<void> {}
   async renameSession(): Promise<void> {}
   async setModel(): Promise<void> {}
   async setPermissionMode(): Promise<void> {}
@@ -8998,7 +8998,7 @@ class InterruptibleTurnDriver implements MakaSessionDriver {
     this.releaseTurn = null;
   }
 
-  async respondToPermission(_response: PermissionResponse): Promise<void> {}
+  async respondToSandboxBoundary(_response: PermissionResponse): Promise<void> {}
   async renameSession(): Promise<void> {}
   async setModel(): Promise<void> {}
   async setPermissionMode(): Promise<void> {}
@@ -9130,7 +9130,7 @@ class SteeringTurnDriver implements MakaSessionDriver {
     this.wakeTurn = null;
   }
 
-  async respondToPermission(_response: PermissionResponse): Promise<void> {}
+  async respondToSandboxBoundary(_response: PermissionResponse): Promise<void> {}
   async renameSession(): Promise<void> {}
   async setModel(): Promise<void> {}
   async setPermissionMode(): Promise<void> {}
@@ -9301,7 +9301,7 @@ class FallbackSteeringDriver implements MakaSessionDriver {
     this.endTurn();
   }
 
-  async respondToPermission(_response: PermissionResponse): Promise<void> {}
+  async respondToSandboxBoundary(_response: PermissionResponse): Promise<void> {}
   async renameSession(): Promise<void> {}
   async setModel(): Promise<void> {}
   async setPermissionMode(): Promise<void> {}
@@ -9361,7 +9361,7 @@ class SlowStopDriver implements MakaSessionDriver {
     this.releaseTurn = null;
   }
 
-  async respondToPermission(_response: PermissionResponse): Promise<void> {}
+  async respondToSandboxBoundary(_response: PermissionResponse): Promise<void> {}
   async renameSession(): Promise<void> {}
   async setModel(): Promise<void> {}
   async setPermissionMode(): Promise<void> {}
@@ -9420,7 +9420,7 @@ class ThinkingOutputDriver implements MakaSessionDriver {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_response: PermissionResponse): Promise<void> {}
+  async respondToSandboxBoundary(_response: PermissionResponse): Promise<void> {}
   async renameSession(): Promise<void> {}
   async setModel(): Promise<void> {}
   async setPermissionMode(): Promise<void> {}
@@ -9513,7 +9513,7 @@ class ToolOutputDriver implements MakaSessionDriver {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_response: PermissionResponse): Promise<void> {}
+  async respondToSandboxBoundary(_response: PermissionResponse): Promise<void> {}
   async renameSession(): Promise<void> {}
   async setModel(): Promise<void> {}
   async setPermissionMode(): Promise<void> {}
@@ -9985,7 +9985,7 @@ class SlashCommandDriver implements MakaSessionDriver {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_response: PermissionResponse): Promise<void> {}
+  async respondToSandboxBoundary(_response: PermissionResponse): Promise<void> {}
   async setModel(model: string, connectionSlug?: string): Promise<void> {
     this.models.push(model);
     this.modelConnections.push(connectionSlug);
@@ -10310,7 +10310,7 @@ class DeferredControlDriver implements MakaSessionDriver {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_response: PermissionResponse): Promise<void> {}
+  async respondToSandboxBoundary(_response: PermissionResponse): Promise<void> {}
 
   async setModel(model: string): Promise<void> {
     this.models.push(model);
@@ -10377,7 +10377,7 @@ class RejectingPermissionDriver implements MakaSessionDriver {
 
   async stop(): Promise<void> {}
 
-  async respondToPermission(response: PermissionResponse): Promise<void> {
+  async respondToSandboxBoundary(response: PermissionResponse): Promise<void> {
     this.responses.push(response);
     throw new Error('permission response rejected');
   }
@@ -10469,7 +10469,7 @@ class PermissionThenErrorDriver implements MakaSessionDriver {
 
   async stop(): Promise<void> {}
 
-  async respondToPermission(_response: PermissionResponse): Promise<void> {
+  async respondToSandboxBoundary(_response: PermissionResponse): Promise<void> {
     this.respondCalls += 1;
   }
 
@@ -10521,7 +10521,7 @@ class QuickErrorDriver implements MakaSessionDriver {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_response: PermissionResponse): Promise<void> {}
+  async respondToSandboxBoundary(_response: PermissionResponse): Promise<void> {}
   async renameSession(): Promise<void> {}
   async setModel(): Promise<void> {}
   async setPermissionMode(): Promise<void> {}
@@ -10670,7 +10670,7 @@ async function runSignalExitProbe(
       async *compactSession() {},
       async stop() {},
       async listSessions() { return []; },
-      async respondToPermission() {},
+      async respondToSandboxBoundary() {},
       async renameSession() {},
       async setModel() {},
       async setPermissionMode() {},
@@ -10758,7 +10758,7 @@ async function runFatalExitProbe(
       async *compactSession() {},
       async stop() {},
       async listSessions() { return []; },
-      async respondToPermission() {},
+      async respondToSandboxBoundary() {},
       async renameSession() {},
       async setModel() {},
       async setPermissionMode() {},

@@ -264,7 +264,7 @@ describe('permission mode transition guard copy', () => {
 
   it('uses the configured default permission mode without one-shot new-chat state', async () => {
     const renderer = await readRendererShellCombinedSource();
-    const sendBlock = renderer.match(/async function send\([\s\S]*?\n  async function respondToPermission/)?.[0] ?? '';
+    const sendBlock = renderer.match(/async function send\([\s\S]*?\n  async function respondToSandboxBoundary/)?.[0] ?? '';
 
     assert.doesNotMatch(
       renderer,

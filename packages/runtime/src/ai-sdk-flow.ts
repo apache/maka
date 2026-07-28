@@ -22,7 +22,7 @@
  *   - coalesce duplicate terminal backend facts (e.g. `abort` followed by
  *     trailing `complete(user_stop)`) so the AgentFlow contract stays at
  *     exactly one terminal RuntimeEvent.
- *   - control surface (`stop` / `respondToPermission` / `dispose`): delegate
+ *   - control surface (`stop` / `respondToSandboxBoundary` / `dispose`): delegate
  *     to the wrapped backend so current control semantics are preserved.
  *
  * What this adapter deliberately does NOT do:
@@ -37,7 +37,7 @@ import {
   type CompleteEvent,
   type SessionEvent,
 } from '@maka/core/events';
-import type { PermissionDecision } from '@maka/core/backend-types';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type {
   AdditionalPermissionRequest,
   PermissionRequest,
@@ -762,7 +762,7 @@ export interface AiSdkFlowInput {
  * `AiSdkFlow.run()`.
  *
  * Control surface delegates 1:1 to the wrapped backend, preserving the
- * existing `stop` / `respondToPermission` / `dispose` semantics.
+ * existing `stop` / `respondToSandboxBoundary` / `dispose` semantics.
  */
 export class AiSdkFlow implements AgentFlow, AgentFlowControl {
   readonly kind: string;
@@ -890,8 +890,8 @@ export class AiSdkFlow implements AgentFlow, AgentFlowControl {
     return this.stopBackend(reason);
   }
 
-  async respondToPermission(decision: PermissionDecision): Promise<void> {
-    await this.backend.respondToPermission(decision);
+  async respondToSandboxBoundary(decision: SandboxBoundaryResponse): Promise<void> {
+    await this.backend.respondToSandboxBoundary(decision);
   }
 
   async respondToUserQuestion(response: UserQuestionResponse): Promise<void> {

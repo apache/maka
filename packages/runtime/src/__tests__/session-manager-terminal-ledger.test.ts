@@ -1392,7 +1392,7 @@ class ScriptBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -1434,7 +1434,7 @@ class StopDuringSendBackend implements AgentBackend {
     this.stopReturned.resolve();
   }
 
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 

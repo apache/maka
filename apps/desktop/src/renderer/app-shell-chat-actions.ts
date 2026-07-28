@@ -1,7 +1,7 @@
 import type {
   CollaborationMode,
   OrchestrationMode,
-  PermissionResponse,
+  SandboxBoundaryResponse,
   QuoteRef,
   SessionSummary,
   StoredMessage,
@@ -86,7 +86,7 @@ export interface AppShellChatActions {
       quotes?: readonly QuoteRef[];
     },
   ): Promise<boolean>;
-  respondToPermission(response: PermissionResponse): Promise<void>;
+  respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion(response: UserQuestionResponse): Promise<void>;
   refreshMessages(sessionId: string, options?: RefreshMessagesOptions): Promise<boolean>;
   retryMessages(sessionId: string): Promise<void>;
@@ -431,11 +431,11 @@ export function createAppShellChatActions(deps: {
     }
   }
 
-  async function respondToPermission(response: PermissionResponse) {
+  async function respondToSandboxBoundary(response: SandboxBoundaryResponse) {
     const sessionId = activeIdRef.current;
     if (!sessionId) return;
     try {
-      await window.maka.sessions.respondToPermission(sessionId, response);
+      await window.maka.sessions.respondToSandboxBoundary(sessionId, response);
     } catch (error) {
       // Same fire-and-forget call site as stop(), wrap so a failed
       // permission response (main process busy / session dropped)
@@ -539,7 +539,7 @@ export function createAppShellChatActions(deps: {
 
   return {
     send,
-    respondToPermission,
+    respondToSandboxBoundary,
     respondToUserQuestion,
     refreshMessages,
     retryMessages,

@@ -603,7 +603,7 @@ class BlockingBackend implements AgentBackend {
     this.releaseSend?.();
   }
 
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
 
   async dispose(): Promise<void> {
     this.disposeCalls += 1;

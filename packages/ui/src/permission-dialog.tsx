@@ -39,7 +39,7 @@ export function PermissionPrompt(props: {
   request: AnyPermissionRequestEvent;
   // Accept Promise-returning impls so the prompt can await the IPC
   // and reset its own pending state when it resolves OR rejects.
-  // The renderer's `respondToPermission` is async but was typed as
+  // The renderer's `respondToSandboxBoundary` is async but was typed as
   // void by the legacy signature, which made `submit()` strand
   // `responsePending=true` if the IPC failed silently.
   onRespond(response: PermissionResponse): void | Promise<void>;

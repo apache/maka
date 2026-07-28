@@ -39,7 +39,7 @@ export type ParseMakaRunArgsResult =
 export interface MakaRunRuntime {
   createSession(input: CreateSessionInput): Promise<SessionSummary>;
   sendMessage(sessionId: string, input: UserMessageInput): AsyncIterable<SessionEvent>;
-  respondToPermission(
+  respondToSandboxBoundary(
     sessionId: string,
     response: { requestId: string; decision: 'deny'; rememberForTurn?: boolean },
   ): Promise<void>;
@@ -322,7 +322,7 @@ export async function runMakaTextCli(
       if (event.type === 'permission_request') {
         boundaryDenied = true;
         deps.writeStderr(`maka run: denied permission request for ${event.toolName}\n`);
-        await context.runtime.respondToPermission(session.id, {
+        await context.runtime.respondToSandboxBoundary(session.id, {
           requestId: event.requestId,
           decision: 'deny',
         });
@@ -332,7 +332,7 @@ export async function runMakaTextCli(
         deps.writeStderr(
           'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
         );
-        await context.runtime.respondToPermission(session.id, {
+        await context.runtime.respondToSandboxBoundary(session.id, {
           requestId: event.requestId,
           decision: 'deny',
         });

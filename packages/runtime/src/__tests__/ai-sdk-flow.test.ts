@@ -73,7 +73,7 @@ class ScriptedBackend implements AgentBackend {
     if (this.stopFailure) throw this.stopFailure;
   }
 
-  async respondToPermission(decision: PermissionDecision): Promise<void> {
+  async respondToSandboxBoundary(decision: PermissionDecision): Promise<void> {
     this.permissionCalls.push(decision);
   }
 
@@ -745,12 +745,12 @@ describe('AiSdkFlow seam', () => {
     assert.equal(result.events.filter(isTerminalRuntimeEvent).length, 1);
   });
 
-  test('delegates stop / respondToPermission / dispose to the wrapped backend', async () => {
+  test('delegates stop / respondToSandboxBoundary / dispose to the wrapped backend', async () => {
     const backend = new ScriptedBackend({ events: [] });
     const flow = new AiSdkFlow({ backend });
 
     await flow.stop('redirect');
-    await flow.respondToPermission({ requestId: 'r', decision: 'allow' });
+    await flow.respondToSandboxBoundary({ requestId: 'r', decision: 'allow' });
     await flow.dispose();
 
     assert.deepEqual(backend.stopCalls, ['redirect']);
