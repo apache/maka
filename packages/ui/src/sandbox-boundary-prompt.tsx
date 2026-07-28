@@ -1,7 +1,10 @@
 import type { SandboxBoundaryRequestEvent } from '@maka/core';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 
+import { getConversationCopy } from './conversation-copy.js';
+import { useUiLocale } from './locale-context.js';
 import { Button } from './ui.js';
+import { useMountedRef } from './use-mounted-ref.js';
 
 export interface SandboxBoundaryPromptProps {
   request: SandboxBoundaryRequestEvent;
@@ -12,9 +15,12 @@ export function SandboxBoundaryPrompt({
   request,
   onRespond,
 }: SandboxBoundaryPromptProps) {
+  const copy = getConversationCopy(useUiLocale()).sandboxBoundary;
+  const titleId = useId();
   const [responsePending, setResponsePending] = useState(false);
   const responsePendingRef = useRef(false);
   const rejectButtonRef = useRef<HTMLButtonElement>(null);
+  const mountedRef = useMountedRef();
 
   useEffect(() => {
     responsePendingRef.current = false;
@@ -31,7 +37,7 @@ export function SandboxBoundaryPrompt({
       await onRespond({ requestId: request.requestId, decision });
     } finally {
       responsePendingRef.current = false;
-      setResponsePending(false);
+      if (mountedRef.current) setResponsePending(false);
     }
   }
 
@@ -39,11 +45,11 @@ export function SandboxBoundaryPrompt({
   return (
     <section
       className="maka-composer-interaction maka-sandbox-boundary-prompt composer"
-      aria-labelledby="sandboxBoundaryTitle"
+      aria-labelledby={titleId}
     >
       <div className="maka-composer-interaction-inner maka-sandbox-boundary-prompt-inner">
         <div className="maka-sandbox-boundary-copy">
-          <h2 id="sandboxBoundaryTitle">Expand sandbox boundary?</h2>
+          <h2 id={titleId}>{copy.title}</h2>
           <p>{request.justification}</p>
         </div>
         <ul className="maka-sandbox-boundary-scopes">
@@ -51,14 +57,14 @@ export function SandboxBoundaryPrompt({
             <li key={`${entry.access}:${entry.scope}:${entry.path}`}>
               <code>{entry.path}</code>
               <span>
-                {entry.access} · {entry.scope}
+                {copy.access[entry.access]} · {copy.scope[entry.scope]}
               </span>
             </li>
           ))}
           {request.expansion.network?.enabled ? (
             <li>
-              <code>Network access</code>
-              <span>enabled</span>
+              <code>{copy.network}</code>
+              <span>{copy.enabled}</span>
             </li>
           ) : null}
         </ul>
@@ -69,10 +75,10 @@ export function SandboxBoundaryPrompt({
             disabled={responsePending}
             onClick={() => void respond('deny')}
           >
-            Reject
+            {copy.reject}
           </Button>
           <Button disabled={responsePending} onClick={() => void respond('allow')}>
-            Allow for this session
+            {copy.allowSession}
           </Button>
         </div>
       </div>

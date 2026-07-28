@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type {
+  SandboxBoundaryRequestEvent,
   SessionSummary,
   UiLocale,
   UserQuestionRequestEvent,
@@ -11,6 +12,7 @@ import { EmptyChatHero } from '../chat-empty-hero.js';
 import { Composer } from '../composer.js';
 import { LocaleProvider } from '../locale-context.js';
 import { SessionHistoryList } from '../session-history-list.js';
+import { SandboxBoundaryPrompt } from '../sandbox-boundary-prompt.js';
 import { ToolTrow } from '../tool-activity.js';
 import { summarizeTrowTools } from '../tool-activity/trow-summary.js';
 import { UserQuestionPrompt } from '../user-question-prompt.js';
@@ -29,6 +31,25 @@ const questionRequest = {
   toolUseId: 'tool-question',
   questions: [{ question: 'RAW_QUESTION_中文', options: [{ label: 'RAW_OPTION_中文' }] }],
 } satisfies UserQuestionRequestEvent;
+
+const sandboxBoundaryRequest = {
+  id: 'event-boundary',
+  turnId: 'turn-1',
+  ts: 1,
+  type: 'sandbox_boundary_request',
+  requestId: 'boundary-1',
+  toolUseId: 'tool-boundary',
+  justification: 'RAW_JUSTIFICATION_中文',
+  expansion: {
+    filesystem: {
+      entries: [
+        { path: '/RAW/exact', access: 'read', scope: 'exact' },
+        { path: '/RAW/subtree', access: 'write', scope: 'subtree' },
+      ],
+    },
+    network: { enabled: true },
+  },
+} satisfies SandboxBoundaryRequestEvent;
 
 const archivedSession = {
   id: 'session-archived',
@@ -228,6 +249,27 @@ describe('localized conversation journey', () => {
 
     assert.match(en, /Other/);
     for (const raw of ['RAW_QUESTION_中文', 'RAW_OPTION_中文']) {
+      assert.match(zh, new RegExp(raw));
+      assert.match(en, new RegExp(raw));
+    }
+  });
+
+  it('localizes sandbox boundary chrome while preserving exact requested scopes', () => {
+    const surface = <SandboxBoundaryPrompt request={sandboxBoundaryRequest} onRespond={() => {}} />;
+    const zh = render('zh', surface);
+    const en = render('en', surface);
+
+    assert.match(zh, /扩大本会话的沙箱边界？/);
+    assert.match(zh, /读取 · 仅此路径/);
+    assert.match(zh, /写入 · 目录及子目录/);
+    assert.match(zh, /网络访问/);
+    assert.match(zh, /本会话允许/);
+    assert.match(en, /Expand this session&#x27;s sandbox boundary\?/);
+    assert.match(en, /Read · Exact path/);
+    assert.match(en, /Write · Directory subtree/);
+    assert.match(en, /Network access/);
+    assert.match(en, /Allow for this session/);
+    for (const raw of ['RAW_JUSTIFICATION_中文', '/RAW/exact', '/RAW/subtree']) {
       assert.match(zh, new RegExp(raw));
       assert.match(en, new RegExp(raw));
     }

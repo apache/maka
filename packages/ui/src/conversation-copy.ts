@@ -160,6 +160,15 @@ export interface ConversationCopy {
     byteLineCount: (bytes: number, lines: number) => string;
     editLineCount: (removed: number, added: number) => string;
   };
+  sandboxBoundary: {
+    title: string;
+    access: Record<'read' | 'write', string>;
+    scope: Record<'exact' | 'subtree', string>;
+    network: string;
+    enabled: string;
+    reject: string;
+    allowSession: string;
+  };
   questions: {
     other: string;
     otherDescription: string;
@@ -380,6 +389,15 @@ const CONVERSATION_COPY = {
       browser: { navigate: (url) => `即将在浏览器中打开 ${url}`, click: (ref) => `即将在当前页面点击元素 ${ref}`.trim(), type: (ref) => `即将在当前页面输入文本${ref ? ` 到元素 ${ref}` : ''}`, snapshot: '即将读取当前页面的可交互元素列表', extract: (selector) => `即将读取当前页面内容${selector ? `（${selector}）` : ''}`, wait: '即将等待当前页面满足某个条件', generic: '即将操作当前浏览器页面', urlFallback: '一个网址' },
       workingDirectory: '工作目录', readWrite: '读写', readOnly: '只读', exactPath: '仅此路径', directoryTree: '目录及子目录', temporaryNetwork: '本次调用将临时允许网络访问。', outsideWorkspace: '包含工作区外路径。', protectedMetadata: '包含受保护的 Git/Agent 元数据。', outsideSandbox: '本次命令将不经过平台 sandbox，可访问工作区外文件、网络和受保护元数据。', target: '目标', currentApp: '当前应用', inDirectory: (cwd) => `在 ${cwd}`, terminalInteraction: '即将与后台终端交互', fullInputBytes: (bytes) => `完整输入共 ${bytes} 字节`, targetSize: (cols, rows) => `目标尺寸 ${cols}x${rows}`, byteLineCount: (bytes, lines) => `${bytes} 字节 · ${lines} 行`, editLineCount: (removed, added) => `删除 ${removed} 行 · 写入 ${added} 行`,
     },
+    sandboxBoundary: {
+      title: '扩大本会话的沙箱边界？',
+      access: { read: '读取', write: '写入' },
+      scope: { exact: '仅此路径', subtree: '目录及子目录' },
+      network: '网络访问',
+      enabled: '已启用',
+      reject: '拒绝',
+      allowSession: '本会话允许',
+    },
     questions: { other: '其他', otherDescription: '输入一个不同的答案。', otherAriaLabel: '其他答案', otherPlaceholder: '输入你的答案', stop: '停止', stopping: '停止中…', previous: '上一题', submitting: '正在提交…', submit: '提交答案', next: '下一题' },
     mentions: { noFiles: '未找到文件', noSkills: '暂无技能', filesAriaLabel: '工作区文件', skillsAriaLabel: '技能', loading: '加载中…' },
     workspace: {
@@ -517,6 +535,15 @@ const CONVERSATION_COPY = {
       disclosure: { changes: 'View changes', content: 'View content', input: 'View input', fullArguments: 'Full arguments', details: 'View details' }, unsupportedValue: 'Unsupported property value',
       browser: { navigate: (url) => `About to open ${url} in the browser`, click: (ref) => `About to click element ${ref} on the current page`.trim(), type: (ref) => `About to type text${ref ? ` into element ${ref}` : ''} on the current page`, snapshot: 'About to read the interactive elements on the current page', extract: (selector) => `About to read the current page${selector ? ` (${selector})` : ''}`, wait: 'About to wait for a condition on the current page', generic: 'About to control the current browser page', urlFallback: 'a URL' },
       workingDirectory: 'Working directory', readWrite: 'Read and write', readOnly: 'Read only', exactPath: 'This path only', directoryTree: 'Directory and descendants', temporaryNetwork: 'This call will temporarily allow network access.', outsideWorkspace: 'Includes paths outside the workspace.', protectedMetadata: 'Includes protected Git/agent metadata.', outsideSandbox: 'This command will run outside the platform sandbox and can access files outside the workspace, the network, and protected metadata.', target: 'Target', currentApp: 'Current app', inDirectory: (cwd) => `In ${cwd}`, terminalInteraction: 'About to interact with a background terminal', fullInputBytes: (bytes) => `Full input is ${bytes} bytes`, targetSize: (cols, rows) => `Target size ${cols}x${rows}`, byteLineCount: (bytes, lines) => `${bytes} bytes · ${lines} ${lines === 1 ? 'line' : 'lines'}`, editLineCount: (removed, added) => `Remove ${removed} ${removed === 1 ? 'line' : 'lines'} · Write ${added} ${added === 1 ? 'line' : 'lines'}`,
+    },
+    sandboxBoundary: {
+      title: "Expand this session's sandbox boundary?",
+      access: { read: 'Read', write: 'Write' },
+      scope: { exact: 'Exact path', subtree: 'Directory subtree' },
+      network: 'Network access',
+      enabled: 'Enabled',
+      reject: 'Reject',
+      allowSession: 'Allow for this session',
     },
     questions: { other: 'Other', otherDescription: 'Enter a different answer.', otherAriaLabel: 'Other answer', otherPlaceholder: 'Enter your answer', stop: 'Stop', stopping: 'Stopping…', previous: 'Previous', submitting: 'Submitting…', submit: 'Submit answers', next: 'Next' },
     mentions: { noFiles: 'No files found', noSkills: 'No skills available', filesAriaLabel: 'Workspace files', skillsAriaLabel: 'Skills', loading: 'Loading…' },
