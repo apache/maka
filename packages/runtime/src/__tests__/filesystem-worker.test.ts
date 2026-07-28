@@ -230,7 +230,6 @@ describe('filesystem worker operations', () => {
     assert.equal(response.ok, false);
     if (!response.ok) assert.equal(response.error.code, 'path_changed');
   });
-
 });
 
 function requestFor(

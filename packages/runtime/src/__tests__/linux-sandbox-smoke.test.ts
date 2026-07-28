@@ -242,7 +242,9 @@ describe('Linux sandbox smoke', () => {
         kind: 'managed' as const,
         revision: 1,
         profile: applySandboxBoundaryExpansion(createWorkspaceWritePermissionProfile(), {
-          filesystem: { entries: [{ path: allowedPath, access: 'write' as const, scope: 'exact' as const }] },
+          filesystem: {
+            entries: [{ path: allowedPath, access: 'write' as const, scope: 'exact' as const }],
+          },
         }),
       };
       const siblingAttempt = `printf sibling-changed > ${shellQuote(siblingPath)}`;

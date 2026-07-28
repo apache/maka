@@ -263,5 +263,4 @@ describe('SandboxManager.transform', () => {
     assert.equal(result.ok, false);
     if (!result.ok) assert.equal(result.reason, 'backend_not_available');
   });
-
 });

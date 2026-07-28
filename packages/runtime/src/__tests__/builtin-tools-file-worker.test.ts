@@ -71,12 +71,7 @@ describe('builtin file tools use the sandboxed worker', () => {
 
     await runTool(tools, 'Read', { path: 'read.txt' }, cwd);
     await runTool(tools, 'Write', { path: 'write.txt', content: 'content' }, cwd);
-    await runTool(
-      tools,
-      'Edit',
-      { path: 'edit.txt', old_string: 'a', new_string: 'b' },
-      cwd,
-    );
+    await runTool(tools, 'Edit', { path: 'edit.txt', old_string: 'a', new_string: 'b' }, cwd);
     await runTool(tools, 'FormatJson', { path: 'data.json' }, cwd);
     await runTool(tools, 'Glob', { pattern: '**/*.ts' }, cwd);
     await runTool(tools, 'Grep', { pattern: 'value' }, cwd);

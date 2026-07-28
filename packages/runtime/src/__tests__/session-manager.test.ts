@@ -12481,10 +12481,7 @@ describe('SessionManager permission mode updates', () => {
     expect((await store.readHeader(session.id)).status).toBe('waiting_for_user');
     const [run] = await runStore.listSessionRuns(session.id);
     expect(run?.status).toBe('waiting_for_user');
-    await expectRejects(
-      manager.setPermissionMode(session.id, 'bypass'),
-      /当前对话正在运行/,
-    );
+    await expectRejects(manager.setPermissionMode(session.id, 'bypass'), /当前对话正在运行/);
     expect((await store.readHeader(session.id)).permissionMode).toBe('ask');
 
     await manager.respondToSandboxBoundary(session.id, {
