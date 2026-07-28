@@ -1,6 +1,5 @@
 import React, { forwardRef } from 'react';
 import { Button as BaseButton } from '@base-ui/react/button';
-import { Checkbox as BaseCheckbox } from '@base-ui/react/checkbox';
 import { Dialog as BaseDialog } from '@base-ui/react/dialog';
 import { AlertDialog as BaseAlertDialog } from '@base-ui/react/alert-dialog';
 import { Field as BaseField } from '@base-ui/react/field';
@@ -56,7 +55,6 @@ export function pickerTriggerClasses(appearance: PickerTriggerAppearance = 'fiel
 // and avoids maintaining an override layer. Per-component map:
 //   Tabs        data-active                 (primitives/tabs.tsx)
 //   Select      data-[highlighted] / data-[selected]
-//   Checkbox    data-[checked] / data-[disabled]
 //   Switch      data-[checked] / data-[disabled]
 //   Toggle      data-[pressed] / data-[disabled]
 //   Radio       data-[checked] / data-[disabled]
@@ -172,31 +170,6 @@ export const Separator = forwardRef<HTMLDivElement, React.ComponentPropsWithoutR
       data-slot="separator"
       {...props}
     />
-  );
-});
-
-export const Checkbox = forwardRef<
-  HTMLButtonElement,
-  React.ComponentPropsWithoutRef<typeof BaseCheckbox.Root>
->(function Checkbox({ className, ...props }, ref) {
-  return (
-    <BaseCheckbox.Root
-      ref={ref}
-      className={cn(
-        'relative inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-[var(--radius-control)] border border-input bg-background text-foreground transition-colors',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/20',
-        'data-[checked]:border-control data-[checked]:bg-control data-[checked]:text-control-foreground',
-        'data-[disabled]:cursor-not-allowed data-[disabled]:opacity-50',
-        'pointer-coarse:after:absolute pointer-coarse:after:left-1/2 pointer-coarse:after:top-1/2 pointer-coarse:after:min-h-11 pointer-coarse:after:min-w-11 pointer-coarse:after:-translate-x-1/2 pointer-coarse:after:-translate-y-1/2 pointer-coarse:after:content-[" "]',
-        className,
-      )}
-      data-slot="checkbox"
-      {...props}
-    >
-      <BaseCheckbox.Indicator className="grid place-items-center">
-        <Check size={11} aria-hidden="true" />
-      </BaseCheckbox.Indicator>
-    </BaseCheckbox.Root>
   );
 });
 
