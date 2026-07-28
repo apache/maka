@@ -1,13 +1,4 @@
-/**
- * Permission system: PermissionMode + ToolCategory + Mode × Category policy
- * matrix + pure `preToolUse()` evaluator. Runtime owns requestId generation.
- *
- * Purity rule: `preToolUse()` is deterministic given its input — no UUIDs,
- * no clock reads, no I/O. PermissionEngine in runtime wraps it and supplies
- * requestId at the call site.
- */
-
-import { computerUseApprovalScopeKey, computerUseApprovalSummary } from './computer-use.js';
+/** Legacy permission payloads and shared tool-category compatibility types. */
 
 // ============================================================================
 // Mode + Tool categories
@@ -21,26 +12,6 @@ export type ApprovalsReviewer = (typeof APPROVALS_REVIEWERS)[number];
 
 export const APPROVAL_RISK_LEVELS = ['low', 'medium', 'high', 'critical'] as const;
 export type ApprovalRiskLevel = (typeof APPROVAL_RISK_LEVELS)[number];
-
-export interface ActiveApprovalRoutingPolicy {
-  readonly reviewer: ApprovalsReviewer;
-  readonly sandboxEscalationAllowed: boolean;
-}
-
-export function approvalRoutingPolicyForMode(
-  mode: PermissionMode,
-): ActiveApprovalRoutingPolicy | null {
-  switch (mode) {
-    case 'ask':
-      return { reviewer: 'user', sandboxEscalationAllowed: true };
-    case 'execute':
-      return { reviewer: 'auto_review', sandboxEscalationAllowed: true };
-    case 'explore':
-      return { reviewer: 'user', sandboxEscalationAllowed: false };
-    case 'bypass':
-      return null;
-  }
-}
 
 export function isPermissionMode(value: unknown): value is PermissionMode {
   return typeof value === 'string' && (PERMISSION_MODES as readonly string[]).includes(value);
@@ -91,56 +62,8 @@ export function isToolCategory(value: unknown): value is ToolCategory {
   return typeof value === 'string' && (TOOL_CATEGORIES as readonly string[]).includes(value);
 }
 
-export type ToolPermissionRule =
-  | {
-      effect: 'allow' | 'deny';
-      kind: 'category';
-      category: ToolCategory;
-    }
-  | {
-      effect: 'allow' | 'deny';
-      kind: 'bash_exact';
-      command: string;
-    }
-  | {
-      effect: 'allow' | 'deny';
-      kind: 'tool';
-      toolName: string;
-    };
-
-export interface ToolPermissionRuleMatchInput {
-  toolName: string;
-  args: unknown;
-  category: ToolCategory;
-  rules: readonly ToolPermissionRule[];
-}
-
-/** Explicit deny rules always win over explicit allow rules, regardless of argv order. */
-export function matchToolPermissionRules(
-  input: ToolPermissionRuleMatchInput,
-): 'allow' | 'deny' | undefined {
-  if (
-    input.rules.some((rule) => rule.effect === 'deny' && toolPermissionRuleMatches(rule, input))
-  ) {
-    return 'deny';
-  }
-  if (
-    input.rules.some((rule) => rule.effect === 'allow' && toolPermissionRuleMatches(rule, input))
-  ) {
-    return 'allow';
-  }
-  return undefined;
-}
-
-function toolPermissionRuleMatches(
-  rule: ToolPermissionRule,
-  input: Omit<ToolPermissionRuleMatchInput, 'rules'>,
-): boolean {
-  if (rule.kind === 'category') return rule.category === input.category;
-  if (rule.kind === 'tool') return rule.toolName === input.toolName;
-  const command = (input.args as { command?: unknown } | null)?.command;
-  return input.toolName === 'Bash' && typeof command === 'string' && command === rule.command;
-}
+/** Legacy category-policy value retained for agent tool-availability records. */
+export type PolicyDecision = 'allow' | 'prompt' | 'block';
 
 // ============================================================================
 // Tool execution environment facts
@@ -158,94 +81,6 @@ export interface ToolExecutionFacts {
   network: ToolExecutionNetwork;
   secrets: ToolExecutionSecrets;
 }
-
-// ============================================================================
-// Policy matrix
-// ============================================================================
-
-export type PolicyDecision = 'allow' | 'prompt' | 'block';
-
-export const PERMISSION_POLICY: Record<PermissionMode, Record<ToolCategory, PolicyDecision>> = {
-  explore: {
-    read: 'allow',
-    // PR-AGENT-WEB-SEARCH-TOOL-0: explicit network egress (WebSearch
-    // via Tavily) prompts in non-autonomous modes. Agent-issued web
-    // requests are out-of-process side effects the user must confirm,
-    // even in the otherwise read-only `explore` mode.
-    web_read: 'prompt',
-    // shell_safe is fail-closed like shell_unsafe: categorizeBash no longer
-    // produces it (no shell command is provably safe from its string), so this
-    // is defence-in-depth — there is no auto-allow path for shell in explore.
-    shell_safe: 'block',
-    file_write: 'block',
-    fs_destructive: 'block',
-    shell_unsafe: 'block',
-    git_destructive: 'block',
-    network_send: 'block',
-    privileged: 'block',
-    // Driving the user's logged-in browser is an out-of-process effect; explore
-    // mode is read-only-local, so block it like other network/write effects.
-    browser: 'block',
-    computer_use: 'block',
-    custom_tool: 'prompt',
-    subagent: 'allow',
-  },
-  ask: {
-    read: 'allow',
-    web_read: 'prompt',
-    shell_safe: 'prompt',
-    file_write: 'prompt',
-    fs_destructive: 'prompt',
-    shell_unsafe: 'prompt',
-    git_destructive: 'prompt',
-    network_send: 'prompt',
-    privileged: 'prompt',
-    browser: 'prompt',
-    computer_use: 'prompt',
-    custom_tool: 'allow',
-    subagent: 'prompt',
-  },
-  execute: {
-    read: 'allow',
-    web_read: 'allow',
-    file_write: 'allow',
-    network_send: 'allow',
-    custom_tool: 'allow',
-    subagent: 'allow',
-    // Shell stays prompt in the static table. policyDecisionForInput upgrades
-    // shell_unsafe to allow only when runtime proves the active profile can be
-    // enforced by a platform sandbox; otherwise this fail-closed default wins.
-    shell_safe: 'prompt',
-    shell_unsafe: 'prompt',
-    // Irreversible ops ALWAYS prompt, even in execute mode.
-    fs_destructive: 'prompt',
-    git_destructive: 'prompt',
-    privileged: 'prompt',
-    // Browser act/observe drives the user's logged-in sessions — effectively
-    // irreversible (it can post, send, buy). Prompt even in execute so the
-    // visible view stays a confirmed safety net, not a default-allow. The
-    // user's "allow for this turn" then carries the observe→act loop.
-    browser: 'prompt',
-    // Computer Use uses target- and action-class scope keys. Remembering a
-    // metadata read never authorizes a screenshot or mutation.
-    computer_use: 'prompt',
-  },
-  bypass: {
-    read: 'allow',
-    web_read: 'allow',
-    shell_safe: 'allow',
-    file_write: 'allow',
-    fs_destructive: 'allow',
-    shell_unsafe: 'allow',
-    git_destructive: 'allow',
-    network_send: 'allow',
-    privileged: 'allow',
-    browser: 'allow',
-    computer_use: 'allow',
-    custom_tool: 'allow',
-    subagent: 'allow',
-  },
-};
 
 // ============================================================================
 // Tool name → category mapping (Claude SDK canonical names)
@@ -508,43 +343,7 @@ export function categorizeBash(cmd: string): ToolCategory {
   return 'shell_unsafe';
 }
 
-// ============================================================================
-// Pre-tool-use 3-step evaluator (pure)
-// ============================================================================
-
-export interface PreToolUseInput {
-  toolName: string;
-  args: unknown;
-  mode: PermissionMode;
-  turnRemembered: ReadonlySet<string>;
-  /** Optional trusted runtime hint for custom tools that map to a canonical category. */
-  categoryHint?: ToolCategory;
-  /**
-   * Trusted runtime facts about where the tool would execute. The current
-   * policy accepts this for forward compatibility; sandbox-aware decisions are
-   * intentionally introduced in a later policy change.
-   */
-  executionFacts?: ToolExecutionFacts;
-  /**
-   * Platform sandbox availability for sandbox-aware policy decisions. Unsafe
-   * shell in execute mode is only auto-allowed when the runtime can actually
-   * enforce the active profile with a platform sandbox.
-   */
-  sandbox?: {
-    platformSandboxAvailable: boolean;
-  };
-}
-
-export interface PreToolUseResult {
-  proceed: boolean;
-  needsPrompt: boolean;
-  category: ToolCategory;
-  scopeKey: string;
-  /** Request shape WITHOUT requestId — runtime PermissionEngine fills it. */
-  partialRequest?: Omit<PermissionRequest, 'requestId' | 'toolUseId'>;
-  blockReason?: string;
-}
-
+/** Compatibility classification used by plan-mode tool availability. */
 export function classifyToolUse(input: {
   toolName: string;
   args: unknown;
@@ -557,117 +356,6 @@ export function classifyToolUse(input: {
     if (typeof cmd === 'string') category = categorizeBash(cmd);
   }
   return category;
-}
-
-export function preToolUse(input: PreToolUseInput): PreToolUseResult {
-  // (1) Classify
-  const category = classifyToolUse(input);
-
-  // (2) Policy lookup + turn-remembered check
-  const decision = policyDecisionForInput(input, category);
-  const scopeKey = permissionScopeKey(input.toolName, input.args, category);
-  const rememberForTurnAllowed = permissionRememberForTurnAllowed(
-    input.toolName,
-    input.args,
-    category,
-  );
-  if (decision === 'allow') {
-    return { proceed: true, needsPrompt: false, category, scopeKey };
-  }
-  if (decision === 'block') {
-    return {
-      proceed: false,
-      needsPrompt: false,
-      category,
-      scopeKey,
-      blockReason: `Tool category "${category}" is blocked in mode "${input.mode}"`,
-    };
-  }
-  if (rememberForTurnAllowed && input.turnRemembered.has(scopeKey)) {
-    return { proceed: true, needsPrompt: false, category, scopeKey };
-  }
-
-  // (3) Prompt — runtime adds requestId + toolUseId at adapter site
-  return {
-    proceed: false,
-    needsPrompt: true,
-    category,
-    scopeKey,
-    partialRequest: {
-      kind: 'tool_permission',
-      toolName: input.toolName,
-      category,
-      reason: permissionReasonForCategory(category),
-      args: permissionRequestArgs(input.args, category),
-      rememberForTurnAllowed,
-    },
-  };
-}
-
-function policyDecisionForInput(input: PreToolUseInput, category: ToolCategory): PolicyDecision {
-  const decision = PERMISSION_POLICY[input.mode][category];
-  if (input.mode === 'execute' && category === 'shell_unsafe') {
-    return input.sandbox?.platformSandboxAvailable === true ? 'allow' : 'prompt';
-  }
-  return decision;
-}
-
-export function permissionScopeKey(
-  toolName: string,
-  args: unknown,
-  category: ToolCategory,
-): string {
-  // Browser actions share ONE turn-scope across every browser_* tool and its
-  // args: "allow for this turn" on the first prompt then carries the whole
-  // observe→act loop (snapshot → click → type → navigate …), as the policy
-  // comment promises. The visible-conversation lease — not per-call prompts —
-  // is the safety net for which page is driven. Other categories stay scoped
-  // to the specific tool + args below.
-  if (category === 'browser') return 'browser';
-  if (category === 'computer_use') return computerUseApprovalScopeKey(args);
-  switch (toolName) {
-    case 'Write':
-    case 'Edit':
-    case 'Read':
-      return `${category}:${toolName}:${stringArg(args, 'path')}`;
-    case 'Glob':
-      return `${category}:${toolName}:${stringArg(args, 'cwd')}:${stringArg(args, 'pattern')}`;
-    case 'Grep':
-      return `${category}:${toolName}:${stringArg(args, 'path')}:${stringArg(args, 'glob')}:${stringArg(args, 'pattern')}`;
-    case 'Bash':
-      return `${category}:${toolName}:${normalizeScopeText(stringArg(args, 'command'))}`;
-    case 'WebSearch':
-      return `${category}:${toolName}:${stringArg(args, 'query')}`;
-    default:
-      return `${category}:${toolName}:${stableScopeJson(args)}`;
-  }
-}
-
-function stringArg(args: unknown, key: string): string {
-  if (!args || typeof args !== 'object') return '';
-  const value = (args as Record<string, unknown>)[key];
-  return typeof value === 'string' ? normalizeScopeText(value) : '';
-}
-
-function normalizeScopeText(value: string): string {
-  return value.replace(/\s+/g, ' ').trim().slice(0, 512);
-}
-
-function stableScopeJson(value: unknown): string {
-  const json = JSON.stringify(normalizeForScope(value, new WeakSet<object>()));
-  return (json ?? String(value)).slice(0, 1024);
-}
-
-function normalizeForScope(value: unknown, seen: WeakSet<object>): unknown {
-  if (!value || typeof value !== 'object') return value;
-  if (seen.has(value)) return '[Circular]';
-  seen.add(value);
-  if (Array.isArray(value)) return value.map((nested) => normalizeForScope(nested, seen));
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, nested]) => [key, normalizeForScope(nested, seen)]),
-  );
 }
 
 export function permissionReasonForCategory(c: ToolCategory): PermissionRequest['reason'] {
@@ -767,19 +455,6 @@ export type PermissionRequestPayload =
   | PermissionRequest
   | AdditionalPermissionRequest
   | SandboxEscalationRequest;
-
-function permissionRequestArgs(args: unknown, category: ToolCategory): unknown {
-  return category === 'computer_use' ? computerUseApprovalSummary(args) : args;
-}
-
-function permissionRememberForTurnAllowed(
-  toolName: string,
-  args: unknown,
-  category: ToolCategory,
-): boolean {
-  if (toolName === 'WriteStdin') return false;
-  return category !== 'computer_use' || computerUseApprovalSummary(args).rememberForTurnAllowed;
-}
 
 export interface PermissionResponse {
   requestId: string;
