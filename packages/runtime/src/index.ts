@@ -218,8 +218,6 @@ export type {
   BuildAgentGraphReadinessSnapshotInput,
 } from './stream-graph-readiness.js';
 
-export { PermissionEngine, createDefaultPermissionEngineDeps } from './permission-engine.js';
-export type { EvaluateResult, EvaluateInput, PermissionEngineDeps } from './permission-engine.js';
 export { renderSwarmModePrompt } from './swarm-mode.js';
 export { renderGraphModePrompt } from './graph-mode.js';
 export {
@@ -262,63 +260,6 @@ export type {
   RuntimeUserQuestionOutcome,
 } from './interaction-authority.js';
 
-export {
-  MAX_ADDITIONAL_PERMISSION_JUSTIFICATION_CHARS,
-  DEFAULT_ADDITIONAL_PERMISSION_GRANT_TTL_MS,
-  AdditionalPermissionError,
-  assertAdditionalPermissionProposal,
-  buildAdditionalPermissionProposal,
-  freezeAdditionalPermissionProposal,
-  freezeAdditionalPermissionGrant,
-  normalizeAdditionalPermissionPath,
-  normalizeAdditionalPermissionProfile,
-  planDeclaredBashAdditionalPermission,
-  planFileToolAdditionalPermission,
-  revalidateAdditionalPermissionGrant,
-  revalidateAdditionalPermissionProposal,
-} from './additional-permissions.js';
-export type {
-  AdditionalPermissionErrorReason,
-  AdditionalPermissionGrant,
-  AdditionalPermissionPlanResult,
-  AdditionalPermissionPlannerContext,
-  AdditionalPermissionPlanningContext,
-  AdditionalPermissionProposal,
-  NormalizedAdditionalPermissionPath,
-  ToolExecutionPermissionContext,
-} from './additional-permissions.js';
-export { hashAdditionalPermissionProfile } from './additional-permission-hash.js';
-export {
-  DEFAULT_SANDBOX_ESCALATION_GRANT_TTL_MS,
-  MAX_SANDBOX_ESCALATION_JUSTIFICATION_CHARS,
-  SandboxEscalationError,
-  assertSandboxEscalationGrantForExecution,
-  assertSandboxEscalationProposal,
-  freezeSandboxEscalationGrant,
-  freezeSandboxEscalationProposal,
-  planDeclaredBashSandboxEscalation,
-  sandboxEscalationCommandHash,
-} from './sandbox-escalation.js';
-export type {
-  SandboxEscalationErrorReason,
-  SandboxEscalationGrant,
-  SandboxEscalationPlanResult,
-  SandboxEscalationPlannerContext,
-  SandboxEscalationProposal,
-} from './sandbox-escalation.js';
-export {
-  AiSdkAutoApprovalReviewer,
-  ApprovalCoordinator,
-  DEFAULT_AUTO_APPROVAL_REVIEW_TIMEOUT_MS,
-  MAX_AUTO_APPROVAL_RATIONALE_CHARS,
-} from './approval-reviewer.js';
-export type {
-  AiSdkAutoApprovalReviewerInput,
-  ApprovalCoordinatorObserver,
-  AutoApprovalReviewContext,
-  AutoApprovalReviewDecision,
-  AutoApprovalReviewer,
-} from './approval-reviewer.js';
 export {
   FilesystemWorkerClient,
   FilesystemWorkerClientError,
