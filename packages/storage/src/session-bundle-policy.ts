@@ -23,6 +23,22 @@ import { createSqliteRuntimeStore } from './sqlite-runtime-store.js';
  */
 export const SESSION_BUNDLE_STATE_ENTRIES = ['sessions', 'artifacts', 'runtime.sqlite'] as const;
 
+export const SESSION_BUNDLE_PORTABLE_SESSION_DIRECTORIES = [
+  'deep-research',
+  'projections',
+  'runs',
+  'shell-runs',
+  'turn-admissions',
+] as const;
+
+export const SESSION_BUNDLE_PORTABLE_SESSION_FILES = [
+  'agent-mailbox.jsonl',
+  'plan-events.jsonl',
+  'plans.json',
+  'task-events.jsonl',
+  'tasks.json',
+] as const;
+
 export const SESSION_BUNDLE_PROTECTED_ENTRIES = [
   '.maka-storage-root.json',
   '.maka_cli_claude_device_id',
@@ -50,20 +66,8 @@ export const SESSION_BUNDLE_PROTECTED_ENTRIES = [
 
 const allowedEntries = new Set<string>(SESSION_BUNDLE_STATE_ENTRIES);
 const protectedEntries = new Set<string>(SESSION_BUNDLE_PROTECTED_ENTRIES);
-const portableSessionDirectories = new Set([
-  'deep-research',
-  'projections',
-  'runs',
-  'shell-runs',
-  'turn-admissions',
-]);
-const portableSessionFiles = new Set([
-  'agent-mailbox.jsonl',
-  'plan-events.jsonl',
-  'plans.json',
-  'task-events.jsonl',
-  'tasks.json',
-]);
+const portableSessionDirectories = new Set<string>(SESSION_BUNDLE_PORTABLE_SESSION_DIRECTORIES);
+const portableSessionFiles = new Set<string>(SESSION_BUNDLE_PORTABLE_SESSION_FILES);
 
 export type SessionBundleExportErrorCode =
   | 'invalid_root'
@@ -789,7 +793,7 @@ function isArtifactMetadataRecord(
   return typeof record.sessionId === 'string' && typeof record.relativePath === 'string';
 }
 
-function isArtifactPathForSession(relativePath: string, sessionId: string): boolean {
+export function isArtifactPathForSession(relativePath: string, sessionId: string): boolean {
   const parts = relativePath.split(/[\\/]+/);
   return (
     parts.length >= 2 &&

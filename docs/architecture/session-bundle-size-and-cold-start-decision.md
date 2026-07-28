@@ -36,7 +36,8 @@ npm run measure:session-bundle -- \
   --session-export /path/to/sanitized/state-1 \
   --session-export /path/to/sanitized/state-2 \
   --iterations 2 \
-  --provider-ttfb-ms 250
+  --provider-ttfb-ms 250 \
+  --runtime-build-id release-image-2026-07-23
 ```
 
 `--session-export` is repeatable and each path must contain exactly one real exported state tree with `sessions/<id>/session.jsonl`. Each export is paired by position with the corresponding repeated `--workspace` path. A single workspace may be supplied for a smoke run or for comparison exports, but the report marks that evidence `workspacePairing: shared` and it can never be decision-ready. One-to-one workspace/export pairing is required for decision-ready evidence; canonical paths and session IDs must both be unique, so copying one export to another directory cannot manufacture percentile evidence. JSON and JSONL files receive a defense-in-depth redaction pass before measurement; exports must already be sanitized and must never contain credentials. `--provider-ttfb-ms` is optional; when omitted, the report records that no provider estimate was supplied and omits the first-token planning estimate.
@@ -57,14 +58,15 @@ When no `--session-export` is supplied, the command creates one real Maka FakeBa
 
 The JSON report records:
 
-- `evidence.kind` and `evidence.decisionReady`;
+- `evidence.kind`, the independent `bundleSizeDecisionReady` and `bootstrapLatencyDecisionReady` gates, and the combined `evidence.decisionReady`;
+- the bootstrap runtime identity (`node`, `platform`, `arch`, and the supplied non-empty build ID);
 - the exact archive format and layout;
 - raw tar and compressed byte distributions;
 - per-sample state, archive, hydrate, and fresh-process bootstrap measurements;
 - per-sample workspace roots, byte categories, and recursively filtered portable byte counts (with an aggregate only when multiple workspaces are supplied);
 - provider input provenance and the resulting planning estimate.
 
-Only a report with `evidence.kind: sanitized-real-session-exports`, at least 100 measured samples, and one-to-one workspace/export pairing is marked `evidence.decisionReady: true` and may be used to update the budgets below. A smaller, shared-workspace, or smoke report is suitable for regression tests and implementation debugging only.
+Only a report with `evidence.kind: sanitized-real-session-exports`, at least 100 measured samples, one-to-one workspace/export pairing, and a controlled bootstrap runtime (Node 24.x on Linux x64 or arm64 with a non-empty `--runtime-build-id`) is marked `evidence.decisionReady: true` and may be used to update the budgets below. A smaller, shared-workspace, smoke, or uncontrolled-runtime report is suitable for regression tests and implementation debugging only.
 
 ## Bundle and Repository Policy
 

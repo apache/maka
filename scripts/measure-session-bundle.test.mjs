@@ -18,8 +18,10 @@ import {
   DECISION_READY_MIN_SAMPLES,
   hashManifestFiles,
   isDecisionReady,
+  isBootstrapDecisionReady,
   measureChildReady,
   redactText,
+  sanitizeJsonFile,
   writeTarFile,
 } from './measure-session-bundle.mjs';
 
@@ -167,6 +169,30 @@ test('session bundle measurement rejects copied exports with the same session id
       '1',
     ]);
     assert.match(error, /each --session-export must contain a unique session id/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('session bundle measurement rejects overlapping workspace and export roots', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-session-bundle-overlap-test-'));
+  const workspace = join(root, 'workspace');
+  const sessionExport = join(workspace, 'session-export');
+  try {
+    await mkdir(join(sessionExport, 'sessions', 'session-overlap'), { recursive: true });
+    await writeFile(join(sessionExport, 'sessions', 'session-overlap', 'session.jsonl'), '{}\n');
+
+    const error = await runFailure([
+      scriptPath,
+      '--workspace',
+      workspace,
+      '--session-export',
+      sessionExport,
+      '--boot-samples',
+      '1',
+    ]);
+
+    assert.match(error, /workspace and session export roots must not overlap/i);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -460,6 +486,75 @@ test('defense-in-depth redaction preserves ordinary token and secret prose', () 
   assert.equal(redactText('token = top-secret'), 'token = [REDACTED]');
 });
 
+test('JSON sanitization preserves unchanged compact bytes and compacts redacted JSON', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-session-bundle-json-sanitize-test-'));
+  try {
+    const unchanged = join(root, 'unchanged.json');
+    const unchangedOutput = join(root, 'unchanged-output.json');
+    const compact = '{"answer":42}\n';
+    await writeFile(unchanged, compact);
+    await sanitizeJsonFile(unchanged, unchangedOutput);
+    assert.equal(await readFile(unchangedOutput, 'utf8'), compact);
+
+    const redacted = join(root, 'redacted.json');
+    const redactedOutput = join(root, 'redacted-output.json');
+    await writeFile(redacted, '{\n  "token": "secret-value",\n  "answer": 42\n}\n');
+    await sanitizeJsonFile(redacted, redactedOutput);
+    assert.equal(await readFile(redactedOutput, 'utf8'), '{"token":"[REDACTED]","answer":42}\n');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('JSON sanitization does not preserve duplicate-key source text', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-session-bundle-json-duplicate-key-test-'));
+  try {
+    const source = join(root, 'duplicate.jsonl');
+    const output = join(root, 'duplicate-output.jsonl');
+    await writeFile(source, '{"note":"Authorization: Bearer secret-value","note":"safe"}\n');
+    await sanitizeJsonFile(source, output);
+    const sanitized = await readFile(output, 'utf8');
+    assert.equal(sanitized, '{"note":"safe"}\n');
+    assert.doesNotMatch(sanitized, /secret-value/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('JSON sanitization rejects oversized plain JSON', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-session-bundle-json-size-test-'));
+  try {
+    const source = join(root, 'large.json');
+    await writeFile(source, `{"value":"${'x'.repeat(1_048_576)}"}`);
+    await assert.rejects(
+      sanitizeJsonFile(source, join(root, 'output.json')),
+      /JSON file exceeds maximum size/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('bootstrap decision readiness requires a controlled Linux build identity', () => {
+  assert.equal(isBootstrapDecisionReady(undefined), false);
+  assert.equal(
+    isBootstrapDecisionReady('build-2026-07-28', {
+      node: 'v24.18.0',
+      platform: 'linux',
+      arch: 'x64',
+    }),
+    true,
+  );
+  assert.equal(
+    isBootstrapDecisionReady('build-2026-07-28', {
+      node: 'v26.0.0',
+      platform: 'darwin',
+      arch: 'arm64',
+    }),
+    false,
+  );
+});
+
 test('bundle creation streams file bytes and retries injected short writes', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-session-bundle-tar-stream-test-'));
   try {
@@ -501,6 +596,22 @@ test('bundle creation streams file bytes and retries injected short writes', asy
     assert.equal(readerCalls, 1);
     assert.ok(writeCalls > 10, `expected short writes to be retried, got ${writeCalls}`);
     assert.deepEqual(output.subarray(512, 512 + payload.byteLength), payload);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('bundle creation rejects a source that changes size during tar streaming', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-session-bundle-tar-size-test-'));
+  try {
+    const sourcePath = join(root, 'source.txt');
+    await writeFile(sourcePath, 'original');
+    await assert.rejects(
+      writeTarFile(join(root, 'bundle.tar'), [
+        { path: 'workspace/source.txt', sourcePath, bytes: 99 },
+      ]),
+      /tar source size changed during streaming/,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

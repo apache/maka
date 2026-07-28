@@ -1059,6 +1059,30 @@ describe('runHarborCell', () => {
     });
   });
 
+  test('rejects resume input that disagrees with the stored execution config', async () => {
+    await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
+      const first = await runHarborCell({
+        config,
+        instruction: 'create resumable session',
+        cwd: workspaceDir,
+        outputDir,
+        storageRoot,
+      });
+
+      await assert.rejects(
+        runHarborCell({
+          config: { ...config, model: 'different-model' },
+          instruction: 'resume with conflicting config',
+          cwd: workspaceDir,
+          outputDir: join(outputDir, 'resume'),
+          storageRoot,
+          resumeSessionId: first.invocation.sessionId,
+        }),
+        /resume session model.*different-model.*fake-model/i,
+      );
+    });
+  });
+
   test('settles the active session before its hard deadline and writes final usage', async () => {
     await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
       const deadline = { settleAfterMs: 1_000 };

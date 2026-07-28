@@ -16,10 +16,18 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { performance } from 'node:perf_hooks';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { createInterface } from 'node:readline';
 import { Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import {
+  SESSION_BUNDLE_PORTABLE_SESSION_DIRECTORIES,
+  SESSION_BUNDLE_PORTABLE_SESSION_FILES,
+  SESSION_BUNDLE_STATE_ENTRIES,
+  isArtifactPathForSession,
+} from '@maka/storage';
+import { STORAGE_ROOT_MARKER_FILE } from '@maka/storage/root-authority';
 import {
   constants as zlibConstants,
   createBrotliCompress,
@@ -42,26 +50,16 @@ const SUPPORTED_OPTIONS = new Set([
   'iterations',
   'boot-samples',
   'provider-ttfb-ms',
+  'runtime-build-id',
   'help',
 ]);
 // Storage-root authority markers bind a directory to its host device/inode and
 // must be regenerated when a session export is materialized elsewhere.
-const STORAGE_ROOT_AUTHORITY_MARKER = '.maka-storage-root.json';
-const PORTABLE_STATE_TOP_LEVEL = new Set(['sessions', 'artifacts', 'runtime.sqlite']);
-const PORTABLE_SESSION_DIRECTORIES = new Set([
-  'deep-research',
-  'projections',
-  'runs',
-  'shell-runs',
-  'turn-admissions',
-]);
-const PORTABLE_SESSION_FILES = new Set([
-  'agent-mailbox.jsonl',
-  'plan-events.jsonl',
-  'plans.json',
-  'task-events.jsonl',
-  'tasks.json',
-]);
+const STORAGE_ROOT_AUTHORITY_MARKER = STORAGE_ROOT_MARKER_FILE;
+const PORTABLE_STATE_TOP_LEVEL = new Set(SESSION_BUNDLE_STATE_ENTRIES);
+const PORTABLE_SESSION_DIRECTORIES = new Set(SESSION_BUNDLE_PORTABLE_SESSION_DIRECTORIES);
+const PORTABLE_SESSION_FILES = new Set(SESSION_BUNDLE_PORTABLE_SESSION_FILES);
+const MAX_JSON_BYTES = 1_048_576;
 const EXCLUDED_WORKSPACE_SEGMENTS = new Set(['.git', 'node_modules']);
 const SENSITIVE_WORKSPACE_FILE_PATTERNS = [
   /^\.env(?:\..*)?$/i,
@@ -161,6 +159,15 @@ async function main(options) {
   if (new Set(sourceRoots).size !== sourceRoots.length) {
     throw new Error('each --session-export path must be unique; do not duplicate real sessions');
   }
+  for (const workspaceRoot of workspaceRoots) {
+    for (const sourceRoot of sourceRoots) {
+      if (pathsOverlap(workspaceRoot, sourceRoot)) {
+        throw new Error(
+          `workspace and session export roots must not overlap: ${workspaceRoot} and ${sourceRoot}`,
+        );
+      }
+    }
+  }
   const sourceSessionIds = [];
   for (const sourceRoot of sourceRoots) {
     sourceSessionIds.push(await readSessionExportId(sourceRoot));
@@ -172,15 +179,12 @@ async function main(options) {
   const temporaryRoot = await mkdtemp(join(tmpdir(), 'maka-session-bundle-measure-'));
   try {
     const workspaceMeasurements = await Promise.all(
-      workspaceRoots.map(async (root) => ({
-        root,
-        stats: await measureWorkspace(root),
-        entries: await readTreeEntries(root, { excludeWorkspaceDirectories: true }),
-      })),
+      workspaceRoots.map(async (root) => ({ root, stats: await measureWorkspace(root) })),
     );
     const workspaceByRoot = new Map(
       workspaceMeasurements.map((measurement) => [measurement.root, measurement]),
     );
+    const sharedWorkspaceEntries = workspaceRoots.length === 1 ? new Map() : undefined;
     const measuredSourceRoots =
       exportRoots.length > 0 ? sourceRoots : [await createBootstrapSmokeExport(temporaryRoot)];
     const measuredWorkspaceRoots =
@@ -195,11 +199,18 @@ async function main(options) {
       const sourceRoot = measuredSourceRoots[index];
       const workspaceMeasurement = workspaceByRoot.get(measuredWorkspaceRoots[index]);
       if (!workspaceMeasurement) throw new Error('missing workspace measurement for sample');
+      let workspaceEntries = sharedWorkspaceEntries?.get(workspaceMeasurement.root);
+      if (!workspaceEntries) {
+        workspaceEntries = await readTreeEntries(workspaceMeasurement.root, {
+          excludeWorkspaceDirectories: true,
+        });
+        sharedWorkspaceEntries?.set(workspaceMeasurement.root, workspaceEntries);
+      }
       await prepareStateExport(sourceRoot, stateRoot, sourceSessionIds[index]);
       const archivePath = join(sampleRoot, 'session-bundle.tar.zst');
       const archive = await createBundleArchive({
         stateRoot,
-        workspaceEntries: workspaceMeasurement.entries,
+        workspaceEntries,
         archivePath,
       });
       const hydrateSamples = [];
@@ -231,12 +242,26 @@ async function main(options) {
       evidence: {
         kind: evidenceKind,
         sampleCount: samples.length,
-        decisionReady: isDecisionReady(
+        bundleSizeDecisionReady: isDecisionReady(
           evidenceKind,
           samples.length,
           workspaceRoots.length,
           exportRoots.length,
         ),
+        bootstrapLatencyDecisionReady: isBootstrapDecisionReady(options['runtime-build-id']),
+        decisionReady:
+          isDecisionReady(
+            evidenceKind,
+            samples.length,
+            workspaceRoots.length,
+            exportRoots.length,
+          ) && isBootstrapDecisionReady(options['runtime-build-id']),
+        runtime: {
+          node: process.version,
+          platform: process.platform,
+          arch: process.arch,
+          buildIdentity: options['runtime-build-id'] ?? null,
+        },
         decisionReadyMinSamples: DECISION_READY_MIN_SAMPLES,
         sourceCount: exportRoots.length,
         workspaceCount: workspaceRoots.length,
@@ -299,6 +324,15 @@ async function main(options) {
   }
 }
 
+function pathsOverlap(left, right) {
+  return pathIsAtOrInside(left, right) || pathIsAtOrInside(right, left);
+}
+
+function pathIsAtOrInside(root, candidate) {
+  const path = relative(root, candidate);
+  return path === '' || (path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path));
+}
+
 async function createBootstrapSmokeExport(temporaryRoot) {
   const rawStorageRoot = join(temporaryRoot, 'smoke-storage-raw');
   const storageRoot = join(temporaryRoot, 'smoke-storage');
@@ -325,6 +359,9 @@ async function createBootstrapSmokeExport(temporaryRoot) {
     outputDir,
     storageRoot: rawStorageRoot,
   });
+  if (result.invocation.status !== 'completed') {
+    throw new Error(`bootstrap smoke run did not complete: ${result.invocation.status}`);
+  }
   const { exportSessionBundleState } = await import('@maka/storage');
   await exportSessionBundleState({
     stateRoot: rawStorageRoot,
@@ -354,7 +391,7 @@ async function prepareStateExport(sourceRoot, destinationRoot, expectedSessionId
     const destination = join(destinationRoot, entry.path);
     await mkdir(dirname(destination), { recursive: true });
     if (isJsonTextPath(entry.path)) {
-      await writeFile(destination, sanitizeJsonText(entry.path, await readFile(entry.sourcePath)));
+      await sanitizeJsonFile(entry.sourcePath, destination);
     } else {
       await pipeline(createReadStream(entry.sourcePath), createWriteStream(destination));
     }
@@ -426,15 +463,6 @@ async function validateArtifactMetadata(sourceRoot, entry, sessionId) {
       throw new Error(`session export contains unfiltered artifact metadata at line ${index + 1}`);
     }
   }
-}
-
-function isArtifactPathForSession(relativePath, sessionId) {
-  const parts = relativePath.split(/[\\/]+/);
-  return (
-    parts.length >= 2 &&
-    parts[0] === sessionId &&
-    parts.every((part) => part.length > 0 && part !== '.' && part !== '..')
-  );
 }
 
 async function createBundleArchive({ stateRoot, workspaceEntries, archivePath }) {
@@ -576,9 +604,6 @@ async function childBootstrap(archivePath) {
         throw new Error('materialized bundle must contain exactly the manifest session');
       }
       const session = sessions[0];
-      await storage.executionStores.sessionStore.readMessagesForRecovery(session.id);
-      await storage.executionStores.sessionStore.listTurnsSnapshot(session.id);
-      await storage.executionStores.runtimeEventStore.readSessionRuntimeEvents(session.id);
       await storage.executionStores.sessionStore.updateHeader(session.id, {
         workspaceRoot: storageRoot,
         cwd: workspaceDir,
@@ -593,13 +618,16 @@ async function childBootstrap(archivePath) {
       if (rebasedSession.workspaceRoot !== storageRoot || rebasedSession.cwd !== workspaceDir) {
         throw new Error('restored session paths were not rebased to the materialized bundle');
       }
-      await runHarborCellWithStorage(
+      const result = await runHarborCellWithStorage(
         {
           config: {
             id: 'session-bundle-bootstrap-probe',
             backend: 'fake',
             llmConnectionSlug: 'fixture',
             model: 'fixture-model',
+            ...(rebasedSession.thinkingLevel
+              ? { thinkingLevel: rebasedSession.thinkingLevel }
+              : {}),
           },
           instruction: 'bootstrap probe',
           cwd: workspaceDir,
@@ -612,6 +640,9 @@ async function childBootstrap(archivePath) {
         },
         storage,
       );
+      if (result.invocation.status !== 'completed') {
+        throw new Error(`bootstrap probe did not complete: ${result.invocation.status}`);
+      }
       const after = await storage.executionStores.sessionStore.listForRecovery();
       if (after.length !== 1 || after[0].id !== session.id) {
         throw new Error('bootstrap created an unrelated session instead of restoring the export');
@@ -720,18 +751,23 @@ async function validateMaterializedBundle(destination, manifest) {
 
 async function measureWorkspace(root) {
   const categories = { git: 0, nodeModules: 0, sensitive: 0, portableWorkspace: 0 };
+  let archivedPortableRawBytes = 0;
   await walkFiles(root, async (path, relativePath) => {
     const bytes = (await stat(path)).size;
     const category = excludedWorkspaceCategory(relativePath);
     if (category === 'git') categories.git += bytes;
     else if (category === 'nodeModules') categories.nodeModules += bytes;
     else if (category === 'sensitive') categories.sensitive += bytes;
-    else categories.portableWorkspace += bytes;
+    else {
+      categories.portableWorkspace += bytes;
+      archivedPortableRawBytes += bytes;
+    }
   });
   return {
     rawBytes:
       categories.git + categories.nodeModules + categories.sensitive + categories.portableWorkspace,
     categories,
+    archivedPortableRawBytes,
   };
 }
 
@@ -739,7 +775,7 @@ function workspaceReport(measurement) {
   return {
     root: measurement.root,
     ...measurement.stats,
-    archivedPortableRawBytes: measurement.entries.reduce((total, entry) => total + entry.bytes, 0),
+    archivedPortableRawBytes: measurement.stats.archivedPortableRawBytes,
   };
 }
 
@@ -866,32 +902,114 @@ export function isDecisionReady(
   );
 }
 
+export function isBootstrapDecisionReady(
+  runtimeBuildId,
+  runtime = { node: process.version, platform: process.platform, arch: process.arch },
+) {
+  return (
+    runtime.node.startsWith('v24.') &&
+    runtime.platform === 'linux' &&
+    (runtime.arch === 'x64' || runtime.arch === 'arm64') &&
+    typeof runtimeBuildId === 'string' &&
+    runtimeBuildId.trim().length > 0
+  );
+}
+
 function isJsonTextPath(path) {
   return path.endsWith('.json') || path.endsWith('.jsonl');
 }
 
-function sanitizeJsonText(path, bytes) {
-  const text = bytes.toString('utf8');
+export async function sanitizeJsonFile(path, destination) {
+  const sourceStats = await stat(path);
+  if (path.endsWith('.json') && sourceStats.size > MAX_JSON_BYTES) {
+    throw new Error(`JSON file exceeds maximum size of ${MAX_JSON_BYTES} bytes: ${path}`);
+  }
   if (path.endsWith('.jsonl')) {
-    return Buffer.from(
-      text
-        .split('\n')
-        .map((line) => {
-          if (!line.trim()) return line;
-          try {
-            return `${JSON.stringify(redactJson(JSON.parse(line)))}\n`;
-          } catch {
-            return `${redactText(line)}\n`;
-          }
-        })
-        .join(''),
-    );
+    const input = createReadStream(path, { encoding: 'utf8' });
+    const output = createWriteStream(destination, { flags: 'w' });
+    const closed = new Promise((resolvePromise, reject) => {
+      output.once('close', resolvePromise);
+      output.once('error', reject);
+    });
+    try {
+      const lines = createInterface({ input, crlfDelay: Infinity });
+      for await (const line of lines) {
+        if (!line.trim()) {
+          await writeStreamChunk(output, `${line}\n`);
+          continue;
+        }
+        try {
+          const parsed = JSON.parse(line);
+          const redacted = redactJson(parsed);
+          const sanitized = JSON.stringify(redacted);
+          await writeStreamChunk(
+            output,
+            `${!hasDuplicateJsonObjectKeys(line) && sanitized === JSON.stringify(parsed) ? line : sanitized}\n`,
+          );
+        } catch {
+          await writeStreamChunk(output, `${redactText(line)}\n`);
+        }
+      }
+    } finally {
+      output.end();
+      await closed;
+    }
+    return;
   }
+  const bytes = await readFile(path);
+  const text = bytes.toString('utf8');
+  let output = text;
   try {
-    return Buffer.from(`${JSON.stringify(redactJson(JSON.parse(text)), null, 2)}\n`);
+    const parsed = JSON.parse(text);
+    const redacted = redactJson(parsed);
+    output =
+      !hasDuplicateJsonObjectKeys(text) && JSON.stringify(redacted) === JSON.stringify(parsed)
+        ? text
+        : `${JSON.stringify(redacted)}\n`;
   } catch {
-    return Buffer.from(redactText(text));
+    output = redactText(text);
   }
+  await writeFile(destination, output);
+}
+
+function hasDuplicateJsonObjectKeys(text) {
+  const objectKeys = [];
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (character === '"') {
+      const start = index;
+      index += 1;
+      let escaped = false;
+      for (; index < text.length; index += 1) {
+        const current = text[index];
+        if (escaped) escaped = false;
+        else if (current === '\\') escaped = true;
+        else if (current === '"') break;
+      }
+      const next = text.slice(index + 1).match(/^\s*([:])/u)?.[1];
+      if (next === ':' && objectKeys.length > 0) {
+        const key = JSON.parse(text.slice(start, index + 1));
+        const keys = objectKeys[objectKeys.length - 1];
+        if (keys.has(key)) return true;
+        keys.add(key);
+      }
+      continue;
+    }
+    if (/\s/u.test(character) || character === ':' || character === ',') continue;
+    if (character === '{') objectKeys.push(new Set());
+    else if (character === '}' && objectKeys.length > 0) objectKeys.pop();
+  }
+  return false;
+}
+
+function writeStreamChunk(stream, chunk) {
+  return new Promise((resolvePromise, reject) => {
+    if (stream.write(chunk, 'utf8')) resolvePromise();
+    else {
+      stream.once('drain', resolvePromise);
+      stream.once('error', reject);
+    }
+  });
 }
 
 function redactJson(value) {
@@ -980,12 +1098,20 @@ export async function writeTarFile(path, entries, options = {}) {
       const checksum = header.reduce((total, byte) => total + byte, 0);
       writeTarChecksum(header, checksum);
       await write(header);
+      let streamed = 0;
       if (Buffer.isBuffer(entry.bytes)) {
         await write(entry.bytes);
+        streamed = entry.bytes.byteLength;
       } else {
         for await (const chunk of readFileChunks(entry.sourcePath)) {
           await write(chunk);
+          streamed += chunk.byteLength;
         }
+      }
+      if (streamed !== size) {
+        throw new Error(
+          `tar source size changed during streaming for ${entry.path}: expected ${size}, observed ${streamed}`,
+        );
       }
       const padding = (512 - (size % 512)) % 512;
       if (padding > 0) await write(Buffer.alloc(padding));
@@ -1147,7 +1273,7 @@ function parseArgs(argv) {
     if (!SUPPORTED_OPTIONS.has(key)) throw new Error(`Unknown option: --${key}`);
     if (key === 'help') {
       process.stdout.write(
-        'Usage: node scripts/measure-session-bundle.mjs --workspace PATH [--workspace PATH ...] [--session-export PATH ...] [--iterations N] [--boot-samples N] [--provider-ttfb-ms N]\n',
+        'Usage: node scripts/measure-session-bundle.mjs --workspace PATH [--workspace PATH ...] [--session-export PATH ...] [--iterations N] [--boot-samples N] [--provider-ttfb-ms N] [--runtime-build-id ID]\n',
       );
       process.exit(0);
     }
