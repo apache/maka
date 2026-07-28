@@ -429,6 +429,49 @@ describe('Storybook baseline contract', () => {
     assert.doesNotMatch(storyPath, /src\/renderer/, 'desktop Storybook stories must stay out of the renderer build tree');
   });
 
+  /**
+   * The Models page mounts `ModelOAuthSection`, which reads its card state
+   * straight off `window.maka` rather than through the `ConnectionsBridge`
+   * prop. A channel the story bridge does not carry rejects on mount, and the
+   * page still renders — every card frozen at its static "可用" label, the
+   * Claude card hidden behind an experimental gate that never answered, and no
+   * error banner. That is a screen the app never shows, which is exactly what
+   * apps/desktop/stories/FIDELITY.md exists to keep out of Storybook.
+   *
+   * The channel list is derived from the renderer so a new one goes red here
+   * instead of silently degrading the story. It is names only: a fixture that
+   * carries `claudeSubscription` but not its gate method still passes the
+   * derived half, so the gate is named separately below.
+   */
+  it('gives the Models settings page the subscription channels its cards read on mount', () => {
+    const oauthSection = readFileSync(
+      join(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer', 'settings', 'provider-oauth-section.tsx'),
+      'utf8',
+    );
+    const channels = [...new Set([...oauthSection.matchAll(/window\.maka\.(\w+)/g)].map((match) => match[1]))].sort();
+    assert.ok(channels.length > 0, 'ModelOAuthSection must reach the preload bridge for its card state');
+
+    const story = readFileSync(
+      join(REPO_ROOT, 'apps', 'desktop', 'stories', 'settings', 'settings-pages.stories.tsx'),
+      'utf8',
+    );
+    const bridge = story.slice(story.indexOf('const makaBridge = {'), story.indexOf('const withSettingsBridge'));
+    assert.ok(bridge, 'settings-pages.stories.tsx must define the bridge its settings pages render against');
+
+    const missing = channels.filter((channel) => !new RegExp(`^  ${channel}:`, 'm').test(bridge));
+    assert.deepEqual(
+      missing,
+      [],
+      `the Models story bridge is missing channels ModelOAuthSection calls on mount:\n${missing.join('\n')}`,
+    );
+
+    assert.match(
+      bridge,
+      /isExperimentalEnabled/,
+      'the Claude card stays hidden until the experimental gate answers, so the story bridge must answer it',
+    );
+  });
+
   it('storyboards command palette and content search modal states before visual polish', () => {
     const storybookMain = readFileSync(join(REPO_ROOT, 'apps', 'desktop', '.storybook', 'main.ts'), 'utf8');
     const storyPath = join(REPO_ROOT, 'apps', 'desktop', 'stories', 'command-search.stories.tsx');
