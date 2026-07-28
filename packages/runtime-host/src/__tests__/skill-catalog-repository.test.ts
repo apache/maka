@@ -9,7 +9,11 @@ import {
   buildStarterSkillTemplate,
   createManagedSkillLock,
 } from '@maka/runtime';
-import { decodeHostFrame, isSkillCatalogProjectRootLexicallyAbsolute } from '../protocol/index.js';
+import {
+  decodeHostFrame,
+  isSkillCatalogProjectRootLexicallyAbsolute,
+  RuntimeHostProtocolError,
+} from '../protocol/index.js';
 import type {
   SkillCatalogGovernanceItem,
   SkillCatalogQueryResult,
@@ -503,70 +507,59 @@ test('noncanonical external ids remain wire-safe governance entries', async () =
   assert.equal(model.inventory.find((skill) => skill.id === 'valid skill')?.enabled, false);
 });
 
-test('repository and codec preserve the 256-byte display-id boundary', async () => {
+test('repository preserves filesystem-safe ids and codec preserves the 256-byte display-id boundary', async () => {
   const fixture = await createFixture();
+  const filesystemId = `${'界'.repeat(83)} abcde`;
   const boundaryId = `${'界'.repeat(84)} abc`;
   const oversizedId = `${boundaryId}x`;
+  assert.equal(Buffer.byteLength(filesystemId, 'utf8'), 255);
   assert.equal(Buffer.byteLength(boundaryId, 'utf8'), 256);
   assert.equal(Buffer.byteLength(oversizedId, 'utf8'), 257);
   await createSkill(
     join(fixture.project, '.maka', 'skills'),
-    boundaryId,
+    filesystemId,
     skillBody('Boundary Skill', 'encodable external id'),
-  );
-  await createSkill(
-    join(fixture.project, '.maka', 'skills'),
-    oversizedId,
-    skillBody('Oversized Identity Skill', 'unencodable external id'),
   );
 
   const repository = fixture.repository();
   const page = await start(repository, fixture.project, 'governance');
-  const boundaryRef = `project:maka:${boundaryId}`;
-  const boundary = governanceItem(page, boundaryRef);
-  assert.equal(boundary.id, boundaryId);
-  assert.equal(boundary.manageable, false);
-  const oversized = page.items.find(
-    (item): item is SkillCatalogGovernanceItem =>
-      item.kind === 'discovery_diagnostic' && item.name === 'Oversized Identity Skill',
-  );
-  assert.ok(oversized);
-  assert.equal(oversized.id, 'invalid-skill-id');
-  assert.equal(oversized.manageable, false);
+  const filesystemRef = `project:maka:${filesystemId}`;
+  const filesystemItem = governanceItem(page, filesystemRef);
+  assert.equal(filesystemItem.id, filesystemId);
+  assert.equal(filesystemItem.manageable, false);
+
+  const boundaryPage = {
+    ...page,
+    items: [{ ...filesystemItem, id: boundaryId }],
+  };
   const queryFrame = {
     requestId: 'display-id-boundary-query',
     operation: 'skill.catalog.query' as const,
     ok: true as const,
-    result: page,
+    result: boundaryPage,
   };
   assert.deepEqual(decodeHostFrame(queryFrame), queryFrame);
 
-  const rejected = await repository.mutate({
-    context: { projectRoot: fixture.project },
-    expectedRevision: page.revision,
-    mutation: { kind: 'set_enabled', ref: `project:maka:${oversizedId}`, enabled: false },
-  });
-  assert.deepEqual(rejected, { kind: 'rejected', reason: 'not_found' });
-  assert.deepEqual(
-    await repository.mutate({
-      context: { projectRoot: fixture.project },
-      expectedRevision: page.revision,
-      mutation: { kind: 'set_enabled', ref: oversized.ref, enabled: false },
-    }),
-    { kind: 'rejected', reason: 'not_found' },
+  const oversizedFrame = {
+    ...queryFrame,
+    result: {
+      ...boundaryPage,
+      items: [{ ...filesystemItem, id: oversizedId }],
+    },
+  };
+  assert.throws(
+    () => decodeHostFrame(oversizedFrame),
+    (error: unknown) => error instanceof RuntimeHostProtocolError && error.code === 'invalid_frame',
   );
-  await assert.rejects(readFile(join(fixture.root, '.maka', 'skills-state.json')), {
-    code: 'ENOENT',
-  });
 
   const committed = await repository.mutate({
     context: { projectRoot: fixture.project },
     expectedRevision: page.revision,
-    mutation: { kind: 'set_enabled', ref: boundaryRef, enabled: false },
+    mutation: { kind: 'set_enabled', ref: filesystemRef, enabled: false },
   });
   assert.equal(committed.kind, 'committed');
   if (committed.kind !== 'committed') return;
-  assert.equal(committed.entry?.id, boundaryId);
+  assert.equal(committed.entry?.id, filesystemId);
   const mutationFrame = {
     requestId: 'display-id-boundary-mutation',
     operation: 'skill.catalog.mutate' as const,
@@ -578,11 +571,7 @@ test('repository and codec preserve the 256-byte display-id boundary', async () 
   const model = await repository.readCanonicalModelInventory({
     projectRoot: fixture.project,
   });
-  assert.equal(model.inventory.find((skill) => skill.id === boundaryId)?.enabled, false);
-  assert.equal(
-    model.inventory.some((skill) => skill.id === oversizedId),
-    false,
-  );
+  assert.equal(model.inventory.find((skill) => skill.id === filesystemId)?.enabled, false);
 });
 
 test('managed source read failures are not projected as an empty catalog', async () => {
