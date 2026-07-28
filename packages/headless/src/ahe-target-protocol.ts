@@ -374,13 +374,14 @@ export const MAKA_AHE_CURRENT_COMPONENTS: readonly MakaAheTargetComponent[] = [
   {
     id: 'maka-permission-policy',
     category: 'permission_policy',
-    label: 'Permission and tool availability policy',
+    label: 'Sandbox boundary and tool availability policy',
     description:
-      'Permission modes, pre-tool-use policy, runtime permission enforcement, and dynamic tool availability.',
+      'Session sandbox boundaries, boundary expansion, runtime enforcement, and dynamic tool availability.',
     editable: true,
     sourceRefs: [
-      { path: 'packages/core/src/permission.ts' },
-      { path: 'packages/runtime/src/permission-engine.ts' },
+      { path: 'packages/core/src/sandbox-boundary.ts' },
+      { path: 'packages/storage/src/sqlite-session-metadata-store.ts' },
+      { path: 'packages/runtime/src/sandbox-boundary-tool.ts' },
       { path: 'packages/runtime/src/tool-availability.ts' },
     ],
   },
