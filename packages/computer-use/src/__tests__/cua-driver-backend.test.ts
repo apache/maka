@@ -125,7 +125,7 @@ const TOOL_CALL_COUNTS = new Map();
 const EMPTY_AX = process.env.CUA_MOCK_EMPTY_AX === '1';
 const AX_ROLE = process.env.CUA_MOCK_AX_ROLE || 'AXTextArea';
 const AX_LABEL = process.env.CUA_MOCK_AX_LABEL || '';
-const SEMANTIC_OCCLUDED = process.env.CUA_MOCK_SEMANTIC_OCCLUDED === '1';
+const SEMANTIC_OCCLUDED = process.env.CUA_MOCK_SEMANTIC_OCCLUDED || '';
 const PAGE_EXEC_RESULT = process.env.CUA_MOCK_PAGE_EXEC_RESULT || '';
 const PAGE_READBACK_VALUE = process.env.CUA_MOCK_PAGE_READBACK_VALUE || '';
 const NATIVE_READBACK_VALUE = process.env.CUA_MOCK_NATIVE_READBACK_VALUE || '';
@@ -340,8 +340,11 @@ function handle(msg) {
           { window_id: 92, pid: 5002, layer: 0, is_on_screen: true, z_index: 9, bounds: { x: 950, y: 150, width: 300, height: 200 } },
           { window_id: 93, pid: 5003, layer: 3, is_on_screen: true, z_index: 99, bounds: { x: 900, y: 100, width: 400, height: 300 } },
           { window_id: 94, pid: 5004, layer: 0, is_on_screen: false, z_index: 50, bounds: { x: 900, y: 100, width: 400, height: 300 } },
-          ...(SEMANTIC_OCCLUDED
+          ...(SEMANTIC_OCCLUDED === 'other-app'
             ? [{ window_id: 95, pid: 5005, layer: 0, is_on_screen: true, z_index: 20, bounds: { x: 300, y: 180, width: 100, height: 100 } }]
+            : []),
+          ...(SEMANTIC_OCCLUDED === 'same-app'
+            ? [{ window_id: 96, pid: 4242, layer: 0, is_on_screen: true, z_index: 20, bounds: { x: 300, y: 180, width: 100, height: 100 } }]
             : []),
         ] } });
         return;
@@ -506,7 +509,7 @@ function makeBackend(
     emptyAx?: boolean;
     axRole?: string;
     axLabel?: string;
-    semanticOccluded?: boolean;
+    semanticOccluded?: 'other-app' | 'same-app';
     processKind?: 'electron' | 'native' | 'unknown';
     pageTarget?: CuaResolvedPageTextTarget;
     pageFieldValue?: string;
@@ -546,7 +549,7 @@ function makeBackend(
   process.env.CUA_MOCK_EMPTY_AX = opts.emptyAx ? '1' : '';
   process.env.CUA_MOCK_AX_ROLE = opts.axRole ?? 'AXTextArea';
   process.env.CUA_MOCK_AX_LABEL = opts.axLabel ?? '';
-  process.env.CUA_MOCK_SEMANTIC_OCCLUDED = opts.semanticOccluded ? '1' : '';
+  process.env.CUA_MOCK_SEMANTIC_OCCLUDED = opts.semanticOccluded ?? '';
   process.env.CUA_MOCK_PAGE_EXEC_RESULT = opts.semanticPointerResult
     ? JSON.stringify(opts.semanticPointerResult)
     : '';
@@ -1621,11 +1624,13 @@ describe('cua-driver backend', () => {
     assert.equal(toolCalls(await readRecords(logPath), 'click').length, 0);
   });
 
-  it('rejects an observed semantic element occluded by another window', async () => {
+  it('rejects a semantic element covered by another window of the same app', async () => {
+    // A sheet or dialog the app itself put up means the element underneath is
+    // not the thing to act on, whatever the AX tree still says about it.
     const { backend, logPath } = makeBackend({
       axRole: 'AXButton',
       axLabel: 'Continue',
-      semanticOccluded: true,
+      semanticOccluded: 'same-app',
     });
     const signal = new AbortController().signal;
     const context = { sessionId: 's1', turnId: 't1', toolCallId: 'semantic' };
@@ -1651,6 +1656,41 @@ describe('cua-driver backend', () => {
     assert.equal(result.outcome.ok, false);
     if (!result.outcome.ok) assert.equal(result.outcome.error, 'target_occluded');
     assert.equal(toolCalls(await readRecords(logPath), 'click').length, 0);
+  });
+
+  it('allows a semantic action when an unrelated app is stacked on top', async () => {
+    // A semantic action dispatches by element_index/element_token, so nothing
+    // about the z-order affects whether AXPress reaches the element. Refusing
+    // here made background operation impossible: an app started by launch_app
+    // begins at the bottom of the stack, under every window on screen.
+    const { backend, logPath } = makeBackend({
+      axRole: 'AXButton',
+      axLabel: 'Continue',
+      semanticOccluded: 'other-app',
+    });
+    const signal = new AbortController().signal;
+    const context = { sessionId: 's1', turnId: 't1', toolCallId: 'semantic' };
+    const observation = await backend.observeApp!(
+      {
+        app: 'Fixture Window',
+        includeScreenshot: true,
+      },
+      signal,
+      context,
+    );
+    const result = await backend.runSemantic!(
+      {
+        type: 'click_element',
+        observationId: observation.observationId,
+        elementId: '7',
+        elementIdentity: observation.elements[0]!.identity,
+      },
+      signal,
+      { ...context, boundAction: boundElementAction(observation, '7') },
+    );
+
+    assert.equal(result.outcome.ok, true);
+    assert.equal(toolCalls(await readRecords(logPath), 'click').length, 1);
   });
 
   it('allows semantic actions on a visible background window', async () => {

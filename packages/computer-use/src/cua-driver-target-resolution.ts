@@ -235,23 +235,34 @@ export async function validateSemanticElementVisibility(
     };
   }
   const winner = topWindowAtPoint(await deps.listWindowRecords(signal), point);
-  if (!winner || winner.pid !== window.pid || winner.windowId !== window.windowId) {
+  // Refuse only when another window OF THE SAME APP covers the element.
+  //
+  // A semantic action dispatches by element_index / element_token — no screen
+  // coordinate is involved — so whatever an unrelated application stacks above
+  // the target has no bearing on whether AXPress reaches it. Treating that as
+  // occlusion made background operation impossible in the case that matters
+  // most: an app started by `launch_app` begins at the bottom of the z-order,
+  // so every window on the user's screen sat above it and every semantic click
+  // was refused.
+  //
+  // The same-app case is different and still refused. A sheet or dialog the app
+  // itself put up means the element underneath is not the thing to act on,
+  // whatever the AX tree still says about it.
+  const occludedByTarget =
+    winner !== undefined && winner.pid === window.pid && winner.windowId !== window.windowId;
+  if (occludedByTarget) {
     deps.traceOcclusion({
       expectedPid: window.pid,
       expectedWindowId: window.windowId,
-      ...(winner
-        ? {
-            winnerPid: winner.pid,
-            winnerWindowId: winner.windowId,
-            winnerZIndex: winner.zIndex,
-          }
-        : {}),
+      winnerPid: winner.pid,
+      winnerWindowId: winner.windowId,
+      winnerZIndex: winner.zIndex,
     });
     return {
       outcome: {
         ok: false,
         error: 'target_occluded',
-        message: 'another window now owns the semantic element position',
+        message: 'another window of the same app now covers the semantic element',
       },
     };
   }

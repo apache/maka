@@ -93,13 +93,28 @@ const MAX_OBSERVATIONS_PER_SESSION = 16;
  * reacting. Capturing immediately hands the model a UI mid-transition — a menu
  * halfway open, a list not yet repopulated — and the element indices it derives
  * from that snapshot describe a screen that no longer exists by the time it
- * acts on them. The floor covers the common case; the poll catches slower
- * redraws; the ceiling keeps a permanently animating window from stalling the
- * turn, since capturing something is better than capturing nothing.
+ * acts on them.
+ *
+ * The ceiling is set from measurement rather than taste: clicking a button in
+ * a real AppKit window took 947ms and 1103ms to come to rest on two runs, so a
+ * window still moving a second after the action is ordinary, not pathological.
+ * It exists only to stop a permanently animating window from stalling the
+ * turn — capturing something late beats capturing nothing.
  */
 const SETTLE_FLOOR_MS = 120;
 const SETTLE_POLL_MS = 120;
-const SETTLE_CEILING_MS = 1_500;
+const SETTLE_CEILING_MS = 2_500;
+/**
+ * How long to wait for a launched app to put a window on screen.
+ *
+ * Measured on a real machine: `launch_app` returns in 1.3–3.2s and the window
+ * appears 2.3–4.5s after the call, so the driver's own `windows` array is
+ * empty on every real launch. The ceiling is generous because a cold start of
+ * an app that has never run is the slow case, and returning without a window
+ * costs the model a whole extra observe cycle to discover one.
+ */
+const LAUNCH_WINDOW_TIMEOUT_MS = 8_000;
+const LAUNCH_WINDOW_POLL_MS = 250;
 
 function exceedsCuaDriverFrameCap(byteLength: number): boolean {
   return byteLength > CUA_DRIVER_FRAME_MAX_BYTES;
@@ -1557,16 +1572,37 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
           if (!Number.isInteger(pid) || pid <= 0) {
             throw new Error('cua-driver launched an app without reporting a usable pid');
           }
-          const windows = ((structured.windows ?? []) as CuaWindowRecord[]).flatMap((window) =>
-            typeof window.window_id === 'number'
-              ? [
-                  {
-                    windowId: window.window_id,
-                    ...(typeof window.title === 'string' ? { title: window.title } : {}),
-                  },
-                ]
-              : [],
-          );
+          const readWindows = (records: unknown): Array<{ windowId: number; title?: string }> =>
+            ((records ?? []) as CuaWindowRecord[]).flatMap((window) =>
+              typeof window.window_id === 'number'
+                ? [
+                    {
+                      windowId: window.window_id,
+                      ...(typeof window.title === 'string' ? { title: window.title } : {}),
+                    },
+                  ]
+                : [],
+            );
+          let windows = readWindows(structured.windows);
+          // The driver reports the windows that exist when it returns, which on
+          // a real launch is none of them: measured on this machine, the call
+          // comes back in 1.3–3.2s and the window is mapped 2.3–4.5s in. A
+          // caller told to "skip the extra round-trip" would get an empty array
+          // every time, so wait for the app to actually put a window up.
+          if (windows.length === 0) {
+            const deadline = Date.now() + LAUNCH_WINDOW_TIMEOUT_MS;
+            while (Date.now() < deadline && windows.length === 0) {
+              await abortableDelay(LAUNCH_WINDOW_POLL_MS, signal);
+              const listed = await actionClient.callTool('list_windows', {}, signal);
+              const outcome = normalizeCuaDriverOutcome(listed);
+              if (!outcome.ok) break;
+              windows = readWindows(
+                ((listed?.structuredContent?.windows ?? []) as CuaWindowRecord[]).filter(
+                  (window) => window.pid === pid && window.layer === 0,
+                ),
+              );
+            }
+          }
           return {
             pid,
             ...(typeof structured.bundle_id === 'string' ? { bundleId: structured.bundle_id } : {}),
