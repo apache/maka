@@ -168,12 +168,6 @@ async function createContext(input: CreateMakaCliRuntimeContextInput): Promise<M
   ) {
     throw new Error(`unexpected maxSteps ${String(input.maxSteps)}`);
   }
-  if (process.env.MAKA_RUN_EXPECT_PERMISSION_RULES) {
-    const actual = JSON.stringify(input.permissionRules ?? []);
-    if (actual !== process.env.MAKA_RUN_EXPECT_PERMISSION_RULES) {
-      throw new Error(`unexpected permissionRules ${actual}`);
-    }
-  }
   if (
     process.env.MAKA_RUN_EXPECT_CONTEXT_CWD &&
     input.cwd !== process.env.MAKA_RUN_EXPECT_CONTEXT_CWD

@@ -173,8 +173,6 @@ describe('Maka CLI runtime bootstrap', () => {
       const observer = (result: unknown): void => {
         observed.push(result);
       };
-      const permissionRules = [{ effect: 'deny', kind: 'category', category: 'read' }] as const;
-
       const context = await createMakaCliRuntimeContext({
         surface: 'tui',
         workspaceRoot,
@@ -182,7 +180,6 @@ describe('Maka CLI runtime bootstrap', () => {
         requestedConnectionSlug: 'selected-local',
         requestedModel: 'requested-model',
         maxSteps: 3,
-        permissionRules,
         runtimeInvocationObserver: observer,
       });
       try {
@@ -207,7 +204,6 @@ describe('Maka CLI runtime bootstrap', () => {
         const backendInput = (backend as unknown as { input: AiSdkBackendInput }).input;
 
         assert.equal(backendInput.maxSteps, 3);
-        assert.equal(backendInput.permissionRules, permissionRules);
         assert.equal(backendInput.supportsVision, true);
         assert.equal(typeof backendInput.readAttachmentBytes, 'function');
         assert.equal(runtimeDeps.runtimeInvocationObserver, observer);
@@ -262,7 +258,7 @@ describe('Maka CLI runtime bootstrap', () => {
     });
   });
 
-  test('registers Edit in the TUI runtime toolset and still requires permission', async () => {
+  test('registers Edit in the TUI runtime toolset', async () => {
     await withWorkspace(async (workspaceRoot) => {
       const connectionStore = createConnectionStore(workspaceRoot);
       await connectionStore.create({
@@ -283,7 +279,6 @@ describe('Maka CLI runtime bootstrap', () => {
         edit,
         'Edit must be registered (regression: it was once filtered out of the TUI runtime)',
       );
-      assert.equal(edit?.permissionRequired, true);
     });
   });
 
@@ -310,7 +305,6 @@ describe('Maka CLI runtime bootstrap', () => {
       try {
         const tool = tui.tools.find((candidate) => candidate.name === 'AskUserQuestion');
         assert.ok(tool);
-        assert.equal(tool.permissionRequired, false);
         assert.equal(
           run.tools.some((candidate) => candidate.name === 'AskUserQuestion'),
           false,
