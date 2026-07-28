@@ -688,7 +688,7 @@ export function permissionModePickerItems(currentMode: PermissionMode): SelectIt
   const current = currentMode === 'bypass' ? 'bypass' : 'ask';
   return [
     {
-      value: 'ask',
+      value: 'auto',
       label: 'Auto',
       description: current === 'ask' ? 'current · sandboxed' : 'sandboxed',
     },

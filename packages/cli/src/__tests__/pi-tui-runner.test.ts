@@ -4437,7 +4437,7 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
-  test('handles /permissions without sending a prompt', async () => {
+  test('rejects removed permission modes without sending a prompt', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
     const run = runMakaPiTui({
@@ -4453,10 +4453,9 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('/permissions execute');
     terminal.input('\r');
 
-    await waitFor(() => driver.permissionModes.length === 1);
-    await waitFor(() => terminal.output().includes('Permission mode: execute'));
+    await waitFor(() => terminal.output().includes('Usage: /permissions auto|bypass'));
 
-    assert.deepEqual(driver.permissionModes, ['execute']);
+    assert.deepEqual(driver.permissionModes, []);
     assert.deepEqual(driver.prompts, []);
 
     exitMaka(terminal);
@@ -4466,6 +4465,32 @@ describe('Maka Pi TUI runner', () => {
         throw new Error('TUI did not close during test cleanup');
       }),
     ]);
+  });
+
+  test('requires the same second confirmation for typed /permissions bypass', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/permissions bypass');
+    terminal.input('\r');
+    await waitFor(() => terminal.output().includes('Bypass sandbox for this session?'));
+    assert.deepEqual(driver.permissionModes, []);
+
+    terminal.input('\r');
+    await delay(20);
+    assert.deepEqual(driver.permissionModes, []);
+
+    exitMaka(terminal);
+    await run;
   });
 
   test('shows, enables, and disables persistent Swarm Mode without sending a prompt', async () => {
@@ -4800,7 +4825,7 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
-  test('selects a permission mode from /permissions', async () => {
+  test('confirms Bypass a second time when selected from /permissions', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
     const run = runMakaPiTui({
@@ -4816,18 +4841,22 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('/permissions');
     terminal.input('\r');
 
-    await waitFor(() => terminal.output().includes('Select Permission Mode'));
+    await waitFor(() => terminal.output().includes('Sandbox Boundary'));
     assertBottomPickerPlacement(
       terminal,
-      'Select Permission Mode',
+      'Sandbox Boundary',
       'Maka · ask · claude-sonnet-4-5 · claude-subscription · /repo',
     );
     terminal.input('\x1b[B');
     terminal.input('\r');
+    await waitFor(() => terminal.output().includes('Bypass sandbox for this session?'));
+    assert.deepEqual(driver.permissionModes, []);
+    terminal.input('\x1b[B');
+    terminal.input('\r');
     await waitFor(() => driver.permissionModes.length === 1);
-    await waitFor(() => terminal.output().includes('Permission mode: execute'));
+    await waitFor(() => terminal.output().includes('Sandbox boundary: Bypass'));
 
-    assert.deepEqual(driver.permissionModes, ['execute']);
+    assert.deepEqual(driver.permissionModes, ['bypass']);
     assert.deepEqual(driver.prompts, []);
 
     exitMaka(terminal);

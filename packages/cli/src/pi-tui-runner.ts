@@ -13,7 +13,7 @@ import {
   type SelectItem,
   type Terminal,
 } from '@earendil-works/pi-tui';
-import { PERMISSION_MODES, isPermissionMode, type PermissionMode } from '@maka/core/permission';
+import type { PermissionMode } from '@maka/core/permission';
 import {
   isThinkingLevel,
   thinkingVariantsForModel,
@@ -1939,6 +1939,40 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     requestRender();
   };
 
+  const requestSandboxBoundaryMode = (mode: 'auto' | 'bypass') => {
+    if (mode === 'auto' || permissionMode === 'bypass') {
+      void runControl(() => setPermissionMode(mode === 'auto' ? 'ask' : 'bypass'));
+      return;
+    }
+    const confirmation = [
+      {
+        value: 'keep',
+        label: 'Keep Auto',
+        description: 'Stay inside the session sandbox',
+      },
+      {
+        value: 'bypass',
+        label: 'Bypass sandbox',
+        description: 'Allow unrestricted local tools for this session',
+      },
+    ];
+    showSelectPicker(
+      'Bypass sandbox for this session?',
+      'keep',
+      confirmation,
+      (choice) => {
+        if (choice.value === 'bypass') {
+          void runControl(() => setPermissionMode('bypass'));
+        }
+      },
+      {
+        minPrimaryColumnWidth: 18,
+        maxPrimaryColumnWidth: 28,
+        selectedIndex: 0,
+      },
+    );
+  };
+
   const showSwarmStatus = () => {
     state.entries.push({
       kind: 'notice',
@@ -2106,45 +2140,15 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const showPermissionModeList = () => {
     const items = permissionModePickerItems(permissionMode);
-    const displayedMode = permissionMode === 'bypass' ? 'bypass' : 'ask';
+    const displayedMode = permissionMode === 'bypass' ? 'bypass' : 'auto';
     showSelectPicker(
       'Sandbox Boundary',
       displayedMode,
       items,
       (item) => {
-        if (!isPermissionMode(item.value)) return;
-        const mode = item.value;
-        if (mode !== 'bypass' || permissionMode === 'bypass') {
-          void runControl(() => setPermissionMode(mode));
-          return;
+        if (item.value === 'auto' || item.value === 'bypass') {
+          requestSandboxBoundaryMode(item.value);
         }
-        const confirmation = [
-          {
-            value: 'keep',
-            label: 'Keep Auto',
-            description: 'Stay inside the session sandbox',
-          },
-          {
-            value: 'bypass',
-            label: 'Bypass sandbox',
-            description: 'Allow unrestricted local tools for this session',
-          },
-        ];
-        showSelectPicker(
-          'Bypass sandbox for this session?',
-          'keep',
-          confirmation,
-          (choice) => {
-            if (choice.value === 'bypass') {
-              void runControl(() => setPermissionMode('bypass'));
-            }
-          },
-          {
-            minPrimaryColumnWidth: 18,
-            maxPrimaryColumnWidth: 28,
-            selectedIndex: 0,
-          },
-        );
       },
       {
         minPrimaryColumnWidth: 16,
@@ -2299,23 +2303,23 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     {
       name: 'permissions',
-      description: 'Set permission mode',
+      description: 'Set session sandbox boundary',
       run: (parts: string[]) => {
         if (parts.length === 1) {
           showPermissionModeList();
           return;
         }
         const mode = parts.length === 2 ? parts[1] : undefined;
-        if (!isPermissionMode(mode)) {
+        if (mode !== 'auto' && mode !== 'bypass') {
           state.entries.push({
             kind: 'notice',
             level: 'error',
-            text: `Usage: /permissions ${PERMISSION_MODES.join('|')}`,
+            text: 'Usage: /permissions auto|bypass',
           });
           requestRender();
           return;
         }
-        void runControl(() => setPermissionMode(mode));
+        requestSandboxBoundaryMode(mode);
       },
     },
     {
