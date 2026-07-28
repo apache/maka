@@ -1,5 +1,5 @@
 import type { CuAction, CuPoint } from '@maka/core';
-import type { CuOverlayHook, CuPresentationFence } from '@maka/runtime';
+import type { CuOverlayHook, CuOverlayHookContext, CuPresentationFence } from '@maka/runtime';
 
 export type CursorActionKind = 'move' | 'click' | 'drag' | 'scroll';
 
@@ -11,6 +11,13 @@ export interface CursorMoveInput {
   kind: CursorActionKind;
   pressed?: boolean;
   instant?: boolean;
+  /**
+   * Keep the cursor at its top window level once this motion settles, instead
+   * of letting it sink toward the target's own layer. Only an explicit `false`
+   * lets it sink: a caller that says nothing has offered no evidence that the
+   * target is exposed, and an unseen cursor is the worse failure.
+   */
+  keepElevated?: boolean;
 }
 
 export interface CursorCompleteInput extends CursorMoveInput {
@@ -90,6 +97,27 @@ function kindOf(action: CuAction): CursorActionKind {
   }
 }
 
+/**
+ * Codex keeps its cursor above every other window while any of two reasons
+ * holds — the target app is frontmost (or has a menu open), and the cursor has
+ * just been launched to a new position — and only lets it sink into the
+ * target's own layer once the target is genuinely the window under the cursor.
+ * A covered target is therefore a reason to stay HIGH, not to disappear: while
+ * the cursor is travelling it is deliberately drawn on top of whatever covers
+ * the target.
+ *
+ * The launch half is the sink's own business (the presentation layer is what
+ * knows when a motion settles). This is the observation half: stay elevated
+ * unless the target is both stacked under something and exposed at the point
+ * the cursor is heading for. With no stacking evidence at all, stay elevated —
+ * an unseen cursor is the failure this whole path exists to avoid.
+ */
+function keepElevated(context: CuOverlayHookContext): boolean {
+  const stacking = context.targetStacking;
+  if (!stacking) return true;
+  return stacking.frontmost || stacking.destinationCovered;
+}
+
 export function createComputerUseOverlayHook(controller: OverlayCursorSink): CuOverlayHook {
   return {
     onActionBegin(action, context) {
@@ -106,6 +134,7 @@ export function createComputerUseOverlayHook(controller: OverlayCursorSink): CuO
         screenY: screenPoint.y,
         kind: kindOf(action),
         instant: action.type !== 'mouse_move',
+        keepElevated: keepElevated(context),
       });
     },
     onActionEnd(action, result, context) {

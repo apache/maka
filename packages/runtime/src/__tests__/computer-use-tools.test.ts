@@ -8,6 +8,7 @@ import {
   snapshotComputerParams,
   type CuDispatchBackend,
   type CuObservation,
+  type CuOverlayHookContext,
   type CuRunContext,
   type CuRunResult,
 } from '../computer-use-tools.js';
@@ -508,6 +509,76 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     };
     assert.match(result.text, /computer\.wait ok/);
     await new Promise((resolve) => setImmediate(resolve));
+  });
+
+  /**
+   * The window stack reaches presentation as two facts, never as a decision to
+   * hide: a covered destination is the case where the cursor MUST stay above
+   * everything, because that is the only way it stays visible at all.
+   */
+  async function stackingForClick(
+    obscuringRects: CuObservation['obscuringRects'],
+    coordinate: [number, number],
+  ): Promise<CuOverlayHookContext['targetStacking']> {
+    const backend = fakeBackend() as CuDispatchBackend & {
+      observeApp: NonNullable<CuDispatchBackend['observeApp']>;
+    };
+    backend.observeApp = async () =>
+      observation({
+        windowBounds: { x: 1000, y: 500, width: 100, height: 80 },
+        sourceBoundsPx: { x: 0, y: 0, width: 100, height: 80 },
+        ...(obscuringRects ? { obscuringRects } : {}),
+      });
+    let seen: CuOverlayHookContext | undefined;
+    const [tool] = buildComputerUseTools({
+      backend,
+      overlay: {
+        onActionBegin(_action, context) {
+          seen = context;
+        },
+      },
+    });
+    const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
+      modelText?: string;
+    };
+    await tool.impl(
+      {
+        action: 'left_click',
+        observation_id: JSON.parse(observed.modelText ?? '{}').observation_id,
+        coordinate,
+      } as never,
+      ctx(),
+    );
+    return seen?.targetStacking;
+  }
+
+  test('a window covering the cursor destination is reported, not acted on', async () => {
+    // Window at screen (1000,500)-(1100,580); the covering rect takes its right
+    // half. A click at window-local (90,40) lands under it.
+    const covered = await stackingForClick(
+      [{ x: 1050, y: 400, width: 400, height: 400 }],
+      [90, 40],
+    );
+    assert.deepEqual(covered, { frontmost: false, destinationCovered: true });
+  });
+
+  test('a destination outside every covering rect leaves the cursor free to sink', async () => {
+    const exposed = await stackingForClick(
+      [{ x: 1050, y: 400, width: 400, height: 400 }],
+      [10, 40],
+    );
+    assert.deepEqual(exposed, { frontmost: false, destinationCovered: false });
+  });
+
+  test('nothing above the target reads as frontmost', async () => {
+    assert.deepEqual(await stackingForClick([], [10, 40]), {
+      frontmost: true,
+      destinationCovered: false,
+    });
+  });
+
+  test('a backend that reports no stacking at all leaves the decision to presentation', async () => {
+    assert.equal(await stackingForClick(undefined, [10, 40]), undefined);
   });
 
   test('one visual overlay serializes presentation across independent sessions', async () => {

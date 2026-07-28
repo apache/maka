@@ -29,7 +29,9 @@ class FakeCursorOverlayWindow {
   constructor(public options: Record<string, unknown>) {}
   private rec(m: string, ...args: unknown[]): void { this.calls.push({ m, args }); }
   setIgnoreMouseEvents(ignore: boolean, opts?: unknown): void { this.rec('setIgnoreMouseEvents', ignore, opts); }
-  setAlwaysOnTop(flag: boolean, level?: unknown): void { this.rec('setAlwaysOnTop', flag, level); }
+  setAlwaysOnTop(flag: boolean, level?: unknown, relativeLevel?: unknown): void {
+    this.rec('setAlwaysOnTop', flag, level, relativeLevel);
+  }
   setVisibleOnAllWorkspaces(v: boolean, o?: unknown): void { this.rec('setVisibleOnAllWorkspaces', v, o); }
   async loadFile(p: string): Promise<void> { this.rec('loadFile', p); }
   showInactive(): void { this.rec('showInactive'); }
@@ -114,9 +116,131 @@ test('ensure(): arms click-through BEFORE showInactive, never focuses', () => {
   );
   const arm = w.calls.find((c) => c.m === 'setIgnoreMouseEvents')!;
   assert.deepEqual(arm.args, [true, { forward: true }]);
+  // kCGOverlayWindowLevel (102) = NSPopUpMenuWindowLevel + 1, the level Codex
+  // raises its cursor to. Above menus, below the screen saver.
   const aot = w.calls.find((c) => c.m === 'setAlwaysOnTop')!;
-  assert.deepEqual(aot.args, [true, 'screen-saver']);
+  assert.deepEqual(aot.args, [true, 'pop-up-menu', 1]);
   assert.ok(!order.includes('focus'), 'never focuses');
+});
+
+test('the cursor sinks a level once its motion settles over an exposed target', async () => {
+  const { controller, created } = harness();
+  const fence = controller.move({
+    actionId: 'a1',
+    sessionId: 's',
+    screenX: 300,
+    screenY: 250,
+    kind: 'click',
+    keepElevated: false,
+  });
+  const w = created[0];
+  w.fireReady();
+  const levelsDuringFlight = w.calls.filter((c) => c.m === 'setAlwaysOnTop').map((c) => c.args);
+  assert.deepEqual(levelsDuringFlight, [[true, 'pop-up-menu', 1]], 'elevated for the whole trip');
+
+  w.firePresentation('a1', 'finished');
+  await fence.finished;
+  const levels = w.calls.filter((c) => c.m === 'setAlwaysOnTop').map((c) => c.args);
+  assert.deepEqual(levels.at(-1), [true, 'floating', 0]);
+  // Never `setAlwaysOnTop(false)`: normal level from a background app puts the
+  // cursor behind the window it points at.
+  assert.ok(
+    levels.every((args) => args[0] === true),
+    'the overlay is never taken off always-on-top',
+  );
+});
+
+test('a covered target keeps the cursor elevated after it settles', async () => {
+  const { controller, created } = harness();
+  const fence = controller.move({
+    actionId: 'a1',
+    sessionId: 's',
+    screenX: 300,
+    screenY: 250,
+    kind: 'click',
+    keepElevated: true,
+  });
+  const w = created[0];
+  w.fireReady();
+  w.firePresentation('a1', 'finished');
+  await fence.finished;
+  const levels = w.calls.filter((c) => c.m === 'setAlwaysOnTop').map((c) => c.args);
+  assert.deepEqual(levels, [[true, 'pop-up-menu', 1]], 'one level, set once, never lowered');
+});
+
+test('a new launch raises the cursor again before it travels', async () => {
+  const { controller, created } = harness();
+  const first = controller.move({
+    actionId: 'a1',
+    sessionId: 's',
+    screenX: 300,
+    screenY: 250,
+    kind: 'click',
+    keepElevated: false,
+  });
+  const w = created[0];
+  w.fireReady();
+  w.firePresentation('a1', 'finished');
+  await first.finished;
+
+  controller.move({
+    actionId: 'a2',
+    sessionId: 's',
+    screenX: 600,
+    screenY: 500,
+    kind: 'click',
+    keepElevated: false,
+  });
+  const levels = w.calls.filter((c) => c.m === 'setAlwaysOnTop').map((c) => c.args);
+  assert.deepEqual(levels, [
+    [true, 'pop-up-menu', 1],
+    [true, 'floating', 0],
+    [true, 'pop-up-menu', 1],
+  ]);
+});
+
+test('a move that says nothing about stacking never sinks', async () => {
+  const { controller, created } = harness();
+  const fence = controller.move({
+    actionId: 'a1',
+    sessionId: 's',
+    screenX: 300,
+    screenY: 250,
+    kind: 'click',
+  });
+  const w = created[0];
+  w.fireReady();
+  w.firePresentation('a1', 'finished');
+  await fence.finished;
+  const levels = w.calls.filter((c) => c.m === 'setAlwaysOnTop').map((c) => c.args);
+  assert.deepEqual(levels, [[true, 'pop-up-menu', 1]]);
+});
+
+test('a completion with no live presentation raises no level it cannot lower', async () => {
+  const { controller, created } = harness();
+  const fence = controller.move({
+    actionId: 'coordinate',
+    sessionId: 's',
+    screenX: 300,
+    screenY: 250,
+    kind: 'click',
+    keepElevated: false,
+  });
+  const w = created[0];
+  w.fireReady();
+  w.firePresentation('coordinate', 'finished');
+  await fence.finished;
+
+  controller.complete({
+    actionId: 'semantic',
+    sessionId: 's',
+    screenX: 320,
+    screenY: 260,
+    kind: 'click',
+    pulse: true,
+  });
+  const levels = w.calls.filter((c) => c.m === 'setAlwaysOnTop').map((c) => c.args);
+  assert.deepEqual(levels.at(-1), [true, 'floating', 0], 'stays where the settle left it');
 });
 
 test('renderer loss and display changes teardown the live overlay', () => {

@@ -49,8 +49,56 @@ test('presentation starts from the Runtime-bound screen point', () => {
       screenY: 151,
       kind: 'click',
       instant: true,
+      keepElevated: true,
     },
   ]);
+});
+
+test('a covered destination keeps the cursor elevated instead of hiding it', () => {
+  const { controller, moves, ensured } = fakeController();
+  const hook = createComputerUseOverlayHook(controller as never);
+  hook.onActionBegin(
+    { type: 'left_click', coordinate: { x: 400, y: 300 } },
+    {
+      sessionId: 's1',
+      toolCallId: 'a1',
+      presentationScreenPoint: { x: 201, y: 151 },
+      targetStacking: { frontmost: false, destinationCovered: true },
+    },
+  );
+  assert.equal(moves.length, 1, 'the cursor is still drawn over the covering window');
+  assert.equal((moves[0] as { keepElevated: boolean }).keepElevated, true);
+  assert.deepEqual(ensured, []);
+});
+
+test('the cursor may sink only when the target is exposed under it and behind something else', () => {
+  const { controller, moves } = fakeController();
+  const hook = createComputerUseOverlayHook(controller as never);
+  hook.onActionBegin(
+    { type: 'left_click', coordinate: { x: 400, y: 300 } },
+    {
+      sessionId: 's1',
+      toolCallId: 'a1',
+      presentationScreenPoint: { x: 201, y: 151 },
+      targetStacking: { frontmost: false, destinationCovered: false },
+    },
+  );
+  assert.equal((moves[0] as { keepElevated: boolean }).keepElevated, false);
+});
+
+test('a frontmost target stays elevated so the cursor clears its open menus', () => {
+  const { controller, moves } = fakeController();
+  const hook = createComputerUseOverlayHook(controller as never);
+  hook.onActionBegin(
+    { type: 'left_click', coordinate: { x: 400, y: 300 } },
+    {
+      sessionId: 's1',
+      toolCallId: 'a1',
+      presentationScreenPoint: { x: 201, y: 151 },
+      targetStacking: { frontmost: true, destinationCovered: false },
+    },
+  );
+  assert.equal((moves[0] as { keepElevated: boolean }).keepElevated, true);
 });
 
 test('completion uses only the executor-resolved point', () => {

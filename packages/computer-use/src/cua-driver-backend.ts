@@ -1024,12 +1024,60 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
     signal: AbortSignal,
     context: CuRunContext,
   ): Promise<CuObservation> {
-    const window = resolveObservedWindow(
-      await listWindowRecords(signal),
-      input.app,
-      input.windowId,
-    );
-    return observeResolvedWindow(window, input.includeScreenshot, signal, context);
+    const records = await listWindowRecords(signal);
+    const window = resolveObservedWindow(records, input.app, input.windowId);
+    return observeResolvedWindow(window, input.includeScreenshot, signal, context, records);
+  }
+
+  /**
+   * The ordinary application windows stacked above `window`, in screen
+   * coordinates. Presentation uses this to choose how high to draw the agent
+   * cursor, never whether to draw it: an empty list means the target is
+   * frontmost, and a point inside one of these rectangles means the cursor has
+   * to float above the covering window to be seen at all.
+   */
+  function obscuringRectsFor(
+    window: CuaResolvedWindow,
+    records: readonly CuaWindowRecord[],
+  ): Array<{ x: number; y: number; width: number; height: number }> {
+    return records.flatMap((record) => {
+      if (
+        // Layer 0 is the ordinary window layer. Menus, the Dock and the menu
+        // bar live above it and are the system's business, not the target's.
+        record.layer !== 0 ||
+        record.is_on_screen === false ||
+        (record.pid === window.pid && record.window_id === window.windowId) ||
+        (Number(record.z_index) || 0) <= window.zIndex ||
+        !record.bounds ||
+        typeof record.bounds !== 'object'
+      )
+        return [];
+      const bounds = record.bounds as Record<string, unknown>;
+      if (
+        typeof bounds.x !== 'number' ||
+        typeof bounds.y !== 'number' ||
+        typeof bounds.width !== 'number' ||
+        typeof bounds.height !== 'number'
+      )
+        return [];
+      // The window server keeps a titleless, screen-sized layer-0 surface on top
+      // for the Dock and its animations. It covers everything and occludes
+      // nothing, so counting it would pin the cursor to its top level forever
+      // and collapse the two-level model back into one. A real full-screen
+      // application window carries a title, so requiring one keeps this from
+      // swallowing genuine occlusion.
+      const titleless = typeof record.title !== 'string' || record.title.length === 0;
+      if (
+        titleless &&
+        bounds.x === 0 &&
+        bounds.y === 0 &&
+        bounds.width >= 1024 &&
+        bounds.height >= 768
+      ) {
+        return [];
+      }
+      return [{ x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height }];
+    });
   }
 
   async function observeResolvedWindow(
@@ -1037,6 +1085,8 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
     includeScreenshot: boolean,
     signal: AbortSignal,
     context: CuRunContext,
+    /** Reuses the caller's `list_windows` result when it already has one. */
+    windowRecords?: readonly CuaWindowRecord[],
   ): Promise<CuObservation> {
     const state = await actionClient.callTool(
       'get_window_state',
@@ -1068,6 +1118,10 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
         ? await resolveWindowDisplays(screenshotWidthPx, screenshotHeightPx, window)
         : undefined;
     const page = await resolveObservedPage(window, signal);
+    const obscuringRects = obscuringRectsFor(
+      window,
+      windowRecords ?? (await listWindowRecords(signal).catch(() => [])),
+    );
     const axContentFingerprint = opts.resolveContentFingerprint
       ? opts.resolveContentFingerprint([...elements.values()])
       : contentFingerprint(elements.values());
@@ -1112,6 +1166,7 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
           ? { x: 0, y: 0, width: screenshotWidthPx, height: screenshotHeightPx }
           : undefined,
       zIndex: window.zIndex,
+      obscuringRects,
       contentFingerprint: axContentFingerprint,
       ...(page ? { page } : {}),
       ...(displays ? { displays } : {}),

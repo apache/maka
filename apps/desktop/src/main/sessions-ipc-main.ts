@@ -97,6 +97,14 @@ export interface SessionsIpcDeps {
     skillIds?: readonly string[],
   ) => Promise<PreparedSkillInvocationMessage>;
   invalidateSessionBindings?: (sessionId: string) => void;
+  /**
+   * Menu bar indicator for Computer Use; its Stop rows route back here, and it
+   * hides itself once the last session it is reporting on has stopped.
+   */
+  computerUseStatusItem?: {
+    setStopHandler(handler: (sessionId: string) => void): void;
+    clearForSession(sessionId: string): void;
+  };
   clearSkillHost?: (sessionId: string) => void;
   stopAgentGraph?: (sessionId: string) => Promise<void>;
   notifyAgentGraphPermissionResponse?: (sessionId: string) => void;
@@ -201,6 +209,7 @@ export function registerSessionsIpc(
     ensureSessionCanSend,
     prepareSkillInvocation,
     invalidateSessionBindings,
+    computerUseStatusItem,
     clearSkillHost,
     stopAgentGraph,
     notifyAgentGraphPermissionResponse,
@@ -351,16 +360,26 @@ export function registerSessionsIpc(
       getPrivacyContext: getWorkspacePrivacyContext,
     });
   });
-  ipcMain.handle('sessions:stop', async (_event, sessionId: string, input?: { source?: 'stop_button' }) => {
+  // Codex's status item exposes one action per live session, `stopInstance:`.
+  // Point ours at the same code the in-app stop button runs, so stopping from
+  // the menu bar and stopping from the window cannot drift apart.
+  computerUseStatusItem?.setStopHandler((sessionId) => {
+    void stopSession(sessionId, { source: 'stop_button' });
+  });
+  async function stopSession(sessionId: string, input?: { source?: 'stop_button' }): Promise<void> {
     computerUseOverlay.clearForSession(sessionId);
     computerUseTools.clearSession(sessionId);
     await stopAgentGraph?.(sessionId);
+    computerUseStatusItem?.clearForSession(sessionId);
     await runtime.stopSession(sessionId, normalizeStopSessionInput(input));
     await runtime.interruptActivePlanExecution(sessionId, 'user_stopped_execution').catch(() => null);
     emitSessionsChanged('status-change', sessionId);
     emitSessionsChanged('turn-status-change', sessionId);
     emitSessionsChanged('message-appended', sessionId);
-  });
+  }
+  ipcMain.handle('sessions:stop', async (_event, sessionId: string, input?: { source?: 'stop_button' }) =>
+    stopSession(sessionId, input),
+  );
   ipcMain.handle('sessions:readExecutionBoundary', (_event, sessionId: string) =>
     runtime.readExecutionBoundary(sessionId),
   );
@@ -513,6 +532,8 @@ export function registerSessionsIpc(
     for (const id of await resolveSessionActionIds(runtime, sessionId, options)) {
       computerUseOverlay.clearForSession(id);
       computerUseTools.clearSession(id);
+      computerUseStatusItem?.clearForSession(id);
+      computerUseStatusItem?.clearForSession(id);
       await stopAgentGraph?.(id);
       await goalWiring.archiveSession(id, () => runtime.archive(id));
       invalidateSessionBindings?.(id);

@@ -70,6 +70,12 @@ test('desktop packager ships only the release runtime resources', async () => {
       to: 'bundled-tools.json',
     },
     {
+      // Menu bar status item art. Omitting it packages an app whose indicator
+      // silently never appears — NativeImage resolves empty rather than failing.
+      from: 'resources/status',
+      to: 'status',
+    },
+    {
       from: 'resources/workers/filesystem-worker.js',
       to: 'workers/filesystem-worker.js',
     },

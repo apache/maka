@@ -266,6 +266,8 @@ export function buildComputerUseTools(deps: {
     appId?: string;
     windowId?: number;
     elements?: Map<string, CuObservedElement>;
+    /** From the last observation: the windows stacked above the target. */
+    obscuringRects?: Array<{ x: number; y: number; width: number; height: number }>;
   }
   const observations = new Map<string, SessionObservationRecord>();
   interface SessionStateRecord {
@@ -421,6 +423,7 @@ export function buildComputerUseTools(deps: {
     record.backendObservationId = observation.observationId;
     record.appId = observation.appId;
     record.windowId = observation.windowId;
+    record.obscuringRects = observation.obscuringRects;
     record.elements = new Map(normalized.elements.map((element) => [element.elementId, element]));
     return { ...normalized, observationId: frame.frameId };
   }
@@ -527,6 +530,11 @@ export function buildComputerUseTools(deps: {
           type: semanticAction.type,
           elementId,
           value: semanticValue,
+          // Carried so the agent cursor can travel to the element before the
+          // action fires; dispatch itself stays element-addressed.
+          ...(elementId && record.elements?.get(elementId)?.frame
+            ? { elementFrame: record.elements.get(elementId)!.frame! }
+            : {}),
         })
       : bindCuaActionToObservation(active, action as CuAction);
     if (!bound) return { rejection: 'target_missing' };
@@ -600,6 +608,19 @@ export function buildComputerUseTools(deps: {
         invocationQueues.delete(sessionId);
       }
     }
+  }
+
+  function pointIsCovered(
+    point: CuPoint,
+    rects: ReadonlyArray<{ x: number; y: number; width: number; height: number }>,
+  ): boolean {
+    return rects.some(
+      (rect) =>
+        point.x >= rect.x &&
+        point.x < rect.x + rect.width &&
+        point.y >= rect.y &&
+        point.y < rect.y + rect.height,
+    );
   }
 
   function presentationScreenPoint(boundAction: CuaBoundAction | undefined): CuPoint | undefined {
@@ -724,12 +745,23 @@ export function buildComputerUseTools(deps: {
         };
       }
     }
+    const cursorPoint = context.boundAction
+      ? presentationScreenPoint(context.boundAction)
+      : undefined;
+    const obscuringRects = observations.get(context.sessionId)?.obscuringRects;
     const overlayContext: CuOverlayHookContext = {
       sessionId: context.sessionId,
       toolCallId: context.toolCallId,
-      ...(context.boundAction
+      ...(cursorPoint ? { presentationScreenPoint: cursorPoint } : {}),
+      ...(obscuringRects
         ? {
-            presentationScreenPoint: presentationScreenPoint(context.boundAction),
+            targetStacking: {
+              frontmost: obscuringRects.length === 0,
+              // Judged at the point the cursor will occupy, not at the window's
+              // centre: a control near the top edge stays exposed while the
+              // middle of the window is buried.
+              destinationCovered: !!cursorPoint && pointIsCovered(cursorPoint, obscuringRects),
+            },
           }
         : {}),
     };

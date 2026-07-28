@@ -38,7 +38,7 @@ import type {
 /** Minimal window surface the controller drives (fake-able in node --test). */
 export interface CursorOverlayWindowLike {
   setIgnoreMouseEvents(ignore: boolean, options?: { forward?: boolean }): void;
-  setAlwaysOnTop(flag: boolean, level?: string): void;
+  setAlwaysOnTop(flag: boolean, level?: string, relativeLevel?: number): void;
   setVisibleOnAllWorkspaces(visible: boolean, options?: { visibleOnFullScreen?: boolean }): void;
   loadFile(path: string): Promise<void>;
   showInactive(): void;
@@ -88,6 +88,37 @@ export interface CursorOverlayController {
   isActive(): boolean;
   getSessionId(): string | null;
 }
+
+/**
+ * Two window levels, one per reason class, ported from Codex's
+ * `OverlayWindowLevelReasons`.
+ *
+ * FLIGHT is `NSPopUpMenuWindowLevel + 1` = 102 = `kCGOverlayWindowLevel`, the
+ * exact level Codex raises its cursor to while a reason holds. Above every
+ * application window and above open menus (the agent drives menus, so the
+ * cursor has to be visible over them), below the screen saver and below the
+ * real hardware cursor. `'screen-saver'` — which this used to sit at
+ * unconditionally — is 1000, high enough to paint over the screen saver and
+ * over system alerts.
+ *
+ * REST is where Electron runs out of rope. Codex sinks the cursor to the TARGET
+ * window's own level and calls `orderWindow(.above, relativeTo:)` with the
+ * target's window number, so a window later raised over the target covers the
+ * cursor too. Electron exposes no ordering relative to a foreign window, and
+ * `setAlwaysOnTop(false)` would drop the overlay to normal level with no
+ * ordering guarantee at all — from a background app that reliably puts the
+ * cursor BEHIND the window it is pointing at, which is the disappearance this
+ * whole change removes. `'floating'` (3) is the closest expressible thing:
+ * above every ordinary application window, below menus, status items and
+ * pop-ups. So a resting cursor yields to system UI the way Codex's does, but it
+ * cannot be covered by another application's window the way Codex's can.
+ */
+const CURSOR_LEVEL = {
+  flight: { name: 'pop-up-menu', relative: 1 },
+  rest: { name: 'floating', relative: 0 },
+} as const;
+
+type CursorLevel = keyof typeof CURSOR_LEVEL;
 
 /** S14 window options — the focus/click-through contract surface, one literal. */
 export function cursorOverlayWindowOptions(bounds: Rectangle, preloadPath: string): BrowserWindowConstructorOptions {
@@ -153,6 +184,14 @@ export function createCursorOverlayController(
   let bounds: Rectangle = { x: 0, y: 0, width: 0, height: 0 };
   let ready = false;
   let generation = 0;
+  let level: CursorLevel | null = null;
+  /**
+   * Codex's `petLaunch` reason, minus the launch: it is cleared when the motion
+   * settles, and only if the observation said the target is exposed under the
+   * cursor. Sticky across a settle we never hear about (cancel, teardown,
+   * a renderer that goes away), because staying up is the safe direction.
+   */
+  let mayRest = false;
   let queue: Array<{ channel: string; payload: unknown }> = [];
   let unsubscribeDisplayChanges: (() => void) | undefined;
   let presentation:
@@ -186,6 +225,16 @@ export function createCursorOverlayController(
     presentation = undefined;
   }
 
+  function applyLevel(next: CursorLevel): void {
+    if (!win || level === next) return;
+    level = next;
+    const { name, relative } = CURSOR_LEVEL[next];
+    // Always `true`: the flag decides whether a level applies at all, and
+    // `false` would reset the overlay to normal level with no ordering
+    // guarantee against the app being driven.
+    win.setAlwaysOnTop(true, name, relative);
+  }
+
   function teardown(): void {
     const w = win;
     win = null;
@@ -193,6 +242,8 @@ export function createCursorOverlayController(
     actionId = null;
     settlePresentation();
     ready = false;
+    level = null;
+    mayRest = false;
     queue = [];
     unsubscribeDisplayChanges?.();
     unsubscribeDisplayChanges = undefined;
@@ -217,13 +268,15 @@ export function createCursorOverlayController(
     const w = createOverlayWindow(cursorOverlayWindowOptions(bounds, preloadPath));
     // S14 (load-bearing): arm click + focus pass-through BEFORE the window shows.
     w.setIgnoreMouseEvents(true, { forward: true });
-    w.setAlwaysOnTop(true, 'screen-saver');
+    win = w;
+    level = null;
+    mayRest = false;
+    applyLevel('flight');
     try {
       w.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     } catch {
       /* not supported everywhere; best-effort */
     }
-    win = w;
     sessionId = nextSessionId;
     ready = false;
     queue = [];
@@ -258,6 +311,8 @@ export function createCursorOverlayController(
         presentation = undefined;
         completed.ready();
         completed.finish();
+        // The motion has landed. Codex clears `petLaunch` here, and only here.
+        if (mayRest) applyLevel('rest');
         if (completed.completedAt !== undefined) {
           deps.onDisplayFrame?.({
             actionId: completed.actionId,
@@ -285,6 +340,11 @@ export function createCursorOverlayController(
     ensure(input.sessionId);
     settlePresentation();
     actionId = input.actionId;
+    // A launch: up while it flies, and it stays up unless this action's
+    // observation positively said the target is exposed right where the cursor
+    // lands. Silence is not that evidence.
+    mayRest = input.keepElevated === false;
+    applyLevel('flight');
     const nextPresentation = createPresentation(input.actionId);
     presentation = nextPresentation;
     // Screen → window-local so the renderer paints at origin (0,0).
@@ -306,6 +366,11 @@ export function createCursorOverlayController(
     if (presentation && input.actionId !== presentation.actionId) return;
     actionId = input.actionId;
     if (presentation?.actionId === input.actionId) {
+      // Reconciling to the executor's coordinate is another launch, so the
+      // cursor goes back up for the trip. Only while a presentation is live:
+      // without one there is no `finished` to come back down on, and a level
+      // raised with no way down is the static `'screen-saver'` again.
+      applyLevel('flight');
       presentation.completedAt = Date.now();
     }
     push('overlay:complete', {
@@ -352,7 +417,8 @@ function defaultCreateOverlayWindow(options: BrowserWindowConstructorOptions): C
   const bw = new BrowserWindow(options);
   return {
     setIgnoreMouseEvents: (ignore, opts) => bw.setIgnoreMouseEvents(ignore, opts),
-    setAlwaysOnTop: (flag, level) => bw.setAlwaysOnTop(flag, level as Parameters<typeof bw.setAlwaysOnTop>[1]),
+    setAlwaysOnTop: (flag, level, relativeLevel) =>
+      bw.setAlwaysOnTop(flag, level as Parameters<typeof bw.setAlwaysOnTop>[1], relativeLevel),
     setVisibleOnAllWorkspaces: (visible, opts) => bw.setVisibleOnAllWorkspaces(visible, opts),
     loadFile: (path) => bw.loadFile(path),
     showInactive: () => bw.showInactive(),

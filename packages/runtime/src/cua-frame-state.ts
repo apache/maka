@@ -150,13 +150,59 @@ export function fingerprintCuaSemanticAction(
 
 export function bindCuaSemanticActionToObservation(
   observation: CuaObservation,
-  input: { type: string; elementId?: string; value?: string },
+  input: {
+    type: string;
+    elementId?: string;
+    value?: string;
+    /**
+     * The element's rectangle in window-local screenshot pixels, when the
+     * observation reported one.
+     *
+     * A semantic action names an element rather than a point, so nothing here
+     * needs a coordinate to dispatch. It is carried for presentation: the agent
+     * cursor has to know where the element is in order to travel to it before
+     * the action fires, the same way Codex moves its cursor to an element it is
+     * about to act on. Without it the cursor stays hidden for the entire AX
+     * path, which is the path Maka uses by default.
+     */
+    elementFrame?: { x: number; y: number; width: number; height: number };
+  },
 ): CuaBoundAction {
+  const center = input.elementFrame
+    ? {
+        x: input.elementFrame.x + input.elementFrame.width / 2,
+        y: input.elementFrame.y + input.elementFrame.height / 2,
+      }
+    : undefined;
+  // Element frames arrive in SCREEN coordinates — the root element's frame is
+  // exactly the window's bounds — while bound coordinates live in the
+  // screenshot's space. Convert through the window rather than assuming the two
+  // are the same size, so a Retina capture (screenshot wider than the window)
+  // still lands on the element rather than a quarter of the way into it.
+  const windowBounds = observation.target.bounds;
+  const sourceBounds = observation.target.sourceBoundsPx;
+  const inCaptureSpace =
+    center && windowBounds && sourceBounds && windowBounds.width > 0 && windowBounds.height > 0
+      ? {
+          x: ((center.x - windowBounds.x) / windowBounds.width) * sourceBounds.width,
+          y: ((center.y - windowBounds.y) / windowBounds.height) * sourceBounds.height,
+        }
+      : undefined;
+  const point = inCaptureSpace ? bindWindowPoint(observation, inCaptureSpace) : undefined;
   return bindCuaAction(
     observation,
     fingerprintCuaSemanticAction(input.type, input.elementId, input.value),
     observation.target,
-    input.elementId ? { elementId: input.elementId } : {},
+    {
+      ...(input.elementId ? { elementId: input.elementId } : {}),
+      ...(point
+        ? {
+            sourceCoordinate: point,
+            windowCoordinate: point,
+            coordinateSpace: 'window-screenshot-local' as const,
+          }
+        : {}),
+    },
   );
 }
 

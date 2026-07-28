@@ -27,6 +27,10 @@ import { buildBrowserTools } from './browser/browser-tools.js';
 import { createComputerUseHost } from './computer-use-host.js';
 import { createCursorOverlayController } from './computer-use/cursor-overlay-window.js';
 import {
+  createComputerUseStatusItem,
+  withComputerUseStatusItem,
+} from './computer-use/status-item.js';
+import {
   applyComputerUseRealModelPolicy,
   parseComputerUseRealModelPolicy,
 } from './computer-use-real-model-policy.js';
@@ -130,6 +134,10 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
   // outside the app (no host) they report the browser as unavailable.
   const browserTools: MakaTool[] = buildBrowserTools();
   const computerUseOverlay = createCursorOverlayController();
+  // Visible for as long as any session is driving the machine, unlike the
+  // cursor, which stays hidden whenever the window being driven is covered by
+  // something else.
+  const computerUseStatusItem = createComputerUseStatusItem();
   const computerUseHost = createComputerUseHost({
     isPackaged: app.isPackaged,
     resourcesPath: process.resourcesPath,
@@ -161,7 +169,10 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
           },
         }
       : {}),
-    overlay: createComputerUseOverlayHook(computerUseOverlay),
+    overlay: withComputerUseStatusItem(
+      createComputerUseOverlayHook(computerUseOverlay),
+      computerUseStatusItem,
+    ),
   });
   const computerUse = computerUseHost.selected;
   const computerUseTools = applyComputerUseRealModelPolicy(
@@ -284,6 +295,7 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     browserTools,
     computerUse,
     computerUseOverlay,
+    computerUseStatusItem,
     computerUseTools,
     agentTeamLeadTools,
     desktopProductToolSurface,

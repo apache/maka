@@ -33,6 +33,17 @@ declare global {
   }
 }
 
+// Codex `CloseEnoughConfiguration.default`, recovered from the inspected build
+// (doubles at 0x100d68cd0 / 0x100d68cd8). The action is released only once the
+// cursor has effectively landed; releasing earlier makes the click visibly fire
+// while the glyph is still travelling.
+const CLOSE_ENOUGH_PROGRESS_THRESHOLD = 0.995;
+const CLOSE_ENOUGH_DISTANCE_THRESHOLD = 3.157;
+// Follow-up: Codex additionally models `CursorNextInteractionTiming { closeEnough,
+// finished }`, letting each caller pick between firing at "close enough" and
+// firing only at full stop. Maka always uses the closeEnough gate below; adding
+// the mode requires a bridge-payload change and is tracked separately.
+
 const canvas = document.getElementById('cursor') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;
 const engine = new CursorEngine();
@@ -79,8 +90,8 @@ function loop(now: number): void {
     !readySent
     && (
       !engine.hasMotionPath()
-      || engine.motionProgress() >= 0.82
-      || engine.motionDistanceRemaining() <= 24
+      || engine.motionProgress() >= CLOSE_ENOUGH_PROGRESS_THRESHOLD
+      || engine.motionDistanceRemaining() <= CLOSE_ENOUGH_DISTANCE_THRESHOLD
     )
   ) {
     readySent = true;

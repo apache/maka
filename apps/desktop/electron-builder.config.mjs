@@ -13,6 +13,12 @@ export default {
       to: 'bundled-tools.json',
     },
     {
+      // Menu bar status item art. Without this the packaged app resolves an
+      // empty NativeImage and Electron silently shows no icon at all.
+      from: 'resources/status',
+      to: 'status',
+    },
+    {
       from: 'resources/workers/filesystem-worker.js',
       to: 'workers/filesystem-worker.js',
     },

@@ -87,6 +87,19 @@ export function selectComputerUseBackend(deps?: {
         ? { physicalInputRecentlyActive: deps.physicalInputRecentlyActive }
         : {}),
       ...(deps?.onTrace ? { onTrace: deps.onTrace } : {}),
+      // Typing, scrolling and dragging go through cua-driver's compatibility
+      // event backend. That path was left off in the shipping build, which meant
+      // the code existed, had tests, and could never run — Computer Use could
+      // look at a machine and click on it, but not write in it, scroll it, or
+      // drag anything.
+      //
+      // The concern behind the switch was real: synthesized events can collide
+      // with what the user is physically doing. Turning off the whole capability
+      // is a blunt way to express that, and the precise one is already here —
+      // `physicalInputFailure()` guards every one of these dispatch sites and
+      // refuses while the user is actually at the keyboard, driven by the
+      // `physicalInputRecentlyActive` probe the host passes in above.
+      allowCompatibilityInputDispatch: true,
       onSessionInvalidated: ({ sessionId }) => {
         tools?.sessionEvents.reobserveRequired(sessionId);
       },

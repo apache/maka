@@ -98,6 +98,12 @@ export interface CuObservation {
   windowBounds?: { x: number; y: number; width: number; height: number };
   sourceBoundsPx?: { x: number; y: number; width: number; height: number };
   zIndex?: number;
+  /**
+   * Screen rectangles stacked above this window. Presentation-only: the agent
+   * cursor checks the point it is about to draw at, since a control near the
+   * top edge can be visible while the middle of the window is buried.
+   */
+  obscuringRects?: Array<{ x: number; y: number; width: number; height: number }>;
   bundleId?: string;
   contentFingerprint?: string;
   page?: ComputerUsePageIdentity;
@@ -156,6 +162,16 @@ export interface CuOverlayHookContext {
   sessionId: string;
   toolCallId: string;
   presentationScreenPoint?: CuPoint;
+  /**
+   * How the target window sits relative to everything else, for deciding how
+   * HIGH to draw the cursor rather than whether to draw it at all.
+   *
+   * Codex keeps its cursor above every other window while the target app is
+   * frontmost or the cursor is in flight, and only lets it sink into the
+   * target's own layer once the target is genuinely the window underneath.
+   * A covered target is therefore a reason to stay elevated, not to disappear.
+   */
+  targetStacking?: { frontmost: boolean; destinationCovered: boolean };
 }
 
 export interface CuOverlayHook {
