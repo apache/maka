@@ -44,3 +44,6 @@ Fix the story or delete it. Never keep both "the app" and "the story version" of
 ## Side-by-side stories are scaffolds
 
 Where a story deliberately puts several states next to each other for review, say so in the annotation. The arrangement is a review aid; each panel is the reachable state, and the row itself is not a screen anyone sees.
+# Sandbox boundary prompt
+
+`Product/Sandbox Boundary Prompt` mounts the same shared `SandboxBoundaryPrompt` used by the desktop composer slot. `FilesystemAndNetwork` covers the widest mixed expansion; `NetworkOnly` covers the compact single-capability state.
