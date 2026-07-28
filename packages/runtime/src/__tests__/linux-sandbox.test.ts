@@ -120,7 +120,7 @@ describe('buildBubblewrapArgv', () => {
     assert.equal(hasTriple(argv, '--bind', '/repo/project', '/repo/project'), false);
   });
 
-  it('materializes workspace, temp, protected metadata, cwd, and network restrictions', () => {
+  it('materializes writable workspace metadata, temp, cwd, and network restrictions', () => {
     const request = workspaceRequest(createWorkspaceWritePermissionProfile());
     const argv = buildBubblewrapArgv({
       bwrapPath: '/usr/bin/bwrap',
@@ -134,7 +134,10 @@ describe('buildBubblewrapArgv', () => {
     assert.ok(argv.includes('--unshare-user'));
     assert.ok(hasPair(argv, '--seccomp', '3'));
     assert.ok(hasTriple(argv, '--bind', '/repo/project', '/repo/project'));
-    assert.ok(hasTriple(argv, '--ro-bind-try', '/repo/project/.git', '/repo/project/.git'));
+    assert.equal(
+      hasTriple(argv, '--ro-bind-try', '/repo/project/.git', '/repo/project/.git'),
+      false,
+    );
     assert.ok(hasPair(argv, '--tmpfs', '/tmp'));
     assert.ok(hasPair(argv, '--tmpfs', '/var/tmp/maka'));
     assert.ok(hasPair(argv, '--chdir', '/repo/project'));
