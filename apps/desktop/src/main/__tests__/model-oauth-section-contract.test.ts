@@ -296,6 +296,11 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
       /connections:fetchModels[\s\S]*generalizedErrorMessageChinese\(error,\s*'拉取模型列表失败'\)/,
       'main-process fetchModels errors must be localized before crossing IPC to renderer toasts',
     );
+    assert.match(
+      main,
+      /error instanceof ConnectionModelDiscoveryPreconditionError[\s\S]*throw error/,
+      'safe discovery precondition copy must survive IPC error generalization',
+    );
     assert.doesNotMatch(
       main,
       /No OAuth login stored for this connection|No API key set for this connection|Failed to fetch provider models/,
@@ -316,7 +321,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     assert.match(src, /\.\.\.\(normalizedApiKey \? \{ apiKey: normalizedApiKey \} : \{\}\)/);
     assert.match(
       src,
-      /const supportsRemoteDiscovery = defaults\.modelDiscovery\.kind !== 'fallback';[\s\S]*if \(supportsRemoteDiscovery\) \{[\s\S]*props\.bridge\.fetchModels\(connection\.slug\)[\s\S]*props\.onCreated\(connection\.slug, modelDiscoveryError\)/,
+      /const supportsRemoteDiscovery = providerSupportsModelDiscovery\(props\.providerType\);[\s\S]*if \(supportsRemoteDiscovery\) \{[\s\S]*props\.bridge\.fetchModels\(connection\.slug\)[\s\S]*props\.onCreated\(connection\.slug, modelDiscoveryError\)/,
       'new connections with a discovery strategy must fetch the current catalog immediately',
     );
     assert.doesNotMatch(src, /ProviderPageHeader|providerInlineEditor/, 'creation must not retain an in-pane child editor');
@@ -338,7 +343,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
 
     assert.match(
       detail,
-      /const supportsRemoteDiscovery = defaults\.modelDiscovery\.kind !== 'fallback';/,
+      /const supportsRemoteDiscovery = providerSupportsModelDiscovery\(connection\.providerType\);/,
       'connection detail must derive refresh support from the provider discovery contract',
     );
     assert.match(

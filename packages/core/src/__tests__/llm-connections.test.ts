@@ -27,12 +27,18 @@ import {
   persistedBaseUrl,
   providerAuthRequiresSecret,
   providerAuthSupportsApiKey,
+  providerSupportsModelDiscovery,
   reconcileConnectionAfterModelFetch,
   validateConnectionBaseUrl,
   type ProviderType,
 } from '../llm-connections.js';
 
 describe('provider compatibility contract', () => {
+  it('derives remote model discovery support from the registry strategy', () => {
+    assert.equal(providerSupportsModelDiscovery('openai'), true);
+    assert.equal(providerSupportsModelDiscovery('volcengine-ark'), false);
+  });
+
   it('exposes only supported first-class provider ids in stable order', () => {
     assert.deepEqual(Object.keys(PROVIDER_DEFAULTS), [
       'anthropic',

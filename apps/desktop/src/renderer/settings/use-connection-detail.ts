@@ -7,7 +7,11 @@ import {
   type ModelInfo,
   type ProviderType,
 } from '@maka/core';
-import { providerAuthRequiresSecret, providerAuthSupportsApiKey } from '@maka/core/llm-connections';
+import {
+  providerAuthRequiresSecret,
+  providerAuthSupportsApiKey,
+  providerSupportsModelDiscovery,
+} from '@maka/core/llm-connections';
 import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 import { buildCatalogModelChoices } from '../model-catalog-choices';
@@ -107,7 +111,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const oauthLoginService = needsOAuth ? oauthLoginServiceFor(connection.providerType) : null;
   const usesGitHubCopilotLogin = connection.providerType === 'github-copilot';
   const hasFixedOAuthBaseUrl = needsOAuth && Boolean(defaults.baseUrl);
-  const supportsRemoteDiscovery = defaults.modelDiscovery.kind !== 'fallback';
+  const supportsRemoteDiscovery = providerSupportsModelDiscovery(connection.providerType);
   const requiresCredential = providerAuthRequiresSecret(connection.providerType);
   const probesCredential = supportsApiKey || needsOAuth;
   const credentialProbePending = requiresCredential && (hasSecret === 'loading' || hasSecret === 'error');

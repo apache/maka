@@ -1089,6 +1089,24 @@ describe('ModelCatalogEntry', () => {
     );
   });
 
+  it('treats the registry snapshot as authoritative for fallback-only providers', () => {
+    const entries = buildConnectionModelCatalogEntries({
+      connection: {
+        slug: 'volcengine-ark',
+        providerType: 'volcengine-ark',
+        defaultModel: 'doubao-seed-2-0-pro-260215',
+        models: [{ id: 'stale-cli-snapshot' }],
+        modelSource: 'fetched',
+        modelsFetchedAt: 1,
+      },
+    });
+
+    assert.ok(entries.some((entry) => entry.id === 'doubao-seed-2-0-pro-260215'));
+    assert.ok(!entries.some((entry) => entry.id === 'stale-cli-snapshot'));
+    assert.ok(entries.every((entry) => entry.source === 'static_catalog'));
+    assert.ok(entries.every((entry) => entry.provenance.modelSource === 'fallback'));
+  });
+
   it('carries display names separately from stable model ids', () => {
     const [fetchedEntry] = buildModelCatalogEntries({
       providerType: 'openai-codex',

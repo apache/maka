@@ -4,7 +4,30 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { createConnectionStore } from '@maka/storage';
-import { discoverConnectionModels } from '../connection-model-discovery.js';
+import {
+  ConnectionModelDiscoveryPreconditionError,
+  discoverConnectionModels,
+} from '../connection-model-discovery.js';
+
+test('precondition failures are explicitly safe to preserve across IPC', async () => {
+  await assert.rejects(
+    discoverConnectionModels(
+      {
+        connectionStore: {
+          get: async () => null,
+          update: async () => {
+            throw new Error('update must not run for a missing connection');
+          },
+        },
+        resolveConnectionSecret: async () => null,
+      },
+      'missing',
+    ),
+    (error: unknown) =>
+      error instanceof ConnectionModelDiscoveryPreconditionError &&
+      error.message === '找不到模型连接：missing',
+  );
+});
 
 test('an empty discovery result leaves the last successful catalog intact', async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-model-discovery-'));

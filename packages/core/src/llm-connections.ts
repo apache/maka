@@ -206,6 +206,11 @@ export function providerAuthSupportsApiKey(providerType: ProviderType): boolean 
   return authKind === 'api_key' || authKind === 'optional_api_key';
 }
 
+export function providerSupportsModelDiscovery(providerType: ProviderType): boolean {
+  const discovery = PROVIDER_DEFAULTS[providerType]?.modelDiscovery;
+  return discovery !== undefined && discovery.kind !== 'fallback';
+}
+
 export function backendKindOf(c: Pick<LlmConnection, 'providerType'>): BackendKind {
   // Unknown providerType (legacy seed, or a connection persisted on a branch
   // that registers a provider this build doesn't know) → treat as non-real,

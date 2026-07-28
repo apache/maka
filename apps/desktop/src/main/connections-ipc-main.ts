@@ -12,7 +12,10 @@ import { PROVIDER_DEFAULTS, providerAuthRequiresSecret } from '@maka/core/llm-co
 import type { LlmConnection } from '@maka/core/llm-connections';
 import { testConnection } from '@maka/runtime';
 import { createConnectionStore } from '@maka/storage';
-import { discoverConnectionModels } from './connection-model-discovery.js';
+import {
+  ConnectionModelDiscoveryPreconditionError,
+  discoverConnectionModels,
+} from './connection-model-discovery.js';
 import { createFileCredentialStore } from './credential-store.js';
 import { createConnectionWithCredential } from './create-connection-with-credential.js';
 import { connectionTestStatusPatch } from './connection-test-status.js';
@@ -228,6 +231,7 @@ export function registerConnectionsIpc(deps: ConnectionsIpcDeps): void {
       emitConnectionListChanged();
       return result;
     } catch (error) {
+      if (error instanceof ConnectionModelDiscoveryPreconditionError) throw error;
       throw new Error(generalizedErrorMessageChinese(error, '拉取模型列表失败'));
     }
   });

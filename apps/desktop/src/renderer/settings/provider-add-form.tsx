@@ -5,7 +5,11 @@ import {
   validateSlug,
   type ProviderType,
 } from '@maka/core';
-import { providerAuthRequiresSecret, providerAuthSupportsApiKey } from '@maka/core/llm-connections';
+import {
+  providerAuthRequiresSecret,
+  providerAuthSupportsApiKey,
+  providerSupportsModelDiscovery,
+} from '@maka/core/llm-connections';
 import { Alert, AlertDescription, AlertTitle, Button, Chip, Input, useMountedRef, useUiLocale } from '@maka/ui';
 import { buildCatalogRecommendedDefaultModel } from '../model-catalog-choices';
 import { PasswordInput } from './password-input';
@@ -48,7 +52,7 @@ export function AddProviderForm(props: {
   const isCustomRelay = defaults.category === 'custom';
   const isExperimental = defaults.status === 'phase3-experimental';
   const isWiredOAuth = isWiredOAuthProvider(props.providerType);
-  const supportsRemoteDiscovery = defaults.modelDiscovery.kind !== 'fallback';
+  const supportsRemoteDiscovery = providerSupportsModelDiscovery(props.providerType);
   const supportsApiKey = providerAuthSupportsApiKey(props.providerType);
   const requiresApiKey = providerAuthRequiresSecret(props.providerType) && supportsApiKey;
   const usesApiKeyDialog = usesQuickApiKeyDialog(props.providerType);
@@ -96,7 +100,7 @@ export function AddProviderForm(props: {
         try {
           await props.bridge.fetchModels(connection.slug);
         } catch (error) {
-          modelDiscoveryError = error;
+          if (!isCustomRelay) modelDiscoveryError = error;
         }
       }
       if (!addProviderMountedRef.current) return;
