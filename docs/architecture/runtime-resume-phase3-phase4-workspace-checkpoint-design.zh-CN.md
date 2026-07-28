@@ -361,6 +361,15 @@ linked-child RateLimit retry 与 B2.1 repair retry 是窄协议，不代表 runt
 资格。其他能力必须在各自拥有 durable handle/幂等协议后独立设计，不能复用 B2 的普通
 continuation claim 来暗示副作用可重跑。
 
+兼容约束：runtime-host 在 host authority lifecycle integration 完成前仍使用 file
+RuntimeEvent store，因此已有 provider
+RateLimit retry 走显式 `legacy_provider_retry` lane。该 lane 必须在 claim/Run/T1 之前选定，
+只允许 authority 与 safety inspector 同时缺席的组合；半配置状态 fail closed。它执行前重验
+immutable immediate-source replay，但不产生 claim/start，也不能承接
+`continuation_abandoned_before_provider_dispatch`。这不是 durable resume 的降级模式，只是
+保留 mainline provider retry 的临时兼容边界；host authority lifecycle integration 接入 typed
+SQLite authority owner 后删除。
+
 B3 之前，branch/revision preflight 必须在创建目标 Session 之前拒绝任何 V1/V2
 `continuationSource`、continuation-start、tool dispatch/recovery 与 operation reference，稳定
 返回 `branch_runtime_fact_rewrite_unsupported`。B3 的正确实现要先建立旧 id 到新 id 的 typed
