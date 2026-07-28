@@ -2,8 +2,11 @@
 doc_id: architecture.runtime-resume
 title: "第八章：Resume 不是重试——Maka 如何从崩溃事实安全继续"
 language: zh-CN
+source_language: zh-CN
+counterpart: ./runtime-resume-architecture.md
 implementation_status: phase_0_2_and_phase_3a_authority_current
 document_status: current
+translation_status: synced
 last_verified: 2026-07-28
 owners:
   - maka-backend
