@@ -1015,6 +1015,11 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
         role: element.role,
         ...(element.label ? { label: element.label } : {}),
         ...(element.value !== undefined ? { value: element.value } : {}),
+        ...(element.enabled !== undefined ? { enabled: element.enabled } : {}),
+        ...(element.selected !== undefined ? { selected: element.selected } : {}),
+        ...(element.parent_index !== undefined
+          ? { parentElementId: String(element.parent_index) }
+          : {}),
         frame: {
           x: element.frame.x,
           y: element.frame.y,

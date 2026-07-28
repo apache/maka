@@ -38,6 +38,9 @@ export interface CuaSnapshotElement {
   value?: unknown;
   depth?: unknown;
   frame?: unknown;
+  enabled?: unknown;
+  selected?: unknown;
+  parent_index?: unknown;
 }
 
 function finitePositive(value: unknown): value is number {
@@ -152,6 +155,9 @@ export function normalizeCuaSnapshotElement(element: CuaSnapshotElement):
       value?: string;
       depth: number;
       frame: { x: number; y: number; w: number; h: number };
+      enabled?: boolean;
+      selected?: boolean;
+      parent_index?: number;
     }
   | undefined {
   if (typeof element.element_index !== 'number') return undefined;
@@ -178,6 +184,12 @@ export function normalizeCuaSnapshotElement(element: CuaSnapshotElement):
     ...(typeof element.value === 'string' ? { value: element.value } : {}),
     depth: typeof element.depth === 'number' ? element.depth : 0,
     frame: { x: frame.x, y: frame.y, w: frame.w, h: frame.h },
+    // Interaction state and tree position. The driver already reports these;
+    // dropping them here is what forced the model to treat every row as
+    // equally actionable and equally rootless.
+    ...(typeof element.enabled === 'boolean' ? { enabled: element.enabled } : {}),
+    ...(typeof element.selected === 'boolean' ? { selected: element.selected } : {}),
+    ...(typeof element.parent_index === 'number' ? { parent_index: element.parent_index } : {}),
   };
 }
 

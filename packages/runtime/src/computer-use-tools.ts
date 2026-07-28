@@ -93,6 +93,12 @@ export interface CuObservedElement {
   role: string;
   label?: string;
   value?: string;
+  /** False when the control is present but cannot currently be actuated. */
+  enabled?: boolean;
+  /** Selection state for controls that carry one (checkbox, radio, tab, row). */
+  selected?: boolean;
+  /** `elementId` of this element's parent, when the observation reports a tree. */
+  parentElementId?: string;
   frame?: { x: number; y: number; width: number; height: number };
   identity?: {
     token?: string;
@@ -661,6 +667,17 @@ function observationText(observation: CuObservation): string {
       role: element.role,
       ...(element.label ? { label: element.label } : {}),
       ...(element.value !== undefined ? { value: element.value } : {}),
+      // Interaction state: without it the model cannot tell a control it may
+      // not actuate from one it simply failed to hit, and retries the same
+      // dead element across a long run.
+      ...(element.enabled !== undefined ? { enabled: element.enabled } : {}),
+      ...(element.selected !== undefined ? { selected: element.selected } : {}),
+      // Tree position: a flat list hides which panel, dialog, or row group an
+      // element belongs to, which matters as soon as a modal or secondary
+      // window is on screen.
+      ...(element.parentElementId !== undefined
+        ? { parent_element_id: element.parentElementId }
+        : {}),
       ...(element.frame ? { frame: element.frame } : {}),
     })),
   });
