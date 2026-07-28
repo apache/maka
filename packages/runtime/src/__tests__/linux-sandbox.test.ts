@@ -61,6 +61,20 @@ function deniedChildProfile(): PermissionProfile {
   };
 }
 
+function protectedMetadataProfile(): PermissionProfile {
+  const profile = createWorkspaceWritePermissionProfile();
+  return {
+    ...profile,
+    fileSystem: {
+      ...profile.fileSystem,
+      protectedMetadata: {
+        access: 'deny_write',
+        names: ['.git'],
+      },
+    },
+  };
+}
+
 describe('detectLinuxSandboxCapability', () => {
   it('probes every namespace used by production and requires seccomp support', () => {
     for (const flag of [
@@ -355,7 +369,7 @@ describe('LinuxBubblewrapBackend', () => {
       capability: { available: true, bwrapPath: '/usr/bin/bwrap' },
       discoverProtectedMetadataPaths: () => [nested],
     });
-    const result = backend.transform(workspaceRequest(createWorkspaceWritePermissionProfile()));
+    const result = backend.transform(workspaceRequest(protectedMetadataProfile()));
 
     assert.equal(result.ok, true);
     if (result.ok) {
