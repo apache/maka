@@ -356,6 +356,7 @@ export type { MakaTool, MakaToolContext } from './tool-runtime.js';
 export { buildMcpTools, mcpProxyToolName } from './mcp-tools.js';
 export type { McpToolProvider, BuildMcpToolsOptions } from './mcp-tools.js';
 export { buildAskUserQuestionTool } from './ask-user-question-tool.js';
+export { buildRequestSandboxBoundaryTool } from './sandbox-boundary-tool.js';
 export { buildSubmitPlanTool, buildUpdatePlanTool, buildCancelPlanTool } from './plan-tools.js';
 export type { PlanToolResult } from './plan-tools.js';
 export {

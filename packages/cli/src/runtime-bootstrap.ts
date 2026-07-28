@@ -16,6 +16,7 @@ import {
   applyRuntimeEventContextBudget,
   buildAutomationTool,
   buildAskUserQuestionTool,
+  buildRequestSandboxBoundaryTool,
   buildBuiltinTools,
   buildRuntimeEventModelReplayPlan,
   buildChildAgentTools,
@@ -572,7 +573,8 @@ export async function createMakaCliRuntimeContext(
         })
       : [];
   const subagentTools = agentGraphEnabled ? buildParentAgentTools() : [];
-  const surfaceTools = input.surface === 'tui' ? [buildAskUserQuestionTool()] : [];
+  const surfaceTools =
+    input.surface === 'tui' ? [buildAskUserQuestionTool(), buildRequestSandboxBoundaryTool()] : [];
   let cliProductToolSurface: EffectiveProductToolSurface;
   const resolveCliSkillHost: HostCapabilitiesResolver = () =>
     cliProductToolSurface.hostCapabilities;
@@ -656,6 +658,15 @@ export async function createMakaCliRuntimeContext(
       header: { ...header, model: ready.model },
       appendMessage:
         ctx.appendMessage ?? ((message) => ctx.store.appendMessage(ctx.sessionId, message)),
+      readExecutionBoundary: () => ctx.store.readExecutionBoundary!(ctx.sessionId),
+      ...(input.surface === 'tui'
+        ? {
+            createSandboxBoundaryRequest: (request) =>
+              ctx.store.createSandboxBoundaryRequest!(request),
+            settleSandboxBoundaryRequest: (request) =>
+              ctx.store.settleSandboxBoundaryRequest!(request),
+          }
+        : {}),
       connection: ready.connection,
       apiKey: ready.apiKey,
       modelId: ready.model,

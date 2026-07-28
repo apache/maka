@@ -302,6 +302,10 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   header: SessionHeader;
   /** Append-message function bound to this session (e.g. SessionStore wrapper). */
   appendMessage: AppendMessageFn;
+  /** Reads the authoritative session boundary immediately before every local tool invocation. */
+  readExecutionBoundary?: ToolRuntimeInput['readExecutionBoundary'];
+  createSandboxBoundaryRequest?: ToolRuntimeInput['createSandboxBoundaryRequest'];
+  settleSandboxBoundaryRequest?: ToolRuntimeInput['settleSandboxBoundaryRequest'];
 
   // ── Process-singleton deps ─────────────────────────────────────────────
   permissionEngine: PermissionEngine;
@@ -608,6 +612,9 @@ export class AiSdkBackend implements AgentBackend {
       modelId: input.modelId,
       appendMessage: input.appendMessage,
       permissionEngine: input.permissionEngine,
+      readExecutionBoundary: input.readExecutionBoundary,
+      createSandboxBoundaryRequest: input.createSandboxBoundaryRequest,
+      settleSandboxBoundaryRequest: input.settleSandboxBoundaryRequest,
       newId: this.newId,
       now: this.now,
       getPermissionPauseTarget: () => this.currentWatchdog,
@@ -2033,6 +2040,9 @@ export class AiSdkBackend implements AgentBackend {
 
   async respondToPermission(decision: PermissionDecision): Promise<void> {
     if (this.currentTurnId === null) return;
+    if (await this.toolRuntime.respondToSandboxBoundaryRequest(this.currentTurnId, decision)) {
+      return;
+    }
     this.input.permissionEngine.recordResponse(this.currentTurnId, decision);
     // PermissionDecisionMessage + ack event are written inside ToolRuntime settlement
     // after parked.resolve() returns, so no further work here.

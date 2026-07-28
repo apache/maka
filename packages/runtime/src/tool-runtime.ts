@@ -1,9 +1,20 @@
 import {
+  createGenesisExecutionBoundary,
   decodeCanonicalToolResultContent,
   projectAgentSwarmResult,
   projectToolActivityArgs,
+  validateSandboxBoundaryExpansion,
+  type CreateSandboxBoundaryRequest,
+  type ExecutionBoundary,
+  type SandboxBoundaryDecision,
+  type SandboxBoundaryExpansion,
+  type SandboxBoundaryRequest,
+  type SandboxBoundarySettlement,
+  type SettleSandboxBoundaryRequest,
 } from '@maka/core';
 import type {
+  SandboxBoundaryDecisionAckEvent,
+  SandboxBoundaryRequestEvent,
   SessionEvent,
   SandboxDenialSignal,
   ToolActivityKind,
@@ -171,6 +182,8 @@ export interface MakaToolContext {
   turnId: string;
   /** Session working directory. */
   cwd: string;
+  /** Authoritative session boundary read immediately before Runtime-dispatched execution. */
+  executionBoundary?: ExecutionBoundary;
   permissionMode?: PermissionMode;
   toolCallId: string;
   abortSignal: AbortSignal;
@@ -265,6 +278,10 @@ export interface MakaToolContext {
     maxEvents?: number;
   }) => Promise<unknown>;
   askUserQuestion?: (questions: UserQuestion[]) => Promise<UserQuestionResult>;
+  requestSandboxBoundary?: (
+    expansion: SandboxBoundaryExpansion,
+    justification: string,
+  ) => Promise<SandboxBoundarySettlement>;
 }
 
 export interface AgentTeamExecutionContext {
@@ -327,6 +344,13 @@ export interface ToolRuntimeInput {
   modelId: string;
   appendMessage: AppendMessageFn;
   permissionEngine: PermissionEngine;
+  readExecutionBoundary?: () => Promise<ExecutionBoundary>;
+  createSandboxBoundaryRequest?: (
+    input: CreateSandboxBoundaryRequest,
+  ) => Promise<SandboxBoundaryRequest>;
+  settleSandboxBoundaryRequest?: (
+    input: SettleSandboxBoundaryRequest,
+  ) => Promise<SandboxBoundarySettlement>;
   newId: () => string;
   now: () => number;
   getPermissionPauseTarget: () => { pause(): void; resume(): void } | null;
@@ -449,6 +473,10 @@ class RuntimeCommitBoundaryError extends Error {
 }
 
 export class ToolRuntime {
+  private readonly sandboxBoundaryRequests = new TurnScopedAwaitRegistry<
+    SandboxBoundarySettlement,
+    { toolUseId: string }
+  >();
   private readonly userQuestions = new TurnScopedAwaitRegistry<
     UserQuestionResponse,
     { toolUseId: string; questions: UserQuestion[]; hosted: boolean }
@@ -498,6 +526,7 @@ export class ToolRuntime {
     if (hostedInteraction) this.hostedInteractions.set(turnId, hostedInteraction);
     else this.hostedInteractions.delete(turnId);
     this.resetTurnState();
+    this.sandboxBoundaryRequests.beginTurn(turnId);
     this.userQuestions.beginTurn(turnId);
   }
 
@@ -517,6 +546,11 @@ export class ToolRuntime {
       (requestId) =>
         new Error(`Turn ${turnId} ${reason} before user question ${requestId} was answered`),
     );
+    this.sandboxBoundaryRequests.endTurn(
+      turnId,
+      (requestId) =>
+        new Error(`Turn ${turnId} ${reason} before sandbox boundary ${requestId} was settled`),
+    );
     this.deferredQuestionTurnClosures.delete(turnId);
     this.resetTurnState();
   }
@@ -535,6 +569,32 @@ export class ToolRuntime {
       );
     }
     return this.settleUserQuestionAnswer(turnId, response, pending);
+  }
+
+  async respondToSandboxBoundaryRequest(
+    turnId: string,
+    response: { requestId: string; decision: SandboxBoundaryDecision },
+  ): Promise<boolean> {
+    if (
+      !response ||
+      typeof response.requestId !== 'string' ||
+      (response.decision !== 'allow' && response.decision !== 'deny')
+    ) {
+      throw new Error('Invalid sandbox boundary response');
+    }
+    const pending = this.sandboxBoundaryRequests
+      .entries(turnId)
+      .find(([requestId]) => requestId === response.requestId);
+    if (!pending) return false;
+    if (!this.input.settleSandboxBoundaryRequest) {
+      throw new Error('Sandbox boundary settlement is unavailable on this surface');
+    }
+    const settlement = await this.input.settleSandboxBoundaryRequest({
+      sessionId: this.input.sessionId,
+      requestId: response.requestId,
+      decision: response.decision,
+    });
+    return this.sandboxBoundaryRequests.resolve(turnId, response.requestId, settlement) !== null;
   }
 
   private settleUserQuestionAnswer(
@@ -1535,11 +1595,15 @@ export class ToolRuntime {
       pauseTarget?.pause();
       try {
         const runId = this.input.getCurrentRunId?.();
+        const executionBoundary = this.input.readExecutionBoundary
+          ? await this.input.readExecutionBoundary()
+          : createGenesisExecutionBoundary(this.input.header.permissionMode);
         const result = await tool.impl(structuredClone(executionArgs) as never, {
           sessionId: this.input.sessionId,
           turnId,
           ...(runId ? { runId } : {}),
           cwd: this.input.header.cwd,
+          executionBoundary,
           permissionMode: this.input.header.permissionMode,
           toolCallId: toolUseId,
           abortSignal: ctx.abortSignal,
@@ -1578,6 +1642,8 @@ export class ToolRuntime {
             toolName: tool.name,
           }),
           askUserQuestion: (questions) => this.askUserQuestion(turnId, toolUseId, questions, queue),
+          requestSandboxBoundary: (expansion, justification) =>
+            this.requestSandboxBoundary(turnId, toolUseId, expansion, justification, queue),
         });
         output.flush();
         const durationMs = this.input.now() - startedAt;
@@ -2392,6 +2458,60 @@ export class ToolRuntime {
         answer: response.answers[index] ?? null,
       })),
     };
+  }
+
+  private async requestSandboxBoundary(
+    turnId: string,
+    toolUseId: string,
+    expansion: SandboxBoundaryExpansion,
+    justification: string,
+    queue: DurableSessionEventSink,
+  ): Promise<SandboxBoundarySettlement> {
+    if (!this.input.createSandboxBoundaryRequest || !this.input.settleSandboxBoundaryRequest) {
+      throw new Error('Sandbox boundary expansion is unavailable on this surface');
+    }
+    validateSandboxBoundaryExpansion(expansion);
+    if (typeof justification !== 'string' || justification.trim().length === 0) {
+      throw new Error('Sandbox boundary justification must not be empty');
+    }
+    const requestId = this.input.newId();
+    const request = await this.input.createSandboxBoundaryRequest({
+      sessionId: this.input.sessionId,
+      requestId,
+      expansion,
+      justification,
+    });
+    const parked = this.sandboxBoundaryRequests.park(turnId, requestId, { toolUseId });
+    const requestEvent: SandboxBoundaryRequestEvent = {
+      type: 'sandbox_boundary_request',
+      id: this.input.newId(),
+      turnId,
+      ts: this.input.now(),
+      requestId,
+      toolUseId,
+      justification: request.justification,
+      expansion: request.expansion,
+    };
+    queue.push(requestEvent);
+    const settlement = await parked;
+    const decisionAck: SandboxBoundaryDecisionAckEvent = {
+      type: 'sandbox_boundary_decision_ack',
+      id: this.input.newId(),
+      turnId,
+      ts: this.input.now(),
+      requestId,
+      toolUseId,
+      decision: settlement.request.status === 'denied' ? 'deny' : 'allow',
+      status:
+        settlement.request.status === 'pending'
+          ? (() => {
+              throw new Error(`Sandbox boundary request ${requestId} is still pending`);
+            })()
+          : settlement.request.status,
+      revision: settlement.boundary.revision,
+    };
+    queue.push(decisionAck);
+    return settlement;
   }
 
   private interactionRun(turnId: string): HostedInteractionBridge | undefined {

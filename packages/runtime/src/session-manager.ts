@@ -50,6 +50,13 @@ import type {
 import type { PermissionResponse } from '@maka/core/permission';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { PermissionMode } from '@maka/core/permission';
+import type {
+  CreateSandboxBoundaryRequest,
+  ExecutionBoundary,
+  SandboxBoundaryRequest,
+  SandboxBoundarySettlement,
+  SettleSandboxBoundaryRequest,
+} from '@maka/core';
 import type { CollaborationMode } from '@maka/core/collaboration';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type {
@@ -420,6 +427,13 @@ export interface AgentOutputResult {
 export interface SessionStore {
   create(input: CreateSessionInput): Promise<SessionHeader>;
   createSubagent(input: CreateSessionInput): Promise<{ header: SessionHeader; created: boolean }>;
+  readExecutionBoundary?(sessionId: string): Promise<ExecutionBoundary>;
+  createSandboxBoundaryRequest?(
+    input: CreateSandboxBoundaryRequest,
+  ): Promise<SandboxBoundaryRequest>;
+  settleSandboxBoundaryRequest?(
+    input: SettleSandboxBoundaryRequest,
+  ): Promise<SandboxBoundarySettlement>;
   createAgentGraphOperator?(
     input: CreateSessionInput,
     request: AgentGraphOperatorProvisionRequest,

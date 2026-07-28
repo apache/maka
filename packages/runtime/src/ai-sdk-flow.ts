@@ -426,6 +426,40 @@ function mapBackendSessionEvent(
         },
         refs: { toolCallId: event.toolUseId },
       };
+    case 'sandbox_boundary_request':
+      return {
+        ...base,
+        role: 'system',
+        author: 'system',
+        actions: {
+          stateDelta: {
+            sandboxBoundaryRequest: {
+              requestId: event.requestId,
+              toolUseId: event.toolUseId,
+              justification: event.justification,
+              expansion: event.expansion,
+            },
+          },
+        },
+        refs: { toolCallId: event.toolUseId },
+      };
+    case 'sandbox_boundary_decision_ack':
+      return {
+        ...base,
+        role: 'system',
+        author: 'user',
+        actions: {
+          stateDelta: {
+            sandboxBoundaryDecision: {
+              requestId: event.requestId,
+              decision: event.decision,
+              status: event.status,
+              revision: event.revision,
+            },
+          },
+        },
+        refs: { toolCallId: event.toolUseId },
+      };
     case 'permission_decision_ack':
       return {
         ...base,

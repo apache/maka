@@ -14,6 +14,7 @@ import type {
   PermissionResponse,
   SandboxEscalationRequest,
 } from './permission.js';
+import type { SandboxBoundaryExpansion, SandboxBoundaryRequestStatus } from './sandbox-boundary.js';
 import type { UserQuestionRequest } from './user-question.js';
 import type {
   PipeShellOutput,
@@ -324,6 +325,8 @@ export type SessionEvent =
   | ToolProgressEvent
   | ToolResultEvent
   | AnyPermissionRequestEvent
+  | SandboxBoundaryRequestEvent
+  | SandboxBoundaryDecisionAckEvent
   | PermissionAnswerAckEvent
   | PermissionClosureAckEvent
   | PermissionDecisionAckEvent
@@ -698,6 +701,23 @@ export type AnyPermissionRequestEvent =
 
 export interface UserQuestionRequestEvent extends BaseEvent, UserQuestionRequest {
   type: 'user_question_request';
+}
+
+export interface SandboxBoundaryRequestEvent extends BaseEvent {
+  type: 'sandbox_boundary_request';
+  requestId: string;
+  toolUseId: string;
+  justification: string;
+  expansion: SandboxBoundaryExpansion;
+}
+
+export interface SandboxBoundaryDecisionAckEvent extends BaseEvent {
+  type: 'sandbox_boundary_decision_ack';
+  requestId: string;
+  toolUseId: string;
+  decision: 'allow' | 'deny';
+  status: Exclude<SandboxBoundaryRequestStatus, 'pending'>;
+  revision: number;
 }
 
 /**

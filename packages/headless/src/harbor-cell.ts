@@ -1069,6 +1069,7 @@ export function buildAiSdkCellBackendRegistration(input: {
         header: { ...ctx.header, model: input.model },
         appendMessage:
           ctx.appendMessage ?? ((message) => ctx.store.appendMessage(ctx.sessionId, message)),
+        readExecutionBoundary: async () => ({ kind: 'external', revision: 0 }),
         connection,
         apiKey,
         modelId: input.model,

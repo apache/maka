@@ -143,6 +143,11 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
       sessionId: ctx.sessionId,
       header: { ...ctx.header, model, permissionMode: effectivePermissionMode },
       appendMessage: ctx.appendMessage ?? ((message) => ctx.store.appendMessage(ctx.sessionId, message)),
+      readExecutionBoundary: () => ctx.store.readExecutionBoundary!(ctx.sessionId),
+      createSandboxBoundaryRequest: (request) =>
+        ctx.store.createSandboxBoundaryRequest!(request),
+      settleSandboxBoundaryRequest: (request) =>
+        ctx.store.settleSandboxBoundaryRequest!(request),
       connection,
       apiKey: apiKey ?? '',
       modelId: model,

@@ -3,6 +3,7 @@ import {
   buildAgentTeamChildTools,
   buildAgentTeamLeadTools,
   buildAskUserQuestionTool,
+  buildRequestSandboxBoundaryTool,
   buildChildAgentTools,
   buildParentAgentTools,
   assertProductBindingCatalogClean,
@@ -196,6 +197,7 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
   // the shared catalog ∩ this binding (#1099 S2). Skill listing uses the same host.
   const toolsBeforeSkill: MakaTool[] = [
     buildAskUserQuestionTool(),
+    buildRequestSandboxBoundaryTool(),
     ...buildDesktopBuiltinTools({
       shellRuns,
       runtimeResources: shellRuns,
