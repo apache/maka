@@ -57,14 +57,12 @@ function tools(implCalls: string[]): MakaTool[] {
       name: 'Read',
       description: 'Read',
       parameters: z.object({ path: z.string().optional() }),
-      permissionRequired: false,
       impl: () => ({ ok: true }),
     },
     {
       name: 'browser_click',
       description: 'Click in the browser',
       parameters: z.object({}),
-      permissionRequired: false,
       impl: () => {
         implCalls.push('browser_click');
         return { ok: true };
@@ -391,14 +389,12 @@ describe('AiSdkBackend deferred agent tools', () => {
         name: 'view_agent_graph',
         description: 'View graph',
         parameters: z.object({}),
-        permissionRequired: false,
         impl: () => ({ ok: true }),
       },
       {
         name: 'update_agent_graph',
         description: 'Update graph',
         parameters: z.object({}),
-        permissionRequired: false,
         impl: () => ({ ok: true }),
       },
     ];

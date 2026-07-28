@@ -223,7 +223,6 @@ describe('ToolAvailabilityRuntime — connector shape', () => {
     assert.match(c.description, /docs/);
     assert.match(c.description, /Rive/); // rive group's label
     assert.match(c.description, /Document tools/); // docs group's description
-    assert.equal(c.permissionRequired, false);
   });
 
   test('loading a group returns exactly its tool names — a thin result, no schema', async () => {

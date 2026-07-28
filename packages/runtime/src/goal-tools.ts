@@ -87,7 +87,6 @@ function buildGoalSetTool(deps: GoalToolsDeps): MakaTool<
           'Optional token budget; the goal stops (budget_limited) once this many tokens are spent working toward it.',
         ),
     }),
-    permissionRequired: false,
     impl: (input, ctx) => {
       const existing = deps.goalManager.get(ctx.sessionId);
       if (existing && !TERMINAL_GOAL_STATUSES.has(existing.status)) {
@@ -129,7 +128,6 @@ function buildGoalClearTool(deps: GoalToolsDeps): MakaTool<Record<string, never>
     displayName: 'Goal Clear',
     description: 'Clear the active goal, stopping autonomous execution after the current turn.',
     parameters: z.object({}),
-    permissionRequired: false,
     impl: (_input, ctx) => {
       const current = deps.goalManager.get(ctx.sessionId);
       if (!current || TERMINAL_GOAL_STATUSES.has(current.status)) {
@@ -153,7 +151,6 @@ function buildGoalPauseTool(deps: GoalToolsDeps): MakaTool<Record<string, never>
     description:
       'Pause the active goal. Autonomous continuation stops until GoalResume is called; state is preserved.',
     parameters: z.object({}),
-    permissionRequired: false,
     impl: (_input, ctx) => {
       const current = deps.goalManager.get(ctx.sessionId);
       if (!current || (current.status !== 'active' && current.status !== 'waiting')) {
@@ -176,7 +173,6 @@ function buildGoalResumeTool(deps: GoalToolsDeps): MakaTool<Record<string, never
     displayName: 'Goal Resume',
     description: 'Resume a paused goal, re-enabling autonomous continuation.',
     parameters: z.object({}),
-    permissionRequired: false,
     impl: (_input, ctx) => {
       if (deps.goalManager.get(ctx.sessionId)?.status !== 'paused') {
         return 'No paused goal to resume.';
@@ -198,7 +194,6 @@ function buildGoalStatusTool(deps: GoalToolsDeps): MakaTool<Record<string, never
     displayName: 'Goal Status',
     description: 'Check the current goal status for this session.',
     parameters: z.object({}),
-    permissionRequired: false,
     impl: (_input, ctx) => {
       const goal = deps.goalManager.get(ctx.sessionId);
       if (!goal) return 'No goal set for this session.';

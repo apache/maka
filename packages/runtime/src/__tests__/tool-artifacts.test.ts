@@ -165,7 +165,6 @@ function writeArtifactTool(): MakaTool {
     name: 'Write',
     description: 'write file',
     parameters: {},
-    permissionRequired: false,
     impl: async (args) => {
       const path =
         typeof (args as { path?: unknown }).path === 'string'

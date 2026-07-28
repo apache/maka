@@ -54,10 +54,7 @@ import { expect } from '../test-helpers.js';
 describe('subagent tools', () => {
   test('parent-facing agent tools declare permission hints and names', () => {
     const spawnTool = buildSubagentSpawnTool();
-    expect(spawnTool.permissionRequired).toBe(true);
     expect(spawnTool.categoryHint).toBe('subagent');
-    expect(buildSubagentListTool().permissionRequired).toBe(false);
-    expect(buildSubagentOutputTool().permissionRequired).toBe(false);
     expect(buildParentAgentTools().map((tool) => tool.name)).toEqual([
       AGENT_SPAWN_TOOL_NAME,
       AGENT_SWARM_TOOL_NAME,
@@ -531,7 +528,6 @@ describe('subagent tools', () => {
 
     expect(tool.name).toBe(AGENT_SPAWN_TOOL_NAME);
     expect(tool.categoryHint).toBe('subagent');
-    expect(tool.permissionRequired).toBe(true);
     expect(calls).toHaveLength(1);
     const call = calls[0] as {
       agentProfile: string;
@@ -1174,8 +1170,6 @@ describe('subagent tools', () => {
 
     expect(listTool.name).toBe(AGENT_LIST_TOOL_NAME);
     expect(outputTool.name).toBe(AGENT_OUTPUT_TOOL_NAME);
-    expect(listTool.permissionRequired).toBe(false);
-    expect(outputTool.permissionRequired).toBe(false);
     expect(list).toEqual({
       definitions: [{ id: LOCAL_READ_AGENT_ID }],
       runs: [{ runId: 'child-run', turnId: 'child-turn' }],

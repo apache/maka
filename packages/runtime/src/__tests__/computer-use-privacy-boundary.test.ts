@@ -42,7 +42,6 @@ test('Computer Use snapshots execution args and persists only the approval summa
     description: 'test',
     parameters: {},
     categoryHint: 'computer_use',
-    permissionRequired: true,
     permissionArgs: (permissionInput, permissionContext) => {
       observedPermissionContexts.push(permissionContext);
       return {
@@ -156,7 +155,6 @@ test('Computer Use validation failures still persist a redacted call and result'
     description: 'test',
     parameters: {},
     categoryHint: 'computer_use',
-    permissionRequired: false,
     permissionArgs: () => {
       throw new Error('AX label: Customer SSN 123-45-6789');
     },

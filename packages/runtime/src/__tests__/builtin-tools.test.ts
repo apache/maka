@@ -136,7 +136,6 @@ describe('builtin ArchiveRead capabilities', () => {
     if (!archiveRead) throw new Error('ArchiveRead tool missing');
 
     assert.equal(withoutReader, undefined);
-    assert.equal(archiveRead.permissionRequired, false);
     assert.equal(archiveRead.activityKind, 'read');
     const result = await archiveRead.impl(
       {

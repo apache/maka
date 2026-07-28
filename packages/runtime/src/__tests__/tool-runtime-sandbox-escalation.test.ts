@@ -118,7 +118,6 @@ function bashTool(impl: MakaTool['impl']): MakaTool {
         justification: z.string(),
       }),
     }),
-    permissionRequired: true,
     planSandboxEscalation: (_args, context) =>
       planDeclaredBashSandboxEscalation({
         declaration,

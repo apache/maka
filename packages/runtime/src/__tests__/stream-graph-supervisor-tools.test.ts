@@ -21,8 +21,6 @@ describe('stream graph supervisor tools', () => {
     try {
       assert.equal(viewTool.name, VIEW_AGENT_GRAPH_TOOL_NAME);
       assert.equal(updateTool.name, UPDATE_AGENT_GRAPH_TOOL_NAME);
-      assert.equal(viewTool.permissionRequired, false);
-      assert.equal(updateTool.permissionRequired, false);
       assert.equal(viewTool.recoveryMode, 'replay_safe');
       assert.equal(updateTool.recoveryMode, 'idempotent');
 

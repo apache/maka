@@ -223,7 +223,6 @@ describe('ToolRuntime durable boundary', () => {
         return { ok: true };
       }),
       name: 'Bash',
-      permissionRequired: true,
     });
     while (!harness.events.some((event) => event.type === 'permission_request')) {
       await Promise.resolve();
@@ -354,7 +353,6 @@ function tool(impl: MakaTool['impl']): MakaTool {
     name: 'Read',
     description: 'read',
     parameters: {},
-    permissionRequired: false,
     recoveryMode: 'replay_safe',
     impl,
   };

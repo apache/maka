@@ -28,7 +28,6 @@ test('buildMcpTools projects discovery, permissions, abort, and rich model outpu
   );
   assert.equal(tools[0]?.categoryHint, 'network_send');
   assert.equal(tools[1]?.categoryHint, 'network_send');
-  assert.notEqual(tools[0]?.permissionRequired, false);
 
   const controller = new AbortController();
   const result = await tools[0]?.impl(

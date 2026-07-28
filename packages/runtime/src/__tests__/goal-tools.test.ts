@@ -67,7 +67,6 @@ describe('goal tools', () => {
 
   test('all tools are permission-free', () => {
     const { tools } = makeTools();
-    for (const t of tools) assert.equal(t.permissionRequired, false);
   });
 
   test('GoalSet creates a goal with custom limits', async () => {

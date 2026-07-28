@@ -134,7 +134,6 @@ export function buildSubagentSpawnTool(deps: { taskLedger?: TaskLedgerStore } = 
           });
         }
       }),
-    permissionRequired: true,
     categoryHint: 'subagent',
     impl: async (input, ctx) => {
       const definition = requireBuiltinAgentDefinitionByProfile(input.profile);
@@ -271,7 +270,6 @@ export function buildSubagentListTool(): MakaTool<Record<string, never>, unknown
     description:
       'List available agent catalog definitions and child agent runs for the current session.',
     parameters: z.object({}),
-    permissionRequired: false,
     categoryHint: 'read',
     impl: async (_input, ctx) => {
       if (!ctx.listChildAgents) {
@@ -348,7 +346,6 @@ export function buildSubagentOutputTool(): MakaTool<
           });
         }
       }),
-    permissionRequired: false,
     categoryHint: 'read',
     impl: async (input, ctx) => {
       if (!ctx.readChildAgentOutput) {

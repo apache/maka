@@ -44,7 +44,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       name: 'Write',
       description: 'test',
       parameters: {},
-      permissionRequired: true,
       impl: () => {
         executed = true;
         return { ok: true };
@@ -80,7 +79,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       name: 'Read',
       description: 'test',
       parameters: {},
-      permissionRequired: false,
       impl: (_args, context) => {
         assert.ok(context.executionBoundary);
         observed.push(context.executionBoundary);
@@ -195,7 +193,6 @@ describe('ToolRuntime session sandbox boundary', () => {
       name: 'Read',
       description: 'test',
       parameters: {},
-      permissionRequired: false,
       impl: () => {
         throw new FilesystemWorkerClientError({
           reason: 'sandbox_boundary_required',

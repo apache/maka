@@ -45,7 +45,6 @@ export function buildRequestSandboxBoundaryTool(): MakaTool<
         justification: z.string().min(1),
       })
       .strict(),
-    permissionRequired: false,
     impl: ({ expansion, justification }, context) => {
       if (!context.requestSandboxBoundary) {
         throw new Error('Sandbox boundary expansion is unavailable on this surface');

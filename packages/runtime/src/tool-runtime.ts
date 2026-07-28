@@ -111,8 +111,6 @@ export interface MakaTool<P = any, R = unknown> {
   description: string;
   /** Zod schema describing the tool's argument shape. */
   parameters: unknown;
-  /** Legacy metadata ignored by the session-boundary runtime. */
-  permissionRequired?: boolean;
   /** Optional UI display name. */
   displayName?: string;
   /** Stable semantic category used by UI presentation; never carries styling. */

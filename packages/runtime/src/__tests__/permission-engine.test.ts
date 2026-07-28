@@ -103,7 +103,6 @@ describe('PermissionEngine.evaluate — invocation-local rules', () => {
       toolName: 'Read',
       args: { path: '/repo/file.ts' },
       mode: 'bypass',
-      permissionRequired: false,
       permissionRules: [
         { effect: 'allow', kind: 'category', category: 'read' },
         { effect: 'deny', kind: 'category', category: 'read' },
@@ -193,7 +192,6 @@ describe('PermissionEngine.evaluate — invocation-local rules', () => {
       toolName: 'Read',
       args: { path: '/repo/file.ts' },
       mode: 'explore',
-      permissionRequired: false,
       permissionRules: [{ effect: 'deny', kind: 'category', category: 'file_write' }],
     });
 

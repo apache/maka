@@ -96,7 +96,6 @@ describe('ToolRuntime additional permission orchestration', () => {
       name: 'Bash',
       description: 'test',
       parameters: {},
-      permissionRequired: false,
       planAdditionalPermissions: (plannerArgs, context) => {
         plannerCalls += 1;
         assert.equal(Object.isFrozen(plannerArgs), true);
@@ -209,7 +208,6 @@ describe('ToolRuntime additional permission orchestration', () => {
         name: 'Write',
         description: 'test',
         parameters: {},
-        permissionRequired: false,
         planAdditionalPermissions,
         impl: () => {
           implementationCalled = true;

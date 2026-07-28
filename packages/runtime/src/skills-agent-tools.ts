@@ -97,7 +97,6 @@ export function buildSkillAgentTool(
     parameters: z.object({
       name: z.string().describe('The exact skill ref, id, or name from the local skill catalog.'),
     }),
-    permissionRequired: false,
     displayName: SKILL_TOOL_NAME,
     impl: async ({ name }, ctx) => {
       const result = await loadSkillInstructions(
@@ -145,7 +144,6 @@ export function buildSkillSearchAgentTool(
       query: z.string().min(1).max(SKILL_SEARCH_INPUT_MAX_CHARS),
       limit: z.number().int().min(1).max(SKILL_SEARCH_RESULT_LIMIT).optional(),
     }),
-    permissionRequired: false,
     displayName: SKILL_SEARCH_TOOL_NAME,
     impl: async ({ query, limit }, ctx) => {
       const startedAt = performance.now();

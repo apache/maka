@@ -370,7 +370,6 @@ export function buildAgentGraphSupervisorTools(
     description:
       'Inspect the durable graph. Use mode=latest without a cursor for the current view; use mode=page only with a nextCursor returned by an earlier view.',
     parameters: viewSchema,
-    permissionRequired: false,
     categoryHint: 'read',
     recoveryMode: 'replay_safe',
     impl: async (toolInput) => {
@@ -392,7 +391,6 @@ export function buildAgentGraphSupervisorTools(
     description:
       'Adjust the graph durably. Always set operation. For new work set operation=add_work, target_kind=new_agent, agent_id, and replacement_mode=none; unrelated provider-filled optional fields are ignored.',
     parameters: updateSchema,
-    permissionRequired: false,
     categoryHint: 'subagent',
     recoveryMode: 'idempotent',
     impl: async (toolInput, context) => {

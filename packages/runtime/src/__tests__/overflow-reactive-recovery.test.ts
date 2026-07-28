@@ -409,7 +409,6 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
         name: 'Read',
         description: 'Read description',
         parameters: z.object({ path: z.string() }),
-        permissionRequired: false,
         impl: async (args: { path: string }) => {
           toolExecutions.push(args.path);
           return { body: args.path === 'big.md' ? BIG_RESULT : RAW_SPAN_ONE };
@@ -421,7 +420,6 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
               name: 'Big',
               description: 'Gated capability behind the big group',
               parameters: z.object({ q: z.string() }),
-              permissionRequired: false,
               impl: async () => {
                 toolExecutions.push('BIG_EXEC');
                 return { ok: true };

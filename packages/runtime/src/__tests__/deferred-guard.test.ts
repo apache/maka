@@ -119,7 +119,6 @@ describe('tool-availability execute-boundary guard', () => {
     const implCalls: string[] = [];
     const t = Object.assign(tool('CustomCommand', implCalls), {
       activityKind: 'command' as const,
-      permissionRequired: false,
     });
 
     await run(h, t);
@@ -137,7 +136,7 @@ describe('tool-availability execute-boundary guard', () => {
   test('keeps WriteStdin args exact across canonical ledgers and projects telemetry', async () => {
     const h = makeHarness();
     const implCalls: string[] = [];
-    const t = Object.assign(tool('WriteStdin', implCalls), { permissionRequired: false });
+    const t = tool('WriteStdin', implCalls);
     const args = {
       ref: 'maka://runtime/background-tasks/pty-1',
       input: 'password=ordinary-audited-input\r',
@@ -248,7 +247,6 @@ describe('tool-availability execute-boundary guard', () => {
     });
 
     const t = tool('browser_click', implCalls);
-    t.permissionRequired = false;
     await run(h, t);
 
     assert.deepEqual(implCalls, ['browser_click'], 'an active gated tool executes normally');
@@ -263,7 +261,6 @@ describe('tool-availability execute-boundary guard', () => {
     const implCalls: string[] = [];
     // No setGating call: any tool must execute as before.
     const t = tool('browser_click', implCalls);
-    t.permissionRequired = false;
     await run(h, t);
 
     assert.deepEqual(implCalls, ['browser_click'], 'guard must not fire without installed gating');
@@ -281,7 +278,6 @@ describe('tool-availability execute-boundary guard', () => {
       name: 'Read',
       description: 'Read',
       parameters: z.object({}),
-      permissionRequired: false,
       impl: () => {
         implCalls.push('Read');
         return { ok: true };

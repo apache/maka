@@ -96,7 +96,6 @@ function makeTool(name: string, impl: string[]): MakaTool {
     name,
     description: name,
     parameters: z.object({}).passthrough(),
-    permissionRequired: false,
     impl: (args) => {
       impl.push(`${name}:${JSON.stringify(args)}`);
       return { ok: true };
@@ -110,7 +109,6 @@ function makeFailingTool(name: string, impl: string[], message = 'boom'): MakaTo
     name,
     description: name,
     parameters: z.object({}).passthrough(),
-    permissionRequired: false,
     impl: (args) => {
       impl.push(`${name}:${JSON.stringify(args)}`);
       throw new Error(message);
@@ -130,7 +128,6 @@ function makeFlakyTool(
     name,
     description: name,
     parameters: z.object({}).passthrough(),
-    permissionRequired: false,
     impl: (args) => {
       impl.push(`${name}:${JSON.stringify(args)}`);
       if (box.fail) throw new Error(message);
@@ -147,7 +144,6 @@ function makeTerminalTool(name: string, impl: string[], exitCode: number): MakaT
     name,
     description: name,
     parameters: z.object({}).passthrough(),
-    permissionRequired: false,
     impl: (args) => {
       impl.push(`${name}:${JSON.stringify(args)}`);
       return {
@@ -174,7 +170,6 @@ function makeShellRunTool(name: string, impl: string[], status: ObservedShellRun
     name,
     description: name,
     parameters: z.object({}).passthrough(),
-    permissionRequired: false,
     impl: (args) => {
       impl.push(`${name}:${JSON.stringify(args)}`);
       return {
@@ -217,7 +212,6 @@ function makeComputerFailureTool(impl: string[], failureClass?: 'ambiguous_targe
     name: 'maka_computer',
     description: 'computer',
     parameters: z.object({}).passthrough(),
-    permissionRequired: false,
     categoryHint: 'computer_use',
     permissionArgs: (args) => {
       const record = args as Record<string, unknown>;

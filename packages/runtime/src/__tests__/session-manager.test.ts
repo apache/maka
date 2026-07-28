@@ -15943,7 +15943,6 @@ describe('SessionManager steering and followup queues', () => {
         toolExecutions += 1;
       },
       {
-        permissionRequired: true,
         permissionMode: 'ask',
         interactionAuthority,
       },
@@ -16026,7 +16025,6 @@ describe('SessionManager steering and followup queues', () => {
         toolExecutions += 1;
       },
       {
-        permissionRequired: true,
         permissionMode: 'ask',
         interactionAuthority,
       },
@@ -16102,7 +16100,6 @@ describe('SessionManager steering and followup queues', () => {
         toolExecutions += 1;
       },
       {
-        permissionRequired: true,
         permissionMode: 'ask',
         permissionTimeoutMs: 5,
         interactionAuthority,
@@ -17168,7 +17165,6 @@ async function steeringDeliverySession(
             parameters: options.permissionRequired
               ? z.object({ command: z.string() })
               : z.object({ q: z.string() }),
-            permissionRequired: options.permissionRequired ?? false,
             impl: async () => {
               await duringTool(manager, sessionId);
               return { ok: true };
@@ -19729,7 +19725,6 @@ function testTool(name: string): MakaTool {
     name,
     description: `${name} test tool`,
     parameters: {},
-    permissionRequired: false,
     impl: async () => ({ ok: true }),
   };
 }

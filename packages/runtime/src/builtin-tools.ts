@@ -252,7 +252,6 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       activityKind: 'read',
       description: readDescription,
       parameters: readParameters,
-      permissionRequired: false,
       executionFacts,
       impl: async (input, ctx) => {
         const { cwd, sessionId, abortSignal } = ctx;
@@ -338,7 +337,6 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       activityKind: 'edit',
       description: 'Write content to a file (creates or overwrites). Subject to permission policy.',
       parameters: z.object({ path: z.string(), content: z.string() }),
-      permissionRequired: false,
       executionFacts,
       impl: async ({ path, content }, ctx) => {
         const { cwd } = ctx;
@@ -388,7 +386,6 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         old_string: z.string(),
         new_string: z.string(),
       }),
-      permissionRequired: false,
       executionFacts,
       impl: async ({ path, old_string, new_string }, ctx) => {
         const { cwd } = ctx;
@@ -469,7 +466,6 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
           .optional()
           .describe('Sort object keys lexicographically; default false.'),
       }),
-      permissionRequired: false,
       executionFacts,
       impl: async ({ path, sort_keys }, ctx) => {
         const { cwd } = ctx;
@@ -548,7 +544,6 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         pattern: z.string(),
         cwd: z.string().optional(),
       }),
-      permissionRequired: false,
       executionFacts,
       impl: async ({ pattern, cwd: relCwd }, ctx) => {
         const { cwd } = ctx;
@@ -587,7 +582,6 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         path: z.string().optional(),
         glob: z.string().optional(),
       }),
-      permissionRequired: false,
       executionFacts,
       impl: async ({ pattern, path, glob }, ctx) => {
         const { cwd, abortSignal } = ctx;
@@ -688,7 +682,6 @@ function buildExecutorBashTool(
           : {}),
       })
       .strict(),
-    permissionRequired: false,
     toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     executionFacts: executor.facts,
     ...(sandboxOptions.sandboxManager

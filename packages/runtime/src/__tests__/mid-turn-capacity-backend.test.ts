@@ -261,7 +261,6 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
         name: 'Read',
         description: 'Read description',
         parameters: z.object({ path: z.string() }),
-        permissionRequired: false,
         impl: async (args: { path: string }) => {
           toolExecutions.push(args.path);
           if (args.path === 'one.md')
@@ -278,7 +277,6 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
               // request; the trigger must count it (finding D).
               description: `BIG_SCHEMA ${'D'.repeat(12_000)}`,
               parameters: z.object({ q: z.string() }),
-              permissionRequired: false,
               impl: async () => ({ ok: true }),
             },
           ]

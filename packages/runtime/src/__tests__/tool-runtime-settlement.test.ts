@@ -334,7 +334,6 @@ function tool(impl: MakaTool['impl']): MakaTool {
     name: 'Read',
     description: 'read',
     parameters: {},
-    permissionRequired: false,
     impl,
   };
 }

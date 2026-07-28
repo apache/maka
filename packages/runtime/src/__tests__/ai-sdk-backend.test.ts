@@ -135,7 +135,6 @@ describe('AiSdkBackend model history', () => {
       name: 'Bash',
       description: 'shell',
       parameters: {},
-      permissionRequired: true,
       impl: async () => ({ kind: 'text', text: 'ok' }),
     };
     const execute = runtimeExecute(backend, tool, 'turn-1', { push: () => {} });
@@ -349,7 +348,6 @@ describe('AiSdkBackend model history', () => {
       name: 'Bash',
       description: 'shell',
       parameters: {},
-      permissionRequired: false,
       impl: async () => {
         throw new SandboxCommandError({
           domain: 'command',
@@ -407,7 +405,6 @@ describe('AiSdkBackend model history', () => {
       name: 'Grep',
       description: 'search',
       parameters: {},
-      permissionRequired: false,
       impl: async () => {
         throw new FilesystemWorkerClientError({
           reason: 'sandbox_denied',
@@ -463,7 +460,6 @@ describe('AiSdkBackend model history', () => {
       name: 'Read',
       description: 'read',
       parameters: {},
-      permissionRequired: false,
       impl: async () => {
         throw new FilesystemWorkerClientError({
           reason: 'filesystem_denied',
@@ -2436,7 +2432,6 @@ describe('AiSdkBackend model history', () => {
           name: 'Read',
           description: 'read',
           parameters: z.object({ path: z.string() }),
-          permissionRequired: false,
           impl: async () => ({
             kind: 'image',
             mimeType: 'image/png',
@@ -2581,7 +2576,6 @@ describe('AiSdkBackend model history', () => {
           name: 'Read',
           description: 'read',
           parameters: z.object({ path: z.string() }),
-          permissionRequired: false,
           impl: async ({ path }: { path: string }) => {
             executions.push(`Read:${path}`);
             return { body: 'ok' };
@@ -2591,7 +2585,6 @@ describe('AiSdkBackend model history', () => {
           name: 'Fail',
           description: 'fail',
           parameters: z.object({ path: z.string() }),
-          permissionRequired: false,
           impl: async ({ path }: { path: string }) => {
             executions.push(`Fail:${path}`);
             throw new Error('tool failed');
@@ -5335,7 +5328,6 @@ describe('AiSdkBackend model history', () => {
       name: 'Read',
       description: 'Read description',
       parameters: z.object({ path: z.string() }),
-      permissionRequired: false,
       impl: async () => {
         stopRequested = true;
         await (
@@ -7073,7 +7065,6 @@ describe('AiSdkBackend error surfaces', () => {
       name: 'Bash',
       description: 'shell',
       parameters: {},
-      permissionRequired: false,
       impl: async () => {
         throw Object.assign(new Error('Command failed with exit code 2'), {
           code: 2,
@@ -7759,14 +7750,12 @@ describe('AiSdkBackend usage telemetry', () => {
           name: 'Read',
           description: 'Read description',
           parameters: z.object({ path: z.string() }),
-          permissionRequired: false,
           impl: async () => ({ body: largeBody }),
         },
         {
           name: 'Bash',
           description: 'Bash description',
           parameters: z.object({ cmd: z.string() }),
-          permissionRequired: false,
           impl: async () => ({ body: 'NEWEST_RESULT_STAYS_VISIBLE' }),
         },
       ],
@@ -7881,7 +7870,6 @@ describe('AiSdkBackend usage telemetry', () => {
           name: 'Read',
           description: 'Read description',
           parameters: z.object({ path: z.string() }),
-          permissionRequired: false,
           impl: async () => ({ body: largeBody }),
         },
       ],
@@ -8160,7 +8148,6 @@ describe('AiSdkBackend usage telemetry', () => {
           name: 'Read',
           description: 'Read description',
           parameters: z.object({ path: z.string() }),
-          permissionRequired: false,
           impl: async ({ path }) => ({
             body: path === 'large.log' ? largeBody : 'FRESH_SEMANTIC_TAIL_RESULT',
           }),
@@ -8384,7 +8371,6 @@ describe('AiSdkBackend usage telemetry', () => {
           name: 'Read',
           description: 'Read description',
           parameters: z.object({ path: z.string() }),
-          permissionRequired: false,
           impl: async ({ path }) => ({ body: path === 'one.md' ? rawOne : rawTwo }),
         },
       ],
@@ -8489,7 +8475,6 @@ describe('AiSdkBackend usage telemetry', () => {
           name: 'Read',
           description: 'Read description',
           parameters: z.object({ path: z.string() }),
-          permissionRequired: false,
           impl: async () => ({ body: largeBody }),
         },
       ],
@@ -9941,7 +9926,6 @@ describe('AiSdkBackend RunTrace', () => {
       name: 'Write',
       description: 'write file',
       parameters: {},
-      permissionRequired: true,
       impl: async () => ({ ok: true }),
     };
     const execute = runtimeExecute(backend, tool, 'turn-1', {
@@ -10059,7 +10043,7 @@ describe('AiSdkBackend RunTrace', () => {
 });
 
 describe('AiSdkBackend tool permission category hints', () => {
-  test('permissionRequired=false fast path preserves tool-call/result ordering and telemetry', async () => {
+  test('ordinary tool execution preserves tool-call/result ordering and telemetry', async () => {
     const messages: unknown[] = [];
     const events: SessionEvent[] = [];
     const telemetry: Array<{ status: string; toolCallId?: string; argsSummary?: string }> = [];
@@ -10090,7 +10074,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       name: 'Read',
       description: 'read file',
       parameters: {},
-      permissionRequired: false,
       impl: async () => {
         implCalled = true;
         return { kind: 'text', text: 'hello' };
@@ -10165,7 +10148,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       name: 'Read',
       description: 'read file',
       parameters: {},
-      permissionRequired: false,
       impl: async () => {
         implCalled = true;
         return { kind: 'text', text: 'should not run' };
@@ -10224,7 +10206,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       name: 'Read',
       description: 'read file',
       parameters: {},
-      permissionRequired: false,
       impl: async () => {
         implCalled = true;
         return { kind: 'text', text: 'should not run' };
@@ -10274,7 +10255,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       name: 'Write',
       description: 'write file',
       parameters: {},
-      permissionRequired: true,
       impl: async () => {
         implCalled = true;
         return { ok: true };
@@ -10361,7 +10341,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       name: 'Write',
       description: 'write file',
       parameters: {},
-      permissionRequired: true,
       impl: async () => {
         implCalled = true;
         return { ok: true };
@@ -10467,7 +10446,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       name: 'Write',
       description: 'write file',
       parameters: {},
-      permissionRequired: false,
       impl: async () => {
         const error = new Error('401 Authorization: Bearer sk-live-secret-token-value');
         Object.assign(error, { code: 401 });
@@ -10516,7 +10494,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       name: 'Streamer',
       description: 'streams output',
       parameters: {},
-      permissionRequired: false,
       impl: async (_args, ctx) => {
         ctx.emitOutput('stdout', 'success chunk');
         return { ok: true };
@@ -10526,7 +10503,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       name: 'Streamer',
       description: 'streams then fails',
       parameters: {},
-      permissionRequired: false,
       impl: async (_args, ctx) => {
         ctx.emitOutput('stderr', 'failure chunk');
         throw new Error('tool failed');
@@ -10587,7 +10563,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       name: 'ExploreAgent',
       description: 'read-only worker',
       parameters: {},
-      permissionRequired: true,
       categoryHint: 'subagent',
       impl: async () => ({ ok: true }),
     };
@@ -10661,7 +10636,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       name: 'agent_spawn',
       description: 'spawn child agent',
       parameters: {},
-      permissionRequired: true,
       categoryHint: 'subagent',
       impl: async () =>
         new Promise((resolve) => {
@@ -10730,7 +10704,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       name: 'Bash',
       description: 'run a shell command',
       parameters: {},
-      permissionRequired: false,
       impl: async () =>
         new Promise((resolve) => {
           release = () =>
@@ -10793,7 +10766,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       name: 'ExploreAgent',
       description: 'read-only worker',
       parameters: {},
-      permissionRequired: true,
       categoryHint: 'subagent',
       impl: async () => {
         implStarted += 1;
@@ -10862,7 +10834,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       name: 'ExploreAgent',
       description: 'read-only worker',
       parameters: {},
-      permissionRequired: true,
       categoryHint: 'subagent',
       impl: async (args: unknown) => {
         const input = args as { reason?: string };
@@ -10954,7 +10925,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       name: 'agent_spawn',
       description: 'spawn read-only worker',
       parameters: {},
-      permissionRequired: true,
       categoryHint: 'subagent',
       impl: async (args: unknown) => {
         const input = args as { status: 'completed' | 'failed' | 'cancelled' };
@@ -13500,7 +13470,6 @@ function testTool(name: string, parameters: unknown): MakaTool {
     name,
     description: `${name} description`,
     parameters,
-    permissionRequired: false,
     impl: async () => ({ ok: true }),
   };
 }
@@ -13510,7 +13479,6 @@ function permissionTool(onExecute?: () => void): MakaTool {
     name: 'Bash',
     description: 'shell',
     parameters: z.object({ command: z.string() }),
-    permissionRequired: true,
     impl: async () => {
       onExecute?.();
       return { ok: true };

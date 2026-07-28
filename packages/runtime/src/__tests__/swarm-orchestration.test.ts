@@ -39,13 +39,12 @@ function header(): SessionHeader {
 function tool(
   name: string,
   calls: string[],
-  options: Pick<MakaTool, 'executionSemantics' | 'permissionRequired' | 'categoryHint'> = {},
+  options: Pick<MakaTool, 'executionSemantics' | 'categoryHint'> = {},
 ): MakaTool {
   return {
     name,
     description: name,
     parameters: z.object({}),
-    permissionRequired: options.permissionRequired ?? false,
     ...(options.executionSemantics ? { executionSemantics: options.executionSemantics } : {}),
     ...(options.categoryHint ? { categoryHint: options.categoryHint } : {}),
     impl: () => {
@@ -161,7 +160,6 @@ describe('Swarm orchestration authorization', () => {
       fixture,
       tool('agent_swarm', fixture.calls, {
         executionSemantics: 'exclusive_step',
-        permissionRequired: true,
         categoryHint: 'subagent',
       }),
     );
@@ -182,7 +180,6 @@ describe('Swarm orchestration authorization', () => {
       fixture,
       tool('agent_swarm', fixture.calls, {
         executionSemantics: 'exclusive_step',
-        permissionRequired: true,
         categoryHint: 'subagent',
       }),
     );
@@ -195,10 +192,7 @@ describe('Swarm orchestration authorization', () => {
       orchestration: swarm,
       permissionRules: [{ effect: 'deny', kind: 'tool', toolName: 'Write' }],
     });
-    await invoke(
-      fixture,
-      tool('Write', fixture.calls, { permissionRequired: true, categoryHint: 'file_write' }),
-    );
+    await invoke(fixture, tool('Write', fixture.calls, { categoryHint: 'file_write' }));
     assert.deepEqual(fixture.calls, []);
   });
 });

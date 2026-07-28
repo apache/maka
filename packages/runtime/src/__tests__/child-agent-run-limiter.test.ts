@@ -210,7 +210,6 @@ describe('ToolRuntime child-agent run permits', () => {
       name: 'capture_child_spawn',
       description: 'test-only spawn capability capture',
       parameters: {},
-      permissionRequired: false,
       impl: async (_args, ctx) => {
         capturedSpawn = ctx.spawnChildAgent;
         return { kind: 'json', value: { captured: true } };
@@ -241,7 +240,6 @@ function childBatchProbeTool(
     name,
     description: 'test-only child batch probe',
     parameters: {},
-    permissionRequired: false,
     categoryHint: 'subagent',
     impl: async (_args, ctx) => {
       if (!ctx.spawnChildAgent) throw new Error('missing spawn capability');
@@ -269,7 +267,6 @@ function sequentialFailureProbeTool(count: number): MakaTool {
     name: 'sequential_child_failure_probe',
     description: 'test-only sequential child failure probe',
     parameters: {},
-    permissionRequired: false,
     categoryHint: 'subagent',
     impl: async (_args, ctx) => {
       if (!ctx.spawnChildAgent) throw new Error('missing spawn capability');

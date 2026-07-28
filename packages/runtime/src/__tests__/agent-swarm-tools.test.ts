@@ -44,7 +44,6 @@ describe('AgentSwarm adapter', () => {
     };
 
     assert.equal(tool.name, AGENT_SWARM_TOOL_NAME);
-    assert.equal(tool.permissionRequired, true);
     assert.equal(tool.categoryHint, 'subagent');
     assert.equal(AGENT_SWARM_DEFAULT_ITEM_TIMEOUT_MS, 2 * 60 * 60 * 1_000);
     assert.equal(([...AGENT_TOOL_NAMES] as string[]).includes(AGENT_SWARM_TOOL_NAME), true);
@@ -1041,7 +1040,6 @@ describe('AgentSwarm adapter', () => {
       runtime,
       {
         ...buildAgentSwarmTool({ itemTimeoutMs: 20 }),
-        permissionRequired: false,
       },
       { items: [swarmItem(0), swarmItem(1)], max_concurrency: 1 },
       parent,
@@ -1100,7 +1098,6 @@ describe('AgentSwarm adapter', () => {
       runtime,
       {
         ...buildAgentSwarmTool(),
-        permissionRequired: false,
       },
       {
         items: Array.from({ length: 5 }, (_, index) => swarmItem(index)),
@@ -1186,7 +1183,6 @@ describe('AgentSwarm adapter', () => {
     );
     const swarmTool = {
       ...buildAgentSwarmTool(),
-      permissionRequired: false,
     };
     await executeTool(
       runtime,
@@ -1288,7 +1284,6 @@ describe('AgentSwarm adapter', () => {
         name,
         description: name,
         parameters: {},
-        permissionRequired: false,
         categoryHint: 'read' as const,
         impl: async () => ({}),
       })),
@@ -1327,7 +1322,6 @@ describe('AgentSwarm adapter', () => {
       runtime,
       {
         ...buildAgentSwarmTool(),
-        permissionRequired: false,
       },
       { items: [swarmItem(1)] },
       new AbortController(),
@@ -1479,7 +1473,6 @@ function singleChildProbeTool(): MakaTool {
     name: 'single_child_probe',
     description: 'test-only single child probe',
     parameters: {},
-    permissionRequired: false,
     categoryHint: 'subagent',
     impl: async (_input, ctx) => {
       if (!ctx.spawnChildSession) throw new Error('missing spawn capability');
