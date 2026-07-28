@@ -9,6 +9,7 @@ import {
   isSessionInlineRun,
   isTerminalRuntimeEvent,
 } from '@maka/core';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type {
   CreateSessionInput,
   PermissionMode,
@@ -31,11 +32,7 @@ import type {
   StoredMessage,
   TurnRecord,
 } from '@maka/core';
-import type {
-  BackendSendInput,
-  BackendStopMode,
-  PermissionDecision,
-} from '@maka/core/backend-types';
+import type { BackendSendInput, BackendStopMode } from '@maka/core/backend-types';
 import { expect } from '../test-helpers.js';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import type { LanguageModelV4StreamPart } from '@ai-sdk/provider';
@@ -87,7 +84,6 @@ import {
   type CanonicalPermissionOutcomeRecord,
   type RuntimeInteractionAuthority,
   type RuntimeInteractionRunIdentity,
-  type RuntimePermissionContinuation,
   type RuntimeUserQuestionContinuation,
 } from '../interaction-authority.js';
 import {
@@ -15860,12 +15856,6 @@ describe('SessionManager steering and followup queues', () => {
           identities.push(identity);
           return {
             ...identity,
-            acceptPermissionRequest: async () => ({ state: 'pending' }),
-            commitPermissionAnswer: async ({ answer }) => ({
-              kind: 'permission_answer',
-              answer,
-            }),
-            commitPermissionTimeout: async () => ({ kind: 'closure', reason: 'timed_out' }),
             acceptUserQuestionRequest: async () => {},
             close: async (reason) => {
               lifecycle.push(`close:${reason}`);
@@ -15907,12 +15897,6 @@ describe('SessionManager steering and followup queues', () => {
       interactionAuthority: {
         bindRun: (identity) => ({
           ...identity,
-          acceptPermissionRequest: async () => ({ state: 'pending' }),
-          commitPermissionAnswer: async ({ answer }) => ({
-            kind: 'permission_answer',
-            answer,
-          }),
-          commitPermissionTimeout: async () => ({ kind: 'closure', reason: 'timed_out' }),
           acceptUserQuestionRequest: async ({ continuation }) => {
             question = continuation;
           },
@@ -15965,12 +15949,6 @@ describe('SessionManager steering and followup queues', () => {
       interactionAuthority: {
         bindRun: (identity) => ({
           ...identity,
-          acceptPermissionRequest: async () => ({ state: 'pending' }),
-          commitPermissionAnswer: async ({ answer }) => ({
-            kind: 'permission_answer',
-            answer,
-          }),
-          commitPermissionTimeout: async () => ({ kind: 'closure', reason: 'timed_out' }),
           acceptUserQuestionRequest: async () => {},
           close: async () => {},
           release: () => {
@@ -16995,7 +16973,7 @@ class GatedSteeringBackend implements AgentBackend {
     for (const turnId of this.gates.keys()) this.release(turnId);
   }
 
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
 
   async dispose(): Promise<void> {}
 }
@@ -17182,7 +17160,7 @@ class TestBackend implements AgentBackend {
     this.stopCalls += 1;
     this.stopModes.push(mode);
   }
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
 
   async dispose(): Promise<void> {
     if (this.ctx.store instanceof MemorySessionStore) {
@@ -17194,7 +17172,7 @@ class TestBackend implements AgentBackend {
 class PermissionBroadcastBackend extends TestBackend {
   permissionResponses = 0;
 
-  override async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {
+  override async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {
     this.permissionResponses += 1;
   }
 }
@@ -17466,7 +17444,7 @@ class HighVolumeDeltaBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -17506,7 +17484,7 @@ class TextCompleteBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -17543,7 +17521,7 @@ class LateErrorBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {
     if (this.ctx.store instanceof MemorySessionStore) {
       this.ctx.store.disposeCount += 1;
@@ -17602,7 +17580,7 @@ class StopControlledAbortBackend implements AgentBackend {
     this.releaseStop();
   }
 
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -17644,7 +17622,7 @@ class TurnScriptBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -17673,7 +17651,7 @@ class EventBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -17705,7 +17683,7 @@ class ThrowAfterTerminalBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -17730,7 +17708,7 @@ class ThrowBeforeTerminalBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -17761,7 +17739,7 @@ class PartialAbortBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -17815,7 +17793,7 @@ class TraceBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -17877,7 +17855,7 @@ class ProviderRequestTraceBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -17918,7 +17896,7 @@ class ProviderCaptureGateBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -18001,7 +17979,7 @@ class ProviderCaptureAfterAttemptFailureBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -18027,7 +18005,7 @@ class ActiveCompactBlockBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -18072,7 +18050,7 @@ class HistoryCompactCheckpointBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -18124,7 +18102,7 @@ class HistoryCompactCheckpointCacheProbeBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -18181,7 +18159,7 @@ class HistoryCompactCheckpointMonotonicProbeBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -18236,7 +18214,7 @@ class SameCoverageCheckpointReplacementProbeBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -18294,7 +18272,7 @@ class SerializedCheckpointProbeBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -18357,7 +18335,7 @@ class RecoveringCheckpointWriteProbeBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -18414,7 +18392,7 @@ class CheckpointRecorderContractProbeBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -18477,7 +18455,7 @@ class InitialCheckpointLoadRaceProbeBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -19022,7 +19000,7 @@ class ForgingQueueBackend implements AgentBackend {
 
   async stop(): Promise<void> {}
 
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
 
   async dispose(): Promise<void> {}
 }
@@ -19076,7 +19054,7 @@ class ProviderRetryProgressBackend implements AgentBackend {
 
   async stop(): Promise<void> {}
 
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
 
   async dispose(): Promise<void> {}
 }
@@ -19847,12 +19825,6 @@ function testInteractionAuthority(): RuntimeInteractionAuthority {
   return {
     bindRun: (identity) => ({
       ...identity,
-      acceptPermissionRequest: async () => ({ state: 'pending' }),
-      commitPermissionAnswer: async ({ answer }) => ({
-        kind: 'permission_answer',
-        answer,
-      }),
-      commitPermissionTimeout: async () => ({ kind: 'closure', reason: 'timed_out' }),
       acceptUserQuestionRequest: async () => {},
       close: async () => {},
       release: () => {},

@@ -61,12 +61,6 @@ describe('Runtime Interaction authority seam', () => {
           bindRun: () => ({
             ...RUN,
             runId: 'wrong-run',
-            acceptPermissionRequest: async () => ({ state: 'pending' }),
-            commitPermissionAnswer: async ({ answer }) => ({
-              kind: 'permission_answer',
-              answer,
-            }),
-            commitPermissionTimeout: async () => ({ kind: 'closure', reason: 'timed_out' }),
             acceptUserQuestionRequest: async () => {},
             close: async (reason) => {
               log.push(`close:${reason}`);
@@ -392,15 +386,6 @@ function authority(
   return {
     bindRun: (identity) => ({
       ...identity,
-      acceptPermissionRequest: async () => ({ state: 'pending' }),
-      commitPermissionAnswer: async ({ answer }) => ({
-        kind: 'permission_answer',
-        answer,
-      }),
-      commitPermissionTimeout: async () => ({
-        kind: 'closure',
-        reason: 'timed_out',
-      }),
       acceptUserQuestionRequest: async () => {},
       close: async () => {},
       release: () => {},

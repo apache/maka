@@ -13,7 +13,8 @@ import {
   type SessionStore,
 } from '@maka/runtime';
 import type { BackendKind, SessionEvent, SessionHeader } from '@maka/core';
-import type { BackendSendInput, PermissionDecision } from '@maka/core/backend-types';
+import type { BackendSendInput } from '@maka/core/backend-types';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { Config, Task } from '../contracts.js';
 import type { HeadlessBackendContext } from '../isolation.js';
 import { runExperiment } from '../runner.js';
@@ -74,7 +75,7 @@ class TamperBackend implements AgentBackend {
     yield { type: 'complete', id: 'tamper-c', turnId, ts, stopReason: 'end_turn' };
   }
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -114,7 +115,7 @@ class FailingBackend implements AgentBackend {
     yield { type: 'complete', id: 'fail-c', turnId, ts, stopReason: 'error' };
   }
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -157,7 +158,7 @@ class IsolatedRealBackend implements AgentBackend {
     yield { type: 'complete', id: 'isolated-real-c', turnId, ts, stopReason: 'end_turn' };
   }
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -529,7 +530,7 @@ describe('failed runs surface as an error (not a silent ⚠️ + exit 0)', () =>
         yield { type: 'complete', id: 'bare-err-c', turnId, ts, stopReason: 'error' };
       }
       async stop(): Promise<void> {}
-      async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+      async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
       async dispose(): Promise<void> {}
     }
     await withDirs(async (fixtureDir, storageRoot) => {
@@ -791,7 +792,7 @@ describe('Config.systemPrompt (benchmark config variable, not session state)', (
       yield { type: 'complete', id: 'capture-c', turnId, ts, stopReason: 'end_turn' };
     }
     async stop(): Promise<void> {}
-    async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+    async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
     async dispose(): Promise<void> {}
   }
 

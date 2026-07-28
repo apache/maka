@@ -1,16 +1,9 @@
 import {
-  decodeInteractionAnswer,
-  decodeInteractionCanonicalOutcome,
   interactionCanonicalOutcomesEquivalent,
   type InteractionAnswer,
   type InteractionCanonicalOutcome,
 } from '@maka/core/interaction';
-import {
-  RuntimeInteractionInvariantError,
-  type RuntimePermissionAnswer,
-  type RuntimePermissionOutcome,
-  type RuntimeUserQuestionOutcome,
-} from '@maka/runtime';
+import { RuntimeInteractionInvariantError, type RuntimeUserQuestionOutcome } from '@maka/runtime';
 import type {
   InteractionRecord,
   StoredInteractionOutcome,
@@ -80,76 +73,11 @@ export function compareStoredInteractionRequests(
   return left.createdAt - right.createdAt || left.requestId.localeCompare(right.requestId);
 }
 
-export function permissionInteractionAnswer(answer: RuntimePermissionAnswer): InteractionAnswer {
-  return decodeInteractionAnswer({
-    kind: 'permission',
-    decision: answer.decision,
-    rememberForTurn: answer.rememberForTurn ?? false,
-  });
-}
-
-export function permissionCanonicalOutcome(
-  answer: RuntimePermissionAnswer,
+export function questionCanonicalOutcome(
+  answer: Extract<InteractionAnswer, { kind: 'question' }>,
   committedAt: number,
-): Exclude<InteractionCanonicalOutcome, { kind: 'closure' }> {
-  const outcome = decodeInteractionCanonicalOutcome({
-    kind: 'permission_answer',
-    decision: answer.decision,
-    rememberForTurn: answer.rememberForTurn ?? false,
-    reviewer: answer.reviewer ?? 'user',
-    ...(answer.rationale === undefined ? {} : { rationale: answer.rationale }),
-    ...(answer.riskLevel === undefined ? {} : { riskLevel: answer.riskLevel }),
-    committedAt,
-  });
-  if (outcome.kind !== 'permission_answer') {
-    throw new RuntimeInteractionInvariantError('Runtime permission answer decoded incorrectly');
-  }
-  return outcome;
-}
-
-export function wireCanonicalOutcome(
-  answer: InteractionAnswer,
-  committedAt: number,
-): Exclude<InteractionCanonicalOutcome, { kind: 'closure' }> {
-  if (answer.kind === 'question') {
-    return { kind: 'question_answer', answers: [...answer.answers], committedAt };
-  }
-  return answer.decision === 'deny'
-    ? {
-        kind: 'permission_answer',
-        decision: 'deny',
-        rememberForTurn: false,
-        reviewer: 'user',
-        committedAt,
-      }
-    : {
-        kind: 'permission_answer',
-        decision: 'allow',
-        rememberForTurn: answer.rememberForTurn,
-        reviewer: 'user',
-        committedAt,
-      };
-}
-
-export function runtimePermissionOutcome(
-  outcome: InteractionCanonicalOutcome,
-): RuntimePermissionOutcome {
-  if (outcome.kind === 'closure') return { kind: 'closure', reason: outcome.reason };
-  if (outcome.kind !== 'permission_answer') {
-    throw new RuntimeInteractionInvariantError(
-      'Permission Interaction resolved with a question answer',
-    );
-  }
-  return {
-    kind: 'permission_answer',
-    answer: {
-      decision: outcome.decision,
-      rememberForTurn: outcome.rememberForTurn,
-      reviewer: outcome.reviewer,
-      ...(outcome.rationale === undefined ? {} : { rationale: outcome.rationale }),
-      ...(outcome.riskLevel === undefined ? {} : { riskLevel: outcome.riskLevel }),
-    },
-  };
+): Extract<InteractionCanonicalOutcome, { kind: 'question_answer' }> {
+  return { kind: 'question_answer', answers: [...answer.answers], committedAt };
 }
 
 export function runtimeQuestionOutcome(
@@ -188,7 +116,10 @@ export function answerOutcome(
   if (snapshot.status !== 'answered') {
     throw new RuntimeInteractionInvariantError('Committed Interaction did not project as resolved');
   }
-  const candidateOutcome = wireCanonicalOutcome(candidate, snapshot.outcome.committedAt);
+  const candidateOutcome = canonicalOutcomeForHistoricalAnswer(
+    candidate,
+    snapshot.outcome.committedAt,
+  );
   return interactionCanonicalOutcomesEquivalent(snapshot.outcome, candidateOutcome)
     ? { ok: true, result: snapshot }
     : {
@@ -197,5 +128,29 @@ export function answerOutcome(
           code: 'already_resolved',
           message: 'Interaction has a different canonical answer',
         },
+      };
+}
+
+function canonicalOutcomeForHistoricalAnswer(
+  answer: InteractionAnswer,
+  committedAt: number,
+): Exclude<InteractionCanonicalOutcome, { kind: 'closure' }> {
+  if (answer.kind === 'question') {
+    return questionCanonicalOutcome(answer, committedAt);
+  }
+  return answer.decision === 'deny'
+    ? {
+        kind: 'permission_answer',
+        decision: 'deny',
+        rememberForTurn: false,
+        reviewer: 'user',
+        committedAt,
+      }
+    : {
+        kind: 'permission_answer',
+        decision: 'allow',
+        rememberForTurn: answer.rememberForTurn,
+        reviewer: 'user',
+        committedAt,
       };
 }

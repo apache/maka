@@ -1,6 +1,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { deriveTurnRecords, DurableStoreWriteError, isTerminalRuntimeEvent } from '@maka/core';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type {
   AgentRunEvent,
   AgentRunHeader,
@@ -14,7 +15,7 @@ import type {
   StoredMessage,
   TurnRecord,
 } from '@maka/core';
-import type { BackendSendInput, PermissionDecision } from '@maka/core/backend-types';
+import type { BackendSendInput } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
 import { expect } from '../test-helpers.js';
 import { AgentRun } from '../agent-run.js';
@@ -1392,7 +1393,7 @@ class ScriptBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -1434,7 +1435,7 @@ class StopDuringSendBackend implements AgentBackend {
     this.stopReturned.resolve();
   }
 
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 

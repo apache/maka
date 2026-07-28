@@ -12661,15 +12661,6 @@ async function hostedInteractionBinding(overrides: Partial<RuntimeInteractionRun
     {
       bindRun: (identity) => ({
         ...identity,
-        acceptPermissionRequest: async () => ({ state: 'pending' }),
-        commitPermissionAnswer: async ({ continuation, answer }) => {
-          await continuation.applyAnswer(answer);
-          return { kind: 'permission_answer', answer };
-        },
-        commitPermissionTimeout: async ({ continuation }) => {
-          await continuation.applyClosure('timed_out');
-          return { kind: 'closure', reason: 'timed_out' };
-        },
         acceptUserQuestionRequest: async () => {},
         close: async () => {},
         release: () => {},

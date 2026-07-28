@@ -19,7 +19,7 @@ import {
   type RuntimeInteractionRunClosureReason,
   type RuntimeMessageAuthority,
 } from '@maka/runtime';
-import type { AgentBackend, BackendSendInput, PermissionDecision } from '@maka/core/backend-types';
+import type { AgentBackend, BackendSendInput } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
 import type { MakaTool } from '@maka/runtime';
 import {
@@ -157,7 +157,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     const linkedBackends = new Map<string, LinkedChildAuthorityBackend>();
     backends.register('fake', (context) => {
       if (!context.header.subagentRuntime) {
-        return new PermissionWaitingBackend(context.sessionId);
+        return new QuestionWaitingBackend(context.sessionId);
       }
       const backend = new LinkedChildAuthorityBackend(context.sessionId);
       linkedBackends.set(context.sessionId, backend);
@@ -219,15 +219,15 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
         frame.kind === 'subscription.session_projection' &&
         frame.snapshot.session.status === 'waiting_for_user' &&
         frame.snapshot.rootTurn?.status === 'waiting_for_user',
-      'pending permission projection',
+      'pending question projection',
     );
     assert.equal(waitingFrame.kind, 'subscription.session_projection');
     if (waitingFrame.kind !== 'subscription.session_projection') return;
-    const pendingPermission = waitingFrame.snapshot.interactions.pending.find(
-      (interaction) => interaction.request.kind === 'permission',
+    const pendingQuestion = waitingFrame.snapshot.interactions.pending.find(
+      (interaction) => interaction.request.kind === 'question',
     );
-    assert.ok(pendingPermission);
-    if (!pendingPermission) return;
+    assert.ok(pendingQuestion);
+    if (!pendingQuestion) return;
 
     let initialReady:
       | {
@@ -579,8 +579,8 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
 
     const answered = await interactions.handlers['interaction.answer'](
       {
-        interactionId: pendingPermission.interactionId,
-        answer: { kind: 'permission', decision: 'allow', rememberForTurn: false },
+        interactionId: pendingQuestion.interactionId,
+        answer: { kind: 'question', answers: ['Yes'] },
       },
       operationContext(hostEpoch, acquireResidency),
     );
@@ -594,7 +594,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
         frame.snapshot.rootTurn?.runId === parentStarted.result.runId &&
         frame.snapshot.rootTurn.status === 'running' &&
         frame.snapshot.interactions.pending.length === 0,
-      'resumed permission projection',
+      'resumed question projection',
     );
 
     await coordinator.stopRoot({
@@ -1542,103 +1542,6 @@ test('post-start message owner cleanup failure drains after its failed terminal 
   }
 });
 
-test('hosted permission timeout closure ack refreshes continuity before the next backend step', {
-  timeout: 20_000,
-}, async () => {
-  let backend: PermissionTimeoutClosureBackend | undefined;
-  const fixture = await createFailureFixture({
-    withInteractions: true,
-    registerBackend: (backends) => {
-      backends.register('fake', (context) => {
-        backend = new PermissionTimeoutClosureBackend(context.sessionId);
-        return backend;
-      });
-    },
-  });
-  const sink = new RecordingContinuitySink();
-  const connectionId = 'connection-permission-timeout-closure';
-  const connection = fixture.continuity.attachConnection(connectionId, sink);
-
-  try {
-    const opened = await fixture.continuity.handlers['subscription.open'](
-      { sessionId: fixture.sessionId },
-      operationContext(fixture.hostEpoch, fixture.acquireResidency, connectionId),
-    );
-    assert.equal(opened.ok, true);
-    if (!opened.ok) return;
-    connection.activate(opened.result.subscriptionId);
-
-    const turnId = 'turn-permission-timeout-closure';
-    const started = await fixture.coordinator.handlers['turn.start'](
-      {
-        sessionId: fixture.sessionId,
-        turnId,
-        content: { text: 'time out a hosted permission' },
-      },
-      operationContext(fixture.hostEpoch, fixture.acquireResidency),
-    );
-    assert.equal(started.ok, true);
-    if (!started.ok) return;
-    assert.ok(backend);
-
-    await backend.permissionRequestConsumed.promise;
-    const waiting = await waitForContinuityFrame(
-      sink,
-      (frame) =>
-        frame.kind === 'subscription.session_projection' &&
-        frame.snapshot.rootTurn?.runId === started.result.runId &&
-        frame.snapshot.session.status === 'waiting_for_user' &&
-        frame.snapshot.rootTurn.status === 'waiting_for_user' &&
-        frame.snapshot.interactions.pending.some(
-          (interaction) => interaction.request.kind === 'permission',
-        ),
-      'hosted permission waiting projection',
-    );
-    assert.equal(waiting.kind, 'subscription.session_projection');
-    if (waiting.kind !== 'subscription.session_projection') return;
-
-    backend.commitTimeout();
-    await backend.closureAckConsumed.promise;
-    assert.equal(backend.providerStepCount, 0);
-
-    const resumed = await waitForContinuityFrame(
-      sink,
-      (frame) =>
-        frame.kind === 'subscription.session_projection' &&
-        frame.snapshot.projectionRevision > waiting.snapshot.projectionRevision &&
-        frame.snapshot.session.status === 'running' &&
-        frame.snapshot.rootTurn?.runId === started.result.runId &&
-        frame.snapshot.rootTurn.status === 'running' &&
-        frame.snapshot.interactions.pending.length === 0,
-      'permission timeout closure projection',
-    );
-    assert.equal(resumed.kind, 'subscription.session_projection');
-    assert.equal(backend.providerStepCount, 0);
-    const runtimeEvents = await fixture.stores.runtimeEventStore.readImmutableRuntimeEvents(
-      fixture.sessionId,
-      started.result.runId,
-    );
-    assert.equal(
-      runtimeEvents.some(
-        (event) =>
-          event.actions?.permissionClosureAccepted?.reason === 'timed_out' &&
-          event.actions.permissionClosureAccepted.requestId === backend?.requestId,
-      ),
-      true,
-    );
-
-    backend.releaseProviderStep();
-    await backend.providerStepStarted.promise;
-  } finally {
-    backend?.releaseProviderStep();
-    connection.close();
-    await fixture.coordinator.close();
-    await fixture.messages.close();
-    await fixture.interactions?.close();
-    await fixture.dispose();
-  }
-});
-
 test('public turn.stop wins the Session lane before a wire answer for the same Run', {
   timeout: 20_000,
 }, async () => {
@@ -2516,11 +2419,11 @@ class TakeoverClosureBackend implements AgentBackend {
   }
 }
 
-class PermissionWaitingBackend implements AgentBackend {
+class QuestionWaitingBackend implements AgentBackend {
   readonly kind = 'fake' as const;
   private stopped = false;
-  private resolveDecision: ((decision: PermissionDecision | null) => void) | undefined;
-  private releaseAfterDecision: (() => void) | undefined;
+  private resolveAnswer: ((answers: readonly (string | null)[] | null) => void) | undefined;
+  private releaseAfterAnswer: (() => void) | undefined;
 
   constructor(readonly sessionId: string) {}
 
@@ -2529,46 +2432,46 @@ class PermissionWaitingBackend implements AgentBackend {
     const requestId = randomUUID();
     const toolUseId = randomUUID();
     const request = {
-      type: 'permission_request',
+      type: 'user_question_request',
       id: randomUUID(),
       turnId: input.turnId,
       ts: Date.now(),
-      kind: 'tool_permission',
       requestId,
       toolUseId,
-      toolName: 'Bash',
-      category: 'shell_unsafe',
-      reason: 'shell_dangerous',
-      args: { command: 'echo hello', cwd: '/repo' },
-      rememberForTurnAllowed: true,
-    } satisfies Extract<SessionEvent, { type: 'permission_request' }>;
-    const decisionPromise = new Promise<PermissionDecision | null>((resolve) => {
-      this.resolveDecision = resolve;
+      questions: [
+        {
+          question: 'Continue?',
+          options: [{ label: 'Yes' }, { label: 'No' }],
+        },
+      ],
+    } satisfies Extract<SessionEvent, { type: 'user_question_request' }>;
+    const answerPromise = new Promise<readonly (string | null)[] | null>((resolve) => {
+      this.resolveAnswer = resolve;
       if (this.stopped) resolve(null);
     });
     if (!input.hostedInteraction) {
-      throw new Error('PermissionWaitingBackend requires hosted Interaction authority');
+      throw new Error('QuestionWaitingBackend requires hosted interaction authority');
     }
-    const admission = await input.hostedInteraction.admitPermissionRequest({
+    await input.hostedInteraction.admitUserQuestionRequest({
       request,
       settlement: {
         applyAnswer: async (answer) => {
-          this.resolveDecision?.({ requestId, ...answer });
+          this.resolveAnswer?.(answer.answers);
         },
         applyClosure: async () => {
-          this.resolveDecision?.(null);
+          this.resolveAnswer?.(null);
         },
       },
     });
-    if (admission.state === 'pending') yield request;
-    const decision = await decisionPromise;
-    this.resolveDecision = undefined;
-    if (!decision || this.stopped) {
+    yield request;
+    const answers = await answerPromise;
+    this.resolveAnswer = undefined;
+    if (!answers || this.stopped) {
       yield* this.abort(input.turnId);
       return;
     }
     yield {
-      type: 'permission_answer_ack',
+      type: 'user_question_answer_ack',
       id: randomUUID(),
       turnId: input.turnId,
       ts: Date.now(),
@@ -2576,7 +2479,7 @@ class PermissionWaitingBackend implements AgentBackend {
       toolUseId,
     };
     await new Promise<void>((resolve) => {
-      this.releaseAfterDecision = resolve;
+      this.releaseAfterAnswer = resolve;
       if (this.stopped) resolve();
     });
     yield* this.abort(input.turnId);
@@ -2584,8 +2487,8 @@ class PermissionWaitingBackend implements AgentBackend {
 
   async stop(): Promise<void> {
     this.stopped = true;
-    this.resolveDecision?.(null);
-    this.releaseAfterDecision?.();
+    this.resolveAnswer?.(null);
+    this.releaseAfterAnswer?.();
   }
 
   async respondToSandboxBoundary(): Promise<void> {}
@@ -2609,110 +2512,6 @@ class PermissionWaitingBackend implements AgentBackend {
       ts: Date.now(),
       stopReason: 'user_stop',
     };
-  }
-}
-
-class PermissionTimeoutClosureBackend implements AgentBackend {
-  readonly kind = 'fake' as const;
-  readonly permissionRequestConsumed = deferred<void>();
-  readonly closureAckConsumed = deferred<void>();
-  readonly providerStepStarted = deferred<void>();
-  providerStepCount = 0;
-  requestId: string | undefined;
-  private readonly timeoutRequested = deferred<void>();
-  private readonly providerStepReleased = deferred<void>();
-
-  constructor(readonly sessionId: string) {}
-
-  commitTimeout(): void {
-    this.timeoutRequested.resolve();
-  }
-
-  releaseProviderStep(): void {
-    this.providerStepReleased.resolve();
-  }
-
-  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
-    if (!input.hostedInteraction) {
-      throw new Error('PermissionTimeoutClosureBackend requires hosted Interaction authority');
-    }
-    const requestId = randomUUID();
-    this.requestId = requestId;
-    const toolUseId = randomUUID();
-    const request = {
-      type: 'permission_request',
-      id: randomUUID(),
-      turnId: input.turnId,
-      ts: Date.now(),
-      kind: 'tool_permission',
-      requestId,
-      toolUseId,
-      toolName: 'Bash',
-      category: 'shell_unsafe',
-      reason: 'shell_dangerous',
-      args: { command: 'echo timeout', cwd: '/repo' },
-      rememberForTurnAllowed: true,
-    } satisfies Extract<SessionEvent, { type: 'permission_request' }>;
-    const admission = await input.hostedInteraction.admitPermissionRequest({
-      request,
-      settlement: {
-        applyAnswer: async () => {
-          throw new Error('Permission timeout backend unexpectedly received an answer');
-        },
-        applyClosure: async () => {},
-      },
-    });
-    if (admission.state !== 'pending') {
-      throw new Error('Permission timeout backend expected a pending admission');
-    }
-
-    yield request;
-    this.permissionRequestConsumed.resolve();
-    await this.timeoutRequested.promise;
-    const outcome = await input.hostedInteraction.commitPermissionTimeout({ requestId });
-    if (outcome.kind !== 'closure' || outcome.reason !== 'timed_out') {
-      throw new Error('Permission timeout backend received an unexpected canonical outcome');
-    }
-    yield {
-      type: 'permission_closure_ack',
-      id: randomUUID(),
-      turnId: input.turnId,
-      ts: Date.now(),
-      requestId,
-      toolUseId,
-      reason: 'timed_out',
-    };
-    this.closureAckConsumed.resolve();
-
-    await this.providerStepReleased.promise;
-    this.providerStepCount += 1;
-    this.providerStepStarted.resolve();
-    yield {
-      type: 'text_delta',
-      id: randomUUID(),
-      turnId: input.turnId,
-      ts: Date.now(),
-      messageId: randomUUID(),
-      text: 'provider resumed after permission timeout',
-    };
-    yield {
-      type: 'complete',
-      id: randomUUID(),
-      turnId: input.turnId,
-      ts: Date.now(),
-      stopReason: 'end_turn',
-    };
-  }
-
-  async stop(): Promise<void> {
-    this.timeoutRequested.resolve();
-    this.providerStepReleased.resolve();
-  }
-
-  async respondToSandboxBoundary(): Promise<void> {}
-
-  async dispose(): Promise<void> {
-    await this.stop();
   }
 }
 

@@ -12,11 +12,8 @@ import type {
   SessionEvent,
   SessionHeader,
 } from '@maka/core';
-import type {
-  BackendSendInput,
-  BackendStopMode,
-  PermissionDecision,
-} from '@maka/core/backend-types';
+import type { BackendSendInput, BackendStopMode } from '@maka/core/backend-types';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import {
   BackendRegistry,
   PiAgentBackend,
@@ -143,7 +140,7 @@ class CellReportingBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -187,7 +184,7 @@ class CellChildAdmissionProbeBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -216,7 +213,7 @@ class RunStartOrderingProbeBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -241,7 +238,7 @@ class ThrowingBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -294,7 +291,7 @@ class DeadlineSettlingBackend implements AgentBackend {
     this.releaseStop();
   }
 
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -355,7 +352,7 @@ class NonCooperativeDeadlineBackend implements AgentBackend {
     this.releaseStop();
   }
 
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -421,7 +418,7 @@ class ActiveIsolatedToolDeadlineBackend implements AgentBackend {
     if (mode === 'immediate') this.controller.abort();
   }
 
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -459,7 +456,7 @@ class TerminalClaimBeforeDeadlineBackend implements AgentBackend {
     this.stopCalls += 1;
   }
 
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -537,7 +534,7 @@ class StepCapThenCompleteBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -1303,7 +1300,7 @@ describe('runHarborCell', () => {
         }
 
         async stop(): Promise<void> {}
-        async respondToSandboxBoundary(_decision: PermissionDecision): Promise<void> {}
+        async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
         async dispose(): Promise<void> {}
       }
 

@@ -1591,10 +1591,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     binding: RuntimeInteractionRunBinding | undefined,
     event: SessionEvent,
   ): void {
-    if (
-      binding &&
-      (event.type === 'permission_request' || event.type === 'user_question_request')
-    ) {
+    if (binding && event.type === 'user_question_request') {
       binding.assertPendingAdmission(event);
     }
   }
@@ -3188,13 +3185,7 @@ async function interactionResumeAllowed(
   interactionRun: RuntimeInteractionRunBinding | undefined,
   event: SessionEvent,
 ): Promise<boolean> {
-  if (
-    !interactionRun ||
-    (event.type !== 'permission_answer_ack' &&
-      event.type !== 'permission_closure_ack' &&
-      event.type !== 'permission_decision_ack' &&
-      event.type !== 'user_question_answer_ack')
-  ) {
+  if (!interactionRun || event.type !== 'user_question_answer_ack') {
     return true;
   }
   return await interactionRun.canResumeAfterSettlementAck(event);

@@ -29,7 +29,6 @@ import type {
   HostedInteractionBridge,
   HostedUserQuestionAnswer,
   HostedUserQuestionSettlement,
-  PermissionDecision,
 } from '@maka/core/backend-types';
 import type { AgentSpec } from '@maka/core/runtime-inputs';
 import type { PermissionMode, ToolCategory, ToolExecutionFacts } from '@maka/core/permission';

@@ -9,7 +9,6 @@
  */
 
 import type {
-  AnyPermissionRequestEvent,
   AttachmentRef,
   MessageContent,
   QuoteRef,
@@ -20,7 +19,6 @@ import type { InteractionClosureReason } from './interaction.js';
 import type { RuntimeEvent } from './runtime-event.js';
 import type { SandboxBoundaryResponse } from './sandbox-boundary.js';
 import type { StoredMessage, BackendKind } from './session.js';
-import type { PermissionResponse } from './permission.js';
 import type { UserQuestionResponse } from './user-question.js';
 import type { ContextBudgetDiagnostic } from './usage-stats/types.js';
 import type { EffectiveOrchestration } from './orchestration.js';
@@ -88,37 +86,15 @@ export interface BackendSendInput {
   hostedInteraction?: HostedInteractionBridge;
 }
 
-export interface HostedPermissionAnswer {
-  readonly requestId?: never;
-  readonly decision: PermissionResponse['decision'];
-  readonly rememberForTurn?: boolean;
-  readonly reviewer?: PermissionResponse['reviewer'];
-  readonly rationale?: PermissionResponse['rationale'];
-  readonly riskLevel?: PermissionResponse['riskLevel'];
-}
-
-export type HostedPermissionCommitOutcome =
-  | { readonly kind: 'permission_answer'; readonly answer: HostedPermissionAnswer }
-  | { readonly kind: 'closure'; readonly reason: InteractionClosureReason };
-
 export interface HostedUserQuestionAnswer {
   readonly requestId?: never;
   readonly answers: UserQuestionResponse['answers'];
-}
-
-export interface HostedPermissionSettlement {
-  applyAnswer(answer: HostedPermissionAnswer): Promise<void>;
-  applyClosure(reason: InteractionClosureReason): Promise<void>;
 }
 
 export interface HostedUserQuestionSettlement {
   applyAnswer(answer: HostedUserQuestionAnswer): Promise<void>;
   applyClosure(reason: Exclude<InteractionClosureReason, 'timed_out'>): Promise<void>;
 }
-
-export type HostedPermissionAdmission =
-  | { readonly state: 'pending' }
-  | { readonly state: 'settled' };
 
 /**
  * Optional producer capability scoped to one exact hosted Run. Admission must
@@ -128,19 +104,6 @@ export interface HostedInteractionBridge {
   readonly sessionId: string;
   readonly turnId: string;
   readonly runId: string;
-
-  admitPermissionRequest(input: {
-    request: AnyPermissionRequestEvent;
-    rememberScopeId?: string;
-    settlement: HostedPermissionSettlement;
-  }): Promise<HostedPermissionAdmission>;
-
-  commitPermissionAnswer(input: {
-    requestId: string;
-    answer: HostedPermissionAnswer;
-  }): Promise<void>;
-
-  commitPermissionTimeout(input: { requestId: string }): Promise<HostedPermissionCommitOutcome>;
 
   admitUserQuestionRequest(input: {
     request: UserQuestionRequestEvent;
@@ -156,9 +119,6 @@ export interface SteeringLease {
   id: string;
   content: MessageContent;
 }
-
-/** Alias for clarity at the backend boundary. */
-export type PermissionDecision = PermissionResponse;
 
 export interface BackendCompactHistoryInput {
   turnId: string;

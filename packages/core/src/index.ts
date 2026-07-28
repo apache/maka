@@ -1228,7 +1228,6 @@ export {
 export type {
   BackendSendInput,
   RuntimeContinuationMetadata,
-  PermissionDecision,
   AgentBackend,
   BackendCompactHistoryInput,
   BackendCompactHistoryResult,

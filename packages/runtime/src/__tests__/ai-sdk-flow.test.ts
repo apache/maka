@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 import { decodeStoredMessageForRecovery, type BackendKind } from '@maka/core/session';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { SessionEvent } from '@maka/core/events';
-import type { BackendSendInput, PermissionDecision } from '@maka/core/backend-types';
+import type { BackendSendInput } from '@maka/core/backend-types';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
   decodeRuntimeEvent,
@@ -41,7 +42,7 @@ class ScriptedBackend implements AgentBackend {
   readonly kind: BackendKind;
   readonly sessionId: string;
   readonly stopCalls: Array<'user_stop' | 'redirect'> = [];
-  readonly permissionCalls: PermissionDecision[] = [];
+  readonly permissionCalls: SandboxBoundaryResponse[] = [];
   readonly sendInputs: BackendSendInput[] = [];
   disposeCalls = 0;
   sendCalls = 0;
@@ -73,7 +74,7 @@ class ScriptedBackend implements AgentBackend {
     if (this.stopFailure) throw this.stopFailure;
   }
 
-  async respondToSandboxBoundary(decision: PermissionDecision): Promise<void> {
+  async respondToSandboxBoundary(decision: SandboxBoundaryResponse): Promise<void> {
     this.permissionCalls.push(decision);
   }
 
