@@ -1,15 +1,16 @@
 # Runtime sandbox boundary
 
-This directory owns platform sandbox selection and command transformation. It translates an active `PermissionProfile` into an execution request; it does not decide whether an operation is approved and does not execute the request itself.
+This directory owns platform sandbox selection and command transformation. It translates the profile in an active session `ExecutionBoundary` into an execution request; it does not decide whether a requested boundary expansion is approved and does not execute the request itself.
 
 Code and focused tests are the final authority. Remaining enforcement work is tracked in [issue #843](https://github.com/maka-agent/maka-agent/issues/843), not in this document.
 
 ## Ownership
 
-`@maka/core` owns the platform-neutral permission language:
+`@maka/core` owns the platform-neutral boundary language:
 
+- `execution-boundary.ts` defines the session boundary, its revision, and monotonic expansion.
 - `permission-profile.ts` defines managed, disabled, and external profiles; file-system entries; network policy; standard profiles; and pure path matchers.
-- `permission-profile-compiler.ts` maps the product `PermissionMode` to an active profile while keeping approval policy separate.
+- `permission-profile-compiler.ts` preserves compatibility when a legacy product mode must be mapped to a profile.
 
 `@maka/runtime` owns platform transformation:
 
@@ -31,7 +32,8 @@ Code and focused tests are the final authority. Remaining enforcement work is tr
 
 ## Boundaries
 
-- `PermissionEngine` owns allow, prompt, and block decisions. Sandbox selection does not grant approval.
+- The session `ExecutionBoundary` is the authority for whether an operation is currently inside the sandbox boundary. Sandbox selection does not expand that boundary.
+- The sandbox-boundary interaction path owns user approval and atomically settles an approved expansion with its new revision.
 - Callers own canonical cwd and path-context construction. Platform backends must not guess workspace roots.
 - `SandboxManager` transforms commands but does not spawn processes, retry without a sandbox, emit UI, or own telemetry.
 - The macOS backend owns SBPL generation, root parameterization, protected-metadata deny-write rules, and network policy translation.

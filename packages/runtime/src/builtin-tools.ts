@@ -1,9 +1,7 @@
 // packages/runtime/src/builtin-tools.ts
-// Phase 1 baseline tool set. Each tool returned as MakaTool[] so
-// ToolRuntime settlement decorates these with permission and durable tool facts.
-//
-// Read / Glob / Grep auto-approve.
-// Bash / Write / Edit go through PermissionEngine.
+// Baseline tool set. ToolRuntime settlement decorates each tool with durable
+// execution facts, while the active session ExecutionBoundary constrains local
+// filesystem, shell, and network effects.
 
 import { z } from 'zod';
 import { jsonSchema, zodSchema } from 'ai';

@@ -4,7 +4,7 @@
  * Ties together:
  *   SessionStore (storage)           — JSONL persistence
  *   AgentBackend (AiSdkBackend etc) — SDK adapter
- *   PermissionEngine                  — policy + parking
+ *   ExecutionBoundary                — session sandbox authority
  *
  * `SessionStore` comes from `@maka/storage`; its public interface owns
  * persistence and same-session serialization semantics.
@@ -1062,7 +1062,7 @@ export class SessionManager {
 
     this.runtimeKernel.updateCachedHeader(sessionId, next);
     // AiSdkBackend snapshots the header at construction time. Rebuild the
-    // backend before the next turn so PermissionEngine receives the new mode.
+    // backend before the next turn so it receives the new legacy-compatible mode.
     await this.runtimeKernel.disposeBackend(sessionId);
     return headerToSummary(next);
   }
