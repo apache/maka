@@ -385,6 +385,52 @@ describe('Harbor adapter contract', () => {
     assert.equal(env.COPILOT_GITHUB_TOKEN, undefined);
   });
 
+  test('run-host-cell.mjs forwards the Kimi A/B protocol to the host backend', async () => {
+    const { backendEnv } = await import(
+      new URL('../../harbor/run-host-cell.mjs', import.meta.url).href
+    );
+    const env = await backendEnv(
+      {
+        MAKA_HOST_API_KEY: 'kimi-plan-key',
+        MAKA_MODEL_API_PROTOCOL: 'openai-chat',
+      },
+      'kimi-coding-plan',
+    );
+
+    const resolved = resolveHarborCellAiSdkEnv({
+      provider: 'kimi-coding-plan',
+      model: 'k3',
+      env,
+      ts: 1,
+    });
+    assert.equal(env.MAKA_MODEL_API_PROTOCOL, 'openai-chat');
+    assert.equal(resolved.connection.models?.[0]?.apiProtocol, 'openai-chat');
+  });
+
+  test('run-host-cell.mjs preserves invalid Kimi host protocols for fail-closed validation', async () => {
+    const { backendEnv } = await import(
+      new URL('../../harbor/run-host-cell.mjs', import.meta.url).href
+    );
+    const env = await backendEnv(
+      {
+        MAKA_HOST_API_KEY: 'kimi-plan-key',
+        MAKA_HOST_MODEL_API_PROTOCOL: 'typo',
+      },
+      'kimi-coding-plan',
+    );
+
+    assert.throws(
+      () =>
+        resolveHarborCellAiSdkEnv({
+          provider: 'kimi-coding-plan',
+          model: 'k3',
+          env,
+          ts: 1,
+        }),
+      /Kimi Coding Plan protocol must be anthropic-messages or openai-chat/,
+    );
+  });
+
   test('run-host-cell.mjs accepts Ollama without provider credentials', async () => {
     const { backendEnv } = await import(
       new URL('../../harbor/run-host-cell.mjs', import.meta.url).href
@@ -2392,6 +2438,17 @@ with tempfile.TemporaryDirectory() as tmp:
         token="test-token",
     ))
     assert copilot_host_env["MAKA_HOST_MODEL_API_PROTOCOL"] == "openai-responses", copilot_host_env
+
+    kimi_protocol_env = MakaAgent(Path(tmp), extra_env={
+        "MAKA_HOST_API_KEY": "kimi-token",
+        "MAKA_PROVIDER": "kimi-coding-plan",
+        "MAKA_MODEL": "k3",
+        "MAKA_MODEL_API_PROTOCOL": "openai-chat",
+    })._host_cell_env(Path("/tmp/instruction.txt"), "/workspace", types.SimpleNamespace(
+        url="http://127.0.0.1:1",
+        token="test-token",
+    ))
+    assert kimi_protocol_env["MAKA_MODEL_API_PROTOCOL"] == "openai-chat", kimi_protocol_env
 
     # The default model must not be the deprecated deepseek-chat alias.
     default_model_env = MakaAgent(Path(tmp), extra_env={"MAKA_HOST_API_KEY_FILE": "/host/deepseek-key"})._cell_env(Path("/logs/agent/instruction.txt"))

@@ -610,6 +610,7 @@ class MakaAgent(BaseInstalledAgent):
             "MAKA_TRIAL_PRICING_SOURCE",
             "MAKA_REASONING_EFFORT",
             "MAKA_AGENT_TOOLS",
+            "MAKA_MODEL_API_PROTOCOL",
             # Default per-command timeout floor for the in-container Bash tool, so
             # long builds/tests do not hit a hard-coded 2-minute ceiling.
             "MAKA_CELL_COMMAND_TIMEOUT_MS",

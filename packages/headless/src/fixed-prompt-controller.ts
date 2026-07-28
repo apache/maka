@@ -9,6 +9,7 @@ import {
   type HarborCellDeadlineSettlement,
   type HarborCellExecutionIdentity,
   type HarborCellOutput,
+  type HarborCellRuntimeRefs,
   type HarborCellTaskToolSummary,
   type HarborCellTokenSummary,
 } from './cell-output.js';
@@ -131,6 +132,7 @@ export interface FixedPromptTaskCompletedEvent {
   errorClass?: string;
   promptHash?: string;
   executionIdentity?: HarborCellExecutionIdentity;
+  runtimeRefs?: HarborCellRuntimeRefs;
   deadlineSettlement?: HarborCellDeadlineSettlement;
   tokenSummary?: HarborCellTokenSummary;
   contextBudgetPolicy?: HarborCellContextBudgetPolicySnapshot;
@@ -213,6 +215,7 @@ export interface FixedPromptTaskBudgetExhaustedEvent {
   tokenSummary?: HarborCellTokenSummary;
   tokenSummarySource?: 'final' | 'checkpoint';
   executionIdentity?: HarborCellExecutionIdentity;
+  runtimeRefs?: HarborCellRuntimeRefs;
   contextBudgetPolicy?: HarborCellContextBudgetPolicySnapshot;
   contextBudgetSummary?: HarborCellContextBudgetSummary;
   continuationSummary?: HarborCellContinuationSummary;
@@ -241,10 +244,13 @@ export interface FixedPromptTaskPlumbingFailedEvent {
     | 'missing_prompt_hash'
     | 'missing_execution_identity'
     | 'execution_identity_mismatch'
+    | 'missing_provider_request_trace'
+    | 'invalid_provider_request_trace'
     | 'orphaned_sampled_attempt';
   error: string;
   promptHash?: string;
   expectedPromptHash?: string;
+  runtimeRefs?: HarborCellRuntimeRefs;
   tokenSummary?: HarborCellTokenSummary;
   contextBudgetPolicy?: HarborCellContextBudgetPolicySnapshot;
   contextBudgetSummary?: HarborCellContextBudgetSummary;
@@ -904,6 +910,7 @@ function taskCompletedEvent(input: {
     ...(errorClass ? { errorClass } : {}),
     ...(promptHash ? { promptHash } : {}),
     ...(output.cell.executionIdentity ? { executionIdentity: output.cell.executionIdentity } : {}),
+    runtimeRefs: output.cell.runtimeRefs,
     ...(output.cell.deadlineSettlement
       ? { deadlineSettlement: output.cell.deadlineSettlement }
       : {}),
@@ -974,6 +981,7 @@ function taskPlumbingFailedEvent(input: {
     error: input.error,
     ...(input.output.cell.promptHash ? { promptHash: input.output.cell.promptHash } : {}),
     expectedPromptHash: input.expectedPromptHash,
+    runtimeRefs: input.output.cell.runtimeRefs,
     ...(input.output.cell.tokenSummary ? { tokenSummary: input.output.cell.tokenSummary } : {}),
     ...(input.output.cell.contextBudgetPolicy
       ? { contextBudgetPolicy: input.output.cell.contextBudgetPolicy }
@@ -1269,6 +1277,7 @@ function taskBudgetExhaustedEvent(input: {
       : {}),
     expectedPromptHash: input.expectedPromptHash,
     ...(executionIdentity ? { executionIdentity } : {}),
+    ...(cellOutput ? { runtimeRefs: cellOutput.runtimeRefs } : {}),
     ...(runtimeEventsPath ? { runtimeEventsPath } : {}),
     ...(traceEventsPath ? { traceEventsPath } : {}),
     ...(providerTelemetryPath ? { providerTelemetryPath } : {}),
@@ -1318,6 +1327,7 @@ function projectLegacyTimeoutOutcome(event: FixedPromptWalEvent): FixedPromptWal
     evidenceErrorClass: event.errorClass,
     evidenceError: event.error,
     expectedPromptHash: event.expectedPromptHash,
+    ...(event.runtimeRefs ? { runtimeRefs: event.runtimeRefs } : {}),
     ...(event.tokenSummary ? { tokenSummary: event.tokenSummary } : {}),
     ...(event.runtimeEventsPath ? { runtimeEventsPath: event.runtimeEventsPath } : {}),
     ...(event.traceEventsPath ? { traceEventsPath: event.traceEventsPath } : {}),

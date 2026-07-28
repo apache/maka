@@ -4700,6 +4700,39 @@ setTimeout(() => {
     );
   });
 
+  test('preserves an explicit Kimi Coding Plan protocol without duplicating the provider', () => {
+    const resolved = resolveHarborCellAiSdkEnv({
+      provider: 'kimi-coding-plan',
+      model: 'k3',
+      env: {
+        ANTHROPIC_API_KEY: 'kimi-plan-key',
+        MAKA_MODEL_API_PROTOCOL: 'openai-chat',
+      },
+      ts: 123,
+    });
+
+    assert.equal(resolved.connection.providerType, 'kimi-coding-plan');
+    assert.deepEqual(resolved.connection.models, [{ id: 'k3', apiProtocol: 'openai-chat' }]);
+  });
+
+  test('rejects unsupported explicit Kimi Coding Plan protocol overrides', () => {
+    for (const env of [
+      { MAKA_MODEL_API_PROTOCOL: 'openai-responses' },
+      { MAKA_HOST_MODEL_API_PROTOCOL: 'typo' },
+    ]) {
+      assert.throws(
+        () =>
+          resolveHarborCellAiSdkEnv({
+            provider: 'kimi-coding-plan',
+            model: 'k3',
+            env: { ANTHROPIC_API_KEY: 'kimi-plan-key', ...env },
+            ts: 123,
+          }),
+        /Kimi Coding Plan protocol must be anthropic-messages or openai-chat/,
+      );
+    }
+  });
+
   test('resolves LM Studio headless configuration without credentials', () => {
     const resolved = resolveHarborCellAiSdkEnv({
       provider: 'lm-studio',

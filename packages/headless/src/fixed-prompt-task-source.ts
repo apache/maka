@@ -19,8 +19,9 @@ export function resolveFixedPromptRunRoot(
 export async function discoverCachedHarborTasks(
   tasksRoot: string,
   taskIds?: ReadonlySet<string>,
+  options: { duplicatePolicy?: 'error' | 'newest' } = {},
 ): Promise<FixedPromptTask[]> {
-  const byId = new Map<string, FixedPromptTask>();
+  const byId = new Map<string, { task: FixedPromptTask; modifiedAtMs: number }>();
   let hashDirs;
   try {
     hashDirs = await readdir(tasksRoot, { withFileTypes: true });
@@ -33,7 +34,7 @@ export async function discoverCachedHarborTasks(
     const exportedTaskToml = await readTaskToml(hashPath);
     if (exportedTaskToml !== undefined) {
       if (taskIds && !taskIds.has(hashDir.name)) continue;
-      addDiscoveredTask(byId, hashDir.name, hashPath, exportedTaskToml);
+      addDiscoveredTask(byId, hashDir.name, hashPath, exportedTaskToml, options);
       continue;
     }
     let inner;
@@ -48,10 +49,10 @@ export async function discoverCachedHarborTasks(
       const taskPath = join(hashPath, taskDir.name);
       const taskToml = await readTaskToml(taskPath);
       if (taskToml === undefined) continue;
-      addDiscoveredTask(byId, taskDir.name, taskPath, taskToml);
+      addDiscoveredTask(byId, taskDir.name, taskPath, taskToml, options);
     }
   }
-  return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
+  return [...byId.values()].map((entry) => entry.task).sort((a, b) => a.id.localeCompare(b.id));
 }
 
 /**
@@ -145,30 +146,48 @@ async function walkTaskDirectory(
   }
 }
 
-async function readTaskToml(taskPath: string): Promise<string | undefined> {
+interface CachedTaskToml {
+  text: string;
+  modifiedAtMs: number;
+}
+
+async function readTaskToml(taskPath: string): Promise<CachedTaskToml | undefined> {
   try {
-    return await readFile(join(taskPath, 'task.toml'), 'utf8');
+    const path = join(taskPath, 'task.toml');
+    const [text, stats] = await Promise.all([readFile(path, 'utf8'), lstat(path)]);
+    return { text, modifiedAtMs: stats.mtimeMs };
   } catch {
     return undefined;
   }
 }
 
 function addDiscoveredTask(
-  byId: Map<string, FixedPromptTask>,
+  byId: Map<string, { task: FixedPromptTask; modifiedAtMs: number }>,
   taskId: string,
   taskPath: string,
-  taskToml: string,
+  taskToml: CachedTaskToml,
+  options: { duplicatePolicy?: 'error' | 'newest' },
 ): void {
   // The controller keys events by task id, so two cached versions of the same
   // task name would silently collide and pollute scoring. Fail loud instead.
   const existing = byId.get(taskId);
-  if (existing) {
-    throw new Error(`duplicate cached task id "${taskId}": ${existing.path} and ${taskPath}`);
+  if (existing && options.duplicatePolicy !== 'newest') {
+    throw new Error(`duplicate cached task id "${taskId}": ${existing.task.path} and ${taskPath}`);
+  }
+  if (
+    existing &&
+    (existing.modifiedAtMs > taskToml.modifiedAtMs ||
+      (existing.modifiedAtMs === taskToml.modifiedAtMs && existing.task.path > taskPath))
+  ) {
+    return;
   }
   byId.set(taskId, {
-    id: taskId,
-    path: taskPath,
-    ...metadataField(parseTaskTomlMetadata(taskToml)),
+    modifiedAtMs: taskToml.modifiedAtMs,
+    task: {
+      id: taskId,
+      path: taskPath,
+      ...metadataField(parseTaskTomlMetadata(taskToml.text)),
+    },
   });
 }
 

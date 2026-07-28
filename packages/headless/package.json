@@ -57,6 +57,7 @@
     "#harness-oracle-policy": "./dist/harness-oracle-policy.js",
     "#harness-ab-run": "./dist/harness-ab-run.js",
     "#harness-ab-report": "./dist/harness-ab-report.js",
+    "#kimi-protocol-ab": "./dist/kimi-protocol-ab.js",
     "#prompt-structural-smoke": "./dist/prompt-structural-smoke.js"
   },
   "bin": {

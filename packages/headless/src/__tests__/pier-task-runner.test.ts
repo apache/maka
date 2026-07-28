@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { mkdir } from 'node:fs/promises';
+import { createServer as createHttpServer } from 'node:http';
 import { createServer, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1483,6 +1484,82 @@ test('createPierTaskRunner gives a Maka container task run a container-reachable
     assert.notEqual(captured.envFile?.MAKA_PROVIDER_PROXY_TOKEN, 'upstream-key');
     assert.equal(captured.envFile?.MAKA_HOST_BASE_URL, undefined);
     assert.equal(captured.envFile?.MAKA_HOST_API_KEY, undefined);
+  });
+});
+
+test('createPierTaskRunner gives the host-selected Kimi protocol proxy authority', async () => {
+  await withDirs(async ({ jobsDir, repo }) => {
+    let upstreamAuthorization = '';
+    let upstreamPath = '';
+    const upstream = createHttpServer((request, response) => {
+      upstreamAuthorization = request.headers.authorization ?? '';
+      upstreamPath = request.url ?? '';
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end(
+        [
+          'data: {"id":"chatcmpl-1","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":25}}',
+          '',
+          'data: [DONE]',
+          '',
+        ].join('\n'),
+      );
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const address = upstream.address();
+    assert.ok(address && typeof address !== 'string');
+    const inner = fakePier({ reward: 0 });
+    try {
+      const runner = createPierTaskRunner(
+        baseOptions({
+          jobsDir,
+          makaRepoPath: repo,
+          agent: 'maka',
+          backend: 'ai-sdk',
+          provider: 'kimi-coding-plan',
+          model: 'k3',
+          baseUrl: `http://127.0.0.1:${address.port}/coding/v1`,
+          resolveProviderCredential: () => Promise.resolve({ value: 'upstream-key' }),
+          pricing: { inputUsdPer1M: 0, outputUsdPer1M: 0 },
+          runPier: async (request) => {
+            const envFileFlag = request.args.indexOf('--env-file');
+            assert.ok(envFileFlag >= 0);
+            const env = Object.fromEntries(
+              (await readFile(request.args[envFileFlag + 1]!, 'utf8'))
+                .split('\n')
+                .filter((line) => line.includes('='))
+                .map((line) => {
+                  const index = line.indexOf('=');
+                  return [line.slice(0, index), line.slice(index + 1)];
+                }),
+            );
+            const response = await fetch(`${env.MAKA_HOST_BASE_URL}/v1/chat/completions`, {
+              method: 'POST',
+              headers: { authorization: `Bearer ${env.MAKA_HOST_API_KEY}` },
+              body: '{}',
+            });
+            assert.equal(response.status, 200);
+            await response.text();
+            return inner(request);
+          },
+        }),
+      );
+
+      const output = await runner(
+        runInput({
+          agentEnv: {
+            MAKA_HOST_MODEL_API_PROTOCOL: 'openai-chat',
+            MAKA_MODEL_API_PROTOCOL: 'anthropic-messages',
+          },
+        }),
+      );
+      assert.equal(upstreamAuthorization, 'Bearer upstream-key');
+      assert.equal(upstreamPath, '/coding/v1/chat/completions');
+      assert.equal(output.cell.tokenSummary?.total, 125);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        upstream.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
   });
 });
 
