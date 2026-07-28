@@ -132,16 +132,26 @@ export interface BackendCompactHistoryResult {
 export type BackendStopMode = 'immediate' | 'after_step';
 
 /**
- * The session-event vocabulary a backend may produce. `queue_update` has
- * exactly one legal producer — the runtime kernel, which pushes it directly
- * into the turn stream, never through a backend — so a backend-yielded one is
- * forged queue state and the flow drops it at the ingress (not mapped, not
- * forwarded, not persisted). `send` stays typed as `SessionEvent` for
- * implementation ergonomics; the ingress drop enforces the vocabulary.
+ * The live session-event vocabulary accepted from a backend. `queue_update`
+ * belongs to the runtime kernel, while legacy permission requests and
+ * acknowledgements were replaced by sandbox-boundary events. `send` stays
+ * typed as `SessionEvent` for implementation ergonomics; the flow drops these
+ * retired variants at ingress so they are never mapped, observed, or persisted
+ * by a new run.
  */
 export type BackendSessionEvent = Exclude<
   SessionEvent,
-  Extract<SessionEvent, { type: 'queue_update' }>
+  Extract<
+    SessionEvent,
+    {
+      type:
+        | 'queue_update'
+        | 'permission_request'
+        | 'permission_answer_ack'
+        | 'permission_closure_ack'
+        | 'permission_decision_ack';
+    }
+  >
 >;
 
 export interface AgentBackend {

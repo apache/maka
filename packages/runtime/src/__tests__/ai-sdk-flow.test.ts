@@ -350,29 +350,29 @@ describe('AiSdkFlow seam', () => {
     assert.deepEqual(result.actions?.stateDelta, { durationMs: 42 });
   });
 
-  test('maps permission request/decision as first-class runtime actions', async () => {
+  test('maps sandbox boundary requests and decisions as first-class runtime actions', async () => {
     const backend = new ScriptedBackend({
       events: [
         ev({
-          type: 'permission_request',
-          kind: 'tool_permission',
-          requestId: 'req-1',
-          toolUseId: 'tu-2',
-          toolName: 'bash',
-          category: 'shell_unsafe',
-          reason: 'shell_dangerous',
-          args: { cmd: 'rm -rf /' },
-          rememberForTurnAllowed: true,
-          hint: 'destructive',
+          type: 'sandbox_boundary_request',
+          requestId: 'boundary-1',
+          toolUseId: 'tu-boundary',
+          justification: 'Write the requested export.',
+          expansion: {
+            filesystem: {
+              entries: [{ path: '/tmp/export.txt', access: 'write', scope: 'exact' }],
+            },
+          },
         }),
         ev({
-          type: 'permission_decision_ack',
-          requestId: 'req-1',
-          toolUseId: 'tu-2',
-          decision: 'deny',
-          rememberForTurn: true,
+          type: 'sandbox_boundary_decision_ack',
+          requestId: 'boundary-1',
+          toolUseId: 'tu-boundary',
+          decision: 'allow',
+          status: 'approved',
+          revision: 2,
         }),
-        ev({ type: 'complete', stopReason: 'permission_handoff' }),
+        ev({ type: 'complete', stopReason: 'end_turn' }),
       ],
     });
     const flow = new AiSdkFlow({ backend });
@@ -380,177 +380,80 @@ describe('AiSdkFlow seam', () => {
 
     const req = out[0];
     assert.equal(req.author, 'system');
-    assert.equal(req.actions?.permissionRequest?.requestId, 'req-1');
-    assert.equal(req.actions?.permissionRequest?.toolName, 'bash');
-    assert.equal(req.actions?.permissionRequest?.hint, 'destructive');
-    assert.equal(req.actions?.permissionRequest?.kind, 'tool_permission');
-    if (req.actions?.permissionRequest?.kind !== 'tool_permission') {
-      assert.fail('expected a tool permission request');
-    }
-    assert.equal(req.actions.permissionRequest.rememberForTurnAllowed, true);
-
-    const ack = out[1];
-    assert.equal(ack.author, 'user', 'permission decision is authored by the user');
-    assert.deepEqual(ack.actions?.permissionDecision, {
-      requestId: 'req-1',
-      decision: 'deny',
-      rememberForTurn: true,
+    assert.deepEqual(req.actions?.stateDelta?.sandboxBoundaryRequest, {
+      requestId: 'boundary-1',
+      toolUseId: 'tu-boundary',
+      justification: 'Write the requested export.',
+      expansion: {
+        filesystem: {
+          entries: [{ path: '/tmp/export.txt', access: 'write', scope: 'exact' }],
+        },
+      },
     });
 
-    // permission_handoff stopReason maps to completed (run streamed to a halt).
+    const ack = out[1];
+    assert.equal(ack.author, 'user');
+    assert.deepEqual(ack.actions?.stateDelta?.sandboxBoundaryDecision, {
+      requestId: 'boundary-1',
+      decision: 'allow',
+      status: 'approved',
+      revision: 2,
+    });
     assert.equal(out[2].status, 'completed');
   });
 
-  test('maps hosted permission answer acknowledgement without decision fields', () => {
-    const mapped = mapSessionEventToRuntimeEvent(
-      ev({
-        type: 'permission_answer_ack',
-        requestId: 'req-hosted-1',
-        toolUseId: 'tool-hosted-1',
-      }),
-      ctx,
-    );
-
-    assert.deepEqual(mapped.actions, {
-      permissionAnswerAccepted: { requestId: 'req-hosted-1' },
-    });
-    assert.deepEqual(mapped.refs, { toolCallId: 'tool-hosted-1' });
-    const actions = mapped.actions;
-    assert.ok(actions);
-    assert.equal(Object.hasOwn(actions, 'permissionDecision'), false);
-    assert.ok(actions.permissionAnswerAccepted);
-    assert.equal(Object.hasOwn(actions.permissionAnswerAccepted, 'decision'), false);
-    assert.doesNotThrow(() => decodeRuntimeEvent(JSON.parse(JSON.stringify(mapped))));
-  });
-
-  test('maps hosted permission closure acknowledgement as a strict system action', () => {
-    const mapped = mapSessionEventToRuntimeEvent(
-      ev({
-        type: 'permission_closure_ack',
-        requestId: 'req-hosted-timeout-1',
-        toolUseId: 'tool-hosted-timeout-1',
-        reason: 'timed_out',
-      }),
-      ctx,
-    );
-
-    assert.equal(mapped.role, 'system');
-    assert.equal(mapped.author, 'system');
-    assert.deepEqual(mapped.actions, {
-      permissionClosureAccepted: {
-        requestId: 'req-hosted-timeout-1',
-        reason: 'timed_out',
-      },
-    });
-    assert.deepEqual(mapped.refs, { toolCallId: 'tool-hosted-timeout-1' });
-    assert.deepEqual(decodeRuntimeEvent(JSON.parse(JSON.stringify(mapped))), mapped);
-  });
-
-  test('maps additional permission requests without exposing raw tool args', () => {
-    const mapped = mapSessionEventToRuntimeEvent(
+  test('drops legacy permission events at backend ingress and rejects direct mapping', async () => {
+    const legacyEvents = [
       ev({
         type: 'permission_request',
-        kind: 'additional_permissions',
-        requestId: 'req-additional-1',
-        toolUseId: 'tu-additional-1',
+        kind: 'tool_permission',
+        requestId: 'legacy-request',
+        toolUseId: 'legacy-tool',
         toolName: 'Write',
         category: 'file_write',
-        reason: 'additional_permissions',
-        args: undefined,
-        additionalPermissions: {
-          fileSystem: {
-            entries: [{ path: '/tmp/export.txt', access: 'write', scope: 'exact' }],
-          },
-        },
-        cwd: '/workspace',
-        justification: 'Write the requested export outside the workspace.',
-        intentHash: 'intent-hash',
-        permissionsHash: 'permissions-hash',
-        risk: {
-          outsideWorkspace: true,
-          protectedMetadata: false,
-          networkEnabled: false,
-        },
-        alsoApprovesToolExecution: true,
-        availableDecisions: ['allow_once', 'deny'],
+        reason: 'file_write',
+        args: { path: '/tmp/example' },
+        rememberForTurnAllowed: true,
       }),
-      ctx,
-      createSessionEventMapMemory(),
-    );
-
-    const request = mapped.actions?.permissionRequest;
-    assert.equal(request?.kind, 'additional_permissions');
-    if (request?.kind !== 'additional_permissions') {
-      assert.fail('expected an additional permission request');
-    }
-    assert.deepEqual(request.additionalPermissions, {
-      fileSystem: {
-        entries: [{ path: '/tmp/export.txt', access: 'write', scope: 'exact' }],
+      ev({
+        type: 'permission_answer_ack',
+        requestId: 'legacy-request',
+        toolUseId: 'legacy-tool',
+      }),
+      ev({
+        type: 'permission_closure_ack',
+        requestId: 'legacy-request',
+        toolUseId: 'legacy-tool',
+        reason: 'timed_out',
+      }),
+      ev({
+        type: 'permission_decision_ack',
+        requestId: 'legacy-request',
+        toolUseId: 'legacy-tool',
+        decision: 'deny',
+      }),
+    ];
+    const observed: string[] = [];
+    const backend = new ScriptedBackend({
+      events: [...legacyEvents, ev({ type: 'complete', stopReason: 'end_turn' })],
+    });
+    const flow = new AiSdkFlow({
+      backend,
+      onSessionEvent: (event) => {
+        observed.push(event.type);
       },
     });
-    assert.deepEqual(request.availableDecisions, ['allow_once', 'deny']);
-    assert.equal(request.alsoApprovesToolExecution, true);
-    assert.equal('args' in request, false);
-  });
 
-  test('maps sandbox escalation as a bounded one-shot permission action', () => {
-    const mapped = mapSessionEventToRuntimeEvent(
-      ev({
-        type: 'permission_request',
-        kind: 'sandbox_escalation',
-        requestId: 'req-escalation-1',
-        toolUseId: 'tu-escalation-1',
-        toolName: 'Bash',
-        category: 'shell_unsafe',
-        reason: 'sandbox_escalation',
-        args: undefined,
-        command: 'printf ok > /outside/result.txt',
-        cwd: '/workspace',
-        justification: 'Write the exact requested output.',
-        intentHash: 'intent-hash',
-        commandHash: 'command-hash',
-        trigger: 'sandbox_denial',
-        risk: {
-          unsandboxedExecution: true,
-          unrestrictedFileSystem: true,
-          unrestrictedNetwork: true,
-          protectedMetadataExposed: true,
-        },
-        alsoApprovesToolExecution: false,
-        availableDecisions: ['allow_once', 'deny'],
-        rememberForTurnAllowed: false,
-      }),
-      ctx,
-      createSessionEventMapMemory(),
+    const out = await collect(flow.run(ctx, { text: 'do it', context: [] }));
+    assert.deepEqual(
+      out.map((event) => event.status),
+      ['completed'],
     );
-
-    const request = mapped.actions?.permissionRequest;
-    assert.equal(request?.kind, 'sandbox_escalation');
-    if (request?.kind !== 'sandbox_escalation') assert.fail('expected sandbox escalation');
-    assert.equal(request.command, 'printf ok > /outside/result.txt');
-    assert.equal(request.trigger, 'sandbox_denial');
-    assert.deepEqual(request.availableDecisions, ['allow_once', 'deny']);
-    assert.equal('args' in request, false);
-  });
-
-  test('rejects permission requests without an explicit valid kind', () => {
-    const valid = ev({
-      type: 'permission_request',
-      kind: 'tool_permission',
-      requestId: 'req-kind',
-      toolUseId: 'tu-kind',
-      toolName: 'Write',
-      category: 'file_write',
-      reason: 'file_write',
-      args: { path: '/tmp/example' },
-      rememberForTurnAllowed: true,
-    });
-
-    for (const kind of [undefined, 'unknown']) {
-      const malformed = { ...valid, kind } as unknown as SessionEvent;
+    assert.deepEqual(observed, ['complete']);
+    for (const legacyEvent of legacyEvents) {
       assert.throws(
-        () => mapSessionEventToRuntimeEvent(malformed, ctx, createSessionEventMapMemory()),
-        /invalid or missing kind/,
+        () => mapSessionEventToRuntimeEvent(legacyEvent, ctx, createSessionEventMapMemory()),
+        /legacy permission event/,
       );
     }
   });
@@ -1021,53 +924,25 @@ describe('mapSessionEventToRuntimeEvent (pure)', () => {
     assert.equal(event.actions?.stateDelta?.activityKind, 'command');
   });
 
-  test('owns independent args across SessionEvent to RuntimeEvent mappings', () => {
-    const cases = [
-      {
-        event: (args: unknown) =>
-          ev({
-            type: 'tool_start',
-            toolUseId: 'tu-owned',
-            toolName: 'Write',
-            args,
-          }),
-        mappedArgs: (event: RuntimeEvent) =>
-          event.content?.kind === 'function_call' ? event.content.args : undefined,
-      },
-      {
-        event: (args: unknown) =>
-          ev({
-            type: 'permission_request',
-            kind: 'tool_permission',
-            requestId: 'permission-owned',
-            toolUseId: 'tu-owned',
-            toolName: 'Write',
-            category: 'file_write',
-            reason: 'file_write',
-            args,
-            rememberForTurnAllowed: true,
-          }),
-        mappedArgs: (event: RuntimeEvent) => {
-          const request = event.actions?.permissionRequest;
-          return request?.kind === 'tool_permission' ? request.args : undefined;
-        },
-      },
-    ];
+  test('owns independent tool args across SessionEvent to RuntimeEvent mappings', () => {
+    const sourceArgs = { content: 'approved', layout: { cols: 120 } };
+    const sourceEvent = ev({
+      type: 'tool_start',
+      toolUseId: 'tu-owned',
+      toolName: 'Write',
+      args: sourceArgs,
+    });
+    const mapped = mapSessionEventToRuntimeEvent(sourceEvent, ctx, createSessionEventMapMemory());
+    const mappedArgs = (
+      mapped.content?.kind === 'function_call' ? mapped.content.args : undefined
+    ) as typeof sourceArgs;
 
-    for (const scenario of cases) {
-      const sourceArgs = { content: 'approved', layout: { cols: 120 } };
-      const sourceEvent = scenario.event(sourceArgs);
-      const mappedArgs = scenario.mappedArgs(
-        mapSessionEventToRuntimeEvent(sourceEvent, ctx, createSessionEventMapMemory()),
-      ) as typeof sourceArgs;
-
-      assert.notStrictEqual(mappedArgs, sourceArgs);
-      assert.notStrictEqual(mappedArgs.layout, sourceArgs.layout);
-      sourceArgs.layout.cols = 80;
-      assert.equal(mappedArgs.layout.cols, 120);
-      mappedArgs.content = 'runtime';
-      assert.equal(sourceArgs.content, 'approved');
-    }
+    assert.notStrictEqual(mappedArgs, sourceArgs);
+    assert.notStrictEqual(mappedArgs.layout, sourceArgs.layout);
+    sourceArgs.layout.cols = 80;
+    assert.equal(mappedArgs.layout.cols, 120);
+    mappedArgs.content = 'runtime';
+    assert.equal(sourceArgs.content, 'approved');
   });
 
   test('plan_submitted maps to an agent-authored state delta', () => {

@@ -33,17 +33,10 @@
 import {
   failureClassFromCompleteStopReason,
   normalizeMessageContent,
-  type AnyPermissionRequestEvent,
   type CompleteEvent,
   type SessionEvent,
 } from '@maka/core/events';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
-import type {
-  AdditionalPermissionRequest,
-  PermissionRequest,
-  PermissionRequestPayload,
-  SandboxEscalationRequest,
-} from '@maka/core/permission';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import {
   isTerminalRuntimeEvent,
@@ -115,135 +108,6 @@ function resolveBase(event: SessionEvent, ctx: InvocationContext) {
   return base;
 }
 
-function mapPermissionRequest(event: AnyPermissionRequestEvent): PermissionRequestPayload {
-  if (event.kind === 'tool_permission') {
-    const request: PermissionRequest = {
-      kind: 'tool_permission',
-      requestId: event.requestId,
-      toolUseId: event.toolUseId,
-      toolName: event.toolName,
-      category: event.category,
-      reason: event.reason,
-      args: structuredClone(event.args),
-      rememberForTurnAllowed: event.rememberForTurnAllowed,
-      ...(event.hint !== undefined ? { hint: event.hint } : {}),
-    };
-    return request;
-  }
-  return event.kind === 'additional_permissions'
-    ? mapAdditionalPermissionRequest(event)
-    : mapSandboxEscalationRequest(event);
-}
-
-function mapAdditionalPermissionRequest(
-  event: AnyPermissionRequestEvent,
-): AdditionalPermissionRequest {
-  const runtimeKind: unknown = event.kind;
-  if (runtimeKind !== 'additional_permissions') {
-    throw malformedAdditionalPermissionRequest(event.requestId, 'kind');
-  }
-  if (event.reason !== 'additional_permissions') {
-    throw malformedAdditionalPermissionRequest(event.requestId, 'reason');
-  }
-  if (!event.additionalPermissions || typeof event.additionalPermissions !== 'object') {
-    throw malformedAdditionalPermissionRequest(event.requestId, 'additionalPermissions');
-  }
-  if (typeof event.cwd !== 'string') {
-    throw malformedAdditionalPermissionRequest(event.requestId, 'cwd');
-  }
-  if (typeof event.justification !== 'string') {
-    throw malformedAdditionalPermissionRequest(event.requestId, 'justification');
-  }
-  if (typeof event.intentHash !== 'string') {
-    throw malformedAdditionalPermissionRequest(event.requestId, 'intentHash');
-  }
-  if (typeof event.permissionsHash !== 'string') {
-    throw malformedAdditionalPermissionRequest(event.requestId, 'permissionsHash');
-  }
-  if (!event.risk || typeof event.risk !== 'object') {
-    throw malformedAdditionalPermissionRequest(event.requestId, 'risk');
-  }
-  if (typeof event.alsoApprovesToolExecution !== 'boolean') {
-    throw malformedAdditionalPermissionRequest(event.requestId, 'alsoApprovesToolExecution');
-  }
-  if (
-    event.availableDecisions?.length !== 2 ||
-    event.availableDecisions[0] !== 'allow_once' ||
-    event.availableDecisions[1] !== 'deny'
-  ) {
-    throw malformedAdditionalPermissionRequest(event.requestId, 'availableDecisions');
-  }
-  return {
-    kind: 'additional_permissions',
-    requestId: event.requestId,
-    toolUseId: event.toolUseId,
-    toolName: event.toolName,
-    category: event.category,
-    reason: 'additional_permissions',
-    additionalPermissions: structuredClone(event.additionalPermissions),
-    cwd: event.cwd,
-    justification: event.justification,
-    intentHash: event.intentHash,
-    permissionsHash: event.permissionsHash,
-    risk: structuredClone(event.risk),
-    alsoApprovesToolExecution: event.alsoApprovesToolExecution,
-    availableDecisions: ['allow_once', 'deny'],
-    ...(event.hint !== undefined ? { hint: event.hint } : {}),
-  };
-}
-
-function malformedAdditionalPermissionRequest(requestId: string, field: string): TypeError {
-  return new TypeError(
-    `Additional permission request ${requestId} has an invalid or missing ${field}.`,
-  );
-}
-
-function mapSandboxEscalationRequest(event: AnyPermissionRequestEvent): SandboxEscalationRequest {
-  if (event.kind !== 'sandbox_escalation') {
-    throw malformedSandboxEscalationRequest(event.requestId, 'kind');
-  }
-  if (
-    event.reason !== 'sandbox_escalation' ||
-    typeof event.command !== 'string' ||
-    typeof event.cwd !== 'string' ||
-    typeof event.justification !== 'string' ||
-    typeof event.intentHash !== 'string' ||
-    typeof event.commandHash !== 'string' ||
-    (event.trigger !== 'proactive' && event.trigger !== 'sandbox_denial') ||
-    !event.risk ||
-    typeof event.alsoApprovesToolExecution !== 'boolean' ||
-    event.availableDecisions?.length !== 2 ||
-    event.availableDecisions[0] !== 'allow_once' ||
-    event.availableDecisions[1] !== 'deny'
-  ) {
-    throw malformedSandboxEscalationRequest(event.requestId, 'payload');
-  }
-  return {
-    kind: 'sandbox_escalation',
-    requestId: event.requestId,
-    toolUseId: event.toolUseId,
-    toolName: 'Bash',
-    category: event.category,
-    reason: 'sandbox_escalation',
-    command: event.command,
-    cwd: event.cwd,
-    justification: event.justification,
-    intentHash: event.intentHash,
-    commandHash: event.commandHash,
-    trigger: event.trigger,
-    risk: structuredClone(event.risk),
-    alsoApprovesToolExecution: event.alsoApprovesToolExecution,
-    availableDecisions: ['allow_once', 'deny'],
-    ...(event.hint !== undefined ? { hint: event.hint } : {}),
-  };
-}
-
-function malformedSandboxEscalationRequest(requestId: string, field: string): TypeError {
-  return new TypeError(
-    `Sandbox escalation request ${requestId} has an invalid or missing ${field}.`,
-  );
-}
-
 /**
  * Map one renderer-facing `SessionEvent` onto a canonical `RuntimeEvent`.
  *
@@ -255,8 +119,8 @@ function malformedSandboxEscalationRequest(requestId: string, field: string): Ty
  *   - tool_start (function call)   → role 'model',   author 'agent'
  *   - tool progress/output deltas  → role 'tool',    author 'tool' (partial)
  *   - tool_result (function resp)  → role 'tool',    author 'tool'
- *   - permission_request           → role 'system',  author 'system'
- *   - permission_decision_ack      → role 'system',  author 'user'
+ *   - sandbox_boundary_request     → role 'system',  author 'system'
+ *   - sandbox_boundary_decision_ack → role 'system', author 'user'
  *   - user_question_answer_ack     → role 'system',  author 'user'
  *   - plan_submitted               → role 'system',  author 'agent'
  *   - token_usage                  → role 'system',  author 'system'
@@ -280,8 +144,29 @@ export function mapSessionEventToRuntimeEvent(
     // this line means a caller bypassed that authority boundary.
     throw new Error('queue_update is not a backend event: the kernel is its only legal producer');
   }
+  if (isLegacyPermissionSessionEvent(event)) {
+    throw new Error(`${event.type} is a legacy permission event and is not backend-mappable`);
+  }
   const narrowed: BackendSessionEvent = event;
   return mapBackendSessionEvent(narrowed, ctx, memory);
+}
+
+function isLegacyPermissionSessionEvent(event: SessionEvent): event is Extract<
+  SessionEvent,
+  {
+    type:
+      | 'permission_request'
+      | 'permission_answer_ack'
+      | 'permission_closure_ack'
+      | 'permission_decision_ack';
+  }
+> {
+  return (
+    event.type === 'permission_request' ||
+    event.type === 'permission_answer_ack' ||
+    event.type === 'permission_closure_ack' ||
+    event.type === 'permission_decision_ack'
+  );
 }
 
 function mapBackendSessionEvent(
@@ -415,17 +300,7 @@ function mapBackendSessionEvent(
       return ev;
     }
 
-    // ── Permission (first-class runtime action, not just a UI echo) ───────
-    case 'permission_request':
-      return {
-        ...base,
-        role: 'system',
-        author: 'system',
-        actions: {
-          permissionRequest: mapPermissionRequest(event),
-        },
-        refs: { toolCallId: event.toolUseId },
-      };
+    // ── Session sandbox boundary ──────────────────────────────────────────
     case 'sandbox_boundary_request':
       return {
         ...base,
@@ -456,50 +331,6 @@ function mapBackendSessionEvent(
               status: event.status,
               revision: event.revision,
             },
-          },
-        },
-        refs: { toolCallId: event.toolUseId },
-      };
-    case 'permission_decision_ack':
-      return {
-        ...base,
-        role: 'system',
-        author: 'user',
-        actions: {
-          permissionDecision: {
-            requestId: event.requestId,
-            decision: event.decision,
-            ...(event.rememberForTurn !== undefined
-              ? { rememberForTurn: event.rememberForTurn }
-              : {}),
-            ...(event.reviewer !== undefined ? { reviewer: event.reviewer } : {}),
-            ...(event.rationale !== undefined ? { rationale: event.rationale } : {}),
-            ...(event.riskLevel !== undefined ? { riskLevel: event.riskLevel } : {}),
-          },
-        },
-        refs: { toolCallId: event.toolUseId },
-      };
-    case 'permission_answer_ack':
-      return {
-        ...base,
-        role: 'system',
-        author: 'user',
-        actions: {
-          permissionAnswerAccepted: {
-            requestId: event.requestId,
-          },
-        },
-        refs: { toolCallId: event.toolUseId },
-      };
-    case 'permission_closure_ack':
-      return {
-        ...base,
-        role: 'system',
-        author: 'system',
-        actions: {
-          permissionClosureAccepted: {
-            requestId: event.requestId,
-            reason: event.reason,
           },
         },
         refs: { toolCallId: event.toolUseId },
@@ -845,12 +676,13 @@ export class AiSdkFlow implements AgentFlow, AgentFlowControl {
         ...(this.hostedInteraction ? { hostedInteraction: this.hostedInteraction } : {}),
       })) {
         if (terminalEmitted) continue;
-        // Ingress authority check: queue_update has exactly one legal
-        // producer — the kernel, which pushes it directly into the turn
-        // stream, never through this flow. A backend yielding one is forging
-        // authoritative queue state: drop it here — not mapped, not
-        // forwarded to observers, not persisted.
-        if (sessionEvent.type === 'queue_update') continue;
+        // Ingress authority check: queue updates belong to the kernel and
+        // legacy permission events were replaced by sandbox-boundary events.
+        // Drop either retired vocabulary before mapping, observers, or
+        // persistence can treat it as a live runtime fact.
+        if (sessionEvent.type === 'queue_update' || isLegacyPermissionSessionEvent(sessionEvent)) {
+          continue;
+        }
         const runtimeEvent = mapSessionEventToRuntimeEvent(sessionEvent, ctx, memory);
         if (sessionEvent.type === 'error') errorEmitted = true;
         if (isTerminalRuntimeEvent(runtimeEvent)) {
