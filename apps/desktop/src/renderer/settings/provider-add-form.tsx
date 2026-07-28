@@ -48,6 +48,7 @@ export function AddProviderForm(props: {
   const isCustomRelay = defaults.category === 'custom';
   const isExperimental = defaults.status === 'phase3-experimental';
   const isWiredOAuth = isWiredOAuthProvider(props.providerType);
+  const supportsRemoteDiscovery = defaults.modelDiscovery.kind !== 'fallback';
   const supportsApiKey = providerAuthSupportsApiKey(props.providerType);
   const requiresApiKey = providerAuthRequiresSecret(props.providerType) && supportsApiKey;
   const usesApiKeyDialog = usesQuickApiKeyDialog(props.providerType);
@@ -90,17 +91,14 @@ export function AddProviderForm(props: {
         ...(normalizedApiKey ? { apiKey: normalizedApiKey } : {}),
       });
       if (!addProviderMountedRef.current) return;
-      // Local connections should reflect the daemon actually running on this
-      // machine instead of remaining on a static or empty fallback catalog.
       let modelDiscoveryError: unknown;
-      if (defaults.category === 'local') {
+      if (supportsRemoteDiscovery) {
         try {
           await props.bridge.fetchModels(connection.slug);
         } catch (error) {
           modelDiscoveryError = error;
         }
       }
-      if (isCustomRelay) await props.bridge.fetchModels(connection.slug).catch(() => undefined);
       if (!addProviderMountedRef.current) return;
       await props.onCreated(connection.slug, modelDiscoveryError);
     } catch (err) {

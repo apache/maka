@@ -1329,11 +1329,27 @@ describe('models.dev provider conformance', () => {
     assert.equal(result.text, 'Echoed hello.');
   });
 
-  test('Cloudflare Workers AI uses snapshot models and completes its documented two-stage tool-call loop', async () => {
+  test('Cloudflare Workers AI discovers native models and completes its documented two-stage tool-call loop', async () => {
     const modelId = '@cf/moonshotai/kimi-k2.6';
     const requestBodies: Array<Record<string, unknown>> = [];
     const server = await startJsonServer(async (request, response) => {
       assert.equal(request.headers.authorization, 'Bearer cloudflare-workers-ai-test-token');
+      if (
+        request.method === 'GET' &&
+        request.url === '/client/v4/accounts/account-123/ai/models/search?page=1&per_page=50'
+      ) {
+        respondJson(response, 200, {
+          success: true,
+          result: [
+            {
+              name: modelId,
+              task: { id: 'text-generation', name: 'Text Generation' },
+            },
+          ],
+          result_info: { page: 1, total_pages: 1 },
+        });
+        return;
+      }
       assert.equal(request.method, 'POST');
       assert.equal(request.url, '/client/v4/accounts/account-123/ai/v1/chat/completions');
       const body = JSON.parse(await readBody(request)) as Record<string, unknown>;
@@ -1394,9 +1410,7 @@ describe('models.dev provider conformance', () => {
     };
 
     const models = await fetchProviderModels(connection, 'cloudflare-workers-ai-test-token');
-    assert.equal(requestBodies.length, 0, 'snapshot fallback must not invent a discovery request');
-    assert.equal(models[0]?.id, modelId);
-    assert.ok(models.every((model) => model.id.startsWith('@cf/')));
+    assert.deepEqual(models, [{ id: modelId }]);
 
     const result = await generateText({
       model: getAIModel({
@@ -1578,11 +1592,15 @@ describe('models.dev provider conformance', () => {
     assert.equal(result.text, 'Echoed hello.');
   });
 
-  test('Tencent Coding Plan uses fallback models and preserves its exact model id through a two-stage tool-call loop', async () => {
+  test('Tencent Coding Plan discovers models and preserves its exact model id through a two-stage tool-call loop', async () => {
     const modelId = 'glm-5';
     const requestBodies: Array<Record<string, unknown>> = [];
     const server = await startJsonServer(async (request, response) => {
       assert.equal(request.headers.authorization, 'Bearer tencent-coding-plan-test-key');
+      if (request.method === 'GET' && request.url === '/coding/v3/models') {
+        respondJson(response, 200, { object: 'list', data: [{ id: modelId }] });
+        return;
+      }
       assert.equal(request.method, 'POST');
       assert.equal(request.url, '/coding/v3/chat/completions');
       const body = JSON.parse(await readBody(request)) as Record<string, unknown>;
@@ -1643,10 +1661,7 @@ describe('models.dev provider conformance', () => {
     };
 
     const models = await fetchProviderModels(connection, 'tencent-coding-plan-test-key');
-    assert.deepEqual(
-      models.map(({ id }) => id),
-      ['tc-code-latest', 'glm-5', 'minimax-m2.5', 'kimi-k2.5'],
-    );
+    assert.deepEqual(models, [{ id: modelId }]);
 
     const result = await generateText({
       model: getAIModel({ connection, apiKey: 'tencent-coding-plan-test-key', modelId }),
@@ -1699,11 +1714,15 @@ describe('models.dev provider conformance', () => {
     assert.equal(result.text, 'Echoed hello.');
   });
 
-  test('Volcengine Ark Coding Plan preserves fallback model reasoning through a two-stage tool-call loop', async () => {
+  test('Volcengine Ark Coding Plan preserves discovered model reasoning through a two-stage tool-call loop', async () => {
     const modelId = 'glm-5.2';
     const requestBodies: Array<Record<string, unknown>> = [];
     const server = await startJsonServer(async (request, response) => {
       assert.equal(request.headers.authorization, 'Bearer volcengine-coding-plan-test-key');
+      if (request.method === 'GET' && request.url === '/api/coding/v3/models') {
+        respondJson(response, 200, { object: 'list', data: [{ id: modelId }] });
+        return;
+      }
       assert.equal(request.method, 'POST');
       assert.equal(request.url, '/api/coding/v3/chat/completions');
       const body = JSON.parse(await readBody(request)) as Record<string, unknown>;
@@ -1764,23 +1783,7 @@ describe('models.dev provider conformance', () => {
     };
 
     const models = await fetchProviderModels(connection, 'volcengine-coding-plan-test-key');
-    assert.deepEqual(
-      models.map(({ id }) => id),
-      [
-        'ark-code-latest',
-        'doubao-seed-2.0-code',
-        'doubao-seed-2.0-pro',
-        'doubao-seed-2.0-lite',
-        'doubao-seed-code',
-        'minimax-m2.7',
-        'minimax-m3',
-        'glm-5.2',
-        'deepseek-v4-flash',
-        'deepseek-v4-pro',
-        'kimi-k2.6',
-        'kimi-k2.7-code',
-      ],
-    );
+    assert.deepEqual(models, [{ id: modelId }]);
 
     const result = await generateText({
       model: getAIModel({ connection, apiKey: 'volcengine-coding-plan-test-key', modelId }),
@@ -1833,11 +1836,15 @@ describe('models.dev provider conformance', () => {
     assert.equal(result.text, 'Echoed hello.');
   });
 
-  test('Tencent Token Plan uses its official snapshot and preserves the exact model id through a two-stage tool-call loop', async () => {
+  test('Tencent Token Plan uses remote discovery and preserves the exact model id through a two-stage tool-call loop', async () => {
     const modelId = 'hy3';
     const requestBodies: Array<Record<string, unknown>> = [];
     const server = await startJsonServer(async (request, response) => {
       assert.equal(request.headers.authorization, 'Bearer tencent-token-plan-test-key');
+      if (request.method === 'GET' && request.url === '/plan/v3/models') {
+        respondJson(response, 200, { object: 'list', data: [{ id: modelId }] });
+        return;
+      }
       assert.equal(request.method, 'POST');
       assert.equal(request.url, '/plan/v3/chat/completions');
       const body = JSON.parse(await readBody(request)) as Record<string, unknown>;
@@ -1898,21 +1905,7 @@ describe('models.dev provider conformance', () => {
     };
 
     const models = await fetchProviderModels(connection, 'tencent-token-plan-test-key');
-    assert.deepEqual(
-      models.map(({ id }) => id),
-      [
-        'tc-code-latest',
-        'deepseek-v4-flash-202605',
-        'deepseek-v4-pro-202606',
-        'minimax-m2.5',
-        'minimax-m2.7',
-        'glm-5',
-        'glm-5.1',
-        'kimi-k2.5',
-        'hy3',
-        'hy3-preview',
-      ],
-    );
+    assert.deepEqual(models, [{ id: modelId }]);
 
     const result = await generateText({
       model: getAIModel({ connection, apiKey: 'tencent-token-plan-test-key', modelId }),
@@ -2101,21 +2094,23 @@ describe('models.dev provider conformance', () => {
       providerType: 'stepfun-step-plan',
       name: 'StepFun Step Plan (China)',
       apiKey: 'stepfun-step-plan-test-key',
-      models: ['step-3.7-flash', 'step-3.5-flash-2603', 'step-3.5-flash', 'step-router-v1'],
     },
     {
       label: 'Global',
       providerType: 'stepfun-ai-step-plan',
       name: 'StepFun Step Plan (Global)',
       apiKey: 'stepfun-global-step-plan-test-key',
-      models: ['step-3.7-flash', 'step-3.5-flash-2603', 'step-3.5-flash'],
     },
   ] as const)
-    test(`StepFun Step Plan ${stepfunPlan.label} preserves its snapshot model through the documented two-stage tool-call loop`, async () => {
+    test(`StepFun Step Plan ${stepfunPlan.label} preserves its discovered model through the documented two-stage tool-call loop`, async () => {
       const modelId = 'step-3.7-flash';
       const requestBodies: Array<Record<string, unknown>> = [];
       const server = await startJsonServer(async (request, response) => {
         assert.equal(request.headers.authorization, `Bearer ${stepfunPlan.apiKey}`);
+        if (request.method === 'GET' && request.url === '/step_plan/v1/models') {
+          respondJson(response, 200, { object: 'list', data: [{ id: modelId }] });
+          return;
+        }
         assert.equal(request.method, 'POST');
         assert.equal(request.url, '/step_plan/v1/chat/completions');
         const body = JSON.parse(await readBody(request)) as Record<string, unknown>;
@@ -2176,10 +2171,7 @@ describe('models.dev provider conformance', () => {
       };
 
       const models = await fetchProviderModels(connection, stepfunPlan.apiKey);
-      assert.deepEqual(
-        models.map((model) => model.id),
-        [...stepfunPlan.models],
-      );
+      assert.deepEqual(models, [{ id: modelId }]);
 
       const result = await generateText({
         model: getAIModel({ connection, apiKey: stepfunPlan.apiKey, modelId: models[0]!.id }),
@@ -2235,7 +2227,7 @@ describe('models.dev provider conformance', () => {
       assert.equal(result.text, 'Echoed hello.');
     });
 
-  test('Volcengine Ark preserves its snapshot model id through the documented two-stage tool-call loop', async () => {
+  test('Volcengine Ark preserves its fallback model id through the documented two-stage tool-call loop', async () => {
     const modelId = 'doubao-seed-2-0-pro-260215';
     const requestBodies: Array<Record<string, unknown>> = [];
     const server = await startJsonServer(async (request, response) => {

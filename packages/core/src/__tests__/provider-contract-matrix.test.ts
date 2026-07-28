@@ -122,8 +122,13 @@ describe('provider contract matrix — discovery derivation', () => {
     assert.equal(localai.state === 'generated' && localai.discovery?.auth, 'optional');
   });
 
-  it('marks fireworks / cohere / ollama discovery as override', () => {
-    for (const providerType of ['fireworks-ai', 'cohere', 'ollama'] as const) {
+  it('marks provider-native discovery as override', () => {
+    for (const providerType of [
+      'fireworks-ai',
+      'cohere',
+      'ollama',
+      'cloudflare-workers-ai',
+    ] as const) {
       const cell = cellFor(providerType, 'discovery');
       assert.equal(cell.state, 'override', `${providerType} discovery should be override`);
     }
@@ -133,19 +138,32 @@ describe('provider contract matrix — discovery derivation', () => {
     assert.equal(cellFor('github-copilot', 'discovery').state, 'override');
   });
 
-  it('marks fallback discovery not-applicable with a no-/models reverse assertion', () => {
+  it('generates protocol discovery for providers migrated from static fallback snapshots', () => {
     for (const providerType of [
-      'volcengine-ark',
       'tencent-coding-plan',
-      'cloudflare-workers-ai',
+      'volcengine-coding-plan',
+      'tencent-token-plan',
+      'xiaomi-token-plan-cn',
+      'stepfun-step-plan',
+      'alibaba-coding-plan',
+      'alibaba-token-plan',
     ] as const) {
       const cell = cellFor(providerType, 'discovery');
-      assert.equal(cell.state, 'not-applicable', `${providerType} discovery should be N/A`);
-      assert.equal(
-        cell.state === 'not-applicable' ? cell.reverseAssertion : undefined,
-        'must-not-request-models-endpoint',
-      );
+      assert.equal(cell.state, 'generated', `${providerType} discovery should be generated`);
     }
+  });
+
+  it('keeps inference-key-inaccessible control-plane discovery explicitly not applicable', () => {
+    const cell = cellFor('volcengine-ark', 'discovery');
+    assert.equal(cell.state, 'not-applicable');
+    assert.match(
+      cell.state === 'not-applicable' ? cell.reason : '',
+      /control-plane API.*AK\/SK signing/,
+    );
+    assert.equal(
+      cell.state === 'not-applicable' ? cell.reverseAssertion : undefined,
+      'must-not-request-models-endpoint',
+    );
   });
 });
 
@@ -274,7 +292,10 @@ describe('provider contract matrix — derivation is a total function over a fix
         status: 'phase3-experimental',
         protocol: 'openai',
         runtimeAdapter: { kind: 'unavailable' },
-        modelDiscovery: { kind: 'fallback' },
+        modelDiscovery: {
+          kind: 'fallback',
+          reason: 'The inference credential cannot access a model-list API',
+        },
         category: 'oauth',
       },
     };

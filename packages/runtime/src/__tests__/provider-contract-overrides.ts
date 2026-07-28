@@ -69,6 +69,11 @@ export const PROVIDER_CONTRACT_OVERRIDE_BINDINGS: readonly ProviderContractOverr
     run: runCohereDiscovery,
   },
   {
+    keys: ['cloudflare-workers-ai:discovery'],
+    title: 'Cloudflare Workers AI discovers text-generation models through its native catalog',
+    run: runCloudflareDiscovery,
+  },
+  {
     keys: ['zenmux:reasoning-replay'],
     title: 'ZenMux replays signed reasoning details in the streamed runtime tool loop',
     run: runZenMuxSignedReasoningReplay,
@@ -79,6 +84,45 @@ export const PROVIDER_CONTRACT_OVERRIDE_BINDINGS: readonly ProviderContractOverr
     run: runCustomOpenAIResponsesRelayWire,
   },
 ];
+
+async function runCloudflareDiscovery(): Promise<void> {
+  const server = await startJsonServer((request, response) => {
+    assert.equal(request.method, 'GET');
+    assert.equal(
+      request.url,
+      '/client/v4/accounts/account-123/ai/models/search?page=1&per_page=50',
+    );
+    assert.equal(request.headers.authorization, 'Bearer cloudflare-test-token');
+    respondJson(response, 200, {
+      success: true,
+      result: [
+        {
+          name: '@cf/meta/llama-text',
+          task: { id: 'text-generation', name: 'Text Generation' },
+        },
+        {
+          name: '@cf/black-forest-labs/flux-image',
+          task: { id: 'text-to-image', name: 'Text to Image' },
+        },
+      ],
+      result_info: { page: 1, total_pages: 1 },
+    });
+  });
+  const connection: LlmConnection = {
+    slug: 'cloudflare-workers-ai',
+    name: 'Cloudflare Workers AI',
+    providerType: 'cloudflare-workers-ai',
+    baseUrl: `${server.url}/client/v4/accounts/account-123/ai/v1`,
+    defaultModel: '@cf/meta/llama-text',
+    enabled: true,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+
+  assert.deepEqual(await fetchProviderModels(connection, 'cloudflare-test-token'), [
+    { id: '@cf/meta/llama-text' },
+  ]);
+}
 
 async function runGitHubCopilotDiscovery(): Promise<void> {
   const server = await startJsonServer((request, response) => {

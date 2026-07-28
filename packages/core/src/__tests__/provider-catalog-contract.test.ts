@@ -154,4 +154,21 @@ describe('provider catalog contract — structural invariants over CATALOG_PROVI
       }
     }
   });
+
+  it('requires an operational reason for every ready remote provider without live discovery', () => {
+    for (const [type, def] of Object.entries(PROVIDER_REGISTRY)) {
+      if (
+        def.status !== 'ready' ||
+        def.category === 'local' ||
+        def.category === 'custom' ||
+        def.modelDiscovery.kind !== 'fallback'
+      ) {
+        continue;
+      }
+      assert.ok(
+        def.modelDiscovery.reason.trim().length > 0,
+        `${type} must explain why its inference credential cannot discover models`,
+      );
+    }
+  });
 });

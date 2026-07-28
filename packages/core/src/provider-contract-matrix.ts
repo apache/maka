@@ -266,8 +266,15 @@ function discoveryCell(providerType: ProviderType, def: ProviderDefaults): Provi
       return {
         state: 'not-applicable',
         dimension: 'discovery',
-        reason: 'declares-static-fallback-model-snapshot',
+        reason: discovery.reason,
         reverseAssertion: 'must-not-request-models-endpoint',
+      };
+    case 'cloudflare':
+      return {
+        state: 'override',
+        dimension: 'discovery',
+        overrideKey: overrideKeyFor(providerType, 'discovery'),
+        contract: 'Cloudflare Workers AI native paginated /ai/models/search discovery',
       };
     case 'fireworks':
       return {

@@ -11,6 +11,147 @@ after(async () => {
 });
 
 describe('fetchProviderModels', () => {
+  test('Alibaba Coding Plan discovers the current remote catalog instead of returning its bundled snapshot', async () => {
+    const requests: Array<{ url: string; authorization: string | undefined }> = [];
+    const server = await startJsonServer((request, response) => {
+      requests.push({ url: request.url ?? '', authorization: request.headers.authorization });
+      respondJson(response, 200, {
+        object: 'list',
+        data: [{ id: 'qwen-next-after-release', object: 'model' }],
+      });
+    });
+
+    const models = await fetchProviderModels(
+      {
+        slug: 'alibaba-coding-plan',
+        name: 'Alibaba Coding Plan',
+        providerType: 'alibaba-coding-plan',
+        baseUrl: `${server.url}/v1`,
+        defaultModel: 'qwen3-coder-plus',
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      'alibaba-coding-plan-test-key',
+    );
+
+    assert.deepEqual(models, [{ id: 'qwen-next-after-release' }]);
+    assert.deepEqual(requests, [
+      {
+        url: '/v1/models',
+        authorization: 'Bearer alibaba-coding-plan-test-key',
+      },
+    ]);
+  });
+
+  test('fallback-only OpenAI-compatible providers use their inference credential for remote discovery', async () => {
+    const requests: Array<{ url: string; authorization: string | undefined }> = [];
+    const server = await startJsonServer((request, response) => {
+      requests.push({ url: request.url ?? '', authorization: request.headers.authorization });
+      respondJson(response, 200, {
+        object: 'list',
+        data: [{ id: 'provider-model-after-release', object: 'model' }],
+      });
+    });
+    const providerTypes = [
+      'tencent-coding-plan',
+      'volcengine-coding-plan',
+      'tencent-token-plan',
+      'xiaomi-token-plan-cn',
+      'xiaomi-token-plan-sgp',
+      'xiaomi-token-plan-ams',
+      'stepfun-step-plan',
+      'stepfun-ai-step-plan',
+      'alibaba-coding-plan-cn',
+      'alibaba-token-plan-cn',
+      'alibaba-token-plan',
+    ] as const;
+
+    for (const providerType of providerTypes) {
+      const models = await fetchProviderModels(
+        {
+          slug: providerType,
+          name: providerType,
+          providerType,
+          baseUrl: `${server.url}/v1`,
+          defaultModel: 'bundled-model',
+          enabled: true,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        'provider-inference-key',
+      );
+      assert.deepEqual(models, [{ id: 'provider-model-after-release' }], providerType);
+    }
+
+    assert.equal(requests.length, providerTypes.length);
+    assert.ok(
+      requests.every(
+        (request) =>
+          request.url === '/v1/models' && request.authorization === 'Bearer provider-inference-key',
+      ),
+    );
+  });
+
+  test('Cloudflare Workers AI discovers text-generation models through its native paginated API', async () => {
+    const requests: Array<{ url: string; authorization: string | undefined }> = [];
+    const server = await startJsonServer((request, response) => {
+      requests.push({ url: request.url ?? '', authorization: request.headers.authorization });
+      const page = new URL(request.url ?? '', 'http://test.local').searchParams.get('page');
+      respondJson(response, 200, {
+        success: true,
+        result:
+          page === '2'
+            ? [
+                {
+                  id: 'numeric-internal-id-2',
+                  name: '@cf/qwen/qwen-next',
+                  task: { id: 'text-generation', name: 'Text Generation' },
+                },
+              ]
+            : [
+                {
+                  id: 'numeric-internal-id-1',
+                  name: '@cf/meta/llama-next',
+                  task: { id: 'text-generation', name: 'Text Generation' },
+                },
+                {
+                  id: 'image-model',
+                  name: '@cf/black-forest-labs/flux-next',
+                  task: { id: 'text-to-image', name: 'Text to Image' },
+                },
+              ],
+        result_info: { page: Number(page), total_pages: 2 },
+      });
+    });
+
+    const models = await fetchProviderModels(
+      {
+        slug: 'cloudflare-workers-ai',
+        name: 'Cloudflare Workers AI',
+        providerType: 'cloudflare-workers-ai',
+        baseUrl: `${server.url}/client/v4/accounts/account-123/ai/v1`,
+        defaultModel: '@cf/meta/llama-next',
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      'cloudflare-api-token',
+    );
+
+    assert.deepEqual(models, [{ id: '@cf/meta/llama-next' }, { id: '@cf/qwen/qwen-next' }]);
+    assert.deepEqual(requests, [
+      {
+        url: '/client/v4/accounts/account-123/ai/models/search?page=1&per_page=50',
+        authorization: 'Bearer cloudflare-api-token',
+      },
+      {
+        url: '/client/v4/accounts/account-123/ai/models/search?page=2&per_page=50',
+        authorization: 'Bearer cloudflare-api-token',
+      },
+    ]);
+  });
+
   test('OpenCode Zen and Go discover exact account model ids with their shared API-key auth shape', async () => {
     const requests: Array<{ url: string; authorization: string | undefined }> = [];
     const server = await startJsonServer((request, response) => {
@@ -623,7 +764,7 @@ describe('fetchProviderModels', () => {
     let capturedAccountId: string | string[] | undefined;
     const server = await startJsonServer((request, response) => {
       capturedAccountId = request.headers['chatgpt-account-id'];
-      respondJson(response, 200, { models: [] });
+      respondJson(response, 200, { models: [{ slug: 'gpt-5.6-sol' }] });
     });
     await fetchProviderModels(
       {
@@ -663,9 +804,30 @@ describe('fetchProviderModels', () => {
     );
   });
 
-  test('successful empty provider responses stay fetched-empty instead of falling back', async () => {
+  test('discovery rejects empty responses so callers preserve the last usable snapshot', async () => {
     const server = await startJsonServer((_request, response) => {
       respondJson(response, 200, { data: [] });
+    });
+
+    await assert.rejects(
+      fetchProviderModels({ ...zaiConnection(), baseUrl: server.url }, 'zai-live-secret'),
+      /Failed to fetch provider models/,
+    );
+  });
+
+  test('discovery trims model IDs, drops malformed entries, and deduplicates before persistence', async () => {
+    const server = await startJsonServer((_request, response) => {
+      respondJson(response, 200, {
+        data: [
+          { id: ' model-a ' },
+          { id: 'model-a' },
+          { id: '' },
+          { id: 42 },
+          { id: 'bad\nmodel' },
+          { id: 'x'.repeat(513) },
+          { id: 'model-b', name: 'Model B' },
+        ],
+      });
     });
 
     const models = await fetchProviderModels(
@@ -673,7 +835,7 @@ describe('fetchProviderModels', () => {
       'zai-live-secret',
     );
 
-    assert.deepEqual(models, []);
+    assert.deepEqual(models, [{ id: 'model-a' }, { id: 'model-b', displayName: 'Model B' }]);
   });
 });
 

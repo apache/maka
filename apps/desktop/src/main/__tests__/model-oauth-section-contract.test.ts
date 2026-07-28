@@ -316,10 +316,36 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     assert.match(src, /\.\.\.\(normalizedApiKey \? \{ apiKey: normalizedApiKey \} : \{\}\)/);
     assert.match(
       src,
-      /defaults\.category === 'local'[\s\S]*props\.bridge\.fetchModels\(connection\.slug\)[\s\S]*props\.onCreated\(connection\.slug, modelDiscoveryError\)/,
-      'new local-provider connections must immediately discover the daemon model catalog',
+      /const supportsRemoteDiscovery = defaults\.modelDiscovery\.kind !== 'fallback';[\s\S]*if \(supportsRemoteDiscovery\) \{[\s\S]*props\.bridge\.fetchModels\(connection\.slug\)[\s\S]*props\.onCreated\(connection\.slug, modelDiscoveryError\)/,
+      'new connections with a discovery strategy must fetch the current catalog immediately',
     );
     assert.doesNotMatch(src, /ProviderPageHeader|providerInlineEditor/, 'creation must not retain an in-pane child editor');
+  });
+
+  it('refreshes discoverable providers after credential or endpoint changes', async () => {
+    const detail = await readFile(
+      resolve(
+        REPO_ROOT,
+        'apps',
+        'desktop',
+        'src',
+        'renderer',
+        'settings',
+        'use-connection-detail.ts',
+      ),
+      'utf8',
+    );
+
+    assert.match(
+      detail,
+      /const supportsRemoteDiscovery = defaults\.modelDiscovery\.kind !== 'fallback';/,
+      'connection detail must derive refresh support from the provider discovery contract',
+    );
+    assert.match(
+      detail,
+      /if \([\s\S]*supportsRemoteDiscovery[\s\S]*&&[\s\S]*\(wroteNewKey \|\| hasBaseUrlChange \|\| models\.length === 0\)[\s\S]*\) \{[\s\S]*refreshModels\(\{ silent: true \}\)/,
+      'saving a new credential or endpoint must refresh the remote model catalog',
+    );
   });
 
   it('OAuth login uses the same centered connection dialog as API providers', async () => {

@@ -66,7 +66,7 @@ describe('ProviderAuth contract', () => {
     expect(contract.actionAvailability.fetch_models).toBe('available');
   });
 
-  test('Cloudflare Workers AI uses API-token auth with honest snapshot model discovery', () => {
+  test('Cloudflare Workers AI uses API-token auth with native model discovery', () => {
     const contract = deriveProviderAuthContract({
       providerType: 'cloudflare-workers-ai',
       hasSecret: true,
@@ -76,10 +76,10 @@ describe('ProviderAuth contract', () => {
     expect(contract.setupMode).toBe('api_key');
     expect(contract.requiresSecret).toBe(true);
     expect(contract.actionAvailability.test_credentials).toBe('available');
-    expect(contract.actionAvailability.fetch_models).toBe('hidden');
+    expect(contract.actionAvailability.fetch_models).toBe('available');
   });
 
-  test('Volcengine Ark Coding Plan uses an isolated API key and hides unsupported refresh', () => {
+  test('Volcengine Ark Coding Plan uses an isolated API key and remote refresh', () => {
     const contract = deriveProviderAuthContract({
       providerType: 'volcengine-coding-plan',
       hasSecret: true,
@@ -89,10 +89,10 @@ describe('ProviderAuth contract', () => {
     expect(contract.setupMode).toBe('api_key');
     expect(contract.requiresSecret).toBe(true);
     expect(contract.actionAvailability.test_credentials).toBe('available');
-    expect(contract.actionAvailability.fetch_models).toBe('hidden');
+    expect(contract.actionAvailability.fetch_models).toBe('available');
   });
 
-  test('Tencent Token Plan uses an independent API key and fallback-model flow', () => {
+  test('Tencent Token Plan uses an independent API key and remote model flow', () => {
     const contract = deriveProviderAuthContract({
       providerType: 'tencent-token-plan',
       hasSecret: true,
@@ -102,10 +102,10 @@ describe('ProviderAuth contract', () => {
     expect(contract.setupMode).toBe('api_key');
     expect(contract.requiresSecret).toBe(true);
     expect(contract.actionAvailability.test_credentials).toBe('available');
-    expect(contract.actionAvailability.fetch_models).toBe('hidden');
+    expect(contract.actionAvailability.fetch_models).toBe('available');
   });
 
-  test('Alibaba Token Plan variants use an independent API key and fallback-model flow', () => {
+  test('Alibaba Token Plan variants use an independent API key and remote model flow', () => {
     for (const providerType of ['alibaba-token-plan-cn', 'alibaba-token-plan'] as const) {
       const contract = deriveProviderAuthContract({ providerType, hasSecret: true });
 
@@ -113,7 +113,7 @@ describe('ProviderAuth contract', () => {
       expect(contract.setupMode).toBe('api_key');
       expect(contract.requiresSecret).toBe(true);
       expect(contract.actionAvailability.test_credentials).toBe('available');
-      expect(contract.actionAvailability.fetch_models).toBe('hidden');
+      expect(contract.actionAvailability.fetch_models).toBe('available');
     }
   });
 
@@ -122,7 +122,7 @@ describe('ProviderAuth contract', () => {
     'xiaomi-token-plan-sgp',
     'xiaomi-token-plan-ams',
   ] as const) {
-    test(`${providerType} uses an independent API key and fallback-model flow`, () => {
+    test(`${providerType} uses an independent API key and remote model flow`, () => {
       const contract = deriveProviderAuthContract({
         providerType,
         hasSecret: true,
@@ -132,11 +132,11 @@ describe('ProviderAuth contract', () => {
       expect(contract.setupMode).toBe('api_key');
       expect(contract.requiresSecret).toBe(true);
       expect(contract.actionAvailability.test_credentials).toBe('available');
-      expect(contract.actionAvailability.fetch_models).toBe('hidden');
+      expect(contract.actionAvailability.fetch_models).toBe('available');
     });
   }
 
-  test('Tencent Coding Plan uses the shared API-key credential and fallback-model flow', () => {
+  test('Tencent Coding Plan uses the shared API-key credential and remote model flow', () => {
     const contract = deriveProviderAuthContract({
       providerType: 'tencent-coding-plan',
       hasSecret: true,
@@ -146,10 +146,10 @@ describe('ProviderAuth contract', () => {
     expect(contract.setupMode).toBe('api_key');
     expect(contract.requiresSecret).toBe(true);
     expect(contract.actionAvailability.test_credentials).toBe('available');
-    expect(contract.actionAvailability.fetch_models).toBe('hidden');
+    expect(contract.actionAvailability.fetch_models).toBe('available');
   });
 
-  test('Alibaba Coding Plan (China) uses an independent API key and fallback-model flow', () => {
+  test('Alibaba Coding Plan (China) uses an independent API key and remote model flow', () => {
     const contract = deriveProviderAuthContract({
       providerType: 'alibaba-coding-plan-cn',
       hasSecret: true,
@@ -159,10 +159,10 @@ describe('ProviderAuth contract', () => {
     expect(contract.setupMode).toBe('api_key');
     expect(contract.requiresSecret).toBe(true);
     expect(contract.actionAvailability.test_credentials).toBe('available');
-    expect(contract.actionAvailability.fetch_models).toBe('hidden');
+    expect(contract.actionAvailability.fetch_models).toBe('available');
   });
 
-  test('Alibaba Coding Plan (global) uses an independent API key and fallback-model flow', () => {
+  test('Alibaba Coding Plan (global) uses an independent API key and remote model flow', () => {
     const contract = deriveProviderAuthContract({
       providerType: 'alibaba-coding-plan',
       hasSecret: true,
@@ -172,7 +172,7 @@ describe('ProviderAuth contract', () => {
     expect(contract.setupMode).toBe('api_key');
     expect(contract.requiresSecret).toBe(true);
     expect(contract.actionAvailability.test_credentials).toBe('available');
-    expect(contract.actionAvailability.fetch_models).toBe('hidden');
+    expect(contract.actionAvailability.fetch_models).toBe('available');
   });
 
   test('StepFun Global uses an independent API-key credential and model-discovery flow', () => {
@@ -201,7 +201,7 @@ describe('ProviderAuth contract', () => {
     expect(contract.actionAvailability.fetch_models).toBe('available');
   });
 
-  test('StepFun Step Plan China uses an independent API-key credential and snapshot-model flow', () => {
+  test('StepFun Step Plan China uses an independent API-key credential and remote model flow', () => {
     const contract = deriveProviderAuthContract({
       providerType: 'stepfun-step-plan',
       hasSecret: true,
@@ -211,10 +211,10 @@ describe('ProviderAuth contract', () => {
     expect(contract.setupMode).toBe('api_key');
     expect(contract.requiresSecret).toBe(true);
     expect(contract.actionAvailability.test_credentials).toBe('available');
-    expect(contract.actionAvailability.fetch_models).toBe('hidden');
+    expect(contract.actionAvailability.fetch_models).toBe('available');
   });
 
-  test('StepFun Step Plan Global uses an independent API-key credential and snapshot-model flow', () => {
+  test('StepFun Step Plan Global uses an independent API-key credential and remote model flow', () => {
     const contract = deriveProviderAuthContract({
       providerType: 'stepfun-ai-step-plan',
       hasSecret: true,
@@ -224,10 +224,10 @@ describe('ProviderAuth contract', () => {
     expect(contract.setupMode).toBe('api_key');
     expect(contract.requiresSecret).toBe(true);
     expect(contract.actionAvailability.test_credentials).toBe('available');
-    expect(contract.actionAvailability.fetch_models).toBe('hidden');
+    expect(contract.actionAvailability.fetch_models).toBe('available');
   });
 
-  test('Volcengine Ark China uses the shared API-key credential and snapshot-model flow', () => {
+  test('Volcengine Ark China keeps refresh hidden because discovery requires control-plane credentials', () => {
     const contract = deriveProviderAuthContract({
       providerType: 'volcengine-ark',
       hasSecret: true,

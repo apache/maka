@@ -6,6 +6,10 @@ import {
   type ModelInfo,
 } from '@maka/core/llm-connections';
 import { generalizedErrorMessage } from '@maka/core/redaction';
+import {
+  CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
+  CONNECTION_MODEL_ID_MAX_LENGTH,
+} from '@maka/core/runtime-policy';
 import { proxiedFetch } from './bots/proxied-fetch.js';
 import { anthropicV1Url, googleApiUrl } from './provider-urls.js';
 import { claudeSubscriptionHeaders, openAiCodexHeaders } from './subscription-auth.js';
@@ -51,6 +55,14 @@ type RawCohereModel = {
   context_length?: number;
 };
 
+type RawCloudflareModel = {
+  name?: unknown;
+  task?: {
+    id?: unknown;
+    name?: unknown;
+  };
+};
+
 type RawGitHubCopilotModel = {
   id?: string;
   name?: string;
@@ -85,7 +97,7 @@ export async function fetchProviderModels(
   apiKey: string,
 ): Promise<ModelInfo[]> {
   try {
-    return await fetchProviderModelsStrict(connection, apiKey);
+    return validateDiscoveredModels(await fetchProviderModelsStrict(connection, apiKey));
   } catch (error) {
     // Preserve status-bearing discovery errors so the sync layer can classify
     // auth/protocol/network failures; only wrap unknown errors for display.
@@ -129,6 +141,9 @@ async function fetchProviderModelsStrict(
   }
   if (discovery.kind === 'cohere') {
     return fetchCohereModels(baseUrl, apiKey);
+  }
+  if (discovery.kind === 'cloudflare') {
+    return fetchCloudflareModels(baseUrl, apiKey);
   }
   if (discovery.auth === 'github-copilot') {
     return fetchGitHubCopilotModels(baseUrl, apiKey);
@@ -200,6 +215,86 @@ async function fetchProviderModelsStrict(
     case 'cohere':
       throw new Error('Cohere requires native model discovery');
   }
+}
+
+async function fetchCloudflareModels(baseUrl: string, apiKey: string): Promise<ModelInfo[]> {
+  const models: ModelInfo[] = [];
+  let page = 1;
+  let totalPages = 1;
+  do {
+    const url = cloudflareModelsUrl(baseUrl, page);
+    const response = await proxiedFetch(url, {
+      headers: { authorization: `Bearer ${apiKey}` },
+      timeoutMs: MODEL_FETCH_TIMEOUT_MS,
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = (await response.json()) as {
+      success?: unknown;
+      result?: unknown;
+      result_info?: { total_pages?: unknown };
+    };
+    if (data.success !== true || !Array.isArray(data.result)) {
+      throw new Error('Invalid Cloudflare models response');
+    }
+    models.push(
+      ...data.result.flatMap((raw) => {
+        const model = raw as RawCloudflareModel;
+        const taskId = typeof model.task?.id === 'string' ? model.task.id.trim().toLowerCase() : '';
+        const taskName =
+          typeof model.task?.name === 'string' ? model.task.name.trim().toLowerCase() : '';
+        if (
+          typeof model.name !== 'string' ||
+          (taskId !== 'text-generation' && taskName !== 'text generation')
+        ) {
+          return [];
+        }
+        return [{ id: model.name }];
+      }),
+    );
+    const reportedTotalPages = data.result_info?.total_pages;
+    totalPages =
+      typeof reportedTotalPages === 'number' &&
+      Number.isInteger(reportedTotalPages) &&
+      reportedTotalPages >= page
+        ? reportedTotalPages
+        : page;
+    page += 1;
+  } while (page <= totalPages);
+  return models;
+}
+
+function cloudflareModelsUrl(baseUrl: string, page: number): string {
+  const url = new URL(baseUrl);
+  if (!/\/ai\/v1\/?$/.test(url.pathname)) {
+    throw new Error('Cloudflare Workers AI base URL must end with /ai/v1');
+  }
+  url.pathname = url.pathname.replace(/\/ai\/v1\/?$/, '/ai/models/search');
+  url.search = new URLSearchParams({ page: String(page), per_page: '50' }).toString();
+  return url.toString();
+}
+
+function validateDiscoveredModels(models: ModelInfo[]): ModelInfo[] {
+  const unique = new Map<string, ModelInfo>();
+  for (const model of models) {
+    if (typeof model?.id !== 'string') continue;
+    const id = model.id.trim();
+    if (
+      !id ||
+      id.length > CONNECTION_MODEL_ID_MAX_LENGTH ||
+      /[\u0000-\u001f\u007f]/.test(id) ||
+      unique.has(id)
+    ) {
+      continue;
+    }
+    unique.set(id, { ...model, id });
+    if (unique.size > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION) {
+      throw new Error('Provider returned too many models');
+    }
+  }
+  if (unique.size === 0) {
+    throw new Error('Provider returned no usable models');
+  }
+  return [...unique.values()];
 }
 
 export async function fetchGitHubCopilotModels(
