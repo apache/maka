@@ -306,6 +306,10 @@ type ShellCopy = {
   sessionSettingsActions: {
     permissionLabels: Record<ChatDefaultPermissionMode, string>;
     permissionDescriptions: Record<PermissionMode, string>;
+    bypassConfirmTitle: string;
+    bypassConfirmDescription: string;
+    bypassConfirmLabel: string;
+    bypassCancelLabel: string;
     permissionSwitched(label: string): string;
     permissionFailedTitle: string;
     permissionFallback: string;
@@ -910,11 +914,16 @@ const SHELL_COPY_BY_LOCALE = {
         bypass: '绕过沙箱',
       },
       permissionDescriptions: {
-        explore: '只读工具直通，写入或网络仍需确认。',
-        ask: '所有敏感工具调用前都会停下来征求允许或拒绝。',
-        execute: '常见工具直通；破坏性操作、特权操作和浏览器操作仍然确认。',
-        bypass: '跳过全部工具确认，包括破坏性操作、特权操作和浏览器操作。',
+        explore: '兼容模式：使用只读托管边界。',
+        ask: '自动：工作区内可写，网络受限；需要更大范围时询问。',
+        execute: '兼容模式：映射到自动沙箱边界。',
+        bypass: '绕过 Maka 管理的本地沙箱边界。',
       },
+      bypassConfirmTitle: '绕过此会话的沙箱？',
+      bypassConfirmDescription:
+        '本地工具将可以访问工作区外文件与网络。只有在你完全信任此任务时才继续。',
+      bypassConfirmLabel: '绕过沙箱',
+      bypassCancelLabel: '保持自动',
       permissionSwitched: (label: string) => `已切到 ${label}`,
       permissionFailedTitle: '切换权限模式失败',
       permissionFallback: '权限模式暂时无法切换，请稍后重试。',
@@ -1386,11 +1395,16 @@ const SHELL_COPY_BY_LOCALE = {
         bypass: 'Bypass sandbox',
       },
       permissionDescriptions: {
-        explore: 'Run read-only tools directly; confirm writes and network access.',
-        ask: 'Ask before every sensitive tool call.',
-        execute: 'Run common tools directly; confirm destructive, privileged, and browser actions.',
-        bypass: 'Skip all tool confirmations, including destructive, privileged, and browser actions.',
+        explore: 'Compatibility mode: use a managed read-only boundary.',
+        ask: 'Auto: write within the workspace, restrict network access, and ask before expanding.',
+        execute: 'Compatibility mode: map to the automatic sandbox boundary.',
+        bypass: 'Bypass the Maka-managed local sandbox boundary.',
       },
+      bypassConfirmTitle: 'Bypass the sandbox for this session?',
+      bypassConfirmDescription:
+        'Local tools will be able to access files outside the workspace and the network. Continue only if you fully trust this task.',
+      bypassConfirmLabel: 'Bypass sandbox',
+      bypassCancelLabel: 'Keep Auto',
       permissionSwitched: (label: string) => `Switched to ${label}`,
       permissionFailedTitle: 'Could not change permission mode',
       permissionFallback: 'The permission mode could not be changed. Try again later.',

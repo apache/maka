@@ -75,13 +75,10 @@ export function createAppShellSessionSettingsActions(deps: {
     if (
       mode === 'bypass' &&
       !(await toastApi.confirm({
-        title: uiLocale === 'zh' ? '绕过此会话的沙箱？' : 'Bypass the sandbox for this session?',
-        description:
-          uiLocale === 'zh'
-            ? '本地工具将可以访问工作区外文件与网络。只有在你完全信任此任务时才继续。'
-            : 'Local tools will be able to access files outside the workspace and the network. Continue only if you fully trust this task.',
-        confirmLabel: uiLocale === 'zh' ? '绕过沙箱' : 'Bypass sandbox',
-        cancelLabel: uiLocale === 'zh' ? '保持自动' : 'Keep Auto',
+        title: copy.bypassConfirmTitle,
+        description: copy.bypassConfirmDescription,
+        confirmLabel: copy.bypassConfirmLabel,
+        cancelLabel: copy.bypassCancelLabel,
         destructive: true,
       }))
     ) {
