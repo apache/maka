@@ -254,7 +254,7 @@ export const test = base.extend<{
   chatChromeDarwinWindow: Page;
   chatChromeWin32Window: Page;
   sidebarLongSessionsWindow: Page;
-  permissionWindow: Page;
+  sandboxBoundaryWindow: Page;
   staleSessionsWindow: Page;
   sessionWorkbarWindow: Page;
   botSettingsWindow: Page;
@@ -320,10 +320,10 @@ export const test = base.extend<{
       use,
     );
   },
-  // Permission takeover: boots a deterministic destructive request in the
+  // Sandbox-boundary takeover: boots a deterministic expansion request in the
   // real desktop shell so the composer-slot placement and non-modal behavior
   // are covered without a provider or test-only renderer state path.
-  permissionWindow: async ({}, use) => {
+  sandboxBoundaryWindow: async ({}, use) => {
     await withE2eWindow(
       { seed: false, readinessSelector: '.maka-sandbox-boundary-prompt', e2eFixtureScenario: 'sandbox-boundary', locale: 'zh' },
       use,
