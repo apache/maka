@@ -464,12 +464,9 @@ export class AgentRun {
     options: { requireTerminalWrite?: boolean; allowInteractionResume?: boolean } = {},
   ): Promise<void> {
     if (isTerminalRuntimeEvent(runtimeEvent)) {
-      if (!isPermissionHandoffTerminal(runtimeEvent)) {
-        await this.recordRuntimeEvents([runtimeEvent], {
-          requireTerminalWrite:
-            options.requireTerminalWrite ?? Boolean(this.input.runtimeEventStore),
-        });
-      }
+      await this.recordRuntimeEvents([runtimeEvent], {
+        requireTerminalWrite: options.requireTerminalWrite ?? Boolean(this.input.runtimeEventStore),
+      });
       await this.recordSessionEvent(sessionEvent, options);
       return;
     }
@@ -1480,16 +1477,9 @@ function redactTraceString(value: string): string {
 function errorMessage(error: unknown): string {
   return redactTraceString(error instanceof Error ? error.message : String(error));
 }
-function isPermissionHandoffTerminal(event: RuntimeEvent): boolean {
-  return event.actions?.stateDelta?.stopReason === 'permission_handoff';
-}
-
 function isInteractionResumeAck(event: SessionEvent): boolean {
   return (
-    event.type === 'permission_answer_ack' ||
-    event.type === 'permission_closure_ack' ||
-    (event.type === 'permission_decision_ack' && event.decision === 'allow') ||
-    event.type === 'user_question_answer_ack'
+    event.type === 'sandbox_boundary_decision_ack' || event.type === 'user_question_answer_ack'
   );
 }
 

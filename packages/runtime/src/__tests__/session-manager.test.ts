@@ -12454,28 +12454,15 @@ describe('SessionManager permission mode updates', () => {
     expect(turns.find((turn) => turn.turnId === 'turn-1')?.status).toBe('completed');
   });
 
-  test('marks permission handoff as waiting_for_user', async () => {
+  test('marks a sandbox boundary request waiting and blocks boundary mode changes', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
     const backends = new BackendRegistry();
-    backends.register(
-      'fake',
-      (ctx) =>
-        new EventBackend(ctx, [
-          {
-            type: 'permission_request',
-            kind: 'tool_permission',
-            requestId: 'pr-1',
-            toolUseId: 'tool-1',
-            toolName: 'Bash',
-            category: 'shell_safe',
-            reason: 'custom',
-            args: {},
-            rememberForTurnAllowed: true,
-          },
-          { type: 'complete', stopReason: 'permission_handoff' },
-        ]),
-    );
+    let backend: SandboxBoundaryWaitBackend | undefined;
+    backends.register('fake', (ctx) => {
+      backend = new SandboxBoundaryWaitBackend(ctx);
+      return backend;
+    });
     const manager = new SessionManager({
       store,
       runStore,
@@ -12486,107 +12473,27 @@ describe('SessionManager permission mode updates', () => {
     });
     const session = await manager.createSession(makeInput());
 
-    await drain(manager.sendMessage(session.id, { turnId: 'turn-1', text: 'hello' }));
+    const iterator = manager
+      .sendMessage(session.id, { turnId: 'turn-1', text: 'hello' })
+      [Symbol.asyncIterator]();
+    expect((await iterator.next()).value?.type).toBe('sandbox_boundary_request');
 
-    const header = await store.readHeader(session.id);
-    expect(header.status).toBe('waiting_for_user');
-    expect(header.blockedReason).toBe(undefined);
+    expect((await store.readHeader(session.id)).status).toBe('waiting_for_user');
     const [run] = await runStore.listSessionRuns(session.id);
-    const events = await runStore.readEvents(session.id, run!.runId);
-    expect(
-      events.some(
-        (event) =>
-          event.type === 'run_status_changed' && event.data?.sessionStatus === 'waiting_for_user',
-      ),
-    ).toBe(true);
-  });
-
-  test('startup recovery does not treat permission handoff as a completed run fact', async () => {
-    const store = new MemorySessionStore();
-    const runStore = new MemoryAgentRunStore();
-    const backends = new BackendRegistry();
-    backends.register(
-      'fake',
-      (ctx) =>
-        new EventBackend(ctx, [
-          {
-            type: 'permission_request',
-            kind: 'tool_permission',
-            requestId: 'pr-1',
-            toolUseId: 'tool-1',
-            toolName: 'Bash',
-            category: 'shell_safe',
-            reason: 'custom',
-            args: {},
-            rememberForTurnAllowed: true,
-          },
-          { type: 'complete', stopReason: 'permission_handoff' },
-        ]),
-    );
-    const manager = new SessionManager({
-      store,
-      runStore,
-      runtimeEventStore: runStore,
-      backends,
-      newId: nextId(),
-      now: nextNow(9_010),
-    });
-    const session = await manager.createSession(makeInput());
-
-    await drain(manager.sendMessage(session.id, { turnId: 'turn-1', text: 'hello' }));
-    const [runBeforeRecovery] = await runStore.listSessionRuns(session.id);
-    expect(runBeforeRecovery?.status).toBe('waiting_for_user');
-
-    await manager.recoverInterruptedSessions();
-
-    const [runAfterRecovery] = await runStore.listSessionRuns(session.id);
-    expect(runAfterRecovery?.status).toBe('failed');
-    expect(runAfterRecovery?.failureClass).toBe('app_restarted');
-    const [turn] = await store.listTurns(session.id);
-    expect(turn?.status).toBe('failed');
-    expect(turn?.errorClass).toBe('app_restarted');
-    const terminalEvents = (
-      await runStore.readRuntimeEvents(session.id, runAfterRecovery!.runId)
-    ).filter(isTerminalRuntimeEvent);
-    expect(terminalEvents).toHaveLength(1);
-    expect(terminalEvents[0]?.status).toBe('failed');
-  });
-
-  test('rejects mode changes while a tool permission request is waiting', async () => {
-    const store = new MemorySessionStore();
-    const backends = new BackendRegistry();
-    backends.register(
-      'fake',
-      (ctx) =>
-        new EventBackend(ctx, [
-          {
-            type: 'permission_request',
-            kind: 'tool_permission',
-            requestId: 'pr-1',
-            toolUseId: 'tool-1',
-            toolName: 'Bash',
-            category: 'shell_safe',
-            reason: 'custom',
-            args: {},
-            rememberForTurnAllowed: true,
-          },
-          { type: 'complete', stopReason: 'permission_handoff' },
-        ]),
-    );
-    const manager = new SessionManager({ store, backends, newId: nextId(), now: nextNow(9_500) });
-    const session = await manager.createSession(makeInput({ permissionMode: 'ask' }));
-
-    await drain(manager.sendMessage(session.id, { turnId: 'turn-1', text: 'hello' }));
-
+    expect(run?.status).toBe('waiting_for_user');
     await expectRejects(
-      manager.setPermissionMode(session.id, 'execute'),
-      /当前有工具调用正在等待确认/,
+      manager.setPermissionMode(session.id, 'bypass'),
+      /当前对话正在运行/,
     );
     expect((await store.readHeader(session.id)).permissionMode).toBe('ask');
-    const messages = await store.readMessages(session.id);
-    expect(
-      messages.some((message) => message.type === 'system_note' && message.kind === 'mode_change'),
-    ).toBe(false);
+
+    await manager.respondToSandboxBoundary(session.id, {
+      requestId: 'boundary-1',
+      decision: 'deny',
+    });
+    expect(backend?.responses).toEqual([{ requestId: 'boundary-1', decision: 'deny' }]);
+    while (!(await iterator.next()).done) {}
+    expect((await store.readHeader(session.id)).status).toBe('active');
   });
 
   test('marks backend errors as blocked with a generalized reason', async () => {
@@ -17652,6 +17559,65 @@ class EventBackend implements AgentBackend {
 
   async stop(): Promise<void> {}
   async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
+  async dispose(): Promise<void> {}
+}
+
+class SandboxBoundaryWaitBackend implements AgentBackend {
+  readonly kind = 'fake' as const;
+  readonly sessionId: string;
+  readonly responses: SandboxBoundaryResponse[] = [];
+  private readonly responseGate = makeGate();
+
+  constructor(ctx: BackendFactoryContext) {
+    this.sessionId = ctx.sessionId;
+  }
+
+  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    yield {
+      type: 'sandbox_boundary_request',
+      id: `${input.turnId}-request`,
+      turnId: input.turnId,
+      ts: 1,
+      requestId: 'boundary-1',
+      toolUseId: 'tool-1',
+      justification: 'Write the requested export.',
+      expansion: {
+        filesystem: {
+          entries: [{ path: '/tmp/export.txt', access: 'write', scope: 'exact' }],
+        },
+      },
+    };
+    await this.responseGate.promise;
+    const response = this.responses[0]!;
+    yield {
+      type: 'sandbox_boundary_decision_ack',
+      id: `${input.turnId}-decision`,
+      turnId: input.turnId,
+      ts: 2,
+      requestId: response.requestId,
+      toolUseId: 'tool-1',
+      decision: response.decision,
+      status: response.decision === 'allow' ? 'approved' : 'denied',
+      revision: response.decision === 'allow' ? 1 : 0,
+    };
+    yield {
+      type: 'complete',
+      id: `${input.turnId}-complete`,
+      turnId: input.turnId,
+      ts: 3,
+      stopReason: 'end_turn',
+    };
+  }
+
+  async stop(): Promise<void> {
+    this.responseGate.release();
+  }
+
+  async respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void> {
+    this.responses.push(response);
+    this.responseGate.release();
+  }
+
   async dispose(): Promise<void> {}
 }
 
