@@ -21,19 +21,13 @@ export interface PermissionModeMeta {
 }
 
 /**
- * PR-MOVE-PERMISSION-MODE (WAWQAQ msgs 47fe0d0e / 21993dcc / a667cf6c
- * 2026-06-23): the user-facing permission-mode picker is a three-option
- * dropdown. The `explore` (read-only) mode is not user-selectable — it
- * exists in the `PermissionMode` enum because Deep Research sessions and
- * Bot-incoming guards use it as their default; pickers collapse those
- * sessions to display 询问权限 so the user sees a coherent option.
+ * Internal sessions still use `explore` and legacy records may contain
+ * `execute`, so metadata remains complete for the persisted PermissionMode
+ * union. User-facing pickers expose only Auto (`ask`) and Bypass.
  *
- * Labels follow WAWQAQ's a667cf6c renaming — direct, action-led copy
- * instead of engineering shorthand.
- *
- * This module is the ONE home for the mode table and the shared picker —
- * both the composer and Settings → 通用 → 默认权限模式 render from it, so
- * labels/hints/markup can't drift between the two surfaces.
+ * This module is the one home for the mode table and shared picker: both the
+ * composer and Settings render from it so labels, hints, and markup cannot
+ * drift between the two surfaces.
  */
 const PERMISSION_MODE_TONE: Record<PermissionMode, PermissionModeMeta['tone']> = {
   explore: 'info', ask: 'accent', execute: 'info', bypass: 'destructive',
@@ -49,9 +43,7 @@ export function getPermissionModeMeta(locale: UiLocale): Record<PermissionMode, 
   };
 }
 
-/** User-selectable modes, in display order — the canonical non-`explore`
- *  list from @maka/core, aliased under the name the composer historically
- *  exported. */
+/** User-selectable modes in canonical display order. */
 export const PERMISSION_MODE_ORDER: readonly ChatDefaultPermissionMode[] = CHAT_DEFAULT_PERMISSION_MODES;
 
 /**
@@ -64,8 +56,8 @@ export const PERMISSION_MODE_ORDER: readonly ChatDefaultPermissionMode[] = CHAT_
  * hint in the popup so the user never has to select a mode to learn what
  * it does; the selected option carries the standard Select check indicator.
  *
- * `explore` collapses to `ask` for display (Deep Research uses it
- * internally; it's not a useful user toggle).
+ * Internal `explore` and legacy `execute` sessions collapse to Auto for
+ * display because neither is a user-selectable boundary mode.
  */
 export function PermissionModeSelect(props: {
   activeMode: PermissionMode;
