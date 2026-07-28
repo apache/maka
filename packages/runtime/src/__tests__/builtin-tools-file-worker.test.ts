@@ -106,6 +106,8 @@ describe('builtin file tools use the sandboxed worker', () => {
                 byteDelta: 1,
                 changed: true,
               };
+            case 'delete':
+              return { kind: 'delete', ok: true, path: input.operation.path };
             case 'glob':
               return { kind: 'glob', files: ['worker.ts'] };
             case 'grep':
