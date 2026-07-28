@@ -328,6 +328,25 @@ export class CuaDriverService {
           }`,
         );
       }
+      // Declaring a session also gives it a driver-drawn agent cursor, which
+      // appears on the session's first action. Maka draws its own, so leaving
+      // the driver's on means two cursors for one agent — and the driver's is
+      // positioned from its own geometry, which lands on the wrong display in a
+      // multi-monitor setup. Best-effort: this is presentation, and failing to
+      // turn it off is not a reason to refuse to start.
+      try {
+        await this.request(
+          'tools/call',
+          {
+            name: 'set_agent_cursor_enabled',
+            arguments: { session: this.runtimeSessionId, enabled: false },
+          },
+          { timeoutMs, retrySafe: true },
+        );
+      } catch {
+        // An older driver may not expose this tool; the cursor is cosmetic.
+      }
+      this.assertActive();
       this.state = 'ready';
     } catch (error) {
       this.kill('child_exit');
@@ -683,8 +702,45 @@ export class CuaDriverService {
     this.onExit(child, reason);
   }
 
+  /**
+   * Close the driver-side session before tearing the process down.
+   *
+   * `start_session` gives the session an agent cursor, and only `end_session`
+   * takes it away. Killing the proxy without this can leave that cursor drawn
+   * on the user's screen, outliving the run that created it — which is exactly
+   * what a leaked daemon did during real-machine testing.
+   *
+   * Best-effort by construction: it runs on a process that is already going
+   * away, so nothing here may block or throw into disposal.
+   */
+  private endSessionBestEffort(): void {
+    const child = this.child;
+    if (!child) return;
+    try {
+      child.stdin.write(
+        `${JSON.stringify({
+          jsonrpc: '2.0',
+          id: `end-${this.runtimeSessionId}`,
+          method: 'tools/call',
+          params: { name: 'end_session', arguments: { session: this.runtimeSessionId } },
+        })}\n`,
+      );
+    } catch {
+      // The child is already gone; the cursor dies with the process.
+    }
+  }
+
   dispose(): void {
     if (this.disposed) return;
+    // Close the session while the child is still usable — flipping to
+    // 'disposed' first would skip the cursor teardown entirely.
+    if (this.state === 'ready') {
+      try {
+        this.endSessionBestEffort();
+      } catch {
+        // Cursor cleanup must never prevent process cleanup.
+      }
+    }
     this.disposed = true;
     this.state = 'disposed';
     const starting = this.starting;
