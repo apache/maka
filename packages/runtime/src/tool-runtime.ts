@@ -24,11 +24,7 @@ import type {
   ToolStartEvent,
   UserQuestionRequestEvent,
 } from '@maka/core/events';
-import type {
-  PermissionDecisionMessage,
-  ToolCallMessage,
-  ToolResultMessage,
-} from '@maka/core/session';
+import type { ToolCallMessage, ToolResultMessage } from '@maka/core/session';
 import type {
   HostedInteractionBridge,
   HostedUserQuestionAnswer,
@@ -36,13 +32,7 @@ import type {
   PermissionDecision,
 } from '@maka/core/backend-types';
 import type { AgentSpec } from '@maka/core/runtime-inputs';
-import type {
-  PermissionMode,
-  ToolCategory,
-  ToolExecutionFacts,
-  ToolPermissionRule,
-} from '@maka/core/permission';
-import { classifyToolUse } from '@maka/core/permission';
+import type { PermissionMode, ToolCategory, ToolExecutionFacts } from '@maka/core/permission';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import type {
   UserQuestion,
@@ -56,7 +46,6 @@ import type { EffectiveOrchestration } from '@maka/core/orchestration';
 import { redactSecrets } from '@maka/core/redaction';
 import { TOOL_BOUNDARY_PROTOCOL_V1, type RuntimeEvent } from '@maka/core';
 
-import type { PermissionEngine } from './permission-engine.js';
 import { recordToolArtifactsSafely, type ToolArtifactRecorder } from './tool-artifacts.js';
 import { createToolOutputDeltaEmitter } from './tool-output-delta.js';
 import { truncateToolOutput } from './tool-output.js';
@@ -67,19 +56,6 @@ import { TurnScopedAwaitRegistry } from './turn-scoped-await-registry.js';
 import { jsonValue } from './tool-result-output.js';
 import type { ToolResultOutput } from './model-protocol.js';
 import {
-  AdditionalPermissionError,
-  revalidateAdditionalPermissionProposal,
-  type AdditionalPermissionPlannerContext,
-  type AdditionalPermissionPlanResult,
-  type ToolExecutionPermissionContext,
-} from './additional-permissions.js';
-import { ApprovalCoordinator, type AutoApprovalReviewContext } from './approval-reviewer.js';
-import {
-  SandboxEscalationError,
-  type SandboxEscalationPlanResult,
-  type SandboxEscalationPlannerContext,
-} from './sandbox-escalation.js';
-import {
   buildToolOperationId,
   canonicalToolArgsHash,
   type RuntimeCommitSink,
@@ -89,6 +65,15 @@ import { ChildAgentRunLimiter } from './child-agent-run-limiter.js';
 import type { AgentProfile } from './agent-catalog.js';
 import type { SubagentExecutionRef } from './subagent-execution.js';
 import { sandboxErrorMetadata, serializeSandboxError } from './sandbox/errors.js';
+import type {
+  AdditionalPermissionPlannerContext,
+  AdditionalPermissionPlanResult,
+  ToolExecutionPermissionContext,
+} from './additional-permissions.js';
+import type {
+  SandboxEscalationPlanResult,
+  SandboxEscalationPlannerContext,
+} from './sandbox-escalation.js';
 import {
   RuntimeInteractionAdmissionRejectedError,
   RuntimeInteractionClosedError,
@@ -126,10 +111,7 @@ export interface MakaTool<P = any, R = unknown> {
   description: string;
   /** Zod schema describing the tool's argument shape. */
   parameters: unknown;
-  /**
-   * If `false`, the base mode policy is skipped unless invocation-local rules
-   * are present. Explicit deny rules still apply to every tool.
-   */
+  /** Legacy metadata ignored by the session-boundary runtime. */
   permissionRequired?: boolean;
   /** Optional UI display name. */
   displayName?: string;
@@ -156,17 +138,17 @@ export interface MakaTool<P = any, R = unknown> {
     | ((context: { permissionMode: PermissionMode; cwd: string; args: P }) => {
         platformSandboxAvailable: boolean;
       });
-  /** Trusted runtime planner for one-call permission expansion. */
+  /** Legacy planner ignored by the session-boundary runtime. */
   planAdditionalPermissions?: (
     args: P,
     context: AdditionalPermissionPlannerContext,
   ) => Promise<AdditionalPermissionPlanResult> | AdditionalPermissionPlanResult;
-  /** Trusted runtime planner for one-call unsandboxed Bash execution. */
+  /** Legacy planner ignored by the session-boundary runtime. */
   planSandboxEscalation?: (
     args: P,
     context: SandboxEscalationPlannerContext,
   ) => Promise<SandboxEscalationPlanResult> | SandboxEscalationPlanResult;
-  /** Real tool implementation. Called only after permission allows. */
+  /** Real tool implementation. */
   impl: (args: P, ctx: MakaToolContext) => Promise<R> | R;
   /** Optional provider-visible content mapping, used for screenshot image parts. */
   toModelOutput?: (options: {
@@ -202,7 +184,7 @@ export interface MakaToolContext {
   ) => void;
   /** Trusted expert-team identity supplied by RuntimeKernel/backend wiring. */
   agentTeam?: AgentTeamExecutionContext;
-  /** One-call grants already approved and consumed by ToolRuntime. */
+  /** Legacy one-call grants ignored by ToolRuntime. */
   permissionContext?: ToolExecutionPermissionContext;
   spawnChildAgent?: (input: {
     spec: AgentSpec;
@@ -292,9 +274,7 @@ export interface AgentTeamExecutionContext {
   parentRunId?: string;
 }
 
-export type AppendMessageFn = (
-  m: ToolCallMessage | ToolResultMessage | PermissionDecisionMessage,
-) => Promise<void>;
+export type AppendMessageFn = (m: ToolCallMessage | ToolResultMessage) => Promise<void>;
 export type ToolTelemetryRecorder = (record: ToolInvocationRecord) => void;
 
 /**
@@ -343,7 +323,8 @@ export interface ToolRuntimeInput {
   connection: LlmConnection;
   modelId: string;
   appendMessage: AppendMessageFn;
-  permissionEngine: PermissionEngine;
+  /** Legacy engine ignored by the session-boundary runtime. */
+  permissionEngine?: unknown;
   readExecutionBoundary?: () => Promise<ExecutionBoundary>;
   createSandboxBoundaryRequest?: (
     input: CreateSandboxBoundaryRequest,
@@ -438,17 +419,15 @@ export interface ToolRuntimeInput {
     maxEvents?: number;
   }) => Promise<unknown>;
   getRunTrace?: () => RunTraceLike | null;
+  /** Legacy policy inputs ignored by the session-boundary runtime. */
+  permissionRules?: readonly unknown[];
+  approvalCoordinator?: unknown;
+  getAutoApprovalReviewContext?: () => unknown;
   permissionTimeoutMs?: number;
-  permissionRules?: readonly ToolPermissionRule[];
   recordToolInvocation?: ToolTelemetryRecorder;
   recordToolArtifacts?: ToolArtifactRecorder;
   /** Optional Phase 2 T1/T2 commit boundary. Omitted on legacy JSONL hosts. */
   runtimeCommitSink?: RuntimeCommitSink;
-  approvalCoordinator?: ApprovalCoordinator;
-  getAutoApprovalReviewContext?: () => Omit<
-    AutoApprovalReviewContext,
-    'sessionId' | 'turnId' | 'cwd' | 'permissionMode'
-  >;
 }
 
 interface DurableToolAttempt {
@@ -502,17 +481,12 @@ export class ToolRuntime {
   private failedToolCallStreak = 0;
   private lastAmbiguousComputerSignature: string | undefined;
   private readonly recentSandboxDenials = new Set<string>();
-  private readonly autoReviewEscalationAttempts = new Map<string, 'pending' | 'denied'>();
   private readonly durableToolAttempts = new Map<string, DurableToolAttempt>();
   private readonly stepAdmissions = new Map<
     string,
     { callCount: number; exclusiveToolName?: string }
   >();
-  private readonly approvalCoordinator: ApprovalCoordinator;
-
-  constructor(private readonly input: ToolRuntimeInput) {
-    this.approvalCoordinator = input.approvalCoordinator ?? new ApprovalCoordinator({});
-  }
+  constructor(private readonly input: ToolRuntimeInput) {}
 
   beginTurn(turnId: string, hostedInteraction?: HostedInteractionBridge): void {
     if (
@@ -693,7 +667,6 @@ export class ToolRuntime {
     this.failedToolCallStreak = 0;
     this.lastAmbiguousComputerSignature = undefined;
     this.recentSandboxDenials.clear();
-    this.autoReviewEscalationAttempts.clear();
     this.durableToolAttempts.clear();
     this.stepAdmissions.clear();
   }
@@ -848,7 +821,6 @@ export class ToolRuntime {
     trace?.emit('tool', 'tool_started', 'Tool execution started', {
       toolUseId,
       toolName: tool.name,
-      permissionRequired: tool.permissionRequired !== false,
       ...(tool.categoryHint !== undefined ? { categoryHint: tool.categoryHint } : {}),
     });
     const callSignature = `${tool.name} ${loopGateArgsKey(executionArgs, toolUseId)}`;
@@ -972,467 +944,6 @@ export class ToolRuntime {
       return this.errorReturn(reason);
     }
 
-    let additionalPlan: AdditionalPermissionPlanResult = {
-      kind: 'not_required',
-    };
-    if (tool.planAdditionalPermissions) {
-      try {
-        const plannerContext: AdditionalPermissionPlannerContext = Object.freeze({
-          sessionId: this.input.sessionId,
-          turnId,
-          toolUseId,
-          toolName: tool.name,
-          category: classifyToolUse({
-            toolName: tool.name,
-            args: executionArgs,
-            ...(tool.categoryHint !== undefined ? { categoryHint: tool.categoryHint } : {}),
-          }),
-          cwd: this.input.header.cwd,
-          mode: this.input.header.permissionMode,
-          args: executionArgs,
-        });
-        const planned = await tool.planAdditionalPermissions(
-          executionArgs as never,
-          plannerContext,
-        );
-        if (!isAdditionalPermissionPlanResult(planned)) {
-          throw new AdditionalPermissionError({
-            stage: 'planning',
-            reason: 'invalid_additional_permissions',
-            message: 'Additional permission planner returned an invalid result.',
-          });
-        }
-        additionalPlan = planned;
-      } catch (error) {
-        additionalPlan = {
-          kind: 'block',
-          reason: 'invalid_additional_permissions',
-          message: formatSyntheticToolErrorText(error),
-        };
-      }
-      if (additionalPlan.kind === 'block') {
-        const reason = formatSyntheticToolErrorText(additionalPlan.message);
-        trace?.emit('permission', 'permission_failed', 'Additional permission planning failed', {
-          toolUseId,
-          toolName: tool.name,
-          requestKind: 'additional_permissions',
-          reason: additionalPlan.reason,
-        });
-        await this.writeSyntheticToolResult(toolUseId, turnId, reason, queue);
-        this.recordLoopGateOutcome(callSignature, true);
-        return this.errorReturn(reason);
-      }
-    }
-
-    let escalationPlan: SandboxEscalationPlanResult = { kind: 'not_required' };
-    if (tool.planSandboxEscalation) {
-      try {
-        const plannerContext: SandboxEscalationPlannerContext = Object.freeze({
-          sessionId: this.input.sessionId,
-          turnId,
-          toolUseId,
-          toolName: tool.name,
-          category: classifyToolUse({
-            toolName: tool.name,
-            args: executionArgs,
-            ...(tool.categoryHint !== undefined ? { categoryHint: tool.categoryHint } : {}),
-          }),
-          cwd: this.input.header.cwd,
-          mode: this.input.header.permissionMode,
-          args: executionArgs,
-          ...(this.recentSandboxDenials.has(
-            sandboxDenialKey(tool.name, this.input.header.cwd, executionArgs),
-          )
-            ? { recentSandboxDenial: true }
-            : {}),
-        });
-        const planned = await tool.planSandboxEscalation(executionArgs as never, plannerContext);
-        if (!isSandboxEscalationPlanResult(planned)) {
-          throw new SandboxEscalationError({
-            stage: 'planning',
-            reason: 'invalid_sandbox_escalation',
-            message: 'Sandbox escalation planner returned an invalid result.',
-          });
-        }
-        escalationPlan = planned;
-      } catch (error) {
-        escalationPlan = {
-          kind: 'block',
-          reason: 'invalid_sandbox_escalation',
-          message: formatSyntheticToolErrorText(error),
-        };
-      }
-      if (escalationPlan.kind === 'block') {
-        const reason = formatSyntheticToolErrorText(escalationPlan.message);
-        trace?.emit(
-          'permission',
-          'sandbox_escalation_failed',
-          'Sandbox escalation planning failed',
-          {
-            toolUseId,
-            toolName: tool.name,
-            reason: escalationPlan.reason,
-          },
-        );
-        await this.writeSyntheticToolResult(toolUseId, turnId, reason, queue);
-        this.recordLoopGateOutcome(callSignature, true);
-        return this.errorReturn(reason);
-      }
-    }
-
-    if (additionalPlan.kind === 'request' && escalationPlan.kind === 'request') {
-      const reason =
-        'A tool call cannot request additional permissions and unsandboxed execution together.';
-      await this.writeSyntheticToolResult(toolUseId, turnId, reason, queue);
-      this.recordLoopGateOutcome(callSignature, true);
-      return this.errorReturn(reason);
-    }
-
-    let autoReviewEscalationKey: string | undefined;
-    if (this.input.header.permissionMode === 'execute' && escalationPlan.kind === 'request') {
-      autoReviewEscalationKey = `${turnId}\u0000${escalationPlan.proposal.commandHash}`;
-      const priorAttempt = this.autoReviewEscalationAttempts.get(autoReviewEscalationKey);
-      if (priorAttempt) {
-        const reason =
-          priorAttempt === 'pending'
-            ? '相同的 sandbox 提权请求正在自动审批；为防止重复送审，本轮不会再次执行。'
-            : '相同的 sandbox 提权请求已在当前轮次中被自动审批拒绝；需要用户发送新的消息后才能重新申请。';
-        trace?.emit(
-          'permission',
-          'sandbox_escalation_failed',
-          'Repeated automatic escalation review blocked',
-          {
-            toolUseId,
-            toolName: tool.name,
-            reason: 'sandbox_escalation_denied',
-          },
-        );
-        await this.writeSyntheticToolResult(toolUseId, turnId, reason, queue);
-        this.recordLoopGateOutcome(callSignature, true);
-        return this.errorReturn(reason);
-      }
-      this.autoReviewEscalationAttempts.set(autoReviewEscalationKey, 'pending');
-    }
-
-    const permissionRules = this.permissionRulesFor(tool.name);
-    if (additionalPlan.kind === 'request' || escalationPlan.kind === 'request') {
-      const hostedInteraction = this.interactionRun(turnId);
-      const currentRunId = hostedInteraction?.runId ?? this.input.getCurrentRunId?.();
-      const verdict = this.input.permissionEngine.evaluate({
-        sessionId: this.input.sessionId,
-        turnId,
-        ...(currentRunId ? { runId: currentRunId } : {}),
-        ...(hostedInteraction ? { hostedInteraction } : {}),
-        toolUseId,
-        toolName: tool.name,
-        args: structuredClone(additionalPlan.kind === 'request' ? executionArgs : permissionArgs),
-        ...(tool.categoryHint !== undefined ? { categoryHint: tool.categoryHint } : {}),
-        ...(tool.executionFacts !== undefined ? { executionFacts: tool.executionFacts } : {}),
-        permissionRequired: tool.permissionRequired !== false,
-        ...(permissionRules.length > 0 ? { permissionRules } : {}),
-        ...(tool.sandbox !== undefined
-          ? {
-              sandbox:
-                typeof tool.sandbox === 'function'
-                  ? tool.sandbox({
-                      permissionMode: this.input.header.permissionMode,
-                      cwd: this.input.header.cwd,
-                      args: structuredClone(executionArgs),
-                    })
-                  : tool.sandbox,
-            }
-          : {}),
-        mode: this.input.header.permissionMode,
-        cwd:
-          escalationPlan.kind === 'request' ? escalationPlan.proposal.cwd : this.input.header.cwd,
-        ...(additionalPlan.kind === 'request'
-          ? { additionalPermissionProposal: additionalPlan.proposal }
-          : {}),
-        ...(escalationPlan.kind === 'request'
-          ? { sandboxEscalationProposal: escalationPlan.proposal }
-          : {}),
-      });
-
-      if (verdict.kind === 'block') {
-        if (autoReviewEscalationKey) {
-          this.autoReviewEscalationAttempts.set(autoReviewEscalationKey, 'denied');
-        }
-        if (verdict.decisionEvent) {
-          await this.input.appendMessage({
-            type: 'permission_decision',
-            id: verdict.decisionEvent.requestId,
-            turnId,
-            ts: verdict.decisionEvent.ts,
-            toolUseId,
-            toolName: tool.name,
-            decision: 'deny',
-          });
-          if (!hostedInteraction) queue.push(verdict.decisionEvent);
-        }
-        trace?.emit('permission', 'permission_failed', 'Permission blocked tool execution', {
-          toolUseId,
-          toolName: tool.name,
-          verdict: verdict.kind,
-          reason: verdict.reason,
-        });
-        await this.writeSyntheticToolResult(toolUseId, turnId, verdict.reason, queue);
-        trace?.emit('tool', 'tool_failed', 'Tool execution failed before implementation', {
-          toolUseId,
-          toolName: tool.name,
-          status: 'error',
-          errorClass: 'Permission',
-        });
-        this.recordLoopGateOutcome(callSignature, true);
-        return this.errorReturn(verdict.reason);
-      }
-
-      if (verdict.kind === 'prompt') {
-        const hostedRun = this.interactionRun(turnId);
-        const reviewContext: AutoApprovalReviewContext = {
-          sessionId: this.input.sessionId,
-          turnId,
-          cwd:
-            escalationPlan.kind === 'request' ? escalationPlan.proposal.cwd : this.input.header.cwd,
-          permissionMode: this.input.header.permissionMode,
-          ...this.input.getAutoApprovalReviewContext?.(),
-        };
-        const isEscalation = verdict.event.kind === 'sandbox_escalation';
-        let admissionState: 'pending' | 'settled' | undefined;
-        if (hostedRun) {
-          void verdict.parked.catch(() => undefined);
-          const settlement = verdict.settlement;
-          if (!settlement) {
-            throw new RuntimeInteractionInvariantError(
-              `Hosted permission ${verdict.event.requestId} has no PermissionEngine settlement`,
-            );
-          }
-          try {
-            const admission = await hostedRun.admitPermissionRequest({
-              request: verdict.event,
-              ...(verdict.rememberScopeId ? { rememberScopeId: verdict.rememberScopeId } : {}),
-              settlement,
-            });
-            admissionState = admission.state;
-          } catch (error) {
-            this.input.permissionEngine.rejectRequest(
-              turnId,
-              verdict.event.requestId,
-              error instanceof Error
-                ? error
-                : new RuntimeInteractionFailStopError(
-                    `Could not confirm admission for permission ${verdict.event.requestId}`,
-                    error,
-                  ),
-            );
-            await verdict.parked.catch(() => undefined);
-            throw interactionAuthorityError(
-              `Could not confirm admission for permission ${verdict.event.requestId}`,
-              error,
-            );
-          }
-        }
-        if (admissionState !== 'settled') {
-          trace?.emit('permission', 'approval_routed', 'Permission request routed to reviewer', {
-            requestId: verdict.event.requestId,
-            toolUseId,
-            toolName: tool.name,
-            reviewer: this.input.header.permissionMode === 'execute' ? 'auto_review' : 'user',
-            requestKind: verdict.event.kind,
-          });
-          trace?.emit(
-            'permission',
-            isEscalation ? 'sandbox_escalation_requested' : 'permission_requested',
-            'Permission requested',
-            {
-              requestId: verdict.event.requestId,
-              toolUseId,
-              toolName: tool.name,
-              category: verdict.event.category,
-              requestKind: verdict.event.kind,
-            },
-          );
-        }
-        let response: PermissionDecision;
-        try {
-          response =
-            admissionState === 'settled'
-              ? await verdict.parked
-              : await this.awaitPermissionDecision(
-                  verdict,
-                  turnId,
-                  () =>
-                    this.approvalCoordinator.resolve({
-                      mode: this.input.header.permissionMode,
-                      verdict,
-                      permissionEngine: this.input.permissionEngine,
-                      context: reviewContext,
-                      emitUserRequest: (event) => queue.push(event),
-                      abortSignal: ctx.abortSignal,
-                    }),
-                  hostedRun ? { run: hostedRun, eventSink: queue } : undefined,
-                );
-        } catch (err) {
-          if (isInteractionControlError(err)) throw err;
-          if (autoReviewEscalationKey) {
-            this.autoReviewEscalationAttempts.set(autoReviewEscalationKey, 'denied');
-          }
-          const msg = formatSyntheticToolErrorText(err);
-          const reason = formatSyntheticToolErrorText(`Permission flow aborted: ${msg}`);
-          trace?.emit('permission', 'permission_failed', 'Permission flow failed', {
-            requestId: verdict.event.requestId,
-            toolUseId,
-            toolName: tool.name,
-            requestKind: verdict.event.kind ?? 'tool_permission',
-            reason:
-              err instanceof AdditionalPermissionError
-                ? err.reason
-                : err instanceof SandboxEscalationError
-                  ? err.reason
-                  : reason,
-          });
-          if (isEscalation) {
-            trace?.emit(
-              'permission',
-              'sandbox_escalation_failed',
-              'Sandbox escalation flow failed',
-              {
-                requestId: verdict.event.requestId,
-                toolUseId,
-                toolName: tool.name,
-                reason,
-              },
-            );
-          }
-          await this.writeSyntheticToolResult(toolUseId, turnId, reason, queue);
-          trace?.emit('tool', 'tool_failed', 'Tool execution failed before implementation', {
-            toolUseId,
-            toolName: tool.name,
-            status: 'error',
-            errorClass: 'Permission',
-          });
-          this.recordLoopGateOutcome(callSignature, true);
-          return this.errorReturn(reason);
-        }
-
-        if (hostedRun) {
-          await this.publishHostedSettlementAck(queue, {
-            type: 'permission_answer_ack',
-            id: this.input.newId(),
-            turnId,
-            ts: this.input.now(),
-            requestId: response.requestId,
-            toolUseId,
-          });
-          trace?.emit('permission', 'permission_decided', 'Permission answer accepted', {
-            requestId: response.requestId,
-            toolUseId,
-            toolName: tool.name,
-            accepted: true,
-          });
-        } else {
-          const decisionMsg: PermissionDecisionMessage = {
-            type: 'permission_decision',
-            id: response.requestId,
-            turnId,
-            ts: this.input.now(),
-            toolUseId,
-            toolName: tool.name,
-            decision: response.decision,
-            ...(response.rememberForTurn !== undefined
-              ? { rememberForTurn: response.rememberForTurn }
-              : {}),
-            ...(response.reviewer !== undefined ? { reviewer: response.reviewer } : {}),
-            ...(response.rationale !== undefined ? { rationale: response.rationale } : {}),
-            ...(response.riskLevel !== undefined ? { riskLevel: response.riskLevel } : {}),
-          };
-          await this.input.appendMessage(decisionMsg);
-          queue.push({
-            type: 'permission_decision_ack',
-            id: this.input.newId(),
-            turnId,
-            ts: this.input.now(),
-            requestId: response.requestId,
-            toolUseId,
-            decision: response.decision,
-            ...(response.rememberForTurn !== undefined
-              ? { rememberForTurn: response.rememberForTurn }
-              : {}),
-            ...(response.reviewer !== undefined ? { reviewer: response.reviewer } : {}),
-            ...(response.rationale !== undefined ? { rationale: response.rationale } : {}),
-            ...(response.riskLevel !== undefined ? { riskLevel: response.riskLevel } : {}),
-          });
-          trace?.emit('permission', 'permission_decided', 'Permission decision recorded', {
-            requestId: response.requestId,
-            toolUseId,
-            toolName: tool.name,
-            decision: response.decision,
-            requestKind: verdict.event.kind ?? 'tool_permission',
-            ...(response.rememberForTurn !== undefined
-              ? { rememberForTurn: response.rememberForTurn }
-              : {}),
-            ...(response.reviewer !== undefined ? { reviewer: response.reviewer } : {}),
-            ...(response.riskLevel !== undefined ? { riskLevel: response.riskLevel } : {}),
-          });
-        }
-
-        if (response.decision === 'deny') {
-          if (autoReviewEscalationKey && response.reviewer === 'auto_review') {
-            this.autoReviewEscalationAttempts.set(autoReviewEscalationKey, 'denied');
-          }
-          const reason =
-            response.reviewer === 'auto_review'
-              ? `自动审批已拒绝权限请求${response.rationale ? `：${response.rationale}` : ''}`
-              : '用户已拒绝权限请求';
-          if (isEscalation && !hostedRun) {
-            trace?.emit('permission', 'sandbox_escalation_denied', 'Sandbox escalation denied', {
-              requestId: response.requestId,
-              toolUseId,
-              toolName: tool.name,
-              reviewer: response.reviewer ?? 'user',
-            });
-          }
-          await this.writeSyntheticToolResult(toolUseId, turnId, reason, queue);
-          trace?.emit('tool', 'tool_failed', 'Tool execution failed before implementation', {
-            toolUseId,
-            toolName: tool.name,
-            status: 'error',
-            errorClass: 'Permission',
-          });
-          this.recordLoopGateOutcome(callSignature, true);
-          return this.errorReturn(reason);
-        }
-        if (autoReviewEscalationKey) {
-          this.autoReviewEscalationAttempts.delete(autoReviewEscalationKey);
-        }
-        if (isEscalation && !hostedRun) {
-          trace?.emit('permission', 'sandbox_escalation_granted', 'Sandbox escalation granted', {
-            requestId: response.requestId,
-            toolUseId,
-            toolName: tool.name,
-            reviewer: response.reviewer ?? 'user',
-            commandHash:
-              verdict.event.kind === 'sandbox_escalation' ? verdict.event.commandHash : undefined,
-          });
-        }
-      } else {
-        if (autoReviewEscalationKey) {
-          this.autoReviewEscalationAttempts.delete(autoReviewEscalationKey);
-        }
-        trace?.emit('permission', 'permission_decided', 'Permission allowed tool execution', {
-          toolUseId,
-          toolName: tool.name,
-          decision: 'allow',
-          category: verdict.category,
-          ...(tool.name === 'agent_swarm'
-            ? {
-                authorizationSource:
-                  this.input.getCurrentOrchestration?.()?.agentSwarmAuthorization ?? 'none',
-              }
-            : {}),
-        });
-      }
-    }
-
     this.assertCapturedRunOwner(tool.name, runId);
 
     const reservedSubagentSlot = this.reserveSubagentSlot(tool);
@@ -1448,103 +959,6 @@ export class ToolRuntime {
       return this.errorReturn(SUBAGENT_TOOL_LIMIT_MESSAGE);
     }
 
-    let permissionContext: ToolExecutionPermissionContext | undefined;
-    if (additionalPlan.kind === 'request') {
-      try {
-        await revalidateAdditionalPermissionProposal({
-          proposal: additionalPlan.proposal,
-          cwd: this.input.header.cwd,
-        });
-        this.assertCapturedRunOwner(tool.name, runId);
-        const additionalGrant = this.input.permissionEngine.consumeAdditionalPermissionGrant({
-          sessionId: this.input.sessionId,
-          turnId,
-          toolUseId,
-          toolName: tool.name,
-          intentHash: additionalPlan.proposal.intentHash,
-        });
-        if (!additionalGrant) {
-          throw new AdditionalPermissionError({
-            stage: 'consume',
-            reason: 'grant_unavailable',
-            message: 'Approved additional permission grant was unavailable.',
-          });
-        }
-        permissionContext = Object.freeze({ additionalGrant });
-      } catch (error) {
-        try {
-          this.assertCapturedRunOwner(tool.name, runId);
-        } catch (ownerError) {
-          if (reservedSubagentSlot) this.releaseSubagentSlot(tool);
-          throw ownerError;
-        }
-        const reason = formatSyntheticToolErrorText(error);
-        trace?.emit(
-          'permission',
-          'permission_failed',
-          'Additional permission could not be applied',
-          {
-            toolUseId,
-            toolName: tool.name,
-            requestKind: 'additional_permissions',
-            reason:
-              error instanceof AdditionalPermissionError
-                ? error.reason
-                : 'invalid_additional_permissions',
-          },
-        );
-        await this.writeSyntheticToolResult(toolUseId, turnId, reason, queue);
-        this.recordLoopGateOutcome(callSignature, true);
-        this.releaseSubagentSlot(tool);
-        return this.errorReturn(reason);
-      }
-    }
-    if (escalationPlan.kind === 'request') {
-      try {
-        const sandboxEscalationGrant = this.input.permissionEngine.consumeSandboxEscalationGrant({
-          sessionId: this.input.sessionId,
-          turnId,
-          toolUseId,
-          toolName: tool.name,
-          intentHash: escalationPlan.proposal.intentHash,
-          command: escalationPlan.proposal.command,
-          cwd: escalationPlan.proposal.cwd,
-        });
-        if (!sandboxEscalationGrant) {
-          throw new SandboxEscalationError({
-            stage: 'consume',
-            reason: 'sandbox_escalation_intent_mismatch',
-            message: 'Approved sandbox escalation grant was unavailable.',
-          });
-        }
-        permissionContext = Object.freeze({
-          ...(permissionContext ?? {}),
-          sandboxEscalationGrant,
-        });
-        trace?.emit('permission', 'sandbox_escalation_applied', 'Sandbox escalation applied', {
-          toolUseId,
-          toolName: tool.name,
-          commandHash: sandboxEscalationGrant.commandHash,
-        });
-      } catch (error) {
-        const reason = formatSyntheticToolErrorText(error);
-        trace?.emit(
-          'permission',
-          'sandbox_escalation_failed',
-          'Sandbox escalation could not be applied',
-          {
-            toolUseId,
-            toolName: tool.name,
-            reason:
-              error instanceof SandboxEscalationError ? error.reason : 'sandbox_escalation_failed',
-          },
-        );
-        await this.writeSyntheticToolResult(toolUseId, turnId, reason, queue);
-        this.recordLoopGateOutcome(callSignature, true);
-        this.releaseSubagentSlot(tool);
-        return this.errorReturn(reason);
-      }
-    }
     let durableAttempt: DurableToolAttempt | undefined;
     try {
       this.assertCapturedRunOwner(tool.name, runId);
@@ -1624,7 +1038,6 @@ export class ToolRuntime {
               }
             : {}),
           ...(this.input.agentTeam ? { agentTeam: this.input.agentTeam } : {}),
-          ...(permissionContext ? { permissionContext } : {}),
           ...(this.input.listChildAgents ? { listChildAgents: this.input.listChildAgents } : {}),
           ...(this.input.readChildAgentOutput
             ? { readChildAgentOutput: this.input.readChildAgentOutput }
@@ -2051,104 +1464,6 @@ export class ToolRuntime {
     if (exclusive) existing.exclusiveToolName = tool.name;
     this.stepAdmissions.set(stepId, existing);
     return undefined;
-  }
-
-  private permissionRulesFor(toolName: string): ToolPermissionRule[] {
-    const rules = [...(this.input.permissionRules ?? [])];
-    const authorization = this.input.getCurrentOrchestration?.()?.agentSwarmAuthorization;
-    if (toolName === 'agent_swarm' && authorization && authorization !== 'none') {
-      rules.push({ effect: 'allow', kind: 'tool', toolName: 'agent_swarm' });
-    }
-    return rules;
-  }
-
-  private async awaitPermissionDecision(
-    verdict: Extract<ReturnType<PermissionEngine['evaluate']>, { kind: 'prompt' }>,
-    turnId: string,
-    resolve: () => Promise<PermissionDecision> = () => verdict.parked,
-    hosted?: {
-      run: HostedInteractionBridge;
-      eventSink: DurableSessionEventSink;
-    },
-  ): Promise<PermissionDecision> {
-    const timeoutMs = this.input.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS;
-    const pauseTarget = this.input.getPermissionPauseTarget();
-    pauseTarget?.pause();
-    try {
-      if (timeoutMs <= 0) return await resolve();
-      const timeoutSentinel = Symbol('permission_timeout');
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const timeout = new Promise<typeof timeoutSentinel>((resolveTimeout) => {
-        timer = setTimeout(() => {
-          resolveTimeout(timeoutSentinel);
-        }, timeoutMs);
-      });
-      try {
-        const winner = await Promise.race([resolve(), timeout]);
-        if (winner !== timeoutSentinel) return winner;
-        return await this.resolvePermissionTimeout(verdict, turnId, timeoutMs, hosted);
-      } finally {
-        if (timer !== undefined) clearTimeout(timer);
-      }
-    } finally {
-      pauseTarget?.resume();
-    }
-  }
-
-  private async resolvePermissionTimeout(
-    verdict: Extract<ReturnType<PermissionEngine['evaluate']>, { kind: 'prompt' }>,
-    turnId: string,
-    timeoutMs: number,
-    hosted:
-      | {
-          run: HostedInteractionBridge;
-          eventSink: DurableSessionEventSink;
-        }
-      | undefined,
-  ): Promise<PermissionDecision> {
-    const requestId = verdict.event.requestId;
-    const reason = `Permission request ${requestId} timed out after ${timeoutMs}ms`;
-    if (!hosted) {
-      this.input.permissionEngine.expireRequest(turnId, requestId, reason);
-      return await verdict.parked;
-    }
-    let outcome;
-    try {
-      outcome = await hosted.run.commitPermissionTimeout({ requestId });
-    } catch (error) {
-      throw interactionAuthorityError(
-        `Could not confirm the timeout winner for permission ${requestId}`,
-        error,
-      );
-    }
-    if (outcome.kind === 'permission_answer') {
-      return {
-        requestId,
-        ...outcome.answer,
-      };
-    }
-
-    let closureError: unknown;
-    try {
-      await verdict.parked;
-      closureError = new RuntimeInteractionInvariantError(
-        `Hosted permission closure ${requestId} left the local request resolved`,
-      );
-    } catch (error) {
-      closureError = error;
-    }
-    if (outcome.reason === 'timed_out') {
-      await this.publishHostedSettlementAck(hosted.eventSink, {
-        type: 'permission_closure_ack',
-        id: this.input.newId(),
-        turnId,
-        ts: this.input.now(),
-        requestId,
-        toolUseId: verdict.event.toolUseId,
-        reason: 'timed_out',
-      });
-    }
-    throw closureError;
   }
 
   private assertCapturedRunOwner(toolName: string, expectedRunId: string | undefined): void {
@@ -2953,34 +2268,6 @@ function describeToolIntent(tool: MakaTool, args: unknown): string | undefined {
   if (normalized.length === 0) return undefined;
   const capped = normalized.length <= 180 ? normalized : `${normalized.slice(0, 179)}…`;
   return `只读探索：${capped}`;
-}
-
-function isAdditionalPermissionPlanResult(value: unknown): value is AdditionalPermissionPlanResult {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const result = value as Record<string, unknown>;
-  if (result.kind === 'not_required') return true;
-  if (result.kind === 'request') {
-    return Boolean(result.proposal && typeof result.proposal === 'object');
-  }
-  return (
-    result.kind === 'block' &&
-    typeof result.reason === 'string' &&
-    typeof result.message === 'string'
-  );
-}
-
-function isSandboxEscalationPlanResult(value: unknown): value is SandboxEscalationPlanResult {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const result = value as Record<string, unknown>;
-  if (result.kind === 'not_required') return true;
-  if (result.kind === 'request') {
-    return Boolean(result.proposal && typeof result.proposal === 'object');
-  }
-  return (
-    result.kind === 'block' &&
-    typeof result.reason === 'string' &&
-    typeof result.message === 'string'
-  );
 }
 
 function byteLength(value: unknown): number {
