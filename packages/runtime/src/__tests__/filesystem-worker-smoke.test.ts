@@ -73,8 +73,16 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
         mode: 'ask',
         executionBoundary,
       }),
-      (error: unknown) =>
-        error instanceof FilesystemWorkerClientError && error.reason === 'path_denied',
+      (error: unknown) => {
+        assert.ok(error instanceof FilesystemWorkerClientError);
+        assert.equal(error.reason, 'sandbox_boundary_required');
+        assert.deepEqual(error.requiredExpansion, {
+          filesystem: {
+            entries: [{ path: siblingPath, access: 'write', scope: 'exact' }],
+          },
+        });
+        return true;
+      },
     );
     await client.execute({
       operation: { kind: 'write', path: allowedPath, content: 'outside-ok' },
