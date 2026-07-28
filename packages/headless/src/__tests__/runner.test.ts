@@ -7,7 +7,6 @@ import { describe, test } from 'node:test';
 import {
   BackendRegistry,
   FakeBackend,
-  PermissionEngine,
   PiAgentBackend,
   type AgentBackend,
   type PiAgentTransport,
@@ -38,7 +37,6 @@ function registerTestPiAgentBackend(
         header: ctx.header,
         appendMessage:
           ctx.appendMessage ?? ((message) => ctx.store.appendMessage(ctx.sessionId, message)),
-        permissionEngine: new PermissionEngine({ newId: () => 'perm-id', now: () => 123 }),
         transport: transportFactory({ header: ctx.header, store: ctx.store }),
       }),
   );

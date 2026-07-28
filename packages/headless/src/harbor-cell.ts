@@ -15,7 +15,6 @@ import {
   AGENT_TOOL_GROUP_ID,
   AiSdkBackend,
   BackendRegistry,
-  PermissionEngine,
   PiAgentBackend,
   SessionManager,
   buildChildAgentTools,
@@ -772,7 +771,6 @@ export async function runHarborCellFromEnv(
               header: ctx.header,
               appendMessage:
                 ctx.appendMessage ?? ((message) => ctx.store.appendMessage(ctx.sessionId, message)),
-              permissionEngine: new PermissionEngine({ newId, now }),
               transport: new PiCliJsonTransport({
                 command: resolvedEnv.MAKA_PI_COMMAND ?? 'pi',
                 ...(piProvider ? { provider: piProvider } : {}),
@@ -1001,7 +999,6 @@ export function buildAiSdkCellBackendRegistration(input: {
     ? (key: string): PricingConfig | null =>
         key === modelKey ? pricingOverride : getBuiltinPricing(key)
     : getBuiltinPricing;
-  const permissionEngine = new PermissionEngine({ newId: input.newId, now: input.now });
   const contextBudgetBackendOptions = buildHarborCellContextBudgetBackendOptions(input.env);
   const streamConnectTimeoutMs = positiveIntEnv(
     input.env.MAKA_STREAM_CONNECT_TIMEOUT_MS,
@@ -1073,7 +1070,6 @@ export function buildAiSdkCellBackendRegistration(input: {
         connection,
         apiKey,
         modelId: input.model,
-        permissionEngine,
         modelFactory: (modelInput) =>
           getAIModel({
             ...modelInput,

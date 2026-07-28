@@ -200,7 +200,6 @@ export function buildIsolatedReadTool(
       offset: z.number().int().nonnegative().optional(),
       limit: z.number().int().positive().optional(),
     }),
-    permissionRequired: false,
     impl: async ({ path, offset, limit }, ctx) => {
       const { cwd } = ctx;
       const normalizedPath = normalizeWorkspacePath(path, cwd, 'Read path');
@@ -254,7 +253,6 @@ export function buildIsolatedWriteTool(
     name: 'Write',
     description: 'Write content to a file in the isolated headless task workspace.',
     parameters: z.object({ path: z.string(), content: z.string() }),
-    permissionRequired: true,
     impl: async ({ path, content }, ctx) => {
       const { cwd } = ctx;
       const normalizedPath = normalizeWorkspacePath(path, cwd, 'Write path');
@@ -303,7 +301,6 @@ export function buildIsolatedEditTool(
       old_string: z.string(),
       new_string: z.string(),
     }),
-    permissionRequired: true,
     impl: async ({ path, old_string, new_string }, ctx) => {
       const { cwd } = ctx;
       const normalizedPath = normalizeWorkspacePath(path, cwd, 'Edit path');
@@ -342,7 +339,6 @@ export function buildIsolatedGlobTool(
       pattern: z.string(),
       cwd: z.string().optional(),
     }),
-    permissionRequired: false,
     impl: async ({ pattern, cwd: relCwd }, ctx) => {
       const { cwd } = ctx;
       const normalizedPattern = normalizeWorkspaceGlobPattern(pattern, cwd, 'Glob pattern');
@@ -381,7 +377,6 @@ export function buildIsolatedGrepTool(
       path: z.string().optional(),
       glob: z.string().optional(),
     }),
-    permissionRequired: false,
     impl: async ({ pattern, path, glob }, ctx) => {
       const { cwd } = ctx;
       const normalizedPath =

@@ -19,7 +19,6 @@ import type {
 } from '@maka/core/backend-types';
 import {
   BackendRegistry,
-  PermissionEngine,
   PiAgentBackend,
   type AgentBackend,
   type AiSdkBackendInput,
@@ -97,7 +96,6 @@ function registerTestPiAgentBackend(
         header: ctx.header,
         appendMessage:
           ctx.appendMessage ?? ((message) => ctx.store.appendMessage(ctx.sessionId, message)),
-        permissionEngine: new PermissionEngine({ newId: () => 'perm-id', now: () => 123 }),
         transport: transportFactory({ header: ctx.header, store: ctx.store }),
       }),
   );
@@ -2306,14 +2304,6 @@ describe('runHarborCell', () => {
       for (const unexpected of ['agent_spawn', 'agent_swarm', 'agent_list', 'agent_output']) {
         assert.ok(!toolNames.includes(unexpected), `unexpected default Agent tool ${unexpected}`);
       }
-      assert.equal(
-        backendInput.tools.find((tool) => tool.name === 'Bash')?.permissionRequired,
-        false,
-      );
-      assert.equal(
-        backendInput.tools.find((tool) => tool.name === 'Write')?.permissionRequired,
-        false,
-      );
       assert.match(
         typeof backendInput.systemPrompt === 'string' ? backendInput.systemPrompt : '',
         /Prefer Read, Glob, and Grep/,
@@ -4153,13 +4143,12 @@ describe('runHarborCell', () => {
     assert.equal(snapshot.synthesisCache?.schemaVersion, 1);
   });
 
-  test('Harbor tool builder keeps the six container-native tools non-interactive', () => {
+  test('Harbor tool builder exposes the six container-native tools', () => {
     const tools = buildHarborCellAiSdkTools(fakeToolExecutor());
     const names = tools.map((tool) => tool.name);
 
     for (const expected of ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep']) {
       assert.ok(names.includes(expected), `expected Harbor tool ${expected}`);
-      assert.equal(tools.find((tool) => tool.name === expected)?.permissionRequired, false);
     }
   });
 
