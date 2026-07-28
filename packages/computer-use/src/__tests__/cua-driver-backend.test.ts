@@ -511,6 +511,7 @@ function makeBackend(
     onTrace?: CuaDriverBackendOptions['onTrace'];
     allowCompatibilityInputDispatch?: boolean;
     snapshotDelayMs?: number;
+    settleAfterAction?: boolean;
     compressFrame?: (
       b: string,
       m: string,
@@ -564,6 +565,9 @@ function makeBackend(
       : {}),
     ...(opts.onTrace ? { onTrace: opts.onTrace } : {}),
     allowCompatibilityInputDispatch: opts.allowCompatibilityInputDispatch ?? true,
+    ...(opts.settleAfterAction !== undefined
+      ? { settleAfterAction: opts.settleAfterAction }
+      : {}),
     ...(opts.onSessionInvalidated ? { onSessionInvalidated: opts.onSessionInvalidated } : {}),
   });
   const backend: TestBackend = {
@@ -760,6 +764,123 @@ describe('cua-driver backend', () => {
       },
     ]);
     assert.equal(observation?.screenshot?.mimeType, 'image/png');
+  });
+
+  it('waits for the window to stop changing before capturing the post-action observation', async () => {
+    // The driver replies once it has dispatched, not once the app has finished
+    // reacting. Without a settle the model receives a UI mid-transition and
+    // derives element indices from a screen that is already gone.
+    let fingerprintCalls = 0;
+    const fingerprints: string[] = [];
+    const { backend } = makeBackend({
+      axRole: 'AXButton',
+      resolveContentFingerprint: () => {
+        fingerprintCalls += 1;
+        // Observe, then two unsettled polls, then rest.
+        const value = fingerprintCalls <= 3 ? `moving-${fingerprintCalls}` : 'at-rest';
+        fingerprints.push(value);
+        return value;
+      },
+    });
+    const signal = new AbortController().signal;
+    const context = { sessionId: 's1', turnId: 't1', toolCallId: 'settle' };
+    const observation = await backend.observeApp?.(
+      { app: 'Fixture Window', includeScreenshot: false },
+      signal,
+      context,
+    );
+    assert.ok(observation);
+
+    const before = fingerprintCalls;
+    const result = await backend.runSemantic?.(
+      { type: 'click_element', observationId: observation!.observationId, elementId: '7' },
+      signal,
+      context,
+    );
+    assert.equal(result?.outcome.ok, true);
+
+    // Polls until two consecutive reads agree, then the real capture. Anything
+    // less than three further reads means it captured while still moving.
+    assert.ok(
+      fingerprintCalls - before >= 3,
+      `expected the settle to poll past the moving frames, saw ${fingerprintCalls - before} reads`,
+    );
+    assert.equal(fingerprints.at(-1), 'at-rest');
+  });
+
+  it('settleAfterAction:false captures immediately', async () => {
+    let fingerprintCalls = 0;
+    const { backend } = makeBackend({
+      axRole: 'AXButton',
+      settleAfterAction: false,
+      resolveContentFingerprint: () => {
+        fingerprintCalls += 1;
+        return `frame-${fingerprintCalls}`;
+      },
+    });
+    const signal = new AbortController().signal;
+    const context = { sessionId: 's1', turnId: 't1', toolCallId: 'no-settle' };
+    const observation = await backend.observeApp?.(
+      { app: 'Fixture Window', includeScreenshot: false },
+      signal,
+      context,
+    );
+    assert.ok(observation);
+
+    const before = fingerprintCalls;
+    const result = await backend.runSemantic?.(
+      { type: 'click_element', observationId: observation!.observationId, elementId: '7' },
+      signal,
+      context,
+    );
+    assert.equal(result?.outcome.ok, true);
+    // Exactly one read: the capture itself, no polling.
+    assert.equal(fingerprintCalls - before, 1);
+  });
+
+  it('a settle that never comes to rest still yields an observation', async () => {
+    // A window that animates forever must not stall the turn. The ceiling
+    // gives up and captures whatever is there.
+    let fingerprintCalls = 0;
+    const { backend } = makeBackend({
+      axRole: 'AXButton',
+      resolveContentFingerprint: () => `never-${(fingerprintCalls += 1)}`,
+    });
+    const signal = new AbortController().signal;
+    const context = { sessionId: 's1', turnId: 't1', toolCallId: 'restless' };
+    const observation = await backend.observeApp?.(
+      { app: 'Fixture Window', includeScreenshot: false },
+      signal,
+      context,
+    );
+    assert.ok(observation);
+
+    const startedAt = Date.now();
+    const result = await backend.runSemantic?.(
+      { type: 'click_element', observationId: observation!.observationId, elementId: '7' },
+      signal,
+      context,
+    );
+    const elapsed = Date.now() - startedAt;
+    assert.equal(result?.outcome.ok, true);
+    assert.ok(result?.observation?.observationId, 'captured despite never settling');
+    assert.ok(elapsed < 5_000, `settle must be bounded, took ${elapsed}ms`);
+  });
+
+  it('wait is interrupted by an abort instead of running its full duration', async () => {
+    // `wait` used a bare setTimeout, so a user stop was ignored until the timer
+    // fired on its own.
+    const { backend } = makeBackend();
+    const controller = new AbortController();
+    const startedAt = Date.now();
+    const pending = backend.run({ type: 'wait', durationMs: 9_000 } as CuAction, controller.signal, {
+      sessionId: 's1',
+      turnId: 't1',
+      toolCallId: 'wait',
+    });
+    setTimeout(() => controller.abort(), 60);
+    await assert.rejects(pending);
+    assert.ok(Date.now() - startedAt < 3_000, 'abort must cut the wait short');
   });
 
   it('executes an observed element once and returns a fresh observation', async () => {
