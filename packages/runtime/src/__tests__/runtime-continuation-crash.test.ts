@@ -16,6 +16,7 @@ import { FakeBackend } from '../fake-backend.js';
 
 const CRASH_CHILD_ENV = 'MAKA_RUNTIME_CONTINUATION_CRASH_CHILD';
 const FAILPOINTS: readonly RuntimeContinuationFailpoint[] = [
+  'after_continuation_claim_committed',
   'after_run_created',
   'after_continuation_start_committed',
   'after_terminal_event_committed',
@@ -40,13 +41,18 @@ if (process.env[CRASH_CHILD_ENV] === '1') {
           const runtimeEventStore = createCrashRuntimeStore(workspaceRoot);
           const [session] = await store.list();
           assert.ok(session, `${failpoint} did not persist a session`);
+          const [claimState] = await runtimeEventStore.listContinuationClaimsForRecovery(
+            session.id,
+          );
+          assert.ok(claimState, `${failpoint} did not persist the continuation claim`);
           const runsBeforeRecovery = await runStore.listSessionRuns(session.id);
           const continuation = runsBeforeRecovery.find(
-            (run) => run.continuationSource !== undefined,
+            (run) => run.runId === claimState.claim.target.runId,
           );
-          assert.ok(continuation, `${failpoint} did not persist the continuation claim`);
-          assert.equal(continuation.continuationSource?.sourceRunId, 'source-run');
-          const prefix = await runtimeEventStore.readRuntimeEvents(session.id, continuation.runId);
+          const prefix = await runtimeEventStore.readRuntimeEvents(
+            session.id,
+            claimState.claim.target.runId,
+          );
           assertPrefix(failpoint, continuation, prefix);
 
           runtimeEventStore.close();
@@ -61,7 +67,9 @@ if (process.env[CRASH_CHILD_ENV] === '1') {
           });
           assert.equal(repeatedPlan.disposition, 'park');
           assert.deepEqual(repeatedPlan.rejectionReasons, [
-            failpoint === 'after_run_created' || failpoint === 'after_terminal_event_committed'
+            failpoint === 'after_continuation_claim_committed' ||
+            failpoint === 'after_run_created' ||
+            failpoint === 'after_terminal_event_committed'
               ? 'continuation_claim_repair_required'
               : failpoint === 'after_continuation_start_committed'
                 ? 'continuation_started_indeterminate'
@@ -69,21 +77,30 @@ if (process.env[CRASH_CHILD_ENV] === '1') {
           ]);
 
           await manager.recoverInterruptedSessions();
-          const repaired = await runStore.readRun(session.id, continuation.runId);
+          const repaired = await runStore.readRun(session.id, claimState.claim.target.runId);
           const repairedEvents = await recoveryRuntimeStore.readRuntimeEvents(
             session.id,
-            continuation.runId,
+            claimState.claim.target.runId,
           );
           const terminalEvents = repairedEvents.filter(
             (event) => event.actions?.endInvocation === true,
           );
-          assert.equal(terminalEvents.length, 1, `${failpoint} must recover one terminal fact`);
-          assert.ok(
-            repaired.status === 'completed' ||
-              repaired.status === 'failed' ||
-              repaired.status === 'cancelled',
-            `${failpoint} left the continuation non-terminal`,
-          );
+          if (failpoint === 'after_continuation_start_committed') {
+            assert.equal(terminalEvents.length, 0);
+            assert.equal(['created', 'running'].includes(repaired.status), true);
+            const parked = await manager.planAuthoritativeSafeBoundaryContinuation(session.id, {
+              sourceRunId: 'source-run',
+            });
+            assert.deepEqual(parked.rejectionReasons, ['continuation_started_indeterminate']);
+          } else {
+            assert.equal(terminalEvents.length, 1, `${failpoint} must recover one terminal fact`);
+            assert.ok(
+              repaired.status === 'completed' ||
+                repaired.status === 'failed' ||
+                repaired.status === 'cancelled',
+              `${failpoint} left the continuation non-terminal`,
+            );
+          }
           recoveryRuntimeStore.close();
           await recoverySessionStore.close?.();
         }
@@ -281,9 +298,15 @@ async function crashContinuationAt(
 
 function assertPrefix(
   failpoint: RuntimeContinuationFailpoint,
-  header: AgentRunHeader,
+  header: AgentRunHeader | undefined,
   events: readonly RuntimeEvent[],
 ): void {
+  if (failpoint === 'after_continuation_claim_committed') {
+    assert.equal(header, undefined);
+    assert.deepEqual(events, []);
+    return;
+  }
+  assert.ok(header);
   if (failpoint === 'after_run_created') {
     assert.equal(header.status, 'created');
     assert.deepEqual(events, []);

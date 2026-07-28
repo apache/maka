@@ -110,6 +110,47 @@ describe('SQLite recovery authority multi-process races', () => {
     });
   });
 
+  it('serializes a stale continuation claim against a concurrent source append', async () => {
+    await withPreparedDatabase(async ({ dbPath, startPath }) => {
+      const results = await runWorkers(dbPath, startPath, ['claim', 'append_source']);
+      assert.deepEqual(results.map(({ code }) => code).sort(), [0, 2]);
+
+      const store = createSqliteRuntimeStore(dbPath);
+      try {
+        const sourceEvents = await store.readImmutableRuntimeEvents('session-1', 'run-1');
+        const claims = await store.listContinuationClaimsForRecovery('session-1');
+        assert.ok(
+          (sourceEvents.length === 2 && claims.length === 1) ||
+            (sourceEvents.length === 3 && claims.length === 0),
+        );
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it('serializes a continuation claim against an ordinary first target event', async () => {
+    await withPreparedDatabase(async ({ dbPath, startPath }) => {
+      const results = await runWorkers(dbPath, startPath, ['claim_fixed_target', 'append_target']);
+      assert.deepEqual(results.map(({ code }) => code).sort(), [0, 2]);
+
+      const store = createSqliteRuntimeStore(dbPath);
+      try {
+        const claims = await store.listContinuationClaimsForRecovery('session-1');
+        const targetEvents = await store.readImmutableRuntimeEvents(
+          'session-1',
+          'fixed-target-run',
+        );
+        assert.ok(
+          (claims.length === 1 && targetEvents.length === 0) ||
+            (claims.length === 0 && targetEvents.length === 1),
+        );
+      } finally {
+        store.close();
+      }
+    });
+  });
+
   it('allows concurrent processes to keep the same initialized WAL database open', async () => {
     await withPreparedDatabase(async ({ dbPath, startPath }) => {
       const results = await runOpenWorkers(dbPath, startPath);

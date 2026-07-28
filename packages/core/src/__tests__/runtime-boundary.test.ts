@@ -4,7 +4,9 @@ import type { RuntimeEvent } from '../runtime-event.js';
 import {
   buildImmutableRuntimePrefix,
   createRuntimeBoundaryCursor,
+  decodeContinuationClaim,
   runtimePrefixSegment,
+  type RuntimeBoundaryCursorV1,
   type RuntimePrefixIdentityV1,
 } from '../runtime-boundary.js';
 
@@ -114,6 +116,150 @@ describe('immutable RuntimeEvent boundary', () => {
       /prefix position mismatch/,
     );
   });
+
+  it('rejects a boundary whose segments cross session authority', () => {
+    const ancestor = runtimePrefixSegment(
+      buildImmutableRuntimePrefix(runtimeIdentity('run-a'), [
+        { eventSeq: 1, event: event('event-a', runtimeIdentity('run-a')) },
+      ]),
+    );
+    const foreignIdentity = {
+      ...runtimeIdentity('run-b'),
+      sessionId: 'session-2',
+    };
+    const foreignSource = runtimePrefixSegment(
+      buildImmutableRuntimePrefix(foreignIdentity, [
+        { eventSeq: 1, event: event('event-b', foreignIdentity) },
+      ]),
+    );
+
+    assert.throws(() => createRuntimeBoundaryCursor([ancestor, foreignSource]), /same session/);
+  });
+
+  it('rejects a boundary that reuses a source run identity', () => {
+    const firstIdentity = runtimeIdentity('run-shared');
+    const secondIdentity = {
+      ...firstIdentity,
+      invocationId: 'invocation-second',
+      turnId: 'turn-second',
+    };
+    const first = runtimePrefixSegment(
+      buildImmutableRuntimePrefix(firstIdentity, [
+        { eventSeq: 1, event: event('event-first', firstIdentity) },
+      ]),
+    );
+    const second = runtimePrefixSegment(
+      buildImmutableRuntimePrefix(secondIdentity, [
+        { eventSeq: 1, event: event('event-second', secondIdentity) },
+      ]),
+    );
+
+    assert.throws(() => createRuntimeBoundaryCursor([first, second]), /duplicate runId/);
+  });
+
+  it('rejects a boundary that reuses a source invocation identity', () => {
+    const firstIdentity = runtimeIdentity('run-first');
+    const secondIdentity = {
+      ...runtimeIdentity('run-second'),
+      invocationId: firstIdentity.invocationId,
+    };
+    const first = runtimePrefixSegment(
+      buildImmutableRuntimePrefix(firstIdentity, [
+        { eventSeq: 1, event: event('event-first', firstIdentity) },
+      ]),
+    );
+    const second = runtimePrefixSegment(
+      buildImmutableRuntimePrefix(secondIdentity, [
+        { eventSeq: 1, event: event('event-second', secondIdentity) },
+      ]),
+    );
+
+    assert.throws(() => createRuntimeBoundaryCursor([first, second]), /duplicate invocationId/);
+  });
+
+  it('rejects a boundary that reuses a source turn identity', () => {
+    const firstIdentity = runtimeIdentity('run-first');
+    const secondIdentity = {
+      ...runtimeIdentity('run-second'),
+      turnId: firstIdentity.turnId,
+    };
+    const first = runtimePrefixSegment(
+      buildImmutableRuntimePrefix(firstIdentity, [
+        { eventSeq: 1, event: event('event-first', firstIdentity) },
+      ]),
+    );
+    const second = runtimePrefixSegment(
+      buildImmutableRuntimePrefix(secondIdentity, [
+        { eventSeq: 1, event: event('event-second', secondIdentity) },
+      ]),
+    );
+
+    assert.throws(() => createRuntimeBoundaryCursor([first, second]), /duplicate turnId/);
+  });
+
+  it('requires a continuation target to remain in the source session', () => {
+    const boundary = boundaryForRuns('run-source');
+
+    assert.throws(
+      () =>
+        decodeContinuationClaim({
+          ...claimForBoundary(boundary),
+          target: {
+            ...claimForBoundary(boundary).target,
+            sessionId: 'session-foreign',
+          },
+        }),
+      /target session differs/,
+    );
+  });
+
+  it('rejects a continuation target that reuses any source run identity', () => {
+    const boundary = boundaryForRuns('run-ancestor', 'run-source');
+    const claim = claimForBoundary(boundary);
+
+    assert.throws(
+      () =>
+        decodeContinuationClaim({
+          ...claim,
+          target: { ...claim.target, runId: 'run-ancestor' },
+        }),
+      /target runId reuses source identity/,
+    );
+  });
+
+  it('rejects a continuation target that reuses any source invocation identity', () => {
+    const boundary = boundaryForRuns('run-ancestor', 'run-source');
+    const claim = claimForBoundary(boundary);
+
+    assert.throws(
+      () =>
+        decodeContinuationClaim({
+          ...claim,
+          target: {
+            ...claim.target,
+            invocationId: boundary.segments[0].identity.invocationId,
+          },
+        }),
+      /target invocationId reuses source identity/,
+    );
+  });
+
+  it('rejects a continuation target that reuses any source turn identity', () => {
+    const boundary = boundaryForRuns('run-ancestor', 'run-source');
+    const claim = claimForBoundary(boundary);
+
+    assert.throws(
+      () =>
+        decodeContinuationClaim({
+          ...claim,
+          target: {
+            ...claim.target,
+            turnId: boundary.segments[0].identity.turnId,
+          },
+        }),
+      /target turnId reuses source identity/,
+    );
+  });
 });
 
 function runtimeIdentity(runId: string): RuntimePrefixIdentityV1 {
@@ -138,5 +284,67 @@ function event(
     role: 'user',
     author: 'user',
     content,
+  };
+}
+
+function boundaryForRuns(...runIds: string[]): RuntimeBoundaryCursorV1 {
+  const segments = runIds.map((runId) => {
+    const identity = runtimeIdentity(runId);
+    return runtimePrefixSegment(
+      buildImmutableRuntimePrefix(identity, [
+        { eventSeq: 1, event: event(`event-${runId}`, identity) },
+      ]),
+    );
+  }) as [ReturnType<typeof runtimePrefixSegment>, ...ReturnType<typeof runtimePrefixSegment>[]];
+  return createRuntimeBoundaryCursor(segments);
+}
+
+function claimForBoundary(boundary: RuntimeBoundaryCursorV1) {
+  const source = boundary.segments.at(-1)!;
+  const target = {
+    sessionId: boundary.segments[0].identity.sessionId,
+    invocationId: 'target-invocation',
+    runId: 'target-run',
+    turnId: 'target-turn',
+  };
+  return {
+    protocol: 'continuation_claim_v1',
+    claimId: 'claim-1',
+    boundaryDigest: boundary.manifestDigest,
+    boundary,
+    providerProjectionVersion: 1,
+    providerReplayDigest: `sha256:${'b'.repeat(64)}`,
+    target,
+    targetRunHeader: {
+      runId: target.runId,
+      invocationId: target.invocationId,
+      sessionId: target.sessionId,
+      turnId: target.turnId,
+      status: 'created',
+      backendKind: 'fake',
+      llmConnectionSlug: 'connection-1',
+      modelId: 'model-1',
+      cwd: '/workspace',
+      permissionMode: 'ask',
+      collaborationMode: 'agent',
+      orchestrationMode: 'default',
+      orchestrationSource: 'session',
+      createdAt: 1,
+      updatedAt: 1,
+      parentRunId: source.identity.runId,
+      parentTurnId: source.identity.turnId,
+      continuationSource: {
+        protocol: 'continuation_source_v2',
+        claimId: 'claim-1',
+        boundaryDigest: boundary.manifestDigest,
+        sourceInvocationId: source.identity.invocationId,
+        sourceRunId: source.identity.runId,
+        sourceTurnId: source.identity.turnId,
+        sourceRuntimeEventHighWater: source.position.lastEventSeq,
+        sourcePrefixDigest: source.prefixDigest,
+        replayManifestDigest: boundary.manifestDigest,
+      },
+    },
+    claimedAt: 1,
   };
 }

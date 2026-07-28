@@ -31,6 +31,12 @@ import {
   type RuntimeEventStatus,
   type ToolBoundaryProtocol,
 } from '@maka/core/runtime-event';
+import { decodeRuntimeBoundaryCursor } from '@maka/core/runtime-boundary';
+import { digestProviderReplay } from './continuation-replay.js';
+import {
+  buildRuntimeEventModelReplayPlan,
+  PROVIDER_REPLAY_PROJECTION_VERSION,
+} from './model-history.js';
 import type {
   InvocationContext,
   InvocationFailure,
@@ -41,6 +47,10 @@ import type {
 } from './invocation-context.js';
 import { createDefaultInvocationProviders } from './invocation-context.js';
 import type { FlowInput, RunnableAgentFlow } from './agent-flow.js';
+import {
+  consumeRuntimeContinuationStartAdmissionProof,
+  type RuntimeContinuationStartAdmissionProof,
+} from './runtime-continuation-admission.js';
 import type { RuntimeContinuation } from './runtime-resume.js';
 import type { TurnOrigin } from '@maka/core/runtime-inputs';
 
@@ -94,8 +104,6 @@ export type AgentFlowLike = RunnableAgentFlow;
 
 export interface RuntimeRunnerDeps {
   flow: RunnableAgentFlow;
-  /** Durable sink for the Runner-owned continuation-start fact. */
-  commitContinuationStart?: (event: RuntimeEvent) => Promise<void>;
   /** Set only when the tool implementation path is guarded by canonical T1. */
   toolBoundaryProtocol?: ToolBoundaryProtocol;
   /** Optional preflight gate; omitted means "always allow". */
@@ -127,6 +135,33 @@ export interface InitialUserRuntimeEventInput {
   toolBoundaryProtocol?: ToolBoundaryProtocol;
 }
 
+export interface RuntimeContinuationRunOptions {
+  source: InvocationRequest['source'];
+  abortSignal?: AbortSignal;
+}
+
+export interface RuntimeContinuationAdmissionOptions {
+  context?: InvocationRequest['context'];
+  orchestration?: InvocationRequest['orchestration'];
+}
+
+type AdmittedContinuationDispatcher = (request: InvocationRequest) => Promise<InvocationResult>;
+
+const admittedContinuationDispatchers = new WeakMap<
+  RuntimeRunner,
+  AdmittedContinuationDispatcher
+>();
+const runnerToolBoundaryProtocols = new WeakMap<RuntimeRunner, ToolBoundaryProtocol | undefined>();
+const pendingContinuationAdmissions = new WeakMap<
+  object,
+  { runner: RuntimeRunner; request: InvocationRequest }
+>();
+
+declare const runtimeContinuationAdmissionReceiptBrand: unique symbol;
+export interface RuntimeContinuationAdmissionReceipt {
+  readonly [runtimeContinuationAdmissionReceiptBrand]: true;
+}
+
 // ============================================================================
 // RuntimeRunner
 // ============================================================================
@@ -144,31 +179,17 @@ export class RuntimeRunner {
     this.gate = deps.gate;
     this.providers = deps.providers ?? createDefaultInvocationProviders();
     this.stopOnTerminal = deps.stopOnTerminal ?? true;
+    admittedContinuationDispatchers.set(this, async (request) =>
+      this.#runInvocation(request, 'continuation'),
+    );
+    runnerToolBoundaryProtocols.set(this, this.toolBoundaryProtocol);
   }
 
   async resume(
-    continuation: RuntimeContinuation,
-    options: {
-      source: InvocationRequest['source'];
-      context?: InvocationRequest['context'];
-      orchestration?: InvocationRequest['orchestration'];
-      abortSignal?: AbortSignal;
-    },
+    _continuation: RuntimeContinuation,
+    _options: RuntimeContinuationRunOptions,
   ): Promise<InvocationResult> {
-    assertRuntimeContinuationEnvelope(continuation);
-    return this.run({
-      sessionId: continuation.sessionId,
-      invocationId: continuation.invocationId,
-      runId: continuation.runId,
-      turnId: continuation.turnId,
-      text: '',
-      context: options.context ?? [],
-      runtimeContext: continuation.runtimeContext,
-      continuation: invocationContinuationMetadata(continuation),
-      source: options.source,
-      ...(options.orchestration ? { orchestration: options.orchestration } : {}),
-      ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
-    });
+    throw continuationAdmissionRequired();
   }
 
   /**
@@ -181,11 +202,25 @@ export class RuntimeRunner {
    * events can opt into full draining through RuntimeRunnerDeps.
    */
   async run(request: InvocationRequest): Promise<InvocationResult> {
+    const continuation = request.continuation;
+    if (continuation !== undefined) {
+      throw continuationAdmissionRequired();
+    }
+    return this.#runInvocation(snapshotInvocationRequest(request, { continuation }), 'normal');
+  }
+
+  async #runInvocation(
+    request: InvocationRequest,
+    mode: 'normal' | 'continuation',
+  ): Promise<InvocationResult> {
     const startedAt = this.providers.now();
     const invocationId =
       request.invocationId ?? request.initialRuntimeEvent?.invocationId ?? this.providers.newId();
     const runId = request.runId ?? request.initialRuntimeEvent?.runId ?? this.providers.newId();
-    if (request.continuation) {
+    if (mode === 'continuation') {
+      if (!request.continuation) {
+        throw new Error('Admitted Runtime continuation is missing continuation metadata');
+      }
       if (!request.runtimeContext) {
         throw new Error('Runtime continuation requires replay context');
       }
@@ -204,6 +239,8 @@ export class RuntimeRunner {
         ...request.continuation,
         runtimeContext: request.runtimeContext,
       });
+    } else if (request.continuation !== undefined) {
+      throw continuationAdmissionRequired();
     }
 
     // 1. Preflight (injectable gate). On failure we admit no invocation: no
@@ -273,7 +310,7 @@ export class RuntimeRunner {
     // 4. A normal invocation starts with a new user fact. A continuation
     // resumes committed provider history directly and must not invent a
     // duplicate user message.
-    if (!request.continuation) {
+    if (mode === 'normal') {
       const userEvent =
         request.initialRuntimeEvent ??
         buildInitialUserRuntimeEvent({
@@ -372,6 +409,175 @@ export class RuntimeRunner {
   }
 }
 
+/**
+ * @internal Package-only continuation dispatch capability. RuntimeKernel may
+ * call this only after its durable claim and continuation-start admission
+ * protocol has completed. It is intentionally absent from the package barrel
+ * and public exports map.
+ */
+export function runAdmittedRuntimeContinuation(
+  runner: RuntimeRunner,
+  receipt: RuntimeContinuationAdmissionReceipt,
+  options: RuntimeContinuationRunOptions,
+): Promise<InvocationResult> {
+  const admission = pendingContinuationAdmissions.get(receipt as object);
+  if (!admission || admission.runner !== runner) {
+    throw new Error('Runtime continuation admission receipt is invalid or already consumed');
+  }
+  // A continuation admission is one-shot. Consume it before the first await
+  // so retries, reentrancy, or a gate callback cannot dispatch the provider
+  // twice from one durable continuation-start.
+  pendingContinuationAdmissions.delete(receipt as object);
+  const dispatch = admittedContinuationDispatchers.get(runner);
+  if (!dispatch) {
+    throw new Error('RuntimeRunner instance is not registered for continuation admission');
+  }
+  const request = snapshotInvocationRequest({
+    ...admission.request,
+    source: options.source,
+    ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
+  });
+  return dispatch(request);
+}
+
+/**
+ * @internal Package-only capability issuer. RuntimeKernel calls this only
+ * after a newly inserted live continuation-start has committed.
+ */
+export function issueRuntimeContinuationAdmissionReceipt(
+  runner: RuntimeRunner,
+  continuation: RuntimeContinuation,
+  startAdmission: RuntimeContinuationStartAdmissionProof,
+  options: RuntimeContinuationAdmissionOptions = {},
+): RuntimeContinuationAdmissionReceipt {
+  assertRuntimeContinuationEnvelope(continuation);
+  const startAdmissionIdentity = consumeRuntimeContinuationStartAdmissionProof(startAdmission);
+  const boundary = continuation.boundary
+    ? decodeRuntimeBoundaryCursor(continuation.boundary)
+    : undefined;
+  if (
+    !continuation.claimId ||
+    !boundary ||
+    continuation.providerProjectionVersion !== PROVIDER_REPLAY_PROJECTION_VERSION ||
+    !continuation.providerReplayDigest ||
+    !/^sha256:[0-9a-f]{64}$/.test(continuation.providerReplayDigest) ||
+    !isDeepStrictEqual(startAdmissionIdentity, {
+      startEventId: startAdmissionIdentity.startEventId,
+      claimId: continuation.claimId,
+      boundaryDigest: boundary.manifestDigest,
+      providerProjectionVersion: continuation.providerProjectionVersion,
+      providerReplayDigest: continuation.providerReplayDigest,
+      ...(runnerToolBoundaryProtocols.get(runner)
+        ? { toolBoundaryProtocol: runnerToolBoundaryProtocols.get(runner) }
+        : {}),
+      target: {
+        sessionId: continuation.sessionId,
+        invocationId: continuation.invocationId,
+        runId: continuation.runId,
+        turnId: continuation.turnId,
+      },
+    })
+  ) {
+    throw new Error('Runtime continuation durable admission identity is incomplete');
+  }
+  const immediateSource = boundary.segments.at(-1)!;
+  if (
+    boundary.manifestDigest !== continuation.boundary?.manifestDigest ||
+    immediateSource.identity.sessionId !== continuation.sessionId ||
+    immediateSource.identity.invocationId !== continuation.sourceInvocationId ||
+    immediateSource.identity.runId !== continuation.sourceRunId ||
+    immediateSource.identity.turnId !== continuation.sourceTurnId ||
+    immediateSource.position.lastEventSeq !== continuation.sourceRuntimeEventHighWater
+  ) {
+    throw new Error('Runtime continuation durable admission boundary is inconsistent');
+  }
+  const replay = buildRuntimeEventModelReplayPlan(continuation.runtimeContext);
+  const replayDigest = digestProviderReplay(continuation.providerProjectionVersion, replay.items);
+  if (replayDigest !== continuation.providerReplayDigest) {
+    throw new Error('Runtime continuation provider replay identity changed after admission');
+  }
+  const request = snapshotInvocationRequest({
+    sessionId: continuation.sessionId,
+    invocationId: continuation.invocationId,
+    runId: continuation.runId,
+    turnId: continuation.turnId,
+    text: '',
+    context: options.context ?? [],
+    runtimeContext: continuation.runtimeContext,
+    continuation: invocationContinuationMetadata(continuation),
+    source: 'test',
+    ...(options.orchestration ? { orchestration: options.orchestration } : {}),
+  });
+  const receipt = Object.freeze(Object.create(null)) as RuntimeContinuationAdmissionReceipt;
+  pendingContinuationAdmissions.set(receipt as object, { runner, request });
+  return receipt;
+}
+
+function snapshotInvocationRequest(
+  request: InvocationRequest,
+  known?: { continuation: InvocationRequest['continuation'] },
+): InvocationRequest {
+  const continuation = known ? known.continuation : request.continuation;
+  const snapshot: InvocationRequest = {
+    sessionId: request.sessionId,
+    ...(request.invocationId !== undefined ? { invocationId: request.invocationId } : {}),
+    ...(request.runId !== undefined ? { runId: request.runId } : {}),
+    turnId: request.turnId,
+    text: request.text,
+    source: request.source,
+    ...(request.orchestration !== undefined
+      ? { orchestration: cloneAndFreezeSnapshotValue(request.orchestration) }
+      : {}),
+    ...(request.attachments !== undefined
+      ? { attachments: cloneAndFreezeSnapshotValue(request.attachments) }
+      : {}),
+    ...(request.quotes !== undefined
+      ? { quotes: cloneAndFreezeSnapshotValue(request.quotes) }
+      : {}),
+    ...(request.context !== undefined
+      ? { context: cloneAndFreezeSnapshotValue(request.context) }
+      : {}),
+    ...(request.runtimeContext !== undefined
+      ? { runtimeContext: cloneAndFreezeSnapshotValue(request.runtimeContext) }
+      : {}),
+    ...(continuation !== undefined
+      ? { continuation: cloneAndFreezeSnapshotValue(continuation) }
+      : {}),
+    ...(request.initialRuntimeEvent !== undefined
+      ? { initialRuntimeEvent: cloneAndFreezeSnapshotValue(request.initialRuntimeEvent) }
+      : {}),
+    ...(request.branch !== undefined ? { branch: request.branch } : {}),
+    ...(request.lineage !== undefined
+      ? { lineage: cloneAndFreezeSnapshotValue(request.lineage) }
+      : {}),
+    ...(request.pullSteering !== undefined ? { pullSteering: request.pullSteering } : {}),
+    ...(request.ackSteering !== undefined ? { ackSteering: request.ackSteering } : {}),
+    ...(request.nackSteering !== undefined ? { nackSteering: request.nackSteering } : {}),
+    ...(request.abortSignal !== undefined ? { abortSignal: request.abortSignal } : {}),
+  };
+  return Object.freeze(snapshot);
+}
+
+function cloneAndFreezeSnapshotValue<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map((item) => cloneAndFreezeSnapshotValue(item))) as T;
+  }
+  if (value && typeof value === 'object') {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return value;
+    const clone: Record<string, unknown> = Object.create(prototype);
+    for (const key of Object.keys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !('value' in descriptor)) {
+        throw new Error(`Invocation snapshot rejects accessor property ${key}`);
+      }
+      clone[key] = cloneAndFreezeSnapshotValue(descriptor.value);
+    }
+    return Object.freeze(clone) as T;
+  }
+  return value;
+}
+
 function invocationContinuationMetadata(
   continuation: RuntimeContinuation,
 ): NonNullable<InvocationRequest['continuation']> {
@@ -426,6 +632,12 @@ function assertRuntimeContinuationEnvelope(
   ) {
     throw new Error('Runtime continuation must use fresh invocation, run, and turn identities');
   }
+}
+
+function continuationAdmissionRequired(): Error {
+  return new Error(
+    'Runtime continuation requires package-internal durable admission before runner dispatch',
+  );
 }
 
 function finalOutputFromEvents(events: readonly RuntimeEvent[]): string | undefined {

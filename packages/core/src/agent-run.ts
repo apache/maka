@@ -326,9 +326,19 @@ function isAgentRunContinuationSource(value: unknown): value is AgentRunContinua
     hasExactShape(value, AGENT_RUN_CONTINUATION_SOURCE_V2_SHAPE) &&
     value.protocol === 'continuation_source_v2' &&
     typeof value.claimId === 'string' &&
+    value.claimId.length > 0 &&
+    typeof value.sourceInvocationId === 'string' &&
+    value.sourceInvocationId.length > 0 &&
+    typeof value.sourceRunId === 'string' &&
+    value.sourceRunId.length > 0 &&
+    typeof value.sourceTurnId === 'string' &&
+    value.sourceTurnId.length > 0 &&
+    typeof value.sourceRuntimeEventHighWater === 'number' &&
+    value.sourceRuntimeEventHighWater > 0 &&
     isSha256Digest(value.boundaryDigest) &&
     isSha256Digest(value.sourcePrefixDigest) &&
-    isSha256Digest(value.replayManifestDigest)
+    isSha256Digest(value.replayManifestDigest) &&
+    value.replayManifestDigest === value.boundaryDigest
   );
 }
 

@@ -50,6 +50,156 @@ describe('continuation replay segment', () => {
     );
   });
 
+  it('trims every model-visible item when a real continuation segment has no stable anchor', () => {
+    const identity = runtimeIdentity();
+    const digest = `sha256:${'a'.repeat(64)}` as const;
+    const result = buildContinuationReplaySegment({
+      prefix: buildImmutableRuntimePrefix(identity, [
+        {
+          eventSeq: 1,
+          event: {
+            id: 'continuation-start',
+            ...identity,
+            ts: 1,
+            partial: false,
+            role: 'system',
+            author: 'system',
+            actions: {
+              continuationStart: {
+                protocol: 'continuation_start_v2',
+                provenance: 'runtime_admission',
+                claimId: 'claim-1',
+                boundaryDigest: digest,
+                immediateSource: {
+                  sessionId: identity.sessionId,
+                  invocationId: 'ancestor-invocation',
+                  runId: 'ancestor-run',
+                  turnId: 'ancestor-turn',
+                  highWater: 2,
+                  prefixDigest: digest,
+                },
+                replayManifestDigest: digest,
+                providerProjectionVersion: PROVIDER_REPLAY_PROJECTION_VERSION,
+                providerReplayDigest: digest,
+              },
+            },
+          },
+        },
+        {
+          eventSeq: 2,
+          event: {
+            ...textEvent('thinking-1', 'model', identity),
+            content: { kind: 'thinking', text: 'unfinished', signature: 'signed-1' },
+          },
+        },
+        { eventSeq: 3, event: textEvent('assistant-1', 'model', identity) },
+        {
+          eventSeq: 4,
+          event: {
+            id: 'failed-terminal',
+            ...identity,
+            ts: 4,
+            partial: false,
+            role: 'system',
+            author: 'system',
+            status: 'failed',
+            actions: { endInvocation: true },
+          },
+        },
+      ]),
+      providerProjectionVersion: PROVIDER_REPLAY_PROJECTION_VERSION,
+    });
+
+    assert.equal(result.kind, 'replayable');
+    if (result.kind !== 'replayable') return;
+    assert.deepEqual(result.plan.segment.trimmedSuffixEventIds, ['thinking-1', 'assistant-1']);
+    assert.deepEqual(
+      result.plan.segment.replayRuntimeEvents.map((event) => event.id),
+      ['continuation-start', 'failed-terminal'],
+    );
+    assert.deepEqual(result.plan.providerItems, []);
+  });
+
+  it('trims a continuation pre-T1 tool call when the live start declares the durable boundary', () => {
+    const identity = runtimeIdentity();
+    const digest = `sha256:${'a'.repeat(64)}` as const;
+    const result = buildContinuationReplaySegment({
+      prefix: buildImmutableRuntimePrefix(identity, [
+        {
+          eventSeq: 1,
+          event: {
+            id: 'continuation-start',
+            ...identity,
+            ts: 1,
+            partial: false,
+            role: 'system',
+            author: 'system',
+            actions: {
+              runtimeProtocol: { toolBoundary: 't1_after_preflight_v1' },
+              continuationStart: {
+                protocol: 'continuation_start_v2',
+                provenance: 'runtime_admission',
+                claimId: 'claim-1',
+                boundaryDigest: digest,
+                immediateSource: {
+                  sessionId: identity.sessionId,
+                  invocationId: 'ancestor-invocation',
+                  runId: 'ancestor-run',
+                  turnId: 'ancestor-turn',
+                  highWater: 2,
+                  prefixDigest: digest,
+                },
+                replayManifestDigest: digest,
+                providerProjectionVersion: PROVIDER_REPLAY_PROJECTION_VERSION,
+                providerReplayDigest: digest,
+              },
+            },
+          },
+        },
+        {
+          eventSeq: 2,
+          event: {
+            id: 'call-1',
+            ...identity,
+            ts: 2,
+            partial: false,
+            role: 'model',
+            author: 'agent',
+            content: {
+              kind: 'function_call',
+              id: 'tool-call-1',
+              name: 'Write',
+              args: { path: 'notes.txt', content: 'hello' },
+            },
+          },
+        },
+        {
+          eventSeq: 3,
+          event: {
+            id: 'failed-terminal',
+            ...identity,
+            ts: 3,
+            partial: false,
+            role: 'system',
+            author: 'system',
+            status: 'failed',
+            actions: { endInvocation: true },
+          },
+        },
+      ]),
+      providerProjectionVersion: PROVIDER_REPLAY_PROJECTION_VERSION,
+    });
+
+    assert.equal(result.kind, 'replayable');
+    if (result.kind !== 'replayable') return;
+    assert.deepEqual(result.plan.segment.trimmedSuffixEventIds, ['call-1']);
+    assert.deepEqual(
+      result.plan.segment.replayRuntimeEvents.map((event) => event.id),
+      ['continuation-start', 'failed-terminal'],
+    );
+    assert.deepEqual(result.plan.providerItems, []);
+  });
+
   it('blocks an unmatched tool call followed by replayable assistant content', () => {
     const identity = runtimeIdentity();
     const result = buildContinuationReplaySegment({

@@ -32,23 +32,88 @@ try {
     await store.commitToolRecoveryBundle(parkedBundle());
   } else if (mode === 'rebuild') {
     await store.rebuildToolProjectionsFromRuntimeEvents();
-  } else if (mode === 'claim') {
+  } else if (mode === 'append_source') {
+    await store.ensureTerminalRuntimeEventDurable('session-1', 'run-1', {
+      ...baseEvent('concurrent-source-terminal', 3),
+      status: 'failed',
+      actions: {
+        endInvocation: true,
+        stateDelta: { failureClass: 'runtime_interrupted' },
+      },
+    });
+    writeSync(1, 'APPEND committed\n');
+  } else if (mode === 'append_target') {
+    await store.appendRuntimeEvent('session-1', 'fixed-target-run', {
+      id: `target-event-${process.pid}`,
+      sessionId: 'session-1',
+      invocationId: 'fixed-target-invocation',
+      runId: 'fixed-target-run',
+      turnId: 'fixed-target-turn',
+      ts: process.pid,
+      partial: false,
+      role: 'model',
+      author: 'agent',
+      content: { kind: 'text', text: 'racing ordinary target event' },
+    });
+    writeSync(1, 'TARGET_APPEND committed\n');
+  } else if (mode === 'claim' || mode === 'claim_fixed_target') {
     const prefix = await store.readImmutableRuntimePrefix({
       sessionId: 'session-1',
       runId: 'run-1',
+      upToEventSeq: 2,
     });
     const boundary = createRuntimeBoundaryCursor([runtimePrefixSegment(prefix)]);
+    const source = boundary.segments.at(-1)!;
+    const target =
+      mode === 'claim_fixed_target'
+        ? {
+            sessionId: 'session-1',
+            invocationId: 'fixed-target-invocation',
+            runId: 'fixed-target-run',
+            turnId: 'fixed-target-turn',
+          }
+        : {
+            sessionId: 'session-1',
+            invocationId: `invocation-${process.pid}`,
+            runId: `run-${process.pid}`,
+            turnId: `turn-${process.pid}`,
+          };
     const result = await store.claimContinuation({
       claim: {
         protocol: 'continuation_claim_v1',
         claimId: `claim-${process.pid}`,
         boundaryDigest: boundary.manifestDigest,
         boundary,
-        target: {
-          sessionId: 'session-1',
-          invocationId: `invocation-${process.pid}`,
-          runId: `run-${process.pid}`,
-          turnId: `turn-${process.pid}`,
+        providerProjectionVersion: 1,
+        providerReplayDigest: `sha256:${'a'.repeat(64)}`,
+        target,
+        targetRunHeader: {
+          ...target,
+          status: 'created',
+          backendKind: 'fake',
+          llmConnectionSlug: 'connection-1',
+          modelId: 'model-1',
+          cwd: '/workspace/repo',
+          permissionMode: 'ask',
+          collaborationMode: 'agent',
+          orchestrationMode: 'default',
+          orchestrationSource: 'session',
+          agentSwarmAuthorization: 'none',
+          createdAt: process.pid,
+          updatedAt: process.pid,
+          parentRunId: source.identity.runId,
+          parentTurnId: source.identity.turnId,
+          continuationSource: {
+            protocol: 'continuation_source_v2',
+            claimId: `claim-${process.pid}`,
+            boundaryDigest: boundary.manifestDigest,
+            sourceInvocationId: source.identity.invocationId,
+            sourceRunId: source.identity.runId,
+            sourceTurnId: source.identity.turnId,
+            sourceRuntimeEventHighWater: source.position.lastEventSeq,
+            sourcePrefixDigest: source.prefixDigest,
+            replayManifestDigest: boundary.manifestDigest,
+          },
         },
         claimedAt: process.pid,
       },

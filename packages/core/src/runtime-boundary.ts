@@ -1,4 +1,5 @@
 import { createHash, type Hash } from 'node:crypto';
+import { decodeAgentRunHeader, type AgentRunHeader } from './agent-run.js';
 import { encodeCanonicalRuntimeEvent } from './canonical-runtime-event.js';
 import { isRecord } from './record-schema.js';
 import type { RuntimeEvent } from './runtime-event.js';
@@ -50,12 +51,16 @@ export interface ContinuationClaimV1 {
   claimId: string;
   boundaryDigest: RuntimeBoundaryDigest;
   boundary: RuntimeBoundaryCursorV1;
+  providerProjectionVersion: 1;
+  providerReplayDigest: RuntimeBoundaryDigest;
   target: {
     sessionId: string;
     invocationId: string;
     runId: string;
     turnId: string;
   };
+  /** Exact pre-provider target Run header used by both normal admission and crash repair. */
+  targetRunHeader: AgentRunHeader;
   claimedAt: number;
 }
 
@@ -115,11 +120,26 @@ export function createRuntimeBoundaryCursor(
     RuntimePrefixSegmentV1,
     ...RuntimePrefixSegmentV1[],
   ];
-  const identities = new Set<string>();
+  const sessionId = canonicalSegments[0].identity.sessionId;
+  const invocationIds = new Set<string>();
+  const runIds = new Set<string>();
+  const turnIds = new Set<string>();
   for (const segment of canonicalSegments) {
-    const key = stableJsonStringify(segment.identity);
-    if (identities.has(key)) throw new Error('Runtime boundary lineage contains a cycle');
-    identities.add(key);
+    if (segment.identity.sessionId !== sessionId) {
+      throw new Error('Runtime boundary segments must belong to the same session');
+    }
+    if (runIds.has(segment.identity.runId)) {
+      throw new Error('Runtime boundary lineage contains a duplicate runId');
+    }
+    runIds.add(segment.identity.runId);
+    if (invocationIds.has(segment.identity.invocationId)) {
+      throw new Error('Runtime boundary lineage contains a duplicate invocationId');
+    }
+    invocationIds.add(segment.identity.invocationId);
+    if (turnIds.has(segment.identity.turnId)) {
+      throw new Error('Runtime boundary lineage contains a duplicate turnId');
+    }
+    turnIds.add(segment.identity.turnId);
   }
   return {
     protocol: 'runtime_boundary_cursor_v1',
@@ -188,7 +208,10 @@ export function decodeContinuationClaim(value: unknown): ContinuationClaimV1 {
       'claimId',
       'boundaryDigest',
       'boundary',
+      'providerProjectionVersion',
+      'providerReplayDigest',
       'target',
+      'targetRunHeader',
       'claimedAt',
     ]) ||
     value.protocol !== 'continuation_claim_v1' ||
@@ -199,6 +222,7 @@ export function decodeContinuationClaim(value: unknown): ContinuationClaimV1 {
     !isNonEmptyString(value.target.invocationId) ||
     !isNonEmptyString(value.target.runId) ||
     !isNonEmptyString(value.target.turnId) ||
+    value.providerProjectionVersion !== 1 ||
     !Number.isSafeInteger(value.claimedAt) ||
     (value.claimedAt as number) < 0
   ) {
@@ -206,6 +230,7 @@ export function decodeContinuationClaim(value: unknown): ContinuationClaimV1 {
   }
   const boundary = decodeRuntimeBoundaryCursor(value.boundary);
   const boundaryDigest = decodeBoundaryDigest(value.boundaryDigest);
+  const providerReplayDigest = decodeBoundaryDigest(value.providerReplayDigest);
   if (boundaryDigest !== boundary.manifestDigest) {
     throw new Error('Continuation claim boundary digest mismatch');
   }
@@ -213,17 +238,59 @@ export function decodeContinuationClaim(value: unknown): ContinuationClaimV1 {
   if (value.target.sessionId !== source.identity.sessionId) {
     throw new Error('Continuation claim target session differs from source boundary');
   }
+  const targetRunId = value.target.runId;
+  if (boundary.segments.some((segment) => segment.identity.runId === targetRunId)) {
+    throw new Error('Continuation claim target runId reuses source identity');
+  }
+  const targetInvocationId = value.target.invocationId;
+  if (boundary.segments.some((segment) => segment.identity.invocationId === targetInvocationId)) {
+    throw new Error('Continuation claim target invocationId reuses source identity');
+  }
+  const targetTurnId = value.target.turnId;
+  if (boundary.segments.some((segment) => segment.identity.turnId === targetTurnId)) {
+    throw new Error('Continuation claim target turnId reuses source identity');
+  }
+  const targetRunHeader = decodeAgentRunHeader(value.targetRunHeader);
+  const continuationSource = targetRunHeader.continuationSource;
+  if (
+    targetRunHeader.runId !== targetRunId ||
+    targetRunHeader.invocationId !== targetInvocationId ||
+    targetRunHeader.sessionId !== value.target.sessionId ||
+    targetRunHeader.turnId !== targetTurnId ||
+    targetRunHeader.status !== 'created' ||
+    targetRunHeader.createdAt !== value.claimedAt ||
+    targetRunHeader.updatedAt !== value.claimedAt ||
+    targetRunHeader.completedAt !== undefined ||
+    targetRunHeader.failureClass !== undefined ||
+    targetRunHeader.failureMessage !== undefined ||
+    !continuationSource ||
+    !('protocol' in continuationSource) ||
+    continuationSource.protocol !== 'continuation_source_v2' ||
+    continuationSource.claimId !== value.claimId ||
+    continuationSource.boundaryDigest !== boundaryDigest ||
+    continuationSource.sourceInvocationId !== source.identity.invocationId ||
+    continuationSource.sourceRunId !== source.identity.runId ||
+    continuationSource.sourceTurnId !== source.identity.turnId ||
+    continuationSource.sourceRuntimeEventHighWater !== source.position.lastEventSeq ||
+    continuationSource.sourcePrefixDigest !== source.prefixDigest ||
+    continuationSource.replayManifestDigest !== boundary.manifestDigest
+  ) {
+    throw new Error('Continuation claim target Run header mismatch');
+  }
   return {
     protocol: 'continuation_claim_v1',
     claimId: value.claimId,
     boundaryDigest,
     boundary,
+    providerProjectionVersion: 1,
+    providerReplayDigest,
     target: {
       sessionId: value.target.sessionId,
       invocationId: value.target.invocationId,
       runId: value.target.runId,
       turnId: value.target.turnId,
     },
+    targetRunHeader,
     claimedAt: value.claimedAt as number,
   };
 }

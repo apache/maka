@@ -360,10 +360,11 @@ class FileAgentRunStore implements DurableAgentRunStore {
     patch: Partial<AgentRunHeader>,
     options: { durable?: boolean } = {},
   ): Promise<AgentRunHeader> {
+    assertMutableRunHeaderPatch(patch);
     let next: AgentRunHeader | undefined;
     await this.withQueue(sessionId, runId, async () => {
       const current = await this.readRunUnlocked(sessionId, runId);
-      next = { ...current, ...patch, sessionId, runId };
+      next = decodeAgentRunHeader({ ...current, ...patch, sessionId, runId }, { sessionId, runId });
       await writeAtomic(this.runPath(sessionId, runId), JSON.stringify(next, sanitizeJson) + '\n', {
         ...options,
         durabilityRoot: this.durabilityRoot,
@@ -786,6 +787,25 @@ class FileAgentRunStore implements DurableAgentRunStore {
       }
       await this.writeEventProjectionUnlocked(sessionId, type, null);
     }
+  }
+}
+
+const MUTABLE_AGENT_RUN_HEADER_FIELDS = new Set<keyof AgentRunHeader>([
+  'status',
+  'updatedAt',
+  'completedAt',
+  'failureClass',
+  'failureMessage',
+  'abortSource',
+  'traceWriteError',
+]);
+
+function assertMutableRunHeaderPatch(patch: Partial<AgentRunHeader>): void {
+  const immutable = Object.keys(patch).filter(
+    (key) => !MUTABLE_AGENT_RUN_HEADER_FIELDS.has(key as keyof AgentRunHeader),
+  );
+  if (immutable.length > 0) {
+    throw new Error(`AgentRun admission identity is immutable: ${immutable.sort().join(', ')}`);
   }
 }
 

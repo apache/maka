@@ -51,7 +51,6 @@
     "./compaction-boundary": "./dist/compaction-boundary.js",
     "./model-history": "./dist/model-history.js",
     "./invocation-context": "./dist/invocation-context.js",
-    "./runtime-runner": "./dist/runtime-runner.js",
     "./agent-flow": "./dist/agent-flow.js",
     "./ai-sdk-flow": "./dist/ai-sdk-flow.js",
     "./stream-graph-projection": "./dist/stream-graph-projection.js",

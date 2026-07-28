@@ -64,8 +64,16 @@ export type ContinuationClaimResult =
   | { kind: 'existing'; claim: ContinuationClaimV1 }
   | { kind: 'conflict'; claim: ContinuationClaimV1 };
 
+export interface ContinuationClaimStateV1 {
+  claim: ContinuationClaimV1;
+  startEventId?: string;
+  /** Store-owned classification of the narrow command that committed event 1. */
+  startKind?: 'runtime_admission' | 'claim_repair';
+}
+
 export interface RuntimeContinuationAuthorityStore extends RuntimeEventStore {
   readonly continuationAuthorityCapability: typeof RUNTIME_CONTINUATION_AUTHORITY_V1;
+  readImmutableRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
   readImmutableRuntimePrefix(input: {
     sessionId: string;
     runId: string;
@@ -75,7 +83,15 @@ export interface RuntimeContinuationAuthorityStore extends RuntimeEventStore {
   readContinuationClaimByBoundary(
     boundaryDigest: RuntimeBoundaryDigest,
   ): Promise<ContinuationClaimV1 | undefined>;
+  readContinuationClaimStateByBoundary(
+    boundaryDigest: RuntimeBoundaryDigest,
+  ): Promise<ContinuationClaimStateV1 | undefined>;
+  listContinuationClaimsForRecovery(sessionId: string): Promise<ContinuationClaimStateV1[]>;
   commitContinuationStart(input: {
+    claim: ContinuationClaimV1;
+    event: RuntimeEvent;
+  }): Promise<{ created: boolean; runtimeEventSeq: number }>;
+  commitContinuationRepairStart(input: {
     claim: ContinuationClaimV1;
     event: RuntimeEvent;
   }): Promise<{ created: boolean; runtimeEventSeq: number }>;

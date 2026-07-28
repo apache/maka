@@ -129,12 +129,18 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
       source_prefix_digest TEXT NOT NULL,
       boundary_digest TEXT NOT NULL UNIQUE,
       boundary_json TEXT NOT NULL,
+      provider_projection_version INTEGER NOT NULL CHECK (provider_projection_version = 1),
+      provider_replay_digest TEXT NOT NULL,
       target_session_id TEXT NOT NULL,
       target_invocation_id TEXT NOT NULL UNIQUE,
       target_run_id TEXT NOT NULL UNIQUE,
       target_turn_id TEXT NOT NULL,
+      target_run_header_json TEXT NOT NULL,
       claimed_at INTEGER NOT NULL,
       start_event_id TEXT UNIQUE REFERENCES runtime_events(event_id),
+      start_kind TEXT CHECK (
+        start_kind IS NULL OR start_kind IN ('runtime_admission', 'claim_repair')
+      ),
       protocol_version INTEGER NOT NULL CHECK (protocol_version = 1),
       UNIQUE (
         source_session_id,

@@ -255,6 +255,8 @@ export interface RuntimeEventProtocolMarker {
 
 export interface RuntimeEventContinuationStartV2 {
   protocol: 'continuation_start_v2';
+  /** Mirrors store-owned claim state; recovery never trusts this field alone. */
+  provenance: 'runtime_admission' | 'claim_repair';
   claimId: string;
   boundaryDigest: `sha256:${string}`;
   immediateSource: {
@@ -482,6 +484,7 @@ const RUNTIME_PROTOCOL_MARKER_SHAPE = defineObjectShape<RuntimeEventProtocolMark
 const RUNTIME_CONTINUATION_START_SHAPE = defineObjectShape<RuntimeEventContinuationStartV2>()(
   [
     'protocol',
+    'provenance',
     'claimId',
     'boundaryDigest',
     'immediateSource',
@@ -744,6 +747,7 @@ function isRuntimeContinuationStart(value: unknown): value is RuntimeEventContin
     isRecord(value) &&
     hasExactShape(value, RUNTIME_CONTINUATION_START_SHAPE) &&
     value.protocol === 'continuation_start_v2' &&
+    (value.provenance === 'runtime_admission' || value.provenance === 'claim_repair') &&
     isNonEmptyString(value.claimId) &&
     isSha256Digest(value.boundaryDigest) &&
     isRecord(value.immediateSource) &&

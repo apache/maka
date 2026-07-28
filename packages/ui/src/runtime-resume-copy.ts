@@ -25,6 +25,8 @@ const RESUME_PARK_REASON_COPY: Readonly<Record<string, string>> = {
   runtime_lineage_depth_exceeded: '续跑链过长，已停止自动恢复。',
   runtime_lineage_missing: '续跑链缺少必要的历史记录。',
   runtime_lineage_start_mismatch: '续跑链的起点记录不一致，已停止恢复。',
+  runtime_lineage_replay_mismatch: '续跑链记录的模型上下文与当前重建结果不一致。',
+  runtime_lineage_claim_mismatch: '续跑链缺少匹配的恢复所有权记录，已停止恢复。',
   source_prefix_digest_mismatch: '上次运行的不可变边界已发生变化。',
   continuation_already_exists: '该中断任务已经创建过续跑。',
   continuation_claim_repair_required: '恢复所有权已保留，但续跑记录需要先修复。',

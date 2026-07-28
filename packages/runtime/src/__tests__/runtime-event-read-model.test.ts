@@ -953,6 +953,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
           actions: {
             continuationStart: {
               protocol: 'continuation_start_v2',
+              provenance: 'runtime_admission',
               claimId: 'claim-1',
               boundaryDigest:
                 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',

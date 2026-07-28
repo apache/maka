@@ -1143,10 +1143,11 @@ export type {
 // ───────────────────────────────────────────────────────────────────────────
 // Runtime event and recovery public seam.
 //
-// Subpath imports (e.g. `@maka/runtime/runtime-runner`) remain canonical;
-// the barrel re-exports below are for convenience. `InvocationContext` is the
-// canonical runner/flow spine exported from `./invocation-context.js` and used
-// by the formal `AgentFlow` seam.
+// `InvocationContext` is the canonical runner/flow spine exported from
+// `./invocation-context.js` and used by the formal `AgentFlow` seam.
+// RuntimeRunner's normal-invocation API remains public through this barrel;
+// its admitted-continuation capability is package-internal and intentionally
+// has no package subpath or barrel export.
 // ───────────────────────────────────────────────────────────────────────────
 
 // invocation-context.ts — runner spine types + providers.

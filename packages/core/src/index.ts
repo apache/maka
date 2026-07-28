@@ -189,6 +189,7 @@ export type { RuntimeEventStore } from './runtime-event-store.js';
 export { DurableStoreWriteError } from './runtime-event-store.js';
 export type {
   ContinuationClaimResult,
+  ContinuationClaimStateV1,
   RuntimeContinuationAuthorityStore,
   RuntimeRecoveryBundleCommit,
   RuntimeRecoveryBundleStore,

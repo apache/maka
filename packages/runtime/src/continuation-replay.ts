@@ -176,6 +176,16 @@ export function buildContinuationReplaySegment(input: {
         trimmedIds.add(diagnostic.eventId!);
       }
     }
+  } else {
+    // A continuation run does not synthesize another user event. If it crashes
+    // before producing a tool result, the whole model-visible segment is an
+    // interrupted suffix rather than a new replay anchor.
+    for (const item of modelPlan.items) {
+      trimmedIds.add(item.eventId);
+    }
+    for (const diagnostic of unmatchedCalls) {
+      trimmedIds.add(diagnostic.eventId!);
+    }
   }
   const trimmedSuffixEventIds = input.prefix.events
     .filter((event) => trimmedIds.has(event.id))
@@ -219,7 +229,7 @@ function isBlockingProjectionDiagnostic(diagnostic: RuntimeEventReplayDiagnostic
   );
 }
 
-function digestProviderReplay(
+export function digestProviderReplay(
   providerProjectionVersion: number,
   items: readonly RuntimeEventModelReplayItem[],
 ): RuntimeBoundaryDigest {

@@ -97,6 +97,7 @@ describe('continuation-start protocol', () => {
   test('accepts only the replay projection version defined by v2', () => {
     const continuationStart = {
       protocol: 'continuation_start_v2',
+      provenance: 'runtime_admission',
       claimId: 'claim-1',
       boundaryDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       immediateSource: {
