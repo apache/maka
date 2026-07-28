@@ -146,11 +146,15 @@ _RUNTIME_ACTION_KEYS = {
     "artifactDelta",
     "permissionRequest",
     "permissionDecision",
+    "permissionAnswerAccepted",
+    "permissionClosureAccepted",
     "userQuestionRequest",
+    "userQuestionAnswerAccepted",
     "transferToAgent",
     "endInvocation",
     "tokenUsage",
     "toolDispatch",
+    "toolRecovery",
     "runtimeProtocol",
 }
 _RUNTIME_EVENT_REF_KEYS = {
@@ -167,6 +171,220 @@ _RUNTIME_EVENT_REF_KEYS = {
     "sourceTurnId",
     "sourceRuntimeEventHighWater",
 }
+# These value constraints mirror Core's RuntimeEvent decoder. The shared
+# accept/reject corpus exercises both implementations at their public boundary.
+_TOOL_CATEGORIES = {
+    "read",
+    "web_read",
+    "file_write",
+    "fs_destructive",
+    "shell_safe",
+    "shell_unsafe",
+    "git_destructive",
+    "network_send",
+    "privileged",
+    "browser",
+    "computer_use",
+    "custom_tool",
+    "subagent",
+}
+_TOOL_PERMISSION_REASONS = {
+    "shell_dangerous",
+    "file_write",
+    "fs_destructive",
+    "network",
+    "git_destructive",
+    "privileged",
+    "browser",
+    "computer_use",
+    "custom",
+}
+_TOOL_RECOVERY_MODES = {
+    "replay_safe",
+    "idempotent",
+    "reconcile",
+    "reattach",
+    "never_auto_retry",
+}
+_PREFIX_CHANGE_REASONS = {
+    "first_turn",
+    "system_prompt_changed",
+    "tool_schema_changed",
+    "provider_options_changed",
+    "model_or_provider_changed",
+    "history_projection_changed",
+    "stable",
+    "unknown",
+}
+_TOKEN_USAGE_NUMBER_KEYS = {
+    "cacheHitInput",
+    "cacheMissInput",
+    "cacheWriteInput",
+    "reasoning",
+    "total",
+    "runtimeSteps",
+    "cacheRead",
+    "cacheCreation",
+    "costUsd",
+    "contextRemaining",
+}
+_TOKEN_USAGE_KEYS = {
+    "input",
+    "output",
+    *_TOKEN_USAGE_NUMBER_KEYS,
+    "cacheMissInputSource",
+    "rawFinishReason",
+    "systemPromptHash",
+    "prefixHash",
+    "prefixChangeReason",
+    "requestShapeHash",
+    "requestShapeChangeReason",
+    "promptSegments",
+    "contextBudget",
+}
+_CONTEXT_BUDGET_REQUIRED_KEYS = {
+    "enabled",
+    "estimatedTokensBefore",
+    "estimatedTokensAfter",
+    "keptTurns",
+    "droppedTurns",
+    "keptEvents",
+    "droppedEvents",
+}
+_CONTEXT_BUDGET_NUMBER_KEYS = {
+    "maxHistoryEstimatedTokens",
+    "maxHistoryTurns",
+    "prunedToolResults",
+    "prunedToolResultEstimatedTokensBefore",
+    "prunedToolResultEstimatedTokensAfter",
+    "archivePlaceholders",
+    "archiveWriteFailures",
+    "unarchivedToolResults",
+    "activePrunedToolResults",
+    "activeArchiveFailures",
+    "activeEstimatedTokensSaved",
+    "archiveRetrievalEligibleTurns",
+    "retrievedArchiveToolResults",
+    "retrievedArchiveEstimatedTokens",
+    "archiveRetrievalSkipped",
+    "archiveRetrievalFailures",
+    "historySearchMatches",
+    "historyAroundRetrievedEvents",
+    "historyAroundEstimatedTokens",
+    "historyAroundSkippedEvents",
+    "synthesisCacheBlocksLoaded",
+    "synthesisCacheLoadSkipped",
+    "synthesisCacheLoadFailures",
+    "synthesisCacheBlocksAvailable",
+    "synthesisCacheBlocksSelected",
+    "synthesisCacheEstimatedTokens",
+    "synthesisCacheSkipped",
+    "synthesisCacheInvalidated",
+    "synthesisCacheWritesAttempted",
+    "synthesisCacheBlocksWritten",
+    "synthesisCacheWriteEstimatedTokens",
+    "synthesisCacheWriteSkipped",
+    "synthesisCacheWriteFailures",
+    "synthesisCacheEvicted",
+    "historyCompactBlocksLoaded",
+    "historyCompactLoadSkipped",
+    "historyCompactLoadFailures",
+    "historyCompactBlocksAvailable",
+    "historyCompactBlocksSelected",
+    "historyCompactedTurns",
+    "historyCompactedEvents",
+    "historyCompactedEstimatedTokensBefore",
+    "historyCompactedEstimatedTokensAfter",
+    "historyCompactSkipped",
+    "historyCompactWritesAttempted",
+    "historyCompactBlocksWritten",
+    "historyCompactWriteEstimatedTokens",
+    "historyCompactWriteSkipped",
+    "historyCompactWriteFailures",
+    "highWaterSeq",
+}
+_CONTEXT_BUDGET_REASON_COUNT_KEYS = {
+    "archivePlaceholderReasonCounts",
+    "archiveRetrievalSkippedReasonCounts",
+    "archiveRetrievalFailureReasonCounts",
+    "synthesisCacheLoadSkippedReasonCounts",
+    "synthesisCacheSkippedReasonCounts",
+    "synthesisCacheInvalidationReasonCounts",
+    "synthesisCacheWriteSkippedReasonCounts",
+    "synthesisCacheEvictionReasonCounts",
+    "historyCompactLoadSkippedReasonCounts",
+    "historyCompactSkippedReasonCounts",
+    "historyCompactWriteSkippedReasonCounts",
+}
+_CONTEXT_BUDGET_STRING_LIST_KEYS = {
+    "synthesisCacheBlockIds",
+    "synthesisCacheWrittenBlockIds",
+    "historyCompactBlockIds",
+    "historyCompactCoverageHashes",
+    "historyCompactWrittenBlockIds",
+}
+_CONTEXT_BUDGET_KEYS = _CONTEXT_BUDGET_REQUIRED_KEYS | _CONTEXT_BUDGET_NUMBER_KEYS | (
+    _CONTEXT_BUDGET_REASON_COUNT_KEYS
+    | _CONTEXT_BUDGET_STRING_LIST_KEYS
+    | {
+        "policyName",
+        "semanticCompactEnabled",
+        "semanticCompactMode",
+        "compactionDecisions",
+        "archiveRetrievalMode",
+        "synthesisCacheEnabled",
+        "synthesisCacheMode",
+        "historyCompactEnabled",
+        "historyCompactMode",
+        "highWaterName",
+        "highWaterReason",
+        "highWaterRequestShapeHashBefore",
+        "highWaterRequestShapeHashAfter",
+        "historyRewriteVersion",
+        "historyRewriteResetReason",
+        "historyRewriteGate",
+    }
+)
+_COMPACTION_DECISION_REQUIRED_KEYS = {"stage", "sourceKind", "decision"}
+_COMPACTION_DECISION_NUMBER_KEYS = {
+    "coveredTurns",
+    "coveredRuntimeEvents",
+    "coveredToolCalls",
+    "coveredProviderMessages",
+    "estimatedTokensBefore",
+    "estimatedTokensAfter",
+    "estimatedTokensSaved",
+    "candidateEstimatedTokens",
+    "preservedHeadEstimatedTokens",
+    "preservedTailEstimatedTokens",
+    "acceptedProjectionEstimatedTokens",
+    "compactCallInputTokens",
+    "compactCallOutputTokens",
+    "compactCallCacheReadInputTokens",
+    "compactCallCacheWriteInputTokens",
+    "compactCallTotalTokens",
+}
+_COMPACTION_DECISION_KEYS = _COMPACTION_DECISION_REQUIRED_KEYS | (
+    _COMPACTION_DECISION_NUMBER_KEYS
+    | {
+        "phase",
+        "boundaryKind",
+        "boundaryIds",
+        "coveredTurns",
+        "coveredRuntimeEvents",
+        "coveredToolCalls",
+        "coveredProviderMessages",
+        "coverageHashes",
+        "reason",
+        "failOpenReason",
+        "skippedReasonCounts",
+        "validationReasonCounts",
+    }
+)
+_TOOL_BOUNDARY_PROTOCOL = "t1_after_preflight_v1"
+_INTERACTION_ID_MAX_BYTES = 256
+_INTERACTION_TOOL_NAME_MAX_BYTES = 256
+_MAX_SAFE_INTEGER = 9_007_199_254_740_991
 
 
 class _ImageArtifactResolver:
@@ -383,6 +601,8 @@ def build_runtime_trajectory(
             extra: dict[str, Any] = {"maka_runtime_event_id": _event_id(event)}
             if "displayText" in content:
                 extra["maka_display_text"] = redact_value(content["displayText"])
+            if "origin" in content:
+                extra["maka_origin"] = redact_value(content["origin"])
             if "attachments" in content:
                 extra["maka_attachments"] = redact_value(content["attachments"])
             if "quotes" in content:
@@ -730,12 +950,10 @@ def _is_attachment_ref(value: Any) -> bool:
         return False
     if (
         set(value) != {"kind", "name", "mimeType", "bytes", "ref"}
-        or value.get("kind") not in {"image", "pdf", "doc", "code", "other"}
+        or not _is_string_choice(value.get("kind"), {"image", "pdf", "doc", "code", "other"})
         or not isinstance(value.get("name"), str)
         or not isinstance(value.get("mimeType"), str)
-        or isinstance(value.get("bytes"), bool)
-        or not isinstance(value.get("bytes"), int)
-        or value.get("bytes") < 0
+        or not _is_nonnegative_safe_integer(value.get("bytes"))
     ):
         return False
     ref = value.get("ref")
@@ -745,21 +963,17 @@ def _is_attachment_ref(value: Any) -> bool:
         return (
             set(ref) == {"kind", "sessionId", "relativePath"}
             and isinstance(ref.get("sessionId"), str)
-            and bool(ref["sessionId"])
             and isinstance(ref.get("relativePath"), str)
-            and bool(ref["relativePath"])
         )
     if ref["kind"] == "workspace_file":
         return (
             set(ref) == {"kind", "relativePath"}
             and isinstance(ref.get("relativePath"), str)
-            and bool(ref["relativePath"])
         )
     if ref["kind"] == "external_file":
         return (
             set(ref) == {"kind", "absolutePath"}
             and isinstance(ref.get("absolutePath"), str)
-            and bool(ref["absolutePath"])
         )
     return False
 
@@ -816,33 +1030,759 @@ def _is_runtime_event(event: dict[str, Any]) -> bool:
     ):
         return False
     timestamp = event.get("ts")
-    if (
-        isinstance(timestamp, bool)
-        or not isinstance(timestamp, (int, float))
-        or not math.isfinite(timestamp)
-    ):
+    if not _is_finite_number(timestamp):
         return False
     if not isinstance(event.get("partial"), bool):
         return False
-    if event.get("role") not in {"user", "model", "tool", "system"}:
+    if not _is_string_choice(event.get("role"), {"user", "model", "tool", "system"}):
         return False
-    if event.get("author") not in {"user", "agent", "tool", "system"}:
+    if not _is_string_choice(
+        event.get("author"), {"user", "host", "agent", "tool", "system"}
+    ):
         return False
     if "branch" in event and not isinstance(event["branch"], str):
         return False
-    if "status" in event and event["status"] not in _TERMINAL_STATUSES | {"streaming"}:
-        return False
-    if "actions" in event and (
-        not isinstance(event["actions"], dict)
-        or set(event["actions"]) - _RUNTIME_ACTION_KEYS
+    if "status" in event and not _is_string_choice(
+        event["status"], _TERMINAL_STATUSES | {"streaming"}
     ):
         return False
-    if "refs" in event and (
-        not isinstance(event["refs"], dict)
-        or set(event["refs"]) - _RUNTIME_EVENT_REF_KEYS
-    ):
+    if "actions" in event and not _is_runtime_actions(event["actions"]):
+        return False
+    if "refs" in event and not _is_runtime_refs(event["refs"]):
         return False
     return "content" not in event or _is_runtime_content(event["content"])
+
+
+def _is_runtime_actions(actions: Any) -> bool:
+    if not isinstance(actions, dict) or set(actions) - _RUNTIME_ACTION_KEYS:
+        return False
+    if "permissionClosureAccepted" in actions and set(actions) != {"permissionClosureAccepted"}:
+        return False
+    return (
+        ("stateDelta" not in actions or isinstance(actions["stateDelta"], dict))
+        and (
+            "artifactDelta" not in actions
+            or _is_runtime_artifact_delta(actions["artifactDelta"])
+        )
+        and (
+            "permissionRequest" not in actions
+            or _is_permission_request(actions["permissionRequest"])
+        )
+        and (
+            "permissionDecision" not in actions
+            or _is_permission_decision(actions["permissionDecision"])
+        )
+        and (
+            "permissionAnswerAccepted" not in actions
+            or _is_answer_accepted(actions["permissionAnswerAccepted"])
+        )
+        and (
+            "permissionClosureAccepted" not in actions
+            or _is_permission_closure(actions["permissionClosureAccepted"])
+        )
+        and (
+            "userQuestionRequest" not in actions
+            or _is_user_question_request(actions["userQuestionRequest"])
+        )
+        and (
+            "userQuestionAnswerAccepted" not in actions
+            or _is_answer_accepted(actions["userQuestionAnswerAccepted"])
+        )
+        and (
+            "transferToAgent" not in actions
+            or isinstance(actions["transferToAgent"], str)
+        )
+        and (
+            "endInvocation" not in actions
+            or isinstance(actions["endInvocation"], bool)
+        )
+        and (
+            "tokenUsage" not in actions
+            or _is_runtime_token_usage(actions["tokenUsage"])
+        )
+        and (
+            "toolDispatch" not in actions
+            or _is_runtime_tool_dispatch(actions["toolDispatch"])
+        )
+        and (
+            "toolRecovery" not in actions
+            or _is_tool_recovery_fact(actions["toolRecovery"])
+        )
+        and (
+            "runtimeProtocol" not in actions
+            or _is_runtime_protocol(actions["runtimeProtocol"])
+        )
+    )
+
+
+def _is_runtime_artifact_delta(value: Any) -> bool:
+    return isinstance(value, dict) and all(
+        isinstance(item, (str, bool)) or _is_finite_number(item)
+        for item in value.values()
+    )
+
+
+def _is_permission_request(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    common = (
+        isinstance(value.get("requestId"), str)
+        and isinstance(value.get("toolUseId"), str)
+        and isinstance(value.get("toolName"), str)
+        and _is_string_choice(value.get("category"), _TOOL_CATEGORIES)
+    )
+    if not common:
+        return False
+    if value.get("kind") == "tool_permission":
+        return (
+            _has_exact_shape(
+                value,
+                {
+                    "kind",
+                    "requestId",
+                    "toolUseId",
+                    "toolName",
+                    "category",
+                    "reason",
+                    "args",
+                    "rememberForTurnAllowed",
+                },
+                {"hint"},
+            )
+            and _is_string_choice(value.get("reason"), _TOOL_PERMISSION_REASONS)
+            and isinstance(value.get("rememberForTurnAllowed"), bool)
+            and _is_optional_string(value, "hint")
+        )
+    if value.get("kind") == "additional_permissions":
+        return (
+            _has_exact_shape(
+                value,
+                {
+                    "kind",
+                    "requestId",
+                    "toolUseId",
+                    "toolName",
+                    "category",
+                    "reason",
+                    "additionalPermissions",
+                    "cwd",
+                    "justification",
+                    "intentHash",
+                    "permissionsHash",
+                    "risk",
+                    "alsoApprovesToolExecution",
+                    "availableDecisions",
+                },
+                {"hint"},
+            )
+            and value.get("reason") == "additional_permissions"
+            and _is_additional_permission_profile(value.get("additionalPermissions"))
+            and _has_boolean_shape(
+                value.get("risk"),
+                {"outsideWorkspace", "protectedMetadata", "networkEnabled"},
+            )
+            and all(
+                isinstance(value.get(key), str)
+                for key in ("cwd", "justification", "intentHash", "permissionsHash")
+            )
+            and isinstance(value.get("alsoApprovesToolExecution"), bool)
+            and value.get("availableDecisions") == ["allow_once", "deny"]
+            and _is_optional_string(value, "hint")
+        )
+    return (
+        value.get("kind") == "sandbox_escalation"
+        and _has_exact_shape(
+            value,
+            {
+                "kind",
+                "requestId",
+                "toolUseId",
+                "toolName",
+                "category",
+                "reason",
+                "command",
+                "cwd",
+                "justification",
+                "intentHash",
+                "commandHash",
+                "trigger",
+                "risk",
+                "alsoApprovesToolExecution",
+                "availableDecisions",
+            },
+            {"hint"},
+        )
+        and value.get("toolName") == "Bash"
+        and value.get("reason") == "sandbox_escalation"
+        and all(
+            isinstance(value.get(key), str)
+            for key in ("command", "cwd", "justification", "intentHash", "commandHash")
+        )
+        and _is_string_choice(value.get("trigger"), {"proactive", "sandbox_denial"})
+        and _has_true_shape(
+            value.get("risk"),
+            {
+                "unsandboxedExecution",
+                "unrestrictedFileSystem",
+                "unrestrictedNetwork",
+                "protectedMetadataExposed",
+            },
+        )
+        and isinstance(value.get("alsoApprovesToolExecution"), bool)
+        and value.get("availableDecisions") == ["allow_once", "deny"]
+        and _is_optional_string(value, "hint")
+    )
+
+
+def _is_additional_permission_profile(value: Any) -> bool:
+    if not isinstance(value, dict) or set(value) - {"fileSystem", "network"}:
+        return False
+    file_system = value.get("fileSystem")
+    network = value.get("network")
+    entries: list[Any] = []
+    if "fileSystem" in value:
+        if not _has_exact_shape(file_system, {"entries"}) or not isinstance(
+            file_system.get("entries"), list
+        ):
+            return False
+        entries = file_system["entries"]
+        if len(entries) > 32 or not all(_is_additional_permission_entry(item) for item in entries):
+            return False
+    if "network" in value and not (
+        _has_exact_shape(network, {"enabled"}) and network.get("enabled") is True
+    ):
+        return False
+    if not entries and "network" not in value:
+        return False
+    compacted_entries = _compact_additional_permission_entries(entries)
+    normalized: dict[str, Any] = {}
+    if compacted_entries:
+        normalized["fileSystem"] = {"entries": compacted_entries}
+    if "network" in value:
+        normalized["network"] = {"enabled": True}
+    serialized = json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
+    return _utf8_length(serialized, escaped_lone_surrogates=True) <= 64 * 1024
+
+
+def _is_additional_permission_entry(value: Any) -> bool:
+    if not _has_exact_shape(value, {"path", "access", "scope"}):
+        return False
+    path = value.get("path")
+    return (
+        isinstance(path, str)
+        and _is_normalized_absolute_path(path)
+        and _utf16_length(path) <= 4096
+        and _is_string_choice(value.get("access"), {"read", "write"})
+        and _is_string_choice(value.get("scope"), {"exact", "subtree"})
+    )
+
+
+def _is_normalized_absolute_path(value: str) -> bool:
+    if not value.startswith("/") or "\0" in value or "\\" in value:
+        return False
+    if len(value) > 1 and value.endswith("/"):
+        return False
+    return not any(
+        index > 0 and segment in {"", ".", ".."}
+        for index, segment in enumerate(value.split("/"))
+    )
+
+
+def _compact_additional_permission_entries(entries: list[Any]) -> list[dict[str, str]]:
+    compacted: list[dict[str, str]] = []
+    for entry in entries:
+        if any(_additional_permission_covers(existing, entry) for existing in compacted):
+            continue
+        compacted = [
+            existing
+            for existing in compacted
+            if not _additional_permission_covers(entry, existing)
+        ]
+        compacted.append(
+            {
+                "path": entry["path"],
+                "access": entry["access"],
+                "scope": entry["scope"],
+            }
+        )
+    return compacted
+
+
+def _additional_permission_covers(existing: dict[str, str], candidate: dict[str, str]) -> bool:
+    if candidate["access"] == "write" and existing["access"] != "write":
+        return False
+    if existing["scope"] == "exact":
+        return candidate["scope"] == "exact" and existing["path"] == candidate["path"]
+    root = existing["path"]
+    return root == "/" or candidate["path"] == root or candidate["path"].startswith(f"{root}/")
+
+
+def _utf16_length(value: str) -> int:
+    return len(value.encode("utf-16-le", errors="surrogatepass")) // 2
+
+
+def _is_permission_decision(value: Any) -> bool:
+    return (
+        _has_exact_shape(
+            value,
+            {"requestId", "decision"},
+            {"rememberForTurn", "reviewer", "rationale", "riskLevel", "toolName"},
+        )
+        and isinstance(value.get("requestId"), str)
+        and _is_string_choice(value.get("decision"), {"allow", "deny"})
+        and (
+            "rememberForTurn" not in value
+            or isinstance(value.get("rememberForTurn"), bool)
+        )
+        and (
+            "reviewer" not in value
+            or _is_string_choice(value.get("reviewer"), {"user", "auto_review"})
+        )
+        and _is_optional_string(value, "rationale")
+        and (
+            "riskLevel" not in value
+            or _is_string_choice(
+                value.get("riskLevel"), {"low", "medium", "high", "critical"}
+            )
+        )
+        and (
+            "toolName" not in value
+            or _is_bounded_nonempty_string(value.get("toolName"), _INTERACTION_TOOL_NAME_MAX_BYTES)
+        )
+    )
+
+
+def _is_answer_accepted(value: Any) -> bool:
+    return _has_exact_shape(value, {"requestId"}) and _is_bounded_nonempty_string(
+        value.get("requestId"), _INTERACTION_ID_MAX_BYTES
+    )
+
+
+def _is_permission_closure(value: Any) -> bool:
+    return (
+        _has_exact_shape(value, {"requestId", "reason"})
+        and _is_bounded_nonempty_string(value.get("requestId"), _INTERACTION_ID_MAX_BYTES)
+        and value.get("reason") == "timed_out"
+    )
+
+
+def _is_user_question_request(value: Any) -> bool:
+    return (
+        _has_exact_shape(value, {"requestId", "toolUseId", "questions"})
+        and isinstance(value.get("requestId"), str)
+        and isinstance(value.get("toolUseId"), str)
+        and isinstance(value.get("questions"), list)
+        and all(_is_user_question(item) for item in value["questions"])
+    )
+
+
+def _is_user_question(value: Any) -> bool:
+    return (
+        _has_exact_shape(value, {"question", "options"})
+        and isinstance(value.get("question"), str)
+        and isinstance(value.get("options"), list)
+        and all(_is_user_question_option(item) for item in value["options"])
+    )
+
+
+def _is_user_question_option(value: Any) -> bool:
+    return (
+        _has_exact_shape(value, {"label"}, {"description"})
+        and isinstance(value.get("label"), str)
+        and _is_optional_string(value, "description")
+    )
+
+
+def _is_runtime_token_usage(value: Any) -> bool:
+    if not _has_exact_shape(value, {"input", "output"}, _TOKEN_USAGE_KEYS - {"input", "output"}):
+        return False
+    if not _is_finite_number(value.get("input")) or not _is_finite_number(value.get("output")):
+        return False
+    if any(key in value and not _is_finite_number(value[key]) for key in _TOKEN_USAGE_NUMBER_KEYS):
+        return False
+    return (
+        (
+            "cacheMissInputSource" not in value
+            or _is_string_choice(value.get("cacheMissInputSource"), {"explicit", "derived"})
+        )
+        and all(
+            _is_optional_string(value, key)
+            for key in ("rawFinishReason", "systemPromptHash", "prefixHash", "requestShapeHash")
+        )
+        and (
+            "prefixChangeReason" not in value
+            or _is_string_choice(value.get("prefixChangeReason"), _PREFIX_CHANGE_REASONS)
+        )
+        and (
+            "requestShapeChangeReason" not in value
+            or _is_string_choice(value.get("requestShapeChangeReason"), _PREFIX_CHANGE_REASONS)
+        )
+        and (
+            "promptSegments" not in value
+            or (
+                isinstance(value.get("promptSegments"), list)
+                and all(_is_prompt_segment(item) for item in value["promptSegments"])
+            )
+        )
+        and (
+            "contextBudget" not in value
+            or _is_context_budget(value.get("contextBudget"))
+        )
+    )
+
+
+def _is_prompt_segment(value: Any) -> bool:
+    return (
+        _has_exact_shape(
+            value,
+            {"kind", "chars", "estimatedTokens"},
+            {"messageCount", "eventCount", "toolCount"},
+        )
+        and _is_string_choice(
+            value.get("kind"),
+            {"system_prompt", "tool_schema", "prior_history", "current_user", "turn_tail"},
+        )
+        and _is_finite_number(value.get("chars"))
+        and _is_finite_number(value.get("estimatedTokens"))
+        and all(
+            key not in value or _is_finite_number(value[key])
+            for key in ("messageCount", "eventCount", "toolCount")
+        )
+    )
+
+
+def _is_context_budget(value: Any) -> bool:
+    if not _has_exact_shape(
+        value,
+        _CONTEXT_BUDGET_REQUIRED_KEYS,
+        _CONTEXT_BUDGET_KEYS - _CONTEXT_BUDGET_REQUIRED_KEYS,
+    ):
+        return False
+    if not isinstance(value.get("enabled"), bool):
+        return False
+    required_numbers = _CONTEXT_BUDGET_REQUIRED_KEYS - {"enabled"}
+    if any(not _is_finite_number(value.get(key)) for key in required_numbers):
+        return False
+    if any(
+        key in value and not _is_finite_number(value[key])
+        for key in _CONTEXT_BUDGET_NUMBER_KEYS
+    ):
+        return False
+    if any(
+        key in value and not _is_string_number_record(value[key])
+        for key in _CONTEXT_BUDGET_REASON_COUNT_KEYS
+    ):
+        return False
+    if any(
+        key in value and not _is_string_list(value[key])
+        for key in _CONTEXT_BUDGET_STRING_LIST_KEYS
+    ):
+        return False
+    if any(
+        key in value and not isinstance(value[key], bool)
+        for key in (
+            "semanticCompactEnabled",
+            "synthesisCacheEnabled",
+            "historyCompactEnabled",
+        )
+    ):
+        return False
+    compaction_decisions = value.get("compactionDecisions")
+    return (
+        all(
+            _is_optional_string(value, key)
+            for key in (
+                "policyName",
+                "highWaterName",
+                "highWaterRequestShapeHashBefore",
+                "highWaterRequestShapeHashAfter",
+                "historyRewriteVersion",
+                "historyRewriteResetReason",
+                "historyRewriteGate",
+            )
+        )
+        and (
+            "semanticCompactMode" not in value
+            or _is_string_choice(
+                value["semanticCompactMode"],
+                {"off", "validate_only", "prepare_step_dry_run", "replace"},
+            )
+        )
+        and (
+            "compactionDecisions" not in value
+            or (
+                isinstance(compaction_decisions, list)
+                and all(_is_compaction_decision(item) for item in compaction_decisions)
+            )
+        )
+        and (
+            "archiveRetrievalMode" not in value
+            or _is_string_choice(
+                value["archiveRetrievalMode"], {"eager", "history_search_gated"}
+            )
+        )
+        and (
+            "synthesisCacheMode" not in value
+            or _is_string_choice(
+                value["synthesisCacheMode"],
+                {"off", "lookup", "read_write", "write_only", "fallback_archive_retrieval"},
+            )
+        )
+        and (
+            "historyCompactMode" not in value
+            or _is_string_choice(
+                value["historyCompactMode"],
+                {"off", "deterministic", "lookup", "read_write"},
+            )
+        )
+        and (
+            "highWaterReason" not in value
+            or _is_string_choice(
+                value["highWaterReason"],
+                {
+                    "archive_prune",
+                    "history_search_gated_retrieval",
+                    "synthesis_cache_write",
+                    "synthesis_cache_select",
+                    "history_compact",
+                    "manual_reset",
+                    "system_change",
+                    "tools_change",
+                    "log_rewrite",
+                },
+            )
+        )
+    )
+
+
+def _is_compaction_decision(value: Any) -> bool:
+    if not _has_exact_shape(
+        value,
+        _COMPACTION_DECISION_REQUIRED_KEYS,
+        _COMPACTION_DECISION_KEYS - _COMPACTION_DECISION_REQUIRED_KEYS,
+    ):
+        return False
+    if any(
+        key in value and not _is_finite_number(value[key])
+        for key in _COMPACTION_DECISION_NUMBER_KEYS
+    ):
+        return False
+    return (
+        _is_string_choice(value.get("stage"), {"priorReplay", "activeStep"})
+        and _is_string_choice(value.get("sourceKind"), {"runtimeEvents", "providerMessages"})
+        and _is_string_choice(value.get("decision"), {"unchanged", "replaced", "failedOpen"})
+        and (
+            "phase" not in value
+            or _is_string_choice(value["phase"], {"pre_turn", "mid_turn"})
+        )
+        and all(
+            _is_optional_string(value, key)
+            for key in ("boundaryKind", "reason", "failOpenReason")
+        )
+        and all(
+            key not in value or _is_string_list(value[key])
+            for key in ("boundaryIds", "coverageHashes")
+        )
+        and all(
+            key not in value or _is_string_number_record(value[key])
+            for key in ("skippedReasonCounts", "validationReasonCounts")
+        )
+    )
+
+
+def _is_runtime_tool_dispatch(value: Any) -> bool:
+    return (
+        _has_exact_shape(
+            value,
+            {
+                "protocol",
+                "operationId",
+                "providerToolCallId",
+                "toolName",
+                "canonicalArgsHash",
+                "recoveryMode",
+            },
+        )
+        and value.get("protocol") == _TOOL_BOUNDARY_PROTOCOL
+        and all(
+            isinstance(value.get(key), str)
+            for key in ("operationId", "providerToolCallId", "toolName", "canonicalArgsHash")
+        )
+        and _is_string_choice(value.get("recoveryMode"), _TOOL_RECOVERY_MODES)
+    )
+
+
+def _is_runtime_protocol(value: Any) -> bool:
+    return _has_exact_shape(value, {"toolBoundary"}) and value.get(
+        "toolBoundary"
+    ) == _TOOL_BOUNDARY_PROTOCOL
+
+
+def _is_tool_recovery_fact(value: Any) -> bool:
+    if (
+        not _has_exact_shape(value, {"kind", "version", "payload"})
+        or isinstance(value.get("version"), bool)
+        or value.get("version") != 1
+    ):
+        return False
+    payload = value.get("payload")
+    if value.get("kind") == "maka.tool.reconcile_result":
+        return _is_tool_reconcile_result(payload)
+    return value.get("kind") == "maka.tool.recovery_decision" and _is_tool_recovery_decision(
+        payload
+    )
+
+
+def _is_tool_reconcile_result(value: Any) -> bool:
+    return (
+        _has_exact_shape(
+            value,
+            {"protocol", "operationId", "observation", "observationSchema", "observationDigest"},
+        )
+        and value.get("protocol") == "tool_reconcile_v1"
+        and _is_nonempty_string(value.get("operationId"))
+        and _is_string_choice(
+            value.get("observation"),
+            {"matches_expected_state", "matches_prior_state", "diverged", "unreadable"},
+        )
+        and value.get("observationSchema") == "state_identity_v1"
+        and isinstance(value.get("observationDigest"), str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", value["observationDigest"]) is not None
+    )
+
+
+def _is_tool_recovery_decision(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    evidence_ids = value.get("evidenceEventIds")
+    if not (
+        value.get("protocol") == "tool_recovery_v1"
+        and _is_nonempty_string(value.get("operationId"))
+        and isinstance(evidence_ids, list)
+        and bool(evidence_ids)
+        and all(_is_nonempty_string(item) for item in evidence_ids)
+        and len(set(evidence_ids)) == len(evidence_ids)
+    ):
+        return False
+    if value.get("disposition") == "completed":
+        return (
+            _has_exact_shape(
+                value,
+                {
+                    "protocol",
+                    "operationId",
+                    "disposition",
+                    "reasonCode",
+                    "outcomeEventId",
+                    "evidenceEventIds",
+                },
+            )
+            and value.get("reasonCode") == "reconcile_matches_expected_state"
+            and _is_nonempty_string(value.get("outcomeEventId"))
+        )
+    return (
+        value.get("disposition") == "parked"
+        and _has_exact_shape(
+            value,
+            {"protocol", "operationId", "disposition", "reasonCode", "evidenceEventIds"},
+        )
+        and _is_string_choice(
+            value.get("reasonCode"),
+            {"reconcile_matches_prior_state", "reconcile_diverged", "reconcile_unreadable"},
+        )
+    )
+
+
+def _has_exact_shape(value: Any, required: set[str], optional: set[str] | None = None) -> bool:
+    if not isinstance(value, dict):
+        return False
+    keys = set(value)
+    return required <= keys <= required | (optional or set())
+
+
+def _has_boolean_shape(value: Any, keys: set[str]) -> bool:
+    return _has_exact_shape(value, keys) and all(isinstance(value[key], bool) for key in keys)
+
+
+def _has_true_shape(value: Any, keys: set[str]) -> bool:
+    return _has_exact_shape(value, keys) and all(value[key] is True for key in keys)
+
+
+def _is_optional_string(value: dict[str, Any], key: str) -> bool:
+    return key not in value or isinstance(value[key], str)
+
+
+def _is_bounded_nonempty_string(value: Any, max_bytes: int) -> bool:
+    return _is_nonempty_string(value) and _utf8_length(value) <= max_bytes
+
+
+def _utf8_length(value: str, *, escaped_lone_surrogates: bool = False) -> int:
+    length = 0
+    index = 0
+    while index < len(value):
+        code_point = ord(value[index])
+        if code_point <= 0x7F:
+            length += 1
+        elif code_point <= 0x7FF:
+            length += 2
+        elif 0xD800 <= code_point <= 0xDBFF:
+            if index + 1 < len(value) and 0xDC00 <= ord(value[index + 1]) <= 0xDFFF:
+                length += 4
+                index += 1
+            else:
+                length += 6 if escaped_lone_surrogates else 3
+        elif 0xDC00 <= code_point <= 0xDFFF:
+            length += 6 if escaped_lone_surrogates else 3
+        elif code_point <= 0xFFFF:
+            length += 3
+        else:
+            length += 4
+        index += 1
+    return length
+
+
+def _is_nonempty_string(value: Any) -> bool:
+    return isinstance(value, str) and bool(value)
+
+
+def _is_string_choice(value: Any, choices: set[str]) -> bool:
+    return isinstance(value, str) and value in choices
+
+
+def _is_string_list(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def _is_string_number_record(value: Any) -> bool:
+    return isinstance(value, dict) and all(_is_finite_number(item) for item in value.values())
+
+
+def _is_finite_number(value: Any) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _is_nonnegative_safe_integer(value: Any) -> bool:
+    return (
+        _is_finite_number(value)
+        and value == math.trunc(value)
+        and 0 <= value <= _MAX_SAFE_INTEGER
+    )
+
+
+def _is_runtime_refs(refs: Any) -> bool:
+    if not isinstance(refs, dict) or set(refs) - _RUNTIME_EVENT_REF_KEYS:
+        return False
+    string_refs = _RUNTIME_EVENT_REF_KEYS - {"sourceRuntimeEventHighWater"}
+    if any(key in refs and not isinstance(refs[key], str) for key in string_refs):
+        return False
+    if "sourceRuntimeEventHighWater" not in refs:
+        return True
+    return _is_nonnegative_safe_integer(refs["sourceRuntimeEventHighWater"])
 
 
 def _is_runtime_content(content: Any) -> bool:
@@ -851,9 +1791,18 @@ def _is_runtime_content(content: Any) -> bool:
     kind = content.get("kind")
     if kind == "text":
         return (
-            set(content) <= {"kind", "text", "displayText", "attachments", "quotes", "steering"}
+            set(content) <= {
+                "kind",
+                "text",
+                "displayText",
+                "origin",
+                "attachments",
+                "quotes",
+                "steering",
+            }
             and isinstance(content.get("text"), str)
             and ("displayText" not in content or isinstance(content["displayText"], str))
+            and ("origin" not in content or _is_turn_origin(content["origin"]))
             and ("attachments" not in content or (
                 isinstance(content["attachments"], list)
                 and all(_is_attachment_ref(item) for item in content["attachments"])
@@ -909,6 +1858,23 @@ def _is_runtime_content(content: Any) -> bool:
             )
         )
     return False
+
+
+def _is_turn_origin(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if value.get("kind") == "automation":
+        return set(value) == {"kind", "automationId"} and isinstance(
+            value.get("automationId"), str
+        )
+    return (
+        value.get("kind") == "agent_graph"
+        and set(value) == {"kind", "graphId", "wakeId", "attemptId"}
+        and all(
+            isinstance(value.get(key), str)
+            for key in ("graphId", "wakeId", "attemptId")
+        )
+    )
 
 
 def _terminal_status(event: dict[str, Any]) -> Optional[str]:

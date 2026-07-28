@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawnSync } from 'node:child_process';
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
@@ -13,6 +13,10 @@ import { isBudgetExhaustedTrialException } from '../harbor-task-runner.js';
 
 const repoRoot = resolve(fileURLToPath(new URL('../../../..', import.meta.url)));
 const execFileAsync = promisify(execFile);
+const runtimeEventValidationCorpusJson = readFileSync(
+  resolve(repoRoot, 'packages/core/src/__tests__/fixtures/runtime-event-validation-corpus.json'),
+  'utf8',
+);
 
 function validContextEnvValue(key: string): string {
   if (key === 'MAKA_CONTEXT_BUDGET_NAME') return 'test-context-budget';
@@ -49,28 +53,6 @@ describe('Harbor adapter contract', () => {
       },
       refs: { stepId: 'step-1', toolCallId: 'call-1' },
     });
-    const schemaCorpus = [
-      { name: 'valid-function-call', event: providerOptionsEvent },
-      {
-        name: 'unknown-refs-key',
-        event: {
-          ...providerOptionsEvent,
-          refs: { ...providerOptionsEvent.refs, unexpected: 'drift' },
-        },
-      },
-      {
-        name: 'unknown-actions-key',
-        event: { ...providerOptionsEvent, actions: { unexpected: true } },
-      },
-    ].map((entry) => {
-      let accepted = true;
-      try {
-        decodeRuntimeEvent(entry.event);
-      } catch {
-        accepted = false;
-      }
-      return { ...entry, accepted };
-    });
     const result = spawnSync(
       'python3',
       [
@@ -78,7 +60,7 @@ describe('Harbor adapter contract', () => {
         pythonTrajectoryBuilderScript(
           repoRoot,
           JSON.stringify(providerOptionsEvent),
-          JSON.stringify(schemaCorpus),
+          runtimeEventValidationCorpusJson,
         ),
       ],
       {
@@ -2884,7 +2866,7 @@ def event(event_id, ts, role, author, content=None, refs=None, status=None, acti
 
 
 events = [
-    event("user-1", 1000, "user", "user", {"kind": "text", "text": "Fix the repository", "displayText": "/fix", "attachments": [{"kind": "code", "name": "README.md", "mimeType": "text/markdown", "bytes": 12, "ref": {"kind": "workspace_file", "relativePath": "README.md"}}], "quotes": [{"text": "quoted context"}], "steering": True}),
+    event("user-1", 1000, "user", "host", {"kind": "text", "text": "Fix the repository", "displayText": "/fix", "origin": {"kind": "automation", "automationId": "automation-1"}, "attachments": [{"kind": "code", "name": "README.md", "mimeType": "text/markdown", "bytes": 12, "ref": {"kind": "workspace_file", "relativePath": "README.md"}}], "quotes": [{"text": "quoted context"}], "steering": True}),
     event(
         "thinking-1",
         1100,
@@ -2968,6 +2950,7 @@ assert second_action["tool_calls"][0]["tool_call_id"] == "call-2", second_action
 assert second_action["observation"]["results"][0]["source_call_id"] == "call-2", second_action
 user_step = trajectory.steps[0]
 assert user_step["extra"]["maka_display_text"] == "/fix", user_step
+assert user_step["extra"]["maka_origin"] == {"kind": "automation", "automationId": "automation-1"}, user_step
 assert user_step["extra"]["maka_steering"] is True, user_step
 assert user_step["extra"]["maka_attachments"][0]["ref"]["relativePath"] == "README.md", user_step
 assert user_step["extra"]["maka_quotes"][0]["text"] == "quoted context", user_step
@@ -3018,13 +3001,21 @@ assert provider_options_extra["maka_provider_options"] == {
 }, provider_options_extra
 
 schema_corpus = json.loads(${JSON.stringify(schemaCorpusJson)})
-for case in schema_corpus:
-    corpus_events = json.loads(json.dumps(events))
-    corpus_events[2] = case["event"]
-    corpus_result = build_runtime_trajectory(corpus_events, "completed", runtime_refs)
-    expected_kind = "full" if case["accepted"] else "summary"
-    assert corpus_result.artifact_kind == expected_kind, (case, corpus_result)
-    if not case["accepted"]:
+schema_runtime_refs = {
+    key: schema_corpus["baseEvent"][key]
+    for key in ("invocationId", "runId", "sessionId", "turnId")
+}
+for case in schema_corpus["cases"]:
+    corpus_event = {
+        **schema_corpus["baseEvent"],
+        **case["overrides"],
+    }
+    corpus_result = build_runtime_trajectory(
+        [corpus_event], "completed", schema_runtime_refs
+    )
+    if case["accepted"]:
+        assert corpus_result.reason != "runtime_event_schema_invalid", (case, corpus_result)
+    else:
         assert corpus_result.reason == "runtime_event_schema_invalid", (case, corpus_result)
 
 thinking_provider_options_events = json.loads(json.dumps(events))

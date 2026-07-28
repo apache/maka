@@ -1,5 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { expect } from '../test-helpers.js';
 import {
   decodeMessageContent,
@@ -44,6 +45,33 @@ function baseEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
     ...overrides,
   };
 }
+
+interface RuntimeEventValidationCorpus {
+  baseEvent: Record<string, unknown>;
+  cases: Array<{
+    name: string;
+    accepted: boolean;
+    overrides: Record<string, unknown>;
+  }>;
+}
+
+const runtimeEventValidationCorpus = JSON.parse(
+  readFileSync(
+    new URL('../../src/__tests__/fixtures/runtime-event-validation-corpus.json', import.meta.url),
+    'utf8',
+  ),
+) as RuntimeEventValidationCorpus;
+
+test('Core decoder matches the shared RuntimeEvent validation corpus', () => {
+  for (const entry of runtimeEventValidationCorpus.cases) {
+    const event = { ...runtimeEventValidationCorpus.baseEvent, ...entry.overrides };
+    if (entry.accepted) {
+      assert.doesNotThrow(() => decodeRuntimeEvent(event), entry.name);
+    } else {
+      assert.throws(() => decodeRuntimeEvent(event), /Invalid RuntimeEvent schema/, entry.name);
+    }
+  }
+});
 
 describe('RuntimeEvent role / author / status enums', () => {
   test('locks the role enum and guard', () => {
