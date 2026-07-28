@@ -545,6 +545,7 @@ export {
 // sandbox-boundary.ts
 export type {
   ExecutionBoundary,
+  CreateSandboxBoundaryRequest,
   LegacyPermissionMode,
   SandboxBoundaryAccess,
   SandboxBoundaryExpansion,
@@ -552,14 +553,20 @@ export type {
   SandboxBoundaryExpansionValidationFailureReason,
   SandboxBoundaryExpansionValidationResult,
   SandboxBoundaryFilesystemEntry,
+  SandboxBoundaryDecision,
+  SandboxBoundaryRequest,
+  SandboxBoundaryRequestStatus,
+  SandboxBoundarySettlement,
   SandboxBoundaryScope,
   SandboxProfile,
+  SettleSandboxBoundaryRequest,
 } from './sandbox-boundary.js';
 export {
   MAX_SANDBOX_BOUNDARY_FILESYSTEM_ENTRIES,
   MAX_SANDBOX_BOUNDARY_PATH_CHARS,
   MAX_SANDBOX_BOUNDARY_SERIALIZED_BYTES,
   SANDBOX_BOUNDARY_ACCESS_MODES,
+  SANDBOX_BOUNDARY_REQUEST_STATUSES,
   SANDBOX_BOUNDARY_SCOPES,
   applySandboxBoundaryExpansion,
   assessSandboxBoundaryExpansion,
@@ -568,6 +575,7 @@ export {
   createExternalExecutionBoundary,
   createGenesisExecutionBoundary,
   createManagedExecutionBoundary,
+  decodeExecutionBoundary,
   validateSandboxBoundaryExpansion,
 } from './sandbox-boundary.js';
 

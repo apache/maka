@@ -193,6 +193,16 @@ async function openExecutionStoresForWrite<K extends StorageRootKind, E extends 
       createSubagent: (input) => run(() => sessionStore.createSubagent(input)),
       createAgentGraphOperator: (input, request, expectedRevision) =>
         run(() => sessionStore.createAgentGraphOperator(input, request, expectedRevision)),
+      readExecutionBoundary: (sessionId) =>
+        run(() => sessionStore.readExecutionBoundary(sessionId)),
+      createSandboxBoundaryRequest: (input) =>
+        run(() => sessionStore.createSandboxBoundaryRequest(input)),
+      listPendingSandboxBoundaryRequests: (sessionId) =>
+        run(() => sessionStore.listPendingSandboxBoundaryRequests(sessionId)),
+      settleSandboxBoundaryRequest: (input) =>
+        run(() => sessionStore.settleSandboxBoundaryRequest(input)),
+      setExecutionBoundaryKind: (sessionId, boundaryKind) =>
+        run(() => sessionStore.setExecutionBoundaryKind(sessionId, boundaryKind)),
       list: (filter) => run(() => sessionStore.list(filter)),
       listHeaders: () => run(() => sessionStore.listHeaders()),
       listForRecovery: () => run(() => sessionStore.listForRecovery()),

@@ -6,6 +6,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import {
   AGENT_GRAPH_CLIENT_PROJECTION_SCHEMA_VERSION,
   AgentGraphClientProjectionConflictError,
+  assessSandboxBoundaryExpansion,
   assertAgentGraphScheduleUpdateRequest,
   AgentGraphScheduleClosedError,
   AgentGraphScheduleRevisionConflictError,
@@ -14,6 +15,9 @@ import {
   decodeAgentGraphOperatorProvision,
   decodeAgentGraphScheduleUpdate,
   decodeAgentGraphIntentClaim,
+  decodeExecutionBoundary,
+  createGenesisExecutionBoundary,
+  validateSandboxBoundaryExpansion,
   isSubagentSessionParent,
   isSubagentSessionRuntime,
   isSubagentSessionSpawn,
@@ -42,6 +46,11 @@ import {
   type ClaimAgentGraphSupervisorWakeRequest,
   type CompleteAgentGraphSupervisorWakeAttemptRequest,
   type CommitAgentGraphClientProjectionRequest,
+  type CreateSandboxBoundaryRequest,
+  type ExecutionBoundary,
+  type SandboxBoundaryRequest,
+  type SandboxBoundarySettlement,
+  type SettleSandboxBoundaryRequest,
   type SessionHeader,
   type SessionListFilter,
   type SubagentSessionParent,
@@ -86,7 +95,8 @@ export type SqliteSessionMetadataStoreFailpoint =
   | 'after_session_import_marker_write'
   | 'after_agent_graph_intent_claim_write'
   | 'after_agent_graph_schedule_update_write'
-  | 'after_agent_graph_operator_provision_write';
+  | 'after_agent_graph_operator_provision_write'
+  | 'after_sandbox_boundary_write';
 
 export interface SqliteSessionMetadataStoreOptions {
   now?: () => number;
@@ -189,6 +199,265 @@ export class SqliteSessionMetadataStore {
     }
     mkdirSync(dirname(destinationPath), { recursive: true });
     return loadSqliteModule().backup(this.db, destinationPath);
+  }
+
+  async readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    return this.transaction(() => {
+      const record = this.readRecordSync(sessionId);
+      if (!record) throw new SessionNotFoundError(sessionId);
+      this.ensureGenesisExecutionBoundary(record.header);
+      return this.readCurrentExecutionBoundarySync(sessionId);
+    });
+  }
+
+  async createSandboxBoundaryRequest(
+    input: CreateSandboxBoundaryRequest,
+  ): Promise<SandboxBoundaryRequest> {
+    this.assertOpen();
+    assertSafeSessionId(input.sessionId);
+    assertSafeBoundaryRequestId(input.requestId);
+    const validated = validateSandboxBoundaryExpansion(input.expansion);
+    if (!validated.ok) throw new Error(validated.message);
+    const justification = input.justification.trim();
+    if (!justification || justification.length > 2_000) {
+      throw new Error('Sandbox boundary request justification must contain 1 to 2000 characters');
+    }
+
+    return this.transaction(() => {
+      const record = this.readRecordSync(input.sessionId);
+      if (!record) throw new SessionNotFoundError(input.sessionId);
+      this.ensureGenesisExecutionBoundary(record.header);
+
+      const existing = this.readSandboxBoundaryRequestSync(input.sessionId, input.requestId);
+      if (existing) {
+        if (
+          !isDeepStrictEqual(existing.expansion, validated.expansion) ||
+          existing.justification !== justification
+        ) {
+          throw new SessionMetadataConflictError(
+            `Sandbox boundary request identity was reused with different content: ${input.requestId}`,
+          );
+        }
+        return existing;
+      }
+
+      const boundary = this.readCurrentExecutionBoundarySync(input.sessionId);
+      const createdAt = this.now();
+      this.db
+        .prepare(`
+          INSERT INTO sandbox_boundary_log(
+            session_id,
+            entry_id,
+            entry_kind,
+            request_id,
+            status,
+            base_revision,
+            expansion_json,
+            justification,
+            created_at
+          ) VALUES (?, ?, 'expansion_request', ?, 'pending', ?, ?, ?, ?)
+        `)
+        .run(
+          input.sessionId,
+          `request:${input.requestId}`,
+          input.requestId,
+          boundary.revision,
+          JSON.stringify(validated.expansion),
+          justification,
+          createdAt,
+        );
+      this.options.failpoint?.('after_sandbox_boundary_write');
+      return this.requireSandboxBoundaryRequestSync(input.sessionId, input.requestId);
+    });
+  }
+
+  async listPendingSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    return this.transaction(() => {
+      const record = this.readRecordSync(sessionId);
+      if (!record) throw new SessionNotFoundError(sessionId);
+      this.ensureGenesisExecutionBoundary(record.header);
+      const rows = this.db
+        .prepare(`
+          SELECT
+            session_id AS sessionId,
+            request_id AS requestId,
+            status,
+            base_revision AS baseRevision,
+            applied_revision AS appliedRevision,
+            expansion_json AS expansionJson,
+            justification,
+            outcome_reason AS outcomeReason,
+            created_at AS createdAt,
+            settled_at AS settledAt
+          FROM sandbox_boundary_log
+          WHERE session_id = ? AND status = 'pending'
+          ORDER BY created_at, entry_id
+        `)
+        .all(sessionId) as unknown as SandboxBoundaryRequestRow[];
+      return rows.map(decodeSandboxBoundaryRequestRow);
+    });
+  }
+
+  async settleSandboxBoundaryRequest(
+    input: SettleSandboxBoundaryRequest,
+  ): Promise<SandboxBoundarySettlement> {
+    this.assertOpen();
+    assertSafeSessionId(input.sessionId);
+    assertSafeBoundaryRequestId(input.requestId);
+    if (input.decision !== 'allow' && input.decision !== 'deny') {
+      throw new Error('Invalid sandbox boundary decision');
+    }
+
+    return this.transaction(() => {
+      const record = this.readRecordSync(input.sessionId);
+      if (!record) throw new SessionNotFoundError(input.sessionId);
+      this.ensureGenesisExecutionBoundary(record.header);
+      const request = this.requireSandboxBoundaryRequestSync(input.sessionId, input.requestId);
+      const current = this.readCurrentExecutionBoundarySync(input.sessionId);
+      if (request.status !== 'pending') {
+        return { request, boundary: current, changed: false };
+      }
+
+      const settledAt = this.now();
+      if (input.decision === 'deny') {
+        this.settleSandboxBoundaryRequestRow({
+          sessionId: input.sessionId,
+          requestId: input.requestId,
+          status: 'denied',
+          settledAt,
+        });
+        return {
+          request: this.requireSandboxBoundaryRequestSync(input.sessionId, input.requestId),
+          boundary: current,
+          changed: false,
+        };
+      }
+
+      if (current.kind !== 'managed') {
+        this.settleSandboxBoundaryRequestRow({
+          sessionId: input.sessionId,
+          requestId: input.requestId,
+          status: 'conflict',
+          outcomeReason: 'boundary_kind_changed',
+          settledAt,
+        });
+        return {
+          request: this.requireSandboxBoundaryRequestSync(input.sessionId, input.requestId),
+          boundary: current,
+          changed: false,
+        };
+      }
+
+      const assessment = assessSandboxBoundaryExpansion(current.profile, request.expansion, {
+        root: record.header.cwd,
+        workspaceRoots: [record.header.cwd],
+      });
+      if (assessment.outcome === 'conflict') {
+        this.settleSandboxBoundaryRequestRow({
+          sessionId: input.sessionId,
+          requestId: input.requestId,
+          status: 'conflict',
+          outcomeReason: assessment.reason,
+          settledAt,
+        });
+        return {
+          request: this.requireSandboxBoundaryRequestSync(input.sessionId, input.requestId),
+          boundary: current,
+          changed: false,
+        };
+      }
+      if (assessment.outcome === 'noop') {
+        this.settleSandboxBoundaryRequestRow({
+          sessionId: input.sessionId,
+          requestId: input.requestId,
+          status: 'approved',
+          outcomeReason: 'already_applied',
+          settledAt,
+        });
+        return {
+          request: this.requireSandboxBoundaryRequestSync(input.sessionId, input.requestId),
+          boundary: current,
+          changed: false,
+        };
+      }
+
+      const boundary: ExecutionBoundary = {
+        kind: 'managed',
+        profile: assessment.profile,
+        revision: current.revision + 1,
+      };
+      this.settleSandboxBoundaryRequestRow({
+        sessionId: input.sessionId,
+        requestId: input.requestId,
+        status: 'approved',
+        appliedRevision: boundary.revision,
+        boundary,
+        settledAt,
+      });
+      return {
+        request: this.requireSandboxBoundaryRequestSync(input.sessionId, input.requestId),
+        boundary,
+        changed: true,
+      };
+    });
+  }
+
+  async setExecutionBoundaryKind(
+    sessionId: string,
+    kind: 'managed' | 'bypass',
+  ): Promise<ExecutionBoundary> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    return this.transaction(() => {
+      const record = this.readRecordSync(sessionId);
+      if (!record) throw new SessionNotFoundError(sessionId);
+      this.ensureGenesisExecutionBoundary(record.header);
+      const current = this.readCurrentExecutionBoundarySync(sessionId);
+      if (current.kind === 'external') {
+        throw new SessionMetadataConflictError(
+          'An externally isolated session cannot enter Auto or Bypass',
+        );
+      }
+      if (current.kind === kind) return current;
+
+      const revision = current.revision + 1;
+      const boundary: ExecutionBoundary =
+        kind === 'bypass'
+          ? { kind: 'bypass', revision }
+          : {
+              kind: 'managed',
+              profile: this.readLatestManagedSandboxProfileSync(sessionId),
+              revision,
+            };
+      const committedAt = this.now();
+      this.db
+        .prepare(`
+          INSERT INTO sandbox_boundary_log(
+            session_id,
+            entry_id,
+            entry_kind,
+            status,
+            applied_revision,
+            boundary_json,
+            created_at,
+            settled_at
+          ) VALUES (?, ?, 'user_change', 'applied', ?, ?, ?, ?)
+        `)
+        .run(
+          sessionId,
+          `change:${revision}`,
+          revision,
+          JSON.stringify(boundary),
+          committedAt,
+          committedAt,
+        );
+      this.options.failpoint?.('after_sandbox_boundary_write');
+      return boundary;
+    });
   }
 
   async create(header: SessionHeader): Promise<SessionMetadataRecord> {
@@ -1714,7 +1983,153 @@ export class SqliteSessionMetadataStore {
     this.options.failpoint?.('after_session_row_write');
     this.replaceLabels(header);
     this.options.failpoint?.('after_session_labels_write');
+    this.ensureGenesisExecutionBoundary(header);
     return { header, metadataVersion, committedAt };
+  }
+
+  private ensureGenesisExecutionBoundary(header: SessionHeader): void {
+    const existing = this.db
+      .prepare(
+        `SELECT 1 AS found FROM sandbox_boundary_log WHERE session_id = ? AND applied_revision = 0`,
+      )
+      .get(header.id);
+    if (existing) return;
+
+    const boundary = createGenesisExecutionBoundary(header.permissionMode);
+    this.db
+      .prepare(`
+        INSERT INTO sandbox_boundary_log(
+          session_id,
+          entry_id,
+          entry_kind,
+          status,
+          applied_revision,
+          boundary_json,
+          created_at,
+          settled_at
+        ) VALUES (?, 'genesis', 'genesis', 'applied', 0, ?, ?, ?)
+      `)
+      .run(header.id, JSON.stringify(boundary), header.createdAt, header.createdAt);
+    this.options.failpoint?.('after_sandbox_boundary_write');
+  }
+
+  private readCurrentExecutionBoundarySync(sessionId: string): ExecutionBoundary {
+    const row = this.db
+      .prepare(`
+        SELECT boundary_json AS boundaryJson
+        FROM sandbox_boundary_log
+        WHERE session_id = ? AND applied_revision IS NOT NULL
+        ORDER BY applied_revision DESC
+        LIMIT 1
+      `)
+      .get(sessionId) as { boundaryJson?: unknown } | undefined;
+    if (!row || typeof row.boundaryJson !== 'string') {
+      throw new SessionMetadataConflictError(`Session execution boundary is missing: ${sessionId}`);
+    }
+    return decodeExecutionBoundary(JSON.parse(row.boundaryJson) as unknown);
+  }
+
+  private readLatestManagedSandboxProfileSync(
+    sessionId: string,
+  ): Extract<ExecutionBoundary, { kind: 'managed' }>['profile'] {
+    const row = this.db
+      .prepare(`
+        SELECT boundary_json AS boundaryJson
+        FROM sandbox_boundary_log
+        WHERE
+          session_id = ?
+          AND applied_revision IS NOT NULL
+          AND json_extract(boundary_json, '$.kind') = 'managed'
+        ORDER BY applied_revision DESC
+        LIMIT 1
+      `)
+      .get(sessionId) as { boundaryJson?: unknown } | undefined;
+    if (!row || typeof row.boundaryJson !== 'string') {
+      throw new SessionMetadataConflictError(
+        `Managed sandbox boundary history is missing: ${sessionId}`,
+      );
+    }
+    const boundary = decodeExecutionBoundary(JSON.parse(row.boundaryJson) as unknown);
+    if (boundary.kind !== 'managed') {
+      throw new SessionMetadataConflictError(
+        `Managed sandbox boundary history is invalid: ${sessionId}`,
+      );
+    }
+    return boundary.profile;
+  }
+
+  private readSandboxBoundaryRequestSync(
+    sessionId: string,
+    requestId: string,
+  ): SandboxBoundaryRequest | undefined {
+    const row = this.db
+      .prepare(`
+        SELECT
+          session_id AS sessionId,
+          request_id AS requestId,
+          status,
+          base_revision AS baseRevision,
+          applied_revision AS appliedRevision,
+          expansion_json AS expansionJson,
+          justification,
+          outcome_reason AS outcomeReason,
+          created_at AS createdAt,
+          settled_at AS settledAt
+        FROM sandbox_boundary_log
+        WHERE session_id = ? AND request_id = ?
+      `)
+      .get(sessionId, requestId) as SandboxBoundaryRequestRow | undefined;
+    return row ? decodeSandboxBoundaryRequestRow(row) : undefined;
+  }
+
+  private requireSandboxBoundaryRequestSync(
+    sessionId: string,
+    requestId: string,
+  ): SandboxBoundaryRequest {
+    const request = this.readSandboxBoundaryRequestSync(sessionId, requestId);
+    if (!request) {
+      throw new SessionMetadataConflictError(
+        `Sandbox boundary request was not found: ${requestId}`,
+      );
+    }
+    return request;
+  }
+
+  private settleSandboxBoundaryRequestRow(input: {
+    sessionId: string;
+    requestId: string;
+    status: 'approved' | 'denied' | 'conflict';
+    settledAt: number;
+    appliedRevision?: number;
+    boundary?: ExecutionBoundary;
+    outcomeReason?: string;
+  }): void {
+    const result = this.db
+      .prepare(`
+        UPDATE sandbox_boundary_log
+        SET
+          status = ?,
+          applied_revision = ?,
+          boundary_json = ?,
+          outcome_reason = ?,
+          settled_at = ?
+        WHERE session_id = ? AND request_id = ? AND status = 'pending'
+      `)
+      .run(
+        input.status,
+        input.appliedRevision ?? null,
+        input.boundary ? JSON.stringify(input.boundary) : null,
+        input.outcomeReason ?? null,
+        input.settledAt,
+        input.sessionId,
+        input.requestId,
+      );
+    if (result.changes !== 1) {
+      throw new SessionMetadataConflictError(
+        `Sandbox boundary request was already settled: ${input.requestId}`,
+      );
+    }
+    this.options.failpoint?.('after_sandbox_boundary_write');
   }
 
   private replaceLabels(header: SessionHeader): void {
@@ -2180,6 +2595,19 @@ interface SessionMetadataRow {
   committed_at: number;
 }
 
+interface SandboxBoundaryRequestRow {
+  sessionId: string;
+  requestId: string;
+  status: string;
+  baseRevision: number;
+  appliedRevision: number | null;
+  expansionJson: string;
+  justification: string;
+  outcomeReason: string | null;
+  createdAt: number;
+  settledAt: number | null;
+}
+
 interface SubagentSpawnClaim {
   requestFingerprint: string;
   childSessionId: string;
@@ -2404,6 +2832,39 @@ function decodeRecord(row: SessionMetadataRow): SessionMetadataRecord {
   };
 }
 
+function decodeSandboxBoundaryRequestRow(row: SandboxBoundaryRequestRow): SandboxBoundaryRequest {
+  const validated = validateSandboxBoundaryExpansion(JSON.parse(row.expansionJson) as unknown);
+  if (
+    !validated.ok ||
+    !['pending', 'approved', 'denied', 'conflict'].includes(row.status) ||
+    !Number.isSafeInteger(row.baseRevision) ||
+    row.baseRevision < 0 ||
+    (row.appliedRevision !== null &&
+      (!Number.isSafeInteger(row.appliedRevision) || row.appliedRevision < 0)) ||
+    !row.justification ||
+    row.justification.length > 2_000 ||
+    !Number.isSafeInteger(row.createdAt) ||
+    row.createdAt < 0 ||
+    (row.settledAt !== null && (!Number.isSafeInteger(row.settledAt) || row.settledAt < 0))
+  ) {
+    throw new Error(`Invalid sandbox boundary request ${row.requestId}`);
+  }
+  assertSafeSessionId(row.sessionId);
+  assertSafeBoundaryRequestId(row.requestId);
+  return {
+    sessionId: row.sessionId,
+    requestId: row.requestId,
+    status: row.status as SandboxBoundaryRequest['status'],
+    baseRevision: row.baseRevision,
+    expansion: validated.expansion,
+    justification: row.justification,
+    createdAt: row.createdAt,
+    ...(row.settledAt === null ? {} : { settledAt: row.settledAt }),
+    ...(row.appliedRevision === null ? {} : { appliedRevision: row.appliedRevision }),
+    ...(row.outcomeReason === null ? {} : { outcomeReason: row.outcomeReason }),
+  };
+}
+
 function booleanInteger(value: boolean): 0 | 1 {
   return value ? 1 : 0;
 }
@@ -2417,6 +2878,12 @@ function assertGraphLookupIdentity(value: string, name: string): void {
     /[\u0000-\u001f\u007f]/.test(value)
   ) {
     throw new Error(`Invalid agent graph ${name}`);
+  }
+}
+
+function assertSafeBoundaryRequestId(value: string): void {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
+    throw new Error('Invalid sandbox boundary request id');
   }
 }
 

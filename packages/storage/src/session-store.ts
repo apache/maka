@@ -38,11 +38,16 @@ import {
 import type {
   AgentGraphOperatorProvisionRequest,
   AgentGraphOperatorProvisionResult,
+  CreateSandboxBoundaryRequest,
   CreateSessionInput,
+  ExecutionBoundary,
+  SandboxBoundaryRequest,
+  SandboxBoundarySettlement,
   SessionHeader,
   SessionListFilter,
   SessionSummary,
   StoredMessage,
+  SettleSandboxBoundaryRequest,
   TurnRecord,
   UserMessage,
 } from '@maka/core';
@@ -71,6 +76,18 @@ export interface SessionStore {
     request: AgentGraphOperatorProvisionRequest,
     expectedRevision: number,
   ): Promise<{ header: SessionHeader } & AgentGraphOperatorProvisionResult>;
+  readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary>;
+  createSandboxBoundaryRequest(
+    input: CreateSandboxBoundaryRequest,
+  ): Promise<SandboxBoundaryRequest>;
+  listPendingSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]>;
+  settleSandboxBoundaryRequest(
+    input: SettleSandboxBoundaryRequest,
+  ): Promise<SandboxBoundarySettlement>;
+  setExecutionBoundaryKind(
+    sessionId: string,
+    kind: 'managed' | 'bypass',
+  ): Promise<ExecutionBoundary>;
   list(filter?: SessionListFilter): Promise<SessionSummary[]>;
   /** Enumerate durable metadata without reading transcript bodies. */
   listHeaders(): Promise<SessionHeader[]>;
@@ -178,6 +195,38 @@ class SqliteSessionStore implements SessionStore {
       await this.files.remove(staged.id).catch(() => {});
       throw error;
     }
+  }
+
+  async readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary> {
+    await this.ensureReady();
+    return this.metadata.readExecutionBoundary(sessionId);
+  }
+
+  async createSandboxBoundaryRequest(
+    input: CreateSandboxBoundaryRequest,
+  ): Promise<SandboxBoundaryRequest> {
+    await this.ensureReady();
+    return this.metadata.createSandboxBoundaryRequest(input);
+  }
+
+  async listPendingSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]> {
+    await this.ensureReady();
+    return this.metadata.listPendingSandboxBoundaryRequests(sessionId);
+  }
+
+  async settleSandboxBoundaryRequest(
+    input: SettleSandboxBoundaryRequest,
+  ): Promise<SandboxBoundarySettlement> {
+    await this.ensureReady();
+    return this.metadata.settleSandboxBoundaryRequest(input);
+  }
+
+  async setExecutionBoundaryKind(
+    sessionId: string,
+    kind: 'managed' | 'bypass',
+  ): Promise<ExecutionBoundary> {
+    await this.ensureReady();
+    return this.metadata.setExecutionBoundaryKind(sessionId, kind);
   }
 
   async list(filter?: SessionListFilter): Promise<SessionSummary[]> {
@@ -412,6 +461,33 @@ class FileSessionStore implements SessionStore {
     _expectedRevision: number,
   ): Promise<{ header: SessionHeader } & AgentGraphOperatorProvisionResult> {
     throw new Error('Graph operator provisioning requires the SQLite metadata control plane');
+  }
+
+  async readExecutionBoundary(_sessionId: string): Promise<ExecutionBoundary> {
+    throw new Error('Execution boundaries require the SQLite metadata control plane');
+  }
+
+  async createSandboxBoundaryRequest(
+    _input: CreateSandboxBoundaryRequest,
+  ): Promise<SandboxBoundaryRequest> {
+    throw new Error('Sandbox boundary requests require the SQLite metadata control plane');
+  }
+
+  async listPendingSandboxBoundaryRequests(_sessionId: string): Promise<SandboxBoundaryRequest[]> {
+    throw new Error('Sandbox boundary requests require the SQLite metadata control plane');
+  }
+
+  async settleSandboxBoundaryRequest(
+    _input: SettleSandboxBoundaryRequest,
+  ): Promise<SandboxBoundarySettlement> {
+    throw new Error('Sandbox boundary requests require the SQLite metadata control plane');
+  }
+
+  async setExecutionBoundaryKind(
+    _sessionId: string,
+    _kind: 'managed' | 'bypass',
+  ): Promise<ExecutionBoundary> {
+    throw new Error('Execution boundaries require the SQLite metadata control plane');
   }
 
   async createTranscript(input: CreateSessionInput): Promise<SessionHeader> {

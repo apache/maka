@@ -1,4 +1,7 @@
 import {
+  FILE_SYSTEM_ACCESS_MODES,
+  FILE_SYSTEM_PATH_MATCHES,
+  FILE_SYSTEM_SPECIAL_PATHS,
   createReadOnlyPermissionProfile,
   createWorkspaceWritePermissionProfile,
   type FileSystemPathMatch,
@@ -30,6 +33,48 @@ export interface SandboxBoundaryExpansion {
   readonly network?: {
     readonly enabled: true;
   };
+}
+
+export const SANDBOX_BOUNDARY_REQUEST_STATUSES = [
+  'pending',
+  'approved',
+  'denied',
+  'conflict',
+] as const;
+export type SandboxBoundaryRequestStatus = (typeof SANDBOX_BOUNDARY_REQUEST_STATUSES)[number];
+
+export interface SandboxBoundaryRequest {
+  readonly sessionId: string;
+  readonly requestId: string;
+  readonly status: SandboxBoundaryRequestStatus;
+  readonly baseRevision: number;
+  readonly expansion: SandboxBoundaryExpansion;
+  readonly justification: string;
+  readonly createdAt: number;
+  readonly settledAt?: number;
+  readonly appliedRevision?: number;
+  readonly outcomeReason?: string;
+}
+
+export interface CreateSandboxBoundaryRequest {
+  readonly sessionId: string;
+  readonly requestId: string;
+  readonly expansion: SandboxBoundaryExpansion;
+  readonly justification: string;
+}
+
+export type SandboxBoundaryDecision = 'allow' | 'deny';
+
+export interface SettleSandboxBoundaryRequest {
+  readonly sessionId: string;
+  readonly requestId: string;
+  readonly decision: SandboxBoundaryDecision;
+}
+
+export interface SandboxBoundarySettlement {
+  readonly request: SandboxBoundaryRequest;
+  readonly boundary: ExecutionBoundary;
+  readonly changed: boolean;
 }
 
 export type SandboxProfile = PermissionProfileManaged;
@@ -76,6 +121,26 @@ export function createBypassExecutionBoundary(revision: number): ExecutionBounda
 
 export function createExternalExecutionBoundary(revision = 0): ExecutionBoundary {
   return { kind: 'external', revision };
+}
+
+export function decodeExecutionBoundary(input: unknown): ExecutionBoundary {
+  if (!isRecord(input) || !isBoundaryRevision(input.revision)) {
+    throw new Error('Invalid execution boundary');
+  }
+  if (input.kind === 'bypass' || input.kind === 'external') {
+    if (hasUnexpectedKeys(input, ['kind', 'revision'])) {
+      throw new Error('Invalid execution boundary');
+    }
+    return { kind: input.kind, revision: input.revision };
+  }
+  if (input.kind !== 'managed' || hasUnexpectedKeys(input, ['kind', 'profile', 'revision'])) {
+    throw new Error('Invalid execution boundary');
+  }
+  return {
+    kind: 'managed',
+    profile: decodeSandboxProfile(input.profile),
+    revision: input.revision,
+  };
 }
 
 export type SandboxBoundaryExpansionValidationFailureReason =
@@ -323,6 +388,70 @@ function validateFilesystem(
     });
   }
   return { ok: true, entries };
+}
+
+function decodeSandboxProfile(input: unknown): SandboxProfile {
+  if (
+    !isRecord(input) ||
+    input.type !== 'managed' ||
+    hasUnexpectedKeys(input, ['type', 'name', 'fileSystem', 'network']) ||
+    (input.name !== undefined && typeof input.name !== 'string') ||
+    !isRecord(input.fileSystem) ||
+    hasUnexpectedKeys(input.fileSystem, ['kind', 'entries']) ||
+    (input.fileSystem.kind !== 'restricted' && input.fileSystem.kind !== 'unrestricted') ||
+    !Array.isArray(input.fileSystem.entries) ||
+    !isRecord(input.network) ||
+    hasUnexpectedKeys(input.network, ['kind']) ||
+    (input.network.kind !== 'restricted' && input.network.kind !== 'enabled')
+  ) {
+    throw new Error('Invalid managed sandbox profile');
+  }
+
+  const entries: FileSystemSandboxEntry[] = input.fileSystem.entries.map((entry) => {
+    if (!isRecord(entry) || !FILE_SYSTEM_ACCESS_MODES.includes(entry.access as never)) {
+      throw new Error('Invalid managed sandbox filesystem entry');
+    }
+    if (
+      entry.kind === 'path' &&
+      !hasUnexpectedKeys(entry, ['kind', 'access', 'path', 'match']) &&
+      typeof entry.path === 'string' &&
+      isNormalizedAbsolutePath(entry.path) &&
+      (entry.match === undefined || FILE_SYSTEM_PATH_MATCHES.includes(entry.match as never))
+    ) {
+      return {
+        kind: 'path',
+        access: entry.access as FileSystemSandboxEntry['access'],
+        path: entry.path,
+        ...(entry.match === undefined ? {} : { match: entry.match as FileSystemPathMatch }),
+      };
+    }
+    if (
+      entry.kind === 'special' &&
+      !hasUnexpectedKeys(entry, ['kind', 'access', 'special']) &&
+      FILE_SYSTEM_SPECIAL_PATHS.includes(entry.special as never)
+    ) {
+      return {
+        kind: 'special',
+        access: entry.access as FileSystemSandboxEntry['access'],
+        special: entry.special as Extract<FileSystemSandboxEntry, { kind: 'special' }>['special'],
+      };
+    }
+    throw new Error('Invalid managed sandbox filesystem entry');
+  });
+
+  return {
+    type: 'managed',
+    ...(input.name === undefined ? {} : { name: input.name }),
+    fileSystem: {
+      kind: input.fileSystem.kind,
+      entries,
+    },
+    network: { kind: input.network.kind },
+  };
+}
+
+function isBoundaryRevision(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 function validateNetwork(

@@ -1,9 +1,11 @@
+import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { expect } from '../test-helpers.js';
 import {
   applySandboxBoundaryExpansion,
   assessSandboxBoundaryExpansion,
   createGenesisExecutionBoundary,
+  decodeExecutionBoundary,
   validateSandboxBoundaryExpansion,
 } from '../sandbox-boundary.js';
 import { canReadPath, canWritePath, type PermissionProfileManaged } from '../permission-profile.js';
@@ -127,5 +129,23 @@ describe('ExecutionBoundary', () => {
     expect(explore.kind).toBe('managed');
     if (explore.kind === 'managed') expect(explore.profile.name).toBe('read-only');
     expect(createGenesisExecutionBoundary('bypass')).toEqual({ kind: 'bypass', revision: 0 });
+  });
+
+  test('decodes only a complete full boundary snapshot', () => {
+    const managed = createGenesisExecutionBoundary('ask');
+    expect(decodeExecutionBoundary(JSON.parse(JSON.stringify(managed)))).toEqual(managed);
+    expect(decodeExecutionBoundary({ kind: 'bypass', revision: 3 })).toEqual({
+      kind: 'bypass',
+      revision: 3,
+    });
+
+    for (const invalid of [
+      { kind: 'managed', revision: 0 },
+      { kind: 'bypass', revision: -1 },
+      { kind: 'external', revision: 1, profile: {} },
+      { kind: 'unknown', revision: 0 },
+    ]) {
+      assert.throws(() => decodeExecutionBoundary(invalid));
+    }
   });
 });

@@ -167,13 +167,14 @@ describe('SQLite Agent Graph supervisor wakes', () => {
       initial.close();
 
       const v11 = new DatabaseSync(path);
+      v11.exec('DROP TABLE sandbox_boundary_log');
       v11
         .prepare(`UPDATE session_metadata_schema SET version = 11 WHERE scope = 'session_metadata'`)
         .run();
       v11.close();
 
       const migrated = createSqliteSessionMetadataStore(path);
-      assert.equal(migrated.schemaVersion(), 12);
+      assert.equal(migrated.schemaVersion(), 13);
       assert.equal(
         (await migrated.readAgentGraphSupervisorWake('graph-1', 'wake-1'))?.status,
         'running',
