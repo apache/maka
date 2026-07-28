@@ -606,20 +606,6 @@ export type {
 } from './permission-profile-compiler.js';
 export { compilePermissionProfile } from './permission-profile-compiler.js';
 
-// permission-request-health.ts
-export type {
-  PermissionRequestHealth,
-  PermissionRequestHealthStatus,
-} from './permission-request-health.js';
-export {
-  PERMISSION_REQUEST_EXPIRED_AFTER_MS,
-  PERMISSION_REQUEST_HEALTH_STATUSES,
-  PERMISSION_REQUEST_STALE_AFTER_MS,
-  derivePermissionRequestHealth,
-  formatPermissionRequestWait,
-  isPermissionRequestHealthStatus,
-} from './permission-request-health.js';
-
 // connections.ts
 export type {
   ConnectionEvent,
