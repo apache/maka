@@ -19,11 +19,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute } from 'node:path';
-import {
-  compilePermissionProfile,
-  type StorageRef,
-  type PermissionProfile,
-} from '@maka/core';
+import { compilePermissionProfile, type StorageRef, type PermissionProfile } from '@maka/core';
 import { computeEditedSource } from './edit-replace.js';
 import { bashToolResultToModelOutput } from './bash-model-output.js';
 import {
@@ -60,9 +56,7 @@ import type { SandboxPlatform, SandboxType } from './sandbox/types.js';
 import type { ChildFdInput } from './child-fd-input.js';
 import { buildArchiveReadTool } from './archive-read-tool.js';
 import type { ToolResultArchiveResourceReader } from './tool-result-archive-resource.js';
-import {
-  normalizeAdditionalPermissionPath,
-} from './additional-permissions.js';
+import { normalizeSandboxBoundaryPath } from './sandbox-boundary-path.js';
 import type { FilesystemWorkerClient } from './filesystem-worker/client.js';
 
 // Generous wall-clock cap for the ripgrep-backed Grep tool. A search should be
@@ -855,9 +849,7 @@ function prepareLinuxBashExactWriteTargets(
     return [];
   }
   const exactWrites = profile.fileSystem.entries.flatMap((entry) =>
-    entry.kind === 'path' &&
-    entry.access === 'write' &&
-    (entry.match ?? 'subtree') === 'exact'
+    entry.kind === 'path' && entry.access === 'write' && (entry.match ?? 'subtree') === 'exact'
       ? [entry.path]
       : [],
   );
@@ -1002,9 +994,8 @@ function effectivePermissionProfile(
   return { profile: compiled.profile, workspaceRoots: compiled.workspaceRoots };
 }
 
-
 async function fileToolWriteLockKey(cwd: string, path: string): Promise<string> {
-  const target = await normalizeAdditionalPermissionPath({
+  const target = await normalizeSandboxBoundaryPath({
     path,
     access: 'write',
     scope: 'exact',

@@ -12,7 +12,7 @@ import {
   type SandboxBoundaryExpansion,
 } from '@maka/core';
 
-import { normalizeAdditionalPermissionPath } from '../additional-permissions.js';
+import { normalizeSandboxBoundaryPath } from '../sandbox-boundary-path.js';
 import type { SandboxManager } from '../sandbox/sandbox-manager.js';
 import type { SandboxPlatform } from '../sandbox/types.js';
 import type { FilesystemWorkerLaunchSpecProvider } from './launch-spec.js';
@@ -141,7 +141,7 @@ export class FilesystemWorkerClient {
     if (!parsedOperation.success) throw clientError('invalid_operation', 'validation', requestId);
 
     const access = operationAccess(parsedOperation.data.kind);
-    const target = await normalizeAdditionalPermissionPath({
+    const target = await normalizeSandboxBoundaryPath({
       path: parsedOperation.data.path,
       access,
       scope: operationScope(parsedOperation.data.kind),
