@@ -1304,6 +1304,10 @@ describe('runTaskOnce', () => {
       assert.ok(
         !result.projection.toolExecutors[0]?.toolNames.some((name) => name.startsWith('agent_')),
       );
+      assert.deepEqual(result.projection.toolExecutors[0]?.productToolSurface, {
+        policy: { economy: true, disabledSurfaceIds: ['agent'] },
+        productToolNames: ['Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write'],
+      });
       assert.equal(
         result.resultRecord.status,
         'completed',
@@ -1369,6 +1373,21 @@ describe('runTaskOnce', () => {
       for (const toolName of ['agent_spawn', 'agent_swarm', 'agent_list', 'agent_output']) {
         assert.ok(result.projection.toolExecutors[0]?.toolNames.includes(toolName));
       }
+      assert.deepEqual(result.projection.toolExecutors[0]?.productToolSurface, {
+        policy: { economy: true, disabledSurfaceIds: [] },
+        productToolNames: [
+          'Bash',
+          'Edit',
+          'Glob',
+          'Grep',
+          'Read',
+          'Write',
+          'agent_list',
+          'agent_output',
+          'agent_spawn',
+          'agent_swarm',
+        ],
+      });
     });
   });
 
@@ -2104,6 +2123,16 @@ describe('runTaskOnce', () => {
       assert.ok(result.projection.toolExecutors[0]?.toolNames.includes('todo_update'));
       assert.ok(result.projection.toolExecutors[0]?.toolNames.includes('self_check_plan_submit'));
       assert.ok(result.projection.toolExecutors[0]?.toolNames.includes('self_check_submit'));
+      assert.deepEqual(result.projection.toolExecutors[0]?.supplementalToolSets, [
+        {
+          label: 'heavy_task_progress',
+          toolNames: ['inventory_submit', 'todo_update'],
+        },
+        {
+          label: 'heavy_task_self_check',
+          toolNames: ['self_check_plan_submit', 'self_check_submit'],
+        },
+      ]);
       assert.equal(result.projection.latestHeavyTaskInventory?.summary, 'Inspected public files.');
       assert.equal(result.projection.latestHeavyTaskInventory?.items[0]?.path, 'README.md');
       assert.equal(result.projection.latestHeavyTaskTodos?.items[0]?.status, 'in_progress');

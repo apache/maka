@@ -1,6 +1,11 @@
 import type { RuntimeEvent } from '@maka/core';
 import type { ThinkingLevel } from '@maka/core';
-import type { ContextBudgetPolicy, InvocationResult } from '@maka/runtime';
+import type {
+  ContextBudgetPolicy,
+  InvocationResult,
+  ProductToolSurfaceIdentity,
+} from '@maka/runtime';
+import type { SupplementalToolSetIdentity } from './task-contracts.js';
 import type { HeadlessSystemPromptMode } from './contracts.js';
 
 export const HARBOR_CELL_OUTPUT_SCHEMA_VERSION = 1;
@@ -138,6 +143,10 @@ export interface HarborCellExecutionIdentity {
   pricingProfile: string;
   /** Present on artifacts written after Headless Agent tool gating was introduced. */
   agentTools?: boolean;
+  /** Exact catalog-owned product surface after host binding and run policy. */
+  productToolSurface?: ProductToolSurfaceIdentity;
+  /** Non-catalog tools grouped by their owning harness or experiment. */
+  supplementalToolSets?: SupplementalToolSetIdentity[];
 }
 
 export interface HarborCellDeadlineSettlement {
@@ -360,7 +369,7 @@ function validateHarborCellDeadlineSettlement(value: unknown): HarborCellDeadlin
 
 export function validateHarborCellExecutionIdentity(value: unknown): HarborCellExecutionIdentity {
   if (!isRecord(value)) throw new Error('executionIdentity must be a JSON object');
-  return {
+  const identity: HarborCellExecutionIdentity = {
     llmConnectionSlug: requireString(
       value.llmConnectionSlug,
       'executionIdentity.llmConnectionSlug',
@@ -388,7 +397,62 @@ export function validateHarborCellExecutionIdentity(value: unknown): HarborCellE
     ...('agentTools' in value
       ? { agentTools: requireBoolean(value.agentTools, 'executionIdentity.agentTools') }
       : {}),
+    ...('productToolSurface' in value
+      ? { productToolSurface: validateProductToolSurfaceIdentity(value.productToolSurface) }
+      : {}),
+    ...('supplementalToolSets' in value
+      ? { supplementalToolSets: validateSupplementalToolSets(value.supplementalToolSets) }
+      : {}),
   };
+  if (
+    identity.productToolSurface &&
+    identity.agentTools !== undefined &&
+    identity.agentTools !== !identity.productToolSurface.policy.disabledSurfaceIds.includes('agent')
+  ) {
+    throw new Error(
+      'executionIdentity.agentTools must match executionIdentity.productToolSurface.policy',
+    );
+  }
+  return identity;
+}
+
+function validateProductToolSurfaceIdentity(value: unknown): ProductToolSurfaceIdentity {
+  if (!isRecord(value))
+    throw new Error('executionIdentity.productToolSurface must be a JSON object');
+  if (!isRecord(value.policy))
+    throw new Error('executionIdentity.productToolSurface.policy must be a JSON object');
+  return {
+    policy: {
+      economy: requireBoolean(
+        value.policy.economy,
+        'executionIdentity.productToolSurface.policy.economy',
+      ),
+      disabledSurfaceIds: validateStringArray(
+        value.policy.disabledSurfaceIds,
+        'executionIdentity.productToolSurface.policy.disabledSurfaceIds',
+      ),
+    },
+    productToolNames: validateStringArray(
+      value.productToolNames,
+      'executionIdentity.productToolSurface.productToolNames',
+    ),
+  };
+}
+
+function validateSupplementalToolSets(value: unknown): SupplementalToolSetIdentity[] {
+  if (!Array.isArray(value))
+    throw new Error('executionIdentity.supplementalToolSets must be a JSON array');
+  return value.map((entry, index) => {
+    if (!isRecord(entry))
+      throw new Error(`executionIdentity.supplementalToolSets[${index}] must be a JSON object`);
+    return {
+      label: requireString(entry.label, `executionIdentity.supplementalToolSets[${index}].label`),
+      toolNames: validateStringArray(
+        entry.toolNames,
+        `executionIdentity.supplementalToolSets[${index}].toolNames`,
+      ),
+    };
+  });
 }
 
 function requireThinkingLevel(value: unknown, path: string): ThinkingLevel {

@@ -16,7 +16,6 @@ import {
   BackendRegistry,
   RuntimeRunner,
   SessionManager,
-  AGENT_TOOL_NAMES,
   buildChildAgentTools,
   type AgentRunActiveSession,
   type InvocationResult,
@@ -61,7 +60,6 @@ import {
 import { observeHeavyTaskWorkspace } from './heavy-task-workspace-observation.js';
 import type { HeadlessBackendContext } from './isolation.js';
 import {
-  ISOLATED_HEADLESS_TOOL_NAMES,
   taskIsolationFacts,
   toolExecutorIdentity,
   validateRealBackendIsolation,
@@ -306,11 +304,25 @@ export async function runTaskOnceWithStorage(
         taskRunId,
         attemptId,
         isolation: deps.realBackendIsolation,
-        toolNames: toolNamesForIdentity(
-          Boolean(deps.realBackendIsolation?.toolExecutor),
-          heavyTaskMode.enabled,
-          effectiveConfig.agentTools === true,
-        ),
+        ...(productToolSurface
+          ? {
+              productToolSurface: productToolSurface.identity,
+              ...(heavyTaskMode.enabled
+                ? {
+                    supplementalToolSets: [
+                      {
+                        label: 'heavy_task_progress',
+                        toolNames: [...HEAVY_TASK_PROGRESS_TOOL_NAMES],
+                      },
+                      {
+                        label: 'heavy_task_self_check',
+                        toolNames: [...HEAVY_TASK_SELF_CHECK_TOOL_NAMES],
+                      },
+                    ],
+                  }
+                : {}),
+            }
+          : { toolNames: ['registered_backend'] }),
       }),
     });
     const backends = new BackendRegistry();
@@ -951,18 +963,6 @@ function withOptionalStatePrompts(
     next = `${next}\n\n${prompt}`;
   }
   return next;
-}
-
-function toolNamesForIdentity(
-  hasIsolatedExecutor: boolean,
-  heavyTaskEnabled: boolean,
-  agentTools: boolean,
-): string[] {
-  const names = hasIsolatedExecutor ? [...ISOLATED_HEADLESS_TOOL_NAMES] : ['registered_backend'];
-  if (agentTools && hasIsolatedExecutor) names.push(...AGENT_TOOL_NAMES);
-  if (heavyTaskEnabled && hasIsolatedExecutor)
-    names.push(...HEAVY_TASK_PROGRESS_TOOL_NAMES, ...HEAVY_TASK_SELF_CHECK_TOOL_NAMES);
-  return names;
 }
 
 async function appendTaskAttemptExecutionLink(input: {

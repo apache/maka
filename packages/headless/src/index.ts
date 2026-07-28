@@ -135,6 +135,7 @@ export type {
   TaskRunError,
   TaskRunResult,
   TaskRunStatus,
+  SupplementalToolSetIdentity,
   ToolExecutorIdentity,
   ToolExecutorIdentityRecordedEvent,
   VerifierResult,

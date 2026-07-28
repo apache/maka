@@ -193,7 +193,7 @@ async function runHarborTaskRunMode(
     await mkdir(options.sourceWorkspaceDir, { recursive: true });
   }
   const task = buildHarborTask(options);
-  const executionIdentity = await writeTaskRunExecutionIdentity(options, task);
+  let executionIdentity = await writeTaskRunExecutionIdentity(options, task);
   const common = {
     storageRoot: options.storageRoot,
     taskRunId: options.taskRunId,
@@ -262,6 +262,19 @@ async function runHarborTaskRunMode(
         storage,
       )
     : await runTaskOnceWithStorage(options.config, task, common, storage);
+
+  const toolExecutor = run.projection.toolExecutors.at(-1);
+  if (toolExecutor?.productToolSurface) {
+    executionIdentity = validateHarborCellExecutionIdentity({
+      ...executionIdentity,
+      productToolSurface: toolExecutor.productToolSurface,
+      ...(toolExecutor.supplementalToolSets
+        ? { supplementalToolSets: toolExecutor.supplementalToolSets }
+        : {}),
+      agentTools: !toolExecutor.productToolSurface.policy.disabledSurfaceIds.includes('agent'),
+    });
+    await writeHarborCellExecutionIdentity(options.cellArtifactDir, executionIdentity);
+  }
 
   const exportDir = join(options.outDir, 'exports', taskRunLocator(run.taskRunId));
   const exported = await writeTaskRunExport(exportDir, run.projection, {

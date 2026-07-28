@@ -369,7 +369,10 @@ export async function runHarborCellWithStorage(
     systemPromptMode: prompt.mode,
     systemPromptHash: prompt.systemPromptHash,
     pricingProfile: input.pricingProfile ?? 'unconfigured',
-    agentTools: config.agentTools === true,
+    agentTools: productToolSurface
+      ? !productToolSurface.identity.policy.disabledSurfaceIds.includes(AGENT_TOOL_GROUP_ID)
+      : config.agentTools === true,
+    ...(productToolSurface ? { productToolSurface: productToolSurface.identity } : {}),
   };
   await writeHarborCellExecutionIdentity(input.outputDir, executionIdentity);
 

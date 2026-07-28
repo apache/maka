@@ -1,4 +1,5 @@
 import type { ExecutionEvidenceRef, WorkspaceRevisionRef } from '@maka/core/execution-evidence';
+import type { ProductToolSurfaceIdentity } from '@maka/runtime';
 import type { ResultRecord, TaskVerification, VerifierSpec } from './contracts.js';
 
 export type TaskRunStatus =
@@ -699,9 +700,18 @@ export interface ToolExecutorIdentity {
   taskRunId: string;
   attemptId?: string;
   toolNames: string[];
+  /** Exact catalog-owned product surface after host binding and run policy. */
+  productToolSurface?: ProductToolSurfaceIdentity;
+  /** Non-catalog tools grouped by their owning harness or experiment. */
+  supplementalToolSets?: SupplementalToolSetIdentity[];
   isolationMode: 'external' | 'inert_fake_backend';
   label: string;
   commandPolicy?: EnvNetworkSecretPolicy;
+}
+
+export interface SupplementalToolSetIdentity {
+  label: string;
+  toolNames: string[];
 }
 
 export type PermissionDecision = 'allow' | 'deny' | 'timeout' | 'expired';

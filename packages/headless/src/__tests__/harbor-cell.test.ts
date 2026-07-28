@@ -1008,7 +1008,7 @@ describe('runHarborCell', () => {
   test('does not provision child tools when Agent tools are disabled by default', async () => {
     await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
       const observed: { spawned?: boolean; error?: string } = {};
-      await runHarborCell({
+      const result = await runHarborCell({
         config: { ...config, backend: 'ai-sdk' },
         instruction: 'probe child admission',
         cwd: workspaceDir,
@@ -1033,6 +1033,10 @@ describe('runHarborCell', () => {
 
       assert.equal(observed.spawned, false);
       assert.match(observed.error ?? '', /missing tools/i);
+      assert.deepEqual(result.output.executionIdentity?.productToolSurface, {
+        policy: { economy: true, disabledSurfaceIds: ['agent'] },
+        productToolNames: ['Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write'],
+      });
     });
   });
 

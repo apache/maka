@@ -131,6 +131,13 @@ describe('Harbor cell output contract', () => {
         systemPromptHash: 'sha256:prompt-a',
         pricingProfile: 'deepseek-v4-flash-tbench-v1',
         agentTools: true,
+        productToolSurface: {
+          policy: { economy: true, disabledSurfaceIds: [] },
+          productToolNames: ['Bash', 'agent_spawn'],
+        },
+        supplementalToolSets: [
+          { label: 'heavy_task_progress', toolNames: ['inventory_submit', 'todo_update'] },
+        ],
       },
     }) as HarborCellOutput & { executionIdentity?: unknown };
 
@@ -142,6 +149,13 @@ describe('Harbor cell output contract', () => {
       systemPromptHash: 'sha256:prompt-a',
       pricingProfile: 'deepseek-v4-flash-tbench-v1',
       agentTools: true,
+      productToolSurface: {
+        policy: { economy: true, disabledSurfaceIds: [] },
+        productToolNames: ['Bash', 'agent_spawn'],
+      },
+      supplementalToolSets: [
+        { label: 'heavy_task_progress', toolNames: ['inventory_submit', 'todo_update'] },
+      ],
     });
   });
 
