@@ -906,9 +906,8 @@ const SHELL_COPY_BY_LOCALE = {
     },
     sessionSettingsActions: {
       permissionLabels: {
-        ask: '询问权限',
-        execute: '自动执行',
-        bypass: '跳过确认',
+        ask: '自动',
+        bypass: '绕过沙箱',
       },
       permissionDescriptions: {
         explore: '只读工具直通，写入或网络仍需确认。',
@@ -1383,9 +1382,8 @@ const SHELL_COPY_BY_LOCALE = {
     },
     sessionSettingsActions: {
       permissionLabels: {
-        ask: 'Ask first',
-        execute: 'Auto execute',
-        bypass: 'Bypass confirmations',
+        ask: 'Auto',
+        bypass: 'Bypass sandbox',
       },
       permissionDescriptions: {
         explore: 'Run read-only tools directly; confirm writes and network access.',

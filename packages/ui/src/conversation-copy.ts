@@ -363,9 +363,9 @@ const CONVERSATION_COPY = {
     permissions: {
       mode: {
         explore: { label: '只读模式', hint: '读取、列表和搜索直接执行；写入或网络操作仍需明确确认。Deep Research 默认使用此模式。' },
-        ask: { label: '询问权限', hint: '每次工具调用前都让你确认，适合需要逐步监督的任务。' },
+        ask: { label: '自动', hint: '在会话沙箱内自动执行；需要扩大文件或网络边界时再询问。' },
         execute: { label: '自动执行', hint: '常见工具直接执行；破坏性、特权和浏览器操作仍会请求确认。' },
-        bypass: { label: '跳过确认', hint: '跳过全部工具确认，包括高风险操作。仅在完全信任本轮任务时使用。' },
+        bypass: { label: '绕过沙箱', hint: '本会话中的本地工具不受沙箱限制。仅在完全信任任务时使用。' },
       },
       modeAriaLabel: (label) => `权限模式：${label}`,
     },
@@ -501,9 +501,9 @@ const CONVERSATION_COPY = {
     permissions: {
       mode: {
         explore: { label: 'Read only', hint: 'Read, list, and search run directly; writes and network access still require confirmation. Deep Research uses this mode by default.' },
-        ask: { label: 'Ask permission', hint: 'Confirm every tool call. Best when you want to supervise each step.' },
+        ask: { label: 'Auto', hint: 'Run automatically inside the session sandbox; ask only when file or network boundaries must expand.' },
         execute: { label: 'Auto execute', hint: 'Common tools run directly; destructive, privileged, and browser actions still require confirmation.' },
-        bypass: { label: 'Skip confirmations', hint: 'Skip every tool confirmation, including high-risk actions. Use only when you fully trust this task.' },
+        bypass: { label: 'Bypass sandbox', hint: 'Local tools in this session run without sandbox restrictions. Use only for tasks you fully trust.' },
       },
       modeAriaLabel: (label) => `Permission mode: ${label}`,
     },

@@ -2,6 +2,7 @@ import { Markdown } from '@earendil-works/pi-tui';
 import type {
   AnyPermissionRequestEvent,
   ProviderRetryEvent,
+  SandboxBoundaryRequestEvent,
   UserQuestionRequestEvent,
   SessionEvent,
   ToolOutputStream,
@@ -101,7 +102,10 @@ export interface MakaPiTranscriptState {
   providerRetry?: ProviderRetryEvent;
 }
 
-export type MakaPiPendingInteraction = AnyPermissionRequestEvent | UserQuestionRequestEvent;
+export type MakaPiPendingInteraction =
+  | AnyPermissionRequestEvent
+  | SandboxBoundaryRequestEvent
+  | UserQuestionRequestEvent;
 
 export interface MakaPiRenderGeometry {
   /**
@@ -664,6 +668,9 @@ export function applyMakaSessionEventToTranscript(
     case 'permission_request':
       enqueuePendingInteraction(state, event);
       break;
+    case 'sandbox_boundary_request':
+      enqueuePendingInteraction(state, event);
+      break;
     case 'user_question_request':
       enqueuePendingInteraction(state, event);
       break;
@@ -678,6 +685,19 @@ export function applyMakaSessionEventToTranscript(
             kind: 'notice',
             level: 'info',
             text: `Permission ${event.decision}ed for ${toolName}`,
+          });
+        }
+      }
+      break;
+    case 'sandbox_boundary_decision_ack':
+      {
+        const request = findPendingInteraction(state, event.requestId);
+        if (request?.type === 'sandbox_boundary_request') {
+          completePendingInteraction(state, event.requestId);
+          state.entries.push({
+            kind: 'notice',
+            level: 'info',
+            text: `Sandbox boundary ${event.decision === 'allow' ? 'expanded' : 'unchanged'}`,
           });
         }
       }
@@ -1089,6 +1109,10 @@ export function renderMakaPiTranscript(
       ),
     );
   }
+  if (state.pendingInteraction?.type === 'sandbox_boundary_request') {
+    lines.push('');
+    lines.push(...renderSandboxBoundaryPrompt(state.pendingInteraction, safeWidth));
+  }
 
   return lines;
 }
@@ -1117,6 +1141,14 @@ export function activePermissionRequest(
   state: MakaPiTranscriptState,
 ): AnyPermissionRequestEvent | undefined {
   return state.pendingInteraction?.type === 'permission_request'
+    ? state.pendingInteraction
+    : undefined;
+}
+
+export function activeSandboxBoundaryRequest(
+  state: MakaPiTranscriptState,
+): SandboxBoundaryRequestEvent | undefined {
+  return state.pendingInteraction?.type === 'sandbox_boundary_request'
     ? state.pendingInteraction
     : undefined;
 }
@@ -1682,6 +1714,29 @@ function renderPermissionPrompt(
       ? `  ${ansi.dim('Ctrl+O ' + (detailsExpanded ? 'hide' : 'show') + ' full parameters')}`
       : '';
   lines.push(fitLine(`${actions}${detailsAction}`, width));
+  return lines;
+}
+
+function renderSandboxBoundaryPrompt(
+  request: SandboxBoundaryRequestEvent,
+  width: number,
+): string[] {
+  const lines = [
+    fitLine(ansi.yellow('Sandbox boundary expansion'), width),
+    ...renderIndented(request.justification, width, 2),
+  ];
+  for (const entry of request.expansion.filesystem?.entries ?? []) {
+    lines.push(...renderIndented(`${entry.access} ${entry.scope} ${entry.path}`, width, 2));
+  }
+  if (request.expansion.network?.enabled) {
+    lines.push(...renderIndented('network enabled', width, 2));
+  }
+  lines.push(
+    fitLine(
+      `${ansi.bold('y')}${ansi.dim('/Enter allow for session')}  ${ansi.bold('n')}${ansi.dim('/Esc deny')}`,
+      width,
+    ),
+  );
   return lines;
 }
 

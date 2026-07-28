@@ -15,7 +15,6 @@ import {
 } from './web-search.js';
 import { defaultLocalMemorySettings, normalizeLocalMemorySettings } from './local-memory.js';
 import type { PermissionMode } from './permission.js';
-import { PERMISSION_MODES } from './permission.js';
 import {
   UI_LOCALE_PREFERENCES,
   isUiLocalePreference,
@@ -239,10 +238,12 @@ export interface PrivacySettings {
  * list as PERMISSION_MODE_ORDER), and the settings validation — in one
  * place.
  */
-export type ChatDefaultPermissionMode = Exclude<PermissionMode, 'explore'>;
+export type ChatDefaultPermissionMode = Extract<PermissionMode, 'ask' | 'bypass'>;
 
-export const CHAT_DEFAULT_PERMISSION_MODES: readonly ChatDefaultPermissionMode[] =
-  PERMISSION_MODES.filter((mode): mode is ChatDefaultPermissionMode => mode !== 'explore');
+export const CHAT_DEFAULT_PERMISSION_MODES: readonly ChatDefaultPermissionMode[] = [
+  'ask',
+  'bypass',
+];
 
 export function isChatDefaultPermissionMode(value: unknown): value is ChatDefaultPermissionMode {
   return (
@@ -646,9 +647,12 @@ function defaultChatDefaultsSettings(): ChatDefaultsSettings {
 // doesn't recognize -- fall back to the safest default instead.
 function normalizeChatDefaultsSettings(settings: ChatDefaultsSettings): ChatDefaultsSettings {
   return {
-    permissionMode: isChatDefaultPermissionMode(settings.permissionMode)
-      ? settings.permissionMode
-      : 'ask',
+    permissionMode:
+      (settings.permissionMode as unknown) === 'execute'
+        ? 'ask'
+        : isChatDefaultPermissionMode(settings.permissionMode)
+          ? settings.permissionMode
+          : 'ask',
   };
 }
 

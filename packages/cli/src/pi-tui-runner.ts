@@ -67,6 +67,7 @@ import {
   applyMakaSessionEventToTranscript,
   createMakaPiTranscriptState,
   activePermissionRequest,
+  activeSandboxBoundaryRequest,
   activeUserQuestionRequest,
   completePendingInteraction,
   applyShellRunViewUpdateToTranscript,
@@ -577,7 +578,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     decision: 'allow' | 'deny',
     rememberForTurn = false,
   ): boolean => {
-    const request = activePermissionRequest(state);
+    const request = activePermissionRequest(state) ?? activeSandboxBoundaryRequest(state);
     if (!request || permissionResponseInFlightRequestId !== null) return false;
     permissionResponseInFlightRequestId = request.requestId;
     // Keep the prompt visible until the driver accepts the response. If it
@@ -587,7 +588,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       .respondToPermission({
         requestId: request.requestId,
         decision,
-        ...(decision === 'allow' && request.rememberForTurnAllowed ? { rememberForTurn } : {}),
+        ...(request.type === 'permission_request' &&
+        decision === 'allow' &&
+        request.rememberForTurnAllowed
+          ? { rememberForTurn }
+          : {}),
       })
       .catch((error) => {
         if (permissionResponseInFlightRequestId === request.requestId) {
@@ -951,7 +956,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         if (event.type === 'error') attention.attentionNeeded();
         if (
           permissionResponseInFlightRequestId !== null &&
-          activePermissionRequest(state)?.requestId !== permissionResponseInFlightRequestId
+          (activePermissionRequest(state) ?? activeSandboxBoundaryRequest(state))?.requestId !==
+            permissionResponseInFlightRequestId
         ) {
           permissionResponseInFlightRequestId = null;
         }
@@ -1939,7 +1945,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     state.entries.push({
       kind: 'notice',
       level: 'info',
-      text: `Permission mode: ${mode}`,
+      text: `Sandbox boundary: ${mode === 'bypass' ? 'Bypass' : 'Auto'}`,
     });
     requestRender();
   };
@@ -2111,19 +2117,50 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const showPermissionModeList = () => {
     const items = permissionModePickerItems(permissionMode);
+    const displayedMode = permissionMode === 'bypass' ? 'bypass' : 'ask';
     showSelectPicker(
-      'Select Permission Mode',
-      permissionMode,
+      'Sandbox Boundary',
+      displayedMode,
       items,
       (item) => {
         if (!isPermissionMode(item.value)) return;
         const mode = item.value;
-        void runControl(() => setPermissionMode(mode));
+        if (mode !== 'bypass' || permissionMode === 'bypass') {
+          void runControl(() => setPermissionMode(mode));
+          return;
+        }
+        const confirmation = [
+          {
+            value: 'keep',
+            label: 'Keep Auto',
+            description: 'Stay inside the session sandbox',
+          },
+          {
+            value: 'bypass',
+            label: 'Bypass sandbox',
+            description: 'Allow unrestricted local tools for this session',
+          },
+        ];
+        showSelectPicker(
+          'Bypass sandbox for this session?',
+          'keep',
+          confirmation,
+          (choice) => {
+            if (choice.value === 'bypass') {
+              void runControl(() => setPermissionMode('bypass'));
+            }
+          },
+          {
+            minPrimaryColumnWidth: 18,
+            maxPrimaryColumnWidth: 28,
+            selectedIndex: 0,
+          },
+        );
       },
       {
         minPrimaryColumnWidth: 16,
         maxPrimaryColumnWidth: 24,
-        selectedIndex: items.findIndex((item) => item.value === permissionMode),
+        selectedIndex: items.findIndex((item) => item.value === displayedMode),
       },
     );
   };
@@ -2480,6 +2517,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       }
     }
     const pendingPermission = activePermissionRequest(state);
+    const pendingSandboxBoundary = activeSandboxBoundaryRequest(state);
+    if (pendingSandboxBoundary) {
+      if (matchesKey(data, 'y') || matchesKey(data, Key.enter) || matchesKey(data, Key.return)) {
+        respondToPendingPermission('allow');
+        return { consume: true };
+      }
+      if (matchesKey(data, 'n') || matchesKey(data, Key.escape)) {
+        respondToPendingPermission('deny');
+        return { consume: true };
+      }
+    }
     if (pendingPermission) {
       if (matchesKey(data, 'y') || matchesKey(data, Key.enter) || matchesKey(data, Key.return)) {
         respondToPendingPermission('allow', false);

@@ -80,7 +80,8 @@ export function PermissionModeSelect(props: {
   const locale = useUiLocale();
   const permissionCopy = getConversationCopy(locale).permissions;
   const modeMeta = getPermissionModeMeta(locale);
-  const displayMode: PermissionMode = props.activeMode === 'explore' ? 'ask' : props.activeMode;
+  const displayMode: PermissionMode =
+    props.activeMode === 'bypass' ? 'bypass' : 'ask';
   const meta = modeMeta[displayMode];
   return (
     <SelectRoot

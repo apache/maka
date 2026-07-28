@@ -15,6 +15,13 @@ type BooleanRecordUpdater = (updater: (current: Record<string, boolean>) => Reco
 type ToastApi = {
   success(title: string, description?: string): void;
   error(title: string, description?: string): void;
+  confirm(input: {
+    title: string;
+    description?: string;
+    confirmLabel?: string;
+    cancelLabel?: string;
+    destructive?: boolean;
+  }): Promise<boolean>;
 };
 
 export interface AppShellSessionSettingsActions {
@@ -61,10 +68,25 @@ export function createAppShellSessionSettingsActions(deps: {
   }
 
   async function setPermissionMode(mode: PermissionMode) {
-    if (mode === 'explore') return;
+    if (mode !== 'ask' && mode !== 'bypass') return;
     const sessionId = activeIdRef.current;
     const pendingKey = sessionId ?? '__global_permission_mode__';
     if (pendingPermissionModeChangesRef.current.has(pendingKey)) return;
+    if (
+      mode === 'bypass' &&
+      !(await toastApi.confirm({
+        title: uiLocale === 'zh' ? '绕过此会话的沙箱？' : 'Bypass the sandbox for this session?',
+        description:
+          uiLocale === 'zh'
+            ? '本地工具将可以访问工作区外文件与网络。只有在你完全信任此任务时才继续。'
+            : 'Local tools will be able to access files outside the workspace and the network. Continue only if you fully trust this task.',
+        confirmLabel: uiLocale === 'zh' ? '绕过沙箱' : 'Bypass sandbox',
+        cancelLabel: uiLocale === 'zh' ? '保持自动' : 'Keep Auto',
+        destructive: true,
+      }))
+    ) {
+      return;
+    }
 
     pendingPermissionModeChangesRef.current.add(pendingKey);
     if (sessionId)
@@ -73,13 +95,24 @@ export function createAppShellSessionSettingsActions(deps: {
         [sessionId]: true,
       }));
     try {
-      const result = await window.maka.settings.update({
-        chatDefaults: { permissionMode: mode },
-      });
-      const nextMode = result.settings.chatDefaults.permissionMode;
-      setDefaultPermissionMode(nextMode);
-      setSessions((prev) => prev.map((session) => ({ ...session, permissionMode: nextMode })));
-      toastApi.success(copy.permissionSwitched(copy.permissionLabels[nextMode]), copy.permissionDescriptions[nextMode]);
+      let nextMode = mode;
+      if (sessionId) {
+        const next = await window.maka.sessions.setPermissionMode(sessionId, mode);
+        nextMode = next.permissionMode === 'bypass' ? 'bypass' : 'ask';
+        setSessions((prev) =>
+          prev.map((session) => (session.id === sessionId ? next : session)),
+        );
+      } else {
+        const result = await window.maka.settings.update({
+          chatDefaults: { permissionMode: mode },
+        });
+        nextMode = result.settings.chatDefaults.permissionMode;
+        setDefaultPermissionMode(nextMode);
+      }
+      toastApi.success(
+        copy.permissionSwitched(copy.permissionLabels[nextMode]),
+        copy.permissionDescriptions[nextMode],
+      );
       await refreshSessions();
     } catch (error) {
       toastApi.error(copy.permissionFailedTitle, localizedShellErrorMessage(error, copy.permissionFallback, uiLocale));

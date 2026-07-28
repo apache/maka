@@ -36,7 +36,10 @@ describe('resolveCreateSessionInput', () => {
    * a suggestion, and the session it names is not the session you get.
    */
   it("a mode's boundary outranks the renderer's request and the configured default", async () => {
-    const resolved = await resolve({ mode: 'deep_research', permissionMode: 'ask' }, settings('execute'));
+    const resolved = await resolve(
+      { mode: 'deep_research', permissionMode: 'bypass' },
+      settings('ask'),
+    );
     assert.equal(resolved.permissionMode, 'explore');
   });
 
@@ -66,17 +69,17 @@ describe('resolveCreateSessionInput', () => {
    */
   it('cannot be reached by an unrecognized mode from the renderer', async () => {
     for (const mode of ['explore', 'deep-reseach', 'chat', 'admin', '', null, 42, {}]) {
-      const resolved = await resolve({ mode }, settings('execute'));
-      assert.equal(resolved.permissionMode, 'execute', `mode ${JSON.stringify(mode)} conferred a boundary`);
+      const resolved = await resolve({ mode }, settings('ask'));
+      assert.equal(resolved.permissionMode, 'ask', `mode ${JSON.stringify(mode)} conferred a boundary`);
       assert.equal(resolved.name, DEFAULT_SESSION_NAME);
       assert.equal(resolved.labels, undefined);
     }
   });
 
   it('falls back to the configured default when neither a mode nor the caller says otherwise', async () => {
-    assert.equal((await resolve(undefined, settings('execute'))).permissionMode, 'execute');
+    assert.equal((await resolve(undefined, settings('ask'))).permissionMode, 'ask');
     assert.equal((await resolve({}, settings('bypass'))).permissionMode, 'bypass');
-    assert.equal((await resolve({ permissionMode: 'ask' }, settings('execute'))).permissionMode, 'ask');
+    assert.equal((await resolve({ permissionMode: 'ask' }, settings('bypass'))).permissionMode, 'ask');
   });
 
   /**

@@ -1277,6 +1277,46 @@ describe('Maka Pi TUI transcript', () => {
     assert.ok(visibleLines.some((line) => line.includes('n/Esc deny')));
   });
 
+  test('renders an unboxed session sandbox boundary request with exact scopes', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'sandbox_boundary_request',
+        requestId: 'boundary-1',
+        toolUseId: 'tool-boundary',
+        justification: 'Read the user-selected file.',
+        expansion: {
+          filesystem: {
+            entries: [{ path: '/outside/file.txt', access: 'read', scope: 'exact' }],
+          },
+          network: { enabled: true },
+        },
+      }),
+    );
+
+    const visibleLines = renderMakaPiTranscript(
+      state,
+      {
+        title: 'Maka',
+        cwd: '/tmp/project',
+        model: 'test',
+        connectionSlug: 'test',
+        permissionMode: 'auto',
+      },
+      100,
+    ).map(stripAnsi);
+
+    assert.equal(state.pendingInteraction?.requestId, 'boundary-1');
+    assert.ok(visibleLines.some((line) => line.includes('Sandbox boundary expansion')));
+    assert.ok(visibleLines.some((line) => line.includes('Read the user-selected file.')));
+    assert.ok(visibleLines.some((line) => line.includes('read exact /outside/file.txt')));
+    assert.ok(visibleLines.some((line) => line.includes('network enabled')));
+    assert.ok(visibleLines.some((line) => line.includes('y/Enter allow for session')));
+    assert.ok(visibleLines.some((line) => line.includes('n/Esc deny')));
+    assert.ok(visibleLines.every((line) => !line.includes(' a ')));
+  });
+
   test('renders one-call additional permission paths and risks without turn-wide approval', () => {
     const state = createMakaPiTranscriptState();
     applyMakaSessionEventToTranscript(

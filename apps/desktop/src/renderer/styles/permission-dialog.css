@@ -4,6 +4,66 @@
   display: contents;
 }
 
+.maka-sandbox-boundary-prompt-inner {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+}
+
+.maka-sandbox-boundary-copy h2,
+.maka-sandbox-boundary-copy p {
+  margin: 0;
+}
+
+.maka-sandbox-boundary-copy h2 {
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  font-weight: 650;
+}
+
+.maka-sandbox-boundary-copy p {
+  margin-top: var(--space-1);
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  line-height: 1.45;
+}
+
+.maka-sandbox-boundary-scopes {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.maka-sandbox-boundary-scopes li {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+}
+
+.maka-sandbox-boundary-scopes code {
+  overflow: hidden;
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maka-sandbox-boundary-scopes span {
+  flex: none;
+  color: var(--text-tertiary);
+}
+
+.maka-sandbox-boundary-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
 .maka-composer-interaction {
   width: 100%;
 }

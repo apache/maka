@@ -5,6 +5,7 @@ export * from './chat-model-helpers.js';
 export * from './clipboard-feedback.js';
 export * from './use-mounted-ref.js';
 export * from './components.js';
+export type { SandboxBoundaryPromptProps } from './sandbox-boundary-prompt.js';
 export type { SessionHistoryGroup } from './session-history-list.js';
 export * from './session-status-presentation.js';
 export * from './composer-helpers.js';

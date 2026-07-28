@@ -120,11 +120,19 @@ export function createAppShellSessionEventHandlers(options: {
       case 'permission_request':
         setInteractionBySession((current) => enqueueInteraction(current, sessionId, event));
         break;
+      case 'sandbox_boundary_request':
+        setInteractionBySession((current) => enqueueInteraction(current, sessionId, event));
+        break;
       case 'user_question_request':
         setInteractionBySession((current) => enqueueInteraction(current, sessionId, event));
         break;
       case 'permission_decision_ack':
         setInteractionBySession((current) => dequeueInteractionByRequestId(current, sessionId, event.requestId));
+        break;
+      case 'sandbox_boundary_decision_ack':
+        setInteractionBySession((current) =>
+          dequeueInteractionByRequestId(current, sessionId, event.requestId),
+        );
         break;
       case 'tool_result':
         setInteractionBySession((current) => dequeueInteractionByToolUseId(current, sessionId, event.toolUseId));

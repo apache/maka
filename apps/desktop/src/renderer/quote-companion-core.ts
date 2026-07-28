@@ -234,9 +234,11 @@ export function applyCompanionInteractionEvent(
 ): InteractionQueues {
   switch (event.type) {
     case 'permission_request':
+    case 'sandbox_boundary_request':
     case 'user_question_request':
       return enqueueInteraction(queues, sessionId, event);
     case 'permission_decision_ack':
+    case 'sandbox_boundary_decision_ack':
       return dequeueInteractionByRequestId(queues, sessionId, event.requestId);
     case 'tool_result':
       return dequeueInteractionByToolUseId(queues, sessionId, event.toolUseId);

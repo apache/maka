@@ -16,7 +16,7 @@ import {
   type TUI,
 } from '@earendil-works/pi-tui';
 import type { UserQuestionOption } from '@maka/core';
-import { PERMISSION_MODES, type PermissionMode } from '@maka/core/permission';
+import type { PermissionMode } from '@maka/core/permission';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { InvocableSkillEntry } from '@maka/runtime';
 import { PROVIDER_DEFAULTS, type ModelInfo, type ProviderType } from '@maka/core/llm-connections';
@@ -685,11 +685,19 @@ export class ModelSearchOverlay implements Component {
 }
 
 export function permissionModePickerItems(currentMode: PermissionMode): SelectItem[] {
-  return PERMISSION_MODES.map((mode) => ({
-    value: mode,
-    label: mode,
-    ...(mode === currentMode ? { description: 'current' } : {}),
-  }));
+  const current = currentMode === 'bypass' ? 'bypass' : 'ask';
+  return [
+    {
+      value: 'ask',
+      label: 'Auto',
+      description: current === 'ask' ? 'current · sandboxed' : 'sandboxed',
+    },
+    {
+      value: 'bypass',
+      label: 'Bypass',
+      description: current === 'bypass' ? 'current · unrestricted' : 'unrestricted',
+    },
+  ];
 }
 
 /**

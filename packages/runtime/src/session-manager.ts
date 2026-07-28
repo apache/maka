@@ -434,6 +434,10 @@ export interface SessionStore {
   settleSandboxBoundaryRequest?(
     input: SettleSandboxBoundaryRequest,
   ): Promise<SandboxBoundarySettlement>;
+  setExecutionBoundaryKind?(
+    sessionId: string,
+    kind: 'managed' | 'bypass',
+  ): Promise<ExecutionBoundary>;
   createAgentGraphOperator?(
     input: CreateSessionInput,
     request: AgentGraphOperatorProvisionRequest,
@@ -1038,6 +1042,10 @@ export class SessionManager {
       throw new Error('当前有工具调用正在等待确认，处理后再切换权限模式。');
     }
 
+    await this.deps.store.setExecutionBoundaryKind?.(
+      sessionId,
+      mode === 'bypass' ? 'bypass' : 'managed',
+    );
     const next = await this.deps.store.updateHeader(sessionId, {
       permissionMode: mode,
       labels: leavingDeepResearch
@@ -1057,6 +1065,25 @@ export class SessionManager {
     // backend before the next turn so PermissionEngine receives the new mode.
     await this.runtimeKernel.disposeBackend(sessionId);
     return headerToSummary(next);
+  }
+
+  async setExecutionBoundaryKind(
+    sessionId: string,
+    kind: 'managed' | 'bypass',
+  ): Promise<ExecutionBoundary> {
+    if (this.runtimeKernel.hasActiveRuns(sessionId)) {
+      throw new Error('当前对话正在运行，等结束后再切换沙箱边界。');
+    }
+    const header = await this.deps.store.readHeader(sessionId);
+    if (header.status === 'waiting_for_user') {
+      throw new Error('当前有沙箱边界请求正在等待确认，处理后再切换。');
+    }
+    if (!this.deps.store.setExecutionBoundaryKind) {
+      throw new Error('Session store does not support execution boundaries');
+    }
+    const boundary = await this.deps.store.setExecutionBoundaryKind(sessionId, kind);
+    await this.runtimeKernel.disposeBackend(sessionId);
+    return boundary;
   }
 
   async getPlanState(sessionId: string): Promise<PlanSessionState> {

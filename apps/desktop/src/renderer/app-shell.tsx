@@ -519,6 +519,8 @@ function AppShellContent({
   });
   const activeInteraction = activeInteractionFor(interactionBySession, activeId);
   const activePermission = activeInteraction?.type === 'permission_request' ? activeInteraction : undefined;
+  const activeSandboxBoundary =
+    activeInteraction?.type === 'sandbox_boundary_request' ? activeInteraction : undefined;
   const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
   const activeSession = sessions.find((session) => session.id === activeId);
   // Live-turn projection of the active session: streaming/thinking slices, the
@@ -2109,6 +2111,7 @@ function AppShellContent({
                 activeId={activeId}
                 stopPendingBySession={stopPendingBySession}
                 activePermission={activePermission}
+                activeSandboxBoundary={activeSandboxBoundary}
                 respondToPermission={respondToPermission}
                 activeQuestion={activeQuestion}
                 respondToUserQuestion={respondToUserQuestion}

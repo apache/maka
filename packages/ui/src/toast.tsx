@@ -281,7 +281,10 @@ function ConfirmDialog(props: { request: PendingConfirm; onResolve(result: boole
         showClose={false}
       >
         <div className="maka-modal-header">
-          <h2 className="maka-modal-title" id="maka-confirm-title">{title}</h2>
+          <h2 className="maka-modal-title" id="maka-confirm-title">
+            {destructive ? <AlertTriangle size={18} aria-hidden="true" /> : null}
+            {title}
+          </h2>
           {description && (
             <p className="maka-modal-subtitle" id="maka-confirm-description">{description}</p>
           )}
