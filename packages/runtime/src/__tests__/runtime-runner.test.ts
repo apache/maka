@@ -148,28 +148,6 @@ function flowTokenUsageEvent(ctx: InvocationContext, rawFinishReason: string): R
   };
 }
 
-function flowPermissionDeniedEvent(ctx: InvocationContext): RuntimeEvent {
-  return {
-    id: ctx.newId(),
-    invocationId: ctx.invocationId,
-    runId: ctx.runId,
-    sessionId: ctx.sessionId,
-    turnId: ctx.turnId,
-    ts: ctx.now(),
-    ...(ctx.branch ? { branch: ctx.branch } : {}),
-    partial: false,
-    role: 'system',
-    author: 'user',
-    actions: {
-      permissionDecision: {
-        requestId: 'perm-1',
-        decision: 'deny',
-        rememberForTurn: true,
-      },
-    },
-  };
-}
-
 // ============================================================================
 // Tests
 // ============================================================================
@@ -428,21 +406,6 @@ describe('RuntimeRunner', () => {
     expect(result.status).toBe('failed');
     expect(result.failure?.class).toBe('tool_step_cap_reached');
     expect(result.failure?.message).toMatch(/tool-call step cap/);
-  });
-
-  test('denied permission decision marks a later completed terminal event failed', async () => {
-    const providers = makeProviders();
-    const flow = new ScriptFlow((ctx) => [
-      flowPermissionDeniedEvent(ctx),
-      flowTerminalEvent(ctx, 'completed'),
-    ]);
-    const runner = new RuntimeRunner({ flow, providers });
-
-    const result = await runner.run(makeRequest());
-
-    expect(result.status).toBe('failed');
-    expect(result.failure?.class).toBe('permission_denied');
-    expect(result.failure?.message).toBe('permission request perm-1 was denied');
   });
 
   test('a flow that throws maps to a failed result (user event retained)', async () => {

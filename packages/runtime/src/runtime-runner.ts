@@ -571,14 +571,6 @@ function failureFromRuntimeEvent(event: RuntimeEvent): InvocationFailure | undef
     };
   }
 
-  const permissionDecision = event.actions?.permissionDecision;
-  if (permissionDecision?.decision === 'deny') {
-    return {
-      class: 'permission_denied',
-      message: `permission request ${permissionDecision.requestId} was denied`,
-    };
-  }
-
   const rawFinishReason = event.actions?.tokenUsage?.rawFinishReason;
   const finishFailure = failureFromRawFinishReason(rawFinishReason);
   if (finishFailure) return finishFailure;
