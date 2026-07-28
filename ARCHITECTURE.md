@@ -79,7 +79,7 @@ Relevant chapter: 6.
 
 ### Entering Runtime for the first time
 
-Read `1 → 8 → 2 → 3`. Start with the fact log and its crash boundary, then move to tool evidence and context projections.
+Read `1 → 2 → 3 → 8`. Start with the fact log, then learn the tool-evidence and context projections that recovery later consumes. Finish with crash repair and safe continuation.
 
 ### Changing Tools, Context, or Compaction
 
