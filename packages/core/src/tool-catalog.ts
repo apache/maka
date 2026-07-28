@@ -91,6 +91,7 @@ export const MAKA_CATALOG_TOOLS: readonly CatalogToolDef[] = Object.freeze(
     { name: 'WriteStdin' },
     // Host product always-on
     { name: 'AskUserQuestion' },
+    { name: 'request_sandbox_boundary' },
     { name: 'Skill' },
     { name: 'SkillSearch' },
     { name: 'WebSearch' },
