@@ -1,5 +1,4 @@
 import type { PermissionProfile } from '@maka/core/permission-profile';
-import type { AdditionalPermissionProfile } from '@maka/core/additional-permissions';
 import type { ChildFdInput } from '../child-fd-input.js';
 
 export type SandboxType = 'none' | 'macos-seatbelt' | 'linux';
@@ -82,8 +81,6 @@ export type SandboxSelectionResult =
 
 export interface SandboxTransformRequest {
   command: SandboxCommand;
-  /** One-call permissions merged into command.profile for this transform only. */
-  additionalPermissions?: AdditionalPermissionProfile;
   preference?: SandboxablePreference;
   platform?: SandboxPlatform;
 }

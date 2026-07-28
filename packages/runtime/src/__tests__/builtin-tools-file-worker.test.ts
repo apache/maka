@@ -3,10 +3,10 @@ import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join, parse } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
+import { createManagedExecutionBoundary, createWorkspaceWritePermissionProfile } from '@maka/core';
 import { createReadOnlyPermissionProfile } from '@maka/core/permission-profile';
 
 import { buildBuiltinTools } from '../builtin-tools.js';
-import type { AdditionalPermissionGrant } from '../additional-permissions.js';
 import type { FilesystemWorkerExecuteInput } from '../filesystem-worker/client.js';
 
 const cleanup: string[] = [];
@@ -16,37 +16,17 @@ afterEach(async () => {
 });
 
 describe('builtin file tools use the sandboxed worker', () => {
-  test('requires a sandboxed worker but does not attach one-call permission planners', () => {
-    assert.throws(
-      () => buildBuiltinTools({ enableFileToolAdditionalPermissions: true }),
-      /require a sandboxed filesystem worker/,
-    );
-
+  test('uses a sandboxed worker without one-call permission metadata', () => {
     const linuxTools = buildBuiltinTools({
       filesystemWorker: { execute: async () => ({ kind: 'read', content: '' }) },
-      enableFileToolAdditionalPermissions: true,
       sandboxPlatform: 'linux',
     });
-    assert.equal(
-      linuxTools.find((tool) => tool.name === 'Write')?.planAdditionalPermissions,
-      undefined,
-    );
-
-    assert.throws(
-      () =>
-        buildBuiltinTools({
-          filesystemWorker: { execute: async () => ({ kind: 'read', content: '' }) },
-          enableFileToolAdditionalPermissions: true,
-          sandboxPlatform: 'win32',
-        }),
-      /supported only on macOS and Linux/,
-    );
+    assert.ok(linuxTools.find((tool) => tool.name === 'Write'));
   });
 
-  test('forwards the consumed grant only to the current worker operation', async () => {
+  test('forwards the current session boundary to every worker operation', async () => {
     const cwd = await temporaryDirectory('maka-file-worker-cwd-');
     const calls: FilesystemWorkerExecuteInput[] = [];
-    const grant = fakeGrant();
     const permissionProfile = createReadOnlyPermissionProfile();
     const tools = buildBuiltinTools({
       filesystemWorker: {
@@ -89,25 +69,24 @@ describe('builtin file tools use the sandboxed worker', () => {
       sandboxPlatform: 'darwin',
     });
 
-    await runTool(tools, 'Read', { path: 'read.txt' }, cwd, grant);
-    await runTool(tools, 'Write', { path: 'write.txt', content: 'content' }, cwd, grant);
+    await runTool(tools, 'Read', { path: 'read.txt' }, cwd);
+    await runTool(tools, 'Write', { path: 'write.txt', content: 'content' }, cwd);
     await runTool(
       tools,
       'Edit',
       { path: 'edit.txt', old_string: 'a', new_string: 'b' },
       cwd,
-      grant,
     );
-    await runTool(tools, 'FormatJson', { path: 'data.json' }, cwd, grant);
-    await runTool(tools, 'Glob', { pattern: '**/*.ts' }, cwd, grant);
-    await runTool(tools, 'Grep', { pattern: 'value' }, cwd, grant);
+    await runTool(tools, 'FormatJson', { path: 'data.json' }, cwd);
+    await runTool(tools, 'Glob', { pattern: '**/*.ts' }, cwd);
+    await runTool(tools, 'Grep', { pattern: 'value' }, cwd);
 
     assert.deepEqual(
       calls.map((call) => call.operation.kind),
       ['read', 'write', 'edit', 'format_json', 'glob', 'grep'],
     );
     assert.equal(
-      calls.every((call) => call.additionalGrant === grant),
+      calls.every((call) => call.executionBoundary?.kind === 'managed'),
       true,
     );
     assert.equal(
@@ -204,7 +183,6 @@ async function runTool(
   name: string,
   args: unknown,
   cwd: string,
-  grant?: AdditionalPermissionGrant,
 ): Promise<unknown> {
   const tool = tools.find((candidate) => candidate.name === name);
   if (!tool) throw new Error(`${name} tool missing`);
@@ -214,27 +192,10 @@ async function runTool(
     toolCallId: `tool-${name}`,
     cwd,
     permissionMode: 'ask',
-    ...(grant ? { permissionContext: { additionalGrant: grant } } : {}),
+    executionBoundary: createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0),
     abortSignal: new AbortController().signal,
     emitOutput: () => {},
   });
-}
-
-function fakeGrant(): AdditionalPermissionGrant {
-  return {
-    grantId: 'grant-1',
-    sessionId: 'session-1',
-    turnId: 'turn-1',
-    toolUseId: 'tool-1',
-    toolName: 'Write',
-    intentHash: `sha256:${'1'.repeat(64)}`,
-    permissionsHash: `sha256:${'2'.repeat(64)}`,
-    profile: { fileSystem: { entries: [{ path: '/tmp/file', access: 'write', scope: 'exact' }] } },
-    normalizedPaths: [],
-    risk: { outsideWorkspace: true, protectedMetadata: false, networkEnabled: false },
-    issuedAt: 1,
-    expiresAt: 2,
-  };
 }
 
 async function temporaryDirectory(prefix: string): Promise<string> {

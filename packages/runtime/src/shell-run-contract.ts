@@ -8,7 +8,6 @@ import {
 
 import type { ShellPlan } from './shell-detect.js';
 import type { ChildFdInput } from './child-fd-input.js';
-import type { ToolExecutionPermissionContext } from './additional-permissions.js';
 import type { SandboxType } from './sandbox/types.js';
 
 export const DEFAULT_BASH_TIMEOUT_MS = 120_000;
@@ -64,8 +63,6 @@ export interface ShellRunBashInput {
   abortSignal?: AbortSignal;
   emitOutput: (stream: 'stdout' | 'stderr', chunk: string) => void;
   shell?: ShellPlan;
-  /** One-call grants consumed by ToolRuntime for this exact invocation. */
-  permissionContext?: ToolExecutionPermissionContext;
   /** Effective command sandbox selected before process launch. */
   sandboxType?: SandboxType;
   /** Invoked exactly once after startup failure or terminal process completion. */

@@ -578,6 +578,7 @@ export {
   createGenesisExecutionBoundary,
   createManagedExecutionBoundary,
   decodeExecutionBoundary,
+  sandboxBoundaryExpansionAllowsPath,
   validateSandboxBoundaryExpansion,
 } from './sandbox-boundary.js';
 

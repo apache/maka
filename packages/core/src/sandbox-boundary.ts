@@ -217,6 +217,22 @@ export function compactSandboxBoundaryFilesystemEntries(
   return compacted.sort(compareEntries);
 }
 
+export function sandboxBoundaryExpansionAllowsPath(
+  expansion: SandboxBoundaryExpansion,
+  path: string,
+  access: SandboxBoundaryAccess,
+): boolean {
+  return (
+    expansion.filesystem?.entries.some(
+      (entry) =>
+        (access !== 'write' || entry.access === 'write') &&
+        (entry.scope === 'exact'
+          ? samePath(path, entry.path)
+          : pathWithinRoot(path, entry.path)),
+    ) ?? false
+  );
+}
+
 export function applySandboxBoundaryExpansion(
   base: SandboxProfile,
   expansion: SandboxBoundaryExpansion,

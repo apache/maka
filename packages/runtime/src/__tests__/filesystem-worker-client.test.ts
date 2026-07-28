@@ -14,11 +14,6 @@ import {
   type PermissionProfile,
 } from '@maka/core/permission-profile';
 
-import { hashAdditionalPermissionProfile } from '../additional-permission-hash.js';
-import {
-  normalizeAdditionalPermissionProfile,
-  type AdditionalPermissionGrant,
-} from '../additional-permissions.js';
 import {
   FilesystemWorkerClient,
   FilesystemWorkerClientError,
@@ -160,7 +155,7 @@ describe('filesystem worker client permission snapshots', () => {
 
     assert.deepEqual(result, { kind: 'read', content: 'worker-content' });
     assert.equal(requests.length, 1);
-    assert.deepEqual(requests[0]?.operationPermission.fileSystem?.entries, [
+    assert.deepEqual(requests[0]?.operationBoundary.filesystem?.entries, [
       {
         path: target,
         access: 'read',
@@ -187,32 +182,6 @@ describe('filesystem worker client Grep target scope', () => {
     assert.equal(requests[0]?.expectedTarget.scope, 'exact');
   });
 
-  test('uses an exact one-call grant for an external file', async () => {
-    const workspace = await temporaryDirectory('maka-worker-client-grep-workspace-');
-    const outside = await temporaryDirectory('maka-worker-client-grep-outside-');
-    const target = join(outside, 'file.ts');
-    await writeFile(target, 'const value = 1;', 'utf8');
-    const grant = await readGrantFor(target, workspace);
-    const { client, requests } = fakeClient();
-
-    await client.execute({
-      operation: grepOperation(target),
-      cwd: workspace,
-      mode: 'ask',
-      permissionProfile: createReadOnlyPermissionProfile(),
-      additionalGrant: grant,
-    });
-
-    assert.equal(requests[0]?.expectedTarget.scope, 'exact');
-    assert.deepEqual(requests[0]?.operationPermission.fileSystem?.entries, [
-      {
-        path: target,
-        access: 'read',
-        scope: 'exact',
-      },
-    ]);
-  });
-
   test('uses subtree scope for a directory search', async () => {
     const workspace = await temporaryDirectory('maka-worker-client-grep-directory-');
     const directory = join(workspace, 'src');
@@ -226,7 +195,7 @@ describe('filesystem worker client Grep target scope', () => {
     });
 
     assert.equal(requests[0]?.expectedTarget.scope, 'subtree');
-    assert.deepEqual(requests[0]?.operationPermission.fileSystem?.entries, [
+    assert.deepEqual(requests[0]?.operationBoundary.filesystem?.entries, [
       {
         path: directory,
         access: 'read',
@@ -438,27 +407,6 @@ function grepOperation(path: string) {
     maxCountPerFile: 50,
     limit: 200,
     timeoutMs: 1_000,
-  };
-}
-
-async function readGrantFor(path: string, cwd: string): Promise<AdditionalPermissionGrant> {
-  const normalized = await normalizeAdditionalPermissionProfile({
-    profile: { fileSystem: { entries: [{ path, access: 'read', scope: 'exact' }] } },
-    cwd,
-  });
-  return {
-    grantId: 'grant-read',
-    sessionId: 'session-1',
-    turnId: 'turn-1',
-    toolUseId: 'tool-1',
-    toolName: 'Grep',
-    intentHash: `sha256:${'1'.repeat(64)}`,
-    permissionsHash: hashAdditionalPermissionProfile(normalized.profile),
-    profile: normalized.profile,
-    normalizedPaths: normalized.normalizedPaths,
-    risk: { outsideWorkspace: true, protectedMetadata: false, networkEnabled: false },
-    issuedAt: Date.now(),
-    expiresAt: Date.now() + 60_000,
   };
 }
 

@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { zodSchema } from 'ai';
 import { z } from 'zod';
-import { SHELL_RUN_ID_MAX_CHARS } from '@maka/core';
+import { applySandboxBoundaryExpansion, SHELL_RUN_ID_MAX_CHARS } from '@maka/core';
 import {
   createWorkspaceWritePermissionProfile,
   type PermissionProfile,
@@ -246,20 +246,12 @@ describe('builtin Bash description declares the executing shell', () => {
 });
 
 describe('builtin Bash streaming output', () => {
-  test('requires a sandbox manager but exposes no one-shot permission schema', () => {
-    assert.throws(
-      () => buildBuiltinTools({ enableBashAdditionalPermissions: true }),
-      /require a sandbox manager/,
-    );
-
+  test('exposes no one-shot permission schema', () => {
     const linuxBash = buildBuiltinTools({
       sandboxManager: availableLinuxManager(),
       sandboxPlatform: 'linux',
-      enableBashAdditionalPermissions: true,
     }).find((tool) => tool.name === 'Bash');
     assert.ok(linuxBash);
-    assert.equal(linuxBash?.planAdditionalPermissions, undefined);
-    assert.equal(linuxBash?.planSandboxEscalation, undefined);
     assert.equal(
       (linuxBash.parameters as z.ZodTypeAny).safeParse({
         command: 'echo unsafe',
@@ -269,16 +261,6 @@ describe('builtin Bash streaming output', () => {
         },
       }).success,
       false,
-    );
-
-    assert.throws(
-      () =>
-        buildBuiltinTools({
-          sandboxManager: availableLinuxManager(),
-          sandboxPlatform: 'win32',
-          enableBashAdditionalPermissions: true,
-        }),
-      /supported only on macOS and Linux/,
     );
   });
 
@@ -823,8 +805,6 @@ describe('builtin Bash streaming output', () => {
         sandboxPlatform: 'darwin',
       }).find((candidate) => candidate.name === 'Bash');
       if (!bash) throw new Error('Bash tool missing');
-      assert.equal(bash?.planAdditionalPermissions, undefined);
-      assert.equal(bash?.planSandboxEscalation, undefined);
       assert.equal(
         (bash!.parameters as z.ZodTypeAny).safeParse({
           command: 'echo unsafe',
@@ -2036,13 +2016,6 @@ async function linuxMissingExactWriteFixture() {
   const target = join(await realpath(outside), 'new.txt');
   const args = {
     command: 'true',
-    sandbox_permissions: {
-      mode: 'with_additional_permissions' as const,
-      file_system: {
-        entries: [{ path: target, access: 'write' as const, scope: 'exact' as const }],
-      },
-      justification: 'Write the selected output.',
-    },
   };
   const context = {
     sessionId: 'session-1',
@@ -2052,33 +2025,14 @@ async function linuxMissingExactWriteFixture() {
     permissionMode: 'execute' as const,
     abortSignal: new AbortController().signal,
     emitOutput: () => {},
-    permissionContext: {
-      additionalGrant: {
-        grantId: 'grant-1',
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        toolUseId: 'tool-1',
-        toolName: 'Bash',
-        intentHash: 'intent',
-        permissionsHash: 'permissions',
-        profile: {
-          fileSystem: {
-            entries: [{ path: target, access: 'write' as const, scope: 'exact' as const }],
-          },
+    executionBoundary: {
+      kind: 'managed' as const,
+      revision: 1,
+      profile: applySandboxBoundaryExpansion(createWorkspaceWritePermissionProfile(), {
+        filesystem: {
+          entries: [{ path: target, access: 'write' as const, scope: 'exact' as const }],
         },
-        normalizedPaths: [
-          {
-            displayPath: target,
-            enforcementPath: target,
-            access: 'write' as const,
-            scope: 'exact' as const,
-            targetType: 'missing' as const,
-          },
-        ],
-        risk: { outsideWorkspace: true, protectedMetadata: false, networkEnabled: false },
-        issuedAt: 1,
-        expiresAt: 2,
-      },
+      }),
     },
   };
 
@@ -2092,7 +2046,6 @@ async function linuxMissingExactWriteFixture() {
         permissionProfile: createWorkspaceWritePermissionProfile(),
         sandboxManager: availableLinuxManager(),
         sandboxPlatform: 'linux',
-        enableBashAdditionalPermissions: true,
       }).find((candidate) => candidate.name === 'Bash');
       if (!bash) throw new Error('Bash tool missing');
       return bash;

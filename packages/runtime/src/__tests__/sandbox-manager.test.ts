@@ -264,34 +264,4 @@ describe('SandboxManager.transform', () => {
     if (!result.ok) assert.equal(result.reason, 'backend_not_available');
   });
 
-  it('builds an effective profile from one-call permissions without mutating the base', () => {
-    const backend = new FakeMacosBackend();
-    const manager = new SandboxManager([backend]);
-    const base = createWorkspaceWritePermissionProfile();
-    const result = manager.transform({
-      command: command(base),
-      platform: 'darwin',
-      additionalPermissions: {
-        fileSystem: {
-          entries: [{ path: '/outside/file.txt', access: 'write', scope: 'exact' }],
-        },
-        network: { enabled: true },
-      },
-    });
-
-    assert.equal(result.ok, true);
-    assert.equal(base.network.kind, 'restricted');
-    assert.equal(backend.calls.length, 1);
-    const effective = backend.calls[0]!.command.profile;
-    assert.equal(effective.type, 'managed');
-    if (effective.type === 'managed') {
-      assert.equal(effective.network.kind, 'enabled');
-      assert.deepEqual(effective.fileSystem.entries.at(-1), {
-        kind: 'path',
-        access: 'write',
-        path: '/outside/file.txt',
-        match: 'exact',
-      });
-    }
-  });
 });

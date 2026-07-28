@@ -760,14 +760,6 @@ export class ShellRunProcessManager
             },
           }
         : {}),
-      ...(input.permissionContext?.sandboxEscalationGrant
-        ? {
-            sandboxEscalation: {
-              commandHash: input.permissionContext.sandboxEscalationGrant.commandHash,
-              unsandboxed: true,
-            },
-          }
-        : {}),
       revision: 1,
       output: live.mode === 'pipes' ? live.collector.snapshot() : live.collector.lastGoodSnapshot(),
     };

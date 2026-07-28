@@ -1,14 +1,14 @@
 import { z } from 'zod';
-import { validateAdditionalPermissionProfile } from '@maka/core/additional-permissions';
+import { validateSandboxBoundaryExpansion } from '@maka/core';
 
-export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 3 as const;
+export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 4 as const;
 
 const path = z.string().min(1).max(4096);
 const cwd = z.string().min(1).max(4096);
 
-const AdditionalPermissionProfileSchema = z
+const OperationBoundarySchema = z
   .object({
-    fileSystem: z
+    filesystem: z
       .object({
         entries: z
           .array(
@@ -31,7 +31,7 @@ const AdditionalPermissionProfileSchema = z
   })
   .strict()
   .superRefine((profile, context) => {
-    const validation = validateAdditionalPermissionProfile(profile);
+    const validation = validateSandboxBoundaryExpansion(profile);
     if (!validation.ok) context.addIssue({ code: 'custom', message: validation.message });
   });
 
@@ -100,8 +100,7 @@ export const FilesystemWorkerRequestSchema = z
     version: z.literal(FILESYSTEM_WORKER_PROTOCOL_VERSION),
     requestId: z.string().min(1).max(256),
     operation: FilesystemWorkerOperationSchema,
-    operationPermission: AdditionalPermissionProfileSchema,
-    permissionsHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    operationBoundary: OperationBoundarySchema,
     expectedTarget: FilesystemWorkerTargetSchema,
   })
   .strict();

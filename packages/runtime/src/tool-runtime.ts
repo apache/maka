@@ -65,15 +65,6 @@ import { ChildAgentRunLimiter } from './child-agent-run-limiter.js';
 import type { AgentProfile } from './agent-catalog.js';
 import type { SubagentExecutionRef } from './subagent-execution.js';
 import { sandboxErrorMetadata, serializeSandboxError } from './sandbox/errors.js';
-import type {
-  AdditionalPermissionPlannerContext,
-  AdditionalPermissionPlanResult,
-  ToolExecutionPermissionContext,
-} from './additional-permissions.js';
-import type {
-  SandboxEscalationPlanResult,
-  SandboxEscalationPlannerContext,
-} from './sandbox-escalation.js';
 import {
   RuntimeInteractionAdmissionRejectedError,
   RuntimeInteractionClosedError,
@@ -136,16 +127,6 @@ export interface MakaTool<P = any, R = unknown> {
     | ((context: { permissionMode: PermissionMode; cwd: string; args: P }) => {
         platformSandboxAvailable: boolean;
       });
-  /** Legacy planner ignored by the session-boundary runtime. */
-  planAdditionalPermissions?: (
-    args: P,
-    context: AdditionalPermissionPlannerContext,
-  ) => Promise<AdditionalPermissionPlanResult> | AdditionalPermissionPlanResult;
-  /** Legacy planner ignored by the session-boundary runtime. */
-  planSandboxEscalation?: (
-    args: P,
-    context: SandboxEscalationPlannerContext,
-  ) => Promise<SandboxEscalationPlanResult> | SandboxEscalationPlanResult;
   /** Real tool implementation. */
   impl: (args: P, ctx: MakaToolContext) => Promise<R> | R;
   /** Optional provider-visible content mapping, used for screenshot image parts. */
@@ -182,8 +163,6 @@ export interface MakaToolContext {
   ) => void;
   /** Trusted expert-team identity supplied by RuntimeKernel/backend wiring. */
   agentTeam?: AgentTeamExecutionContext;
-  /** Legacy one-call grants ignored by ToolRuntime. */
-  permissionContext?: ToolExecutionPermissionContext;
   spawnChildAgent?: (input: {
     spec: AgentSpec;
     prompt: string;
@@ -321,7 +300,7 @@ export interface ToolRuntimeInput {
   connection: LlmConnection;
   modelId: string;
   appendMessage: AppendMessageFn;
-  /** Legacy engine ignored by the session-boundary runtime. */
+  /** Deprecated constructor input retained temporarily for embedding compatibility. */
   permissionEngine?: unknown;
   readExecutionBoundary?: () => Promise<ExecutionBoundary>;
   createSandboxBoundaryRequest?: (
@@ -417,11 +396,6 @@ export interface ToolRuntimeInput {
     maxEvents?: number;
   }) => Promise<unknown>;
   getRunTrace?: () => RunTraceLike | null;
-  /** Legacy policy inputs ignored by the session-boundary runtime. */
-  permissionRules?: readonly unknown[];
-  approvalCoordinator?: unknown;
-  getAutoApprovalReviewContext?: () => unknown;
-  permissionTimeoutMs?: number;
   recordToolInvocation?: ToolTelemetryRecorder;
   recordToolArtifacts?: ToolArtifactRecorder;
   /** Optional Phase 2 T1/T2 commit boundary. Omitted on legacy JSONL hosts. */

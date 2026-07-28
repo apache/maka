@@ -3,7 +3,6 @@ import { realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname } from 'node:path';
 import {
-  applyAdditionalPermissionProfile,
   canReadPath,
   canWritePath,
   compilePermissionProfile,
@@ -13,12 +12,7 @@ import {
   type SandboxBoundaryExpansion,
 } from '@maka/core';
 
-import { hashAdditionalPermissionProfile } from '../additional-permission-hash.js';
-import {
-  normalizeAdditionalPermissionPath,
-  revalidateAdditionalPermissionGrant,
-  type AdditionalPermissionGrant,
-} from '../additional-permissions.js';
+import { normalizeAdditionalPermissionPath } from '../additional-permissions.js';
 import type { SandboxManager } from '../sandbox/sandbox-manager.js';
 import type { SandboxPlatform } from '../sandbox/types.js';
 import type { FilesystemWorkerLaunchSpecProvider } from './launch-spec.js';
@@ -62,7 +56,6 @@ export interface FilesystemWorkerExecuteInput {
   /** Explicit embedding policy. Mode-based defaults are compiled only when omitted. */
   permissionProfile?: PermissionProfile;
   abortSignal?: AbortSignal;
-  additionalGrant?: AdditionalPermissionGrant;
 }
 
 export type FilesystemWorkerClientErrorReason =
@@ -141,19 +134,6 @@ export class FilesystemWorkerClient {
         'Session cwd is unavailable.',
       );
     });
-    if (input.additionalGrant) {
-      if (
-        input.additionalGrant.permissionsHash !==
-        hashAdditionalPermissionProfile(input.additionalGrant.profile)
-      ) {
-        throw clientError('invalid_request', 'validation', requestId);
-      }
-      await revalidateAdditionalPermissionGrant({
-        grant: input.additionalGrant,
-        cwd: canonicalCwd,
-      });
-    }
-
     const parsedOperation = FilesystemWorkerOperationSchema.safeParse({
       ...input.operation,
       cwd: canonicalCwd,
@@ -181,9 +161,7 @@ export class FilesystemWorkerClient {
               workspaceRoots: [canonicalCwd],
             }
           : compilePermissionProfile({ mode: input.mode ?? 'ask', cwd: canonicalCwd });
-    const effectiveProfile = input.additionalGrant
-      ? applyAdditionalPermissionProfile(compiled.profile, input.additionalGrant.profile)
-      : compiled.profile;
+    const effectiveProfile = compiled.profile;
     const platform = this.input.platform ?? process.platform;
     const runtimeWritableRoots = filesystemWorkerRuntimeWritableRoots({
       platform,
@@ -226,8 +204,8 @@ export class FilesystemWorkerClient {
       );
     }
 
-    const operationPermission = {
-      fileSystem: {
+    const operationBoundary = {
+      filesystem: {
         entries: [{ path: target.enforcementPath, access, scope: target.scope }],
       },
     } as const;
@@ -239,8 +217,7 @@ export class FilesystemWorkerClient {
       version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
       requestId,
       operation,
-      operationPermission,
-      permissionsHash: hashAdditionalPermissionProfile(operationPermission),
+      operationBoundary,
       expectedTarget: {
         enforcementPath: target.enforcementPath,
         access,
@@ -255,7 +232,7 @@ export class FilesystemWorkerClient {
 
     const launch = await this.input.getLaunchSpec();
     if (!launch.ok) throw clientError(launch.reason, 'launch', requestId, launch.message);
-    const workerProfile = deriveWorkerProfile(effectiveProfile, operationPermission);
+    const workerProfile = deriveWorkerProfile(effectiveProfile, operationBoundary);
     const transformed = this.input.sandboxManager.transform({
       platform,
       command: {
@@ -350,8 +327,8 @@ export function filesystemWorkerRuntimeWritableRoots(input: {
 
 function deriveWorkerProfile(
   profile: PermissionProfile,
-  operationPermission: {
-    readonly fileSystem: {
+  operationBoundary: {
+    readonly filesystem: {
       readonly entries: readonly [
         {
           readonly path: string;
@@ -363,7 +340,7 @@ function deriveWorkerProfile(
   },
 ): PermissionProfile {
   if (profile.type !== 'managed' || profile.fileSystem.kind !== 'restricted') return profile;
-  const target = operationPermission.fileSystem.entries[0];
+  const target = operationBoundary.filesystem.entries[0];
   return {
     ...profile,
     fileSystem: {
