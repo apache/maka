@@ -2291,7 +2291,7 @@ class AdmissionThenFailureBackend implements AgentBackend {
 
   async stop(): Promise<void> {}
 
-  async respondToPermission(): Promise<void> {}
+  async respondToSandboxBoundary(): Promise<void> {}
 
   async dispose(): Promise<void> {
     this.fail.resolve();
