@@ -1607,12 +1607,6 @@ function appendTaskEvent(store: TaskRunWriter, taskRunId: string, event: TaskEve
   return store.appendEvent(taskRunId, event);
 }
 
-function isPermissionHandoffTerminal(event: {
-  actions?: { stateDelta?: Record<string, unknown> };
-}): boolean {
-  return event.actions?.stateDelta?.stopReason === 'permission_handoff';
-}
-
 function isNonTerminalErrorRuntimeEvent(event: RuntimeEvent): boolean {
   return event.content?.kind === 'error' && !isTerminalRuntimeEvent(event);
 }
