@@ -109,8 +109,6 @@ describe('sidebar project view mode', () => {
     active.locations.push({
       path: '/work/active-feature',
       isWorktree: true,
-      addedAt: 1,
-      lastUsedAt: 1,
     });
     const groups = deriveProjectGroups(
       [worktreeSession],
@@ -472,15 +470,7 @@ function project(
   return {
     id,
     name,
-    kind: 'git' as const,
-    locations: locations.map((location) => ({
-      ...location,
-      addedAt: 1,
-      lastUsedAt: 1,
-    })),
-    createdAt: 1,
-    updatedAt: 1,
-    lastUsedAt: 1,
+    locations,
     available: true,
     preferredPath: locations[0]?.path,
   };

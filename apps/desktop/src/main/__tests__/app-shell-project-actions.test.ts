@@ -174,20 +174,14 @@ function makeProject(id: string, path: string): ProjectRecord {
   return {
     id,
     name: id,
-    kind: 'folder',
     locations: [
       {
         path,
         isWorktree: false,
-        addedAt: 1,
-        lastUsedAt: 1,
       },
     ],
     preferredPath: path,
     available: true,
-    createdAt: 1,
-    updatedAt: 1,
-    lastUsedAt: 1,
   };
 }
 

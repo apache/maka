@@ -50,8 +50,18 @@ export interface ProjectCatalog {
   restore(projectId: string): Promise<ProjectRecord>;
 }
 
-interface PersistedProject extends Omit<ProjectRecord, 'available' | 'preferredPath'> {
+interface PersistedProject {
+  id: string;
+  aliases?: string[];
+  name: string;
   identity: string;
+  locations: PersistedProjectLocation[];
+  lastUsedAt: number;
+  archivedAt?: number;
+}
+
+interface PersistedProjectLocation extends ProjectLocation {
+  lastUsedAt: number;
 }
 
 interface ProjectCatalogFile {
@@ -97,11 +107,30 @@ class FileProjectCatalog implements ProjectCatalog {
   }
 
   async register(path: string): Promise<ProjectRecord> {
-    return this.registerAt(path, this.now());
+    const resolved = await resolveProjectLocation({ path });
+    return this.upsertResolvedProject(resolved, this.now());
   }
 
-  private async registerAt(path: string, timestamp: number): Promise<ProjectRecord> {
-    const resolved = await resolveProjectLocation({ path });
+  async importLegacyPath(path: string, usedAt: number = this.now()): Promise<ProjectRecord> {
+    let resolved: ResolvedProjectLocation;
+    try {
+      resolved = await resolveProjectLocation({ path });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      const canonicalPath = normalize(resolve(path));
+      resolved = {
+        canonicalPath,
+        identity: `folder:${canonicalPath}`,
+        kind: 'folder',
+      };
+    }
+    return this.upsertResolvedProject(resolved, usedAt);
+  }
+
+  private async upsertResolvedProject(
+    resolved: ResolvedProjectLocation,
+    timestamp: number,
+  ): Promise<ProjectRecord> {
     let registered: PersistedProject | undefined;
     await this.withQueue(async () => {
       const file = await this.read();
@@ -112,41 +141,28 @@ class FileProjectCatalog implements ProjectCatalog {
         const location = existing.locations.find((item) => item.path === locationPath);
         if (location) {
           location.lastUsedAt = Math.max(location.lastUsedAt, timestamp);
-          if (resolved.git?.branch) {
-            location.branch = resolved.git.branch;
-          } else {
-            delete location.branch;
-          }
           location.isWorktree = resolved.git?.isWorktree ?? false;
         } else {
           existing.locations.push({
             path: locationPath,
-            ...(resolved.git?.branch ? { branch: resolved.git.branch } : {}),
             isWorktree: resolved.git?.isWorktree ?? false,
-            addedAt: timestamp,
             lastUsedAt: timestamp,
           });
         }
         existing.lastUsedAt = Math.max(existing.lastUsedAt, timestamp);
-        existing.updatedAt = Math.max(existing.updatedAt, timestamp);
         registered = existing;
       } else {
         const project: PersistedProject = {
           id: this.createId(),
           name: defaultProjectName(resolved),
           identity: resolved.identity,
-          kind: resolved.kind,
           locations: [
             {
               path: locationPath,
-              ...(resolved.git?.branch ? { branch: resolved.git.branch } : {}),
               isWorktree: resolved.git?.isWorktree ?? false,
-              addedAt: timestamp,
               lastUsedAt: timestamp,
             },
           ],
-          createdAt: timestamp,
-          updatedAt: timestamp,
           lastUsedAt: timestamp,
         };
         file.projects.push(project);
@@ -154,64 +170,10 @@ class FileProjectCatalog implements ProjectCatalog {
       }
       await this.write(file);
     });
-    if (!registered) throw new Error(`Failed to register project: ${path}`);
-    return this.present(registered);
-  }
-
-  async importLegacyPath(path: string, usedAt: number = this.now()): Promise<ProjectRecord> {
-    try {
-      return await this.registerAt(path, usedAt);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    if (!registered) {
+      throw new Error(`Failed to register project: ${resolved.canonicalPath}`);
     }
-
-    const canonicalPath = normalize(resolve(path));
-    const identity = `folder:${canonicalPath}`;
-    const timestamp = usedAt;
-    let imported: PersistedProject | undefined;
-    await this.withQueue(async () => {
-      const file = await this.read();
-      const existing = file.projects.find((project) => project.identity === identity);
-      if (existing) {
-        const location = existing.locations.find((item) => item.path === canonicalPath);
-        if (location) {
-          location.lastUsedAt = Math.max(location.lastUsedAt, timestamp);
-        } else {
-          existing.locations.push({
-            path: canonicalPath,
-            isWorktree: false,
-            addedAt: timestamp,
-            lastUsedAt: timestamp,
-          });
-        }
-        existing.lastUsedAt = Math.max(existing.lastUsedAt, timestamp);
-        existing.updatedAt = Math.max(existing.updatedAt, timestamp);
-        imported = existing;
-      } else {
-        const project: PersistedProject = {
-          id: this.createId(),
-          name: basename(canonicalPath) || canonicalPath,
-          identity,
-          kind: 'folder',
-          locations: [
-            {
-              path: canonicalPath,
-              isWorktree: false,
-              addedAt: timestamp,
-              lastUsedAt: timestamp,
-            },
-          ],
-          createdAt: timestamp,
-          updatedAt: timestamp,
-          lastUsedAt: timestamp,
-        };
-        file.projects.push(project);
-        imported = project;
-      }
-      await this.write(file);
-    });
-    if (!imported) throw new Error(`Failed to import legacy project: ${path}`);
-    return this.present(imported);
+    return this.present(registered);
   }
 
   async select(projectId: string): Promise<{ project: ProjectRecord; path: string }> {
@@ -243,7 +205,6 @@ class FileProjectCatalog implements ProjectCatalog {
       const timestamp = this.now();
       location.lastUsedAt = timestamp;
       project.lastUsedAt = timestamp;
-      project.updatedAt = timestamp;
       selected = project;
       selectedPath = location.path;
       await this.write(file);
@@ -275,7 +236,6 @@ class FileProjectCatalog implements ProjectCatalog {
       const timestamp = this.now();
       if (location) location.lastUsedAt = timestamp;
       project.lastUsedAt = timestamp;
-      project.updatedAt = timestamp;
       touched = project;
       await this.write(file);
     });
@@ -322,16 +282,13 @@ class FileProjectCatalog implements ProjectCatalog {
         file.projects = file.projects.filter((item) => item.id !== conflict.id);
       }
       project.identity = resolved.identity;
-      project.kind = resolved.kind;
       const existingDestination = conflict?.locations.find(
         (location) => location.path === locationPath,
       );
       project.locations = [
         {
           path: locationPath,
-          ...(resolved.git?.branch ? { branch: resolved.git.branch } : {}),
           isWorktree: resolved.git?.isWorktree ?? false,
-          addedAt: existingDestination?.addedAt ?? timestamp,
           lastUsedAt: timestamp,
         },
         ...(conflict?.locations
@@ -339,7 +296,6 @@ class FileProjectCatalog implements ProjectCatalog {
           .map((location) => ({ ...location })) ?? []),
       ];
       project.lastUsedAt = Math.max(timestamp, conflict?.lastUsedAt ?? 0);
-      project.updatedAt = timestamp;
       relinked = project;
       await this.write(file);
     });
@@ -356,7 +312,6 @@ class FileProjectCatalog implements ProjectCatalog {
       const project = findProjectById(file.projects, projectId);
       if (!project) throw new Error(`No such project: ${projectId}`);
       project.name = trimmed;
-      project.updatedAt = this.now();
       renamed = project;
       await this.write(file);
     });
@@ -372,7 +327,6 @@ class FileProjectCatalog implements ProjectCatalog {
       if (!project) throw new Error(`No such project: ${projectId}`);
       const timestamp = this.now();
       project.archivedAt = timestamp;
-      project.updatedAt = timestamp;
       archived = project;
       await this.write(file);
     });
@@ -386,9 +340,7 @@ class FileProjectCatalog implements ProjectCatalog {
       const file = await this.read();
       const project = findProjectById(file.projects, projectId);
       if (!project) throw new Error(`No such project: ${projectId}`);
-      const timestamp = this.now();
       delete project.archivedAt;
-      project.updatedAt = timestamp;
       restored = project;
       await this.write(file);
     });
@@ -397,10 +349,9 @@ class FileProjectCatalog implements ProjectCatalog {
   }
 
   private async present(project: PersistedProject): Promise<ProjectRecord> {
-    const locations = project.locations.map((location) => ({ ...location }));
     const availableLocations = (
       await Promise.all(
-        locations.map(async (location) => ({
+        project.locations.map(async (location) => ({
           location,
           available: await isDirectory(location.path),
         })),
@@ -411,10 +362,16 @@ class FileProjectCatalog implements ProjectCatalog {
         b.location.lastUsedAt - a.location.lastUsedAt ||
         a.location.path.localeCompare(b.location.path),
     );
-    const { identity: _identity, ...record } = project;
+    const locations = project.locations.map((location) => ({
+      path: location.path,
+      isWorktree: location.isWorktree,
+    }));
     return {
-      ...record,
+      id: project.id,
+      ...(project.aliases ? { aliases: [...project.aliases] } : {}),
+      name: project.name,
       locations,
+      ...(project.archivedAt !== undefined ? { archivedAt: project.archivedAt } : {}),
       available: availableLocations.length > 0,
       ...(availableLocations[0] ? { preferredPath: availableLocations[0].location.path } : {}),
     };
@@ -491,11 +448,8 @@ function normalizePersistedProject(value: unknown): PersistedProject {
     !isNonEmptyString(project.id) ||
     !isNonEmptyString(project.name) ||
     !isNonEmptyString(project.identity) ||
-    (project.kind !== 'git' && project.kind !== 'folder') ||
     !Array.isArray(project.locations) ||
     project.locations.length === 0 ||
-    !isTimestamp(project.createdAt) ||
-    !isTimestamp(project.updatedAt) ||
     !isTimestamp(project.lastUsedAt) ||
     aliases === undefined ||
     new Set(aliases).size !== aliases.length ||
@@ -509,10 +463,7 @@ function normalizePersistedProject(value: unknown): PersistedProject {
     ...(aliases.length > 0 ? { aliases } : {}),
     name: project.name,
     identity: project.identity,
-    kind: project.kind,
     locations: project.locations.map(normalizeProjectLocation),
-    createdAt: project.createdAt,
-    updatedAt: project.updatedAt,
     lastUsedAt: project.lastUsedAt,
     ...(project.archivedAt !== undefined ? { archivedAt: project.archivedAt } : {}),
   };
@@ -527,7 +478,7 @@ function findProjectById(
   );
 }
 
-function normalizeProjectLocation(value: unknown): ProjectLocation {
+function normalizeProjectLocation(value: unknown): PersistedProjectLocation {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new TypeError('Invalid project catalog.');
   }
@@ -535,18 +486,13 @@ function normalizeProjectLocation(value: unknown): ProjectLocation {
   if (
     !isNonEmptyString(location.path) ||
     typeof location.isWorktree !== 'boolean' ||
-    !isTimestamp(location.addedAt) ||
-    !isTimestamp(location.lastUsedAt) ||
-    ((location.branch !== undefined || Object.hasOwn(location, 'branch')) &&
-      typeof location.branch !== 'string')
+    !isTimestamp(location.lastUsedAt)
   ) {
     throw new TypeError('Invalid project catalog.');
   }
   return {
     path: location.path,
-    ...(typeof location.branch === 'string' && location.branch ? { branch: location.branch } : {}),
     isWorktree: location.isWorktree,
-    addedAt: location.addedAt,
     lastUsedAt: location.lastUsedAt,
   };
 }
@@ -574,7 +520,6 @@ export interface ResolvedProjectLocation {
   git?: {
     commonDir: string;
     worktreeRoot: string;
-    branch?: string;
     isWorktree?: boolean;
   };
 }
@@ -608,45 +553,34 @@ async function resolveGitLocation(
   delete env.GIT_INDEX_FILE;
   delete env.GIT_COMMON_DIR;
   try {
-    const [{ stdout: locationOutput }, { stdout: branchOutput }] = await Promise.all([
-      execFileAsync(
-        'git',
-        [
-          '-C',
-          canonicalPath,
-          'rev-parse',
-          '--path-format=absolute',
-          '--show-toplevel',
-          '--git-dir',
-          '--git-common-dir',
-        ],
-        {
-          env,
-          encoding: 'utf8',
-          maxBuffer: 64 * 1024,
-          timeout: 3_000,
-          windowsHide: true,
-        },
-      ),
-      execFileAsync('git', ['-C', canonicalPath, 'branch', '--show-current'], {
+    const { stdout: locationOutput } = await execFileAsync(
+      'git',
+      [
+        '-C',
+        canonicalPath,
+        'rev-parse',
+        '--path-format=absolute',
+        '--show-toplevel',
+        '--git-dir',
+        '--git-common-dir',
+      ],
+      {
         env,
         encoding: 'utf8',
         maxBuffer: 64 * 1024,
         timeout: 3_000,
         windowsHide: true,
-      }),
-    ]);
+      },
+    );
     const [worktreeRootRaw, gitDirRaw, commonDirRaw] = locationOutput.trim().split(/\r?\n/);
     if (!worktreeRootRaw || !gitDirRaw || !commonDirRaw) return undefined;
     const worktreeRoot = normalize(await realpath(worktreeRootRaw));
     const gitDir = normalize(await realpath(gitDirRaw));
     const commonDir = normalize(await realpath(commonDirRaw));
-    const branch = branchOutput.trim();
     return {
       commonDir,
       worktreeRoot,
       isWorktree: gitDir !== commonDir,
-      ...(branch ? { branch } : {}),
     };
   } catch {
     return undefined;

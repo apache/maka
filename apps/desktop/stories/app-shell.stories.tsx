@@ -82,11 +82,7 @@ const sidebarSessions: SessionSummary[] = [
 
 function project(input: Partial<ProjectRecord> & Pick<ProjectRecord, 'id' | 'name'>): ProjectRecord {
   return {
-    kind: 'folder',
     locations: [],
-    createdAt: NOW,
-    updatedAt: NOW,
-    lastUsedAt: NOW,
     available: true,
     ...input,
   };
@@ -96,11 +92,10 @@ const catalogProjects: ProjectRecord[] = [
   project({
     id: 'project-maka',
     name: 'maka-agent',
-    kind: 'git',
     preferredPath: '/workspace/maka-agent',
     locations: [
-      { path: '/workspace/maka-agent', isWorktree: false, addedAt: NOW, lastUsedAt: NOW },
-      { path: '/workspace/maka-agent/.worktree/storybook', branch: 'feat/storybook', isWorktree: true, addedAt: NOW, lastUsedAt: NOW },
+      { path: '/workspace/maka-agent', isWorktree: false },
+      { path: '/workspace/maka-agent/.worktree/storybook', isWorktree: true },
     ],
   }),
   project({ id: 'project-docs', name: '产品文档', preferredPath: '/workspace/docs' }),

@@ -143,11 +143,8 @@ test('preserves session recency when building the project catalog', async () => 
     await migrateSessionProjects({ sessions, catalog });
 
     assert.deepEqual(
-      (await catalog.list()).map((project) => [project.name, project.lastUsedAt]),
-      [
-        ['alpha', 300],
-        ['beta', 200],
-      ],
+      (await catalog.list()).map((project) => project.name),
+      ['alpha', 'beta'],
     );
   } finally {
     await sessions.close?.();

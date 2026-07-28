@@ -695,11 +695,7 @@ function makeProject(id: string, path: string, archivedAt?: number): ProjectReco
   return {
     id,
     name: id,
-    kind: 'folder',
-    locations: [{ path, isWorktree: false, addedAt: 1, lastUsedAt: 1 }],
-    createdAt: 1,
-    updatedAt: 1,
-    lastUsedAt: 1,
+    locations: [{ path, isWorktree: false }],
     ...(archivedAt !== undefined ? { archivedAt } : {}),
     available: true,
     preferredPath: path,
