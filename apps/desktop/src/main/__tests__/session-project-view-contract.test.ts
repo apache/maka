@@ -146,6 +146,46 @@ describe('sidebar project view mode', () => {
     assert.match(list, /copy\.projectRestore/);
   });
 
+  it('keeps collapsed project rows on the same vertical rhythm as conversation rows', async () => {
+    const projects = [
+      project('project-a', 'Project A', [{ path: '/work/a', isWorktree: false }]),
+      project('project-b', 'Project B', [{ path: '/work/b', isWorktree: false }]),
+    ];
+    const markup = renderSessionListPanel({
+      sessions: [],
+      groups: deriveProjectGroups([], projects, 'zh'),
+      viewMode: 'project',
+    });
+    const css = await readRepo('apps/desktop/src/renderer/styles/sidebar.css');
+
+    assert.equal(
+      (markup.match(/data-variant="project" data-expanded="false"/g) ?? []).length,
+      2,
+      'empty project groups should expose their collapsed state to the layout',
+    );
+    assert.match(
+      ruleBody(
+        css,
+        '.maka-list-group[data-variant="project"] + .maka-list-group[data-variant="project"]',
+      ),
+      /margin-top:\s*0/,
+      'adjacent collapsed projects should not add spacing beyond the list stack gap',
+    );
+    assert.match(
+      ruleBody(
+        css,
+        '.maka-list-group[data-variant="project"][data-expanded="true"] + .maka-list-group[data-variant="project"]',
+      ),
+      /margin-top:\s*var\(--space-3\)/,
+      'an expanded project may keep a group break before the next project',
+    );
+    assert.match(
+      ruleBody(css, '.maka-list-project-heading'),
+      /min-height:\s*var\(--h-control-lg\)/,
+    );
+    assert.match(ruleBody(css, '.maka-list-row'), /min-height:\s*var\(--h-control-lg\)/);
+  });
+
   it('renders project groups, the unassigned bucket, and keeps the conversation fallback path', () => {
     const sessions = [
       makeSessionSummary({
@@ -474,6 +514,13 @@ function project(
     available: true,
     preferredPath: locations[0]?.path,
   };
+}
+
+function ruleBody(css: string, selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const body = new RegExp(`${escaped}\\s*\\{([\\s\\S]*?)\\}`).exec(css)?.[1];
+  assert.ok(body, `${selector} rule must exist`);
+  return body;
 }
 
 function childRelation(parentSessionId: string) {

@@ -220,9 +220,13 @@
 }
 
 .maka-list-group[data-variant="project"] + .maka-list-group[data-variant="project"] {
-  margin-top: var(--space-3);
+  margin-top: 0;
   padding-top: 0;
   border-top: 0;
+}
+
+.maka-list-group[data-variant="project"][data-expanded="true"] + .maka-list-group[data-variant="project"] {
+  margin-top: var(--space-3);
 }
 
 /* Group label — a quiet, non-interactive divider for flat conversations.

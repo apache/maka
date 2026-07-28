@@ -431,6 +431,7 @@ function ProjectSessionGroup(props: ProjectGroupSharedProps & {
       className="maka-list-group"
       data-variant="project"
       data-unavailable={project && !project.available ? 'true' : undefined}
+      data-expanded={expanded ? 'true' : 'false'}
     >
       <div className="maka-list-project-header">
         {editing ? (
