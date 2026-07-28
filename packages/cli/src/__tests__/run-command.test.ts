@@ -182,13 +182,6 @@ describe('maka run process contract', () => {
     assert.match(result.stderr, /tool-step limit reached/);
   });
 
-  test('denies an unresolved permission prompt and exits 1', async () => {
-    const result = await runFixture(['hello'], { scenario: 'permission', input: '' });
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, /denied permission request for WebSearch/);
-    assert.equal(result.stdout, '');
-  });
-
   test('fails closed when a sandbox boundary request reaches non-interactive run', async () => {
     const result = await runFixture(['hello'], { scenario: 'sandbox-boundary', input: '' });
     assert.equal(result.code, 1);

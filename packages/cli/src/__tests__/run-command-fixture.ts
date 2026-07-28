@@ -87,25 +87,6 @@ const runtime: MakaRunRuntime = {
       await notify(completedResult('initial graph supervisor output'));
       return;
     }
-    if (scenario === 'permission') {
-      yield {
-        type: 'permission_request',
-        kind: 'tool_permission',
-        id: 'event-permission',
-        turnId: input.turnId,
-        ts: 1,
-        requestId: 'permission-1',
-        toolUseId: 'tool-1',
-        toolName: 'WebSearch',
-        category: 'web_read',
-        reason: 'network',
-        args: { query: 'example' },
-        rememberForTurnAllowed: true,
-      };
-      if (!permissionDenied) throw new Error('permission prompt was not denied');
-      await notify(failedResult('permission_denied', 'permission request permission-1 was denied'));
-      return;
-    }
     if (scenario === 'sandbox-boundary') {
       yield {
         type: 'sandbox_boundary_request',
@@ -151,9 +132,7 @@ const runtime: MakaRunRuntime = {
     await notify(completedResult(output));
   },
   async respondToSandboxBoundary(_sessionId, response) {
-    permissionDenied =
-      response.decision === 'deny' &&
-      (response.requestId === 'permission-1' || response.requestId === 'boundary-1');
+    permissionDenied = response.decision === 'deny' && response.requestId === 'boundary-1';
   },
   async stopSession() {
     releaseStop?.();

@@ -452,7 +452,7 @@ export async function runHarborCellWithStorage(
       attemptedTurnId = turnId;
       attemptedRunId = runId;
       invocation = undefined;
-      for await (const event of manager.sendMessage(
+      for await (const _event of manager.sendMessage(
         session.id,
         { turnId, text: nextText },
         {
@@ -460,13 +460,7 @@ export async function runHarborCellWithStorage(
           ...(input.onRunStarted ? { onRunStarted: input.onRunStarted } : {}),
         },
       )) {
-        if ((event as { type?: string }).type === 'permission_request') {
-          const { requestId } = event as { requestId: string };
-          await manager.respondToSandboxBoundary(session.id, {
-            requestId,
-            decision: 'deny',
-          });
-        }
+        // Event consumption drives the externally isolated Harbor run.
       }
       if (!invocation)
         throw new Error('Harbor cell turn finished without a runtime invocation result');

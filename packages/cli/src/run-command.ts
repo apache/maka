@@ -319,14 +319,6 @@ export async function runMakaTextCli(
         ? { turnOrchestration: { mode: 'graph' as const, source: 'host_api' as const } }
         : {}),
     })) {
-      if (event.type === 'permission_request') {
-        boundaryDenied = true;
-        deps.writeStderr(`maka run: denied permission request for ${event.toolName}\n`);
-        await context.runtime.respondToSandboxBoundary(session.id, {
-          requestId: event.requestId,
-          decision: 'deny',
-        });
-      }
       if (event.type === 'sandbox_boundary_request') {
         boundaryDenied = true;
         deps.writeStderr(
