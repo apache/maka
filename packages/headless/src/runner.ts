@@ -2,11 +2,13 @@ import { randomUUID } from 'node:crypto';
 import type { BackendKind, OrchestrationMode, TurnOrchestration } from '@maka/core';
 import {
   AgentGraphCoordinator,
+  AGENT_TOOL_GROUP_ID,
   BackendRegistry,
   SessionManager,
   buildChildAgentTools,
   type InvocationResult,
 } from '@maka/runtime';
+import { createReadImageSnapshotter } from '@maka/storage';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import type { Config, ResultRecord, Task } from './contracts.js';
 import { registerFakeBackend } from './backends.js';
@@ -24,7 +26,7 @@ import {
   restoreProtectedPaths,
 } from './sandbox.js';
 import { defaultFinalScorer } from './scorer.js';
-import { buildIsolatedHeadlessTools } from './tools.js';
+import { buildIsolatedHeadlessProductToolSurface } from './tools.js';
 import { normalizeVerifier, runVerifier, verifierProtectedPaths } from './verifier.js';
 import type { BenchmarkAdapterRegistry } from './benchmark-adapters.js';
 import { createHeadlessSessionCapabilityBridge } from './session-capabilities.js';
@@ -128,6 +130,12 @@ export async function runExperimentWithStorage(
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
   try {
     const agentWorkspaceDir = deps.realBackendIsolation?.workspaceDir ?? workspace.dir;
+    const productToolSurface = deps.realBackendIsolation?.toolExecutor
+      ? buildIsolatedHeadlessProductToolSurface(deps.realBackendIsolation.toolExecutor, {
+          agentTools: effectiveConfig.agentTools,
+          snapshotImage: createReadImageSnapshotter(storage.artifactStore),
+        })
+      : undefined;
     const verifier = normalizeVerifier(task);
     const backends = new BackendRegistry();
     const sessionCapabilities = createHeadlessSessionCapabilityBridge();
@@ -140,6 +148,7 @@ export async function runExperimentWithStorage(
       workspaceDir: agentWorkspaceDir,
       ...sessionCapabilities.capabilities,
       artifactStore: storage.artifactStore,
+      ...(productToolSurface ? { productToolSurface } : {}),
       ...(backendNeedsIsolation(config.backend)
         ? {
             realBackendIsolation: deps.realBackendIsolation,
@@ -155,11 +164,9 @@ export async function runExperimentWithStorage(
       runStore,
       runtimeEventStore: storage.executionStores.runtimeEventStore,
       backends,
-      ...(config.agentTools && deps.realBackendIsolation?.toolExecutor
+      ...(productToolSurface?.boundSurfaceIds.includes(AGENT_TOOL_GROUP_ID)
         ? {
-            childTools: buildChildAgentTools(
-              buildIsolatedHeadlessTools(deps.realBackendIsolation.toolExecutor),
-            ),
+            childTools: buildChildAgentTools(productToolSurface.tools),
           }
         : {}),
       newId,

@@ -12,6 +12,7 @@ import type {
 import { isTerminalRuntimeEvent, isThinkingLevel, resolveModelVisionSupport } from '@maka/core';
 import {
   AgentGraphCoordinator,
+  AGENT_TOOL_GROUP_ID,
   AiSdkBackend,
   BackendRegistry,
   PermissionEngine,
@@ -25,6 +26,7 @@ import {
   getBuiltinPricing,
   loadSynthesisCacheBlocksFromArtifacts,
   persistSynthesisCacheBlocksToArtifacts,
+  projectEffectiveProductToolSurface,
   type InvocationResult,
   type SynthesisCacheArtifactStore,
   type SynthesisCacheLoader,
@@ -64,7 +66,10 @@ import { validateRealBackendIsolation } from './isolation.js';
 import { PiCliJsonTransport } from './pi-cli-json-transport.js';
 import { providerFromEnv, resolveHarborCellAiSdkEnv } from './provider-env.js';
 import { backendNeedsIsolation } from './runner.js';
-import { buildIsolatedHeadlessToolAvailability, buildIsolatedHeadlessTools } from './tools.js';
+import {
+  buildIsolatedHeadlessProductToolSurface,
+  buildIsolatedHeadlessSupplementalTools,
+} from './tools.js';
 import { createHeadlessSessionCapabilityBridge } from './session-capabilities.js';
 import { resolveHeadlessSystemPrompt } from './system-prompts.js';
 import {
@@ -86,6 +91,7 @@ import {
 import {
   buildHarborCellAiSdkTools,
   createHarborCellLocalToolExecutor,
+  prepareHarborCellAiSdkTools,
 } from './harbor-cell-tool-executor.js';
 import { createProviderEnvFetch, type ProviderEnvFetch } from './provider-env-fetch.js';
 
@@ -331,6 +337,12 @@ export async function runHarborCellWithStorage(
       }
     }
   }
+  const productToolSurface = input.realBackendIsolation?.toolExecutor
+    ? buildIsolatedHeadlessProductToolSurface(input.realBackendIsolation.toolExecutor, {
+        agentTools: config.agentTools,
+        snapshotImage: createReadImageSnapshotter(storage.artifactStore),
+      })
+    : undefined;
   const registerBackends =
     input.registerBackends ?? ((registry: BackendRegistry) => registerFakeBackend(registry));
   await registerBackends(backends, {
@@ -340,6 +352,7 @@ export async function runHarborCellWithStorage(
     workspaceDir: input.cwd,
     ...sessionCapabilities.capabilities,
     artifactStore: storage.artifactStore,
+    ...(productToolSurface ? { productToolSurface } : {}),
     ...(backendNeedsIsolation(input.config.backend)
       ? {
           realBackendIsolation: input.realBackendIsolation,
@@ -366,11 +379,9 @@ export async function runHarborCellWithStorage(
     runStore: agentRunStore,
     runtimeEventStore,
     backends,
-    ...(config.agentTools && input.realBackendIsolation?.toolExecutor
+    ...(productToolSurface?.boundSurfaceIds.includes(AGENT_TOOL_GROUP_ID)
       ? {
-          childTools: buildChildAgentTools(
-            buildIsolatedHeadlessTools(input.realBackendIsolation.toolExecutor),
-          ),
+          childTools: buildChildAgentTools(productToolSurface.tools),
         }
       : {}),
     newId,
@@ -1009,6 +1020,9 @@ export function buildAiSdkCellBackendRegistration(input: {
     if (!context.toolExecutor) {
       throw new Error('Harbor ai-sdk backend requires an isolated tool executor');
     }
+    if (!context.productToolSurface) {
+      throw new Error('Harbor ai-sdk backend requires the projected product-tool surface');
+    }
     // Artifact consumers share the same lease-bound store and metadata index.
     const artifactStore = context.artifactStore;
     const synthesisCacheCallbacks = buildHarborCellSynthesisCacheCallbacks(
@@ -1024,17 +1038,29 @@ export function buildAiSdkCellBackendRegistration(input: {
         ...(input.fetch ? { fetchFn: input.fetch } : {}),
       });
       const providerFetch = subscriptionFetch ?? input.fetch;
-      const hostTools = buildHarborCellAiSdkTools(context.toolExecutor!, {
-        agentTools: context.config.agentTools,
-        ...(context.heavyTaskEvidence ? { heavyTaskEvidence: context.heavyTaskEvidence } : {}),
-        ...(context.heavyTaskProgress ? { heavyTaskProgress: context.heavyTaskProgress } : {}),
-        ...(context.heavyTaskSelfCheck ? { heavyTaskSelfCheck: context.heavyTaskSelfCheck } : {}),
-        ...(taskLedgerExperimentStore && taskLedgerExperimentPolicy
-          ? { taskLedgerExperiment: { store: taskLedgerExperimentStore } }
-          : {}),
-        snapshotImage: createReadImageSnapshotter(artifactStore),
-      });
-      const tools = ctx.tools ? [...ctx.tools] : hostTools;
+      const productToolSurface = ctx.tools
+        ? projectEffectiveProductToolSurface({
+            host: 'headless',
+            tools: ctx.tools,
+            policy: context.productToolSurface!.identity.policy,
+          })
+        : context.productToolSurface!;
+      const productTools = ctx.tools
+        ? [...productToolSurface.tools]
+        : prepareHarborCellAiSdkTools(productToolSurface.tools);
+      const supplementalTools = ctx.tools
+        ? []
+        : buildIsolatedHeadlessSupplementalTools({
+            ...(context.heavyTaskProgress ? { heavyTaskProgress: context.heavyTaskProgress } : {}),
+            ...(context.heavyTaskSelfCheck
+              ? { heavyTaskSelfCheck: context.heavyTaskSelfCheck }
+              : {}),
+            ...(taskLedgerExperimentStore && taskLedgerExperimentPolicy
+              ? { taskLedgerExperiment: { store: taskLedgerExperimentStore } }
+              : {}),
+          });
+      const tools = [...productTools, ...supplementalTools];
+      const admitsAgentChildren = productToolSurface.boundSurfaceIds.includes(AGENT_TOOL_GROUP_ID);
       return new AiSdkBackend({
         sessionId: ctx.sessionId,
         header: { ...ctx.header, model: input.model },
@@ -1050,28 +1076,28 @@ export function buildAiSdkCellBackendRegistration(input: {
             ...(providerFetch ? { fetch: providerFetch } : {}),
           }),
         tools,
-        toolAvailability: ctx.tools
-          ? undefined
-          : buildIsolatedHeadlessToolAvailability(tools.map((tool) => tool.name)),
-        spawnChildAgent: context.spawnChildAgent
-          ? (childInput) => context.spawnChildAgent!(ctx.sessionId, childInput)
-          : undefined,
-        spawnChildSession: context.spawnChildSession
-          ? (childInput) =>
-              context.spawnChildSession!(ctx.sessionId, {
-                spawnedBy: {
-                  parentRunId: childInput.parentRunId,
-                  parentTurnId: childInput.parentTurnId,
-                  toolCallId: childInput.toolCallId,
-                },
-                agentProfile: childInput.agentProfile,
-                prompt: childInput.prompt,
-                ...(childInput.swarm ? { swarm: childInput.swarm } : {}),
-                abortSignal: childInput.abortSignal,
-                ...(childInput.onReady ? { onReady: childInput.onReady } : {}),
-                ...(childInput.onEvent ? { onEvent: childInput.onEvent } : {}),
-              })
-          : undefined,
+        toolAvailability: productToolSurface.toolAvailability,
+        spawnChildAgent:
+          admitsAgentChildren && context.spawnChildAgent
+            ? (childInput) => context.spawnChildAgent!(ctx.sessionId, childInput)
+            : undefined,
+        spawnChildSession:
+          admitsAgentChildren && context.spawnChildSession
+            ? (childInput) =>
+                context.spawnChildSession!(ctx.sessionId, {
+                  spawnedBy: {
+                    parentRunId: childInput.parentRunId,
+                    parentTurnId: childInput.parentTurnId,
+                    toolCallId: childInput.toolCallId,
+                  },
+                  agentProfile: childInput.agentProfile,
+                  prompt: childInput.prompt,
+                  ...(childInput.swarm ? { swarm: childInput.swarm } : {}),
+                  abortSignal: childInput.abortSignal,
+                  ...(childInput.onReady ? { onReady: childInput.onReady } : {}),
+                  ...(childInput.onEvent ? { onEvent: childInput.onEvent } : {}),
+                })
+            : undefined,
         prepareChildAgentResume: context.prepareChildAgentResume
           ? (sourceRunId) => context.prepareChildAgentResume!(ctx.sessionId, sourceRunId)
           : undefined,

@@ -10,6 +10,7 @@ import {
   AGENT_SWARM_TOOL_NAME,
   buildChildAgentTools,
   LOAD_TOOLS_NAME,
+  projectEffectiveProductToolSurface,
   ToolAvailabilityRuntime,
 } from '@maka/runtime';
 import { createHeavyTaskEvidenceRecorder } from '../heavy-task-evidence.js';
@@ -20,7 +21,7 @@ import {
 import { createInMemoryTaskRunStore } from '../task-run-store.js';
 import {
   buildIsolatedBashTool,
-  buildIsolatedHeadlessToolAvailability,
+  buildIsolatedHeadlessProductToolSurface,
   buildIsolatedHeadlessTools,
 } from '../tools.js';
 import type { IsolatedToolExecutor } from '../isolation.js';
@@ -1699,21 +1700,17 @@ describe('isolated headless tools', () => {
   });
 
   test('standard isolated tool availability does not advertise agent tools or a loader', () => {
-    const tools = buildIsolatedHeadlessTools({
+    const surface = buildIsolatedHeadlessProductToolSurface({
       async exec() {
         return { exitCode: 0, stdout: '', stderr: '' };
       },
     });
-    const plan = new ToolAvailabilityRuntime(
-      tools,
-      buildIsolatedHeadlessToolAvailability(tools.map((tool) => tool.name)),
-      {
-        name: 'invalid',
-        description: 'invalid',
-        parameters: {},
-        impl: () => ({}),
-      },
-    ).prepare([
+    const plan = new ToolAvailabilityRuntime(surface.tools, surface.toolAvailability, {
+      name: 'invalid',
+      description: 'invalid',
+      parameters: {},
+      impl: () => ({}),
+    }).prepare([
       {
         content: {
           kind: 'function_call',
@@ -1736,7 +1733,7 @@ describe('isolated headless tools', () => {
   });
 
   test('explicitly enabled agent tools remain deferred behind the catalog loader', () => {
-    const tools = buildIsolatedHeadlessTools(
+    const surface = buildIsolatedHeadlessProductToolSurface(
       {
         async exec() {
           return { exitCode: 0, stdout: '', stderr: '' };
@@ -1744,16 +1741,12 @@ describe('isolated headless tools', () => {
       },
       { agentTools: true },
     );
-    const plan = new ToolAvailabilityRuntime(
-      tools,
-      buildIsolatedHeadlessToolAvailability(tools.map((tool) => tool.name)),
-      {
-        name: 'invalid',
-        description: 'invalid',
-        parameters: {},
-        impl: () => ({}),
-      },
-    ).prepare([]);
+    const plan = new ToolAvailabilityRuntime(surface.tools, surface.toolAvailability, {
+      name: 'invalid',
+      description: 'invalid',
+      parameters: {},
+      impl: () => ({}),
+    }).prepare([]);
 
     assert.ok(plan.activeTools.includes(LOAD_TOOLS_NAME));
     assert.ok(!plan.activeTools.includes('agent_spawn'));
@@ -1770,7 +1763,7 @@ describe('isolated headless tools', () => {
   });
 
   test('standard isolated child tool availability omits parent-facing agent tools', () => {
-    const parentTools = buildIsolatedHeadlessTools(
+    const parentSurface = buildIsolatedHeadlessProductToolSurface(
       {
         async exec() {
           return { exitCode: 0, stdout: '', stderr: '' };
@@ -1778,17 +1771,17 @@ describe('isolated headless tools', () => {
       },
       { agentTools: true },
     );
-    const childTools = buildChildAgentTools(parentTools);
-    const plan = new ToolAvailabilityRuntime(
-      childTools,
-      buildIsolatedHeadlessToolAvailability(parentTools.map((tool) => tool.name)),
-      {
-        name: 'invalid',
-        description: 'invalid',
-        parameters: {},
-        impl: () => ({}),
-      },
-    ).prepare([]);
+    const childSurface = projectEffectiveProductToolSurface({
+      host: 'headless',
+      tools: buildChildAgentTools(parentSurface.tools),
+      policy: parentSurface.identity.policy,
+    });
+    const plan = new ToolAvailabilityRuntime(childSurface.tools, childSurface.toolAvailability, {
+      name: 'invalid',
+      description: 'invalid',
+      parameters: {},
+      impl: () => ({}),
+    }).prepare([]);
 
     assert.deepEqual([...plan.activeTools].sort(), [
       'Bash',
@@ -1807,8 +1800,9 @@ describe('isolated headless tools', () => {
   test('README real-backend sketch preserves child tool overrides', async () => {
     const readme = await readFile(new URL('../../README.md', import.meta.url), 'utf8');
 
-    assert.ok(readme.includes('ctx.tools ??'));
-    assert.ok(readme.includes('agentTools: context.config.agentTools,'));
+    assert.ok(readme.includes('ctx.tools'));
+    assert.ok(readme.includes('tools: ctx.tools'));
+    assert.ok(readme.includes('policy: rootProductToolSurface.identity.policy'));
   });
 });
 

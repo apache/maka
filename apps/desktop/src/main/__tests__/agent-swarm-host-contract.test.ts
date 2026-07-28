@@ -24,7 +24,7 @@ describe('AgentSwarm host registration contract', () => {
     assert.match(cli, /const subagentTools = input\.surface === 'tui'\s*\?\s*buildParentAgentTools\(\)/);
     assert.match(
       headless,
-      /\.\.\.\(options\.agentTools\s*\?\s*buildParentAgentTools\(\)\s*:\s*\[\]\)/,
+      /\.\.\.buildParentAgentTools\(\)/,
     );
 
     for (const source of [desktop, cli, headless]) {
@@ -58,7 +58,7 @@ describe('AgentSwarm host registration contract', () => {
     );
     assert.match(
       headless,
-      /groups:\s*buildDeferredToolGroupsFromCatalog\(\s*'headless'/,
+      /projectEffectiveProductToolSurface\(\{[\s\S]*host:\s*'headless'/,
     );
 
     for (const source of [desktop, cli, headless]) {

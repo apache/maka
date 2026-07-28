@@ -29,8 +29,12 @@ export function buildHarborCellAiSdkTools(
   executor: IsolatedToolExecutor,
   options: BuildIsolatedHeadlessToolsOptions = {},
 ): MakaTool[] {
+  return prepareHarborCellAiSdkTools(buildIsolatedHeadlessTools(executor, options));
+}
+
+export function prepareHarborCellAiSdkTools(tools: readonly MakaTool[]): MakaTool[] {
   const nonInteractiveToolNames = new Set<string>(ISOLATED_HEADLESS_TOOL_NAMES);
-  return buildIsolatedHeadlessTools(executor, options).map((tool) =>
+  return tools.map((tool) =>
     nonInteractiveToolNames.has(tool.name) ? { ...tool, permissionRequired: false } : tool,
   );
 }

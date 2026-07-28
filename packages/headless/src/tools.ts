@@ -1,13 +1,13 @@
 import { MAX_READ_IMAGE_BYTES, type StorageRef } from '@maka/core';
-import type { MakaTool, ToolAvailabilityConfig } from '@maka/runtime';
+import type { EffectiveProductToolSurface, MakaTool } from '@maka/runtime';
 import {
   assertProductBindingCatalogClean,
   bashToolShellGuidance,
-  buildDeferredToolGroupsFromCatalog,
   buildForegroundBashTool,
   buildParentAgentTools,
   computeEditedSource,
   isSupportedImagePath,
+  projectEffectiveProductToolSurface,
   validateImageBytes,
 } from '@maka/runtime';
 import { withFileWriteLock } from '@maka/runtime/file-write-lock';
@@ -16,18 +16,15 @@ import { posix as pathPosix } from 'node:path';
 import { z } from 'zod';
 import type { HeavyTaskEvidenceRecorder } from './heavy-task-evidence.js';
 import {
-  HEAVY_TASK_PROGRESS_TOOL_NAMES,
   buildHeavyTaskProgressTools,
   type HeavyTaskProgressRecorder,
 } from './heavy-task-progress.js';
 import {
-  HEAVY_TASK_SELF_CHECK_TOOL_NAMES,
   buildHeavyTaskSelfCheckTools,
   type HeavyTaskSelfCheckRecorder,
 } from './heavy-task-self-check.js';
 import type { IsolatedToolExecutor } from './isolation.js';
 import {
-  TASK_LEDGER_EXPERIMENT_TODO_TOOL_NAMES,
   buildTaskLedgerExperimentTools,
   type TaskLedgerExperimentStore,
 } from './task-ledger-experiment.js';
@@ -79,26 +76,51 @@ export const FRAMED_FILE_TOOL_MAX_TRANSPORT_BYTES = 16 * 1024 * 1024;
  * Build Maka's standard headless tool surface with shell and file operations
  * routed through the isolated executor boundary.
  */
-/** Harness / benchmark experiment tools — not product catalog vocabulary. */
-const HEADLESS_EXPERIMENT_TOOL_NAMES = new Set<string>([
-  ...HEAVY_TASK_PROGRESS_TOOL_NAMES,
-  ...HEAVY_TASK_SELF_CHECK_TOOL_NAMES,
-  ...TASK_LEDGER_EXPERIMENT_TODO_TOOL_NAMES,
-]);
-
 export function buildIsolatedHeadlessTools(
   executor: IsolatedToolExecutor,
   options: BuildIsolatedHeadlessToolsOptions = {},
 ): MakaTool[] {
-  const tools = [
+  const productSurface = buildIsolatedHeadlessProductToolSurface(executor, options);
+  return [...productSurface.tools, ...buildIsolatedHeadlessSupplementalTools(options)];
+}
+
+export function buildIsolatedHeadlessProductToolSurface(
+  executor: IsolatedToolExecutor,
+  options: Pick<
+    BuildIsolatedHeadlessToolsOptions,
+    'agentTools' | 'heavyTaskEvidence' | 'snapshotImage'
+  > = {},
+): EffectiveProductToolSurface {
+  const productTools = [
     buildIsolatedBashTool(executor, options),
     buildIsolatedReadTool(executor, options),
     buildIsolatedWriteTool(executor, options),
     buildIsolatedEditTool(executor, options),
     buildIsolatedGlobTool(executor, options),
     buildIsolatedGrepTool(executor, options),
-    ...(options.agentTools ? buildParentAgentTools() : []),
+    ...buildParentAgentTools(),
   ];
+  assertProductBindingCatalogClean(
+    'headless',
+    productTools.map((tool) => tool.name),
+  );
+  return projectEffectiveProductToolSurface({
+    host: 'headless',
+    tools: productTools,
+    policy: {
+      economy: true,
+      ...(options.agentTools ? {} : { disabledSurfaceIds: ['agent'] }),
+    },
+  });
+}
+
+export function buildIsolatedHeadlessSupplementalTools(
+  options: Pick<
+    BuildIsolatedHeadlessToolsOptions,
+    'heavyTaskProgress' | 'heavyTaskSelfCheck' | 'taskLedgerExperiment'
+  > = {},
+): MakaTool[] {
+  const tools: MakaTool[] = [];
   if (options.heavyTaskProgress) {
     tools.push(...buildHeavyTaskProgressTools(options.heavyTaskProgress));
   }
@@ -108,28 +130,7 @@ export function buildIsolatedHeadlessTools(
   if (options.taskLedgerExperiment) {
     tools.push(...buildTaskLedgerExperimentTools(options.taskLedgerExperiment));
   }
-  // Product tools must stay catalog-clean (#1099 S2). Experiment packs are
-  // harness-only and intentionally outside the product vocabulary, so exclude
-  // them from the cleanliness check (the catalog derive ignores them anyway).
-  assertProductBindingCatalogClean(
-    'headless',
-    tools.map((tool) => tool.name).filter((name) => !HEADLESS_EXPERIMENT_TOOL_NAMES.has(name)),
-  );
   return tools;
-}
-
-/**
- * Deferred groups from catalog ∩ bound product tools. Affinity-unsupported
- * packs never appear; harness experiment names are not catalog members, so
- * the catalog derive ignores them without an explicit filter.
- */
-export function buildIsolatedHeadlessToolAvailability(
-  boundToolNames: Iterable<string>,
-): ToolAvailabilityConfig {
-  return {
-    economy: true,
-    groups: buildDeferredToolGroupsFromCatalog('headless', boundToolNames),
-  };
 }
 
 export function buildIsolatedBashTool(

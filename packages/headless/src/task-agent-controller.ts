@@ -10,6 +10,7 @@ import {
 } from '@maka/core';
 import {
   AgentGraphCoordinator,
+  AGENT_TOOL_GROUP_ID,
   AgentRun,
   AiSdkFlow,
   BackendRegistry,
@@ -21,6 +22,7 @@ import {
   type InvocationResult,
   type SessionStore,
 } from '@maka/runtime';
+import { createReadImageSnapshotter } from '@maka/storage';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import type { Config, ResultRecord, Task } from './contracts.js';
 import { registerFakeBackend } from './backends.js';
@@ -105,7 +107,7 @@ import { taskDefinitionFromTask } from './task-run-adapter.js';
 import { taskEvidenceRuntimeProvenanceLinks } from './task-evidence-provenance.js';
 import { taskAttemptExecutionEvidence } from './task-execution-lineage.js';
 import { bindSelfCheckEvidence } from './task-self-check-evidence.js';
-import { buildIsolatedHeadlessTools } from './tools.js';
+import { buildIsolatedHeadlessProductToolSurface } from './tools.js';
 
 export interface RunTaskOnceDeps extends RunExperimentDeps {
   taskRunId?: string;
@@ -269,6 +271,13 @@ export async function runTaskOnceWithStorage(
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
   try {
     const agentWorkspaceDir = deps.realBackendIsolation?.workspaceDir ?? workspace.dir;
+    const productToolSurface = deps.realBackendIsolation?.toolExecutor
+      ? buildIsolatedHeadlessProductToolSurface(deps.realBackendIsolation.toolExecutor, {
+          agentTools: effectiveConfig.agentTools,
+          ...(heavyTaskEvidence ? { heavyTaskEvidence } : {}),
+          snapshotImage: createReadImageSnapshotter(storage.artifactStore),
+        })
+      : undefined;
     await appendTaskEvent(taskRunStore, taskRunId, {
       type: 'workspace_lease_recorded',
       id: newId(),
@@ -315,6 +324,7 @@ export async function runTaskOnceWithStorage(
       workspaceDir: agentWorkspaceDir,
       ...sessionCapabilities.capabilities,
       artifactStore: storage.artifactStore,
+      ...(productToolSurface ? { productToolSurface } : {}),
       heavyTaskMode,
       ...(heavyTaskProgress ? { heavyTaskProgress } : {}),
       ...(heavyTaskSelfCheck ? { heavyTaskSelfCheck } : {}),
@@ -333,11 +343,9 @@ export async function runTaskOnceWithStorage(
       runStore: agentRunStore,
       runtimeEventStore,
       backends,
-      ...(config.agentTools && deps.realBackendIsolation?.toolExecutor
+      ...(productToolSurface?.boundSurfaceIds.includes(AGENT_TOOL_GROUP_ID)
         ? {
-            childTools: buildChildAgentTools(
-              buildIsolatedHeadlessTools(deps.realBackendIsolation.toolExecutor),
-            ),
+            childTools: buildChildAgentTools(productToolSurface.tools),
           }
         : {}),
       isParentRunActive: (sessionId, runId, turnId) =>

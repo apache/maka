@@ -32,6 +32,7 @@ import {
   type ToolResultArchiveReader,
   type ToolResultArchiveRecorder,
 } from '@maka/runtime';
+import { createReadImageSnapshotter } from '@maka/storage';
 import { Agent } from 'undici';
 import type { Config } from '../contracts.js';
 import { openHeadlessStorageForWrite } from '../headless-storage.js';
@@ -63,7 +64,7 @@ import {
 } from '../harbor-cell.js';
 import { resolveHarborRunOptions } from '../harbor-cli.js';
 import { DEFAULT_HEADLESS_SYSTEM_PROMPT } from '../system-prompts.js';
-import { buildIsolatedBashTool } from '../tools.js';
+import { buildIsolatedBashTool, buildIsolatedHeadlessProductToolSurface } from '../tools.js';
 
 const config: Config = {
   id: 'cell-cfg',
@@ -2263,7 +2264,7 @@ describe('runHarborCell', () => {
         now: () => 123,
         newId: () => 'id',
       });
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -2332,7 +2333,7 @@ describe('runHarborCell', () => {
         ['ReadOnlyProbe'],
       );
       assert.equal(scopedInput.systemPrompt, 'Durable child prompt.');
-      assert.equal(scopedInput.toolAvailability, undefined);
+      assert.deepEqual(scopedInput.toolAvailability, { economy: true, groups: [] });
     });
   });
 
@@ -2347,7 +2348,7 @@ describe('runHarborCell', () => {
         now: () => 123,
         newId: () => 'id',
       });
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk-agent-tools',
           backend: 'ai-sdk',
@@ -2401,7 +2402,7 @@ describe('runHarborCell', () => {
         },
       });
       const toolExecutor = fakeToolExecutor();
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -2522,7 +2523,7 @@ describe('runHarborCell', () => {
       const recorders: Array<NonNullable<AiSdkBackendInput['recordUsageCheckpoint']>> = [];
       for (const sessionId of ['attempt-1', 'attempt-2']) {
         const registry = new BackendRegistry();
-        await register(registry, context);
+        await registerProjectedAiSdkBackend(register, registry, context);
         const backendContextInput = backendContext(workspaceDir);
         const backend = await registry.build('ai-sdk', {
           ...backendContextInput,
@@ -2595,7 +2596,7 @@ describe('runHarborCell', () => {
         },
       });
       const toolExecutor = fakeToolExecutor();
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -2703,7 +2704,7 @@ describe('runHarborCell', () => {
         },
       });
       const toolExecutor = fakeToolExecutor();
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -2796,7 +2797,7 @@ describe('runHarborCell', () => {
         },
       });
       const toolExecutor = fakeToolExecutor();
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -2894,7 +2895,7 @@ describe('runHarborCell', () => {
       assert.ok(options.registerBackends);
       const registry = new BackendRegistry();
       const toolExecutor = fakeToolExecutor();
-      await options.registerBackends(registry, {
+      await registerProjectedAiSdkBackend(options.registerBackends, registry, {
         config: options.config,
         task: { id: 'harbor-cell', instruction: 'solve', workspaceDir },
         storageRoot,
@@ -2997,7 +2998,7 @@ describe('runHarborCell', () => {
       assert.ok(options.registerBackends);
       const registry = new BackendRegistry();
       const toolExecutor = fakeToolExecutor();
-      await options.registerBackends(registry, {
+      await registerProjectedAiSdkBackend(options.registerBackends, registry, {
         config: options.config,
         task: { id: 'harbor-cell', instruction: 'solve', workspaceDir },
         storageRoot,
@@ -3104,7 +3105,7 @@ describe('runHarborCell', () => {
         now: () => 123,
         newId: () => 'id',
       });
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -3182,7 +3183,7 @@ describe('runHarborCell', () => {
         realBackendIsolation: { kind: 'external', label: 'Harbor task container', toolExecutor },
         toolExecutor,
       };
-      await register(registry, context);
+      await registerProjectedAiSdkBackend(register, registry, context);
 
       const backend = await registry.build('ai-sdk', {
         ...backendContext(workspaceDir),
@@ -3295,7 +3296,7 @@ describe('runHarborCell', () => {
         now: () => 123,
         newId: () => 'id',
       });
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -3370,7 +3371,7 @@ describe('runHarborCell', () => {
         newId: testIdFactory(),
       });
       const toolExecutor = fakeToolExecutor();
-      await offRegister(offRegistry, {
+      await registerProjectedAiSdkBackend(offRegister, offRegistry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -3404,7 +3405,7 @@ describe('runHarborCell', () => {
         now: () => 123,
         newId: testIdFactory(),
       });
-      await todoRegister(todoRegistry, {
+      await registerProjectedAiSdkBackend(todoRegister, todoRegistry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -3484,7 +3485,7 @@ describe('runHarborCell', () => {
       });
       // Trailing newline kept on purpose: the controller hashes these exact bytes.
       const candidatePrompt = 'CANDIDATE SYSTEM PROMPT — exact bytes.\n';
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -3526,7 +3527,7 @@ describe('runHarborCell', () => {
         now: () => 123,
         newId: () => 'id',
       });
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -3586,7 +3587,7 @@ describe('runHarborCell', () => {
         now: () => 123,
         newId: () => 'id',
       });
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -3687,7 +3688,7 @@ describe('runHarborCell', () => {
         now: () => 123,
         newId: () => 'id',
       });
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -3736,7 +3737,7 @@ describe('runHarborCell', () => {
         now: () => 123,
         newId: () => 'id',
       });
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -3782,7 +3783,7 @@ describe('runHarborCell', () => {
               now: () => 123,
               newId: () => 'id',
             });
-            await register(registry, {
+            await registerProjectedAiSdkBackend(register, registry, {
               config: {
                 id: 'harbor-ai-sdk',
                 backend: 'ai-sdk',
@@ -3861,7 +3862,7 @@ describe('runHarborCell', () => {
           now: () => 123,
           newId: () => 'id',
         });
-        await register(registry, {
+        await registerProjectedAiSdkBackend(register, registry, {
           config: {
             id: 'harbor-ai-sdk',
             backend: 'ai-sdk',
@@ -3901,7 +3902,7 @@ describe('runHarborCell', () => {
         now: () => 123,
         newId: () => 'id',
       });
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -5952,6 +5953,21 @@ function fakeToolExecutor(): IsolatedToolExecutor {
       return { exitCode: 0, stdout: '', stderr: '' };
     },
   };
+}
+
+async function registerProjectedAiSdkBackend(
+  register: (registry: BackendRegistry, context: HeadlessBackendContext) => void | Promise<void>,
+  registry: BackendRegistry,
+  context: HeadlessBackendContext,
+): Promise<void> {
+  assert.ok(context.toolExecutor);
+  await register(registry, {
+    ...context,
+    productToolSurface: buildIsolatedHeadlessProductToolSurface(context.toolExecutor, {
+      agentTools: context.config.agentTools,
+      snapshotImage: createReadImageSnapshotter(context.artifactStore),
+    }),
+  });
 }
 
 function testIdFactory(): () => string {

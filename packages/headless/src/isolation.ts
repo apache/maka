@@ -1,5 +1,5 @@
 import type { StorageRef } from '@maka/core';
-import { isPathInside, type ShellPlan } from '@maka/runtime';
+import { isPathInside, type EffectiveProductToolSurface, type ShellPlan } from '@maka/runtime';
 import { isAbsolute } from 'node:path';
 import type { Config, Task } from './contracts.js';
 import type { HeavyTaskEvidenceRecorder } from './heavy-task-evidence.js';
@@ -212,6 +212,8 @@ export interface HeadlessBackendContext extends Partial<HeadlessSessionCapabilit
   realBackendIsolation?: RealBackendIsolation;
   /** Convenience alias for realBackendIsolation.toolExecutor. */
   toolExecutor?: IsolatedToolExecutor;
+  /** One policy-filtered product-tool surface for this root Session / TaskRun. */
+  productToolSurface?: EffectiveProductToolSurface;
   /** Heavy-task selection resolved for this task run. */
   heavyTaskMode?: HeavyTaskModeSelection;
   /** Present only when heavy-task mode is enabled for task-run backed tooling. */

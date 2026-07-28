@@ -44,14 +44,14 @@ default**:
   `runExperiment` plus a `registerBackends` factory. The isolation record is an
   explicit assertion that tool execution is already outside the host credential
   process (for example Harbor / Terminal-Bench or a Docker workspace executor).
-- If the caller wants Maka's standard tool surface, use
-  `buildIsolatedHeadlessTools(executor)`: it routes `Bash` plus
-  `Read`/`Write`/`Edit`/`Glob`/`Grep` through the supplied isolation boundary.
-  Parent-facing Agent tools and child-session admission are disabled by
-  default. Set `Config.agentTools: true` and pass that value to the builder to
-  opt in. The Harbor and Pier task runners project that config to the canonical
-  cell setting `MAKA_AGENT_TOOLS=true`; direct Harbor cell/CLI entrypoints accept
-  the same environment setting (`false` is the default).
+- The standard runners project Maka's product-tool surface once and expose it
+  as `context.productToolSurface`: it contains `Bash` plus
+  `Read`/`Write`/`Edit`/`Glob`/`Grep`, all routed through the supplied isolation
+  boundary. Parent-facing Agent tools and child-session admission are disabled
+  by default. Set `Config.agentTools: true` to opt in. The Harbor and Pier task
+  runners project that config to the canonical cell setting
+  `MAKA_AGENT_TOOLS=true`; direct Harbor cell/CLI entrypoints accept the same
+  environment setting (`false` is the default).
   Executors can implement native file-operation methods, or rely on the
   command-backed fallback when the isolated workspace has `node` available.
   The headless helper rejects absolute paths, `..` escapes, and absolute glob
@@ -64,9 +64,8 @@ trust posture, never the eval default.)
 Programmatic sketch:
 
 ```ts
+import { projectEffectiveProductToolSurface } from '@maka/runtime';
 import {
-  buildIsolatedHeadlessToolAvailability,
-  buildIsolatedHeadlessTools,
   runExperiment,
   type IsolatedToolExecutor,
 } from '@maka/headless';
@@ -92,16 +91,18 @@ await runExperiment(config, task, {
   },
   registerBackends(registry, context) {
     registry.register('ai-sdk', (ctx) => {
-      const tools = [
-        ...(ctx.tools ??
-          buildIsolatedHeadlessTools(context.toolExecutor!, {
-            agentTools: context.config.agentTools,
-          })),
-      ];
+      const rootProductToolSurface = context.productToolSurface!;
+      const productToolSurface = ctx.tools
+        ? projectEffectiveProductToolSurface({
+            host: 'headless',
+            tools: ctx.tools,
+            policy: rootProductToolSurface.identity.policy,
+          })
+        : rootProductToolSurface;
       return createAiSdkBackend({
         ...ctx,
-        tools,
-        toolAvailability: buildIsolatedHeadlessToolAvailability(tools.map((tool) => tool.name)),
+        tools: [...productToolSurface.tools],
+        toolAvailability: productToolSurface.toolAvailability,
       });
     });
   },
