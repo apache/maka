@@ -1878,7 +1878,9 @@ export class ToolRuntime {
         errorClass: classifyError(err),
         ...(sandboxError ? { sandbox: sandboxError } : {}),
       });
-      return this.errorReturn(msg);
+      return sandboxError?.reason === 'sandbox_boundary_required'
+        ? { error: msg, sandbox: sandboxError }
+        : this.errorReturn(msg);
     } finally {
       this.recordLoopGateOutcome(callSignature, attemptFailed);
       if (reservedSubagentSlot) this.releaseSubagentSlot(tool);

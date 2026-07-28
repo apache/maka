@@ -11,6 +11,7 @@ import {
 
 import { PermissionEngine } from '../permission-engine.js';
 import { buildRequestSandboxBoundaryTool } from '../sandbox-boundary-tool.js';
+import { FilesystemWorkerClientError } from '../filesystem-worker/client.js';
 import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
 
 describe('ToolRuntime session sandbox boundary', () => {
@@ -129,6 +130,71 @@ describe('ToolRuntime session sandbox boundary', () => {
     const result = (await pending).result as SandboxBoundarySettlement;
     assert.equal(result.request.status, 'approved');
     assert.equal(result.boundary.revision, 1);
+  });
+
+  test('returns a structured boundary requirement to the agent', async () => {
+    const permissionEngine = new PermissionEngine({ newId: nextId(), now: () => 1 });
+    const runtime = new ToolRuntime({
+      sessionId: 'session-1',
+      header: header(),
+      connection: { providerType: 'openai', slug: 'test' } as never,
+      modelId: 'test',
+      appendMessage: async () => {},
+      permissionEngine,
+      readExecutionBoundary: async () => ({
+        kind: 'managed',
+        profile: createWorkspaceWritePermissionProfile(),
+        revision: 0,
+      }),
+      newId: nextId(),
+      now: () => 1,
+      getPermissionPauseTarget: () => null,
+    });
+    const tool: MakaTool = {
+      name: 'Read',
+      description: 'test',
+      parameters: {},
+      permissionRequired: false,
+      impl: () => {
+        throw new FilesystemWorkerClientError({
+          reason: 'sandbox_boundary_required',
+          stage: 'validation',
+          recoverable: true,
+          requiredExpansion: {
+            filesystem: {
+              entries: [{ path: '/outside/file.txt', access: 'read', scope: 'exact' }],
+            },
+          },
+        });
+      },
+    };
+
+    const settlement = await runtime.settleToolCall({
+      tool,
+      turnId: 'turn-1',
+      toolCallId: 'tool-1',
+      input: {},
+      abortSignal: new AbortController().signal,
+      eventSink: {
+        push: () => {},
+        pushAndWaitUntilConsumed: async () => {},
+      },
+    });
+
+    assert.deepEqual(settlement.result, {
+      error: 'Filesystem worker failed: sandbox_boundary_required.',
+      sandbox: {
+        domain: 'filesystem',
+        stage: 'validation',
+        reason: 'sandbox_boundary_required',
+        recoverable: true,
+        requiredExpansion: {
+          filesystem: {
+            entries: [{ path: '/outside/file.txt', access: 'read', scope: 'exact' }],
+          },
+        },
+      },
+    });
   });
 });
 

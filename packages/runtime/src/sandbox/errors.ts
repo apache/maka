@@ -1,3 +1,5 @@
+import { validateSandboxBoundaryExpansion, type SandboxBoundaryExpansion } from '@maka/core';
+
 import type { SandboxType } from './types.js';
 
 const SANDBOX_ERROR_DOMAINS = ['command', 'background_command', 'filesystem'] as const;
@@ -27,6 +29,7 @@ export interface SandboxErrorMetadata {
   recoverable: boolean;
   profileName?: string;
   requestId?: string;
+  requiredExpansion?: SandboxBoundaryExpansion;
 }
 
 export interface SandboxErrorWithMetadata extends Error, SandboxErrorMetadata {
@@ -78,6 +81,9 @@ export function sandboxErrorMetadata(error: unknown): SandboxErrorMetadata | und
     ...(isBoundedMatch(value.requestId, SAFE_IDENTIFIER_PATTERN)
       ? { requestId: value.requestId }
       : {}),
+    ...(isSandboxBoundaryExpansion(value.requiredExpansion)
+      ? { requiredExpansion: value.requiredExpansion }
+      : {}),
   };
 }
 
@@ -97,4 +103,14 @@ function isBoundedMatch(value: unknown, pattern: RegExp): value is string {
     value.length <= MAX_METADATA_VALUE_CHARS &&
     pattern.test(value)
   );
+}
+
+function isSandboxBoundaryExpansion(value: unknown): value is SandboxBoundaryExpansion {
+  if (value === undefined) return false;
+  try {
+    validateSandboxBoundaryExpansion(value);
+    return true;
+  } catch {
+    return false;
+  }
 }

@@ -319,6 +319,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
               ...(limit !== undefined ? { limit } : {}),
             },
             cwd: canonicalCwd,
+            ...(ctx.executionBoundary ? { executionBoundary: ctx.executionBoundary } : {}),
             mode: ctx.permissionMode ?? 'ask',
             ...(options.permissionProfile ? { permissionProfile: options.permissionProfile } : {}),
             ...(ctx.permissionContext?.additionalGrant
@@ -391,6 +392,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
             const result = await options.filesystemWorker.execute({
               operation: { kind: 'write', path, content },
               cwd: canonicalCwd,
+              ...(ctx.executionBoundary ? { executionBoundary: ctx.executionBoundary } : {}),
               mode: ctx.permissionMode ?? 'ask',
               ...(options.permissionProfile
                 ? { permissionProfile: options.permissionProfile }
@@ -450,6 +452,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
                 newString: new_string,
               },
               cwd: canonicalCwd,
+              ...(ctx.executionBoundary ? { executionBoundary: ctx.executionBoundary } : {}),
               mode: ctx.permissionMode ?? 'ask',
               ...(options.permissionProfile
                 ? { permissionProfile: options.permissionProfile }
@@ -530,6 +533,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
             const result = await options.filesystemWorker.execute({
               operation: { kind: 'format_json', path, sortKeys: sort_keys ?? false },
               cwd: canonicalCwd,
+              ...(ctx.executionBoundary ? { executionBoundary: ctx.executionBoundary } : {}),
               mode: ctx.permissionMode ?? 'ask',
               ...(options.permissionProfile
                 ? { permissionProfile: options.permissionProfile }
@@ -610,6 +614,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
           const result = await options.filesystemWorker.execute({
             operation: { kind: 'glob', path: relCwd ?? '.', pattern, limit: 200 },
             cwd: canonicalCwd,
+            ...(ctx.executionBoundary ? { executionBoundary: ctx.executionBoundary } : {}),
             mode: ctx.permissionMode ?? 'ask',
             ...(options.permissionProfile ? { permissionProfile: options.permissionProfile } : {}),
             ...(ctx.permissionContext?.additionalGrant
@@ -660,6 +665,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
               timeoutMs: GREP_TIMEOUT_MS,
             },
             cwd: canonicalCwd,
+            ...(ctx.executionBoundary ? { executionBoundary: ctx.executionBoundary } : {}),
             mode: ctx.permissionMode ?? 'ask',
             ...(options.permissionProfile ? { permissionProfile: options.permissionProfile } : {}),
             ...(ctx.permissionContext?.additionalGrant

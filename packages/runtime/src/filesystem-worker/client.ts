@@ -7,8 +7,10 @@ import {
   canReadPath,
   canWritePath,
   compilePermissionProfile,
+  type ExecutionBoundary,
   type PermissionMode,
   type PermissionProfile,
+  type SandboxBoundaryExpansion,
 } from '@maka/core';
 
 import { hashAdditionalPermissionProfile } from '../additional-permission-hash.js';
@@ -55,7 +57,8 @@ export interface FilesystemWorkerClientInput {
 export interface FilesystemWorkerExecuteInput {
   operation: FilesystemWorkerClientOperation;
   cwd: string;
-  mode: PermissionMode;
+  executionBoundary?: ExecutionBoundary;
+  mode?: PermissionMode;
   /** Explicit embedding policy. Mode-based defaults are compiled only when omitted. */
   permissionProfile?: PermissionProfile;
   abortSignal?: AbortSignal;
@@ -80,7 +83,8 @@ export type FilesystemWorkerClientErrorReason =
   | 'unsupported_platform'
   | 'backend_not_available'
   | 'backend_not_implemented'
-  | 'sandbox_required';
+  | 'sandbox_required'
+  | 'sandbox_boundary_required';
 
 export class FilesystemWorkerClientError extends Error {
   readonly code = 'SANDBOX_FILESYSTEM_OPERATION_FAILED';
@@ -91,6 +95,7 @@ export class FilesystemWorkerClientError extends Error {
   readonly requestId?: string;
   readonly backend?: 'none' | 'macos-seatbelt' | 'linux';
   readonly profileName?: string;
+  readonly requiredExpansion?: SandboxBoundaryExpansion;
 
   constructor(input: {
     reason: FilesystemWorkerClientErrorReason;
@@ -100,6 +105,7 @@ export class FilesystemWorkerClientError extends Error {
     requestId?: string;
     backend?: 'none' | 'macos-seatbelt' | 'linux';
     profileName?: string;
+    requiredExpansion?: SandboxBoundaryExpansion;
   }) {
     super(input.message ?? `Filesystem worker failed: ${input.reason}.`);
     this.name = 'FilesystemWorkerClientError';
@@ -109,6 +115,7 @@ export class FilesystemWorkerClientError extends Error {
     this.requestId = input.requestId;
     this.backend = input.backend;
     this.profileName = input.profileName;
+    this.requiredExpansion = input.requiredExpansion;
   }
 }
 
@@ -162,12 +169,18 @@ export class FilesystemWorkerClient {
     }).catch(() => {
       throw clientError('invalid_operation', 'validation', requestId);
     });
-    const compiled = input.permissionProfile
-      ? {
-          profile: input.permissionProfile,
-          workspaceRoots: [canonicalCwd],
-        }
-      : compilePermissionProfile({ mode: input.mode, cwd: canonicalCwd });
+    const compiled =
+      input.executionBoundary?.kind === 'managed'
+        ? {
+            profile: input.executionBoundary.profile,
+            workspaceRoots: [canonicalCwd],
+          }
+        : input.permissionProfile
+          ? {
+              profile: input.permissionProfile,
+              workspaceRoots: [canonicalCwd],
+            }
+          : compilePermissionProfile({ mode: input.mode ?? 'ask', cwd: canonicalCwd });
     const effectiveProfile = input.additionalGrant
       ? applyAdditionalPermissionProfile(compiled.profile, input.additionalGrant.profile)
       : compiled.profile;
@@ -188,7 +201,30 @@ export class FilesystemWorkerClient {
       access === 'write'
         ? canWritePath(effectiveProfile, target.enforcementPath, pathContext)
         : canReadPath(effectiveProfile, target.enforcementPath, pathContext);
-    if (!allowed) throw clientError('path_denied', 'validation', requestId);
+    if (!allowed) {
+      throw clientError(
+        input.executionBoundary?.kind === 'managed' ? 'sandbox_boundary_required' : 'path_denied',
+        'validation',
+        requestId,
+        undefined,
+        true,
+        input.executionBoundary?.kind === 'managed'
+          ? {
+              requiredExpansion: {
+                filesystem: {
+                  entries: [
+                    {
+                      path: target.enforcementPath,
+                      access,
+                      scope: target.scope,
+                    },
+                  ],
+                },
+              },
+            }
+          : {},
+      );
+    }
 
     const operationPermission = {
       fileSystem: {
@@ -368,6 +404,7 @@ function clientError(
   metadata: {
     backend?: 'none' | 'macos-seatbelt' | 'linux';
     profileName?: string;
+    requiredExpansion?: SandboxBoundaryExpansion;
   } = {},
 ): FilesystemWorkerClientError {
   return new FilesystemWorkerClientError({

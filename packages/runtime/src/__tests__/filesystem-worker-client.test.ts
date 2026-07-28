@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
-import { MAX_READ_IMAGE_BYTES } from '@maka/core';
+import {
+  createManagedExecutionBoundary,
+  createWorkspaceWritePermissionProfile,
+  MAX_READ_IMAGE_BYTES,
+} from '@maka/core';
 import {
   canWritePath,
   createReadOnlyPermissionProfile,
@@ -47,6 +51,37 @@ test('Read image payloads fit within the filesystem worker response limit', () =
 });
 
 describe('filesystem worker client permission snapshots', () => {
+  test('returns the smallest session boundary expansion for an external path', async () => {
+    const workspace = await temporaryDirectory('maka-worker-client-boundary-workspace-');
+    const outside = await mkdtemp(join(homedir(), '.maka-worker-client-boundary-outside-'));
+    cleanup.push(outside);
+    const target = join(outside, 'blocked.txt');
+    await writeFile(target, 'blocked', 'utf8');
+    const { client, requests } = fakeClient();
+
+    await assert.rejects(
+      client.execute({
+        operation: { kind: 'read', path: target },
+        cwd: workspace,
+        executionBoundary: createManagedExecutionBoundary(
+          createWorkspaceWritePermissionProfile(),
+          0,
+        ),
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof FilesystemWorkerClientError);
+        assert.equal(error.reason, 'sandbox_boundary_required');
+        assert.deepEqual(error.requiredExpansion, {
+          filesystem: {
+            entries: [{ path: target, access: 'read', scope: 'exact' }],
+          },
+        });
+        return true;
+      },
+    );
+    assert.equal(requests.length, 0);
+  });
+
   test('rejects a workspace write under an explicit read-only profile', async () => {
     const workspace = await temporaryDirectory('maka-worker-client-read-only-');
     const { client, requests } = fakeClient();
@@ -224,12 +259,12 @@ describe('filesystem worker operation-scoped Seatbelt profile', () => {
       canWritePath(transform.command.profile, sibling, transform.command.pathContext),
       false,
     );
-    assert.deepEqual(
+    assert.equal(
       transform.command.profile.type === 'managed' &&
         transform.command.profile.fileSystem.kind === 'restricted'
         ? transform.command.profile.fileSystem.protectedMetadata?.names
         : undefined,
-      ['.git', '.agents', '.codex'],
+      undefined,
     );
   });
 
