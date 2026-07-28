@@ -79,7 +79,6 @@ export function buildWebSearchAgentTool(deps: {
         .optional()
         .describe(`Max results to return (default ${WEB_SEARCH_DEFAULT_LIMIT}).`),
     }),
-    permissionRequired: true,
     displayName: '联网搜索',
     impl: async ({ query, limit }) => {
       const normalizedQuery = normalizeWebSearchQuery(query);

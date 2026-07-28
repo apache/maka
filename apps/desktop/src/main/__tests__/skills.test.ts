@@ -601,7 +601,6 @@ Make every slide carry one idea.`);
 
       const tool = buildSkillAgentTool(workspaceRoot);
       assert.equal(tool.name, 'Skill');
-      assert.equal(tool.permissionRequired, false);
       const result = await tool.impl({ name: 'Deck Helper' }, {
         sessionId: 's1',
         turnId: 't1',
