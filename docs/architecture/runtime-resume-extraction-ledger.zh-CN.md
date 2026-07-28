@@ -5,7 +5,7 @@
 - 集成实验来源：`origin/codex/runtime-resume-phase3a@24bb5f33`
 - PR A 旧重写来源：`codex/runtime-recovery-authority@c843519e`
 - PR A 已合并：`upstream/main@086ec99d`（#1521）
-- 当前 PR B 平铺基线：`upstream/main@de242b43`
+- 当前 PR B 平铺基线：`upstream/main@e4c6ddbf`
 - 当前 PR B 平铺分支：`codex/runtime-continuation-correctness`
 
 ## 1. 目的
@@ -231,7 +231,7 @@ PR A 后续清偿项不阻塞当前 correctness merge gate：
 ## 8. PR B 的提取与施工账本
 
 PR B 没有整体 cherry-pick #1346 的任何 commit。它从已包含 PR A 的
-`upstream/main@de242b43` 建立平铺分支，先重写 immutable boundary、lineage replay、
+`upstream/main@e4c6ddbf` 建立平铺分支，先重写 immutable boundary、lineage replay、
 claim race 与 provider-call T1 测试，再补满足不变量的最小生产路径。
 
 ### 8.1 PR B 的唯一不变量
@@ -373,16 +373,15 @@ B3（typed retry/reattach branch）仍然 defer，不进入本 PR。
 
 2026-07-28 在 Windows 有限支持环境完成：
 
-- Core boundary/decoder/AgentRun V2 定向集合：65/65；
-- Storage SQLite schema/claim/start/terminal/concurrency 定向集合：43/43；AgentRun
-  continuation/immutable 定向集合：6/6；
-- Runtime replay/admission/planner/read-model 定向集合：92/92；
-- SessionManager authority/claim/repair/branch-preflight 定向集合：11/11；额外
-  continuation 名称扫测：24/24（与前述集合有重叠）；
+- Core boundary/decoder/AgentRun V2 定向集合：54/54；
+- Storage SQLite schema/claim/start/terminal/concurrency 定向集合：43/43；
+- Runtime continuation/replay/admission/planner 定向集合：46/46；
+- SessionManager continuation、authority、branch-preflight 与 upstream 冲突回归：
+  25/25；
 - 真实进程 SIGKILL crash harness：1/1；内部逐一覆盖 claim committed、target Run created、
   live start committed、terminal RuntimeEvent committed、terminal header committed 五个 durable
   boundary；
-- Core、Storage、Runtime 构建全部通过。
+- Core、Storage、Runtime、UI 构建全部通过；UI resume copy：4/4。
 
 这些结果证明本切片受影响路径，不把未运行的全仓测试描述为“已完整覆盖”。最终 schema 支持已发布
 mainline v5 → v6 的 populated RuntimeEvent 升级；#1346 与本分支中途产生的未发布实验 schema 6

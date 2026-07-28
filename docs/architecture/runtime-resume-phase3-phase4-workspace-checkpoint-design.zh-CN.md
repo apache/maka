@@ -85,7 +85,7 @@ PR A 的证明矩阵包括：
 > `runtime_admission` 的 continuation-start 才是 provider-call T1。`claim_repair` start 只是
 > provider=0 的审计与收敛事实。
 
-PR B 从已合并 PR A 的 `upstream/main@de242b43` 平铺实现，不迁移 #1346 的 continuation
+PR B 从已合并 PR A 的 `upstream/main@e4c6ddbf` 平铺实现，不迁移 #1346 的 continuation
 代码块。当前实现分为 B1、B2 与 B2.1；B3 typed branch 继续 defer。
 
 #### B1：immutable composite boundary
