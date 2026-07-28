@@ -332,7 +332,7 @@ describe('Daily Review copy feedback contract', () => {
     const main = await readRendererShellCombinedSource();
     const panelBlock = extractFunctionBlock(ui, 'DailyReviewPanel');
     const helperBlock = main.match(/function dailyReviewActionErrorMessage\(error: unknown, fallback: string, locale: UiLocale\): string \{[\s\S]*?\n\}/)?.[0] ?? '';
-    const saveBlock = main.match(/async function saveDailyReviewMarkdown\([\s\S]*?const activePermission/)?.[0] ?? '';
+    const saveBlock = extractFunctionBlock(main, 'saveDailyReviewMarkdown');
     const saveTodayBlock = main.match(/onSaveTodayDailyReviewToFile: async \(\) => \{[\s\S]*?onCopyEnvSummary/)?.[0] ?? '';
 
     assert.match(uiHelpers, /generalizedErrorMessageChinese/);
