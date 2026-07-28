@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { unlock, waitForLock } from 'fs-native-extensions';
 import { ARTIFACT_WRITER_LOCK_FILE } from './artifact-storage-layout.js';
 import {
+  prepareArtifactWriterBootstrapAuthority,
   prepareArtifactWriterLockAuthorityForMarkedRoot,
   type ArtifactWriterLockAuthority,
 } from './root-authority.js';
@@ -15,16 +16,41 @@ const lockGates = new Map<string, Promise<void>>();
 // Operation-scoped and intentionally non-reentrant for the same workspace root.
 export async function withArtifactWriterLock<T>(
   workspaceRoot: string,
-  operation: () => Promise<T>,
+  operation: (canonicalRoot: string) => Promise<T>,
 ): Promise<T> {
   await mkdir(workspaceRoot, { recursive: true });
-  const canonicalRoot = await realpath(workspaceRoot);
-  const authority = await prepareArtifactWriterLockAuthorityForMarkedRoot(canonicalRoot);
-  if (authority) return withLeaseBoundArtifactWriterLock(authority, operation);
-  return withArtifactWriterLockPath(join(canonicalRoot, ARTIFACT_WRITER_LOCK_FILE), operation);
+  const requestedCanonicalRoot = await realpath(workspaceRoot);
+  const bootstrap = await prepareArtifactWriterBootstrapAuthority(requestedCanonicalRoot);
+  return withBootstrapArtifactWriterLock(bootstrap.lockPath, async () => {
+    await bootstrap.assertCurrentRoot();
+    const authority = await prepareArtifactWriterLockAuthorityForMarkedRoot(
+      bootstrap.canonicalPath,
+    );
+    if (!authority) return operation(bootstrap.canonicalPath);
+    if (authority.bootstrapLockPath !== bootstrap.lockPath) {
+      throw new Error('Storage root identity changed while acquiring its Artifact writer lock');
+    }
+    return withAuthorityArtifactWriterLock(authority, () => operation(bootstrap.canonicalPath));
+  });
 }
 
 export async function withLeaseBoundArtifactWriterLock<T>(
+  authority: ArtifactWriterLockAuthority,
+  operation: () => Promise<T>,
+): Promise<T> {
+  return withBootstrapArtifactWriterLock(authority.bootstrapLockPath, () =>
+    withAuthorityArtifactWriterLock(authority, operation),
+  );
+}
+
+async function withBootstrapArtifactWriterLock<T>(
+  lockPath: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  return withArtifactWriterLockPath(lockPath, operation);
+}
+
+async function withAuthorityArtifactWriterLock<T>(
   authority: ArtifactWriterLockAuthority,
   operation: () => Promise<T>,
 ): Promise<T> {

@@ -214,9 +214,9 @@ export function createArtifactStoreWriteAuthority(
 }
 
 class FileArtifactStore implements ArtifactAuthorityStore {
-  private readonly artifactRoot: string;
-  private readonly metadataPath: string;
-  private readonly purgeIntentPath: string;
+  private artifactRoot: string;
+  private metadataPath: string;
+  private purgeIntentPath: string;
   private records: ArtifactRecord[] = [];
   private sessionSnapshots = new Map<string, ArtifactSessionSnapshot>();
   private loaded = false;
@@ -227,7 +227,7 @@ class FileArtifactStore implements ArtifactAuthorityStore {
   private queue: Promise<void> = Promise.resolve();
 
   constructor(
-    private readonly workspaceRoot: string,
+    private workspaceRoot: string,
     private readonly recoveryMode: 'legacy' | 'authority',
     private readonly assertAuthority?: () => Promise<void>,
     private readonly leaseBoundWriterLockAuthority?: ArtifactWriterLockAuthority,
@@ -1120,6 +1120,19 @@ class FileArtifactStore implements ArtifactAuthorityStore {
     else this.legacyRecoveryRequired = true;
   }
 
+  private bindLegacyMutationRoot(canonicalRoot: string): void {
+    if (this.recoveryMode !== 'legacy' || this.workspaceRoot === canonicalRoot) return;
+    this.workspaceRoot = canonicalRoot;
+    this.artifactRoot = join(canonicalRoot, 'artifacts');
+    this.metadataPath = join(this.artifactRoot, 'metadata.jsonl');
+    this.purgeIntentPath = join(this.artifactRoot, ARTIFACT_PURGE_INTENT_FILE);
+    this.replaceRecords([]);
+    this.loaded = false;
+    this.metadataIdentity = undefined;
+    this.recoverableOrphans.clear();
+    this.legacyRecoveryRequired = true;
+  }
+
   private replaceRecords(records: ArtifactRecord[]): void {
     const bySession = new Map<string, ArtifactRecord[]>();
     for (const record of records) {
@@ -1329,12 +1342,14 @@ class FileArtifactStore implements ArtifactAuthorityStore {
   private enqueueMutation<T>(operation: () => Promise<T>): Promise<T> {
     return this.enqueueSerialized(() => {
       const leaseBoundWriterLockAuthority = this.leaseBoundWriterLockAuthority;
-      const withWriterLock = leaseBoundWriterLockAuthority
-        ? (lockedOperation: () => Promise<T>) =>
-            withLeaseBoundArtifactWriterLock(leaseBoundWriterLockAuthority, lockedOperation)
-        : (lockedOperation: () => Promise<T>) =>
-            withArtifactWriterLock(this.workspaceRoot, lockedOperation);
-      return withWriterLock(async () => {
+      if (leaseBoundWriterLockAuthority) {
+        return withLeaseBoundArtifactWriterLock(leaseBoundWriterLockAuthority, async () => {
+          await this.assertAuthority?.();
+          return operation();
+        });
+      }
+      return withArtifactWriterLock(this.workspaceRoot, async (canonicalRoot) => {
+        this.bindLegacyMutationRoot(canonicalRoot);
         await this.assertAuthority?.();
         return operation();
       });

@@ -109,7 +109,6 @@ test('exports one session only and excludes credential/config canaries', async (
       [...plan.excludedEntries].sort(),
       [
         '.maka_cli_claude_device_id',
-        '.maka-artifact-writer.lock',
         'credentials.json',
         'llm-connections.json',
         'sessions.sqlite',

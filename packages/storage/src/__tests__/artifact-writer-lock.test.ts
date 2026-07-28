@@ -9,6 +9,7 @@ import {
   rename,
   rm,
   stat,
+  symlink,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -127,30 +128,153 @@ test('public Store mutations share the rootId writer lock used by lease-bound au
   });
 });
 
-test('lease-bound mutation rejects a replacement root without modifying it', {
+test('mutations spanning initial root marking remain serialized by the bootstrap writer lock', {
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  await withTemporaryDirectory(async (root) => {
+    const stateRoot = join(root, 'state');
+    await mkdir(stateRoot);
+    const holder = await spawnLockHolder(stateRoot);
+    try {
+      const firstMutation = createArtifactStore(stateRoot).create(
+        artifactInput('before-root-marking'),
+      );
+      await assertPending(firstMutation, 'public mutation started before root marking');
+
+      await resolveStorageRoot({ path: stateRoot, kind: 'headless' });
+      const secondMutation = createArtifactStore(stateRoot).create(
+        artifactInput('after-root-marking', undefined, 2),
+      );
+      await assertPending(secondMutation, 'public mutation started after root marking');
+
+      await releaseHolder(holder);
+      await withTimeout(
+        Promise.all([firstMutation, secondMutation]),
+        OPERATION_TIMEOUT_MS,
+        'mutations spanning initial root marking',
+      );
+
+      const freshStore = createArtifactStore(stateRoot);
+      assert.deepEqual((await freshStore.list('session-1')).map((record) => record.id).sort(), [
+        'after-root-marking',
+        'before-root-marking',
+      ]);
+      assert.deepEqual(await freshStore.readText('before-root-marking'), {
+        ok: true,
+        text: 'before-root-marking',
+      });
+      assert.deepEqual(await freshStore.readText('after-root-marking'), {
+        ok: true,
+        text: 'after-root-marking',
+      });
+    } finally {
+      await stopHolder(holder);
+    }
+  });
+});
+
+test('public mutation rejects an unmarked replacement installed while waiting for bootstrap', {
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  await withTemporaryDirectory(async (root) => {
+    const stateRoot = join(root, 'state');
+    const displacedRoot = join(root, 'displaced-state');
+    await mkdir(stateRoot);
+    const holder = await spawnLockHolder(stateRoot);
+    try {
+      const mutation = createArtifactStore(stateRoot).create(
+        artifactInput('stale-public-replacement'),
+      );
+      await assertPending(mutation, 'public mutation waiting for its captured bootstrap authority');
+
+      await rename(stateRoot, displacedRoot);
+      await mkdir(stateRoot);
+      await writeFile(join(stateRoot, 'replacement-sentinel'), 'replacement');
+      await releaseHolder(holder);
+
+      await assert.rejects(mutation);
+      assert.deepEqual(await readdir(stateRoot), ['replacement-sentinel']);
+      await assert.rejects(() => lstat(join(stateRoot, 'artifacts')), { code: 'ENOENT' });
+      await assert.rejects(() => lstat(join(displacedRoot, 'artifacts')), { code: 'ENOENT' });
+    } finally {
+      await stopHolder(holder);
+    }
+  });
+});
+
+test('public mutation through a retargeted alias stays bound to its verified canonical root', {
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  await withTemporaryDirectory(async (root) => {
+    const stateRoot = join(root, 'state');
+    const replacementRoot = join(root, 'replacement');
+    const alias = join(root, 'state-alias');
+    await Promise.all([mkdir(stateRoot), mkdir(replacementRoot)]);
+    await writeFile(join(replacementRoot, 'replacement-sentinel'), 'replacement');
+    const capability = await resolveStorageRoot({ path: stateRoot, kind: 'headless' });
+    await createArtifactStore(stateRoot).create(artifactInput('seed'));
+    await symlink(stateRoot, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    const store = createArtifactStore(alias);
+    assert.deepEqual(
+      (await store.list('session-1')).map((record) => record.id),
+      ['seed'],
+    );
+
+    const holder = await spawnAuthorityLockHolder(stateRoot, capability.rootId);
+    try {
+      const mutation = store.create(artifactInput('alias-mutation', undefined, 2));
+      await assertPending(mutation, 'public mutation through the original alias target');
+
+      await rm(alias, { force: true });
+      await symlink(replacementRoot, alias, process.platform === 'win32' ? 'junction' : 'dir');
+      await releaseHolder(holder);
+      assert.equal((await mutation).id, 'alias-mutation');
+
+      assert.deepEqual(
+        (await createArtifactStore(stateRoot).list('session-1')).map((record) => record.id).sort(),
+        ['alias-mutation', 'seed'],
+      );
+      assert.deepEqual(await readdir(replacementRoot), ['replacement-sentinel']);
+      await assert.rejects(() => lstat(join(replacementRoot, 'artifacts')), { code: 'ENOENT' });
+    } finally {
+      await stopHolder(holder);
+    }
+  });
+});
+
+test('admitted lease-bound mutations reject a replacement root without modifying it', {
   timeout: TEST_TIMEOUT_MS,
 }, async () => {
   await withTemporaryDirectory(async (root) => {
     const stateRoot = join(root, 'state');
     await mkdir(stateRoot);
     const capability = await resolveStorageRoot({ path: stateRoot, kind: 'headless' });
-    const lease = createHeadlessRootLease(capability, 'write');
-    const store = await openHeadlessArtifactStoreForWrite(lease);
+    const firstLease = createHeadlessRootLease(capability, 'write');
+    const secondLease = createHeadlessRootLease(capability, 'write');
+    const [firstStore, secondStore] = await Promise.all([
+      openHeadlessArtifactStoreForWrite(firstLease),
+      openHeadlessArtifactStoreForWrite(secondLease),
+    ]);
     const holder = await spawnAuthorityLockHolder(stateRoot, capability.rootId);
     const displacedRoot = join(root, 'displaced-state');
     try {
-      const mutation = store.create(artifactInput('stale-replacement'));
-      await assertPending(mutation, 'lease-bound mutation');
+      const firstMutation = firstStore.create(artifactInput('stale-replacement-first'));
+      const secondMutation = secondStore.create(
+        artifactInput('stale-replacement-second', undefined, 2),
+      );
+      await Promise.all([
+        assertPending(firstMutation, 'first admitted lease-bound mutation'),
+        assertPending(secondMutation, 'second admitted lease-bound mutation'),
+      ]);
 
       await rename(stateRoot, displacedRoot);
       await mkdir(stateRoot, { mode: 0o750 });
       await writeFile(join(stateRoot, 'replacement-sentinel'), 'replacement');
       const replacementMode = (await stat(stateRoot)).mode & 0o777;
-      const replacementEntries = await readdir(stateRoot);
       await releaseHolder(holder);
 
-      await assert.rejects(mutation);
-      assert.deepEqual(await readdir(stateRoot), replacementEntries);
+      await Promise.all([assert.rejects(firstMutation), assert.rejects(secondMutation)]);
+      assert.deepEqual(await readdir(stateRoot), ['replacement-sentinel']);
       assert.equal((await stat(stateRoot)).mode & 0o777, replacementMode);
       await assert.rejects(() => lstat(join(stateRoot, '.maka-artifact-writer.lock')), {
         code: 'ENOENT',

@@ -25,6 +25,7 @@ import {
   assertStorageRootLease,
   createHeadlessRootLease,
   discoverMarkedStorageRoot,
+  prepareArtifactWriterBootstrapAuthority,
   prepareStorageRootControlDirectory,
   prepareStorageRootIdentityRepair,
   repairStorageRootIdentity,
@@ -111,6 +112,35 @@ describe('storage root authority', () => {
 
       assert.equal(throughAlias.canonicalPath, direct.canonicalPath);
       assert.equal(throughAlias.rootId, direct.rootId);
+    });
+  });
+
+  test('derives Artifact writer bootstrap authority from stable filesystem identity', async () => {
+    await withRoots(async ({ base, root }) => {
+      const alias = join(base, 'alias');
+      const movedRoot = join(base, 'moved-root');
+      await symlink(root, alias, process.platform === 'win32' ? 'junction' : 'dir');
+
+      const direct = await prepareArtifactWriterBootstrapAuthority(root);
+      const throughAlias = await prepareArtifactWriterBootstrapAuthority(alias);
+      assert.equal(throughAlias.lockPath, direct.lockPath);
+      assert.equal(throughAlias.canonicalPath, direct.canonicalPath);
+      assert.deepEqual(await readdir(root), []);
+
+      await rename(root, movedRoot);
+      await assert.rejects(() => direct.assertCurrentRoot());
+      const moved = await prepareArtifactWriterBootstrapAuthority(movedRoot);
+      assert.equal(moved.lockPath, direct.lockPath);
+
+      await mkdir(root);
+      const replacement = await prepareArtifactWriterBootstrapAuthority(root);
+      assert.notEqual(replacement.lockPath, direct.lockPath);
+      assert.deepEqual(await readdir(root), []);
+
+      await Promise.all([
+        rm(direct.lockPath, { force: true }),
+        rm(replacement.lockPath, { force: true }),
+      ]);
     });
   });
 
