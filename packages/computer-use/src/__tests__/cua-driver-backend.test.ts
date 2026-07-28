@@ -332,10 +332,19 @@ function handle(msg) {
         return;
       case 'select_text':
       case 'perform_secondary_action':
-      case 'press_key':
         reply(id, {
           content: [{ type: 'text', text: name + ' ok' }],
           structuredContent: { path: 'ax', verified: true, effect: 'confirmed' },
+        });
+        return;
+      case 'press_key':
+        // Matches what cua-driver actually returns for an element-bound
+        // press_key (verified against v0.12.6): the element is resolved through
+        // AX but the keystroke is delivered as CGEvents, so the driver reports
+        // an unverifiable key_events path — never a confirmed AX dispatch.
+        reply(id, {
+          content: [{ type: 'text', text: name + ' ok' }],
+          structuredContent: { path: 'key_events', verified: false, effect: 'unverifiable' },
         });
         return;
       case 'page':
@@ -820,7 +829,7 @@ describe('cua-driver backend', () => {
     const { backend, logPath } = makeBackend({
       axRole: 'AXButton',
       axLabel: 'Commit',
-      physicalInputRecentlyActive: () => true,
+      physicalInputRecentlyActive: () => false,
       onTrace: (event) => traces.push(event),
     });
     const signal = new AbortController().signal;
@@ -854,15 +863,58 @@ describe('cua-driver backend', () => {
     assert.equal(call?.element_index, 7);
     assert.equal(call?.element_token, 'snapshot:7');
     assert.equal(call?.key, 'Return');
+    // The driver delivers this as keyboard CGEvents (`path: 'key_events'`), so
+    // the audit trail must not claim an AX dispatch just because the element
+    // was addressed through AX.
+    const dispatch = traces.find(
+      (event) =>
+        event.type === 'dispatch' &&
+        event.toolCallId === 'press-key' &&
+        event.actionType === 'press_key',
+    );
+    assert.ok(dispatch, 'press_key must emit a dispatch trace');
     assert.equal(
-      traces.some(
-        (event) =>
-          event.type === 'dispatch' &&
-          event.toolCallId === 'press-key' &&
-          event.actionType === 'press_key' &&
-          event.address === 'ax',
-      ),
-      true,
+      dispatch.type === 'dispatch' ? dispatch.address : undefined,
+      'px',
+      'a key_events delivery must not be recorded as an AX dispatch',
+    );
+  });
+
+  it('press_key refuses to dispatch while physical input is active', async () => {
+    const { backend, logPath } = makeBackend({
+      axRole: 'AXButton',
+      axLabel: 'Commit',
+      physicalInputRecentlyActive: () => true,
+    });
+    const signal = new AbortController().signal;
+    const context = {
+      sessionId: 'press-fence',
+      turnId: 'press-turn',
+      toolCallId: 'press-key-fence',
+    };
+    const observation = await backend.observeApp!(
+      { app: 'Fixture Window', includeScreenshot: false },
+      signal,
+      context,
+    );
+    const result = await backend.runSemantic!(
+      {
+        type: 'press_key',
+        observationId: observation.observationId,
+        elementId: '7',
+        key: 'Return',
+        elementIdentity: observation.elements[0]!.identity,
+      },
+      signal,
+      { ...context, boundAction: boundElementAction(observation, '7') },
+    );
+
+    assert.equal(result.outcome.ok, false);
+    assert.equal(result.outcome.ok === false ? result.outcome.error : undefined, 'user_intervened');
+    assert.equal(
+      toolCall(await readRecords(logPath), 'press_key'),
+      undefined,
+      'no keystroke may reach the driver while the user is typing',
     );
   });
 

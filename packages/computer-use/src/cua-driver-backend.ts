@@ -431,7 +431,10 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
     return { base64, mimeType, widthPx, heightPx };
   }
 
-  function deliveredVerificationFailure(actionType: string, path: 'ax' | 'cdp'): CuRunResult {
+  function deliveredVerificationFailure(
+    actionType: string,
+    path: 'ax' | 'cdp' | 'key_events',
+  ): CuRunResult {
     return {
       outcome: {
         ok: false,
@@ -1893,21 +1896,20 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
             );
             if ('outcome' in validated) return validated;
             if (action.type === 'press_key') {
+              // press_key resolves its target through AX but delivers keyboard
+              // CGEvents to the pid, so a user typing at the same time is still
+              // interleaved with — and can be redirected by — this dispatch.
+              // The element-bound addressing does not remove that hazard, which
+              // is why this path keeps the physical-input fence that the pure
+              // AX mutations (click_element / set_value) can safely skip.
+              const intervention = await physicalInputFailure();
+              if (intervention) return intervention;
               const refetched = await refetchSemanticElement(observation, action, signal);
               if ('outcome' in refetched) return refetched;
               const resolvedScreenPoint = {
                 x: refetched.frame.x + refetched.frame.w / 2,
                 y: refetched.frame.y + refetched.frame.h / 2,
               };
-              trace({
-                type: 'dispatch',
-                toolCallId: context.toolCallId,
-                actionType: action.type,
-                tool: 'press_key',
-                pid: validated.pid,
-                windowId: validated.windowId,
-                address: 'ax',
-              });
               const result = await actionClient.callTool(
                 'press_key',
                 {
@@ -1920,12 +1922,30 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
                 signal,
               );
               const outcome = normalizeCuaDriverOutcome(result);
+              // Addressing an element does not make the dispatch an AX one.
+              // The driver focuses the element and then posts keyboard CGEvents
+              // to the target pid, reporting `path: 'key_events'`. Deriving the
+              // trace address from the driver's own evidence keeps the
+              // safe-dispatch audit honest instead of laundering a synthetic
+              // key path as AX.
+              trace({
+                type: 'dispatch',
+                toolCallId: context.toolCallId,
+                actionType: action.type,
+                tool: 'press_key',
+                pid: validated.pid,
+                windowId: validated.windowId,
+                address: outcome.evidence?.path === 'ax' ? 'ax' : 'px',
+              });
               if (!outcome.ok) return { outcome };
               let fresh: CuObservation;
               try {
                 fresh = await observeResolvedWindow(validated, true, signal, context);
               } catch {
-                return deliveredVerificationFailure('press_key', 'ax');
+                return deliveredVerificationFailure(
+                  'press_key',
+                  outcome.evidence?.path === 'ax' ? 'ax' : 'key_events',
+                );
               }
               return {
                 outcome,
