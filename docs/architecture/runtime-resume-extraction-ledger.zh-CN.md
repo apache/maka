@@ -273,7 +273,7 @@ B3（typed retry/reattach branch）仍然 defer，不进入本 PR。
 | 文件 | PR B 职责 |
 |---|---|
 | `sqlite-runtime-schema.ts` | schema 6 + `runtime_continuation_authority@1`；claim row 持久化 `start_kind` |
-| `sqlite-runtime-store.ts` | prefix 一致性读、latest-source claim transaction、source/terminal seal、分离的 live/repair start command，并原子交叉校验 event、`start_event_id`、`start_kind` |
+| `sqlite-runtime-store.ts` | prefix 一致性读、latest-source claim transaction、immediate source terminal-tail gate、source/terminal seal、分离的 live/repair start command，并原子交叉校验 event、`start_event_id`、`start_kind` |
 | `agent-run-store.ts` | JSONL 拒绝 continuation-start authority fact；Run admission identity 创建后不可修改 |
 | `sqlite-runtime-store.test.ts` | prefix/claim/start/rollback/row-payload mismatch、terminal-tail seal |
 | `sqlite-recovery-concurrency.test.ts` | 两进程争抢 boundary 与 source append/claim 竞态 |
@@ -323,9 +323,11 @@ B3（typed retry/reattach branch）仍然 defer，不进入本 PR。
 | exact claim retry | existing，不产生第二个 target |
 | exact target header/start/terminal、claim/provider replay identity 不一致 | repair required |
 | source H+1 出现在 revalidation 或 claim transaction 前 | stale plan 被拒绝 |
+| active/non-terminal source 直接调用 claim | claim 事务回滚；source 不 seal，仍可提交 terminal |
+| immediate source terminal 后有后缀或存在多个 terminal | claim fail closed |
 | claim 成功后追加 source event | sealed/rejected |
 | 两进程同时 claim 同一 boundary | 1 acquired + 1 existing |
-| 两进程 source append 与 claim 竞争 | 二者恰有一个成功 |
+| 两进程 active source terminal append 与 claim 竞争 | terminal append 成功，non-terminal claim 必须失败且不留 claim |
 | claim insert 后事务失败 | 无 durable claim |
 | start event insert 后事务失败 | claim 保留、target prefix 为空 |
 | claim-only / created-without-start reopen | deterministic repair，provider 0 次 |
@@ -372,7 +374,7 @@ B3（typed retry/reattach branch）仍然 defer，不进入本 PR。
 2026-07-28 在 Windows 有限支持环境完成：
 
 - Core boundary/decoder/AgentRun V2 定向集合：65/65；
-- Storage SQLite schema/claim/start/terminal/concurrency 定向集合：44/44；AgentRun
+- Storage SQLite schema/claim/start/terminal/concurrency 定向集合：43/43；AgentRun
   continuation/immutable 定向集合：6/6；
 - Runtime replay/admission/planner/read-model 定向集合：92/92；
 - SessionManager authority/claim/repair/branch-preflight 定向集合：11/11；额外

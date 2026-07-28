@@ -1346,6 +1346,15 @@ export class SqliteRuntimeStore
             : `Continuation ancestor boundary changed for ${segment.identity.runId}`,
         );
       }
+      if (index === lastIndex) {
+        const terminalEvents = prefix.events.filter(isTerminalRuntimeEvent);
+        const terminal = terminalEvents[0];
+        if (terminalEvents.length !== 1 || !terminal || prefix.events.at(-1)?.id !== terminal.id) {
+          throw new Error(
+            'Continuation source boundary must end with exactly one terminal RuntimeEvent',
+          );
+        }
+      }
     }
   }
 

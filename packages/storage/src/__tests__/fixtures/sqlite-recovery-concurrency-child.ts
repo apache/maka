@@ -56,11 +56,12 @@ try {
       content: { kind: 'text', text: 'racing ordinary target event' },
     });
     writeSync(1, 'TARGET_APPEND committed\n');
-  } else if (mode === 'claim' || mode === 'claim_fixed_target') {
+  } else if (mode === 'claim' || mode === 'claim_fixed_target' || mode === 'claim_nonterminal') {
+    const sourceRunId = mode === 'claim_nonterminal' ? 'run-1' : 'continuation-source-run';
     const prefix = await store.readImmutableRuntimePrefix({
       sessionId: 'session-1',
-      runId: 'run-1',
-      upToEventSeq: 2,
+      runId: sourceRunId,
+      ...(mode === 'claim_nonterminal' ? { upToEventSeq: 2 } : {}),
     });
     const boundary = createRuntimeBoundaryCursor([runtimePrefixSegment(prefix)]);
     const source = boundary.segments.at(-1)!;

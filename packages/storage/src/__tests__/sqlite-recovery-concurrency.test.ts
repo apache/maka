@@ -110,19 +110,17 @@ describe('SQLite recovery authority multi-process races', () => {
     });
   });
 
-  it('serializes a stale continuation claim against a concurrent source append', async () => {
+  it('never claims an active source while its terminal append races in another process', async () => {
     await withPreparedDatabase(async ({ dbPath, startPath }) => {
-      const results = await runWorkers(dbPath, startPath, ['claim', 'append_source']);
+      const results = await runWorkers(dbPath, startPath, ['claim_nonterminal', 'append_source']);
       assert.deepEqual(results.map(({ code }) => code).sort(), [0, 2]);
 
       const store = createSqliteRuntimeStore(dbPath);
       try {
         const sourceEvents = await store.readImmutableRuntimeEvents('session-1', 'run-1');
         const claims = await store.listContinuationClaimsForRecovery('session-1');
-        assert.ok(
-          (sourceEvents.length === 2 && claims.length === 1) ||
-            (sourceEvents.length === 3 && claims.length === 0),
-        );
+        assert.equal(sourceEvents.length, 3);
+        assert.equal(claims.length, 0);
       } finally {
         store.close();
       }
@@ -208,6 +206,34 @@ async function withPreparedDatabase(
   const store = createSqliteRuntimeStore(dbPath);
   try {
     await store.commitToolPrepared(preparedCommit());
+    await store.appendRuntimeEvent('session-1', 'continuation-source-run', {
+      id: 'continuation-source-user',
+      sessionId: 'session-1',
+      invocationId: 'continuation-source-invocation',
+      runId: 'continuation-source-run',
+      turnId: 'continuation-source-turn',
+      ts: 10,
+      partial: false,
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: 'continue after this completed boundary' },
+    });
+    await store.ensureTerminalRuntimeEventDurable('session-1', 'continuation-source-run', {
+      id: 'continuation-source-terminal',
+      sessionId: 'session-1',
+      invocationId: 'continuation-source-invocation',
+      runId: 'continuation-source-run',
+      turnId: 'continuation-source-turn',
+      ts: 11,
+      partial: false,
+      role: 'system',
+      author: 'system',
+      status: 'failed',
+      actions: {
+        endInvocation: true,
+        stateDelta: { failureClass: 'runtime_interrupted' },
+      },
+    });
     store.close();
     await run({ dbPath, startPath });
   } finally {

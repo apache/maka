@@ -398,7 +398,7 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
-  it('atomically acquires one continuation claim and makes exact retry observable', async () => {
+  it('atomically claims a source with exactly one terminal RuntimeEvent at its tail', async () => {
     await withStore(async (store) => {
       const claim = continuationClaim();
       await persistImmutablePrefix(store, continuationSourcePrefix());
@@ -422,10 +422,94 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
+  it('rejects a non-terminal continuation source without sealing the active Run', async () => {
+    await withStore(async (store) => {
+      const source = activeContinuationSourcePrefix();
+      const claim = continuationClaimForBoundary(
+        createRuntimeBoundaryCursor([runtimePrefixSegment(source)]),
+      );
+      await persistImmutablePrefix(store, source);
+
+      await assert.rejects(
+        store.claimContinuation({ claim }),
+        /source boundary must end with exactly one terminal RuntimeEvent/i,
+      );
+      assert.equal(await store.readContinuationClaimByBoundary(claim.boundaryDigest), undefined);
+
+      const terminal: RuntimeEvent = functionCallEvent({
+        id: 'source-terminal-after-rejected-claim',
+        ts: 2,
+        content: undefined,
+        role: 'system',
+        author: 'system',
+        status: 'failed',
+        actions: { endInvocation: true },
+      });
+      await store.ensureTerminalRuntimeEventDurable(terminal.sessionId, terminal.runId, terminal);
+      assert.deepEqual(
+        (await store.readImmutableRuntimeEvents(terminal.sessionId, terminal.runId)).map(
+          (event) => event.id,
+        ),
+        [source.events[0]!.id, terminal.id],
+      );
+    });
+  });
+
+  it('rejects a continuation source whose terminal RuntimeEvent has a corrupt suffix', async () => {
+    await withStore(async (store, dbPath) => {
+      const source = continuationSourcePrefix();
+      const suffix = functionCallEvent({
+        id: 'corrupt-source-suffix',
+        ts: 3,
+        content: { kind: 'text', text: 'must not follow the terminal fact' },
+      });
+      await persistImmutablePrefix(store, source);
+
+      const raw = new DatabaseSync(dbPath);
+      try {
+        raw
+          .prepare(`
+            INSERT INTO runtime_events (
+              event_id, session_id, invocation_id, run_id, turn_id, event_seq,
+              event_kind, payload_json, committed_at
+            ) VALUES (?, ?, ?, ?, ?, 3, 'text', ?, ?)
+          `)
+          .run(
+            suffix.id,
+            suffix.sessionId,
+            suffix.invocationId,
+            suffix.runId,
+            suffix.turnId,
+            JSON.stringify(suffix),
+            suffix.ts,
+          );
+      } finally {
+        raw.close();
+      }
+
+      const corruptedPrefix = buildImmutableRuntimePrefix(source.identity, [
+        ...source.events.map((event, index) => ({ eventSeq: index + 1, event })),
+        { eventSeq: 3, event: suffix },
+      ]);
+      const claim = continuationClaimForBoundary(
+        createRuntimeBoundaryCursor([runtimePrefixSegment(corruptedPrefix)]),
+      );
+
+      await assert.rejects(
+        store.claimContinuation({ claim }),
+        /source boundary must end with exactly one terminal RuntimeEvent/i,
+      );
+      assert.equal(await store.readContinuationClaimByBoundary(claim.boundaryDigest), undefined);
+    });
+  });
+
   it('rejects a stale claim after the source advances beyond its planned boundary', async () => {
     await withStore(async (store) => {
-      const claim = continuationClaim();
-      await persistImmutablePrefix(store, continuationSourcePrefix());
+      const source = activeContinuationSourcePrefix();
+      const claim = continuationClaimForBoundary(
+        createRuntimeBoundaryCursor([runtimePrefixSegment(source)]),
+      );
+      await persistImmutablePrefix(store, source);
       await store.appendRuntimeEvent(
         'session-1',
         'run-1',
@@ -503,7 +587,24 @@ describe('SqliteRuntimeStore', () => {
               invocationId: 'invocation-source-2',
               runId: 'run-source-2',
               turnId: 'turn-source-2',
+              content: { kind: 'text', text: 'source request' },
+              role: 'user',
+              author: 'user',
+            }),
+          },
+          {
+            eventSeq: 2,
+            event: functionCallEvent({
+              id: 'source-2-terminal',
+              invocationId: 'invocation-source-2',
+              runId: 'run-source-2',
+              turnId: 'turn-source-2',
+              ts: 2,
               content: undefined,
+              role: 'system',
+              author: 'system',
+              status: 'failed',
+              actions: { endInvocation: true },
             }),
           },
         ],
@@ -725,6 +826,25 @@ describe('SqliteRuntimeStore', () => {
               invocationId: 'invocation-repair-source',
               runId: 'run-repair-source',
               turnId: 'turn-repair-source',
+              content: { kind: 'text', text: 'repair source request' },
+              role: 'user',
+              author: 'user',
+            }),
+          },
+          {
+            eventSeq: 2,
+            event: functionCallEvent({
+              id: 'repair-source-terminal',
+              sessionId: 'session-1',
+              invocationId: 'invocation-repair-source',
+              runId: 'run-repair-source',
+              turnId: 'turn-repair-source',
+              ts: 2,
+              content: undefined,
+              role: 'system',
+              author: 'system',
+              status: 'failed',
+              actions: { endInvocation: true },
             }),
           },
         ],
@@ -1222,7 +1342,46 @@ function continuationSourcePrefix(): ImmutableRuntimePrefixV1 {
       runId: 'run-1',
       turnId: 'turn-1',
     },
-    [{ eventSeq: 1, event: functionCallEvent({ content: undefined }) }],
+    [
+      ...activeContinuationSourcePrefix().events.map((event, index) => ({
+        eventSeq: index + 1,
+        event,
+      })),
+      {
+        eventSeq: 2,
+        event: functionCallEvent({
+          id: 'source-terminal-1',
+          ts: 2,
+          content: undefined,
+          role: 'system',
+          author: 'system',
+          status: 'failed',
+          actions: { endInvocation: true },
+        }),
+      },
+    ],
+  );
+}
+
+function activeContinuationSourcePrefix(): ImmutableRuntimePrefixV1 {
+  return buildImmutableRuntimePrefix(
+    {
+      sessionId: 'session-1',
+      invocationId: 'invocation-1',
+      runId: 'run-1',
+      turnId: 'turn-1',
+    },
+    [
+      {
+        eventSeq: 1,
+        event: functionCallEvent({
+          id: 'source-user-1',
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'continue this interrupted Run' },
+        }),
+      },
+    ],
   );
 }
 

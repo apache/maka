@@ -187,8 +187,15 @@ INSERT claim 前，事务内必须重读真实 RuntimeEvent ledger：
 
 - ancestor segment 按其 pinned high-water 验证；
 - immediate source 必须与数据库当前 latest immutable head 完全一致；
+- immediate source 必须恰好包含一个 terminal RuntimeEvent，且 terminal 必须位于 immutable
+  ledger 尾部；active/non-terminal source、重复 terminal 或 terminal 后缀均拒绝 claim；
 - source 不存在、出现 H+1、identity/position/digest 漂移或 event-seq gap 均拒绝 claim；
 - claim 成功后，该 immediate source ledger 被 seal，不能再追加新的 immutable event。
+
+这条 terminal-tail gate 的 owner 是 `SqliteRuntimeStore`，不能只依赖上层 planner。它与 latest
+boundary 重读、target ledger 为空检查和 claim INSERT 位于同一个 `BEGIN IMMEDIATE` 事务：
+任一检查失败时整个事务回滚，不产生 claim、不 seal source，active Run 仍可提交自己的 terminal
+事实。这样即使内部调用者绕过 planner，数据库也不能把尚在运行的 source 永久封死。
 
 planner 只读 existing claim 并分类：
 
