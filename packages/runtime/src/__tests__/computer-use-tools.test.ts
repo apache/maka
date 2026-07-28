@@ -623,6 +623,74 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     await first;
   });
 
+  test('launch_app starts an app and hands back a directly targetable window', async () => {
+    // Without this the model can only drive apps that already happen to be
+    // running. The launch returns pid + windows so the next call can be
+    // observe(window_id) rather than list_apps-then-guess.
+    const backend = fakeBackend() as CuDispatchBackend & {
+      launchApp: NonNullable<CuDispatchBackend['launchApp']>;
+    };
+    const seen: Array<{ app: string }> = [];
+    backend.launchApp = async (input) => {
+      seen.push(input);
+      return {
+        pid: 5150,
+        bundleId: 'com.example.fixture',
+        name: 'Fixture App',
+        windows: [{ windowId: 501, title: 'Fixture Main' }],
+        focusHeld: true,
+      };
+    };
+    const [tool] = buildComputerUseTools({ backend });
+
+    const launched = (await tool.impl(
+      { action: 'launch_app', app: 'com.example.fixture' } as never,
+      ctx(),
+    )) as { text: string; modelText?: string };
+
+    assert.deepEqual(seen, [{ app: 'com.example.fixture' }]);
+    assert.deepEqual(JSON.parse(launched.text), { pid: 5150, window_count: 1 });
+    // Window titles are model-facing only, the same split list_apps uses.
+    assert.doesNotMatch(launched.text, /Fixture Main/);
+    assert.deepEqual(JSON.parse(launched.modelText ?? ''), {
+      pid: 5150,
+      bundle_id: 'com.example.fixture',
+      name: 'Fixture App',
+      windows: [{ window_id: 501, title: 'Fixture Main' }],
+    });
+  });
+
+  test('launch_app reports when the app took the foreground anyway', async () => {
+    // A background launch that fronts the app disturbed the user. The model
+    // should know, because what it sees next may not be what it expected.
+    const backend = fakeBackend() as CuDispatchBackend & {
+      launchApp: NonNullable<CuDispatchBackend['launchApp']>;
+    };
+    backend.launchApp = async () => ({
+      pid: 5150,
+      windows: [],
+      focusHeld: false,
+    });
+    const [tool] = buildComputerUseTools({ backend });
+
+    const launched = (await tool.impl(
+      { action: 'launch_app', app: 'Fixture App' } as never,
+      ctx(),
+    )) as { modelText?: string };
+    assert.equal(JSON.parse(launched.modelText ?? '').took_foreground, true);
+  });
+
+  test('launch_app on a backend without support fails rather than silently doing nothing', async () => {
+    const backend = fakeBackend();
+    delete (backend as { launchApp?: unknown }).launchApp;
+    const [tool] = buildComputerUseTools({ backend });
+    const result = (await tool.impl(
+      { action: 'launch_app', app: 'Fixture App' } as never,
+      ctx(),
+    )) as { text: string };
+    assert.match(result.text, /unsupported_action/);
+  });
+
   test('list_apps and observe expose one provider-neutral Sky-like surface', async () => {
     const backend = fakeBackend() as CuDispatchBackend & {
       listApps: NonNullable<CuDispatchBackend['listApps']>;

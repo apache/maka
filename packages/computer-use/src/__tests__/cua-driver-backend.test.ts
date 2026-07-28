@@ -214,6 +214,18 @@ function handle(msg) {
       case 'start_session':
         reply(id, { content: [], structuredContent: {} });
         return;
+      case 'launch_app':
+        reply(id, {
+          content: [],
+          structuredContent: {
+            pid: 5150,
+            bundle_id: 'com.example.fixture',
+            name: 'Fixture App',
+            windows: [{ window_id: 501, title: 'Fixture Main' }],
+            self_activation_suppressed: true,
+          },
+        });
+        return;
       case 'check_permissions':
         reply(id, { content: [], structuredContent: { accessibility: true, screen_recording_capturable: true } });
         return;
@@ -565,14 +577,13 @@ function makeBackend(
       : {}),
     ...(opts.onTrace ? { onTrace: opts.onTrace } : {}),
     allowCompatibilityInputDispatch: opts.allowCompatibilityInputDispatch ?? true,
-    ...(opts.settleAfterAction !== undefined
-      ? { settleAfterAction: opts.settleAfterAction }
-      : {}),
+    ...(opts.settleAfterAction !== undefined ? { settleAfterAction: opts.settleAfterAction } : {}),
     ...(opts.onSessionInvalidated ? { onSessionInvalidated: opts.onSessionInvalidated } : {}),
   });
   const backend: TestBackend = {
     preflight: (signal) => rawBackend.preflight(signal),
     listApps: (signal) => rawBackend.listApps!(signal),
+    launchApp: (input, signal, context) => rawBackend.launchApp!(input, signal, context),
     observeApp: (input, signal, context) => rawBackend.observeApp!(input, signal, context),
     runSemantic: (action, signal, context) => rawBackend.runSemantic!(action, signal, context),
     inspectWindowAt: (point, signal) => rawBackend.inspectWindowAt(point, signal),
@@ -766,6 +777,50 @@ describe('cua-driver backend', () => {
     assert.equal(observation?.screenshot?.mimeType, 'image/png');
   });
 
+  it('launches by bundle id when the app string looks like one, by name otherwise', async () => {
+    // The model supplies a single string. A reverse-DNS shape is unambiguous
+    // and the driver prefers it; anything else is a display name.
+    const { backend, logPath } = makeBackend();
+    const signal = new AbortController().signal;
+    const context = { sessionId: 's1', turnId: 't1', toolCallId: 'launch' };
+
+    await backend.launchApp?.({ app: 'com.example.fixture' }, signal, context);
+    await backend.launchApp?.({ app: 'Fixture App' }, signal, context);
+
+    const launches = toolCalls(await readRecords(logPath), 'launch_app');
+    assert.equal(launches.length, 2);
+    assert.deepEqual(launches[0], { bundle_id: 'com.example.fixture' });
+    assert.deepEqual(launches[1], { name: 'Fixture App' });
+  });
+
+  it('returns the launched pid and windows so no extra round-trip is needed', async () => {
+    const { backend } = makeBackend();
+    const launched = await backend.launchApp?.(
+      { app: 'com.example.fixture' },
+      new AbortController().signal,
+      { sessionId: 's1', turnId: 't1', toolCallId: 'launch' },
+    );
+    assert.equal(launched?.pid, 5150);
+    assert.equal(launched?.bundleId, 'com.example.fixture');
+    assert.equal(launched?.name, 'Fixture App');
+    assert.deepEqual(launched?.windows, [{ windowId: 501, title: 'Fixture Main' }]);
+    // The driver reports whether the launch stayed out of the foreground.
+    assert.equal(launched?.focusHeld, true);
+  });
+
+  it('rejects a launch that reports no usable pid', async () => {
+    // Without a pid there is nothing to target, and returning success would
+    // hand the model an app it cannot address.
+    const { backend } = makeBackend({ rpcErrTool: 'launch_app' });
+    await assert.rejects(
+      backend.launchApp!({ app: 'com.example.fixture' }, new AbortController().signal, {
+        sessionId: 's1',
+        turnId: 't1',
+        toolCallId: 'launch',
+      }),
+    );
+  });
+
   it('waits for the window to stop changing before capturing the post-action observation', async () => {
     // The driver replies once it has dispatched, not once the app has finished
     // reacting. Without a settle the model receives a UI mid-transition and
@@ -873,11 +928,15 @@ describe('cua-driver backend', () => {
     const { backend } = makeBackend();
     const controller = new AbortController();
     const startedAt = Date.now();
-    const pending = backend.run({ type: 'wait', durationMs: 9_000 } as CuAction, controller.signal, {
-      sessionId: 's1',
-      turnId: 't1',
-      toolCallId: 'wait',
-    });
+    const pending = backend.run(
+      { type: 'wait', durationMs: 9_000 } as CuAction,
+      controller.signal,
+      {
+        sessionId: 's1',
+        turnId: 't1',
+        toolCallId: 'wait',
+      },
+    );
     setTimeout(() => controller.abort(), 60);
     await assert.rejects(pending);
     assert.ok(Date.now() - startedAt < 3_000, 'abort must cut the wait short');
