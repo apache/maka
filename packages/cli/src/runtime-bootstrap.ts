@@ -28,13 +28,10 @@ import {
   buildSkillAgentTool,
   buildSkillSearchAgentTool,
   SkillShadowSelectionTracker,
-  SKILL_SEARCH_TOOL_NAME,
-  SKILL_TOOL_NAME,
   buildGoalTools,
   buildParentAgentTools,
   assertProductBindingCatalogClean,
-  buildDeferredToolGroupsFromCatalog,
-  buildHostCapabilitiesFromBinding,
+  AGENT_TOOL_GROUP_ID,
   buildLlmHistorySummarizer,
   cleanupLegacyHistoryCompactArtifacts,
   buildProviderOptions,
@@ -46,13 +43,15 @@ import {
   replayPlanItemsToModelMessages,
   resolveSkillDiscoveryPaths,
   resolveSelectedModelContextWindow,
+  projectEffectiveProductToolSurface,
   type AutomationDefinition,
+  type EffectiveProductToolSurface,
   type HostCapabilities,
+  type HostCapabilitiesResolver,
   type MakaTool,
   type InvocationResult,
   type ShellRunUpdate,
   type SkillSource,
-  type ToolAvailabilityConfig,
   type ModelMessage,
 } from '@maka/runtime';
 import {
@@ -549,47 +548,22 @@ export async function createMakaCliRuntimeContext(
         })
       : [];
   const subagentTools = input.surface === 'tui' ? buildParentAgentTools() : [];
-  // CLI host capability surface for the skill-compatibility gate: the tool
-  // names registered on this host. The CLI has no Office tools, so bundled
-  // Office skills (requiredTools includes OfficeDocument/OfficeDocumentEdit)
-  // are hard-hidden here without seeding them — desktop owns Office seeding.
-  // Catalog ∩ binding (#1099 S2): capability tags and deferred groups come from
-  // the shared catalog rather than a parallel hand list.
   const surfaceTools = input.surface === 'tui' ? [buildAskUserQuestionTool()] : [];
-  const cliBoundToolNames = [
-    ...tools,
-    automationTool,
-    ...goalTools,
-    ...subagentTools,
-    ...surfaceTools,
-  ].map((tool) => tool.name);
-  // Skill is always registered on this host; include it before the instance exists.
-  const cliBoundToolNamesWithSkill = [
-    ...cliBoundToolNames,
-    SKILL_TOOL_NAME,
-    SKILL_SEARCH_TOOL_NAME,
-  ];
-  assertProductBindingCatalogClean('cli', cliBoundToolNamesWithSkill);
-  const host: HostCapabilities = buildHostCapabilitiesFromBinding(cliBoundToolNamesWithSkill);
-  const toolAvailability: ToolAvailabilityConfig | undefined =
-    input.surface === 'tui'
-      ? {
-          economy: !process.env.MAKA_DISABLE_DEFERRED_TOOLS,
-          groups: buildDeferredToolGroupsFromCatalog('cli', cliBoundToolNamesWithSkill),
-        }
-      : undefined;
+  let cliProductToolSurface: EffectiveProductToolSurface;
+  const resolveCliSkillHost: HostCapabilitiesResolver = () =>
+    cliProductToolSurface.hostCapabilities;
   const skillShadowTracker = new SkillShadowSelectionTracker();
   const skillTool = buildSkillAgentTool(
     ({ cwd }) => resolveSkillDiscoveryPaths(cwd, configRoot),
-    host,
+    resolveCliSkillHost,
     { shadowTracker: skillShadowTracker },
   );
   const skillSearchTool = buildSkillSearchAgentTool(
     ({ cwd }) => resolveSkillDiscoveryPaths(cwd, configRoot),
-    host,
+    resolveCliSkillHost,
     { shadowTracker: skillShadowTracker },
   );
-  const allTools = [
+  const boundTools = [
     ...tools,
     automationTool,
     ...goalTools,
@@ -598,6 +572,18 @@ export async function createMakaCliRuntimeContext(
     ...subagentTools,
     ...surfaceTools,
   ];
+  assertProductBindingCatalogClean(
+    'cli',
+    boundTools.map((tool) => tool.name),
+  );
+  cliProductToolSurface = projectEffectiveProductToolSurface({
+    host: 'cli',
+    tools: boundTools,
+    policy: {
+      economy: input.surface === 'tui' && !process.env.MAKA_DISABLE_DEFERRED_TOOLS,
+    },
+  });
+  const allTools = [...cliProductToolSurface.tools];
 
   backends.register('ai-sdk', async (ctx) => {
     const header =
@@ -630,7 +616,13 @@ export async function createMakaCliRuntimeContext(
       mode: header.permissionMode,
       cwd: header.cwd,
     });
-    const backendTools = ctx.tools ? [...ctx.tools] : allTools;
+    const productToolSurface = projectEffectiveProductToolSurface({
+      host: 'cli',
+      tools: ctx.tools ?? allTools,
+      policy: cliProductToolSurface.identity.policy,
+    });
+    const backendTools = [...productToolSurface.tools];
+    const admitsAgentChildren = productToolSurface.boundSurfaceIds.includes(AGENT_TOOL_GROUP_ID);
     return new AiSdkBackend({
       sessionId: ctx.sessionId,
       header: { ...header, model: ready.model },
@@ -643,8 +635,8 @@ export async function createMakaCliRuntimeContext(
       modelFactory: (modelInput) => getAIModel({ ...modelInput, fetch: modelFetch }),
       tools: backendTools,
       sandboxDiagnosticsSnapshot,
-      toolAvailability: ctx.tools ? undefined : toolAvailability,
-      ...(input.surface === 'tui'
+      toolAvailability: productToolSurface.toolAvailability,
+      ...(admitsAgentChildren
         ? {
             spawnChildAgent: (childInput) => runtime.spawnChildAgent(ctx.sessionId, childInput),
             spawnChildSession: (childInput) =>
@@ -706,7 +698,7 @@ export async function createMakaCliRuntimeContext(
             settings,
             cwd,
             workspaceRoot: configRoot,
-            host,
+            host: productToolSurface.hostCapabilities,
             modelContextWindow: resolveSelectedModelContextWindow(ready.connection, ready.model),
             onSkillSelection: (report) =>
               emitSkillCatalogTrace?.('Skill catalog selection completed', {
@@ -785,7 +777,9 @@ export async function createMakaCliRuntimeContext(
         );
       },
     }),
-    ...(input.surface === 'tui' ? { childTools: childAgentTools } : {}),
+    ...(cliProductToolSurface.boundSurfaceIds.includes(AGENT_TOOL_GROUP_ID)
+      ? { childTools: childAgentTools }
+      : {}),
     runtimeInvocationObserver: input.runtimeInvocationObserver,
     onSessionTitleChanged: input.onSessionTitleChanged,
     ...(input.surface === 'tui'
@@ -909,7 +903,7 @@ export async function createMakaCliRuntimeContext(
     tools: allTools,
     skills: {
       source: (cwd) => resolveSkillDiscoveryPaths(cwd, configRoot),
-      host,
+      host: cliProductToolSurface.hostCapabilities,
     },
     automationManager,
     automationScheduler,

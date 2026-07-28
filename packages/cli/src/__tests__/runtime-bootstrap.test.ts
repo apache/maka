@@ -139,7 +139,12 @@ describe('Maka CLI runtime bootstrap', () => {
           ['ReadOnlyProbe'],
         );
         assert.equal(backendInput.systemPrompt, 'Durable child prompt.');
-        assert.equal(backendInput.toolAvailability, undefined);
+        assert.deepEqual(backendInput.toolAvailability, {
+          economy: !process.env.MAKA_DISABLE_DEFERRED_TOOLS,
+          groups: [],
+        });
+        assert.equal(backendInput.spawnChildAgent, undefined);
+        assert.equal(backendInput.spawnChildSession, undefined);
       } finally {
         await context.close();
       }
