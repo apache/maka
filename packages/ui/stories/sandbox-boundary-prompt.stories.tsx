@@ -3,6 +3,9 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 
 import { SandboxBoundaryPrompt } from '../src/sandbox-boundary-prompt.js';
 
+// Product-level stories document the real shipped path that reaches each state.
+// See apps/desktop/stories/FIDELITY.md.
+
 const meta = {
   title: 'Product/Sandbox Boundary Prompt',
   component: SandboxBoundaryPrompt,
@@ -50,6 +53,8 @@ export const FilesystemAndNetwork: Story = {
   },
 };
 
+// Real path: the same Auto-session prompt when the requested expansion enables
+// network access without adding filesystem entries.
 export const NetworkOnly: Story = {
   args: {
     request: {
