@@ -5,7 +5,8 @@ import { promisify } from 'node:util';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import type { QueueEnqueueOutcome, SessionEvent } from '@maka/core/events';
-import type { PermissionMode, PermissionResponse } from '@maka/core/permission';
+import type { PermissionMode } from '@maka/core/permission';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type {
   BranchFromTurnInput,
@@ -46,7 +47,7 @@ export interface MakaSessionRuntime {
   queueMessage(sessionId: string, text: string): QueueEnqueueOutcome;
   drainFollowup(sessionId: string): string | null;
   retractQueue(sessionId: string): string;
-  respondToSandboxBoundary(sessionId: string, response: PermissionResponse): Promise<void>;
+  respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion?(sessionId: string, response: UserQuestionResponse): Promise<void>;
   setPermissionMode(sessionId: string, mode: PermissionMode): Promise<SessionSummary>;
   setOrchestrationMode(sessionId: string, mode: OrchestrationMode): Promise<SessionSummary>;
@@ -140,7 +141,7 @@ export interface MakaSessionDriver {
   takePendingFollowup?(): string | null;
   /** Take back every queued message as one `\n\n`-joined string (clears both queues). */
   retractQueued?(): string;
-  respondToSandboxBoundary(response: PermissionResponse): Promise<void>;
+  respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion?(response: UserQuestionResponse): Promise<void>;
   /**
    * Switch the active session's model, optionally rebinding it to another
@@ -297,7 +298,7 @@ class RuntimeMakaSessionDriver implements MakaSessionDriver {
     return this.input.runtime.retractQueue(this.sessionId);
   }
 
-  async respondToSandboxBoundary(response: PermissionResponse): Promise<void> {
+  async respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void> {
     if (!this.sessionId) throw new Error('Cannot respond to permission before a session starts.');
     await this.input.runtime.respondToSandboxBoundary(this.sessionId, response);
   }
