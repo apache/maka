@@ -449,8 +449,8 @@ export interface SessionStreamerDeps {
 }
 
 function isStatusChangingSessionEvent(event: SessionEvent): boolean {
-  return event.type === 'permission_request' ||
-    event.type === 'permission_decision_ack' ||
+  return event.type === 'sandbox_boundary_request' ||
+    event.type === 'sandbox_boundary_decision_ack' ||
     event.type === 'complete' ||
     event.type === 'abort' ||
     event.type === 'error';
