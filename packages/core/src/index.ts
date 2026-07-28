@@ -542,6 +542,35 @@ export {
   isProtectedMetadataPath,
 } from './permission-profile.js';
 
+// sandbox-boundary.ts
+export type {
+  ExecutionBoundary,
+  LegacyPermissionMode,
+  SandboxBoundaryAccess,
+  SandboxBoundaryExpansion,
+  SandboxBoundaryExpansionAssessment,
+  SandboxBoundaryExpansionValidationFailureReason,
+  SandboxBoundaryExpansionValidationResult,
+  SandboxBoundaryFilesystemEntry,
+  SandboxBoundaryScope,
+  SandboxProfile,
+} from './sandbox-boundary.js';
+export {
+  MAX_SANDBOX_BOUNDARY_FILESYSTEM_ENTRIES,
+  MAX_SANDBOX_BOUNDARY_PATH_CHARS,
+  MAX_SANDBOX_BOUNDARY_SERIALIZED_BYTES,
+  SANDBOX_BOUNDARY_ACCESS_MODES,
+  SANDBOX_BOUNDARY_SCOPES,
+  applySandboxBoundaryExpansion,
+  assessSandboxBoundaryExpansion,
+  compactSandboxBoundaryFilesystemEntries,
+  createBypassExecutionBoundary,
+  createExternalExecutionBoundary,
+  createGenesisExecutionBoundary,
+  createManagedExecutionBoundary,
+  validateSandboxBoundaryExpansion,
+} from './sandbox-boundary.js';
+
 // additional-permissions.ts
 export type {
   AdditionalFileSystemPermission,

@@ -1,0 +1,407 @@
+import {
+  createReadOnlyPermissionProfile,
+  createWorkspaceWritePermissionProfile,
+  type FileSystemPathMatch,
+  type FileSystemSandboxEntry,
+  type PermissionProfileManaged,
+  type PermissionProfileMatchContext,
+} from './permission-profile.js';
+
+export const SANDBOX_BOUNDARY_ACCESS_MODES = ['read', 'write'] as const;
+export type SandboxBoundaryAccess = (typeof SANDBOX_BOUNDARY_ACCESS_MODES)[number];
+
+export const SANDBOX_BOUNDARY_SCOPES = ['exact', 'subtree'] as const;
+export type SandboxBoundaryScope = (typeof SANDBOX_BOUNDARY_SCOPES)[number];
+
+export const MAX_SANDBOX_BOUNDARY_FILESYSTEM_ENTRIES = 32;
+export const MAX_SANDBOX_BOUNDARY_PATH_CHARS = 4096;
+export const MAX_SANDBOX_BOUNDARY_SERIALIZED_BYTES = 64 * 1024;
+
+export interface SandboxBoundaryFilesystemEntry {
+  readonly path: string;
+  readonly access: SandboxBoundaryAccess;
+  readonly scope: SandboxBoundaryScope;
+}
+
+export interface SandboxBoundaryExpansion {
+  readonly filesystem?: {
+    readonly entries: readonly SandboxBoundaryFilesystemEntry[];
+  };
+  readonly network?: {
+    readonly enabled: true;
+  };
+}
+
+export type SandboxProfile = PermissionProfileManaged;
+
+export type ExecutionBoundary =
+  | {
+      readonly kind: 'managed';
+      readonly profile: SandboxProfile;
+      readonly revision: number;
+    }
+  | {
+      readonly kind: 'bypass';
+      readonly revision: number;
+    }
+  | {
+      readonly kind: 'external';
+      readonly revision: number;
+    };
+
+export type LegacyPermissionMode = 'ask' | 'execute' | 'explore' | 'bypass';
+
+export function createGenesisExecutionBoundary(mode: LegacyPermissionMode): ExecutionBoundary {
+  if (mode === 'bypass') return { kind: 'bypass', revision: 0 };
+  return {
+    kind: 'managed',
+    profile:
+      mode === 'explore'
+        ? createReadOnlyPermissionProfile()
+        : createWorkspaceWritePermissionProfile(),
+    revision: 0,
+  };
+}
+
+export function createManagedExecutionBoundary(
+  profile: SandboxProfile,
+  revision: number,
+): ExecutionBoundary {
+  return { kind: 'managed', profile, revision };
+}
+
+export function createBypassExecutionBoundary(revision: number): ExecutionBoundary {
+  return { kind: 'bypass', revision };
+}
+
+export function createExternalExecutionBoundary(revision = 0): ExecutionBoundary {
+  return { kind: 'external', revision };
+}
+
+export type SandboxBoundaryExpansionValidationFailureReason =
+  | 'invalid_expansion'
+  | 'empty_expansion'
+  | 'too_many_entries'
+  | 'invalid_entry'
+  | 'invalid_path'
+  | 'path_too_long'
+  | 'payload_too_large';
+
+export type SandboxBoundaryExpansionValidationResult =
+  | { ok: true; expansion: SandboxBoundaryExpansion }
+  | {
+      ok: false;
+      reason: SandboxBoundaryExpansionValidationFailureReason;
+      message: string;
+    };
+
+export function validateSandboxBoundaryExpansion(
+  input: unknown,
+): SandboxBoundaryExpansionValidationResult {
+  if (!isRecord(input)) {
+    return invalid('invalid_expansion', 'Sandbox boundary expansion must be an object.');
+  }
+  if (hasUnexpectedKeys(input, ['filesystem', 'network'])) {
+    return invalid('invalid_expansion', 'Sandbox boundary expansion contains unsupported fields.');
+  }
+
+  const entriesResult = validateFilesystem(input.filesystem);
+  if (!entriesResult.ok) return entriesResult;
+  const networkResult = validateNetwork(input.network);
+  if (!networkResult.ok) return networkResult;
+  if (entriesResult.entries.length === 0 && !networkResult.enabled) {
+    return invalid(
+      'empty_expansion',
+      'Sandbox boundary expansion must contain at least one permission.',
+    );
+  }
+
+  const expansion: SandboxBoundaryExpansion = {
+    ...(entriesResult.entries.length > 0
+      ? {
+          filesystem: {
+            entries: compactSandboxBoundaryFilesystemEntries(entriesResult.entries),
+          },
+        }
+      : {}),
+    ...(networkResult.enabled ? { network: { enabled: true as const } } : {}),
+  };
+  if (serializedByteLength(expansion) > MAX_SANDBOX_BOUNDARY_SERIALIZED_BYTES) {
+    return invalid(
+      'payload_too_large',
+      'Sandbox boundary expansion exceeds the serialized size limit.',
+    );
+  }
+  return { ok: true, expansion };
+}
+
+export function compactSandboxBoundaryFilesystemEntries(
+  entries: readonly SandboxBoundaryFilesystemEntry[],
+): readonly SandboxBoundaryFilesystemEntry[] {
+  const sorted = [...entries]
+    .map((entry) => ({ ...entry, path: trimTrailingSlashes(entry.path) }))
+    .sort(compareEntries);
+  const compacted: SandboxBoundaryFilesystemEntry[] = [];
+  for (const entry of sorted) {
+    if (compacted.some((existing) => entryCovers(existing, entry))) continue;
+    for (let index = compacted.length - 1; index >= 0; index -= 1) {
+      if (entryCovers(entry, compacted[index]!)) compacted.splice(index, 1);
+    }
+    compacted.push(entry);
+  }
+  return compacted.sort(compareEntries);
+}
+
+export function applySandboxBoundaryExpansion(
+  base: SandboxProfile,
+  expansion: SandboxBoundaryExpansion,
+): SandboxProfile {
+  if (base.fileSystem.kind === 'unrestricted') return base;
+
+  const filesystemEntries = [
+    ...base.fileSystem.entries,
+    ...(expansion.filesystem?.entries ?? []).map((entry) => ({
+      kind: 'path' as const,
+      access: entry.access,
+      path: entry.path,
+      match: entry.scope satisfies FileSystemPathMatch,
+    })),
+  ];
+
+  return {
+    ...base,
+    fileSystem: {
+      ...base.fileSystem,
+      entries: filesystemEntries,
+    },
+    network: expansion.network?.enabled ? { kind: 'enabled' } : base.network,
+  };
+}
+
+export type SandboxBoundaryExpansionAssessment =
+  | { outcome: 'apply'; profile: SandboxProfile }
+  | { outcome: 'noop'; profile: SandboxProfile }
+  | { outcome: 'conflict'; reason: 'explicit_deny' };
+
+export function assessSandboxBoundaryExpansion(
+  base: SandboxProfile,
+  expansion: SandboxBoundaryExpansion,
+  context: PermissionProfileMatchContext = {},
+): SandboxBoundaryExpansionAssessment {
+  if (expansionConflictsWithExplicitDeny(base, expansion, context)) {
+    return { outcome: 'conflict', reason: 'explicit_deny' };
+  }
+  if (profileContainsExpansion(base, expansion, context)) {
+    return { outcome: 'noop', profile: base };
+  }
+  return { outcome: 'apply', profile: applySandboxBoundaryExpansion(base, expansion) };
+}
+
+function profileContainsExpansion(
+  profile: SandboxProfile,
+  expansion: SandboxBoundaryExpansion,
+  context: PermissionProfileMatchContext,
+): boolean {
+  if (expansion.network?.enabled && profile.network.kind !== 'enabled') return false;
+  if (profile.fileSystem.kind === 'unrestricted') return true;
+
+  return (expansion.filesystem?.entries ?? []).every((requested) =>
+    profile.fileSystem.entries.some(
+      (existing) =>
+        existing.access !== 'deny' &&
+        accessCovers(existing.access, requested.access) &&
+        resolvedEntryRoots(existing, context).some((root) =>
+          requested.scope === 'exact'
+            ? pathWithinRoot(requested.path, root.path)
+            : root.scope === 'subtree' && pathWithinRoot(requested.path, root.path),
+        ),
+    ),
+  );
+}
+
+function expansionConflictsWithExplicitDeny(
+  profile: SandboxProfile,
+  expansion: SandboxBoundaryExpansion,
+  context: PermissionProfileMatchContext,
+): boolean {
+  if (profile.fileSystem.kind === 'unrestricted') return false;
+  const deniedRoots = profile.fileSystem.entries
+    .filter((entry) => entry.access === 'deny')
+    .flatMap((entry) => resolvedEntryRoots(entry, context));
+
+  return (expansion.filesystem?.entries ?? []).some((requested) =>
+    deniedRoots.some((denied) =>
+      requested.scope === 'exact'
+        ? pathCoveredByRoot(requested.path, denied)
+        : pathWithinRoot(denied.path, requested.path) || pathCoveredByRoot(requested.path, denied),
+    ),
+  );
+}
+
+function accessCovers(
+  existing: FileSystemSandboxEntry['access'],
+  requested: SandboxBoundaryAccess,
+): boolean {
+  return existing === 'write' || (existing === 'read' && requested === 'read');
+}
+
+function resolvedEntryRoots(
+  entry: FileSystemSandboxEntry,
+  context: PermissionProfileMatchContext,
+): readonly { path: string; scope: SandboxBoundaryScope }[] {
+  if (entry.kind === 'path') {
+    return [{ path: entry.path, scope: entry.match ?? 'subtree' }];
+  }
+  switch (entry.special) {
+    case ':root':
+      return context.root ? [{ path: context.root, scope: 'subtree' }] : [];
+    case ':workspace_roots':
+      return (context.workspaceRoots ?? []).map((path) => ({ path, scope: 'subtree' }));
+    case ':tmpdir':
+      return context.tmpdir ? [{ path: context.tmpdir, scope: 'subtree' }] : [];
+    case ':slash_tmp':
+      return context.slashTmp ? [{ path: context.slashTmp, scope: 'subtree' }] : [];
+    case ':minimal':
+      return (context.minimalRoots ?? []).map((path) => ({ path, scope: 'subtree' }));
+  }
+}
+
+function pathCoveredByRoot(
+  path: string,
+  root: { path: string; scope: SandboxBoundaryScope },
+): boolean {
+  return root.scope === 'exact' ? samePath(path, root.path) : pathWithinRoot(path, root.path);
+}
+
+function validateFilesystem(
+  input: unknown,
+):
+  | { ok: true; entries: SandboxBoundaryFilesystemEntry[] }
+  | Extract<SandboxBoundaryExpansionValidationResult, { ok: false }> {
+  if (input === undefined) return { ok: true, entries: [] };
+  if (!isRecord(input) || hasUnexpectedKeys(input, ['entries']) || !Array.isArray(input.entries)) {
+    return invalid('invalid_expansion', 'filesystem must contain an entries array.');
+  }
+  if (input.entries.length > MAX_SANDBOX_BOUNDARY_FILESYSTEM_ENTRIES) {
+    return invalid(
+      'too_many_entries',
+      `Sandbox boundary filesystem entries are limited to ${MAX_SANDBOX_BOUNDARY_FILESYSTEM_ENTRIES}.`,
+    );
+  }
+
+  const entries: SandboxBoundaryFilesystemEntry[] = [];
+  for (const candidate of input.entries) {
+    if (!isRecord(candidate) || hasUnexpectedKeys(candidate, ['path', 'access', 'scope'])) {
+      return invalid(
+        'invalid_entry',
+        'Sandbox boundary filesystem entry contains unsupported fields.',
+      );
+    }
+    if (
+      typeof candidate.path !== 'string' ||
+      !SANDBOX_BOUNDARY_ACCESS_MODES.includes(candidate.access as SandboxBoundaryAccess) ||
+      !SANDBOX_BOUNDARY_SCOPES.includes(candidate.scope as SandboxBoundaryScope)
+    ) {
+      return invalid(
+        'invalid_entry',
+        'Sandbox boundary filesystem entry must contain path, access, and scope.',
+      );
+    }
+    if (!isNormalizedAbsolutePath(candidate.path)) {
+      return invalid(
+        'invalid_path',
+        'Sandbox boundary path must be a normalized absolute POSIX path.',
+      );
+    }
+    if (candidate.path.length > MAX_SANDBOX_BOUNDARY_PATH_CHARS) {
+      return invalid('path_too_long', 'Sandbox boundary path exceeds the length limit.');
+    }
+    entries.push({
+      path: trimTrailingSlashes(candidate.path),
+      access: candidate.access as SandboxBoundaryAccess,
+      scope: candidate.scope as SandboxBoundaryScope,
+    });
+  }
+  return { ok: true, entries };
+}
+
+function validateNetwork(
+  input: unknown,
+):
+  | { ok: true; enabled: boolean }
+  | Extract<SandboxBoundaryExpansionValidationResult, { ok: false }> {
+  if (input === undefined) return { ok: true, enabled: false };
+  if (!isRecord(input) || hasUnexpectedKeys(input, ['enabled']) || input.enabled !== true) {
+    return invalid('invalid_expansion', 'network expansion only supports enabled: true.');
+  }
+  return { ok: true, enabled: true };
+}
+
+function entryCovers(
+  existing: SandboxBoundaryFilesystemEntry,
+  candidate: SandboxBoundaryFilesystemEntry,
+): boolean {
+  if (candidate.access === 'write' && existing.access !== 'write') return false;
+  if (existing.scope === 'exact') {
+    return candidate.scope === 'exact' && samePath(existing.path, candidate.path);
+  }
+  return pathWithinRoot(candidate.path, existing.path);
+}
+
+function compareEntries(
+  a: SandboxBoundaryFilesystemEntry,
+  b: SandboxBoundaryFilesystemEntry,
+): number {
+  return (
+    a.path.localeCompare(b.path) ||
+    (a.scope === b.scope ? 0 : a.scope === 'subtree' ? -1 : 1) ||
+    (a.access === b.access ? 0 : a.access === 'write' ? -1 : 1)
+  );
+}
+
+function isNormalizedAbsolutePath(path: string): boolean {
+  if (!path.startsWith('/') || path.includes('\0') || path.includes('\\')) return false;
+  if (path.length > 1 && path.endsWith('/')) return false;
+  return !path
+    .split('/')
+    .some((segment, index) => index > 0 && (segment === '' || segment === '.' || segment === '..'));
+}
+
+function pathWithinRoot(path: string, root: string): boolean {
+  const normalizedPath = trimTrailingSlashes(path);
+  const normalizedRoot = trimTrailingSlashes(root);
+  if (normalizedRoot === '/') return normalizedPath.startsWith('/');
+  return normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}/`);
+}
+
+function samePath(a: string, b: string): boolean {
+  return trimTrailingSlashes(a) === trimTrailingSlashes(b);
+}
+
+function trimTrailingSlashes(value: string): string {
+  if (value === '/') return value;
+  return value.replace(/\/+$/g, '');
+}
+
+function serializedByteLength(value: unknown): number {
+  const json = JSON.stringify(value);
+  if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(json).byteLength;
+  return json.length;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasUnexpectedKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  return Object.keys(value).some((key) => !allowed.includes(key));
+}
+
+function invalid(
+  reason: SandboxBoundaryExpansionValidationFailureReason,
+  message: string,
+): Extract<SandboxBoundaryExpansionValidationResult, { ok: false }> {
+  return { ok: false, reason, message };
+}
+
+export type { PermissionProfileMatchContext };

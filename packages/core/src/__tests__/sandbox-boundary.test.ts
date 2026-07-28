@@ -1,0 +1,131 @@
+import { describe, test } from 'node:test';
+import { expect } from '../test-helpers.js';
+import {
+  applySandboxBoundaryExpansion,
+  assessSandboxBoundaryExpansion,
+  createGenesisExecutionBoundary,
+  validateSandboxBoundaryExpansion,
+} from '../sandbox-boundary.js';
+import { canReadPath, canWritePath, type PermissionProfileManaged } from '../permission-profile.js';
+
+describe('SandboxBoundaryExpansion', () => {
+  test('accepts and canonicalizes only additive filesystem and network authority', () => {
+    const result = validateSandboxBoundaryExpansion({
+      filesystem: {
+        entries: [
+          { path: '/outside/tree/file.txt', access: 'read', scope: 'exact' },
+          { path: '/outside/tree', access: 'read', scope: 'subtree' },
+        ],
+      },
+      network: { enabled: true },
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      expansion: {
+        filesystem: {
+          entries: [{ path: '/outside/tree', access: 'read', scope: 'subtree' }],
+        },
+        network: { enabled: true },
+      },
+    });
+  });
+
+  test('rejects empty, relative, deny, policy-shaped, and legacy expansions', () => {
+    for (const expansion of [
+      {},
+      { filesystem: { entries: [] } },
+      { filesystem: { entries: [{ path: '../outside', access: 'read', scope: 'exact' }] } },
+      { filesystem: { entries: [{ path: '/outside', access: 'deny', scope: 'exact' }] } },
+      { filesystem: { entries: [{ path: '/outside', access: 'read', scope: 'special' }] } },
+      {
+        filesystem: {
+          entries: [{ path: '/outside', access: 'read', scope: 'exact', kind: 'path' }],
+        },
+      },
+      { network: { enabled: false } },
+      { profile: { type: 'managed' } },
+      { fileSystem: { entries: [{ path: '/legacy', access: 'read', scope: 'exact' }] } },
+    ]) {
+      expect(validateSandboxBoundaryExpansion(expansion).ok).toBe(false);
+    }
+  });
+
+  test('applies additive authority without weakening an explicit deny', () => {
+    const base: PermissionProfileManaged = {
+      type: 'managed',
+      name: 'custom',
+      fileSystem: {
+        kind: 'restricted',
+        entries: [{ kind: 'path', access: 'deny', path: '/outside/locked', match: 'subtree' }],
+      },
+      network: { kind: 'restricted' },
+    };
+
+    const result = applySandboxBoundaryExpansion(base, {
+      filesystem: {
+        entries: [
+          { path: '/outside/open.txt', access: 'write', scope: 'exact' },
+          { path: '/outside/locked/file.txt', access: 'write', scope: 'exact' },
+        ],
+      },
+      network: { enabled: true },
+    });
+
+    expect(canWritePath(result, '/outside/open.txt')).toBe(true);
+    expect(canReadPath(result, '/outside/locked/file.txt')).toBe(false);
+    expect(canWritePath(result, '/outside/locked/file.txt')).toBe(false);
+    expect(result.network.kind).toBe('enabled');
+  });
+
+  test('distinguishes a new expansion, an approved no-op, and an explicit-deny conflict', () => {
+    const base: PermissionProfileManaged = {
+      type: 'managed',
+      name: 'custom',
+      fileSystem: {
+        kind: 'restricted',
+        entries: [
+          { kind: 'path', access: 'read', path: '/outside/already.txt', match: 'exact' },
+          { kind: 'path', access: 'deny', path: '/outside/locked', match: 'subtree' },
+        ],
+      },
+      network: { kind: 'restricted' },
+    };
+
+    expect(
+      assessSandboxBoundaryExpansion(base, {
+        filesystem: {
+          entries: [{ path: '/outside/already.txt', access: 'read', scope: 'exact' }],
+        },
+      }).outcome,
+    ).toBe('noop');
+    expect(
+      assessSandboxBoundaryExpansion(base, {
+        filesystem: { entries: [{ path: '/outside/new.txt', access: 'read', scope: 'exact' }] },
+      }).outcome,
+    ).toBe('apply');
+    expect(
+      assessSandboxBoundaryExpansion(base, {
+        filesystem: {
+          entries: [{ path: '/outside', access: 'write', scope: 'subtree' }],
+        },
+      }),
+    ).toEqual({ outcome: 'conflict', reason: 'explicit_deny' });
+  });
+});
+
+describe('ExecutionBoundary', () => {
+  test('migrates every legacy permission mode to a deterministic revision-zero boundary', () => {
+    for (const mode of ['ask', 'execute'] as const) {
+      const boundary = createGenesisExecutionBoundary(mode);
+      expect(boundary.kind).toBe('managed');
+      expect(boundary.revision).toBe(0);
+      if (boundary.kind === 'managed') expect(boundary.profile.name).toBe('workspace-write');
+    }
+
+    const explore = createGenesisExecutionBoundary('explore');
+    expect(explore.kind).toBe('managed');
+    if (explore.kind === 'managed') expect(explore.profile.name).toBe('read-only');
+    expect(createGenesisExecutionBoundary('bypass')).toEqual({ kind: 'bypass', revision: 0 });
+  });
+});
