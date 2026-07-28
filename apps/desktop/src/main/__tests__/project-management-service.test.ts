@@ -187,6 +187,71 @@ test('project management service persists an explicit no-project selection in ma
   }
 });
 
+test('archiving the current project resolves fallback or no-project inside main', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-service-archive-selection-'));
+  const firstPath = join(base, 'first');
+  const secondPath = join(base, 'second');
+  await mkdir(firstPath);
+  await mkdir(secondPath);
+  let now = 1_000;
+  let id = 0;
+  const catalog = createProjectCatalog(join(base, 'storage'), {
+    now: () => now,
+    createId: () => `project-${++id}`,
+  });
+  const first = await catalog.register(firstPath);
+  now = 2_000;
+  const second = await catalog.register(secondPath);
+  let selection = {
+    projectId: second.id as string | null | undefined,
+    path: await realpath(secondPath),
+  };
+  const service = createProjectManagementService({
+    catalog,
+    sessions: {
+      listHeaders: async () => [],
+      updateHeader: async () => {
+        throw new Error('No sessions expected');
+      },
+    },
+    chooseDirectory: async () => undefined,
+    selection: {
+      currentSelection: async () => selection,
+      setSelection: (projectId, path) => {
+        selection = { projectId, path };
+      },
+    },
+  });
+
+  try {
+    await service.archive(second.id);
+    assert.deepEqual(selection, {
+      projectId: first.id,
+      path: await realpath(firstPath),
+    });
+
+    selection = { projectId: second.id, path: await realpath(secondPath) };
+    assert.deepEqual(await service.current(), {
+      projectId: first.id,
+      path: await realpath(firstPath),
+    });
+
+    await service.archive(first.id);
+    assert.deepEqual(selection, {
+      projectId: null,
+      path: await realpath(firstPath),
+    });
+
+    selection = { projectId: first.id, path: await realpath(firstPath) };
+    assert.deepEqual(await service.current(), {
+      projectId: null,
+      path: await realpath(firstPath),
+    });
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 test('relinking merges a project that was accidentally added from its new path', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-project-service-merge-'));
   const oldPath = join(base, 'old-location');

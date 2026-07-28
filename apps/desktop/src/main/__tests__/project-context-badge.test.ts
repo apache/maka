@@ -92,11 +92,8 @@ describe('project context workspace picker', () => {
     );
     const workspacePickerBlock = renderer.match(/workspacePicker=\{\{[\s\S]*?\n\s*\}\}/)?.[0] ?? '';
 
-    assert.match(controller, /let selectedProjectRoot: string \| null = null;/);
-    assert.match(
-      controller,
-      /return \{ projectId: selectedProjectId, projectPath: selectedProjectRoot \};/,
-    );
+    assert.match(controller, /let selectedProject: CurrentProjectSelection \| null = null;/);
+    assert.match(controller, /if \(selectedProject\) return selectedProject;/);
     assert.match(appIpc, /ipcMain\.handle\('projects:list'/);
     assert.match(appIpc, /ipcMain\.handle\('projects:add'/);
     assert.match(appIpc, /ipcMain\.handle\('projects:select'/);
@@ -106,7 +103,7 @@ describe('project context workspace picker', () => {
     assert.match(appIpc, /ipcMain\.handle\('projects:restore'/);
     assert.match(
       controller,
-      /function setSelection\(projectId: string \| null, projectPath: string\): void \{[\s\S]*selectedProjectRoot = projectPath;[\s\S]*selectedProjectId = projectId;[\s\S]*void saveLastProjectPath\(projectPath, projectId\);/,
+      /function setSelection\(projectId: string \| null, projectPath: string\): void \{\s*selectedProject = \{ projectId, path: projectPath \};\s*void saveLastProjectPath\(projectPath, projectId\);/,
       'the controller must persist the project association and path together',
     );
     assert.match(preload, /projects:\s*\{/);

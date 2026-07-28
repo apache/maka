@@ -37,8 +37,8 @@ export function createProjectManagementService(deps: {
     }
     const projects = await deps.catalog.list();
     const selectedProjectId = selection.projectId;
-    const selected =
-      (typeof selectedProjectId === 'string'
+    const requested =
+      typeof selectedProjectId === 'string'
         ? projects.find(
             (project) =>
               project.id === selectedProjectId ||
@@ -46,10 +46,20 @@ export function createProjectManagementService(deps: {
           )
         : projects.find((project) =>
             project.locations.some((location) => location.path === selection.path),
-          )) ??
-      projects.find((project) => project.archivedAt === undefined && project.available);
+          );
+    const isSelectable = (project: ProjectRecord | undefined) =>
+      project !== undefined &&
+      project.archivedAt === undefined &&
+      project.available &&
+      project.preferredPath;
+    const selected =
+      isSelectable(requested) ? requested : projects.find((project) => isSelectable(project));
     const path = selected?.preferredPath;
-    if (!selected || selected.archivedAt !== undefined || !selected.available || !path) {
+    if (!selected || !path) {
+      if (requested || typeof selectedProjectId === 'string') {
+        deps.selection.setSelection(null, selection.path);
+        return { projectId: null, path: selection.path };
+      }
       return { projectId: undefined, path: selection.path };
     }
     deps.selection.setSelection(selected.id, path);
@@ -128,8 +138,10 @@ export function createProjectManagementService(deps: {
       return deps.catalog.rename(requireProjectId(projectId), trimmed);
     },
 
-    archive(projectId) {
-      return deps.catalog.archive(requireProjectId(projectId));
+    async archive(projectId) {
+      const project = await deps.catalog.archive(requireProjectId(projectId));
+      await current();
+      return project;
     },
 
     restore(projectId) {

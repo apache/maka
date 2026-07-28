@@ -278,14 +278,7 @@ export function createAppShellProjectActions(deps: {
   async function archiveProject(projectId: string): Promise<void> {
     try {
       await window.maka.projects.archive(projectId);
-      const next = await refreshProjects();
-      if (selectedProjectId === projectId) {
-        const fallback = next.find(
-          (project) => project.archivedAt === undefined && project.available,
-        );
-        if (fallback) await selectProjectRecord(fallback, false);
-        else await selectNoProject();
-      }
+      await refreshProjects();
     } catch (error) {
       toastApi.error(
         copy.projectUpdateFailedTitle,
