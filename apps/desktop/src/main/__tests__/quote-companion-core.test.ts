@@ -280,7 +280,7 @@ describe('performCompanionTurn', () => {
 });
 
 describe('isCompanionTurnTerminal', () => {
-  it('error / abort / plain complete are terminal; permission_handoff is not', () => {
+  it('error, abort, and every complete event are terminal', () => {
     assert.equal(isCompanionTurnTerminal({ type: 'error' } as SessionEvent), true);
     assert.equal(isCompanionTurnTerminal({ type: 'abort' } as SessionEvent), true);
     assert.equal(
@@ -289,7 +289,7 @@ describe('isCompanionTurnTerminal', () => {
     );
     assert.equal(
       isCompanionTurnTerminal({ type: 'complete', stopReason: 'permission_handoff' } as SessionEvent),
-      false,
+      true,
     );
     assert.equal(isCompanionTurnTerminal({ type: 'text_delta' } as SessionEvent), false);
   });
@@ -309,20 +309,14 @@ describe('applyCompanionInteractionEvent', () => {
     assert.equal(queues.S.length, 1);
   });
 
-  it('a permission_handoff complete keeps the pending prompt; an ack clears it', () => {
+  it('a legacy permission_handoff complete clears the pending prompt', () => {
     const withPrompt = applyCompanionInteractionEvent({}, 'S', req);
     const afterHandoff = applyCompanionInteractionEvent(
       withPrompt,
       'S',
       { type: 'complete', stopReason: 'permission_handoff' } as SessionEvent,
     );
-    assert.equal(afterHandoff.S.length, 1); // survives the handoff
-    const afterAck = applyCompanionInteractionEvent(
-      afterHandoff,
-      'S',
-      { type: 'sandbox_boundary_decision_ack', requestId: 'r1' } as SessionEvent,
-    );
-    assert.equal(afterAck.S.length, 0);
+    assert.deepEqual(afterHandoff.S, []);
   });
 
   it('a terminal complete clears the queue', () => {

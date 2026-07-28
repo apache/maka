@@ -134,8 +134,6 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       setInteractions((current) => applyCompanionInteractionEvent(current, forkId, event));
       setLiveTurn((prev) => applyLiveTurnEvent(prev, event, localeRef.current));
       if (event.type === 'error') setError(copyRef.current.errors.runError);
-      // A `permission_handoff` complete is NOT terminal — the turn resumes once
-      // the pending interaction is resolved, so keep the interaction + live turn.
       if (isCompanionTurnTerminal(event)) {
         // Settlement: wait for the assistant message to persist before handing
         // off from the live projection, then reconcile (shared with the main chat)

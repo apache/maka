@@ -209,23 +209,14 @@ export async function performCompanionTurn(
   return { status: 'sent', forkId };
 }
 
-/**
- * A `complete` with `stopReason === 'permission_handoff'` is NOT terminal — the
- * turn resumes once the pending interaction is resolved, so the live turn and the
- * interaction queue must survive it.
- */
 export function isCompanionTurnTerminal(event: SessionEvent): boolean {
-  return (
-    event.type === 'error' ||
-    event.type === 'abort' ||
-    (event.type === 'complete' && event.stopReason !== 'permission_handoff')
-  );
+  return event.type === 'error' || event.type === 'abort' || event.type === 'complete';
 }
 
 /**
  * Route a companion event into its interaction queue, mirroring the main shell:
  * boundary / question requests enqueue, their acks / tool results dequeue, and
- * a terminal event clears the queue (a permission handoff does not).
+ * a terminal event clears the queue.
  */
 export function applyCompanionInteractionEvent(
   queues: InteractionQueues,

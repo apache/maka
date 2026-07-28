@@ -360,22 +360,20 @@ describe('permission response IPC boundary', () => {
     assert.match(composerRegion, /hidden=\{[^}]*Boolean\(activeInteraction\)[^}]*\}/);
   });
 
-  it('renderer clears the permission prompt when a session completes (PR-PERMISSION-UI-CLEANUP-0)', async () => {
-    // Without this, a session that finishes for a reason other than
-    // permission_handoff would leave a stranded permission entry in
+  it('renderer clears the boundary prompt when a session completes', async () => {
+    // Without this, a completed session would leave a stranded boundary entry in
     // `interactionBySession[sessionId]`, keeping the prompt visible
     // and blocking the session UI until the user manually navigates
     // away. Mirrors the existing `abort` cleanup.
     const renderer = await readRendererShellSource('app-shell-session-events.ts');
     // Find the 'complete' case in handleSessionEvent — the body must
-    // clear the session's permission queue when stopReason is not
-    // permission_handoff.
+    // clear the session's interaction queue for every terminal completion.
     const completeCase = renderer.match(/case 'complete':[\s\S]*?break;/);
     assert.ok(completeCase, "'complete' case must exist in renderer event handler");
     assert.match(
       completeCase[0],
       /setInteractionBySession\(\(current\) => clearInteractions\(current, sessionId\)\)/,
-      "'complete' case must clear the session's permission queue — mirrors the abort handler",
+      "'complete' case must clear the session's interaction queue — mirrors the abort handler",
     );
   });
 

@@ -153,12 +153,10 @@ export function createAppShellSessionEventHandlers(options: {
         void refreshMessages(sessionId, terminalRefreshOptions(before));
         break;
       case 'complete': {
-        if (event.stopReason !== 'permission_handoff') {
-          setInteractionBySession((current) => clearInteractions(current, sessionId));
-          if (event.stopReason === 'end_turn' || event.stopReason === 'max_tokens') {
-            const body = [...(before?.steps ?? [])].reverse().find((step) => step.text?.text)?.text?.text;
-            notifyRunEnded?.({ kind: 'completed', sessionId, body });
-          }
+        setInteractionBySession((current) => clearInteractions(current, sessionId));
+        if (event.stopReason === 'end_turn' || event.stopReason === 'max_tokens') {
+          const body = [...(before?.steps ?? [])].reverse().find((step) => step.text?.text)?.text?.text;
+          notifyRunEnded?.({ kind: 'completed', sessionId, body });
         }
         void refreshSessions();
         void refreshMessages(sessionId, terminalRefreshOptions(before));
