@@ -226,9 +226,21 @@ export const PERMISSION_POLICY: Record<PermissionMode, Record<ToolCategory, Poli
     // visible view stays a confirmed safety net, not a default-allow. The
     // user's "allow for this turn" then carries the observe→act loop.
     browser: 'prompt',
-    // Computer Use uses target- and action-class scope keys. Remembering a
-    // metadata read never authorizes a screenshot or mutation.
-    computer_use: 'prompt',
+    // Computer Use runs unattended in execute mode. Its scope key includes the
+    // observation id, and observations are single-use, so a prompt policy could
+    // never be answered once for a task — every step minted a fresh key and
+    // asked again. A four-step flow meant four dialogs, which is not automation.
+    //
+    // Correctness of the target is enforced at the protocol level rather than by
+    // the dialog: every mutating action must echo the frame identity of the
+    // observation it came from, and that binding is consumed once. A stale or
+    // mismatched target fails closed regardless of what the user approved. The
+    // approval class is still recorded for auditing; it just no longer gates.
+    //
+    // Judgement about consequential actions (credentials, payments,
+    // irreversible deletion) belongs in the tool instructions the model reads,
+    // the same place Codex puts it — not in a dialog the user answers per step.
+    computer_use: 'allow',
   },
   bypass: {
     read: 'allow',

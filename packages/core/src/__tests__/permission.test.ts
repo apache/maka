@@ -690,18 +690,29 @@ describe('preToolUse — browser permission contract', () => {
 });
 
 describe('preToolUse — Computer Use permission contract', () => {
-  test('Computer Use is blocked in explore and prompts in ask/execute', () => {
-    for (const mode of ['ask', 'execute'] as const) {
-      const result = evaluate(
-        'maka_computer',
-        { action: 'observe', app: 'Example' },
-        mode,
-        [],
-        'computer_use',
-      );
-      expect(result.needsPrompt).toBe(true);
-      expect(result.partialRequest?.reason).toBe('computer_use');
-    }
+  test('Computer Use is blocked in explore, prompts in ask, and proceeds in execute', () => {
+    const ask = evaluate(
+      'maka_computer',
+      { action: 'observe', app: 'Example' },
+      'ask',
+      [],
+      'computer_use',
+    );
+    expect(ask.needsPrompt).toBe(true);
+    expect(ask.partialRequest?.reason).toBe('computer_use');
+
+    // Execute runs unattended: a single-use observation id in the scope key means
+    // a prompt could never be answered once for a multi-step task.
+    const execute = evaluate(
+      'maka_computer',
+      { action: 'observe', app: 'Example' },
+      'execute',
+      [],
+      'computer_use',
+    );
+    expect(execute.needsPrompt).toBe(false);
+    expect(execute.proceed).toBe(true);
+
     const explore = evaluate(
       'maka_computer',
       { action: 'observe', app: 'Example' },
@@ -713,6 +724,9 @@ describe('preToolUse — Computer Use permission contract', () => {
     expect(explore.needsPrompt).toBe(false);
   });
 
+  // These three assert scope-isolation semantics: a remembered grant must not
+  // widen across action classes, and a forged scope must not be honoured. They
+  // exercise `ask`, the mode that still prompts, since execute now runs unattended.
   test('permission events receive an allowlisted summary, not sensitive action args', () => {
     const result = evaluate(
       'maka_computer',
@@ -724,7 +738,7 @@ describe('preToolUse — Computer Use permission contract', () => {
         text: 'secret text',
         coordinate: [123, 456],
       },
-      'execute',
+      'ask',
       [],
       'computer_use',
     );
@@ -746,11 +760,11 @@ describe('preToolUse — Computer Use permission contract', () => {
       window_id: 42,
     };
     const remembered = [permissionScopeKey('maka_computer', metadataArgs, 'computer_use')];
-    const metadata = evaluate('maka_computer', metadataArgs, 'execute', remembered, 'computer_use');
+    const metadata = evaluate('maka_computer', metadataArgs, 'ask', remembered, 'computer_use');
     const screenshot = evaluate(
       'maka_computer',
       { ...metadataArgs, include_screenshot: true },
-      'execute',
+      'ask',
       remembered,
       'computer_use',
     );
@@ -761,7 +775,7 @@ describe('preToolUse — Computer Use permission contract', () => {
         observation_id: 'frame-7',
         coordinate: [10, 20],
       },
-      'execute',
+      'ask',
       remembered,
       'computer_use',
     );
@@ -777,7 +791,7 @@ describe('preToolUse — Computer Use permission contract', () => {
       app: 'Example',
     };
     const remembered = [permissionScopeKey('maka_computer', args, 'computer_use')];
-    const result = evaluate('maka_computer', args, 'execute', remembered, 'computer_use');
+    const result = evaluate('maka_computer', args, 'ask', remembered, 'computer_use');
     expect(result.needsPrompt).toBe(true);
     expect(result.proceed).toBe(false);
     expect(result.partialRequest?.rememberForTurnAllowed).toBe(false);
@@ -838,10 +852,15 @@ describe('PERMISSION_POLICY matrix invariants', () => {
     expect(PERMISSION_POLICY.bypass.browser).toBe('allow');
   });
 
-  test('computer_use is blocked in explore, prompts in ask/execute, and only bypass allows it', () => {
+  test('computer_use is blocked in explore, prompts in ask, and runs unattended from execute up', () => {
     expect(PERMISSION_POLICY.explore.computer_use).toBe('block');
+    // `ask` means "ask" — the mode exists for users who want every step confirmed.
     expect(PERMISSION_POLICY.ask.computer_use).toBe('prompt');
-    expect(PERMISSION_POLICY.execute.computer_use).toBe('prompt');
+    // Execute must not prompt: the scope key contains a single-use observation id,
+    // so a prompt policy asks again on every step and a multi-step task can never
+    // be automated. Target correctness is enforced by the frame binding protocol,
+    // not by the dialog.
+    expect(PERMISSION_POLICY.execute.computer_use).toBe('allow');
     expect(PERMISSION_POLICY.bypass.computer_use).toBe('allow');
   });
 
