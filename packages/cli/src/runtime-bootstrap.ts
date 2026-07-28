@@ -616,11 +616,13 @@ export async function createMakaCliRuntimeContext(
       mode: header.permissionMode,
       cwd: header.cwd,
     });
-    const productToolSurface = projectEffectiveProductToolSurface({
-      host: 'cli',
-      tools: ctx.tools ?? allTools,
-      policy: cliProductToolSurface.identity.policy,
-    });
+    const productToolSurface = ctx.tools
+      ? projectEffectiveProductToolSurface({
+          host: 'cli',
+          tools: ctx.tools,
+          policy: cliProductToolSurface.identity.policy,
+        })
+      : cliProductToolSurface;
     const backendTools = [...productToolSurface.tools];
     const admitsAgentChildren = productToolSurface.boundSurfaceIds.includes(AGENT_TOOL_GROUP_ID);
     return new AiSdkBackend({
