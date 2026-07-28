@@ -283,7 +283,12 @@ describe('Runtime Interaction authority seam', () => {
       },
       { toolCallId: 'tool-1', abortSignal: new AbortController().signal },
     );
-    await waitFor(() => question !== undefined);
+    await waitFor(() => events.some((event) => event.type === 'user_question_request'));
+    const published = events.find((event) => event.type === 'user_question_request');
+    if (published?.type !== 'user_question_request') {
+      assert.fail('expected a published user question');
+    }
+    binding.assertPendingAdmission(published);
 
     const rejected = assert.rejects(pending, /turn_stopped/);
     currentRunId = undefined;
