@@ -321,7 +321,7 @@ async function resolveWritableAllowed(
   if (!isPathInside(root, parent) && !exactWriteCoversParent(permission, candidate, parent)) {
     throw operationError(
       'path_denied',
-      `${label} parent was not covered by the one-call permission.`,
+      `${label} parent was not covered by the operation boundary.`,
     );
   }
   return candidate;
@@ -353,10 +353,7 @@ async function resolveCandidate(
     !isPathInside(root, candidate) &&
     !sandboxBoundaryExpansionAllowsPath(permission, candidate, access)
   ) {
-    throw operationError(
-      'path_denied',
-      `${label} path was not covered by the one-call permission.`,
-    );
+    throw operationError('path_denied', `${label} path was not covered by the operation boundary.`);
   }
   return { root, candidate };
 }
