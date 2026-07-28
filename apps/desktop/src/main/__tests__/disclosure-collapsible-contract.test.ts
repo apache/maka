@@ -1,7 +1,7 @@
 /**
  * PR-DISCLOSURE-COLLAPSIBLE-0 (issue #520 PR5 item 17, 2026-07-05):
- * the four disclosure sites (turn-thinking, reasoning-panel, permission-raw,
- * tool-activity) migrate off native `<details>`/`<summary>` onto Base UI
+ * the remaining disclosure sites migrate off native `<details>`/`<summary>`
+ * onto Base UI
  * Collapsible. The code comments at the sites already said "future Base UI
  * Accordion path"; all four are independent single sections (not grouped),
  * so Collapsible (not Accordion) is the right primitive.
@@ -28,7 +28,6 @@ import { REPO_ROOT } from './css-test-helpers.js';
 
 const MIGRATED_FILES = [
   'packages/ui/src/chat-turn.tsx',
-  'packages/ui/src/permission-dialog.tsx',
   'packages/ui/src/tool-activity.tsx',
 ];
 

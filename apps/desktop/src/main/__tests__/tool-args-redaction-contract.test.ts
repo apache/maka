@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { formatRedactedJson, formatToolIntent } from '@maka/ui';
 
-describe('tool and permission args redaction', () => {
+describe('tool args redaction', () => {
   it('redacts JSON-shaped args before they are rendered', () => {
     const rendered = formatRedactedJson({
       command: 'curl -H "Authorization: Bearer sk-live-secret-token" https://example.test',
@@ -17,14 +17,12 @@ describe('tool and permission args redaction', () => {
     assert.match(rendered, /command/);
   });
 
-  it('routes ToolActivity args through quiet formatters and only additional PermissionPrompt args through formatRedactedJson', async () => {
-    const [toolSource, permissionSource, quietSource] = await Promise.all([
+  it('routes ToolActivity args through quiet formatters', async () => {
+    const [toolSource, quietSource] = await Promise.all([
       readFile(join(process.cwd(), '../../packages/ui/src/tool-activity.tsx'), 'utf8'),
-      readFile(join(process.cwd(), '../../packages/ui/src/permission-dialog.tsx'), 'utf8'),
       readFile(join(process.cwd(), '../../packages/core/src/tool-quiet-preview.ts'), 'utf8'),
     ]);
     const toolActivity = toolSource.match(/export function ToolActivity[\s\S]*?function ToolOutputStream/)?.[0] ?? '';
-    const permissionPrompt = permissionSource.match(/export function PermissionPrompt[\s\S]*?function renderPermissionSummary/)?.[0] ?? '';
 
     // Quiet panel: never stringify args; use formatToolInvocationLine / formatQuietJsonValue.
     assert.match(toolActivity, /formatToolInvocationLine\(item, locale\)/);
@@ -34,9 +32,6 @@ describe('tool and permission args redaction', () => {
     // Keys and full lines are redacted in the shared core quiet key/value formatter.
     assert.match(quietSource, /redactSecrets\(key\)/);
     assert.match(quietSource, /push\(redactSecrets\(line\)\)|lines\.push\(redactSecrets\(line\)\)/);
-    // Permission prompt redacts only args that its summary and details have not already shown.
-    assert.match(permissionPrompt, /\{formatRedactedJson\(additionalArgs\)\}/);
-    assert.doesNotMatch(permissionPrompt, /JSON\.stringify\(props\.request\.args/);
   });
 
   it('redacts and caps model-authored tool intents before rendering', async () => {
@@ -56,18 +51,4 @@ describe('tool and permission args redaction', () => {
     assert.doesNotMatch(toolActivity, /\{item\.intent\}/);
   });
 
-  it('redacts permission summary previews before rendering command, path, or file content', async () => {
-    const source = await readFile(join(process.cwd(), '../../packages/ui/src/permission-dialog.tsx'), 'utf8');
-    const presentation = source.match(/function renderPermissionSummary[\s\S]*?function permissionTextPreview/)?.[0] ?? '';
-
-    assert.match(presentation, /\{redactSecrets\(command\)\}/);
-    assert.match(presentation, /\{redactSecrets\(path\)\}/);
-    assert.match(presentation, /\{permissionTextPreview\(content, 600\)\}/);
-    assert.match(presentation, /prefixPermissionDiff\(permissionTextPreview\(oldString, 400\), '-'\)/);
-    assert.match(presentation, /prefixPermissionDiff\(permissionTextPreview\(newString, 400\), '\+'\)/);
-    assert.doesNotMatch(presentation, /\{command\}<\/pre>/);
-    assert.doesNotMatch(presentation, /\{path\}<\/code>/);
-    assert.doesNotMatch(presentation, /oldString\.slice/);
-    assert.doesNotMatch(presentation, /newString\.slice/);
-  });
 });

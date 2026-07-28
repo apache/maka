@@ -1,7 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type {
-  AnyPermissionRequestEvent,
   SessionSummary,
   UiLocale,
   UserQuestionRequestEvent,
@@ -11,7 +10,6 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { EmptyChatHero } from '../chat-empty-hero.js';
 import { Composer } from '../composer.js';
 import { LocaleProvider } from '../locale-context.js';
-import { PermissionPrompt } from '../permission-dialog.js';
 import { SessionHistoryList } from '../session-history-list.js';
 import { ToolTrow } from '../tool-activity.js';
 import { summarizeTrowTools } from '../tool-activity/trow-summary.js';
@@ -21,21 +19,6 @@ import { ModelProviderRetryIndicator } from '../chat-turn.js';
 function render(locale: UiLocale, children: ReactNode): string {
   return renderToStaticMarkup(<LocaleProvider locale={locale}>{children}</LocaleProvider>);
 }
-
-const permissionRequest = {
-  id: 'event-permission',
-  turnId: 'turn-1',
-  ts: 1,
-  type: 'permission_request',
-  kind: 'tool_permission',
-  requestId: 'request-1',
-  toolUseId: 'tool-1',
-  toolName: 'RawShellTool',
-  category: 'shell_unsafe',
-  reason: 'shell_dangerous',
-  args: { command: 'echo RAW_COMMAND_中文' },
-  rememberForTurnAllowed: true,
-} satisfies AnyPermissionRequestEvent;
 
 const questionRequest = {
   id: 'event-question',
@@ -236,44 +219,18 @@ describe('localized conversation journey', () => {
     assert.match(markup, /aria-label="添加"/);
   });
 
-  it('localizes permission and question chrome while preserving raw values', () => {
+  it('localizes question chrome while preserving raw values', () => {
     const surface = (
-      <>
-        <PermissionPrompt request={permissionRequest} onRespond={() => {}} onStop={() => {}} />
-        <UserQuestionPrompt request={questionRequest} onRespond={() => {}} onStop={() => {}} />
-      </>
+      <UserQuestionPrompt request={questionRequest} onRespond={() => {}} onStop={() => {}} />
     );
     const zh = render('zh', surface);
     const en = render('en', surface);
 
-    assert.match(zh, /允许执行高风险 shell 命令？/);
-    assert.match(zh, /允许操作/);
-    assert.match(en, /Allow a high-risk shell command\?/);
-    assert.match(en, />Allow</);
     assert.match(en, /Other/);
     for (const raw of ['RAW_QUESTION_中文', 'RAW_OPTION_中文']) {
       assert.match(zh, new RegExp(raw));
       assert.match(en, new RegExp(raw));
     }
-  });
-
-  it('localizes stale permission wait durations without mixing unit languages', () => {
-    const staleRequest = {
-      ...permissionRequest,
-      ts: Date.now() - 6 * 60_000,
-    } satisfies AnyPermissionRequestEvent;
-    const zh = render(
-      'zh',
-      <PermissionPrompt request={staleRequest} onRespond={() => {}} onStop={() => {}} />,
-    );
-    const en = render(
-      'en',
-      <PermissionPrompt request={staleRequest} onRespond={() => {}} onStop={() => {}} />,
-    );
-
-    assert.match(zh, /已等待 6 分钟/);
-    assert.match(en, /Waiting for 6 minutes/);
-    assert.doesNotMatch(en, /分钟|小时/);
   });
 
   it('keeps the default conversation list flat without a redundant time heading', () => {

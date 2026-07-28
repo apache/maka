@@ -379,26 +379,6 @@ describe('permission response IPC boundary', () => {
     );
   });
 
-  it('PermissionPrompt submit() awaits onRespond and resets pending in finally (PR-PERMISSION-UI-CLEANUP-0)', async () => {
-    // Critical interaction with PR-STOP-ERROR-SURFACE-0: the parent
-    // respondToSandboxBoundary now swallows IPC errors via toast. If
-    // submit() doesn't reset pending on resolve OR catch, the
-    // prompt buttons lock up forever after a failed IPC.
-    const componentsPath = fileURLToPath(new URL('../../../../../packages/ui/src/permission-dialog.tsx', import.meta.url));
-    const components = await readFile(componentsPath, 'utf8');
-    const submit = components.match(/async function submit\(decision:[\s\S]*?\n  \}/);
-    assert.ok(submit, 'PermissionPrompt submit() must be async');
-    assert.match(components, /const permissionMountedRef = useMountedRef\(\);/);
-    assert.match(components, /const activePermissionRequestIdRef = useRef\(props\.request\.requestId\);/);
-    assert.match(components, /activePermissionRequestIdRef\.current = props\.request\.requestId;/);
-    assert.match(submit[0], /const requestId = props\.request\.requestId;/);
-    assert.match(submit[0], /await props\.onRespond\(/);
-    assert.match(
-      submit[0],
-      /\}\s*finally\s*\{[\s\S]*?if \(activePermissionRequestIdRef\.current === requestId\) \{[\s\S]*?responsePendingRef\.current\s*=\s*false[\s\S]*?if \(permissionMountedRef\.current\) setResponsePending\(false\)/,
-    );
-  });
-
   it('toast items carry role="alert" so screen readers announce them (PR-PERMISSION-UI-CLEANUP-0)', async () => {
     const toastPath = fileURLToPath(new URL('../../../../../packages/ui/src/toast.tsx', import.meta.url));
     const toast = await readFile(toastPath, 'utf8');
