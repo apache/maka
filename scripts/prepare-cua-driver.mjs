@@ -42,6 +42,8 @@ const binDir = join(repoRoot, 'apps', 'desktop', 'resources', 'bin');
 const licenseDir = join(repoRoot, 'apps', 'desktop', 'resources', 'licenses', 'cua-driver');
 const DEFAULT_FETCH_TIMEOUT_MS = 300_000;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+/** Upstream home of cua-driver. Anything else is a fork build and must pin its patch provenance. */
+const UPSTREAM_CUA_REPO = 'trycua/cua';
 const MACH_O_MAGICS = new Set([
   'feedface',
   'feedfacf',
@@ -94,10 +96,8 @@ export function assertPinnedCuaDriverChecksums(entry) {
   if (
     typeof entry?.expectedVersion !== 'string' ||
     typeof entry?.expectedProtocolVersion !== 'string' ||
-    typeof entry?.sourceCommit !== 'string' ||
+    typeof entry?.upstreamTag !== 'string' ||
     typeof entry?.upstreamCommit !== 'string' ||
-    typeof entry?.upstreamMergeCommit !== 'string' ||
-    typeof entry?.cargoLockSha256 !== 'string' ||
     !Array.isArray(entry?.architectures) ||
     entry.architectures.length === 0 ||
     !['archiveSizeBytes', 'binarySizeBytes', 'licenseSizeBytes', 'sourceSizeBytes'].every(
@@ -105,8 +105,25 @@ export function assertPinnedCuaDriverChecksums(entry) {
     )
   ) {
     throw new Error(
-      'bundled-tools.json cuaDriver must pin version, protocol, source commits, Cargo.lock, architectures, and exact file sizes.',
+      'bundled-tools.json cuaDriver must pin version, protocol, upstream tag and commit, architectures, and exact file sizes.',
     );
+  }
+  // A fork build is only reproducible if it also pins where the patch came
+  // from and what it was built against. An upstream release artifact carries
+  // none of those, and demanding them would force placeholder values that
+  // assert provenance nobody verified.
+  const isForkBuild = entry.repo !== UPSTREAM_CUA_REPO;
+  if (isForkBuild) {
+    if (
+      typeof entry?.sourceCommit !== 'string' ||
+      typeof entry?.upstreamMergeCommit !== 'string' ||
+      typeof entry?.cargoLockSha256 !== 'string'
+    ) {
+      throw new Error(
+        `bundled-tools.json cuaDriver.repo is ${JSON.stringify(entry.repo)} (a fork of ${UPSTREAM_CUA_REPO}), ` +
+          'so it must also pin sourceCommit, upstreamMergeCommit, and cargoLockSha256.',
+      );
+    }
   }
 }
 
@@ -446,13 +463,22 @@ export async function prepareCuaDriver(targetPlatform = process.platform) {
       .split('\n')
       .map((line) => line.trim())
       .filter(Boolean);
-    if (licenses.length !== 1 || sources.length !== 1) {
+    // A fork build carries LICENSE.md and SOURCE.json inside the archive, and
+    // must — they describe a binary nobody else can reproduce. Upstream release
+    // artifacts ship only the binary and SDK files, so the repo's own copies
+    // are the authoritative record for what was pinned.
+    const isUpstreamRelease = cua.repo === UPSTREAM_CUA_REPO;
+    if (!isUpstreamRelease && (licenses.length !== 1 || sources.length !== 1)) {
       throw new Error(
         `Extracted archive ${cua.asset} must contain exactly one LICENSE.md and SOURCE.json`,
       );
     }
-    const licenseBytes = await readFile(licenses[0]);
-    const sourceBytes = await readFile(sources[0]);
+    const licenseBytes = isUpstreamRelease
+      ? await readFile(join(licenseDir, 'LICENSE.md'))
+      : await readFile(licenses[0]);
+    const sourceBytes = isUpstreamRelease
+      ? await readFile(join(licenseDir, 'SOURCE.json'))
+      : await readFile(sources[0]);
     if (licenseBytes.byteLength !== cua.licenseSizeBytes) {
       throw new Error(
         `Size mismatch for extracted cua-driver LICENSE.md: expected ${cua.licenseSizeBytes}, got ${licenseBytes.byteLength}`,

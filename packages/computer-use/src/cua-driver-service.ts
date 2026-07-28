@@ -1,9 +1,10 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { rmSync } from 'node:fs';
-import { access, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   CuaDriverLifecycleError,
@@ -14,6 +15,8 @@ import {
 } from './cua-driver-release.js';
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
+/** How long to wait for `serve --embedded` to publish its socket before failing the start. */
+const DAEMON_READY_TIMEOUT_MS = 10_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
 const DEFAULT_MAX_RESTART_ATTEMPTS = 3;
 const DEFAULT_RESTART_BACKOFF_MS = 50;
@@ -82,6 +85,21 @@ function abortPromise(signal: AbortSignal): Promise<never> {
 export class CuaDriverService {
   private readonly childEnv: NodeJS.ProcessEnv;
   private child?: ChildProcessWithoutNullStreams;
+  /**
+   * cua-driver >= 0.9 splits embedded hosting in two: a `serve --embedded`
+   * daemon that owns the runtime, and an `mcp --embedded` proxy that speaks
+   * JSON-RPC over stdio. Both are our direct children so the host app's TCC
+   * grants still apply; the daemon is spawned first and torn down with the
+   * proxy so a crash on either side never leaves an orphan holding the socket.
+   */
+  private daemon?: ChildProcess;
+  private daemonSocketPath?: string;
+  /**
+   * Session id declared to cua-driver at handshake. One per process, minted
+   * fresh on every (re)start so a restarted runtime never inherits state that
+   * a previous generation registered under the same name.
+   */
+  private runtimeSessionId = randomUUID();
   private nextId = 1;
   private pending = new Map<number, PendingRequest>();
   private buffer = '';
@@ -213,12 +231,19 @@ export class CuaDriverService {
       this.assertActive();
     }
 
+    // Fresh session identity per generation: a restart must not resume a
+    // session the previous runtime registered.
+    this.runtimeSessionId = randomUUID();
+    const socketPath = await this.startDaemon(executablePath);
+    this.assertActive();
+
     const child = spawn(
       executablePath,
       [
         'mcp',
         '--embedded',
-        '--no-daemon-relaunch',
+        '--socket',
+        socketPath,
         '--no-overlay',
         '--host-bundle-id',
         this.opts.hostBundleId,
@@ -232,7 +257,6 @@ export class CuaDriverService {
           CUA_DRIVER_HOST_BUNDLE_ID: this.opts.hostBundleId,
           CUA_DRIVER_RS_TELEMETRY_ENABLED: 'false',
           CUA_DRIVER_RS_UPDATE_CHECK: 'false',
-          CUA_DRIVER_RS_MCP_NO_RELAUNCH: '1',
         },
       },
     );
@@ -280,18 +304,26 @@ export class CuaDriverService {
       }
       this.assertActive();
       this.notify('notifications/initialized');
+      // cua-driver >= 0.12 retired the process-wide `set_config capture_scope`
+      // in favour of a per-session declaration. This service still owns exactly
+      // one scope for its whole lifetime (one process per role), so it declares
+      // a single long-lived session at handshake time and every later call
+      // rides on it.
       const config = await this.request(
         'tools/call',
         {
-          name: 'set_config',
-          arguments: { capture_scope: this.opts.captureScope },
+          name: 'start_session',
+          arguments: {
+            session: this.runtimeSessionId,
+            capture_scope: this.opts.captureScope,
+          },
         },
         { timeoutMs, retrySafe: true },
       );
       this.assertActive();
       if (config.error || config.result?.isError) {
         throw new Error(
-          `set_config capture_scope=${this.opts.captureScope} failed: ${
+          `start_session capture_scope=${this.opts.captureScope} failed: ${
             config.error?.message ?? 'tool returned isError'
           }`,
         );
@@ -391,6 +423,11 @@ export class CuaDriverService {
     }
     this.child = undefined;
     this.buffer = '';
+    // The daemon exists only to serve this proxy. Nothing tells it the proxy is
+    // gone — its stdin is 'ignore', so there is no EOF to notice — and a
+    // restart brings up a fresh pair, so leaving it running accumulates one
+    // orphaned process per crash.
+    this.stopDaemon();
     if (!this.disposed) {
       this.state = 'idle';
       const backoff = this.opts.restartBackoffMs ?? DEFAULT_RESTART_BACKOFF_MS;
@@ -547,8 +584,100 @@ export class CuaDriverService {
     this.emitRelease('session_cleared', [sessionId], false, false);
   }
 
+  /**
+   * Spawn the `serve --embedded` daemon that owns the runtime and wait for its
+   * socket to appear.
+   *
+   * The socket does NOT live under the role's private HOME: those paths are
+   * already long temp directories, and a Unix socket path must fit in
+   * `sun_path` (~104 bytes on macOS) or `bind` fails outright. A short
+   * dedicated directory keeps us well inside that budget while still giving
+   * each role its own runtime.
+   */
+  private async startDaemon(executablePath: string): Promise<string> {
+    const socketDir = join(tmpdir(), 'maka-cud');
+    await mkdir(socketDir, { recursive: true, mode: 0o700 });
+    const socketPath = join(socketDir, `${randomUUID().slice(0, 8)}.sock`);
+    this.assertActive();
+
+    const daemon = spawn(executablePath, ['serve', '--embedded', '--socket', socketPath], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...this.childEnv,
+        HOME: this.opts.homeDir,
+        CUA_DRIVER_EMBEDDED: '1',
+        CUA_DRIVER_HOST_BUNDLE_ID: this.opts.hostBundleId,
+        CUA_DRIVER_RS_TELEMETRY_ENABLED: 'false',
+        CUA_DRIVER_RS_UPDATE_CHECK: 'false',
+      },
+    });
+    this.daemon = daemon;
+    this.daemonSocketPath = socketPath;
+
+    let daemonStderr = '';
+    daemon.stderr?.setEncoding('utf8');
+    daemon.stderr?.on('data', (chunk: string) => {
+      daemonStderr = `${daemonStderr}${chunk}`.slice(-4096);
+    });
+    // A daemon exit invalidates the proxy: fail the same way a proxy crash
+    // does rather than leaving requests hanging on a dead socket.
+    daemon.on('exit', () => {
+      if (this.daemon === daemon) this.onDaemonLost();
+    });
+    daemon.on('error', () => {
+      if (this.daemon === daemon) this.onDaemonLost();
+    });
+
+    const deadline = Date.now() + DAEMON_READY_TIMEOUT_MS;
+    try {
+      while (Date.now() < deadline) {
+        this.assertActive();
+        if (daemon.exitCode !== null || daemon.signalCode !== null) {
+          throw new Error(
+            `cua-driver serve exited before its socket was ready${daemonStderr.trim() ? `: ${daemonStderr.trim()}` : ''}`,
+          );
+        }
+        try {
+          await stat(socketPath);
+          return socketPath;
+        } catch {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+      }
+      throw new Error('cua-driver serve did not publish its socket in time');
+    } catch (error) {
+      // A daemon that never became usable must not outlive the attempt. Both
+      // the timeout path and an abort mid-wait would otherwise leak a live
+      // process holding its stdio pipes open.
+      this.stopDaemon();
+      throw error;
+    }
+  }
+
+  private onDaemonLost(): void {
+    this.daemon = undefined;
+    const child = this.child;
+    if (child) this.onExit(child, 'child_exit');
+  }
+
+  private stopDaemon(): void {
+    const daemon = this.daemon;
+    this.daemon = undefined;
+    if (daemon && daemon.exitCode === null && daemon.signalCode === null) {
+      daemon.kill('SIGKILL');
+    }
+    const socketPath = this.daemonSocketPath;
+    this.daemonSocketPath = undefined;
+    if (socketPath) {
+      rm(socketPath, { force: true }).catch(() => {
+        // The daemon usually unlinks it; a leftover socket is harmless.
+      });
+    }
+  }
+
   private kill(reason: CuaDriverReleaseEvent['reason']): void {
     const child = this.child;
+    this.stopDaemon();
     if (!child) return;
     child.kill('SIGKILL');
     this.onExit(child, reason);
