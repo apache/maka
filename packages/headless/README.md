@@ -18,7 +18,7 @@ maka eval compare <results.jsonl>
 maka eval task-run run <spec.json> --task <id> --config <id> [--out <dir>]
 maka eval task-run inspect <taskRunId> --store <out>/runs [--json]
 maka eval task-run export <taskRunId> --store <out>/runs --out <dir> [--include-events]
-maka eval task-run resume <taskRunId> --spec <spec.json> --out <dir> [--grant-file <json>]
+maka eval task-run resume <taskRunId> --spec <spec.json> --out <dir>
 maka eval task-run retry-failed <results.jsonl|out-dir> --spec <spec.json> --out <dir>
 maka eval ahe export <taskRunId...> --store <out>/runs --repo <repo> --out <dir>
 maka eval harbor run --instruction <text> --workdir <dir> --out <dir> --isolation harbor-local

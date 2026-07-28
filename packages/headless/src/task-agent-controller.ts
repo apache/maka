@@ -90,7 +90,6 @@ import {
   type TaskAttemptStatus,
   type TaskEvent,
   type TaskInterventionPolicy,
-  type TaskPermissionGrant,
   type TaskRunError,
   type TaskRunResult,
   type VerifierResult,
@@ -112,7 +111,6 @@ export interface RunTaskOnceDeps extends RunExperimentDeps {
   priorRuntimeContext?: readonly RuntimeEvent[];
   permissionMode?: 'execute';
   interventionPolicy?: TaskInterventionPolicy;
-  permissionGrants?: readonly TaskPermissionGrant[];
   /** Absolute wall-clock deadline for settling the active runtime before its outer watchdog. */
   deadlineAtMs?: number;
 }
@@ -248,17 +246,6 @@ export async function runTaskOnceWithStorage(
       validatedAt: now(),
     }),
   });
-  for (const grant of deps.permissionGrants ?? []) {
-    if (grant.taskRunId !== taskRunId) continue;
-    await appendTaskEvent(taskRunStore, taskRunId, {
-      type: 'permission_grant_recorded',
-      id: newId(),
-      taskRunId,
-      ts: now(),
-      grant,
-    });
-  }
-
   const workspace = await prepareWorkspace(task.workspaceDir);
   let graphCoordinator: AgentGraphCoordinator | undefined;
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
