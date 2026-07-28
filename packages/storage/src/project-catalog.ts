@@ -282,9 +282,6 @@ class FileProjectCatalog implements ProjectCatalog {
         file.projects = file.projects.filter((item) => item.id !== conflict.id);
       }
       project.identity = resolved.identity;
-      const existingDestination = conflict?.locations.find(
-        (location) => location.path === locationPath,
-      );
       project.locations = [
         {
           path: locationPath,
