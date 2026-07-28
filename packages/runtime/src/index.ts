@@ -364,9 +364,29 @@ export type {
 export { buildBuiltinTools } from './builtin-tools.js';
 export type {
   BuildBuiltinToolsOptions,
+  EditingProtocol,
   MakaTool as BuiltinMakaTool,
   MakaToolContext as BuiltinMakaToolContext,
 } from './builtin-tools.js';
+export {
+  parseApplyPatch,
+  applyUpdateChunksToContent,
+  assertSafePatchPath,
+  collectPatchPaths,
+} from '@maka/core/apply-patch';
+export type {
+  ApplyPatchHunk,
+  ApplyPatchParseOutcome,
+  ApplyPatchUpdateChunk,
+} from '@maka/core/apply-patch';
+export {
+  executeApplyPatchWithAdapter,
+} from './apply-patch-engine.js';
+export type {
+  ApplyPatchEngineResult,
+  ApplyPatchFsAdapter,
+  ApplyPatchOperationResult,
+} from './apply-patch-engine.js';
 export {
   buildToolResultArchiveResourceRef,
   parseToolResultArchiveResourceRef,

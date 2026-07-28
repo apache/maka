@@ -1,14 +1,17 @@
 import { MAX_READ_IMAGE_BYTES, type BackendKind, type StorageRef } from '@maka/core';
 import type { EffectiveProductToolSurface, MakaTool } from '@maka/runtime';
+import { type EditingProtocol } from '@maka/core/apply-patch';
 import {
   assertProductBindingCatalogClean,
   bashToolShellGuidance,
   buildForegroundBashTool,
   buildParentAgentTools,
   computeEditedSource,
+  executeApplyPatchWithAdapter,
   isSupportedImagePath,
   projectEffectiveProductToolSurface,
   validateImageBytes,
+  type ApplyPatchFsAdapter,
 } from '@maka/runtime';
 import { withFileWriteLock } from '@maka/runtime/file-write-lock';
 import { createHash } from 'node:crypto';
@@ -31,6 +34,12 @@ import {
 
 export interface BuildIsolatedHeadlessToolsOptions {
   agentTools?: boolean;
+  /**
+   * Per-run editing protocol projection (#1552). Default `edit_write` keeps
+   * Write/Edit; `apply_patch` exposes ApplyPatch instead. Same semantics as
+   * runtime `buildBuiltinTools({ editingProtocol })`.
+   */
+  editingProtocol?: EditingProtocol;
   heavyTaskEvidence?: HeavyTaskEvidenceRecorder;
   heavyTaskProgress?: HeavyTaskProgressRecorder;
   heavyTaskSelfCheck?: HeavyTaskSelfCheckRecorder;
@@ -88,14 +97,18 @@ export function buildIsolatedHeadlessProductToolSurface(
   executor: IsolatedToolExecutor,
   options: Pick<
     BuildIsolatedHeadlessToolsOptions,
-    'agentTools' | 'heavyTaskEvidence' | 'snapshotImage'
+    'agentTools' | 'heavyTaskEvidence' | 'snapshotImage' | 'editingProtocol'
   > = {},
 ): EffectiveProductToolSurface {
+  const editingProtocol: EditingProtocol = options.editingProtocol ?? 'edit_write';
+  // Bind every editing protocol implementation; the product-tool projector
+  // selects exactly one via policy.editingProtocol (#1493 / #1552).
   const productTools = [
     buildIsolatedBashTool(executor, options),
     buildIsolatedReadTool(executor, options),
     buildIsolatedWriteTool(executor, options),
     buildIsolatedEditTool(executor, options),
+    buildIsolatedApplyPatchTool(executor, options),
     buildIsolatedGlobTool(executor, options),
     buildIsolatedGrepTool(executor, options),
     ...buildParentAgentTools(),
@@ -109,6 +122,7 @@ export function buildIsolatedHeadlessProductToolSurface(
     tools: productTools,
     policy: {
       economy: true,
+      editingProtocol,
       ...(options.agentTools ? {} : { disabledSurfaceIds: ['agent'] }),
     },
   });
@@ -123,7 +137,7 @@ export function buildHeadlessProductToolSurfaceForBackend(
   executor: IsolatedToolExecutor | undefined,
   options: Pick<
     BuildIsolatedHeadlessToolsOptions,
-    'agentTools' | 'heavyTaskEvidence' | 'snapshotImage'
+    'agentTools' | 'heavyTaskEvidence' | 'snapshotImage' | 'editingProtocol'
   > = {},
 ): EffectiveProductToolSurface | undefined {
   if (!headlessBackendBindsMakaProductTools(backend) || !executor) return undefined;
@@ -280,6 +294,89 @@ export function buildIsolatedWriteTool(
         await options.heavyTaskEvidence?.recordToolEvidence({ name: 'Write', input, result }, ctx);
         return result;
       });
+    },
+  };
+}
+
+export function buildIsolatedApplyPatchTool(
+  executor: IsolatedToolExecutor,
+  options: Pick<BuildIsolatedHeadlessToolsOptions, 'heavyTaskEvidence'> = {},
+): MakaTool {
+  return {
+    name: 'ApplyPatch',
+    activityKind: 'edit',
+    categoryHint: 'file_write',
+    description:
+      'Apply a Codex-compatible multi-file patch in the isolated headless task workspace. ' +
+      'Pass the full *** Begin Patch … *** End Patch envelope. Parsed and preflighted ' +
+      'before any mutation; absolute paths and parent escapes are rejected.',
+    parameters: z.object({
+      patch: z.string().describe('Full *** Begin Patch … *** End Patch text.'),
+    }),
+    impl: async ({ patch }, ctx) => {
+      const { cwd } = ctx;
+      const fs = createIsolatedApplyPatchFs(executor, cwd, ctx.abortSignal);
+      // Evidence recording for ApplyPatch is intentionally deferred: the
+      // heavy-task evidence union still types Write/Edit only. The tool still
+      // runs through ToolRuntime durability like every other MakaTool.
+      void options.heavyTaskEvidence;
+      return executeApplyPatchWithAdapter(patch, fs, withFileWriteLock);
+    },
+  };
+}
+
+function createIsolatedApplyPatchFs(
+  executor: IsolatedToolExecutor,
+  cwd: string,
+  abortSignal: AbortSignal,
+): ApplyPatchFsAdapter {
+  return {
+    async lockKey(path) {
+      const normalized = normalizeWorkspacePath(path, cwd, 'ApplyPatch path');
+      return fileWriteKey(cwd, normalized);
+    },
+    async pathExists(path) {
+      const normalized = normalizeWorkspacePath(path, cwd, 'ApplyPatch exists path');
+      try {
+        await readIsolatedFileBytes(
+          executor,
+          cwd,
+          normalized,
+          abortSignal,
+          EDIT_READ_BYTES_SCRIPT,
+          'ApplyPatch exists',
+        );
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    async readText(path, label) {
+      const normalized = normalizeWorkspacePath(path, cwd, label);
+      const raw = await readIsolatedFileBytes(
+        executor,
+        cwd,
+        normalized,
+        abortSignal,
+        EDIT_READ_BYTES_SCRIPT,
+        label,
+      );
+      const source = raw.toString('utf8');
+      if (Buffer.compare(Buffer.from(source, 'utf8'), raw) !== 0) {
+        throw new Error(`${label} does not support non-UTF-8 files: ${normalized}`);
+      }
+      return source;
+    },
+    async writeText(path, content) {
+      const normalized = normalizeWorkspacePath(path, cwd, 'ApplyPatch write path');
+      const bytes = Buffer.from(content, 'utf8');
+      await writeIsolatedFileBytes(executor, cwd, normalized, bytes, abortSignal);
+      return { path: normalized, bytes: bytes.length };
+    },
+    async deletePath(path) {
+      const normalized = normalizeWorkspacePath(path, cwd, 'ApplyPatch delete path');
+      await deleteIsolatedPath(executor, cwd, normalized, abortSignal);
+      return { path: normalized };
     },
   };
 }
@@ -563,6 +660,15 @@ async function writeIsolatedFileBytes(
   );
 }
 
+async function deleteIsolatedPath(
+  executor: IsolatedToolExecutor,
+  cwd: string,
+  path: string,
+  abortSignal: AbortSignal,
+): Promise<void> {
+  await execFileCommand(executor, cwd, shellFileCommand(DELETE_SCRIPT, [path]), abortSignal);
+}
+
 function computeEditBytes(
   raw: Buffer,
   oldString: string,
@@ -828,6 +934,13 @@ const WRITE_SCRIPT = `${COMMON_SHELL_HELPERS}
 root=$(pwd -P) || exit 1
 target=$(writable_target "$1" 'Write path') || exit 1
 printf '%s' "$2" > "$target"
+`;
+
+const DELETE_SCRIPT = `${COMMON_SHELL_HELPERS}
+root=$(pwd -P) || exit 1
+target=$(existing_target "$1" 'Delete path') || exit 1
+[ -f "$target" ] || fail 'Delete path must be a regular file'
+rm -f "$target"
 `;
 
 const EDIT_READ_BYTES_SCRIPT = `${COMMON_SHELL_HELPERS}

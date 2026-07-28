@@ -63,6 +63,16 @@ describe('builtin tool activity kinds', () => {
       Glob: 'search',
       Grep: 'search',
     });
+    // ApplyPatch is projected only when editingProtocol is apply_patch.
+    const patchKinds = Object.fromEntries(
+      buildBuiltinTools({ editingProtocol: 'apply_patch' }).map((tool) => [
+        tool.name,
+        tool.activityKind,
+      ]),
+    );
+    expect(patchKinds.ApplyPatch).toBe('edit');
+    assert.equal('Write' in patchKinds, false);
+    assert.equal('Edit' in patchKinds, false);
   });
 
   test('categorizes background task controls as command activity', () => {

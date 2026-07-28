@@ -467,7 +467,9 @@ function deriveWorkerProfile(
 }
 
 function operationAccess(kind: FilesystemWorkerOperation['kind']): 'read' | 'write' {
-  return kind === 'write' || kind === 'edit' || kind === 'format_json' ? 'write' : 'read';
+  return kind === 'write' || kind === 'edit' || kind === 'format_json' || kind === 'delete'
+    ? 'write'
+    : 'read';
 }
 
 function operationScope(kind: FilesystemWorkerOperation['kind']): 'exact' | 'subtree' | 'auto' {

@@ -86,6 +86,8 @@ export const MAKA_CATALOG_TOOLS: readonly CatalogToolDef[] = Object.freeze(
     { name: 'ArchiveRead' },
     { name: 'Write' },
     { name: 'Edit' },
+    /** GPT/Codex-compatible editing projection (#1552); mutually exclusive with Write/Edit per run. */
+    { name: 'ApplyPatch' },
     { name: 'FormatJson' },
     { name: 'Glob' },
     { name: 'Grep' },

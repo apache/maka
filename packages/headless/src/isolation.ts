@@ -116,6 +116,7 @@ export const ISOLATED_HEADLESS_TOOL_NAMES = [
   'Read',
   'Write',
   'Edit',
+  'ApplyPatch',
   'Glob',
   'Grep',
 ] as const;

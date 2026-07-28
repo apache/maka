@@ -13,6 +13,7 @@ describe('legacy permission payload classification', () => {
   test('keeps plan-mode tool availability classification independent of authorization', () => {
     expect(classifyToolUse({ toolName: 'Read', args: {} })).toBe('read');
     expect(classifyToolUse({ toolName: 'Write', args: {} })).toBe('file_write');
+    expect(classifyToolUse({ toolName: 'ApplyPatch', args: {} })).toBe('file_write');
     expect(classifyToolUse({ toolName: 'ExploreAgent', args: {}, categoryHint: 'subagent' })).toBe(
       'subagent',
     );

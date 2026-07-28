@@ -80,7 +80,8 @@
     "./usage-stats/pricing": "./dist/usage-stats/pricing.js",
     "./usage-record-schema": "./dist/usage-record-schema.js",
     "./session-send-projection": "./dist/session-send-projection.js",
-    "./tool-catalog": "./dist/tool-catalog.js"
+    "./tool-catalog": "./dist/tool-catalog.js",
+    "./apply-patch": "./dist/apply-patch.js"
   },
   "scripts": {
     "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo",

@@ -458,6 +458,17 @@ function validateProductToolSurfaceIdentity(value: unknown): ProductToolSurfaceI
       );
     }
   }
+  const editingProtocolRaw = value.policy.editingProtocol;
+  const editingProtocol =
+    editingProtocolRaw === undefined
+      ? 'edit_write'
+      : editingProtocolRaw === 'edit_write' || editingProtocolRaw === 'apply_patch'
+        ? editingProtocolRaw
+        : (() => {
+            throw new Error(
+              'executionIdentity.productToolSurface.policy.editingProtocol must be "edit_write" or "apply_patch"',
+            );
+          })();
   return {
     policy: {
       economy: requireBoolean(
@@ -465,6 +476,7 @@ function validateProductToolSurfaceIdentity(value: unknown): ProductToolSurfaceI
         'executionIdentity.productToolSurface.policy.economy',
       ),
       disabledSurfaceIds,
+      editingProtocol,
     },
     productToolNames,
   };

@@ -191,6 +191,17 @@ export async function executeFilesystemOperation(
         changed: formatted !== original,
       };
     }
+    case 'delete': {
+      const path = await resolveExistingAllowed(
+        operation.cwd,
+        operation.path,
+        'Delete',
+        'write',
+        operationPermission,
+      );
+      await fs.unlink(path);
+      return { kind: 'delete', ok: true, path };
+    }
     case 'glob': {
       assertContainedGlobPattern(operation.pattern);
       const path = await resolveExistingAllowed(

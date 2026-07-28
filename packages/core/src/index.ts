@@ -8,6 +8,7 @@
  */
 
 export * from './mcp.js';
+export * from './apply-patch.js';
 export * from './collaboration.js';
 export * from './orchestration.js';
 export * from './swarm-command.js';

@@ -25,6 +25,12 @@ import {
 } from '@maka/core';
 import { computeEditedSource } from './edit-replace.js';
 import { bashToolResultToModelOutput } from './bash-model-output.js';
+import { type EditingProtocol } from '@maka/core/apply-patch';
+export type { EditingProtocol } from '@maka/core/apply-patch';
+import {
+  executeApplyPatchWithAdapter,
+  type ApplyPatchFsAdapter,
+} from './apply-patch-engine.js';
 import {
   buildManagedBashTool,
   buildStopBackgroundTaskTool,
@@ -44,6 +50,7 @@ import {
   type WorkspaceExecResult,
   type WorkspaceExecutor,
 } from './workspace-executor.js';
+import { mkdir, unlink } from 'node:fs/promises';
 
 // tool-runtime.ts is the single source of truth for the tool shape; this
 // re-export only keeps back-compat for callers that imported from
@@ -87,6 +94,14 @@ export interface BuildBuiltinToolsOptions {
   filesystemWorker?: Pick<FilesystemWorkerClient, 'execute'>;
   /** Host-surface gate for Edit. Defaults to enabled. */
   includeEdit?: boolean;
+  /**
+   * Per-run editing protocol projection (#1552).
+   * - `edit_write` (default): expose Write/Edit; omit ApplyPatch.
+   * - `apply_patch`: expose ApplyPatch; omit Write and Edit.
+   * - `all`: bind Write/Edit/ApplyPatch so `projectEffectiveProductToolSurface`
+   *   can select exactly one protocol via `policy.editingProtocol`.
+   */
+  editingProtocol?: EditingProtocol | 'all';
   /** Test/embedding override. Production callers use the current process platform. */
   sandboxPlatform?: SandboxPlatform;
   snapshotImage?: (input: {
@@ -97,6 +112,7 @@ export interface BuildBuiltinToolsOptions {
     mimeType: string;
   }) => Promise<Extract<StorageRef, { kind: 'session_file' }>>;
 }
+
 
 export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaTool[] {
   const executor = options.executor ?? createLocalWorkspaceExecutor();
@@ -399,6 +415,35 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       },
     },
     {
+      name: 'ApplyPatch',
+      activityKind: 'edit',
+      categoryHint: 'file_write',
+      description:
+        'Apply a Codex-compatible multi-file patch in one call. Pass the full patch ' +
+        'envelope (*** Begin Patch … *** End Patch) with Add File / Update File ' +
+        '(optional Move to) / Delete File operations. Paths must be relative to the ' +
+        'session cwd. The complete patch is parsed and preflighted before any mutation; ' +
+        'syntax errors, path escapes, missing targets, and hunk mismatches leave the ' +
+        'workspace unchanged. Subject to permission policy.',
+      parameters: z.object({
+        patch: z
+          .string()
+          .describe(
+            'Full *** Begin Patch … *** End Patch text (Codex apply_patch envelope).',
+          ),
+      }),
+      executionFacts,
+      impl: async ({ patch }, ctx) => {
+        const fs = createRuntimeApplyPatchFs({
+          ctx,
+          executor,
+          filesystemWorker: options.filesystemWorker,
+          permissionProfile: options.permissionProfile,
+        });
+        return await executeApplyPatchWithAdapter(patch, fs, withFileWriteLock);
+      },
+    },
+    {
       name: 'FormatJson',
       activityKind: 'edit',
       description:
@@ -579,7 +624,19 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       },
     },
   ];
-  return tools.filter((tool) => options.includeEdit !== false || tool.name !== 'Edit');
+  // Host composition should prefer `projectEffectiveProductToolSurface` with
+  // `policy.editingProtocol`. The builder option remains a convenience filter
+  // for tests and callers that do not run the projector.
+  // Use `editingProtocol: 'all'` to bind every protocol for projector selection.
+  const editingProtocol = options.editingProtocol ?? 'edit_write';
+  return tools.filter((tool) => {
+    if (tool.name === 'Edit' && options.includeEdit === false) return false;
+    if (editingProtocol === 'all') return true;
+    if (editingProtocol === 'apply_patch') {
+      return tool.name !== 'Write' && tool.name !== 'Edit';
+    }
+    return tool.name !== 'ApplyPatch';
+  });
 }
 
 function filesystemWorkerForExecution(
@@ -1075,6 +1132,111 @@ async function fileToolWriteLockKey(cwd: string, path: string): Promise<string> 
     cwd,
   });
   return target.enforcementPath;
+}
+
+interface RuntimeApplyPatchDeps {
+  ctx: MakaToolContext;
+  executor: WorkspaceExecutor;
+  filesystemWorker?: Pick<FilesystemWorkerClient, 'execute'>;
+  permissionProfile?: PermissionProfile;
+}
+
+function createRuntimeApplyPatchFs(input: RuntimeApplyPatchDeps): ApplyPatchFsAdapter {
+  const { cwd } = input.ctx;
+  const filesystemWorker = filesystemWorkerForExecution(input.filesystemWorker, input.ctx);
+  const canonicalCwd = filesystemWorker ? canonicalExistingPath(cwd) : cwd;
+
+  const workerExecute = async (operation: {
+    kind: 'read' | 'write' | 'delete';
+    path: string;
+    content?: string;
+  }) => {
+    if (!filesystemWorker) throw new Error('Filesystem worker is unavailable.');
+    return filesystemWorker.execute({
+      operation:
+        operation.kind === 'write'
+          ? { kind: 'write', path: operation.path, content: operation.content ?? '' }
+          : operation.kind === 'delete'
+            ? { kind: 'delete', path: operation.path }
+            : { kind: 'read', path: operation.path },
+      cwd: canonicalCwd,
+      ...(input.ctx.executionBoundary ? { executionBoundary: input.ctx.executionBoundary } : {}),
+      mode: input.ctx.permissionMode ?? 'ask',
+      ...(input.permissionProfile ? { permissionProfile: input.permissionProfile } : {}),
+      ...(input.ctx.abortSignal ? { abortSignal: input.ctx.abortSignal } : {}),
+    });
+  };
+
+  return {
+    async lockKey(path) {
+      if (filesystemWorker) return fileToolWriteLockKey(canonicalCwd, path);
+      return (await input.executor.writeLockKey({ cwd, path })).key;
+    },
+    async pathExists(path) {
+      try {
+        if (filesystemWorker) {
+          const result = await workerExecute({ kind: 'read', path });
+          return result.kind === 'read' || result.kind === 'read_image';
+        }
+        await input.executor.resolveExistingPath({
+          cwd,
+          path,
+          label: 'ApplyPatch exists',
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    async readText(path, label) {
+      if (filesystemWorker) {
+        const result = await workerExecute({ kind: 'read', path });
+        if (result.kind === 'read_image') throw new Error(`${label} does not support image files.`);
+        if (result.kind !== 'read') throw new Error(`${label}: unexpected read result for ${path}`);
+        return result.content;
+      }
+      const { path: resolvedPath } = await input.executor.resolveExistingPath({
+        cwd,
+        path,
+        label,
+      });
+      const read = await input.executor.readFile({ cwd, path: resolvedPath });
+      if ('bytes' in read) throw new Error(`${label} does not support image files.`);
+      return read.content;
+    },
+    async writeText(path, content) {
+      if (filesystemWorker) {
+        const result = await workerExecute({ kind: 'write', path, content });
+        if (result.kind !== 'write') {
+          throw new Error('Filesystem worker returned a mismatched write.');
+        }
+        return { path: result.path, bytes: result.bytes };
+      }
+      const { path: resolvedPath } = await input.executor.resolveWritablePath({
+        cwd,
+        path,
+        label: 'ApplyPatch',
+      });
+      await mkdir(dirname(resolvedPath), { recursive: true });
+      return await input.executor.writeFile({ cwd, path: resolvedPath, content });
+    },
+    async deletePath(path) {
+      if (filesystemWorker) {
+        const result = await workerExecute({ kind: 'delete', path });
+        if (result.kind !== 'delete') {
+          throw new Error('Filesystem worker returned a mismatched delete.');
+        }
+        return { path: result.path };
+      }
+      const { path: resolvedPath } = await input.executor.resolveExistingPath({
+        cwd,
+        path,
+        label: 'ApplyPatch Delete',
+      });
+      await unlink(resolvedPath);
+      return { path: resolvedPath };
+    },
+  };
 }
 
 function terminalError(

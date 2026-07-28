@@ -11,6 +11,7 @@ import {
   unknownBoundToolNames,
   type ToolHostId,
 } from '@maka/core/tool-catalog';
+import type { EditingProtocol } from '@maka/core/apply-patch';
 import type { HostCapabilities } from './skills-context.js';
 import type { ToolGroup } from './tool-availability.js';
 import type { MakaTool } from './tool-runtime.js';
@@ -18,11 +19,18 @@ import type { MakaTool } from './tool-runtime.js';
 export interface ProductToolSurfacePolicy {
   readonly economy: boolean;
   readonly disabledSurfaceIds?: Iterable<string>;
+  /**
+   * Editing protocol projection (#1552). Default `edit_write` keeps Write/Edit
+   * and drops ApplyPatch; `apply_patch` does the inverse. Exactly one editing
+   * protocol remains on the effective surface.
+   */
+  readonly editingProtocol?: EditingProtocol;
 }
 
 export interface NormalizedProductToolSurfacePolicy {
   readonly economy: boolean;
   readonly disabledSurfaceIds: readonly string[];
+  readonly editingProtocol: EditingProtocol;
 }
 
 export interface ProductToolSurfaceIdentity {
@@ -92,6 +100,7 @@ export function projectEffectiveProductToolSurface(input: {
   policy: ProductToolSurfacePolicy;
 }): EffectiveProductToolSurface {
   const disabledSurfaceIds = [...new Set(input.policy.disabledSurfaceIds ?? [])].sort();
+  const editingProtocol: EditingProtocol = input.policy.editingProtocol ?? 'edit_write';
   const excludedToolNames = new Set<string>();
   for (const surfaceId of disabledSurfaceIds) {
     const surface = catalogSurfaceById(surfaceId);
@@ -101,6 +110,13 @@ export function projectEffectiveProductToolSurface(input: {
   for (const surface of MAKA_CATALOG_SURFACES) {
     if (surface.hosts[input.host] === 'supported') continue;
     for (const name of surface.toolNames) excludedToolNames.add(name);
+  }
+  // Exactly one editing protocol on the effective surface (#1552).
+  if (editingProtocol === 'apply_patch') {
+    excludedToolNames.add('Write');
+    excludedToolNames.add('Edit');
+  } else {
+    excludedToolNames.add('ApplyPatch');
   }
   const tools = input.tools.filter((tool) => !excludedToolNames.has(tool.name));
   const boundToolNames = new Set(tools.map((tool) => tool.name));
@@ -116,6 +132,7 @@ export function projectEffectiveProductToolSurface(input: {
   const policy = Object.freeze({
     economy: input.policy.economy,
     disabledSurfaceIds: Object.freeze(disabledSurfaceIds),
+    editingProtocol,
   });
   return Object.freeze({
     tools: Object.freeze(tools),

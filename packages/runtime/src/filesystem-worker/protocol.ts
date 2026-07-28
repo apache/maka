@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { validateSandboxBoundaryExpansion } from '@maka/core';
 
-export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 4 as const;
+// v5: add delete operation for ApplyPatch Move/Delete settlement (#1552).
+export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 5 as const;
 
 const path = z.string().min(1).max(4096);
 const cwd = z.string().min(1).max(4096);
@@ -72,6 +73,7 @@ export const FilesystemWorkerOperationSchema = z.discriminatedUnion('kind', [
       sortKeys: z.boolean(),
     })
     .strict(),
+  z.object({ kind: z.literal('delete'), cwd, path }).strict(),
   z
     .object({
       kind: z.literal('glob'),
@@ -144,6 +146,13 @@ export const FilesystemWorkerResultSchema = z.discriminatedUnion('kind', [
       bytesAfter: z.number().int().nonnegative().optional(),
       byteDelta: z.number().int(),
       changed: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('delete'),
+      ok: z.literal(true),
+      path: z.string(),
     })
     .strict(),
   z.object({ kind: z.literal('glob'), files: z.array(z.string()) }).strict(),
