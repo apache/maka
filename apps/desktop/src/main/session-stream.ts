@@ -22,7 +22,6 @@ import type {
   BackendFactory,
   GoalTurnOutcome,
   HostCapabilities,
-  PermissionEngine,
   SessionActivityLease,
   SessionActivityRegistry,
   SessionManager,
@@ -65,7 +64,6 @@ const SKILL_CATALOG_TRACE_DECISION_LIMIT = 100;
 export interface AiSdkBackendFactoryDeps extends DesktopBackendToolSurfaceDeps {
   buildSubscriptionModelFetch: SubscriptionModelFetchBuilder;
   systemPromptService: SystemPromptMainService;
-  permissionEngine: PermissionEngine;
   telemetryRepo: TelemetryRepo;
   artifactStore: ArtifactStore;
   desktopSessionSkillHosts: Map<string, HostCapabilities>;
@@ -94,7 +92,6 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
   const {
     buildSubscriptionModelFetch,
     systemPromptService,
-    permissionEngine,
     telemetryRepo,
     artifactStore,
     desktopSessionSkillHosts,
@@ -151,7 +148,6 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
       connection,
       apiKey: apiKey ?? '',
       modelId: model,
-      permissionEngine,
       modelFactory: (input) => getAIModel({ ...input, fetch: modelFetch }),
       tools: selectedTools,
       sandboxDiagnosticsSnapshot,

@@ -34,7 +34,6 @@ import {
   AgentGraphSupervisorWakeCoordinator,
   BackendRegistry,
   FakeBackend,
-  PermissionEngine,
   SessionManager,
   createLocalContinuationSafetyInspector,
   buildDeepResearchTools,
@@ -643,7 +642,6 @@ const openGateway = new OpenGatewayService({
   },
 });
 const backends = new BackendRegistry();
-const permissionEngine = new PermissionEngine({ newId: randomUUID, now: Date.now });
 const shellRuns = new ShellRunProcessManager({
   store: shellRunStore,
   newId: randomUUID,
@@ -806,7 +804,6 @@ backends.register('ai-sdk', createAiSdkBackendFactory({
   ...desktopBackendToolSurfaceDeps,
   buildSubscriptionModelFetch,
   systemPromptService,
-  permissionEngine,
   telemetryRepo,
   artifactStore,
   desktopSessionSkillHosts,
