@@ -449,6 +449,7 @@ export function ProviderBrandMark({ type }: { type: ProviderType }): ReactElemen
       return <img src={stepfunBrandMark} alt="" />;
     case 'volcengine-ark':
     case 'volcengine-coding-plan':
+    case 'volcengine-agent-plan':
       return <img src={volcengineBrandMark} alt="" />;
     default:
       return <GenericProviderMark />;

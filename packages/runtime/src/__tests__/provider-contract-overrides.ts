@@ -81,7 +81,28 @@ export const PROVIDER_CONTRACT_OVERRIDE_BINDINGS: readonly ProviderContractOverr
   {
     keys: ['openai-responses-compatible:exact-model-id', 'openai-responses-compatible:tool-loop'],
     title: 'Custom OpenAI Responses relay preserves exact model ids and tool results',
-    run: runCustomOpenAIResponsesRelayWire,
+    run: () =>
+      runOpenAIResponsesWire({
+        providerType: 'openai-responses-compatible',
+        slug: 'responses-relay',
+        name: 'Responses Relay',
+        basePath: '/relay/v1',
+        modelId: 'relay-responses-model',
+        apiKey: 'responses-relay-key',
+      }),
+  },
+  {
+    keys: ['volcengine-agent-plan:exact-model-id', 'volcengine-agent-plan:tool-loop'],
+    title: 'Volcengine Agent Plan uses its dedicated key on the OpenAI Responses tool wire',
+    run: () =>
+      runOpenAIResponsesWire({
+        providerType: 'volcengine-agent-plan',
+        slug: 'volcengine-agent-plan',
+        name: 'Volcengine Ark Agent Plan (China)',
+        basePath: '/api/plan/v3',
+        modelId: 'ark-code-latest',
+        apiKey: 'volcengine-agent-plan-test-key',
+      }),
   },
 ];
 
@@ -825,13 +846,20 @@ async function runCohereDiscovery(): Promise<void> {
   assert.equal(result.text, 'Echoed hello.');
 }
 
-async function runCustomOpenAIResponsesRelayWire(): Promise<void> {
-  const modelId = 'relay-responses-model';
+async function runOpenAIResponsesWire(input: {
+  providerType: LlmConnection['providerType'];
+  slug: string;
+  name: string;
+  basePath: string;
+  modelId: string;
+  apiKey: string;
+}): Promise<void> {
+  const { providerType, slug, name, basePath, modelId, apiKey } = input;
   const requestBodies: Array<Record<string, unknown>> = [];
   const server = await startJsonServer(async (request, response) => {
     assert.equal(request.method, 'POST');
-    assert.equal(request.url, '/relay/v1/responses');
-    assert.equal(request.headers.authorization, 'Bearer responses-relay-key');
+    assert.equal(request.url, `${basePath}/responses`);
+    assert.equal(request.headers.authorization, `Bearer ${apiKey}`);
     requestBodies.push(JSON.parse(await readBody(request)) as Record<string, unknown>);
     if (requestBodies.length === 1) {
       respondJson(response, 200, {
@@ -873,10 +901,10 @@ async function runCustomOpenAIResponsesRelayWire(): Promise<void> {
     });
   });
   const connection: LlmConnection = {
-    slug: 'responses-relay',
-    name: 'Responses Relay',
-    providerType: 'openai-responses-compatible',
-    baseUrl: `${server.url}/relay/v1`,
+    slug,
+    name,
+    providerType,
+    baseUrl: `${server.url}${basePath}`,
     defaultModel: modelId,
     enabled: true,
     createdAt: 1,
@@ -884,7 +912,7 @@ async function runCustomOpenAIResponsesRelayWire(): Promise<void> {
   };
 
   const result = await generateText({
-    model: getAIModel({ connection, apiKey: 'responses-relay-key', modelId }),
+    model: getAIModel({ connection, apiKey, modelId }),
     prompt: 'Call echo with hello.',
     stopWhen: isStepCount(2),
     tools: {

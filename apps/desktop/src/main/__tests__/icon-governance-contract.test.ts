@@ -830,8 +830,8 @@ describe('icon + typography governance contract', () => {
     );
     assert.match(
       componentSrc,
-      /case 'volcengine-ark':\s*case 'volcengine-coding-plan':\s*return <img src=\{volcengineBrandMark\} alt="" \/>/,
-      'direct Ark and Coding Plan must share the single governed Volcengine asset route',
+      /case 'volcengine-ark':\s*case 'volcengine-coding-plan':\s*case 'volcengine-agent-plan':\s*return <img src=\{volcengineBrandMark\} alt="" \/>/,
+      'direct Ark, Coding Plan, and Agent Plan must share the single governed Volcengine asset route',
     );
   });
 

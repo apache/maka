@@ -92,6 +92,19 @@ describe('ProviderAuth contract', () => {
     expect(contract.actionAvailability.fetch_models).toBe('available');
   });
 
+  test('Volcengine Agent Plan uses its dedicated API key without exposing control-plane refresh', () => {
+    const contract = deriveProviderAuthContract({
+      providerType: 'volcengine-agent-plan',
+      hasSecret: true,
+    });
+
+    expect(contract.providerType).toBe('volcengine-agent-plan');
+    expect(contract.setupMode).toBe('api_key');
+    expect(contract.requiresSecret).toBe(true);
+    expect(contract.actionAvailability.test_credentials).toBe('available');
+    expect(contract.actionAvailability.fetch_models).toBe('hidden');
+  });
+
   test('Tencent Token Plan uses an independent API key and remote model flow', () => {
     const contract = deriveProviderAuthContract({
       providerType: 'tencent-token-plan',

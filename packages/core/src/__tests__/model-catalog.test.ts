@@ -226,6 +226,35 @@ describe('ModelCatalogEntry', () => {
     });
   });
 
+  it('uses the official Volcengine Agent Plan text-model snapshot without inventing data-plane discovery', () => {
+    const entries = buildConnectionModelCatalogEntries({
+      connection: {
+        slug: 'volcengine-agent-plan',
+        providerType: 'volcengine-agent-plan',
+        defaultModel: 'ark-code-latest',
+      },
+    });
+
+    assert.equal(entries[0]?.id, 'ark-code-latest');
+    assert.equal(entries[0]?.displayName, 'Ark Code Latest');
+    assert.equal(entries[0]?.source, 'static_catalog');
+    assert.equal(entries[0]?.provenance.modelSource, 'fallback');
+    assert.deepEqual(entries[0]?.capabilities, {
+      reasoning: true,
+      functionCalling: true,
+    });
+
+    const deepseek = entries.find((entry) => entry.id === 'deepseek-v4-pro');
+    assert.equal(deepseek?.contextWindow, 1_024_000);
+    assert.equal(deepseek?.maxOutputTokens, 384_000);
+    assert.equal(deepseek?.capabilities.vision, undefined);
+
+    const retiring = entries.find((entry) => entry.id === 'doubao-seed-2.0-code');
+    assert.equal(retiring?.lifecycle, 'deprecated');
+    assert.equal(retiring?.contextWindow, 256_000);
+    assert.equal(retiring?.maxOutputTokens, 128_000);
+  });
+
   it('uses the checked-in StepFun China snapshot until account discovery succeeds', () => {
     const entries = buildConnectionModelCatalogEntries({
       connection: {

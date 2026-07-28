@@ -194,6 +194,14 @@ test('Volcengine Coding Plan is unavailable to non-interactive headless credenti
   );
 });
 
+test('Volcengine Agent Plan is unavailable to non-interactive headless credential loading', () => {
+  assert.equal(providerCredentialEnv('volcengine-agent-plan'), undefined);
+  assert.throws(
+    () => requireProviderCredentialEnv('volcengine-agent-plan'),
+    /provider does not support API key files: volcengine-agent-plan/,
+  );
+});
+
 test('Tencent Token Plan is unavailable to non-interactive headless credential loading', () => {
   assert.equal(providerCredentialEnv('tencent-token-plan'), undefined);
   assert.throws(

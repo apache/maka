@@ -262,6 +262,23 @@ const volcengineCodingPlanModelIds = [
   'kimi-k2.6',
   'kimi-k2.7-code',
 ] as const;
+const volcengineAgentPlanModelIds = [
+  'ark-code-latest',
+  'doubao-seed-2.0-mini',
+  'doubao-seed-2.0-lite',
+  'deepseek-v4-flash',
+  'doubao-seed-2.1-turbo',
+  'doubao-seed-evolving',
+  'doubao-seed-2.0-code',
+  'doubao-seed-2.0-pro',
+  'minimax-m2.7',
+  'minimax-m3',
+  'glm-5.2',
+  'kimi-k2.6',
+  'kimi-k2.7-code',
+  'deepseek-v4-pro',
+  'kimi-k3',
+] as const;
 const tencentTokenPlan = GENERATED_MODELS_DEV_PROVIDER_FACTS['tencent-token-plan'];
 if (tencentTokenPlan.id !== 'tencent-token-plan') {
   throw new Error(
@@ -665,6 +682,28 @@ const providerRegistry = {
     signupUrl: 'https://www.volcengine.com/activity/codingplan',
     readyOrder: 26,
     catalogOrder: 26,
+  },
+  'volcengine-agent-plan': {
+    label: 'Volcengine Ark Agent Plan (China)',
+    description: 'Volcengine Ark subscription for interactive personal agents and coding tools.',
+    baseUrl: 'https://ark.cn-beijing.volces.com/api/plan/v3',
+    authKind: 'api_key',
+    backendKind: 'ai-sdk',
+    fallbackModels: [...volcengineAgentPlanModelIds],
+    status: 'ready',
+    protocol: 'openai',
+    runtimeAdapter: { kind: 'openai', apiProtocol: 'openai-responses' },
+    modelDiscovery: {
+      kind: 'fallback',
+      reason:
+        'Agent Plan model discovery uses an account-authenticated subscription control-plane API; the dedicated inference API key cannot call it',
+    },
+    category: 'domestic',
+    catalogGroup: 'plans',
+    catalogBadge: 'Agent',
+    signupUrl: 'https://console.volcengine.com/ark/agent-plan',
+    readyOrder: 26.5,
+    catalogOrder: 26.5,
   },
   'tencent-token-plan': {
     label: tencentTokenPlan.name,

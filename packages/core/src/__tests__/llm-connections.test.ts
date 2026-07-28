@@ -46,6 +46,7 @@ describe('provider compatibility contract', () => {
       'minimax-coding-plan',
       'tencent-coding-plan',
       'volcengine-coding-plan',
+      'volcengine-agent-plan',
       'tencent-token-plan',
       'openai',
       'google',
@@ -135,6 +136,7 @@ describe('provider compatibility contract', () => {
       'stepfun-ai',
       'volcengine-ark',
       'volcengine-coding-plan',
+      'volcengine-agent-plan',
       'tencent-token-plan',
       'stepfun-step-plan',
       'deepinfra',
@@ -190,6 +192,7 @@ describe('provider compatibility contract', () => {
       'stepfun-ai',
       'volcengine-ark',
       'volcengine-coding-plan',
+      'volcengine-agent-plan',
       'tencent-token-plan',
       'stepfun-step-plan',
       'deepinfra',
@@ -1284,6 +1287,51 @@ describe('provider compatibility contract', () => {
     assert.equal(ark.signupUrl, 'https://console.volcengine.com/ark/region:ark+cn-beijing/model');
     assert.equal(ark.modelsDevId, undefined);
     assert.deepEqual(ark.fallbackModels, ['doubao-seed-2-0-pro-260215']);
+  });
+
+  it('owns Volcengine Agent Plan as an independent Responses access path', () => {
+    const agentPlan = (
+      PROVIDER_REGISTRY as Partial<
+        Record<string, (typeof PROVIDER_REGISTRY)[keyof typeof PROVIDER_REGISTRY]>
+      >
+    )['volcengine-agent-plan'];
+
+    assert.ok(agentPlan, 'Volcengine Agent Plan must have its own persisted provider id');
+    assert.equal(agentPlan.label, 'Volcengine Ark Agent Plan (China)');
+    assert.equal(agentPlan.baseUrl, 'https://ark.cn-beijing.volces.com/api/plan/v3');
+    assert.equal(agentPlan.authKind, 'api_key');
+    assert.equal(agentPlan.protocol, 'openai');
+    assert.deepEqual(agentPlan.runtimeAdapter, {
+      kind: 'openai',
+      apiProtocol: 'openai-responses',
+    });
+    assert.deepEqual(agentPlan.modelDiscovery, {
+      kind: 'fallback',
+      reason:
+        'Agent Plan model discovery uses an account-authenticated subscription control-plane API; the dedicated inference API key cannot call it',
+    });
+    assert.equal(agentPlan.category, 'domestic');
+    assert.equal(agentPlan.catalogGroup, 'plans');
+    assert.equal(agentPlan.catalogBadge, 'Agent');
+    assert.equal(agentPlan.signupUrl, 'https://console.volcengine.com/ark/agent-plan');
+    assert.equal(agentPlan.modelsDevId, undefined);
+    assert.deepEqual(agentPlan.fallbackModels, [
+      'ark-code-latest',
+      'doubao-seed-2.0-mini',
+      'doubao-seed-2.0-lite',
+      'deepseek-v4-flash',
+      'doubao-seed-2.1-turbo',
+      'doubao-seed-evolving',
+      'doubao-seed-2.0-code',
+      'doubao-seed-2.0-pro',
+      'minimax-m2.7',
+      'minimax-m3',
+      'glm-5.2',
+      'kimi-k2.6',
+      'kimi-k2.7-code',
+      'deepseek-v4-pro',
+      'kimi-k3',
+    ]);
   });
 });
 
