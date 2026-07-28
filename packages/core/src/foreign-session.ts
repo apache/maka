@@ -364,23 +364,56 @@ export function claudeAssistantText(record: Record<string, unknown>): string | u
 
 /** File paths referenced by tool_use blocks in a Claude assistant record. */
 export function claudeToolFilePaths(record: Record<string, unknown>): string[] {
+  return claudeToolFileUses(record).flatMap((use) => use.paths);
+}
+
+/**
+ * File paths per tool_use block, keyed by the block's own id so the digest
+ * can anchor each touch to the matching tool_result's timestamp. The
+ * tool_use record is written BEFORE the tool executes — a file's mtime is
+ * newer than that record even when nothing changed after the session
+ * (#1512 review P1) — so the completion boundary is the result record.
+ */
+export function claudeToolFileUses(
+  record: Record<string, unknown>,
+): Array<{ toolUseId?: string; paths: string[] }> {
   const message = asRecord(record.message);
   const content = message?.content;
   if (!Array.isArray(content)) return [];
-  const paths: string[] = [];
+  const uses: Array<{ toolUseId?: string; paths: string[] }> = [];
   for (const block of content) {
     const rec = asRecord(block);
     if (!rec || rec.type !== 'tool_use') continue;
     const input = asRecord(rec.input);
     if (!input) continue;
+    const paths: string[] = [];
     for (const key of ['file_path', 'path', 'notebook_path']) {
       const value = input[key];
       if (typeof value === 'string' && value.length > 0) {
         paths.push(sanitizeForeignText(value, FOREIGN_SESSION_PATH_MAX_CODE_POINTS));
       }
     }
+    if (paths.length === 0) continue;
+    uses.push({
+      toolUseId: isSafeForeignId(rec.id) ? rec.id : undefined,
+      paths,
+    });
   }
-  return paths;
+  return uses;
+}
+
+/** tool_use ids completed by the tool_result blocks of a Claude record. */
+export function claudeToolResultIds(record: Record<string, unknown>): string[] {
+  const message = asRecord(record.message);
+  const content = message?.content;
+  if (!Array.isArray(content)) return [];
+  const ids: string[] = [];
+  for (const block of content) {
+    const rec = asRecord(block);
+    if (!rec || rec.type !== 'tool_result') continue;
+    if (isSafeForeignId(rec.tool_use_id)) ids.push(rec.tool_use_id);
+  }
+  return ids;
 }
 
 /* ------------------------------------------------------------------ *
@@ -615,17 +648,40 @@ export function foreignRecordTimestampMs(record: Record<string, unknown>): numbe
  * in @maka/storage; this module owns the pure assessment and rendering.
  * ------------------------------------------------------------------ */
 
-/** Facts observed about the repository at handoff time. */
+/** Per-file observation. `out_of_scope` = the real path resolved outside the
+ *  session directory and was deliberately not checked (#1512 review P1: the
+ *  probe must not follow transcript-controlled paths out of the repo). */
+export type ForeignSessionProbeFileState =
+  | { status: 'ok'; mtimeMs: number }
+  | { status: 'missing' }
+  | { status: 'out_of_scope' }
+  | { status: 'unreadable' };
+
+export type ForeignSessionProbeGitState =
+  | { status: 'branch'; branch: string }
+  | { status: 'detached' }
+  | { status: 'not_a_repo' }
+  | { status: 'unreadable' }
+  | { status: 'unchecked' };
+
+/** Facts observed about the repository at handoff time. Every observation
+ *  carries an explicit failure state — the assessment must be able to tell
+ *  "checked and fine" from "could not check" (#1512 review P2). */
 export interface ForeignSessionRepoProbe {
   probedAtMs: number;
-  /** Whether the digest's `cwd` exists as a directory now. */
-  cwdExists: boolean;
-  /** Current branch of the cwd repository; undefined when detached, not a
-   *  repository, or unreadable. */
-  currentGitBranch?: string;
-  /** Current mtime per digest file path (keyed VERBATIM by `filesTouched`
-   *  paths); a missing key means the file does not exist now. */
-  fileMtimes: ReadonlyMap<string, number>;
+  /** 'unknown' = the digest recorded no cwd, nothing to check. */
+  cwdState: 'ok' | 'missing' | 'unreadable' | 'unknown';
+  gitState: ForeignSessionProbeGitState;
+  /**
+   * mtime of the source transcript itself — the TRUSTED upper bound for
+   * every transcript-claimed timestamp (#1512 review P1: a forged future
+   * timestamp must not be able to suppress mtime warnings). Undefined when
+   * the transcript could not be statted; mtime comparisons are then
+   * unverifiable.
+   */
+  transcriptMtimeMs?: number;
+  /** Keyed VERBATIM by `filesTouched` paths. */
+  fileStates: ReadonlyMap<string, ForeignSessionProbeFileState>;
 }
 
 export type ForeignSessionStalenessKind =
@@ -639,14 +695,20 @@ export interface ForeignSessionStalenessFlag {
   detail: string;
 }
 
-/** What was checked plus every mismatch found — flags empty means "checked
- *  and clean", which the renderer states explicitly (silence is not
- *  success). */
+/**
+ * What was checked, every mismatch found, and every required check that did
+ * NOT complete. The renderer derives a tri-state from it: `stale` (flags),
+ * `partial` (no flags but something was unverifiable), `clean` (everything
+ * checked, nothing mismatched). A probe failure can never fold into `clean`
+ * (#1512 review P2).
+ */
 export interface ForeignSessionStalenessReport {
   probedAtMs: number;
   cwdChecked: boolean;
   branchChecked: boolean;
   filesChecked: number;
+  /** Human-readable reasons for checks that could not complete. */
+  unverified: string[];
   flags: ForeignSessionStalenessFlag[];
 }
 
@@ -664,34 +726,88 @@ export function assessForeignSessionStaleness(
   probe: ForeignSessionRepoProbe,
 ): ForeignSessionStalenessReport {
   const flags: ForeignSessionStalenessFlag[] = [];
-  const cwdChecked = digest.cwd.length > 0;
-  if (cwdChecked && !probe.cwdExists) {
+  const unverified: string[] = [];
+
+  const cwdChecked = probe.cwdState === 'ok' || probe.cwdState === 'missing';
+  if (probe.cwdState === 'missing') {
     flags.push({
       kind: 'cwd_missing',
       detail: `the session's working directory no longer exists: ${digest.cwd}`,
     });
+  } else if (probe.cwdState === 'unreadable') {
+    unverified.push('the working directory could not be read');
   }
-  const branchChecked = digest.gitBranch !== undefined && probe.currentGitBranch !== undefined;
-  if (branchChecked && digest.gitBranch !== probe.currentGitBranch) {
-    flags.push({
-      kind: 'branch_changed',
-      detail: `the repository is on '${probe.currentGitBranch}' now, but the session ran on '${digest.gitBranch}'`,
-    });
+
+  let branchChecked = false;
+  if (digest.gitBranch !== undefined) {
+    switch (probe.gitState.status) {
+      case 'branch':
+        branchChecked = true;
+        if (probe.gitState.branch !== digest.gitBranch) {
+          flags.push({
+            kind: 'branch_changed',
+            detail: `the repository is on '${probe.gitState.branch}' now, but the session ended on '${digest.gitBranch}'`,
+          });
+        }
+        break;
+      case 'detached':
+        unverified.push('the repository is on a detached HEAD; branch comparison skipped');
+        break;
+      case 'not_a_repo':
+        unverified.push(
+          `no git repository found, but the session recorded branch '${digest.gitBranch}'`,
+        );
+        break;
+      case 'unreadable':
+        unverified.push('git metadata could not be read; branch comparison skipped');
+        break;
+      case 'unchecked':
+        break;
+    }
   }
+
+  // The trusted ceiling: no transcript-claimed timestamp may count as later
+  // than the transcript file's own last write (or the probe itself). A
+  // forged year-9999 anchor clamps down and cannot suppress mtime warnings.
+  const ceiling =
+    probe.transcriptMtimeMs !== undefined
+      ? Math.min(probe.transcriptMtimeMs, probe.probedAtMs)
+      : undefined;
+
   // File checks are meaningless when the whole cwd is gone — cwd_missing
   // already says everything the missing-file noise would.
-  const filesChecked = cwdChecked && !probe.cwdExists ? 0 : digest.filesTouched.length;
-  if (filesChecked > 0) {
+  let filesChecked = 0;
+  if (probe.cwdState !== 'missing' && digest.filesTouched.length > 0) {
     const changed: string[] = [];
     const missing: string[] = [];
+    const outOfScope: string[] = [];
+    const unreadable: string[] = [];
+    let mtimesUnverifiable = false;
     for (const touch of digest.filesTouched) {
-      const mtime = probe.fileMtimes.get(touch.path);
-      if (mtime === undefined) {
+      const state = probe.fileStates.get(touch.path);
+      if (state === undefined || state.status === 'unreadable') {
+        unreadable.push(touch.path);
+        continue;
+      }
+      if (state.status === 'out_of_scope') {
+        outOfScope.push(touch.path);
+        continue;
+      }
+      if (state.status === 'missing') {
+        filesChecked += 1;
         missing.push(touch.path);
         continue;
       }
-      const anchor = touch.lastEventAtMs ?? digest.updatedAtMs;
-      if (Number.isFinite(anchor) && mtime > anchor) changed.push(touch.path);
+      // Existence is checkable without a time reference; modification is not.
+      if (ceiling === undefined) {
+        filesChecked += 1;
+        mtimesUnverifiable = true;
+        continue;
+      }
+      filesChecked += 1;
+      const claimed = touch.lastEventAtMs ?? digest.updatedAtMs;
+      const anchor = Number.isFinite(claimed) ? Math.min(claimed, ceiling) : ceiling;
+      if (state.mtimeMs > anchor) changed.push(touch.path);
     }
     if (changed.length > 0) {
       flags.push({
@@ -705,12 +821,29 @@ export function assessForeignSessionStaleness(
         detail: `${missing.length} touched file(s) no longer exist: ${listWithOverflow(missing)}`,
       });
     }
+    if (mtimesUnverifiable) {
+      unverified.push(
+        'the source transcript could not be statted — no trusted time reference, so file modification times were not compared',
+      );
+    }
+    if (outOfScope.length > 0) {
+      unverified.push(
+        `${outOfScope.length} touched file(s) resolve outside the session directory and were not checked: ${listWithOverflow(outOfScope)}`,
+      );
+    }
+    if (unreadable.length > 0) {
+      unverified.push(
+        `${unreadable.length} touched file(s) could not be read: ${listWithOverflow(unreadable)}`,
+      );
+    }
   }
+
   return {
     probedAtMs: probe.probedAtMs,
     cwdChecked,
     branchChecked,
     filesChecked,
+    unverified,
     flags,
   };
 }
@@ -842,12 +975,21 @@ export function renderForeignSessionStalenessReport(report: ForeignSessionStalen
     `checked_at=${toIsoOrUnknown(report.probedAtMs)}`,
     `checked=${scope.length > 0 ? scope : 'nothing verifiable (no cwd, branch, or files recorded)'}`,
   ];
-  if (report.flags.length === 0) {
-    lines.push('result=clean — no mismatches between the digest and the current repository state');
-  } else {
+  // Tri-state, and a probe failure can never fold into `clean` (#1512 P2):
+  // `clean` requires that something was checked AND every required check
+  // completed. "Nothing verifiable" is partial, not clean.
+  const nothingChecked = !report.cwdChecked && !report.branchChecked && report.filesChecked === 0;
+  if (report.flags.length > 0) {
     lines.push('result=stale — treat the digest claims below these flags with extra suspicion');
     for (const flag of report.flags) lines.push(`- [${flag.kind}] ${safe(flag.detail)}`);
+  } else if (report.unverified.length > 0 || nothingChecked) {
+    lines.push(
+      'result=partial — no mismatches found, but some checks could not complete; do not treat this as a clean verification',
+    );
+  } else {
+    lines.push('result=clean — no mismatches between the digest and the current repository state');
   }
+  for (const reason of report.unverified) lines.push(`- [unverified] ${safe(reason)}`);
   lines.push('</repo-state-check>');
   return lines.join('\n');
 }
