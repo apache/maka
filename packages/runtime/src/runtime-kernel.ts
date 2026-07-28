@@ -105,6 +105,7 @@ import {
   type RuntimeInteractionRunBinding,
   type RuntimeInteractionRunClosureReason,
 } from './interaction-authority.js';
+import { DeliveryAckQueue, isDeliveryAckQueueClosed } from './delivery-ack-queue.js';
 
 export interface RuntimeKernelLike {
   claimExecution(sessionId: string): RuntimeExecutionClaim;
@@ -1389,7 +1390,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     onRunStarted?: (runId: string, initialHeader: SessionHeader) => void | Promise<void>,
     initialHeader?: SessionHeader,
   ): AsyncIterable<SessionEvent> {
-    const sessionEvents = new AsyncEventQueue<SessionEvent>();
+    const sessionEvents = new DeliveryAckQueue<SessionEvent>();
     const { abortController, release: releaseExecutionAbort } =
       this.inheritExecutionAbort(execution);
     let flowDone = false;
@@ -1517,7 +1518,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         await sessionEvents.push(sessionEvent);
       },
       onError: async (error) => {
-        if (!isAsyncEventQueueClosed(error)) {
+        if (!isDeliveryAckQueueClosed(error)) {
           await run.recordFailure(error);
           sessionEvents.fail(error);
         }
@@ -1630,7 +1631,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     bindHostedRoot = false,
     onRunStarted?: () => void | Promise<void>,
   ): AsyncIterable<SessionEvent> {
-    const sessionEvents = new AsyncEventQueue<SessionEvent>();
+    const sessionEvents = new DeliveryAckQueue<SessionEvent>();
     const { abortController, release: releaseExecutionAbort } =
       this.inheritExecutionAbort(execution);
     let flowDone = false;
@@ -1690,7 +1691,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         await sessionEvents.push(sessionEvent);
       },
       onError: async (error) => {
-        if (!isAsyncEventQueueClosed(error)) {
+        if (!isDeliveryAckQueueClosed(error)) {
           await run.recordFailure(error);
           sessionEvents.fail(error);
         }
@@ -1835,7 +1836,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     flow: AiSdkFlow;
     flowDone: boolean;
     abortController: AbortController;
-    sessionEvents: AsyncEventQueue<SessionEvent>;
+    sessionEvents: DeliveryAckQueue<SessionEvent>;
     runnerResult: Promise<InvocationResult>;
     interactionRun: RuntimeInteractionRunBinding | undefined;
     runnerFailure?: unknown;
@@ -3743,17 +3744,6 @@ function effectiveOrchestrationForRun(
   return resolveEffectiveOrchestration(session.orchestrationMode, undefined);
 }
 
-class AsyncEventQueueClosed extends Error {
-  constructor() {
-    super('Async event queue closed');
-    this.name = 'AsyncEventQueueClosed';
-  }
-}
-
-function isAsyncEventQueueClosed(error: unknown): boolean {
-  return error instanceof AsyncEventQueueClosed;
-}
-
 async function interactionResumeAllowed(
   interactionRun: RuntimeInteractionRunBinding | undefined,
   event: SessionEvent,
@@ -3849,79 +3839,6 @@ class FailureCollector {
   throwIfAny(message: string): void {
     if (this.failures.length === 1) throw this.failures[0];
     if (this.failures.length > 1) throw new AggregateError(this.failures, message);
-  }
-}
-
-interface AsyncEventQueueEntry<T> {
-  value: T;
-  delivered: () => void;
-  rejected: (error: unknown) => void;
-}
-
-class AsyncEventQueue<T> implements AsyncIterable<T> {
-  private readonly values: Array<AsyncEventQueueEntry<T>> = [];
-  private readonly waiters: Array<{
-    resolve: (entry: AsyncEventQueueEntry<T> | undefined) => void;
-    reject: (error: unknown) => void;
-  }> = [];
-  private closed = false;
-  private failure: unknown;
-
-  [Symbol.asyncIterator](): AsyncIterator<T> {
-    return this.consume()[Symbol.asyncIterator]();
-  }
-
-  push(value: T): Promise<void> {
-    if (this.failure) return Promise.reject(this.failure);
-    if (this.closed) return Promise.reject(new AsyncEventQueueClosed());
-    return new Promise<void>((resolve, reject) => {
-      const entry = { value, delivered: resolve, rejected: reject };
-      const waiter = this.waiters.shift();
-      if (waiter) {
-        waiter.resolve(entry);
-        return;
-      }
-      this.values.push(entry);
-    });
-  }
-
-  fail(error: unknown): void {
-    if (this.failure) return;
-    this.failure = error;
-    for (const value of this.values.splice(0)) value.rejected(error);
-    for (const waiter of this.waiters.splice(0)) waiter.reject(error);
-  }
-
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    const closed = new AsyncEventQueueClosed();
-    for (const value of this.values.splice(0)) value.rejected(closed);
-    for (const waiter of this.waiters.splice(0)) waiter.resolve(undefined);
-  }
-
-  private async *consume(): AsyncIterable<T> {
-    while (true) {
-      const entry = await this.nextEntry();
-      if (!entry) return;
-      try {
-        yield entry.value;
-      } finally {
-        entry.delivered();
-      }
-    }
-  }
-
-  private nextEntry(): Promise<AsyncEventQueueEntry<T> | undefined> {
-    if (this.values.length > 0) {
-      const next = this.values.shift()!;
-      return Promise.resolve(next);
-    }
-    if (this.failure) return Promise.reject(this.failure);
-    if (this.closed) return Promise.resolve(undefined);
-    return new Promise<AsyncEventQueueEntry<T> | undefined>((resolve, reject) => {
-      this.waiters.push({ resolve, reject });
-    });
   }
 }
 
