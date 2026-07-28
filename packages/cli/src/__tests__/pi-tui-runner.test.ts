@@ -10,9 +10,9 @@ import { visibleWidth } from '@earendil-works/pi-tui';
 import {
   SHELL_RUN_UPDATE_BUFFER_MAX_ENTRIES,
   type PermissionMode,
-  type PermissionResponse,
   type OrchestrationMode,
   type QueueEnqueueOutcome,
+  type SandboxBoundaryResponse,
   type SessionEvent,
   type SessionSummary,
   type StoredMessage,
@@ -1968,9 +1968,9 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
-  test('allows a pending permission request from the terminal', async () => {
+  test('allows a pending sandbox boundary request from the terminal', async () => {
     const terminal = new FakeTerminal();
-    const driver = new PermissionPromptDriver();
+    const driver = new SandboxBoundaryPromptDriver();
     const run = runMakaPiTui({
       title: 'Maka',
       driver,
@@ -1986,16 +1986,15 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('n');
     terminal.input('\r');
 
-    await waitFor(() => driver.permissionRequests === 1);
+    await waitFor(() => driver.boundaryRequests === 1);
     await delay(20);
     terminal.input('y');
-    await waitFor(() => driver.permissionResponses.length === 1);
+    await waitFor(() => driver.boundaryResponses.length === 1);
 
-    assert.deepEqual(driver.permissionResponses, [
+    assert.deepEqual(driver.boundaryResponses, [
       {
-        requestId: 'permission-1',
+        requestId: 'boundary-1',
         decision: 'allow',
-        rememberForTurn: false,
       },
     ]);
 
@@ -2008,9 +2007,9 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
-  test('allows a pending permission request for the turn with a', async () => {
+  test('ignores the removed turn-wide approval key while a boundary request waits', async () => {
     const terminal = new FakeTerminal();
-    const driver = new PermissionPromptDriver();
+    const driver = new SandboxBoundaryPromptDriver(['/outside']);
     const run = runMakaPiTui({
       title: 'Maka',
       driver,
@@ -2025,56 +2024,16 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('u');
     terminal.input('n');
     terminal.input('\r');
-
-    await waitFor(() => driver.permissionRequests === 1);
-    await delay(20);
-    terminal.input('a');
-    await waitFor(() => driver.permissionResponses.length === 1);
-
-    assert.deepEqual(driver.permissionResponses, [
-      {
-        requestId: 'permission-1',
-        decision: 'allow',
-        rememberForTurn: true,
-      },
-    ]);
-
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(50).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
-  });
-
-  test('allows additional permissions once and ignores the turn-wide approval key', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new PermissionPromptDriver(['write outside'], async () => {}, true);
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
-      terminal,
-    });
-
-    terminal.input('r');
-    terminal.input('u');
-    terminal.input('n');
-    terminal.input('\r');
-    await waitFor(() => driver.permissionRequests === 1);
+    await waitFor(() => driver.boundaryRequests === 1);
     await delay(20);
     terminal.input('a');
     await delay(20);
-    assert.equal(driver.permissionResponses.length, 0);
+    assert.equal(driver.boundaryResponses.length, 0);
     terminal.input('y');
-    await waitFor(() => driver.permissionResponses.length === 1);
-    assert.deepEqual(driver.permissionResponses, [
+    await waitFor(() => driver.boundaryResponses.length === 1);
+    assert.deepEqual(driver.boundaryResponses, [
       {
-        requestId: 'permission-1',
+        requestId: 'boundary-1',
         decision: 'allow',
       },
     ]);
@@ -2088,70 +2047,9 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
-  test('inspects exact WriteStdin input and allows it without turn memory', async () => {
+  test('denies a pending sandbox boundary request from the terminal', async () => {
     const terminal = new FakeTerminal();
-    const hiddenSuffix = '\u001b[31mrm -rf /tmp/hidden-suffix\r';
-    const driver = new PermissionPromptDriver([
-      {
-        toolName: 'WriteStdin',
-        args: {
-          ref: 'maka://runtime/background-tasks/pty-1',
-          input: `password=super-secret ${'x'.repeat(200)}${hiddenSuffix}`,
-          size: { cols: 120, rows: 40 },
-        },
-        rememberForTurnAllowed: false,
-      },
-    ]);
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
-      terminal,
-    });
-
-    terminal.input('run');
-    terminal.input('\r');
-    await waitFor(() => driver.permissionRequests === 1);
-    await waitFor(() =>
-      plainTerminalOutput(terminal.screenOutput()).includes('Ctrl+O show full parameters'),
-    );
-    const collapsed = plainTerminalOutput(terminal.screenOutput());
-    assert.doesNotMatch(collapsed, /super-secret/);
-    assert.doesNotMatch(collapsed, /hidden-suffix/);
-    assert.doesNotMatch(collapsed, /allow for turn/);
-
-    terminal.input('\x0f');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('hidden-suffix\\r'));
-    const expanded = plainTerminalOutput(terminal.output());
-    assert.match(expanded, /super-secret/);
-    assert.match(expanded, /\\u\{001B\}\[31mrm -rf/);
-    assert.match(expanded, /\/tmp\/hidden-suffix\\r/);
-    assert.doesNotMatch(terminal.output(), /\u001b\[31mrm -rf/);
-
-    terminal.input('y');
-    await waitFor(() => driver.permissionResponses.length === 1);
-    assert.deepEqual(driver.permissionResponses, [
-      {
-        requestId: 'permission-1',
-        decision: 'allow',
-      },
-    ]);
-
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(50).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
-  });
-
-  test('denies a pending permission request from the terminal', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new PermissionPromptDriver();
+    const driver = new SandboxBoundaryPromptDriver();
     const run = runMakaPiTui({
       title: 'Maka',
       driver,
@@ -2167,14 +2065,14 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('n');
     terminal.input('\r');
 
-    await waitFor(() => driver.permissionRequests === 1);
+    await waitFor(() => driver.boundaryRequests === 1);
     await delay(20);
     terminal.input('n');
-    await waitFor(() => driver.permissionResponses.length === 1);
+    await waitFor(() => driver.boundaryResponses.length === 1);
 
-    assert.deepEqual(driver.permissionResponses, [
+    assert.deepEqual(driver.boundaryResponses, [
       {
-        requestId: 'permission-1',
+        requestId: 'boundary-1',
         decision: 'deny',
       },
     ]);
@@ -2188,13 +2086,13 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
-  test('waits for permission acknowledgement before advancing concurrent requests', async () => {
+  test('waits for boundary acknowledgement before advancing concurrent requests', async () => {
     const terminal = new FakeTerminal();
     let releaseFirstAck!: () => void;
     const firstAck = new Promise<void>((resolve) => {
       releaseFirstAck = resolve;
     });
-    const driver = new PermissionPromptDriver(['printf first', 'printf second'], async (index) => {
+    const driver = new SandboxBoundaryPromptDriver(['/first', '/second'], async (index) => {
       if (index === 0) await firstAck;
     });
     const run = runMakaPiTui({
@@ -2212,26 +2110,26 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('n');
     terminal.input('\r');
 
-    await waitFor(() => driver.permissionRequests === 2);
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('printf first'));
-    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /printf second/);
+    await waitFor(() => driver.boundaryRequests === 2);
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('/first'));
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /\/second/);
 
     terminal.input('n');
-    await waitFor(() => driver.permissionResponses.length === 1);
+    await waitFor(() => driver.boundaryResponses.length === 1);
     terminal.input('y');
     await delay(0);
-    assert.equal(driver.permissionResponses.length, 1);
-    assert.match(plainTerminalOutput(terminal.screenOutput()), /printf first/);
-    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /printf second/);
+    assert.equal(driver.boundaryResponses.length, 1);
+    assert.match(plainTerminalOutput(terminal.screenOutput()), /\/first/);
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /\/second/);
 
     releaseFirstAck();
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('printf second'));
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('/second'));
 
     terminal.input('y');
-    await waitFor(() => driver.permissionResponses.length === 2);
-    assert.deepEqual(driver.permissionResponses, [
-      { requestId: 'permission-1', decision: 'deny' },
-      { requestId: 'permission-2', decision: 'allow', rememberForTurn: false },
+    await waitFor(() => driver.boundaryResponses.length === 2);
+    assert.deepEqual(driver.boundaryResponses, [
+      { requestId: 'boundary-1', decision: 'deny' },
+      { requestId: 'boundary-2', decision: 'allow' },
     ]);
 
     exitMaka(terminal);
@@ -6753,9 +6651,9 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
-  test('keeps the permission prompt visible when responding rejects', async () => {
+  test('keeps the sandbox boundary prompt visible when responding rejects', async () => {
     const terminal = new FakeTerminal();
-    const driver = new RejectingPermissionDriver();
+    const driver = new RejectingSandboxBoundaryDriver();
     const run = runMakaPiTui({
       title: 'Maka',
       driver,
@@ -6768,14 +6666,14 @@ describe('Maka Pi TUI runner', () => {
 
     terminal.input('run');
     terminal.input('\r');
-    await waitFor(() => terminal.output().includes('Permission required'));
+    await waitFor(() => terminal.output().includes('Sandbox boundary expansion'));
 
     terminal.input('y');
     await waitFor(() => driver.responses.length === 1);
     await delay(20);
 
-    // Response rejected: error shows, but the permission prompt stays and can be retried.
-    assert.ok(plainTerminalOutput(terminal.output()).includes('Permission required'));
+    // Response rejected: error shows, but the boundary prompt stays and can be retried.
+    assert.ok(plainTerminalOutput(terminal.output()).includes('Sandbox boundary expansion'));
 
     terminal.input('n');
     await waitFor(() => driver.responses.length === 2);
@@ -7512,9 +7410,9 @@ describe('Maka Pi TUI runner', () => {
     }
   });
 
-  test('keeps Escape as permission deny while a permission prompt is pending', async () => {
+  test('keeps Escape as deny while a sandbox boundary prompt is pending', async () => {
     const terminal = new FakeTerminal();
-    const driver = new PermissionPromptDriver();
+    const driver = new SandboxBoundaryPromptDriver();
     const run = runMakaPiTui({
       title: 'Maka',
       driver,
@@ -7527,15 +7425,15 @@ describe('Maka Pi TUI runner', () => {
 
     terminal.input('run');
     terminal.input('\r');
-    await waitFor(() => driver.permissionRequests === 1);
+    await waitFor(() => driver.boundaryRequests === 1);
     await delay(20);
 
     terminal.input('\x1b');
     terminal.input('\x1b');
-    await waitFor(() => driver.permissionResponses.length >= 1);
+    await waitFor(() => driver.boundaryResponses.length >= 1);
 
-    // Both Escapes route to the permission prompt, never to turn interruption.
-    assert.equal(driver.permissionResponses[0]?.decision, 'deny');
+    // Both Escapes route to the boundary prompt, never to turn interruption.
+    assert.equal(driver.boundaryResponses[0]?.decision, 'deny');
     assert.equal(driver.stopCalls, 0);
 
     exitMaka(terminal);
@@ -7547,9 +7445,9 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
-  test('clears the permission prompt when the turn errors', async () => {
+  test('clears the sandbox boundary prompt when the turn errors', async () => {
     const terminal = new FakeTerminal();
-    const driver = new PermissionThenErrorDriver();
+    const driver = new SandboxBoundaryThenErrorDriver();
     const run = runMakaPiTui({
       title: 'Maka',
       driver,
@@ -7562,13 +7460,13 @@ describe('Maka Pi TUI runner', () => {
 
     terminal.input('run');
     terminal.input('\r');
-    await waitFor(() => terminal.output().includes('Permission required'));
+    await waitFor(() => terminal.output().includes('Sandbox boundary expansion'));
     driver.continueToError();
     await waitFor(() => terminal.output().includes('turn failed'));
 
-    // The turn errored: the permission prompt must be gone from the screen.
+    // The turn errored: the boundary prompt must be gone from the screen.
     assert.equal(
-      plainTerminalOutput(terminal.screenOutput()).includes('Permission required'),
+      plainTerminalOutput(terminal.screenOutput()).includes('Sandbox boundary expansion'),
       false,
     );
 
@@ -7726,9 +7624,9 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
-  test('rings when a permission prompt appears unfocused', async () => {
+  test('rings when a sandbox boundary prompt appears unfocused', async () => {
     const terminal = new FakeTerminal();
-    const driver = new PermissionPromptDriver();
+    const driver = new SandboxBoundaryPromptDriver();
     const run = runMakaPiTui({
       title: 'Maka',
       driver,
@@ -7743,13 +7641,13 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('run');
     terminal.input('\r');
 
-    await waitFor(() => driver.permissionRequests === 1);
+    await waitFor(() => driver.boundaryRequests === 1);
     await waitFor(() => bellCount(terminal) >= 1);
     assert.ok(terminal.titles.includes('★ Maka'));
 
     // Answer so the parked turn can finish and the TUI closes cleanly.
     terminal.input('y');
-    await waitFor(() => driver.permissionResponses.length === 1);
+    await waitFor(() => driver.boundaryResponses.length === 1);
 
     exitMaka(terminal);
     await Promise.race([
@@ -8737,7 +8635,7 @@ class RejectingStopDriver implements MakaSessionDriver {
     throw new Error('stop failed');
   }
 
-  async respondToSandboxBoundary(_response: PermissionResponse): Promise<void> {}
+  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
   async renameSession(): Promise<void> {}
   async setModel(): Promise<void> {}
   async setPermissionMode(): Promise<void> {}
@@ -8758,34 +8656,16 @@ class RejectingStopDriver implements MakaSessionDriver {
   }
 }
 
-interface PermissionPromptRequest {
-  toolName: string;
-  args: unknown;
-  rememberForTurnAllowed: boolean;
-}
-
-class PermissionPromptDriver implements MakaSessionDriver {
-  readonly permissionResponses: PermissionResponse[] = [];
-  permissionRequests = 0;
+class SandboxBoundaryPromptDriver implements MakaSessionDriver {
+  readonly boundaryResponses: SandboxBoundaryResponse[] = [];
+  boundaryRequests = 0;
   stopCalls = 0;
-  private permissionResponseWaiter: (() => void) | null = null;
-  private readonly requests: readonly PermissionPromptRequest[];
+  private boundaryResponseWaiter: (() => void) | null = null;
 
   constructor(
-    requests: readonly (string | PermissionPromptRequest)[] = ['npm test'],
-    private readonly beforePermissionAck: (index: number) => Promise<void> = async () => {},
-    private readonly additionalPermissions = false,
-  ) {
-    this.requests = requests.map((request) =>
-      typeof request === 'string'
-        ? {
-            toolName: 'Bash',
-            args: { command: request },
-            rememberForTurnAllowed: true,
-          }
-        : request,
-    );
-  }
+    private readonly paths: readonly string[] = ['/outside'],
+    private readonly beforeBoundaryAck: (index: number) => Promise<void> = async () => {},
+  ) {}
 
   async listSessions(): Promise<SessionSummary[]> {
     return [];
@@ -8798,76 +8678,48 @@ class PermissionPromptDriver implements MakaSessionDriver {
   async *compactSession(): AsyncIterable<never> {}
 
   async *promptEvents(_prompt: string): AsyncIterable<SessionEvent> {
-    for (const [index, request] of this.requests.entries()) {
-      this.permissionRequests += 1;
-      yield this.additionalPermissions
-        ? {
-            type: 'permission_request',
-            kind: 'additional_permissions',
-            id: `event-permission-${index + 1}`,
-            turnId: 'turn-1',
-            ts: index + 1,
-            requestId: `permission-${index + 1}`,
-            toolUseId: `tool-${index + 1}`,
-            toolName: 'Write',
-            category: 'file_write',
-            reason: 'additional_permissions',
-            args: undefined,
-            cwd: '/repo',
-            justification: 'Write requires access to the requested path.',
-            intentHash: `sha256:${'1'.repeat(64)}`,
-            permissionsHash: `sha256:${'2'.repeat(64)}`,
-            additionalPermissions: {
-              fileSystem: {
-                entries: [{ path: '/outside/file.txt', access: 'write', scope: 'exact' }],
-              },
-            },
-            risk: { outsideWorkspace: true, protectedMetadata: false, networkEnabled: false },
-            alsoApprovesToolExecution: true,
-            availableDecisions: ['allow_once', 'deny'],
-            rememberForTurnAllowed: false,
-          }
-        : {
-            type: 'permission_request',
-            kind: 'tool_permission',
-            id: `event-permission-${index + 1}`,
-            turnId: 'turn-1',
-            ts: index + 1,
-            requestId: `permission-${index + 1}`,
-            toolUseId: `tool-${index + 1}`,
-            toolName: request.toolName,
-            category: 'shell_unsafe',
-            reason: 'shell_dangerous',
-            args: request.args,
-            rememberForTurnAllowed: request.rememberForTurnAllowed,
-          };
+    for (const [index, path] of this.paths.entries()) {
+      this.boundaryRequests += 1;
+      yield {
+        type: 'sandbox_boundary_request',
+        id: `event-boundary-${index + 1}`,
+        turnId: 'turn-1',
+        ts: index + 1,
+        requestId: `boundary-${index + 1}`,
+        toolUseId: `tool-${index + 1}`,
+        justification: `Read ${path}.`,
+        expansion: {
+          filesystem: {
+            entries: [{ path, access: 'read', scope: 'exact' }],
+          },
+        },
+      };
     }
-    for (const index of this.requests.keys()) {
-      while (this.permissionResponses.length <= index) {
+    for (const index of this.paths.keys()) {
+      while (this.boundaryResponses.length <= index) {
         await new Promise<void>((resolve) => {
-          this.permissionResponseWaiter = resolve;
+          this.boundaryResponseWaiter = resolve;
         });
       }
-      const response = this.permissionResponses[index]!;
-      await this.beforePermissionAck(index);
+      const response = this.boundaryResponses[index]!;
+      await this.beforeBoundaryAck(index);
       yield {
-        type: 'permission_decision_ack',
-        id: `event-decision-${index + 1}`,
+        type: 'sandbox_boundary_decision_ack',
+        id: `event-boundary-decision-${index + 1}`,
         turnId: 'turn-1',
-        ts: this.requests.length + index + 1,
+        ts: this.paths.length + index + 1,
         requestId: response.requestId,
         toolUseId: `tool-${index + 1}`,
         decision: response.decision,
-        ...(response.rememberForTurn !== undefined
-          ? { rememberForTurn: response.rememberForTurn }
-          : {}),
+        status: response.decision === 'allow' ? 'approved' : 'denied',
+        revision: response.decision === 'allow' ? index + 1 : index,
       };
     }
     yield {
       type: 'complete',
       id: 'event-complete',
       turnId: 'turn-1',
-      ts: this.requests.length * 2 + 1,
+      ts: this.paths.length * 2 + 1,
       stopReason: 'end_turn',
     };
   }
@@ -8876,10 +8728,10 @@ class PermissionPromptDriver implements MakaSessionDriver {
     this.stopCalls += 1;
   }
 
-  async respondToSandboxBoundary(response: PermissionResponse): Promise<void> {
-    this.permissionResponses.push(response);
-    const waiter = this.permissionResponseWaiter;
-    this.permissionResponseWaiter = null;
+  async respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void> {
+    this.boundaryResponses.push(response);
+    const waiter = this.boundaryResponseWaiter;
+    this.boundaryResponseWaiter = null;
     waiter?.();
   }
   async renameSession(): Promise<void> {}
@@ -8944,7 +8796,7 @@ class UserQuestionPromptDriver implements MakaSessionDriver {
     this.stopCalls += 1;
     this.release?.();
   }
-  async respondToSandboxBoundary(_response: PermissionResponse): Promise<void> {}
+  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
   async renameSession(): Promise<void> {}
   async setModel(): Promise<void> {}
   async setPermissionMode(): Promise<void> {}
@@ -8998,7 +8850,7 @@ class InterruptibleTurnDriver implements MakaSessionDriver {
     this.releaseTurn = null;
   }
 
-  async respondToSandboxBoundary(_response: PermissionResponse): Promise<void> {}
+  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
   async renameSession(): Promise<void> {}
   async setModel(): Promise<void> {}
   async setPermissionMode(): Promise<void> {}
@@ -9130,7 +8982,7 @@ class SteeringTurnDriver implements MakaSessionDriver {
     this.wakeTurn = null;
   }
 
-  async respondToSandboxBoundary(_response: PermissionResponse): Promise<void> {}
+  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
   async renameSession(): Promise<void> {}
   async setModel(): Promise<void> {}
   async setPermissionMode(): Promise<void> {}
@@ -9301,7 +9153,7 @@ class FallbackSteeringDriver implements MakaSessionDriver {
     this.endTurn();
   }
 
-  async respondToSandboxBoundary(_response: PermissionResponse): Promise<void> {}
+  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
   async renameSession(): Promise<void> {}
   async setModel(): Promise<void> {}
   async setPermissionMode(): Promise<void> {}
@@ -9361,7 +9213,7 @@ class SlowStopDriver implements MakaSessionDriver {
     this.releaseTurn = null;
   }
 
-  async respondToSandboxBoundary(_response: PermissionResponse): Promise<void> {}
+  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
   async renameSession(): Promise<void> {}
   async setModel(): Promise<void> {}
   async setPermissionMode(): Promise<void> {}
@@ -9420,7 +9272,7 @@ class ThinkingOutputDriver implements MakaSessionDriver {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_response: PermissionResponse): Promise<void> {}
+  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
   async renameSession(): Promise<void> {}
   async setModel(): Promise<void> {}
   async setPermissionMode(): Promise<void> {}
@@ -9513,7 +9365,7 @@ class ToolOutputDriver implements MakaSessionDriver {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_response: PermissionResponse): Promise<void> {}
+  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
   async renameSession(): Promise<void> {}
   async setModel(): Promise<void> {}
   async setPermissionMode(): Promise<void> {}
@@ -9985,7 +9837,7 @@ class SlashCommandDriver implements MakaSessionDriver {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_response: PermissionResponse): Promise<void> {}
+  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
   async setModel(model: string, connectionSlug?: string): Promise<void> {
     this.models.push(model);
     this.modelConnections.push(connectionSlug);
@@ -10310,7 +10162,7 @@ class DeferredControlDriver implements MakaSessionDriver {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_response: PermissionResponse): Promise<void> {}
+  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
 
   async setModel(model: string): Promise<void> {
     this.models.push(model);
@@ -10343,8 +10195,8 @@ class DeferredControlDriver implements MakaSessionDriver {
   }
 }
 
-class RejectingPermissionDriver implements MakaSessionDriver {
-  readonly responses: PermissionResponse[] = [];
+class RejectingSandboxBoundaryDriver implements MakaSessionDriver {
+  readonly responses: SandboxBoundaryResponse[] = [];
 
   async listSessions(): Promise<SessionSummary[]> {
     return [];
@@ -10358,28 +10210,28 @@ class RejectingPermissionDriver implements MakaSessionDriver {
 
   async *promptEvents(_prompt: string): AsyncIterable<SessionEvent> {
     yield {
-      type: 'permission_request',
-      kind: 'tool_permission',
-      id: 'event-permission',
+      type: 'sandbox_boundary_request',
+      id: 'event-boundary',
       turnId: 'turn-1',
       ts: 1,
-      requestId: 'permission-1',
+      requestId: 'boundary-1',
       toolUseId: 'tool-1',
-      toolName: 'Bash',
-      category: 'shell_unsafe',
-      reason: 'shell_dangerous',
-      args: { command: 'npm test' },
-      rememberForTurnAllowed: true,
+      justification: 'Read /outside.',
+      expansion: {
+        filesystem: {
+          entries: [{ path: '/outside', access: 'read', scope: 'exact' }],
+        },
+      },
     };
-    // The turn stays parked while the permission is unresolved.
+    // The turn stays parked while the boundary request is unresolved.
     await new Promise<void>(() => {});
   }
 
   async stop(): Promise<void> {}
 
-  async respondToSandboxBoundary(response: PermissionResponse): Promise<void> {
+  async respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void> {
     this.responses.push(response);
-    throw new Error('permission response rejected');
+    throw new Error('sandbox boundary response rejected');
   }
 
   async renameSession(): Promise<void> {}
@@ -10427,7 +10279,7 @@ class CanonicalRenameDriver extends SlashCommandDriver {
   }
 }
 
-class PermissionThenErrorDriver implements MakaSessionDriver {
+class SandboxBoundaryThenErrorDriver implements MakaSessionDriver {
   respondCalls = 0;
   private resolveContinue: (() => void) | null = null;
 
@@ -10443,18 +10295,18 @@ class PermissionThenErrorDriver implements MakaSessionDriver {
 
   async *promptEvents(_prompt: string): AsyncIterable<SessionEvent> {
     yield {
-      type: 'permission_request',
-      kind: 'tool_permission',
-      id: 'event-permission',
+      type: 'sandbox_boundary_request',
+      id: 'event-boundary',
       turnId: 'turn-1',
       ts: 1,
-      requestId: 'permission-1',
+      requestId: 'boundary-1',
       toolUseId: 'tool-1',
-      toolName: 'Bash',
-      category: 'shell_unsafe',
-      reason: 'shell_dangerous',
-      args: { command: 'npm test' },
-      rememberForTurnAllowed: true,
+      justification: 'Read /outside.',
+      expansion: {
+        filesystem: {
+          entries: [{ path: '/outside', access: 'read', scope: 'exact' }],
+        },
+      },
     };
     await new Promise<void>((resolve) => {
       this.resolveContinue = resolve;
@@ -10469,7 +10321,7 @@ class PermissionThenErrorDriver implements MakaSessionDriver {
 
   async stop(): Promise<void> {}
 
-  async respondToSandboxBoundary(_response: PermissionResponse): Promise<void> {
+  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {
     this.respondCalls += 1;
   }
 
@@ -10521,7 +10373,7 @@ class QuickErrorDriver implements MakaSessionDriver {
   }
 
   async stop(): Promise<void> {}
-  async respondToSandboxBoundary(_response: PermissionResponse): Promise<void> {}
+  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
   async renameSession(): Promise<void> {}
   async setModel(): Promise<void> {}
   async setPermissionMode(): Promise<void> {}

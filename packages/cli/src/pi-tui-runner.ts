@@ -66,7 +66,6 @@ import {
   appendUserPrompt,
   applyMakaSessionEventToTranscript,
   createMakaPiTranscriptState,
-  activePermissionRequest,
   activeSandboxBoundaryRequest,
   activeUserQuestionRequest,
   completePendingInteraction,
@@ -75,7 +74,6 @@ import {
   submitCompactToTranscript,
   toggleAllThinkingExpansion,
   toggleAllToolExpansion,
-  togglePendingPermissionDetails,
   type MakaPiTranscriptMetadata,
 } from './pi-transcript.js';
 import {
@@ -574,11 +572,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   process.once('uncaughtException', handleUncaughtException);
   process.once('unhandledRejection', handleUnhandledRejection);
 
-  const respondToPendingPermission = (
-    decision: 'allow' | 'deny',
-    rememberForTurn = false,
-  ): boolean => {
-    const request = activePermissionRequest(state) ?? activeSandboxBoundaryRequest(state);
+  const respondToPendingSandboxBoundary = (decision: 'allow' | 'deny'): boolean => {
+    const request = activeSandboxBoundaryRequest(state);
     if (!request || permissionResponseInFlightRequestId !== null) return false;
     permissionResponseInFlightRequestId = request.requestId;
     // Keep the prompt visible until the driver accepts the response. If it
@@ -588,11 +583,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       .respondToSandboxBoundary({
         requestId: request.requestId,
         decision,
-        ...(request.type === 'permission_request' &&
-        decision === 'allow' &&
-        request.rememberForTurnAllowed
-          ? { rememberForTurn }
-          : {}),
       })
       .catch((error) => {
         if (permissionResponseInFlightRequestId === request.requestId) {
@@ -956,8 +946,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         if (event.type === 'error') attention.attentionNeeded();
         if (
           permissionResponseInFlightRequestId !== null &&
-          (activePermissionRequest(state) ?? activeSandboxBoundaryRequest(state))?.requestId !==
-            permissionResponseInFlightRequestId
+          activeSandboxBoundaryRequest(state)?.requestId !== permissionResponseInFlightRequestId
         ) {
           permissionResponseInFlightRequestId = null;
         }
@@ -2501,10 +2490,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // one (e.g. `Esc`, type, `Esc`).
     if (!matchesKey(data, Key.escape)) lastIdleEscapeAt = 0;
     if (matchesKey(data, Key.ctrl('o')) && !isKeyRepeat(data)) {
-      if (togglePendingPermissionDetails(state)) {
-        requestRender();
-        return { consume: true };
-      }
       if (toggleAllToolExpansion(state)) {
         requestRender();
         return { consume: true };
@@ -2516,29 +2501,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         return { consume: true };
       }
     }
-    const pendingPermission = activePermissionRequest(state);
     const pendingSandboxBoundary = activeSandboxBoundaryRequest(state);
     if (pendingSandboxBoundary) {
       if (matchesKey(data, 'y') || matchesKey(data, Key.enter) || matchesKey(data, Key.return)) {
-        respondToPendingPermission('allow');
+        respondToPendingSandboxBoundary('allow');
         return { consume: true };
       }
       if (matchesKey(data, 'n') || matchesKey(data, Key.escape)) {
-        respondToPendingPermission('deny');
-        return { consume: true };
-      }
-    }
-    if (pendingPermission) {
-      if (matchesKey(data, 'y') || matchesKey(data, Key.enter) || matchesKey(data, Key.return)) {
-        respondToPendingPermission('allow', false);
-        return { consume: true };
-      }
-      if (matchesKey(data, 'a') && pendingPermission.rememberForTurnAllowed) {
-        respondToPendingPermission('allow', true);
-        return { consume: true };
-      }
-      if (matchesKey(data, 'n') || matchesKey(data, Key.escape)) {
-        respondToPendingPermission('deny');
+        respondToPendingSandboxBoundary('deny');
         return { consume: true };
       }
     }
@@ -2548,7 +2518,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       return { consume: true };
     }
     // Double Escape interrupts the running turn. This must sit below the
-    // permission branch so Escape keeps meaning "deny" while a prompt is
+    // boundary branch so Escape keeps meaning "deny" while a prompt is
     // pending, and it only arms while a prompt turn is actually running.
     if (turnRunning && matchesKey(data, Key.escape)) {
       // Once an interrupt is issued, swallow further Escapes until the turn

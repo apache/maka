@@ -1,6 +1,5 @@
 import { Markdown } from '@earendil-works/pi-tui';
 import type {
-  AnyPermissionRequestEvent,
   ProviderRetryEvent,
   SandboxBoundaryRequestEvent,
   UserQuestionRequestEvent,
@@ -16,10 +15,8 @@ import {
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import {
-  formatWriteStdinPermissionInspection,
   mergeShellRunStateWithDiagnostics,
   projectToolActivityArgs,
-  projectWriteStdinPermissionSummary,
   type ShellRunUpdate,
 } from '@maka/core';
 import { homedir } from 'node:os';
@@ -53,7 +50,6 @@ export interface MakaPiTranscriptState {
   sawTextDeltaMessageIds: Set<string>;
   pendingInteraction?: MakaPiPendingInteraction;
   queuedInteractions: MakaPiPendingInteraction[];
-  expandedPermissionRequestId?: string;
   /**
    * Expansion defaults: entries stamp `expanded` from these at creation, and
    * one Ctrl+O / Ctrl+T press retargets every tool / thinking entry inside the
@@ -102,10 +98,7 @@ export interface MakaPiTranscriptState {
   providerRetry?: ProviderRetryEvent;
 }
 
-export type MakaPiPendingInteraction =
-  | AnyPermissionRequestEvent
-  | SandboxBoundaryRequestEvent
-  | UserQuestionRequestEvent;
+export type MakaPiPendingInteraction = SandboxBoundaryRequestEvent | UserQuestionRequestEvent;
 
 export interface MakaPiRenderGeometry {
   /**
@@ -431,14 +424,6 @@ export function toggleAllThinkingExpansion(state: MakaPiTranscriptState): boolea
   return true;
 }
 
-export function togglePendingPermissionDetails(state: MakaPiTranscriptState): boolean {
-  const request = activePermissionRequest(state);
-  if (request?.toolName !== 'WriteStdin') return false;
-  state.expandedPermissionRequestId =
-    state.expandedPermissionRequestId === request.requestId ? undefined : request.requestId;
-  return true;
-}
-
 export async function submitCompactToTranscript(input: {
   state: MakaPiTranscriptState;
   driver: Pick<MakaSessionDriver, 'compactSession'>;
@@ -542,7 +527,6 @@ export function applyMakaSessionEventToTranscript(
     }
 
     case 'tool_result': {
-      completePendingPermissionsForToolUseId(state, event.toolUseId);
       const foldedPoll = state.pendingShellRunPolls.get(event.toolUseId);
       if (foldedPoll) {
         state.pendingShellRunPolls.delete(event.toolUseId);
@@ -665,9 +649,6 @@ export function applyMakaSessionEventToTranscript(
       break;
     }
 
-    case 'permission_request':
-      enqueuePendingInteraction(state, event);
-      break;
     case 'sandbox_boundary_request':
       enqueuePendingInteraction(state, event);
       break;
@@ -675,20 +656,6 @@ export function applyMakaSessionEventToTranscript(
       enqueuePendingInteraction(state, event);
       break;
 
-    case 'permission_decision_ack':
-      {
-        const request = findPendingInteraction(state, event.requestId);
-        if (request?.type === 'permission_request') {
-          completePendingInteraction(state, event.requestId);
-          const toolName = request.toolName;
-          state.entries.push({
-            kind: 'notice',
-            level: 'info',
-            text: `Permission ${event.decision}ed for ${toolName}`,
-          });
-        }
-      }
-      break;
     case 'sandbox_boundary_decision_ack':
       {
         const request = findPendingInteraction(state, event.requestId);
@@ -760,7 +727,7 @@ export function applyMakaSessionEventToTranscript(
       break;
 
     case 'complete':
-      // The turn is over; any unresolved permission request is no longer actionable.
+      // The turn is over; any unresolved interaction is no longer actionable.
       clearPendingInteractions(state);
       if (event.stopReason === 'max_tokens') {
         state.entries.push({
@@ -1099,16 +1066,6 @@ export function renderMakaPiTranscript(
   }
   state.renderGeometry.entryFirstLine = entryFirstLine;
 
-  if (state.pendingInteraction?.type === 'permission_request') {
-    lines.push('');
-    lines.push(
-      ...renderPermissionPrompt(
-        state.pendingInteraction,
-        state.expandedPermissionRequestId === state.pendingInteraction.requestId,
-        safeWidth,
-      ),
-    );
-  }
   if (state.pendingInteraction?.type === 'sandbox_boundary_request') {
     lines.push('');
     lines.push(...renderSandboxBoundaryPrompt(state.pendingInteraction, safeWidth));
@@ -1123,26 +1080,12 @@ export function completePendingInteraction(
 ): boolean {
   if (state.pendingInteraction?.requestId === requestId) {
     state.pendingInteraction = state.queuedInteractions.shift();
-    if (state.expandedPermissionRequestId === requestId) {
-      state.expandedPermissionRequestId = undefined;
-    }
     return true;
   }
   const index = state.queuedInteractions.findIndex((request) => request.requestId === requestId);
   if (index < 0) return false;
   state.queuedInteractions.splice(index, 1);
-  if (state.expandedPermissionRequestId === requestId) {
-    state.expandedPermissionRequestId = undefined;
-  }
   return true;
-}
-
-export function activePermissionRequest(
-  state: MakaPiTranscriptState,
-): AnyPermissionRequestEvent | undefined {
-  return state.pendingInteraction?.type === 'permission_request'
-    ? state.pendingInteraction
-    : undefined;
 }
 
 export function activeSandboxBoundaryRequest(
@@ -1170,19 +1113,6 @@ function enqueuePendingInteraction(
   else state.queuedInteractions.push(request);
 }
 
-function completePendingPermissionsForToolUseId(
-  state: MakaPiTranscriptState,
-  toolUseId: string,
-): void {
-  const requestIds = [state.pendingInteraction, ...state.queuedInteractions]
-    .filter(
-      (request): request is AnyPermissionRequestEvent =>
-        request?.type === 'permission_request' && request.toolUseId === toolUseId,
-    )
-    .map((request) => request.requestId);
-  for (const requestId of requestIds) completePendingInteraction(state, requestId);
-}
-
 function findPendingInteraction(
   state: MakaPiTranscriptState,
   requestId: string,
@@ -1194,7 +1124,6 @@ function findPendingInteraction(
 function clearPendingInteractions(state: MakaPiTranscriptState): void {
   state.pendingInteraction = undefined;
   state.queuedInteractions = [];
-  state.expandedPermissionRequestId = undefined;
 }
 
 /**
@@ -1679,44 +1608,6 @@ function renderWelcomeBlock(width: number): string[] {
   return lines;
 }
 
-function renderPermissionPrompt(
-  request: AnyPermissionRequestEvent,
-  detailsExpanded: boolean,
-  width: number,
-): string[] {
-  const lines = [
-    fitLine(
-      `${ansi.yellow(
-        request.kind === 'additional_permissions'
-          ? 'Additional permission required'
-          : request.kind === 'sandbox_escalation'
-            ? 'Unsandboxed execution approval required'
-            : 'Permission required',
-      )} ${ansi.bold(request.toolName)} ${ansi.dim(request.category)}`,
-      width,
-    ),
-  ];
-  const summary = permissionRequestSummary(request);
-  if (summary) lines.push(...renderIndented(summary, width, 2));
-  if (request.hint) lines.push(...renderIndented(request.hint, width, 2).map(ansi.dim));
-  if (detailsExpanded && request.toolName === 'WriteStdin') {
-    const details = formatWriteStdinPermissionInspection(request.args);
-    if (details) {
-      lines.push(fitLine(ansi.dim('Full parameters'), width));
-      lines.push(...renderIndented(details, width, 2));
-    }
-  }
-  const actions = request.rememberForTurnAllowed
-    ? `${ansi.bold('y')}${ansi.dim('/Enter allow once')}  ${ansi.bold('a')}${ansi.dim(' allow for turn')}  ${ansi.bold('n')}${ansi.dim('/Esc deny')}`
-    : `${ansi.bold('y')}${ansi.dim('/Enter allow once')}  ${ansi.bold('n')}${ansi.dim('/Esc deny')}`;
-  const detailsAction =
-    request.toolName === 'WriteStdin'
-      ? `  ${ansi.dim('Ctrl+O ' + (detailsExpanded ? 'hide' : 'show') + ' full parameters')}`
-      : '';
-  lines.push(fitLine(`${actions}${detailsAction}`, width));
-  return lines;
-}
-
 function renderSandboxBoundaryPrompt(
   request: SandboxBoundaryRequestEvent,
   width: number,
@@ -1738,55 +1629,4 @@ function renderSandboxBoundaryPrompt(
     ),
   );
   return lines;
-}
-
-function permissionRequestSummary(request: AnyPermissionRequestEvent): string {
-  if (request.kind === 'additional_permissions') {
-    const lines = [request.justification, `cwd: ${request.cwd}`];
-    for (const entry of request.additionalPermissions.fileSystem?.entries ?? []) {
-      lines.push(`${entry.access} ${entry.scope} ${entry.path}`);
-    }
-    if (request.risk.networkEnabled) lines.push('network enabled for this call only');
-    if (request.risk.outsideWorkspace) lines.push('risk: outside workspace');
-    if (request.risk.protectedMetadata) lines.push('risk: protected metadata');
-    return limitText(lines.join('\n'), 1200);
-  }
-  if (request.kind === 'sandbox_escalation') {
-    return limitText(
-      [
-        request.justification,
-        `cwd: ${request.cwd}`,
-        `$ ${request.command}`,
-        'risk: unrestricted filesystem, network, and protected metadata access for this call',
-      ].join('\n'),
-      1200,
-    );
-  }
-  const args = request.args;
-  if (request.toolName === 'Bash' && args !== null && typeof args === 'object') {
-    const command = (args as { command?: unknown }).command;
-    if (typeof command === 'string' && command.trim()) return `$ ${command}`;
-  }
-  if (request.toolName === 'WriteStdin') {
-    const summary = projectWriteStdinPermissionSummary(args);
-    const lines: string[] = [];
-    if (summary.ref) {
-      lines.push(`ref: ${summary.ref.text}${summary.ref.truncated ? '…' : ''}`);
-    }
-    if (summary.input) {
-      const suffix = summary.input.truncated ? `… · ${summary.input.bytes} bytes total` : '';
-      lines.push(`input: ${summary.input.text}${suffix}`);
-    }
-    if (summary.size) lines.push(`size: ${summary.size.cols}x${summary.size.rows}`);
-    return lines.join('\n');
-  }
-  if (
-    (request.toolName === 'Write' || request.toolName === 'Edit') &&
-    args !== null &&
-    typeof args === 'object'
-  ) {
-    const path = (args as { path?: unknown }).path;
-    if (typeof path === 'string' && path.trim()) return path;
-  }
-  return limitText(formatUnknown(request.args), 600);
 }
