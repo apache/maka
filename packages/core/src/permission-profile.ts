@@ -140,10 +140,6 @@ export function createWorkspaceWritePermissionProfile(): PermissionProfileManage
           special: ':slash_tmp',
         },
       ],
-      protectedMetadata: {
-        access: 'deny_write',
-        names: PROTECTED_METADATA_NAMES,
-      },
     },
     network: { kind: 'restricted' },
   };

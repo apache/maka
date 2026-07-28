@@ -132,17 +132,6 @@ describe('Additional permission matching and effective profiles', () => {
     expect(canWritePath(effective, '/outside/sibling.txt', CONTEXT)).toBe(false);
   });
 
-  test('explicit path grant overrides protected metadata default for its exact target', () => {
-    const effective = applyAdditionalPermissionProfile(createWorkspaceWritePermissionProfile(), {
-      fileSystem: {
-        entries: [{ path: '/workspace/project/.git/config', access: 'write', scope: 'exact' }],
-      },
-    });
-    expect(canWritePath(effective, '/workspace/project/.git/config', CONTEXT)).toBe(true);
-    expect(canReadPath(effective, '/workspace/project/.git/config', CONTEXT)).toBe(true);
-    expect(canWritePath(effective, '/workspace/project/.git/HEAD', CONTEXT)).toBe(false);
-  });
-
   test('explicit deny remains stronger than an additional allow', () => {
     const base: PermissionProfile = {
       type: 'managed',

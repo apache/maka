@@ -47,7 +47,7 @@ describe('PermissionProfile factories', () => {
     expect(canWritePath(profile, '/tmp2/maka-out.txt', WORKSPACE_CONTEXT)).toBe(false);
   });
 
-  test('workspace-write profile denies protected metadata writes but allows reads', () => {
+  test('workspace-write profile allows protected metadata writes inside the workspace', () => {
     const profile = createWorkspaceWritePermissionProfile();
 
     for (const path of [
@@ -57,7 +57,7 @@ describe('PermissionProfile factories', () => {
     ]) {
       expect(isProtectedMetadataPath(path, WORKSPACE_CONTEXT.workspaceRoots)).toBe(true);
       expect(canReadPath(profile, path, WORKSPACE_CONTEXT)).toBe(true);
-      expect(canWritePath(profile, path, WORKSPACE_CONTEXT)).toBe(false);
+      expect(canWritePath(profile, path, WORKSPACE_CONTEXT)).toBe(true);
     }
 
     expect(
