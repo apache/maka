@@ -35,6 +35,7 @@ import {
   isWellFormedTerminalInput,
 } from './shell-run-contract.js';
 import type { ChildFdInput } from './child-fd-input.js';
+import { bashToolResultToModelOutput } from './bash-model-output.js';
 
 export interface ForegroundBashExecuteInput {
   command: string;
@@ -129,6 +130,7 @@ export function buildForegroundBashTool(options: BuildForegroundBashToolOptions)
       timeout_ms: z.number().int().positive().max(maxTimeoutMs).optional(),
     }),
     permissionRequired: true,
+    toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     ...(options.executionFacts ? { executionFacts: options.executionFacts } : {}),
     impl: async ({ command, timeout_ms }, ctx) => {
       const timeoutMs = timeout_ms ?? options.defaultTimeoutMs?.(command);
@@ -255,6 +257,7 @@ export function buildManagedBashTool(
         }
       }),
     permissionRequired: true,
+    toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     ...(options.executionFacts ? { executionFacts: options.executionFacts } : {}),
     ...(options.sandbox ? { sandbox: options.sandbox } : {}),
     ...(options.planAdditionalPermissions

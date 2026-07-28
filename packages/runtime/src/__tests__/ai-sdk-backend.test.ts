@@ -2892,6 +2892,170 @@ describe('AiSdkBackend model history', () => {
     ]);
   });
 
+  test('replays durable Bash results without duplicating commands in provider output', async () => {
+    const model = completionModel();
+    const durableResults = [
+      {
+        kind: 'terminal' as const,
+        cwd: '/workspace',
+        cmd: 'printf completed-marker',
+        status: 'completed' as const,
+        exitCode: 0,
+        output: {
+          mode: 'pipes' as const,
+          stdout: 'completed',
+          stderr: '',
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          redacted: false,
+        },
+      },
+      {
+        kind: 'terminal' as const,
+        cwd: '/workspace',
+        cmd: 'printf failed-marker',
+        status: 'failed' as const,
+        exitCode: 2,
+        output: {
+          mode: 'pipes' as const,
+          stdout: '',
+          stderr: 'failed',
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          redacted: false,
+        },
+        sandboxDenial: {
+          likely: true as const,
+          backend: 'macos-seatbelt' as const,
+          recovery: 'require_escalated' as const,
+        },
+      },
+      {
+        kind: 'terminal' as const,
+        cwd: '/workspace',
+        cmd: 'printf timeout-marker',
+        status: 'timed_out' as const,
+        exitCode: 124,
+        output: {
+          mode: 'pipes' as const,
+          stdout: 'partial timeout',
+          stderr: '',
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          redacted: false,
+        },
+      },
+      {
+        kind: 'terminal' as const,
+        cwd: '/workspace',
+        cmd: 'printf cancelled-marker',
+        status: 'cancelled' as const,
+        exitCode: 130,
+        output: {
+          mode: 'pipes' as const,
+          stdout: '',
+          stderr: 'cancelled',
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          redacted: false,
+        },
+      },
+      {
+        kind: 'terminal' as const,
+        cwd: '/workspace',
+        cmd: 'printf truncated-marker',
+        status: 'completed' as const,
+        exitCode: 0,
+        output: {
+          mode: 'pipes' as const,
+          stdout: 'tail',
+          stderr: 'error tail',
+          stdoutTruncated: true,
+          stderrTruncated: true,
+          redacted: true,
+        },
+      },
+    ];
+    const runtimeContext: RuntimeEvent[] = [
+      runtimeTextEvent({
+        id: 'rt-u',
+        turnId: 'turn-prev',
+        role: 'user',
+        author: 'user',
+        text: 'run all commands',
+      }),
+      ...durableResults.map((result, index) =>
+        runtimeEvent({
+          id: `rt-call-${index}`,
+          turnId: 'turn-prev',
+          role: 'model',
+          author: 'agent',
+          content: {
+            kind: 'function_call',
+            id: `tool-${index}`,
+            name: 'Bash',
+            args: { command: result.cmd },
+          },
+        }),
+      ),
+      ...durableResults.map((result, index) =>
+        runtimeEvent({
+          id: `rt-result-${index}`,
+          turnId: 'turn-prev',
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: `tool-${index}`,
+            name: 'Bash',
+            result,
+            isError: result.status !== 'completed',
+          },
+        }),
+      ),
+    ];
+    const backend = new AiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'continue',
+        context: [],
+        runtimeContext,
+      }),
+    );
+
+    const prompt = compactPrompt(model) as Array<{ role: string; content: any[] }>;
+    const serializedPrompt = JSON.stringify(prompt);
+    const toolResults = prompt.find((message) => message.role === 'tool')?.content ?? [];
+    assert.equal(toolResults.length, durableResults.length);
+    for (const [index, durable] of durableResults.entries()) {
+      assert.equal(
+        serializedPrompt.split(durable.cmd).length - 1,
+        1,
+        `command ${index} should remain only in its paired Bash call`,
+      );
+      const output = toolResults[index]?.output;
+      assert.equal(output?.type, durable.status === 'completed' ? 'json' : 'error-json');
+      assert.equal(Object.hasOwn(output?.value ?? {}, 'cmd'), false);
+      const { cmd: _cmd, ...expected } = durable;
+      assert.deepEqual(output?.value, expected);
+      assert.equal(durableResults[index]?.cmd, durable.cmd);
+    }
+  });
+
   test('archives stale RuntimeEvent tool results before replay placeholder rewrite', async () => {
     const model = completionModel();
     const archiveRequests: Array<{

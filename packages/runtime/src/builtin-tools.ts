@@ -26,6 +26,7 @@ import {
   type PermissionProfile,
 } from '@maka/core';
 import { computeEditedSource } from './edit-replace.js';
+import { bashToolResultToModelOutput } from './bash-model-output.js';
 import {
   buildManagedBashTool,
   buildStopBackgroundTaskTool,
@@ -743,6 +744,7 @@ function buildExecutorBashTool(
       })
       .strict(),
     permissionRequired: true,
+    toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     executionFacts: executor.facts,
     ...(sandboxOptions.planAdditionalPermissions
       ? { planAdditionalPermissions: sandboxOptions.planAdditionalPermissions }

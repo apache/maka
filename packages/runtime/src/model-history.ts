@@ -45,6 +45,7 @@ import {
 import { normalizeShellToolResultContent, normalizeToolResultContentForRead } from '@maka/core';
 import type { AttachmentRef, QuoteRef } from '@maka/core/events';
 import type { ModelMessage, UserContent, UserModelMessage } from './model-protocol.js';
+import { projectBashToolResultForModel } from './bash-model-output.js';
 
 // ============================================================================
 // Output type
@@ -566,6 +567,9 @@ export function buildRuntimeEventModelReplayPlan(
             invalidResultMessage =
               'function_response contains an invalid legacy subagent tool result';
           }
+        }
+        if (!invalidResultMessage && event.content.name === 'Bash') {
+          normalizedResult = projectBashToolResultForModel(normalizedResult);
         }
         if (invalidResultMessage) {
           const call = callsById.get(event.content.id);

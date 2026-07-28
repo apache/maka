@@ -179,6 +179,37 @@ describe('builtin tool executor facts', () => {
 });
 
 describe('builtin Bash description declares the executing shell', () => {
+  test('executor Bash keeps its durable command out of provider-facing results', async () => {
+    const bash = buildBuiltinTools({
+      executor: fakeExecutor({
+        exec: async () => ({
+          exitCode: 0,
+          stdout: 'done',
+          stderr: '',
+          timedOut: false,
+          aborted: false,
+        }),
+      }),
+    }).find((tool) => tool.name === 'Bash')!;
+    const result = await runTool(bash, { command: 'printf executor-marker' }, '/workspace');
+    const modelOutput = await bash.toModelOutput?.({
+      toolCallId: 'tool-1',
+      input: { command: 'printf executor-marker' },
+      output: result,
+    });
+
+    assert.equal((result as { cmd?: unknown }).cmd, 'printf executor-marker');
+    assert.equal(
+      Object.hasOwn(
+        modelOutput && 'value' in modelOutput && typeof modelOutput.value === 'object'
+          ? (modelOutput.value ?? {})
+          : {},
+        'cmd',
+      ),
+      false,
+    );
+  });
+
   test('executor Bash executes with the same shell it declares', async () => {
     // /bin/echo stands in for pwsh.exe: if the shell reaches the local
     // executor's spawn, stdout echoes the PowerShell flags back instead of a

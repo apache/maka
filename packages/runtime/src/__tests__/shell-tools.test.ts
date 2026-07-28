@@ -126,6 +126,57 @@ describe('Bash tool shell is threaded through to execution, not just the descrip
   });
 });
 
+describe('Bash provider-facing result projection', () => {
+  test('managed Bash removes only the duplicated foreground command', async () => {
+    const tool = buildManagedBashTool(fakeShellRuns());
+    const terminal = {
+      kind: 'terminal',
+      cwd: '/workspace',
+      cmd: 'printf foreground',
+      status: 'completed',
+      exitCode: 0,
+      output: {
+        mode: 'pipes',
+        stdout: 'foreground',
+        stderr: '',
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        redacted: false,
+      },
+    };
+    const background = {
+      kind: 'shell_run',
+      ref: 'maka://runtime/background-tasks/sr_test',
+      mode: 'pipes',
+      status: 'running',
+      cwd: '/workspace',
+      cmd: 'printf background',
+      startedAt: 1,
+      updatedAt: 1,
+      revision: 1,
+    };
+
+    assert.deepEqual(
+      await tool.toModelOutput?.({ toolCallId: 'foreground', input: {}, output: terminal }),
+      {
+        type: 'json',
+        value: {
+          kind: 'terminal',
+          cwd: '/workspace',
+          status: 'completed',
+          exitCode: 0,
+          output: terminal.output,
+        },
+      },
+    );
+    assert.deepEqual(
+      await tool.toModelOutput?.({ toolCallId: 'background', input: {}, output: background }),
+      { type: 'json', value: background },
+    );
+    assert.equal(terminal.cmd, 'printf foreground');
+  });
+});
+
 describe('shapeTerminalResult sandbox denial projection', () => {
   test('surfaces sandboxDenial when a sandboxed command fails with a denial message', () => {
     const result = shapeTerminalResult({

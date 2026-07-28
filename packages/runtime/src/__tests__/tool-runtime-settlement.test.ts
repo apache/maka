@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { LlmConnection, SessionHeader } from '@maka/core';
 import { PermissionEngine } from '../permission-engine.js';
+import { buildForegroundBashTool, buildManagedBashTool } from '../shell-tools.js';
 import { ToolRuntime, type MakaTool, type ToolRuntimeInput } from '../tool-runtime.js';
 
 describe('ToolRuntime settlement', () => {
@@ -26,6 +27,151 @@ describe('ToolRuntime settlement', () => {
       result,
       modelOutput: { type: 'json', value: result },
     });
+  });
+
+  it('keeps the durable Bash command while omitting it from the live model output', async () => {
+    const runtime = makeRuntime();
+    const bash = buildForegroundBashTool({
+      description: 'shell',
+      execute: async () => ({
+        exitCode: 0,
+        stdout: 'done',
+        stderr: '',
+        stdoutTruncated: true,
+        stderrTruncated: false,
+      }),
+    });
+    bash.permissionRequired = false;
+
+    const settlement = await runtime.settleToolCall({
+      tool: bash,
+      turnId: 'turn-1',
+      stepId: 'step-1',
+      toolCallId: 'call-1',
+      input: { command: 'printf durable-command' },
+      abortSignal: new AbortController().signal,
+      eventSink: {
+        push: () => {},
+        pushAndWaitUntilConsumed: async () => {},
+      },
+    });
+
+    assert.equal((settlement.result as { cmd?: unknown }).cmd, 'printf durable-command');
+    assert.deepEqual(settlement.modelOutput, {
+      type: 'json',
+      value: {
+        kind: 'terminal',
+        cwd: '/workspace/repo',
+        status: 'completed',
+        exitCode: 0,
+        output: {
+          mode: 'pipes',
+          stdout: 'done',
+          stderr: '',
+          stdoutTruncated: true,
+          stderrTruncated: false,
+          redacted: false,
+        },
+      },
+    });
+  });
+
+  it('projects every managed foreground Bash terminal state without its command', async () => {
+    const terminalResults = [
+      {
+        kind: 'terminal' as const,
+        cwd: '/workspace/repo',
+        cmd: 'printf completed',
+        status: 'completed' as const,
+        exitCode: 0,
+        output: {
+          mode: 'pipes' as const,
+          stdout: 'tail',
+          stderr: '',
+          stdoutTruncated: true,
+          stderrTruncated: false,
+          redacted: false,
+        },
+      },
+      {
+        kind: 'terminal' as const,
+        cwd: '/workspace/repo',
+        cmd: 'printf failed',
+        status: 'failed' as const,
+        exitCode: 2,
+        output: {
+          mode: 'pipes' as const,
+          stdout: '',
+          stderr: 'failed',
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          redacted: false,
+        },
+        sandboxDenial: {
+          likely: true as const,
+          backend: 'macos-seatbelt' as const,
+          recovery: 'require_escalated' as const,
+        },
+      },
+      {
+        kind: 'terminal' as const,
+        cwd: '/workspace/repo',
+        cmd: 'printf timed-out',
+        status: 'timed_out' as const,
+        exitCode: 124,
+        output: {
+          mode: 'pipes' as const,
+          stdout: 'partial',
+          stderr: '',
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          redacted: false,
+        },
+      },
+      {
+        kind: 'terminal' as const,
+        cwd: '/workspace/repo',
+        cmd: 'printf cancelled',
+        status: 'cancelled' as const,
+        exitCode: 130,
+        output: {
+          mode: 'pipes' as const,
+          stdout: '',
+          stderr: 'cancelled',
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          redacted: true,
+        },
+      },
+    ];
+
+    for (const [index, terminal] of terminalResults.entries()) {
+      const runtime = makeRuntime();
+      const bash = buildManagedBashTool({
+        runForegroundBash: async () => terminal,
+        runBackgroundBash: async () => {
+          throw new Error('not used');
+        },
+      });
+      bash.permissionRequired = false;
+      const settlement = await runtime.settleToolCall({
+        tool: bash,
+        turnId: 'turn-1',
+        stepId: 'step-1',
+        toolCallId: `call-${index}`,
+        input: { command: terminal.cmd },
+        abortSignal: new AbortController().signal,
+        eventSink: {
+          push: () => {},
+          pushAndWaitUntilConsumed: async () => {},
+        },
+      });
+      const { cmd: _cmd, ...projected } = terminal;
+
+      assert.deepEqual(settlement.result, terminal);
+      assert.deepEqual(settlement.modelOutput, { type: 'json', value: projected });
+      assert.equal(terminalResults[index]?.cmd, terminal.cmd);
+    }
   });
 
   it('preserves live provider error mapping', async () => {

@@ -976,7 +976,7 @@ describe('buildModelHistoryFromRuntimeEvents', () => {
     ]);
   });
 
-  test('runtime replay plan normalizes an exact legacy terminal result', () => {
+  test('runtime replay plan normalizes a legacy Bash result without changing durable input', () => {
     const events: RuntimeEvent[] = [
       ev({
         role: 'model',
@@ -1017,7 +1017,6 @@ describe('buildModelHistoryFromRuntimeEvents', () => {
     expect(result?.kind === 'tool_result' ? result.output : undefined).toEqual({
       kind: 'terminal',
       cwd: '/tmp/work',
-      cmd: 'printf ok',
       status: 'completed',
       exitCode: 0,
       output: {
@@ -1029,6 +1028,11 @@ describe('buildModelHistoryFromRuntimeEvents', () => {
         redacted: false,
       },
     });
+    expect(
+      events[1]?.content?.kind === 'function_response'
+        ? (events[1].content.result as { cmd?: unknown }).cmd
+        : undefined,
+    ).toBe('printf ok');
   });
 
   test('runtime replay plan rejects a mixed legacy/current shell result', () => {
