@@ -88,20 +88,20 @@ export const PROVIDER_CONTRACT_OVERRIDE_BINDINGS: readonly ProviderContractOverr
 async function runCloudflareDiscovery(): Promise<void> {
   const server = await startJsonServer((request, response) => {
     assert.equal(request.method, 'GET');
-    assert.equal(
-      request.url,
-      '/client/v4/accounts/account-123/ai/models/search?page=1&per_page=50&task=Text+Generation',
-    );
+    const page = new URL(request.url ?? '', 'http://test.local').searchParams.get('page');
     assert.equal(request.headers.authorization, 'Bearer cloudflare-test-token');
     respondJson(response, 200, {
       success: true,
-      result: [
-        {
-          name: '@cf/meta/llama-text',
-          task: { id: 'text-generation', name: 'Text Generation' },
-        },
-      ],
-      result_info: { page: 1, total_pages: 1 },
+      result:
+        page === '1'
+          ? [
+              {
+                name: '@cf/meta/llama-text',
+                task: { id: 'text-generation', name: 'Text Generation' },
+              },
+            ]
+          : [],
+      result_info: { page: Number(page), per_page: 50 },
     });
   });
   const connection: LlmConnection = {

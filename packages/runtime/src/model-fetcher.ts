@@ -20,9 +20,8 @@ import {
 
 const MODEL_FETCH_TIMEOUT_MS = 10_000;
 const CLOUDFLARE_MODEL_PAGE_SIZE = 50;
-const CLOUDFLARE_MODEL_MAX_PAGES = Math.ceil(
-  CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION / CLOUDFLARE_MODEL_PAGE_SIZE,
-);
+const CLOUDFLARE_MODEL_MAX_REQUEST_PAGES =
+  Math.ceil(CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION / CLOUDFLARE_MODEL_PAGE_SIZE) + 1;
 
 type RawProviderModel = {
   id?: string;
@@ -221,7 +220,7 @@ async function fetchCloudflareModels(baseUrl: string, apiKey: string): Promise<M
   const models: ModelInfo[] = [];
   let page = 1;
   let rawModelCount = 0;
-  while (page <= CLOUDFLARE_MODEL_MAX_PAGES) {
+  while (page <= CLOUDFLARE_MODEL_MAX_REQUEST_PAGES) {
     const url = cloudflareModelsUrl(baseUrl, page);
     const response = await proxiedFetch(url, {
       headers: { authorization: `Bearer ${apiKey}` },
@@ -245,7 +244,7 @@ async function fetchCloudflareModels(baseUrl: string, apiKey: string): Promise<M
         return typeof model.name === 'string' ? [{ id: model.name }] : [];
       }),
     );
-    if (data.result.length < CLOUDFLARE_MODEL_PAGE_SIZE) return models;
+    if (data.result.length === 0) return models;
     page += 1;
   }
   throw new Error('Provider returned too many models');

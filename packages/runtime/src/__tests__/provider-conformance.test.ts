@@ -1336,18 +1336,21 @@ describe('models.dev provider conformance', () => {
       assert.equal(request.headers.authorization, 'Bearer cloudflare-workers-ai-test-token');
       if (
         request.method === 'GET' &&
-        request.url ===
-          '/client/v4/accounts/account-123/ai/models/search?page=1&per_page=50&task=Text+Generation'
+        request.url?.startsWith('/client/v4/accounts/account-123/ai/models/search?')
       ) {
+        const page = new URL(request.url, 'http://test.local').searchParams.get('page');
         respondJson(response, 200, {
           success: true,
-          result: [
-            {
-              name: modelId,
-              task: { id: 'text-generation', name: 'Text Generation' },
-            },
-          ],
-          result_info: { page: 1, total_pages: 1 },
+          result:
+            page === '1'
+              ? [
+                  {
+                    name: modelId,
+                    task: { id: 'text-generation', name: 'Text Generation' },
+                  },
+                ]
+              : [],
+          result_info: { page: Number(page), per_page: 50 },
         });
         return;
       }

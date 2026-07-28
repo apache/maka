@@ -17,11 +17,13 @@ describe('fetchProviderModels', () => {
       requests.push({ url: request.url ?? '', authorization: request.headers.authorization });
       const page = new URL(request.url ?? '', 'http://test.local').searchParams.get('page');
       const result =
-        page === '2'
-          ? [{ name: '@cf/qwen/qwen-next' }]
-          : Array.from({ length: 50 }, (_, index) => ({
-              name: `@cf/example/text-model-${index}`,
-            }));
+        page === '3'
+          ? []
+          : page === '2'
+            ? [{ name: '@cf/qwen/qwen-next' }]
+            : Array.from({ length: 50 }, (_, index) => ({
+                name: `@cf/example/text-model-${index}`,
+              }));
       respondJson(response, 200, {
         success: true,
         result,
@@ -60,7 +62,50 @@ describe('fetchProviderModels', () => {
         url: '/client/v4/accounts/account-123/ai/models/search?page=2&per_page=50&task=Text+Generation',
         authorization: 'Bearer cloudflare-api-token',
       },
+      {
+        url: '/client/v4/accounts/account-123/ai/models/search?page=3&per_page=50&task=Text+Generation',
+        authorization: 'Bearer cloudflare-api-token',
+      },
     ]);
+  });
+
+  test('Cloudflare Workers AI accepts exactly 2,048 models and rejects the first excess item', async () => {
+    for (const modelCount of [2_048, 2_049]) {
+      let requestCount = 0;
+      const server = await startJsonServer((request, response) => {
+        requestCount += 1;
+        const page = Number(
+          new URL(request.url ?? '', 'http://test.local').searchParams.get('page'),
+        );
+        const pageStart = (page - 1) * 50;
+        const result = Array.from(
+          { length: Math.max(0, Math.min(50, modelCount - pageStart)) },
+          (_, index) => ({ name: `@cf/example/model-${pageStart + index}` }),
+        );
+        respondJson(response, 200, { success: true, result });
+      });
+
+      const request = fetchProviderModels(
+        {
+          slug: 'cloudflare-workers-ai',
+          name: 'Cloudflare Workers AI',
+          providerType: 'cloudflare-workers-ai',
+          baseUrl: `${server.url}/client/v4/accounts/account-123/ai/v1`,
+          defaultModel: '@cf/example/default',
+          enabled: true,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        'cloudflare-api-token',
+      );
+      if (modelCount === 2_048) {
+        assert.equal((await request).length, 2_048);
+        assert.equal(requestCount, 42);
+      } else {
+        await assert.rejects(request, /Failed to fetch provider models/);
+        assert.equal(requestCount, 41);
+      }
+    }
   });
 
   test('Cloudflare Workers AI bounds pagination before an oversized catalog can be persisted', async () => {
