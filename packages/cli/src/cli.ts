@@ -24,6 +24,7 @@ import { createApiKeyOnboardingSurface } from './onboarding.js';
 export type MakaCliCommand =
   | { kind: 'tui'; resumeSessionId?: string }
   | { kind: 'run'; args: string[] }
+  | { kind: 'activate'; args: string[] }
   | { kind: 'eval'; args: string[] }
   | { kind: 'inspect'; args: string[] }
   | { kind: 'help'; text: string }
@@ -47,6 +48,7 @@ export function parseMakaCliArgs(argv: string[], version: string): MakaCliComman
     return { kind: 'tui', resumeSessionId: sessionId };
   }
   if (first === 'run' || first === '-p') return { kind: 'run', args: argv.slice(1) };
+  if (first === 'activate') return { kind: 'activate', args: argv.slice(1) };
   if (first === 'eval') return { kind: 'eval', args: argv.slice(1) };
   if (first === 'inspect') return { kind: 'inspect', args: argv.slice(1) };
   return {
@@ -98,6 +100,7 @@ function helpText(): string {
     '  maka              Start the TUI',
     '  maka-agent        Start the TUI',
     '  maka run ...      Run one non-interactive model turn',
+    '  maka activate ... Run one Cloud Session activation and emit JSONL',
     '  maka -p ...       Alias for maka run',
     '  maka eval ...     Run evaluation and autonomous task commands',
     '  maka inspect ...  Inspect Session, AgentRun, or TaskRun evidence',
@@ -163,6 +166,10 @@ export async function runMakaCli(argv: string[] = process.argv.slice(2)): Promis
     case 'run': {
       const { runMakaTextCli } = await import('./run-command.js');
       return runMakaTextCli(command.args);
+    }
+    case 'activate': {
+      const { runMakaActivationCli } = await import('./activation-command.js');
+      return runMakaActivationCli(command.args);
     }
     case 'eval': {
       const { runMakaEvalCli } = await import('@maka/headless/eval-router');
