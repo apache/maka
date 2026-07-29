@@ -37,6 +37,7 @@ import type { StreamEvents } from './session-stream.js';
 import type { SettingsIpcHandle } from './settings-ipc-main.js';
 import { runProjectStartupMigration } from './project-startup-migration.js';
 import { createAppQuitCoordinator } from './app-quit-coordinator.js';
+import { resumeSafeBoundaryContinuationsOnStartup } from './startup-safe-boundary-resume.js';
 
 type AssembledTools = ReturnType<typeof assembleDesktopTools>;
 type PricingLookup = ReturnType<typeof buildPricingLookup>;
@@ -147,15 +148,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
       await agentGraphSupervisorWakeCoordinator.recover();
       await agentGraphCoordinator.recover();
       if (process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME !== '1') return;
-      for (const session of await runtime.listSessions()) {
-        const plan = await runtime.planLatestAuthoritativeSafeBoundaryContinuation(session.id);
-        if (!plan.continuation) continue;
-        const iterator = runtime.resumeSafeBoundaryContinuation(plan.continuation);
-        void streamEvents(session.id, iterator, {
-          turnId: plan.continuation.turnId,
-          goalBoundary: 'none',
-        });
-      }
+      await resumeSafeBoundaryContinuationsOnStartup(runtime, streamEvents);
     } catch {
       // Best-effort: startup should still reach the renderer so users can inspect
       // and repair any remaining local session state.

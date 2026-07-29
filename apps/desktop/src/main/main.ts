@@ -83,6 +83,7 @@ import {
   errorMessage,
   requireReadyConnection,
 } from './chat-readiness.js';
+import { assertDesktopExecutionBoundary } from './desktop-execution-admission.js';
 import { createFileCredentialStore } from './credential-store.js';
 import { bindOnboardingDeps, createOnboardingService } from './onboarding-service.js';
 import { createDailyReviewArchiveStore } from './daily-review-archive-store.js';
@@ -1213,11 +1214,7 @@ const streamEvents = createSessionStreamer({
 
 async function ensureSessionCanSend(sessionId: string): Promise<void> {
   const boundary = await runtime.readExecutionBoundary(sessionId);
-  if (boundary.kind === 'external') {
-    throw new Error(
-      `Cannot run externally isolated session ${sessionId} outside its owning harness.`,
-    );
-  }
+  assertDesktopExecutionBoundary(sessionId, boundary);
   const header = await readAvailableSessionHeader(sessionId);
   let result: Awaited<ReturnType<typeof ensureSessionCanSendOrRebind>>;
   try {

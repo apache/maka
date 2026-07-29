@@ -289,7 +289,7 @@ describe('permission response IPC boundary', () => {
       main.match(/async function ensureSessionCanSend\(sessionId: string\)[\s\S]*?\n\}/)?.[0] ?? '';
     assert.match(
       admission,
-      /runtime\.readExecutionBoundary\(sessionId\)[\s\S]*boundary\.kind === 'external'/,
+      /runtime\.readExecutionBoundary\(sessionId\)[\s\S]*assertDesktopExecutionBoundary\(sessionId, boundary\)/,
     );
     for (const channel of [
       'sessions:compact',
