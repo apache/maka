@@ -15,18 +15,21 @@
   display: flex;
   align-items: flex-end;
   gap: var(--space-1);
-  /* The header is also a drag strip, so its box must stop before the
-     absolutely-positioned .maka-workspace-top-actions toolbar instead of
-     merely padding content away from it. Otherwise the transparent drag
-     region covers the titlebar icon buttons. */
+  /* Reserve the absolutely-positioned .maka-workspace-top-actions footprint so
+     right-aligned header content (model switcher, mode pill, memory pill) is
+     never laid out underneath it. This is a content-avoidance ruler only: the
+     header no longer declares a drag region, so `.maka-titlebar-drag-layer`
+     covers this strip and the toolbar's own `no-drag` carves the buttons back
+     out. */
   margin-right: var(--maka-workspace-top-actions-inset);
   padding: 0 var(--space-2-5);
   background: transparent;
   border-bottom: 0;
   transition: margin-left var(--duration-large) var(--ease-drawer);
-  -webkit-app-region: drag;
 }
 
+/* Same content-avoidance role on the left: while the sidebar is collapsed the
+   topbar rail overlaps this row, so header content starts after its buttons. */
 .maka-shell-2col[data-sidebar-state="collapsed"] .maka-chat-header {
   margin-left: var(--maka-sidebar-collapsed-topbar-inset);
 }

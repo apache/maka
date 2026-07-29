@@ -46,6 +46,14 @@
      --maka-workspace-top-actions-top. */
   --maka-sidebar-topbar-offset-y: calc(var(--maka-titlebar-control-safe-top) - 16px);
   --maka-sidebar-topbar-offset-x: calc(var(--maka-titlebar-control-safe-left) - 10px);
+  /* Height of the window-drag band (`.maka-titlebar-drag-layer`). Bound to the
+     rail's own offset + its 34px row plus 2px of slack, so moving the rail
+     moves the band with it instead of leaving a hand-tuned number behind. */
+  --maka-titlebar-drag-band-height: calc(var(--maka-sidebar-topbar-offset-y) + 36px);
+  /* Content-avoidance ruler ONLY: keeps collapsed-state chat-header content
+     clear of the topbar rail's buttons. It is NOT a drag-region ruler — the
+     drag band is one layer now (`.maka-titlebar-drag-layer`), so this value
+     being a few px off can no longer swallow a titlebar click. */
   --maka-sidebar-collapsed-topbar-inset: calc(
     var(--maka-sidebar-topbar-offset-x) + var(--maka-sidebar-topbar-button-size) +
       var(--maka-sidebar-topbar-button-size) + var(--maka-sidebar-topbar-button-size) +
@@ -143,6 +151,30 @@
   transform: translateX(var(--maka-sidebar-exit-offset));
 }
 
+/* The window's only drag surface: one band across the top of the shell.
+   Everything interactive inside the band carves itself out with `no-drag`,
+   which works because this layer is the first child of `.maka-shell-2col`
+   (see the document-order note in app-shell.tsx).
+
+   This replaces the previous arrangement, where each container that happened
+   to sit in the titlebar band declared its own drag region and then reserved
+   space for its neighbours with a hand-computed `margin-left`/`margin-right`
+   ruler. Those rulers encoded "how many titlebar buttons exist right now",
+   which is state-dependent: the sidebar rail renders a third button (新任务)
+   only while the sidebar is collapsed, the sidebar's own drag strip only ever
+   reserved room for two, and the third button landed in the 36px nobody had
+   reserved — clicks on it reached the OS as window drags. A single band plus
+   `no-drag` controls makes the geometry follow the layout instead of a number
+   someone has to remember to update. */
+.maka-titlebar-drag-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--maka-titlebar-drag-band-height);
+  -webkit-app-region: drag;
+}
+
 .maka-shell-topbar-rail {
   position: absolute;
   z-index: var(--z-panel-action);
@@ -172,6 +204,11 @@
   user-select: none;
   touch-action: none;
   background: transparent;
+  /* The handle spans the full window height, so its top sits inside the drag
+     band and must carve itself out — otherwise the topmost pixels of the
+     column resizer start a window drag instead. Previously it escaped only
+     because the sidebar's drag strip happened to end 2px to its left. */
+  -webkit-app-region: no-drag;
 }
 
 .maka-shell-2col[data-sidebar-state="collapsed"] .maka-resize-handle {

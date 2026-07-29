@@ -11,22 +11,22 @@
   contain: layout paint style;
 }
 
+/* The sidebar's first grid row is blank on purpose: it clears the titlebar
+   band so the nav starts below the window controls. Its height used to come
+   from an empty `.maka-sidebar-drag-strip` child that existed only to donate a
+   drag region; `.maka-titlebar-drag-layer` owns dragging now, so the row keeps
+   the geometry and drops the child.
+
+   Derived from the band height rather than restating a number: the row clears
+   the band and adds the same gap the panel uses elsewhere. `min-height` is
+   border-box here (global `box-sizing: border-box`), so this is the row's total
+   height, padding included. */
 .maka-session-panel-header {
   display: grid;
+  min-height: calc(var(--maka-titlebar-drag-band-height) + var(--space-1-5));
   gap: var(--space-1);
   padding: var(--space-1-5) var(--space-1-5) var(--space-1-5);
   border-bottom: 0;
-}
-
-.maka-sidebar-drag-strip {
-  min-height: 34px;
-  margin-left: calc(
-    var(--maka-sidebar-topbar-offset-x) + var(--maka-sidebar-topbar-button-size) +
-      var(--maka-sidebar-topbar-button-size) + var(--maka-sidebar-topbar-gap) +
-      var(--maka-sidebar-topbar-gap)
-  );
-  box-sizing: border-box;
-  -webkit-app-region: drag;
 }
 
 .maka-session-list {

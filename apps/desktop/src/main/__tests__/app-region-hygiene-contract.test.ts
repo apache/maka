@@ -42,6 +42,26 @@ const APP_SHELL_CHROME_ACTIONS_PATH = join(
   'renderer',
   'app-shell-chrome-actions.tsx',
 );
+const APP_SHELL_PATH = join(process.cwd(), 'src', 'renderer', 'app-shell.tsx');
+
+/**
+ * The single element allowed to declare `-webkit-app-region: drag`.
+ *
+ * Chromium builds the OS draggable region by walking annotated elements in
+ * DOCUMENT ORDER, adding each `drag` rect and subtracting each `no-drag` rect.
+ * A `no-drag` control therefore only escapes a `drag` region that was declared
+ * BEFORE it. When drag regions were spread across containers, each one had to
+ * reserve space for its neighbours with a hand-computed margin ruler encoding
+ * "how many titlebar buttons exist right now" — and the sidebar's strip only
+ * ever reserved room for two, so the third button the rail renders while the
+ * sidebar is collapsed (新任务) sat under a live drag region and its clicks
+ * reached the OS as window drags instead of clicks.
+ *
+ * One band declared first, plus `no-drag` on the controls inside it, makes that
+ * class of bug unrepresentable: any control added to the band later carves
+ * itself out automatically.
+ */
+const DRAG_AUTHORITY_SELECTOR = '.maka-titlebar-drag-layer';
 
 /**
  * Selectors that, if they ever carry `-webkit-app-region: drag`,
@@ -113,34 +133,89 @@ describe('app-region hygiene contract (PR-SIDEBAR-IA-0 Phase 3 P0 fixup v5)', ()
     });
   }
 
-  it('every -webkit-app-region: drag rule lives inside a narrow header/tab/nav selector', async () => {
-    // Positive form: the drag declarations we DO have must each
-    // sit on a class whose name indicates it's a deliberately
-    // narrow drag strip (header / tab-bar / nav-window /
-    // drag-strip). Anything else flags as "drag declared on an
-    // unexpected scope" so reviewers see it before merge.
-    const allowedNamePatterns = [
-      /-header($|[\s,{])/,
-      /-tab-bar($|[\s,{])/,
-      /-drag-strip($|[\s,{])/,
-      /-nav-window($|[\s,{])/,
-      /-toolbar($|[\s,{])/,
-    ];
+  it(`declares -webkit-app-region: drag on exactly one selector (${DRAG_AUTHORITY_SELECTOR})`, async () => {
     const stylesSources = [
       ['renderer CSS', await readRendererContractCss()],
       [TOKENS_PATH, await readFile(TOKENS_PATH, 'utf8')],
     ] as const;
+    const selectors: string[] = [];
     for (const [sourceLabel, src] of stylesSources) {
-      const dragRules = findRulesWithDeclaration(src, '-webkit-app-region: drag');
-      for (const rule of dragRules) {
-        const selector = rule.selector;
-        const ok = allowedNamePatterns.some((pattern) => pattern.test(selector));
-        assert.ok(
-          ok,
-          `\`-webkit-app-region: drag\` on selector '${selector}' (in ${sourceLabel}) is outside the allowlisted narrow strips. Allowed naming: *-header / *-tab-bar / *-drag-strip / *-nav-window / *-toolbar. Add the class to the allowlist only after confirming it sits in a narrow strip, NOT a full-window container.`,
+      for (const rule of findRulesWithDeclaration(src, '-webkit-app-region: drag')) {
+        selectors.push(`${rule.selector} (${sourceLabel})`);
+        assert.equal(
+          rule.selector.trim(),
+          DRAG_AUTHORITY_SELECTOR,
+          `\`-webkit-app-region: drag\` on selector '${rule.selector}' (in ${sourceLabel}) adds a second window-drag authority. Drag belongs to ${DRAG_AUTHORITY_SELECTOR} alone; a container that merely sits in the titlebar band should declare nothing, and a control inside the band should declare \`no-drag\`.`,
         );
       }
     }
+    assert.equal(
+      selectors.length,
+      1,
+      `expected exactly one \`-webkit-app-region: drag\` rule (${DRAG_AUTHORITY_SELECTOR}), found ${selectors.length}: ${selectors.join(', ')}`,
+    );
+  });
+
+  it('keeps the drag layer ahead of every titlebar control in document order', async () => {
+    // The ordering IS the mechanism (see DRAG_AUTHORITY_SELECTOR above), so it
+    // has to be a contract and not a convention: moving the layer below a
+    // titlebar control, or hoisting a control above the layer, makes that
+    // control swallow clicks as window drags with no build or type error.
+    const src = await readFile(APP_SHELL_PATH, 'utf8');
+    const shellIdx = src.indexOf('className="app maka-shell-2col');
+    assert.ok(shellIdx > -1, 'app-shell.tsx must render the `.maka-shell-2col` shell container');
+
+    const layerIdx = src.indexOf(DRAG_AUTHORITY_SELECTOR.slice(1), shellIdx);
+    assert.ok(
+      layerIdx > shellIdx,
+      `app-shell.tsx must render ${DRAG_AUTHORITY_SELECTOR} inside the shell container`,
+    );
+
+    const controlsAfterTheLayer: Array<[string, string]> = [
+      ['the topbar rail', '<AppShellTopbarActions'],
+      ['the column resize handle', 'className="maka-resize-handle"'],
+      ['the detail panel (chat header + workspace actions)', '<AppShellDetailPanel'],
+    ];
+    for (const [label, needle] of controlsAfterTheLayer) {
+      const idx = src.indexOf(needle, shellIdx);
+      assert.ok(idx > -1, `app-shell.tsx must render ${label} (${needle})`);
+      assert.ok(
+        layerIdx < idx,
+        `${DRAG_AUTHORITY_SELECTOR} must be declared BEFORE ${label} in app-shell.tsx so its \`no-drag\` regions can be subtracted from the drag band. Found the layer at ${layerIdx} and ${label} at ${idx}.`,
+      );
+    }
+  });
+
+  it('carves the full-height column resize handle out of the drag band', async () => {
+    // The handle spans the whole window height, so its top overlaps the drag
+    // band. It used to escape only because the retired sidebar drag strip
+    // happened to stop 2px to its left.
+    const css = await readRendererContractCss();
+    const rule = findRuleWithBoth(css, '.maka-resize-handle', '-webkit-app-region: no-drag');
+    assert.ok(
+      rule,
+      '.maka-resize-handle must declare `-webkit-app-region: no-drag`; otherwise the top of the column resizer starts a window drag',
+    );
+  });
+
+  it('retires the per-container drag strips the single band replaced', async () => {
+    const css = await readRendererContractCss();
+    // Selector-level, not text-level: the CSS comments that explain why the
+    // strip was retired are allowed to name it.
+    const revived = [...iterateRules(css)].filter((rule) =>
+      selectorMatches(rule.selector, '.maka-sidebar-drag-strip'),
+    );
+    assert.deepEqual(
+      revived.map((rule) => rule.selector),
+      [],
+      'the sidebar drag strip existed only to donate a drag region; it is replaced by the single drag band and must not come back',
+    );
+    const chatHeader = findRuleWithBoth(css, '.maka-chat-header', '-webkit-app-region');
+    assert.equal(
+      chatHeader,
+      null,
+      '.maka-chat-header must not declare an app-region: the drag band covers this strip, and re-declaring drag here would again require a hand-tuned margin ruler to keep the titlebar buttons clickable',
+    );
   });
 
   it('topbar chrome UiButtons and their icon subtrees carve out no-drag hit regions', async () => {

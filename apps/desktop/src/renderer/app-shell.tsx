@@ -1876,6 +1876,18 @@ function AppShellContent({
           } as CSSProperties
         }
       >
+        {/* The window's single drag authority. It MUST stay the first child of
+            `.maka-shell-2col`: Chromium builds the OS draggable region by
+            walking annotated elements in DOCUMENT ORDER, adding each `drag`
+            rect and subtracting each `no-drag` rect, so only a `no-drag`
+            element declared AFTER this layer can carve itself back out of it.
+            Everything clickable inside the titlebar band — the topbar rail, the
+            workspace actions, the column resize handle, right-aligned
+            chat-header content — is declared later in this tree and depends on
+            that ordering. Moving this layer down, or moving a titlebar control
+            above it, silently makes that control undraggable-through: the click
+            reaches the OS as a window drag and never becomes a click. */}
+        <div className="maka-titlebar-drag-layer" aria-hidden="true" />
         <AppShellTopbarActions
           sidebarCollapsed={sessionListCollapsed}
           onOpenSearchModal={() => {
