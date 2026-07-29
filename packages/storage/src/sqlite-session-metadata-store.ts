@@ -468,9 +468,9 @@ export class SqliteSessionMetadataStore {
         kind === 'managed'
           ? projectedMode === 'explore'
             ? requireManagedProfile(createGenesisExecutionBoundary('explore'))
-            : current.kind === 'managed' && current.profile.name !== 'read-only'
+            : current.kind === 'managed' && !isCanonicalReadOnlySandboxProfile(current.profile)
               ? current.profile
-              : restoreAutoSandboxProfile(this.readLatestManagedSandboxProfileSync(sessionId))
+              : this.readLatestAutoSandboxProfileSync(sessionId)
           : undefined;
       const boundaryChanged =
         current.kind !== kind ||
@@ -2066,10 +2066,10 @@ export class SqliteSessionMetadataStore {
     return decodeExecutionBoundary(JSON.parse(row.boundaryJson) as unknown);
   }
 
-  private readLatestManagedSandboxProfileSync(
+  private readLatestAutoSandboxProfileSync(
     sessionId: string,
   ): Extract<ExecutionBoundary, { kind: 'managed' }>['profile'] {
-    const row = this.db
+    const rows = this.db
       .prepare(`
         SELECT boundary_json AS boundaryJson
         FROM sandbox_boundary_log
@@ -2077,26 +2077,24 @@ export class SqliteSessionMetadataStore {
           session_id = ?
           AND applied_revision IS NOT NULL
           AND json_extract(boundary_json, '$.kind') = 'managed'
-          AND (
-            json_extract(boundary_json, '$.profile.name') IS NULL
-            OR json_extract(boundary_json, '$.profile.name') != 'read-only'
-          )
         ORDER BY applied_revision DESC
-        LIMIT 1
       `)
-      .get(sessionId) as { boundaryJson?: unknown } | undefined;
-    if (!row || typeof row.boundaryJson !== 'string') {
-      throw new SessionMetadataConflictError(
-        `Managed sandbox boundary history is missing: ${sessionId}`,
-      );
+      .all(sessionId) as unknown as Array<{ boundaryJson?: unknown }>;
+    for (const row of rows) {
+      if (typeof row.boundaryJson !== 'string') {
+        throw new SessionMetadataConflictError(
+          `Managed sandbox boundary history is invalid: ${sessionId}`,
+        );
+      }
+      const boundary = decodeExecutionBoundary(JSON.parse(row.boundaryJson) as unknown);
+      if (boundary.kind !== 'managed') {
+        throw new SessionMetadataConflictError(
+          `Managed sandbox boundary history is invalid: ${sessionId}`,
+        );
+      }
+      if (!isCanonicalReadOnlySandboxProfile(boundary.profile)) return boundary.profile;
     }
-    const boundary = decodeExecutionBoundary(JSON.parse(row.boundaryJson) as unknown);
-    if (boundary.kind !== 'managed') {
-      throw new SessionMetadataConflictError(
-        `Managed sandbox boundary history is invalid: ${sessionId}`,
-      );
-    }
-    return boundary.profile;
+    return requireManagedProfile(createGenesisExecutionBoundary('ask'));
   }
 
   private readSandboxBoundaryRequestSync(
@@ -2997,12 +2995,14 @@ function requireManagedProfile(
   return boundary.profile;
 }
 
-function restoreAutoSandboxProfile(
-  latest: Extract<ExecutionBoundary, { kind: 'managed' }>['profile'],
-): Extract<ExecutionBoundary, { kind: 'managed' }>['profile'] {
-  return latest.name === 'read-only'
-    ? requireManagedProfile(createGenesisExecutionBoundary('ask'))
-    : latest;
+function isCanonicalReadOnlySandboxProfile(
+  profile: Extract<ExecutionBoundary, { kind: 'managed' }>['profile'],
+): boolean {
+  const { name: _profileName, ...profilePolicy } = profile;
+  const { name: _canonicalName, ...canonicalPolicy } = requireManagedProfile(
+    createGenesisExecutionBoundary('explore'),
+  );
+  return isDeepStrictEqual(profilePolicy, canonicalPolicy);
 }
 
 function assertGraphLookupIdentity(value: string, name: string): void {

@@ -7,6 +7,7 @@ import { describe, test } from 'node:test';
 import { Worker } from 'node:worker_threads';
 import {
   canReadPath,
+  createReadOnlyPermissionProfile,
   createWorkspaceWritePermissionProfile,
   MAX_EXECUTION_BOUNDARY_SERIALIZED_BYTES,
   type SandboxBoundarySettlement,
@@ -489,6 +490,59 @@ describe('SqliteSessionMetadataStore', () => {
 
       assert.equal(restored.kind, 'managed');
       if (restored.kind === 'managed') assert.deepEqual(restored.profile, unnamedProfile);
+    } finally {
+      store.close();
+    }
+  });
+
+  test('restores canonical Auto when an Explore-origin session has no Auto history', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(218) });
+    try {
+      await store.create(fullHeader({ permissionMode: 'explore' }));
+
+      await store.setExecutionBoundaryKind('session-1', 'bypass', {
+        permissionMode: 'bypass',
+      });
+      const restored = await store.setExecutionBoundaryKind('session-1', 'managed', {
+        permissionMode: 'ask',
+      });
+
+      assert.equal(restored.kind, 'managed');
+      if (restored.kind === 'managed') {
+        assert.deepEqual(restored.profile, createWorkspaceWritePermissionProfile());
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+  test('classifies the internal read-only profile by policy instead of its display name', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(220) });
+    const { name: _name, ...unnamedReadOnlyProfile } = createReadOnlyPermissionProfile();
+    try {
+      await store.importEntries([
+        {
+          header: fullHeader({ permissionMode: 'explore' }),
+          initialBoundary: {
+            kind: 'managed',
+            profile: unnamedReadOnlyProfile,
+            revision: 0,
+          },
+          source: {
+            path: '/workspace/sessions/session-1/session.jsonl',
+            fingerprint: 'unnamed-read-only-profile',
+          },
+        },
+      ]);
+
+      const restored = await store.setExecutionBoundaryKind('session-1', 'managed', {
+        permissionMode: 'ask',
+      });
+
+      assert.equal(restored.kind, 'managed');
+      if (restored.kind === 'managed') {
+        assert.deepEqual(restored.profile, createWorkspaceWritePermissionProfile());
+      }
     } finally {
       store.close();
     }
