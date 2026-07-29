@@ -111,11 +111,14 @@ export interface ConversationCopy {
     switchSession: string;
     pinnedSession: (connection: string, model: string) => string;
     switchTitle: (sessionTitle: string) => string;
-    newChatAriaLabel: (label: string) => string;
+    /** Constant: the picker is a combobox, so the selection is its value. */
+    newChatLabel: string;
     newChatTitle: (label: string) => string;
-    configureAriaLabel: (label: string) => string;
+    /** Constant: the connection name is the button's content, not its name. */
+    configureLabel: string;
     configureTitle: string;
-    currentAriaLabel: (label: string) => string; // a11y-allow: the value is not exposed on this element today; the fix is to expose it (see docs/accessibility-governance.md, Outstanding), not to drop it from the name
+    /** Context prefix for a static display, rendered visually-hidden beside the value. */
+    currentLabel: string;
   };
   permissions: {
     mode: Record<PermissionMode, { label: string; hint: string }>;
@@ -164,9 +167,9 @@ export interface ConversationCopy {
     noBranches: string;
     currentProject: string;
     chooseTitle: (branch?: string) => string;
-    chooseAriaLabel: (label: string, branch?: string) => string; // a11y-allow: the value is not exposed on this element today; the fix is to expose it (see docs/accessibility-governance.md, Outstanding), not to drop it from the name
+
     branchTitle: (branch?: string) => string;
-    branchAriaLabel: (branch?: string) => string; // a11y-allow: the value is not exposed on this element today; the fix is to expose it (see docs/accessibility-governance.md, Outstanding), not to drop it from the name
+
   };
   messages: {
     you: string;
@@ -333,10 +336,10 @@ const CONVERSATION_COPY = {
       switching: '切换中', model: '模型', switchAriaLabel: '切换当前会话模型', switchSession: '切换当前会话使用的模型',
       pinnedSession: (connection, model) => `本会话固定模型：${connection} · ${model}`,
       switchTitle: (title) => `${title}。设置里的默认模型只影响新建会话；这里会更新当前会话。`,
-      newChatAriaLabel: (label) => `选择新对话模型，当前 ${label}`, // a11y-allow: the value is not exposed on this element today; the fix is to expose it (see docs/accessibility-governance.md, Outstanding), not to drop it from the name
+      newChatLabel: '选择新对话模型',
       newChatTitle: (label) => `新对话使用的模型：${label}`,
-      configureAriaLabel: (label) => `配置模型连接，当前 ${label}`, // a11y-allow: the value is not exposed on this element today; the fix is to expose it (see docs/accessibility-governance.md, Outstanding), not to drop it from the name
-      configureTitle: '配置模型连接', currentAriaLabel: (label) => `当前模型：${label}`, // a11y-allow: the value is not exposed on this element today; the fix is to expose it (see docs/accessibility-governance.md, Outstanding), not to drop it from the name
+      configureLabel: '配置模型连接',
+      configureTitle: '配置模型连接', currentLabel: '当前模型',
      
     },
     permissions: {
@@ -362,8 +365,8 @@ const CONVERSATION_COPY = {
     workspace: {
       choose: '选择项目', current: '当前项目', addProject: '添加项目', noProject: '无项目', relink: '重新定位', branch: '选择分支', noBranches: '无本地分支', currentProject: '当前项目',
       chooseTitle: (branch) => branch ? `选择项目 · ${branch}` : '选择项目',
-      chooseAriaLabel: (label, branch) => branch ? `选择项目：${label}，当前分支 ${branch}` : `选择项目：${label}`, // a11y-allow: the value is not exposed on this element today; the fix is to expose it (see docs/accessibility-governance.md, Outstanding), not to drop it from the name
-      branchTitle: (branch) => branch ? `分支：${branch}` : '选择分支', branchAriaLabel: (branch) => branch ? `切换分支：${branch}` : '选择分支', // a11y-allow: the value is not exposed on this element today; the fix is to expose it (see docs/accessibility-governance.md, Outstanding), not to drop it from the name
+      
+      branchTitle: (branch) => branch ? `分支：${branch}` : '选择分支', 
      
     },
     messages: {
@@ -474,8 +477,8 @@ const CONVERSATION_COPY = {
       switching: 'Switching', model: 'Model', switchAriaLabel: 'Switch model for this conversation', switchSession: 'Switch the model used by this conversation',
       pinnedSession: (connection, model) => `Model fixed for this conversation: ${connection} · ${model}`,
       switchTitle: (title) => `${title}. The default model in Settings affects only new conversations; this updates the current conversation.`,
-      newChatAriaLabel: (label) => `Choose a model for the new conversation, currently ${label}`, newChatTitle: (label) => `Model for the new conversation: ${label}`,
-      configureAriaLabel: (label) => `Configure model connections, currently ${label}`, configureTitle: 'Configure model connections', currentAriaLabel: (label) => `Current model: ${label}`, // a11y-allow: the value is not exposed on this element today; the fix is to expose it (see docs/accessibility-governance.md, Outstanding), not to drop it from the name
+      newChatLabel: 'Choose a model for the new conversation', newChatTitle: (label) => `Model for the new conversation: ${label}`,
+      configureLabel: 'Configure model connections', configureTitle: 'Configure model connections', currentLabel: 'Current model',
     },
     permissions: {
       mode: {
@@ -500,8 +503,8 @@ const CONVERSATION_COPY = {
     workspace: {
       choose: 'Choose project', current: 'Current project', addProject: 'Add project', noProject: 'No project', relink: 'Relink', branch: 'Choose branch', noBranches: 'No local branches', currentProject: 'Current project',
       chooseTitle: (branch) => branch ? `Choose project · ${branch}` : 'Choose project',
-      chooseAriaLabel: (label, branch) => branch ? `Choose project: ${label}, current branch ${branch}` : `Choose project: ${label}`, // a11y-allow: the value is not exposed on this element today; the fix is to expose it (see docs/accessibility-governance.md, Outstanding), not to drop it from the name
-      branchTitle: (branch) => branch ? `Branch: ${branch}` : 'Choose branch', branchAriaLabel: (branch) => branch ? `Switch branch: ${branch}` : 'Choose branch', // a11y-allow: the value is not exposed on this element today; the fix is to expose it (see docs/accessibility-governance.md, Outstanding), not to drop it from the name
+      
+      branchTitle: (branch) => branch ? `Branch: ${branch}` : 'Choose branch', 
     },
     messages: {
       you: 'You', assistant: 'Maka', processing: 'Working…', continuing: 'Continuing…', providerRetryScheduled: (seconds, attempt, maxAttempts) => `Retrying in ${seconds}s (${attempt}/${maxAttempts})`, providerRetryStarted: (attempt, maxAttempts) => `Retrying (${attempt}/${maxAttempts})`, safeResumePending: 'Checking…', safeResume: 'Safe recovery', thinking: 'Thinking', truncated: 'Truncated', copied: 'Copied', copying: 'Copying', copyFailed: 'Copy failed', copy: 'Copy', copyMessage: 'Copy message', editMessage: 'Edit & resend', editMessageDisabledRunning: 'Wait for this answer to finish before editing', editMessageDisabledAttachments: 'Edit & resend does not yet support messages with attachments', editMessageDisabledQuotes: 'Edit & resend does not yet support messages with quotes', editMessageDisabledTransformedText: 'Edit & resend does not yet support messages sent with an explicit skill', copyThinking: 'Copy reasoning',

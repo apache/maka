@@ -265,7 +265,7 @@ export function NewChatModelPicker(props: {
       groups={grouped}
       value={props.currentValue ?? ''}
       renderProviderMark={props.renderProviderMark}
-      ariaLabel={copy.newChatAriaLabel(props.label)}
+      ariaLabel={copy.newChatLabel}
       title={copy.newChatTitle(props.label)}
       triggerClassName="maka-composer-model-chip"
       onValueChange={(value) => {
@@ -311,16 +311,27 @@ export function ModelChipStatic(props: { label: string; onOpenSettings?: () => v
         variant="quiet"
         size="sm"
         onClick={props.onOpenSettings}
-        aria-label={copy.configureAriaLabel(props.label)}
+        // The connection name is the button's content; the name says what
+        // pressing does. docs/accessibility-governance.md §1.
+        aria-label={copy.configureLabel}
+        aria-describedby="maka-composer-model-configure-value"
         title={copy.configureTitle}
       >
         <Settings size={12} aria-hidden="true" />
-        <span className="maka-composer-model-chip-text">{props.label}</span>
+        <span id="maka-composer-model-configure-value" className="maka-composer-model-chip-text">
+          {props.label}
+        </span>
       </UiButton>
     );
   }
   return (
-    <span className="maka-composer-model-chip" aria-label={copy.currentAriaLabel(props.label)} title={props.label}>
+    // A static display, not a control: its name is its content, and an
+    // `aria-label` here only overrode the text it already shows. The context
+    // that made the label worth having moves to a visually-hidden prefix, so
+    // both audiences read "当前模型 <name>" without the value being locked
+    // inside an attribute. docs/accessibility-governance.md §1.
+    <span className="maka-composer-model-chip" title={props.label}>
+      <span className="maka-visually-hidden">{copy.currentLabel}</span>
       <span className="maka-composer-model-chip-text">{props.label}</span>
       <span className="maka-composer-model-status" aria-hidden="true" />
     </span>

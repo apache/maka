@@ -174,35 +174,32 @@ about it:
 maka-cu/.build/release/OpenComputerUse snapshot "Maka"
 ```
 
-## 7. Outstanding
+## 7. Cleared
 
-Five accessible names still report the element's own state. Each carries an
-`a11y-allow` in `packages/ui/src/conversation-copy.ts` rather than a silent
-pass, because the value is genuinely not exposed anywhere else on those
-elements — stripping it from the name would delete the fact rather than move
-it. The fix in each case is to expose the value, then remove the interpolation
-and the allow.
+The five names that reported state are fixed, and no `a11y-allow` remains for
+them. Each needed the value put somewhere real rather than deleted:
 
-| label | element | what it should become |
+| control | was | is |
 |---|---|---|
-| `chooseAriaLabel` | project picker in the composer | name `选择项目`, project and branch as the control's value |
-| `branchAriaLabel` | branch switcher | name `切换分支`, branch as the value |
-| `currentAriaLabel` | model chip beside the composer | a status display, not a control — give it a role that has a value |
-| `newChatAriaLabel` | model picker on a new conversation | follow the composer's switcher, which is already correct |
-| `configureAriaLabel` | model-connection entry point | same |
+| permission picker | `权限模式：跳过确认` | `权限模式`, value `跳过确认` |
+| project picker | `选择项目：kami-report` | `选择项目`, value as a described-by child |
+| branch switcher | `切换分支：main` | `切换分支`, same shape |
+| model chip | `当前模型：X` via `aria-label` on a `<span>` | a visually-hidden prefix beside the text — a static display's name is its content, and an `aria-label` only overrode it |
+| new-chat / configure pickers | `…，当前 X` | constants; the picker is a combobox and reports its own value |
 
-The composer's session model switcher is the worked example. Measured on the
-running app:
-
-```
-组合框  Description: 切换当前会话模型   Value: Claude Opus 4.6
-```
-
-Name and value, each carrying one thing. The project picker one row below still
-reads:
+Measured after the change, on the running app:
 
 ```
-弹出式按钮  选择项目：kami-report   Help: 选择项目
+组合框      Description: 权限模式            Value: 跳过确认
+弹出式按钮   选择项目
+  文本      kami-report
 ```
 
-— the value in the name, the name in the help, and no value at all.
+The project picker is the one worth reading twice. Dropping the value from the
+name removed it from the tree entirely — the button's text is not exposed
+separately once `aria-label` wins. `aria-describedby` pointing at the value span
+brought it back as a child node, which is where it belongs: the name says what
+pressing does, the child says what is selected.
+
+The two `a11y-allow` comments that remain are on `removeSkillAriaLabel`, which
+names which skill a row removes. That is identity, and §1's second row.

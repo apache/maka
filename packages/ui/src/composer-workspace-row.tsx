@@ -66,11 +66,22 @@ export function ComposerWorkspaceRow(props: {
               disabled={wp.pending === true}
               aria-busy={wp.pending === true ? 'true' : undefined}
               title={copy.chooseTitle(wp.branch ?? undefined)}
-              aria-label={copy.chooseAriaLabel(wp.label ?? copy.current, wp.branch ?? undefined)}
+              // The name says what the control does; the selected project is the
+              // control's content, which the platform reports separately. Naming
+              // it `选择项目：kami-report` meant the name changed every time the
+              // user picked a project — so whoever had just picked one could no
+              // longer refer to the thing they picked it with.
+              // docs/accessibility-governance.md §1.
+              aria-label={copy.choose}
+              aria-describedby={wp.label ? 'maka-composer-workspace-value' : undefined}
             >
               <FolderOpen size={13} aria-hidden="true" />
               {wp.label
-                ? <span className="maka-composer-workspace-current">{wp.label}</span>
+                ? (
+                  <span id="maka-composer-workspace-value" className="maka-composer-workspace-current">
+                    {wp.label}
+                  </span>
+                )
                 : <span>{copy.choose}</span>}
               <ChevronDown size={12} aria-hidden="true" />
             </UiButton>
@@ -132,10 +143,16 @@ export function ComposerWorkspaceRow(props: {
                   disabled={triggerDisabled}
                   aria-busy={triggerDisabled ? 'true' : undefined}
                   title={copy.branchTitle(bp.branch ?? undefined)}
-                  aria-label={copy.branchAriaLabel(bp.branch ?? undefined)}
+                  // Same shape as the project picker above: the name says what
+                  // pressing does, the branch is content the platform reports on
+                  // its own. docs/accessibility-governance.md §1.
+                  aria-label={copy.branch}
+                  aria-describedby={bp.branch ? 'maka-composer-branch-value' : undefined}
                 >
                   <GitBranch size={13} aria-hidden="true" />
-                  <span className="maka-composer-branch-current">{bp.branch ?? '—'}</span>
+                  <span id="maka-composer-branch-value" className="maka-composer-branch-current">
+                    {bp.branch ?? '—'}
+                  </span>
                   <ChevronDown size={12} aria-hidden="true" />
                 </UiButton>
               )}
