@@ -45,6 +45,12 @@ export function useChatScroll(input: {
     if (!input.hasTurns) return;
     const root = viewportRef.current;
     if (!root) return;
+    // Publish the walk's phase on the scroller. Until the markdown pipeline
+    // has landed and the warm-up has walked every turn, this scroller's
+    // geometry is still a placeholder-scale estimate, and nothing outside can
+    // tell that apart from a pause between chunks. Marked `running` up front
+    // so a rebuilt transcript never shows the previous walk's `settled`.
+    root.dataset.turnWarmup = 'running';
     let disposed = false;
     let cancelWarmup: (() => void) | undefined;
     let pollTimer: number | undefined;
@@ -56,6 +62,9 @@ export function useChatScroll(input: {
       }
       cancelWarmup = createTurnSizeWarmup({
         turns: () => root.querySelectorAll<HTMLElement>('.maka-turn'),
+        onSettled: () => {
+          if (!disposed) root.dataset.turnWarmup = 'settled';
+        },
       });
     };
     const fontsReady: Promise<unknown> =

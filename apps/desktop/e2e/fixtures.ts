@@ -282,12 +282,25 @@ export const test = base.extend<{
   // Long transcript: boots the e2e-fixture `long-transcript` fixture, which
   // seeds a 24-turn (~1300px each) session and opens it as the active
   // session. Fixture mode seeds its own connections, so no connection is
-  // pre-staged here. Readiness = turns on screen: the session is open and
-  // above-viewport turns sit at their content-visibility placeholder size.
-  // Used by the scroll-geometry spec.
+  // pre-staged here. Readiness = turns on screen and RENDERED BY THE REAL
+  // MARKDOWN PIPELINE: the session is open and above-viewport turns sit at
+  // their content-visibility placeholder size. Used by the scroll-geometry
+  // spec.
+  //
+  // `.maka-markdown-pending` is the Suspense fallback for the lazily imported
+  // markdown chunk, and the turn-size warm-up will not start while one is on
+  // screen. Handing the page over before that chunk lands charged the spec's
+  // settle budget for a module load: under 50x CPU throttling the fallback
+  // holds for ~9.6s of a ~19s cold start, most of the spec's 15s, for work
+  // that is boot rather than settling.
   longTranscriptWindow: async ({}, use) => {
     await withE2eWindow(
-      { seed: false, readinessSelector: '.maka-turn', e2eFixtureScenario: 'long-transcript', locale: 'zh' },
+      {
+        seed: false,
+        readinessSelector: '.maka-chatViewport:has(.maka-turn):not(:has(.maka-markdown-pending))',
+        e2eFixtureScenario: 'long-transcript',
+        locale: 'zh',
+      },
       use,
     );
   },

@@ -71,6 +71,53 @@ describe('createTurnSizeWarmup', () => {
     assert.equal(pending(), 0);
   });
 
+  it('reports settled once, after the last chunk is released and not before', () => {
+    const turns = [fakeTurn(), fakeTurn(), fakeTurn()];
+    const { scheduler, flushIdle, flushFrame } = fakeScheduler();
+    let settled = 0;
+    createTurnSizeWarmup({ turns: () => turns, chunkSize: 2, scheduler, onSettled: () => { settled += 1; } });
+
+    flushIdle();
+    flushFrame();
+    flushFrame();
+    // The gap between two chunks looks exactly like the end from outside — no
+    // chunk forced, geometry holding still. It is not the end.
+    assert.deepEqual(forced(turns), []);
+    assert.equal(settled, 0);
+
+    flushIdle();
+    flushFrame();
+    flushFrame();
+    assert.equal(settled, 1);
+    // Nothing left to schedule can fire it a second time.
+    flushIdle();
+    flushFrame();
+    assert.equal(settled, 1);
+  });
+
+  it('settles immediately when there is nothing to walk', () => {
+    const { scheduler, flushIdle } = fakeScheduler();
+    let settled = 0;
+    createTurnSizeWarmup({ turns: () => [], scheduler, onSettled: () => { settled += 1; } });
+
+    flushIdle();
+    assert.equal(settled, 1);
+  });
+
+  it('does not report settled for a cancelled walk', () => {
+    const turns = [fakeTurn(), fakeTurn(), fakeTurn()];
+    const { scheduler, flushIdle, flushFrame } = fakeScheduler();
+    let settled = 0;
+    const stop = createTurnSizeWarmup({ turns: () => turns, chunkSize: 2, scheduler, onSettled: () => { settled += 1; } });
+
+    flushIdle();
+    stop();
+    flushFrame();
+    flushFrame();
+    flushIdle();
+    assert.equal(settled, 0);
+  });
+
   it('skips the live-streaming tail and disconnected turns', () => {
     const turns = [fakeTurn(), fakeTurn({ connected: false }), fakeTurn(), fakeTurn({ live: true })];
     const { scheduler, flushIdle } = fakeScheduler();
