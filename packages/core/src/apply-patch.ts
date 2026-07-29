@@ -141,7 +141,10 @@ export function parseApplyPatch(input: string): ApplyPatchParseOutcome {
       }
       const chunks: ApplyPatchUpdateChunk[] = [];
       while (i < lines.length - 1 && !isFileOpHeader(lines[i]!)) {
-        if (lines[i] === CHANGE_CONTEXT_MARKER || lines[i]!.startsWith(`${CHANGE_CONTEXT_MARKER} `)) {
+        if (
+          lines[i] === CHANGE_CONTEXT_MARKER ||
+          lines[i]!.startsWith(`${CHANGE_CONTEXT_MARKER} `)
+        ) {
           const changeContext =
             lines[i] === CHANGE_CONTEXT_MARKER
               ? undefined
@@ -151,9 +154,7 @@ export function parseApplyPatch(input: string): ApplyPatchParseOutcome {
           if (!chunkResult.ok) return chunkResult;
           i = chunkResult.nextIndex;
           chunks.push({
-            ...(changeContext !== undefined && changeContext.length > 0
-              ? { changeContext }
-              : {}),
+            ...(changeContext !== undefined && changeContext.length > 0 ? { changeContext } : {}),
             oldLines: chunkResult.oldLines,
             newLines: chunkResult.newLines,
             isEndOfFile: chunkResult.isEndOfFile,
@@ -195,7 +196,10 @@ export function parseApplyPatch(input: string): ApplyPatchParseOutcome {
   }
 
   if (hunks.length === 0) {
-    return { ok: false, error: { code: 'invalid_patch', message: 'Patch contains no file operations' } };
+    return {
+      ok: false,
+      error: { code: 'invalid_patch', message: 'Patch contains no file operations' },
+    };
   }
 
   return {
@@ -238,8 +242,7 @@ export function applyUpdateChunksToContent(
   // carrying each original line's terminator through untouched lines.
   const originalLines = splitContentLinesWithEnds(original);
   const hadTrailingNewline =
-    original.length > 0 &&
-    (original.endsWith('\n') || original.endsWith('\r'));
+    original.length > 0 && (original.endsWith('\n') || original.endsWith('\r'));
   let bodies = originalLines.map((line) => line.body);
   let endings = originalLines.map((line) => line.ending);
   const defaultEnding = detectDefaultLineEnding(original);
@@ -260,11 +263,7 @@ export function applyUpdateChunksToContent(
     }
     const insertedEnds = chunk.newLines.map(() => defaultEnding);
     bodies = [...bodies.slice(0, match.start), ...chunk.newLines, ...bodies.slice(match.end)];
-    endings = [
-      ...endings.slice(0, match.start),
-      ...insertedEnds,
-      ...endings.slice(match.end),
-    ];
+    endings = [...endings.slice(0, match.start), ...insertedEnds, ...endings.slice(match.end)];
   }
 
   let content = '';
@@ -306,10 +305,7 @@ function extractPatchLines(
   if (lines.length >= 4) {
     const first = lines[0]!.trim();
     const last = lines[lines.length - 1]!.trim();
-    if (
-      (first === '<<EOF' || first === "<<'EOF'" || first === '<<"EOF"') &&
-      last.endsWith('EOF')
-    ) {
+    if ((first === '<<EOF' || first === "<<'EOF'" || first === '<<"EOF"') && last.endsWith('EOF')) {
       return checkBoundariesStrict(lines.slice(1, -1));
     }
   }

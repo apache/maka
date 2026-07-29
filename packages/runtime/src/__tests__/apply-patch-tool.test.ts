@@ -231,14 +231,9 @@ describe('shared ApplyPatch engine partial move failure', () => {
 
     const result = await executeApplyPatchWithAdapter(
       envelope(
-        [
-          '*** Update File: src.txt',
-          '*** Move to: dest.txt',
-          '@@',
-          '-hello',
-          '+hello',
-          '',
-        ].join('\n'),
+        ['*** Update File: src.txt', '*** Move to: dest.txt', '@@', '-hello', '+hello', ''].join(
+          '\n',
+        ),
       ),
       fs,
       async (_key, run) => run(),

@@ -259,7 +259,11 @@ describe('Harbor cell output contract', () => {
       pricingProfile: 'deepseek-v4-flash-tbench-v1',
       agentTools: true,
       productToolSurface: {
-        policy: { economy: true, disabledSurfaceIds: [] },
+        policy: {
+          economy: true,
+          disabledSurfaceIds: [],
+          editingProtocol: 'edit_write',
+        },
         productToolNames: ['Bash', 'agent_spawn'],
       },
       supplementalToolSets: [

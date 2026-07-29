@@ -94,6 +94,7 @@ describe('projectEffectiveProductToolSurface', () => {
       policy: {
         economy: true,
         disabledSurfaceIds: ['agent'],
+        editingProtocol: 'edit_write',
       },
       productToolNames: ['Read', 'browser_click', 'browser_navigate'],
     });

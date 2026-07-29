@@ -27,10 +27,7 @@ import { computeEditedSource } from './edit-replace.js';
 import { bashToolResultToModelOutput } from './bash-model-output.js';
 import { type EditingProtocol } from '@maka/core/apply-patch';
 export type { EditingProtocol } from '@maka/core/apply-patch';
-import {
-  executeApplyPatchWithAdapter,
-  type ApplyPatchFsAdapter,
-} from './apply-patch-engine.js';
+import { executeApplyPatchWithAdapter, type ApplyPatchFsAdapter } from './apply-patch-engine.js';
 import {
   buildManagedBashTool,
   buildStopBackgroundTaskTool,
@@ -112,7 +109,6 @@ export interface BuildBuiltinToolsOptions {
     mimeType: string;
   }) => Promise<Extract<StorageRef, { kind: 'session_file' }>>;
 }
-
 
 export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaTool[] {
   const executor = options.executor ?? createLocalWorkspaceExecutor();
@@ -428,9 +424,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       parameters: z.object({
         patch: z
           .string()
-          .describe(
-            'Full *** Begin Patch … *** End Patch text (Codex apply_patch envelope).',
-          ),
+          .describe('Full *** Begin Patch … *** End Patch text (Codex apply_patch envelope).'),
       }),
       executionFacts,
       impl: async ({ patch }, ctx) => {

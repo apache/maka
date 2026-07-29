@@ -124,11 +124,13 @@ async function planUnderLocks(
     }
     let original: string;
     if (plannedCreates.has(hunk.path)) {
-      const prior = [...prepared].reverse().find(
-        (step) =>
-          (step.kind === 'add' || step.kind === 'update' || step.kind === 'move') &&
-          step.path === hunk.path,
-      );
+      const prior = [...prepared]
+        .reverse()
+        .find(
+          (step) =>
+            (step.kind === 'add' || step.kind === 'update' || step.kind === 'move') &&
+            step.path === hunk.path,
+        );
       if (!prior || prior.kind === 'delete') {
         throw new Error(`ApplyPatch Update File target missing: ${hunk.path}`);
       }

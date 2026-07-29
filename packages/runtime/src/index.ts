@@ -379,9 +379,7 @@ export type {
   ApplyPatchParseOutcome,
   ApplyPatchUpdateChunk,
 } from '@maka/core/apply-patch';
-export {
-  executeApplyPatchWithAdapter,
-} from './apply-patch-engine.js';
+export { executeApplyPatchWithAdapter } from './apply-patch-engine.js';
 export type {
   ApplyPatchEngineResult,
   ApplyPatchFsAdapter,
