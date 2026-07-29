@@ -295,12 +295,26 @@ export const test = base.extend<{
   // fixture, which seeds 60 active sessions and opens the newest one
   // (`...-00`) with the sidebar expanded. Fixture mode seeds its own
   // connections, so no connection is pre-staged here. Readiness = a session
-  // row on screen: the panel grid has mounted, the session list has loaded
-  // from IPC, and the footer sits below the constrained list row. Used by the
-  // sidebar-geometry spec.
+  // row on screen INSIDE AN EXPANDED SIDEBAR: the panel grid has mounted, the
+  // session list has loaded from IPC, and the footer sits below the
+  // constrained list row. Used by the sidebar-geometry and sidebar-navigation
+  // specs.
+  //
+  // The `[data-sidebar-state="expanded"]` part is load-bearing. The shell
+  // boots collapsed (the localStorage default), and `sidebarCollapsed: false`
+  // only lands later, from `applyE2eFixture` — a rAF plus two IPC round trips
+  // after mount. A bare `.maka-list-row` does not gate on it: a collapsed
+  // sidebar keeps the whole list mounted at full width behind `opacity: 0` in
+  // a 0px grid column, which Playwright still reports as visible. Tests then
+  // started against a sidebar that was about to expand under them.
   sidebarLongSessionsWindow: async ({}, use) => {
     await withE2eWindow(
-      { seed: false, readinessSelector: '.maka-list-row', e2eFixtureScenario: 'sidebar-long-sessions', locale: 'zh' },
+      {
+        seed: false,
+        readinessSelector: '[data-sidebar-state="expanded"] .maka-list-row',
+        e2eFixtureScenario: 'sidebar-long-sessions',
+        locale: 'zh',
+      },
       use,
     );
   },
