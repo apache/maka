@@ -78,6 +78,29 @@ value:
 The composer's model picker is already correct and is the reference:
 `Description: 切换当前会话模型`, `Value: Claude Opus 4.6`.
 
+### Busy is not a new name
+
+A control must not rename itself while it works. Four did:
+
+| control | said | already said by |
+|---|---|---|
+| usage refresh | `刷新中…` | `disabled`, `aria-busy`, `data-pending` |
+| password copy | `复制中…`, `已复制` | `disabled` |
+| MCP install | `取消中…` | `disabled` |
+| code-block copy | `复制中…`, `已复制`, `复制失败` | `aria-busy`, `disabled`, `data-copy-feedback` |
+
+Progress belongs in `disabled` / `aria-busy`, which both audiences read. A
+confirmation belongs in a live region — `<span className="maka-visually-hidden"
+role="status" aria-live="polite">` is the established pattern. Neither belongs
+in the name, because the name is the only handle anyone has on the control, and
+taking it away mid-operation takes it away exactly when they are waiting.
+
+A name that switches because the *action* switches is correct and common:
+stop / reload, install / cancel, expand / collapse. The discriminator is not the
+wording — `loading` appears in both — but whether the handler switches on the
+same condition. Flagging by vocabulary alone gave two false positives out of
+three; `check-a11y.mjs` now checks the handler.
+
 ## 2. Identity comes from class names, not from generated ids
 
 There is no stable per-element identifier in this tree, and the ones that exist
@@ -136,6 +159,7 @@ Mechanical, in `scripts/check-a11y.mjs`:
 - icon-only buttons need a name
 - no positive `tabIndex`
 - an `aria-label` may not interpolate a value the element also exposes (§1)
+- a control may not rename itself while it is busy, unless its handler switches too (§1)
 
 Not mechanical, and therefore a review responsibility:
 

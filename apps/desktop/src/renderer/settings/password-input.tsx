@@ -94,14 +94,25 @@ export function PasswordInput(props: {
             variant="quiet"
             size="icon-sm"
             disabled={copying}
+            aria-busy={copying}
             onClick={() => void copyValue()}
-            aria-label={copying ? copy.copying : justCopied ? copy.copied : copy.copy}
+            // The name stays put. `copying` is already carried by `disabled`
+            // and `aria-busy`, and the confirmation is an announcement rather
+            // than a rename — a button that calls itself 已复制 after being
+            // pressed is a button nobody can find again, including whoever
+            // pressed it. docs/accessibility-governance.md §1.
+            aria-label={copy.copy}
           >
             {justCopied
               ? <Check size={16} aria-hidden="true" />
               : <Copy size={16} aria-hidden="true" />}
           </Button>
         )}
+        {/* The confirmation the name used to carry, in the place a status
+            belongs. Follows composer.tsx's drop-to-import announcement. */}
+        <span className="maka-visually-hidden" role="status" aria-live="polite">
+          {copying ? copy.copying : justCopied ? copy.copied : ''}
+        </span>
         <Button
           type="button"
           variant="quiet"

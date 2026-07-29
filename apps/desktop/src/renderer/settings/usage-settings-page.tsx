@@ -138,7 +138,11 @@ export function UsageSettingsPage(props: {
           disabled={refreshing}
           aria-busy={refreshing}
           data-pending={refreshing ? 'true' : undefined}
-          aria-label={refreshing ? copy.refreshingAria : copy.refreshAria}
+          // The busy state is already on this element three times over —
+          // `disabled`, `aria-busy` and `data-pending`. Renaming it a fourth
+          // time moves the only handle anyone has on the control, mid-operation.
+          // docs/accessibility-governance.md §1.
+          aria-label={copy.refreshAria}
           title={refreshing ? copy.refreshingAria : copy.refreshAria}
           onClick={() => void refresh()}
         >

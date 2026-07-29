@@ -272,7 +272,11 @@ function CodeBlock({ children, ...rest }: { children?: ReactNode }) {
           type="button"
           className="maka-code-block-copy"
           onClick={() => void copy()}
-          aria-label={copyPhase === 'pending' ? codeCopy.copyingCode : copyPhase === 'copied' ? codeCopy.copiedCode : copyPhase === 'failed' ? codeCopy.copyCodeFailed : codeCopy.copyCode}
+          // The handler does not switch, so neither does the name. Pending is
+          // already on `aria-busy` and `disabled`; copied and failed are
+          // announcements, and they are made below in the place announcements
+          // belong. docs/accessibility-governance.md §1.
+          aria-label={codeCopy.copyCode}
           aria-busy={copyPending ? 'true' : undefined}
           disabled={copyPending}
           data-copied={copied}
@@ -283,6 +287,13 @@ function CodeBlock({ children, ...rest }: { children?: ReactNode }) {
             ? <Check size={12} aria-hidden="true" />
             : <Copy size={12} aria-hidden="true" />}
         </BaseButton>
+        <span className="maka-visually-hidden" role="status" aria-live="polite">
+          {copyPhase === 'copied'
+            ? codeCopy.copiedCode
+            : copyPhase === 'failed'
+              ? codeCopy.copyCodeFailed
+              : ''}
+        </span>
       </div>
       <pre {...rest}>{children}</pre>
     </div>

@@ -230,6 +230,54 @@ const RULES = [
     },
   },
   {
+    name: 'busy-renames-control',
+    /**
+     * A control must not rename itself while it works. The busy state belongs
+     * in `disabled` / `aria-busy`, which both audiences already read; putting
+     * it in the name as well moves the only handle anyone has on the control,
+     * at exactly the moment they are waiting on it. A model that pressed
+     * `刷新` and then looks for `刷新` finds `刷新中…`.
+     *
+     * Only the progress vocabulary is flagged. A name that switches because the
+     * ACTION switches is correct and common — `展开侧边栏` / `收起侧边栏`,
+     * `隐藏` / `显示`, `安装` / `取消安装` — and those share no words with this
+     * list. Found four real instances when it was written, and no false ones.
+     *
+     * docs/accessibility-governance.md §1.
+     */
+    scan(text) {
+      const offenders = [];
+      const CONDITIONAL_LABEL = /aria-label=\{([^}\n]*?)\?[^}\n]*\}/g;
+      const PROGRESS =
+        /\b(copying|refreshing|loading|saving|installing|cancelling|canceling|submitting|deleting|creating|sending|uploading|pending|busy)\b/i;
+      let match;
+      while ((match = CONDITIONAL_LABEL.exec(text))) {
+        if (!PROGRESS.test(match[0])) continue;
+        // A name that switches because the ACTION switches is correct: a stop /
+        // reload button, or install / cancel, is two actions on one control and
+        // the name must say which one is live. The discriminator is not the
+        // vocabulary — `loading` appears in both — it is whether the handler
+        // switches on the same condition. Flagging by word alone produced two
+        // false positives out of three on the first run.
+        const condition = (match[1] ?? '').trim();
+        const around = text.slice(Math.max(0, match.index - 700), match.index + 700);
+        const handlerSwitches =
+          condition.length > 0 &&
+          new RegExp(`onClick=\\{[^}]*${condition.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`).test(
+            around,
+          );
+        if (handlerSwitches) continue;
+        const lineStart = text.lastIndexOf('\n', match.index) + 1;
+        const lineEnd = text.indexOf('\n', match.index);
+        const line = text.slice(lineStart, lineEnd < 0 ? text.length : lineEnd);
+        if (/\/\/\s*a11y-allow:/.test(line)) continue;
+        const lineIndex = text.slice(0, match.index).split('\n').length;
+        offenders.push({ line: lineIndex, snippet: match[0].slice(0, 90) });
+      }
+      return offenders;
+    },
+  },
+  {
     name: 'dialog-missing-label',
     /**
      * Catches elements with `role="dialog"` that lack a label

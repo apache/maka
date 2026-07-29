@@ -451,7 +451,12 @@ export function PlanReminderPanel(props: {
                           <Switch
                             checked={reminder.enabled}
                             disabled={reminderActionPending}
-                            aria-label={`${reminder.enabled ? copy.page.pause : copy.page.enable}: ${reminder.title}`}
+                            // A switch already reports on/off through `checked`.
+                            // Flipping the name with it means the control is
+                            // called one thing when on and another when off, so
+                            // whoever just toggled it can no longer name what
+                            // they toggled. docs/accessibility-governance.md §1.
+                            aria-label={`${copy.page.enable}: ${reminder.title}`}
                             onCheckedChange={() => void runPlanReminderAction(`${reminder.id}:toggle`, () => props.onToggle?.(reminder.id, !reminder.enabled))}
                           />
                         )}

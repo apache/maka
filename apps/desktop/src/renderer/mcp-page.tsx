@@ -433,7 +433,11 @@ function McpCatalogCard(props: {
           type="button"
           className="maka-mcp-install-button"
           data-phase={props.phase ?? 'idle'}
-          aria-label={cancelling ? props.copy.card.cancellingAria(props.entry.name) : installing ? props.copy.card.cancelAria(props.entry.name) : props.copy.card.installAria(props.entry.name)}
+          // Install and cancel are two actions on one button, and `onClick`
+          // switches with them, so the name switching is correct. The
+          // `cancelling` arm is not an action — it is progress, and `disabled`
+          // already carries it. docs/accessibility-governance.md §1.
+          aria-label={installing ? props.copy.card.cancelAria(props.entry.name) : props.copy.card.installAria(props.entry.name)}
           title={cancelling ? props.copy.card.cancelling : installing ? props.copy.card.cancel : props.copy.card.install}
           onClick={installing ? props.onCancel : props.onInstall}
           disabled={cancelling}
