@@ -11,8 +11,8 @@
 
 
 /* A right-aligned strip of per-session status chips (memory / deep-research /
-   goal), each rendered only when that state is active — so most of the time this
-   row is just its spacer.
+   goal), each rendered only when that state is active — so most of the time the
+   row is empty, and takes no space.
    It carried three rulers until the shell grew a real titlebar row: a
    `margin-right` reserving the workspace toolbar's hand-summed width, a
    collapsed-state `margin-left` reserving the topbar rail's, and the transition
