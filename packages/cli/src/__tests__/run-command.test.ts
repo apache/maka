@@ -189,6 +189,16 @@ describe('maka run process contract', () => {
     assert.equal(result.stdout, '');
   });
 
+  test('fails closed when a tool reports an unresolved sandbox boundary requirement', async () => {
+    const result = await runFixture(['hello'], {
+      scenario: 'sandbox-boundary-tool-result',
+      input: '',
+    });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /sandbox boundary expansion is unavailable/);
+    assert.equal(result.stdout, '');
+  });
+
   test('creates an Auto boundary by default', async () => {
     const result = await runFixture(['hello'], {
       input: '',

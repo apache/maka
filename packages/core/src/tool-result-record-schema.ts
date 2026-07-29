@@ -5,6 +5,7 @@ import {
 } from './shell-run-result.js';
 import { isPermissionMode } from './permission.js';
 import { isStorageRef, type ToolResultContent } from './events.js';
+import { validateSandboxBoundaryExpansion } from './sandbox-boundary.js';
 import {
   defineObjectShape,
   hasExactShape,
@@ -20,7 +21,14 @@ type ExploreResult = Result<'explore_agent'>;
 type AgentSwarmResult = Result<'agent_swarm'>;
 type RiveResult = Result<'rive_workflow'>;
 
-const TEXT_SHAPE = defineObjectShape<Result<'text'>>()(['kind', 'text'], ['sandboxDenial']);
+const TEXT_SHAPE = defineObjectShape<Result<'text'>>()(
+  ['kind', 'text'],
+  ['sandboxDenial', 'sandboxFailure'],
+);
+const SANDBOX_FAILURE_SHAPE = defineObjectShape<NonNullable<Result<'text'>['sandboxFailure']>>()(
+  ['reason'],
+  ['requiredExpansion'],
+);
 const JSON_SHAPE = defineObjectShape<Result<'json'>>()(['kind', 'value'], []);
 const FILE_DIFF_SHAPE = defineObjectShape<Result<'file_diff'>>()(['kind', 'paths', 'diff'], []);
 const FILE_WRITE_SHAPE = defineObjectShape<Result<'file_write'>>()(['kind', 'path', 'bytes'], []);
@@ -219,7 +227,14 @@ function isNonShellToolResultContent(value: unknown): value is ToolResultContent
       return (
         hasExactShape(value, TEXT_SHAPE) &&
         typeof value.text === 'string' &&
-        (value.sandboxDenial === undefined || isSandboxDenialSignal(value.sandboxDenial))
+        (value.sandboxDenial === undefined || isSandboxDenialSignal(value.sandboxDenial)) &&
+        (value.sandboxFailure === undefined ||
+          (isRecord(value.sandboxFailure) &&
+            hasExactShape(value.sandboxFailure, SANDBOX_FAILURE_SHAPE) &&
+            (value.sandboxFailure.reason === 'sandbox_boundary_required' ||
+              value.sandboxFailure.reason === 'requires_bypass') &&
+            (value.sandboxFailure.requiredExpansion === undefined ||
+              validateSandboxBoundaryExpansion(value.sandboxFailure.requiredExpansion).ok)))
       );
     case 'json':
       return hasExactShape(value, JSON_SHAPE) && Object.hasOwn(value, 'value');

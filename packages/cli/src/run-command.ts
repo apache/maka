@@ -335,6 +335,19 @@ export async function runMakaTextCli(
           decision: 'deny',
         });
       }
+      if (
+        event.type === 'tool_result' &&
+        event.isError &&
+        event.content.kind === 'text' &&
+        event.content.sandboxFailure
+      ) {
+        boundaryDenied = true;
+        deps.writeStderr(
+          event.content.sandboxFailure.reason === 'requires_bypass'
+            ? 'maka run: sandbox bypass requires an explicit --yolo\n'
+            : 'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
+        );
+      }
     }
     graphActivity?.release();
     if (parsed.options.graph && invocation?.status === 'completed') {

@@ -456,6 +456,11 @@ export interface SandboxDenialRecovery extends SandboxDenialSignal {
   recovery: 'require_escalated';
 }
 
+export interface SandboxBoundaryFailureSignal {
+  reason: 'sandbox_boundary_required' | 'requires_bypass';
+  requiredExpansion?: SandboxBoundaryExpansion;
+}
+
 export type ShellRunCompactResult = ShellRunResultMetadata &
   ({ mode: 'pipes'; output?: never } | { mode: 'pty'; output?: never });
 
@@ -476,7 +481,12 @@ type ShellRunToolResultContent =
       ));
 
 export type ToolResultContent =
-  | { kind: 'text'; text: string; sandboxDenial?: SandboxDenialSignal }
+  | {
+      kind: 'text';
+      text: string;
+      sandboxDenial?: SandboxDenialSignal;
+      sandboxFailure?: SandboxBoundaryFailureSignal;
+    }
   | { kind: 'json'; value: unknown }
   | { kind: 'file_diff'; paths: string[]; diff: string }
   | { kind: 'file_write'; path: string; bytes: number }

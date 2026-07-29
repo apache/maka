@@ -701,11 +701,13 @@ export class ToolRuntime {
     text: string,
     queue: DurableSessionEventSink,
     sandboxDenial?: SandboxDenialSignal,
+    sandboxFailure?: Extract<ToolResultContent, { kind: 'text' }>['sandboxFailure'],
   ): Promise<void> {
     const content: ToolResultContent = {
       kind: 'text',
       text: formatSyntheticToolErrorText(text),
       ...(sandboxDenial ? { sandboxDenial } : {}),
+      ...(sandboxFailure ? { sandboxFailure } : {}),
     };
     const durableAttempt = this.durableToolAttempts.get(durableAttemptKey(turnId, toolUseId));
     const durableOutcome = await durableAttempt?.commitOutcome(content, true);
@@ -1260,6 +1262,7 @@ export class ToolRuntime {
         msg,
         queue,
         sandboxDenialSignalFromError(err),
+        sandboxBoundaryFailureSignal(sandboxError),
       );
       this.input.recordToolInvocation?.({
         sessionId: this.input.sessionId,
@@ -2005,6 +2008,20 @@ export function formatSyntheticToolErrorText(error: unknown): string {
   const redacted = redactSecrets(raw || 'Tool failed');
   if (redacted.length <= TOOL_ERROR_RESULT_MAX_CHARS) return redacted;
   return `${redacted.slice(0, TOOL_ERROR_RESULT_MAX_CHARS - 1)}…`;
+}
+
+function sandboxBoundaryFailureSignal(
+  metadata: ReturnType<typeof serializeSandboxError>,
+): Extract<ToolResultContent, { kind: 'text' }>['sandboxFailure'] {
+  if (metadata?.reason !== 'sandbox_boundary_required' && metadata?.reason !== 'requires_bypass') {
+    return undefined;
+  }
+  return {
+    reason: metadata.reason,
+    ...(metadata.requiredExpansion
+      ? { requiredExpansion: metadata.requiredExpansion as SandboxBoundaryExpansion }
+      : {}),
+  };
 }
 
 function coerceResultContent(raw: unknown): ToolResultContent {

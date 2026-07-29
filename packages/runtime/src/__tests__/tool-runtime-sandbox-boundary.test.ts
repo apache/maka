@@ -317,6 +317,11 @@ describe('ToolRuntime session sandbox boundary', () => {
       events.some((event) => event.type === 'sandbox_boundary_request'),
       false,
     );
+    assert.deepEqual(events.find((event) => event.type === 'tool_result')?.content, {
+      kind: 'text',
+      text: 'Command sandbox failed: requires_bypass.',
+      sandboxFailure: { reason: 'requires_bypass' },
+    });
   });
 });
 

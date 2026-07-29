@@ -127,6 +127,26 @@ const runtime: MakaRunRuntime = {
       if (!permissionDenied) throw new Error('sandbox boundary request was not denied');
       return;
     }
+    if (scenario === 'sandbox-boundary-tool-result') {
+      yield {
+        type: 'tool_result',
+        id: 'event-boundary-result',
+        turnId: input.turnId,
+        ts: 1,
+        toolUseId: 'tool-boundary',
+        isError: true,
+        content: {
+          kind: 'text',
+          text: 'Bash requires an approved session sandbox boundary expansion.',
+          sandboxFailure: {
+            reason: 'sandbox_boundary_required',
+            requiredExpansion: { network: { enabled: true } },
+          },
+        },
+      } as unknown as SessionEvent;
+      await notify(completedResult('should not be emitted'));
+      return;
+    }
     if (scenario === 'slow') {
       process.stderr.write('fixture-ready\n');
       const keepAlive = setInterval(() => {}, 1_000);
