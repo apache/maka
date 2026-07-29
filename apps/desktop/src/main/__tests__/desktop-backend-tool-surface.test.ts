@@ -227,6 +227,31 @@ describe('Desktop backend tool surface', () => {
     assert.equal(host.toolNames.has('Write'), false);
   });
 
+  it('does not use the legacy permission ceiling as child admission authority', async () => {
+    const header = inputFor('claude-sonnet-4-5-20250929').header;
+    header.permissionMode = 'execute';
+    header.subagentParent = {} as SessionHeader['subagentParent'];
+    header.subagentRuntime = {
+      schemaVersion: 1,
+      definitionVersion: 1,
+      agentId: 'implementation-child',
+      agentName: 'Implementation child',
+      profile: 'implementation',
+      systemPrompt: 'Implement.',
+      toolNames: ['Write'],
+      categoryPolicy: {},
+      permissionCeiling: 'ask',
+    };
+
+    const host = await resolveDesktopSessionSkillHost(makeDeps(), {
+      sessionId: header.id,
+      header,
+      childTools: [readTool, writeTool],
+    });
+
+    assert.deepEqual([...host.toolNames], ['Write']);
+  });
+
   it('never previews Deep Research tools — the preview stands in for a plain chat', async () => {
     // #1433: this used to branch on a `mode` the Quick Chat panel passed in
     // before its session existed. That panel is gone; the only entry point

@@ -3,7 +3,6 @@ import {
   DEFAULT_SESSION_NAME,
   expertTeamIdFromLabels,
   isDeepResearchSession,
-  isPermissionModeWithinCeiling,
   resolveModelVisionSupport,
 } from '@maka/core';
 import type {
@@ -311,9 +310,6 @@ function resolveDurableChildTools(
   }
   if (!header.subagentParent) {
     throw new Error('Subagent runtime snapshot requires a linked child session');
-  }
-  if (!isPermissionModeWithinCeiling(header.permissionMode, snapshot.permissionCeiling)) {
-    throw new Error('Subagent runtime permission mode exceeds its durable ceiling');
   }
   const tools = buildToolsForAgentDefinition(availableChildTools, {
     id: snapshot.agentId,

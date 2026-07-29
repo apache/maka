@@ -5,7 +5,7 @@ import type {
   RuntimeEventStore,
   ToolBoundaryProtocol,
 } from '@maka/core';
-import { isPermissionModeWithinCeiling, isSessionInlineRun } from '@maka/core';
+import { isSessionInlineRun } from '@maka/core';
 import type {
   CompleteEvent,
   QueueEnqueueOutcome,
@@ -2549,9 +2549,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
     }
     if (!header.subagentParent) {
       throw new Error('Subagent runtime snapshot requires a linked child session');
-    }
-    if (!isPermissionModeWithinCeiling(header.permissionMode, snapshot.permissionCeiling)) {
-      throw new Error('Subagent runtime permission mode exceeds its durable ceiling');
     }
     const snapshotDefinition = {
       id: snapshot.agentId,

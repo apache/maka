@@ -74,7 +74,6 @@ import {
   decodeAgentGraphIntentClaim,
   failureClassFromCompleteStopReason,
   isDeepResearchSession,
-  isPermissionModeWithinCeiling,
   isSessionInlineRun,
   subagentSessionRuntimeSummary,
 } from '@maka/core';
@@ -1079,14 +1078,6 @@ export class SessionManager {
   async setPermissionMode(sessionId: string, mode: PermissionMode): Promise<SessionSummary> {
     const previous = await this.deps.store.readHeader(sessionId);
     const boundary = await this.deps.store.readExecutionBoundary(sessionId);
-    if (
-      previous.subagentRuntime &&
-      !isPermissionModeWithinCeiling(mode, previous.subagentRuntime.permissionCeiling)
-    ) {
-      throw new Error(
-        `Child session permission mode "${mode}" exceeds its "${previous.subagentRuntime.permissionCeiling}" ceiling`,
-      );
-    }
     const leavingDeepResearch = isDeepResearchSession(previous.labels) && mode !== 'explore';
     if (
       previous.permissionMode === mode &&
@@ -2736,9 +2727,6 @@ export class SessionManager {
       !snapshot
     ) {
       throw new Error(`Child AgentRun resume source ${sourceRunId} was not found`);
-    }
-    if (!isPermissionModeWithinCeiling(child.permissionMode, snapshot.permissionCeiling)) {
-      throw new Error('Child Session permission mode exceeds its durable runtime ceiling');
     }
     const runnableTools = buildToolsForAgentDefinition(this.deps.childTools ?? [], {
       id: snapshot.agentId,
