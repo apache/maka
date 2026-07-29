@@ -458,10 +458,10 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
 ]);
 
 export function configureSqliteSessionMetadataDatabase(db: DatabaseSync): void {
+  db.exec('PRAGMA busy_timeout = 5000');
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA synchronous = FULL');
   db.exec('PRAGMA foreign_keys = ON');
-  db.exec('PRAGMA busy_timeout = 5000');
 }
 
 export function migrateSqliteSessionMetadataDatabase(db: DatabaseSync): void {
