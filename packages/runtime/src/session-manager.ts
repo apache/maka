@@ -1150,10 +1150,15 @@ export class SessionManager {
       labels?: readonly string[];
     },
   ): Promise<ExecutionBoundary> {
-    const shellRunClose =
-      current.kind === 'bypass' && kind === 'managed'
-        ? await this.deps.shellRuns?.terminateSession(sessionId)
-        : undefined;
+    const narrowsShellAuthority =
+      (current.kind === 'bypass' && kind === 'managed') ||
+      (current.kind === 'managed' &&
+        kind === 'managed' &&
+        projection?.permissionMode === 'explore' &&
+        current.profile.name !== 'read-only');
+    const shellRunClose = narrowsShellAuthority
+      ? await this.deps.shellRuns?.terminateSession(sessionId)
+      : undefined;
     let boundary: ExecutionBoundary;
     try {
       // Backends snapshot boundary-related session state at construction time.

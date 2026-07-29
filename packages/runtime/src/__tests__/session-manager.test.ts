@@ -3882,6 +3882,40 @@ describe('SessionManager permission mode updates', () => {
     expect((await store.readExecutionBoundary(session.id)).kind).toBe('managed');
   });
 
+  test('revokes background shell authority before narrowing Auto to Explore', async () => {
+    const store = new AtomicBoundaryMemorySessionStore();
+    const calls: string[] = [];
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(985),
+      shellRuns: {
+        async terminateSession(sessionId: string) {
+          calls.push(`terminate:${sessionId}`);
+          return { sessionId, token: Symbol('test') };
+        },
+        async commitSessionClose() {
+          calls.push('commit');
+        },
+        rollbackSessionClose() {
+          calls.push('rollback');
+        },
+        resumeSession(sessionId: string) {
+          calls.push(`resume:${sessionId}`);
+        },
+      } as never,
+    });
+    const session = await manager.createSession(makeInput({ permissionMode: 'ask' }));
+
+    await manager.setPermissionMode(session.id, 'explore');
+
+    expect(calls).toEqual([`terminate:${session.id}`, 'commit', `resume:${session.id}`]);
+    const boundary = await store.readExecutionBoundary(session.id);
+    expect(boundary.kind).toBe('managed');
+    if (boundary.kind === 'managed') expect(boundary.profile.name).toBe('read-only');
+  });
+
   test('revokes background shell authority through the direct boundary API', async () => {
     const store = new AtomicBoundaryMemorySessionStore();
     const calls: string[] = [];
