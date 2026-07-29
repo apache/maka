@@ -31,7 +31,10 @@ describe('app shell chrome contract', () => {
     const combined = await readRendererShellCombinedSource();
     const sessionListPanel = await readFile(SESSION_LIST_PANEL_PATH, 'utf8');
 
-    assert.match(combined, /sidebarCollapsed \? 'is-collapsed' : 'is-expanded'/);
+    // `is-collapsed` / `is-expanded` used to be asserted here. They were written
+    // into the DOM but no CSS ever read them once the rail stopped being
+    // absolutely positioned, so the assertion pinned a dead string. The three
+    // checks below cover what this test is actually about.
     assert.match(combined, /PanelLeftClose/, 'expanded shell rail must expose collapse action');
     assert.match(combined, /PanelLeftOpen/, 'collapsed shell rail must expose expand action');
     assert.match(combined, /\{props\.sidebarCollapsed && \(/, 'new-session action should stay collapsed-only');

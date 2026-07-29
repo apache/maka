@@ -149,11 +149,19 @@
    collapsed. The sidebar's strip reserved room for two, the third button landed
    in the space nobody reserved, and clicks on it reached the OS as window drags.
 
-   Inset from the window frame by `--maka-window-resize-edge` on the three sides
-   it touches: a drag rect flush against an edge takes the OS resize hit area
-   with it, which is the other half of this area's bug history (`af681c1`). The
-   margin is what keeps the resize corridor clickable, so the drag rect ends at
-   `--h-titlebar` exactly and never reaches into the row below. */
+   The margin keeps the drag rect off the window frame on the three sides it
+   touches, so the OS keeps its resize corridor there. It is DEFENSIVE, not
+   demonstrated: this area's other bug (`af681c1`, msg `5b85fdb1`) was a window
+   that could not be resized from its edges, and no automated check in this repo
+   can exercise the OS hit test to prove whether 0 would also be safe. 4px of a
+   36px titlebar is not a cost worth arguing about; a P0 nobody can reproduce in
+   CI is.
+
+   The gutters are applied as plain padding, NOT as `calc(gutter - margin)`. Both
+   are safe-AREA measurements, so the box's 4px inset just yields 4px more
+   clearance than the minimum. Subtracting it would restate the inset in two more
+   places to keep the clusters at an exact pixel — which is the habit this whole
+   change exists to remove. */
 .maka-window-titlebar {
   grid-column: 1 / -1;
   grid-row: 1;
@@ -166,8 +174,8 @@
      where they end. Windows puts its native controls on the right instead, and
      that width IS knowable — `--maka-workspace-top-actions-right` derives it
      from the `titlebar-area-*` env vars. */
-  padding-left: calc(var(--maka-titlebar-control-safe-left) - var(--maka-window-resize-edge));
-  padding-right: calc(var(--maka-workspace-top-actions-right) - var(--maka-window-resize-edge));
+  padding-left: var(--maka-titlebar-control-safe-left);
+  padding-right: var(--maka-workspace-top-actions-right);
   -webkit-app-region: drag;
 }
 

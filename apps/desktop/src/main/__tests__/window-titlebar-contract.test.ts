@@ -106,10 +106,19 @@ describe('window titlebar layout contract', () => {
     // side and DOES expose them, through the `titlebar-area-*` env vars — that
     // path must not regress into a hardcoded native width or a platform
     // attribute selector (it was both, once).
+    // A plain token reference, not `calc(token - resize-edge)`: both are
+    // safe-AREA minimums, so the row's own 4px inset just yields more clearance
+    // than required. Subtracting it would restate the inset here and on the right
+    // gutter purely to pin an exact pixel.
     assert.match(
       titlebar,
-      /padding-left:\s*calc\(\s*var\(--maka-titlebar-control-safe-left\)/,
+      /padding-left:\s*var\(--maka-titlebar-control-safe-left\)\s*;/,
       "the titlebar row's left gutter must come from the traffic-light safe-area token",
+    );
+    assert.match(
+      titlebar,
+      /padding-right:\s*var\(--maka-workspace-top-actions-right\)\s*;/,
+      "the titlebar row's right gutter must come from the native-overlay-derived token",
     );
     assert.doesNotMatch(
       css,

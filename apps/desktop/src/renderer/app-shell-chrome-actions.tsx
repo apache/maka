@@ -34,10 +34,7 @@ export function AppShellTopbarActions(props: {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).chrome;
   return (
-    <div
-      className={`maka-shell-topbar-rail ${props.sidebarCollapsed ? 'is-collapsed' : 'is-expanded'}`}
-      aria-label={copy.windowActions}
-    >
+    <div className="maka-shell-topbar-rail" aria-label={copy.windowActions}>
       <Tooltip>
         <TooltipTrigger
           render={<UiButton variant="quiet" size="icon-sm" />}
