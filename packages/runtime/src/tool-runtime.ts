@@ -1,5 +1,5 @@
 import {
-  createGenesisExecutionBoundary,
+  createExternalExecutionBoundary,
   decodeCanonicalToolResultContent,
   projectAgentSwarmResult,
   projectToolActivityArgs,
@@ -1012,7 +1012,7 @@ export class ToolRuntime {
         const runId = this.input.getCurrentRunId?.();
         const executionBoundary = this.input.readExecutionBoundary
           ? await this.input.readExecutionBoundary()
-          : createGenesisExecutionBoundary(this.input.header.permissionMode);
+          : createExternalExecutionBoundary();
         const result = await tool.impl(structuredClone(executionArgs) as never, {
           sessionId: this.input.sessionId,
           turnId,
