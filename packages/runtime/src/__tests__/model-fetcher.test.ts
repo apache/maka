@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { after, describe, test } from 'node:test';
 import type { LlmConnection } from '@maka/core';
-import { fetchProviderModels, ProviderModelDiscoveryHttpError } from '../model-fetcher.js';
+import {
+  fetchProviderModels,
+  ProviderModelDiscoveryHttpError,
+  runConnectionModelDiscoveryEffect,
+} from '../model-fetcher.js';
 
 const servers: Array<{ close(): Promise<void> }> = [];
 
@@ -164,7 +168,7 @@ describe('fetchProviderModels', () => {
               ],
             }
           : {
-              models: [{ name: 'command-a', endpoints: ['chat'] }],
+              models: [{ endpoints: 'legacy-format' }, { name: 'command-a', endpoints: ['chat'] }],
               next_page_token: 'page-2',
             },
       );
@@ -973,6 +977,69 @@ describe('fetchProviderModels', () => {
     );
 
     assert.deepEqual(models, [{ id: 'model-a' }, { id: 'model-b', displayName: 'Model B' }]);
+  });
+
+  test('connection discovery classifies structurally invalid JSON from a real HTTP response', async () => {
+    const secret = 'raw-provider-secret';
+    for (const body of [
+      null,
+      { data: { id: 'not-an-array', secret } },
+      { data: [null, { id: secret }] },
+      { data: [42, { id: secret }] },
+    ]) {
+      const server = await startJsonServer((_request, response) => {
+        respondJson(response, 200, body);
+      });
+
+      const outcome = await runConnectionModelDiscoveryEffect(
+        { ...zaiConnection(), baseUrl: server.url },
+        'zai-live-secret',
+        { fetch: globalThis.fetch },
+      );
+
+      assert.deepEqual(outcome, { ok: false, error: { kind: 'invalid_response' } });
+      assert.equal(JSON.stringify(outcome).includes(secret), false);
+    }
+  });
+
+  test('connection discovery keeps ignoring object entries without model IDs', async () => {
+    const server = await startJsonServer((_request, response) => {
+      respondJson(response, 200, {
+        data: [{ name: 'missing-id' }, { id: 'glm-valid' }],
+      });
+    });
+
+    assert.deepEqual(
+      await runConnectionModelDiscoveryEffect(
+        { ...zaiConnection(), baseUrl: server.url },
+        'zai-live-secret',
+        { fetch: globalThis.fetch },
+      ),
+      { ok: true, models: [{ id: 'glm-valid' }] },
+    );
+  });
+
+  test('connection discovery ignores metadata-only objects before validating model details', async () => {
+    const server = await startJsonServer((_request, response) => {
+      respondJson(response, 200, {
+        data: [
+          { name: 'metadata', tags: 'legacy-format' },
+          { id: 'glm-valid', tags: ['reasoning'] },
+        ],
+      });
+    });
+
+    assert.deepEqual(
+      await runConnectionModelDiscoveryEffect(
+        { ...zaiConnection(), baseUrl: server.url },
+        'zai-live-secret',
+        { fetch: globalThis.fetch },
+      ),
+      {
+        ok: true,
+        models: [{ id: 'glm-valid', capabilities: { reasoning: true } }],
+      },
+    );
   });
 });
 

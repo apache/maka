@@ -38,6 +38,7 @@ import {
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 500;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 2_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 2_000;
 
 export interface ConnectRuntimeHostInput {
   rootPath: string;
@@ -138,7 +139,7 @@ interface PendingRequest {
   accept(value: unknown): unknown;
   resolve(value: unknown): void;
   reject(error: Error): void;
-  timer: NodeJS.Timeout;
+  timer?: NodeJS.Timeout;
 }
 
 class RuntimeHostConnectionImpl implements RuntimeHostConnection {
@@ -171,28 +172,37 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   request<K extends DirectRequestOperationKey>(
     operation: K,
     input: OperationInput<K>,
-    timeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_MS,
+    timeoutMs?: number,
   ): Promise<OperationOutput<K>> {
-    return this.#requestOperation(operation, input, timeoutMs, (result) => result);
+    return this.#requestOperation(
+      operation,
+      input,
+      timeoutMs ?? defaultRequestTimeoutMs(operation),
+      (result) => result,
+    );
   }
 
   #requestOperation<K extends OperationKey, Result>(
     operation: K,
     input: OperationInput<K>,
-    timeoutMs: number,
+    timeoutMs: number | undefined,
     accept: (result: OperationOutput<K>) => Result,
   ): Promise<Result> {
-    const boundedTimeoutMs = requireTimeout(timeoutMs, 'timeoutMs');
+    const boundedTimeoutMs =
+      timeoutMs === undefined ? undefined : requireTimeout(timeoutMs, 'timeoutMs');
     if (this.#terminalError) return Promise.reject(this.#terminalError);
     const requestId = randomUUID();
     const result = new Promise<Result>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        const error = new RuntimeHostTransportError(
-          'read_timeout',
-          `Timed out waiting for Runtime Host ${operation} response`,
-        );
-        this.#fail(error);
-      }, boundedTimeoutMs);
+      const timer =
+        boundedTimeoutMs === undefined
+          ? undefined
+          : setTimeout(() => {
+              const error = new RuntimeHostTransportError(
+                'read_timeout',
+                `Timed out waiting for Runtime Host ${operation} response`,
+              );
+              this.#fail(error);
+            }, boundedTimeoutMs);
       this.#pendingRequests.set(requestId, {
         operation,
         accept: (value) => accept(value as OperationOutput<K>),
@@ -295,7 +305,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       return;
     }
     this.#pendingRequests.delete(frame.requestId);
-    clearTimeout(pending.timer);
+    if (pending.timer) clearTimeout(pending.timer);
     if (frame.ok) {
       try {
         pending.resolve(pending.accept(frame.result));
@@ -372,7 +382,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     if (this.#terminalError) return;
     this.#terminalError = error;
     for (const pending of this.#pendingRequests.values()) {
-      clearTimeout(pending.timer);
+      if (pending.timer) clearTimeout(pending.timer);
       pending.reject(error);
     }
     this.#pendingRequests.clear();
@@ -586,6 +596,17 @@ function requireTimeout(value: number, label: string): number {
     throw new RangeError(`${label} must be an integer between 1 and 120000`);
   }
   return value;
+}
+
+function defaultRequestTimeoutMs(operation: DirectRequestOperationKey): number | undefined {
+  switch (operation) {
+    case 'connection.models.fetch':
+    case 'connection.test.run':
+      // Completion effects own provider deadlines and may wait behind same-connection FIFO work.
+      return undefined;
+    default:
+      return DEFAULT_REQUEST_TIMEOUT_MS;
+  }
 }
 
 interface PhaseDeadline {

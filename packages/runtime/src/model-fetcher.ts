@@ -181,8 +181,10 @@ async function fetchProviderModelsStrict(
       await r.cancel();
       throw new ConnectionEffectHttpError(r.status);
     }
-    const data = await readProviderJson<{ models?: Array<{ name?: string }> }>(r);
-    return (data.models ?? []).flatMap((model) => (model.name ? [{ id: model.name }] : []));
+    const data = await readProviderJson<{ models?: unknown }>(r);
+    return providerObjectArray<{ name?: string }>(data.models, 'Ollama models').flatMap((model) =>
+      model.name ? [{ id: model.name }] : [],
+    );
   }
   if (discovery.kind === 'fireworks') {
     return fetchFireworksModels(baseUrl, apiKey, discovery, fetchFn);
@@ -213,8 +215,8 @@ async function fetchProviderModelsStrict(
         await r.cancel();
         throw new ConnectionEffectHttpError(r.status);
       }
-      const data = await readProviderJson<{ data?: RawProviderModel[] }>(r);
-      const models = (data.data ?? [])
+      const data = await readProviderJson<{ data?: unknown }>(r);
+      const models = providerObjectArray<RawProviderModel>(data.data, 'Anthropic models')
         .map(toModelInfo)
         .filter((model): model is ModelInfo => model !== null);
       return filterDiscoveredModels(models, discovery.filter, definition.fallbackModels);
@@ -242,15 +244,15 @@ async function fetchProviderModelsStrict(
         }
         throw new ConnectionEffectHttpError(r.status);
       }
-      const data = await readProviderJson<{ data?: RawProviderModel[] } | RawProviderModel[]>(r);
+      const data = await readProviderJson<{ data?: unknown } | unknown[]>(r);
       const rawModels =
         discovery.responseShape === 'array-or-data'
           ? Array.isArray(data)
-            ? data
-            : (data.data ?? [])
+            ? providerObjectArray<RawProviderModel>(data, 'provider models')
+            : providerObjectArray<RawProviderModel>(data.data, 'provider models')
           : Array.isArray(data)
             ? []
-            : (data.data ?? []);
+            : providerObjectArray<RawProviderModel>(data.data, 'provider models');
       const models = rawModels
         .filter((model) => discovery.filter !== 'language-models' || model.type === 'language')
         .map(toModelInfo)
@@ -265,11 +267,13 @@ async function fetchProviderModelsStrict(
         await r.cancel();
         throw new ConnectionEffectHttpError(r.status);
       }
-      const data = await readProviderJson<{ models?: Array<{ name?: string }> }>(r);
-      return (data.models ?? []).flatMap((model) => {
-        const id = model.name?.split('/').pop();
-        return id ? [{ id }] : [];
-      });
+      const data = await readProviderJson<{ models?: unknown }>(r);
+      return providerObjectArray<{ name?: string }>(data.models, 'Google models').flatMap(
+        (model) => {
+          const id = model.name?.split('/').pop();
+          return id ? [{ id }] : [];
+        },
+      );
     }
     case 'cohere':
       throw new Error('Cohere requires native model discovery');
@@ -300,20 +304,22 @@ async function fetchCloudflareModels(
       success?: unknown;
       result?: unknown;
     }>(response);
-    if (data.success !== true || !Array.isArray(data.result)) {
+    if (data.success !== true) {
       throw new ConnectionEffectInvalidResponseError('Invalid Cloudflare models response');
     }
-    rawModelCount += data.result.length;
+    const rawModels = providerObjectArray<RawCloudflareModel>(
+      data.result,
+      'Cloudflare models',
+      true,
+    );
+    rawModelCount += rawModels.length;
     if (rawModelCount > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION) {
       throw new ConnectionEffectInvalidResponseError('Provider returned too many models');
     }
     models.push(
-      ...data.result.flatMap((raw) => {
-        const model = raw as RawCloudflareModel;
-        return typeof model.name === 'string' ? [{ id: model.name }] : [];
-      }),
+      ...rawModels.flatMap((model) => (typeof model.name === 'string' ? [{ id: model.name }] : [])),
     );
-    if (data.result.length === 0) return models;
+    if (rawModels.length === 0) return models;
     page += 1;
   }
   throw new ConnectionEffectInvalidResponseError('Provider returned too many models');
@@ -386,11 +392,12 @@ export async function fetchGitHubCopilotModels(
     await response.cancel();
     throw new ConnectionEffectHttpError(response.status);
   }
-  const payload = await readProviderJson<{ data?: RawGitHubCopilotModel[] }>(response);
-  if (!Array.isArray(payload.data)) {
-    throw new ConnectionEffectInvalidResponseError('Invalid GitHub Copilot models response');
-  }
-  return payload.data.flatMap(toGitHubCopilotModelInfo);
+  const payload = await readProviderJson<{ data?: unknown }>(response);
+  return providerObjectArray<RawGitHubCopilotModel>(
+    payload.data,
+    'GitHub Copilot models',
+    true,
+  ).flatMap(toGitHubCopilotModelInfo);
 }
 
 type RawOpenAiCodexModel = {
@@ -450,11 +457,13 @@ export async function fetchOpenAiCodexModels(
     await response.cancel();
     throw new OpenAiCodexDiscoveryError(response.status);
   }
-  const payload = await readProviderJson<{ models?: RawOpenAiCodexModel[] }>(response);
-  if (!Array.isArray(payload?.models)) {
-    throw new ConnectionEffectInvalidResponseError('Invalid OpenAI Codex models response');
-  }
-  const visible = payload.models.filter((model) => {
+  const payload = await readProviderJson<{ models?: unknown }>(response);
+  const models = providerObjectArray<RawOpenAiCodexModel>(
+    payload.models,
+    'OpenAI Codex models',
+    true,
+  );
+  const visible = models.filter((model) => {
     if (!model || typeof model.slug !== 'string' || !model.slug.trim()) return false;
     const visibility =
       typeof model.visibility === 'string' ? model.visibility.trim().toLowerCase() : '';
@@ -485,12 +494,22 @@ function contextWindowOfOpenAiCodexModel(model: RawOpenAiCodexModel): number | u
 
 function toGitHubCopilotModelInfo(model: RawGitHubCopilotModel): ModelInfo[] {
   if (
+    typeof model.id !== 'string' ||
     !model.id ||
     model.model_picker_enabled !== true ||
     model.policy?.state === 'disabled' ||
     model.capabilities?.supports?.tool_calls !== true
   )
     return [];
+  assertOptionalArray(model.supported_endpoints, 'model supported_endpoints');
+  assertOptionalArray(
+    model.capabilities.supports.reasoning_effort,
+    'model capabilities.supports.reasoning_effort',
+  );
+  assertOptionalArray(
+    model.capabilities.limits?.vision?.supported_media_types,
+    'model capabilities.limits.vision.supported_media_types',
+  );
   const endpoints = model.supported_endpoints ?? [];
   const apiProtocol = endpoints.includes('/v1/messages')
     ? ('anthropic-messages' as const)
@@ -509,7 +528,9 @@ function toGitHubCopilotModelInfo(model: RawGitHubCopilotModel): ModelInfo[] {
     supports.min_thinking_budget !== undefined;
   const vision =
     supports.vision === true ||
-    limits?.vision?.supported_media_types?.some((type) => type.startsWith('image/')) === true;
+    limits?.vision?.supported_media_types?.some(
+      (type) => typeof type === 'string' && type.startsWith('image/'),
+    ) === true;
   const contextWindow = limits?.max_context_window_tokens ?? limits?.max_prompt_tokens;
   return [
     {
@@ -560,22 +581,19 @@ async function fetchCohereModels(
       await response.cancel();
       throw new ConnectionEffectHttpError(response.status);
     }
-    const data = await readProviderJson<{
-      models?: RawCohereModel[];
-      next_page_token?: unknown;
-    }>(response);
-    if (data.models !== undefined && !Array.isArray(data.models)) {
-      throw new ConnectionEffectInvalidResponseError('Invalid Cohere models response');
-    }
-    const rawModels = data.models ?? [];
+    const data = await readProviderJson<{ models?: unknown; next_page_token?: unknown }>(response);
+    const rawModels = providerObjectArray<RawCohereModel>(data.models, 'Cohere models');
     rawModelCount += rawModels.length;
     if (rawModelCount > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION) {
       throw new ConnectionEffectInvalidResponseError('Provider returned too many models');
     }
     models.push(
       ...rawModels.flatMap((model) => {
-        if (!model.name || model.is_deprecated === true || !model.endpoints?.includes('chat'))
+        if (typeof model.name !== 'string' || !model.name || model.is_deprecated === true) {
           return [];
+        }
+        assertOptionalArray(model.endpoints, 'model endpoints');
+        if (!model.endpoints?.includes('chat')) return [];
         return [
           {
             id: model.name,
@@ -632,7 +650,7 @@ async function fetchFireworksModels(
     authorization: `Bearer ${apiKey}`,
   };
   const signal = AbortSignal.timeout(MODEL_FETCH_TIMEOUT_MS);
-  const fetchPages = async <T>(
+  const fetchPages = async <T extends object>(
     path: string,
     query: Readonly<Record<string, string>>,
     itemKey: 'accounts' | 'models',
@@ -664,15 +682,11 @@ async function fetchFireworksModels(
         throw new ConnectionEffectHttpError(response.status);
       }
       const data = await readProviderJson<{
-        accounts?: T[];
-        models?: T[];
+        accounts?: unknown;
+        models?: unknown;
         nextPageToken?: unknown;
       }>(response);
-      const pageItems = data[itemKey];
-      if (pageItems !== undefined && !Array.isArray(pageItems)) {
-        throw new ConnectionEffectInvalidResponseError('Invalid Fireworks models response');
-      }
-      const rawItems = pageItems ?? [];
+      const rawItems = providerObjectArray<T>(data[itemKey], `Fireworks ${itemKey}`);
       reserveItems?.(rawItems.length);
       items.push(...rawItems);
       if (items.length > maxItems) {
@@ -747,7 +761,14 @@ async function fetchFireworksModels(
 }
 
 function toModelInfo(model: RawProviderModel): ModelInfo | null {
-  if (!model.id) return null;
+  if (typeof model.id !== 'string' || !model.id) return null;
+  assertOptionalArray(model.input_modalities, 'model input_modalities');
+  assertOptionalArray(model.output_modalities, 'model output_modalities');
+  assertOptionalArray(model.tags, 'model tags');
+  const providers = providerObjectArray<NonNullable<RawProviderModel['providers']>[number]>(
+    model.providers,
+    'model providers',
+  );
   const contextWindow = model.context_length ?? model.context_window;
   const capabilities: NonNullable<ModelInfo['capabilities']> = {};
   if (model.input_modalities?.includes('image')) capabilities.vision = true;
@@ -760,7 +781,7 @@ function toModelInfo(model: RawProviderModel): ModelInfo | null {
   if (model.tags?.includes('reasoning')) capabilities.reasoning = true;
   if (model.tags?.includes('tool-use')) capabilities.functionCalling = true;
   if (model.providers) {
-    capabilities.functionCalling = model.providers.some(
+    capabilities.functionCalling = providers.some(
       (provider) => provider.status === 'live' && provider.supports_tools === true,
     );
   }
@@ -799,7 +820,35 @@ function ollamaRoot(baseUrl: string): string {
 }
 
 async function readProviderJson<T>(response: ConnectionEffectResponse): Promise<T> {
-  return response.readJson<T>();
+  const value = await response.readJson<unknown>();
+  if (value === null || typeof value !== 'object') {
+    throw new ConnectionEffectInvalidResponseError('Invalid provider JSON response structure');
+  }
+  return value as T;
+}
+
+function providerObjectArray<T extends object>(
+  value: unknown,
+  label: string,
+  required = false,
+): T[] {
+  if (value === undefined && !required) return [];
+  if (
+    !Array.isArray(value) ||
+    value.some((item) => item === null || typeof item !== 'object' || Array.isArray(item))
+  ) {
+    throw new ConnectionEffectInvalidResponseError(`Invalid ${label} response`);
+  }
+  return value as T[];
+}
+
+function assertOptionalArray(
+  value: unknown,
+  label: string,
+): asserts value is unknown[] | undefined {
+  if (value !== undefined && !Array.isArray(value)) {
+    throw new ConnectionEffectInvalidResponseError(`Invalid ${label}`);
+  }
 }
 
 function nextProviderPageToken(value: unknown): string | undefined {

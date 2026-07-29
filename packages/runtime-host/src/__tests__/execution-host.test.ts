@@ -246,8 +246,8 @@ test('two UDS Clients share one Runtime Policy authority and CAS winner', async 
   });
 });
 
-test('two UDS Clients run connection effects against one canonical catalog', async () => {
-  const provider = await startConnectionEffectProvider();
+test('two UDS Clients await slow connection effects against one canonical catalog', async () => {
+  const provider = await startConnectionEffectProvider({ responseDelayMs: 2_100 });
   try {
     await withExecutionRoot(async (fixture) => {
       const secret = 'connection-effect-secret';
@@ -2351,7 +2351,7 @@ async function connectClient(
   return result.connection;
 }
 
-async function startConnectionEffectProvider(): Promise<{
+async function startConnectionEffectProvider(options: { responseDelayMs?: number } = {}): Promise<{
   readonly baseUrl: string;
   readonly requests: Array<{
     readonly method: string;
@@ -2371,13 +2371,21 @@ async function startConnectionEffectProvider(): Promise<{
       url: request.url ?? '',
       authorization: request.headers.authorization,
     });
-    response.statusCode = 200;
-    response.setHeader('content-type', 'application/json');
-    response.end(
-      request.method === 'GET'
-        ? JSON.stringify({ data: CONNECTION_EFFECT_MODEL_IDS.map((id) => ({ id })) })
-        : JSON.stringify({ choices: [] }),
-    );
+    const respond = () => {
+      response.statusCode = 200;
+      response.setHeader('content-type', 'application/json');
+      response.end(
+        request.method === 'GET'
+          ? JSON.stringify({ data: CONNECTION_EFFECT_MODEL_IDS.map((id) => ({ id })) })
+          : JSON.stringify({ choices: [] }),
+      );
+    };
+    const responseDelayMs = options.responseDelayMs ?? 0;
+    if (responseDelayMs > 0) {
+      setTimeout(respond, responseDelayMs);
+    } else {
+      respond();
+    }
   });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
