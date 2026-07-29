@@ -11,7 +11,7 @@ import { readMainProcessCombinedSource } from './main-process-contract-source-he
 
 import {
   normalizeBranchFromTurnInput,
-  normalizePermissionResponse,
+  normalizeSandboxBoundaryResponse,
   normalizeRegenerateTurnInput,
   normalizeReviseBeforeTurnInput,
   normalizeSessionSendCommand,
@@ -64,9 +64,9 @@ describe('permission response IPC boundary', () => {
     assert.match(globalTypes, /respondToUserQuestion\(sessionId: string, response: UserQuestionResponse\): Promise<void>/);
   });
 
-  it('normalizes valid allow / deny responses into the core shape', () => {
+  it('normalizes boundary allow / deny responses without legacy grant fields', () => {
     assert.deepEqual(
-      normalizePermissionResponse({
+      normalizeSandboxBoundaryResponse({
         requestId: 'permission-1',
         decision: 'allow',
         rememberForTurn: true,
@@ -75,25 +75,24 @@ describe('permission response IPC boundary', () => {
       {
         requestId: 'permission-1',
         decision: 'allow',
-        rememberForTurn: true,
       },
     );
     assert.deepEqual(
-      normalizePermissionResponse({ requestId: 'permission-2', decision: 'deny' }),
+      normalizeSandboxBoundaryResponse({ requestId: 'permission-2', decision: 'deny' }),
       { requestId: 'permission-2', decision: 'deny' },
     );
   });
 
   it('rejects malformed renderer decisions instead of treating them as allow', () => {
-    assert.throws(() => normalizePermissionResponse(null), /Invalid permission response/);
-    assert.throws(() => normalizePermissionResponse({ requestId: '', decision: 'allow' }), /requestId/);
+    assert.throws(() => normalizeSandboxBoundaryResponse(null), /Invalid sandbox boundary response/);
     assert.throws(
-      () => normalizePermissionResponse({ requestId: 'permission-1', decision: 'approve' }),
-      /decision/,
+      () => normalizeSandboxBoundaryResponse({ requestId: '', decision: 'allow' }),
+      /requestId/,
     );
     assert.throws(
-      () => normalizePermissionResponse({ requestId: 'permission-1', decision: 'deny', rememberForTurn: 'yes' }),
-      /rememberForTurn/,
+      () =>
+        normalizeSandboxBoundaryResponse({ requestId: 'permission-1', decision: 'approve' }),
+      /decision/,
     );
   });
 
@@ -102,7 +101,7 @@ describe('permission response IPC boundary', () => {
     const main = await readMainProcessCombinedSource();
     const handler = main.match(/ipcMain\.handle\('sessions:respondToSandboxBoundary'[\s\S]*?\n  \}\);/)?.[0] ?? '';
 
-    assert.match(handler, /normalizePermissionResponse\(response\)/);
+    assert.match(handler, /normalizeSandboxBoundaryResponse\(response\)/);
     assert.match(
       handler,
       /if \(normalized\.decision === 'allow'\) \{[\s\S]*await ensureSessionWorkspaceAvailable\(sessionId\)/,

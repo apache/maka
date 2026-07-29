@@ -43,7 +43,7 @@ export interface MakaRunRuntime {
   sendMessage(sessionId: string, input: UserMessageInput): AsyncIterable<SessionEvent>;
   respondToSandboxBoundary(
     sessionId: string,
-    response: { requestId: string; decision: 'deny'; rememberForTurn?: boolean },
+    response: { requestId: string; decision: 'deny' },
   ): Promise<void>;
   stopSession(sessionId: string, input?: { source?: 'stop_button' }): Promise<void>;
   setExecutionBoundaryKind(sessionId: string, kind: 'managed' | 'bypass'): Promise<unknown>;

@@ -32,7 +32,7 @@ import { releaseBrowserSession } from './browser/session.js';
 import { sessionReadMessagesFailureMessage } from './session-read-error-copy.js';
 import { resolveCreateSessionInput } from './create-session-input.js';
 import {
-  normalizePermissionResponse,
+  normalizeSandboxBoundaryResponse,
   normalizeRegenerateTurnInput,
   normalizeSessionSendCommand,
   normalizeStopSessionInput,
@@ -326,7 +326,7 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
     runtime.listActiveSandboxBoundaryRequests(sessionId),
   );
   ipcMain.handle('sessions:respondToSandboxBoundary', async (_event, sessionId: string, response) => {
-    const normalized = normalizePermissionResponse(response);
+    const normalized = normalizeSandboxBoundaryResponse(response);
     if (normalized.decision === 'allow') {
       await ensureSessionWorkspaceAvailable(sessionId);
     }

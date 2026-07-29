@@ -1,12 +1,12 @@
 import type {
   BranchFromTurnInput,
-  PermissionResponse,
   QuoteRef,
   RegenerateTurnInput,
   ReviseBeforeTurnInput,
   TurnOrchestration,
   UserQuestionResponse,
 } from '@maka/core';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import { isOrchestrationMode, isTurnOrchestrationSource } from '@maka/core';
 
 const MAX_PERMISSION_REQUEST_ID_LENGTH = 128;
@@ -28,9 +28,9 @@ interface NormalizedSendSessionCommand {
 }
 type NormalizedStopSessionInput = { source?: 'stop_button' };
 
-export function normalizePermissionResponse(input: unknown): PermissionResponse {
+export function normalizeSandboxBoundaryResponse(input: unknown): SandboxBoundaryResponse {
   if (!input || typeof input !== 'object') {
-    throw new Error('Invalid permission response');
+    throw new Error('Invalid sandbox boundary response');
   }
   const value = input as Record<string, unknown>;
   if (
@@ -38,18 +38,14 @@ export function normalizePermissionResponse(input: unknown): PermissionResponse 
     value.requestId.length === 0 ||
     value.requestId.length > MAX_PERMISSION_REQUEST_ID_LENGTH
   ) {
-    throw new Error('Invalid permission response requestId');
+    throw new Error('Invalid sandbox boundary response requestId');
   }
   if (value.decision !== 'allow' && value.decision !== 'deny') {
-    throw new Error('Invalid permission response decision');
-  }
-  if (value.rememberForTurn !== undefined && typeof value.rememberForTurn !== 'boolean') {
-    throw new Error('Invalid permission response rememberForTurn');
+    throw new Error('Invalid sandbox boundary response decision');
   }
   return {
     requestId: value.requestId,
     decision: value.decision,
-    ...(value.rememberForTurn !== undefined ? { rememberForTurn: value.rememberForTurn } : {}),
   };
 }
 
