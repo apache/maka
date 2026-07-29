@@ -4,29 +4,19 @@
   min-height: 0;
   height: 100%;
   display: grid;
-  /* 5 rows: header / hub nav / session-list heading / list / footer. */
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  /* 4 rows: hub nav / session-list heading / list / footer. The panel used to
+     carry a fifth leading row holding an empty `<header>` whose only job was to
+     host a blank drag strip; `.maka-titlebar-drag-layer` owns window dragging
+     now, so the row and its element are gone and the clearance below is what
+     keeps the nav under the window controls. */
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  /* Clear the shell's titlebar band so the first nav row starts below the window
+     controls, plus the gap the panel uses elsewhere. Derived from the band
+     height rather than restating a literal. */
+  padding-top: calc(var(--maka-titlebar-drag-band-height) + var(--space-1-5));
   overflow: hidden;
   background: transparent;
   contain: layout paint style;
-}
-
-/* The sidebar's first grid row is blank on purpose: it clears the titlebar
-   band so the nav starts below the window controls. Its height used to come
-   from an empty `.maka-sidebar-drag-strip` child that existed only to donate a
-   drag region; `.maka-titlebar-drag-layer` owns dragging now, so the row keeps
-   the geometry and drops the child.
-
-   Derived from the band height rather than restating a number: the row clears
-   the band and adds the same gap the panel uses elsewhere. `min-height` is
-   border-box here (global `box-sizing: border-box`), so this is the row's total
-   height, padding included. */
-.maka-session-panel-header {
-  display: grid;
-  min-height: calc(var(--maka-titlebar-drag-band-height) + var(--space-1-5));
-  gap: var(--space-1);
-  padding: var(--space-1-5) var(--space-1-5) var(--space-1-5);
-  border-bottom: 0;
 }
 
 .maka-session-list {

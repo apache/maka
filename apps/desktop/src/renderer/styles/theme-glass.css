@@ -81,8 +81,7 @@ html[data-os="darwin"] .maka-list-group-label {
    (audit finding §6). The wash + 50% base provide enough contrast for
    foreground @ full alpha; nav rows / list rows / settings button all
    inherit. */
-html[data-os="darwin"] .maka-session-panel-header,
-  html[data-os="darwin"] .maka-session-list,
+html[data-os="darwin"] .maka-session-list,
   html[data-os="darwin"] .maka-list-row {
     color: var(--foreground);
   }
@@ -124,7 +123,6 @@ html[data-os="darwin"] .maka-session-panel-footer {
      selection" footgun and makes click+drag-to-resize feel native. */
 
 .maka-session-panel,
-  .maka-session-panel-header,
   .maka-session-panel-footer,
   .maka-nav-row,
   .maka-list-row,

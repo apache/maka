@@ -59,13 +59,18 @@ describe('sidebar topbar rail geometry contract', () => {
     );
   });
 
-  it('keeps the blank sidebar header row that clears the titlebar band', async () => {
+  it('clears the titlebar band on the sidebar panel itself, with no placeholder element', async () => {
     const css = await readRendererContractCss();
-    const sidebarHeader = ruleBody(css, '.maka-session-panel-header');
+    const sidebarPanel = exactRuleBody(css, '.maka-session-panel');
     assert.match(
-      sidebarHeader,
-      /min-height:\s*calc\(\s*var\(--maka-titlebar-drag-band-height\)/,
-      'the sidebar header row reserves the titlebar band height; it used to be propped open by an empty drag-strip child, so the height must now be declared on the row itself AND derived from the band height rather than restating a literal (a bare 34px silently shrank the row to 34px total under border-box and lifted the whole nav by 8px)',
+      sidebarPanel,
+      /padding-top:\s*calc\(\s*var\(--maka-titlebar-drag-band-height\)/,
+      'the sidebar must clear the titlebar band from its own padding, derived from the band height rather than restating a literal (the clearance used to come from an empty `<header>` holding a blank drag strip, and a bare 34px replacement silently collapsed under border-box and lifted the whole nav by 8px)',
+    );
+    assert.doesNotMatch(
+      css,
+      /\.maka-session-panel-header\s*[,{]/,
+      'the blank `.maka-session-panel-header` placeholder is retired; the sidebar panel owns its own titlebar clearance',
     );
   });
 });
@@ -79,4 +84,23 @@ function ruleBody(css: string, selector: string): string {
 function optionalRuleBody(css: string, selector: string): string | undefined {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`${escaped}\\s*\\{([\\s\\S]*?)\\}`).exec(css)?.[1];
+}
+
+/**
+ * Body of the rule whose selector is EXACTLY `selector`.
+ *
+ * `optionalRuleBody` matches the selector as a substring, so asking it for
+ * `.maka-session-panel` returns whichever rule mentions it first — including
+ * `.maka-shell-2col .maka-panel-list > .maka-session-panel`. That is fine for
+ * selectors that appear once, but not for one that also exists as a descendant
+ * in another rule.
+ */
+function exactRuleBody(css: string, selector: string): string {
+  const pattern = new RegExp(
+    `(?:^|[};])\\s*${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([\\s\\S]*?)\\}`,
+    'm',
+  );
+  const body = pattern.exec(css)?.[1];
+  assert.ok(body, `a rule with the exact selector '${selector}' must exist`);
+  return body;
 }

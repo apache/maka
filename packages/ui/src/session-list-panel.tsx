@@ -49,9 +49,6 @@ export function SessionListPanel(props: {
       className="maka-session-panel agents-sidebar"
       aria-label={copy.listAriaLabel}
     >
-      {/* Blank row that clears the titlebar band; window dragging belongs to
-          `.maka-titlebar-drag-layer` in the app shell. */}
-      <header className="maka-session-panel-header" />
       <SessionSidebarNav
         selection={props.selection}
         planReminders={props.planReminders}
