@@ -6,6 +6,80 @@ import { describe, mock, test } from 'node:test';
 import { createTelemetryRepo, TelemetryRepoPublicationError } from '../telemetry-repo.js';
 
 describe('FileTelemetryRepo', () => {
+  test('single-flights concurrent load and allows retry after failure', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-telemetry-load-retry-'));
+    const path = join(root, 'telemetry.json');
+    const repo = createTelemetryRepo(root);
+    try {
+      await writeFile(path, '{');
+
+      const first = repo.load();
+      const concurrent = repo.load();
+      assert.equal(concurrent, first);
+      await assert.rejects(() => first, SyntaxError);
+
+      await writeFile(
+        path,
+        JSON.stringify({ version: 1, usageRecords: [], toolInvocations: [] }, null, 2) + '\n',
+      );
+      await repo.load();
+      assert.equal(repo.summary({ range: 'all' }).totalRequests, 0);
+    } finally {
+      await repo.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('close joins a load started in the same tick and closes managed pricing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-telemetry-load-close-'));
+    const repo = createTelemetryRepo(root);
+    try {
+      let loadSettled = false;
+      const load = repo.load().finally(() => {
+        loadSettled = true;
+      });
+      await repo.close();
+      assert.equal(loadSettled, true);
+      await load;
+
+      assert.match(await readFile(join(root, 'telemetry.json'), 'utf8'), /"version": 1/);
+      assert.match(await readFile(join(root, 'pricing.json'), 'utf8'), /"version": 1/);
+      assert.throws(() => repo.summary({ range: 'all' }), /draining or closed/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('retry does not reuse legacy pricing from a failed load attempt', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-telemetry-stale-load-'));
+    const repo = createTelemetryRepo(root);
+    try {
+      await writeFile(
+        join(root, 'telemetry.json'),
+        JSON.stringify({
+          pricingOverrides: [{ modelKey: 'openai:stale', inputUsdPer1M: 1, outputUsdPer1M: 2 }],
+        }),
+      );
+      await writeFile(join(root, 'pricing.json'), '{');
+      await assert.rejects(() => repo.load(), SyntaxError);
+
+      await Promise.all([rm(join(root, 'telemetry.json')), rm(join(root, 'pricing.json'))]);
+      await repo.load();
+      assert.deepEqual(repo.listPricingOverrides(), []);
+      assert.deepEqual(
+        (
+          JSON.parse(await readFile(join(root, 'pricing.json'), 'utf8')) as {
+            overrides: unknown[];
+          }
+        ).overrides,
+        [],
+      );
+    } finally {
+      await repo.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('upserts LLM calls by id and aggregates the latest record', async () => {
     await withRepo(async (repo) => {
       await repo.load();

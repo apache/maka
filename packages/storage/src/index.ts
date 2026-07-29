@@ -22,7 +22,6 @@ export type {
 } from './credential-store.js';
 export * from './settings-store.js';
 export * from './telemetry-repo.js';
-export * from './pricing-store.js';
 export * from './usage-stores.js';
 export {
   ARTIFACT_BINARY_PREVIEW_LIMIT_BYTES,

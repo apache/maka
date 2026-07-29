@@ -1,9 +1,19 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import {
   comparePricingModelKeys,
   PRICING_MODEL_KEY_MAX_CHARS,
 } from '@maka/core/usage-stats/pricing';
+import type { UsageBucket } from '@maka/core/usage-stats/types';
+import {
+  resolveRootControlNamespace,
+  resolveStorageRoot,
+  tryAcquireInteractiveRootOwner,
+} from '@maka/storage/root-authority';
+import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import {
   decodeClientFrame,
   decodeHostFrame,
@@ -18,7 +28,19 @@ import {
   USAGE_PAGE_MAX_BYTES,
   USAGE_PAGE_MAX_ITEMS,
   USAGE_PROJECTION_TEXT_MAX_BYTES,
+  type LlmUsageLogProjection,
+  type ToolUsageLogProjection,
 } from '../protocol/index.js';
+import type { ConnectionContext } from '../server/operation-dispatcher.js';
+import { HostUsagePricingCoordinator } from '../server/usage-pricing-coordinator.js';
+
+const CONNECTION_CONTEXT: ConnectionContext = {
+  hostEpoch: 'usage-pricing-protocol-test',
+  connectionId: 'usage-pricing-protocol-test-connection',
+  surface: 'tui',
+  principal: 'local_os_user',
+  acquireResidency: () => ({ release() {} }),
+};
 
 describe('Usage/Pricing protocol', () => {
   test('registers only the closed ready operations with current Kernel metadata', () => {
@@ -255,6 +277,76 @@ describe('Usage/Pricing protocol', () => {
       { kind: 'buckets', buckets: [validBucket()], offset: 1, total: 1, nextOffset: null },
     ]) {
       assert.throws(() => usageResponse(result), invalidFrame);
+    }
+  });
+
+  test('keeps long usage identities distinct through the real coordinator and protocol', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-usage-identity-projection-'));
+    const capability = await resolveStorageRoot({
+      path: join(base, 'interactive-root'),
+      kind: 'interactive',
+    });
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner, 'test must acquire the real Interactive write lease');
+    const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+
+    try {
+      const longCommon = '界'.repeat(400);
+      const identities = [
+        `identity\u0000${longCommon}-alpha`,
+        `identity\u0001${longCommon}-omega`,
+        'short\u0000identity',
+        'short\u0001identity',
+        `${'x'.repeat(1_100)}\ud800`,
+        `${'x'.repeat(1_100)}\ud801`,
+      ] as const;
+      await Promise.all(
+        identities.flatMap((identity, index) => [
+          stores.telemetry.recordLlmCall(longUsageRecord(identity, index + 1)),
+          stores.telemetry.recordToolInvocation(longToolRecord(identity, index + 11)),
+        ]),
+      );
+      const coordinator = new HostUsagePricingCoordinator(stores, () => {});
+
+      const llmRows = await queryUsageRows(coordinator, 'llm');
+      const toolRows = await queryUsageRows(coordinator, 'tool');
+      const buckets = await queryUsageBuckets(coordinator);
+
+      for (const field of [
+        'id',
+        'callId',
+        'connectionSlug',
+        'providerId',
+        'modelId',
+        'sessionId',
+        'turnId',
+      ] as const) {
+        assertDistinctBoundedIdentities(llmRows.map((row) => row[field]));
+      }
+      for (const field of [
+        'id',
+        'toolCallId',
+        'toolName',
+        'providerId',
+        'modelId',
+        'sessionId',
+        'turnId',
+      ] as const) {
+        assertDistinctBoundedIdentities(toolRows.map((row) => row[field]));
+      }
+      assertDistinctBoundedIdentities(buckets.map((bucket) => bucket.key));
+      assert.equal(new Set(buckets.map((bucket) => bucket.label)).size, 3);
+      assert.deepEqual(await queryUsageRows(coordinator, 'llm'), llmRows);
+      assert.deepEqual(await queryUsageRows(coordinator, 'tool'), toolRows);
+      assert.deepEqual(await queryUsageBuckets(coordinator), buckets);
+    } finally {
+      await stores.close().catch(() => undefined);
+      await owner.close();
+      await rm(join(resolveRootControlNamespace(), capability.rootId), {
+        recursive: true,
+        force: true,
+      });
+      await rm(base, { recursive: true, force: true });
     }
   });
 
@@ -536,6 +628,125 @@ function validToolLog() {
     bytesOut: 3,
     startedAt: 1,
   };
+}
+
+function longUsageRecord(identity: string, ts: number) {
+  return {
+    id: identity,
+    sessionId: identity,
+    turnId: identity,
+    callId: identity,
+    connectionSlug: identity,
+    providerId: identity,
+    modelId: identity,
+    inputTokens: 1,
+    outputTokens: 2,
+    cacheHitInputTokens: 0,
+    cacheMissInputTokens: 1,
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    reasoningTokens: 0,
+    totalTokens: 3,
+    latencyMs: 10,
+    costUsd: 0.01,
+    startedAt: ts,
+    date: '2026-07-29',
+    ts,
+    status: 'success' as const,
+  };
+}
+
+function longToolRecord(identity: string, ts: number) {
+  return {
+    id: identity,
+    sessionId: identity,
+    turnId: identity,
+    toolCallId: identity,
+    toolName: identity,
+    providerId: identity,
+    modelId: identity,
+    durationMs: 10,
+    status: 'success' as const,
+    bytesIn: 1,
+    bytesOut: 2,
+    startedAt: ts,
+    date: '2026-07-29',
+    ts,
+  };
+}
+
+async function queryUsageRows(
+  coordinator: HostUsagePricingCoordinator,
+  source: 'llm',
+): Promise<readonly LlmUsageLogProjection[]>;
+async function queryUsageRows(
+  coordinator: HostUsagePricingCoordinator,
+  source: 'tool',
+): Promise<readonly ToolUsageLogProjection[]>;
+async function queryUsageRows(
+  coordinator: HostUsagePricingCoordinator,
+  source: 'llm' | 'tool',
+): Promise<readonly (LlmUsageLogProjection | ToolUsageLogProjection)[]> {
+  const outcome = await coordinator.handlers['usage.query'](
+    { kind: 'logs', source, query: { range: 'all' } },
+    CONNECTION_CONTEXT,
+  );
+  const frame = decodeHostFrame(
+    JSON.parse(
+      encodeProtocolFrame({
+        requestId: `usage-${source}-identity-query`,
+        operation: 'usage.query',
+        ...outcome,
+      }).toString('utf8'),
+    ),
+  );
+  if (
+    'kind' in frame ||
+    frame.operation !== 'usage.query' ||
+    !frame.ok ||
+    frame.result.kind !== 'logs' ||
+    frame.result.source !== source
+  ) {
+    throw new Error(`Expected ${source} usage rows`);
+  }
+  return frame.result.rows;
+}
+
+async function queryUsageBuckets(
+  coordinator: HostUsagePricingCoordinator,
+): Promise<readonly UsageBucket[]> {
+  const outcome = await coordinator.handlers['usage.query'](
+    { kind: 'buckets', query: { range: 'all' }, groupBy: 'provider' },
+    CONNECTION_CONTEXT,
+  );
+  const frame = decodeHostFrame(
+    JSON.parse(
+      encodeProtocolFrame({
+        requestId: 'usage-bucket-identity-query',
+        operation: 'usage.query',
+        ...outcome,
+      }).toString('utf8'),
+    ),
+  );
+  if (
+    'kind' in frame ||
+    frame.operation !== 'usage.query' ||
+    !frame.ok ||
+    frame.result.kind !== 'buckets'
+  ) {
+    throw new Error('Expected usage buckets');
+  }
+  return frame.result.buckets;
+}
+
+function assertDistinctBoundedIdentities(values: readonly (string | undefined)[]): void {
+  assert.equal(values.length, 6);
+  assert.ok(values.every((value): value is string => typeof value === 'string'));
+  assert.equal(new Set(values).size, values.length);
+  for (const value of values) {
+    assert.ok(Buffer.byteLength(value, 'utf8') <= USAGE_PROJECTION_TEXT_MAX_BYTES);
+    assert.equal(/[\u0000-\u001f\u007f-\u009f]/u.test(value), false);
+  }
 }
 
 function pricing(modelKey: string) {

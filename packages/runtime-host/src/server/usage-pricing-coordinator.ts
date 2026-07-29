@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type {
   PricingConfig,
   ToolInvocationRecord,
@@ -378,7 +379,7 @@ function logPageResult(
 function projectUsageBucket(bucket: UsageBucket): UsageBucket {
   return {
     ...bucket,
-    key: projectText(bucket.key),
+    key: projectIdentity(bucket.key),
     label: projectText(bucket.label),
   };
 }
@@ -388,15 +389,15 @@ function projectUsageLog(row: UsageLogRow): LlmUsageLogProjection {
     .cacheMissInputSource;
   return {
     source: 'llm',
-    id: projectText(row.id),
+    id: projectIdentity(row.id),
     ts: row.ts,
     ...(row.callKind === undefined ? {} : { callKind: row.callKind }),
-    ...(row.callId === undefined ? {} : { callId: projectText(row.callId) }),
+    ...(row.callId === undefined ? {} : { callId: projectIdentity(row.callId) }),
     ...(row.connectionSlug === undefined
       ? {}
-      : { connectionSlug: projectText(row.connectionSlug) }),
-    providerId: projectText(row.providerId),
-    modelId: projectText(row.modelId),
+      : { connectionSlug: projectIdentity(row.connectionSlug) }),
+    providerId: projectIdentity(row.providerId),
+    modelId: projectIdentity(row.modelId),
     inputTokens: row.inputTokens,
     outputTokens: row.outputTokens,
     cacheMissTokens: row.cacheMissTokens,
@@ -411,8 +412,8 @@ function projectUsageLog(row: UsageLogRow): LlmUsageLogProjection {
     latencyMs: row.latencyMs,
     status: row.status,
     ...(row.errorClass === undefined ? {} : { errorClass: projectText(row.errorClass) }),
-    ...(row.sessionId === undefined ? {} : { sessionId: projectText(row.sessionId) }),
-    ...(row.turnId === undefined ? {} : { turnId: projectText(row.turnId) }),
+    ...(row.sessionId === undefined ? {} : { sessionId: projectIdentity(row.sessionId) }),
+    ...(row.turnId === undefined ? {} : { turnId: projectIdentity(row.turnId) }),
   };
 }
 
@@ -426,12 +427,12 @@ function projectToolUsageLog(
 ): ToolUsageLogProjection {
   return {
     source: 'tool',
-    id: projectText(row.id),
+    id: projectIdentity(row.id),
     ts: row.ts,
-    ...(row.toolCallId === undefined ? {} : { toolCallId: projectText(row.toolCallId) }),
-    toolName: projectText(row.toolName),
-    ...(row.providerId === undefined ? {} : { providerId: projectText(row.providerId) }),
-    ...(row.modelId === undefined ? {} : { modelId: projectText(row.modelId) }),
+    ...(row.toolCallId === undefined ? {} : { toolCallId: projectIdentity(row.toolCallId) }),
+    toolName: projectIdentity(row.toolName),
+    ...(row.providerId === undefined ? {} : { providerId: projectIdentity(row.providerId) }),
+    ...(row.modelId === undefined ? {} : { modelId: projectIdentity(row.modelId) }),
     durationMs: row.durationMs,
     status: row.status,
     ...(row.errorClass === undefined ? {} : { errorClass: projectText(row.errorClass) }),
@@ -450,24 +451,68 @@ function projectToolUsageLog(
     bytesIn: row.bytesIn,
     bytesOut: row.bytesOut,
     startedAt: row.startedAt,
-    ...(row.sessionId === undefined ? {} : { sessionId: projectText(row.sessionId) }),
-    ...(row.turnId === undefined ? {} : { turnId: projectText(row.turnId) }),
+    ...(row.sessionId === undefined ? {} : { sessionId: projectIdentity(row.sessionId) }),
+    ...(row.turnId === undefined ? {} : { turnId: projectIdentity(row.turnId) }),
   };
+}
+
+const IDENTITY_HASH_HEX_CHARS = 16;
+const IDENTITY_HASH_SEPARATOR = '~';
+const IDENTITY_HASH_SUFFIX_BYTES = IDENTITY_HASH_SEPARATOR.length + IDENTITY_HASH_HEX_CHARS;
+
+function projectIdentity(value: string): string {
+  const prefixMaxBytes = USAGE_PROJECTION_TEXT_MAX_BYTES - IDENTITY_HASH_SUFFIX_BYTES;
+  let projected = '';
+  let prefix = '';
+  let bytes = 0;
+  let prefixBytes = 0;
+  let canonicalized = false;
+  let prefixTruncated = false;
+  let truncated = false;
+
+  for (const codePoint of value) {
+    const canonical = projectCodePoint(codePoint);
+    if (canonical !== codePoint) canonicalized = true;
+    const size = Buffer.byteLength(canonical, 'utf8');
+    if (!truncated && bytes + size <= USAGE_PROJECTION_TEXT_MAX_BYTES) {
+      projected += canonical;
+      bytes += size;
+    } else {
+      truncated = true;
+    }
+    if (!prefixTruncated && prefixBytes + size <= prefixMaxBytes) {
+      prefix += canonical;
+      prefixBytes += size;
+    } else {
+      prefixTruncated = true;
+    }
+  }
+
+  if (!truncated && !canonicalized) return projected || '\ufffd';
+  const hashSuffix =
+    IDENTITY_HASH_SEPARATOR +
+    createHash('sha256').update(value, 'utf16le').digest('hex').slice(0, IDENTITY_HASH_HEX_CHARS);
+  return prefix + hashSuffix;
 }
 
 function projectText(value: string): string {
   let projected = '';
   let bytes = 0;
   for (const codePoint of value) {
-    const scalar = codePoint.codePointAt(0);
-    const canonical =
-      scalar !== undefined && (scalar <= 0x1f || scalar === 0x7f) ? '\ufffd' : codePoint;
+    const canonical = projectCodePoint(codePoint);
     const size = Buffer.byteLength(canonical, 'utf8');
     if (bytes + size > USAGE_PROJECTION_TEXT_MAX_BYTES) break;
     projected += canonical;
     bytes += size;
   }
   return projected || '\ufffd';
+}
+
+function projectCodePoint(codePoint: string): string {
+  const scalar = codePoint.codePointAt(0);
+  return scalar !== undefined && (scalar <= 0x1f || (scalar >= 0x7f && scalar <= 0x9f))
+    ? '\ufffd'
+    : codePoint;
 }
 
 function jsonBytes(value: unknown): number {

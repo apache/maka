@@ -9,6 +9,7 @@ import type {
   UsageQuery,
   UsageSummaryV2,
 } from '@maka/core/usage-stats/types';
+import { throwDeduplicatedFailures } from './failure-utils.js';
 import { createPricingStore, type PricingStore } from './pricing-store.js';
 import { syncDirectory } from './stable-storage.js';
 import {
@@ -118,6 +119,7 @@ class FileTelemetryRepo implements TelemetryRepo {
   private queue: Promise<void> = Promise.resolve();
   private failure: TelemetryRepoPublicationError | undefined;
   private state: 'open' | 'draining' | 'closed' = 'open';
+  private loadPromise: Promise<void> | undefined;
   private closePromise: Promise<void> | undefined;
 
   constructor(
@@ -128,35 +130,55 @@ class FileTelemetryRepo implements TelemetryRepo {
     this.path = join(workspaceRoot, 'telemetry.json');
   }
 
-  async load(): Promise<void> {
-    if (this.loaded) return;
+  load(): Promise<void> {
+    if (this.loaded) return Promise.resolve();
     this.assertOpen();
+    if (this.loadPromise) return this.loadPromise;
+    const operation = this.loadFromDisk();
+    this.loadPromise = operation;
+    void operation.catch(() => {
+      if (this.state === 'open' && this.loadPromise === operation) {
+        this.loadPromise = undefined;
+      }
+    });
+    return operation;
+  }
+
+  private async loadFromDisk(): Promise<void> {
     let missing = false;
+    let file: TelemetryFile;
+    let legacyPricing: readonly unknown[];
+    let requiresCanonicalPublication: boolean;
+    let pricingStore: PricingStore | undefined;
     try {
       const decoded = decodeTelemetryFile(JSON.parse(await readFile(this.path, 'utf8')));
-      this.file = decoded.file;
-      this.legacyPricing = decoded.legacyPricingOverrides;
-      this.requiresCanonicalPublication = decoded.requiresCanonicalPublication;
+      file = decoded.file;
+      legacyPricing = decoded.legacyPricingOverrides;
+      requiresCanonicalPublication = decoded.requiresCanonicalPublication;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       missing = true;
-      this.file = emptyTelemetryFile();
+      file = emptyTelemetryFile();
+      legacyPricing = [];
+      requiresCanonicalPublication = false;
     }
 
     if (this.managePricing) {
-      this.pricingStore = createPricingStore(dirname(this.path), {
+      pricingStore = createPricingStore(dirname(this.path), {
         createIfMissing: this.createIfMissing,
-        initialOverrides: this.legacyPricing,
+        initialOverrides: legacyPricing,
       });
-      await this.pricingStore.load();
+      await pricingStore.load();
     }
-    if (
-      this.createIfMissing &&
-      (missing || (this.managePricing && this.requiresCanonicalPublication))
-    ) {
-      await this.publish(this.file);
-      this.requiresCanonicalPublication = false;
+    if (this.createIfMissing && (missing || (this.managePricing && requiresCanonicalPublication))) {
+      await this.publish(file);
+      requiresCanonicalPublication = false;
     }
+
+    this.file = file;
+    this.legacyPricing = legacyPricing;
+    this.requiresCanonicalPublication = requiresCanonicalPublication;
+    this.pricingStore = pricingStore;
     this.loaded = true;
   }
 
@@ -302,25 +324,26 @@ class FileTelemetryRepo implements TelemetryRepo {
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise;
     this.state = 'draining';
-    this.closePromise = Promise.allSettled([
+    this.closePromise = this.closeResources().finally(() => {
+      this.state = 'closed';
+    });
+    return this.closePromise;
+  }
+
+  private async closeResources(): Promise<void> {
+    const settled = await Promise.allSettled([
+      this.loadPromise ?? Promise.resolve(),
       this.queue.then(() => {
         if (this.failure) throw this.failure;
       }),
+    ]);
+    const pricingResult = await Promise.allSettled([
       this.pricingStore?.close() ?? Promise.resolve(),
-    ])
-      .then((results) => {
-        const failures = results.flatMap((result) =>
-          result.status === 'rejected' ? [result.reason] : [],
-        );
-        if (failures.length === 1) throw failures[0];
-        if (failures.length > 1) {
-          throw new AggregateError(failures, 'Unable to close telemetry repository');
-        }
-      })
-      .finally(() => {
-        this.state = 'closed';
-      });
-    return this.closePromise;
+    ]);
+    throwDeduplicatedFailures('Unable to close telemetry repository', [
+      ...settled.flatMap((result) => (result.status === 'rejected' ? [result.reason] : [])),
+      ...pricingResult.flatMap((result) => (result.status === 'rejected' ? [result.reason] : [])),
+    ]);
   }
 
   private enqueueMutation(mutate: (file: TelemetryFile) => TelemetryFile): Promise<void> {

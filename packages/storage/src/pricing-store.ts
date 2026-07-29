@@ -9,6 +9,7 @@ import {
   validateCanonicalPricingConfig,
 } from '@maka/core/usage-stats/pricing';
 import type { PricingConfig } from '@maka/core/usage-stats/types';
+import { throwDeduplicatedFailures } from './failure-utils.js';
 import { syncDirectory } from './stable-storage.js';
 
 const PRICING_DOCUMENT_VERSION = 1;
@@ -112,6 +113,7 @@ class FilePricingStore implements PricingStore {
   private queue: Promise<void> = Promise.resolve();
   private failure: PricingCommitUnknownError | PricingStorePublicationError | undefined;
   private state: 'open' | 'draining' | 'closed' = 'open';
+  private loadPromise: Promise<void> | undefined;
   private closePromise: Promise<void> | undefined;
 
   constructor(
@@ -123,9 +125,21 @@ class FilePricingStore implements PricingStore {
     this.document = makeDocument(0, []);
   }
 
-  async load(): Promise<void> {
-    if (this.loaded) return;
+  load(): Promise<void> {
+    if (this.loaded) return Promise.resolve();
     this.assertOpen();
+    if (this.loadPromise) return this.loadPromise;
+    const operation = this.loadFromDisk();
+    this.loadPromise = operation;
+    void operation.catch(() => {
+      if (this.state === 'open' && this.loadPromise === operation) {
+        this.loadPromise = undefined;
+      }
+    });
+    return operation;
+  }
+
+  private async loadFromDisk(): Promise<void> {
     try {
       this.document = decodeDocument(JSON.parse(await readFile(this.path, 'utf8')));
     } catch (error) {
@@ -181,9 +195,21 @@ class FilePricingStore implements PricingStore {
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise;
     this.state = 'draining';
-    this.closePromise = this.flush().finally(() => {
-      this.state = 'closed';
-    });
+    this.closePromise = Promise.allSettled([
+      this.loadPromise ?? Promise.resolve(),
+      this.queue.then(() => {
+        if (this.failure) throw this.failure;
+      }),
+    ])
+      .then((results) => {
+        throwDeduplicatedFailures(
+          'Unable to close pricing store',
+          results.flatMap((result) => (result.status === 'rejected' ? [result.reason] : [])),
+        );
+      })
+      .finally(() => {
+        this.state = 'closed';
+      });
     return this.closePromise;
   }
 

@@ -6,6 +6,7 @@ import type {
   UsageQuery,
   UsageSummaryV2,
 } from '@maka/core/usage-stats/types';
+import { throwDeduplicatedFailures } from './failure-utils.js';
 import {
   createPricingStore,
   PricingCommitUnknownError,
@@ -21,6 +22,7 @@ import {
 import {
   runWithStorageRootLease,
   StorageRootAuthorityError,
+  type StorageRootAuthorityErrorCode,
   type StorageRootLease,
 } from './root-authority.js';
 import {
@@ -145,14 +147,40 @@ export function classifyInteractiveUsageStoresFailure(
   ) {
     return { kind: 'persistence_failed', needsDrain: true };
   }
-  if (
-    error instanceof PricingStoreNotLoadedError ||
-    error instanceof TelemetryRepoNotLoadedError ||
-    error instanceof StorageRootAuthorityError
-  ) {
+  if (error instanceof PricingStoreNotLoadedError || error instanceof TelemetryRepoNotLoadedError) {
     return { kind: 'persistence_failed', needsDrain: false };
   }
+  if (error instanceof StorageRootAuthorityError) {
+    return {
+      kind: 'persistence_failed',
+      needsDrain: rootAuthorityFailureNeedsDrain(error.code),
+    };
+  }
   return { kind: 'unknown', error };
+}
+
+function rootAuthorityFailureNeedsDrain(code: StorageRootAuthorityErrorCode): boolean {
+  switch (code) {
+    case 'root_unmarked':
+    case 'invalid_marker':
+    case 'root_kind_mismatch':
+    case 'root_identity_collision':
+    case 'root_identity_changed':
+      return true;
+    case 'invalid_root':
+    case 'invalid_root_kind':
+    case 'root_not_found':
+    case 'invalid_repair':
+    case 'invalid_capability':
+    case 'invalid_lease':
+    case 'invalid_owner':
+    case 'invalid_lock_artifact':
+    case 'insecure_control_directory':
+    case 'root_io_failed':
+    case 'control_io_failed':
+    case 'lock_failed':
+      return false;
+  }
 }
 
 export function authenticateInteractiveUsageStoresReader(
@@ -236,7 +264,7 @@ async function openRepos(
   } catch (error) {
     const closed = await Promise.allSettled([telemetry.close(), pricing.close()]);
     const failures = [error, ...rejectedReasons(closed)];
-    throwFailures('Unable to open interactive usage stores', failures);
+    throwDeduplicatedFailures('Unable to open interactive usage stores', failures);
     throw error;
   }
 }
@@ -282,7 +310,7 @@ function createWriterFacade(
     state = 'draining';
     const accepted = barrier;
     drainPromise = accepted.then(() =>
-      throwFailures('Interactive usage store drain failed', failures),
+      throwDeduplicatedFailures('Interactive usage store drain failed', failures),
     );
     return drainPromise;
   };
@@ -294,7 +322,7 @@ function createWriterFacade(
       run(() => telemetry.flush()),
       run(() => pricing.flush()),
     ]);
-    throwFailures('Interactive usage store flush failed', [
+    throwDeduplicatedFailures('Interactive usage store flush failed', [
       ...failures,
       ...rejectedReasons(flushed),
     ]);
@@ -310,7 +338,7 @@ function createWriterFacade(
           run(() => telemetry.close()),
           run(() => pricing.close()),
         ]);
-        throwFailures('Interactive usage stores close failed', [
+        throwDeduplicatedFailures('Interactive usage stores close failed', [
           ...failures,
           ...rejectedReasons(closed),
         ]);
@@ -383,18 +411,11 @@ function isExpectedPricingFailure(error: unknown): boolean {
 
 async function closeRepos(telemetry: TelemetryRepo, pricing: PricingStore): Promise<void> {
   const closed = await Promise.allSettled([telemetry.close(), pricing.close()]);
-  throwFailures('Unable to close interactive usage stores', rejectedReasons(closed));
+  throwDeduplicatedFailures('Unable to close interactive usage stores', rejectedReasons(closed));
 }
 
 function rejectedReasons(results: readonly PromiseSettledResult<unknown>[]): unknown[] {
   return results.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
-}
-
-function throwFailures(message: string, failures: readonly unknown[]): void {
-  const unique = [...new Set(failures)];
-  if (unique.length === 0) return;
-  if (unique.length === 1) throw unique[0];
-  throw new AggregateError(unique, message);
 }
 
 function freezeFacade(stores: InteractiveUsageStoresReader | InteractiveUsageStoresWriter): void {

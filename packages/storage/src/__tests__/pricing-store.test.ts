@@ -12,6 +12,44 @@ import {
 } from '../pricing-store.js';
 
 describe('PricingStore', () => {
+  test('single-flights concurrent load and allows retry after failure', async () => {
+    await withRoot(async (root) => {
+      const path = join(root, 'pricing.json');
+      await writeFile(path, '{');
+      const store = createPricingStore(root);
+
+      const first = store.load();
+      const concurrent = store.load();
+      assert.equal(concurrent, first);
+      await assert.rejects(() => first, SyntaxError);
+
+      await writeFile(
+        path,
+        JSON.stringify({ version: 1, revision: 0, overrides: [] }, null, 2) + '\n',
+      );
+      await store.load();
+      assert.deepEqual(store.snapshot(), { revision: 0, overrides: [] });
+      await store.close();
+    });
+  });
+
+  test('close joins a load started in the same tick', async () => {
+    await withRoot(async (root) => {
+      const store = createPricingStore(root);
+
+      let loadSettled = false;
+      const load = store.load().finally(() => {
+        loadSettled = true;
+      });
+      await store.close();
+      assert.equal(loadSettled, true);
+      await load;
+
+      assert.match(await readFile(join(root, 'pricing.json'), 'utf8'), /"version": 1/);
+      assert.throws(() => store.snapshot(), /draining or closed/);
+    });
+  });
+
   test('serializes revision CAS so only one mutation at a revision commits', async () => {
     await withRoot(async (root) => {
       const store = createPricingStore(root);

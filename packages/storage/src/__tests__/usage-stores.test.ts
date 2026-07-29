@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
@@ -13,8 +13,10 @@ import {
 } from '../pricing-store.js';
 import {
   resolveStorageRoot,
+  STORAGE_ROOT_MARKER_FILE,
   StorageRootAuthorityError,
   tryAcquireInteractiveRootOwner,
+  type StorageRootAuthorityErrorCode,
 } from '../root-authority.js';
 import {
   TelemetryQueryValidationError,
@@ -47,6 +49,7 @@ describe('InteractiveUsageStores', () => {
       new PricingStoreClosedError(),
       new TelemetryRepoClosedError(),
       new StorageRootAuthorityError('invalid_lease', 'revoked'),
+      new StorageRootAuthorityError('invalid_owner', 'inauthentic'),
     ]) {
       assert.deepEqual(classifyInteractiveUsageStoresFailure(error), {
         kind: 'lifecycle',
@@ -70,15 +73,39 @@ describe('InteractiveUsageStores', () => {
         needsDrain: true,
       });
     }
-    for (const error of [
-      new PricingStoreNotLoadedError(),
-      new TelemetryRepoNotLoadedError(),
-      new StorageRootAuthorityError('lock_failed', 'lock failed'),
-    ]) {
+    for (const error of [new PricingStoreNotLoadedError(), new TelemetryRepoNotLoadedError()]) {
       assert.deepEqual(classifyInteractiveUsageStoresFailure(error), {
         kind: 'persistence_failed',
         needsDrain: false,
       });
+    }
+    const rootAuthorityNeedsDrain = {
+      invalid_root: false,
+      invalid_root_kind: false,
+      root_not_found: false,
+      root_unmarked: true,
+      invalid_marker: true,
+      root_kind_mismatch: true,
+      root_identity_collision: true,
+      root_identity_changed: true,
+      invalid_repair: false,
+      invalid_capability: false,
+      invalid_lock_artifact: false,
+      insecure_control_directory: false,
+      root_io_failed: false,
+      control_io_failed: false,
+      lock_failed: false,
+    } as const satisfies Record<
+      Exclude<StorageRootAuthorityErrorCode, 'invalid_lease' | 'invalid_owner'>,
+      boolean
+    >;
+    for (const [code, needsDrain] of Object.entries(rootAuthorityNeedsDrain)) {
+      assert.deepEqual(
+        classifyInteractiveUsageStoresFailure(
+          new StorageRootAuthorityError(code as StorageRootAuthorityErrorCode, code),
+        ),
+        { kind: 'persistence_failed', needsDrain },
+      );
     }
 
     const unknown = new Error('unknown');
@@ -86,6 +113,83 @@ describe('InteractiveUsageStores', () => {
       kind: 'unknown',
       error: unknown,
     });
+  });
+
+  test('classifies a renamed or replaced live root as a draining persistence failure', async () => {
+    for (const replacement of [false, true]) {
+      await withInteractiveRoot(async ({ root, capability }) => {
+        const owner = await tryAcquireInteractiveRootOwner(capability);
+        assert(owner);
+        const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+        await rename(root, `${root}-moved`);
+        if (replacement) await mkdir(root);
+        try {
+          await assert.rejects(
+            () => stores.pricing.snapshot(),
+            (error: unknown) => {
+              assert.ok(error instanceof StorageRootAuthorityError);
+              assert.equal(error.code, 'root_identity_changed');
+              assert.deepEqual(classifyInteractiveUsageStoresFailure(error), {
+                kind: 'persistence_failed',
+                needsDrain: true,
+              });
+              return true;
+            },
+          );
+        } finally {
+          await owner.close();
+        }
+      });
+    }
+  });
+
+  test('classifies poisoned live root markers as draining persistence failures', async () => {
+    const scenarios: ReadonlyArray<{
+      code: 'root_unmarked' | 'invalid_marker' | 'root_kind_mismatch';
+      poison(markerPath: string): Promise<void>;
+    }> = [
+      {
+        code: 'root_unmarked',
+        poison: (markerPath) => rm(markerPath),
+      },
+      {
+        code: 'invalid_marker',
+        poison: (markerPath) => writeFile(markerPath, '{'),
+      },
+      {
+        code: 'root_kind_mismatch',
+        poison: async (markerPath) => {
+          const marker = JSON.parse(await readFile(markerPath, 'utf8')) as { kind: string };
+          marker.kind = 'headless';
+          await writeFile(markerPath, `${JSON.stringify(marker)}\n`);
+        },
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      await withInteractiveRoot(async ({ root, capability }) => {
+        const owner = await tryAcquireInteractiveRootOwner(capability);
+        assert(owner);
+        const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+        await scenario.poison(join(root, STORAGE_ROOT_MARKER_FILE));
+        try {
+          await assert.rejects(
+            () => stores.pricing.snapshot(),
+            (error: unknown) => {
+              assert.ok(error instanceof StorageRootAuthorityError);
+              assert.equal(error.code, scenario.code);
+              assert.deepEqual(classifyInteractiveUsageStoresFailure(error), {
+                kind: 'persistence_failed',
+                needsDrain: true,
+              });
+              return true;
+            },
+          );
+        } finally {
+          await owner.close();
+        }
+      });
+    }
   });
 
   test('migrates legacy usage, tools, and pricing idempotently', async () => {
