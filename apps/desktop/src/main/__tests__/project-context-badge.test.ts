@@ -230,7 +230,20 @@ describe('project context workspace picker', () => {
     // is only rendered when no directory has been selected yet. Once
     // a label is set, the picker renders `.maka-composer-workspace-current`
     // alone — no more "选择工作目录 ai ▾" doubled string.
-    assert.match(workspaceRow, /\? <span className="maka-composer-workspace-current">\{wp\.label\}<\/span>[\s\S]*?: <span>\{copy\.choose\}<\/span>/);
+    assert.match(
+      workspaceRow,
+      /\? \(\s*<span id="maka-composer-workspace-value" className="maka-composer-workspace-current">\s*\{wp\.label\}\s*<\/span>\s*\)\s*: <span>\{copy\.choose\}<\/span>/,
+    );
+    // The picker's name says what pressing it does and never changes; the
+    // selected project is a described-by child, because dropping it from the
+    // name removed it from the accessibility tree entirely — `aria-label` wins
+    // over a button's own text. docs/accessibility-governance.md §1 and §7.
+    assert.match(workspaceRow, /aria-label=\{copy\.choose\}/);
+    assert.match(
+      workspaceRow,
+      /aria-describedby=\{wp\.label \? 'maka-composer-workspace-value' : undefined\}/,
+      'the selected project must stay readable, as a child node rather than as part of the name',
+    );
     assert.match(workspaceRow, /title=\{copy\.branchTitle\(bp\.branch \?\? undefined\)\}/);
     // Workspace picker must track the shared chat/composer measure token,
     // not a bespoke hard-coded width, so future measure updates keep the

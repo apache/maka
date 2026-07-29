@@ -221,7 +221,22 @@ describe('Settings form accessibility labels', () => {
     assert.match(passwordInput, /if \(mountedRef\.current\) toast\.error\(copy\.copyFailed, copy\.clipboardUnavailable\)/);
     assert.match(passwordInput, /copyGuard\.finish\(\);[\s\S]*if \(mountedRef\.current\) setCopying\(false\)/);
     assert.match(passwordInput, /disabled=\{copying\}/);
-    assert.match(passwordInput, /aria-label=\{copying \? copy\.copying : justCopied \? copy\.copied : copy\.copy\}/);
+    // The name stays put while the control works, and the progress and the
+    // confirmation move to where both audiences can read them:
+    // `disabled` + `aria-busy` for progress, a live region for the result.
+    // docs/accessibility-governance.md §1, "Busy is not a new name".
+    assert.match(passwordInput, /aria-busy=\{copying\}/);
+    assert.match(passwordInput, /aria-label=\{copy\.copy\}/);
+    assert.match(
+      passwordInput,
+      /<span className="maka-visually-hidden" role="status" aria-live="polite">\s*\{copying \? copy\.copying : justCopied \? copy\.copied : ''\}/,
+      'the copy state must still be announced, as a status rather than as a name',
+    );
+    assert.doesNotMatch(
+      passwordInput,
+      /aria-label=\{copying \?/,
+      'the copy button must not rename itself mid-operation — that removes the only handle on it exactly while someone is waiting for it',
+    );
     assert.match(passwordInput, /toast\.error\(copy\.copyFailed, copy\.clipboardUnavailable\)/);
     assert.doesNotMatch(
       passwordInput,

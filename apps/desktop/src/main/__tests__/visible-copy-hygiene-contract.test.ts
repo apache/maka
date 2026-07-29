@@ -634,6 +634,15 @@ describe('chat markdown copy feedback contract', () => {
     assert.match(block, /codeCopy\.copyingCode/, 'Code copy should expose pending feedback.');
     assert.match(block, /codeCopy\.copiedCode/, 'Code copy should expose success feedback.');
     assert.match(block, /codeCopy\.copyCodeFailed/, 'Code copy should expose failure feedback.');
+    // All three reach the user as announcements rather than as the button's
+    // name — a control that renames itself mid-copy takes away the only handle
+    // anyone has on it. docs/accessibility-governance.md §1.
+    assert.match(block, /aria-label=\{codeCopy\.copyCode\}/, 'The copy button keeps one stable name.');
+    assert.match(
+      block,
+      /<span className="maka-visually-hidden" role="status" aria-live="polite">/,
+      'Code copy feedback should be announced from a live region.',
+    );
     assert.match(block, /aria-busy=\{copyPending \? 'true' : undefined\}/, 'Code copy should expose busy state.');
     assert.match(block, /disabled=\{copyPending\}/, 'Code copy should disable while pending.');
     assert.match(block, /data-copy-feedback=\{copyPhase \?\? undefined\}/, 'Code copy should expose stable copy state.');

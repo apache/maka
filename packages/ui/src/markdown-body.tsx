@@ -288,11 +288,13 @@ function CodeBlock({ children, ...rest }: { children?: ReactNode }) {
             : <Copy size={12} aria-hidden="true" />}
         </BaseButton>
         <span className="maka-visually-hidden" role="status" aria-live="polite">
-          {copyPhase === 'copied'
-            ? codeCopy.copiedCode
-            : copyPhase === 'failed'
-              ? codeCopy.copyCodeFailed
-              : ''}
+          {copyPending
+            ? codeCopy.copyingCode
+            : copyPhase === 'copied'
+              ? codeCopy.copiedCode
+              : copyPhase === 'failed'
+                ? codeCopy.copyCodeFailed
+                : ''}
         </span>
       </div>
       <pre {...rest}>{children}</pre>
