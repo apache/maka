@@ -47,6 +47,13 @@ test('a read-only session names its boundary and can still be raised to full acc
   // Keyboard navigation still works with nothing selected, and choosing Auto
   // is a real permission change.
   await trigger.click();
+  // The click resolves when it is dispatched, not when the popup exists. Keys
+  // sent before then land on nothing: no option is highlighted, Enter selects
+  // nothing, and the label sits on 只读 until the assertion times out. Waiting
+  // for the listbox the keys are aimed at fixes the sequence rather than
+  // widening the window it is allowed to be wrong in (measured: 2/25 failures
+  // without this line, 25/25 clean with it).
+  await expect(page.getByRole('listbox')).toBeVisible();
   await page.keyboard.press('ArrowDown');
   await page.keyboard.press('Enter');
   await expect(trigger).toHaveText('自动');
