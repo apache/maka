@@ -279,7 +279,14 @@ describe('permission response IPC boundary', () => {
   it('routes send and stop IPC payloads through main-process normalizers', async () => {
     const mainPath = fileURLToPath(new URL('../../../src/main/main.ts', import.meta.url));
     const main = await readMainProcessCombinedSource();
-    const stopHandler = main.match(/ipcMain\.handle\('sessions:stop'[\s\S]*?\n  \);/)?.[0] ?? '';
+    // The stop path was extracted into `stopSession()` so the menu bar's Stop
+    // item runs the same code as the in-app button. Match the function body,
+    // not the one-line handler that now forwards to it — the invariants below
+    // are about what stopping does, not about where the lines live.
+    const stopHandler =
+      main.match(/async function stopSession\([\s\S]*?\n  \}/)?.[0] ??
+      main.match(/ipcMain\.handle\('sessions:stop'[\s\S]*?\n  \);/)?.[0] ??
+      '';
     const sendHandler = main.match(/ipcMain\.handle\('sessions:send'[\s\S]*?\n  \);/)?.[0] ?? '';
 
     assert.match(stopHandler, /normalizeStopSessionInput\(input\)/);
