@@ -1106,14 +1106,11 @@ export class SessionManager {
     const labels = leavingDeepResearch
       ? previous.labels.filter((label) => label !== DEEP_RESEARCH_SESSION_LABEL)
       : previous.labels;
-    await this.deps.store.setExecutionBoundaryKind(
-      sessionId,
-      mode === 'bypass' ? 'bypass' : 'managed',
-      {
-        permissionMode: mode,
-        labels,
-      },
-    );
+    const nextKind = mode === 'bypass' ? 'bypass' : 'managed';
+    await this.commitExecutionBoundaryTransition(sessionId, boundary, nextKind, {
+      permissionMode: mode,
+      labels,
+    });
     const next = await this.deps.store.readHeader(sessionId);
     await this.deps.store.appendMessage(sessionId, {
       type: 'system_note',
@@ -1141,8 +1138,36 @@ export class SessionManager {
     if (header.status === 'waiting_for_user') {
       throw new Error('当前有沙箱边界请求正在等待确认，处理后再切换。');
     }
-    const boundary = await this.deps.store.setExecutionBoundaryKind(sessionId, kind);
+    const current = await this.deps.store.readExecutionBoundary(sessionId);
+    const boundary = await this.commitExecutionBoundaryTransition(sessionId, current, kind);
     await this.runtimeKernel.disposeBackend(sessionId);
+    return boundary;
+  }
+
+  private async commitExecutionBoundaryTransition(
+    sessionId: string,
+    current: ExecutionBoundary,
+    kind: 'managed' | 'bypass',
+    projection?: {
+      permissionMode: SessionHeader['permissionMode'];
+      labels?: readonly string[];
+    },
+  ): Promise<ExecutionBoundary> {
+    const shellRunClose =
+      current.kind === 'bypass' && kind === 'managed'
+        ? await this.deps.shellRuns?.terminateSession(sessionId)
+        : undefined;
+    let boundary: ExecutionBoundary;
+    try {
+      boundary = await this.deps.store.setExecutionBoundaryKind(sessionId, kind, projection);
+    } catch (error) {
+      if (shellRunClose) this.deps.shellRuns?.rollbackSessionClose(shellRunClose);
+      throw error;
+    }
+    if (shellRunClose) {
+      await this.deps.shellRuns?.commitSessionClose(shellRunClose);
+      this.deps.shellRuns?.resumeSession(sessionId);
+    }
     return boundary;
   }
 

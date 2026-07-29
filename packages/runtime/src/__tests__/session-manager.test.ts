@@ -3833,6 +3833,71 @@ describe('SessionManager permission mode updates', () => {
     expect((await store.readExecutionBoundary(session.id)).kind).toBe('managed');
   });
 
+  test('revokes background shell authority before narrowing Bypass to Auto', async () => {
+    const store = new AtomicBoundaryMemorySessionStore();
+    const calls: string[] = [];
+    const lease = { sessionId: 'session-1', token: Symbol('test') };
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(980),
+      shellRuns: {
+        async terminateSession(sessionId: string) {
+          calls.push(`terminate:${sessionId}`);
+          return lease;
+        },
+        async commitSessionClose() {
+          calls.push('commit');
+        },
+        rollbackSessionClose() {
+          calls.push('rollback');
+        },
+        resumeSession(sessionId: string) {
+          calls.push(`resume:${sessionId}`);
+        },
+      } as never,
+    });
+    const session = await manager.createSession(makeInput({ permissionMode: 'bypass' }));
+    lease.sessionId = session.id;
+
+    await manager.setPermissionMode(session.id, 'ask');
+
+    expect(calls).toEqual([`terminate:${session.id}`, 'commit', `resume:${session.id}`]);
+    expect((await store.readExecutionBoundary(session.id)).kind).toBe('managed');
+  });
+
+  test('revokes background shell authority through the direct boundary API', async () => {
+    const store = new AtomicBoundaryMemorySessionStore();
+    const calls: string[] = [];
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(990),
+      shellRuns: {
+        async terminateSession(sessionId: string) {
+          calls.push(`terminate:${sessionId}`);
+          return { sessionId, token: Symbol('test') };
+        },
+        async commitSessionClose() {
+          calls.push('commit');
+        },
+        rollbackSessionClose() {
+          calls.push('rollback');
+        },
+        resumeSession(sessionId: string) {
+          calls.push(`resume:${sessionId}`);
+        },
+      } as never,
+    });
+    const session = await manager.createSession(makeInput({ permissionMode: 'bypass' }));
+
+    await manager.setExecutionBoundaryKind(session.id, 'managed');
+
+    expect(calls).toEqual([`terminate:${session.id}`, 'commit', `resume:${session.id}`]);
+  });
+
   test('updates header, rebuilds active backend, and writes an audit note', async () => {
     const store = new MemorySessionStore();
     const backends = new BackendRegistry();
