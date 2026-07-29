@@ -79,6 +79,10 @@ import {
   canReplaceHistoryCompactCheckpoint,
   type HistoryCompactCheckpoint,
 } from './history-compact-checkpoint.js';
+import {
+  HistoryCompactCheckpointCoordinator,
+  type HistoryCompactCleanupRequest,
+} from './history-compact-checkpoint-coordinator.js';
 import { shouldAppendContextCompactionFailedOpenNote } from './context-budget.js';
 import {
   buildResumePlanFromRuntimeEvents,
@@ -271,11 +275,7 @@ export interface RuntimeKernelDeps {
   interactionAuthority?: RuntimeInteractionAuthority;
 }
 
-export interface HistoryCompactCleanupRequest {
-  sessionId: string;
-  checkpoint: HistoryCompactCheckpoint;
-  runtimeEvents: readonly RuntimeEvent[];
-}
+export type { HistoryCompactCleanupRequest } from './history-compact-checkpoint-coordinator.js';
 
 interface BackendGeneration extends AgentRunActiveSession {
   sessionId: string;
@@ -383,16 +383,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     PendingExecutionClaim
   >();
   private readonly stopIntents = new Map<string, SessionStopIntent>();
-  private readonly historyCompactCheckpoints = new Map<
-    string,
-    HistoryCompactCheckpoint | undefined
-  >();
-  private readonly historyCompactCheckpointLoads = new Map<
-    string,
-    Promise<HistoryCompactCheckpoint | undefined>
-  >();
-  private readonly historyCompactCheckpointWrites = new Map<string, Promise<void>>();
-  private readonly historyCompactCleanupWrites = new Map<string, Promise<void>>();
+  private readonly historyCompactCoordinator: HistoryCompactCheckpointCoordinator;
   private readonly pendingContinuationClaims = new Set<string>();
   private readonly pendingContinuationSessions = new Set<string>();
   private readonly steeringBySession = new Map<string, SessionSteeringState>();
@@ -405,6 +396,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     if (deps.runStore && !deps.runtimeEventStore) {
       throw new Error('RuntimeEventStore is required when AgentRunStore is configured');
     }
+    this.historyCompactCoordinator = new HistoryCompactCheckpointCoordinator(deps);
   }
 
   private async runBackendActivation<T>(operation: () => Promise<T> | T): Promise<T> {
@@ -2450,8 +2442,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
   private async disposeBackendNow(sessionId: string): Promise<BackendDisposalOutcome> {
     const generations = this.backendGenerationsFor(sessionId);
     this.steeringBySession.delete(sessionId);
-    this.historyCompactCheckpoints.delete(sessionId);
-    this.historyCompactCheckpointLoads.delete(sessionId);
+    this.historyCompactCoordinator.clear(sessionId);
     let disposalError: unknown;
     for (const active of generations) {
       const outcome = await this.quarantineBackendGeneration(active);
@@ -2616,108 +2607,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
     );
   }
 
-  private loadHistoryCompactCheckpoint(
-    sessionId: string,
-  ): Promise<HistoryCompactCheckpoint | undefined> {
-    if (this.historyCompactCheckpoints.has(sessionId)) {
-      return Promise.resolve(this.historyCompactCheckpoints.get(sessionId));
-    }
-    const existing = this.historyCompactCheckpointLoads.get(sessionId);
-    if (existing) return existing;
-    if (!this.deps.runStore) return Promise.resolve(undefined);
-
-    let guardedLoad: Promise<HistoryCompactCheckpoint | undefined>;
-    guardedLoad = loadLatestHistoryCompactCheckpointFromRunLedger(this.deps.runStore, sessionId)
-      .then((checkpoint) => {
-        if (checkpoint) this.scheduleHistoryCompactCleanup(sessionId, checkpoint);
-        if (
-          this.historyCompactCheckpointLoads.get(sessionId) === guardedLoad &&
-          !this.historyCompactCheckpoints.has(sessionId)
-        ) {
-          this.historyCompactCheckpoints.set(sessionId, checkpoint);
-        }
-        return this.historyCompactCheckpoints.has(sessionId)
-          ? this.historyCompactCheckpoints.get(sessionId)
-          : checkpoint;
-      })
-      .finally(() => {
-        if (this.historyCompactCheckpointLoads.get(sessionId) === guardedLoad) {
-          this.historyCompactCheckpointLoads.delete(sessionId);
-        }
-      });
-    this.historyCompactCheckpointLoads.set(sessionId, guardedLoad);
-    return guardedLoad;
-  }
-
-  private recordHistoryCompactCheckpoint(
-    sessionId: string,
-    checkpoint: HistoryCompactCheckpoint,
-    run: AgentRun | undefined,
-  ): Promise<void> {
-    if (!run) return Promise.reject(new Error('No active AgentRun for history compact checkpoint'));
-    const previous = this.historyCompactCheckpointWrites.get(sessionId) ?? Promise.resolve();
-    let tracked: Promise<void>;
-    tracked = previous
-      .catch(() => {})
-      .then(async () => {
-        const durableCheckpoint = await this.loadHistoryCompactCheckpoint(sessionId);
-        if (!canReplaceHistoryCompactCheckpoint(durableCheckpoint, checkpoint)) {
-          throw new Error('History compact checkpoint was superseded before persistence');
-        }
-        await run.recordHistoryCompactCheckpoint(checkpoint);
-        this.historyCompactCheckpoints.set(sessionId, checkpoint);
-        this.scheduleHistoryCompactCleanup(sessionId, checkpoint);
-      })
-      .finally(() => {
-        if (this.historyCompactCheckpointWrites.get(sessionId) === tracked) {
-          this.historyCompactCheckpointWrites.delete(sessionId);
-        }
-      });
-    this.historyCompactCheckpointWrites.set(sessionId, tracked);
-    return tracked;
-  }
-
-  private scheduleHistoryCompactCleanup(
-    sessionId: string,
-    checkpoint: HistoryCompactCheckpoint,
-  ): void {
-    if (
-      !this.deps.cleanupHistoryCompactArtifacts ||
-      !this.deps.runStore ||
-      !this.deps.runtimeEventStore
-    )
-      return;
-    const previous = this.historyCompactCleanupWrites.get(sessionId) ?? Promise.resolve();
-    let tracked: Promise<void>;
-    tracked = previous
-      .catch(() => {})
-      .then(async () => {
-        const runs = (await this.deps.runStore!.listSessionRuns(sessionId)).filter(
-          isSessionInlineRun,
-        );
-        const runtimeEvents: RuntimeEvent[] = [];
-        for (const run of runs) {
-          runtimeEvents.push(
-            ...(await this.deps.runtimeEventStore!.readRuntimeEvents(sessionId, run.runId)),
-          );
-        }
-        await this.deps.cleanupHistoryCompactArtifacts!({
-          sessionId,
-          checkpoint,
-          runtimeEvents,
-        });
-      })
-      .catch(() => {
-        // Legacy cleanup is reclaim-only. Runtime replay must remain available on failure.
-      })
-      .finally(() => {
-        if (this.historyCompactCleanupWrites.get(sessionId) === tracked) {
-          this.historyCompactCleanupWrites.delete(sessionId);
-        }
-      });
-    this.historyCompactCleanupWrites.set(sessionId, tracked);
-  }
-
   private async ensureActive(
     sessionId: string,
     header: SessionHeader,
@@ -2775,7 +2664,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
                 const run = runId ? active?.activeRuns.get(runId) : undefined;
                 run?.recordProviderRequestAttempt(attempt);
               },
-              loadHistoryCompactCheckpoint: () => this.loadHistoryCompactCheckpoint(sessionId),
+              loadHistoryCompactCheckpoint: () => this.historyCompactCoordinator.load(sessionId),
               recordHistoryCompactCheckpoint: (
                 checkpoint: HistoryCompactCheckpoint,
                 turnId: string,
@@ -2783,7 +2672,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
                 const active = this.active.get(sessionId);
                 const runId = active?.turnToRunId.get(turnId);
                 const run = runId ? active?.activeRuns.get(runId) : undefined;
-                return this.recordHistoryCompactCheckpoint(sessionId, checkpoint, run);
+                return this.historyCompactCoordinator.record(sessionId, checkpoint, run);
               },
             }
           : {}),
@@ -2926,7 +2815,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
                 const run = runId ? active?.activeRuns.get(runId) : undefined;
                 run?.recordProviderRequestAttempt(attempt);
               },
-              loadHistoryCompactCheckpoint: () => this.loadHistoryCompactCheckpoint(sessionId),
+              loadHistoryCompactCheckpoint: () => this.historyCompactCoordinator.load(sessionId),
               recordHistoryCompactCheckpoint: (
                 checkpoint: HistoryCompactCheckpoint,
                 turnId: string,
@@ -2934,7 +2823,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
                 const active = this.childActive.get(activeKey);
                 const runId = active?.turnToRunId.get(turnId);
                 const run = runId ? active?.activeRuns.get(runId) : undefined;
-                return this.recordHistoryCompactCheckpoint(sessionId, checkpoint, run);
+                return this.historyCompactCoordinator.record(sessionId, checkpoint, run);
               },
             }
           : {}),
