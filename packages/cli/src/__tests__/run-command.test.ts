@@ -189,6 +189,16 @@ describe('maka run process contract', () => {
     assert.equal(result.stdout, '');
   });
 
+  test('creates an Auto boundary by default', async () => {
+    const result = await runFixture(['hello'], {
+      input: '',
+      env: { MAKA_RUN_EXPECT_PERMISSION_MODE: 'ask' },
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, 'prompt=hello\n');
+  });
+
   test('passes max steps as an invocation-local context limit', async () => {
     const result = await runFixture(['hello', '--max-steps', '3'], {
       input: '',

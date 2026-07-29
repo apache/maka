@@ -262,7 +262,7 @@ export async function runMakaTextCli(
             backend: 'ai-sdk',
             llmConnectionSlug: context.target.connection.slug,
             model: context.target.model,
-            permissionMode: parsed.options.yolo ? 'bypass' : 'execute',
+            permissionMode: parsed.options.yolo ? 'bypass' : 'ask',
             ...(parsed.options.thinking !== undefined
               ? { thinkingLevel: parsed.options.thinking }
               : {}),
