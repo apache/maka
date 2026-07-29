@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { rmSync } from 'node:fs';
 import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -312,6 +313,30 @@ describe('filesystem worker operation-scoped Seatbelt profile', () => {
 });
 
 describe('filesystem worker Linux path context', () => {
+  test('rejects an existing subtree that disappears before it can be pinned', async () => {
+    const workspace = await temporaryDirectory('maka-linux-worker-vanished-');
+    const target = join(workspace, 'src');
+    await mkdir(target);
+    const { client, requests } = fakeClient({
+      platform: 'linux',
+      beforeLaunchSpecReturn: () => rmSync(target, { recursive: true }),
+    });
+
+    await assert.rejects(
+      client.execute({
+        operation: { kind: 'glob', path: target, pattern: '*.ts', limit: 20 },
+        cwd: workspace,
+        mode: 'ask',
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof FilesystemWorkerClientError);
+        assert.equal(error.reason, 'path_changed');
+        return true;
+      },
+    );
+    assert.equal(requests.length, 0);
+  });
+
   test('pins an existing operation target through an inherited descriptor', async () => {
     const workspace = await temporaryDirectory('maka-linux-worker-pin-');
     const target = join(workspace, 'existing.txt');
@@ -331,6 +356,29 @@ describe('filesystem worker Linux path context', () => {
     );
     assert.ok(pinned);
     assert.ok(hasArgTriple(processInput.argv, '--ro-bind', `/proc/self/fd/${pinned.fd}`, target));
+  });
+
+  test('pins the writable parent of a missing exact target', async () => {
+    const workspace = await temporaryDirectory('maka-linux-worker-parent-pin-');
+    const parent = join(workspace, 'output');
+    const target = join(parent, 'new.txt');
+    await mkdir(parent);
+    const { client, processInputs } = fakeClient({ platform: 'linux' });
+
+    await client.execute({
+      operation: { kind: 'write', path: target, content: 'new' },
+      cwd: workspace,
+      mode: 'ask',
+    });
+
+    const processInput = processInputs[0];
+    assert.ok(processInput);
+    const pinned = processInput.fdInputs?.find(
+      (input): input is Extract<typeof input, { sourceFd: number }> => 'sourceFd' in input,
+    );
+    assert.ok(pinned);
+    assert.ok(hasArgTriple(processInput.argv, '--bind', `/proc/self/fd/${pinned.fd}`, parent));
+    assert.equal(hasArgTriple(processInput.argv, '--bind', parent, parent), false);
   });
 
   test('requests a trusted parent mount only for a missing write target', () => {
@@ -366,7 +414,11 @@ describe('filesystem worker Linux path context', () => {
 });
 
 function fakeClient(
-  options: { operationErrorCode?: FilesystemWorkerErrorCode; platform?: SandboxPlatform } = {},
+  options: {
+    operationErrorCode?: FilesystemWorkerErrorCode;
+    platform?: SandboxPlatform;
+    beforeLaunchSpecReturn?: () => void;
+  } = {},
 ): {
   client: FilesystemWorkerClient;
   requests: FilesystemWorkerRequest[];
@@ -394,16 +446,19 @@ function fakeClient(
     }) as SandboxManager,
     platform,
     newId: () => `request-${requests.length + 1}`,
-    getLaunchSpec: async () => ({
-      ok: true,
-      spec: {
-        program: '/usr/bin/node',
-        args: ['/runtime/filesystem-worker.js', '--grep-executable', '/usr/bin/rg'],
-        env: {},
-        runtimeReadableRoots: ['/runtime/filesystem-worker.js'],
-        executableRoots: ['/usr/bin/node', '/usr/bin/rg'],
-      },
-    }),
+    getLaunchSpec: async () => {
+      options.beforeLaunchSpecReturn?.();
+      return {
+        ok: true,
+        spec: {
+          program: '/usr/bin/node',
+          args: ['/runtime/filesystem-worker.js', '--grep-executable', '/usr/bin/rg'],
+          env: {},
+          runtimeReadableRoots: ['/runtime/filesystem-worker.js'],
+          executableRoots: ['/usr/bin/node', '/usr/bin/rg'],
+        },
+      };
+    },
     runProcess: async (input) => {
       processInputs.push(input);
       const request = FilesystemWorkerRequestSchema.parse(JSON.parse(input.stdin));
@@ -453,6 +508,8 @@ function fakeResult(request: FilesystemWorkerRequest): FilesystemWorkerResult {
       };
     case 'grep':
       return { kind: 'grep', matches: ['file.ts:1:value'] };
+    case 'glob':
+      return { kind: 'glob', files: [] };
     default:
       throw new Error(`Unexpected fake worker operation: ${request.operation.kind}`);
   }

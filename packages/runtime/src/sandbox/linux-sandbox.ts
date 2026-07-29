@@ -139,9 +139,17 @@ export class LinuxBubblewrapBackend implements SandboxBackend {
         ...(releaseSource ? { releaseSource } : {}),
       }),
     );
+    const pinnedRuntimeWritableFdInputs = command.pathContext.pinnedRuntimeWritableRoots?.map(
+      ({ fd, sourceFd, releaseSource }) => ({
+        fd,
+        sourceFd,
+        ...(releaseSource ? { releaseSource } : {}),
+      }),
+    );
     const fdInputs = [
       ...(seccompFilter ? [{ fd: 3, data: seccompFilter }] : []),
       ...(pinnedFdInputs ?? []),
+      ...(pinnedRuntimeWritableFdInputs ?? []),
     ];
     return {
       ok: true,
@@ -221,8 +229,20 @@ export function buildBubblewrapArgv(input: BuildBubblewrapArgvInput): readonly s
   const runtimeWritableRoots = removeNestedRoots(
     (command.pathContext.runtimeWritableRoots ?? []).filter(isUsableRuntimeRoot),
   );
-  const profileReadableRoots = removeRootsCoveredBy(roots.readableRoots, runtimeWritableRoots);
-  const profileWritableRoots = removeRootsCoveredBy(roots.writableRoots, runtimeWritableRoots);
+  const unavailableProfilePaths = new Set(command.pathContext.unavailableProfilePaths ?? []);
+  const pinnedRuntimeWritableRoots = new Map(
+    (command.pathContext.pinnedRuntimeWritableRoots ?? []).map(
+      (entry) => [entry.path, entry] as const,
+    ),
+  );
+  const profileReadableRoots = removeRootsCoveredBy(
+    roots.readableRoots,
+    runtimeWritableRoots,
+  ).filter((root) => !unavailableProfilePaths.has(root));
+  const profileWritableRoots = removeRootsCoveredBy(
+    roots.writableRoots,
+    runtimeWritableRoots,
+  ).filter((root) => !unavailableProfilePaths.has(root));
   const exactReadableRoots = exactProfileRoots(command.profile, 'read');
   const exactWritableRoots = exactProfileRoots(command.profile, 'write');
   const pinnedProfilePaths = new Map(
@@ -294,7 +314,10 @@ export function buildBubblewrapArgv(input: BuildBubblewrapArgvInput): readonly s
     argv.push('--ro-bind-try', directory, directory);
   }
   for (const root of requiredRuntimeMounts) argv.push('--ro-bind', root, root);
-  for (const root of runtimeWritableRoots) argv.push('--bind', root, root);
+  for (const root of runtimeWritableRoots) {
+    const pinned = pinnedRuntimeWritableRoots.get(root);
+    argv.push('--bind', pinned ? `/proc/self/fd/${pinned.fd}` : root, root);
+  }
   for (const root of roots.tempRoots) argv.push('--tmpfs', root);
   if (needsSyntheticCwd) {
     for (const directory of requiredParentDirectories([command.cwd])) {

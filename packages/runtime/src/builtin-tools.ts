@@ -762,9 +762,9 @@ function sandboxCommand(
     return undefined;
   }
 
-  let preparedPaths: readonly PreparedProfilePath[] = [];
+  let preparedProfile: PreparedLinuxProfilePaths = { paths: [], unavailablePaths: [] };
   try {
-    preparedPaths = prepareLinuxBashProfilePaths(
+    preparedProfile = prepareLinuxBashProfilePaths(
       platform,
       effective.profile,
       effective.workspaceRoots,
@@ -781,7 +781,7 @@ function sandboxCommand(
       message: 'An approved sandbox path could not be pinned safely.',
     });
   }
-  const onCompletion = preparedProfilePathCompletion(preparedPaths);
+  const onCompletion = preparedProfilePathCompletion(preparedProfile.paths);
 
   let result: ReturnType<SandboxManager['transform']>;
   try {
@@ -808,9 +808,9 @@ function sandboxCommand(
                   execPath: process.execPath,
                   path: env.PATH,
                 }),
-                ...(preparedPaths.length > 0
+                ...(preparedProfile.paths.length > 0
                   ? {
-                      pinnedProfilePaths: preparedPaths.map((path) => ({
+                      pinnedProfilePaths: preparedProfile.paths.map((path) => ({
                         path: path.path,
                         access: path.access,
                         fd: path.childFd,
@@ -818,6 +818,9 @@ function sandboxCommand(
                         releaseSource: path.releaseSource,
                       })),
                     }
+                  : {}),
+                ...(preparedProfile.unavailablePaths.length > 0
+                  ? { unavailableProfilePaths: preparedProfile.unavailablePaths }
                   : {}),
               }
             : {}),
@@ -864,18 +867,23 @@ interface PreparedProfilePath {
   readonly ctimeNs: bigint;
 }
 
+interface PreparedLinuxProfilePaths {
+  readonly paths: readonly PreparedProfilePath[];
+  readonly unavailablePaths: readonly string[];
+}
+
 function prepareLinuxBashProfilePaths(
   platform: SandboxPlatform,
   profile: PermissionProfile,
   workspaceRoots: readonly string[],
   requiredBoundary?: SandboxBoundaryExpansion,
-): readonly PreparedProfilePath[] {
+): PreparedLinuxProfilePaths {
   if (
     platform !== 'linux' ||
     profile.type !== 'managed' ||
     profile.fileSystem.kind !== 'restricted'
   ) {
-    return [];
+    return { paths: [], unavailablePaths: [] };
   }
   const activeExactPaths = new Set(
     (requiredBoundary?.filesystem?.entries ?? []).flatMap((entry) =>
@@ -905,6 +913,7 @@ function prepareLinuxBashProfilePaths(
     );
   }
   const prepared: PreparedProfilePath[] = [];
+  const unavailablePaths: string[] = [];
   try {
     for (const [target, { access, match }] of candidates) {
       const existing = (() => {
@@ -916,7 +925,10 @@ function prepareLinuxBashProfilePaths(
         }
       })();
       if (!existing) {
-        if (match !== 'exact' || access !== 'write') continue;
+        if (match !== 'exact' || access !== 'write') {
+          unavailablePaths.push(target);
+          continue;
+        }
         const fd = openMissingExactWriteTarget(target);
         let sourceOpen = true;
         const releaseSource = () => {
@@ -956,7 +968,7 @@ function prepareLinuxBashProfilePaths(
       if (!pinned) throw new Error(`Approved sandbox path disappeared: ${target}`);
       prepared.push({ ...pinned, created: false });
     }
-    return prepared;
+    return { paths: prepared, unavailablePaths };
   } catch (error) {
     completePreparedProfilePaths(prepared);
     throw error;

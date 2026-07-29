@@ -544,6 +544,59 @@ describe('builtin Bash streaming output', () => {
     }
   });
 
+  test('omits a missing subtree grant from an unrelated Linux Bash mount plan', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-linux-missing-subtree-'));
+    const workspace = await realpath(
+      await mkdir(join(root, 'workspace')).then(() => join(root, 'workspace')),
+    );
+    const missingSubtree = join(root, 'missing-subtree');
+    let launchInput: any;
+    const bash = buildBuiltinTools({
+      shellRuns: {
+        async runForegroundBash(input: any) {
+          launchInput = input;
+          return terminalResult(input, 'completed', 0);
+        },
+        async runBackgroundBash() {
+          throw new Error('not used');
+        },
+      },
+      permissionProfile: createWorkspaceWritePermissionProfile(),
+      sandboxManager: availableLinuxManager(),
+      sandboxPlatform: 'linux',
+    }).find((candidate) => candidate.name === 'Bash');
+    if (!bash) throw new Error('Bash tool missing');
+
+    try {
+      await bash.impl(
+        { command: 'true' },
+        {
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          toolCallId: 'tool-1',
+          cwd: workspace,
+          permissionMode: 'execute',
+          abortSignal: new AbortController().signal,
+          emitOutput: () => {},
+          executionBoundary: {
+            kind: 'managed',
+            revision: 1,
+            profile: applySandboxBoundaryExpansion(createWorkspaceWritePermissionProfile(), {
+              filesystem: {
+                entries: [{ path: missingSubtree, access: 'read', scope: 'subtree' }],
+              },
+            }),
+          },
+        },
+      );
+
+      assert.ok(launchInput);
+      assert.equal(launchInput.argv.includes(missingSubtree), false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('removes missing exact-write placeholders after launch rejection and failed completion', async () => {
     for (const outcome of ['launch_rejected', 'failed', 'cancelled', 'timed_out'] as const) {
       const fixture = await linuxMissingExactWriteFixture();

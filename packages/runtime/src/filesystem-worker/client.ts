@@ -262,6 +262,47 @@ export class FilesystemWorkerClient {
             }
           })()
         : undefined;
+    if (platform === 'linux' && target.targetType !== 'missing' && !pinnedTarget) {
+      throw clientError(
+        'path_changed',
+        'validation',
+        requestId,
+        'The approved filesystem target changed before sandbox launch.',
+      );
+    }
+    const pinnedRuntimeWritableRoot =
+      platform === 'linux' && target.targetType === 'missing' && runtimeWritableRoots?.[0]
+        ? (() => {
+            try {
+              return pinExistingLinuxProfilePath({
+                path: runtimeWritableRoots[0],
+                access: 'write',
+                targetType: 'directory',
+                childFd: 4,
+              });
+            } catch {
+              throw clientError(
+                'path_changed',
+                'validation',
+                requestId,
+                'The approved filesystem target parent changed before sandbox launch.',
+              );
+            }
+          })()
+        : undefined;
+    if (
+      platform === 'linux' &&
+      target.targetType === 'missing' &&
+      runtimeWritableRoots &&
+      !pinnedRuntimeWritableRoot
+    ) {
+      throw clientError(
+        'path_changed',
+        'validation',
+        requestId,
+        'The approved filesystem target parent changed before sandbox launch.',
+      );
+    }
     let transformed: ReturnType<SandboxManager['transform']>;
     try {
       transformed = this.input.sandboxManager.transform({
@@ -289,15 +330,29 @@ export class FilesystemWorkerClient {
                   ],
                 }
               : {}),
+            ...(pinnedRuntimeWritableRoot
+              ? {
+                  pinnedRuntimeWritableRoots: [
+                    {
+                      path: pinnedRuntimeWritableRoot.path,
+                      fd: pinnedRuntimeWritableRoot.childFd,
+                      sourceFd: pinnedRuntimeWritableRoot.sourceFd,
+                      releaseSource: pinnedRuntimeWritableRoot.releaseSource,
+                    },
+                  ],
+                }
+              : {}),
           },
         },
       });
     } catch (error) {
       pinnedTarget?.releaseSource();
+      pinnedRuntimeWritableRoot?.releaseSource();
       throw error;
     }
     if (!transformed.ok) {
       pinnedTarget?.releaseSource();
+      pinnedRuntimeWritableRoot?.releaseSource();
       throw clientError(transformed.reason, 'transform', requestId, transformed.message, false, {
         backend: transformed.sandboxType,
         profileName: effectiveProfile.name ?? effectiveProfile.type,
@@ -319,6 +374,7 @@ export class FilesystemWorkerClient {
       throw clientError('spawn_failed', 'launch', requestId);
     } finally {
       pinnedTarget?.releaseSource();
+      pinnedRuntimeWritableRoot?.releaseSource();
     }
     if (processResult.timedOut) throw clientError('timeout', 'launch', requestId);
     if (processResult.aborted) throw clientError('aborted', 'launch', requestId);
