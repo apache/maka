@@ -11,6 +11,7 @@ import type {
   LlmConnection,
   ModelDiscoveryResult,
   ModelInfo,
+  SandboxBoundaryRequestEvent,
   SandboxBoundaryResponse,
   UserQuestionResponse,
   PermissionMode,
@@ -266,6 +267,9 @@ export interface MakaBridge {
     stop(sessionId: string, input?: { source?: 'stop_button' }): Promise<void>;
     readMessages(sessionId: string): Promise<StoredMessage[]>;
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary>;
+    listActiveSandboxBoundaryRequests(
+      sessionId: string,
+    ): Promise<SandboxBoundaryRequestEvent[]>;
     listTurns(sessionId: string): Promise<TurnRecord[]>;
     compact(sessionId: string): Promise<void>;
     resumeLatest(sessionId: string): Promise<

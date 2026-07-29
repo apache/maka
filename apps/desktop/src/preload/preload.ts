@@ -24,6 +24,7 @@ import type {
   LlmConnection,
   ModelDiscoveryResult,
   ModelInfo,
+  SandboxBoundaryRequestEvent,
   SandboxBoundaryResponse,
   UserQuestionResponse,
   PermissionMode,
@@ -237,6 +238,11 @@ const makaBridge = {
     },
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary> {
       return ipcRenderer.invoke('sessions:readExecutionBoundary', sessionId);
+    },
+    listActiveSandboxBoundaryRequests(
+      sessionId: string,
+    ): Promise<SandboxBoundaryRequestEvent[]> {
+      return ipcRenderer.invoke('sessions:listActiveSandboxBoundaryRequests', sessionId);
     },
     listTurns(sessionId: string): Promise<TurnRecord[]> {
       return ipcRenderer.invoke('sessions:listTurns', sessionId);

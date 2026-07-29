@@ -69,3 +69,26 @@ export const NetworkOnly: Story = {
     onRespond: async () => {},
   },
 };
+
+// Limit state: all 32 accepted filesystem entries stay inspectable while the
+// decision buttons remain in the stable composer slot.
+export const MaximumFilesystemEntries: Story = {
+  args: {
+    request: {
+      ...filesystemAndNetworkRequest,
+      id: 'boundary-event-3',
+      requestId: 'boundary-request-3',
+      justification: '读取发布清单中列出的外部文件，以完成本次会话的校验。',
+      expansion: {
+        filesystem: {
+          entries: Array.from({ length: 32 }, (_, index) => ({
+            path: `/Users/maka/release/manifests/component-${String(index + 1).padStart(2, '0')}/artifact-with-a-long-name.json`,
+            access: 'read' as const,
+            scope: 'exact' as const,
+          })),
+        },
+      },
+    },
+    onRespond: async () => {},
+  },
+};

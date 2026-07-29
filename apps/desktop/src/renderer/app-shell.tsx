@@ -45,6 +45,7 @@ import {
   type TurnFooterActionMeta,
   useToast,
   activeInteractionFor,
+  enqueueInteraction,
   getConversationCopy,
   getSharedUiCopy,
 } from '@maka/ui';
@@ -1004,6 +1005,25 @@ function AppShellContent({
       cancelled = true;
     };
   }, [activeId, activeSessionForView?.permissionMode]);
+  useEffect(() => {
+    if (!activeId) return;
+    let cancelled = false;
+    void window.maka.sessions
+      .listActiveSandboxBoundaryRequests(activeId)
+      .then((requests) => {
+        if (cancelled) return;
+        setInteractionBySession((current) =>
+          requests.reduce(
+            (next, request) => enqueueInteraction(next, activeId, request),
+            current,
+          ),
+        );
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [activeId, setInteractionBySession]);
   const activePermissionMode: PermissionMode = activeId
     ? activeExecutionBoundary
       ? activeExecutionBoundary.kind === 'bypass'

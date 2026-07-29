@@ -434,6 +434,7 @@ export interface SessionStore {
   createSandboxBoundaryRequest?(
     input: CreateSandboxBoundaryRequest,
   ): Promise<SandboxBoundaryRequest>;
+  listPendingSandboxBoundaryRequests?(sessionId: string): Promise<SandboxBoundaryRequest[]>;
   settleSandboxBoundaryRequest?(
     input: SettleSandboxBoundaryRequest,
   ): Promise<SandboxBoundarySettlement>;
@@ -857,6 +858,29 @@ export class SessionManager {
     const recovered = new Set<string>();
     for (const session of interrupted) {
       if (this.runtimeKernel.hasActiveRuns(session.id)) continue;
+      if (
+        this.deps.store.listPendingSandboxBoundaryRequests &&
+        this.deps.store.settleSandboxBoundaryRequest
+      ) {
+        const pendingBoundaryRequests = await recoverOr(
+          policy,
+          () => this.deps.store.listPendingSandboxBoundaryRequests!(session.id),
+          [],
+        );
+        for (const request of pendingBoundaryRequests) {
+          await recoverOr(
+            policy,
+            () =>
+              this.deps.store.settleSandboxBoundaryRequest!({
+                sessionId: session.id,
+                requestId: request.requestId,
+                decision: 'deny',
+                closureReason: 'host_restarted',
+              }),
+            undefined,
+          );
+        }
+      }
       if (this.deps.planStore) {
         const planRecovery = await recoverOr(
           policy,
@@ -1043,6 +1067,13 @@ export class SessionManager {
 
   async readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary> {
     return this.deps.store.readExecutionBoundary(sessionId);
+  }
+
+  async listActiveSandboxBoundaryRequests(
+    sessionId: string,
+  ): Promise<Array<Extract<SessionEvent, { type: 'sandbox_boundary_request' }>>> {
+    await this.deps.store.readHeader(sessionId);
+    return this.runtimeKernel.listActiveSandboxBoundaryRequests?.(sessionId) ?? [];
   }
 
   async setPermissionMode(sessionId: string, mode: PermissionMode): Promise<SessionSummary> {

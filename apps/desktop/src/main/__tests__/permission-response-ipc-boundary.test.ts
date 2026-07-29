@@ -360,6 +360,34 @@ describe('permission response IPC boundary', () => {
     assert.match(composerRegion, /hidden=\{[^}]*Boolean\(activeInteraction\)[^}]*\}/);
   });
 
+  it('renderer reload rehydrates only main-owned live sandbox boundary requests', async () => {
+    const shell = await readRendererShellSource('app-shell.tsx');
+    assert.match(
+      shell,
+      /listActiveSandboxBoundaryRequests\(activeId\)[\s\S]*requests\.reduce\([\s\S]*enqueueInteraction\(next, activeId, request\)/,
+    );
+    assert.doesNotMatch(
+      shell,
+      /listPendingSandboxBoundaryRequests/,
+      'the renderer must not turn ownerless persisted rows into actionable prompts',
+    );
+  });
+
+  it('keeps every requested scope inspectable without pushing decisions off-screen', async () => {
+    const styles = await readFile(
+      fileURLToPath(new URL('../../../src/renderer/styles/interaction-prompts.css', import.meta.url)),
+      'utf8',
+    );
+    const scopes = styles.match(/\.maka-sandbox-boundary-scopes\s*\{[\s\S]*?\}/)?.[0] ?? '';
+    const path = styles.match(/\.maka-sandbox-boundary-scopes code\s*\{[\s\S]*?\}/)?.[0] ?? '';
+
+    assert.match(scopes, /max-height:/);
+    assert.match(scopes, /overflow-y:\s*auto/);
+    assert.match(path, /overflow-wrap:\s*anywhere/);
+    assert.match(path, /white-space:\s*normal/);
+    assert.doesNotMatch(path, /text-overflow:\s*ellipsis/);
+  });
+
   it('renderer clears the boundary prompt when a session completes', async () => {
     // Without this, a completed session would leave a stranded boundary entry in
     // `interactionBySession[sessionId]`, keeping the prompt visible

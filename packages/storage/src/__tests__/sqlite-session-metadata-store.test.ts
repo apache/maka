@@ -467,6 +467,33 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
+  test('records host restart when recovery denies an ownerless boundary request', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(700) });
+    try {
+      await store.create(fullHeader());
+      await store.createSandboxBoundaryRequest({
+        sessionId: 'session-1',
+        requestId: 'restart-request',
+        expansion: { network: { enabled: true } },
+        justification: 'Fetch a dependency.',
+      });
+
+      const recovered = await store.settleSandboxBoundaryRequest({
+        sessionId: 'session-1',
+        requestId: 'restart-request',
+        decision: 'deny',
+        closureReason: 'host_restarted',
+      });
+
+      assert.equal(recovered.request.status, 'denied');
+      assert.equal(recovered.request.outcomeReason, 'host_restarted');
+      assert.equal(recovered.boundary.revision, 0);
+      assert.deepEqual(await store.listPendingSandboxBoundaryRequests('session-1'), []);
+    } finally {
+      store.close();
+    }
+  });
+
   test('lists only pending sandbox boundary requests for resume', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     try {

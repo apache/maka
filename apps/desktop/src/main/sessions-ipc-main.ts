@@ -322,6 +322,9 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
   ipcMain.handle('sessions:readExecutionBoundary', (_event, sessionId: string) =>
     runtime.readExecutionBoundary(sessionId),
   );
+  ipcMain.handle('sessions:listActiveSandboxBoundaryRequests', (_event, sessionId: string) =>
+    runtime.listActiveSandboxBoundaryRequests(sessionId),
+  );
   ipcMain.handle('sessions:respondToSandboxBoundary', async (_event, sessionId: string, response) => {
     const normalized = normalizePermissionResponse(response);
     if (normalized.decision === 'allow') {

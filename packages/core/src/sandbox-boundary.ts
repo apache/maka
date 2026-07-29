@@ -74,6 +74,8 @@ export interface SettleSandboxBoundaryRequest {
   readonly sessionId: string;
   readonly requestId: string;
   readonly decision: SandboxBoundaryDecision;
+  /** Internal fail-closed settlement used when a live request owner cannot survive restart. */
+  readonly closureReason?: 'host_restarted';
 }
 
 export interface SandboxBoundarySettlement {

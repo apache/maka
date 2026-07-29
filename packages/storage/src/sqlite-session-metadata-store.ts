@@ -328,6 +328,7 @@ export class SqliteSessionMetadataStore {
           sessionId: input.sessionId,
           requestId: input.requestId,
           status: 'denied',
+          ...(input.closureReason ? { outcomeReason: input.closureReason } : {}),
           settledAt,
         });
         return {

@@ -10,7 +10,13 @@ import {
   isSessionInlineRun,
   isTerminalRuntimeEvent,
 } from '@maka/core';
-import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import type {
+  CreateSandboxBoundaryRequest,
+  SandboxBoundaryRequest,
+  SandboxBoundaryResponse,
+  SandboxBoundarySettlement,
+  SettleSandboxBoundaryRequest,
+} from '@maka/core/sandbox-boundary';
 import type {
   CreateSessionInput,
   ExecutionBoundary,
@@ -12598,6 +12604,13 @@ describe('SessionManager permission mode updates', () => {
       .sendMessage(session.id, { turnId: 'turn-1', text: 'hello' })
       [Symbol.asyncIterator]();
     expect((await iterator.next()).value?.type).toBe('sandbox_boundary_request');
+    const [activeBoundaryRequest] = await manager.listActiveSandboxBoundaryRequests(session.id);
+    expect(activeBoundaryRequest).toMatchObject({
+      type: 'sandbox_boundary_request',
+      requestId: 'boundary-1',
+      toolUseId: 'tool-1',
+      turnId: 'turn-1',
+    });
 
     expect((await store.readHeader(session.id)).status).toBe('waiting_for_user');
     const [run] = await runStore.listSessionRuns(session.id);
@@ -12610,6 +12623,8 @@ describe('SessionManager permission mode updates', () => {
       decision: 'deny',
     });
     expect(backend?.responses).toEqual([{ requestId: 'boundary-1', decision: 'deny' }]);
+    expect((await iterator.next()).value?.type).toBe('sandbox_boundary_decision_ack');
+    expect(await manager.listActiveSandboxBoundaryRequests(session.id)).toEqual([]);
     while (!(await iterator.next()).done) {}
     expect((await store.readHeader(session.id)).status).toBe('active');
   });
@@ -14824,6 +14839,12 @@ describe('SessionManager permission mode updates', () => {
       now: nextNow(12_830),
     });
     const session = await manager.createSession(makeInput({ status: 'waiting_for_user' }));
+    await store.createSandboxBoundaryRequest({
+      sessionId: session.id,
+      requestId: 'boundary-before-restart',
+      expansion: { network: { enabled: true } },
+      justification: 'Fetch a dependency.',
+    });
     await seedRunningTurn(store, session.id, 'turn-1');
     await seedRun(
       runStore,
@@ -14853,6 +14874,7 @@ describe('SessionManager permission mode updates', () => {
     const [run] = await runStore.listSessionRuns(session.id);
     expect(run?.status).toBe('failed');
     expect(run?.failureClass).toBe('app_restarted');
+    expect(await store.listPendingSandboxBoundaryRequests(session.id)).toEqual([]);
   });
 
   test('startup recovery repairs stale completed model tails without leaving running runs', async () => {
@@ -18594,6 +18616,7 @@ class MemorySessionStore implements SessionStore {
   private headers = new Map<string, SessionHeader>();
   private messages = new Map<string, StoredMessage[]>();
   private executionBoundaries = new Map<string, ExecutionBoundary>();
+  private sandboxBoundaryRequests = new Map<string, SandboxBoundaryRequest>();
   readonly failReadMessagesFor = new Set<string>();
   readonly failNextReadMessagesFor = new Map<string, number>();
   readonly failListTurnsFor = new Set<string>();
@@ -18740,6 +18763,49 @@ class MemorySessionStore implements SessionStore {
     const boundary = this.executionBoundaries.get(sessionId);
     if (!boundary) throw new Error(`Unknown session ${sessionId}`);
     return boundary;
+  }
+
+  async createSandboxBoundaryRequest(
+    input: CreateSandboxBoundaryRequest,
+  ): Promise<SandboxBoundaryRequest> {
+    const boundary = await this.readExecutionBoundary(input.sessionId);
+    const request: SandboxBoundaryRequest = {
+      ...input,
+      status: 'pending',
+      baseRevision: boundary.revision,
+      createdAt: 1,
+    };
+    this.sandboxBoundaryRequests.set(`${input.sessionId}:${input.requestId}`, request);
+    return request;
+  }
+
+  async listPendingSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]> {
+    return [...this.sandboxBoundaryRequests.values()].filter(
+      (request) => request.sessionId === sessionId && request.status === 'pending',
+    );
+  }
+
+  async settleSandboxBoundaryRequest(
+    input: SettleSandboxBoundaryRequest,
+  ): Promise<SandboxBoundarySettlement> {
+    const key = `${input.sessionId}:${input.requestId}`;
+    const request = this.sandboxBoundaryRequests.get(key);
+    if (!request) throw new Error(`Unknown sandbox boundary request ${input.requestId}`);
+    const settled =
+      request.status === 'pending'
+        ? {
+            ...request,
+            status: input.decision === 'allow' ? ('approved' as const) : ('denied' as const),
+            settledAt: 2,
+            ...(input.closureReason ? { outcomeReason: input.closureReason } : {}),
+          }
+        : request;
+    this.sandboxBoundaryRequests.set(key, settled);
+    return {
+      request: settled,
+      boundary: await this.readExecutionBoundary(input.sessionId),
+      changed: false,
+    };
   }
 
   async list(_filter?: SessionListFilter): Promise<SessionSummary[]> {

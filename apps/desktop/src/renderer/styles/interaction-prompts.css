@@ -31,8 +31,10 @@
 .maka-sandbox-boundary-scopes {
   display: grid;
   gap: var(--space-1);
+  max-height: min(16rem, 40vh);
   margin: 0;
   padding: 0;
+  overflow-y: auto;
   list-style: none;
 }
 
@@ -48,10 +50,9 @@
 
 .maka-sandbox-boundary-scopes code {
   min-width: 0;
-  overflow: hidden;
   color: var(--text-primary);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .maka-sandbox-boundary-scopes span {

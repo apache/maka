@@ -113,6 +113,9 @@ export interface RuntimeKernelLike {
   ): AsyncIterable<SessionEvent>;
   stopSession(sessionId: string, input?: StopSessionInput): Promise<void>;
   respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void>;
+  listActiveSandboxBoundaryRequests?(
+    sessionId: string,
+  ): Array<Extract<SessionEvent, { type: 'sandbox_boundary_request' }>>;
   respondToUserQuestion?(sessionId: string, response: UserQuestionResponse): Promise<void>;
   /** Queue a user message for mid-turn injection at the next step boundary. */
   steer(sessionId: string, text: string): QueueEnqueueOutcome;
@@ -326,6 +329,7 @@ interface SandboxBoundaryRequestOwner {
   sessionId: string;
   turnId: string;
   generation: number;
+  request: Extract<SessionEvent, { type: 'sandbox_boundary_request' }>;
 }
 
 export class RuntimeKernel implements RuntimeKernelLike {
@@ -1920,6 +1924,15 @@ export class RuntimeKernel implements RuntimeKernelLike {
     await active.backend.respondToSandboxBoundary(response);
   }
 
+  listActiveSandboxBoundaryRequests(
+    sessionId: string,
+  ): Array<Extract<SessionEvent, { type: 'sandbox_boundary_request' }>> {
+    return [...this.sandboxBoundaryRequestOwners.values()]
+      .filter((owner) => owner.sessionId === sessionId)
+      .sort((left, right) => left.request.ts - right.request.ts)
+      .map((owner) => owner.request);
+  }
+
   async respondToUserQuestion(sessionId: string, response: UserQuestionResponse): Promise<void> {
     if (this.deps.interactionAuthority) {
       throw new RuntimeInteractionInvariantError(
@@ -2189,6 +2202,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       sessionId,
       turnId: event.turnId,
       generation: generation.generation,
+      request: event,
     });
   }
 
