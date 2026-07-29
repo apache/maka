@@ -15,12 +15,14 @@ type StartupResumeRuntime = Pick<
  * continue past.
  *
  * One session per iteration, and one session's failure costs only that session.
- * Every step here can throw for reasons local to a single session — its record
- * can be gone by the time this pass reads it, its boundary row can be
- * unreadable — and an unguarded loop turns that into "no session after this one
- * gets recovered", which is a much larger outage than the one that caused it.
- * The caller only knows the whole pass failed, so a fault in the oldest session
- * would silently strand every newer one.
+ * The setup steps guarded below can each throw for reasons local to a single
+ * session — its record can be gone by the time this pass reads it, its boundary
+ * row can be unreadable — and an unguarded loop turns that into "no session
+ * after this one gets recovered", which is a much larger outage than the one
+ * that caused it. Any session but the last can strand the rest, and the caller
+ * only learns that the whole pass failed. (Streaming itself is not guarded
+ * beyond a synchronous throw; the streamer projects an iterator failure onto
+ * the turn it belongs to.)
  *
  * An externally isolated session is skipped rather than reported: that is the
  * admission rule holding, not a fault. Asking
