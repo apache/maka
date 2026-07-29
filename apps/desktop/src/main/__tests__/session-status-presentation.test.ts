@@ -262,7 +262,14 @@ describe('permission mode transition guard copy', () => {
     assert.match(setPermissionModeBlock, /finally \{[\s\S]*pendingPermissionModeChangesRef\.current\.delete\(pendingKey\);[\s\S]*\}/);
     assert.match(setPermissionModeBlock, /if \(sessionId\) setPendingPermissionModeBySession\(\(current\) => omitSessionKey\(current, sessionId\)\);/);
     assert.match(renderer, /permissionModePending=\{activeId \? pendingPermissionModeBySession\[activeId\] === true : false\}/);
-    assert.match(renderer, /onPermissionModeChange=\{\(mode\) => setPermissionMode\(mode\)\}/);
+    assert.match(
+      renderer,
+      /onPermissionModeChange=\{\s*activeBoundarySurface\.localInteractionAvailable\s*\? \(mode\) => setPermissionMode\(mode\)\s*: undefined\s*\}/,
+    );
+    assert.match(
+      renderer,
+      /onboardingComposerHidden=\{\s*onboardingComposerHidden \|\| !activeBoundarySurface\.localInteractionAvailable\s*\}/,
+    );
     assert.doesNotMatch(renderer, /onPermissionModeChange=\{\(mode\) => void setPermissionMode\(mode\)\}/);
     assert.doesNotMatch(
       setPermissionModeBlock,

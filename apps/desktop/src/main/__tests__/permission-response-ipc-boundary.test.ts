@@ -394,8 +394,9 @@ describe('permission response IPC boundary', () => {
     const shell = await readRendererShellSource('app-shell.tsx');
     assert.match(
       shell,
-      /const commandOptions:[\s\S]*?activeId,\s*activePermissionMode,\s*connections,/,
+      /const commandOptions:[\s\S]*?activeId,\s*activePermissionMode,\s*canSetPermissionMode: activeBoundarySurface\.localInteractionAvailable,\s*connections,/,
     );
+    assert.match(shell, /deriveDesktopExecutionBoundarySurface\(/);
     assert.doesNotMatch(shell, /activePermissionMode:\s*activeSessionForView\?\.permissionMode/);
   });
 

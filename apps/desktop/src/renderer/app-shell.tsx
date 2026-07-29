@@ -12,7 +12,6 @@ import {
 } from 'react';
 import type {
   ExecutionBoundary,
-  PermissionMode,
   PlanReminder,
   QuoteRef,
   SessionSummary,
@@ -80,6 +79,7 @@ import { deriveBranchBanner } from './branch-banner';
 import { readNavigationState, selectNavigation } from './nav-selection';
 import { sessionMatchesNavSelection } from './session-nav-filter';
 import { deriveSessionRevisionNavigation } from './session-revisions';
+import { deriveDesktopExecutionBoundarySurface } from './desktop-execution-boundary-surface';
 import {
   SESSION_LIST_EXPANDED_MAX_WIDTH,
   SESSION_LIST_EXPANDED_MIN_WIDTH,
@@ -1033,13 +1033,12 @@ function AppShellContent({
       cancelled = true;
     };
   }, [activeId, setInteractionBySession]);
-  const activePermissionMode: PermissionMode = activeId
-    ? activeExecutionBoundary
-      ? activeExecutionBoundary.kind === 'bypass'
-        ? 'bypass'
-        : 'ask'
-      : (activeSessionForView?.permissionMode ?? 'ask')
-    : defaultPermissionMode;
+  const activeBoundarySurface = deriveDesktopExecutionBoundarySurface(
+    activeId,
+    activeExecutionBoundary,
+    activeId ? (activeSessionForView?.permissionMode ?? 'ask') : defaultPermissionMode,
+  );
+  const activePermissionMode = activeBoundarySurface.permissionMode;
   const planMode = usePlanModeState(activeSessionForView);
   const planConversationItems = (planMode.state?.proposals ?? []).map((proposal) => ({
     id: proposal.proposalId,
@@ -1832,6 +1831,7 @@ function AppShellContent({
     uiLocale,
     activeId,
     activePermissionMode,
+    canSetPermissionMode: activeBoundarySurface.localInteractionAvailable,
     connections,
     defaultConnection,
     dailyReviewBridge,
@@ -2164,7 +2164,9 @@ function AppShellContent({
               <ChatComposerRegion
                 composerRef={composerRef}
                 active={navSelection.section === 'sessions'}
-                onboardingComposerHidden={onboardingComposerHidden}
+                onboardingComposerHidden={
+                  onboardingComposerHidden || !activeBoundarySurface.localInteractionAvailable
+                }
                 activeInteraction={activeInteraction}
                 activeId={activeId}
                 stopPendingBySession={stopPendingBySession}
@@ -2297,7 +2299,11 @@ function AppShellContent({
                             ? shellCopy.permissionModeWaiting
                           : undefined
                 }
-                onPermissionModeChange={(mode) => setPermissionMode(mode)}
+                onPermissionModeChange={
+                  activeBoundarySurface.localInteractionAvailable
+                    ? (mode) => setPermissionMode(mode)
+                    : undefined
+                }
                 planModeActive={activeId
                   ? (activeSessionForView?.collaborationMode ?? 'agent') === 'plan'
                   : newChatPlanModeActive}
