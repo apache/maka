@@ -96,7 +96,7 @@ export function PermissionModeSelect(props: {
     >
       <SelectTrigger
         appearance={props.appearance}
-        aria-label={props.ariaLabel ?? permissionCopy.modeAriaLabel(meta.label)}
+        aria-label={props.ariaLabel ?? permissionCopy.modeAriaLabel}
         title={props.disabledReason ?? meta.hint}
         className={props.className}
       >

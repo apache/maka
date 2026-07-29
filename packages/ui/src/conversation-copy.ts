@@ -115,11 +115,16 @@ export interface ConversationCopy {
     newChatTitle: (label: string) => string;
     configureAriaLabel: (label: string) => string;
     configureTitle: string;
-    currentAriaLabel: (label: string) => string;
+    currentAriaLabel: (label: string) => string; // a11y-allow: the value is not exposed on this element today; the fix is to expose it (see docs/accessibility-governance.md, Outstanding), not to drop it from the name
   };
   permissions: {
     mode: Record<PermissionMode, { label: string; hint: string }>;
-    modeAriaLabel: (label: string) => string;
+    /**
+     * The name of the control, never its current setting: the setting is the
+     * element's value, and a name that repeats it changes when the user acts.
+     * See docs/accessibility-governance.md §1.
+     */
+    modeAriaLabel: string;
   };
   sandboxBoundary: {
     title: string;
@@ -159,9 +164,9 @@ export interface ConversationCopy {
     noBranches: string;
     currentProject: string;
     chooseTitle: (branch?: string) => string;
-    chooseAriaLabel: (label: string, branch?: string) => string;
+    chooseAriaLabel: (label: string, branch?: string) => string; // a11y-allow: the value is not exposed on this element today; the fix is to expose it (see docs/accessibility-governance.md, Outstanding), not to drop it from the name
     branchTitle: (branch?: string) => string;
-    branchAriaLabel: (branch?: string) => string;
+    branchAriaLabel: (branch?: string) => string; // a11y-allow: the value is not exposed on this element today; the fix is to expose it (see docs/accessibility-governance.md, Outstanding), not to drop it from the name
   };
   messages: {
     you: string;
@@ -307,7 +312,8 @@ const CONVERSATION_COPY = {
       startersAriaLabel: '深度研究起手式', starters: DEEP_RESEARCH_STARTER_PROMPTS,
     },
     composer: {
-      placeholder: '描述任务，@ 引用文件，/ 选择技能…', textareaAriaLabel: '消息输入框', pastedQuoteLabel: '粘贴的文本', selectedSkillsAriaLabel: '已选择的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你确认权限…',
+      placeholder: '描述任务，@ 引用文件，/ 选择技能…', textareaAriaLabel: '消息输入框', pastedQuoteLabel: '粘贴的文本', selectedSkillsAriaLabel: '已选择的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, // a11y-allow: names which skill this row removes; there is one per skill, so this is identity, not state
+      awaitingPermission: '等待你确认权限…',
       sending: '正在发送…', importing: '正在导入…', sendLabel: '发送', stopLabel: '停止', stopping: '停止中…',
       streaming: 'Maka 正在回答…', processing: 'Maka 正在处理…', continuing: 'Maka 继续中…',
       interruptHint: '或点停止中断', addContext: '添加上下文', importText: '导入文本文件', attachFile: '附加文件', expertTeam: '专家团',
@@ -327,8 +333,11 @@ const CONVERSATION_COPY = {
       switching: '切换中', model: '模型', switchAriaLabel: '切换当前会话模型', switchSession: '切换当前会话使用的模型',
       pinnedSession: (connection, model) => `本会话固定模型：${connection} · ${model}`,
       switchTitle: (title) => `${title}。设置里的默认模型只影响新建会话；这里会更新当前会话。`,
-      newChatAriaLabel: (label) => `选择新对话模型，当前 ${label}`, newChatTitle: (label) => `新对话使用的模型：${label}`,
-      configureAriaLabel: (label) => `配置模型连接，当前 ${label}`, configureTitle: '配置模型连接', currentAriaLabel: (label) => `当前模型：${label}`,
+      newChatAriaLabel: (label) => `选择新对话模型，当前 ${label}`, // a11y-allow: the value is not exposed on this element today; the fix is to expose it (see docs/accessibility-governance.md, Outstanding), not to drop it from the name
+      newChatTitle: (label) => `新对话使用的模型：${label}`,
+      configureAriaLabel: (label) => `配置模型连接，当前 ${label}`, // a11y-allow: the value is not exposed on this element today; the fix is to expose it (see docs/accessibility-governance.md, Outstanding), not to drop it from the name
+      configureTitle: '配置模型连接', currentAriaLabel: (label) => `当前模型：${label}`, // a11y-allow: the value is not exposed on this element today; the fix is to expose it (see docs/accessibility-governance.md, Outstanding), not to drop it from the name
+     
     },
     permissions: {
       mode: {
@@ -337,7 +346,7 @@ const CONVERSATION_COPY = {
         execute: { label: '自动执行', hint: '常见工具直接执行；破坏性、特权和浏览器操作仍会请求确认。' },
         bypass: { label: '完全权限', hint: '本地工具直接访问你的文件和网络，不经 Maka 的保护层。仅用于你完全信任的任务。' },
       },
-      modeAriaLabel: (label) => `权限模式：${label}`,
+      modeAriaLabel: '权限模式',
     },
     sandboxBoundary: {
       title: '允许访问工作区以外的内容？',
@@ -353,8 +362,9 @@ const CONVERSATION_COPY = {
     workspace: {
       choose: '选择项目', current: '当前项目', addProject: '添加项目', noProject: '无项目', relink: '重新定位', branch: '选择分支', noBranches: '无本地分支', currentProject: '当前项目',
       chooseTitle: (branch) => branch ? `选择项目 · ${branch}` : '选择项目',
-      chooseAriaLabel: (label, branch) => branch ? `选择项目：${label}，当前分支 ${branch}` : `选择项目：${label}`,
-      branchTitle: (branch) => branch ? `分支：${branch}` : '选择分支', branchAriaLabel: (branch) => branch ? `切换分支：${branch}` : '选择分支',
+      chooseAriaLabel: (label, branch) => branch ? `选择项目：${label}，当前分支 ${branch}` : `选择项目：${label}`, // a11y-allow: the value is not exposed on this element today; the fix is to expose it (see docs/accessibility-governance.md, Outstanding), not to drop it from the name
+      branchTitle: (branch) => branch ? `分支：${branch}` : '选择分支', branchAriaLabel: (branch) => branch ? `切换分支：${branch}` : '选择分支', // a11y-allow: the value is not exposed on this element today; the fix is to expose it (see docs/accessibility-governance.md, Outstanding), not to drop it from the name
+     
     },
     messages: {
       you: '你', assistant: 'Maka', processing: '正在处理…', continuing: '继续中…', providerRetryScheduled: (seconds, attempt, maxAttempts) => `${seconds} 秒后重试（${attempt}/${maxAttempts}）`, providerRetryStarted: (attempt, maxAttempts) => `正在重试（${attempt}/${maxAttempts}）`, safeResumePending: '正在验证…', safeResume: '安全恢复', thinking: '深度思考', truncated: '已截断', copied: '已复制', copying: '复制中', copyFailed: '复制失败', copy: '复制', copyMessage: '复制消息', editMessage: '编辑并重发', editMessageDisabledRunning: '当前回答仍在进行中，结束后再编辑', editMessageDisabledAttachments: '包含附件的历史消息暂不支持编辑并重发', editMessageDisabledQuotes: '包含引用的历史消息暂不支持编辑并重发', editMessageDisabledTransformedText: '通过显式技能发送的历史消息暂不支持编辑并重发', copyThinking: '复制思考过程',
@@ -443,7 +453,8 @@ const CONVERSATION_COPY = {
       ],
     },
     composer: {
-      placeholder: 'Describe a task, @ to reference files, / for skills…', textareaAriaLabel: 'Message input', pastedQuoteLabel: 'Pasted text', selectedSkillsAriaLabel: 'Selected Skills', removeSkillAriaLabel: (name) => `Remove Skill: ${name}`, awaitingPermission: 'Waiting for your permission decision…',
+      placeholder: 'Describe a task, @ to reference files, / for skills…', textareaAriaLabel: 'Message input', pastedQuoteLabel: 'Pasted text', selectedSkillsAriaLabel: 'Selected Skills', removeSkillAriaLabel: (name) => `Remove Skill: ${name}`, // a11y-allow: names which skill this row removes; there is one per skill, so this is identity, not state
+      awaitingPermission: 'Waiting for your permission decision…',
       sending: 'Sending…', importing: 'Importing…', sendLabel: 'Send', stopLabel: 'Stop', stopping: 'Stopping…',
       streaming: 'Maka is responding…', processing: 'Maka is working…', continuing: 'Maka is continuing…',
       interruptHint: 'or click Stop to interrupt', addContext: 'Add context', importText: 'Import text file', attachFile: 'Attach file', expertTeam: 'Expert team',
@@ -464,7 +475,7 @@ const CONVERSATION_COPY = {
       pinnedSession: (connection, model) => `Model fixed for this conversation: ${connection} · ${model}`,
       switchTitle: (title) => `${title}. The default model in Settings affects only new conversations; this updates the current conversation.`,
       newChatAriaLabel: (label) => `Choose a model for the new conversation, currently ${label}`, newChatTitle: (label) => `Model for the new conversation: ${label}`,
-      configureAriaLabel: (label) => `Configure model connections, currently ${label}`, configureTitle: 'Configure model connections', currentAriaLabel: (label) => `Current model: ${label}`,
+      configureAriaLabel: (label) => `Configure model connections, currently ${label}`, configureTitle: 'Configure model connections', currentAriaLabel: (label) => `Current model: ${label}`, // a11y-allow: the value is not exposed on this element today; the fix is to expose it (see docs/accessibility-governance.md, Outstanding), not to drop it from the name
     },
     permissions: {
       mode: {
@@ -473,7 +484,7 @@ const CONVERSATION_COPY = {
         execute: { label: 'Auto execute', hint: 'Common tools run directly; destructive, privileged, and browser actions still require confirmation.' },
         bypass: { label: 'Full access', hint: "Local tools reach your files and your network directly, outside Maka's protection layer. Use only for tasks you fully trust." },
       },
-      modeAriaLabel: (label) => `Permission mode: ${label}`,
+      modeAriaLabel: 'Permission mode',
     },
     sandboxBoundary: {
       title: 'Allow access outside the workspace?',
@@ -489,8 +500,8 @@ const CONVERSATION_COPY = {
     workspace: {
       choose: 'Choose project', current: 'Current project', addProject: 'Add project', noProject: 'No project', relink: 'Relink', branch: 'Choose branch', noBranches: 'No local branches', currentProject: 'Current project',
       chooseTitle: (branch) => branch ? `Choose project · ${branch}` : 'Choose project',
-      chooseAriaLabel: (label, branch) => branch ? `Choose project: ${label}, current branch ${branch}` : `Choose project: ${label}`,
-      branchTitle: (branch) => branch ? `Branch: ${branch}` : 'Choose branch', branchAriaLabel: (branch) => branch ? `Switch branch: ${branch}` : 'Choose branch',
+      chooseAriaLabel: (label, branch) => branch ? `Choose project: ${label}, current branch ${branch}` : `Choose project: ${label}`, // a11y-allow: the value is not exposed on this element today; the fix is to expose it (see docs/accessibility-governance.md, Outstanding), not to drop it from the name
+      branchTitle: (branch) => branch ? `Branch: ${branch}` : 'Choose branch', branchAriaLabel: (branch) => branch ? `Switch branch: ${branch}` : 'Choose branch', // a11y-allow: the value is not exposed on this element today; the fix is to expose it (see docs/accessibility-governance.md, Outstanding), not to drop it from the name
     },
     messages: {
       you: 'You', assistant: 'Maka', processing: 'Working…', continuing: 'Continuing…', providerRetryScheduled: (seconds, attempt, maxAttempts) => `Retrying in ${seconds}s (${attempt}/${maxAttempts})`, providerRetryStarted: (attempt, maxAttempts) => `Retrying (${attempt}/${maxAttempts})`, safeResumePending: 'Checking…', safeResume: 'Safe recovery', thinking: 'Thinking', truncated: 'Truncated', copied: 'Copied', copying: 'Copying', copyFailed: 'Copy failed', copy: 'Copy', copyMessage: 'Copy message', editMessage: 'Edit & resend', editMessageDisabledRunning: 'Wait for this answer to finish before editing', editMessageDisabledAttachments: 'Edit & resend does not yet support messages with attachments', editMessageDisabledQuotes: 'Edit & resend does not yet support messages with quotes', editMessageDisabledTransformedText: 'Edit & resend does not yet support messages sent with an explicit skill', copyThinking: 'Copy reasoning',

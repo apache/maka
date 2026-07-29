@@ -32,6 +32,14 @@ import { fileURLToPath } from 'node:url';
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const ROOTS = ['apps', 'packages'];
 const EXTS = new Set(['.tsx']);
+/**
+ * The accessible-name templates the `stateful-aria-label` rule reads live in the
+ * copy catalogues, which are `.ts`. Only those are added to the walk: including
+ * every `.ts` file pulled 999 more files in for 600ms, and pulled e2e specs in
+ * with them — `attachment.spec.ts` has a bare `<input type=file>` that is a test
+ * fixture, not a surface anyone navigates.
+ */
+const EXTRA_FILES = /(^|\/)[\w-]*copy[\w-]*\.ts$/;
 // `primitives/` holds vendored upstream primitive source components that ship with
 // English aria-labels. They're rewritten with Chinese labels when
 // each consumer surface wires them up, so the a11y walker treats
@@ -57,7 +65,7 @@ async function walk(root) {
       } else if (entry.isFile()) {
         const dot = entry.name.lastIndexOf('.');
         const ext = dot >= 0 ? entry.name.slice(dot) : '';
-        if (EXTS.has(ext)) out.push(full);
+        if (EXTS.has(ext) || EXTRA_FILES.test(full)) out.push(full);
       }
     }
   }
@@ -69,6 +77,37 @@ async function walk(root) {
 // Lines are checked one at a time with a small lookahead/lookbehind for
 // multi-line opening tags. `// a11y-allow: <reason>` on the same line
 // silences the rule for that line.
+
+/**
+ * Read a copy-catalogue arrow body starting at `from`, stopping at the comma
+ * that separates it from the next `name:` entry. Quotes and template literals
+ * are tracked so a comma or colon inside a string never ends the entry.
+ */
+function readArrowBody(text, from) {
+  let quote = '';
+  let depth = 0;
+  for (let index = from; index < text.length; index += 1) {
+    const char = text[index];
+    if (quote) {
+      if (char === '\\') index += 1;
+      else if (char === quote) quote = '';
+      continue;
+    }
+    if (char === '`' || char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char === '(' || char === '{' || char === '[') depth += 1;
+    else if (char === ')' || char === '}' || char === ']') {
+      if (depth === 0) return text.slice(from, index);
+      depth -= 1;
+    } else if (char === '\n') return text.slice(from, index);
+    else if (char === ',' && depth === 0) {
+      if (/^\s*\w+\s*:/.test(text.slice(index + 1, index + 40))) return text.slice(from, index);
+    }
+  }
+  return text.slice(from);
+}
 
 const RULES = [
   {
@@ -136,6 +175,56 @@ const RULES = [
         if (/\/\/\s*a11y-allow:/.test(line)) continue;
         const lineIndex = text.slice(0, match.index).split('\n').length;
         offenders.push({ line: lineIndex, snippet: match[0].trim() });
+      }
+      return offenders;
+    },
+  },
+  {
+    name: 'stateful-aria-label',
+    /**
+     * An accessible name identifies a control. It must not also report the
+     * control's own current value, because then acting on the control changes
+     * the way you refer to it — a screen reader hears the value twice, and a
+     * model that observed the control cannot name it afterwards.
+     *
+     * Measured on the running app: the composer's permission picker rendered
+     * `Description: 权限模式：跳过确认` beside `Value: 跳过确认` — the same fact
+     * on the same element, twice. See docs/accessibility-governance.md §1.
+     *
+     * Two shapes are flagged, because between them they caught every real
+     * instance in the catalogue:
+     *
+     *   `当前` / `current` anywhere in the template — a name that says "current"
+     *     is reporting state by definition.
+     *   `：${` or `: ${` — the "Label: value" shape.
+     *
+     * Interpolating is not the defect. `移除 ${name}` names which object the
+     * control acts on, and that is identity, not state. Those carry
+     * `// a11y-allow: <reason>` — the reason is the point, since only a human
+     * can tell "which one" from "what state".
+     */
+    scan(text) {
+      const offenders = [];
+      const START = /\b\w*[aA]riaLabel\s*:\s*\([^)]*\)\s*=>/g;
+      let match;
+      while ((match = START.exec(text))) {
+        // The catalogue packs several entries on one line, so the arrow body is
+        // read to the next top-level `name:` rather than to the end of the line.
+        // Reading to the line end made a neighbour's colon look like this
+        // entry's, and flagged `显示 ${count} 条更多对话` for a shape it does
+        // not have.
+        const body = readArrowBody(text, match.index + match[0].length);
+        const template = `${match[0]}${body}`;
+        if (!body.includes('${')) continue;
+        const reportsCurrent = /当前|\bcurrent\b/i.test(body);
+        const labelledValue = /[：:]\s*\$\{/.test(body);
+        if (!reportsCurrent && !labelledValue) continue;
+        const lineStart = text.lastIndexOf('\n', match.index) + 1;
+        const lineEnd = text.indexOf('\n', match.index);
+        const line = text.slice(lineStart, lineEnd < 0 ? text.length : lineEnd);
+        if (/\/\/\s*a11y-allow:/.test(line)) continue;
+        const lineIndex = text.slice(0, match.index).split('\n').length;
+        offenders.push({ line: lineIndex, snippet: template.slice(0, 90).trim() });
       }
       return offenders;
     },
