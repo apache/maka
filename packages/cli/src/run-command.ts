@@ -217,8 +217,8 @@ export async function runMakaTextCli(
   }
 
   let invocation: InvocationResult | undefined;
-  let streamBoundaryFailureUnresolved = false;
-  const invocationBoundaryFailures = new Map<string, boolean>();
+  let streamBoundaryFailure = false;
+  const boundaryFailureInvocationIds = new Set<string>();
   let context: MakaRunContext;
   try {
     context = await deps.createContext({
@@ -245,10 +245,9 @@ export async function runMakaTextCli(
       ...(parsed.options.maxSteps !== undefined ? { maxSteps: parsed.options.maxSteps } : {}),
       ...(parsed.options.graph ? { enableAgentGraph: true } : {}),
       runtimeInvocationObserver: (result) => {
-        invocationBoundaryFailures.set(
-          result.invocationId,
-          invocationHasUnresolvedSandboxBoundaryFailure(result),
-        );
+        if (invocationHasSandboxBoundaryFailure(result)) {
+          boundaryFailureInvocationIds.add(result.invocationId);
+        }
         invocation = result;
       },
     });
@@ -331,7 +330,7 @@ export async function runMakaTextCli(
         : {}),
     })) {
       if (event.type === 'sandbox_boundary_request') {
-        streamBoundaryFailureUnresolved = true;
+        streamBoundaryFailure = true;
         deps.writeStderr(
           'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
         );
@@ -346,14 +345,12 @@ export async function runMakaTextCli(
         event.content.kind === 'text' &&
         event.content.sandboxFailure
       ) {
-        streamBoundaryFailureUnresolved = true;
+        streamBoundaryFailure = true;
         deps.writeStderr(
           event.content.sandboxFailure.reason === 'requires_bypass'
             ? 'maka run: sandbox bypass requires an explicit --yolo\n'
             : 'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
         );
-      } else if (event.type === 'tool_result' && !event.isError) {
-        streamBoundaryFailureUnresolved = false;
       }
     }
     graphActivity?.release();
@@ -380,7 +377,7 @@ export async function runMakaTextCli(
     return 1;
   }
   if (streamFailed) return 1;
-  if (streamBoundaryFailureUnresolved || [...invocationBoundaryFailures.values()].some(Boolean)) {
+  if (streamBoundaryFailure || boundaryFailureInvocationIds.size > 0) {
     return 1;
   }
   if (!invocation) {
@@ -490,8 +487,7 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function invocationHasUnresolvedSandboxBoundaryFailure(result: InvocationResult): boolean {
-  let unresolved = false;
+function invocationHasSandboxBoundaryFailure(result: InvocationResult): boolean {
   for (const event of result.events) {
     if (event.content?.kind !== 'function_response') continue;
     const failure = isRecord(event.content.result)
@@ -501,12 +497,10 @@ function invocationHasUnresolvedSandboxBoundaryFailure(result: InvocationResult)
       isRecord(failure) &&
       (failure.reason === 'sandbox_boundary_required' || failure.reason === 'requires_bypass')
     ) {
-      unresolved = true;
-    } else if (event.content.isError !== true) {
-      unresolved = false;
+      return true;
     }
   }
-  return unresolved;
+  return false;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
