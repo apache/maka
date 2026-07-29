@@ -4,6 +4,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildBuiltinTools } from '../builtin-tools.js';
+import { executeApplyPatchWithAdapter, type ApplyPatchFsAdapter } from '../apply-patch-engine.js';
+import { projectEffectiveProductToolSurface } from '../tool-catalog-derive.js';
 import type { MakaToolContext } from '../tool-runtime.js';
 
 function toolCtx(cwd: string): MakaToolContext {
@@ -53,6 +55,49 @@ describe('editingProtocol projection', () => {
 });
 
 describe('ApplyPatch tool integration', () => {
+  test('rejects Add and Move when the destination already exists', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-apply-patch-exists-'));
+    try {
+      await writeFile(join(root, 'existing.txt'), 'keep\n', 'utf8');
+      await writeFile(join(root, 'source.txt'), 'src\n', 'utf8');
+      const tools = buildBuiltinTools({ editingProtocol: 'apply_patch' });
+      const apply = tools.find((tool) => tool.name === 'ApplyPatch');
+      assert.ok(apply);
+
+      await assert.rejects(async () => {
+        await apply.impl(
+          {
+            patch: envelope(['*** Add File: existing.txt', '+nope', ''].join('\n')),
+          },
+          toolCtx(root),
+        );
+      }, /already exists/i);
+      assert.equal(await readFile(join(root, 'existing.txt'), 'utf8'), 'keep\n');
+
+      await assert.rejects(async () => {
+        await apply.impl(
+          {
+            patch: envelope(
+              [
+                '*** Update File: source.txt',
+                '*** Move to: existing.txt',
+                '@@',
+                '-src',
+                '+moved',
+                '',
+              ].join('\n'),
+            ),
+          },
+          toolCtx(root),
+        );
+      }, /already exists/i);
+      assert.equal(await readFile(join(root, 'source.txt'), 'utf8'), 'src\n');
+      assert.equal(await readFile(join(root, 'existing.txt'), 'utf8'), 'keep\n');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('add, update, delete, multi-file, mismatch, and absolute path', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-apply-patch-'));
     try {
@@ -130,5 +175,79 @@ describe('ApplyPatch tool integration', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('product-tool surface editingProtocol', () => {
+  test('projector selects exactly one editing protocol from bound tools', () => {
+    const tools = buildBuiltinTools({ editingProtocol: 'all', includeEdit: true });
+    const editWrite = projectEffectiveProductToolSurface({
+      host: 'cli',
+      tools,
+      policy: { economy: false, editingProtocol: 'edit_write' },
+    });
+    assert.ok(editWrite.toolNames.has('Write'));
+    assert.ok(editWrite.toolNames.has('Edit'));
+    assert.equal(editWrite.toolNames.has('ApplyPatch'), false);
+    assert.equal(editWrite.identity.policy.editingProtocol, 'edit_write');
+
+    const applyPatch = projectEffectiveProductToolSurface({
+      host: 'cli',
+      tools,
+      policy: { economy: false, editingProtocol: 'apply_patch' },
+    });
+    assert.ok(applyPatch.toolNames.has('ApplyPatch'));
+    assert.equal(applyPatch.toolNames.has('Write'), false);
+    assert.equal(applyPatch.toolNames.has('Edit'), false);
+    assert.equal(applyPatch.identity.policy.editingProtocol, 'apply_patch');
+  });
+});
+
+describe('shared ApplyPatch engine partial move failure', () => {
+  test('reports partial=true and completed destination when source delete fails', async () => {
+    const files = new Map<string, string>([['src.txt', 'hello\n']]);
+    const fs: ApplyPatchFsAdapter = {
+      async lockKey(path) {
+        return path;
+      },
+      async pathExists(path) {
+        return files.has(path);
+      },
+      async readText(path) {
+        const content = files.get(path);
+        if (content === undefined) throw new Error(`missing ${path}`);
+        return content;
+      },
+      async writeText(path, content) {
+        files.set(path, content);
+        return { path, bytes: Buffer.byteLength(content, 'utf8') };
+      },
+      async deletePath(path) {
+        if (path === 'src.txt') throw new Error('delete failed');
+        files.delete(path);
+        return { path };
+      },
+    };
+
+    const result = await executeApplyPatchWithAdapter(
+      envelope(
+        [
+          '*** Update File: src.txt',
+          '*** Move to: dest.txt',
+          '@@',
+          '-hello',
+          '+hello',
+          '',
+        ].join('\n'),
+      ),
+      fs,
+      async (_key, run) => run(),
+    );
+
+    assert.equal(result.ok, false);
+    assert.equal(result.partial, true);
+    assert.deepEqual(result.completed, ['dest.txt']);
+    assert.ok(files.has('dest.txt'));
+    assert.ok(files.has('src.txt'));
   });
 });

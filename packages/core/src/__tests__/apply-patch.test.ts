@@ -128,6 +128,8 @@ describe('applyUpdateChunksToContent', () => {
     );
     assert.equal(result.ok, true);
     if (!result.ok) return;
-    assert.equal(result.content, 'a\r\nB\nc\r');
+    // Untouched lines keep their original terminators; the replaced line uses
+    // the file's dominant default ending (CRLF here because the file has CRLF).
+    assert.equal(result.content, 'a\r\nB\r\nc\r');
   });
 });

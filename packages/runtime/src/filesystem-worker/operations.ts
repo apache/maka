@@ -197,7 +197,7 @@ export async function executeFilesystemOperation(
         operation.path,
         'Delete',
         'write',
-        operationPermission,
+        operationBoundary,
       );
       await fs.unlink(path);
       return { kind: 'delete', ok: true, path };
