@@ -1135,6 +1135,22 @@ function registerIpc(): void {
     resolveConnectionSecret,
     hasConnectionSecret,
     emitConnectionListChanged,
+    // Same seam as the fake-backend override above, for the other IPC that can
+    // leave the machine: adding a catalog provider runs remote model discovery
+    // against the provider's real endpoint. In E2E the key is a placeholder, so
+    // discovery can only fail — but it fails at whatever speed the network
+    // answers, and the add dialog stays open for the whole round trip. The
+    // provider-side budget (10s) is exactly the suite's expect timeout (10s),
+    // so a slow answer flips `await expect(dialog).toBeHidden()` from pass to
+    // fail with no code change. Fail deterministically and offline instead,
+    // which is the outcome a placeholder key produces anyway.
+    ...(isE2e
+      ? {
+          fetchModels: async () => {
+            throw new Error('E2E: remote model discovery is disabled');
+          },
+        }
+      : {}),
   });
   registerOnboardingIpc({ onboardingService });
   registerSessionEntryIpc({

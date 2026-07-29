@@ -15,6 +15,7 @@ import { createConnectionStore } from '@maka/storage';
 import {
   ConnectionModelDiscoveryPreconditionError,
   discoverConnectionModels,
+  type ConnectionModelDiscoveryDeps,
 } from './connection-model-discovery.js';
 import { createFileCredentialStore } from './credential-store.js';
 import { createConnectionWithCredential } from './create-connection-with-credential.js';
@@ -33,6 +34,11 @@ interface ConnectionsIpcDeps extends ConnectionInputNormalizerDeps {
   resolveConnectionSecret: (slug: string) => Promise<string | null>;
   hasConnectionSecret: (connection: LlmConnection) => Promise<boolean>;
   emitConnectionListChanged: () => void;
+  /**
+   * Override for remote model discovery. Only E2E supplies this, to keep the
+   * add-provider flow off the public internet (see main.ts).
+   */
+  fetchModels?: ConnectionModelDiscoveryDeps['fetchModels'];
 }
 
 const IPC_CONNECTION_SLUG_MAX_LENGTH = 64;
@@ -135,6 +141,7 @@ export function registerConnectionsIpc(deps: ConnectionsIpcDeps): void {
     resolveConnectionSecret,
     hasConnectionSecret,
     emitConnectionListChanged,
+    fetchModels,
   } = deps;
 
   ipcMain.handle('connections:list', async () => {
@@ -227,6 +234,7 @@ export function registerConnectionsIpc(deps: ConnectionsIpcDeps): void {
       const result = await discoverConnectionModels({
         connectionStore,
         resolveConnectionSecret,
+        ...(fetchModels ? { fetchModels } : {}),
       }, slug);
       emitConnectionListChanged();
       return result;
