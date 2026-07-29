@@ -370,19 +370,31 @@ export class CuaDriverService {
     const sessionIds = potentiallyDelivered.flatMap((request) =>
       request.sessionId ? [request.sessionId] : [],
     );
+    // Say why it died. The service has been buffering the child's stderr all
+    // along and then threw it away at the one moment it was worth reading: a
+    // driver that exits mid-request produced "cua-driver action exited after
+    // request delivery", which names the event and not one thing about the
+    // cause. On a real desktop chain that message reached the model, which
+    // concluded Computer Use was unavailable and finished the task by
+    // shelling out to AppleScript instead.
+    //
+    // One line, bounded. The driver's stderr is its own diagnostics, not
+    // application content.
+    const why = this.stderrTail.trim().replace(/\s+/g, ' ').slice(-200);
+    const because = why ? `: ${why}` : '';
     for (const request of requests) {
       request.reject(
         request.stage === 'writing' || request.stage === 'delivered'
           ? new CuaDriverLifecycleError(
               'outcome_unknown',
-              `cua-driver ${this.opts.role} exited after request delivery`,
+              `cua-driver ${this.opts.role} exited after request delivery${because}`,
               this.opts.role,
               this.generation,
               request.stage,
             )
           : new CuaDriverLifecycleError(
               'service_unavailable',
-              `cua-driver ${this.opts.role} exited before request delivery`,
+              `cua-driver ${this.opts.role} exited before request delivery${because}`,
               this.opts.role,
               this.generation,
               request.stage,
