@@ -66,17 +66,23 @@ describe('Linux sandbox smoke', () => {
     await assert.rejects(() => stat(join(outside, 'outside.txt')));
   });
 
-  test('workspace-write blocks protected metadata writes', { skip: skipReason }, async () => {
+  test('workspace-write allows metadata writes inside the selected workspace', {
+    skip: skipReason,
+  }, async () => {
     if (!capability.available) return;
     const workspace = await mkdtemp(join(tmpdir(), 'maka-linux-sandbox-metadata-'));
     await mkdir(join(workspace, '.git'), { recursive: true });
-    await mkdir(join(workspace, 'packages', 'pkg', '.git'), { recursive: true });
+    await mkdir(join(workspace, 'packages', 'pkg', '.agents'), { recursive: true });
+    await mkdir(join(workspace, 'packages', 'pkg', '.codex'), { recursive: true });
     const backend = new LinuxBubblewrapBackend({ capability });
     const request = backend.transform({
       platform: 'linux',
       command: {
         program: '/bin/sh',
-        args: ['-lc', '! echo nope > .git/config && ! echo nope > packages/pkg/.git/config'],
+        args: [
+          '-lc',
+          'echo git-ok > .git/config && echo agents-ok > packages/pkg/.agents/state && echo codex-ok > packages/pkg/.codex/state',
+        ],
         cwd: workspace,
         profile: createWorkspaceWritePermissionProfile(),
         pathContext: { workspaceRoots: [workspace], tmpdir: tmpdir(), slashTmp: '/tmp' },
@@ -96,9 +102,14 @@ describe('Linux sandbox smoke', () => {
     );
 
     assert.equal(result.exitCode, 0, result.stderr);
-    await assert.rejects(() => readFile(join(workspace, '.git', 'config'), 'utf8'));
-    await assert.rejects(() =>
-      readFile(join(workspace, 'packages', 'pkg', '.git', 'config'), 'utf8'),
+    assert.equal(await readFile(join(workspace, '.git', 'config'), 'utf8'), 'git-ok\n');
+    assert.equal(
+      await readFile(join(workspace, 'packages', 'pkg', '.agents', 'state'), 'utf8'),
+      'agents-ok\n',
+    );
+    assert.equal(
+      await readFile(join(workspace, 'packages', 'pkg', '.codex', 'state'), 'utf8'),
+      'codex-ok\n',
     );
   });
 
