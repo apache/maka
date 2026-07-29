@@ -633,6 +633,56 @@ describe('builtin Bash streaming output', () => {
     }
   });
 
+  test('does not let an unrelated stale exact-write grant block Bash', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-linux-stale-exact-'));
+    const workspace = join(root, 'workspace');
+    await mkdir(workspace);
+    const cwd = await realpath(workspace);
+    const staleTarget = join(root, 'removed-parent', 'stale.txt');
+    const calls: unknown[] = [];
+    const bash = buildBuiltinTools({
+      shellRuns: {
+        async runForegroundBash(input) {
+          calls.push(input);
+          return terminalResult(input, 'completed', 0);
+        },
+        async runBackgroundBash() {
+          throw new Error('not used');
+        },
+      },
+      sandboxManager: availableLinuxManager(),
+      sandboxPlatform: 'linux',
+    }).find((candidate) => candidate.name === 'Bash');
+    if (!bash) throw new Error('Bash tool missing');
+
+    try {
+      await bash.impl(
+        { command: 'true' },
+        {
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          toolCallId: 'tool-1',
+          cwd,
+          permissionMode: 'execute',
+          executionBoundary: {
+            kind: 'managed',
+            revision: 1,
+            profile: applySandboxBoundaryExpansion(createWorkspaceWritePermissionProfile(), {
+              filesystem: {
+                entries: [{ path: staleTarget, access: 'write', scope: 'exact' }],
+              },
+            }),
+          },
+          abortSignal: new AbortController().signal,
+          emitOutput: () => {},
+        },
+      );
+      expect(calls).toHaveLength(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('reports requires_bypass for managed PTY Bash and runs it only at a bypass boundary', async () => {
     const calls: any[] = [];
     const shellRuns = {
@@ -2105,6 +2155,11 @@ async function linuxMissingExactWriteFixture() {
   const target = join(await realpath(outside), 'new.txt');
   const args = {
     command: 'true',
+    required_boundary: {
+      filesystem: {
+        entries: [{ path: target, access: 'write' as const, scope: 'exact' as const }],
+      },
+    },
   };
   const context = {
     sessionId: 'session-1',

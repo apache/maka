@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { redactSecrets } from '@maka/core/redaction';
 import type { ToolResultContent } from '@maka/core/events';
 import type { ToolExecutionFacts } from '@maka/core/permission';
+import type { SandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
 import type { MakaTool, MakaToolContext } from './tool-runtime.js';
 import type { SandboxType } from './sandbox/types.js';
 import { isLikelySandboxDenial } from './sandbox/detect.js';
@@ -131,7 +132,12 @@ export function buildManagedBashTool(
   options: {
     executionFacts?: ToolExecutionFacts;
     shell?: ShellPlan;
-    transformCommand?: (input: { command: string; pty: boolean; ctx: MakaToolContext }) =>
+    transformCommand?: (input: {
+      command: string;
+      pty: boolean;
+      requiredBoundary?: SandboxBoundaryExpansion;
+      ctx: MakaToolContext;
+    }) =>
       | {
           argv?: readonly string[];
           cwd: string;
@@ -192,7 +198,12 @@ export function buildManagedBashTool(
     ...(options.executionFacts ? { executionFacts: options.executionFacts } : {}),
     impl: async ({ command, timeout_ms, run_in_background, pty, required_boundary }, ctx) => {
       preflightDeclaredSandboxBoundary(required_boundary, ctx);
-      const transformed = options.transformCommand?.({ command, pty: pty === true, ctx });
+      const transformed = options.transformCommand?.({
+        command,
+        pty: pty === true,
+        ...(required_boundary ? { requiredBoundary: required_boundary } : {}),
+        ctx,
+      });
       const onCompletion = onceCompletion(transformed?.onCompletion);
       try {
         const result = await shellRuns[

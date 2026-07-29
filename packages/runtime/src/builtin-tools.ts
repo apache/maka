@@ -17,7 +17,12 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute } from 'node:path';
-import { compilePermissionProfile, type StorageRef, type PermissionProfile } from '@maka/core';
+import {
+  compilePermissionProfile,
+  type SandboxBoundaryExpansion,
+  type StorageRef,
+  type PermissionProfile,
+} from '@maka/core';
 import { computeEditedSource } from './edit-replace.js';
 import { bashToolResultToModelOutput } from './bash-model-output.js';
 import {
@@ -170,7 +175,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
           shell,
           ...(options.sandboxManager
             ? {
-                transformCommand: ({ command, pty, ctx }) =>
+                transformCommand: ({ command, pty, requiredBoundary, ctx }) =>
                   sandboxCommand(
                     options.sandboxManager!,
                     options.permissionProfile,
@@ -178,6 +183,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
                     command,
                     pty,
                     ctx,
+                    requiredBoundary,
                     'background_command',
                   ),
               }
@@ -652,6 +658,7 @@ function buildExecutorBashTool(
             command,
             false,
             ctx,
+            required_boundary,
           )
         : undefined;
       let successful = false;
@@ -700,6 +707,7 @@ function sandboxCommand(
   command: string,
   pty: boolean,
   ctx: MakaToolContext,
+  requiredBoundary?: SandboxBoundaryExpansion,
   domain: 'command' | 'background_command' = 'command',
 ):
   | {
@@ -752,7 +760,11 @@ function sandboxCommand(
 
   let preparedTargets: readonly PreparedExactWriteTarget[] = [];
   try {
-    preparedTargets = prepareLinuxBashExactWriteTargets(platform, effective.profile);
+    preparedTargets = prepareLinuxBashExactWriteTargets(
+      platform,
+      effective.profile,
+      requiredBoundary,
+    );
   } catch {
     throw new SandboxCommandError({
       domain,
@@ -847,6 +859,7 @@ interface PreparedExactWriteTarget {
 function prepareLinuxBashExactWriteTargets(
   platform: SandboxPlatform,
   profile: PermissionProfile,
+  requiredBoundary?: SandboxBoundaryExpansion,
 ): readonly PreparedExactWriteTarget[] {
   if (
     platform !== 'linux' ||
@@ -855,10 +868,8 @@ function prepareLinuxBashExactWriteTargets(
   ) {
     return [];
   }
-  const exactWrites = profile.fileSystem.entries.flatMap((entry) =>
-    entry.kind === 'path' && entry.access === 'write' && (entry.match ?? 'subtree') === 'exact'
-      ? [entry.path]
-      : [],
+  const exactWrites = (requiredBoundary?.filesystem?.entries ?? []).flatMap((entry) =>
+    entry.access === 'write' && entry.scope === 'exact' ? [entry.path] : [],
   );
   const prepared: PreparedExactWriteTarget[] = [];
   try {
