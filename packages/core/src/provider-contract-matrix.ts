@@ -389,8 +389,22 @@ function reasoningReplayCell(
       },
     };
   }
+  if (
+    providerType === 'volcengine-agent-plan' &&
+    adapter.kind === 'openai' &&
+    adapter.apiProtocol === 'openai-responses'
+  ) {
+    return {
+      state: 'override',
+      dimension: 'reasoning-replay',
+      overrideKey: overrideKeyFor(providerType, 'reasoning-replay'),
+      contract:
+        'Stateless OpenAI Responses reasoning items retain their encrypted content across Maka-owned durable replay',
+    };
+  }
   // Native Anthropic / OpenAI / Google / Cohere SDKs own signed reasoning replay
-  // opaquely; the maka provider layer adds no wire transform to derive from.
+  // opaquely; except for the stateless Agent Plan contract above, the Maka
+  // provider layer adds no wire transform to derive from.
   return {
     state: 'not-applicable',
     dimension: 'reasoning-replay',

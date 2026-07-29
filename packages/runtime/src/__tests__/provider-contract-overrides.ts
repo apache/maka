@@ -92,7 +92,11 @@ export const PROVIDER_CONTRACT_OVERRIDE_BINDINGS: readonly ProviderContractOverr
       }),
   },
   {
-    keys: ['volcengine-agent-plan:exact-model-id', 'volcengine-agent-plan:tool-loop'],
+    keys: [
+      'volcengine-agent-plan:exact-model-id',
+      'volcengine-agent-plan:tool-loop',
+      'volcengine-agent-plan:reasoning-replay',
+    ],
     title: 'Volcengine Agent Plan uses its dedicated key on the OpenAI Responses tool wire',
     run: () =>
       runOpenAIResponsesWire({
@@ -871,6 +875,16 @@ async function runOpenAIResponsesWire(input: {
         status: 'completed',
         model: modelId,
         output: [
+          ...(statelessReasoning
+            ? [
+                {
+                  type: 'reasoning',
+                  id: 'rs_relay_tool',
+                  summary: [{ type: 'summary_text', text: 'Use echo.' }],
+                  encrypted_content: 'encrypted-relay-reasoning',
+                },
+              ]
+            : []),
           {
             type: 'function_call',
             id: 'fc_relay_echo',
@@ -934,6 +948,17 @@ async function runOpenAIResponsesWire(input: {
   if (statelessReasoning) {
     assert.equal(requestBodies[0]?.store, false);
     assert.deepEqual(requestBodies[0]?.include, ['reasoning.encrypted_content']);
+    assert.deepEqual(
+      (requestBodies[1].input as Array<Record<string, unknown>>).find(
+        ({ type }) => type === 'reasoning',
+      ),
+      {
+        type: 'reasoning',
+        id: 'rs_relay_tool',
+        summary: [{ type: 'summary_text', text: 'Use echo.' }],
+        encrypted_content: 'encrypted-relay-reasoning',
+      },
+    );
   }
   assert.deepEqual(
     (requestBodies[1].input as Array<Record<string, unknown>>).find(

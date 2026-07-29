@@ -220,6 +220,15 @@ describe('provider contract matrix — wire and reasoning derivation', () => {
     assert.equal(cellFor('zenmux', 'reasoning-replay').state, 'override');
   });
 
+  it('marks Agent Plan stateless Responses reasoning replay as override', () => {
+    const cell = cellFor('volcengine-agent-plan', 'reasoning-replay');
+    assert.equal(cell.state, 'override');
+    assert.equal(
+      cell.state === 'override' ? cell.overrideKey : undefined,
+      'volcengine-agent-plan:reasoning-replay',
+    );
+  });
+
   it('marks native-SDK adapters not-applicable for reasoning replay', () => {
     for (const providerType of ['anthropic', 'openai', 'google', 'cohere'] as const) {
       assert.equal(
