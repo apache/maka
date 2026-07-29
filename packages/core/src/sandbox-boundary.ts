@@ -311,7 +311,6 @@ function expansionConflictsWithExplicitDeny(
   expansion: SandboxBoundaryExpansion,
   context: PermissionProfileMatchContext,
 ): boolean {
-  if (profile.fileSystem.kind === 'unrestricted') return false;
   const deniedRoots = profile.fileSystem.entries
     .filter((entry) => entry.access === 'deny')
     .flatMap((entry) => resolvedEntryRoots(entry, context));
@@ -341,13 +340,13 @@ function resolvedEntryRoots(
   }
   switch (entry.special) {
     case ':root':
-      return context.root ? [{ path: context.root, scope: 'subtree' }] : [];
+      return [{ path: context.root ?? '/', scope: 'subtree' }];
     case ':workspace_roots':
       return (context.workspaceRoots ?? []).map((path) => ({ path, scope: 'subtree' }));
     case ':tmpdir':
       return context.tmpdir ? [{ path: context.tmpdir, scope: 'subtree' }] : [];
     case ':slash_tmp':
-      return context.slashTmp ? [{ path: context.slashTmp, scope: 'subtree' }] : [];
+      return [{ path: context.slashTmp ?? '/tmp', scope: 'subtree' }];
     case ':minimal':
       return (context.minimalRoots ?? []).map((path) => ({ path, scope: 'subtree' }));
   }

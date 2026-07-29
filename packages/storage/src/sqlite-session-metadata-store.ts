@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { existsSync, mkdirSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import type { DatabaseSync } from 'node:sqlite';
@@ -376,6 +377,8 @@ export class SqliteSessionMetadataStore {
       const assessment = assessSandboxBoundaryExpansion(current.profile, request.expansion, {
         root: record.header.cwd,
         workspaceRoots: [record.header.cwd],
+        tmpdir: tmpdir(),
+        slashTmp: '/tmp',
       });
       if (assessment.outcome === 'conflict') {
         this.settleSandboxBoundaryRequestRow({

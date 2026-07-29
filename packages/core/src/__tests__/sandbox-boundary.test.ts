@@ -8,7 +8,12 @@ import {
   decodeExecutionBoundary,
   validateSandboxBoundaryExpansion,
 } from '../sandbox-boundary.js';
-import { canReadPath, canWritePath, type PermissionProfileManaged } from '../permission-profile.js';
+import {
+  canReadPath,
+  canWritePath,
+  createWorkspaceWritePermissionProfile,
+  type PermissionProfileManaged,
+} from '../permission-profile.js';
 
 describe('SandboxBoundaryExpansion', () => {
   test('accepts and canonicalizes only additive filesystem and network authority', () => {
@@ -148,6 +153,36 @@ describe('SandboxBoundaryExpansion', () => {
     });
 
     expect(assessment.outcome).toBe('apply');
+  });
+
+  test('keeps explicit denies authoritative inside an otherwise unrestricted profile', () => {
+    const base: PermissionProfileManaged = {
+      type: 'managed',
+      name: 'custom',
+      fileSystem: {
+        kind: 'unrestricted',
+        entries: [{ kind: 'path', access: 'deny', path: '/locked', match: 'subtree' }],
+      },
+      network: { kind: 'enabled' },
+    };
+
+    expect(
+      assessSandboxBoundaryExpansion(base, {
+        filesystem: {
+          entries: [{ path: '/locked/file.txt', access: 'read', scope: 'exact' }],
+        },
+      }),
+    ).toEqual({ outcome: 'conflict', reason: 'explicit_deny' });
+  });
+
+  test('uses the same default slash-tmp root as permission enforcement', () => {
+    const assessment = assessSandboxBoundaryExpansion(createWorkspaceWritePermissionProfile(), {
+      filesystem: {
+        entries: [{ path: '/tmp/output.txt', access: 'write', scope: 'exact' }],
+      },
+    });
+
+    expect(assessment.outcome).toBe('noop');
   });
 });
 

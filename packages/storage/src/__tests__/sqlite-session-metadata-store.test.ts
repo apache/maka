@@ -267,6 +267,35 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
+  test('settles an already-authorized temp path without inflating the boundary revision', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(90) });
+    try {
+      await store.create(fullHeader());
+      await store.createSandboxBoundaryRequest({
+        sessionId: 'session-1',
+        requestId: 'request-tmp',
+        expansion: {
+          filesystem: {
+            entries: [{ path: join(tmpdir(), 'maka-output'), access: 'write', scope: 'exact' }],
+          },
+        },
+        justification: 'Write a temporary output.',
+      });
+
+      const settlement = await store.settleSandboxBoundaryRequest({
+        sessionId: 'session-1',
+        requestId: 'request-tmp',
+        decision: 'allow',
+      });
+
+      assert.equal(settlement.changed, false);
+      assert.equal(settlement.request.outcomeReason, 'already_applied');
+      assert.equal(settlement.boundary.revision, 0);
+    } finally {
+      store.close();
+    }
+  });
+
   test('serializes competing approvals from independent SQLite connections', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-boundary-writer-race-'));
     const path = join(root, 'sessions.sqlite');
