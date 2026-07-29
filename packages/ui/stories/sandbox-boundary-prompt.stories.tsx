@@ -70,8 +70,8 @@ export const NetworkOnly: Story = {
   },
 };
 
-// Limit state: all 32 accepted filesystem entries stay inspectable while the
-// decision buttons remain in the stable composer slot.
+// Real path: an Auto session requests the maximum 32 filesystem entries; every
+// entry stays inspectable while the decision buttons remain in the composer slot.
 export const MaximumFilesystemEntries: Story = {
   args: {
     request: {
