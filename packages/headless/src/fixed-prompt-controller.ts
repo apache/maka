@@ -358,7 +358,7 @@ export async function readFixedPromptWal(path: string): Promise<FixedPromptWalEv
       throw error;
     }
   }
-  return events.map(projectLegacyTimeoutOutcome).map(projectStructuredVerifierPassOutcome);
+  return events.map(projectLegacyTimeoutOutcome).map(projectStructuredVerifierOutcome);
 }
 
 export async function readHarborTaskRunOutput(
@@ -580,8 +580,7 @@ function taskEventFromOutput(input: {
   | FixedPromptTaskCompletedEvent
   | FixedPromptTaskPlumbingFailedEvent
   | FixedPromptTaskInfraFailedEvent {
-  const structuredVerifierPassed =
-    input.output.harbor.reward > 0 && input.output.harbor.verifier?.outcome === 'passed';
+  const verifierGrade = structuredVerifierGrade(input.output.harbor);
   const identityMismatch = classifyExplicitIdentityMismatch(
     input.output.cell.executionIdentity,
     input.expectedPromptHash,
@@ -595,7 +594,7 @@ function taskEventFromOutput(input: {
       error: identityMismatch.error,
     });
   }
-  if (isProviderInfraFailure(input.output.cell.errorClass) && !structuredVerifierPassed) {
+  if (isProviderInfraFailure(input.output.cell.errorClass) && verifierGrade === undefined) {
     return taskInfraFailedEvent({
       ...input,
       errorClass: input.output.cell.errorClass,
@@ -633,12 +632,11 @@ function taskCompletedEvent(input: {
   const { output } = input;
   const promptHash = output.cell.promptHash ?? output.cell.executionIdentity?.systemPromptHash;
   const deadlineSettled = output.cell.deadlineSettlement?.source === 'benchmark.deadline';
-  const structuredVerifierPassed =
-    output.harbor.reward > 0 && output.harbor.verifier?.outcome === 'passed';
+  const verifierGrade = structuredVerifierGrade(output.harbor);
   const verifierGraded =
     output.cell.status === 'completed' ||
     deadlineSettled ||
-    structuredVerifierPassed ||
+    verifierGrade !== undefined ||
     ((output.cell.errorClass === 'max_tokens' ||
       output.cell.errorClass === 'tool_step_cap_reached' ||
       output.cell.errorClass === 'policy_denied') &&
@@ -649,7 +647,8 @@ function taskCompletedEvent(input: {
     : deadlineSettled
       ? 'budget_exhausted'
       : (output.cell.errorClass ?? 'verification_failed');
-  const scored = verifierGraded && !isUnscoredCellFailure(errorClass);
+  const scored =
+    verifierGraded && (verifierGrade !== undefined || !isUnscoredCellFailure(errorClass));
   const agentFailure = output.cell.status === 'failed' && errorClass === 'tool_step_cap_reached';
   return {
     schemaVersion: FIXED_PROMPT_WAL_SCHEMA_VERSION,
@@ -1101,13 +1100,18 @@ function projectLegacyTimeoutOutcome(event: FixedPromptWalEvent): FixedPromptWal
   };
 }
 
-function projectStructuredVerifierPassOutcome(event: FixedPromptWalEvent): FixedPromptWalEvent {
-  if (
-    event.type !== 'task_completed' ||
-    event.harbor.reward <= 0 ||
-    event.harbor.verifier?.outcome !== 'passed'
-  )
-    return event;
+function projectStructuredVerifierOutcome(event: FixedPromptWalEvent): FixedPromptWalEvent {
+  if (event.type !== 'task_completed') return event;
+  const verifierGrade = structuredVerifierGrade(event.harbor);
+  if (verifierGrade === undefined) return event;
+  if (verifierGrade === 'failed') {
+    return {
+      ...event,
+      passed: false,
+      scored: true,
+      eligible: true,
+    };
+  }
   const { errorClass: _legacyFailureClass, ...rest } = event;
   return {
     ...rest,
@@ -1115,6 +1119,60 @@ function projectStructuredVerifierPassOutcome(event: FixedPromptWalEvent): Fixed
     scored: true,
     eligible: true,
   };
+}
+
+/**
+ * Grants scoring authority only when the structured outcome, reward, and final
+ * verifier attempt agree. Harbor validates this contract while reading its
+ * artifact; this boundary check also protects alternate runners and stored WAL
+ * events from treating malformed or infrastructure-only attempts as grades.
+ */
+function structuredVerifierGrade(harbor: TaskRunOutput['harbor']): 'passed' | 'failed' | undefined {
+  const verifier = harbor.verifier;
+  if (
+    !Number.isFinite(harbor.reward) ||
+    !verifier ||
+    verifier.attempts.length < 1 ||
+    verifier.attempts.length > 2
+  )
+    return undefined;
+  if (
+    verifier.attempts.some(
+      (attempt, index) =>
+        attempt.attempt !== index + 1 ||
+        !Number.isFinite(attempt.durationMs) ||
+        attempt.durationMs < 0 ||
+        (attempt.reward !== undefined && !Number.isFinite(attempt.reward)),
+    )
+  )
+    return undefined;
+  if (
+    verifier.attempts
+      .slice(0, -1)
+      .some(
+        (attempt) =>
+          attempt.classification !== 'infra_setup_failed' &&
+          attempt.classification !== 'infra_failed',
+      )
+  )
+    return undefined;
+
+  const finalAttempt = verifier.attempts.at(-1)!;
+  if (
+    verifier.outcome === 'passed' &&
+    harbor.reward > 0 &&
+    finalAttempt.classification === 'passed' &&
+    (finalAttempt.reward ?? 0) > 0
+  )
+    return 'passed';
+  if (
+    verifier.outcome === 'failed' &&
+    harbor.reward === 0 &&
+    finalAttempt.classification === 'failed' &&
+    finalAttempt.reward === 0
+  )
+    return 'failed';
+  return undefined;
 }
 
 function budgetExhaustedArtifactRefs(error: unknown): FixedPromptBudgetExhaustedArtifactRefs {
