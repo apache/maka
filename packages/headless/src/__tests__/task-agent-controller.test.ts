@@ -1305,7 +1305,11 @@ describe('runTaskOnce', () => {
         !result.projection.toolExecutors[0]?.toolNames.some((name) => name.startsWith('agent_')),
       );
       assert.deepEqual(result.projection.toolExecutors[0]?.productToolSurface, {
-        policy: { economy: true, disabledSurfaceIds: ['agent'] },
+        policy: {
+          economy: true,
+          disabledSurfaceIds: ['agent'],
+          editingProtocol: 'edit_write',
+        },
         productToolNames: ['Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write'],
       });
       assert.equal(
@@ -1374,7 +1378,11 @@ describe('runTaskOnce', () => {
         assert.ok(result.projection.toolExecutors[0]?.toolNames.includes(toolName));
       }
       assert.deepEqual(result.projection.toolExecutors[0]?.productToolSurface, {
-        policy: { economy: true, disabledSurfaceIds: [] },
+        policy: {
+          economy: true,
+          disabledSurfaceIds: [],
+          editingProtocol: 'edit_write',
+        },
         productToolNames: [
           'Bash',
           'Edit',
