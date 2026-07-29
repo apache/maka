@@ -109,6 +109,11 @@ export interface SessionMetadataRecord {
   committedAt: number;
 }
 
+export interface SessionAuthoritySnapshot {
+  record: SessionMetadataRecord;
+  boundary: ExecutionBoundary;
+}
+
 export interface IdempotentSubagentSessionMetadataResult {
   record: SessionMetadataRecord;
   created: boolean;
@@ -210,6 +215,20 @@ export class SqliteSessionMetadataStore {
       if (!record) throw new SessionNotFoundError(sessionId);
       this.ensureGenesisExecutionBoundary(record.header);
       return this.readCurrentExecutionBoundarySync(sessionId);
+    });
+  }
+
+  async readSessionAuthoritySnapshot(sessionId: string): Promise<SessionAuthoritySnapshot> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    return this.transaction(() => {
+      const record = this.readRecordSync(sessionId);
+      if (!record) throw new SessionNotFoundError(sessionId);
+      this.ensureGenesisExecutionBoundary(record.header);
+      return {
+        record,
+        boundary: this.readCurrentExecutionBoundarySync(sessionId),
+      };
     });
   }
 

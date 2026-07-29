@@ -403,6 +403,24 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
+  test('reads the header projection and execution boundary from one authority snapshot', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(275) });
+    try {
+      await store.create(fullHeader());
+      await store.setExecutionBoundaryKind('session-1', 'bypass', {
+        permissionMode: 'bypass',
+      });
+
+      const snapshot = await store.readSessionAuthoritySnapshot('session-1');
+
+      assert.equal(snapshot.record.header.permissionMode, 'bypass');
+      assert.equal(snapshot.boundary.kind, 'bypass');
+      assert.equal(snapshot.boundary.revision, 1);
+    } finally {
+      store.close();
+    }
+  });
+
   test('rolls back a boundary kind and header projection as one transaction', async () => {
     let armed = false;
     const store = createSqliteSessionMetadataStore(':memory:', {

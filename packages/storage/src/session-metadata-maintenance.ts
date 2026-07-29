@@ -38,6 +38,28 @@ export async function exportLegacySessionTree(input: {
   now?: () => number;
 }): Promise<LegacySessionTreeExportReport> {
   const workspaceRoot = resolve(input.workspaceRoot);
+  const databasePath = join(workspaceRoot, SQLITE_SESSION_METADATA_DATABASE_NAME);
+  await assertFileExists(databasePath, 'SQLite session metadata database');
+  const metadata = createSqliteSessionMetadataStore(databasePath);
+  try {
+    return exportLegacySessionTreeSnapshot({
+      ...input,
+      records: await metadata.list(),
+    });
+  } finally {
+    metadata.close();
+  }
+}
+
+export async function exportLegacySessionTreeSnapshot(input: {
+  workspaceRoot: string;
+  destinationRoot: string;
+  records: readonly SessionMetadataRecord[];
+  /** Optional selected-session export; omitted preserves the full backup behavior. */
+  sessionIds?: readonly string[];
+  now?: () => number;
+}): Promise<LegacySessionTreeExportReport> {
+  const workspaceRoot = resolve(input.workspaceRoot);
   const destinationRoot = resolve(input.destinationRoot);
   const sourceSessionsRoot = join(workspaceRoot, 'sessions');
   const destinationSessionsRoot = join(destinationRoot, 'sessions');
@@ -50,17 +72,13 @@ export async function exportLegacySessionTree(input: {
   }
   await assertPathMissing(destinationRoot, 'Session metadata export destination');
 
-  const databasePath = join(workspaceRoot, SQLITE_SESSION_METADATA_DATABASE_NAME);
-  await assertFileExists(databasePath, 'SQLite session metadata database');
-  const metadata = createSqliteSessionMetadataStore(databasePath);
   const stagingRoot = `${destinationRoot}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    const allRecords = await metadata.list();
     const selectedIds = input.sessionIds === undefined ? undefined : new Set(input.sessionIds);
     if (selectedIds?.size !== input.sessionIds?.length) {
       throw new Error('Session metadata export contains duplicate session ids');
     }
-    const records = allRecords
+    const records = input.records
       .filter((record) => selectedIds === undefined || selectedIds.has(record.header.id))
       .sort((a, b) => a.header.id.localeCompare(b.header.id));
     if (selectedIds !== undefined) {
@@ -101,7 +119,6 @@ export async function exportLegacySessionTree(input: {
       manifestPath: join(destinationRoot, SESSION_METADATA_EXPORT_MANIFEST_NAME),
     };
   } finally {
-    metadata.close();
     await rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
   }
 }
