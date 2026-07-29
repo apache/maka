@@ -1080,42 +1080,44 @@ export function buildAiSdkCellBackendRegistration(input: {
           }),
         tools,
         toolAvailability: productToolSurface.toolAvailability,
-        spawnChildAgent:
-          admitsAgentChildren && context.spawnChildAgent
-            ? (childInput) => context.spawnChildAgent!(ctx.sessionId, childInput)
-            : undefined,
-        spawnChildSession:
-          admitsAgentChildren && context.spawnChildSession
-            ? (childInput) =>
-                context.spawnChildSession!(ctx.sessionId, {
-                  spawnedBy: {
-                    parentRunId: childInput.parentRunId,
-                    parentTurnId: childInput.parentTurnId,
-                    toolCallId: childInput.toolCallId,
-                  },
-                  agentProfile: childInput.agentProfile,
-                  prompt: childInput.prompt,
-                  ...(childInput.swarm ? { swarm: childInput.swarm } : {}),
-                  abortSignal: childInput.abortSignal,
-                  ...(childInput.onReady ? { onReady: childInput.onReady } : {}),
-                  ...(childInput.onEvent ? { onEvent: childInput.onEvent } : {}),
-                })
-            : undefined,
-        prepareChildAgentResume: context.prepareChildAgentResume
-          ? (sourceRunId) => context.prepareChildAgentResume!(ctx.sessionId, sourceRunId)
-          : undefined,
-        resumeChildAgent: context.resumeChildAgent
-          ? (childInput) => context.resumeChildAgent!(ctx.sessionId, childInput)
-          : undefined,
-        retryChildAgent: context.retryChildAgent
-          ? (childInput) => context.retryChildAgent!(ctx.sessionId, childInput)
-          : undefined,
-        listChildAgents: context.listChildAgents
-          ? () => context.listChildAgents!(ctx.sessionId)
-          : undefined,
-        readChildAgentOutput: context.readChildAgentOutput
-          ? (childInput) => context.readChildAgentOutput!(ctx.sessionId, childInput)
-          : undefined,
+        ...(admitsAgentChildren
+          ? {
+              spawnChildAgent: context.spawnChildAgent
+                ? (childInput) => context.spawnChildAgent!(ctx.sessionId, childInput)
+                : undefined,
+              spawnChildSession: context.spawnChildSession
+                ? (childInput) =>
+                    context.spawnChildSession!(ctx.sessionId, {
+                      spawnedBy: {
+                        parentRunId: childInput.parentRunId,
+                        parentTurnId: childInput.parentTurnId,
+                        toolCallId: childInput.toolCallId,
+                      },
+                      agentProfile: childInput.agentProfile,
+                      prompt: childInput.prompt,
+                      ...(childInput.swarm ? { swarm: childInput.swarm } : {}),
+                      abortSignal: childInput.abortSignal,
+                      ...(childInput.onReady ? { onReady: childInput.onReady } : {}),
+                      ...(childInput.onEvent ? { onEvent: childInput.onEvent } : {}),
+                    })
+                : undefined,
+              prepareChildAgentResume: context.prepareChildAgentResume
+                ? (sourceRunId) => context.prepareChildAgentResume!(ctx.sessionId, sourceRunId)
+                : undefined,
+              resumeChildAgent: context.resumeChildAgent
+                ? (childInput) => context.resumeChildAgent!(ctx.sessionId, childInput)
+                : undefined,
+              retryChildAgent: context.retryChildAgent
+                ? (childInput) => context.retryChildAgent!(ctx.sessionId, childInput)
+                : undefined,
+              listChildAgents: context.listChildAgents
+                ? () => context.listChildAgents!(ctx.sessionId)
+                : undefined,
+              readChildAgentOutput: context.readChildAgentOutput
+                ? (childInput) => context.readChildAgentOutput!(ctx.sessionId, childInput)
+                : undefined,
+            }
+          : {}),
         providerOptions: buildProviderOptions(connection, input.model, ctx.header.thinkingLevel),
         supportsVision: resolveModelVisionSupport(
           connection.providerType,

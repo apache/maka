@@ -63,6 +63,7 @@ import {
   writeHarborCellUsageCheckpoint,
 } from '../harbor-cell.js';
 import { resolveHarborRunOptions } from '../harbor-cli.js';
+import { createHeadlessSessionCapabilityBridge } from '../session-capabilities.js';
 import { DEFAULT_HEADLESS_SYSTEM_PROMPT } from '../system-prompts.js';
 import { buildIsolatedBashTool, buildIsolatedHeadlessProductToolSurface } from '../tools.js';
 
@@ -73,6 +74,16 @@ const config: Config = {
   model: 'fake-model',
   systemPrompt: 'You are a benchmark cell agent.',
 };
+
+const AGENT_RUNTIME_CAPABILITIES = [
+  'spawnChildAgent',
+  'spawnChildSession',
+  'prepareChildAgentResume',
+  'resumeChildAgent',
+  'retryChildAgent',
+  'listChildAgents',
+  'readChildAgentOutput',
+] as const satisfies readonly (keyof AiSdkBackendInput)[];
 
 function registerTestPiAgentBackend(
   registry: BackendRegistry,
@@ -2282,21 +2293,11 @@ describe('runHarborCell', () => {
         artifactStore,
         realBackendIsolation: { kind: 'external', label: 'Harbor task container', toolExecutor },
         toolExecutor,
+        ...createHeadlessSessionCapabilityBridge().capabilities,
       });
 
       const backend = await registry.build('ai-sdk', backendContext(workspaceDir));
-      const backendInput = (
-        backend as unknown as {
-          input: {
-            tools: Array<{ name: string; permissionRequired?: boolean }>;
-            systemPrompt?: string;
-            streamConnectTimeoutMs?: number;
-            streamIdleTimeoutMs?: number;
-            supportsVision?: boolean;
-            readAttachmentBytes?: unknown;
-          };
-        }
-      ).input;
+      const backendInput = (backend as unknown as { input: AiSdkBackendInput }).input;
       const toolNames = backendInput.tools.map((tool) => tool.name);
 
       for (const expected of ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep']) {
@@ -2313,11 +2314,17 @@ describe('runHarborCell', () => {
         backendInput.tools.find((tool) => tool.name === 'Write')?.permissionRequired,
         false,
       );
-      assert.match(backendInput.systemPrompt ?? '', /Prefer Read, Glob, and Grep/);
+      assert.match(
+        typeof backendInput.systemPrompt === 'string' ? backendInput.systemPrompt : '',
+        /Prefer Read, Glob, and Grep/,
+      );
       assert.equal(backendInput.streamConnectTimeoutMs, 456_000);
       assert.equal(backendInput.streamIdleTimeoutMs, 789_000);
       assert.equal(backendInput.supportsVision, true);
       assert.equal(typeof backendInput.readAttachmentBytes, 'function');
+      for (const capability of AGENT_RUNTIME_CAPABILITIES) {
+        assert.equal(backendInput[capability], undefined, `unexpected root ${capability}`);
+      }
 
       const scopedBackend = await registry.build('ai-sdk', {
         ...backendContext(workspaceDir),
@@ -2338,6 +2345,9 @@ describe('runHarborCell', () => {
       );
       assert.equal(scopedInput.systemPrompt, 'Durable child prompt.');
       assert.deepEqual(scopedInput.toolAvailability, { economy: true, groups: [] });
+      for (const capability of AGENT_RUNTIME_CAPABILITIES) {
+        assert.equal(scopedInput[capability], undefined, `unexpected scoped ${capability}`);
+      }
     });
   });
 
@@ -2367,17 +2377,11 @@ describe('runHarborCell', () => {
         artifactStore,
         realBackendIsolation: { kind: 'external', label: 'Harbor task container', toolExecutor },
         toolExecutor,
+        ...createHeadlessSessionCapabilityBridge().capabilities,
       });
 
       const backend = await registry.build('ai-sdk', backendContext(workspaceDir));
-      const backendInput = (
-        backend as unknown as {
-          input: {
-            tools: Array<{ name: string }>;
-            toolAvailability?: { groups?: Array<{ id: string; toolNames: string[] }> };
-          };
-        }
-      ).input;
+      const backendInput = (backend as unknown as { input: AiSdkBackendInput }).input;
       const toolNames = backendInput.tools.map((tool) => tool.name);
 
       for (const expected of ['agent_spawn', 'agent_swarm', 'agent_list', 'agent_output']) {
@@ -2387,6 +2391,9 @@ describe('runHarborCell', () => {
         backendInput.toolAvailability?.groups?.find((group) => group.id === 'agent')?.toolNames,
         ['agent_spawn', 'agent_swarm', 'agent_list', 'agent_output'],
       );
+      for (const capability of AGENT_RUNTIME_CAPABILITIES) {
+        assert.equal(typeof backendInput[capability], 'function', `expected root ${capability}`);
+      }
     });
   });
 
