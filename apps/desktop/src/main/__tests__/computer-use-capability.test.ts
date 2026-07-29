@@ -28,8 +28,9 @@ describe('Desktop Computer Use production wiring', () => {
     assert.match(main, /sessions:stop[\s\S]*computerUseOverlay\.clearForSession/);
     assert.match(main, /sessions:archive[\s\S]*computerUseTools\.clearSession/);
     assert.match(main, /sessions:archive[\s\S]*computerUseOverlay\.clearForSession/);
-    assert.match(main, /sessions:remove[\s\S]*computerUseTools\.clearSession/);
-    assert.match(main, /sessions:remove[\s\S]*computerUseOverlay\.clearForSession/);
+    assert.match(main, /const removeSession[\s\S]*computerUseTools\.clearSession/);
+    assert.match(main, /const removeSession[\s\S]*computerUseOverlay\.clearForSession/);
+    assert.match(main, /sessions:remove[\s\S]*await removeSession/);
     assert.match(main, /isTurnStatusChangingSessionEvent[\s\S]*computerUseTools\.clearSession/);
     assert.match(main, /catch \(error\)[\s\S]*computerUseTools\.clearSession/);
     assert.match(main, /Promise\.allSettled\(\[[\s\S]*computerUse\.backend\?\.dispose/);

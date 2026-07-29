@@ -36,7 +36,7 @@ export interface CompanionSessionApi {
   branchFromTurn(sessionId: string, input: { sourceTurnId: string; name?: string }): Promise<SessionSummary>;
   create(input: Partial<CreateSessionInput>): Promise<SessionSummary>;
   setPermissionMode(sessionId: string, mode: PermissionMode): Promise<SessionSummary>;
-  remove(sessionId: string): Promise<void>;
+  cleanupQuoteCompanion(sessionId: string): Promise<void>;
   send(
     sessionId: string,
     command: { type: 'send'; turnId: string; text: string; quotes?: QuoteRef[] },
@@ -94,6 +94,16 @@ export function deriveCompanionComposerState(
 }
 
 /**
+ * The main-process cleanup authority durably records the fork before attempting
+ * the complete session-removal path. A rejection here means the intent remains
+ * queued for the next `sessions.list` call or Desktop restart, so renderer
+ * lifecycle paths can remain fire-and-forget without losing recovery.
+ */
+function scheduleCompanionCleanup(api: CompanionSessionApi, sessionId: string): void {
+  void api.cleanupQuoteCompanion(sessionId).catch(() => {});
+}
+
+/**
  * Fork the main session for a companion and return a session that is CONFIRMED
  * read-only (`explore`): reads + local search stay available and web/custom
  * tools follow the normal permission path, but writes / shell / destructive
@@ -139,7 +149,7 @@ export async function ensureCompanionFork(
   }
 
   if (isDisposed()) {
-    void api.remove(created.id).catch(() => {});
+    scheduleCompanionCleanup(api, created.id);
     return { status: 'disposed' };
   }
   // `sessions:branchFromTurn` broadcasts `sessions:changed(created)` before the
@@ -153,15 +163,15 @@ export async function ensureCompanionFork(
   try {
     ready = await api.setPermissionMode(created.id, COMPANION_PERMISSION_MODE);
   } catch {
-    void api.remove(created.id).catch(() => {});
+    scheduleCompanionCleanup(api, created.id);
     return { status: 'error', code: 'permission_pin_failed' };
   }
   if (ready.permissionMode !== COMPANION_PERMISSION_MODE) {
-    void api.remove(created.id).catch(() => {});
+    scheduleCompanionCleanup(api, created.id);
     return { status: 'error', code: 'permission_pin_failed' };
   }
   if (isDisposed()) {
-    void api.remove(created.id).catch(() => {});
+    scheduleCompanionCleanup(api, created.id);
     return { status: 'disposed' };
   }
 

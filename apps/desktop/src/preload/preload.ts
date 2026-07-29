@@ -346,6 +346,9 @@ const makaBridge = {
     remove(sessionId: string, options?: { revisionFamily?: boolean }): Promise<void> {
       return ipcRenderer.invoke('sessions:remove', sessionId, options);
     },
+    cleanupQuoteCompanion(sessionId: string): Promise<void> {
+      return ipcRenderer.invoke('sessions:cleanupQuoteCompanion', sessionId);
+    },
   },
   projects: {
     list(): Promise<ProjectRecord[]> {

@@ -172,7 +172,9 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       unsubscribeRef.current?.();
       const id = companionIdRef.current ?? pendingForkIdRef.current;
       if (id) {
-        window.maka.sessions.remove(id).catch(() => {});
+        // The main-process authority records this intent before attempting the
+        // full removal, and retries it on a later session list / app restart.
+        window.maka.sessions.cleanupQuoteCompanion(id).catch(() => {});
         onForkChangeRef.current?.(undefined);
       }
     };

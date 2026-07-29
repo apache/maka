@@ -86,7 +86,7 @@ function makeApi(control: FakeControl = {}) {
       if (control.setModeThrows) throw new Error('setPermissionMode failed');
       return summary(id, control.afterSetMode ?? mode);
     },
-    remove: async (id) => {
+    cleanupQuoteCompanion: async (id) => {
       calls.removed.push(id);
     },
     send: async (id, cmd) => {

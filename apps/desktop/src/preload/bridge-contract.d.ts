@@ -316,6 +316,7 @@ export interface MakaBridge {
     setModel(sessionId: string, input: { llmConnectionSlug: string; model: string }): Promise<SessionSummary>;
     setThinkingLevel(sessionId: string, level: ThinkingLevel | undefined | null): Promise<SessionSummary>;
     remove(sessionId: string, options?: { revisionFamily?: boolean }): Promise<void>;
+    cleanupQuoteCompanion(sessionId: string): Promise<void>;
   };
   projects: {
     list(): Promise<ProjectRecord[]>;

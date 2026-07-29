@@ -1077,6 +1077,7 @@ function registerIpc(): void {
     sendToRenderer: safeSendToRenderer,
   });
   registerSessionsIpc({
+    workspaceRoot,
     runtime,
     store,
     taskLedgerStore,
