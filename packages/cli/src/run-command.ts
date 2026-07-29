@@ -246,7 +246,11 @@ export async function runMakaTextCli(
       ...(parsed.options.graph ? { enableAgentGraph: true } : {}),
       runtimeInvocationObserver: (result) => {
         if (invocationHasSandboxBoundaryFailure(result)) {
-          boundaryFailureInvocationIds.add(result.invocationId);
+          if (invocationRecoveredSandboxBoundaryFailure(result)) {
+            boundaryFailureInvocationIds.delete(result.invocationId);
+          } else {
+            boundaryFailureInvocationIds.add(result.invocationId);
+          }
         }
         invocation = result;
       },
@@ -377,7 +381,10 @@ export async function runMakaTextCli(
     return 1;
   }
   if (streamFailed) return 1;
-  if (streamBoundaryFailure || boundaryFailureInvocationIds.size > 0) {
+  if (
+    (streamBoundaryFailure && !invocationRecoveredSandboxBoundaryFailure(invocation)) ||
+    boundaryFailureInvocationIds.size > 0
+  ) {
     return 1;
   }
   if (!invocation) {
@@ -501,6 +508,37 @@ function invocationHasSandboxBoundaryFailure(result: InvocationResult): boolean 
     }
   }
   return false;
+}
+
+function invocationRecoveredSandboxBoundaryFailure(result: InvocationResult | undefined): boolean {
+  if (!invocationCompletedWithOutput(result)) return false;
+  let unresolvedBoundaryFailure = false;
+  let recoveredBoundaryFailure = false;
+  for (const event of result.events) {
+    if (event.content?.kind !== 'function_response') continue;
+    const failure = isRecord(event.content.result)
+      ? event.content.result.sandboxFailure
+      : undefined;
+    if (
+      event.content.isError &&
+      isRecord(failure) &&
+      (failure.reason === 'sandbox_boundary_required' || failure.reason === 'requires_bypass')
+    ) {
+      unresolvedBoundaryFailure = true;
+      continue;
+    }
+    if (unresolvedBoundaryFailure && !event.content.isError) {
+      unresolvedBoundaryFailure = false;
+      recoveredBoundaryFailure = true;
+    }
+  }
+  return recoveredBoundaryFailure && !unresolvedBoundaryFailure;
+}
+
+function invocationCompletedWithOutput(
+  result: InvocationResult | undefined,
+): result is InvocationResult & { status: 'completed'; finalOutput: string } {
+  return result?.status === 'completed' && typeof result.finalOutput === 'string';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
