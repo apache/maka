@@ -39,6 +39,10 @@ export type RuntimePolicyOperationKey = Extract<
   OperationKey,
   `runtime.policy.${string}` | `connection.catalog.${string}` | `credential.vault.${string}`
 >;
+export type ConnectionEffectOperationKey = Extract<
+  OperationKey,
+  'connection.models.fetch' | 'connection.test.run'
+>;
 export type MessageOperationKey = Extract<
   OperationKey,
   'turn.message.submit' | 'queue.retract' | 'turn.interrupt'
@@ -54,6 +58,10 @@ export type SkillCatalogOperationKey = Extract<OperationKey, `skill.catalog.${st
 export type DomainOperationHandlerMap = Pick<OperationHandlerMap, DomainOperationKey>;
 export type TurnOperationHandlerMap = Pick<OperationHandlerMap, TurnOperationKey>;
 export type RuntimePolicyOperationHandlerMap = Pick<OperationHandlerMap, RuntimePolicyOperationKey>;
+export type ConnectionEffectOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  ConnectionEffectOperationKey
+>;
 export type MessageOperationHandlerMap = Pick<OperationHandlerMap, MessageOperationKey>;
 export type InteractionOperationHandlerMap = Pick<OperationHandlerMap, InteractionOperationKey>;
 export type SessionContinuityOperationHandlerMap = Pick<

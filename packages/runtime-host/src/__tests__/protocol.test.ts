@@ -52,6 +52,8 @@ describe('Runtime Host bootstrap protocol', () => {
       'connection.catalog.remove',
       'connection.catalog.set-default-target',
       'connection.catalog.update',
+      'connection.models.fetch',
+      'connection.test.run',
       'credential.vault.delete',
       'credential.vault.query',
       'credential.vault.set',

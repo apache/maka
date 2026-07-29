@@ -145,6 +145,150 @@ describe('fetchProviderModels', () => {
     assert.equal(requestCount, 41);
   });
 
+  test('Cohere accepts bounded multi-page discovery and rejects repeated tokens or excess entries', async () => {
+    const pages: string[] = [];
+    const normal = await startJsonServer((request, response) => {
+      const token = new URL(request.url ?? '', 'http://test.local').searchParams.get('page_token');
+      pages.push(token ?? 'first');
+      respondJson(
+        response,
+        200,
+        token
+          ? {
+              models: [
+                {
+                  name: 'command-r-plus',
+                  endpoints: ['chat'],
+                  context_length: 128_000,
+                },
+              ],
+            }
+          : {
+              models: [{ name: 'command-a', endpoints: ['chat'] }],
+              next_page_token: 'page-2',
+            },
+      );
+    });
+    assert.deepEqual(await fetchProviderModels(cohereConnection(normal.url), 'cohere-key'), [
+      { id: 'command-a' },
+      { id: 'command-r-plus', contextWindow: 128_000 },
+    ]);
+    assert.deepEqual(pages, ['first', 'page-2']);
+
+    let repeatedRequests = 0;
+    const repeated = await startJsonServer((_request, response) => {
+      repeatedRequests += 1;
+      respondJson(response, 200, {
+        models: [],
+        next_page_token: 'same-token',
+      });
+    });
+    await assert.rejects(
+      fetchProviderModels(cohereConnection(repeated.url), 'cohere-key'),
+      /Failed to fetch provider models/,
+    );
+    assert.equal(repeatedRequests, 2);
+
+    const oversized = await startJsonServer((_request, response) => {
+      respondJson(response, 200, {
+        models: Array.from({ length: 2_049 }, (_, index) => ({
+          name: `command-${index}`,
+          endpoints: ['chat'],
+        })),
+      });
+    });
+    await assert.rejects(
+      fetchProviderModels(cohereConnection(oversized.url), 'cohere-key'),
+      /Failed to fetch provider models/,
+    );
+  });
+
+  test('Fireworks bounds account concurrency while preserving normal pagination', async () => {
+    let activeModelRequests = 0;
+    let maxActiveModelRequests = 0;
+    const server = await startJsonServer((request, response) => {
+      const url = new URL(request.url ?? '', 'http://test.local');
+      if (url.pathname === '/v1/accounts') {
+        respondJson(response, 200, {
+          accounts: Array.from({ length: 6 }, (_, index) => ({
+            name: `accounts/team-${index}`,
+          })),
+        });
+        return;
+      }
+
+      activeModelRequests += 1;
+      maxActiveModelRequests = Math.max(maxActiveModelRequests, activeModelRequests);
+      setTimeout(() => {
+        activeModelRequests -= 1;
+        const account = url.pathname.match(/^\/v1\/accounts\/([^/]+)\/models$/)?.[1] ?? 'unknown';
+        const pageToken = url.searchParams.get('pageToken');
+        respondJson(response, 200, {
+          models: [{ name: `accounts/${account}/models/${pageToken ?? 'first'}` }],
+          ...(account === 'team-0' && !pageToken ? { nextPageToken: 'second' } : {}),
+        });
+      }, 10);
+    });
+
+    const models = await fetchProviderModels(fireworksConnection(server.url), 'fireworks-key');
+    assert.equal(maxActiveModelRequests, 4);
+    assert.equal(models.length, 8);
+    assert.ok(models.some(({ id }) => id === 'accounts/team-0/models/second'));
+    assert.ok(models.some(({ id }) => id === 'accounts/fireworks/models/first'));
+  });
+
+  test('Fireworks rejects excess account fanout, total raw entries, and repeated page tokens', async () => {
+    const tooManyAccounts = await startJsonServer((request, response) => {
+      assert.equal(new URL(request.url ?? '', 'http://test.local').pathname, '/v1/accounts');
+      respondJson(response, 200, {
+        accounts: Array.from({ length: 32 }, (_, index) => ({
+          name: `accounts/team-${index}`,
+        })),
+      });
+    });
+    await assert.rejects(
+      fetchProviderModels(fireworksConnection(tooManyAccounts.url), 'fireworks-key'),
+      /Failed to fetch provider models/,
+    );
+
+    const tooManyEntries = await startJsonServer((request, response) => {
+      const path = new URL(request.url ?? '', 'http://test.local').pathname;
+      if (path === '/v1/accounts') {
+        respondJson(response, 200, { accounts: [{ name: 'accounts/team' }] });
+        return;
+      }
+      const account = path.includes('/accounts/team/') ? 'team' : 'fireworks';
+      respondJson(response, 200, {
+        models: Array.from({ length: account === 'team' ? 1_024 : 1_025 }, (_, index) => ({
+          name: `accounts/${account}/models/${index}`,
+        })),
+      });
+    });
+    await assert.rejects(
+      fetchProviderModels(fireworksConnection(tooManyEntries.url), 'fireworks-key'),
+      /Failed to fetch provider models/,
+    );
+
+    let repeatedRequests = 0;
+    const repeatedToken = await startJsonServer((request, response) => {
+      const path = new URL(request.url ?? '', 'http://test.local').pathname;
+      if (path === '/v1/accounts') {
+        respondJson(response, 200, { accounts: [] });
+        return;
+      }
+      repeatedRequests += 1;
+      respondJson(response, 200, {
+        models: [],
+        nextPageToken: 'same-token',
+      });
+    });
+    await assert.rejects(
+      fetchProviderModels(fireworksConnection(repeatedToken.url), 'fireworks-key'),
+      /Failed to fetch provider models/,
+    );
+    assert.equal(repeatedRequests, 2);
+  });
+
   test('OpenCode Zen and Go discover exact account model ids with their shared API-key auth shape', async () => {
     const requests: Array<{ url: string; authorization: string | undefined }> = [];
     const server = await startJsonServer((request, response) => {
@@ -873,6 +1017,32 @@ function googleConnection(): LlmConnection {
     name: 'Google Gemini',
     providerType: 'google',
     defaultModel: 'gemini-2.5-flash',
+    enabled: true,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+}
+
+function cohereConnection(baseUrl: string): LlmConnection {
+  return {
+    slug: 'cohere',
+    name: 'Cohere',
+    providerType: 'cohere',
+    baseUrl: `${baseUrl}/v2`,
+    defaultModel: 'command-a',
+    enabled: true,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+}
+
+function fireworksConnection(baseUrl: string): LlmConnection {
+  return {
+    slug: 'fireworks',
+    name: 'Fireworks',
+    providerType: 'fireworks-ai',
+    baseUrl: `${baseUrl}/inference/v1`,
+    defaultModel: 'accounts/fireworks/models/default',
     enabled: true,
     createdAt: 1,
     updatedAt: 1,

@@ -43,6 +43,16 @@ export interface CredentialVaultDocument {
   readonly entries: readonly CredentialVaultEntry[];
 }
 
+interface PreparedCredentialSet {
+  readonly kind: 'ready';
+  readonly document: CredentialVaultDocument;
+}
+
+interface PreparedCredentialDelete {
+  readonly kind: 'ready';
+  readonly document: CredentialVaultDocument;
+}
+
 export class CredentialVaultDocumentOwner {
   async read(root: string): Promise<CredentialVaultDocument> {
     const value = await readBoundedJsonDocument(root, FILE, VAULT_DOCUMENT_MAX_BYTES);
@@ -73,9 +83,17 @@ export class CredentialVaultDocumentOwner {
   }
 
   async set(root: string, rawInput: SetCredentialInput): Promise<CredentialMutationResult> {
+    const prepared = this.prepareSet(await this.read(root), rawInput);
+    if (prepared.kind !== 'ready') return prepared;
+    return this.commitSet(root, prepared);
+  }
+
+  prepareSet(
+    current: CredentialVaultDocument,
+    rawInput: SetCredentialInput,
+  ): PreparedCredentialSet | CredentialMutationResult {
     const input = decodeCredentialInput(() => normalizeSetCredentialInput(rawInput));
     assertCredentialInputSecretLimit(input.secret, 'set credential secret');
-    const current = await this.read(root);
     const index = findCredentialIndex(current, input.locator);
     const previous = index < 0 ? undefined : current.entries[index];
     if (!matchesExpectation(previous, input.expected)) {
@@ -109,13 +127,29 @@ export class CredentialVaultDocumentOwner {
       revision: nextRevision(current.revision),
       entries,
     };
-    await this.write(root, next);
-    return committed(next);
+    this.assertDocumentSize(next);
+    return { kind: 'ready', document: next };
+  }
+
+  async commitSet(
+    root: string,
+    prepared: PreparedCredentialSet,
+  ): Promise<CredentialMutationResult> {
+    await this.write(root, prepared.document);
+    return committed(prepared.document);
   }
 
   async delete(root: string, rawInput: DeleteCredentialInput): Promise<CredentialMutationResult> {
+    const prepared = this.prepareDelete(await this.read(root), rawInput);
+    if (prepared.kind !== 'ready') return prepared;
+    return this.commitDelete(root, prepared);
+  }
+
+  prepareDelete(
+    current: CredentialVaultDocument,
+    rawInput: DeleteCredentialInput,
+  ): PreparedCredentialDelete | CredentialMutationResult {
     const input = decodeCredentialInput(() => normalizeDeleteCredentialInput(rawInput));
-    const current = await this.read(root);
     const index = findCredentialIndex(current, input.expected.locator);
     const previous = index < 0 ? undefined : current.entries[index];
     if (!sameCredentialBasis(previous, input.expected)) {
@@ -126,8 +160,16 @@ export class CredentialVaultDocumentOwner {
       revision: nextRevision(current.revision),
       entries: current.entries.filter((_entry, candidate) => candidate !== index),
     };
-    await this.write(root, next);
-    return committed(next);
+    this.assertDocumentSize(next);
+    return { kind: 'ready', document: next };
+  }
+
+  async commitDelete(
+    root: string,
+    prepared: PreparedCredentialDelete,
+  ): Promise<CredentialMutationResult> {
+    await this.write(root, prepared.document);
+    return committed(prepared.document);
   }
 
   async deleteConnectionCredentials(
@@ -170,13 +212,17 @@ export class CredentialVaultDocumentOwner {
   }
 
   private async write(root: string, document: CredentialVaultDocument): Promise<void> {
+    this.assertDocumentSize(document);
+    await writeJsonDocument(root, FILE, document, VAULT_DOCUMENT_MAX_BYTES);
+  }
+
+  private assertDocumentSize(document: CredentialVaultDocument): void {
     if (serializeJsonDocument(document).length > VAULT_DOCUMENT_MAX_BYTES) {
       throw new RuntimePolicyStoreError(
         'invalid_credential_input',
         `credential vault exceeds its ${VAULT_DOCUMENT_MAX_BYTES} byte limit`,
       );
     }
-    await writeJsonDocument(root, FILE, document, VAULT_DOCUMENT_MAX_BYTES);
   }
 }
 

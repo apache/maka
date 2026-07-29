@@ -11,20 +11,15 @@ describe('Claude subscription runtime wiring', () => {
   });
 
   test('testConnection never burns Claude OAuth quota with a synthetic messages probe', async () => {
-    const src = await readFile(new URL('../../src/test-connection.ts', import.meta.url), 'utf8');
-    const branchIdx = src.indexOf("connection.providerType === 'claude-subscription'");
-    assert.notEqual(branchIdx, -1, 'Claude OAuth test branch must exist');
-    const branchRegion = src.slice(
-      branchIdx,
-      src.indexOf('const r = await proxiedFetch', branchIdx),
-    );
-    assert.match(
-      branchRegion,
-      /return \{ ok: true, latencyMs: Date\.now\(\) - t0, modelTested: model \}/,
-      'Claude OAuth connection test should validate stored login presence without calling the chat endpoint',
-    );
-    assert.doesNotMatch(branchRegion, /anthropicV1Url\(baseUrl, '\/messages'\)/);
-    assert.doesNotMatch(branchRegion, /messages:\s*\[\{ role: 'user', content: 'Hi' \}\]/);
+    let requests = 0;
+    const result = await testConnection(claudeOAuthConnection(), 'oauth-access-token', undefined, {
+      fetch: async () => {
+        requests += 1;
+        throw new Error('Claude OAuth connection test must not issue a request');
+      },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(requests, 0);
   });
 
   test('model factory constructs Anthropic with authToken for claude-subscription', async () => {

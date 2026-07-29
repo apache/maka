@@ -4,6 +4,7 @@ import type {
   ConnectionCatalogEntryDraft,
   ConnectionCatalogEntryUpdate,
   ConnectionModel,
+  ConnectionModelDiscoveryResult,
   ConnectionTarget,
   ConnectionTestSummary,
   ConnectionVersionBasis,
@@ -318,6 +319,35 @@ export function decodeConnectionTestSummary(value: unknown): ConnectionTestSumma
     status: item.status,
     checkedAt: nonEmptyStringValue(item.checkedAt, 'connection test checkedAt', 128),
     ...(item.errorClass === undefined ? {} : { errorClass: item.errorClass }),
+  };
+}
+
+export function normalizeConnectionModelDiscoveryResult(
+  value: unknown,
+): ConnectionModelDiscoveryResult {
+  const item = exactRecord(value, 'model discovery result', ['models', 'source', 'fetchedAt']);
+  if (
+    !Array.isArray(item.models) ||
+    item.models.length > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION
+  ) {
+    throw domainError('model discovery models must be a bounded array');
+  }
+  const models = item.models.map(decodeConnectionModel);
+  if (new Set(models.map((model) => model.id)).size !== models.length) {
+    throw domainError('model discovery model ids must be unique');
+  }
+  if (item.source !== 'fetched' && item.source !== 'fallback') {
+    throw domainError('model discovery source is invalid');
+  }
+  return {
+    models,
+    source: item.source,
+    fetchedAt: integerValue(
+      item.fetchedAt,
+      'model discovery fetchedAt',
+      0,
+      Number.MAX_SAFE_INTEGER,
+    ),
   };
 }
 

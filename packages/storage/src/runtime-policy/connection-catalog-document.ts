@@ -3,8 +3,10 @@ import {
   CONNECTION_CATALOG_MAX_CONNECTIONS,
   decodeCanonicalConnectionCatalogEntry,
   decodeConnectionTarget,
+  decodeConnectionTestSummary,
   decodeConnectionVersionBasis,
   normalizeConnectionCatalogEntryUpdateForProvider,
+  normalizeConnectionModelDiscoveryResult,
   normalizeCreateCatalogConnectionInput,
   normalizeRemoveCatalogConnectionInput,
   normalizeSetDefaultConnectionTargetInput,
@@ -12,13 +14,16 @@ import {
   type ConnectionCatalogEntry,
   type ConnectionCatalogMutationResult,
   type ConnectionCatalogSnapshot,
+  type ConnectionModelDiscoveryResult,
   type ConnectionTarget,
+  type ConnectionTestSummary,
   type ConnectionVersionBasis,
   type CreateCatalogConnectionInput,
   type RemoveCatalogConnectionInput,
   type SetDefaultConnectionTargetInput,
   type UpdateCatalogConnectionInput,
 } from '@maka/core/runtime-policy';
+import { reconcileConnectionAfterModelFetch } from '@maka/core/llm-connections';
 import { deepFreeze, nextRevision, record, revision, unique } from './codec.js';
 import {
   codecError,
@@ -41,6 +46,15 @@ export interface ConnectionCatalogDocument {
   readonly revision: number;
   readonly defaultTarget: ConnectionTarget | null;
   readonly connections: readonly ConnectionCatalogEntry[];
+}
+
+export interface ConnectionTestModelBasis {
+  readonly enabledModelIds: readonly string[];
+  readonly modelSource: ConnectionCatalogEntry['modelSource'];
+  readonly models: readonly {
+    readonly id: string;
+    readonly apiProtocol: ConnectionCatalogEntry['models'][number]['apiProtocol'];
+  }[];
 }
 
 export class ConnectionCatalogDocumentOwner {
@@ -142,6 +156,10 @@ export class ConnectionCatalogDocumentOwner {
       normalizeConnectionCatalogEntryUpdateForProvider(input.changes, previous.providerType),
     );
     const endpointChanged = previous.baseUrl !== changes.baseUrl;
+    const testBasisChanged =
+      endpointChanged ||
+      previous.enabled !== changes.enabled ||
+      !sameStringArray(previous.enabledModelIds, changes.enabledModelIds);
     const connections = [...current.connections];
     connections[index] = {
       connectionId: previous.connectionId,
@@ -159,7 +177,7 @@ export class ConnectionCatalogDocumentOwner {
       ...(endpointChanged || previous.modelsFetchedAt === undefined
         ? {}
         : { modelsFetchedAt: previous.modelsFetchedAt }),
-      ...(endpointChanged || previous.lastTest === undefined
+      ...(testBasisChanged || previous.lastTest === undefined
         ? {}
         : { lastTest: previous.lastTest }),
     };
@@ -216,6 +234,144 @@ export class ConnectionCatalogDocumentOwner {
     return committed(next);
   }
 
+  async writeModelFetchResult(
+    root: string,
+    current: ConnectionCatalogDocument,
+    expected: ConnectionVersionBasis,
+    rawResult: ConnectionModelDiscoveryResult,
+  ): Promise<ConnectionCatalogSnapshot> {
+    const result = decodeConnectionInput(() => normalizeConnectionModelDiscoveryResult(rawResult));
+    if (result.models.length === 0) {
+      throw codecError('invalid_connection_input', 'Model discovery result must not be empty');
+    }
+    const index = findConnectionIndex(current, expected);
+    const previous = current.connections[index];
+    if (!previous || previous.revision !== expected.revision) {
+      throw codecError('invalid_document', 'Coordinator admitted a stale model discovery result');
+    }
+    const currentDefaultTarget =
+      current.defaultTarget?.connectionId === previous.connectionId
+        ? current.defaultTarget
+        : undefined;
+    const reconciled =
+      result.source === 'fetched'
+        ? reconcileConnectionAfterModelFetch(
+            {
+              defaultModel: currentDefaultTarget?.modelId ?? previous.enabledModelIds[0],
+              enabledModelIds: previous.enabledModelIds,
+            },
+            result.models,
+          )
+        : {
+            defaultModel: currentDefaultTarget?.modelId ?? previous.enabledModelIds[0] ?? '',
+            enabledModelIds: previous.enabledModelIds,
+          };
+    const defaultTarget = currentDefaultTarget
+      ? { connectionId: previous.connectionId, modelId: reconciled.defaultModel }
+      : current.defaultTarget;
+    const discovered: ConnectionCatalogEntry = {
+      ...previous,
+      revision: nextRevision(previous.revision),
+      enabledModelIds: reconciled.enabledModelIds,
+      models: result.models,
+      modelSource: result.source,
+      modelsFetchedAt: result.fetchedAt,
+    };
+    const testBasisChanged = !sameConnectionTestModelBasis(
+      connectionTestModelBasis(previous),
+      connectionTestModelBasis(discovered),
+    );
+    const { lastTest: _lastTest, ...discoveredWithoutLastTest } = discovered;
+    return this.writePatchedResult(
+      root,
+      current,
+      index,
+      testBasisChanged ? discoveredWithoutLastTest : discovered,
+      defaultTarget,
+    );
+  }
+
+  async writeConnectionTestResult(
+    root: string,
+    current: ConnectionCatalogDocument,
+    expected: ConnectionVersionBasis,
+    rawResult: ConnectionTestSummary,
+  ): Promise<ConnectionCatalogSnapshot> {
+    const result = decodeConnectionInput(() => decodeConnectionTestSummary(rawResult));
+    const index = findConnectionIndex(current, expected);
+    const previous = current.connections[index];
+    if (!previous || previous.revision !== expected.revision) {
+      throw codecError('invalid_document', 'Coordinator admitted a stale connection test result');
+    }
+    return this.writePatchedResult(root, current, index, {
+      ...previous,
+      revision: nextRevision(previous.revision),
+      lastTest: result,
+    });
+  }
+
+  async clearConnectionLastTest(
+    root: string,
+    current: ConnectionCatalogDocument,
+    connectionId: string,
+  ): Promise<boolean> {
+    const index = findConnectionIndex(current, { connectionId });
+    const previous = current.connections[index];
+    if (!previous) {
+      throw codecError('invalid_document', 'Coordinator admitted an unknown connection');
+    }
+    if (previous.lastTest === undefined) return false;
+    const { lastTest: _lastTest, ...withoutLastTest } = previous;
+    await this.writePatchedResult(root, current, index, {
+      ...withoutLastTest,
+      revision: nextRevision(previous.revision),
+    });
+    return true;
+  }
+
+  async clearAllConnectionLastTests(
+    root: string,
+    current: ConnectionCatalogDocument,
+  ): Promise<boolean> {
+    if (current.connections.every((connection) => connection.lastTest === undefined)) return false;
+    const connections = current.connections.map((connection) => {
+      if (connection.lastTest === undefined) return connection;
+      const { lastTest: _lastTest, ...withoutLastTest } = connection;
+      return {
+        ...withoutLastTest,
+        revision: nextRevision(connection.revision),
+      };
+    });
+    await this.write(root, {
+      ...current,
+      revision: nextRevision(current.revision),
+      connections,
+    });
+    return true;
+  }
+
+  private async writePatchedResult(
+    root: string,
+    current: ConnectionCatalogDocument,
+    index: number,
+    patched: ConnectionCatalogEntry,
+    defaultTarget: ConnectionTarget | null = current.defaultTarget,
+  ): Promise<ConnectionCatalogSnapshot> {
+    const connections = [...current.connections];
+    connections[index] = patched;
+    if (defaultTarget && !isValidTarget(defaultTarget, connections)) {
+      throw codecError('invalid_document', 'Connection effect produced an invalid default target');
+    }
+    const next = {
+      ...current,
+      revision: nextRevision(current.revision),
+      defaultTarget,
+      connections,
+    };
+    await this.write(root, next);
+    return catalogSnapshot(next);
+  }
+
   private async write(root: string, document: ConnectionCatalogDocument): Promise<void> {
     if (serializeJsonDocument(document).length > CATALOG_DOCUMENT_MAX_BYTES) {
       throw new RuntimePolicyStoreError(
@@ -249,6 +405,35 @@ export function findConnection(
   return document.connections.find((item) => sameConnectionIdentity(item, identity));
 }
 
+export function connectionTestModelBasis(
+  connection: ConnectionCatalogEntry,
+): ConnectionTestModelBasis {
+  return {
+    enabledModelIds: [...connection.enabledModelIds],
+    modelSource: connection.modelSource,
+    models: connection.models.map((model) => ({
+      id: model.id,
+      apiProtocol: model.apiProtocol,
+    })),
+  };
+}
+
+export function sameConnectionTestModelBasis(
+  actual: ConnectionTestModelBasis,
+  expected: ConnectionTestModelBasis,
+): boolean {
+  return (
+    sameStringArray(actual.enabledModelIds, expected.enabledModelIds) &&
+    actual.modelSource === expected.modelSource &&
+    actual.models.length === expected.models.length &&
+    actual.models.every(
+      (model, index) =>
+        model.id === expected.models[index]?.id &&
+        model.apiProtocol === expected.models[index]?.apiProtocol,
+    )
+  );
+}
+
 function findConnectionIndex(
   document: ConnectionCatalogDocument,
   identity: Pick<ConnectionVersionBasis, 'connectionId'>,
@@ -269,6 +454,12 @@ function isValidTarget(
 ): boolean {
   const connection = connections.find((item) => sameConnectionIdentity(item, target));
   return Boolean(connection?.enabled && connection.enabledModelIds.includes(target.modelId));
+}
+
+function sameStringArray(actual: readonly string[], expected: readonly string[]): boolean {
+  return (
+    actual.length === expected.length && actual.every((value, index) => value === expected[index])
+  );
 }
 
 function revisionConflict(expectedRevision: number, actualRevision: number) {

@@ -1,5 +1,6 @@
 import { ARTIFACT_OPERATION_SPECS } from './artifact.js';
 import { requireExactRecord, requireId, requireRecord, requireString } from './codec.js';
+import { CONNECTION_EFFECT_OPERATION_SPECS } from './connection-effects.js';
 import { invalidProtocolFrame } from './errors.js';
 import { HOST_STATUS_OPERATION_SPECS } from './host-status.js';
 import { INTERACTION_OPERATION_SPECS } from './interaction.js';
@@ -69,6 +70,7 @@ export type {
   TurnStartInput,
   TurnStopInput,
 } from './turn.js';
+export * from './connection-effects.js';
 export * from './runtime-policy.js';
 export * from './skill-catalog.js';
 
@@ -77,8 +79,13 @@ const HOST_AND_TURN_OPERATION_SPECS = composeOperationSpecMaps(
   TURN_OPERATION_SPECS,
 );
 
-const CORE_OPERATION_SPECS = composeOperationSpecMaps(
+const CORE_AND_CONNECTION_EFFECT_OPERATION_SPECS = composeOperationSpecMaps(
   HOST_AND_TURN_OPERATION_SPECS,
+  CONNECTION_EFFECT_OPERATION_SPECS,
+);
+
+const CORE_OPERATION_SPECS = composeOperationSpecMaps(
+  CORE_AND_CONNECTION_EFFECT_OPERATION_SPECS,
   RUNTIME_POLICY_OPERATION_SPECS,
 );
 

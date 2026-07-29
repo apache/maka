@@ -1080,14 +1080,32 @@ export type {
   SemanticCompactSummarizer,
   SemanticCompactSummaryRequest,
 } from './semantic-compact.js';
-export { testConnection } from './test-connection.js';
+export { runConnectionTestEffect, testConnection } from './test-connection.js';
 export {
   fetchGitHubCopilotModels,
   fetchOpenAiCodexModels,
   fetchProviderModels,
   OpenAiCodexDiscoveryError,
   ProviderModelDiscoveryHttpError,
+  runConnectionModelDiscoveryEffect,
 } from './model-fetcher.js';
+export type {
+  ConnectionEffectFetch,
+  ConnectionEffectFetchDependency,
+  ConnectionEffectFetchOptions,
+} from './connection-effect-fetch.js';
+export type {
+  ConnectionEffectConnection,
+  ConnectionEffectError,
+  ConnectionEffectErrorKind,
+  ConnectionModelDiscoveryEffectOutcome,
+  ConnectionTestEffectOutcome,
+} from './connection-effect-outcome.js';
+export { createConnectionEffectFetchTransport } from './network/scoped-fetch-transport.js';
+export type {
+  ConnectionEffectFetchTransport,
+  ConnectionEffectProxySnapshot,
+} from './network/scoped-fetch-transport.js';
 
 export { materializeSession, applyAppendedMessage, setToolStatus } from './materializer.js';
 export type { ToolActivityItem, ChatItem, SessionViewModel } from './materializer.js';

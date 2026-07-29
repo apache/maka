@@ -2,12 +2,14 @@ import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { appendFile, chmod, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { createServer, type Server } from 'node:http';
 import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { MessageContent } from '@maka/core/events';
+import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import type { StoredMessage } from '@maka/core/session';
 import type { Task } from '@maka/core/task-ledger';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
@@ -25,6 +27,7 @@ import {
   openInteractiveExecutionStoresForRead,
   openInteractiveExecutionStoresForWrite,
 } from '@maka/storage/execution-stores';
+import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import {
   resolveRootControlNamespace,
   resolveStorageRoot,
@@ -44,6 +47,7 @@ import {
   decodeHostFrame,
   RUNTIME_HOST_PROTOCOL_VERSION,
   TASK_LEDGER_PAGE_MAX_ITEMS,
+  type ConnectionCatalogQueryResult,
   type InteractionPendingSnapshot,
   type SubscriptionFrame,
   type TaskLedgerQueryResult,
@@ -60,6 +64,10 @@ const CURRENT_PROTOCOL = {
   max: RUNTIME_HOST_PROTOCOL_VERSION,
 } as const;
 const PROCESS_TIMEOUT_MS = 10_000;
+const CONNECTION_EFFECT_MODEL_IDS = Array.from(
+  { length: 129 },
+  (_, index) => `connection-effect-model-${String(index + 1).padStart(3, '0')}`,
+);
 
 test('dual UDS Clients query persisted Task Ledger tool-port mutations across Host restart', async () => {
   await withExecutionRoot(async (fixture) => {
@@ -236,6 +244,116 @@ test('two UDS Clients share one Runtime Policy authority and CAS winner', async 
       await fixture.stopHost(host);
     }
   });
+});
+
+test('two UDS Clients run connection effects against one canonical catalog', async () => {
+  const provider = await startConnectionEffectProvider();
+  try {
+    await withExecutionRoot(async (fixture) => {
+      const secret = 'connection-effect-secret';
+      const connection = await fixture.seedConnectionEffect(provider.baseUrl, secret);
+      const host = await fixture.startHost();
+      const desktop = await connectClient(fixture.root, 'desktop');
+      const tui = await connectClient(fixture.root, 'tui');
+      try {
+        assert.equal(desktop.hostEpoch, tui.hostEpoch);
+        assert.notEqual(desktop.connectionId, tui.connectionId);
+        const fetchInput = { connectionId: connection.connectionId };
+        const fetched = await desktop.request('connection.models.fetch', {
+          ...fetchInput,
+        });
+        assert.equal(fetched.kind, 'committed');
+        if (fetched.kind !== 'committed') return;
+        assert.equal(fetched.modelCount, CONNECTION_EFFECT_MODEL_IDS.length);
+        assert.equal(fetched.source, 'fetched');
+
+        const firstPage = await tui.request('connection.catalog.query', { kind: 'start' });
+        assert.equal(firstPage.kind, 'page');
+        if (firstPage.kind !== 'page') return;
+        type CatalogPage = Extract<ConnectionCatalogQueryResult, { readonly kind: 'page' }>;
+        const pages: CatalogPage[] = [firstPage];
+        let observed: CatalogPage = firstPage;
+        while (observed.nextCursor) {
+          const nextResult: ConnectionCatalogQueryResult = await tui.request(
+            'connection.catalog.query',
+            {
+              kind: 'continue',
+              revision: observed.revision,
+              cursor: observed.nextCursor,
+            },
+          );
+          assert.equal(nextResult.kind, 'page');
+          if (nextResult.kind !== 'page') return;
+          pages.push(nextResult);
+          observed = nextResult;
+        }
+        assert.ok(pages.length > 1);
+        assert.ok(pages.every((page) => page.revision === fetched.catalogRevision));
+        assert.deepEqual(
+          pages.flatMap((page) =>
+            page.items.flatMap((item) => (item.kind === 'model' ? [item.model.id] : [])),
+          ),
+          CONNECTION_EFFECT_MODEL_IDS,
+        );
+
+        const testInput = {
+          connectionId: connection.connectionId,
+          modelId: CONNECTION_EFFECT_MODEL_IDS[0]!,
+        };
+        const tested = await tui.request('connection.test.run', {
+          ...testInput,
+        });
+        assert.equal(tested.kind, 'committed');
+        if (tested.kind !== 'committed') return;
+        assert.equal(tested.test.kind, 'verified');
+
+        const canonical = await desktop.request('connection.catalog.query', { kind: 'start' });
+        assert.equal(canonical.kind, 'page');
+        if (canonical.kind !== 'page') return;
+        const header = canonical.items.find(
+          (item) => item.kind === 'connection' && item.connectionId === connection.connectionId,
+        );
+        assert.equal(header?.kind, 'connection');
+        if (header?.kind === 'connection') {
+          assert.deepEqual(header.lastTest, {
+            status: 'verified',
+            checkedAt: tested.test.checkedAt,
+          });
+        }
+        assert.equal(
+          JSON.stringify([fetchInput, fetched, pages, testInput, tested, canonical]).includes(
+            secret,
+          ),
+          false,
+        );
+        assert.equal(provider.requests.length, 2);
+        assert.ok(
+          provider.requests.every(({ authorization }) => authorization === `Bearer ${secret}`),
+        );
+        assert.deepEqual(
+          provider.requests.map(({ method, url }) => ({
+            method,
+            url,
+          })),
+          [
+            {
+              method: 'GET',
+              url: '/v1/models',
+            },
+            {
+              method: 'POST',
+              url: '/v1/chat/completions',
+            },
+          ],
+        );
+      } finally {
+        await Promise.allSettled([desktop.close(), tui.close()]);
+        await fixture.stopHost(host);
+      }
+    });
+  } finally {
+    await provider.close();
+  }
 });
 
 test('two Clients share one execution after the starting Client disconnects', async () => {
@@ -1921,6 +2039,49 @@ class ExecutionFixture {
     }
   }
 
+  async seedConnectionEffect(baseUrl: string, secret: string): Promise<ConnectionCatalogEntry> {
+    const owner = await tryAcquireInteractiveRootOwner(this.capability);
+    assert.ok(owner);
+    if (!owner) throw new Error('Unable to acquire execution root for connection effect setup');
+    try {
+      const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+      const current = await stores.connectionCatalog.getSnapshot();
+      const created = await stores.connectionCatalog.create({
+        expectedCatalogRevision: current.revision,
+        connection: {
+          slug: 'connection-effect-provider',
+          name: 'Connection effect provider',
+          providerType: 'moonshot',
+          baseUrl,
+          enabled: true,
+          enabledModelIds: [CONNECTION_EFFECT_MODEL_IDS[0]!],
+        },
+      });
+      assert.equal(created.kind, 'committed');
+      if (created.kind !== 'committed') {
+        throw new Error('Connection effect setup did not create a connection');
+      }
+      const connection = created.snapshot.connections.find(
+        ({ slug }) => slug === 'connection-effect-provider',
+      );
+      assert.ok(connection);
+      if (!connection) throw new Error('Connection effect setup omitted its connection');
+      const credential = await stores.credentialVault.set({
+        locator: {
+          scope: 'connection',
+          connectionId: connection.connectionId,
+          kind: 'api_key',
+        },
+        expected: null,
+        secret,
+      });
+      assert.equal(credential.kind, 'committed');
+      return connection;
+    } finally {
+      await owner.close();
+    }
+  }
+
   seedRunWithoutUserMessage(
     turnId: string,
     content: string | MessageContent,
@@ -2188,6 +2349,59 @@ async function connectClient(
   });
   assert.equal(result.kind, 'connected');
   return result.connection;
+}
+
+async function startConnectionEffectProvider(): Promise<{
+  readonly baseUrl: string;
+  readonly requests: Array<{
+    readonly method: string;
+    readonly url: string;
+    readonly authorization: string | undefined;
+  }>;
+  close(): Promise<void>;
+}> {
+  const requests: Array<{
+    method: string;
+    url: string;
+    authorization: string | undefined;
+  }> = [];
+  const server = createServer((request, response) => {
+    requests.push({
+      method: request.method ?? '',
+      url: request.url ?? '',
+      authorization: request.headers.authorization,
+    });
+    response.statusCode = 200;
+    response.setHeader('content-type', 'application/json');
+    response.end(
+      request.method === 'GET'
+        ? JSON.stringify({ data: CONNECTION_EFFECT_MODEL_IDS.map((id) => ({ id })) })
+        : JSON.stringify({ choices: [] }),
+    );
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', reject);
+      resolve();
+    });
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    await closeHttpServer(server);
+    throw new Error('Connection effect provider did not bind a TCP address');
+  }
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    requests,
+    close: () => closeHttpServer(server),
+  };
+}
+
+function closeHttpServer(server: Server): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
 }
 
 async function sendStartWithoutReadingResponse(

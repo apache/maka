@@ -15,6 +15,7 @@ import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledge
 import { CanonicalSessionProjectionReader } from './canonical-session-projection.js';
 import { HostCanonicalPermissionOutcomeReader } from './canonical-permission-outcome-reader.js';
 import { HostArtifactCoordinator } from './artifact-coordinator.js';
+import { HostConnectionEffectCoordinator } from './connection-effect-coordinator.js';
 import type { RuntimeHostComposition, RuntimeHostCompositionContext } from './host-kernel.js';
 import { HostInteractionCoordinator } from './interaction-coordinator.js';
 import { type HostMessageRootPort, HostMessageCoordinator } from './message-coordinator.js';
@@ -44,6 +45,14 @@ export async function createExecutionRuntimeHostComposition(
     const backends = new BackendRegistry();
     backends.register('fake', (backendContext) => new FakeBackend(backendContext));
     const runtimePolicyActivation = new RuntimePolicyActivationGate();
+    const invalidateRuntimePolicy = async () => {
+      try {
+        await manager.refreshIdleBackends();
+      } catch (error) {
+        context.requestDrain();
+        throw error;
+      }
+    };
     const sessionAdmission = new SessionAdmissionGate();
     const taskLedger = new HostTaskLedgerCoordinator(taskLedgerStore, sessionAdmission);
     const openedGraphControlStore = createAgentGraphControlStore(
@@ -113,6 +122,7 @@ export async function createExecutionRuntimeHostComposition(
       draining = true;
       messages.beginDrain();
       interactions.beginDrain();
+      connectionEffects.beginDrain();
       skills.beginDrain();
     };
     const interactions = new HostInteractionCoordinator({
@@ -188,21 +198,20 @@ export async function createExecutionRuntimeHostComposition(
     const runtimePolicy = new HostRuntimePolicyCoordinator(
       runtimePolicyStores,
       runtimePolicyActivation,
-      async () => {
-        try {
-          await manager.refreshIdleBackends();
-        } catch (error) {
-          context.requestDrain();
-          throw error;
-        }
-      },
+      invalidateRuntimePolicy,
     );
+    const connectionEffects = new HostConnectionEffectCoordinator({
+      stores: runtimePolicyStores,
+      activation: runtimePolicyActivation,
+      onCommittedMutation: invalidateRuntimePolicy,
+    });
     const artifacts = new HostArtifactCoordinator(openedArtifactStore, context.requestDrain);
     const handlers = {
       ...coordinator.handlers,
       ...messages.handlers,
       ...interactions.handlers,
       ...runtimePolicy.handlers,
+      ...connectionEffects.handlers,
       ...continuityCoordinator.handlers,
       ...taskLedger.handlers,
       ...artifacts.handlers,
@@ -234,6 +243,11 @@ export async function createExecutionRuntimeHostComposition(
         try {
           await recover();
           recovered = true;
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
+          await connectionEffects.close();
         } catch (error) {
           errors.push(error);
         }
