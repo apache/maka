@@ -21,6 +21,7 @@ import {
 } from '@maka/core';
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import { createSessionStore } from '@maka/storage';
 import { StorageRootAuthorityError } from '@maka/storage/root-authority';
 import type { Config, Task } from '../contracts.js';
 import { openHeadlessStorageForWrite } from '../headless-storage.js';
@@ -1248,6 +1249,15 @@ describe('runTaskOnce', () => {
         ),
       );
       assert.ok(events.some((event) => event.status === 'completed'));
+      const sessions = createSessionStore(storageRoot);
+      try {
+        assert.deepEqual(await sessions.readExecutionBoundary(result.resultRecord.sessionId), {
+          kind: 'external',
+          revision: 0,
+        });
+      } finally {
+        await sessions.close?.();
+      }
     });
   });
 

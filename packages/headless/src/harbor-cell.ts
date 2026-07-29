@@ -320,6 +320,12 @@ export async function runHarborCellWithStorage(
   const prompt = resolveHeadlessSystemPrompt(input.config, { heavyTaskMode, economyTaskMode });
   const config = { ...input.config, systemPrompt: prompt.systemPrompt };
   if (resumedSession) {
+    const boundary = await sessionStore.readExecutionBoundary(resumedSession.id);
+    if (boundary.kind !== 'external') {
+      throw new Error(
+        `Harbor resume session requires an external execution boundary, observed ${boundary.kind}`,
+      );
+    }
     const executionFacts = [
       ['cwd', input.cwd, resumedSession.cwd],
       ['backend', input.config.backend, resumedSession.backend],
@@ -395,15 +401,18 @@ export async function runHarborCellWithStorage(
   });
   const session =
     resumedSession ??
-    (await manager.createSession({
-      cwd: input.cwd,
-      backend: input.config.backend,
-      llmConnectionSlug: config.llmConnectionSlug,
-      model: config.model,
-      ...(config.thinkingLevel ? { thinkingLevel: config.thinkingLevel } : {}),
-      permissionMode: 'execute',
-      name: `harbor-cell:${input.config.id}`,
-    }));
+    (await manager.createSession(
+      {
+        cwd: input.cwd,
+        backend: input.config.backend,
+        llmConnectionSlug: config.llmConnectionSlug,
+        model: config.model,
+        ...(config.thinkingLevel ? { thinkingLevel: config.thinkingLevel } : {}),
+        permissionMode: 'execute',
+        name: `harbor-cell:${input.config.id}`,
+      },
+      { initialBoundary: { kind: 'external', revision: 0 } },
+    ));
   const graphControlStore = createAgentGraphControlStore(input.storageRoot);
   const graphCoordinator = new AgentGraphCoordinator({
     sessionStore,
@@ -1059,7 +1068,7 @@ export function buildAiSdkCellBackendRegistration(input: {
         header: { ...ctx.header, model: input.model },
         appendMessage:
           ctx.appendMessage ?? ((message) => ctx.store.appendMessage(ctx.sessionId, message)),
-        readExecutionBoundary: async () => ({ kind: 'external', revision: 0 }),
+        readExecutionBoundary: () => ctx.store.readExecutionBoundary(ctx.sessionId),
         connection,
         apiKey,
         modelId: input.model,

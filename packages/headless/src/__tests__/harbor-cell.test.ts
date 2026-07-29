@@ -14,6 +14,7 @@ import type {
 } from '@maka/core';
 import type { BackendSendInput, BackendStopMode } from '@maka/core/backend-types';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import { createSessionStore } from '@maka/storage';
 import {
   BackendRegistry,
   PiAgentBackend,
@@ -1008,6 +1009,15 @@ describe('runHarborCell', () => {
       );
       assert.match(runtimeEvents, /"id":"cell-usage"/);
       assert.match(runtimeEvents, /"systemPromptHash":"sha256:cell-prompt"/);
+      const sessions = createSessionStore(storageRoot);
+      try {
+        assert.deepEqual(await sessions.readExecutionBoundary(result.invocation.sessionId), {
+          kind: 'external',
+          revision: 0,
+        });
+      } finally {
+        await sessions.close?.();
+      }
     });
   });
 
@@ -1090,6 +1100,33 @@ describe('runHarborCell', () => {
           resumeSessionId: first.invocation.sessionId,
         }),
         /resume session model.*different-model.*fake-model/i,
+      );
+    });
+  });
+
+  test('rejects resuming a session that is not externally isolated', async () => {
+    await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
+      const sessions = createSessionStore(storageRoot);
+      const managed = await sessions.create({
+        cwd: workspaceDir,
+        backend: config.backend,
+        llmConnectionSlug: config.llmConnectionSlug,
+        model: config.model,
+        permissionMode: 'execute',
+        name: 'managed-session',
+      });
+      await sessions.close?.();
+
+      await assert.rejects(
+        runHarborCell({
+          config,
+          instruction: 'resume without external isolation',
+          cwd: workspaceDir,
+          outputDir,
+          storageRoot,
+          resumeSessionId: managed.id,
+        }),
+        /external execution boundary/i,
       );
     });
   });

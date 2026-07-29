@@ -500,7 +500,10 @@ export class SqliteSessionMetadataStore {
     });
   }
 
-  async create(header: SessionHeader): Promise<SessionMetadataRecord> {
+  async create(
+    header: SessionHeader,
+    initialBoundary?: ExecutionBoundary,
+  ): Promise<SessionMetadataRecord> {
     this.assertOpen();
     const normalized = normalizeSessionHeader(header);
     assertSafeSessionId(normalized.id);
@@ -516,11 +519,14 @@ export class SqliteSessionMetadataStore {
       if (this.readRecordSync(normalized.id)) {
         throw new SessionMetadataConflictError(`Session metadata already exists: ${normalized.id}`);
       }
-      return this.insertHeader(normalized, 1, this.now());
+      return this.insertHeader(normalized, 1, this.now(), initialBoundary);
     });
   }
 
-  async createSubagent(header: SessionHeader): Promise<IdempotentSubagentSessionMetadataResult> {
+  async createSubagent(
+    header: SessionHeader,
+    initialBoundary?: ExecutionBoundary,
+  ): Promise<IdempotentSubagentSessionMetadataResult> {
     this.assertOpen();
     const normalized = normalizeSessionHeader(header);
     assertSafeSessionId(normalized.id);
@@ -540,7 +546,10 @@ export class SqliteSessionMetadataStore {
       const committedAt = this.now();
       const claim = this.tryClaimSubagentSpawn(normalized, committedAt);
       if (claim.created) {
-        return { record: this.insertHeader(normalized, 1, committedAt), created: true };
+        return {
+          record: this.insertHeader(normalized, 1, committedAt, initialBoundary),
+          created: true,
+        };
       }
       const existing = this.readRecordSync(claim.childSessionId);
       if (claim.requestFingerprint !== identity.spawn.requestFingerprint) {
@@ -567,6 +576,7 @@ export class SqliteSessionMetadataStore {
     header: SessionHeader,
     request: AgentGraphOperatorProvisionRequest,
     expectedRevision: number,
+    initialBoundary?: ExecutionBoundary,
   ): Promise<IdempotentAgentGraphOperatorMetadataResult> {
     this.assertOpen();
     const normalized = normalizeSessionHeader(header);
@@ -616,7 +626,7 @@ export class SqliteSessionMetadataStore {
           'Graph operator spawn identity exists without its topology provision',
         );
       }
-      const record = this.insertHeader(normalized, 1, provisionedAt);
+      const record = this.insertHeader(normalized, 1, provisionedAt, initialBoundary);
       const provision: AgentGraphOperatorProvision = {
         ...request,
         edges: request.edges.map((edge) => ({ ...edge })),
@@ -1870,8 +1880,15 @@ export class SqliteSessionMetadataStore {
     header: SessionHeader,
     metadataVersion: number,
     committedAt: number,
+    initialBoundary?: ExecutionBoundary,
   ): SessionMetadataRecord {
-    const inserted = this.tryInsertHeader(header, metadataVersion, committedAt, false);
+    const inserted = this.tryInsertHeader(
+      header,
+      metadataVersion,
+      committedAt,
+      false,
+      initialBoundary,
+    );
     if (!inserted) {
       throw new SessionMetadataConflictError(`Session metadata already exists: ${header.id}`);
     }
@@ -1883,6 +1900,7 @@ export class SqliteSessionMetadataStore {
     metadataVersion: number,
     committedAt: number,
     ignoreConflicts: boolean,
+    initialBoundary?: ExecutionBoundary,
   ): SessionMetadataRecord | undefined {
     const result = this.db
       .prepare(`
@@ -1949,11 +1967,14 @@ export class SqliteSessionMetadataStore {
     this.options.failpoint?.('after_session_row_write');
     this.replaceLabels(header);
     this.options.failpoint?.('after_session_labels_write');
-    this.ensureGenesisExecutionBoundary(header);
+    this.ensureGenesisExecutionBoundary(header, initialBoundary);
     return { header, metadataVersion, committedAt };
   }
 
-  private ensureGenesisExecutionBoundary(header: SessionHeader): void {
+  private ensureGenesisExecutionBoundary(
+    header: SessionHeader,
+    initialBoundary?: ExecutionBoundary,
+  ): void {
     const existing = this.db
       .prepare(
         `SELECT 1 AS found FROM sandbox_boundary_log WHERE session_id = ? AND applied_revision = 0`,
@@ -1961,7 +1982,9 @@ export class SqliteSessionMetadataStore {
       .get(header.id);
     if (existing) return;
 
-    const boundary = createGenesisExecutionBoundary(header.permissionMode);
+    const boundary = initialBoundary
+      ? { ...decodeExecutionBoundary(initialBoundary), revision: 0 }
+      : createGenesisExecutionBoundary(header.permissionMode);
     this.db
       .prepare(`
         INSERT INTO sandbox_boundary_log(

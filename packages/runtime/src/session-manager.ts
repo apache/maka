@@ -425,8 +425,11 @@ export interface AgentOutputResult {
 // StoredMessage rows remain a projection/cache surface for existing public
 // shapes. RuntimeEventStore is the semantic conversation ledger.
 export interface SessionStore {
-  create(input: CreateSessionInput): Promise<SessionHeader>;
-  createSubagent(input: CreateSessionInput): Promise<{ header: SessionHeader; created: boolean }>;
+  create(input: CreateSessionInput, initialBoundary?: ExecutionBoundary): Promise<SessionHeader>;
+  createSubagent(
+    input: CreateSessionInput,
+    initialBoundary?: ExecutionBoundary,
+  ): Promise<{ header: SessionHeader; created: boolean }>;
   readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary>;
   createSandboxBoundaryRequest?(
     input: CreateSandboxBoundaryRequest,
@@ -446,6 +449,7 @@ export interface SessionStore {
     input: CreateSessionInput,
     request: AgentGraphOperatorProvisionRequest,
     expectedRevision: number,
+    initialBoundary?: ExecutionBoundary,
   ): Promise<ProvisionAgentGraphOperatorResult>;
   list(filter?: SessionListFilter): Promise<SessionSummary[]>;
   readHeader(sessionId: string): Promise<SessionHeader>;
@@ -688,8 +692,11 @@ export class SessionManager {
   // Session lifecycle
   // --------------------------------------------------------------------------
 
-  async createSession(input: CreateSessionInput): Promise<SessionSummary> {
-    const header = await this.deps.store.create(input);
+  async createSession(
+    input: CreateSessionInput,
+    options: { initialBoundary?: ExecutionBoundary } = {},
+  ): Promise<SessionSummary> {
+    const header = await this.deps.store.create(input, options.initialBoundary);
     return headerToSummary(header);
   }
 
@@ -1626,9 +1633,10 @@ export class SessionManager {
     if (input.source.sessionId.length === 0) {
       throw new Error('Graph operator provision requires a supervisor Session');
     }
-    const [parentHeader, sourceRun] = await Promise.all([
+    const [parentHeader, sourceRun, parentBoundary] = await Promise.all([
       this.deps.store.readHeader(input.source.sessionId),
       this.deps.runStore.readRun(input.source.sessionId, input.source.runId),
+      this.deps.store.readExecutionBoundary(input.source.sessionId),
     ]);
     if (
       sourceRun.sessionId !== input.source.sessionId ||
@@ -1743,6 +1751,7 @@ export class SessionManager {
       },
       request,
       input.expectedScheduleRevision,
+      parentBoundary,
     );
     const relation = result.header.subagentParent?.graph;
     if (
@@ -2194,9 +2203,10 @@ export class SessionManager {
     if (!this.deps.runStore || !this.deps.runtimeEventStore) {
       throw new Error('Child session creation requires AgentRunStore and RuntimeEventStore');
     }
-    const [parentHeader, parentRun] = await Promise.all([
+    const [parentHeader, parentRun, parentBoundary] = await Promise.all([
       this.deps.store.readHeader(parentSessionId),
       this.deps.runStore.readRun(parentSessionId, input.spawnedBy.parentRunId),
+      this.deps.store.readExecutionBoundary(parentSessionId),
     ]);
     this.assertActiveParentRun(parentSessionId, parentRun, input.spawnedBy.parentTurnId);
 
@@ -2216,45 +2226,48 @@ export class SessionManager {
       definition,
       requestFingerprint,
     );
-    const creation = await this.deps.store.createSubagent({
-      cwd: workspace?.worktreePath ?? parentHeader.cwd,
-      ...(parentHeader.projectId !== undefined ? { projectId: parentHeader.projectId } : {}),
-      name: input.name ?? definition.name,
-      backend: parentHeader.backend,
-      llmConnectionSlug: parentHeader.llmConnectionSlug,
-      model: parentHeader.model,
-      ...(parentHeader.thinkingLevel !== undefined
-        ? { thinkingLevel: parentHeader.thinkingLevel }
-        : {}),
-      permissionMode: definition.permissionMode,
-      collaborationMode: 'agent',
-      orchestrationMode: 'default',
-      subagentParent: {
-        kind: 'subagent',
-        parentSessionId,
-        spawnedBy: input.spawnedBy,
-        ...(input.swarm ? { swarm: input.swarm } : {}),
-        lifecycle: 'foreground',
+    const creation = await this.deps.store.createSubagent(
+      {
+        cwd: workspace?.worktreePath ?? parentHeader.cwd,
+        ...(parentHeader.projectId !== undefined ? { projectId: parentHeader.projectId } : {}),
+        name: input.name ?? definition.name,
+        backend: parentHeader.backend,
+        llmConnectionSlug: parentHeader.llmConnectionSlug,
+        model: parentHeader.model,
+        ...(parentHeader.thinkingLevel !== undefined
+          ? { thinkingLevel: parentHeader.thinkingLevel }
+          : {}),
+        permissionMode: definition.permissionMode,
+        collaborationMode: 'agent',
+        orchestrationMode: 'default',
+        subagentParent: {
+          kind: 'subagent',
+          parentSessionId,
+          spawnedBy: input.spawnedBy,
+          ...(input.swarm ? { swarm: input.swarm } : {}),
+          lifecycle: 'foreground',
+        },
+        subagentRuntime: {
+          schemaVersion: SUBAGENT_SESSION_RUNTIME_SCHEMA_VERSION,
+          definitionVersion: definition.definitionVersion,
+          agentId: definition.id,
+          agentName: definition.name,
+          profile: definition.profile,
+          systemPrompt: definition.systemPrompt,
+          toolNames: [...definition.tools],
+          categoryPolicy: { ...definition.categoryPolicy },
+          permissionCeiling: parentHeader.permissionMode,
+        },
+        subagentSpawn: {
+          schemaVersion: SUBAGENT_SESSION_SPAWN_SCHEMA_VERSION,
+          requestFingerprint,
+          initialTurnId: proposedTurnId,
+          initialRunId: proposedRunId,
+        },
+        ...(workspace ? { subagentWorkspace: workspace } : {}),
       },
-      subagentRuntime: {
-        schemaVersion: SUBAGENT_SESSION_RUNTIME_SCHEMA_VERSION,
-        definitionVersion: definition.definitionVersion,
-        agentId: definition.id,
-        agentName: definition.name,
-        profile: definition.profile,
-        systemPrompt: definition.systemPrompt,
-        toolNames: [...definition.tools],
-        categoryPolicy: { ...definition.categoryPolicy },
-        permissionCeiling: parentHeader.permissionMode,
-      },
-      subagentSpawn: {
-        schemaVersion: SUBAGENT_SESSION_SPAWN_SCHEMA_VERSION,
-        requestFingerprint,
-        initialTurnId: proposedTurnId,
-        initialRunId: proposedRunId,
-      },
-      ...(workspace ? { subagentWorkspace: workspace } : {}),
-    });
+      parentBoundary,
+    );
     const child = creation.header;
     const snapshot = child.subagentRuntime;
     const spawn = child.subagentSpawn;

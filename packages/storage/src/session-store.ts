@@ -69,12 +69,16 @@ export function isSessionNotFoundError(error: unknown): error is SessionNotFound
 }
 
 export interface SessionStore {
-  create(input: CreateSessionInput): Promise<SessionHeader>;
-  createSubagent(input: CreateSessionInput): Promise<{ header: SessionHeader; created: boolean }>;
+  create(input: CreateSessionInput, initialBoundary?: ExecutionBoundary): Promise<SessionHeader>;
+  createSubagent(
+    input: CreateSessionInput,
+    initialBoundary?: ExecutionBoundary,
+  ): Promise<{ header: SessionHeader; created: boolean }>;
   createAgentGraphOperator(
     input: CreateSessionInput,
     request: AgentGraphOperatorProvisionRequest,
     expectedRevision: number,
+    initialBoundary?: ExecutionBoundary,
   ): Promise<{ header: SessionHeader } & AgentGraphOperatorProvisionResult>;
   readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary>;
   createSandboxBoundaryRequest(
@@ -147,14 +151,17 @@ class SqliteSessionStore implements SessionStore {
     void this.ready.catch(() => {});
   }
 
-  async create(input: CreateSessionInput): Promise<SessionHeader> {
+  async create(
+    input: CreateSessionInput,
+    initialBoundary?: ExecutionBoundary,
+  ): Promise<SessionHeader> {
     await this.ensureReady();
     if (input.subagentSpawn) {
       throw new Error('Subagent spawn metadata requires createSubagent()');
     }
     const staged = await this.files.createTranscript(input);
     try {
-      return (await this.metadata.create(staged)).header;
+      return (await this.metadata.create(staged, initialBoundary)).header;
     } catch (error) {
       await this.files.remove(staged.id).catch(() => {});
       throw error;
@@ -163,11 +170,12 @@ class SqliteSessionStore implements SessionStore {
 
   async createSubagent(
     input: CreateSessionInput,
+    initialBoundary?: ExecutionBoundary,
   ): Promise<{ header: SessionHeader; created: boolean }> {
     await this.ensureReady();
     const staged = await this.files.createTranscript(input);
     try {
-      const result = await this.metadata.createSubagent(staged);
+      const result = await this.metadata.createSubagent(staged, initialBoundary);
       if (!result.created) await this.files.remove(staged.id);
       return { header: result.record.header, created: result.created };
     } catch (error) {
@@ -180,6 +188,7 @@ class SqliteSessionStore implements SessionStore {
     input: CreateSessionInput,
     request: AgentGraphOperatorProvisionRequest,
     expectedRevision: number,
+    initialBoundary?: ExecutionBoundary,
   ): Promise<{ header: SessionHeader } & AgentGraphOperatorProvisionResult> {
     await this.ensureReady();
     const staged = await this.files.createTranscript(input);
@@ -188,6 +197,7 @@ class SqliteSessionStore implements SessionStore {
         staged,
         request,
         expectedRevision,
+        initialBoundary,
       );
       if (!result.created) await this.files.remove(staged.id);
       return {

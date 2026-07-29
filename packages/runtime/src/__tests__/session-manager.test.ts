@@ -1452,6 +1452,9 @@ describe('SessionManager child-session runtime primitive', () => {
     });
 
     const childHeader = await store.readHeader(result.childSessionId);
+    expect(await store.readExecutionBoundary(result.childSessionId)).toEqual(
+      await store.readExecutionBoundary(parent.id),
+    );
     expect(childHeader.cwd).toBe('/tmp/project');
     expect(childHeader.projectId).toBe('project-1');
     expect(childHeader.workspaceRoot).toBe((await store.readHeader(parent.id)).workspaceRoot);
@@ -18531,6 +18534,7 @@ function activeCompactBlockFixture(sessionId: string, turnId: string): ActiveFul
 class MemorySessionStore implements SessionStore {
   private headers = new Map<string, SessionHeader>();
   private messages = new Map<string, StoredMessage[]>();
+  private executionBoundaries = new Map<string, ExecutionBoundary>();
   readonly failReadMessagesFor = new Set<string>();
   readonly failNextReadMessagesFor = new Map<string, number>();
   readonly failListTurnsFor = new Set<string>();
@@ -18544,6 +18548,7 @@ class MemorySessionStore implements SessionStore {
 
   async createSubagent(
     input: CreateSessionInput,
+    initialBoundary?: ExecutionBoundary,
   ): Promise<{ header: SessionHeader; created: boolean }> {
     const parent = input.subagentParent;
     const spawn = input.subagentSpawn;
@@ -18569,15 +18574,16 @@ class MemorySessionStore implements SessionStore {
       }
       return { header: existing, created: false };
     }
-    return { header: await this.create(input), created: true };
+    return { header: await this.create(input, initialBoundary), created: true };
   }
 
   async createAgentGraphOperator(
     input: CreateSessionInput,
     request: AgentGraphOperatorProvisionRequest,
     _expectedRevision: number,
+    initialBoundary?: ExecutionBoundary,
   ): Promise<{ header: SessionHeader } & AgentGraphOperatorProvisionResult> {
-    const header = await this.create(input);
+    const header = await this.create(input, initialBoundary);
     return {
       header,
       created: true,
@@ -18590,7 +18596,10 @@ class MemorySessionStore implements SessionStore {
     };
   }
 
-  async create(input: CreateSessionInput): Promise<SessionHeader> {
+  async create(
+    input: CreateSessionInput,
+    initialBoundary?: ExecutionBoundary,
+  ): Promise<SessionHeader> {
     const header: SessionHeader = {
       id: `session-${this.headers.size + 1}`,
       workspaceRoot: '/tmp/workspace',
@@ -18634,6 +18643,12 @@ class MemorySessionStore implements SessionStore {
     };
     this.headers.set(header.id, header);
     this.messages.set(header.id, []);
+    this.executionBoundaries.set(
+      header.id,
+      initialBoundary
+        ? { ...initialBoundary, revision: 0 }
+        : createGenesisExecutionBoundary(header.permissionMode),
+    );
     return header;
   }
 
@@ -18657,11 +18672,15 @@ class MemorySessionStore implements SessionStore {
       permissionMode,
       ...(projection?.labels ? { labels: [...projection.labels] } : {}),
     });
-    return createGenesisExecutionBoundary(permissionMode);
+    const boundary = createGenesisExecutionBoundary(permissionMode);
+    this.executionBoundaries.set(sessionId, boundary);
+    return boundary;
   }
 
   async readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary> {
-    return createGenesisExecutionBoundary((await this.readHeader(sessionId)).permissionMode);
+    const boundary = this.executionBoundaries.get(sessionId);
+    if (!boundary) throw new Error(`Unknown session ${sessionId}`);
+    return boundary;
   }
 
   async list(_filter?: SessionListFilter): Promise<SessionSummary[]> {
@@ -18782,6 +18801,7 @@ class MemorySessionStore implements SessionStore {
   async remove(sessionId: string): Promise<void> {
     this.headers.delete(sessionId);
     this.messages.delete(sessionId);
+    this.executionBoundaries.delete(sessionId);
   }
 }
 

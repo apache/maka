@@ -15,6 +15,7 @@ import {
 import type { BackendKind, SessionEvent, SessionHeader } from '@maka/core';
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import { createSessionStore } from '@maka/storage';
 import type { Config, Task } from '../contracts.js';
 import type { HeadlessBackendContext } from '../isolation.js';
 import { runExperiment } from '../runner.js';
@@ -422,6 +423,15 @@ describe('fail-closed (a model-backed backend does not run without isolation)', 
       assert.equal(typeof contexts[0]?.listChildAgents, 'function');
       assert.equal(typeof contexts[0]?.readChildAgentOutput, 'function');
       assert.ok(Array.isArray((await contexts[0]!.listChildAgents!(result.sessionId)).definitions));
+      const sessions = createSessionStore(storageRoot);
+      try {
+        assert.deepEqual(await sessions.readExecutionBoundary(result.sessionId), {
+          kind: 'external',
+          revision: 0,
+        });
+      } finally {
+        await sessions.close?.();
+      }
     });
   });
 

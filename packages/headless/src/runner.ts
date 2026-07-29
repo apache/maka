@@ -178,15 +178,18 @@ export async function runExperimentWithStorage(
         invocation = result;
       },
     });
-    const session = await manager.createSession({
-      cwd: agentWorkspaceDir,
-      backend: config.backend,
-      llmConnectionSlug: config.llmConnectionSlug,
-      model: config.model,
-      permissionMode: 'execute',
-      ...(deps.orchestrationMode ? { orchestrationMode: deps.orchestrationMode } : {}),
-      name: `lab:${config.id}:${task.id}`,
-    });
+    const session = await manager.createSession(
+      {
+        cwd: agentWorkspaceDir,
+        backend: config.backend,
+        llmConnectionSlug: config.llmConnectionSlug,
+        model: config.model,
+        permissionMode: 'execute',
+        ...(deps.orchestrationMode ? { orchestrationMode: deps.orchestrationMode } : {}),
+        name: `lab:${config.id}:${task.id}`,
+      },
+      { initialBoundary: { kind: 'external', revision: 0 } },
+    );
     graphControlStore = createAgentGraphControlStore(deps.storageRoot);
     graphCoordinator = new AgentGraphCoordinator({
       sessionStore: storage.executionStores.sessionStore,

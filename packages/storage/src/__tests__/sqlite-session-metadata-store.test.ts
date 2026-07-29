@@ -113,6 +113,20 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
+  test('persists an explicitly supplied external genesis boundary', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    try {
+      await store.create(fullHeader(), { kind: 'external', revision: 17 });
+
+      assert.deepEqual(await store.readExecutionBoundary('session-1'), {
+        kind: 'external',
+        revision: 0,
+      });
+    } finally {
+      store.close();
+    }
+  });
+
   test('persists one immutable normalized sandbox boundary request at the current revision', async () => {
     const store = createSqliteSessionMetadataStore(':memory:', { now: () => 50 });
     try {

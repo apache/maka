@@ -350,18 +350,21 @@ export async function runTaskOnceWithStorage(
       now,
       runtimeSource: 'test',
     });
-    const header = await sessionStore.create({
-      cwd: agentWorkspaceDir,
-      backend: config.backend,
-      llmConnectionSlug: effectiveConfig.llmConnectionSlug,
-      model: effectiveConfig.model,
-      ...(effectiveConfig.thinkingLevel !== undefined
-        ? { thinkingLevel: effectiveConfig.thinkingLevel }
-        : {}),
-      permissionMode: deps.permissionMode ?? 'execute',
-      ...(deps.orchestrationMode ? { orchestrationMode: deps.orchestrationMode } : {}),
-      name: `task:${config.id}:${task.id}`,
-    });
+    const header = await sessionStore.create(
+      {
+        cwd: agentWorkspaceDir,
+        backend: config.backend,
+        llmConnectionSlug: effectiveConfig.llmConnectionSlug,
+        model: effectiveConfig.model,
+        ...(effectiveConfig.thinkingLevel !== undefined
+          ? { thinkingLevel: effectiveConfig.thinkingLevel }
+          : {}),
+        permissionMode: deps.permissionMode ?? 'execute',
+        ...(deps.orchestrationMode ? { orchestrationMode: deps.orchestrationMode } : {}),
+        name: `task:${config.id}:${task.id}`,
+      },
+      { kind: 'external', revision: 0 },
+    );
     graphControlStore = createAgentGraphControlStore(deps.storageRoot);
     graphCoordinator = new AgentGraphCoordinator({
       sessionStore,
