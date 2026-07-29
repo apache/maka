@@ -217,7 +217,8 @@ export async function runMakaTextCli(
   }
 
   let invocation: InvocationResult | undefined;
-  let boundaryDenied = false;
+  let streamBoundaryFailureUnresolved = false;
+  const invocationBoundaryFailures = new Map<string, boolean>();
   let context: MakaRunContext;
   try {
     context = await deps.createContext({
@@ -244,7 +245,10 @@ export async function runMakaTextCli(
       ...(parsed.options.maxSteps !== undefined ? { maxSteps: parsed.options.maxSteps } : {}),
       ...(parsed.options.graph ? { enableAgentGraph: true } : {}),
       runtimeInvocationObserver: (result) => {
-        boundaryDenied ||= invocationHasSandboxBoundaryFailure(result);
+        invocationBoundaryFailures.set(
+          result.invocationId,
+          invocationHasUnresolvedSandboxBoundaryFailure(result),
+        );
         invocation = result;
       },
     });
@@ -327,7 +331,7 @@ export async function runMakaTextCli(
         : {}),
     })) {
       if (event.type === 'sandbox_boundary_request') {
-        boundaryDenied = true;
+        streamBoundaryFailureUnresolved = true;
         deps.writeStderr(
           'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
         );
@@ -342,12 +346,14 @@ export async function runMakaTextCli(
         event.content.kind === 'text' &&
         event.content.sandboxFailure
       ) {
-        boundaryDenied = true;
+        streamBoundaryFailureUnresolved = true;
         deps.writeStderr(
           event.content.sandboxFailure.reason === 'requires_bypass'
             ? 'maka run: sandbox bypass requires an explicit --yolo\n'
             : 'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
         );
+      } else if (event.type === 'tool_result' && !event.isError) {
+        streamBoundaryFailureUnresolved = false;
       }
     }
     graphActivity?.release();
@@ -374,7 +380,9 @@ export async function runMakaTextCli(
     return 1;
   }
   if (streamFailed) return 1;
-  if (boundaryDenied) return 1;
+  if (streamBoundaryFailureUnresolved || [...invocationBoundaryFailures.values()].some(Boolean)) {
+    return 1;
+  }
   if (!invocation) {
     deps.writeStderr('maka run: runtime produced no InvocationResult\n');
     return 1;
@@ -482,17 +490,23 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function invocationHasSandboxBoundaryFailure(result: InvocationResult): boolean {
-  return result.events.some((event) => {
-    if (event.content?.kind !== 'function_response' || !isRecord(event.content.result)) {
-      return false;
-    }
-    const failure = event.content.result.sandboxFailure;
-    return (
+function invocationHasUnresolvedSandboxBoundaryFailure(result: InvocationResult): boolean {
+  let unresolved = false;
+  for (const event of result.events) {
+    if (event.content?.kind !== 'function_response') continue;
+    const failure = isRecord(event.content.result)
+      ? event.content.result.sandboxFailure
+      : undefined;
+    if (
       isRecord(failure) &&
       (failure.reason === 'sandbox_boundary_required' || failure.reason === 'requires_bypass')
-    );
-  });
+    ) {
+      unresolved = true;
+    } else if (event.content.isError !== true) {
+      unresolved = false;
+    }
+  }
+  return unresolved;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

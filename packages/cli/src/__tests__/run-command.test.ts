@@ -199,6 +199,15 @@ describe('maka run process contract', () => {
     assert.equal(result.stdout, '');
   });
 
+  test('succeeds when the invocation safely recovers after a boundary failure', async () => {
+    const result = await runFixture(['hello'], {
+      scenario: 'sandbox-boundary-recovered',
+      input: '',
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, 'recovered safely\n');
+  });
+
   test('creates an Auto boundary by default', async () => {
     const result = await runFixture(['hello'], {
       input: '',

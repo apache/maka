@@ -147,6 +147,43 @@ const runtime: MakaRunRuntime = {
       await notify(completedResult('should not be emitted'));
       return;
     }
+    if (scenario === 'sandbox-boundary-recovered') {
+      yield {
+        type: 'tool_result',
+        id: 'event-boundary-result',
+        turnId: input.turnId,
+        ts: 1,
+        toolUseId: 'tool-boundary',
+        isError: true,
+        content: {
+          kind: 'text',
+          text: 'Bash requires an approved session sandbox boundary expansion.',
+          sandboxFailure: {
+            reason: 'sandbox_boundary_required',
+            requiredExpansion: { network: { enabled: true } },
+          },
+        },
+      } as unknown as SessionEvent;
+      yield {
+        type: 'tool_result',
+        id: 'event-safe-result',
+        turnId: input.turnId,
+        ts: 2,
+        toolUseId: 'tool-safe',
+        isError: false,
+        content: { kind: 'text', text: 'completed within the current boundary' },
+      };
+      await notify({
+        ...completedResult('recovered safely'),
+        events: [
+          functionResponseEvent('tool-boundary', true, {
+            sandboxFailure: { reason: 'sandbox_boundary_required' },
+          }),
+          functionResponseEvent('tool-safe', false, 'completed within the current boundary'),
+        ],
+      });
+      return;
+    }
     if (scenario === 'slow') {
       process.stderr.write('fixture-ready\n');
       const keepAlive = setInterval(() => {}, 1_000);
@@ -316,6 +353,31 @@ function failedResult(failureClass: string, message: string): InvocationResult {
     failure: { class: failureClass, message },
     startedAt: 1,
     finishedAt: 2,
+  };
+}
+
+function functionResponseEvent(
+  toolUseId: string,
+  isError: boolean,
+  result: unknown,
+): InvocationResult['events'][number] {
+  return {
+    id: `event-${toolUseId}`,
+    invocationId: 'invocation-fixture',
+    runId: 'run-fixture',
+    sessionId: summary.id,
+    turnId: 'turn-fixture',
+    ts: 1,
+    partial: false,
+    role: 'tool',
+    author: 'tool',
+    content: {
+      kind: 'function_response',
+      id: toolUseId,
+      name: 'Bash',
+      result,
+      isError,
+    },
   };
 }
 
