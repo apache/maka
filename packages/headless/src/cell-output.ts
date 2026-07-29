@@ -1,5 +1,9 @@
-import type { RuntimeEvent } from '@maka/core';
-import type { ThinkingLevel } from '@maka/core';
+import {
+  catalogSurfaceById,
+  catalogToolByName,
+  type RuntimeEvent,
+  type ThinkingLevel,
+} from '@maka/core';
 import type {
   ContextBudgetPolicy,
   InvocationResult,
@@ -407,11 +411,12 @@ export function validateHarborCellExecutionIdentity(value: unknown): HarborCellE
   if (
     identity.productToolSurface &&
     identity.agentTools !== undefined &&
-    identity.agentTools !== !identity.productToolSurface.policy.disabledSurfaceIds.includes('agent')
+    identity.agentTools !==
+      (catalogSurfaceById('agent')?.toolNames.some((name) =>
+        identity.productToolSurface!.productToolNames.includes(name),
+      ) ?? false)
   ) {
-    throw new Error(
-      'executionIdentity.agentTools must match executionIdentity.productToolSurface.policy',
-    );
+    throw new Error('executionIdentity.agentTools must match the effective product-tool surface');
   }
   return identity;
 }
@@ -421,21 +426,47 @@ function validateProductToolSurfaceIdentity(value: unknown): ProductToolSurfaceI
     throw new Error('executionIdentity.productToolSurface must be a JSON object');
   if (!isRecord(value.policy))
     throw new Error('executionIdentity.productToolSurface.policy must be a JSON object');
+  const disabledSurfaceIds = validateCanonicalStringArray(
+    value.policy.disabledSurfaceIds,
+    'executionIdentity.productToolSurface.policy.disabledSurfaceIds',
+  );
+  const disabledSurfaces = disabledSurfaceIds.map((surfaceId) => {
+    const surface = catalogSurfaceById(surfaceId);
+    if (!surface) {
+      throw new Error(
+        `executionIdentity.productToolSurface.policy.disabledSurfaceIds entry "${surfaceId}" is not in the product catalog`,
+      );
+    }
+    return surface;
+  });
+  const productToolNames = validateCanonicalStringArray(
+    value.productToolNames,
+    'executionIdentity.productToolSurface.productToolNames',
+  );
+  for (const name of productToolNames) {
+    if (!catalogToolByName(name)) {
+      throw new Error(
+        `executionIdentity.productToolSurface.productToolNames entry "${name}" is not in the product catalog`,
+      );
+    }
+  }
+  for (const surface of disabledSurfaces) {
+    const disabledName = surface.toolNames.find((name) => productToolNames.includes(name));
+    if (disabledName) {
+      throw new Error(
+        `executionIdentity.productToolSurface.productToolNames entry "${disabledName}" belongs to disabled surface "${surface.id}"`,
+      );
+    }
+  }
   return {
     policy: {
       economy: requireBoolean(
         value.policy.economy,
         'executionIdentity.productToolSurface.policy.economy',
       ),
-      disabledSurfaceIds: validateStringArray(
-        value.policy.disabledSurfaceIds,
-        'executionIdentity.productToolSurface.policy.disabledSurfaceIds',
-      ),
+      disabledSurfaceIds,
     },
-    productToolNames: validateStringArray(
-      value.productToolNames,
-      'executionIdentity.productToolSurface.productToolNames',
-    ),
+    productToolNames,
   };
 }
 
@@ -1367,6 +1398,18 @@ function validateStringArray(value: unknown, field: string): string[] {
     throw new Error(`${field} must be an array of strings`);
   }
   return [...value];
+}
+
+function validateCanonicalStringArray(value: unknown, field: string): string[] {
+  const parsed = validateStringArray(value, field);
+  const canonical = [...new Set(parsed)].sort();
+  if (
+    parsed.length !== canonical.length ||
+    parsed.some((entry, index) => entry !== canonical[index])
+  ) {
+    throw new Error(`${field} must be sorted and unique`);
+  }
+  return parsed;
 }
 
 function validateRuntimeRefs(value: unknown): HarborCellRuntimeRefs {
