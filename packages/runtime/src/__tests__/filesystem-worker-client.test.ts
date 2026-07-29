@@ -30,9 +30,14 @@ import {
   type FilesystemWorkerRequest,
   type FilesystemWorkerResult,
 } from '../filesystem-worker/protocol.js';
+import { LinuxBubblewrapBackend } from '../sandbox/linux-sandbox.js';
 import { MacosSeatbeltBackend } from '../sandbox/macos-seatbelt.js';
 import { SandboxManager } from '../sandbox/sandbox-manager.js';
-import type { SandboxTransformRequest, SandboxTransformResult } from '../sandbox/types.js';
+import type {
+  SandboxPlatform,
+  SandboxTransformRequest,
+  SandboxTransformResult,
+} from '../sandbox/types.js';
 
 const cleanup: string[] = [];
 
@@ -307,6 +312,27 @@ describe('filesystem worker operation-scoped Seatbelt profile', () => {
 });
 
 describe('filesystem worker Linux path context', () => {
+  test('pins an existing operation target through an inherited descriptor', async () => {
+    const workspace = await temporaryDirectory('maka-linux-worker-pin-');
+    const target = join(workspace, 'existing.txt');
+    await writeFile(target, 'existing', 'utf8');
+    const { client, processInputs } = fakeClient({ platform: 'linux' });
+
+    await client.execute({
+      operation: { kind: 'read', path: target },
+      cwd: workspace,
+      mode: 'ask',
+    });
+
+    const processInput = processInputs[0];
+    assert.ok(processInput);
+    const pinned = processInput.fdInputs?.find(
+      (input): input is Extract<typeof input, { sourceFd: number }> => 'sourceFd' in input,
+    );
+    assert.ok(pinned);
+    assert.ok(hasArgTriple(processInput.argv, '--ro-bind', `/proc/self/fd/${pinned.fd}`, target));
+  });
+
   test('requests a trusted parent mount only for a missing write target', () => {
     const target = join(tmpdir(), 'maka-linux-worker-parent', 'new.txt');
     assert.deepEqual(
@@ -339,7 +365,9 @@ describe('filesystem worker Linux path context', () => {
   });
 });
 
-function fakeClient(options: { operationErrorCode?: FilesystemWorkerErrorCode } = {}): {
+function fakeClient(
+  options: { operationErrorCode?: FilesystemWorkerErrorCode; platform?: SandboxPlatform } = {},
+): {
   client: FilesystemWorkerClient;
   requests: FilesystemWorkerRequest[];
   transforms: SandboxTransformRequest[];
@@ -347,7 +375,15 @@ function fakeClient(options: { operationErrorCode?: FilesystemWorkerErrorCode } 
 } {
   const requests: FilesystemWorkerRequest[] = [];
   const transforms: SandboxTransformRequest[] = [];
-  const sandboxManager = new SandboxManager([new MacosSeatbeltBackend()]);
+  const platform = options.platform ?? 'darwin';
+  const sandboxManager =
+    platform === 'linux'
+      ? new SandboxManager([
+          new LinuxBubblewrapBackend({
+            capability: { available: true, bwrapPath: '/usr/bin/bwrap' },
+          }),
+        ])
+      : new SandboxManager([new MacosSeatbeltBackend()]);
   const processInputs: FilesystemWorkerProcessRunInput[] = [];
   const client = new FilesystemWorkerClient({
     sandboxManager: Object.assign(Object.create(sandboxManager), {
@@ -356,7 +392,7 @@ function fakeClient(options: { operationErrorCode?: FilesystemWorkerErrorCode } 
         return sandboxManager.transform(request);
       },
     }) as SandboxManager,
-    platform: 'darwin',
+    platform,
     newId: () => `request-${requests.length + 1}`,
     getLaunchSpec: async () => ({
       ok: true,
@@ -431,6 +467,17 @@ function grepOperation(path: string) {
     limit: 200,
     timeoutMs: 1_000,
   };
+}
+
+function hasArgTriple(
+  argv: readonly string[],
+  first: string,
+  second: string,
+  third: string,
+): boolean {
+  return argv.some(
+    (value, index) => value === first && argv[index + 1] === second && argv[index + 2] === third,
+  );
 }
 
 function isPathDenied(error: unknown): boolean {

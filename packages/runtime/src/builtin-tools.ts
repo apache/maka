@@ -55,6 +55,7 @@ import { profileRequiresSandbox, type SandboxManager } from './sandbox/sandbox-m
 import { SandboxCommandError } from './sandbox/errors.js';
 import { isLikelySandboxDenial } from './sandbox/detect.js';
 import { linuxExecutableRoots } from './sandbox/linux-sandbox.js';
+import { pinExistingLinuxProfilePath } from './sandbox/linux-profile-path.js';
 import type { SandboxPlatform, SandboxType } from './sandbox/types.js';
 import type { ChildFdInput } from './child-fd-input.js';
 import { buildArchiveReadTool } from './archive-read-tool.js';
@@ -946,48 +947,14 @@ function prepareLinuxBashProfilePaths(
         }
         continue;
       }
-      if (
-        existing.isSymbolicLink() ||
-        (match === 'exact' ? !existing.isFile() : !existing.isDirectory())
-      ) {
-        throw new Error(`Approved sandbox path changed type: ${target}`);
-      }
-      const linuxConstants = constants as typeof constants & { O_PATH?: number };
-      const fd = openSync(
-        target,
-        (linuxConstants.O_PATH ?? constants.O_RDONLY) | (constants.O_NOFOLLOW ?? 0),
-      );
-      let sourceOpen = true;
-      const releaseSource = () => {
-        if (!sourceOpen) return;
-        sourceOpen = false;
-        closeSync(fd);
-      };
-      try {
-        const metadata = fstatSync(fd, { bigint: true });
-        if (
-          metadata.dev !== BigInt(existing.dev) ||
-          metadata.ino !== BigInt(existing.ino) ||
-          (match === 'exact' ? !metadata.isFile() : !metadata.isDirectory())
-        ) {
-          throw new Error(`Approved sandbox path changed while pinning: ${target}`);
-        }
-        prepared.push({
-          path: target,
-          access,
-          created: false,
-          sourceFd: fd,
-          releaseSource,
-          childFd: 4 + prepared.length,
-          device: metadata.dev,
-          inode: metadata.ino,
-          mtimeNs: metadata.mtimeNs,
-          ctimeNs: metadata.ctimeNs,
-        });
-      } catch (error) {
-        releaseSource();
-        throw error;
-      }
+      const pinned = pinExistingLinuxProfilePath({
+        path: target,
+        access,
+        targetType: match === 'exact' ? 'file' : 'directory',
+        childFd: 4 + prepared.length,
+      });
+      if (!pinned) throw new Error(`Approved sandbox path disappeared: ${target}`);
+      prepared.push({ ...pinned, created: false });
     }
     return prepared;
   } catch (error) {

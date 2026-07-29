@@ -13,6 +13,7 @@ import {
 } from '@maka/core';
 
 import { normalizeSandboxBoundaryPath } from '../sandbox-boundary-path.js';
+import { pinExistingLinuxProfilePath } from '../sandbox/linux-profile-path.js';
 import type { SandboxManager } from '../sandbox/sandbox-manager.js';
 import type { SandboxPlatform } from '../sandbox/types.js';
 import type { FilesystemWorkerLaunchSpecProvider } from './launch-spec.js';
@@ -241,22 +242,62 @@ export class FilesystemWorkerClient {
     const launch = await this.input.getLaunchSpec();
     if (!launch.ok) throw clientError(launch.reason, 'launch', requestId, launch.message);
     const workerProfile = deriveWorkerProfile(effectiveProfile, operationBoundary);
-    const transformed = this.input.sandboxManager.transform({
-      platform,
-      command: {
-        program: launch.spec.program,
-        args: launch.spec.args,
-        cwd: canonicalCwd,
-        env: launch.spec.env,
-        profile: workerProfile,
-        pathContext: {
-          ...pathContext,
-          runtimeReadableRoots: launch.spec.runtimeReadableRoots,
-          executableRoots: launch.spec.executableRoots,
+    const pinnedTarget =
+      platform === 'linux' && target.targetType !== 'missing'
+        ? (() => {
+            try {
+              return pinExistingLinuxProfilePath({
+                path: target.enforcementPath,
+                access,
+                targetType: target.targetType,
+                childFd: 4,
+              });
+            } catch {
+              throw clientError(
+                'path_changed',
+                'validation',
+                requestId,
+                'The approved filesystem target changed before sandbox launch.',
+              );
+            }
+          })()
+        : undefined;
+    let transformed: ReturnType<SandboxManager['transform']>;
+    try {
+      transformed = this.input.sandboxManager.transform({
+        platform,
+        command: {
+          program: launch.spec.program,
+          args: launch.spec.args,
+          cwd: canonicalCwd,
+          env: launch.spec.env,
+          profile: workerProfile,
+          pathContext: {
+            ...pathContext,
+            runtimeReadableRoots: launch.spec.runtimeReadableRoots,
+            executableRoots: launch.spec.executableRoots,
+            ...(pinnedTarget
+              ? {
+                  pinnedProfilePaths: [
+                    {
+                      path: pinnedTarget.path,
+                      access: pinnedTarget.access,
+                      fd: pinnedTarget.childFd,
+                      sourceFd: pinnedTarget.sourceFd,
+                      releaseSource: pinnedTarget.releaseSource,
+                    },
+                  ],
+                }
+              : {}),
+          },
         },
-      },
-    });
+      });
+    } catch (error) {
+      pinnedTarget?.releaseSource();
+      throw error;
+    }
     if (!transformed.ok) {
+      pinnedTarget?.releaseSource();
       throw clientError(transformed.reason, 'transform', requestId, transformed.message, false, {
         backend: transformed.sandboxType,
         profileName: effectiveProfile.name ?? effectiveProfile.type,
@@ -276,6 +317,8 @@ export class FilesystemWorkerClient {
       });
     } catch {
       throw clientError('spawn_failed', 'launch', requestId);
+    } finally {
+      pinnedTarget?.releaseSource();
     }
     if (processResult.timedOut) throw clientError('timeout', 'launch', requestId);
     if (processResult.aborted) throw clientError('aborted', 'launch', requestId);
