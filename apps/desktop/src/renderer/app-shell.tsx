@@ -55,6 +55,11 @@ import { AgentGraphPanel } from './agent-graph-panel';
 import { ChatComposerRegion } from './chat-composer-region';
 import { ChatWorkbar } from './chat-workbar';
 import {
+  consumeCompanionQuoteSnapshot,
+  stageCompanionQuote,
+  type QuoteCompanionPanelState,
+} from './quote-companion-panel-state';
+import {
   PlanExecutionPanel,
   PlanProposalCard,
   usePlanModeState,
@@ -454,9 +459,7 @@ function AppShellContent({
   // `quotes` accumulates excerpts staged for the next follow-up — selecting more
   // text adds to the SAME panel rather than opening a new one; `sourceSessionId`
   // pins it to the main session the companion forks from.
-  const [quotePanel, setQuotePanel] = useState<
-    { sourceSessionId: string; quotes: QuoteRef[] } | null
-  >(null);
+  const [quotePanel, setQuotePanel] = useState<QuoteCompanionPanelState | null>(null);
   // The quote companion's ephemeral fork id, while its panel is open — hidden
   // from the main session list (the fork is removed on panel dismiss).
   const [companionForkId, setCompanionForkId] = useState<string | undefined>(undefined);
@@ -2135,9 +2138,11 @@ function AppShellContent({
                         // Accumulate onto the open panel for this session rather
                         // than spawning a new one; otherwise start a fresh panel.
                         setQuotePanel((prev) =>
-                          prev && prev.sourceSessionId === activeId
-                            ? { ...prev, quotes: [...prev.quotes, quote] }
-                            : { sourceSessionId: activeId, quotes: [quote] },
+                          stageCompanionQuote(prev, {
+                            sourceSessionId: activeId,
+                            quote,
+                            newId: () => crypto.randomUUID(),
+                          }),
                         );
                         // Surface it inside the session workbar (as a tab) rather
                         // than a second right column — open the bar on the quote tab.
@@ -2408,8 +2413,8 @@ function AppShellContent({
                   quotePanel && quotePanel.sourceSessionId === activeId ? quotePanel : null
                 }
                 onClearQuote={() => setQuotePanel(null)}
-                onQuotesConsumed={() =>
-                  setQuotePanel((prev) => (prev ? { ...prev, quotes: [] } : prev))
+                onQuotesConsumed={(snapshot) =>
+                  setQuotePanel((prev) => consumeCompanionQuoteSnapshot(prev, snapshot))
                 }
                 onForkChange={setCompanionForkId}
                 sourceSession={activeSessionForView}

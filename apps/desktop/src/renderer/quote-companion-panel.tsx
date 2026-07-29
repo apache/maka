@@ -8,9 +8,13 @@ import {
   type ChatModelChoice,
   type ComposerHandle,
 } from '@maka/ui';
-import type { QuoteRef, SessionSummary } from '@maka/core';
+import type { SessionSummary } from '@maka/core';
 import { useQuoteCompanion } from './use-quote-companion';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import type {
+  CompanionQuoteSnapshot,
+  StagedCompanionQuote,
+} from './quote-companion-panel-state';
 
 /**
  * The "追问引用" workbar tab: a follow-up thread about the selected excerpt(s).
@@ -23,19 +27,21 @@ import { getDesktopConversationCopy } from './locales/conversation-copy.js';
  * in the main transcript adds another quote chip to THIS thread.
  */
 export function QuoteCompanionPanel(props: {
+  panelId: string;
   /** Excerpts staged for the next send (accumulated as the user adds more). */
-  quotes: readonly QuoteRef[];
+  quotes: readonly StagedCompanionQuote[];
   sourceSession: SessionSummary | undefined;
   /** Shared global choice list, only used to render the inherited model's label. */
   modelChoices: readonly ChatModelChoice[];
   onClear?: () => void;
-  onQuotesConsumed: () => void;
+  onQuotesConsumed: (snapshot: CompanionQuoteSnapshot) => void;
   onForkChange?: (forkId: string | undefined) => void;
 }) {
   const locale = useUiLocale();
   const copy = getDesktopConversationCopy(locale).quoteCompanion;
   const composerRef = useRef<ComposerHandle>(null);
   const companion = useQuoteCompanion({
+    panelId: props.panelId,
     pendingQuotes: props.quotes,
     sourceSession: props.sourceSession,
     locale,
@@ -66,9 +72,9 @@ export function QuoteCompanionPanel(props: {
         activeSession={companion.companionSession}
         emptyOverride={
           <div className="maka-quote-companion-intro">
-            {props.quotes.map((quote, index) => (
-              <blockquote key={`${index}:${quote.text}`} className="maka-quote-panel-quote">
-                {quote.text}
+            {props.quotes.map((quote) => (
+              <blockquote key={quote.id} className="maka-quote-panel-quote">
+                {quote.value.text}
               </blockquote>
             ))}
             <p className="maka-quote-panel-hint">{copy.hint}</p>
@@ -103,7 +109,7 @@ export function QuoteCompanionPanel(props: {
         processing={companion.processing}
         draftKey={companion.companionSession?.id ?? `quote-companion:${props.sourceSession?.id ?? 'none'}`}
         disabled={!props.sourceSession}
-        pendingQuotes={props.quotes}
+        pendingQuotes={props.quotes.map((quote) => quote.value)}
         // No activeSession / onModelChange → the model shows as a read-only chip
         // (the companion has no independent picker; it inherits the source model).
         modelLabel={activeModelLabel}

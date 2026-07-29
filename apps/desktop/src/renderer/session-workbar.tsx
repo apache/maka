@@ -9,13 +9,17 @@ import {
   useUiLocale,
   type ChatModelChoice,
 } from '@maka/ui';
-import type { QuoteRef, SessionSummary } from '@maka/core';
+import type { SessionSummary } from '@maka/core';
 import { ArtifactPane } from './artifact-pane';
 import { BrowserPanel } from './browser-panel';
 import { QuoteCompanionPanel } from './quote-companion-panel';
 import type { SessionWorkbarTab } from './session-workbar-layout';
 import { useSessionTasks } from './use-session-tasks';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import type {
+  CompanionQuoteSnapshot,
+  QuoteCompanionPanelState,
+} from './quote-companion-panel-state';
 
 export function SessionWorkbar(props: {
   sessionId: string;
@@ -27,9 +31,9 @@ export function SessionWorkbar(props: {
   onActiveTabChange: (tab: SessionWorkbarTab) => void;
   /** Active quote side panel: staged excerpts for the source session, or null
    *  when no panel is open. Renders a transient "追问引用" tab. */
-  quote?: { sourceSessionId: string; quotes: QuoteRef[] } | null;
+  quote?: QuoteCompanionPanelState | null;
   onClearQuote?: () => void;
-  onQuotesConsumed?: () => void;
+  onQuotesConsumed?: (snapshot: CompanionQuoteSnapshot) => void;
   onForkChange?: (forkId: string | undefined) => void;
   /** The main session the companion forks from (inherits context + model). */
   sourceSession?: SessionSummary;
@@ -97,6 +101,8 @@ export function SessionWorkbar(props: {
             keepMounted
           >
             <QuoteCompanionPanel
+              key={props.quote.id}
+              panelId={props.quote.id}
               quotes={props.quote.quotes}
               sourceSession={props.sourceSession}
               modelChoices={props.modelChoices ?? []}

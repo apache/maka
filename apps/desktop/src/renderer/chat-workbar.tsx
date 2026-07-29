@@ -1,10 +1,14 @@
 import { lazy, Suspense } from 'react';
 import type { KeyboardEvent, PointerEvent } from 'react';
 import { useUiLocale, type ChatModelChoice } from '@maka/ui';
-import type { QuoteRef, SessionSummary } from '@maka/core';
+import type { SessionSummary } from '@maka/core';
 import type { SessionWorkbarTab } from './session-workbar-layout';
 import { SESSION_WORKBAR_MAX_WIDTH, SESSION_WORKBAR_MIN_WIDTH } from './session-workbar-layout';
 import { getShellCopy } from './locales/shell-copy';
+import type {
+  CompanionQuoteSnapshot,
+  QuoteCompanionPanelState,
+} from './quote-companion-panel-state';
 
 // The session workbar owns the task ledger, embedded browser, and artifact
 // preview. Keep the combined auxiliary surface out of the first chat paint.
@@ -38,9 +42,9 @@ interface ChatWorkbarProps {
   onWorkbarResizeHandleKeyDown: (event: KeyboardEvent<HTMLDivElement>) => void;
   /** Active quote side panel: staged excerpts + source; threads to the workbar's
    *  "追问引用" tab. */
-  quote?: { sourceSessionId: string; quotes: QuoteRef[] } | null;
+  quote?: QuoteCompanionPanelState | null;
   onClearQuote?: () => void;
-  onQuotesConsumed?: () => void;
+  onQuotesConsumed?: (snapshot: CompanionQuoteSnapshot) => void;
   onForkChange?: (forkId: string | undefined) => void;
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];

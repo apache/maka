@@ -28,18 +28,25 @@ import {
 } from './quote-companion-core';
 import { readSettledMessages } from './session-message-settlement';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
+import {
+  snapshotCompanionQuotes,
+  type CompanionQuoteSnapshot,
+  type StagedCompanionQuote,
+} from './quote-companion-panel-state';
 
 export interface UseQuoteCompanionInput {
+  /** Stable owner for the currently mounted panel generation. */
+  panelId: string;
   /** Excerpts staged for the next send; accumulates as the user adds more from
    *  the main transcript. Attached to the next turn, then cleared by the host. */
-  pendingQuotes: readonly QuoteRef[];
+  pendingQuotes: readonly StagedCompanionQuote[];
   /** The main session the panel is attached to. The companion FORKS from it (via
    *  branchFromTurn) so it inherits the full conversation context + model / cwd —
    *  Codex `/side` style. */
   sourceSession: SessionSummary | undefined;
   locale: UiLocale;
   /** Called once a send has consumed the staged quotes, so the host clears them. */
-  onQuotesConsumed: () => void;
+  onQuotesConsumed: (snapshot: CompanionQuoteSnapshot) => void;
   /** Reports the companion fork's id (or undefined) so the host can hide it from
    *  the main session list while the panel is open — the fork is ephemeral. */
   onForkChange?: (forkId: string | undefined) => void;
@@ -91,7 +98,7 @@ function requiredAssistantMessageId(projection: LiveTurnProjection | undefined):
  * which removes the ephemeral fork.
  */
 export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompanionResult {
-  const { locale, sourceSession, pendingQuotes, onQuotesConsumed, onForkChange } = input;
+  const { panelId, locale, sourceSession, pendingQuotes, onQuotesConsumed, onForkChange } = input;
   const copy = getDesktopConversationCopy(locale).quoteCompanion;
   const [companion, setCompanion] = useState<SessionSummary | undefined>(undefined);
   const companionIdRef = useRef<string | null>(null);
@@ -177,7 +184,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       if (!trimmed || turnInFlight || !sourceSession) return false;
       setError(null);
       const turnId = crypto.randomUUID();
-      const label = (pendingQuotes[0]?.text ?? trimmed).slice(0, 24);
+      const quoteSnapshot = snapshotCompanionQuotes(panelId, pendingQuotes);
+      const label = (quoteSnapshot.quotes[0]?.text ?? trimmed).slice(0, 24);
       const result = await performCompanionTurn({
         api: window.maka.sessions,
         sourceSession,
@@ -186,7 +194,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         existingForkId: companionIdRef.current,
         turnId,
         text: trimmed,
-        quotes: pendingQuotes.length > 0 ? [...pendingQuotes] : undefined,
+        quotes: quoteSnapshot.quotes.length > 0 ? [...quoteSnapshot.quotes] : undefined,
         onForkCreated: (session) => {
           pendingForkIdRef.current = session.id;
           onForkChangeRef.current?.(session.id);
@@ -206,7 +214,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
           ownTurnIdsRef.current.add(turnId);
           setOwnTurnTick((tick) => tick + 1);
         },
-        onQuotesConsumed,
+        onQuotesConsumed: () => onQuotesConsumed(quoteSnapshot),
       });
       if (result.status === 'sent') {
         // Surface the just-sent user message immediately, and reflect any
@@ -244,7 +252,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       // 'disposed' → the panel unmounted mid-create; nothing to update.
       return false;
     },
-    [turnInFlight, sourceSession, pendingQuotes, onQuotesConsumed, subscribeToFork, mountedRef],
+    [turnInFlight, sourceSession, panelId, pendingQuotes, onQuotesConsumed, subscribeToFork, mountedRef],
   );
 
   const stop = useCallback(async (): Promise<void> => {
