@@ -79,8 +79,10 @@ test('approving an expansion updates the permission label at once and after a re
   // The answer has to reach the fixture state itself, not just the active
   // request list. The renderer seeds its interaction queue straight out of
   // `e2eFixture:getState` on every boot, bypassing that list entirely, so a
-  // retirement only one exit could see would put the prompt back over the
-  // composer after the reload below — depending on which reply landed last.
+  // retirement only the list could see leaves an answered request that the
+  // seed can still put back over the composer. Asserted here directly because
+  // that is the part with hard evidence: this poll fails against a
+  // list-only retirement and passes against a retirement at the shared owner.
   await expect
     .poll(() =>
       page.evaluate(async () => {
@@ -97,12 +99,11 @@ test('approving an expansion updates the permission label at once and after a re
   // the retry — nothing rejects here — which the read model's own tests cover
   // deterministically (#1629).
   //
-  // The boot path reaches the answered request twice: the active-request list,
-  // and the fixture state the renderer seeds its interaction queue from. Both
-  // read one retirement now, so the assertions below are a settled state rather
-  // than a frame they happened to catch — while either could still resurrect
-  // the prompt, whichever reply landed last decided whether the composer or the
-  // prompt owned the slot, and that coin flip is what timed out on CI.
+  // What made this half time out on CI before #1630 removed it is not measured
+  // here — an answered request that stayed active could be resurrected by
+  // either the list or the seed, and the local ordering never reproduced it.
+  // What is measured is that neither path has an answered request to resurrect
+  // any more, which the poll above pins directly.
   await page.reload();
   await expect(page.locator('.maka-composer-textarea')).toBeVisible();
   await expect(page.locator('.maka-boundary-unreadable-notice')).toHaveCount(0);

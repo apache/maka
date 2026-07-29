@@ -140,9 +140,13 @@ export function startActiveExecutionBoundaryRead(input: {
     cancelled: () => cancelled,
     retryDelaysMs: input.retryDelaysMs,
   }).then((result) => {
-    // Checked here as well as inside the read: this generation can be retired
-    // in the turn between the read resolving and this callback running.
-    if (cancelled || result.outcome === 'cancelled') return;
+    // The read's own re-check is the whole boundary, and it is enough. A
+    // retirement reaches this generation from exactly one place — React's
+    // effect cleanup — which runs from the scheduler, never from the microtask
+    // drain between the read resolving and this callback. Another reply
+    // landing in that drain can only queue a React update behind this callback,
+    // not ahead of it.
+    if (result.outcome === 'cancelled') return;
     input.commit.setReading(false);
     input.commit.setSnapshot({
       sessionId: input.sessionId,

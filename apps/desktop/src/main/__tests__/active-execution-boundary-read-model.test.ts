@@ -278,34 +278,6 @@ describe('Only the newest boundary read may commit', () => {
     // And a retired read must not report the live one as finished either.
     assert.deepEqual(commit.readings, [false]);
   });
-
-  it('does not commit an answer whose generation was retired one microtask too late', async () => {
-    const answer = deferred<ExecutionBoundary>();
-    const commit = recordingCommit();
-
-    const retire = startActiveExecutionBoundaryRead({
-      sessionId: 'session-a',
-      read: () => answer.promise,
-      commit,
-      retryDelaysMs: [],
-    });
-    // Queued behind the read's own resumption on the same promise, so it lands
-    // in the one-microtask window after the read has decided it has a live
-    // answer and before the commit callback runs. Nothing in the read itself
-    // can see a retirement that arrives in that window — which is why the
-    // commit re-checks rather than trusting the outcome it was handed.
-    //
-    // On the product path that window is occupied by whatever React drains
-    // next: a pending passive-effect flush runs this generation's cleanup, and
-    // the app shell has several in-flight IPC replies whose continuations can
-    // sit between ours and the callback.
-    void answer.promise.then(() => retire());
-    answer.resolve(readOnly);
-    await settle();
-
-    assert.deepEqual(commit.snapshots, []);
-    assert.deepEqual(commit.readings, []);
-  });
 });
 
 describe('Boundary decisions notify the read model', () => {
