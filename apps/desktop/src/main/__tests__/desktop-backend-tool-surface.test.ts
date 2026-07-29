@@ -4,7 +4,6 @@ import type { LlmConnection, SessionHeader, TaskLedgerStore } from '@maka/core';
 import { emptyPlanSessionState, type PlanStore } from '@maka/core/plan';
 import type { McpClientManager } from '@maka/mcp';
 import {
-  PermissionEngine,
   type AiSdkBackendInput,
   type BackendFactoryContext,
   type MakaTool,
@@ -377,7 +376,6 @@ function makeFactoryDeps(
     systemPromptService: {
       buildLocalMemoryPromptFragment: async () => '',
     },
-    permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
     telemetryRepo: {},
     artifactStore: {},
     desktopSessionSkillHosts: new Map(),

@@ -90,7 +90,6 @@ import {
 import {
   buildHarborCellAiSdkTools,
   createHarborCellLocalToolExecutor,
-  prepareHarborCellAiSdkTools,
 } from './harbor-cell-tool-executor.js';
 import { createProviderEnvFetch, type ProviderEnvFetch } from './provider-env-fetch.js';
 
@@ -1046,9 +1045,7 @@ export function buildAiSdkCellBackendRegistration(input: {
             policy: context.productToolSurface!.identity.policy,
           })
         : context.productToolSurface!;
-      const productTools = ctx.tools
-        ? [...productToolSurface.tools]
-        : prepareHarborCellAiSdkTools(productToolSurface.tools);
+      const productTools = [...productToolSurface.tools];
       const supplementalTools = ctx.tools
         ? []
         : buildIsolatedHeadlessSupplementalTools({

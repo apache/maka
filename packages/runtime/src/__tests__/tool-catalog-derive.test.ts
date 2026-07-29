@@ -14,7 +14,6 @@ function tool(name: string): MakaTool {
     name,
     description: name,
     parameters: { parse: (value: unknown) => value },
-    permissionRequired: false,
     impl: async () => null,
   };
 }
