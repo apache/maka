@@ -6,6 +6,7 @@ import {
   assessSandboxBoundaryExpansion,
   createGenesisExecutionBoundary,
   decodeExecutionBoundary,
+  executionBoundaryContains,
   validateSandboxBoundaryExpansion,
 } from '../sandbox-boundary.js';
 import {
@@ -323,5 +324,19 @@ describe('ExecutionBoundary', () => {
       () => decodeExecutionBoundary(oversized),
       /Execution boundary exceeds the serialized size limit/,
     );
+  });
+
+  test('compares complete boundary authority with one canonical containment contract', () => {
+    const auto = createGenesisExecutionBoundary('ask');
+    const readOnly = createGenesisExecutionBoundary('explore');
+    const bypass = createGenesisExecutionBoundary('bypass');
+    const external = { kind: 'external', revision: 0 } as const;
+
+    expect(executionBoundaryContains(auto, readOnly)).toBe(true);
+    expect(executionBoundaryContains(readOnly, auto)).toBe(false);
+    expect(executionBoundaryContains(bypass, external)).toBe(true);
+    expect(executionBoundaryContains(external, external)).toBe(true);
+    expect(executionBoundaryContains(external, auto)).toBe(false);
+    expect(executionBoundaryContains(auto, external)).toBe(false);
   });
 });

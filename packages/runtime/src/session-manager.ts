@@ -53,10 +53,8 @@ import type { PermissionMode } from '@maka/core/permission';
 import type {
   CreateSandboxBoundaryRequest,
   ExecutionBoundary,
-  FileSystemSandboxEntry,
   SandboxBoundaryRequest,
   SandboxBoundarySettlement,
-  SandboxProfile,
   SettleSandboxBoundaryRequest,
 } from '@maka/core';
 import type { CollaborationMode } from '@maka/core/collaboration';
@@ -74,6 +72,7 @@ import {
   SUBAGENT_SESSION_SPAWN_SCHEMA_VERSION,
   childSessionsForParent,
   decodeAgentGraphIntentClaim,
+  executionBoundaryContains,
   failureClassFromCompleteStopReason,
   isDeepResearchSession,
   isSessionInlineRun,
@@ -4779,78 +4778,6 @@ function executionBoundaryMatchesPermissionMode(
   return mode === 'explore'
     ? boundary.profile.name === 'read-only'
     : boundary.profile.name !== 'read-only';
-}
-
-function executionBoundaryContains(parent: ExecutionBoundary, child: ExecutionBoundary): boolean {
-  if (parent.kind === 'bypass') return true;
-  if (parent.kind === 'external') return child.kind === 'external';
-  if (child.kind !== 'managed') return false;
-  return sandboxProfileContains(parent.profile, child.profile);
-}
-
-function sandboxProfileContains(parent: SandboxProfile, child: SandboxProfile): boolean {
-  if (child.network.kind === 'enabled' && parent.network.kind !== 'enabled') return false;
-  if (child.fileSystem.kind === 'unrestricted' && parent.fileSystem.kind !== 'unrestricted') {
-    return false;
-  }
-  if (
-    !child.fileSystem.entries
-      .filter((entry) => entry.access !== 'deny')
-      .every((requested) =>
-        parent.fileSystem.entries.some(
-          (existing) =>
-            existing.access !== 'deny' && sandboxEntryContains(existing, requested, false),
-        ),
-      ) &&
-    parent.fileSystem.kind !== 'unrestricted'
-  ) {
-    return false;
-  }
-  if (
-    !parent.fileSystem.entries
-      .filter((entry) => entry.access === 'deny')
-      .every((requiredDeny) =>
-        child.fileSystem.entries.some(
-          (candidate) =>
-            candidate.access === 'deny' && sandboxEntryContains(candidate, requiredDeny, true),
-        ),
-      )
-  ) {
-    return false;
-  }
-  const parentProtected = parent.fileSystem.protectedMetadata?.names ?? [];
-  const childProtected = new Set(child.fileSystem.protectedMetadata?.names ?? []);
-  return parentProtected.every((name) => childProtected.has(name));
-}
-
-function sandboxEntryContains(
-  existing: FileSystemSandboxEntry,
-  requested: FileSystemSandboxEntry,
-  ignoreAccess: boolean,
-): boolean {
-  if (
-    !ignoreAccess &&
-    existing.access !== 'write' &&
-    (existing.access !== 'read' || requested.access !== 'read')
-  ) {
-    return false;
-  }
-  if (existing.kind === 'special' || requested.kind === 'special') {
-    return (
-      existing.kind === 'special' &&
-      requested.kind === 'special' &&
-      existing.special === requested.special
-    );
-  }
-  const existingMatch = existing.match ?? 'subtree';
-  const requestedMatch = requested.match ?? 'subtree';
-  if (existingMatch === 'exact') {
-    return requestedMatch === 'exact' && existing.path === requested.path;
-  }
-  return (
-    requested.path === existing.path ||
-    requested.path.startsWith(existing.path.endsWith('/') ? existing.path : `${existing.path}/`)
-  );
 }
 
 function agentRunStatusForSpawnResult(

@@ -162,6 +162,16 @@ export function assertExecutionBoundaryCapacity(boundary: ExecutionBoundary): vo
   }
 }
 
+export function executionBoundaryContains(
+  parent: ExecutionBoundary,
+  child: ExecutionBoundary,
+): boolean {
+  if (parent.kind === 'bypass') return true;
+  if (parent.kind === 'external') return child.kind === 'external';
+  if (child.kind !== 'managed') return false;
+  return sandboxProfileContains(parent.profile, child.profile);
+}
+
 export type SandboxBoundaryExpansionValidationFailureReason =
   | 'invalid_expansion'
   | 'empty_expansion'
@@ -334,6 +344,69 @@ function profileContainsExpansion(
         ),
     ),
   );
+}
+
+function sandboxProfileContains(parent: SandboxProfile, child: SandboxProfile): boolean {
+  if (child.network.kind === 'enabled' && parent.network.kind !== 'enabled') return false;
+  if (child.fileSystem.kind === 'unrestricted' && parent.fileSystem.kind !== 'unrestricted') {
+    return false;
+  }
+  if (
+    parent.fileSystem.kind !== 'unrestricted' &&
+    !child.fileSystem.entries
+      .filter((entry) => entry.access !== 'deny')
+      .every((requested) =>
+        parent.fileSystem.entries.some(
+          (existing) =>
+            existing.access !== 'deny' && sandboxProfileEntryContains(existing, requested, false),
+        ),
+      )
+  ) {
+    return false;
+  }
+  if (
+    !parent.fileSystem.entries
+      .filter((entry) => entry.access === 'deny')
+      .every((requiredDeny) =>
+        child.fileSystem.entries.some(
+          (candidate) =>
+            candidate.access === 'deny' &&
+            sandboxProfileEntryContains(candidate, requiredDeny, true),
+        ),
+      )
+  ) {
+    return false;
+  }
+  const parentProtected = parent.fileSystem.protectedMetadata?.names ?? [];
+  const childProtected = new Set(child.fileSystem.protectedMetadata?.names ?? []);
+  return parentProtected.every((name) => childProtected.has(name));
+}
+
+function sandboxProfileEntryContains(
+  existing: FileSystemSandboxEntry,
+  requested: FileSystemSandboxEntry,
+  ignoreAccess: boolean,
+): boolean {
+  if (
+    !ignoreAccess &&
+    existing.access !== 'write' &&
+    (existing.access !== 'read' || requested.access !== 'read')
+  ) {
+    return false;
+  }
+  if (existing.kind === 'special' || requested.kind === 'special') {
+    return (
+      existing.kind === 'special' &&
+      requested.kind === 'special' &&
+      existing.special === requested.special
+    );
+  }
+  const existingMatch = existing.match ?? 'subtree';
+  const requestedMatch = requested.match ?? 'subtree';
+  if (existingMatch === 'exact') {
+    return requestedMatch === 'exact' && samePath(existing.path, requested.path);
+  }
+  return pathWithinRoot(requested.path, existing.path);
 }
 
 function expansionConflictsWithExplicitDeny(
