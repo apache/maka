@@ -90,7 +90,7 @@ describe('desktop conversation presentation localization', () => {
     assert.equal(describeTurnErrorClass('timeout', 'en'), 'Request timed out');
     assert.equal(
       describeTurnErrorClass(SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS, 'en'),
-      'The app restarted, so the pending sandbox boundary request was closed as denied',
+      'The app restarted, so the pending request to reach outside the workspace was closed as denied',
     );
     assert.equal(deriveFailedTurnRecovery({
       errorClass: 'tool_failed',
