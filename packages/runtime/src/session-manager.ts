@@ -3941,7 +3941,10 @@ export class SessionManager {
     copied: StoredMessage[],
     input: ReviseBeforeTurnInput,
   ): Promise<SessionSummary> {
-    const header = await this.deps.store.readHeader(sessionId);
+    const [header, boundary] = await Promise.all([
+      this.deps.store.readHeader(sessionId),
+      this.deps.store.readExecutionBoundary(sessionId),
+    ]);
     const revisionRootSessionId = header.revisionRootSessionId ?? sessionId;
     const family = (await this.deps.store.list()).filter(
       (candidate) =>
@@ -3950,29 +3953,32 @@ export class SessionManager {
     );
     const revisionIndex =
       Math.max(1, ...family.map((candidate) => candidate.revisionIndex ?? 1)) + 1;
-    const next = await this.deps.store.create({
-      cwd: header.cwd,
-      ...(header.projectId !== undefined ? { projectId: header.projectId } : {}),
-      backend: header.backend,
-      llmConnectionSlug: header.llmConnectionSlug,
-      model: header.model,
-      thinkingLevel: header.thinkingLevel,
-      permissionMode: header.permissionMode,
-      collaborationMode: header.collaborationMode,
-      orchestrationMode: header.orchestrationMode ?? 'default',
-      name: header.name,
-      labels: header.labels,
-      // A revision of a real branch remains in that branch's conversation
-      // slot; revision lineage itself must not create a branch banner.
-      parentSessionId: header.parentSessionId,
-      branchOfTurnId: header.branchOfTurnId,
-      revisionRootSessionId,
-      revisionParentSessionId: sessionId,
-      revisionOfTurnId: input.sourceTurnId,
-      revisionIndex,
-      revisionState: 'preparing',
-      status: 'active',
-    });
+    const next = await this.deps.store.create(
+      {
+        cwd: header.cwd,
+        ...(header.projectId !== undefined ? { projectId: header.projectId } : {}),
+        backend: header.backend,
+        llmConnectionSlug: header.llmConnectionSlug,
+        model: header.model,
+        thinkingLevel: header.thinkingLevel,
+        permissionMode: header.permissionMode,
+        collaborationMode: header.collaborationMode,
+        orchestrationMode: header.orchestrationMode ?? 'default',
+        name: header.name,
+        labels: header.labels,
+        // A revision of a real branch remains in that branch's conversation
+        // slot; revision lineage itself must not create a branch banner.
+        parentSessionId: header.parentSessionId,
+        branchOfTurnId: header.branchOfTurnId,
+        revisionRootSessionId,
+        revisionParentSessionId: sessionId,
+        revisionOfTurnId: input.sourceTurnId,
+        revisionIndex,
+        revisionState: 'preparing',
+        status: 'active',
+      },
+      boundary,
+    );
     await this.cloneConversationRuntimeLedger(next.id, sourceView, copied);
     if (copied.length > 0) await this.deps.store.appendMessages(next.id, copied);
     await this.deps.store.appendMessage(next.id, {
@@ -4001,23 +4007,29 @@ export class SessionManager {
     copied: StoredMessage[],
     input: BranchFromTurnInput,
   ): Promise<SessionSummary> {
-    const header = await this.deps.store.readHeader(sessionId);
-    const next = await this.deps.store.create({
-      cwd: header.cwd,
-      ...(header.projectId !== undefined ? { projectId: header.projectId } : {}),
-      backend: header.backend,
-      llmConnectionSlug: header.llmConnectionSlug,
-      model: header.model,
-      thinkingLevel: header.thinkingLevel,
-      permissionMode: header.permissionMode,
-      collaborationMode: header.collaborationMode,
-      orchestrationMode: header.orchestrationMode ?? 'default',
-      name: input.name ?? `${header.name} · 分支`,
-      labels: header.labels,
-      parentSessionId: sessionId,
-      branchOfTurnId: input.sourceTurnId,
-      status: 'active',
-    });
+    const [header, boundary] = await Promise.all([
+      this.deps.store.readHeader(sessionId),
+      this.deps.store.readExecutionBoundary(sessionId),
+    ]);
+    const next = await this.deps.store.create(
+      {
+        cwd: header.cwd,
+        ...(header.projectId !== undefined ? { projectId: header.projectId } : {}),
+        backend: header.backend,
+        llmConnectionSlug: header.llmConnectionSlug,
+        model: header.model,
+        thinkingLevel: header.thinkingLevel,
+        permissionMode: header.permissionMode,
+        collaborationMode: header.collaborationMode,
+        orchestrationMode: header.orchestrationMode ?? 'default',
+        name: input.name ?? `${header.name} · 分支`,
+        labels: header.labels,
+        parentSessionId: sessionId,
+        branchOfTurnId: input.sourceTurnId,
+        status: 'active',
+      },
+      boundary,
+    );
     await this.cloneConversationRuntimeLedger(next.id, sourceView, copied);
     if (copied.length > 0) await this.deps.store.appendMessages(next.id, copied);
     await this.deps.store.appendMessage(next.id, {

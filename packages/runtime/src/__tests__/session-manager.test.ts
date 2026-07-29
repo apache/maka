@@ -4,7 +4,9 @@ import { readFile } from 'node:fs/promises';
 import { setTimeout as timerDelay } from 'node:timers/promises';
 import { createHash } from 'node:crypto';
 import {
+  applySandboxBoundaryExpansion,
   createGenesisExecutionBoundary,
+  createWorkspaceWritePermissionProfile,
   DEEP_RESEARCH_SESSION_LABEL,
   deriveTurnRecords,
   isSessionInlineRun,
@@ -15491,6 +15493,53 @@ describe('SessionManager permission mode updates', () => {
       childMessages.some((message) => (message as { turnId?: string }).turnId === 'after'),
     ).toBe(false);
     expect(childMessages.some((message) => message.type === 'turn_state')).toBe(false);
+  });
+
+  test('conversation copies inherit the authoritative execution boundary', async () => {
+    const store = new AtomicBoundaryMemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    backends.register(
+      'fake',
+      (ctx) => new EventBackend(ctx, [{ type: 'complete', stopReason: 'end_turn' }]),
+    );
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      newId: nextId(),
+      now: nextNow(15_050),
+    });
+    const boundaries: ExecutionBoundary[] = [
+      {
+        kind: 'managed',
+        revision: 4,
+        profile: applySandboxBoundaryExpansion(createWorkspaceWritePermissionProfile(), {
+          filesystem: {
+            entries: [{ path: '/approved/release.txt', access: 'write', scope: 'exact' }],
+          },
+        }),
+      },
+      { kind: 'external', revision: 3 },
+    ];
+
+    for (const [index, boundary] of boundaries.entries()) {
+      const source = await manager.createSession(makeInput({ name: `Source ${index}` }));
+      await drain(manager.sendMessage(source.id, { turnId: 'first', text: 'keep' }));
+      await drain(manager.sendMessage(source.id, { turnId: 'second', text: 'replace' }));
+      store.forceBoundary(source.id, boundary);
+
+      const branch = await manager.branchFromTurn(source.id, { sourceTurnId: 'first' });
+      const revision = await manager.reviseBeforeTurn(source.id, { sourceTurnId: 'second' });
+
+      for (const copy of [branch, revision]) {
+        expect(await store.readExecutionBoundary(copy.id)).toEqual({
+          ...boundary,
+          revision: 0,
+        });
+      }
+    }
   });
 
   test('branchFromTurn preserves an explicit no-project association', async () => {
