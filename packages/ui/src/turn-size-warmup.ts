@@ -27,30 +27,12 @@ export interface WarmupScheduler {
   requestFrame(callback: () => void): () => void;
 }
 
-/**
- * Deadline for each chunk's idle slot.
- *
- * `requestIdleCallback` with no timeout promises nothing: it runs when the
- * scheduler finds an idle period, and a thread that stays busy never offers
- * one. That is not a corner case here — the walk is kicked off from the same
- * mount that is rendering the transcript, so it asks for idle time exactly
- * while the renderer is saturated laying out the turns it exists to measure.
- * On a slow enough machine the first chunk simply never runs and the session
- * keeps its 250px placeholder geometry for good, which is the bug the warm-up
- * was written to prevent. Observed directly at 50x CPU throttling: the walk
- * was created and then sat idle indefinitely without forcing a single chunk.
- *
- * A deadline turns "when convenient" into "soon, and no later than this". The
- * whole walk is a handful of chunks, so it still yields to real work first.
- */
-const IDLE_CHUNK_DEADLINE_MS = 200;
-
 function defaultScheduler(): WarmupScheduler | undefined {
   if (typeof requestAnimationFrame !== 'function') return undefined;
   return {
     requestIdle: typeof requestIdleCallback === 'function'
       ? (callback) => {
-        const id = requestIdleCallback(callback, { timeout: IDLE_CHUNK_DEADLINE_MS });
+        const id = requestIdleCallback(callback);
         return () => cancelIdleCallback(id);
       }
       : (callback) => {
@@ -69,16 +51,21 @@ export function createTurnSizeWarmup(options: {
   chunkSize?: number;
   scheduler?: WarmupScheduler;
   /**
-   * Fires once, when the queue has drained and the last chunk has been
-   * released — the moment transcript geometry stops moving.
+   * The moment transcript geometry stops moving: the queue has drained and the
+   * last chunk has been released.
    *
-   * The walk is the only thing that knows this. From the outside it looks
-   * identical to the idle gap between two chunks: no chunk is forced, and the
-   * height holds still until the next one starts. Anything watching from
-   * outside therefore has to guess, and guesses both ways — an observer that
-   * calls a pause "done" stops early at an intermediate height, and one that
-   * waits for quiet longer than a gap can outlive its own budget. Cancelling
-   * the walk does not fire it: nothing settled.
+   * The walk is the only thing that knows this. From outside, the end looks
+   * exactly like the idle gap between two chunks — no chunk is forced, and the
+   * height holds still until the next one starts — so an outside observer has
+   * to guess, and guesses wrong both ways: calling a gap "done" reports an
+   * intermediate height, and waiting out a gap that never ends outlives its own
+   * budget. Both were observed against this module's own E2E.
+   *
+   * Fires exactly once per walk, by control flow rather than by a flag: the two
+   * terminal paths below — a queue that drained with nothing live left in it,
+   * and the release of the last chunk — are mutually exclusive within a step,
+   * and neither schedules further work. Cancelling reaches neither: nothing
+   * settled.
    */
   onSettled?: () => void;
 }): () => void {
@@ -92,13 +79,6 @@ export function createTurnSizeWarmup(options: {
     .reverse();
   let forcedChunk: WarmupTurnElement[] = [];
   let cancelScheduled: (() => void) | undefined;
-  let settled = false;
-
-  const settle = (): void => {
-    if (settled) return;
-    settled = true;
-    options.onSettled?.();
-  };
 
   const release = (): void => {
     for (const turn of forcedChunk) {
@@ -114,7 +94,7 @@ export function createTurnSizeWarmup(options: {
       chunk = queue.splice(0, chunkSize).filter((turn) => turn.isConnected);
     }
     if (chunk.length === 0) {
-      settle();
+      options.onSettled?.();
       return;
     }
     forcedChunk = chunk;
@@ -135,7 +115,7 @@ export function createTurnSizeWarmup(options: {
       cancelScheduled = scheduler.requestFrame(() => {
         release();
         if (queue.length > 0) cancelScheduled = scheduler.requestIdle(step);
-        else settle();
+        else options.onSettled?.();
       });
     });
   };

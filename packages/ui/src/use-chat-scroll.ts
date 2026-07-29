@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { StoredMessage } from '@maka/core';
 import { createPinnedBottomFollower } from './pinned-bottom.js';
 import { createTurnSizeWarmup } from './turn-size-warmup.js';
@@ -41,16 +41,28 @@ export function useChatScroll(input: {
   // Replace content-visibility placeholders with final-layout remembered sizes.
   // ChatView itself unmounts outside sessions, so every rebuilt transcript gets
   // a fresh hook lifecycle without depending on navigation state.
-  useEffect(() => {
-    if (!input.hasTurns) return;
+  //
+  // A LAYOUT effect, only for the sake of the marker below. The scroller can
+  // outlive a transcript — switching sessions empties `messages` and refills it
+  // asynchronously on the same element — so `settled` has to be withdrawn in
+  // the same commit that puts a different transcript on screen. A passive
+  // effect withdraws it one paint too late, leaving a window in which the
+  // marker vouches for geometry that has already been replaced. The body
+  // itself only writes an attribute and schedules async work.
+  useLayoutEffect(() => {
     const root = viewportRef.current;
     if (!root) return;
     // Publish the walk's phase on the scroller. Until the markdown pipeline
     // has landed and the warm-up has walked every turn, this scroller's
     // geometry is still a placeholder-scale estimate, and nothing outside can
-    // tell that apart from a pause between chunks. Marked `running` up front
-    // so a rebuilt transcript never shows the previous walk's `settled`.
+    // tell that apart from a pause between chunks.
+    //
+    // Claimed before the `hasTurns` bail and dropped on teardown, so the only
+    // states this element can be observed in are `running`, a `settled` that
+    // belongs to the transcript currently mounted, and absent.
     root.dataset.turnWarmup = 'running';
+    const forget = () => { delete root.dataset.turnWarmup; };
+    if (!input.hasTurns) return forget;
     let disposed = false;
     let cancelWarmup: (() => void) | undefined;
     let pollTimer: number | undefined;
@@ -72,6 +84,7 @@ export function useChatScroll(input: {
     void fontsReady.then(warmOnceSettled);
     return () => {
       disposed = true;
+      forget();
       window.clearTimeout(pollTimer);
       cancelWarmup?.();
     };

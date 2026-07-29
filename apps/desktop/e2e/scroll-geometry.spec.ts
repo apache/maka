@@ -162,8 +162,8 @@ test('long session opens pinned to bottom and stays pinned while geometry settle
   // distance stays 0 while scrollHeight rises to its final value.
   await expect.poll(async () => (await page.evaluate(probeScroller)).distanceFromBottom).toBe(0);
 
-  // Geometry settled = final-scale height and two consecutive reads agreeing
-  // on it while still pinned. A fixed sleep would race the warm-up.
+  // And the pin is still 0 once the walk reports itself done, which is what
+  // makes the poll above a contract rather than a lucky early read.
   await settleGeometry(page, { pinned: true });
 });
 
