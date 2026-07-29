@@ -11712,6 +11712,233 @@ describe('AiSdkBackend thinking persistence', () => {
     );
   });
 
+  test('preserves every OpenAI Responses reasoning item through stream persistence and replay', async () => {
+    const chunks: LanguageModelV4StreamPart[] = [
+      { type: 'stream-start', warnings: [] },
+      { type: 'reasoning-start', id: 'r1' },
+      {
+        type: 'reasoning-delta',
+        id: 'r1',
+        delta: 'first summary',
+        providerMetadata: { openai: { itemId: 'rs_first' } },
+      },
+      {
+        type: 'reasoning-end',
+        id: 'r1',
+        providerMetadata: {
+          openai: {
+            itemId: 'rs_first',
+            reasoningEncryptedContent: 'encrypted-first',
+          },
+        },
+      },
+      { type: 'reasoning-start', id: 'r2' },
+      {
+        type: 'reasoning-delta',
+        id: 'r2',
+        delta: 'second summary',
+        providerMetadata: { openai: { itemId: 'rs_second' } },
+      },
+      {
+        type: 'reasoning-end',
+        id: 'r2',
+        providerMetadata: {
+          openai: {
+            itemId: 'rs_second',
+            reasoningEncryptedContent: 'encrypted-second',
+          },
+        },
+      },
+      { type: 'text-start', id: 't1' },
+      { type: 'text-delta', id: 't1', delta: 'Final answer.' },
+      { type: 'text-end', id: 't1' },
+      {
+        type: 'finish',
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: {
+          inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+          outputTokens: { total: 3, text: 1, reasoning: 2 },
+        },
+      },
+    ];
+    const firstModel = new MockLanguageModelV4({
+      doStream: {
+        stream: simulateReadableStream({ chunks, initialDelayInMs: null, chunkDelayInMs: null }),
+      },
+    });
+    const planConnection: LlmConnection = {
+      slug: 'volcengine-agent-plan',
+      name: 'Volcengine Ark Agent Plan (China)',
+      providerType: 'volcengine-agent-plan',
+      defaultModel: 'ark-code-latest',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const appended: StoredMessage[] = [];
+    const firstBackend = new AiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message) => {
+        appended.push(message);
+      },
+      connection: planConnection,
+      apiKey: 'ark-plan-token',
+      modelId: 'ark-code-latest',
+      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
+      modelFactory: () => firstModel,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of firstBackend.send({
+      turnId: 'turn-prev',
+      text: 'solve it',
+      context: [],
+    })) {
+      events.push(event);
+    }
+
+    const thinkingCompletes = events.filter(
+      (event): event is Extract<SessionEvent, { type: 'thinking_complete' }> =>
+        event.type === 'thinking_complete',
+    );
+    assert.deepEqual(
+      thinkingCompletes.map((event) => [event.text, event.providerOptions]),
+      [
+        [
+          'first summary',
+          {
+            openai: {
+              itemId: 'rs_first',
+              reasoningEncryptedContent: 'encrypted-first',
+            },
+          },
+        ],
+        [
+          'second summary',
+          {
+            openai: {
+              itemId: 'rs_second',
+              reasoningEncryptedContent: 'encrypted-second',
+            },
+          },
+        ],
+      ],
+    );
+
+    const persistedAssistant = appended.find(
+      (message): message is AssistantMessage => message.type === 'assistant',
+    );
+    assert.ok(persistedAssistant);
+    assert.deepEqual(
+      (
+        persistedAssistant.thinking as
+          | {
+              parts?: Array<{
+                text: string;
+                providerOptions?: Record<string, unknown>;
+              }>;
+            }
+          | undefined
+      )?.parts,
+      thinkingCompletes.map(({ text, providerOptions }) => ({ text, providerOptions })),
+    );
+
+    const ctx = {
+      sessionId: 'session-1',
+      invocationId: 'inv-1',
+      runId: 'run-prev',
+      turnId: 'turn-prev',
+      now: () => 7,
+      newId: idGenerator(),
+    } as unknown as InvocationContext;
+    const memory = createSessionEventMapMemory();
+    const runtimeContext = events.map((event) => mapSessionEventToRuntimeEvent(event, ctx, memory));
+    const projection = projectRuntimeEventsToStoredMessages(runtimeContext, {
+      runHeaders: [
+        {
+          runId: 'run-prev',
+          sessionId: 'session-1',
+          turnId: 'turn-prev',
+          status: 'completed',
+          backendKind: 'ai-sdk',
+          llmConnectionSlug: planConnection.slug,
+          modelId: 'ark-code-latest',
+          cwd: '/tmp/maka',
+          permissionMode: 'ask',
+          createdAt: 1,
+          updatedAt: 2,
+        },
+      ],
+    });
+    const projectedAssistant = projection.messages.find(
+      (message): message is AssistantMessage => message.type === 'assistant',
+    );
+    assert.ok(projectedAssistant);
+    assert.deepEqual(
+      projectedAssistant.thinking?.parts,
+      thinkingCompletes.map(({ text, providerOptions }) => ({ text, providerOptions })),
+    );
+
+    const secondModel = completionModel();
+    const secondBackend = new AiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: planConnection,
+      apiKey: 'ark-plan-token',
+      modelId: 'ark-code-latest',
+      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
+      modelFactory: () => secondModel,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      secondBackend.send({
+        turnId: 'turn-current',
+        text: 'follow up',
+        context: [],
+        runtimeContext,
+      }),
+    );
+
+    const prompt = compactPrompt(secondModel) as ModelMessage[];
+    const assistant = prompt.find(
+      (message) => message.role === 'assistant' && Array.isArray(message.content),
+    );
+    assert.ok(assistant && Array.isArray(assistant.content));
+    assert.deepEqual(
+      assistant.content.filter((part) => part.type === 'reasoning'),
+      [
+        {
+          type: 'reasoning',
+          text: 'first summary',
+          providerOptions: {
+            openai: {
+              itemId: 'rs_first',
+              reasoningEncryptedContent: 'encrypted-first',
+            },
+          },
+        },
+        {
+          type: 'reasoning',
+          text: 'second summary',
+          providerOptions: {
+            openai: {
+              itemId: 'rs_second',
+              reasoningEncryptedContent: 'encrypted-second',
+            },
+          },
+        },
+      ],
+    );
+  });
+
   test('thinking-only tool step (no text) replays reasoning + tool call in one assistant message without an empty text block', async () => {
     // Anthropic interleaved thinking's most common step shape: the step reasons,
     // calls a tool, and produces NO closing text — the backend still flushes the

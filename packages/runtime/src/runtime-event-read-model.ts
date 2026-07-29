@@ -95,7 +95,7 @@ interface ProjectionState {
    * step's assistant row gets). Per-step turns have several entries per turn, so
    * keying by message id (not turn) attaches each step's reasoning to its own row.
    */
-  thinkingByMessageId: Map<string, PendingThinking>;
+  thinkingByMessageId: Map<string, PendingThinking[]>;
   contentOrderByMessageId: Map<string, AssistantStepContentKind[]>;
 }
 
@@ -246,13 +246,15 @@ export function projectRuntimeEventsToStoredMessages(
     }
   }
 
-  for (const pending of state.thinkingByMessageId.values()) {
-    diagnostic(
-      state,
-      pending.event,
-      'unsupported_event',
-      'thinking content has no assistant text row with a matching message id',
-    );
+  for (const pendingItems of state.thinkingByMessageId.values()) {
+    for (const pending of pendingItems) {
+      diagnostic(
+        state,
+        pending.event,
+        'unsupported_event',
+        'thinking content has no assistant text row with a matching message id',
+      );
+    }
   }
 
   return { messages, diagnostics: state.diagnostics };
@@ -588,7 +590,9 @@ function projectThinking(
   // attach eagerly if it already exists (older ordering), else park by message id
   // for projectText's attachPendingThinking to claim.
   if (attachThinkingToAssistant(event, pending, messages)) return true;
-  state.thinkingByMessageId.set(messageId, pending);
+  const pendingItems = state.thinkingByMessageId.get(messageId) ?? [];
+  pendingItems.push(pending);
+  state.thinkingByMessageId.set(messageId, pendingItems);
   return true;
 }
 
@@ -1004,9 +1008,9 @@ function attachPendingThinking(
   messages: StoredMessage[],
   assistantMessageId: string,
 ): void {
-  const pending = state.thinkingByMessageId.get(assistantMessageId);
-  if (!pending) return;
-  if (attachThinkingToAssistant(event, pending, messages)) {
+  const pendingItems = state.thinkingByMessageId.get(assistantMessageId);
+  if (!pendingItems) return;
+  if (pendingItems.every((pending) => attachThinkingToAssistant(event, pending, messages))) {
     state.thinkingByMessageId.delete(assistantMessageId);
   }
 }
@@ -1022,12 +1026,31 @@ function attachThinkingToAssistant(
     const message = messages[index]!;
     if (message.type !== 'assistant' || message.turnId !== event.turnId) continue;
     if (message.id !== pending.messageId) continue;
-    message.thinking = {
+    const incoming = {
       text: pending.text,
       ...(pending.signature !== undefined ? { signature: pending.signature } : {}),
       ...(pending.providerOptions !== undefined
         ? { providerOptions: structuredClone(pending.providerOptions) }
         : {}),
+    };
+    if (!message.thinking) {
+      message.thinking = incoming;
+      return true;
+    }
+    const parts = message.thinking.parts ?? [
+      {
+        text: message.thinking.text,
+        ...(message.thinking.signature !== undefined
+          ? { signature: message.thinking.signature }
+          : {}),
+        ...(message.thinking.providerOptions !== undefined
+          ? { providerOptions: structuredClone(message.thinking.providerOptions) }
+          : {}),
+      },
+    ];
+    message.thinking = {
+      text: message.thinking.text + pending.text,
+      parts: [...parts, incoming],
     };
     return true;
   }

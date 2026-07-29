@@ -325,6 +325,47 @@ describe('storedMessageToRuntimeEvents', () => {
     expect(out[1]?.refs?.storedMessageId).toBe('a2');
   });
 
+  test('assistant with multiple reasoning parts → one replay event per part', () => {
+    const out = storedMessageToRuntimeEvents(
+      assistant('a-parts', 'answer', {
+        text: 'firstsecond',
+        parts: [
+          {
+            text: 'first',
+            providerOptions: {
+              openai: { itemId: 'rs_first', reasoningEncryptedContent: 'encrypted-first' },
+            },
+          },
+          {
+            text: 'second',
+            providerOptions: {
+              openai: { itemId: 'rs_second', reasoningEncryptedContent: 'encrypted-second' },
+            },
+          },
+        ],
+      }),
+      ctx,
+    );
+
+    expect(out.map((event) => event.content)).toEqual([
+      { kind: 'text', text: 'answer' },
+      {
+        kind: 'thinking',
+        text: 'first',
+        providerOptions: {
+          openai: { itemId: 'rs_first', reasoningEncryptedContent: 'encrypted-first' },
+        },
+      },
+      {
+        kind: 'thinking',
+        text: 'second',
+        providerOptions: {
+          openai: { itemId: 'rs_second', reasoningEncryptedContent: 'encrypted-second' },
+        },
+      },
+    ]);
+  });
+
   test('user message → single event (same as singular)', () => {
     const out = storedMessageToRuntimeEvents(user('u', 'hello'), ctx);
     expect(out).toHaveLength(1);

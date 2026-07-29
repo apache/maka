@@ -73,6 +73,36 @@ test('Core decoder matches the shared RuntimeEvent validation corpus', () => {
   }
 });
 
+test('Stored assistant reasoning parts survive recovery decoding', () => {
+  const parts = [
+    {
+      text: 'first summary',
+      providerOptions: {
+        openai: { itemId: 'rs_first', reasoningEncryptedContent: 'encrypted-first' },
+      },
+    },
+    {
+      text: 'second summary',
+      providerOptions: {
+        openai: { itemId: 'rs_second', reasoningEncryptedContent: 'encrypted-second' },
+      },
+    },
+  ];
+  const stored = decodeStoredMessageForRecovery({
+    type: 'assistant',
+    id: 'message-1',
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'answer',
+    thinking: { text: 'first summarysecond summary', parts },
+    modelId: 'ark-code-latest',
+  });
+
+  assert.equal(stored.type, 'assistant');
+  if (stored.type !== 'assistant') throw new Error('unreachable');
+  assert.deepEqual(stored.thinking?.parts, parts);
+});
+
 describe('RuntimeEvent role / author / status enums', () => {
   test('locks the role enum and guard', () => {
     expect(RUNTIME_EVENT_ROLES).toEqual(['user', 'model', 'tool', 'system']);

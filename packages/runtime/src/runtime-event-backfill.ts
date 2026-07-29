@@ -115,24 +115,25 @@ export function backfillRuntimeEventsFromStoredMessages(
           refs: { storedMessageId: message.id },
         });
         if (message.thinking) {
-          events.push({
-            ...base,
-            id: newId(),
-            role: 'model',
-            author: 'agent',
-            content: {
-              kind: 'thinking',
-              text: message.thinking.text,
-              ...(message.thinking.signature !== undefined
-                ? { signature: message.thinking.signature }
-                : {}),
-              ...(message.thinking.providerOptions !== undefined
-                ? { providerOptions: structuredClone(message.thinking.providerOptions) }
-                : {}),
-            },
-            actions: { stateDelta: recoveryState(now, message) },
-            refs: { storedMessageId: message.id },
-          });
+          const parts = message.thinking.parts ?? [message.thinking];
+          for (const part of parts) {
+            events.push({
+              ...base,
+              id: newId(),
+              role: 'model',
+              author: 'agent',
+              content: {
+                kind: 'thinking',
+                text: part.text,
+                ...(part.signature !== undefined ? { signature: part.signature } : {}),
+                ...(part.providerOptions !== undefined
+                  ? { providerOptions: structuredClone(part.providerOptions) }
+                  : {}),
+              },
+              actions: { stateDelta: recoveryState(now, message) },
+              refs: { storedMessageId: message.id },
+            });
+          }
         }
         break;
 

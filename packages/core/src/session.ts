@@ -610,13 +610,7 @@ export interface AssistantMessage {
   turnId: string;
   ts: number;
   text: string;
-  thinking?: {
-    text: string;
-    /** Anthropic signed thinking for replay. */
-    signature?: string;
-    /** Provider-owned replay metadata that must survive missing-ledger recovery. */
-    providerOptions?: Record<string, unknown>;
-  };
+  thinking?: AssistantThinking;
   /**
    * First-observed order of visible content inside this assistant step.
    * RuntimeEvent projection records partial text/thinking and the paired tool
@@ -627,6 +621,23 @@ export interface AssistantMessage {
   contentOrder?: AssistantStepContentKind[];
   /** Actual model used for this turn. */
   modelId: string;
+}
+
+export interface AssistantThinkingPart {
+  text: string;
+  /** Anthropic signed thinking for replay. */
+  signature?: string;
+  /** Provider-owned replay metadata that must survive missing-ledger recovery. */
+  providerOptions?: Record<string, unknown>;
+}
+
+export interface AssistantThinking extends AssistantThinkingPart {
+  /**
+   * Ordered provider reasoning items when one assistant step contains more than
+   * one independently replayable item. The aggregate text remains available on
+   * the parent for existing readers; single-item rows keep the legacy shape.
+   */
+  parts?: AssistantThinkingPart[];
 }
 
 export type AssistantStepContentKind = 'thinking' | 'text' | 'tools';
@@ -831,10 +842,13 @@ const SYSTEM_NOTE_MESSAGE_SHAPE = defineObjectShape<SystemNoteMessage>()(
   ['type', 'id', 'ts', 'kind'],
   ['turnId', 'data'],
 );
-type AssistantThinking = NonNullable<AssistantMessage['thinking']>;
-const ASSISTANT_THINKING_SHAPE = defineObjectShape<AssistantThinking>()(
+const ASSISTANT_THINKING_PART_SHAPE = defineObjectShape<AssistantThinkingPart>()(
   ['text'],
   ['signature', 'providerOptions'],
+);
+const ASSISTANT_THINKING_SHAPE = defineObjectShape<AssistantThinking>()(
+  ['text'],
+  ['signature', 'providerOptions', 'parts'],
 );
 type MessageOrigin = NonNullable<UserMessage['origin']>;
 type AutomationOrigin = Extract<MessageOrigin, { kind: 'automation' }>;
@@ -998,13 +1012,27 @@ function hasMessageEnvelope(value: Record<string, unknown>, turnRequired: boolea
   );
 }
 
+function isAssistantThinkingPart(value: unknown): value is AssistantThinkingPart {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, ASSISTANT_THINKING_PART_SHAPE) &&
+    typeof value.text === 'string' &&
+    isOptionalString(value.signature) &&
+    (value.providerOptions === undefined || isRecord(value.providerOptions))
+  );
+}
+
 function isAssistantThinking(value: unknown): value is AssistantThinking {
   return (
     isRecord(value) &&
     hasExactShape(value, ASSISTANT_THINKING_SHAPE) &&
     typeof value.text === 'string' &&
     isOptionalString(value.signature) &&
-    (value.providerOptions === undefined || isRecord(value.providerOptions))
+    (value.providerOptions === undefined || isRecord(value.providerOptions)) &&
+    (value.parts === undefined ||
+      (Array.isArray(value.parts) &&
+        value.parts.length > 0 &&
+        value.parts.every(isAssistantThinkingPart)))
   );
 }
 
