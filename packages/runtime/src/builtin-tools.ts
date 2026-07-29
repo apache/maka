@@ -220,9 +220,10 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         if (runtimeRef === 'runtime') {
           throw new Error('Runtime resources must be read with the ref parameter, not path');
         }
-        if (options.filesystemWorker) {
+        const filesystemWorker = filesystemWorkerForExecution(options.filesystemWorker, ctx);
+        if (filesystemWorker) {
           const canonicalCwd = canonicalExistingPath(cwd);
-          const result = await options.filesystemWorker.execute({
+          const result = await filesystemWorker.execute({
             operation: {
               kind: 'read',
               path,
@@ -285,13 +286,14 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       executionFacts,
       impl: async ({ path, content }, ctx) => {
         const { cwd } = ctx;
-        const canonicalCwd = options.filesystemWorker ? canonicalExistingPath(cwd) : cwd;
-        const key = options.filesystemWorker
+        const filesystemWorker = filesystemWorkerForExecution(options.filesystemWorker, ctx);
+        const canonicalCwd = filesystemWorker ? canonicalExistingPath(cwd) : cwd;
+        const key = filesystemWorker
           ? await fileToolWriteLockKey(canonicalCwd, path)
           : (await executor.writeLockKey({ cwd, path })).key;
         return await withFileWriteLock(key, async () => {
-          if (options.filesystemWorker) {
-            const result = await options.filesystemWorker.execute({
+          if (filesystemWorker) {
+            const result = await filesystemWorker.execute({
               operation: { kind: 'write', path, content },
               cwd: canonicalCwd,
               ...(ctx.executionBoundary ? { executionBoundary: ctx.executionBoundary } : {}),
@@ -331,13 +333,14 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       executionFacts,
       impl: async ({ path, old_string, new_string }, ctx) => {
         const { cwd } = ctx;
-        const canonicalCwd = options.filesystemWorker ? canonicalExistingPath(cwd) : cwd;
-        const key = options.filesystemWorker
+        const filesystemWorker = filesystemWorkerForExecution(options.filesystemWorker, ctx);
+        const canonicalCwd = filesystemWorker ? canonicalExistingPath(cwd) : cwd;
+        const key = filesystemWorker
           ? await fileToolWriteLockKey(canonicalCwd, path)
           : (await executor.writeLockKey({ cwd, path })).key;
         return await withFileWriteLock(key, async () => {
-          if (options.filesystemWorker) {
-            const result = await options.filesystemWorker.execute({
+          if (filesystemWorker) {
+            const result = await filesystemWorker.execute({
               operation: {
                 kind: 'edit',
                 path,
@@ -408,13 +411,14 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       executionFacts,
       impl: async ({ path, sort_keys }, ctx) => {
         const { cwd } = ctx;
-        const canonicalCwd = options.filesystemWorker ? canonicalExistingPath(cwd) : cwd;
-        const key = options.filesystemWorker
+        const filesystemWorker = filesystemWorkerForExecution(options.filesystemWorker, ctx);
+        const canonicalCwd = filesystemWorker ? canonicalExistingPath(cwd) : cwd;
+        const key = filesystemWorker
           ? await fileToolWriteLockKey(canonicalCwd, path)
           : (await executor.writeLockKey({ cwd, path })).key;
         return await withFileWriteLock(key, async () => {
-          if (options.filesystemWorker) {
-            const result = await options.filesystemWorker.execute({
+          if (filesystemWorker) {
+            const result = await filesystemWorker.execute({
               operation: { kind: 'format_json', path, sortKeys: sort_keys ?? false },
               cwd: canonicalCwd,
               ...(ctx.executionBoundary ? { executionBoundary: ctx.executionBoundary } : {}),
@@ -484,9 +488,10 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       impl: async ({ pattern, cwd: relCwd }, ctx) => {
         const { cwd } = ctx;
         assertRelativeGlobPattern(pattern);
-        if (options.filesystemWorker) {
+        const filesystemWorker = filesystemWorkerForExecution(options.filesystemWorker, ctx);
+        if (filesystemWorker) {
           const canonicalCwd = canonicalExistingPath(cwd);
-          const result = await options.filesystemWorker.execute({
+          const result = await filesystemWorker.execute({
             operation: { kind: 'glob', path: relCwd ?? '.', pattern, limit: 200 },
             cwd: canonicalCwd,
             ...(ctx.executionBoundary ? { executionBoundary: ctx.executionBoundary } : {}),
@@ -518,9 +523,10 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       executionFacts,
       impl: async ({ pattern, path, glob }, ctx) => {
         const { cwd, abortSignal } = ctx;
-        if (options.filesystemWorker) {
+        const filesystemWorker = filesystemWorkerForExecution(options.filesystemWorker, ctx);
+        if (filesystemWorker) {
           const canonicalCwd = canonicalExistingPath(cwd);
-          const result = await options.filesystemWorker.execute({
+          const result = await filesystemWorker.execute({
             operation: {
               kind: 'grep',
               path: path ?? '.',
@@ -563,6 +569,23 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
     },
   ];
   return tools.filter((tool) => options.includeEdit !== false || tool.name !== 'Edit');
+}
+
+function filesystemWorkerForExecution(
+  worker: Pick<FilesystemWorkerClient, 'execute'> | undefined,
+  ctx: MakaToolContext,
+): Pick<FilesystemWorkerClient, 'execute'> | undefined {
+  if (worker) return worker;
+  if (ctx.executionBoundary?.kind !== 'managed') return undefined;
+  throw new SandboxCommandError({
+    domain: 'filesystem',
+    stage: 'capability',
+    reason: 'requires_bypass',
+    recoverable: false,
+    profileName: ctx.executionBoundary.profile.name ?? ctx.executionBoundary.profile.type,
+    message:
+      'Managed filesystem execution is unavailable because the sandboxed worker cannot be enforced.',
+  });
 }
 
 interface ExecutorBashSandboxOptions {

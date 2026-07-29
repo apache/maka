@@ -16,6 +16,20 @@ afterEach(async () => {
 });
 
 describe('builtin file tools use the sandboxed worker', () => {
+  test('fails closed for managed file operations when the worker is unavailable', async () => {
+    const cwd = await temporaryDirectory('maka-file-worker-unavailable-');
+    const tools = buildBuiltinTools();
+
+    await assert.rejects(
+      runTool(tools, 'Write', { path: 'blocked.txt', content: 'must not be written' }, cwd),
+      (error: unknown) =>
+        error instanceof Error &&
+        Object.assign(error, {}) &&
+        (error as Error & { domain?: string; reason?: string }).domain === 'filesystem' &&
+        (error as Error & { reason?: string }).reason === 'requires_bypass',
+    );
+  });
+
   test('uses a sandboxed worker without one-call permission metadata', () => {
     const linuxTools = buildBuiltinTools({
       filesystemWorker: { execute: async () => ({ kind: 'read', content: '' }) },
