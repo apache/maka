@@ -983,7 +983,11 @@ describe('projectRuntimeEventsToStoredMessages', () => {
                 requestId: 'boundary-1',
                 toolUseId: 'tool-1',
                 justification: 'read a file outside the workspace',
-                expansion: { readPaths: ['/tmp/outside.txt'] },
+                expansion: {
+                  filesystem: {
+                    entries: [{ path: '/tmp/outside.txt', access: 'read', scope: 'exact' }],
+                  },
+                },
               },
             },
           },
@@ -999,7 +1003,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
               sandboxBoundaryDecision: {
                 requestId: 'boundary-1',
                 decision: 'allow',
-                status: 'applied',
+                status: 'approved',
                 revision: 2,
               },
             },
@@ -1014,26 +1018,25 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     expect(out.diagnostics).toEqual([]);
   });
 
-  test('an unmapped SessionEvent degrades to a soft diagnostic instead of failing the projection', () => {
-    // AiSdkFlow's exhaustiveness guard turns an unknown SessionEvent into this
-    // shape rather than dropping it. It must stay observable without making a
-    // completed session unreadable.
+  test('a malformed sandbox boundary state delta stays an unsupported event', () => {
+    // Claiming the key alone would let any shape ride in under a control-fact
+    // name. Only a well-formed request or decision is a canonical fact.
     const out = projectRuntimeEventsToStoredMessages(
       [
         ev({
-          id: 'unmapped-session-event',
+          id: 'sandbox-boundary-malformed',
+          ts: ts + 1,
           role: 'system',
           author: 'system',
-          actions: { stateDelta: { unmappedSessionEventType: 'future_event' } },
+          actions: { stateDelta: { sandboxBoundaryRequest: { toolUseId: 'tool-1' } } },
+          refs: { toolCallId: 'tool-1' },
         }),
       ],
       { runHeaders: [header] },
     );
 
     expect(out.messages).toEqual([]);
-    expect(out.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
-      'unmapped_session_event',
-    ]);
+    expect(out.diagnostics.map((diagnostic) => diagnostic.code)).toEqual(['unsupported_event']);
   });
 
   test('model thinking attaches to the assistant text row that shares its step message id', () => {

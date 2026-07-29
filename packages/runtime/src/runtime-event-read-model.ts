@@ -21,7 +21,6 @@ import { isArchivedToolResultPlaceholder } from './tool-result-archive.js';
 export type RuntimeEventReadModelDiagnosticCode =
   | 'partial_skipped'
   | 'unsupported_event'
-  | 'unmapped_session_event'
   | 'incomplete_event'
   | 'archived_tool_result_placeholder'
   | 'generated_id'
@@ -219,27 +218,10 @@ export function projectRuntimeEventsToStoredMessages(
       projected = true;
     }
 
-    if (
-      event.actions?.stateDelta?.sandboxBoundaryRequest !== undefined ||
-      event.actions?.stateDelta?.sandboxBoundaryDecision !== undefined
-    ) {
+    if (isSandboxBoundaryStateDelta(event)) {
       // The session sandbox boundary owns enforcement and its own durable
       // revisions. These are canonical control/audit facts, and the tool call
       // and response around them own every provider-visible row.
-      projected = true;
-    }
-
-    if (typeof event.actions?.stateDelta?.unmappedSessionEventType === 'string') {
-      // AiSdkFlow's exhaustiveness guard preserves an unknown SessionEvent as
-      // this shape instead of dropping it. Surfacing it stays useful, but a
-      // single unknown event must never make a completed session unreadable.
-      diagnostic(
-        state,
-        event,
-        'unmapped_session_event',
-        'SessionEvent type has no RuntimeEvent mapping',
-        { type: event.actions.stateDelta.unmappedSessionEventType },
-      );
       projected = true;
     }
 
@@ -1200,6 +1182,33 @@ function isPlanProposalStateDelta(event: RuntimeEvent): boolean {
     typeof stateDelta?.planId === 'string' &&
     typeof stateDelta.title === 'string'
   );
+}
+
+function isSandboxBoundaryStateDelta(event: RuntimeEvent): boolean {
+  const stateDelta = event.actions?.stateDelta;
+  if (!stateDelta) return false;
+  const request = stateDelta.sandboxBoundaryRequest;
+  const decision = stateDelta.sandboxBoundaryDecision;
+  if (request !== undefined) {
+    return (
+      isRecord(request) &&
+      typeof request.requestId === 'string' &&
+      typeof request.toolUseId === 'string' &&
+      isRecord(request.expansion)
+    );
+  }
+  if (decision !== undefined) {
+    return (
+      isRecord(decision) &&
+      typeof decision.requestId === 'string' &&
+      (decision.decision === 'allow' || decision.decision === 'deny')
+    );
+  }
+  return false;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function diagnostic(
