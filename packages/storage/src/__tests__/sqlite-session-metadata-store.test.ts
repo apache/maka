@@ -92,6 +92,56 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
+  test('migrates v12 sessions to durable revision-zero boundaries on first read', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-boundary-v12-'));
+    const path = join(root, 'sessions.sqlite');
+    try {
+      const initial = createSqliteSessionMetadataStore(path);
+      for (const permissionMode of ['ask', 'execute', 'explore', 'bypass'] as const) {
+        await initial.create(fullHeader({ id: `legacy-${permissionMode}`, permissionMode }));
+      }
+      initial.close();
+
+      const v12 = new DatabaseSync(path);
+      v12.exec(`
+        DROP TABLE sandbox_boundary_log;
+        UPDATE session_metadata_schema
+        SET version = 12
+        WHERE scope = 'session_metadata';
+      `);
+      v12.close();
+
+      const migrated = createSqliteSessionMetadataStore(path);
+      for (const permissionMode of ['ask', 'execute', 'explore', 'bypass'] as const) {
+        const boundary = await migrated.readExecutionBoundary(`legacy-${permissionMode}`);
+        assert.equal(boundary.revision, 0);
+        assert.equal(boundary.kind, permissionMode === 'bypass' ? 'bypass' : 'managed');
+        if (boundary.kind === 'managed') {
+          assert.equal(
+            boundary.profile.name,
+            permissionMode === 'explore' ? 'read-only' : 'workspace-write',
+          );
+        }
+      }
+      migrated.close();
+
+      const reopened = createSqliteSessionMetadataStore(path);
+      try {
+        assert.deepEqual(await reopened.readExecutionBoundary('legacy-bypass'), {
+          kind: 'bypass',
+          revision: 0,
+        });
+        const readOnly = await reopened.readExecutionBoundary('legacy-explore');
+        assert.equal(readOnly.kind, 'managed');
+        if (readOnly.kind === 'managed') assert.equal(readOnly.profile.name, 'read-only');
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('creates a deterministic revision-zero execution boundary for every legacy mode', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     try {
