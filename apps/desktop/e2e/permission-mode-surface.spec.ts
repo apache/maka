@@ -52,7 +52,7 @@ test('a read-only session names its boundary and can still be raised to full acc
   await expect(trigger).toHaveText('自动');
 });
 
-test('approving an expansion updates the permission label at once', async ({
+test('approving an expansion updates the permission label at once and after a reload', async ({
   sandboxBoundaryWindow: page,
 }) => {
   const prompt = page.locator('.maka-sandbox-boundary-prompt');
@@ -68,13 +68,15 @@ test('approving an expansion updates the permission label at once', async ({
   // moves — so a surface that does not re-read authority would keep telling
   // the user this session cannot write, right after they let it.
   await expect(trigger).toHaveText('自动');
-});
 
-// A reload assertion used to follow, to show the label came from the boundary
-// rather than renderer state. It could not hold here: after a reload the
-// composer stays hidden until a boundary has been read for the restored
-// session, and that read has no retry — `readExecutionBoundary` rejecting once
-// leaves the snapshot unset for good. On CI the composer never became visible
-// within the timeout. That is a product gap worth its own fix (#1629), not
-// something this journey should encode; the read model's own contract test
-// already covers that the label follows authority and not renderer state.
+  // And it is the boundary saying so, not renderer state: it survives a reload.
+  // #1629: a reload also re-reads the boundary from scratch, and the composer
+  // stays hidden until that read lands. One rejection used to end it there for
+  // good; a failed read is now retried and, if it still cannot be read, says so
+  // instead of leaving an empty window — so the composer coming back with no
+  // notice is the whole recovery path holding.
+  await page.reload();
+  await expect(page.locator('.maka-composer-textarea')).toBeVisible();
+  await expect(page.locator('.maka-boundary-unreadable-notice')).toHaveCount(0);
+  await expect(trigger).toHaveText('自动');
+});

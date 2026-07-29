@@ -71,6 +71,46 @@
   outline-offset: var(--focus-ring-offset);
 }
 
+/* #1629: the boundary-unreadable notice stands in for the composer it replaces,
+   so it resolves to the same box by the same formula as the health notice. */
+.maka-boundary-unreadable-notice {
+  width: min(var(--maka-chat-measure), calc(100% - (2 * var(--space-6))));
+  max-width: var(--maka-chat-measure);
+  margin: 0 auto var(--space-2);
+  -webkit-app-region: no-drag;
+}
+
+.maka-boundary-unreadable-notice-alert {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.maka-boundary-unreadable-notice-action {
+  appearance: none;
+  border: var(--border-width-hairline) solid oklch(from var(--border) l c h / 0.9);
+  background: var(--background-elevated);
+  color: var(--foreground);
+  border-radius: var(--radius-surface);
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
+  white-space: nowrap;
+  cursor: default;
+}
+
+.maka-boundary-unreadable-notice-action:hover:not(:disabled) {
+  background: var(--state-hover-bg);
+}
+
+.maka-boundary-unreadable-notice-action:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.maka-boundary-unreadable-notice-action:disabled {
+  opacity: var(--opacity-disabled);
+}
+
 /* PR-REMOVE-CHAT-TAB (WAWQAQ msg d401938d 2026-06-23): the
    browser-style session tab + the duplicate "新建对话" plus button at
    the top-left of the chat header are removed. ~95 LOC of .maka-chat-tab*

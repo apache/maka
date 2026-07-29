@@ -999,8 +999,12 @@ function AppShellContent({
     permissionMode: defaultPermissionMode,
         }
       : undefined);
-  const { boundary: activeExecutionBoundary, reload: reloadActiveExecutionBoundary } =
-    useActiveExecutionBoundary(activeId, activeSessionForView?.permissionMode);
+  const {
+    boundary: activeExecutionBoundary,
+    unreadable: activeExecutionBoundaryUnreadable,
+    reading: activeExecutionBoundaryReading,
+    reload: reloadActiveExecutionBoundary,
+  } = useActiveExecutionBoundary(activeId, activeSessionForView?.permissionMode);
   useEffect(() => {
     if (!activeId) return;
     let cancelled = false;
@@ -1121,6 +1125,21 @@ function AppShellContent({
     onboardingState.kind !== 'ready_with_history' &&
     onboardingState.kind !== 'ready_empty';
   const onboardingComposerHidden = isOnboardingLoading || (showOnboardingHero && onboardingState !== undefined);
+  // #1629: hiding the composer because the boundary is unknown is right, but
+  // hiding it silently and forever is not. Once the read has spent its retries
+  // the slot says so and hands the user another attempt; while it is still
+  // reading, or while onboarding owns the surface, there is nothing to say.
+  const boundaryUnreadableNotice =
+    activeId && activeExecutionBoundaryUnreadable && !onboardingComposerHidden
+      ? {
+          title: shellCopy.boundaryUnreadableTitle,
+          detail: shellCopy.boundaryUnreadableDetail,
+          retryLabel: shellCopy.boundaryUnreadableRetry,
+          retryPendingLabel: shellCopy.boundaryUnreadableRetrying,
+          retryPending: activeExecutionBoundaryReading,
+          onRetry: () => reloadActiveExecutionBoundary(activeId),
+        }
+      : undefined;
   const {
     sessionListWidth,
     setSessionListWidth,
@@ -2182,6 +2201,7 @@ function AppShellContent({
                 onboardingComposerHidden={
                   onboardingComposerHidden || !activeBoundarySurface.localInteractionAvailable
                 }
+                boundaryUnreadableNotice={boundaryUnreadableNotice}
                 activeInteraction={activeInteraction}
                 activeId={activeId}
                 stopPendingBySession={stopPendingBySession}
