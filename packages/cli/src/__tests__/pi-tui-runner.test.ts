@@ -2007,6 +2007,39 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
+  test('allows a pending sandbox boundary request with Enter', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SandboxBoundaryPromptDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('r');
+    terminal.input('u');
+    terminal.input('n');
+    terminal.input('\r');
+    await waitFor(() => driver.boundaryRequests === 1);
+    await delay(20);
+    terminal.input('\r');
+    await waitFor(() => driver.boundaryResponses.length === 1);
+
+    assert.deepEqual(driver.boundaryResponses, [
+      {
+        requestId: 'boundary-1',
+        decision: 'allow',
+      },
+    ]);
+
+    exitMaka(terminal);
+    await run;
+  });
+
   test('ignores the removed turn-wide approval key while a boundary request waits', async () => {
     const terminal = new FakeTerminal();
     const driver = new SandboxBoundaryPromptDriver(['/outside']);
@@ -2162,7 +2195,7 @@ describe('Maka Pi TUI runner', () => {
     assertBottomPickerPlacement(
       terminal,
       'Choose an approach',
-      'Maka · ask · claude-sonnet-4-5 · claude-subscription · /repo',
+      'Maka · Auto · claude-sonnet-4-5 · claude-subscription · /repo',
     );
     // The preset options and the free-text "Other" row are on screen together —
     // the option list is no longer swapped out for a separate text overlay.
@@ -2816,13 +2849,13 @@ describe('Maka Pi TUI runner', () => {
 
     await waitFor(() =>
       plainTerminalOutput(terminal.output()).includes(
-        'Maka · ask · deepseek-v4-flash · deepseek · /repo',
+        'Maka · Auto · deepseek-v4-flash · deepseek · /repo',
       ),
     );
 
     const lines = plainTerminalOutput(terminal.output()).split(/\r?\n/);
     const statusLineIndex = lines.findIndex((line) =>
-      line.includes('Maka · ask · deepseek-v4-flash · deepseek · /repo'),
+      line.includes('Maka · Auto · deepseek-v4-flash · deepseek · /repo'),
     );
     const editorBorderIndexes = lines
       .map((line, index) => (/^─+$/.test(line) ? index : -1))
@@ -2911,13 +2944,13 @@ describe('Maka Pi TUI runner', () => {
 
     await waitFor(() =>
       plainTerminalOutput(terminal.output()).includes(
-        'Maka · ask · deepseek-v4-flash · deepseek · /repo',
+        'Maka · Auto · deepseek-v4-flash · deepseek · /repo',
       ),
     );
 
     const lines = plainTerminalOutput(terminal.output()).split(/\r?\n/);
     const statusLineIndex = lines.findIndex((line) =>
-      line.includes('Maka · ask · deepseek-v4-flash · deepseek · /repo'),
+      line.includes('Maka · Auto · deepseek-v4-flash · deepseek · /repo'),
     );
     const editorBorderIndexes = lines
       .map((line, index) => (/^─+$/.test(line) ? index : -1))
@@ -3231,7 +3264,7 @@ describe('Maka Pi TUI runner', () => {
       'the head should have scrolled off',
     );
     assert.equal(
-      screen[terminal.rows - 1]?.includes('Maka · ask · deepseek-v4-flash · deepseek · /repo'),
+      screen[terminal.rows - 1]?.includes('Maka · Auto · deepseek-v4-flash · deepseek · /repo'),
       true,
     );
 
@@ -3259,7 +3292,7 @@ describe('Maka Pi TUI runner', () => {
 
     await waitFor(() =>
       plainTerminalOutput(terminal.output()).includes(
-        'Maka · ask · deepseek-v4-flash · deepseek · /repo',
+        'Maka · Auto · deepseek-v4-flash · deepseek · /repo',
       ),
     );
 
@@ -4041,7 +4074,7 @@ describe('Maka Pi TUI runner', () => {
     const [editorTopBorder, editorBottomBorder] = inputSurfaceRows(lines);
     const cursorIndex = lines.findIndex((line) => line.includes('→'));
     const statusLineIndex = lines.findIndex((line) =>
-      line.includes('Maka · ask · deepseek-v4-flash · deepseek · /repo'),
+      line.includes('Maka · Auto · deepseek-v4-flash · deepseek · /repo'),
     );
 
     // The autocomplete menu (→ cursor) renders above the editor's top border.
@@ -4493,6 +4526,30 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
+  test('returns from Bypass to Auto without a confirmation', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('/permissions auto');
+    terminal.input('\r');
+    await waitFor(() => driver.permissionModes.length === 1);
+
+    assert.deepEqual(driver.permissionModes, ['ask']);
+    assert.doesNotMatch(terminal.output(), /Bypass sandbox for this session/);
+
+    exitMaka(terminal);
+    await run;
+  });
+
   test('shows, enables, and disables persistent Swarm Mode without sending a prompt', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
@@ -4718,7 +4775,7 @@ describe('Maka Pi TUI runner', () => {
     // thinkingLevel appears. The status line omits the thinking segment.
     await waitFor(() =>
       plainTerminalOutput(terminal.output()).includes(
-        'Maka · ask · glm-5.2 · ollama-cloud · /repo',
+        'Maka · Auto · glm-5.2 · ollama-cloud · /repo',
       ),
     );
 
@@ -4845,7 +4902,7 @@ describe('Maka Pi TUI runner', () => {
     assertBottomPickerPlacement(
       terminal,
       'Sandbox Boundary',
-      'Maka · ask · claude-sonnet-4-5 · claude-subscription · /repo',
+      'Maka · Auto · claude-sonnet-4-5 · claude-subscription · /repo',
     );
     terminal.input('\x1b[B');
     terminal.input('\r');
@@ -4924,7 +4981,7 @@ describe('Maka Pi TUI runner', () => {
     assertBottomPickerPlacement(
       terminal,
       'Select Model',
-      'Maka · ask · deepseek-v4-flash · deepseek · /repo',
+      'Maka · Auto · deepseek-v4-flash · deepseek · /repo',
     );
     terminal.input('\x1b[B');
     terminal.input('\r');
@@ -4988,7 +5045,7 @@ describe('Maka Pi TUI runner', () => {
     assert.deepEqual(driver.modelConnections, ['zai']);
     // The status line now reflects both the new model and the new connection.
     await waitFor(() =>
-      plainTerminalOutput(terminal.output()).includes('Maka · ask · glm-5.2 · zai · /repo'),
+      plainTerminalOutput(terminal.output()).includes('Maka · Auto · glm-5.2 · zai · /repo'),
     );
 
     exitMaka(terminal);
@@ -5040,7 +5097,7 @@ describe('Maka Pi TUI runner', () => {
     assert.ok(before.includes('glm-5.2'));
     // The searchable overlay stays bottom-anchored above the editor + status line,
     // just like the non-searchable picker it replaces.
-    assertBottomPickerPlacement(terminal, 'Select Model', 'Maka · ask · gpt-5.5 · openai · /repo');
+    assertBottomPickerPlacement(terminal, 'Select Model', 'Maka · Auto · gpt-5.5 · openai · /repo');
 
     // Typing in the search field filters the cross-connection list live. The
     // query "gpt" matches only the OpenAI model id, so the Z.ai model leaves
@@ -5159,7 +5216,7 @@ describe('Maka Pi TUI runner', () => {
     assert.deepEqual(driver.models, ['glm-5.2']);
     assert.deepEqual(driver.modelConnections, ['zai']);
     await waitFor(() =>
-      plainTerminalOutput(terminal.output()).includes('Maka · ask · glm-5.2 · zai · /repo'),
+      plainTerminalOutput(terminal.output()).includes('Maka · Auto · glm-5.2 · zai · /repo'),
     );
 
     exitMaka(terminal);
@@ -5213,7 +5270,7 @@ describe('Maka Pi TUI runner', () => {
     assert.deepEqual(driver.models, []);
     assert.deepEqual(driver.modelConnections, []);
     assert.ok(
-      plainTerminalOutput(terminal.output()).includes('Maka · ask · gpt-5.5 · openai · /repo'),
+      plainTerminalOutput(terminal.output()).includes('Maka · Auto · gpt-5.5 · openai · /repo'),
     );
 
     exitMaka(terminal);
@@ -5704,7 +5761,7 @@ describe('Maka Pi TUI runner', () => {
     assertBottomPickerPlacement(
       terminal,
       'Resume Session Current',
-      'Maka · ask · claude-sonnet-4-5 · claude-subscription · /repo',
+      'Maka · Auto · claude-sonnet-4-5 · claude-subscription · /repo',
     );
     terminal.input('\r');
     await waitFor(() => driver.sessionIds.length === 1);
@@ -7230,7 +7287,7 @@ describe('Maka Pi TUI runner', () => {
 
     await waitFor(() =>
       plainTerminalOutput(terminal.output()).includes(
-        'Maka · ask · claude-sonnet-4-5 · claude-subscription · /repo',
+        'Maka · Auto · claude-sonnet-4-5 · claude-subscription · /repo',
       ),
     );
 
@@ -7271,7 +7328,7 @@ describe('Maka Pi TUI runner', () => {
 
     await waitFor(() =>
       plainTerminalOutput(terminal.output()).includes(
-        'Maka · ask · claude-sonnet-4-5 · claude-subscription · /repo',
+        'Maka · Auto · claude-sonnet-4-5 · claude-subscription · /repo',
       ),
     );
 
@@ -7310,7 +7367,7 @@ describe('Maka Pi TUI runner', () => {
 
     await waitFor(() =>
       plainTerminalOutput(terminal.output()).includes(
-        'Maka · ask · claude-sonnet-4-5 · claude-subscription · /repo',
+        'Maka · Auto · claude-sonnet-4-5 · claude-subscription · /repo',
       ),
     );
 

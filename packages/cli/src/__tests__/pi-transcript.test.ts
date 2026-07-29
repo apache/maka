@@ -5420,6 +5420,18 @@ describe('transcript entry render memoization', () => {
 });
 
 describe('Maka Pi TUI status line', () => {
+  test('renders managed compatibility modes as Auto and bypass as Bypass', () => {
+    for (const permissionMode of ['ask', 'execute', 'explore']) {
+      const line = stripAnsi(renderMakaPiStatusLine({ ...meta(), permissionMode }, 100));
+      assert.match(line, /Maka · Auto ·/);
+      assert.doesNotMatch(line, new RegExp(`· ${permissionMode} ·`));
+    }
+    assert.match(
+      stripAnsi(renderMakaPiStatusLine({ ...meta(), permissionMode: 'bypass' }, 100)),
+      /Maka · Bypass ·/,
+    );
+  });
+
   test('shows thinking:high when thinkingLevel is set', () => {
     const line = stripAnsi(
       renderMakaPiStatusLine(

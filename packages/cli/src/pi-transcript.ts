@@ -1229,7 +1229,7 @@ export function renderMakaPiStatusLine(metadata: MakaPiTranscriptMetadata, width
   const sep = ansi.dim(' · ');
   const parts: string[] = [
     ansi.bold(metadata.title),
-    ansi.dim(metadata.permissionMode),
+    ansi.dim(metadata.permissionMode === 'bypass' ? 'Bypass' : 'Auto'),
     ansi.dim(metadata.model),
   ];
   // #1064: omit thinking:default — it is noise before the user explicitly
