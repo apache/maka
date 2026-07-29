@@ -67,7 +67,7 @@ import { PiCliJsonTransport } from './pi-cli-json-transport.js';
 import { providerFromEnv, resolveHarborCellAiSdkEnv } from './provider-env.js';
 import { backendNeedsIsolation } from './runner.js';
 import {
-  buildIsolatedHeadlessProductToolSurface,
+  buildHeadlessProductToolSurfaceForBackend,
   buildIsolatedHeadlessSupplementalTools,
 } from './tools.js';
 import { createHeadlessSessionCapabilityBridge } from './session-capabilities.js';
@@ -337,12 +337,14 @@ export async function runHarborCellWithStorage(
       }
     }
   }
-  const productToolSurface = input.realBackendIsolation?.toolExecutor
-    ? buildIsolatedHeadlessProductToolSurface(input.realBackendIsolation.toolExecutor, {
-        agentTools: config.agentTools,
-        snapshotImage: createReadImageSnapshotter(storage.artifactStore),
-      })
-    : undefined;
+  const productToolSurface = buildHeadlessProductToolSurfaceForBackend(
+    config.backend,
+    input.realBackendIsolation?.toolExecutor,
+    {
+      agentTools: config.agentTools,
+      snapshotImage: createReadImageSnapshotter(storage.artifactStore),
+    },
+  );
   const registerBackends =
     input.registerBackends ?? ((registry: BackendRegistry) => registerFakeBackend(registry));
   await registerBackends(backends, {
@@ -369,9 +371,7 @@ export async function runHarborCellWithStorage(
     systemPromptMode: prompt.mode,
     systemPromptHash: prompt.systemPromptHash,
     pricingProfile: input.pricingProfile ?? 'unconfigured',
-    agentTools: productToolSurface
-      ? !productToolSurface.identity.policy.disabledSurfaceIds.includes(AGENT_TOOL_GROUP_ID)
-      : config.agentTools === true,
+    agentTools: productToolSurface?.boundSurfaceIds.includes(AGENT_TOOL_GROUP_ID) ?? false,
     ...(productToolSurface ? { productToolSurface: productToolSurface.identity } : {}),
   };
   await writeHarborCellExecutionIdentity(input.outputDir, executionIdentity);

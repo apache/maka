@@ -26,7 +26,7 @@ import {
   restoreProtectedPaths,
 } from './sandbox.js';
 import { defaultFinalScorer } from './scorer.js';
-import { buildIsolatedHeadlessProductToolSurface } from './tools.js';
+import { buildHeadlessProductToolSurfaceForBackend } from './tools.js';
 import { normalizeVerifier, runVerifier, verifierProtectedPaths } from './verifier.js';
 import type { BenchmarkAdapterRegistry } from './benchmark-adapters.js';
 import { createHeadlessSessionCapabilityBridge } from './session-capabilities.js';
@@ -130,12 +130,14 @@ export async function runExperimentWithStorage(
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
   try {
     const agentWorkspaceDir = deps.realBackendIsolation?.workspaceDir ?? workspace.dir;
-    const productToolSurface = deps.realBackendIsolation?.toolExecutor
-      ? buildIsolatedHeadlessProductToolSurface(deps.realBackendIsolation.toolExecutor, {
-          agentTools: effectiveConfig.agentTools,
-          snapshotImage: createReadImageSnapshotter(storage.artifactStore),
-        })
-      : undefined;
+    const productToolSurface = buildHeadlessProductToolSurfaceForBackend(
+      effectiveConfig.backend,
+      deps.realBackendIsolation?.toolExecutor,
+      {
+        agentTools: effectiveConfig.agentTools,
+        snapshotImage: createReadImageSnapshotter(storage.artifactStore),
+      },
+    );
     const verifier = normalizeVerifier(task);
     const backends = new BackendRegistry();
     const sessionCapabilities = createHeadlessSessionCapabilityBridge();

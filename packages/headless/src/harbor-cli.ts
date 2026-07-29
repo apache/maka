@@ -38,6 +38,7 @@ import { backendNeedsIsolation } from './runner.js';
 import { runTaskOnceWithStorage } from './task-agent-controller.js';
 import { taxonomyFromResultRecord } from './task-contracts.js';
 import { taskRunLocator } from './task-run-identity.js';
+import { headlessBackendBindsMakaProductTools } from './tools.js';
 import { requireProviderCredentialEnv } from './provider-env.js';
 import { createProviderEnvFetch, type ProviderEnvFetch } from './provider-env-fetch.js';
 import { resolveHeadlessSystemPrompt } from './system-prompts.js';
@@ -374,7 +375,9 @@ async function writeTaskRunExecutionIdentity(
     systemPromptMode: prompt.mode,
     systemPromptHash: prompt.systemPromptHash,
     pricingProfile: options.env.MAKA_TRIAL_PRICING_SOURCE ?? 'unconfigured',
-    agentTools: options.config.agentTools === true,
+    agentTools:
+      headlessBackendBindsMakaProductTools(options.config.backend) &&
+      options.config.agentTools === true,
   });
   await writeHarborCellExecutionIdentity(options.cellArtifactDir, executionIdentity);
   return executionIdentity;

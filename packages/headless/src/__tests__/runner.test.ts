@@ -437,9 +437,17 @@ describe('fail-closed (a model-backed backend does not run without isolation)', 
         verification: { command: 'test -f solved.txt', protectedPaths: [] },
       };
 
-      const result = await runExperiment(piConfig, task, {
+      const result = await runExperiment({ ...piConfig, agentTools: true }, task, {
         storageRoot,
-        realBackendIsolation: { kind: 'external', label: 'unit-test isolated pi transport' },
+        realBackendIsolation: {
+          kind: 'external',
+          label: 'unit-test isolated pi transport',
+          toolExecutor: {
+            async exec() {
+              return { exitCode: 0, stdout: '', stderr: '' };
+            },
+          },
+        },
         registerBackends: (registry, context) => {
           seen.push(context);
           registerTestPiAgentBackend(registry, ({ header }) => ({
@@ -469,6 +477,7 @@ describe('fail-closed (a model-backed backend does not run without isolation)', 
       assert.equal(result.passed, true);
       assert.equal(seen[0]?.config.backend, 'pi-agent');
       assert.equal(seen[0]?.realBackendIsolation?.label, 'unit-test isolated pi transport');
+      assert.equal(seen[0]?.productToolSurface, undefined);
     });
   });
 });

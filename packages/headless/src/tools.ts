@@ -1,4 +1,4 @@
-import { MAX_READ_IMAGE_BYTES, type StorageRef } from '@maka/core';
+import { MAX_READ_IMAGE_BYTES, type BackendKind, type StorageRef } from '@maka/core';
 import type { EffectiveProductToolSurface, MakaTool } from '@maka/runtime';
 import {
   assertProductBindingCatalogClean,
@@ -112,6 +112,22 @@ export function buildIsolatedHeadlessProductToolSurface(
       ...(options.agentTools ? {} : { disabledSurfaceIds: ['agent'] }),
     },
   });
+}
+
+export function headlessBackendBindsMakaProductTools(backend: BackendKind): boolean {
+  return backend === 'ai-sdk';
+}
+
+export function buildHeadlessProductToolSurfaceForBackend(
+  backend: BackendKind,
+  executor: IsolatedToolExecutor | undefined,
+  options: Pick<
+    BuildIsolatedHeadlessToolsOptions,
+    'agentTools' | 'heavyTaskEvidence' | 'snapshotImage'
+  > = {},
+): EffectiveProductToolSurface | undefined {
+  if (!headlessBackendBindsMakaProductTools(backend) || !executor) return undefined;
+  return buildIsolatedHeadlessProductToolSurface(executor, options);
 }
 
 export function buildIsolatedHeadlessSupplementalTools(

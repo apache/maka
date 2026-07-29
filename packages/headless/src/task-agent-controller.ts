@@ -105,7 +105,7 @@ import { taskDefinitionFromTask } from './task-run-adapter.js';
 import { taskEvidenceRuntimeProvenanceLinks } from './task-evidence-provenance.js';
 import { taskAttemptExecutionEvidence } from './task-execution-lineage.js';
 import { bindSelfCheckEvidence } from './task-self-check-evidence.js';
-import { buildIsolatedHeadlessProductToolSurface } from './tools.js';
+import { buildHeadlessProductToolSurfaceForBackend } from './tools.js';
 
 export interface RunTaskOnceDeps extends RunExperimentDeps {
   taskRunId?: string;
@@ -269,13 +269,15 @@ export async function runTaskOnceWithStorage(
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
   try {
     const agentWorkspaceDir = deps.realBackendIsolation?.workspaceDir ?? workspace.dir;
-    const productToolSurface = deps.realBackendIsolation?.toolExecutor
-      ? buildIsolatedHeadlessProductToolSurface(deps.realBackendIsolation.toolExecutor, {
-          agentTools: effectiveConfig.agentTools,
-          ...(heavyTaskEvidence ? { heavyTaskEvidence } : {}),
-          snapshotImage: createReadImageSnapshotter(storage.artifactStore),
-        })
-      : undefined;
+    const productToolSurface = buildHeadlessProductToolSurfaceForBackend(
+      effectiveConfig.backend,
+      deps.realBackendIsolation?.toolExecutor,
+      {
+        agentTools: effectiveConfig.agentTools,
+        ...(heavyTaskEvidence ? { heavyTaskEvidence } : {}),
+        snapshotImage: createReadImageSnapshotter(storage.artifactStore),
+      },
+    );
     await appendTaskEvent(taskRunStore, taskRunId, {
       type: 'workspace_lease_recorded',
       id: newId(),

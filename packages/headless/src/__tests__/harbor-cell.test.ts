@@ -1349,7 +1349,7 @@ describe('runHarborCell', () => {
     });
   });
 
-  test('env entrypoint enables Agent tools only for canonical MAKA_AGENT_TOOLS=true', async () => {
+  test('env entrypoint parses canonical MAKA_AGENT_TOOLS without attesting tools for fake', async () => {
     await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
       let observedAgentTools: boolean | undefined;
       const result = await runHarborCellFromEnv(
@@ -1371,7 +1371,7 @@ describe('runHarborCell', () => {
       );
 
       assert.equal(observedAgentTools, true);
-      assert.equal(result.output.executionIdentity?.agentTools, true);
+      assert.equal(result.output.executionIdentity?.agentTools, false);
     });
   });
 
@@ -4200,6 +4200,7 @@ describe('runHarborCell', () => {
       const result = await runHarborCellFromEnv(
         {
           MAKA_BACKEND: 'pi-agent',
+          MAKA_AGENT_TOOLS: 'true',
           MAKA_INSTRUCTION: 'solve through pi',
           MAKA_MODEL: 'pi-test',
           MAKA_WORKDIR: workspaceDir,
@@ -4228,6 +4229,9 @@ describe('runHarborCell', () => {
       assert.equal(seenContexts[0]?.realBackendIsolation?.kind, 'external');
       assert.equal(seenContexts[0]?.realBackendIsolation?.label, 'Harbor task container');
       assert.equal(typeof seenContexts[0]?.realBackendIsolation?.toolExecutor?.exec, 'function');
+      assert.equal(seenContexts[0]?.productToolSurface, undefined);
+      assert.equal(result.output.executionIdentity?.agentTools, false);
+      assert.equal(result.output.executionIdentity?.productToolSurface, undefined);
     });
   });
 
