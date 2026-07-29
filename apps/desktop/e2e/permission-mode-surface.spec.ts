@@ -13,7 +13,11 @@ test('a read-only session names its boundary and can still be raised to full acc
 }) => {
   const trigger = page.locator('.maka-composer-left-controls [data-slot="select-trigger"]');
   await expect(trigger).toHaveText('只读');
-  await expect(trigger).toHaveAttribute('aria-label', '权限模式：只读');
+  // The name says what the control is, and the current mode is its content —
+  // it used to read `权限模式：只读`, which changed every time the user changed
+  // the setting, so acting on the control invalidated the way you found it.
+  // docs/accessibility-governance.md §1.
+  await expect(trigger).toHaveAttribute('aria-label', '权限模式');
   await expect(trigger).toHaveAttribute('title', READ_ONLY_HINT);
 
   await trigger.click();
