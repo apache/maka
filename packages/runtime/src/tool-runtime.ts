@@ -2,7 +2,6 @@ import {
   decodeCanonicalToolResultContent,
   projectAgentSwarmResult,
   projectToolActivityArgs,
-  validateSandboxBoundaryExpansion,
   type CreateSandboxBoundaryRequest,
   type ExecutionBoundary,
   type SandboxBoundaryDecision,
@@ -63,6 +62,7 @@ import { ChildAgentRunLimiter } from './child-agent-run-limiter.js';
 import type { AgentProfile } from './agent-catalog.js';
 import type { SubagentExecutionRef } from './subagent-execution.js';
 import { sandboxErrorMetadata, serializeSandboxError } from './sandbox/errors.js';
+import { normalizeSandboxBoundaryExpansion } from './sandbox-boundary-path.js';
 import {
   RuntimeInteractionAdmissionRejectedError,
   RuntimeInteractionClosedError,
@@ -1790,8 +1790,7 @@ export class ToolRuntime {
     if (!this.input.createSandboxBoundaryRequest || !this.input.settleSandboxBoundaryRequest) {
       throw new Error('Sandbox boundary expansion is unavailable on this surface');
     }
-    const validated = validateSandboxBoundaryExpansion(expansion);
-    if (!validated.ok) throw new Error(validated.message);
+    const normalized = await normalizeSandboxBoundaryExpansion(expansion, this.input.header.cwd);
     if (typeof justification !== 'string' || justification.trim().length === 0) {
       throw new Error('Sandbox boundary justification must not be empty');
     }
@@ -1799,7 +1798,7 @@ export class ToolRuntime {
     const creation = this.input.createSandboxBoundaryRequest({
       sessionId: this.input.sessionId,
       requestId,
-      expansion: validated.expansion,
+      expansion: normalized,
       justification,
     });
     const parked = this.sandboxBoundaryRequests.park(turnId, requestId, {

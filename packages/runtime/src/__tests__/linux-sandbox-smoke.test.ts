@@ -249,21 +249,25 @@ describe('Linux sandbox smoke', () => {
       }).find((candidate) => candidate.name === 'Bash');
       if (!bash) throw new Error('Bash tool missing');
 
+      const requiredBoundary = {
+        filesystem: {
+          entries: [{ path: allowedPath, access: 'write' as const, scope: 'exact' as const }],
+        },
+      };
       const expandedBoundary = {
         kind: 'managed' as const,
         revision: 1,
-        profile: applySandboxBoundaryExpansion(createWorkspaceWritePermissionProfile(), {
-          filesystem: {
-            entries: [{ path: allowedPath, access: 'write' as const, scope: 'exact' as const }],
-          },
-        }),
+        profile: applySandboxBoundaryExpansion(
+          createWorkspaceWritePermissionProfile(),
+          requiredBoundary,
+        ),
       };
       const siblingAttempt = `printf sibling-changed > ${shellQuote(siblingPath)}`;
       const additionalCommand =
         `printf additional-ok > ${shellQuote(allowedPath)}; ` +
         `/bin/sh -c ${shellQuote(siblingAttempt)} 2>/dev/null || :; exit 0`;
       const additionalResult = (await bash.impl(
-        { command: additionalCommand },
+        { command: additionalCommand, required_boundary: requiredBoundary },
         {
           sessionId: 'session-1',
           turnId: 'turn-1',

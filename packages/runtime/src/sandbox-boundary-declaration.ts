@@ -1,12 +1,9 @@
 import { tmpdir } from 'node:os';
-import {
-  assessSandboxBoundaryExpansion,
-  validateSandboxBoundaryExpansion,
-  type SandboxBoundaryExpansion,
-} from '@maka/core';
+import { assessSandboxBoundaryExpansion, type SandboxBoundaryExpansion } from '@maka/core';
 import { z } from 'zod';
 
 import { SandboxCommandError } from './sandbox/errors.js';
+import { normalizeSandboxBoundaryExpansion } from './sandbox-boundary-path.js';
 import type { MakaToolContext } from './tool-runtime.js';
 
 const filesystemEntrySchema = z
@@ -37,24 +34,21 @@ export const sandboxBoundaryExpansionSchema = z
     message: 'At least one sandbox boundary expansion is required',
   });
 
-export function preflightDeclaredSandboxBoundary(
+export async function preflightDeclaredSandboxBoundary(
   requiredBoundary: SandboxBoundaryExpansion | undefined,
   ctx: MakaToolContext,
-): void {
-  if (!requiredBoundary) return;
-  const validated = validateSandboxBoundaryExpansion(requiredBoundary);
-  if (!validated.ok) {
-    throw new Error(validated.message);
-  }
+): Promise<SandboxBoundaryExpansion | undefined> {
+  if (!requiredBoundary) return undefined;
+  const normalized = await normalizeSandboxBoundaryExpansion(requiredBoundary, ctx.cwd);
   const boundary = ctx.executionBoundary;
-  if (!boundary || boundary.kind === 'bypass' || boundary.kind === 'external') return;
-  const assessment = assessSandboxBoundaryExpansion(boundary.profile, validated.expansion, {
+  if (!boundary || boundary.kind === 'bypass' || boundary.kind === 'external') return normalized;
+  const assessment = assessSandboxBoundaryExpansion(boundary.profile, normalized, {
     root: ctx.cwd,
     workspaceRoots: [ctx.cwd],
     tmpdir: tmpdir(),
     slashTmp: '/tmp',
   });
-  if (assessment.outcome === 'noop') return;
+  if (assessment.outcome === 'noop') return normalized;
   if (assessment.outcome === 'conflict') {
     throw new SandboxCommandError({
       domain: 'command',
@@ -71,7 +65,7 @@ export function preflightDeclaredSandboxBoundary(
     reason: 'sandbox_boundary_required',
     recoverable: true,
     profileName: boundary.profile.name ?? boundary.profile.type,
-    requiredExpansion: validated.expansion,
+    requiredExpansion: normalized,
     message: 'Bash requires an approved session sandbox boundary expansion.',
   });
 }

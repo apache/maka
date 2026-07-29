@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import {
   createWorkspaceWritePermissionProfile,
@@ -191,6 +194,147 @@ describe('ToolRuntime session sandbox boundary', () => {
 
     assert.equal(createCalls, 0);
     assert.match((settlement.result as { error: string }).error, /absolute/i);
+  });
+
+  test('canonicalizes filesystem authority before creating durable pending state', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-boundary-request-'));
+    const target = join(root, 'target');
+    const alias = join(root, 'alias');
+    const file = join(target, 'file.txt');
+    await mkdir(target);
+    await writeFile(file, 'ok');
+    await symlink(target, alias, 'dir');
+    const canonicalFile = await realpath(file);
+    let created: SandboxBoundaryRequest | undefined;
+    const events: SessionEvent[] = [];
+    const runtime = new ToolRuntime({
+      sessionId: 'session-1',
+      header: header(root),
+      connection: { providerType: 'openai', slug: 'test' } as never,
+      modelId: 'test',
+      appendMessage: async () => {},
+      readExecutionBoundary: async () => ({
+        kind: 'managed',
+        profile: createWorkspaceWritePermissionProfile(),
+        revision: 0,
+      }),
+      createSandboxBoundaryRequest: async (input) => {
+        created = {
+          ...input,
+          status: 'pending',
+          baseRevision: 0,
+          createdAt: 1,
+        };
+        return created;
+      },
+      settleSandboxBoundaryRequest: async (input) => {
+        assert.ok(created);
+        return {
+          request: {
+            ...created,
+            status: 'denied',
+            settledAt: 2,
+          },
+          boundary: {
+            kind: 'managed',
+            profile: createWorkspaceWritePermissionProfile(),
+            revision: 0,
+          },
+          changed: false,
+        };
+      },
+      newId: nextId(),
+      now: () => 1,
+      getPermissionPauseTarget: () => null,
+    });
+    runtime.beginTurn('turn-1');
+
+    try {
+      const pending = runtime.settleToolCall({
+        tool: buildRequestSandboxBoundaryTool(),
+        turnId: 'turn-1',
+        toolCallId: 'tool-boundary',
+        input: {
+          expansion: {
+            filesystem: {
+              entries: [{ path: join(alias, 'file.txt'), access: 'read', scope: 'exact' }],
+            },
+          },
+          justification: 'Read the selected file.',
+        },
+        abortSignal: new AbortController().signal,
+        eventSink: {
+          push: (event) => events.push(event),
+          pushAndWaitUntilConsumed: async (event) => {
+            events.push(event);
+          },
+        },
+      });
+      const request = await waitForBoundaryRequest(events);
+      assert.equal(request.expansion.filesystem?.entries[0]?.path, canonicalFile);
+      assert.equal(created?.expansion.filesystem?.entries[0]?.path, canonicalFile);
+      await runtime.respondToSandboxBoundaryRequest('turn-1', {
+        requestId: request.requestId,
+        decision: 'deny',
+      });
+      await pending;
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects exact directory authority before creating durable pending state', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-boundary-directory-'));
+    let createCalls = 0;
+    const runtime = new ToolRuntime({
+      sessionId: 'session-1',
+      header: header(root),
+      connection: { providerType: 'openai', slug: 'test' } as never,
+      modelId: 'test',
+      appendMessage: async () => {},
+      readExecutionBoundary: async () => ({
+        kind: 'managed',
+        profile: createWorkspaceWritePermissionProfile(),
+        revision: 0,
+      }),
+      createSandboxBoundaryRequest: async () => {
+        createCalls += 1;
+        throw new Error('must not create');
+      },
+      settleSandboxBoundaryRequest: async () => {
+        throw new Error('must not settle');
+      },
+      newId: nextId(),
+      now: () => 1,
+      getPermissionPauseTarget: () => null,
+    });
+    runtime.beginTurn('turn-1');
+
+    try {
+      const settlement = await runtime.settleToolCall({
+        tool: buildRequestSandboxBoundaryTool(),
+        turnId: 'turn-1',
+        toolCallId: 'tool-boundary',
+        input: {
+          expansion: {
+            filesystem: {
+              entries: [{ path: root, access: 'read', scope: 'exact' }],
+            },
+          },
+          justification: 'Read one directory path.',
+        },
+        abortSignal: new AbortController().signal,
+        eventSink: {
+          push: () => {},
+          pushAndWaitUntilConsumed: async () => {},
+        },
+      });
+
+      assert.equal(createCalls, 0);
+      assert.match((settlement.result as { error: string }).error, /exact.*directory/i);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test('durably denies a pending boundary request before an aborted turn closes', async () => {
@@ -487,11 +631,11 @@ async function settle(runtime: ToolRuntime, tool: MakaTool, toolCallId: string):
   });
 }
 
-function header(): SessionHeader {
+function header(cwd = process.cwd()): SessionHeader {
   return {
     id: 'session-1',
-    workspaceRoot: '/workspace',
-    cwd: '/workspace',
+    workspaceRoot: cwd,
+    cwd,
     createdAt: 1,
     lastUsedAt: 1,
     name: 'test',

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { mkdir, mkdtemp } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -275,6 +275,41 @@ describe('buildBubblewrapArgv', () => {
     );
   });
 
+  it('does not require stale exact file roots to exist for an unrelated command', () => {
+    const request = workspaceRequest({
+      type: 'managed',
+      name: 'custom',
+      fileSystem: {
+        kind: 'restricted',
+        entries: [
+          { kind: 'path', access: 'read', path: '/outside/missing-read.txt', match: 'exact' },
+          { kind: 'path', access: 'write', path: '/outside/missing-write.txt', match: 'exact' },
+        ],
+      },
+      network: { kind: 'restricted' },
+    });
+
+    const argv = buildBubblewrapArgv({
+      bwrapPath: '/usr/bin/bwrap',
+      command: request.command,
+    });
+
+    assert.equal(
+      hasTriple(argv, '--ro-bind', '/outside/missing-read.txt', '/outside/missing-read.txt'),
+      false,
+    );
+    assert.ok(
+      hasTriple(argv, '--ro-bind-try', '/outside/missing-read.txt', '/outside/missing-read.txt'),
+    );
+    assert.equal(
+      hasTriple(argv, '--bind', '/outside/missing-write.txt', '/outside/missing-write.txt'),
+      false,
+    );
+    assert.ok(
+      hasTriple(argv, '--bind-try', '/outside/missing-write.txt', '/outside/missing-write.txt'),
+    );
+  });
+
   it('materializes an otherwise-unmounted worker cwd without exposing its contents', () => {
     const profile: PermissionProfile = {
       type: 'managed',
@@ -401,6 +436,34 @@ describe('LinuxBubblewrapBackend', () => {
     if (!result.ok) {
       assert.equal(result.reason, 'invalid_request');
       assert.match(result.message ?? '', /deny entries/i);
+    }
+  });
+
+  it('rejects exact directory entries that bubblewrap would otherwise expose as subtrees', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'maka-linux-exact-directory-'));
+    const backend = new LinuxBubblewrapBackend({
+      capability: { available: true, bwrapPath: '/usr/bin/bwrap' },
+    });
+    const profile: PermissionProfile = {
+      type: 'managed',
+      name: 'custom',
+      fileSystem: {
+        kind: 'restricted',
+        entries: [{ kind: 'path', access: 'read', path: directory, match: 'exact' }],
+      },
+      network: { kind: 'restricted' },
+    };
+
+    try {
+      assert.equal(backend.canEnforceProfile(profile), false);
+      const result = backend.transform(workspaceRequest(profile));
+      assert.equal(result.ok, false);
+      if (!result.ok) {
+        assert.equal(result.reason, 'invalid_request');
+        assert.match(result.message ?? '', /exact director/i);
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
     }
   });
 

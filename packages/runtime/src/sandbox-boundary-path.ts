@@ -2,7 +2,9 @@ import { promises as fs } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import {
   MAX_SANDBOX_BOUNDARY_PATH_CHARS,
+  validateSandboxBoundaryExpansion,
   type SandboxBoundaryAccess,
+  type SandboxBoundaryExpansion,
   type SandboxBoundaryScope,
 } from '@maka/core';
 
@@ -37,6 +39,38 @@ export async function normalizeSandboxBoundaryPath(input: {
     throw new Error('A subtree sandbox boundary must target an existing directory.');
   }
   return { displayPath, enforcementPath, access: input.access, scope, targetType };
+}
+
+export async function normalizeSandboxBoundaryExpansion(
+  expansion: SandboxBoundaryExpansion,
+  cwd: string,
+): Promise<SandboxBoundaryExpansion> {
+  const validated = validateSandboxBoundaryExpansion(expansion);
+  if (!validated.ok) throw new Error(validated.message);
+  const entries = await Promise.all(
+    (validated.expansion.filesystem?.entries ?? []).map(async (entry) => {
+      const normalized = await normalizeSandboxBoundaryPath({
+        ...entry,
+        cwd,
+      });
+      if (normalized.scope === 'exact' && normalized.targetType === 'directory') {
+        throw new Error(
+          'An exact sandbox boundary cannot target a directory; use subtree for directory access.',
+        );
+      }
+      return {
+        path: normalized.enforcementPath,
+        access: normalized.access,
+        scope: normalized.scope,
+      };
+    }),
+  );
+  const normalized = validateSandboxBoundaryExpansion({
+    ...(entries.length > 0 ? { filesystem: { entries } } : {}),
+    ...(validated.expansion.network ? { network: validated.expansion.network } : {}),
+  });
+  if (!normalized.ok) throw new Error(normalized.message);
+  return normalized.expansion;
 }
 
 async function realpathAllowMissing(target: string): Promise<string> {

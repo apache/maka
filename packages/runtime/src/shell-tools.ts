@@ -197,11 +197,14 @@ export function buildManagedBashTool(
     toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     ...(options.executionFacts ? { executionFacts: options.executionFacts } : {}),
     impl: async ({ command, timeout_ms, run_in_background, pty, required_boundary }, ctx) => {
-      preflightDeclaredSandboxBoundary(required_boundary, ctx);
+      const normalizedRequiredBoundary = await preflightDeclaredSandboxBoundary(
+        required_boundary,
+        ctx,
+      );
       const transformed = options.transformCommand?.({
         command,
         pty: pty === true,
-        ...(required_boundary ? { requiredBoundary: required_boundary } : {}),
+        ...(normalizedRequiredBoundary ? { requiredBoundary: normalizedRequiredBoundary } : {}),
         ctx,
       });
       const onCompletion = onceCompletion(transformed?.onCompletion);

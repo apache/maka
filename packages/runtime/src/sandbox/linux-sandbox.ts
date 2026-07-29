@@ -1,5 +1,5 @@
 import { posix } from 'node:path';
-import { readdirSync } from 'node:fs';
+import { readdirSync, statSync } from 'node:fs';
 
 import type { PermissionProfile } from '@maka/core/permission-profile';
 
@@ -58,6 +58,7 @@ export class LinuxBubblewrapBackend implements SandboxBackend {
   canEnforceProfile(profile: PermissionProfile): boolean {
     if (profile.type !== 'managed' || profile.fileSystem.kind !== 'restricted') return false;
     if (profile.fileSystem.entries.some((entry) => entry.access === 'deny')) return false;
+    if (profileHasUnenforceableExactDirectory(profile)) return false;
     if (networkRestricted(profile)) {
       try {
         networkSyscalls(this.options.arch ?? process.arch);
@@ -87,6 +88,14 @@ export class LinuxBubblewrapBackend implements SandboxBackend {
       return failure(
         'invalid_request',
         'Linux sandbox deny entries are not supported by the bubblewrap backend.',
+        platform,
+        preference,
+      );
+    }
+    if (profileHasUnenforceableExactDirectory(command.profile)) {
+      return failure(
+        'invalid_request',
+        'Linux sandbox cannot enforce an exact directory entry without exposing its subtree.',
         platform,
         preference,
       );
@@ -175,6 +184,33 @@ export class LinuxBubblewrapBackend implements SandboxBackend {
   }
 }
 
+function exactProfileRoots(
+  profile: PermissionProfile,
+  access: 'read' | 'write',
+): ReadonlySet<string> {
+  if (profile.type !== 'managed' || profile.fileSystem.kind !== 'restricted') return new Set();
+  return new Set(
+    profile.fileSystem.entries.flatMap((entry) =>
+      entry.kind === 'path' && entry.access === access && (entry.match ?? 'subtree') === 'exact'
+        ? [entry.path]
+        : [],
+    ),
+  );
+}
+
+function profileHasUnenforceableExactDirectory(profile: PermissionProfile): boolean {
+  if (profile.type !== 'managed' || profile.fileSystem.kind !== 'restricted') return false;
+  return profile.fileSystem.entries.some((entry) => {
+    if (entry.kind !== 'path' || (entry.match ?? 'subtree') !== 'exact') return false;
+    try {
+      return statSync(entry.path).isDirectory();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      return true;
+    }
+  });
+}
+
 export function buildBubblewrapArgv(input: BuildBubblewrapArgvInput): readonly string[] {
   const { command } = input;
   const roots = resolveRoots(command.profile, command.pathContext);
@@ -210,6 +246,8 @@ export function buildBubblewrapArgv(input: BuildBubblewrapArgvInput): readonly s
   );
   const profileReadableRoots = removeRootsCoveredBy(roots.readableRoots, runtimeWritableRoots);
   const profileWritableRoots = removeRootsCoveredBy(roots.writableRoots, runtimeWritableRoots);
+  const exactReadableRoots = exactProfileRoots(command.profile, 'read');
+  const exactWritableRoots = exactProfileRoots(command.profile, 'write');
   const pinnedWritableFiles = new Map(
     (command.pathContext.pinnedWritableFiles ?? []).map((entry) => [entry.path, entry] as const),
   );
@@ -284,10 +322,16 @@ export function buildBubblewrapArgv(input: BuildBubblewrapArgvInput): readonly s
     }
     argv.push('--dir', command.cwd);
   }
-  for (const root of profileReadableRoots) argv.push('--ro-bind', root, root);
+  for (const root of profileReadableRoots) {
+    argv.push(exactReadableRoots.has(root) ? '--ro-bind-try' : '--ro-bind', root, root);
+  }
   for (const root of profileWritableRoots) {
     const pinned = pinnedWritableFiles.get(root);
-    argv.push('--bind', pinned ? `/proc/self/fd/${pinned.fd}` : root, root);
+    argv.push(
+      pinned ? '--bind' : exactWritableRoots.has(root) ? '--bind-try' : '--bind',
+      pinned ? `/proc/self/fd/${pinned.fd}` : root,
+      root,
+    );
   }
 
   for (const root of roots.protectedWritableRoots) {

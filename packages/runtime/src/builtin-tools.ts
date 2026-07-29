@@ -632,7 +632,10 @@ function buildExecutorBashTool(
     toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     executionFacts: executor.facts,
     impl: async ({ command, timeout_ms, required_boundary }, ctx) => {
-      preflightDeclaredSandboxBoundary(required_boundary, ctx);
+      const normalizedRequiredBoundary = await preflightDeclaredSandboxBoundary(
+        required_boundary,
+        ctx,
+      );
       const { cwd, abortSignal, emitOutput } = ctx;
       const timeout = timeout_ms ?? 120_000;
       if (
@@ -658,7 +661,7 @@ function buildExecutorBashTool(
             command,
             false,
             ctx,
-            required_boundary,
+            normalizedRequiredBoundary,
           )
         : undefined;
       let successful = false;
