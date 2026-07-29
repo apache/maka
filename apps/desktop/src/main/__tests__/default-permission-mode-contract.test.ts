@@ -145,6 +145,22 @@ describe('default permission mode contract', () => {
       'closing Settings must re-read chatDefaults.permissionMode so the composer chip reflects the change',
     );
   });
+
+  it('requires explicit confirmation before making Bypass the new-session default', async () => {
+    const src = await readFile(
+      join(REPO_ROOT, 'apps/desktop/src/renderer/settings/general-settings-page.tsx'),
+      'utf8',
+    );
+    const persist =
+      src.match(/async function persistPermissionMode\([\s\S]*?\n  \}/)?.[0] ?? '';
+
+    assert.match(
+      persist,
+      /nextMode === 'bypass'[\s\S]*props\.permissionMode !== 'bypass'[\s\S]*toast\.confirm\(/,
+    );
+    assert.match(persist, /destructive: true/);
+    assert.match(persist, /releaseSave\(\);[\s\S]*return;/);
+  });
 });
 
 describe('General settings page 默认权限模式 picker', () => {

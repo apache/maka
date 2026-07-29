@@ -319,6 +319,9 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
     emitSessionsChanged('turn-status-change', sessionId);
     emitSessionsChanged('message-appended', sessionId);
   });
+  ipcMain.handle('sessions:readExecutionBoundary', (_event, sessionId: string) =>
+    runtime.readExecutionBoundary(sessionId),
+  );
   ipcMain.handle('sessions:respondToSandboxBoundary', async (_event, sessionId: string, response) => {
     const normalized = normalizePermissionResponse(response);
     if (normalized.decision === 'allow') {

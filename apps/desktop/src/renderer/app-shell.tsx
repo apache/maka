@@ -11,6 +11,7 @@ import {
   type SetStateAction,
 } from 'react';
 import type {
+  ExecutionBoundary,
   PermissionMode,
   PlanReminder,
   QuoteRef,
@@ -983,6 +984,33 @@ function AppShellContent({
     permissionMode: defaultPermissionMode,
         }
       : undefined);
+  const [activeExecutionBoundary, setActiveExecutionBoundary] = useState<
+    ExecutionBoundary | undefined
+  >();
+  useEffect(() => {
+    if (!activeId) {
+      setActiveExecutionBoundary(undefined);
+      return;
+    }
+    let cancelled = false;
+    setActiveExecutionBoundary(undefined);
+    void window.maka.sessions
+      .readExecutionBoundary(activeId)
+      .then((boundary) => {
+        if (!cancelled) setActiveExecutionBoundary(boundary);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [activeId, activeSessionForView?.permissionMode]);
+  const activePermissionMode: PermissionMode = activeId
+    ? activeExecutionBoundary
+      ? activeExecutionBoundary.kind === 'bypass'
+        ? 'bypass'
+        : 'ask'
+      : (activeSessionForView?.permissionMode ?? 'ask')
+    : defaultPermissionMode;
   const planMode = usePlanModeState(activeSessionForView);
   const planConversationItems = (planMode.state?.proposals ?? []).map((proposal) => ({
     id: proposal.proposalId,
@@ -2225,7 +2253,7 @@ function AppShellContent({
                       }
                     : undefined
                 }
-                permissionMode={defaultPermissionMode}
+                permissionMode={activePermissionMode}
                 permissionModePending={activeId ? pendingPermissionModeBySession[activeId] === true : false}
                 permissionModeDisabledReason={
                   activeId && pendingPermissionModeBySession[activeId] === true

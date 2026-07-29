@@ -7,6 +7,7 @@ import type {
   BotOnboardingSnapshot,
   BotOnboardingStartInput,
   HealthSnapshot,
+  ExecutionBoundary,
   LlmConnection,
   ModelDiscoveryResult,
   ModelInfo,
@@ -264,6 +265,7 @@ export interface MakaBridge {
     >;
     stop(sessionId: string, input?: { source?: 'stop_button' }): Promise<void>;
     readMessages(sessionId: string): Promise<StoredMessage[]>;
+    readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary>;
     listTurns(sessionId: string): Promise<TurnRecord[]>;
     compact(sessionId: string): Promise<void>;
     resumeLatest(sessionId: string): Promise<

@@ -34,6 +34,7 @@ import { settingsActionErrorMessage } from './settings-error-copy';
 import { useActionGuard, useKeyedActionGuard } from './use-action-guard';
 import { useOptimisticSettingsDraft } from './use-optimistic-settings-draft';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
+import { getShellCopy } from '../locales/shell-copy.js';
 
 export function GeneralSettingsPage(props: {
   settings: AppSettings;
@@ -126,6 +127,7 @@ function GeneralDefaultsCard(props: {
 }) {
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).general;
+  const boundaryCopy = getShellCopy(locale).sessionSettingsActions;
   const toast = useToast();
   const mountedRef = useMountedRef();
   const persistGuard = useKeyedActionGuard<'default-model' | 'permission-mode'>();
@@ -175,6 +177,28 @@ function GeneralDefaultsCard(props: {
     // ordering guarantee.
     const releaseSave = persistGuard.begin('permission-mode');
     if (!releaseSave) return;
+    if (nextMode === 'bypass' && props.permissionMode !== 'bypass') {
+      let confirmed = false;
+      try {
+        confirmed = await toast.confirm({
+          title: boundaryCopy.bypassConfirmTitle,
+          description: boundaryCopy.bypassConfirmDescription,
+          confirmLabel: boundaryCopy.bypassConfirmLabel,
+          cancelLabel: boundaryCopy.bypassCancelLabel,
+          destructive: true,
+        });
+      } catch (error) {
+        releaseSave();
+        if (mountedRef.current) {
+          toast.error(copy.saveDefaultPermissionFailed, settingsActionErrorMessage(error, locale));
+        }
+        return;
+      }
+      if (!confirmed) {
+        releaseSave();
+        return;
+      }
+    }
     setSavingPermissionMode(true);
     try {
       await props.onUpdate({ chatDefaults: { permissionMode: nextMode } });

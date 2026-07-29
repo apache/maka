@@ -20,6 +20,7 @@ import type {
   BotOnboardingSnapshot,
   BotOnboardingStartInput,
   HealthSnapshot,
+  ExecutionBoundary,
   LlmConnection,
   ModelDiscoveryResult,
   ModelInfo,
@@ -233,6 +234,9 @@ const makaBridge = {
     },
     readMessages(sessionId: string): Promise<StoredMessage[]> {
       return ipcRenderer.invoke('sessions:readMessages', sessionId);
+    },
+    readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary> {
+      return ipcRenderer.invoke('sessions:readExecutionBoundary', sessionId);
     },
     listTurns(sessionId: string): Promise<TurnRecord[]> {
       return ipcRenderer.invoke('sessions:listTurns', sessionId);

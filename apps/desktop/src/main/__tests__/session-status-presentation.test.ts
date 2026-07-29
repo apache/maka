@@ -294,8 +294,8 @@ describe('permission mode transition guard copy', () => {
     );
     assert.match(
       renderer,
-      /permissionMode=\{defaultPermissionMode\}/,
-      'The Composer mode chip must show the configured global default',
+      /permissionMode=\{activePermissionMode\}/,
+      'The Composer mode chip must show the active session boundary and use the configured default only before a session exists',
     );
     assert.match(renderer, /setDefaultPermissionMode\(next\.chatDefaults\?\.permissionMode \?\? 'ask'\)/);
     assert.match(
