@@ -38,7 +38,11 @@ import {
   normalizeStopSessionInput,
   normalizeUserQuestionResponse,
 } from './permission-response-guard.js';
-import { getE2eFixtureState, type resolveE2eFixture } from './e2e-fixture.js';
+import {
+  getE2eFixtureState,
+  retireE2eFixtureSandboxBoundaryRequest,
+  type resolveE2eFixture,
+} from './e2e-fixture.js';
 import type { requireReadyConnection } from './chat-readiness.js';
 import type { MainTaskLedgerWiring } from './task-ledger-wiring.js';
 import type { MainGoalWiring } from './goal-wiring.js';
@@ -334,15 +338,11 @@ export function registerSessionsIpc(
   ipcMain.handle('sessions:readExecutionBoundary', (_event, sessionId: string) =>
     runtime.readExecutionBoundary(sessionId),
   );
-  // The fixture's synthetic request is recomputed from its scenario on every
-  // read, so answering it cannot retire it the way a real request retires
-  // itself in the store. Without somewhere to remember the answer, the prompt
-  // comes back on the next hydration — after a renderer reload, say — and the
-  // fixture models a request the user is never allowed to finish answering.
-  const answeredFixtureSandboxBoundaryRequests = new Set<string>();
   ipcMain.handle('sessions:listActiveSandboxBoundaryRequests', (_event, sessionId: string) => {
+    // Already filtered by retirement: `getE2eFixtureState` is the one owner of
+    // which fixture requests are still unanswered.
     const fixtureRequest = getE2eFixtureState(e2eFixture)?.sandboxBoundaryBySession?.[sessionId];
-    return fixtureRequest && !answeredFixtureSandboxBoundaryRequests.has(fixtureRequest.requestId)
+    return fixtureRequest
       ? [fixtureRequest]
       : runtime.listActiveSandboxBoundaryRequests(sessionId);
   });
@@ -353,13 +353,15 @@ export function registerSessionsIpc(
       // The fixture request is synthetic — no runtime turn is waiting on it —
       // but allowing it must still move the real boundary, or the fixture
       // would model an "allow" that grants nothing and no surface built on the
-      // boundary could be exercised against it (#1611). Answering it must also
-      // settle it, for the same reason: a decision that leaves the request
-      // pending is not a decision.
-      answeredFixtureSandboxBoundaryRequests.add(normalized.requestId);
+      // boundary could be exercised against it (#1611).
       if (normalized.decision === 'allow') {
+        // Retired only once the grant has landed. The runtime drops an active
+        // request when the decision is acknowledged, not when it is received;
+        // hiding this one before the write succeeds would let the fixture
+        // swallow a settlement failure the renderer is about to be told about.
         await applyFixtureSandboxBoundaryExpansion(store, sessionId, fixtureRequest.expansion);
       }
+      retireE2eFixtureSandboxBoundaryRequest(normalized.requestId);
       return;
     }
     if (normalized.decision === 'allow') {

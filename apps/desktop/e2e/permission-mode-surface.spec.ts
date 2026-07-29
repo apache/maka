@@ -69,6 +69,20 @@ test('approving an expansion updates the permission label at once and after a re
   // the user this session cannot write, right after they let it.
   await expect(trigger).toHaveText('自动');
 
+  // The answer has to reach the fixture state itself, not just the active
+  // request list. The renderer seeds its interaction queue straight out of
+  // `e2eFixture:getState` on every boot, bypassing that list entirely, so a
+  // retirement only one exit could see would put the prompt back over the
+  // composer after the reload below — depending on which reply landed last.
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        const state = await window.maka.e2eFixture.getState();
+        return Object.keys(state?.sandboxBoundaryBySession ?? {}).length;
+      }),
+    )
+    .toBe(0);
+
   // And it is the boundary saying so, not renderer state: it survives a reload,
   // where the renderer starts from nothing and has to read the boundary again.
   // The notice assertion adds that the composer came back because that read
@@ -76,13 +90,19 @@ test('approving an expansion updates the permission label at once and after a re
   // the retry — nothing rejects here — which the read model's own tests cover
   // deterministically (#1629).
   //
-  // The composer returning is only a stable expectation because answering the
-  // fixture's request now settles it: while an answered request kept coming
-  // back on every hydration, whether the composer or the prompt won this frame
-  // was a coin flip, and that was the real cause of the CI timeout that #1630
-  // removed this half over.
+  // The boot path reaches the answered request twice: the active-request list,
+  // and the fixture state the renderer seeds its interaction queue from. Both
+  // read one retirement now, so the assertions below are a settled state rather
+  // than a frame they happened to catch — while either could still resurrect
+  // the prompt, whichever reply landed last decided whether the composer or the
+  // prompt owned the slot, and that coin flip is what timed out on CI.
   await page.reload();
   await expect(page.locator('.maka-composer-textarea')).toBeVisible();
   await expect(page.locator('.maka-boundary-unreadable-notice')).toHaveCount(0);
   await expect(trigger).toHaveText('自动');
+
+  // Re-checked after the boot path has had time to run both seeds: a late
+  // resurrection would take the slot back here rather than never happening.
+  await expect(prompt).toHaveCount(0);
+  await expect(page.locator('.maka-composer-textarea')).toBeVisible();
 });
