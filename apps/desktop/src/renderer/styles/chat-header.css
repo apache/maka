@@ -10,28 +10,23 @@
    `.maka-chat-jump-bottom`). The header status cluster was removed.     */
 
 
+/* A right-aligned strip of per-session status chips (memory / deep-research /
+   goal), each rendered only when that state is active — so most of the time this
+   row is just its spacer.
+   It carried three rulers until the shell grew a real titlebar row: a
+   `margin-right` reserving the workspace toolbar's hand-summed width, a
+   collapsed-state `margin-left` reserving the topbar rail's, and the transition
+   animating the latter. The strip now sits in the content row, below the
+   titlebar, where neither cluster can reach it. No fixed height either: an empty
+   status strip should take no vertical space, so the height follows the chips. */
 .maka-chat-header {
-  height: 32px;
   display: flex;
   align-items: flex-end;
+  justify-content: flex-end;
   gap: var(--space-1);
-  /* Reserve the absolutely-positioned .maka-workspace-top-actions footprint so
-     right-aligned header content (model switcher, mode pill, memory pill) is
-     never laid out underneath it. This is a content-avoidance ruler only: the
-     header no longer declares a drag region, so `.maka-titlebar-drag-layer`
-     covers this strip and the toolbar's own `no-drag` carves the buttons back
-     out. */
-  margin-right: var(--maka-workspace-top-actions-inset);
   padding: 0 var(--space-2-5);
   background: transparent;
   border-bottom: 0;
-  transition: margin-left var(--duration-large) var(--ease-drawer);
-}
-
-/* Same content-avoidance role on the left: while the sidebar is collapsed the
-   topbar rail overlaps this row, so header content starts after its buttons. */
-.maka-shell-2col[data-sidebar-state="collapsed"] .maka-chat-header {
-  margin-left: var(--maka-sidebar-collapsed-topbar-inset);
 }
 
 /* #1032: hard-block session health notice sits above the composer,
@@ -81,10 +76,6 @@
    the top-left of the chat header are removed. ~95 LOC of .maka-chat-tab*
    rules came out with them. Session name + model live in the sidebar;
    create-session lives in the sidebar new-task button. */
-
-.maka-chat-header-spacer {
-  flex: 1;
-}
 
 /* PR-MEMORY-VISIBILITY-INDICATOR-0: small clickable pill that fires
    when local MEMORY.md is being injected into the agent's system

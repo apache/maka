@@ -153,6 +153,14 @@ type ComposerImportOwner = {
 const SETTLE_FALLBACK_GRACE_MS = 1000;
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
+/**
+ * Module surfaces that own their whole column and render no workspace toolbar.
+ * This used to be a `display: none` rule keyed on the detail panel's
+ * `data-agents-view`; the toolbar now lives in the window titlebar, which is not
+ * a descendant of the detail panel, so the condition belongs here.
+ */
+const VIEWS_WITHOUT_WORKSPACE_ACTIONS = new Set(['skills', 'cron', 'daily-review']);
+
 type AppShellProps = {
   /** Pre-mount snapshot prefetched by main.tsx — see prefetchOnboardingSnapshot. */
   initialOnboardingSnapshot?: OnboardingSnapshot | null;
@@ -1861,6 +1869,15 @@ function AppShellContent({
     toastApi,
   };
 
+  const agentsView =
+    navSelection.section === 'automations'
+      ? navSelection.module === 'daily-review'
+        ? 'daily-review'
+        : 'cron'
+      : navSelection.section === 'extensions'
+        ? navSelection.module
+        : 'im_hub';
+
   return (
       <div className="appFrame agents-layout-root" data-agents-page>
       <div
@@ -1876,28 +1893,45 @@ function AppShellContent({
           } as CSSProperties
         }
       >
-        {/* The window's single drag authority. It MUST stay the first child of
-            `.maka-shell-2col`: Chromium builds the OS draggable region by
-            walking annotated elements in DOCUMENT ORDER, adding each `drag`
-            rect and subtracting each `no-drag` rect, so only a `no-drag`
-            element declared AFTER this layer can carve itself back out of it.
-            Everything clickable inside the titlebar band — the topbar rail, the
-            workspace actions, the column resize handle, right-aligned
-            chat-header content — is declared later in this tree and depends on
-            that ordering. Moving this layer down, or moving a titlebar control
-            above it, silently makes that control undraggable-through: the click
-            reaches the OS as a window drag and never becomes a click. */}
-        <div className="maka-titlebar-drag-layer" aria-hidden="true" />
-        <AppShellTopbarActions
-          sidebarCollapsed={sessionListCollapsed}
-          onOpenSearchModal={() => {
-            setSearchModalInitialQuery('');
-            setSearchModalOpen(true);
-          }}
-          onCollapseSidebar={() => setSessionListCollapsed(true)}
-          onExpandSidebar={() => setSessionListCollapsed(false)}
-          onCreateSession={createSession}
-        />
+        {/* The window's titlebar: the shell's first grid row, spanning every
+            column, and the only element that declares `-webkit-app-region:
+            drag`. Its action clusters are ordinary in-flow children that each
+            declare `no-drag`, so the OS draggable region is whatever the row
+            has left over — no container has to reserve space for a sibling.
+            Two properties make that work and must hold together:
+            it is the FIRST child (Chromium builds the draggable region by
+            walking annotated elements in DOCUMENT ORDER, adding `drag` rects
+            and subtracting `no-drag` ones, so only a `no-drag` element declared
+            after it can carve itself back out), and it OCCUPIES a row rather
+            than floating over one, so content below can never land inside it.
+            Locked by e2e/window-titlebar.spec.ts. */}
+        <header className="maka-window-titlebar">
+          <AppShellTopbarActions
+            sidebarCollapsed={sessionListCollapsed}
+            onOpenSearchModal={() => {
+              setSearchModalInitialQuery('');
+              setSearchModalOpen(true);
+            }}
+            onCollapseSidebar={() => setSessionListCollapsed(true)}
+            onExpandSidebar={() => setSessionListCollapsed(false)}
+            onCreateSession={createSession}
+          />
+          {/* The module surfaces that own their whole column show no workspace
+              toolbar. That used to be a `display: none` override reaching in
+              from the detail panel's `data-agents-view`; now that the toolbar
+              lives in the titlebar it is simply not rendered. */}
+          {!VIEWS_WITHOUT_WORKSPACE_ACTIONS.has(agentsView) && (
+            <AppShellWorkspaceTopActions
+              workbarAvailable={navSelection.section === 'sessions' && Boolean(activeId)}
+              workbarCollapsed={workbarCollapsed}
+              onToggleWorkbar={() => setWorkbarCollapsed((current) => !current)}
+              onOpenFeedback={() => openSettingsSection('about')}
+              onOpenPalette={openPalette}
+              onOpenHelp={openHelp}
+              onOpenHealth={() => openSettingsSection('health')}
+            />
+          )}
+        </header>
         <div
           className="maka-panel maka-panel-list maka-floating-panel"
           aria-hidden={sessionListCollapsed ? 'true' : undefined}
@@ -1941,23 +1975,8 @@ function AppShellContent({
         />
         <AppShellDetailPanel
           data-sidebar-state={sessionListCollapsed ? 'collapsed' : 'expanded'}
-          agentsView={
-            navSelection.section === 'automations'
-              ? navSelection.module === 'daily-review' ? 'daily-review' : 'cron'
-              : navSelection.section === 'extensions'
-                ? navSelection.module
-                : 'im_hub'
-          }
+          agentsView={agentsView}
         >
-          <AppShellWorkspaceTopActions
-            workbarAvailable={navSelection.section === 'sessions' && Boolean(activeId)}
-            workbarCollapsed={workbarCollapsed}
-            onToggleWorkbar={() => setWorkbarCollapsed((current) => !current)}
-            onOpenFeedback={() => openSettingsSection('about')}
-            onOpenPalette={openPalette}
-            onOpenHelp={openHelp}
-            onOpenHealth={() => openSettingsSection('health')}
-          />
           {/* PR-UI-RENDER-2: install the internal-URI dispatcher
               for any Markdown rendered inside ChatView (assistant
               answers, thinking panels, streaming bubbles). Wrapping

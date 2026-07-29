@@ -112,12 +112,12 @@ describe('sidebar session list CSS scroll contract (PR-SIDEBAR-IA-0 Phase 1)', (
     const ruleBody = extractRuleBody(css, '.maka-session-panel');
     assert.ok(ruleBody, '.maka-session-panel rule must exist');
     // Four rows, not five: the panel used to lead with a row holding an empty
-    // `<header>` that existed only to donate a window-drag strip. The single
-    // `.maka-titlebar-drag-layer` owns dragging now, so that row is gone and the
-    // panel's own `padding-top` provides the titlebar clearance. What this
-    // contract actually protects is unchanged — the session heading keeps its own
-    // row above a `minmax(0, 1fr)`-constrained list, which is what keeps the
-    // footer on screen.
+    // `<header>` that existed only to donate a window-drag strip. The window
+    // titlebar is its own shell row now, so the panel starts below it and needs
+    // neither the placeholder nor a clearance of its own. What this contract
+    // actually protects is unchanged — the session heading keeps its own row
+    // above a `minmax(0, 1fr)`-constrained list, which is what keeps the footer
+    // on screen.
     assert.match(
       ruleBody,
       /grid-template-rows:\s*auto\s+auto\s+minmax\(\s*0\s*,\s*1fr\s*\)\s+auto/,

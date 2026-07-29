@@ -69,16 +69,12 @@ describe('sidebar structural motion contract', () => {
     );
   });
 
-  it('keeps the chat header avoidance geometry synchronized with the drawer', async () => {
-    const css = await readRendererContractCss();
-    const chatHeaderRule = ruleBody(css, '.maka-chat-header');
-
-    assert.match(
-      chatHeaderRule,
-      /transition:\s*margin-left var\(--duration-large\) var\(--ease-drawer\)/,
-      'the chat header hit-area inset should move with the surrounding layout',
-    );
-  });
+  // The chat header used to animate a `margin-left` in lockstep with the drawer:
+  // while the sidebar was collapsed, the topbar rail overlapped the header, so
+  // the header inset its content by the rail's hand-summed width and had to
+  // animate that inset as the drawer moved. The titlebar is its own shell row
+  // now, the rail is an in-flow child of it, and the header is a content-row
+  // status strip — there is no inset left to keep in sync.
 
   it('gives both sidebar states the same explicit three-track shape', async () => {
     const css = await readRendererContractCss();

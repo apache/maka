@@ -552,9 +552,16 @@
   --h-toolbar: 40px;
   --h-composer-min: 44px;
 
-  /* titlebar control baseline (macOS traffic-light center) */
+  /* Where the macOS traffic lights stop. The OS draws them over the renderer, so
+     this is the one titlebar measurement the DOM cannot derive; it is the
+     titlebar row's left gutter.
+
+     A companion `--maka-titlebar-control-safe-top: 20px` (the lights' optical
+     center, pixel-measured — 20.75, not the theoretical 20) is gone with the
+     absolutely-positioned rail it aligned. The titlebar is a `--h-titlebar` row
+     with `align-items: center` now, which puts the buttons' center at 20 — 0.75px
+     off the lights, closer than the 21 the hand-tuned offset produced. */
   --maka-titlebar-control-safe-left: 94px;
-  --maka-titlebar-control-safe-top: 20px;
 
   /* OS window-resize corridor. A draggable app-region rect flush against a
      window edge takes the native resize hit area with it — that is the P0 WAWQAQ
@@ -568,18 +575,16 @@
      (sidebar.css) and the in-flow chat status row (module-pages.css).
      The status row only shares the toolbar's right edge; it no longer
      anchors off the toolbar bottom. */
-  --maka-workspace-top-actions-top: calc(var(--maka-titlebar-control-safe-top) - 16px); /* pixel-measured lockstep with sidebar rail — lights' optical center is 20.75 */
+  /* Right-hand gutter of the titlebar row: our own 24px plus however wide the
+     platform's native controls are on that side (0 on macOS, where they sit
+     left; the Windows `titleBarOverlay` width on Windows).
+
+     There used to be a companion `--maka-workspace-top-actions-inset` adding
+     "two 28px buttons + a 6px gap + 12px clearance = 74px" so the chat header
+     could reserve the toolbar's footprint, with a contract test recomputing that
+     sum from the rendered button count. Both are gone: the toolbar is an in-flow
+     child of the titlebar row, so nothing has to know how wide it is. */
   --maka-workspace-top-actions-right: 24px;
-  /* Horizontal footprint the absolutely-positioned .maka-workspace-top-actions
-     toolbar occupies in the top-right corner: its right offset + two resident
-     28px compact icon buttons (the overflow trigger and the workbar toggle)
-     with a 6px gap (62px) + a 12px clearance gap. The four secondary actions
-     (feedback, command palette, help, health) live behind the overflow menu
-     and add no horizontal footprint here. Right-aligned chat-header content
-     (model switcher, .maka-chat-header-mode-pill, memory pill) and the
-     chat-header drag strip reserve this footprint so neither content nor
-     titlebar hit regions sit underneath the toolbar. */
-  --maka-workspace-top-actions-inset: calc(var(--maka-workspace-top-actions-right) + 74px);
 
   /* PR-WINDOW-TITLEBAR-0: Electron exposes the titlebar safe area through
      `titlebar-area-*` CSS env vars. The safe area is the usable titlebar

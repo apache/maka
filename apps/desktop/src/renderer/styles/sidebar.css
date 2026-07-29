@@ -6,14 +6,10 @@
   display: grid;
   /* 4 rows: hub nav / session-list heading / list / footer. The panel used to
      carry a fifth leading row holding an empty `<header>` whose only job was to
-     host a blank drag strip; `.maka-titlebar-drag-layer` owns window dragging
-     now, so the row and its element are gone and the clearance below is what
-     keeps the nav under the window controls. */
+     host a blank drag strip, and after that a `padding-top` clearing the drag
+     band. Both are gone: the titlebar is its own grid row in the shell, so this
+     panel starts below it and has nothing to clear. */
   grid-template-rows: auto auto minmax(0, 1fr) auto;
-  /* Clear the shell's titlebar band so the first nav row starts below the window
-     controls, plus the gap the panel uses elsewhere. Derived from the band
-     height rather than restating a literal. */
-  padding-top: calc(var(--maka-titlebar-drag-band-height) + var(--space-1-5));
   overflow: hidden;
   background: transparent;
   contain: layout paint style;

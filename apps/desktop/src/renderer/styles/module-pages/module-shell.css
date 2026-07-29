@@ -120,16 +120,7 @@
 
 @media (max-width: 820px) {
   .maka-module-main {
-    /* The top padding must clear the shell's titlebar band, not just breathe.
-       `--space-4` used to put this header at y≈20, which both overlapped the
-       window controls visually and — once the shell gained a single drag band —
-       left the header's own controls inside a drag region, so the overlapping
-       part of their hit area became a window drag. The band is positioned on the
-       shell while this panel is inset by `.maka-panel-detail`'s own
-       `var(--space-1)` margin, hence the subtraction. Locked by
-       e2e/titlebar-drag-band.spec.ts. */
-    padding: calc(var(--maka-titlebar-drag-band-height) - var(--space-1)) var(--space-4)
-      var(--space-4);
+    padding: var(--space-4);
   }
 
   .maka-module-main-header {
