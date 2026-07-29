@@ -18,11 +18,15 @@ import {
 
 class FakeWindow {
   sent: Array<{ channel: string; payload: any }> = [];
-  bounds: unknown = null;
+  bounds: any = { x: 0, y: 0, width: 200, height: 125 };
   shown = false;
   destroyed = false;
+  ignoringMouse = true;
   private readyCb: (() => void) | null = null;
   private goneCb: (() => void) | null = null;
+  private messageCb: ((channel: string, payload: unknown) => void) | null = null;
+  /** Every setBounds, so a test can tell "did not move" from "moved back". */
+  moves: any[] = [];
   send(channel: string, payload: unknown): void {
     this.sent.push({ channel, payload });
   }
@@ -32,11 +36,21 @@ class FakeWindow {
   onGone(cb: () => void): void {
     this.goneCb = cb;
   }
-  setBounds(bounds: unknown): void {
+  onMessage(cb: (channel: string, payload: unknown) => void): void {
+    this.messageCb = cb;
+  }
+  setBounds(bounds: any): void {
     this.bounds = bounds;
+    this.moves.push(bounds);
+  }
+  getBounds(): any {
+    return this.bounds;
   }
   showInactive(): void {
     this.shown = true;
+  }
+  setIgnoreMouseEvents(ignore: boolean): void {
+    this.ignoringMouse = ignore;
   }
   isDestroyed(): boolean {
     return this.destroyed;
@@ -50,9 +64,19 @@ class FakeWindow {
   fireGone(): void {
     this.goneCb?.();
   }
+  fireMessage(channel: string, payload?: unknown): void {
+    this.messageCb?.(channel, payload);
+  }
 }
 
-function makePip() {
+/**
+ * A display for the controller to position against. The mirror now owns where
+ * it sits — it re-seats itself on a reshape and settles onto a corner after a
+ * throw — so a test that gives it no display is asking it to work blind.
+ */
+const WORK_AREA = { x: 0, y: 0, width: 1600, height: 1000 };
+
+function makePip(extra: Record<string, unknown> = {}) {
   const windows: FakeWindow[] = [];
   const pip = createComputerUsePipController({
     createWindow: () => {
@@ -61,8 +85,10 @@ function makePip() {
       return w as never;
     },
     resolveBounds: (aspect) => ({ x: 0, y: 0, width: Math.round(400 * aspect), height: 400 }),
+    workAreaFor: () => WORK_AREA,
     preloadPath: '/fake/pip-preload.cjs',
     htmlPath: '/fake/pip.html',
+    ...extra,
   });
   return { pip, windows };
 }
@@ -201,30 +227,32 @@ test('Computer Use picture-in-picture mirror', async (t) => {
       },
       resolveBounds: (aspect) =>
         pipBoundsForAnchor(aspect, appRect, { x: 0, y: 0, width: 3000, height: 2000 }),
+      workAreaFor: () => ({ x: 0, y: 0, width: 3000, height: 2000 }),
       preloadPath: '/p.cjs',
       htmlPath: '/p.html',
     });
     pip.present({ sessionId: 's1', ...FRAME });
     windows[0]!.fireReady();
-    windows[0]!.bounds = null;
+    windows[0]!.moves.length = 0;
 
     // A drag: the origin moves, the size does not.
     appRect = { x: 1000, y: 500, width: 800, height: 600 };
     for (const cb of changes) cb();
-    assert.equal(windows[0]!.bounds, null, 'a move is left to the window server');
+    assert.deepEqual(windows[0]!.moves, [], 'a move is left to the window server');
 
     // A resize: the corner the mirror hangs off has moved relative to it.
     appRect = { x: 1000, y: 500, width: 1200, height: 900 };
     for (const cb of changes) cb();
+    assert.equal(windows[0]!.moves.length, 1, 'a resize is recomputed');
     assert.deepEqual(
-      windows[0]!.bounds,
+      windows[0]!.moves[0],
       pipBoundsForAnchor(FRAME.widthPx / FRAME.heightPx, appRect, {
         x: 0,
         y: 0,
         width: 3000,
         height: 2000,
       }),
-      'a resize is recomputed',
+      'and it lands back on the corner it was resting on',
     );
   });
 
@@ -246,16 +274,17 @@ test('Computer Use picture-in-picture mirror', async (t) => {
       },
       resolveBounds: (aspect) =>
         pipBoundsForAnchor(aspect, appRect, { x: 0, y: 0, width: 3000, height: 2000 }),
+      workAreaFor: () => ({ x: 0, y: 0, width: 3000, height: 2000 }),
       preloadPath: '/p.cjs',
       htmlPath: '/p.html',
     });
     pip.present({ sessionId: 's1', ...FRAME });
     windows[0]!.fireReady();
-    windows[0]!.bounds = null;
+    windows[0]!.moves.length = 0;
 
     appRect = { x: 1000, y: 500, width: 800, height: 600 };
     for (const cb of changes) cb();
-    assert.notEqual(windows[0]!.bounds, null, 'the mirror moved with the app');
+    assert.equal(windows[0]!.moves.length, 1, 'the mirror moved with the app');
   });
 
   await t.test('a destroyed app window is not used as a parent', () => {
@@ -273,12 +302,199 @@ test('Computer Use picture-in-picture mirror', async (t) => {
       },
       resolveParentWindow: () => ({ isDestroyed: () => true }),
       resolveBounds: () => ({ x: 0, y: 0, width: 200, height: 125 }),
+      workAreaFor: () => WORK_AREA,
       preloadPath: '/p.cjs',
       htmlPath: '/p.html',
     });
     pip.present({ sessionId: 's1', ...FRAME });
     assert.equal(seen[0]?.parent, undefined);
     assert.equal(seen[0]?.alwaysOnTop, true);
+  });
+
+  await t.test('the mirror is click-through until the pointer is on it', () => {
+    // Codex's tile always takes the click. This keeps the older promise that
+    // the mirror never blocks what is underneath it, and gives that up only
+    // for as long as someone is actually pointing at it — which the window can
+    // tell because `setIgnoreMouseEvents(true, {forward: true})` still
+    // forwards moves to the page.
+    const { pip, windows } = makePip();
+    pip.present({ sessionId: 's1', ...FRAME });
+    windows[0]!.fireReady();
+    assert.equal(windows[0]!.ignoringMouse, true, 'transparent to clicks at rest');
+
+    windows[0]!.fireMessage('pip:hover', { inside: true });
+    assert.equal(windows[0]!.ignoringMouse, false, 'takes the pointer while hovered');
+
+    windows[0]!.fireMessage('pip:hover', { inside: false });
+    assert.equal(windows[0]!.ignoringMouse, true, 'and gives it straight back');
+  });
+
+  await t.test('a drag moves the mirror, and a release settles it on a corner', () => {
+    // The whole interaction, end to end: press, drag across the window, throw
+    // it right, and watch the settling spring carry it to the corner the throw
+    // was aimed at.
+    let cursor = { x: 500, y: 500 };
+    let clock = 0;
+    const frames: Array<() => void> = [];
+    const { pip, windows } = makePip({
+      resolveAnchorRect: () => ({ x: 0, y: 0, width: 1600, height: 1000 }),
+      resolveParentWindow: () => ({ isDestroyed: () => false }),
+      resolveBounds: () => ({ x: 400, y: 800, width: 200, height: 125 }),
+      cursorPoint: () => cursor,
+      now: () => clock,
+      scheduleFrame: (cb: () => void) => {
+        frames.push(cb);
+        return () => {};
+      },
+    });
+    pip.present({ sessionId: 's1', ...FRAME });
+    const w = windows[0]!;
+    w.fireReady();
+    const runFrames = (count: number) => {
+      for (let i = 0; i < count; i++) {
+        const next = frames.shift();
+        if (!next) return;
+        clock += 16;
+        next();
+      }
+    };
+
+    assert.equal(pip.currentAlignment(), 'bottom-right', 'starts where it was placed');
+
+    // Press on the mirror's own top-left corner, wherever the controller has
+    // actually seated it, so the grab offset is zero and the drag is readable.
+    const seated = w.getBounds();
+    cursor = { x: seated.x, y: seated.y };
+    w.fireMessage('pip:pointer-down');
+    w.moves.length = 0;
+
+    // Drag it up and to the left, fast enough that the release is a throw.
+    cursor = { x: 200, y: 200 };
+    clock += 16;
+    w.fireMessage('pip:pointer-move');
+    runFrames(30);
+    assert.ok(w.moves.length > 0, 'the mirror follows the pointer');
+    assert.ok(w.moves.at(-1)!.x < seated.x, 'leftward');
+    assert.ok(w.moves.at(-1)!.y < seated.y, 'and upward');
+
+    clock += 16;
+    w.fireMessage('pip:pointer-up');
+    runFrames(400);
+    assert.equal(pip.currentAlignment(), 'top-left', 'thrown up and left, it lands there');
+    assert.deepEqual(
+      { x: w.moves.at(-1)!.x, y: w.moves.at(-1)!.y },
+      { x: 24, y: 24 },
+      'and comes to rest exactly on the anchor',
+    );
+  });
+
+  await t.test('a resize brings the mirror back to the corner the user chose', () => {
+    // Not to the default corner. Someone put it in the top-left on purpose,
+    // and resizing the app window is not them changing their mind.
+    let cursor = { x: 0, y: 0 };
+    let clock = 0;
+    const frames: Array<() => void> = [];
+    const changes: Array<() => void> = [];
+    let appRect = { x: 0, y: 0, width: 1600, height: 1000 };
+    const { pip, windows } = makePip({
+      resolveAnchorRect: () => appRect,
+      resolveParentWindow: () => ({ isDestroyed: () => false }),
+      subscribeAnchorChanges: (cb: () => void) => {
+        changes.push(cb);
+        return () => {};
+      },
+      resolveBounds: () => ({ x: 1376, y: 851, width: 200, height: 125 }),
+      cursorPoint: () => cursor,
+      now: () => clock,
+      scheduleFrame: (cb: () => void) => {
+        frames.push(cb);
+        return () => {};
+      },
+    });
+    pip.present({ sessionId: 's1', ...FRAME });
+    const w = windows[0]!;
+    w.fireReady();
+
+    cursor = { x: w.getBounds().x, y: w.getBounds().y };
+    w.fireMessage('pip:pointer-down');
+    cursor = { x: 100, y: 100 };
+    clock += 16;
+    w.fireMessage('pip:pointer-move');
+    clock += 16;
+    w.fireMessage('pip:pointer-up');
+    for (let i = 0; i < 400; i++) {
+      const next = frames.shift();
+      if (!next) break;
+      clock += 16;
+      next();
+    }
+    assert.equal(pip.currentAlignment(), 'top-left');
+
+    w.moves.length = 0;
+    appRect = { x: 0, y: 0, width: 1200, height: 800 };
+    for (const cb of changes) cb();
+    assert.deepEqual(
+      { x: w.moves.at(-1)!.x, y: w.moves.at(-1)!.y },
+      { x: 24, y: 24 },
+      'still the top-left, against the new rect',
+    );
+  });
+
+  await t.test('the stop control runs the same stop the menu bar does', () => {
+    const stopped: string[] = [];
+    const { pip, windows } = makePip();
+    pip.setStopHandler((id) => stopped.push(id));
+    pip.present({ sessionId: 's1', ...FRAME });
+    windows[0]!.fireReady();
+
+    windows[0]!.fireMessage('pip:control', { id: 'stop' });
+    assert.deepEqual(stopped, ['s1']);
+    assert.equal(pip.isVisible(), true, 'stopping the run does not close the mirror');
+  });
+
+  await t.test('hide dismisses the mirror for this run, and only this run', () => {
+    // Codex has `hide` and `close`; with one tile they are the same gesture.
+    // Dismissing is a statement about this run — the next one gets a mirror.
+    const { pip, windows } = makePip();
+    pip.present({ sessionId: 's1', ...FRAME });
+    windows[0]!.fireReady();
+
+    windows[0]!.fireMessage('pip:control', { id: 'hide' });
+    assert.equal(pip.isVisible(), false);
+
+    pip.present({ sessionId: 's1', ...FRAME });
+    assert.equal(pip.isVisible(), false, 'and stays dismissed for the rest of the run');
+
+    pip.present({ sessionId: 's2', ...FRAME });
+    assert.equal(pip.isVisible(), true, 'the next run is a fresh decision');
+  });
+
+  await t.test('an unknown control identifier does nothing', () => {
+    const stopped: string[] = [];
+    const { pip, windows } = makePip();
+    pip.setStopHandler((id) => stopped.push(id));
+    pip.present({ sessionId: 's1', ...FRAME });
+    windows[0]!.fireReady();
+    windows[0]!.fireMessage('pip:control', { id: 'launch-the-missiles' });
+    windows[0]!.fireMessage('pip:control', {});
+    assert.deepEqual(stopped, []);
+    assert.equal(pip.isVisible(), true);
+  });
+
+  await t.test('a stale window cannot drive the live one', () => {
+    // The mirror is rebuilt per session. A message arriving late from the
+    // window that just went away must not move the one that replaced it.
+    const { pip, windows } = makePip();
+    pip.present({ sessionId: 's1', ...FRAME });
+    windows[0]!.fireReady();
+    pip.present({ sessionId: 's2', ...FRAME });
+    windows[1]!.fireReady();
+    windows[1]!.moves.length = 0;
+
+    windows[0]!.fireMessage('pip:hover', { inside: true });
+    windows[0]!.fireMessage('pip:control', { id: 'hide' });
+    assert.equal(pip.isVisible(), true, 'the live mirror is untouched');
+    assert.equal(windows[1]!.ignoringMouse, true);
   });
 
   await t.test('stays absent until a frame arrives', () => {

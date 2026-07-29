@@ -2,6 +2,20 @@ import { createRequire } from 'node:module';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { BrowserWindowConstructorOptions, Rectangle } from 'electron';
+import {
+  PIP_SPRING,
+  PipDragTracker,
+  anchorFor,
+  clampToWorkArea,
+  pickPipAnchor,
+  pipAnchors,
+  springAtRest,
+  stepSpring,
+  type MotionState,
+  type PipAlignment,
+  type Point,
+  type Rect,
+} from './pip-motion.js';
 
 /**
  * Picture-in-picture mirror of the window Computer Use is driving.
@@ -31,8 +45,16 @@ export interface ComputerUsePipController {
   clearForSession(sessionId: string): void;
   destroyAll(): void;
   isVisible(): boolean;
+  /**
+   * What the mirror's stop control runs. Same shape the status item uses, and
+   * pointed at the same code, so stopping from the menu bar, from the mirror
+   * and from the window cannot drift apart.
+   */
+  setStopHandler(handler: (sessionId: string) => void): void;
   /** Test seam. */
   currentSessionId(): string | null;
+  /** Test seam: which corner the mirror is resting on. */
+  currentAlignment(): PipAlignment;
 }
 
 export interface PipPresentInput {
@@ -66,11 +88,32 @@ export interface PipWindowLike {
   send(channel: string, payload: unknown): void;
   onReady(cb: () => void): void;
   onGone(cb: () => void): void;
+  /**
+   * Messages from this window's renderer only.
+   *
+   * Scoped to the WebContents rather than global `ipcMain`, so the drag and
+   * the controls cannot be driven by any other renderer in the app.
+   */
+  onMessage(cb: (channel: string, payload: unknown) => void): void;
   setBounds(bounds: Rectangle): void;
+  getBounds(): Rectangle;
   showInactive(): void;
+  /** Click-through, with mouse moves still forwarded to the page. */
+  setIgnoreMouseEvents(ignore: boolean): void;
   isDestroyed(): boolean;
   destroy(): void;
 }
+
+/**
+ * The hover controls, from Codex's `performControlWithIdentifier:`.
+ *
+ * Codex has three — `stop`, `hide`, `close` — because its PiP is a stack:
+ * `close` dismisses one tile and `hide` dismisses the stack. Maka mirrors one
+ * window at a time, so those two are the same gesture and only one of them
+ * earns a button.
+ */
+export type PipControlId = 'stop' | 'hide';
+
 
 export interface CreatePipControllerDeps {
   createWindow?: (options: BrowserWindowConstructorOptions) => PipWindowLike;
@@ -121,6 +164,20 @@ export interface CreatePipControllerDeps {
    * window was "cheap enough not to debounce". It is cheap. It is also late.
    */
   resolveParentWindow?: () => ParentWindowLike | undefined;
+  /**
+   * Where the pointer is, in screen points.
+   *
+   * Read on the main side rather than taken from the renderer's `screenX` so
+   * the drag cannot drift: the window is moved in screen points and the
+   * pointer is read in screen points, with no CSS-pixel conversion in between.
+   */
+  cursorPoint?: () => Point;
+  /** Work area of whichever display holds a rect, for the release clamp. */
+  workAreaFor?: (rect: Rectangle) => Rect;
+  /** Monotonic-enough clock, injectable so drag physics can be tested exactly. */
+  now?: () => number;
+  /** Schedule one animation step; returns a cancel. Defaults to ~60Hz. */
+  scheduleFrame?: (cb: () => void) => () => void;
   preloadPath?: string;
   htmlPath?: string;
 }
@@ -293,6 +350,35 @@ export function createComputerUsePipController(
    */
   let anchorSize: { width: number; height: number } | null = null;
   let parented = false;
+  /**
+   * Which corner the mirror rests on, and whether the user put it there.
+   *
+   * Once someone has thrown the mirror somewhere, a resize must bring it back
+   * to *that* corner rather than to the default — moving it back to the
+   * bottom-right would undo a decision they just made on purpose.
+   */
+  let alignment: PipAlignment = 'bottom-right';
+  let drag: PipDragTracker | null = null;
+  let motion: MotionState | null = null;
+  let motionTarget: Point | null = null;
+  let cancelFrame: (() => void) | null = null;
+  /**
+   * Which run the user dismissed the mirror for.
+   *
+   * A session id rather than a flag: `teardown` clears `sessionId`, so a flag
+   * would be un-set by the very next frame of the run it was meant to dismiss.
+   */
+  let hiddenSessionId: string | null = null;
+  let pointerInside = false;
+  let stopHandler: ((sessionId: string) => void) | undefined;
+
+  const now = deps.now ?? (() => Date.now());
+  const scheduleFrame =
+    deps.scheduleFrame ??
+    ((cb: () => void) => {
+      const handle = setTimeout(cb, 16);
+      return () => clearTimeout(handle);
+    });
 
   function push(channel: string, payload: unknown): void {
     if (!win || win.isDestroyed()) return;
@@ -314,6 +400,12 @@ export function createComputerUsePipController(
     queue = [];
     anchorSize = null;
     parented = false;
+    drag = null;
+    motion = null;
+    motionTarget = null;
+    pointerInside = false;
+    cancelFrame?.();
+    cancelFrame = null;
     unsubscribeAnchor?.();
     unsubscribeAnchor = null;
     if (w && !w.isDestroyed()) w.destroy();
@@ -322,6 +414,167 @@ export function createComputerUsePipController(
   function liveParent(): ParentWindowLike | undefined {
     const candidate = deps.resolveParentWindow?.();
     return candidate && !candidate.isDestroyed() ? candidate : undefined;
+  }
+
+  /**
+   * The rect the mirror hangs off: the app window when there is one, otherwise
+   * the display it is on. Codex calls this the host, and its
+   * `defaultHostForPositioning` falls back the same way.
+   */
+  function hostRect(current: Rectangle): Rect {
+    return deps.resolveAnchorRect?.() ?? workAreaOf(current);
+  }
+
+  function workAreaOf(rect: Rectangle): Rect {
+    if (deps.workAreaFor) return deps.workAreaFor(rect);
+    const require = createRequire(import.meta.url);
+    const { screen } = require('electron') as typeof import('electron');
+    return screen.getDisplayMatching(rect).workArea;
+  }
+
+  /** Rest position for the corner the mirror currently belongs to. */
+  function restPoint(current: Rectangle): Point {
+    const host = hostRect(current);
+    const size = { width: current.width, height: current.height };
+    const anchors = pipAnchors(host, size, PIP_MARGIN);
+    const chosen = anchorFor(anchors, alignment) ?? anchors[anchors.length - 1]!;
+    return clampToWorkArea(chosen.point, size, workAreaOf(current));
+  }
+
+  function moveTo(w: PipWindowLike, point: Point, size: { width: number; height: number }): void {
+    w.setBounds({
+      x: Math.round(point.x),
+      y: Math.round(point.y),
+      width: size.width,
+      height: size.height,
+    });
+  }
+
+  /**
+   * Run the spring until it arrives.
+   *
+   * Codex drives this from a display link (`displayLinkDidRequestFrameAtTimestamp:`).
+   * There is no display link in the main process, so the frame source is
+   * injected — which also makes the physics testable without waiting for real
+   * time to pass.
+   */
+  function animate(): void {
+    cancelFrame?.();
+    cancelFrame = null;
+    let last = now();
+    const tick = (): void => {
+      const w = win;
+      if (!w || w.isDestroyed() || !motion || !motionTarget) {
+        cancelFrame = null;
+        return;
+      }
+      const at = now();
+      const dt = (at - last) / 1000;
+      last = at;
+      const spring = drag ? PIP_SPRING.dragging : PIP_SPRING.settling;
+      motion = stepSpring(motion, motionTarget, spring, dt);
+      const bounds = w.getBounds();
+      moveTo(w, motion.position, { width: bounds.width, height: bounds.height });
+      if (!drag && springAtRest(motion, motionTarget)) {
+        moveTo(w, motionTarget, { width: bounds.width, height: bounds.height });
+        motion = null;
+        motionTarget = null;
+        cancelFrame = null;
+        return;
+      }
+      cancelFrame = scheduleFrame(tick);
+    };
+    cancelFrame = scheduleFrame(tick);
+  }
+
+  function beginDrag(w: PipWindowLike): void {
+    const bounds = w.getBounds();
+    const pointer = deps.cursorPoint?.() ?? { x: bounds.x, y: bounds.y };
+    drag = new PipDragTracker(pointer, { x: bounds.x, y: bounds.y }, now());
+    motion = { position: { x: bounds.x, y: bounds.y }, velocity: { x: 0, y: 0 } };
+    motionTarget = { x: bounds.x, y: bounds.y };
+    animate();
+  }
+
+  function moveDrag(w: PipWindowLike): void {
+    if (!drag) return;
+    const pointer = deps.cursorPoint?.();
+    if (!pointer) return;
+    // The spring targets the pointer rather than being snapped to it: that
+    // trailing eighth of a second is what gives the window weight, and it is
+    // why Codex uses a stiffer spring while dragging (900/55) than while
+    // settling (320/42) instead of no spring at all.
+    motionTarget = drag.update(pointer, now());
+    if (!cancelFrame) animate();
+    void w;
+  }
+
+  /**
+   * Release: choose a corner from where the mirror is and how fast it was
+   * thrown, then let the settling spring carry it there, seeded with the
+   * release velocity so a throw keeps its momentum through the transition.
+   */
+  function endDrag(w: PipWindowLike): void {
+    const tracker = drag;
+    drag = null;
+    if (!tracker) return;
+    const pointer = deps.cursorPoint?.();
+    if (pointer) tracker.update(pointer, now());
+    const bounds = w.getBounds();
+    const size = { width: bounds.width, height: bounds.height };
+    const origin = tracker.windowOrigin;
+    const velocity = tracker.velocity();
+    const host = hostRect(bounds);
+    const chosen = pickPipAnchor(pipAnchors(host, size, PIP_MARGIN), origin, velocity, host);
+    alignment = chosen.alignment;
+    motion = { position: origin, velocity };
+    motionTarget = clampToWorkArea(chosen.point, size, workAreaOf(bounds));
+    animate();
+  }
+
+  function handleMessage(w: PipWindowLike, channel: string, payload: unknown): void {
+    if (win !== w || w.isDestroyed()) return;
+    switch (channel) {
+      case 'pip:pointer-down':
+        beginDrag(w);
+        return;
+      case 'pip:pointer-move':
+        moveDrag(w);
+        return;
+      case 'pip:pointer-up':
+        endDrag(w);
+        return;
+      case 'pip:hover': {
+        // Click-through until the pointer is actually on the mirror. Codex's
+        // tile always takes the click; this keeps the older promise that the
+        // mirror never blocks what is underneath it, and gives it up only for
+        // as long as someone is pointing at it.
+        const inside = typeof payload === 'object' && payload !== null && 'inside' in payload
+          ? Boolean((payload as { inside: unknown }).inside)
+          : false;
+        if (inside === pointerInside) return;
+        pointerInside = inside;
+        w.setIgnoreMouseEvents(!inside);
+        return;
+      }
+      case 'pip:control': {
+        const id = typeof payload === 'object' && payload !== null && 'id' in payload
+          ? (payload as { id: unknown }).id
+          : null;
+        const session = sessionId;
+        if (id === 'stop') {
+          if (session) stopHandler?.(session);
+          return;
+        }
+        if (id === 'hide') {
+          hiddenSessionId = session;
+          teardown();
+        }
+        return;
+      }
+      default:
+        return;
+    }
   }
 
   function ensure(nextSessionId: string): PipWindowLike {
@@ -340,6 +593,7 @@ export function createComputerUsePipController(
     parented = Boolean(parent);
     const anchor = deps.resolveAnchorRect?.();
     anchorSize = anchor ? { width: anchor.width, height: anchor.height } : null;
+    created.onMessage((channel, payload) => handleMessage(created, channel, payload));
     created.onReady(() => {
       if (win !== created) return;
       ready = true;
@@ -360,13 +614,17 @@ export function createComputerUsePipController(
     unsubscribeAnchor =
       deps.subscribeAnchorChanges?.(() => {
         if (win !== created || created.isDestroyed()) return;
+        // A drag outranks the app window: whatever the window is doing, the
+        // mirror is where the pointer is holding it.
+        if (drag) return;
         const next = deps.resolveAnchorRect?.();
         if (parented && next && anchorSize &&
             next.width === anchorSize.width && next.height === anchorSize.height) {
           return;
         }
         anchorSize = next ? { width: next.width, height: next.height } : null;
-        created.setBounds(resolveBounds(aspect));
+        const current = created.getBounds();
+        moveTo(created, restPoint(current), { width: current.width, height: current.height });
       }) ?? null;
     return created;
   }
@@ -375,12 +633,24 @@ export function createComputerUsePipController(
     present(input: PipPresentInput): void {
       if (typeof input.sessionId !== 'string' || input.sessionId.length === 0) return;
       if (!input.base64) return;
+      // Dismissed for this run. The next run gets a mirror again — hiding it
+      // is a statement about this run, not a setting.
+      if (hiddenSessionId === input.sessionId) return;
       const nextAspect =
         input.widthPx > 0 && input.heightPx > 0 ? input.widthPx / input.heightPx : aspect;
       const reshaped = Math.abs(nextAspect - aspect) > 0.01;
       aspect = nextAspect;
       const w = ensure(input.sessionId);
-      if (reshaped && !deps.createWindow) w.setBounds(resolveBounds(aspect));
+      // A reshape resizes the mirror, and a resized mirror no longer touches
+      // the corner it was resting on — so re-seat it rather than leaving it
+      // floating a few points off. Never while a drag or a settle is in
+      // flight: those own the position until they finish.
+      if (reshaped && !drag && !motion) {
+        const current = w.getBounds();
+        const size = pipDisplaySize(aspect);
+        w.setBounds({ ...current, ...size });
+        moveTo(w, restPoint({ ...current, ...size }), size);
+      }
       push('pip:frame', {
         src: `data:${input.mimeType};base64,${input.base64}`,
         widthPx: input.widthPx,
@@ -395,12 +665,22 @@ export function createComputerUsePipController(
     },
 
     clearForSession(endedSessionId: string): void {
+      if (hiddenSessionId === endedSessionId) hiddenSessionId = null;
       if (sessionId !== endedSessionId) return;
       teardown();
     },
 
     destroyAll(): void {
+      hiddenSessionId = null;
       teardown();
+    },
+
+    setStopHandler(handler: (sessionId: string) => void): void {
+      stopHandler = handler;
+    },
+
+    currentAlignment(): PipAlignment {
+      return alignment;
     },
 
     isVisible(): boolean {
@@ -420,14 +700,32 @@ function defaultCreateWindow(
   const require = createRequire(import.meta.url);
   const { BrowserWindow } = require('electron') as typeof import('electron');
   const w = new BrowserWindow(options);
+  // Click-through with moves forwarded: the page still sees the pointer cross
+  // it, which is how it knows to ask for the clicks back.
   w.setIgnoreMouseEvents(true, { forward: true });
   void w.loadFile(htmlPath);
+  const PIP_CHANNELS = [
+    'pip:pointer-down',
+    'pip:pointer-move',
+    'pip:pointer-up',
+    'pip:hover',
+    'pip:control',
+  ] as const;
   return {
     send: (channel, payload) => w.webContents.send(channel, payload),
     onReady: (cb) => w.webContents.once('did-finish-load', cb),
     onGone: (cb) => w.once('closed', cb),
+    onMessage: (cb) => {
+      // `webContents.ipc` is scoped to this window, so nothing else in the app
+      // can drive the mirror by sending on the same channel names.
+      for (const channel of PIP_CHANNELS) {
+        w.webContents.ipc.on(channel, (_event, payload) => cb(channel, payload));
+      }
+    },
     setBounds: (bounds) => w.setBounds(bounds),
+    getBounds: () => w.getBounds(),
     showInactive: () => w.showInactive(),
+    setIgnoreMouseEvents: (ignore) => w.setIgnoreMouseEvents(ignore, { forward: true }),
     isDestroyed: () => w.isDestroyed(),
     destroy: () => w.destroy(),
   };

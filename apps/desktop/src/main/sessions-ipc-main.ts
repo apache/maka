@@ -106,7 +106,10 @@ export interface SessionsIpcDeps {
     clearForSession(sessionId: string): void;
   };
   /** Picture-in-picture mirror of the driven window; torn down with its session. */
-  computerUsePip?: { clearForSession(sessionId: string): void };
+  computerUsePip?: {
+    clearForSession(sessionId: string): void;
+    setStopHandler(handler: (sessionId: string) => void): void;
+  };
   clearSkillHost?: (sessionId: string) => void;
   stopAgentGraph?: (sessionId: string) => Promise<void>;
   notifyAgentGraphPermissionResponse?: (sessionId: string) => void;
@@ -369,6 +372,11 @@ export function registerSessionsIpc(
   // Point ours at the same code the in-app stop button runs, so stopping from
   // the menu bar and stopping from the window cannot drift apart.
   computerUseStatusItem?.setStopHandler((sessionId) => {
+    void stopSession(sessionId, { source: 'stop_button' });
+  });
+  // The mirror's own stop control, pointed at the same function for the same
+  // reason: three places that stop a run must stop it identically.
+  computerUsePip?.setStopHandler((sessionId) => {
     void stopSession(sessionId, { source: 'stop_button' });
   });
   async function stopSession(sessionId: string, input?: { source?: 'stop_button' }): Promise<void> {

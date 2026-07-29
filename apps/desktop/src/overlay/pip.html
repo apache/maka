@@ -68,12 +68,70 @@
       #cursor[data-visible='1'] {
         opacity: 1;
       }
+      /* Hover controls, from Codex's `performControlWithIdentifier:`. Hidden
+         until the pointer is on the mirror — a window this small cannot afford
+         permanent chrome, and the mirror is meant to be glanceable. */
+      #controls {
+        position: absolute;
+        top: 6px;
+        right: 6px;
+        display: flex;
+        gap: 4px;
+        opacity: 0;
+        transition: opacity 120ms ease-out;
+        pointer-events: none;
+      }
+      #controls[data-visible='1'] {
+        opacity: 1;
+        pointer-events: auto;
+      }
+      #controls button {
+        all: unset;
+        display: grid;
+        place-items: center;
+        width: 20px;
+        height: 20px;
+        border-radius: 6px;
+        color: rgb(255 255 255 / 0.92);
+        /* Codex blurs behind its controls (`remoteHostedPIPAppearanceBlur`);
+           a mirror is arbitrary imagery, and a flat scrim is the part of that
+           which survives without a backdrop filter over a moving picture. */
+        background: rgb(0 0 0 / 0.55);
+        box-shadow: inset 0 0 0 0.5px rgb(255 255 255 / 0.16);
+        cursor: default;
+      }
+      #controls button:hover {
+        background: rgb(0 0 0 / 0.75);
+      }
+      #controls button:active {
+        background: rgb(0 0 0 / 0.9);
+      }
+      #controls svg {
+        width: 11px;
+        height: 11px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2;
+        stroke-linecap: round;
+      }
+      /* While dragging, the whole tile is the handle. */
+      body[data-dragging='1'] {
+        cursor: grabbing;
+      }
     </style>
   </head>
   <body>
     <div id="shell">
       <img id="frame" alt="" />
       <div id="cursor"></div>
+      <div id="controls" data-visible="0">
+        <button type="button" data-control="stop" aria-label="停止 Computer Use" title="停止 Computer Use">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1" fill="currentColor" stroke="none" /></svg>
+        </button>
+        <button type="button" data-control="hide" aria-label="隐藏画中画" title="隐藏画中画">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+        </button>
+      </div>
     </div>
     <script src="./pip.js" type="module"></script>
   </body>

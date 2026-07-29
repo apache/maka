@@ -1,4 +1,4 @@
-import { app, nativeImage, powerMonitor } from 'electron';
+import { app, nativeImage, powerMonitor, screen } from 'electron';
 import {
   buildAgentTeamChildTools,
   buildAgentTeamLeadTools,
@@ -163,6 +163,11 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
           resolveAnchorRect: () => mainWindow.windowBounds(),
           subscribeAnchorChanges: (cb) => mainWindow.onWindowGeometryChanged(cb),
           resolveParentWindow: () => mainWindow.browserWindow(),
+          // The drag reads the pointer here rather than trusting the
+          // renderer's `screenX`: the window is moved in screen points, so
+          // the pointer is read in screen points and nothing converts.
+          cursorPoint: () => screen.getCursorScreenPoint(),
+          workAreaFor: (rect) => screen.getDisplayMatching(rect).workArea,
         }
       : {},
   );

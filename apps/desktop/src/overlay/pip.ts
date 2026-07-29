@@ -1,16 +1,19 @@
 // PiP renderer. Receives frames and cursor positions from main and draws them;
-// it computes nothing about the target and reports nothing back.
+// it computes nothing about the target. It does report the pointer, because
+// only the page can see it — main moves the window, the page says when.
 declare global {
   interface Window {
     computerUsePip: {
       onFrame(cb: (payload: unknown) => void): void;
       onCursor(cb: (payload: unknown) => void): void;
+      send(channel: string, payload?: unknown): void;
     };
   }
 }
 
 const frame = document.getElementById('frame') as HTMLImageElement;
 const cursor = document.getElementById('cursor') as HTMLDivElement;
+const controls = document.getElementById('controls') as HTMLDivElement;
 
 /** Size of the captured frame, needed to place the cursor within it. */
 let capture = { widthPx: 0, heightPx: 0 };
@@ -71,6 +74,72 @@ window.computerUsePip.onCursor((payload) => {
   cursor.style.left = `${rect.x + (x / capture.widthPx) * rect.width}px`;
   cursor.style.top = `${rect.y + (y / capture.heightPx) * rect.height}px`;
   cursor.dataset.visible = '1';
+});
+
+// ── pointer ──────────────────────────────────────────────────────────────────
+//
+// The window is click-through with moves forwarded, so `mousemove` arrives even
+// when clicks do not. That is what lets the mirror stay out of the way until
+// someone points at it: the page reports the crossing, main takes the clicks
+// back for as long as the pointer is inside, and gives them up again after.
+//
+// Codex's tile takes the click unconditionally (`PIPStackContentView
+// acceptsFirstMouse:` returns YES and its `hitTest:` claims the whole view).
+// Its tile is opt-in behind a setting; ours appears whenever a run starts, so
+// it should cost nothing to ignore.
+
+let inside = false;
+let dragging = false;
+
+function setInside(next: boolean): void {
+  if (next === inside) return;
+  inside = next;
+  window.computerUsePip.send('pip:hover', { inside: next });
+  controls.dataset.visible = next ? '1' : '0';
+}
+
+document.addEventListener('mousemove', (event) => {
+  if (dragging) {
+    window.computerUsePip.send('pip:pointer-move');
+    return;
+  }
+  // A forwarded move can land outside the window's own bounds; only a point
+  // actually inside counts as a hover.
+  const within =
+    event.clientX >= 0 &&
+    event.clientY >= 0 &&
+    event.clientX <= document.documentElement.clientWidth &&
+    event.clientY <= document.documentElement.clientHeight;
+  setInside(within);
+});
+
+document.addEventListener('mouseleave', () => {
+  if (!dragging) setInside(false);
+});
+
+document.addEventListener('mousedown', (event) => {
+  // The controls are buttons; let them be pressed rather than starting a drag
+  // that happens to begin on top of one.
+  if ((event.target as HTMLElement | null)?.closest('[data-control]')) return;
+  dragging = true;
+  document.body.dataset.dragging = '1';
+  window.computerUsePip.send('pip:pointer-down');
+});
+
+for (const event of ['mouseup', 'blur'] as const) {
+  window.addEventListener(event, () => {
+    if (!dragging) return;
+    dragging = false;
+    delete document.body.dataset.dragging;
+    window.computerUsePip.send('pip:pointer-up');
+  });
+}
+
+controls.addEventListener('click', (event) => {
+  const button = (event.target as HTMLElement | null)?.closest('[data-control]');
+  const id = button instanceof HTMLElement ? button.dataset.control : null;
+  if (!id) return;
+  window.computerUsePip.send('pip:control', { id });
 });
 
 export {};
