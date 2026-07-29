@@ -322,9 +322,12 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
   ipcMain.handle('sessions:readExecutionBoundary', (_event, sessionId: string) =>
     runtime.readExecutionBoundary(sessionId),
   );
-  ipcMain.handle('sessions:listActiveSandboxBoundaryRequests', (_event, sessionId: string) =>
-    runtime.listActiveSandboxBoundaryRequests(sessionId),
-  );
+  ipcMain.handle('sessions:listActiveSandboxBoundaryRequests', (_event, sessionId: string) => {
+    const fixtureRequest = getE2eFixtureState(e2eFixture)?.sandboxBoundaryBySession?.[sessionId];
+    return fixtureRequest
+      ? [fixtureRequest]
+      : runtime.listActiveSandboxBoundaryRequests(sessionId);
+  });
   ipcMain.handle('sessions:respondToSandboxBoundary', async (_event, sessionId: string, response) => {
     const normalized = normalizeSandboxBoundaryResponse(response);
     const fixtureRequest = getE2eFixtureState(e2eFixture)?.sandboxBoundaryBySession?.[sessionId];
