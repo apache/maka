@@ -38,6 +38,57 @@ test('publish reports unknown after its durable intent and recovery publishes ex
   assert.deepEqual(await transactionEntries(root), []);
 });
 
+test('publish dual-copy crash recovery keeps one target when target and staged next match intent', async () => {
+  const root = await tempRoot();
+  const artifacts = managedArtifacts('dual-copy');
+
+  await assert.rejects(
+    writer(root, 'after_intent').publishSkill('alpha', artifacts),
+    isTransactionError('commit_outcome_unknown'),
+  );
+  const transaction = await onlyTransaction(root);
+  await writeManagedDirectory(join(root, 'skills', 'alpha'), artifacts);
+  assert.deepEqual(await readManaged(root, 'alpha'), artifacts);
+  assert.deepEqual(await readManagedDirectory(join(transaction, 'next')), artifacts);
+
+  const reopened = writer(root);
+  await reopened.recover();
+  await reopened.recover();
+  assert.deepEqual(await readManaged(root, 'alpha'), artifacts);
+  assert.deepEqual(await readdir(join(root, 'skills')), ['alpha']);
+  assert.deepEqual(await transactionEntries(root), []);
+});
+
+for (const changedCopy of ['target', 'staged next'] as const) {
+  test(`publish dual-copy crash recovery fails closed when ${changedCopy} mismatches intent next`, async () => {
+    const root = await tempRoot();
+    const artifacts = managedArtifacts('expected');
+    const conflicting = managedArtifacts(`conflicting-${changedCopy.replace(' ', '-')}`);
+
+    await assert.rejects(
+      writer(root, 'after_intent').publishSkill('alpha', artifacts),
+      isTransactionError('commit_outcome_unknown'),
+    );
+    const transaction = await onlyTransaction(root);
+    const target = join(root, 'skills', 'alpha');
+    const next = join(transaction, 'next');
+    await writeManagedDirectory(target, changedCopy === 'target' ? conflicting : artifacts);
+    if (changedCopy === 'staged next') await writeManagedDirectory(next, conflicting);
+    const transactionsBeforeRecovery = await transactionEntries(root);
+
+    await assert.rejects(writer(root).recover(), isTransactionError('persistence_failed'));
+    assert.deepEqual(
+      await readManagedDirectory(target),
+      changedCopy === 'target' ? conflicting : artifacts,
+    );
+    assert.deepEqual(
+      await readManagedDirectory(next),
+      changedCopy === 'staged next' ? conflicting : artifacts,
+    );
+    assert.deepEqual(await transactionEntries(root), transactionsBeforeRecovery);
+  });
+}
+
 test('publish recovers a durable intent before the directory rename', async () => {
   const root = await tempRoot();
   const artifacts = { skill: '# Starter\n' };
@@ -589,6 +640,73 @@ test('workspace deletion recovers a tombstone rename and is idempotent', async (
   await reopened.recover();
   await assert.rejects(readFile(join(directory, 'SKILL.md')), { code: 'ENOENT' });
   assert.deepEqual(await transactionEntries(root), []);
+});
+
+test('delete dual-copy crash recovery removes a recreated target matching the tombstone', async () => {
+  const root = await tempRoot();
+  const artifacts = managedArtifacts('workspace');
+  await createManaged(root, 'workspace-skill', artifacts);
+
+  await assert.rejects(
+    deleteWorkspaceSkill(writer(root, 'after_delete_rename'), root, 'workspace-skill'),
+    isTransactionError('commit_outcome_unknown'),
+  );
+  const transaction = await onlyTransaction(root);
+  const tombstone = join(transaction, 'tombstone');
+  await writeManagedDirectory(join(root, 'skills', 'workspace-skill'), artifacts);
+  assert.deepEqual(await readManaged(root, 'workspace-skill'), artifacts);
+  assert.deepEqual(await readManagedDirectory(tombstone), artifacts);
+
+  const reopened = writer(root);
+  await reopened.recover();
+  await reopened.recover();
+  await assert.rejects(readManaged(root, 'workspace-skill'), { code: 'ENOENT' });
+  assert.deepEqual(await readdir(join(root, 'skills')), []);
+  assert.deepEqual(await transactionEntries(root), []);
+});
+
+test('delete dual-copy crash recovery fails closed for a live target mismatching expected', async () => {
+  const root = await tempRoot();
+  const expected = managedArtifacts('workspace');
+  const conflicting = managedArtifacts('conflicting-live-target');
+  await createManaged(root, 'workspace-skill', expected);
+
+  await assert.rejects(
+    deleteWorkspaceSkill(writer(root, 'after_delete_rename'), root, 'workspace-skill'),
+    isTransactionError('commit_outcome_unknown'),
+  );
+  const transaction = await onlyTransaction(root);
+  const tombstone = join(transaction, 'tombstone');
+  await writeManagedDirectory(join(root, 'skills', 'workspace-skill'), conflicting);
+  const transactionsBeforeRecovery = await transactionEntries(root);
+
+  await assert.rejects(writer(root).recover(), isTransactionError('persistence_failed'));
+  assert.deepEqual(await readManaged(root, 'workspace-skill'), conflicting);
+  assert.deepEqual(await readManagedDirectory(tombstone), expected);
+  assert.deepEqual(await transactionEntries(root), transactionsBeforeRecovery);
+});
+
+test('delete dual-copy crash recovery fails closed for a tombstone mismatching expected', async () => {
+  const root = await tempRoot();
+  const expected = managedArtifacts('workspace');
+  const conflicting = managedArtifacts('conflicting-tombstone');
+  await createManaged(root, 'workspace-skill', expected);
+
+  await assert.rejects(
+    deleteWorkspaceSkill(writer(root, 'after_delete_rename'), root, 'workspace-skill'),
+    isTransactionError('commit_outcome_unknown'),
+  );
+  const transaction = await onlyTransaction(root);
+  const target = join(root, 'skills', 'workspace-skill');
+  const tombstone = join(transaction, 'tombstone');
+  await writeManagedDirectory(target, expected);
+  await writeManagedDirectory(tombstone, conflicting);
+  const transactionsBeforeRecovery = await transactionEntries(root);
+
+  await assert.rejects(writer(root).recover(), isTransactionError('persistence_failed'));
+  assert.deepEqual(await readManagedDirectory(target), expected);
+  assert.deepEqual(await readManagedDirectory(tombstone), conflicting);
+  assert.deepEqual(await transactionEntries(root), transactionsBeforeRecovery);
 });
 
 for (const failpoint of [

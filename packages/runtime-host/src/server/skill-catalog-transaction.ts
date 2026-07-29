@@ -379,9 +379,11 @@ async function replayPublish(
   const next = join(transaction.directory, NEXT_DIRECTORY);
   const [targetStat, nextStat] = await Promise.all([safeLstat(target), safeLstat(next)]);
   if (targetStat && nextStat) {
-    throw persistenceFailed('Skill publication conflicts with an existing target');
-  }
-  if (targetStat) {
+    await Promise.all([
+      verifyArtifactDirectory(target, intent.next),
+      verifyArtifactDirectory(next, intent.next),
+    ]);
+  } else if (targetStat) {
     if (!targetStat.isDirectory() || targetStat.isSymbolicLink()) {
       throw persistenceFailed('Published Skill target is unsafe');
     }
@@ -437,7 +439,7 @@ async function replayReplace(
       throw persistenceFailed('Managed Skill has conflicting live and retained old generations');
     }
     // Tombstone owns the old generation; the source-parent duplicate can enter recoverable GC.
-    await handoffManagedFrozenDuplicateToGc(root, frozen);
+    await handoffDuplicateToGc(root, frozen);
     retainedOld.delete('frozen');
   }
 
@@ -518,16 +520,13 @@ async function replayReplace(
   await finishTransaction(root.transactions, transaction.directory, failpoint);
 }
 
-async function handoffManagedFrozenDuplicateToGc(
-  root: PreparedRoot,
-  frozen: string,
-): Promise<void> {
+async function handoffDuplicateToGc(root: PreparedRoot, duplicate: string): Promise<void> {
   const gcId = randomUUID();
   const gcDigest = createHash('sha256').update(gcId).digest('hex');
   const gcDirectory = join(root.transactions, `gc-${gcId}-${gcDigest}`);
-  await rename(frozen, gcDirectory);
+  await rename(duplicate, gcDirectory);
   await syncDirectory(root.transactions);
-  await syncDirectory(root.skills);
+  await syncDirectory(dirname(duplicate));
   await cleanupGcEntry(root.transactions, gcDirectory);
 }
 
@@ -571,9 +570,12 @@ async function replayDelete(
   const tombstone = join(transaction.directory, TOMBSTONE_DIRECTORY);
   const [targetStat, tombstoneStat] = await Promise.all([safeLstat(target), safeLstat(tombstone)]);
   if (targetStat && tombstoneStat) {
-    throw persistenceFailed('Workspace Skill deletion has conflicting live and tombstone paths');
-  }
-  if (targetStat) {
+    await Promise.all([
+      verifyTreeManifest(target, intent.expected),
+      verifyTreeManifest(tombstone, intent.expected),
+    ]);
+    await handoffDuplicateToGc(root, target);
+  } else if (targetStat) {
     if (!targetStat.isDirectory() || targetStat.isSymbolicLink()) {
       throw persistenceFailed('Workspace Skill deletion target is unsafe');
     }
