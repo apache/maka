@@ -606,6 +606,7 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
   });
   ipcMain.handle('plan-mode:resume', async (_event, sessionId: string, executionId: unknown) => {
     if (typeof executionId !== 'string' || !executionId) throw new Error('Invalid execution id');
+    await ensureSessionCanSend(sessionId);
     await ensureSessionWorkspaceAvailable(sessionId);
     const result = await runtime.resumePlanExecution(sessionId, executionId);
     const turnId = randomUUID();

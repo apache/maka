@@ -296,6 +296,7 @@ describe('permission response IPC boundary', () => {
       'sessions:resumeLatest',
       'sessions:regenerateTurn',
       'plan-mode:approve',
+      'plan-mode:resume',
     ]) {
       const handler =
         main.match(new RegExp(`ipcMain\\.handle\\('${channel}'[\\s\\S]*?\\n  \\}\\);`))?.[0] ?? '';
