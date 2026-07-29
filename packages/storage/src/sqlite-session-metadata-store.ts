@@ -8,6 +8,7 @@ import {
   AGENT_GRAPH_CLIENT_PROJECTION_SCHEMA_VERSION,
   AgentGraphClientProjectionConflictError,
   assessSandboxBoundaryExpansion,
+  assertExecutionBoundaryCapacity,
   assertAgentGraphScheduleUpdateRequest,
   AgentGraphScheduleClosedError,
   AgentGraphScheduleRevisionConflictError,
@@ -414,6 +415,7 @@ export class SqliteSessionMetadataStore {
         profile: assessment.profile,
         revision: current.revision + 1,
       };
+      assertExecutionBoundaryCapacity(boundary);
       this.settleSandboxBoundaryRequestRow({
         sessionId: input.sessionId,
         requestId: input.requestId,

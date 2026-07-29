@@ -20,6 +20,7 @@ export type SandboxBoundaryScope = (typeof SANDBOX_BOUNDARY_SCOPES)[number];
 export const MAX_SANDBOX_BOUNDARY_FILESYSTEM_ENTRIES = 32;
 export const MAX_SANDBOX_BOUNDARY_PATH_CHARS = 4096;
 export const MAX_SANDBOX_BOUNDARY_SERIALIZED_BYTES = 64 * 1024;
+export const MAX_EXECUTION_BOUNDARY_SERIALIZED_BYTES = 1024 * 1024;
 
 export interface SandboxBoundaryFilesystemEntry {
   readonly path: string;
@@ -135,20 +136,30 @@ export function decodeExecutionBoundary(input: unknown): ExecutionBoundary {
   if (!isRecord(input) || !isBoundaryRevision(input.revision)) {
     throw new Error('Invalid execution boundary');
   }
+  let boundary: ExecutionBoundary;
   if (input.kind === 'bypass' || input.kind === 'external') {
     if (hasUnexpectedKeys(input, ['kind', 'revision'])) {
       throw new Error('Invalid execution boundary');
     }
-    return { kind: input.kind, revision: input.revision };
+    boundary = { kind: input.kind, revision: input.revision };
+  } else {
+    if (input.kind !== 'managed' || hasUnexpectedKeys(input, ['kind', 'profile', 'revision'])) {
+      throw new Error('Invalid execution boundary');
+    }
+    boundary = {
+      kind: 'managed',
+      profile: decodeSandboxProfile(input.profile),
+      revision: input.revision,
+    };
   }
-  if (input.kind !== 'managed' || hasUnexpectedKeys(input, ['kind', 'profile', 'revision'])) {
-    throw new Error('Invalid execution boundary');
+  assertExecutionBoundaryCapacity(boundary);
+  return boundary;
+}
+
+export function assertExecutionBoundaryCapacity(boundary: ExecutionBoundary): void {
+  if (serializedByteLength(boundary) > MAX_EXECUTION_BOUNDARY_SERIALIZED_BYTES) {
+    throw new Error('Execution boundary exceeds the serialized size limit');
   }
-  return {
-    kind: 'managed',
-    profile: decodeSandboxProfile(input.profile),
-    revision: input.revision,
-  };
 }
 
 export type SandboxBoundaryExpansionValidationFailureReason =
@@ -248,7 +259,7 @@ export function applySandboxBoundaryExpansion(
       ? base.fileSystem
       : {
           ...base.fileSystem,
-          entries: [
+          entries: compactSandboxProfileFilesystemEntries([
             ...base.fileSystem.entries,
             ...(expansion.filesystem?.entries ?? []).map((entry) => ({
               kind: 'path' as const,
@@ -256,7 +267,7 @@ export function applySandboxBoundaryExpansion(
               path: entry.path,
               match: entry.scope satisfies FileSystemPathMatch,
             })),
-          ],
+          ]),
         };
 
   return {
@@ -264,6 +275,24 @@ export function applySandboxBoundaryExpansion(
     fileSystem,
     network: expansion.network?.enabled ? { kind: 'enabled' } : base.network,
   };
+}
+
+function compactSandboxProfileFilesystemEntries(
+  entries: readonly FileSystemSandboxEntry[],
+): readonly FileSystemSandboxEntry[] {
+  const explicitAllows: SandboxBoundaryFilesystemEntry[] = entries.flatMap((entry) =>
+    entry.kind === 'path' && entry.access !== 'deny'
+      ? [{ path: entry.path, access: entry.access, scope: entry.match ?? 'subtree' }]
+      : [],
+  );
+  const preserved = entries.filter((entry) => entry.kind !== 'path' || entry.access === 'deny');
+  const compacted = compactSandboxBoundaryFilesystemEntries(explicitAllows).map((entry) => ({
+    kind: 'path' as const,
+    access: entry.access,
+    path: entry.path,
+    match: entry.scope satisfies FileSystemPathMatch,
+  }));
+  return [...preserved, ...compacted];
 }
 
 export type SandboxBoundaryExpansionAssessment =

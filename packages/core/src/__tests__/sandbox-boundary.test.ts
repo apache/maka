@@ -100,6 +100,33 @@ describe('SandboxBoundaryExpansion', () => {
     expect(result.network.kind).toBe('enabled');
   });
 
+  test('compacts cumulative explicit grants without changing special paths or denies', () => {
+    const base: PermissionProfileManaged = {
+      type: 'managed',
+      fileSystem: {
+        kind: 'restricted',
+        entries: [
+          { kind: 'special', access: 'write', special: ':workspace_roots' },
+          { kind: 'path', access: 'deny', path: '/outside/locked', match: 'subtree' },
+          { kind: 'path', access: 'read', path: '/outside/tree/file.txt', match: 'exact' },
+        ],
+      },
+      network: { kind: 'restricted' },
+    };
+
+    const result = applySandboxBoundaryExpansion(base, {
+      filesystem: {
+        entries: [{ path: '/outside/tree', access: 'read', scope: 'subtree' }],
+      },
+    });
+
+    expect(result.fileSystem.entries).toEqual([
+      { kind: 'special', access: 'write', special: ':workspace_roots' },
+      { kind: 'path', access: 'deny', path: '/outside/locked', match: 'subtree' },
+      { kind: 'path', access: 'read', path: '/outside/tree', match: 'subtree' },
+    ]);
+  });
+
   test('distinguishes a new expansion, an approved no-op, and an explicit-deny conflict', () => {
     const base: PermissionProfileManaged = {
       type: 'managed',
@@ -271,5 +298,30 @@ describe('ExecutionBoundary', () => {
     };
 
     expect(decodeExecutionBoundary(JSON.parse(JSON.stringify(boundary)))).toEqual(boundary);
+  });
+
+  test('rejects a complete boundary snapshot above the shared capacity', () => {
+    const managed = createGenesisExecutionBoundary('ask');
+    if (managed.kind !== 'managed') throw new Error('expected managed boundary');
+    const oversized = {
+      ...managed,
+      profile: {
+        ...managed.profile,
+        fileSystem: {
+          ...managed.profile.fileSystem,
+          entries: Array.from({ length: 300 }, (_, index) => ({
+            kind: 'path' as const,
+            access: 'read' as const,
+            path: `/outside/${index}-${'x'.repeat(3_900)}`,
+            match: 'exact' as const,
+          })),
+        },
+      },
+    };
+
+    assert.throws(
+      () => decodeExecutionBoundary(oversized),
+      /Execution boundary exceeds the serialized size limit/,
+    );
   });
 });

@@ -556,6 +556,7 @@ export type {
   SettleSandboxBoundaryRequest,
 } from './sandbox-boundary.js';
 export {
+  MAX_EXECUTION_BOUNDARY_SERIALIZED_BYTES,
   MAX_SANDBOX_BOUNDARY_FILESYSTEM_ENTRIES,
   MAX_SANDBOX_BOUNDARY_PATH_CHARS,
   MAX_SANDBOX_BOUNDARY_SERIALIZED_BYTES,
@@ -563,6 +564,7 @@ export {
   SANDBOX_BOUNDARY_REQUEST_STATUSES,
   SANDBOX_BOUNDARY_SCOPES,
   applySandboxBoundaryExpansion,
+  assertExecutionBoundaryCapacity,
   assessSandboxBoundaryExpansion,
   compactSandboxBoundaryFilesystemEntries,
   createBypassExecutionBoundary,

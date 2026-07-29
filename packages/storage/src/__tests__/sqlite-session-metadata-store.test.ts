@@ -8,6 +8,7 @@ import { Worker } from 'node:worker_threads';
 import {
   canReadPath,
   createWorkspaceWritePermissionProfile,
+  MAX_EXECUTION_BOUNDARY_SERIALIZED_BYTES,
   type SandboxBoundarySettlement,
   type SessionHeader,
 } from '@maka/core';
@@ -267,6 +268,58 @@ describe('SqliteSessionMetadataStore', () => {
       assert.equal(retry.request.status, 'approved');
       assert.equal(retry.boundary.revision, 2);
       assert.equal((await store.readExecutionBoundary('session-1')).revision, 2);
+    } finally {
+      store.close();
+    }
+  });
+
+  test('rejects an expansion atomically before the complete boundary exceeds capacity', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(120) });
+    let rejectedRequestId: string | undefined;
+    try {
+      await store.create(fullHeader());
+      for (let request = 0; request < 30; request += 1) {
+        const requestId = `capacity-${request}`;
+        await store.createSandboxBoundaryRequest({
+          sessionId: 'session-1',
+          requestId,
+          expansion: {
+            filesystem: {
+              entries: Array.from({ length: 32 }, (_, entry) => ({
+                path: `/outside/${request}/${entry}-${'x'.repeat(1_800)}`,
+                access: 'read' as const,
+                scope: 'exact' as const,
+              })),
+            },
+          },
+          justification: 'Read generated inputs.',
+        });
+        const before = await store.readExecutionBoundary('session-1');
+        try {
+          await store.settleSandboxBoundaryRequest({
+            sessionId: 'session-1',
+            requestId,
+            decision: 'allow',
+          });
+        } catch (error) {
+          assert.match(String(error), /execution boundary.*size limit/i);
+          rejectedRequestId = requestId;
+          assert.deepEqual(await store.readExecutionBoundary('session-1'), before);
+          assert.deepEqual(
+            (await store.listPendingSandboxBoundaryRequests('session-1')).map(
+              (pending) => pending.requestId,
+            ),
+            [requestId],
+          );
+          break;
+        }
+      }
+
+      assert.ok(rejectedRequestId, 'a cumulative boundary must reach the shared capacity');
+      assert.ok(
+        Buffer.byteLength(JSON.stringify(await store.readExecutionBoundary('session-1')), 'utf8') <=
+          MAX_EXECUTION_BOUNDARY_SERIALIZED_BYTES,
+      );
     } finally {
       store.close();
     }

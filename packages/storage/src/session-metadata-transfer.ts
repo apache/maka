@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto';
 import { lstat, open, readFile, readdir, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { decodeExecutionBoundary, type ExecutionBoundary } from '@maka/core';
+import {
+  assertExecutionBoundaryCapacity,
+  decodeExecutionBoundary,
+  MAX_EXECUTION_BOUNDARY_SERIALIZED_BYTES,
+  type ExecutionBoundary,
+} from '@maka/core';
 import { decodeSessionHeader, isSafeSessionId } from './session-store.js';
 import {
   createSessionTranscriptMarker,
@@ -16,10 +21,11 @@ import type {
 const LEGACY_SESSION_HEADER_MAX_BYTES = 1024 * 1024;
 const LEGACY_SESSION_HEADER_READ_BYTES = 8192;
 // A transfer contains the cumulative session boundary, not one 64 KiB expansion request.
-export const EXECUTION_BOUNDARY_TRANSFER_MAX_BYTES = 1024 * 1024;
+export const EXECUTION_BOUNDARY_TRANSFER_MAX_BYTES = MAX_EXECUTION_BOUNDARY_SERIALIZED_BYTES + 64;
 export const EXECUTION_BOUNDARY_TRANSFER_FILE = 'execution-boundary.json';
 
 export function encodeExecutionBoundaryTransfer(boundary: ExecutionBoundary): string {
+  assertExecutionBoundaryCapacity(boundary);
   const raw = `${JSON.stringify({ schemaVersion: 1, boundary })}\n`;
   if (Buffer.byteLength(raw, 'utf8') > EXECUTION_BOUNDARY_TRANSFER_MAX_BYTES) {
     throw new Error('Execution boundary transfer exceeds the serialized size limit');
