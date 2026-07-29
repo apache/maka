@@ -372,6 +372,19 @@ describe('maka run process contract', () => {
     assert.match(result.stderr, /timed out after 50ms/);
   });
 
+  test('returns exit 1 when a graph descendant leaves a boundary failure unresolved', async () => {
+    const result = await runFixture(['graph task', '--graph'], {
+      input: '',
+      env: {
+        MAKA_RUN_EXPECT_GRAPH: '1',
+        MAKA_RUN_GRAPH_BOUNDARY_FAILURE: '1',
+      },
+    });
+
+    assert.equal(result.code, 1, result.stderr);
+    assert.equal(result.stdout, '');
+  });
+
   test('returns exit 130 on SIGINT', async () => {
     const child = spawn(process.execPath, [fixturePath, 'hello'], {
       env: { ...process.env, MAKA_RUN_FIXTURE_SCENARIO: 'slow' },

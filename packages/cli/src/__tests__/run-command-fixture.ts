@@ -244,6 +244,38 @@ async function createContext(input: CreateMakaCliRuntimeContextInput): Promise<M
             clearInterval(keepAlive);
             return;
           }
+          if (process.env.MAKA_RUN_GRAPH_BOUNDARY_FAILURE === '1') {
+            await notify({
+              ...completedResult('child could not complete'),
+              invocationId: 'invocation-child',
+              runId: 'run-child',
+              sessionId: 'session-child',
+              events: [
+                {
+                  id: 'event-child-tool',
+                  invocationId: 'invocation-child',
+                  runId: 'run-child',
+                  sessionId: 'session-child',
+                  turnId: 'turn-child',
+                  ts: 1,
+                  partial: false,
+                  role: 'tool',
+                  author: 'tool',
+                  content: {
+                    kind: 'function_response',
+                    id: 'tool-child',
+                    name: 'Write',
+                    isError: true,
+                    result: {
+                      kind: 'text',
+                      text: 'boundary required',
+                      sandboxFailure: { reason: 'sandbox_boundary_required' },
+                    },
+                  },
+                },
+              ],
+            });
+          }
           await notify(completedResult('graph completed'));
         },
       },

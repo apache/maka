@@ -217,6 +217,7 @@ export async function runMakaTextCli(
   }
 
   let invocation: InvocationResult | undefined;
+  let boundaryDenied = false;
   let context: MakaRunContext;
   try {
     context = await deps.createContext({
@@ -243,6 +244,7 @@ export async function runMakaTextCli(
       ...(parsed.options.maxSteps !== undefined ? { maxSteps: parsed.options.maxSteps } : {}),
       ...(parsed.options.graph ? { enableAgentGraph: true } : {}),
       runtimeInvocationObserver: (result) => {
+        boundaryDenied ||= invocationHasSandboxBoundaryFailure(result);
         invocation = result;
       },
     });
@@ -286,7 +288,6 @@ export async function runMakaTextCli(
   let interrupted = false;
   let timedOut = false;
   let streamFailed = false;
-  let boundaryDenied = false;
   let stopPromise: Promise<void> | undefined;
   let resolveStopSignal: (() => void) | undefined;
   const stopSignal = new Promise<void>((resolve) => {
@@ -479,4 +480,21 @@ function withTrailingNewline(text: string): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function invocationHasSandboxBoundaryFailure(result: InvocationResult): boolean {
+  return result.events.some((event) => {
+    if (event.content?.kind !== 'function_response' || !isRecord(event.content.result)) {
+      return false;
+    }
+    const failure = event.content.result.sandboxFailure;
+    return (
+      isRecord(failure) &&
+      (failure.reason === 'sandbox_boundary_required' || failure.reason === 'requires_bypass')
+    );
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
