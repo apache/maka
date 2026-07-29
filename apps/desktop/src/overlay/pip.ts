@@ -6,6 +6,7 @@ declare global {
     computerUsePip: {
       onFrame(cb: (payload: unknown) => void): void;
       onCursor(cb: (payload: unknown) => void): void;
+      onControls(cb: (payload: unknown) => void): void;
       send(channel: string, payload?: unknown): void;
     };
   }
@@ -78,43 +79,22 @@ window.computerUsePip.onCursor((payload) => {
 
 // ── pointer ──────────────────────────────────────────────────────────────────
 //
-// The window is click-through with moves forwarded, so `mousemove` arrives even
-// when clicks do not. That is what lets the mirror stay out of the way until
-// someone points at it: the page reports the crossing, main takes the clicks
-// back for as long as the pointer is inside, and gives them up again after.
-//
-// Codex's tile takes the click unconditionally (`PIPStackContentView
-// acceptsFirstMouse:` returns YES and its `hitTest:` claims the whole view).
-// Its tile is opt-in behind a setting; ours appears whenever a run starts, so
-// it should cost nothing to ignore.
+// Hover is main's decision, not the page's. Main tracks the pointer directly,
+// the way Codex tracks it with `addGlobalMonitorForEventsMatchingMask:` feeding
+// `updateHoverFromCurrentMouseLocation` rather than asking its window whether
+// the pointer is inside — and main takes the clicks back for exactly as long as
+// the pointer is on the mirror. Letting the page decide meant relying on moves
+// forwarded to a click-through window, and those were measured dropping events
+// on this machine.
 
-let inside = false;
 let dragging = false;
 
-function setInside(next: boolean): void {
-  if (next === inside) return;
-  inside = next;
-  window.computerUsePip.send('pip:hover', { inside: next });
-  controls.dataset.visible = next ? '1' : '0';
-}
-
-document.addEventListener('mousemove', (event) => {
-  if (dragging) {
-    window.computerUsePip.send('pip:pointer-move');
-    return;
-  }
-  // A forwarded move can land outside the window's own bounds; only a point
-  // actually inside counts as a hover.
-  const within =
-    event.clientX >= 0 &&
-    event.clientY >= 0 &&
-    event.clientX <= document.documentElement.clientWidth &&
-    event.clientY <= document.documentElement.clientHeight;
-  setInside(within);
+window.computerUsePip.onControls((payload) => {
+  controls.dataset.visible = isRecord(payload) && payload.visible === true ? '1' : '0';
 });
 
-document.addEventListener('mouseleave', () => {
-  if (!dragging) setInside(false);
+document.addEventListener('mousemove', () => {
+  if (dragging) window.computerUsePip.send('pip:pointer-move');
 });
 
 document.addEventListener('mousedown', (event) => {

@@ -178,6 +178,18 @@ export interface CreatePipControllerDeps {
   now?: () => number;
   /** Schedule one animation step; returns a cancel. Defaults to ~60Hz. */
   scheduleFrame?: (cb: () => void) => () => void;
+  /**
+   * Schedule the next hover check; returns a cancel. Defaults to ~20Hz.
+   *
+   * Hover is decided here rather than in the page. Codex does the same, with
+   * `addGlobalMonitorForEventsMatchingMask:` feeding
+   * `updateHoverFromCurrentMouseLocation` — it never asks the window whether
+   * the pointer is inside it. Electron has no global mouse monitor, so this
+   * polls the pointer instead; the alternative, forwarding moves to a
+   * click-through window and letting the page decide, drops events, which was
+   * measured on this machine before it was replaced.
+   */
+  scheduleHoverCheck?: (cb: () => void) => () => void;
   preloadPath?: string;
   htmlPath?: string;
 }
@@ -370,6 +382,7 @@ export function createComputerUsePipController(
    */
   let hiddenSessionId: string | null = null;
   let pointerInside = false;
+  let cancelHover: (() => void) | null = null;
   let stopHandler: ((sessionId: string) => void) | undefined;
 
   const now = deps.now ?? (() => Date.now());
@@ -377,6 +390,12 @@ export function createComputerUsePipController(
     deps.scheduleFrame ??
     ((cb: () => void) => {
       const handle = setTimeout(cb, 16);
+      return () => clearTimeout(handle);
+    });
+  const scheduleHoverCheck =
+    deps.scheduleHoverCheck ??
+    ((cb: () => void) => {
+      const handle = setTimeout(cb, 50);
       return () => clearTimeout(handle);
     });
 
@@ -404,6 +423,8 @@ export function createComputerUsePipController(
     motion = null;
     motionTarget = null;
     pointerInside = false;
+    cancelHover?.();
+    cancelHover = null;
     cancelFrame?.();
     cancelFrame = null;
     unsubscribeAnchor?.();
@@ -532,6 +553,50 @@ export function createComputerUsePipController(
     animate();
   }
 
+  /**
+   * Take the pointer only while it is on the mirror.
+   *
+   * Codex's tile takes the click unconditionally — `acceptsFirstMouse:` YES,
+   * and a `hitTest:` that claims the whole view. Its tile is opt-in behind a
+   * setting; ours appears whenever a run starts, so it has to cost nothing to
+   * ignore. The window stays click-through until the pointer is actually over
+   * it, which is also when its controls are worth showing.
+   */
+  function setPointerInside(w: PipWindowLike, inside: boolean): void {
+    if (inside === pointerInside) return;
+    pointerInside = inside;
+    w.setIgnoreMouseEvents(!inside);
+    push('pip:controls', { visible: inside });
+  }
+
+  function watchHover(w: PipWindowLike): void {
+    cancelHover?.();
+    const tick = (): void => {
+      if (win !== w || w.isDestroyed()) {
+        cancelHover = null;
+        return;
+      }
+      // A drag owns the pointer until it ends: the mirror trails the cursor by
+      // design, so the pointer being outside its bounds mid-drag means the
+      // spring has not caught up, not that the user has left.
+      if (!drag) {
+        const pointer = deps.cursorPoint?.();
+        const bounds = w.getBounds();
+        if (pointer) {
+          setPointerInside(
+            w,
+            pointer.x >= bounds.x &&
+              pointer.y >= bounds.y &&
+              pointer.x < bounds.x + bounds.width &&
+              pointer.y < bounds.y + bounds.height,
+          );
+        }
+      }
+      cancelHover = scheduleHoverCheck(tick);
+    };
+    cancelHover = scheduleHoverCheck(tick);
+  }
+
   function handleMessage(w: PipWindowLike, channel: string, payload: unknown): void {
     if (win !== w || w.isDestroyed()) return;
     switch (channel) {
@@ -544,19 +609,6 @@ export function createComputerUsePipController(
       case 'pip:pointer-up':
         endDrag(w);
         return;
-      case 'pip:hover': {
-        // Click-through until the pointer is actually on the mirror. Codex's
-        // tile always takes the click; this keeps the older promise that the
-        // mirror never blocks what is underneath it, and gives it up only for
-        // as long as someone is pointing at it.
-        const inside = typeof payload === 'object' && payload !== null && 'inside' in payload
-          ? Boolean((payload as { inside: unknown }).inside)
-          : false;
-        if (inside === pointerInside) return;
-        pointerInside = inside;
-        w.setIgnoreMouseEvents(!inside);
-        return;
-      }
       case 'pip:control': {
         const id = typeof payload === 'object' && payload !== null && 'id' in payload
           ? (payload as { id: unknown }).id
@@ -600,6 +652,7 @@ export function createComputerUsePipController(
       for (const m of queue) created.send(m.channel, m.payload);
       queue = [];
       created.showInactive();
+      watchHover(created);
     });
     created.onGone(() => {
       if (win === created) teardown();
@@ -708,7 +761,6 @@ function defaultCreateWindow(
     'pip:pointer-down',
     'pip:pointer-move',
     'pip:pointer-up',
-    'pip:hover',
     'pip:control',
   ] as const;
   return {

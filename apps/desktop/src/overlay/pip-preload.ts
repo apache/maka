@@ -13,7 +13,6 @@ const SEND_CHANNELS = new Set([
   'pip:pointer-down',
   'pip:pointer-move',
   'pip:pointer-up',
-  'pip:hover',
   'pip:control',
 ]);
 
@@ -23,6 +22,9 @@ contextBridge.exposeInMainWorld('computerUsePip', {
   },
   onCursor: (cb: (p: unknown) => void): void => {
     ipcRenderer.on('pip:cursor', (_e, payload) => cb(payload));
+  },
+  onControls: (cb: (p: unknown) => void): void => {
+    ipcRenderer.on('pip:controls', (_e, payload) => cb(payload));
   },
   send: (channel: string, payload?: unknown): void => {
     if (!SEND_CHANNELS.has(channel)) return;
