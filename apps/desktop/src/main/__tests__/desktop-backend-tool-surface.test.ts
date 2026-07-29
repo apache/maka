@@ -250,6 +250,26 @@ describe('Desktop backend tool surface', () => {
     assert.equal(preview.toolNames.has('deep_research_status'), false);
   });
 
+  it('keeps Deep Research on a read-only local tool surface without boundary expansion', async () => {
+    const requestBoundary = tool('request_sandbox_boundary', 'custom_tool');
+    const bash = tool('Bash', 'shell_unsafe');
+    const webSearch = tool('WebSearch', 'web_read');
+    const deepResearchStatus = tool('deep_research_status', 'read');
+    const deps = makeDeps({
+      builtinTools: [readTool, writeTool, requestBoundary, bash, webSearch],
+      deepResearchTools: [deepResearchStatus],
+    });
+    const input = inputFor('claude-sonnet-4-5-20250929');
+    input.header.labels = ['mode:deep_research'];
+
+    const surface = await resolveDesktopBackendToolSurface(deps, input);
+
+    assert.deepEqual(
+      surface.selectedTools.map((candidate) => candidate.name),
+      ['Read', 'WebSearch', 'deep_research_status'],
+    );
+  });
+
   it('uses explicit preview inputs without reading a nonexistent session plan', async () => {
     let connectionReads = 0;
     let planReads = 0;

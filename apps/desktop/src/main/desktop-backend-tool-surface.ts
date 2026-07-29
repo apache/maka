@@ -204,7 +204,7 @@ export async function resolveDesktopBackendToolSurface(
     deps.getAgentGraphSupervisorTools
       ? await deps.getAgentGraphSupervisorTools(input.sessionId, input.header)
       : [];
-  const candidateTools = input.tools
+  const unscopedCandidateTools = input.tools
     ? [...input.tools]
     : deps.isComputerUseRealModelE2e
       ? [...deps.computerUseTools]
@@ -214,6 +214,10 @@ export async function resolveDesktopBackendToolSurface(
           ...buildMcpTools(deps.mcpManager),
           ...(isDeepResearchSession(input.header.labels) ? deps.deepResearchTools : []),
         ];
+  const candidateTools =
+    !input.tools && isDeepResearchSession(input.header.labels)
+      ? unscopedCandidateTools.filter(isDeepResearchToolAllowed)
+      : unscopedCandidateTools;
   const toolEconomy = deps.isComputerUseRealModelE2e ? false : deps.toolEconomy;
 
   // Expert-team lead: a main session labeled `mode:expert-team:<teamId>`
@@ -273,6 +277,21 @@ export async function resolveDesktopBackendToolSurface(
     skillHost: productToolSurface.hostCapabilities,
     admitsAgentChildren: productToolSurface.boundSurfaceIds.includes(AGENT_TOOL_GROUP_ID),
   };
+}
+
+const DEEP_RESEARCH_ALLOWED_TOOL_NAMES = new Set([
+  'AskUserQuestion',
+  'Read',
+  'ArchiveRead',
+  'Glob',
+  'Grep',
+  'WebSearch',
+]);
+
+function isDeepResearchToolAllowed(tool: MakaTool): boolean {
+  return (
+    DEEP_RESEARCH_ALLOWED_TOOL_NAMES.has(tool.name) || tool.name.startsWith('deep_research_')
+  );
 }
 
 function modelSupportsVision(connection: LlmConnection, model: string): boolean {
