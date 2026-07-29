@@ -1,14 +1,16 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createReadOnlyPermissionProfile, createWorkspaceWritePermissionProfile } from '@maka/core';
-import type { SessionEvent } from '@maka/core';
+import type { ExecutionBoundary, SessionEvent } from '@maka/core';
 
 import { createAppShellSessionEventHandlers } from '../../renderer/app-shell-session-events.js';
 import {
   EXECUTION_BOUNDARY_READ_RETRY_DELAYS_MS,
+  type ActiveExecutionBoundarySnapshot,
   activeExecutionBoundaryOf,
   activeExecutionBoundaryUnreadable,
   readExecutionBoundaryWithRetry,
+  startActiveExecutionBoundaryRead,
 } from '../../renderer/use-active-execution-boundary.js';
 import { deriveDesktopExecutionBoundarySurface } from '../../renderer/desktop-execution-boundary-surface.js';
 import { readRendererShellSource } from './renderer-shell-source-helpers.js';
@@ -115,6 +117,24 @@ describe('A boundary read that fails (#1629)', () => {
     assert.deepEqual(harness.waits, []);
   });
 
+  it('does not report a read that main answered after it was cancelled', async () => {
+    // Cancelling before the first call is the easy half. The half that matters
+    // is cancelling while main is mid-answer: the reply still arrives, and
+    // without a re-check it comes back indistinguishable from a live one.
+    const answer = deferred<ExecutionBoundary>();
+    let cancelled = false;
+    const result = readExecutionBoundaryWithRetry({
+      read: () => answer.promise,
+      wait: async () => {},
+      cancelled: () => cancelled,
+    });
+
+    cancelled = true;
+    answer.resolve(readOnly);
+
+    assert.deepEqual(await result, { outcome: 'cancelled' });
+  });
+
   it('separates "asked and failed" from "not asked yet", and both fail closed', () => {
     const failed = { sessionId: 'session-a', boundary: undefined };
 
@@ -155,6 +175,108 @@ describe('A boundary read that fails (#1629)', () => {
     assert.match(composerRegion, /boundaryUnreadableNotice\.title/);
     assert.match(composerRegion, /boundaryUnreadableNotice\.detail/);
     assert.match(composerRegion, /onClick=\{boundaryUnreadableNotice\.onRetry\}/);
+  });
+});
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolveValue) => {
+    resolve = resolveValue;
+  });
+  return { promise, resolve };
+}
+
+/** Let every pending microtask chain run to completion. */
+async function settle(): Promise<void> {
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
+function recordingCommit() {
+  const snapshots: ActiveExecutionBoundarySnapshot[] = [];
+  const readings: boolean[] = [];
+  return {
+    snapshots,
+    readings,
+    setReading: (reading: boolean) => {
+      readings.push(reading);
+    },
+    setSnapshot: (snapshot: ActiveExecutionBoundarySnapshot) => {
+      snapshots.push(snapshot);
+    },
+  };
+}
+
+describe('Only the newest boundary read may commit', () => {
+  it('does not let a session the user left overwrite the one they opened', async () => {
+    const answerA = deferred<ExecutionBoundary>();
+    const answerB = deferred<ExecutionBoundary>();
+    const commit = recordingCommit();
+
+    const retireA = startActiveExecutionBoundaryRead({
+      sessionId: 'session-a',
+      read: () => answerA.promise,
+      commit,
+      retryDelaysMs: [],
+    });
+    // Switching sessions: React runs the previous cleanup before the next
+    // effect body, so B's generation always starts after A's has been retired.
+    retireA();
+    startActiveExecutionBoundaryRead({
+      sessionId: 'session-b',
+      read: () => answerB.promise,
+      commit,
+      retryDelaysMs: [],
+    });
+
+    answerB.resolve(widened);
+    await settle();
+    answerA.resolve(readOnly);
+    await settle();
+
+    // A's late reply would name a session that is no longer active, which the
+    // surface reads as "boundary unknown, and nothing wrong" — composer hidden,
+    // no notice, and no read left in flight to recover it. That is #1629 again.
+    assert.deepEqual(commit.snapshots, [{ sessionId: 'session-b', boundary: widened }]);
+  });
+
+  // The shape CI reproduced from the first cut of this fix: changing the
+  // permission mode re-runs the read (permissionMode is one of its triggers),
+  // and the previous generation's answer landed afterwards and put the old
+  // boundary back. The composer's label then still read 只读 right after the
+  // user chose 自动 — the read model's own state, not anything main said.
+  it('does not let a superseded revision come back after a reload or a mode change', async () => {
+    const staleAnswer = deferred<ExecutionBoundary>();
+    const freshAnswer = deferred<ExecutionBoundary>();
+    const commit = recordingCommit();
+
+    const retireStale = startActiveExecutionBoundaryRead({
+      sessionId: 'session-a',
+      read: () => staleAnswer.promise,
+      commit,
+      retryDelaysMs: [],
+    });
+    // `reload()` after a decision settles, or the stored permission mode moving
+    // under the hook: same session, new generation. The session id matches on
+    // both, so only the generation can tell them apart.
+    retireStale();
+    startActiveExecutionBoundaryRead({
+      sessionId: 'session-a',
+      read: () => freshAnswer.promise,
+      commit,
+      retryDelaysMs: [],
+    });
+
+    freshAnswer.resolve(widened);
+    await settle();
+    staleAnswer.resolve(readOnly);
+    await settle();
+
+    // Otherwise the label tells the user this session cannot write, moments
+    // after they granted it write access — the #1611 staleness, reintroduced
+    // through the back door.
+    assert.deepEqual(commit.snapshots, [{ sessionId: 'session-a', boundary: widened }]);
+    // And a retired read must not report the live one as finished either.
+    assert.deepEqual(commit.readings, [false]);
   });
 });
 

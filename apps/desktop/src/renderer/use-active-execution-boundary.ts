@@ -20,9 +20,10 @@ export type ExecutionBoundaryReadResult =
  * Bounded on purpose. A boundary read fails for two very different reasons: a
  * main process that has not finished settling the session yet — which the next
  * attempt fixes — and something actually broken, which no number of attempts
- * fixes. This schedule rides out the first (converging in under two seconds)
- * and then stops, so the second becomes a state the user is told about rather
- * than a poll that runs until the window closes.
+ * fixes. This schedule rides out the first (four reads, with 1.75s of waiting
+ * spread between them on top of whatever the reads themselves cost) and then
+ * stops, so the second becomes a state the user is told about rather than a
+ * poll that runs until the window closes.
  */
 export const EXECUTION_BOUNDARY_READ_RETRY_DELAYS_MS: readonly number[] = [150, 400, 1200];
 
@@ -42,7 +43,12 @@ export async function readExecutionBoundaryWithRetry(input: {
   for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
     if (input.cancelled()) return { outcome: 'cancelled' };
     try {
-      return { outcome: 'read', boundary: await input.read() };
+      const boundary = await input.read();
+      // A read outlives its caller: main answers whenever it answers, and by
+      // then the session may have been switched away from. Re-check before
+      // claiming a result, or a reply nobody is waiting for any more comes back
+      // looking exactly like a live answer.
+      return input.cancelled() ? { outcome: 'cancelled' } : { outcome: 'read', boundary };
     } catch {
       // Retried below, or reported as unreadable once the schedule runs out.
     }
@@ -91,6 +97,65 @@ export function activeExecutionBoundaryUnreadable(
   return snapshot.boundary === undefined;
 }
 
+/** Where a settled read writes back. Both come straight from `useState`. */
+export interface ActiveExecutionBoundaryReadCommit {
+  setReading(reading: boolean): void;
+  setSnapshot(snapshot: ActiveExecutionBoundarySnapshot): void;
+}
+
+/**
+ * Start one generation of the boundary read and return the call that retires
+ * it. Only a generation that has not been retired may commit.
+ *
+ * That invariant is the whole reason this is a named function rather than an
+ * effect body. A read for session A can still be in flight when the user opens
+ * B; A's reply arrives later and, uncontrolled, overwrites B's snapshot with
+ * A's. The snapshot then names a session that is not active, which reads as
+ * "boundary unknown, and no failure to report" — the exact dead end #1629 is
+ * about, this time with nothing left in flight to recover from it. The same
+ * race puts a superseded revision back on screen after a `reload()`.
+ *
+ * The generation token is the `cancelled` flag closed over below: React runs a
+ * cleanup before the next effect body, so one flag per call is already one flag
+ * per generation, and no separate counter would say anything more.
+ */
+export function startActiveExecutionBoundaryRead(input: {
+  sessionId: string;
+  read(sessionId: string): Promise<ExecutionBoundary>;
+  commit: ActiveExecutionBoundaryReadCommit;
+  retryDelaysMs?: readonly number[];
+}): () => void {
+  let cancelled = false;
+  let waitTimer: ReturnType<typeof setTimeout> | undefined;
+  let releaseWait: (() => void) | undefined;
+  void readExecutionBoundaryWithRetry({
+    read: () => input.read(input.sessionId),
+    // Released on cancel so a retired generation does not sit out the rest of a
+    // backoff before the loop notices.
+    wait: (delayMs) =>
+      new Promise<void>((resolve) => {
+        releaseWait = resolve;
+        waitTimer = setTimeout(resolve, delayMs);
+      }),
+    cancelled: () => cancelled,
+    retryDelaysMs: input.retryDelaysMs,
+  }).then((result) => {
+    // Checked here as well as inside the read: this generation can be retired
+    // in the turn between the read resolving and this callback running.
+    if (cancelled || result.outcome === 'cancelled') return;
+    input.commit.setReading(false);
+    input.commit.setSnapshot({
+      sessionId: input.sessionId,
+      boundary: result.outcome === 'read' ? result.boundary : undefined,
+    });
+  });
+  return () => {
+    cancelled = true;
+    if (waitTimer !== undefined) clearTimeout(waitTimer);
+    releaseWait?.();
+  };
+}
+
 /**
  * The desktop's read model for the active session's execution boundary — the
  * one place that decides when the renderer's copy of the boundary is stale.
@@ -112,7 +177,9 @@ export function activeExecutionBoundaryUnreadable(
  * good. Nothing here re-fires on its own, so the surface fell closed
  * permanently and the composer never came back. A failed read is now retried on
  * a bounded schedule and, when that runs out, reported as `unreadable` so the
- * surface can say so and offer another attempt.
+ * surface can say so and offer another attempt. Every read runs as a generation
+ * that only commits while it is still the current one — see
+ * `startActiveExecutionBoundaryRead` for why a late reply is the same bug.
  */
 export function useActiveExecutionBoundary(
   activeSessionId: string | undefined,
@@ -136,34 +203,16 @@ export function useActiveExecutionBoundary(
   }, [activeSessionId]);
 
   useEffect(() => {
+    // Armed synchronously by every generation and cleared only by one that is
+    // still current, so `reading` needs no generation of its own: a retired
+    // read can no longer report the newest one as finished.
     setReading(activeSessionId !== undefined);
     if (!activeSessionId) return;
-    let cancelled = false;
-    let waitTimer: ReturnType<typeof setTimeout> | undefined;
-    let releaseWait: (() => void) | undefined;
-    void readExecutionBoundaryWithRetry({
-      read: () => window.maka.sessions.readExecutionBoundary(activeSessionId),
-      // Released on cleanup so a session switch or an unmount does not sit out
-      // the rest of a backoff before the loop notices it has been cancelled.
-      wait: (delayMs) =>
-        new Promise<void>((resolve) => {
-          releaseWait = resolve;
-          waitTimer = setTimeout(resolve, delayMs);
-        }),
-      cancelled: () => cancelled,
-    }).then((result) => {
-      if (result.outcome === 'cancelled') return;
-      setReading(false);
-      setSnapshot({
-        sessionId: activeSessionId,
-        boundary: result.outcome === 'read' ? result.boundary : undefined,
-      });
+    return startActiveExecutionBoundaryRead({
+      sessionId: activeSessionId,
+      read: (sessionId) => window.maka.sessions.readExecutionBoundary(sessionId),
+      commit: { setReading, setSnapshot },
     });
-    return () => {
-      cancelled = true;
-      if (waitTimer !== undefined) clearTimeout(waitTimer);
-      releaseWait?.();
-    };
   }, [activeSessionId, permissionMode, reloadNonce]);
 
   const reload = useCallback((sessionId: string) => {
