@@ -79,6 +79,34 @@ describe('ModelAdapter stream and error normalization', () => {
       toolResults: true,
       signedThinking: false,
       unsignedThinking: true,
+      openAiResponsesThinking: false,
+    });
+  });
+
+  test('supports Responses reasoning replay for Volcengine Agent Plan', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'volcengine-agent-plan',
+        name: 'Volcengine Ark Agent Plan (China)',
+        providerType: 'volcengine-agent-plan',
+        defaultModel: 'ark-code-latest',
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      apiKey: 'ark-plan-token',
+      modelId: 'ark-code-latest',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    assert.deepEqual(adapter.runtimeEventReplaySupport(), {
+      toolCalls: true,
+      toolResults: true,
+      signedThinking: false,
+      unsignedThinking: false,
+      openAiResponsesThinking: true,
     });
   });
 
@@ -251,6 +279,48 @@ describe('ModelAdapter stream and error normalization', () => {
       | Extract<ModelStreamEvent, { kind: 'thinking-signature' }>
       | undefined;
     assert.equal(signatureEvent?.signature, 'sig-xyz');
+  });
+
+  test('preserves OpenAI Responses reasoning metadata through stream normalization', () => {
+    const adapter = newAdapter();
+    type Chunk = Parameters<typeof adapter.translateChunk>[0];
+    const chunks: Chunk[] = [
+      {
+        type: 'reasoning-delta',
+        delta: 'inspect',
+        providerMetadata: { openai: { itemId: 'rs_ark' } },
+      },
+      {
+        type: 'reasoning-end',
+        providerMetadata: {
+          openai: {
+            itemId: 'rs_ark',
+            reasoningEncryptedContent: 'encrypted-ark-reasoning',
+          },
+        },
+      },
+    ];
+
+    assert.deepEqual(
+      chunks.flatMap((chunk) => adapter.translateChunk(chunk)),
+      [
+        {
+          kind: 'thinking',
+          text: 'inspect',
+          providerOptions: { openai: { itemId: 'rs_ark' } },
+        },
+        {
+          kind: 'thinking',
+          text: '',
+          providerOptions: {
+            openai: {
+              itemId: 'rs_ark',
+              reasoningEncryptedContent: 'encrypted-ark-reasoning',
+            },
+          },
+        },
+      ],
+    );
   });
 
   test('classifies provider errors and maps finish reasons through adapter-owned helpers', () => {

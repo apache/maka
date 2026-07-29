@@ -668,6 +668,30 @@ describe('models.dev provider conformance', () => {
     assert.deepEqual(requests[2]?.body.contents, [{ role: 'user', parts: [{ text: 'Hi' }] }]);
   });
 
+  test('Volcengine Agent Plan connection probes do not retain the synthetic response', async () => {
+    let body: Record<string, unknown> | undefined;
+    const server = await startJsonServer(async (request, response) => {
+      assert.equal(request.method, 'POST');
+      assert.equal(request.url, '/api/plan/v3/responses');
+      assert.equal(request.headers.authorization, 'Bearer ark-plan-token');
+      body = JSON.parse(await readBody(request)) as Record<string, unknown>;
+      respondJson(response, 200, {});
+    });
+    const connection: LlmConnection = {
+      slug: 'volcengine-agent-plan',
+      name: 'Volcengine Ark Agent Plan (China)',
+      providerType: 'volcengine-agent-plan',
+      baseUrl: `${server.url}/api/plan/v3`,
+      defaultModel: 'ark-code-latest',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    assert.equal((await testConnection(connection, 'ark-plan-token')).ok, true);
+    assert.equal(body?.store, false);
+  });
+
   test('Vercel Gateway preserves its public discovery boundary and exact model id through a reasoning tool loop', async () => {
     const modelId = 'xai/grok-4.3';
     const requestBodies: Array<Record<string, unknown>> = [];

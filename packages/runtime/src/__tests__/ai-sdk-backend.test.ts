@@ -11603,6 +11603,115 @@ describe('AiSdkBackend thinking persistence', () => {
     assert.ok(prompt.indexOf('reasoning about the tool result') < prompt.indexOf('tool-1'));
   });
 
+  test('OpenAI Responses reasoning from a tool step is replayed with its encrypted content', async () => {
+    const ctx = {
+      sessionId: 'session-1',
+      invocationId: 'inv-1',
+      runId: 'run-prev',
+      turnId: 'turn-prev',
+      now: () => 7,
+      newId: idGenerator(),
+    } as unknown as InvocationContext;
+    const memory = createSessionEventMapMemory();
+    const priorEvents: SessionEvent[] = [
+      {
+        type: 'tool_start',
+        id: 'e1',
+        turnId: 'turn-prev',
+        ts: 1,
+        toolUseId: 'tool-1',
+        toolName: 'Read',
+        args: { path: 'package.json' },
+        stepId: 'm1',
+      },
+      {
+        type: 'tool_result',
+        id: 'e2',
+        turnId: 'turn-prev',
+        ts: 2,
+        toolUseId: 'tool-1',
+        isError: false,
+        content: { kind: 'text', text: 'file contents' },
+      },
+      {
+        type: 'thinking_complete',
+        id: 'e3',
+        turnId: 'turn-prev',
+        ts: 3,
+        messageId: 'm1',
+        text: 'reasoning about the tool',
+        providerOptions: {
+          openai: {
+            itemId: 'rs_ark',
+            reasoningEncryptedContent: 'encrypted-ark-reasoning',
+          },
+        },
+      },
+      {
+        type: 'text_complete',
+        id: 'e4',
+        turnId: 'turn-prev',
+        ts: 4,
+        messageId: 'm1',
+        text: '',
+      },
+    ];
+    const runtimeContext = priorEvents.map((event) =>
+      mapSessionEventToRuntimeEvent(event, ctx, memory),
+    );
+    const secondModel = completionModel();
+    const secondBackend = new AiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: {
+        slug: 'volcengine-agent-plan',
+        name: 'Volcengine Ark Agent Plan (China)',
+        providerType: 'volcengine-agent-plan',
+        defaultModel: 'ark-code-latest',
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      apiKey: 'ark-plan-token',
+      modelId: 'ark-code-latest',
+      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
+      modelFactory: () => secondModel,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      secondBackend.send({
+        turnId: 'turn-current',
+        text: 'follow up',
+        context: [],
+        runtimeContext,
+      }),
+    );
+
+    const prompt = compactPrompt(secondModel) as ModelMessage[];
+    const assistant = prompt.find(
+      (message) => message.role === 'assistant' && Array.isArray(message.content),
+    );
+    assert.ok(assistant && Array.isArray(assistant.content));
+    const reasoning = assistant.content.find((part) => part.type === 'reasoning');
+    assert.deepEqual(reasoning, {
+      type: 'reasoning',
+      text: 'reasoning about the tool',
+      providerOptions: {
+        openai: {
+          itemId: 'rs_ark',
+          reasoningEncryptedContent: 'encrypted-ark-reasoning',
+        },
+      },
+    });
+    assert.ok(
+      assistant.content.some((part) => part.type === 'tool-call' && part.toolCallId === 'tool-1'),
+    );
+  });
+
   test('thinking-only tool step (no text) replays reasoning + tool call in one assistant message without an empty text block', async () => {
     // Anthropic interleaved thinking's most common step shape: the step reasons,
     // calls a tool, and produces NO closing text — the backend still flushes the

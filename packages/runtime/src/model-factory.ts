@@ -373,6 +373,13 @@ export function buildProviderOptions(
           ...(level ? { reasoningEffort: level === 'off' ? 'none' : level } : {}),
         },
       };
+    case 'volcengine-agent-plan':
+      return {
+        openai: {
+          store: false,
+          forceReasoning: true,
+        },
+      };
     case 'xai':
     case 'xai-oauth':
       return modelId === 'grok-4.5'

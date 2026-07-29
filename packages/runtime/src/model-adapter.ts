@@ -1,6 +1,6 @@
 import type { ErrorEvent, CompleteEvent } from '@maka/core/events';
 import { providerAuthRequiresSecret, type LlmConnection } from '@maka/core/llm-connections';
-import { lookupModelMetadata } from '@maka/core/model-metadata';
+import { lookupModelMetadata, openAiAdapterApiProtocol } from '@maka/core/model-metadata';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import type { CacheMissInputSource } from '@maka/core/usage-stats/types';
 import type {
@@ -127,6 +127,7 @@ export class ModelAdapter {
       toolResults: true,
       signedThinking: usesAnthropicMessages(this.input.connection, this.input.modelId),
       unsignedThinking: usesKimiOpenAiChat(this.input.connection, this.input.modelId),
+      openAiResponsesThinking: usesOpenAiResponses(this.input.connection, this.input.modelId),
     };
   }
 
@@ -374,6 +375,16 @@ function usesKimiOpenAiChat(connection: LlmConnection, modelId: string): boolean
   );
 }
 
+function usesOpenAiResponses(connection: LlmConnection, modelId: string): boolean {
+  const runtime = resolveModelRuntime(connection, modelId);
+  if (runtime.adapter.kind !== 'openai') return false;
+  return (
+    runtime.adapter.apiProtocol === 'openai-responses' ||
+    runtime.apiProtocol === 'openai-responses' ||
+    openAiAdapterApiProtocol(modelId, connection.providerType) === 'openai-responses'
+  );
+}
+
 function fixedAnthropicThinkingBudget(
   providerOptions: Record<string, unknown> | undefined,
 ): number {
@@ -390,6 +401,7 @@ export interface ModelAdapterRuntimeEventReplaySupport {
   toolResults: boolean;
   signedThinking: boolean;
   unsignedThinking: boolean;
+  openAiResponsesThinking: boolean;
 }
 
 /**
@@ -444,6 +456,28 @@ function reasoningSignatureFromChunk(chunk: AiSdkStreamChunk): string | undefine
   return typeof signature === 'string' && signature.length > 0 ? signature : undefined;
 }
 
+function openAiResponsesReasoningProviderOptionsFromChunk(
+  chunk: AiSdkStreamChunk,
+): NonNullable<ModelMessage['providerOptions']> | undefined {
+  const meta = chunk.providerMetadata;
+  if (!meta || typeof meta !== 'object') return undefined;
+  const openai = (meta as { openai?: unknown }).openai;
+  if (!openai || typeof openai !== 'object' || Array.isArray(openai)) return undefined;
+  const { itemId, reasoningEncryptedContent } = openai as {
+    itemId?: unknown;
+    reasoningEncryptedContent?: unknown;
+  };
+  if (typeof itemId !== 'string' || itemId.length === 0) return undefined;
+  return {
+    openai: {
+      itemId,
+      ...(typeof reasoningEncryptedContent === 'string' || reasoningEncryptedContent === null
+        ? { reasoningEncryptedContent }
+        : {}),
+    },
+  };
+}
+
 /**
  * Translate one raw AI SDK stream chunk into zero or more Maka-owned
  * `ModelStreamEvent`s. The sole site that parses SDK chunk names; the backend
@@ -469,6 +503,7 @@ function translateChunk(
               ? chunk.delta
               : undefined;
       const signature = reasoningSignatureFromChunk(chunk);
+      const responsesProviderOptions = openAiResponsesReasoningProviderOptionsFromChunk(chunk);
       const events: ModelStreamEvent[] = [];
       if (signature) events.push({ kind: 'thinking-signature', signature });
       // The signed reasoning chunk arrives as a standalone delta with empty
@@ -478,20 +513,28 @@ function translateChunk(
         events.push({
           kind: 'thinking',
           text: restoreKimiEmptyReasoning(text),
-          ...(kimiOpenAiTransportState
-            ? {
-                providerOptions: kimiReasoningFieldProviderOptions(
-                  kimiOpenAiTransportState.reasoningField,
-                ),
-              }
-            : {}),
+          ...(responsesProviderOptions
+            ? { providerOptions: responsesProviderOptions }
+            : kimiOpenAiTransportState
+              ? {
+                  providerOptions: kimiReasoningFieldProviderOptions(
+                    kimiOpenAiTransportState.reasoningField,
+                  ),
+                }
+              : {}),
         });
       }
       return events;
     }
     case 'reasoning-end': {
       const signature = reasoningSignatureFromChunk(chunk);
-      return signature ? [{ kind: 'thinking-signature', signature }] : [];
+      const responsesProviderOptions = openAiResponsesReasoningProviderOptionsFromChunk(chunk);
+      return [
+        ...(signature ? [{ kind: 'thinking-signature' as const, signature }] : []),
+        ...(responsesProviderOptions
+          ? [{ kind: 'thinking' as const, text: '', providerOptions: responsesProviderOptions }]
+          : []),
+      ];
     }
     // Step boundaries (`start-step` / `finish-step`) and the terminal `finish`
     // carry no text/thinking to stream. The backend owns step accounting: it

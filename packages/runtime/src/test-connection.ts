@@ -139,6 +139,7 @@ async function probeOpenAIResponses(
     },
     body: JSON.stringify({
       model,
+      store: false,
       max_output_tokens: 16,
       input: [{ role: 'user', content: 'Hi' }],
     }),

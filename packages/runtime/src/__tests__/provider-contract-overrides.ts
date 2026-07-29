@@ -17,7 +17,7 @@ import type { LlmConnection } from '@maka/core';
 import { generateText, isStepCount, streamText, tool } from 'ai';
 import { z } from 'zod';
 import { fetchProviderModels } from '../model-fetcher.js';
-import { getAIModel } from '../model-factory.js';
+import { buildProviderOptions, getAIModel } from '../model-factory.js';
 import { buildSubscriptionModelFetch } from '../subscription-model-fetch.js';
 import {
   readBody,
@@ -102,6 +102,7 @@ export const PROVIDER_CONTRACT_OVERRIDE_BINDINGS: readonly ProviderContractOverr
         basePath: '/api/plan/v3',
         modelId: 'ark-code-latest',
         apiKey: 'volcengine-agent-plan-test-key',
+        statelessReasoning: true,
       }),
   },
 ];
@@ -853,8 +854,9 @@ async function runOpenAIResponsesWire(input: {
   basePath: string;
   modelId: string;
   apiKey: string;
+  statelessReasoning?: boolean;
 }): Promise<void> {
-  const { providerType, slug, name, basePath, modelId, apiKey } = input;
+  const { providerType, slug, name, basePath, modelId, apiKey, statelessReasoning } = input;
   const requestBodies: Array<Record<string, unknown>> = [];
   const server = await startJsonServer(async (request, response) => {
     assert.equal(request.method, 'POST');
@@ -914,6 +916,7 @@ async function runOpenAIResponsesWire(input: {
   const result = await generateText({
     model: getAIModel({ connection, apiKey, modelId }),
     prompt: 'Call echo with hello.',
+    ...(statelessReasoning ? { providerOptions: buildProviderOptions(connection, modelId) } : {}),
     stopWhen: isStepCount(2),
     tools: {
       echo: tool({
@@ -928,6 +931,10 @@ async function runOpenAIResponsesWire(input: {
     requestBodies.map((body) => body.model),
     [modelId, modelId],
   );
+  if (statelessReasoning) {
+    assert.equal(requestBodies[0]?.store, false);
+    assert.deepEqual(requestBodies[0]?.include, ['reasoning.encrypted_content']);
+  }
   assert.deepEqual(
     (requestBodies[1].input as Array<Record<string, unknown>>).find(
       ({ type }) => type === 'function_call_output',

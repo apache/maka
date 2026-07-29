@@ -77,6 +77,7 @@ import type {
   JSONValue,
   ModelFinishReason,
   ModelMessage,
+  ReasoningPart,
   ModelToolSet,
   NormalizedUsage,
   ModelFailureKind,
@@ -2379,6 +2380,10 @@ export class AiSdkBackend implements AgentBackend {
     type ToolCallItem = Extract<RuntimeEventModelReplayItem, { kind: 'tool_call' }>;
     type ToolResultItem = Extract<RuntimeEventModelReplayItem, { kind: 'tool_result' }>;
     type ThinkingItem = Extract<RuntimeEventModelReplayItem, { kind: 'thinking' }>;
+    type ReplayReasoning = {
+      part?: ReasoningPart;
+      providerOptions?: NonNullable<ModelMessage['providerOptions']>;
+    };
     const out: ModelMessage[] = [];
     let bufferedCalls: ToolCallItem[] = [];
     const results = new Map<string, ToolResultItem>();
@@ -2386,7 +2391,7 @@ export class AiSdkBackend implements AgentBackend {
     const textByStep = new Map<string, string>();
 
     const replaySupport = this.modelAdapter.runtimeEventReplaySupport();
-    const reasoningReplay = (item: ThinkingItem) => {
+    const reasoningReplay = (item: ThinkingItem): ReplayReasoning | undefined => {
       if (item.signature) {
         return replaySupport.signedThinking
           ? {
@@ -2397,6 +2402,32 @@ export class AiSdkBackend implements AgentBackend {
               },
             }
           : undefined;
+      }
+      if (replaySupport.openAiResponsesThinking) {
+        const openai = item.providerOptions?.openai;
+        if (openai && typeof openai === 'object' && !Array.isArray(openai)) {
+          const { itemId, reasoningEncryptedContent } = openai as {
+            itemId?: unknown;
+            reasoningEncryptedContent?: unknown;
+          };
+          if (typeof itemId === 'string' && itemId.length > 0) {
+            return {
+              part: {
+                type: 'reasoning' as const,
+                text: item.text,
+                providerOptions: {
+                  openai: {
+                    itemId,
+                    ...(typeof reasoningEncryptedContent === 'string' ||
+                    reasoningEncryptedContent === null
+                      ? { reasoningEncryptedContent }
+                      : {}),
+                  },
+                },
+              },
+            };
+          }
+        }
       }
       if (!replaySupport.unsignedThinking) return undefined;
       const kimiReasoningField = kimiReasoningFieldFromProviderOptions(item.providerOptions);
