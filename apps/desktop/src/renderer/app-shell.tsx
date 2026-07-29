@@ -1820,7 +1820,7 @@ function AppShellContent({
   const commandOptions: AppShellCommandListOptions = {
     uiLocale,
     activeId,
-    activePermissionMode: activeSessionForView?.permissionMode,
+    activePermissionMode,
     connections,
     defaultConnection,
     dailyReviewBridge,

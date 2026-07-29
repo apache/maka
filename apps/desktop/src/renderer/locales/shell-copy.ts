@@ -982,14 +982,14 @@ const SHELL_COPY_BY_LOCALE = {
       settingsSections: ZH_SETTINGS_SECTIONS,
       permissionModes: {
         explore: { label: '权限 · 只读', hint: '读取和搜索直通，写入仍确认' },
-        ask: { label: '权限 · 询问权限', hint: '每条敏感工具都先确认（默认）' },
+        ask: { label: '权限 · 自动', hint: '在会话沙箱内运行；扩大文件或网络边界时再询问' },
         execute: {
           label: '权限 · 自动执行',
           hint: '常见工具直通，破坏性操作仍确认',
         },
         bypass: {
-          label: '权限 · 跳过确认',
-          hint: '全部工具直通，不再弹权限确认',
+          label: '权限 · Bypass',
+          hint: '关闭 Maka 沙箱，开放宿主机文件系统和网络',
         },
       },
       settingsCommand: (section: string) => `设置 · ${section}`,
@@ -1467,16 +1467,16 @@ const SHELL_COPY_BY_LOCALE = {
           hint: 'Read and search directly; confirm writes',
         },
         ask: {
-          label: 'Permissions · Ask first',
-          hint: 'Confirm every sensitive tool call (default)',
+          label: 'Permissions · Auto',
+          hint: 'Run inside the session sandbox; ask only to expand filesystem or network access',
         },
         execute: {
           label: 'Permissions · Auto execute',
           hint: 'Run common tools; confirm destructive actions',
         },
         bypass: {
-          label: 'Permissions · Bypass confirmations',
-          hint: 'Run all tools without permission prompts',
+          label: 'Permissions · Bypass',
+          hint: 'Disable the Maka sandbox and expose host filesystem and network access',
         },
       },
       settingsCommand: (section: string) => `Settings · ${section}`,

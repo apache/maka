@@ -372,6 +372,15 @@ describe('permission response IPC boundary', () => {
     );
   });
 
+  it('command palette receives the active boundary-derived mode', async () => {
+    const shell = await readRendererShellSource('app-shell.tsx');
+    assert.match(
+      shell,
+      /const commandOptions:[\s\S]*?activeId,\s*activePermissionMode,\s*connections,/,
+    );
+    assert.doesNotMatch(shell, /activePermissionMode:\s*activeSessionForView\?\.permissionMode/);
+  });
+
   it('keeps every requested scope inspectable without pushing decisions off-screen', async () => {
     const styles = await readFile(
       fileURLToPath(new URL('../../../src/renderer/styles/interaction-prompts.css', import.meta.url)),

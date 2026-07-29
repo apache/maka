@@ -108,9 +108,8 @@ export function GeneralSettingsPage(props: {
  * inline. The selection is grouped by connection, but the persisted
  * default is the pair `{ slug, model }` via `connections.setDefaultModel`.
  *
- * PR-DEFAULT-PERMISSION-MODE-0: the composer's per-session permission-mode
- * picker (询问权限 / 自动执行 / 跳过确认) always reset new sessions back to
- * 询问权限 -- there was no way to change what a *new* chat starts on. Added
+ * PR-DEFAULT-PERMISSION-MODE-0: the composer's per-session boundary picker
+ * did not previously control what a *new* chat starts on. Added
  * a second picker right below 默认模型, backed by
  * `settings.chatDefaults.permissionMode` (persisted via the generic
  * `settings.update` patch, unlike the model picker's dedicated
