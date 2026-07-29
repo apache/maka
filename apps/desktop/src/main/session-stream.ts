@@ -125,6 +125,7 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
       selectedTools,
       toolAvailability: backendToolAvailability,
       skillHost: backendSkillHost,
+      admitsAgentChildren,
     } = toolSurface;
     const modelFetch = buildSubscriptionModelFetch(connection, ctx.sessionId, model);
     const memoryPromptSnapshot = await systemPromptService.buildLocalMemoryPromptFragment();
@@ -162,64 +163,69 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
       },
       agentTeam,
       toolAvailability: backendToolAvailability,
-      spawnChildAgent: (input) => getRuntime().spawnChildAgent(ctx.sessionId, input),
-      spawnChildSession: (input) => {
-        const observation = createLinkedChildEventProjection({
-          lifecycle: 'created',
-          safeSendToRenderer,
-          openGateway,
-          emitSessionsChanged,
-          onReady: input.onReady,
-          onEvent: input.onEvent,
-        });
-        return getRuntime().spawnChildSession(ctx.sessionId, {
-          spawnedBy: {
-            parentRunId: input.parentRunId,
-            parentTurnId: input.parentTurnId,
-            toolCallId: input.toolCallId,
-          },
-          agentProfile: input.agentProfile,
-          prompt: input.prompt,
-          ...(input.swarm ? { swarm: input.swarm } : {}),
-          abortSignal: input.abortSignal,
-          onReady: observation.onReady,
-          onEvent: observation.onEvent,
-        });
-      },
-      prepareChildAgentResume: (sourceRunId) =>
-        getRuntime().prepareChildAgentResume(ctx.sessionId, sourceRunId),
-      resumeChildAgent: (input) => {
-        const observation = createLinkedChildEventProjection({
-          lifecycle: 'continued',
-          safeSendToRenderer,
-          openGateway,
-          emitSessionsChanged,
-          onReady: input.onReady,
-          onEvent: input.onEvent,
-        });
-        return getRuntime().resumeChildAgent(ctx.sessionId, {
-          ...input,
-          onReady: observation.onReady,
-          onEvent: observation.onEvent,
-        });
-      },
-      retryChildAgent: (input) => {
-        const observation = createLinkedChildEventProjection({
-          lifecycle: 'continued',
-          safeSendToRenderer,
-          openGateway,
-          emitSessionsChanged,
-          onReady: input.onReady,
-          onEvent: input.onEvent,
-        });
-        return getRuntime().retryChildAgent(ctx.sessionId, {
-          ...input,
-          onReady: observation.onReady,
-          onEvent: observation.onEvent,
-        });
-      },
-      listChildAgents: () => getRuntime().listChildAgents(ctx.sessionId),
-      readChildAgentOutput: (input) => getRuntime().readChildAgentOutput(ctx.sessionId, input),
+      ...(admitsAgentChildren
+        ? {
+            spawnChildAgent: (input) => getRuntime().spawnChildAgent(ctx.sessionId, input),
+            spawnChildSession: (input) => {
+              const observation = createLinkedChildEventProjection({
+                lifecycle: 'created',
+                safeSendToRenderer,
+                openGateway,
+                emitSessionsChanged,
+                onReady: input.onReady,
+                onEvent: input.onEvent,
+              });
+              return getRuntime().spawnChildSession(ctx.sessionId, {
+                spawnedBy: {
+                  parentRunId: input.parentRunId,
+                  parentTurnId: input.parentTurnId,
+                  toolCallId: input.toolCallId,
+                },
+                agentProfile: input.agentProfile,
+                prompt: input.prompt,
+                ...(input.swarm ? { swarm: input.swarm } : {}),
+                abortSignal: input.abortSignal,
+                onReady: observation.onReady,
+                onEvent: observation.onEvent,
+              });
+            },
+            prepareChildAgentResume: (sourceRunId) =>
+              getRuntime().prepareChildAgentResume(ctx.sessionId, sourceRunId),
+            resumeChildAgent: (input) => {
+              const observation = createLinkedChildEventProjection({
+                lifecycle: 'continued',
+                safeSendToRenderer,
+                openGateway,
+                emitSessionsChanged,
+                onReady: input.onReady,
+                onEvent: input.onEvent,
+              });
+              return getRuntime().resumeChildAgent(ctx.sessionId, {
+                ...input,
+                onReady: observation.onReady,
+                onEvent: observation.onEvent,
+              });
+            },
+            retryChildAgent: (input) => {
+              const observation = createLinkedChildEventProjection({
+                lifecycle: 'continued',
+                safeSendToRenderer,
+                openGateway,
+                emitSessionsChanged,
+                onReady: input.onReady,
+                onEvent: input.onEvent,
+              });
+              return getRuntime().retryChildAgent(ctx.sessionId, {
+                ...input,
+                onReady: observation.onReady,
+                onEvent: observation.onEvent,
+              });
+            },
+            listChildAgents: () => getRuntime().listChildAgents(ctx.sessionId),
+            readChildAgentOutput: (input) =>
+              getRuntime().readChildAgentOutput(ctx.sessionId, input),
+          }
+        : {}),
       providerOptions: buildProviderOptions(connection, model, ctx.header.thinkingLevel),
       contextBudget: buildDefaultContextBudgetPolicy(connection, {
         name: 'desktop-default-history-budget',

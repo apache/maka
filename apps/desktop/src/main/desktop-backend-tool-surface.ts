@@ -19,6 +19,7 @@ import {
   type PlanStore,
 } from '@maka/core/plan';
 import {
+  AGENT_TOOL_GROUP_ID,
   buildCancelPlanTool,
   buildExpertDispatchToolForTeamId,
   buildMcpTools,
@@ -86,6 +87,7 @@ export interface DesktopBackendToolSurface {
   selectedTools: MakaTool[];
   toolAvailability: ToolAvailabilityConfig;
   skillHost: HostCapabilities;
+  admitsAgentChildren: boolean;
 }
 
 export interface DesktopNewSessionSkillContext {
@@ -269,6 +271,7 @@ export async function resolveDesktopBackendToolSurface(
     selectedTools: [...productToolSurface.tools],
     toolAvailability: productToolSurface.toolAvailability,
     skillHost: productToolSurface.hostCapabilities,
+    admitsAgentChildren: productToolSurface.boundSurfaceIds.includes(AGENT_TOOL_GROUP_ID),
   };
 }
 

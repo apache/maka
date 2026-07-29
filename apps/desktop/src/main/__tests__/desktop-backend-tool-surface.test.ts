@@ -3,13 +3,23 @@ import { describe, it } from 'node:test';
 import type { LlmConnection, SessionHeader, TaskLedgerStore } from '@maka/core';
 import { emptyPlanSessionState, type PlanStore } from '@maka/core/plan';
 import type { McpClientManager } from '@maka/mcp';
-import type { MakaTool, ToolAvailabilityConfig } from '@maka/runtime';
+import {
+  PermissionEngine,
+  type AiSdkBackendInput,
+  type BackendFactoryContext,
+  type MakaTool,
+  type ToolAvailabilityConfig,
+} from '@maka/runtime';
 import {
   resolveDesktopBackendToolSurface,
   resolveDesktopNewSessionSkillHost,
   resolveDesktopSessionSkillHost,
   type DesktopBackendToolSurfaceDeps,
 } from '../desktop-backend-tool-surface.js';
+import {
+  createAiSdkBackendFactory,
+  type AiSdkBackendFactoryDeps,
+} from '../session-stream.js';
 
 const readTool = tool('Read', 'read');
 const writeTool = tool('Write', 'file_write');
@@ -23,6 +33,30 @@ const availability: ToolAvailabilityConfig = {
 };
 
 describe('Desktop backend tool surface', () => {
+  it('uses the effective Agent surface as the complete child-runtime capability boundary', async () => {
+    const agentTools = [
+      tool('agent_spawn', 'subagent'),
+      tool('agent_swarm', 'subagent'),
+      tool('agent_list', 'read'),
+      tool('agent_output', 'read'),
+    ];
+    const factory = createAiSdkBackendFactory(
+      makeFactoryDeps({
+        builtinTools: [readTool, writeTool, computerTool, ...agentTools],
+      }),
+    );
+
+    const rootInput = await backendInput(factory, undefined);
+    for (const capability of AGENT_RUNTIME_CAPABILITIES) {
+      assert.equal(typeof rootInput[capability], 'function', `expected root ${capability}`);
+    }
+
+    const scopedInput = await backendInput(factory, [readTool]);
+    for (const capability of AGENT_RUNTIME_CAPABILITIES) {
+      assert.equal(scopedInput[capability], undefined, `unexpected scoped ${capability}`);
+    }
+  });
+
   it('derives model-gated Skill capabilities from the current session header', async () => {
     const deps = makeDeps();
 
@@ -313,4 +347,66 @@ function tool(
   categoryHint: MakaTool['categoryHint'],
 ): MakaTool {
   return { name, categoryHint } as MakaTool;
+}
+
+const AGENT_RUNTIME_CAPABILITIES = [
+  'spawnChildAgent',
+  'spawnChildSession',
+  'prepareChildAgentResume',
+  'resumeChildAgent',
+  'retryChildAgent',
+  'listChildAgents',
+  'readChildAgentOutput',
+] as const satisfies readonly (keyof AiSdkBackendInput)[];
+
+function makeFactoryDeps(
+  overrides: Partial<DesktopBackendToolSurfaceDeps> = {},
+): AiSdkBackendFactoryDeps {
+  const runtime = {
+    spawnChildAgent: async () => undefined,
+    spawnChildSession: async () => undefined,
+    prepareChildAgentResume: async () => ({}) as never,
+    resumeChildAgent: async () => undefined,
+    retryChildAgent: async () => undefined,
+    listChildAgents: async () => [],
+    readChildAgentOutput: async () => ({}),
+  };
+  return {
+    ...makeDeps(overrides),
+    buildSubscriptionModelFetch: () => undefined,
+    systemPromptService: {
+      buildLocalMemoryPromptFragment: async () => '',
+    },
+    permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
+    telemetryRepo: {},
+    artifactStore: {},
+    desktopSessionSkillHosts: new Map(),
+    sandboxDiagnosticsProvider: { resolve: async () => undefined },
+    persistToolArtifacts: async () => {},
+    persistArchivedToolResult: async () => undefined,
+    readArchivedToolResult: async () => undefined,
+    runtimeCommitStore: undefined,
+    safeSendToRenderer: () => {},
+    openGateway: {},
+    emitSessionsChanged: () => {},
+    getRuntime: () => runtime,
+    getLookupPricing: () => () => null,
+  } as unknown as AiSdkBackendFactoryDeps;
+}
+
+async function backendInput(
+  factory: ReturnType<typeof createAiSdkBackendFactory>,
+  tools: readonly MakaTool[] | undefined,
+): Promise<AiSdkBackendInput> {
+  const base = inputFor('claude-sonnet-4-5-20250929');
+  const context: BackendFactoryContext = {
+    ...base,
+    workspaceRoot: base.header.workspaceRoot,
+    store: {
+      appendMessage: async () => {},
+    } as unknown as BackendFactoryContext['store'],
+    ...(tools ? { tools } : {}),
+  };
+  const backend = await factory(context);
+  return (backend as unknown as { input: AiSdkBackendInput }).input;
 }
