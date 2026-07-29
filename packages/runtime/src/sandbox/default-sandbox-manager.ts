@@ -9,9 +9,9 @@ export function createDefaultSandboxManager(): SandboxManager {
 }
 
 export function createBuiltinSandboxManager(
-  platform: SandboxPlatform = process.platform,
-): SandboxManager | undefined {
-  return platform === 'darwin' || platform === 'linux' ? createDefaultSandboxManager() : undefined;
+  _platform: SandboxPlatform = process.platform,
+): SandboxManager {
+  return createDefaultSandboxManager();
 }
 
 export function isBuiltinFilesystemWorkerSandboxAvailable(

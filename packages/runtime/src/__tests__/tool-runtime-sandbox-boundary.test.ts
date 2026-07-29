@@ -11,6 +11,7 @@ import {
 
 import { buildRequestSandboxBoundaryTool } from '../sandbox-boundary-tool.js';
 import { FilesystemWorkerClientError } from '../filesystem-worker/client.js';
+import { SandboxCommandError } from '../sandbox/errors.js';
 import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
 
 describe('ToolRuntime session sandbox boundary', () => {
@@ -186,6 +187,66 @@ describe('ToolRuntime session sandbox boundary', () => {
         },
       },
     });
+  });
+
+  test('returns structured requires_bypass without opening an interaction', async () => {
+    const events: SessionEvent[] = [];
+    const runtime = new ToolRuntime({
+      sessionId: 'session-1',
+      header: header(),
+      connection: { providerType: 'openai', slug: 'test' } as never,
+      modelId: 'test',
+      appendMessage: async () => {},
+      readExecutionBoundary: async () => ({
+        kind: 'managed',
+        profile: createWorkspaceWritePermissionProfile(),
+        revision: 0,
+      }),
+      newId: nextId(),
+      now: () => 1,
+      getPermissionPauseTarget: () => null,
+    });
+    const tool: MakaTool = {
+      name: 'Bash',
+      description: 'test',
+      parameters: {},
+      impl: () => {
+        throw new SandboxCommandError({
+          domain: 'command',
+          stage: 'capability',
+          reason: 'requires_bypass',
+          recoverable: false,
+        });
+      },
+    };
+
+    const settlement = await runtime.settleToolCall({
+      tool,
+      turnId: 'turn-1',
+      toolCallId: 'tool-1',
+      input: {},
+      abortSignal: new AbortController().signal,
+      eventSink: {
+        push: (event) => events.push(event),
+        pushAndWaitUntilConsumed: async (event) => {
+          events.push(event);
+        },
+      },
+    });
+
+    assert.deepEqual(settlement.result, {
+      error: 'Command sandbox failed: requires_bypass.',
+      sandbox: {
+        domain: 'command',
+        stage: 'capability',
+        reason: 'requires_bypass',
+        recoverable: false,
+      },
+    });
+    assert.equal(
+      events.some((event) => event.type === 'sandbox_boundary_request'),
+      false,
+    );
   });
 });
 

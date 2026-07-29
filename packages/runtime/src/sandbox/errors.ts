@@ -107,10 +107,5 @@ function isBoundedMatch(value: unknown, pattern: RegExp): value is string {
 
 function isSandboxBoundaryExpansion(value: unknown): value is SandboxBoundaryExpansion {
   if (value === undefined) return false;
-  try {
-    validateSandboxBoundaryExpansion(value);
-    return true;
-  } catch {
-    return false;
-  }
+  return validateSandboxBoundaryExpansion(value).ok;
 }

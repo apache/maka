@@ -192,4 +192,25 @@ describe('sandbox error diagnostics', () => {
       },
     });
   });
+
+  test('rejects malformed required expansions instead of laundering them into diagnostics', () => {
+    const serialized = serializeSandboxError({
+      domain: 'filesystem',
+      stage: 'validation',
+      reason: 'sandbox_boundary_required',
+      recoverable: true,
+      requiredExpansion: {
+        filesystem: {
+          entries: [{ path: 'relative.txt', access: 'read', scope: 'exact' }],
+        },
+      },
+    });
+
+    assert.deepEqual(serialized, {
+      domain: 'filesystem',
+      stage: 'validation',
+      reason: 'sandbox_boundary_required',
+      recoverable: true,
+    });
+  });
 });
