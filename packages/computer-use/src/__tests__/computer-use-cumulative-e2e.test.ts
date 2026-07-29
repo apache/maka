@@ -12,6 +12,16 @@ import {
   type OverlayCursorSink,
 } from '../computer-use-overlay-hook.js';
 
+/**
+ * The observation id out of the model-facing text.
+ *
+ * It leads the header line precisely because the model has to quote it back on
+ * every bound action.
+ */
+function observationIdOf(modelText: string | undefined): string {
+  return /observation_id=(\S+)/.exec(modelText ?? '')?.[1] ?? '';
+}
+
 function context(overrides: Partial<CuRunContext> = {}) {
   return {
     sessionId: 'session-1',
@@ -145,7 +155,7 @@ describe('Computer Use cross-layer deterministic contract', () => {
       } as never,
       context(),
     )) as { text: string; modelText?: string };
-    const observationId = JSON.parse(observed.modelText ?? '{}').observation_id;
+    const observationId = observationIdOf(observed.modelText);
     const result = (await tool.impl(
       {
         action: 'left_click',
@@ -234,7 +244,7 @@ describe('Computer Use cross-layer deterministic contract', () => {
     await tool.impl(
       {
         action: 'left_click',
-        observation_id: JSON.parse(firstObservation.modelText ?? '{}').observation_id,
+        observation_id: observationIdOf(firstObservation.modelText),
         coordinate: [400, 200],
       } as never,
       context({ toolCallId: 'target-change' }),
@@ -254,7 +264,7 @@ describe('Computer Use cross-layer deterministic contract', () => {
     await tool.impl(
       {
         action: 'left_click',
-        observation_id: JSON.parse(secondObservation.modelText ?? '{}').observation_id,
+        observation_id: observationIdOf(secondObservation.modelText),
         coordinate: [400, 200],
       } as never,
       context({ turnId: 'turn-2', toolCallId: 'unknown' }),
@@ -307,7 +317,7 @@ describe('Computer Use cross-layer deterministic contract', () => {
     const afterTurn = (await tool.impl(
       {
         action: 'left_click',
-        observation_id: JSON.parse(observed.modelText ?? '{}').observation_id,
+        observation_id: observationIdOf(observed.modelText),
         coordinate: [400, 200],
       } as never,
       context({ toolCallId: 'late-action' }),
