@@ -56,6 +56,8 @@ const INTERACTIVE_SELECTOR = [
   '[role="radio"]',
   '[role="checkbox"]',
   '[tabindex]:not([tabindex="-1"])',
+  'summary',
+  '[contenteditable]:not([contenteditable="false"])',
 ].join(', ');
 
 interface TitlebarReport {
@@ -94,16 +96,15 @@ async function readTitlebar(page: Page, interactiveSelector: string): Promise<Ti
         : node.tagName.toLowerCase();
 
     /**
-     * Resolve the app-region that actually applies to the part of `el` inside the
-     * drag rect.
+     * Resolve the app-region that actually applies AT a point of `el`.
      *
-     * A `no-drag` inherited from an ancestor carves out the ANCESTOR's rect. A
-     * child can overflow that rect (absolute positioning, negative margins), and
-     * the overflowing part stays inside the drag region even though the computed
-     * style reads `no-drag`. So when the declaration comes from an ancestor, the
-     * ancestor's rect has to contain the overlapping part.
+     * Per-point rather than per-element, because a `no-drag` inherited from an
+     * ancestor carves out the ANCESTOR's rect: a child can overflow that rect
+     * (absolute positioning, negative margins) and the overflowing part stays
+     * inside the drag region even though the computed style reads `no-drag`. So
+     * the annotated ancestor's rect has to contain the point being judged.
      */
-    const resolveRegion = (el: Element, target: DOMRect): { region: string; covered: boolean } => {
+    const resolveRegionAt = (el: Element, x: number, y: number): { region: string; covered: boolean } => {
       for (
         let node: Element | null = el;
         node && node !== document.documentElement;
@@ -111,16 +112,36 @@ async function readTitlebar(page: Page, interactiveSelector: string): Promise<Ti
       ) {
         const region = regionOf(node);
         if (region !== 'drag' && region !== 'no-drag') continue;
-        if (node === el) return { region: `${region}@self`, covered: true };
         const rect = node.getBoundingClientRect();
         const covered =
-          rect.left <= target.left + 0.5 &&
-          rect.right >= target.right - 0.5 &&
-          rect.top <= target.top + 0.5 &&
-          rect.bottom >= target.bottom - 0.5;
-        return { region: `${region}@${name(node)}`, covered };
+          rect.left <= x + 0.5 &&
+          rect.right >= x - 0.5 &&
+          rect.top <= y + 0.5 &&
+          rect.bottom >= y - 0.5;
+        return { region: `${region}@${node === el ? 'self' : name(node)}`, covered };
       }
       return { region: 'NONE', covered: false };
+    };
+
+    /**
+     * Sample points across a rect: centre, corners, and edge midpoints, inset by
+     * 1px so a corner sample lands on the element rather than its neighbour.
+     *
+     * The centre alone is not enough. A control whose centre is occluded (a
+     * dropdown, a tooltip, a sibling drawn on top) but whose corner is exposed is
+     * still clickable there, and that corner is what the OS drag region would
+     * swallow.
+     */
+    const samplePoints = (r: DOMRect): Array<[number, number]> => {
+      const xs = [...new Set([r.left + 1, r.left + r.width / 2, r.right - 1])];
+      const ys = [...new Set([r.top + 1, r.top + r.height / 2, r.bottom - 1])];
+      const points: Array<[number, number]> = [];
+      for (const y of ys) {
+        for (const x of xs) {
+          if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) points.push([x, y]);
+        }
+      }
+      return points;
     };
 
     const describe = (el: Element): string => {
@@ -149,40 +170,45 @@ async function readTitlebar(page: Page, interactiveSelector: string): Promise<Ti
         overlap,
       );
 
-      // Only a control the user can actually REACH inside the drag rect can lose
-      // hit area to it. A rect overlapping the titlebar is not enough: a chat
+      // Only a point the user can actually REACH inside the drag rect can lose hit
+      // area to it. A rect overlapping the titlebar is not enough: a chat
       // transcript row scrolled above its viewport reports a rect at negative y,
       // clipped by an `overflow: auto` ancestor and unreachable there. Asking the
-      // browser what is at the point is both more faithful than re-deriving
+      // browser what is at each point is both more faithful than re-deriving
       // clipping and occlusion, and shorter.
-      const probe = document.elementFromPoint(
-        intersection.left + intersection.width / 2,
-        intersection.top + intersection.height / 2,
-      );
-      if (!probe || !(probe === el || el.contains(probe))) continue;
-
-      const { region, covered } = resolveRegion(el, intersection);
       const afterTitlebar = Boolean(
         titlebar.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING,
       );
+      let failure: { region: string; reason: string } | null = null;
+      for (const [x, y] of samplePoints(intersection)) {
+        const probe = document.elementFromPoint(x, y);
+        if (!probe || !(probe === el || el.contains(probe))) continue;
 
-      let reason = '';
-      if (!region.startsWith('no-drag')) reason = `resolves to ${region}, not no-drag`;
-      else if (!covered) reason = `${region} does not cover the part inside the drag rect`;
-      else if (!afterTitlebar) {
-        reason = 'declared before the titlebar, so its no-drag is not subtracted';
+        const { region, covered } = resolveRegionAt(el, x, y);
+        const at = `at ${Math.round(x)},${Math.round(y)}`;
+        if (!region.startsWith('no-drag')) {
+          failure = { region, reason: `resolves to ${region}, not no-drag, ${at}` };
+        } else if (!covered) {
+          failure = { region, reason: `${region} does not cover the reachable point ${at}` };
+        } else if (!afterTitlebar) {
+          failure = {
+            region,
+            reason: `declared before the titlebar, so its no-drag is not subtracted (${at})`,
+          };
+        }
+        if (failure) break;
       }
-      if (!reason) continue;
+      if (!failure) continue;
 
       offenders.push({
         label:
           el.getAttribute('aria-label') || (el.textContent || '').trim().slice(0, 24) || el.tagName,
         selector: describe(el),
         box: `${Math.round(rect.x)},${Math.round(rect.y)} ${Math.round(rect.width)}x${Math.round(rect.height)}`,
-        region,
+        region: failure.region,
         afterTitlebar,
         overlapPx: Math.round(overlap),
-        reason,
+        reason: failure.reason,
       });
     }
 
@@ -260,9 +286,15 @@ async function assertTitlebarIsWellFormed(page: Page, label: string): Promise<vo
     `${label}: the titlebar's drag rect must stop at or before the content row's top edge (content starts at ${report.contentTop}). ${context}`,
   ).toBeLessThanOrEqual(report.contentTop!);
 
+  // Scope, stated honestly: semantically interactive elements matching
+  // INTERACTIVE_SELECTOR, judged at the sampled points of their overlap with the
+  // drag rect that the browser reports as reachable. A custom control that is
+  // neither a button, a link, a form field, nor role/tabindex/contenteditable
+  // annotated is invisible to this check — and would be a hit-testing bug of its
+  // own.
   expect(
     report.offenders,
-    `${label}: every interactive element overlapping the titlebar must resolve to \`-webkit-app-region: no-drag\` through an ancestor whose rect covers the overlapping part, AND sit after the titlebar in document order. Offenders lose that part of their hit area to a window drag`,
+    `${label}: at every reachable sampled point inside the titlebar, an interactive element must resolve to \`-webkit-app-region: no-drag\` through an ancestor whose rect covers that point, AND sit after the titlebar in document order. Offenders lose that part of their hit area to a window drag`,
   ).toEqual([]);
 }
 

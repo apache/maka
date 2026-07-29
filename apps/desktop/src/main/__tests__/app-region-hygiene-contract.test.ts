@@ -33,9 +33,8 @@ import { readFile } from 'node:fs/promises';
 import { describe, it } from 'node:test';
 import { join } from 'node:path';
 import { readRendererContractCss } from './contract-css-helpers.js';
+import { readRendererTsxFiles } from './css-test-helpers.js';
 import { readMainProcessCombinedSource } from './main-process-contract-source-helpers.js';
-
-const TOKENS_PATH = join(process.cwd(), 'src', 'renderer', 'maka-tokens.css');
 
 /**
  * The single element allowed to declare `-webkit-app-region: drag`.
@@ -104,25 +103,48 @@ describe('app-region hygiene contract (PR-SIDEBAR-IA-0 Phase 3 P0 fixup v5)', ()
   });
 
   it(`declares -webkit-app-region: drag on exactly one selector (${DRAG_AUTHORITY_SELECTOR})`, async () => {
-    const stylesSources = [
-      ['renderer CSS', await readRendererContractCss()],
-      [TOKENS_PATH, await readFile(TOKENS_PATH, 'utf8')],
-    ] as const;
+    // One source: `readRendererContractCss()` expands `styles.css`'s @import
+    // graph, which includes `maka-tokens.css`. Reading the tokens file again on
+    // top of that counted every declaration in it twice — harmless while no token
+    // file declares an app-region, and a spurious "found 2 drag rules" the moment
+    // one legitimately did.
+    const css = await readRendererContractCss();
     const selectors: string[] = [];
-    for (const [sourceLabel, src] of stylesSources) {
-      for (const rule of findRulesWithDeclaration(src, 'drag')) {
-        selectors.push(`${rule.selector} (${sourceLabel})`);
-        assert.equal(
-          rule.selector.trim(),
-          DRAG_AUTHORITY_SELECTOR,
-          `\`-webkit-app-region: drag\` on selector '${rule.selector}' (in ${sourceLabel}) adds a second window-drag authority. Drag belongs to ${DRAG_AUTHORITY_SELECTOR} alone; a container that merely sits in the titlebar row should declare nothing, and a control inside it should declare \`no-drag\`. If '${rule.selector}' is a full-window container (\`.appFrame\`, \`.app\`, a modal backdrop, \`html\`/\`body\`), it also swallows the OS resize hit area — the P0 in WAWQAQ ${'`5b85fdb1`'}.`,
-        );
-      }
+    for (const rule of findRulesWithDeclaration(css, 'drag')) {
+      selectors.push(rule.selector);
+      assert.equal(
+        rule.selector.trim(),
+        DRAG_AUTHORITY_SELECTOR,
+        `\`-webkit-app-region: drag\` on selector '${rule.selector}' adds a second window-drag authority. Drag belongs to ${DRAG_AUTHORITY_SELECTOR} alone; a container that merely sits in the titlebar row should declare nothing, and a control inside it should declare \`no-drag\`. If '${rule.selector}' is a full-window container (\`.appFrame\`, \`.app\`, a modal backdrop, \`html\`/\`body\`), it also swallows the OS resize hit area — the P0 in WAWQAQ ${'`5b85fdb1`'}.`,
+      );
     }
     assert.equal(
       selectors.length,
       1,
       `expected exactly one \`-webkit-app-region: drag\` rule (${DRAG_AUTHORITY_SELECTOR}), found ${selectors.length}: ${selectors.join(', ')}`,
+    );
+  });
+
+  it('keeps the drag authority out of component source, where the CSS gate cannot see it', async () => {
+    // The check above reads stylesheets. An inline `style={{ WebkitAppRegion:
+    // 'drag' }}` or a Tailwind arbitrary property would declare a second drag
+    // authority that never appears in any .css file — same P0, invisible to the
+    // gate. `no-drag` in component source is fine (it only ever subtracts).
+    const offenders: string[] = [];
+    for (const { relPath, source } of await readRendererTsxFiles()) {
+      // Declarations, not prose: `app-shell.tsx` documents the titlebar row by
+      // naming the property and its value, which is not a declaration.
+      const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+      for (const match of code.matchAll(
+        /(?:WebkitAppRegion\s*:\s*|-webkit-app-region\s*:\s*|app-region-\[)['"]?(no-drag|drag)/g,
+      )) {
+        if (match[1] === 'drag') offenders.push(`${relPath}: ${match[0]}`);
+      }
+    }
+    assert.deepEqual(
+      offenders,
+      [],
+      `window-drag must be declared in CSS, on ${DRAG_AUTHORITY_SELECTOR} alone, so the single-authority gate above can see it: ${offenders.join(', ')}`,
     );
   });
 
