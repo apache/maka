@@ -21,7 +21,7 @@ describe('Deep Research durable workspace wiring', () => {
       /const builtinTools: MakaTool\[\] = \[[\s\S]*?\n\];/,
     )?.[0] ?? '';
     const candidateTools = backendToolSurface.match(
-      /const candidateTools = input\.tools[\s\S]*?const toolEconomy/,
+      /const unscopedCandidateTools = input\.tools[\s\S]*?const toolEconomy/,
     )?.[0] ?? '';
     const preload = await readFile(
       fileURLToPath(new URL('../../../src/preload/preload.ts', import.meta.url)),
@@ -47,6 +47,11 @@ describe('Deep Research durable workspace wiring', () => {
       candidateTools,
       /input\.tools\s*\?\s*\[\.\.\.input\.tools\]\s*:\s*deps\.isComputerUseRealModelE2e[\s\S]*isDeepResearchSession\(input\.header\.labels\) \? deps\.deepResearchTools : \[\]/,
       'child tool scopes must win before computer-use and root-only Deep Research expansion',
+    );
+    assert.match(
+      candidateTools,
+      /!input\.tools && isDeepResearchSession\(input\.header\.labels\)[\s\S]*unscopedCandidateTools\.filter\(isDeepResearchToolAllowed\)/,
+      'Deep Research root sessions must expose only the read-only research allowlist',
     );
   });
 

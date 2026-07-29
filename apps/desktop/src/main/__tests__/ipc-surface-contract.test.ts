@@ -106,7 +106,11 @@ describe('IPC surface contract', () => {
     assert.match(combinedMainProcess, /<memory-update>/);
     assert.match(
       combinedMainProcess,
-      /const candidateTools = input\.tools\s+\? \[\.\.\.input\.tools\]\s+: deps\.isComputerUseRealModelE2e/,
+      /const unscopedCandidateTools = input\.tools\s+\? \[\.\.\.input\.tools\]\s+: deps\.isComputerUseRealModelE2e/,
+    );
+    assert.match(
+      combinedMainProcess,
+      /const candidateTools =\s+!input\.tools && isDeepResearchSession\(input\.header\.labels\)\s+\? unscopedCandidateTools\.filter\(isDeepResearchToolAllowed\)\s+: unscopedCandidateTools/,
     );
     assert.match(
       combinedMainProcess,
