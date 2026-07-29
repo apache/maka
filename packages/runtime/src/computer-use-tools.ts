@@ -105,7 +105,12 @@ const computerWireParams = z
       .max(512)
       .optional()
       .describe(
-        'Exact app id/name from list_apps. Required for observe unless window_id is supplied.',
+        // "Exact" was already here and was not enough. On a real desktop chain
+        // the model asked for "Calculator" and got nothing, because the app is
+        // named 计算器 — macOS reports the localized display name and that name
+        // is the identity. It recovered by calling list_apps, at the cost of a
+        // round trip this sentence can save.
+        'Exact app id/name as list_apps reports it. Names are localized, so the English name may not match. Required for observe unless window_id is supplied.',
       ),
     window_id: z
       .number()
@@ -923,15 +928,58 @@ export function buildComputerUseTools(deps: {
             if (includeScreenshot && !tcc.screenRecording) {
               return { text: 'maka_computer.observe failed: permission_missing' };
             }
-            const backendObservation = await deps.backend.observeApp(
-              {
-                app: input.app,
-                windowId: input.window_id,
-                includeScreenshot,
-              },
-              abortSignal,
-              runCtx,
-            );
+            // A backend that cannot resolve the target reports it, and the
+            // report belongs in the tool's own result shape.
+            //
+            // Every other way `observe` can fail here — `unsupported_action`,
+            // `permission_missing` — returns text the model reads directly. An
+            // unresolvable app threw instead, so it left through the generic
+            // synthetic-error path and arrived as a different kind of thing
+            // than its siblings. Measured on the real desktop chain: asking for
+            // "Calculator" when the app is named 计算器 produced a thrown
+            // `invalidApp`, and the model read it as "the app is not running"
+            // and launched a second copy rather than looking the name up.
+            let backendObservation;
+            try {
+              backendObservation = await deps.backend.observeApp(
+                {
+                  app: input.app,
+                  windowId: input.window_id,
+                  includeScreenshot,
+                },
+                abortSignal,
+                runCtx,
+              );
+            } catch (error) {
+              const detail = error instanceof Error ? error.message : String(error);
+              // `ambiguousApp` is a different fact than "no such window" and the
+              // enum already distinguishes them; anything else is the target
+              // not being there.
+              const code = /^ambiguous/i.test(detail) ? 'ambiguous_target' : 'target_missing';
+              // Carry the recovery in the failure. The names are the whole
+              // reason this call failed, they are one `list_apps` away, and a
+              // model that has to make that call spends a round trip finding
+              // out something this message already knows. Bounded, because an
+              // error is not a place to paste a hundred app names.
+              let running = '';
+              if (code === 'target_missing' && input.app && deps.backend.listApps) {
+                try {
+                  const apps = await deps.backend.listApps(abortSignal);
+                  const named = apps
+                    .filter((app) => (app.windowCount ?? 0) > 0)
+                    .map((app) => app.appId)
+                    .slice(0, 24);
+                  if (named.length > 0) running = ` Apps with windows: ${named.join(', ')}.`;
+                } catch {
+                  // The list is a courtesy. Failing to fetch it must not turn a
+                  // reportable failure into an unreportable one.
+                }
+              }
+              return {
+                text: `maka_computer.observe failed: ${code} — ${detail}${running}`,
+                error: code,
+              };
+            }
             if (
               !observationLease?.ok ||
               !state.validateObservationLease(observationLease.lease).ok

@@ -864,10 +864,26 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
         ];
       })
       .sort((a, b) => b.zIndex - a.zIndex);
-    if (eligible.length === 0)
+    if (eligible.length === 0) {
+      // Say where the right string comes from. An app is named by the string
+      // `list_apps` reports, which on macOS is the app's *localized* display
+      // name — "计算器", not "Calculator". A model asked to drive Calculator
+      // cannot know that, and this message used to leave it with nothing but
+      // the name it had already tried.
+      //
+      // Measured on the real desktop chain: the model's first call failed here,
+      // it recovered by calling `list_apps` and reading the name off the list,
+      // and the turn cost an extra round trip that the message could have
+      // saved. Matching leniently would be the other fix and is the wrong one —
+      // one string, one namespace, is what keeps `app` and `window_id` from
+      // disagreeing about which window they mean.
+      const named = app ?? windowId ?? 'the current desktop';
       throw new Error(
-        `invalidApp: no visible window matched ${app ?? windowId ?? 'the current desktop'}`,
+        app
+          ? `invalidApp: no visible window matched ${named}. App names come from list_apps and are localized, so they may not be the English name.`
+          : `invalidApp: no visible window matched ${named}`,
       );
+    }
     if (windowId === undefined && app && eligible.length > 1) {
       throw new Error(`ambiguousApp: ${app} matched ${eligible.length} visible windows`);
     }
