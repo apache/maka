@@ -340,7 +340,6 @@ export function shapeTerminalResult(input: {
             (input.result.sandboxType === 'macos-seatbelt' || input.result.sandboxType === 'linux')
               ? { backend: input.result.sandboxType }
               : {}),
-            recovery: 'require_escalated',
           },
         }
       : {}),

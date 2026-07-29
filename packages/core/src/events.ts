@@ -444,7 +444,7 @@ type ShellRunResultMetadata = {
   failureMessage?: string;
   revision: number;
   timeoutMs?: number;
-  sandboxDenial?: SandboxDenialRecovery;
+  sandboxDenial?: SandboxDenialSignal | SandboxDenialRecovery;
 };
 
 export interface SandboxDenialSignal {
@@ -501,7 +501,7 @@ export type ToolResultContent =
       exitCode?: number;
       failureMessage?: string;
       output: ShellOutput;
-      sandboxDenial?: SandboxDenialRecovery;
+      sandboxDenial?: SandboxDenialSignal | SandboxDenialRecovery;
     }
   | ShellRunToolResultContent
   | { kind: 'image'; mimeType: string; ref: StorageRef }

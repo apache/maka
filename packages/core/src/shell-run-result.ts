@@ -501,6 +501,7 @@ export function isSandboxDenialSignal(value: unknown): value is SandboxDenialSig
 function isOptionalSandboxDenial(value: unknown): boolean {
   return (
     value === undefined ||
+    isSandboxDenialSignal(value) ||
     (isRecord(value) &&
       hasExactShape(value, SANDBOX_DENIAL_RECOVERY_SHAPE) &&
       value.likely === true &&

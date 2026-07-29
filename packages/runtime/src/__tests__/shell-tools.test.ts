@@ -193,7 +193,6 @@ describe('shapeTerminalResult sandbox denial projection', () => {
     assert.deepEqual(result.sandboxDenial, {
       likely: true,
       backend: 'macos-seatbelt',
-      recovery: 'require_escalated',
     });
   });
 

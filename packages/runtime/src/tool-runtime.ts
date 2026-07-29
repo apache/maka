@@ -2043,7 +2043,6 @@ function coerceTerminalFailure(
               ...(error.sandboxType === 'macos-seatbelt' || error.sandboxType === 'linux'
                 ? { backend: error.sandboxType }
                 : {}),
-              recovery: 'require_escalated',
             },
           }
         : {}),
@@ -2076,7 +2075,7 @@ function buildTerminalFailureMessage(
   if (stdoutView) parts.push(`--- stdout ---\n${stdoutView}`);
   if (sandboxDenied) {
     parts.push(
-      '该失败很可能来自 Maka sandbox。若完成用户当前请求确实需要在 sandbox 外执行，请使用完全相同的命令重新调用 Bash，并显式传入 sandbox_permissions: { mode: "require_escalated", justification: "具体原因" }。不要静默绕过 sandbox，也不要在更小范围的 additional permissions 足够时请求完全提权。',
+      '该失败很可能来自 Maka sandbox。请先尝试不扩大边界的替代方案；只有工具明确返回 sandbox_boundary_required 和具体 expansion 时，才能请求会话边界扩张。不要从命令文本猜测权限，也不要静默绕过 sandbox。',
     );
   }
   return parts.join('\n\n');

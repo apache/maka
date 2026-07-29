@@ -150,7 +150,6 @@ function sandboxDenialForRecord(record: ShellRunRecord):
   | {
       likely: true;
       backend?: 'macos-seatbelt' | 'linux';
-      recovery: 'require_escalated';
     }
   | undefined {
   if (record.status !== 'failed' || record.sandboxExecution?.enforced !== true) return undefined;
@@ -160,7 +159,6 @@ function sandboxDenialForRecord(record: ShellRunRecord):
   return {
     likely: true,
     ...(backend === 'macos-seatbelt' || backend === 'linux' ? { backend } : {}),
-    recovery: 'require_escalated',
   };
 }
 
