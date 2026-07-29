@@ -90,7 +90,7 @@ describe('maka run session selection', () => {
     );
   });
 
-  test('resume rejects missing cwd, ask mode, unsupported backend, and explicit config conflicts', async () => {
+  test('resume accepts Auto sessions and rejects missing cwd, unsupported backend, and explicit config conflicts', async () => {
     const deps = canonicalizer({ '/repo': '/repo' });
     const base = session({ id: 'resume-me', cwd: '/repo', thinkingLevel: 'high' });
 
@@ -107,19 +107,18 @@ describe('maka run session selection', () => {
       ),
       /has no stored cwd/,
     );
-    await assert.rejects(
-      selectMakaRunSession(
-        {
-          sessions: [session({ id: 'resume-me', permissionMode: 'ask' })],
-          resumeId: 'resume-me',
-          continueLatest: false,
-          processCwd: '/ignored',
-          thinkingSpecified: false,
-        },
-        deps,
-      ),
-      /interactive permission mode ask/,
+    const auto = session({ id: 'resume-me', permissionMode: 'ask' });
+    const resumedAuto = await selectMakaRunSession(
+      {
+        sessions: [auto],
+        resumeId: 'resume-me',
+        continueLatest: false,
+        processCwd: '/ignored',
+        thinkingSpecified: false,
+      },
+      deps,
     );
+    assert.equal(resumedAuto.kind === 'existing' ? resumedAuto.session : undefined, auto);
     await assert.rejects(
       selectMakaRunSession(
         {
@@ -182,7 +181,7 @@ describe('maka run session selection', () => {
     );
 
     assert.equal(selected.kind, 'existing');
-    assert.equal(selected.kind === 'existing' ? selected.session.id : undefined, 'a');
+    assert.equal(selected.kind === 'existing' ? selected.session.id : undefined, 'ask');
     assert.equal(selected.cwd, '/repo');
   });
 

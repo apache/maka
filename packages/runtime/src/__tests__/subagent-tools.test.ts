@@ -205,12 +205,7 @@ describe('subagent tools', () => {
           testCatalogTool('WebSearch', 'web_read'),
         ],
       }).find((definition) => definition.id === WEB_RESEARCH_AGENT_ID)?.availability,
-    ).toEqual({
-      status: 'unavailable',
-      reason: 'parent_permission_mode',
-      parentPermissionMode: 'ask',
-      requiredPermissionMode: 'execute',
-    });
+    ).toEqual({ status: 'available' });
   });
 
   test('built-in catalog exposes implementation only when a worktree executor is available', async () => {
@@ -300,7 +295,7 @@ describe('subagent tools', () => {
     });
   });
 
-  test('agent definition availability reports missing tools and parent permission mismatches without running', () => {
+  test('agent definition availability depends on exposed tools, not legacy parent modes', () => {
     expect(
       evaluateAgentDefinitionAvailability({
         parentPermissionMode: 'ask',
@@ -327,12 +322,7 @@ describe('subagent tools', () => {
           testCatalogTool('Grep', 'read'),
         ],
       }),
-    ).toEqual({
-      status: 'unavailable',
-      reason: 'parent_permission_mode',
-      parentPermissionMode: 'explore',
-      requiredPermissionMode: 'execute',
-    });
+    ).toEqual({ status: 'available' });
   });
 
   test('agent definition policy evaluates each tool through allowlist and category policy', () => {
@@ -370,25 +360,20 @@ describe('subagent tools', () => {
     });
   });
 
-  test('agent definition cannot require broader permissions than the parent turn', async () => {
-    await expectRejects(
-      Promise.resolve().then(() =>
-        assertAgentDefinitionRunnable({
-          parentPermissionMode: 'explore',
-          definition: {
-            ...LOCAL_READ_AGENT_DEFINITION,
-            id: 'writer',
-            permissionMode: 'execute',
-          },
-          tools: [
-            testCatalogTool('Read', 'read'),
-            testCatalogTool('Glob', 'read'),
-            testCatalogTool('Grep', 'read'),
-          ],
-        }),
-      ),
-      /cannot run in parent permission mode "explore" because it requires "execute"/,
-    );
+  test('legacy parent mode does not override the authoritative child boundary and tool surface', () => {
+    assertAgentDefinitionRunnable({
+      parentPermissionMode: 'explore',
+      definition: {
+        ...LOCAL_READ_AGENT_DEFINITION,
+        id: 'writer',
+        permissionMode: 'execute',
+      },
+      tools: [
+        testCatalogTool('Read', 'read'),
+        testCatalogTool('Glob', 'read'),
+        testCatalogTool('Grep', 'read'),
+      ],
+    });
   });
 
   test('child agent toolset keeps only built-in profile allowlisted tools', () => {

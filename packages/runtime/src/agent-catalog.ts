@@ -49,12 +49,6 @@ export type AgentDefinitionAvailability =
   | { status: 'available' }
   | {
       status: 'unavailable';
-      reason: 'parent_permission_mode';
-      parentPermissionMode: PermissionMode;
-      requiredPermissionMode: PermissionMode;
-    }
-  | {
-      status: 'unavailable';
       reason: 'missing_tools';
       missingTools: string[];
     }
@@ -196,13 +190,6 @@ export const BUILTIN_AGENT_DEFINITIONS: readonly AgentDefinition[] = [
   IMPLEMENTATION_AGENT_DEFINITION,
 ];
 
-const modeRank: Record<PermissionMode, number> = {
-  explore: 0,
-  ask: 1,
-  execute: 2,
-  bypass: 3,
-};
-
 export function listBuiltinAgentDefinitions(
   options: AgentDefinitionListOptions = {},
 ): AgentDefinitionListItem[] {
@@ -270,7 +257,7 @@ export function evaluateAgentDefinitionAvailability(input: {
   tools: readonly MakaTool[];
   worktreeChildExecutorAvailable?: boolean;
 }): AgentDefinitionAvailability {
-  const { parentPermissionMode, definition, tools } = input;
+  const { definition, tools } = input;
   if (
     definition.contract.workspace === AGENT_WORKSPACE_WORKTREE &&
     !input.worktreeChildExecutorAvailable
@@ -280,15 +267,6 @@ export function evaluateAgentDefinitionAvailability(input: {
       reason: 'workspace_isolation_unavailable',
       workspace: definition.contract.workspace,
       requiredRuntime: 'worktree_child_executor',
-    };
-  }
-
-  if (modeRank[definition.permissionMode] > modeRank[parentPermissionMode]) {
-    return {
-      status: 'unavailable',
-      reason: 'parent_permission_mode',
-      parentPermissionMode,
-      requiredPermissionMode: definition.permissionMode,
     };
   }
 
@@ -336,20 +314,15 @@ export function assertAgentDefinitionRunnable(input: {
   tools: readonly MakaTool[];
   worktreeChildExecutorAvailable?: boolean;
 }): void {
-  const { parentPermissionMode, definition, tools } = input;
+  const { definition, tools } = input;
   const availability = evaluateAgentDefinitionAvailability({
-    parentPermissionMode,
+    parentPermissionMode: input.parentPermissionMode,
     definition,
     tools,
     worktreeChildExecutorAvailable: input.worktreeChildExecutorAvailable,
   });
   if (availability.status !== 'unavailable') return;
 
-  if (availability.reason === 'parent_permission_mode') {
-    throw new Error(
-      `Agent "${definition.id}" cannot run in parent permission mode "${availability.parentPermissionMode}" because it requires "${availability.requiredPermissionMode}".`,
-    );
-  }
   if (availability.reason === 'missing_tools') {
     throw new Error(
       `Agent "${definition.id}" is unavailable: missing tools: ${availability.missingTools.join(', ')}`,
