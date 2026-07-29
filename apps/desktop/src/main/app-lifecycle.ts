@@ -144,7 +144,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
       await agentGraphSupervisorWakeCoordinator.recover();
       await agentGraphCoordinator.recover();
       if (process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME !== '1') return;
-      await resumeSafeBoundaryContinuationsOnStartup(runtime, streamEvents);
+      await resumeSafeBoundaryContinuationsOnStartup(runtime, streamEvents, console.error);
     } catch {
       // Best-effort: startup should still reach the renderer so users can inspect
       // and repair any remaining local session state.
