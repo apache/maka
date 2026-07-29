@@ -1041,6 +1041,10 @@ export class SessionManager {
     if (header) this.runtimeKernel.updateCachedHeader(sessionId, header);
   }
 
+  async readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary> {
+    return this.deps.store.readExecutionBoundary(sessionId);
+  }
+
   async setPermissionMode(sessionId: string, mode: PermissionMode): Promise<SessionSummary> {
     const previous = await this.deps.store.readHeader(sessionId);
     const boundary = await this.deps.store.readExecutionBoundary(sessionId);

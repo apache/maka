@@ -1,4 +1,5 @@
 import type { SessionEvent } from '@maka/core/events';
+import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import type { SessionSummary } from '@maka/core/session';
 import type { InvocationResult } from '@maka/runtime';
 import { runMakaTextCli, type MakaRunContext, type MakaRunRuntime } from '../run-command.js';
@@ -53,7 +54,28 @@ const runtime: MakaRunRuntime = {
     }
     return summary;
   },
+  async readExecutionBoundary() {
+    const kind = process.env.MAKA_RUN_BOUNDARY_KIND ?? 'managed';
+    return kind === 'managed'
+      ? {
+          kind,
+          profile: createWorkspaceWritePermissionProfile(),
+          revision: 0,
+        }
+      : { kind: kind as 'bypass' | 'external', revision: 0 };
+  },
+  async setExecutionBoundaryKind(_sessionId, kind) {
+    if (
+      process.env.MAKA_RUN_EXPECT_BOUNDARY_KIND &&
+      kind !== process.env.MAKA_RUN_EXPECT_BOUNDARY_KIND
+    ) {
+      throw new Error(`unexpected boundary kind ${kind}`);
+    }
+  },
   async *sendMessage(sessionId, input): AsyncIterable<SessionEvent> {
+    if (process.env.MAKA_RUN_EXPECT_NO_SEND === '1') {
+      throw new Error('unexpected sendMessage call');
+    }
     if (
       process.env.MAKA_RUN_EXPECT_SESSION_ID &&
       sessionId !== process.env.MAKA_RUN_EXPECT_SESSION_ID

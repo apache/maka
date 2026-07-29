@@ -252,6 +252,47 @@ describe('maka run process contract', () => {
     assert.equal(result.stdout, 'prompt=continue this\n');
   });
 
+  test('fails closed when resuming a bypass session without --yolo', async () => {
+    const cwd = await realpath(process.cwd());
+    const resumed = fixtureSession({
+      id: 'resume-bypass',
+      cwd,
+      permissionMode: 'bypass',
+    });
+    const result = await runFixture(['continue this', '--resume', resumed.id], {
+      input: '',
+      env: {
+        MAKA_RUN_FIXTURE_SESSIONS: JSON.stringify([resumed]),
+        MAKA_RUN_BOUNDARY_KIND: 'bypass',
+        MAKA_RUN_EXPECT_NO_SEND: '1',
+      },
+    });
+
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /requires --yolo/i);
+    assert.equal(result.stdout, '');
+  });
+
+  test('resumes in Bypass only when --yolo is explicit', async () => {
+    const cwd = await realpath(process.cwd());
+    const resumed = fixtureSession({
+      id: 'resume-bypass',
+      cwd,
+      permissionMode: 'bypass',
+    });
+    const result = await runFixture(['continue this', '--resume', resumed.id, '--yolo'], {
+      input: '',
+      env: {
+        MAKA_RUN_FIXTURE_SESSIONS: JSON.stringify([resumed]),
+        MAKA_RUN_BOUNDARY_KIND: 'bypass',
+        MAKA_RUN_EXPECT_BOUNDARY_KIND: 'bypass',
+      },
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, 'prompt=continue this\n');
+  });
+
   test('returns exit 2 when explicit configuration conflicts with a resumed session', async () => {
     const resumed = fixtureSession({ id: 'resume-me', cwd: process.cwd() });
     const result = await runFixture(

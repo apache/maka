@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import type { SessionEvent } from '@maka/core/events';
 import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
 import type { CreateSessionInput, UserMessageInput } from '@maka/core/runtime-inputs';
+import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
 import type { SessionSummary } from '@maka/core/session';
 import type { InvocationResult } from '@maka/runtime';
 import { createSessionStore } from '@maka/storage';
@@ -38,13 +39,14 @@ export type ParseMakaRunArgsResult =
 
 export interface MakaRunRuntime {
   createSession(input: CreateSessionInput): Promise<SessionSummary>;
+  readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary>;
   sendMessage(sessionId: string, input: UserMessageInput): AsyncIterable<SessionEvent>;
   respondToSandboxBoundary(
     sessionId: string,
     response: { requestId: string; decision: 'deny'; rememberForTurn?: boolean },
   ): Promise<void>;
   stopSession(sessionId: string, input?: { source?: 'stop_button' }): Promise<void>;
-  setExecutionBoundaryKind?(sessionId: string, kind: 'managed' | 'bypass'): Promise<unknown>;
+  setExecutionBoundaryKind(sessionId: string, kind: 'managed' | 'bypass'): Promise<unknown>;
 }
 
 export interface MakaRunContext {
@@ -265,11 +267,15 @@ export async function runMakaTextCli(
               ? { thinkingLevel: parsed.options.thinking }
               : {}),
           });
-    if (selection.kind === 'existing' && parsed.options.yolo) {
-      if (!context.runtime.setExecutionBoundaryKind) {
-        throw new Error('runtime does not support --yolo for resumed sessions');
+    if (selection.kind === 'existing') {
+      const boundary = await context.runtime.readExecutionBoundary(session.id);
+      if (parsed.options.yolo) {
+        await context.runtime.setExecutionBoundaryKind(session.id, 'bypass');
+      } else if (boundary.kind === 'bypass') {
+        throw new Error(`resuming Bypass session ${session.id} requires --yolo`);
+      } else if (boundary.kind === 'external') {
+        throw new Error(`cannot resume externally isolated session ${session.id} from maka run`);
       }
-      await context.runtime.setExecutionBoundaryKind(session.id, 'bypass');
     }
   } catch (error) {
     await context.close();
