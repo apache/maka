@@ -1149,25 +1149,72 @@ export class SessionManager {
         kind === 'managed' &&
         projection?.permissionMode === 'explore' &&
         current.profile.name !== 'read-only');
-    const shellRunClose = narrowsShellAuthority
-      ? await this.deps.shellRuns?.terminateSession(sessionId)
-      : undefined;
+    const descendantSessionIds = narrowsShellAuthority
+      ? await this.listLinkedDescendantSessionIds(sessionId)
+      : [];
+    const lineageSessionIds = [sessionId, ...descendantSessionIds];
+    const descendantBoundaries = new Map<string, ExecutionBoundary>();
+    for (const descendantSessionId of descendantSessionIds) {
+      descendantBoundaries.set(
+        descendantSessionId,
+        await this.deps.store.readExecutionBoundary(descendantSessionId),
+      );
+    }
+    const shellRunCloses = [];
     let boundary: ExecutionBoundary;
     try {
+      if (narrowsShellAuthority) {
+        for (const lineageSessionId of lineageSessionIds) {
+          const close = await this.deps.shellRuns?.terminateSession(lineageSessionId);
+          if (close) shellRunCloses.push(close);
+        }
+      }
       // Backends snapshot boundary-related session state at construction time.
       // Dispose before the authority commit so a disposal failure cannot leave
       // callers observing a rejected transition that was already committed.
-      await this.runtimeKernel.disposeBackend(sessionId);
+      await Promise.all(
+        lineageSessionIds.map((lineageSessionId) =>
+          this.runtimeKernel.disposeBackend(lineageSessionId),
+        ),
+      );
       boundary = await this.deps.store.setExecutionBoundaryKind(sessionId, kind, projection);
     } catch (error) {
-      if (shellRunClose) this.deps.shellRuns?.rollbackSessionClose(shellRunClose);
+      for (const close of shellRunCloses) this.deps.shellRuns?.rollbackSessionClose(close);
       throw error;
     }
-    if (shellRunClose) {
-      await this.deps.shellRuns?.commitSessionClose(shellRunClose);
+    if (shellRunCloses.length > 0) {
+      for (const close of shellRunCloses) await this.deps.shellRuns?.commitSessionClose(close);
       this.deps.shellRuns?.resumeSession(sessionId);
+      for (const [descendantSessionId, descendantBoundary] of descendantBoundaries) {
+        if (executionBoundaryContains(boundary, descendantBoundary)) {
+          this.deps.shellRuns?.resumeSession(descendantSessionId);
+        }
+      }
     }
     return boundary;
+  }
+
+  private async listLinkedDescendantSessionIds(sessionId: string): Promise<string[]> {
+    const sessions = await this.deps.store.list();
+    const childrenByParent = new Map<string, string[]>();
+    for (const session of sessions) {
+      const parentSessionId = session.subagentParent?.parentSessionId;
+      if (!parentSessionId) continue;
+      const children = childrenByParent.get(parentSessionId) ?? [];
+      children.push(session.id);
+      childrenByParent.set(parentSessionId, children);
+    }
+    const descendants: string[] = [];
+    const pending = [...(childrenByParent.get(sessionId) ?? [])];
+    const seen = new Set([sessionId]);
+    while (pending.length > 0) {
+      const descendantSessionId = pending.shift()!;
+      if (seen.has(descendantSessionId)) continue;
+      seen.add(descendantSessionId);
+      descendants.push(descendantSessionId);
+      pending.push(...(childrenByParent.get(descendantSessionId) ?? []));
+    }
+    return descendants;
   }
 
   async getPlanState(sessionId: string): Promise<PlanSessionState> {

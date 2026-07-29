@@ -3968,12 +3968,15 @@ describe('SessionManager permission mode updates', () => {
     if (boundary.kind === 'managed') expect(boundary.profile.name).toBe('read-only');
   });
 
-  test('revokes background shell authority through the direct boundary API', async () => {
+  test('revokes descendant background shell authority through the direct boundary API', async () => {
     const store = new AtomicBoundaryMemorySessionStore();
     const calls: string[] = [];
+    const backends = new BackendRegistry();
+    backends.register('fake', (ctx) => new TestBackend(ctx));
     const manager = new SessionManager({
       store,
-      backends: new BackendRegistry(),
+      backends,
+      childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
       newId: nextId(),
       now: nextNow(990),
       shellRuns: {
@@ -3993,10 +3996,87 @@ describe('SessionManager permission mode updates', () => {
       } as never,
     });
     const session = await manager.createSession(makeInput({ permissionMode: 'bypass' }));
+    const child = await manager.createSession(
+      makeInput({
+        permissionMode: 'bypass',
+        subagentParent: {
+          kind: 'subagent',
+          parentSessionId: session.id,
+          spawnedBy: {
+            parentRunId: 'parent-run',
+            parentTurnId: 'parent-turn',
+            toolCallId: 'child-tool',
+          },
+          lifecycle: 'foreground',
+        },
+        subagentRuntime: {
+          schemaVersion: 1,
+          definitionVersion: LOCAL_READ_AGENT_DEFINITION.definitionVersion,
+          agentId: LOCAL_READ_AGENT_ID,
+          agentName: LOCAL_READ_AGENT_DEFINITION.name,
+          profile: LOCAL_READ_AGENT_PROFILE,
+          systemPrompt: LOCAL_READ_AGENT_DEFINITION.systemPrompt,
+          toolNames: ['Read', 'Glob', 'Grep'],
+          categoryPolicy: {},
+        },
+        subagentSpawn: {
+          schemaVersion: 1,
+          requestFingerprint: 'a'.repeat(64),
+          initialTurnId: 'child-turn',
+          initialRunId: 'child-run',
+        },
+      }),
+    );
+    const grandchild = await manager.createSession(
+      makeInput({
+        permissionMode: 'bypass',
+        subagentParent: {
+          kind: 'subagent',
+          parentSessionId: child.id,
+          spawnedBy: {
+            parentRunId: 'child-run',
+            parentTurnId: 'child-turn',
+            toolCallId: 'grandchild-tool',
+          },
+          lifecycle: 'foreground',
+        },
+        subagentRuntime: {
+          schemaVersion: 1,
+          definitionVersion: LOCAL_READ_AGENT_DEFINITION.definitionVersion,
+          agentId: LOCAL_READ_AGENT_ID,
+          agentName: LOCAL_READ_AGENT_DEFINITION.name,
+          profile: LOCAL_READ_AGENT_PROFILE,
+          systemPrompt: LOCAL_READ_AGENT_DEFINITION.systemPrompt,
+          toolNames: ['Read', 'Glob', 'Grep'],
+          categoryPolicy: {},
+        },
+        subagentSpawn: {
+          schemaVersion: 1,
+          requestFingerprint: 'b'.repeat(64),
+          initialTurnId: 'grandchild-turn',
+          initialRunId: 'grandchild-run',
+        },
+      }),
+    );
+    await drain(manager.sendMessage(session.id, { turnId: 'parent-turn', text: 'parent' }));
+    await drain(manager.sendMessage(child.id, { turnId: 'child-turn', text: 'child' }));
+    await drain(
+      manager.sendMessage(grandchild.id, { turnId: 'grandchild-turn', text: 'grandchild' }),
+    );
+    store.disposeCount = 0;
 
     await manager.setExecutionBoundaryKind(session.id, 'managed');
 
-    expect(calls).toEqual([`terminate:${session.id}`, 'commit', `resume:${session.id}`]);
+    expect(calls).toEqual([
+      `terminate:${session.id}`,
+      `terminate:${child.id}`,
+      `terminate:${grandchild.id}`,
+      'commit',
+      'commit',
+      'commit',
+      `resume:${session.id}`,
+    ]);
+    expect(store.disposeCount).toBe(3);
   });
 
   test('updates header, rebuilds active backend, and writes an audit note', async () => {
