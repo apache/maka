@@ -5,7 +5,12 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
 import { Worker } from 'node:worker_threads';
-import { canReadPath, type SandboxBoundarySettlement, type SessionHeader } from '@maka/core';
+import {
+  canReadPath,
+  createWorkspaceWritePermissionProfile,
+  type SandboxBoundarySettlement,
+  type SessionHeader,
+} from '@maka/core';
 import type { AgentGraphOperatorProvisionRequest } from '@maka/core/agent-graph-topology';
 import {
   createSqliteSessionMetadataStore,
@@ -406,6 +411,31 @@ describe('SqliteSessionMetadataStore', () => {
         assert.equal(canReadPath(restored.profile, '/outside/kept/file.txt'), true);
       }
       assert.equal((await store.setExecutionBoundaryKind('session-1', 'managed')).revision, 3);
+    } finally {
+      store.close();
+    }
+  });
+
+  test('restores an unnamed managed profile after a temporary Bypass boundary', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(212) });
+    const { name: _name, ...unnamedProfile } = createWorkspaceWritePermissionProfile();
+    try {
+      await store.importEntries([
+        {
+          header: fullHeader(),
+          initialBoundary: { kind: 'managed', profile: unnamedProfile, revision: 0 },
+          source: {
+            path: '/workspace/sessions/session-1/session.jsonl',
+            fingerprint: 'unnamed-profile',
+          },
+        },
+      ]);
+
+      await store.setExecutionBoundaryKind('session-1', 'bypass');
+      const restored = await store.setExecutionBoundaryKind('session-1', 'managed');
+
+      assert.equal(restored.kind, 'managed');
+      if (restored.kind === 'managed') assert.deepEqual(restored.profile, unnamedProfile);
     } finally {
       store.close();
     }
