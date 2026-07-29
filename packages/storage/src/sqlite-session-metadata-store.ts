@@ -121,6 +121,7 @@ export interface IdempotentAgentGraphOperatorMetadataResult
 
 export interface SessionMetadataImportEntry {
   header: SessionHeader;
+  initialBoundary?: ExecutionBoundary;
   source: {
     path: string;
     fingerprint: string;
@@ -1808,7 +1809,18 @@ export class SqliteSessionMetadataStore {
         throw new Error(`Duplicate session metadata import source: ${entry.source.path}`);
       }
       sourcePaths.add(entry.source.path);
-      return { header, source: entry.source };
+      return {
+        header,
+        ...(entry.initialBoundary
+          ? {
+              initialBoundary: {
+                ...decodeExecutionBoundary(entry.initialBoundary),
+                revision: 0,
+              },
+            }
+          : {}),
+        source: entry.source,
+      };
     });
     return this.transaction(() => {
       const created: boolean[] = [];
@@ -1843,6 +1855,17 @@ export class SqliteSessionMetadataStore {
               `Session metadata import conflict for ${entry.header.id}`,
             );
           }
+          if (
+            entry.initialBoundary &&
+            !isDeepStrictEqual(
+              this.readCurrentExecutionBoundarySync(entry.header.id),
+              entry.initialBoundary,
+            )
+          ) {
+            throw new SessionMetadataConflictError(
+              `Session execution boundary import conflict for ${entry.header.id}`,
+            );
+          }
           if (entry.header.subagentSpawn) {
             this.assertMatchingSubagentSpawnClaim(entry.header);
           }
@@ -1857,7 +1880,7 @@ export class SqliteSessionMetadataStore {
             }
             this.assertMatchingSubagentSpawnClaim(entry.header);
           }
-          this.insertHeader(entry.header, 1, this.now());
+          this.insertHeader(entry.header, 1, this.now(), entry.initialBoundary);
           created.push(true);
         }
         this.db
