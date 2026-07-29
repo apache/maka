@@ -105,6 +105,8 @@ export interface SessionsIpcDeps {
     setStopHandler(handler: (sessionId: string) => void): void;
     clearForSession(sessionId: string): void;
   };
+  /** Picture-in-picture mirror of the driven window; torn down with its session. */
+  computerUsePip?: { clearForSession(sessionId: string): void };
   clearSkillHost?: (sessionId: string) => void;
   stopAgentGraph?: (sessionId: string) => Promise<void>;
   notifyAgentGraphPermissionResponse?: (sessionId: string) => void;
@@ -209,6 +211,7 @@ export function registerSessionsIpc(
     ensureSessionCanSend,
     prepareSkillInvocation,
     invalidateSessionBindings,
+    computerUsePip,
     computerUseStatusItem,
     clearSkillHost,
     stopAgentGraph,
@@ -230,6 +233,8 @@ export function registerSessionsIpc(
   });
   const removeSession = async (sessionId: string): Promise<void> => {
     computerUseOverlay.clearForSession(sessionId);
+    // The mirror is per-session too, and dies with it.
+    computerUsePip?.clearForSession(sessionId);
     computerUseTools.clearSession(sessionId);
     await goalWiring.removeSession(sessionId, () => runtime.remove(sessionId));
     invalidateSessionBindings?.(sessionId);
@@ -368,6 +373,7 @@ export function registerSessionsIpc(
   });
   async function stopSession(sessionId: string, input?: { source?: 'stop_button' }): Promise<void> {
     computerUseOverlay.clearForSession(sessionId);
+    computerUsePip?.clearForSession(sessionId);
     computerUseTools.clearSession(sessionId);
     await stopAgentGraph?.(sessionId);
     computerUseStatusItem?.clearForSession(sessionId);
@@ -531,6 +537,7 @@ export function registerSessionsIpc(
   ipcMain.handle('sessions:archive', async (_event, sessionId: string, options?: unknown) => {
     for (const id of await resolveSessionActionIds(runtime, sessionId, options)) {
       computerUseOverlay.clearForSession(id);
+      computerUsePip?.clearForSession(id);
       computerUseTools.clearSession(id);
       computerUseStatusItem?.clearForSession(id);
       computerUseStatusItem?.clearForSession(id);

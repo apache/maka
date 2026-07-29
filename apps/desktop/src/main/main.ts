@@ -666,6 +666,7 @@ const {
   computerUse,
   computerUseOverlay,
   computerUseStatusItem,
+  computerUsePip,
   computerUseTools,
   agentTeamLeadTools,
   desktopProductToolSurface,
@@ -673,6 +674,7 @@ const {
   childAgentTools,
   sandboxDiagnosticsProvider,
 } = assembleDesktopTools({
+  mainWindow: mainWindowController,
   isComputerUseRealModelE2e,
   workspaceRoot,
   taskLedgerStore,
@@ -708,6 +710,7 @@ const desktopBackendToolSurfaceDeps = {
 onMainWindowClose = () => {
   computerUseOverlay.destroyAll();
   computerUseStatusItem.destroy();
+  computerUsePip.destroyAll();
 };
 const systemPromptService = createSystemPromptMainService({
   settingsStore,
@@ -1090,6 +1093,7 @@ function registerIpc(): void {
     automationManager: automationWiring.manager,
     computerUseOverlay,
     computerUseStatusItem,
+    computerUsePip,
     computerUseTools,
     artifactStore,
     attachmentApprovals,

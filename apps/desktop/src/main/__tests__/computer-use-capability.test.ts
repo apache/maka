@@ -30,13 +30,20 @@ describe('Desktop Computer Use production wiring', () => {
     assert.match(main, /sessions:archive[\s\S]*computerUseOverlay\.clearForSession/);
     assert.match(main, /const removeSession[\s\S]*computerUseTools\.clearSession/);
     assert.match(main, /const removeSession[\s\S]*computerUseOverlay\.clearForSession/);
+    // The mirror is per-session too, and dies with it.
+    assert.match(main, /const removeSession[\s\S]*computerUsePip\?\.clearForSession/);
     assert.match(main, /sessions:remove[\s\S]*await removeSession/);
     assert.match(main, /isTurnStatusChangingSessionEvent[\s\S]*computerUseTools\.clearSession/);
     assert.match(main, /catch \(error\)[\s\S]*computerUseTools\.clearSession/);
     assert.match(main, /Promise\.allSettled\(\[[\s\S]*computerUse\.backend\?\.dispose/);
     assert.match(main, /Promise\.allSettled\(\[[\s\S]*computerUseOverlay\.destroyAll/);
     assert.match(main, /window-all-closed[\s\S]*computerUseOverlay\.destroyAll/);
-    assert.match(main, /onMainWindowClose = \(\) => computerUseOverlay\.destroyAll/);
+    // Closing the last window must tear down every surface Computer Use puts
+    // on screen, not just the cursor: a status item or a mirror that outlives
+    // the window it reports on is a thing the user cannot explain or dismiss.
+    assert.match(main, /onMainWindowClose = \(\) => \{[\s\S]*computerUseOverlay\.destroyAll/);
+    assert.match(main, /onMainWindowClose = \(\) => \{[\s\S]*computerUseStatusItem\.destroy/);
+    assert.match(main, /onMainWindowClose = \(\) => \{[\s\S]*computerUsePip\.destroyAll/);
   });
 
   it('reports scoped approval and live service health instead of binary-only healthy', async () => {

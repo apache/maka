@@ -60,6 +60,8 @@ export interface CuaDriverServiceOptions {
   expectedServerVersion?: string;
   expectedProtocolVersion?: string;
   onRelease?: (event: CuaDriverReleaseEvent) => void;
+  /** The driver's own agent cursor could not be suppressed; ours is not the only one drawn. */
+  onCursorSuppressionFailed?: (event: { role: CuaDriverRole; reason: string }) => void;
 }
 
 interface PendingRequest {
@@ -335,7 +337,7 @@ export class CuaDriverService {
       // multi-monitor setup. Best-effort: this is presentation, and failing to
       // turn it off is not a reason to refuse to start.
       try {
-        await this.request(
+        const cursorOff = await this.request(
           'tools/call',
           {
             name: 'set_agent_cursor_enabled',
@@ -343,8 +345,18 @@ export class CuaDriverService {
           },
           { timeoutMs, retrySafe: true },
         );
-      } catch {
-        // An older driver may not expose this tool; the cursor is cosmetic.
+        // A tool that answers with isError does not throw, so silence here
+        // would look identical to success. The cursor is cosmetic and must not
+        // fail the handshake — but a cursor we believe is off while it is
+        // actually drawing on the user's screen is worth a line in the log.
+        if (cursorOff.error || cursorOff.result?.isError) {
+          this.noteCursorSuppressionFailed(
+            cursorOff.error?.message ?? 'set_agent_cursor_enabled returned isError',
+          );
+        }
+      } catch (error) {
+        // An older driver may not expose this tool at all.
+        this.noteCursorSuppressionFailed(error instanceof Error ? error.message : String(error));
       }
       this.assertActive();
       this.state = 'ready';
@@ -713,6 +725,18 @@ export class CuaDriverService {
    * Best-effort by construction: it runs on a process that is already going
    * away, so nothing here may block or throw into disposal.
    */
+  /**
+   * Record that the driver's own agent cursor could not be turned off.
+   *
+   * Maka draws its own cursor, so the driver's is a duplicate — and it is
+   * positioned from the driver's geometry, which has been observed landing on
+   * the wrong display in a multi-monitor setup. Leaving one drawn on the user's
+   * screen with no way to notice is the failure mode this exists to surface.
+   */
+  private noteCursorSuppressionFailed(reason: string): void {
+    this.opts.onCursorSuppressionFailed?.({ role: this.opts.role, reason });
+  }
+
   private endSessionBestEffort(): void {
     const child = this.child;
     if (!child) return;

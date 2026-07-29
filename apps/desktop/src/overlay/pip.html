@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'self'"
+    />
+    <title>Computer Use</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        /* Maka's action token, matching the agent cursor. */
+        --accent: rgb(73 126 247);
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: transparent;
+        font: 500 11px/1.4 -apple-system, BlinkMacSystemFont, sans-serif;
+        -webkit-user-select: none;
+        cursor: default;
+      }
+      #shell {
+        position: absolute;
+        inset: 0;
+        border-radius: 8px;
+        overflow: hidden;
+        background: rgb(22 22 24);
+        box-shadow:
+          0 0 0 0.5px rgb(255 255 255 / 0.14),
+          0 10px 30px rgb(0 0 0 / 0.45);
+      }
+      #frame {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        /* A newly-arrived frame should not flash; the mirror is peripheral. */
+        transition: opacity 120ms ease-out;
+      }
+      /* The agent cursor's position inside the mirrored window. Drawn as a dot
+         rather than the full glyph: at mirror scale the arrow would be a few
+         pixels of noise, while a dot still answers "where is it working". */
+      #cursor {
+        position: absolute;
+        /* Scales with the mirror: fixed at 11px it was 2.6% of a 420pt tile
+           but 5.5% of Codex's 200pt default, which reads as a blob rather
+           than a pointer. Driven from JS as a fraction of the shorter edge. */
+        width: var(--dot, 7px);
+        height: var(--dot, 7px);
+        margin: calc(var(--dot, 7px) / -2) 0 0 calc(var(--dot, 7px) / -2);
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow:
+          0 0 0 1.5px rgb(255 255 255 / 0.9),
+          0 1px 3px rgb(0 0 0 / 0.5);
+        opacity: 0;
+        transition:
+          left 180ms ease-out,
+          top 180ms ease-out,
+          opacity 140ms ease-out;
+        pointer-events: none;
+      }
+      #cursor[data-visible='1'] {
+        opacity: 1;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="shell">
+      <img id="frame" alt="" />
+      <div id="cursor"></div>
+    </div>
+    <script src="./pip.js" type="module"></script>
+  </body>
+</html>

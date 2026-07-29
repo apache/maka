@@ -31,6 +31,10 @@ import {
   withComputerUseStatusItem,
 } from './computer-use/status-item.js';
 import {
+  createComputerUsePipController,
+  withComputerUsePip,
+} from './computer-use/pip-window.js';
+import {
   applyComputerUseRealModelPolicy,
   parseComputerUseRealModelPolicy,
 } from './computer-use-real-model-policy.js';
@@ -66,6 +70,16 @@ export interface DesktopToolAssemblyDeps {
   snapshotReadImage: ToolArtifactPersistence['snapshotReadImage'];
   readArchivedToolResultResource: ToolArtifactPersistence['readArchivedToolResultResource'];
   getWorkspacePrivacyContext: () => Promise<WorkspacePrivacyContext>;
+  /**
+   * The app window, so the Computer Use mirror can anchor to it and follow it.
+   * Codex's PiP tiles anchor 24pt inside their own window's rect and move with
+   * it; pinning to a screen corner leaves the mirror behind whenever the user
+   * drags the app to another display.
+   */
+  mainWindow?: {
+    windowBounds(): { x: number; y: number; width: number; height: number } | undefined;
+    onWindowGeometryChanged(cb: () => void): () => void;
+  };
   resolveDesktopSkillHost: HostCapabilitiesResolver;
 }
 
@@ -95,6 +109,7 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     readArchivedToolResultResource,
     getWorkspacePrivacyContext,
     resolveDesktopSkillHost,
+    mainWindow,
   } = deps;
 
   const sandboxManager = createBuiltinSandboxManager();
@@ -138,6 +153,16 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
   // cursor, which stays hidden whenever the window being driven is covered by
   // something else.
   const computerUseStatusItem = createComputerUseStatusItem();
+  // Mirrors the driven window so background work is watchable at all — the
+  // cursor can only be seen when its target is.
+  const computerUsePip = createComputerUsePipController(
+    mainWindow
+      ? {
+          resolveAnchorRect: () => mainWindow.windowBounds(),
+          subscribeAnchorChanges: (cb) => mainWindow.onWindowGeometryChanged(cb),
+        }
+      : {},
+  );
   const computerUseHost = createComputerUseHost({
     isPackaged: app.isPackaged,
     resourcesPath: process.resourcesPath,
@@ -169,9 +194,12 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
           },
         }
       : {}),
-    overlay: withComputerUseStatusItem(
-      createComputerUseOverlayHook(computerUseOverlay),
-      computerUseStatusItem,
+    overlay: withComputerUsePip(
+      withComputerUseStatusItem(
+        createComputerUseOverlayHook(computerUseOverlay),
+        computerUseStatusItem,
+      ),
+      computerUsePip,
     ),
   });
   const computerUse = computerUseHost.selected;
@@ -296,6 +324,7 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     computerUse,
     computerUseOverlay,
     computerUseStatusItem,
+    computerUsePip,
     computerUseTools,
     agentTeamLeadTools,
     desktopProductToolSurface,

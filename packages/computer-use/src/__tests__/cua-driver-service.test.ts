@@ -72,6 +72,23 @@ process.stdin.on('data', (chunk) => {
       reply(message.id, MODE === 'config_error' ? { isError: true } : {});
       continue;
     }
+    if (name === 'set_agent_cursor_enabled') {
+      // An older driver answers an unknown tool with a JSON-RPC error, not by
+      // going silent — silence would be a hung child, which the transport is
+      // right to kill regardless of which tool caused it.
+      if (MODE === 'cursor_unsupported') {
+        process.stdout.write(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: message.id,
+            error: { code: -32601, message: 'Unknown tool: set_agent_cursor_enabled' },
+          }) + '\n',
+        );
+        continue;
+      }
+      reply(message.id, MODE === 'cursor_error' ? { isError: true } : {});
+      continue;
+    }
     if (name === 'exit_busy') {
       process.exit(19);
     }
@@ -138,6 +155,7 @@ function service(
     maxRestartAttempts?: number;
     restartBackoffMs?: number;
     onRelease?: (event: CuaDriverReleaseEvent) => void;
+    onCursorSuppressionFailed?: (event: { role: string; reason: string }) => void;
   } = {},
 ) {
   const logPath = join(directory, `log-${crypto.randomUUID()}.ndjson`);
@@ -152,6 +170,9 @@ function service(
       handshakeTimeoutMs: options.handshakeTimeoutMs ?? 10_000,
       maxRestartAttempts: options.maxRestartAttempts ?? 2,
       restartBackoffMs: options.restartBackoffMs ?? 1,
+      ...(options.onCursorSuppressionFailed
+        ? { onCursorSuppressionFailed: options.onCursorSuppressionFailed }
+        : {}),
       childEnv: {
         ...process.env,
         CUA_SERVICE_LOG: logPath,
@@ -345,5 +366,39 @@ describe('cua-driver service lifecycle', () => {
     const { instance } = service('config_error');
     await assert.rejects(instance.callTool('ok', {}), /start_session/i);
     assert.notEqual(instance.snapshot().state, 'ready');
+  });
+
+  it('reports a cursor that could not be suppressed, and still starts', async () => {
+    // Declaring a session gives it a driver-drawn cursor, and only this call
+    // takes it away. Maka draws its own, so a failure here means two cursors —
+    // and the driver's is placed from its own geometry, which has been seen
+    // landing on the wrong display. Too cosmetic to fail a handshake over, too
+    // visible to swallow: an isError reply does not throw, so without this the
+    // failure would look exactly like success.
+    const events: Array<{ role: string; reason: string }> = [];
+    const { instance } = service('cursor_error', {
+      onCursorSuppressionFailed: (event) => events.push(event),
+    });
+    const result = await instance.callTool('ok', {});
+    assert.equal(result?.structuredContent?.ok, true, 'the session still works');
+    assert.equal(instance.snapshot().state, 'ready');
+    assert.equal(events.length, 1);
+    assert.equal(events[0]!.role, 'action');
+    assert.match(events[0]!.reason, /isError/i);
+  });
+
+  it('reports a driver too old to expose the cursor switch', async () => {
+    // A driver without this tool answers with a JSON-RPC error. The session is
+    // perfectly usable; it just has a cursor we could not turn off, and the
+    // host deserves to know which of the two on screen is not ours.
+    const events: Array<{ role: string; reason: string }> = [];
+    const { instance } = service('cursor_unsupported', {
+      onCursorSuppressionFailed: (event) => events.push(event),
+    });
+    const result = await instance.callTool('ok', {});
+    assert.equal(result?.structuredContent?.ok, true, 'an old driver still works');
+    assert.equal(instance.snapshot().state, 'ready');
+    assert.equal(events.length, 1);
+    assert.match(events[0]!.reason, /unknown tool/i);
   });
 });

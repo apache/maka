@@ -30,6 +30,15 @@ export interface MainWindowController {
   disposeBrowserViews(): Promise<void>;
   hasOpenWindows(): boolean;
   focus(): void;
+  /**
+   * The app window's screen rect, for surfaces that position themselves
+   * against it (the Computer Use mirror anchors to it and follows it, the way
+   * Codex's PiP tiles anchor to the Codex window). Undefined when there is no
+   * window.
+   */
+  windowBounds(): Electron.Rectangle | undefined;
+  /** Subscribe to app-window moves and resizes; returns an unsubscribe. */
+  onWindowGeometryChanged(cb: () => void): () => void;
   /** Whether the main window currently holds OS focus. False when the
    * window is gone, minimized to the point of losing focus, or another
    * app is in front — used to gate "notify only while unfocused". */
@@ -448,6 +457,31 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     disposeBrowserViews,
     hasOpenWindows() {
       return mainWindow !== null && !mainWindow.isDestroyed();
+    },
+    windowBounds() {
+      return mainWindow && !mainWindow.isDestroyed() ? mainWindow.getBounds() : undefined;
+    },
+    onWindowGeometryChanged(cb: () => void) {
+      const listeners: Array<() => void> = [];
+      const attach = (): void => {
+        const w = mainWindow;
+        if (!w || w.isDestroyed()) return;
+        // 'move' and 'resize' fire continuously during a drag; the consumer is
+        // repositioning a small window, which is cheap enough not to debounce.
+        w.on('move', cb);
+        w.on('resize', cb);
+        listeners.push(() => {
+          if (!w.isDestroyed()) {
+            w.off('move', cb);
+            w.off('resize', cb);
+          }
+        });
+      };
+      attach();
+      return () => {
+        for (const off of listeners) off();
+        listeners.length = 0;
+      };
     },
     focus() {
       // ChatGPT Pro review P2: second-instance / activate must not show() the

@@ -142,6 +142,15 @@ export interface CuaDriverBackendOptions {
   maxRestartAttempts?: number;
   /** Initial exponential backoff between lazy-start attempts. */
   restartBackoffMs?: number;
+  /**
+   * The driver's own agent cursor could not be turned off.
+   *
+   * Maka draws its own, so the driver's is a duplicate positioned from the
+   * driver's geometry — which has been seen landing on the wrong display in a
+   * multi-monitor setup. Cosmetic enough not to fail a handshake over, not so
+   * cosmetic that it should fail silently onto the user's screen.
+   */
+  onCursorSuppressionFailed?: (event: { role: 'action' | 'capture'; reason: string }) => void;
   /** Optional pinned executable hash; verified before every spawn. */
   expectedBinarySha256?: string;
   expectedServerName?: string;
@@ -613,6 +622,9 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
       ? {}
       : { expectedProtocolVersion: opts.expectedProtocolVersion }),
     onRelease: onServiceRelease,
+    ...(opts.onCursorSuppressionFailed
+      ? { onCursorSuppressionFailed: opts.onCursorSuppressionFailed }
+      : {}),
   });
   const captureClient = new CuaDriverService({
     role: 'capture',
@@ -641,6 +653,9 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
       ? {}
       : { expectedProtocolVersion: opts.expectedProtocolVersion }),
     onRelease: onServiceRelease,
+    ...(opts.onCursorSuppressionFailed
+      ? { onCursorSuppressionFailed: opts.onCursorSuppressionFailed }
+      : {}),
   });
 
   function trace(event: CuaDriverTraceEvent): void {
