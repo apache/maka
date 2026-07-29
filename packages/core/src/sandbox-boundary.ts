@@ -240,24 +240,25 @@ export function applySandboxBoundaryExpansion(
   base: SandboxProfile,
   expansion: SandboxBoundaryExpansion,
 ): SandboxProfile {
-  if (base.fileSystem.kind === 'unrestricted') return base;
-
-  const filesystemEntries = [
-    ...base.fileSystem.entries,
-    ...(expansion.filesystem?.entries ?? []).map((entry) => ({
-      kind: 'path' as const,
-      access: entry.access,
-      path: entry.path,
-      match: entry.scope satisfies FileSystemPathMatch,
-    })),
-  ];
+  const fileSystem =
+    base.fileSystem.kind === 'unrestricted'
+      ? base.fileSystem
+      : {
+          ...base.fileSystem,
+          entries: [
+            ...base.fileSystem.entries,
+            ...(expansion.filesystem?.entries ?? []).map((entry) => ({
+              kind: 'path' as const,
+              access: entry.access,
+              path: entry.path,
+              match: entry.scope satisfies FileSystemPathMatch,
+            })),
+          ],
+        };
 
   return {
     ...base,
-    fileSystem: {
-      ...base.fileSystem,
-      entries: filesystemEntries,
-    },
+    fileSystem,
     network: expansion.network?.enabled ? { kind: 'enabled' } : base.network,
   };
 }
@@ -296,7 +297,7 @@ function profileContainsExpansion(
         accessCovers(existing.access, requested.access) &&
         resolvedEntryRoots(existing, context).some((root) =>
           requested.scope === 'exact'
-            ? pathWithinRoot(requested.path, root.path)
+            ? pathCoveredByRoot(requested.path, root)
             : root.scope === 'subtree' && pathWithinRoot(requested.path, root.path),
         ),
     ),

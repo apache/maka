@@ -80,6 +80,21 @@ describe('SandboxBoundaryExpansion', () => {
     expect(result.network.kind).toBe('enabled');
   });
 
+  test('enables network when filesystem access is already unrestricted', () => {
+    const base: PermissionProfileManaged = {
+      type: 'managed',
+      name: 'custom',
+      fileSystem: { kind: 'unrestricted', entries: [] },
+      network: { kind: 'restricted' },
+    };
+
+    const result = applySandboxBoundaryExpansion(base, {
+      network: { enabled: true },
+    });
+
+    expect(result.network.kind).toBe('enabled');
+  });
+
   test('distinguishes a new expansion, an approved no-op, and an explicit-deny conflict', () => {
     const base: PermissionProfileManaged = {
       type: 'managed',
@@ -113,6 +128,26 @@ describe('SandboxBoundaryExpansion', () => {
         },
       }),
     ).toEqual({ outcome: 'conflict', reason: 'explicit_deny' });
+  });
+
+  test('does not treat a child of an exact path grant as already approved', () => {
+    const base: PermissionProfileManaged = {
+      type: 'managed',
+      name: 'custom',
+      fileSystem: {
+        kind: 'restricted',
+        entries: [{ kind: 'path', access: 'read', path: '/outside', match: 'exact' }],
+      },
+      network: { kind: 'restricted' },
+    };
+
+    const assessment = assessSandboxBoundaryExpansion(base, {
+      filesystem: {
+        entries: [{ path: '/outside/child', access: 'read', scope: 'exact' }],
+      },
+    });
+
+    expect(assessment.outcome).toBe('apply');
   });
 });
 
