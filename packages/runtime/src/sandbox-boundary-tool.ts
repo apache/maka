@@ -1,35 +1,8 @@
 import type { SandboxBoundaryExpansion, SandboxBoundarySettlement } from '@maka/core';
 import { z } from 'zod';
 
+import { sandboxBoundaryExpansionSchema } from './sandbox-boundary-declaration.js';
 import type { MakaTool } from './tool-runtime.js';
-
-const filesystemEntrySchema = z
-  .object({
-    path: z.string().min(1),
-    access: z.enum(['read', 'write']),
-    scope: z.enum(['exact', 'subtree']),
-  })
-  .strict();
-
-const expansionSchema = z
-  .object({
-    filesystem: z
-      .object({
-        entries: z.array(filesystemEntrySchema).min(1).max(32),
-      })
-      .strict()
-      .optional(),
-    network: z
-      .object({
-        enabled: z.literal(true),
-      })
-      .strict()
-      .optional(),
-  })
-  .strict()
-  .refine((value) => value.filesystem !== undefined || value.network !== undefined, {
-    message: 'At least one sandbox boundary expansion is required',
-  });
 
 export function buildRequestSandboxBoundaryTool(): MakaTool<
   { expansion: SandboxBoundaryExpansion; justification: string },
@@ -41,7 +14,7 @@ export function buildRequestSandboxBoundaryTool(): MakaTool<
       'Request the smallest session sandbox boundary expansion needed to retry a local tool that returned sandbox_boundary_required.',
     parameters: z
       .object({
-        expansion: expansionSchema,
+        expansion: sandboxBoundaryExpansionSchema,
         justification: z.string().min(1),
       })
       .strict(),

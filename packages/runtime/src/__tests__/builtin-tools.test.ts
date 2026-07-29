@@ -264,7 +264,7 @@ describe('builtin Bash streaming output', () => {
     );
   });
 
-  test('Bash schema exposes only explicit background execution', () => {
+  test('Bash schema exposes explicit background execution and boundary declarations', () => {
     const bash = buildBuiltinTools({
       shellRuns: {
         runForegroundBash: () => Promise.reject(new Error('not used')),
@@ -293,6 +293,12 @@ describe('builtin Bash streaming output', () => {
         sandbox_permissions: { mode: 'use_default' },
       }).success,
     ).toBe(false);
+    expect(
+      parameters.safeParse({
+        command: 'curl https://example.com',
+        required_boundary: { network: { enabled: true } },
+      }).success,
+    ).toBe(true);
   });
 
   test('background-capable Bash stays foreground unless explicitly requested', async () => {
@@ -693,6 +699,79 @@ describe('builtin Bash streaming output', () => {
     expect(calls[0]?.fdInputs).toBe(undefined);
     expect(Boolean(calls[0]?.shell)).toBe(true);
     expect(calls[0]?.sandboxType).toBe(undefined);
+  });
+
+  test('requires an approved network expansion before declared Bash network access', async () => {
+    const calls: any[] = [];
+    const shellRuns: ShellRunLauncher = {
+      async runForegroundBash(input) {
+        calls.push(input);
+        return {
+          kind: 'terminal',
+          cwd: input.cwd,
+          cmd: input.command,
+          status: 'completed',
+          exitCode: 0,
+          output: {
+            mode: 'pipes',
+            stdout: 'network',
+            stderr: '',
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            redacted: false,
+          },
+        };
+      },
+      async runBackgroundBash() {
+        throw new Error('not used');
+      },
+    };
+    const bash = buildBuiltinTools({
+      shellRuns,
+      sandboxManager: availableLinuxManager(),
+      sandboxPlatform: 'linux',
+    }).find((candidate) => candidate.name === 'Bash');
+    if (!bash) throw new Error('Bash tool missing');
+    const args = {
+      command: 'curl https://example.com',
+      required_boundary: { network: { enabled: true as const } },
+    };
+    const context = {
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      toolCallId: 'tool-1',
+      cwd: '/workspace',
+      permissionMode: 'ask' as const,
+      abortSignal: new AbortController().signal,
+      emitOutput: () => {},
+      executionBoundary: {
+        kind: 'managed' as const,
+        revision: 0,
+        profile: createWorkspaceWritePermissionProfile(),
+      },
+    };
+
+    await assert.rejects(
+      async () => await bash.impl(args as never, context),
+      (error: unknown) =>
+        error instanceof SandboxCommandError &&
+        error.reason === 'sandbox_boundary_required' &&
+        (error as SandboxCommandError & { requiredExpansion?: { network?: { enabled?: boolean } } })
+          .requiredExpansion?.network?.enabled === true,
+    );
+    expect(calls).toHaveLength(0);
+
+    await bash.impl(args as never, {
+      ...context,
+      executionBoundary: {
+        ...context.executionBoundary,
+        revision: 1,
+        profile: applySandboxBoundaryExpansion(context.executionBoundary.profile, {
+          network: { enabled: true },
+        }),
+      },
+    });
+    expect(calls).toHaveLength(1);
   });
 
   test('fails closed when a required command sandbox is unavailable', async () => {

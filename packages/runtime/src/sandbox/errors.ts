@@ -44,6 +44,8 @@ export class SandboxCommandError extends Error implements SandboxErrorWithMetada
   readonly backend?: SandboxType;
   readonly recoverable: boolean;
   readonly profileName?: string;
+  readonly requestId?: string;
+  readonly requiredExpansion?: SandboxBoundaryExpansion;
 
   constructor(input: SandboxErrorMetadata & { message?: string }) {
     super(input.message ?? `Command sandbox failed: ${input.reason}.`);
@@ -54,6 +56,8 @@ export class SandboxCommandError extends Error implements SandboxErrorWithMetada
     this.backend = input.backend;
     this.recoverable = input.recoverable;
     this.profileName = input.profileName;
+    this.requestId = input.requestId;
+    this.requiredExpansion = input.requiredExpansion;
   }
 }
 

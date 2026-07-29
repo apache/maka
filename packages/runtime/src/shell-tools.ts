@@ -26,6 +26,10 @@ import {
 } from './shell-run-contract.js';
 import type { ChildFdInput } from './child-fd-input.js';
 import { bashToolResultToModelOutput } from './bash-model-output.js';
+import {
+  preflightDeclaredSandboxBoundary,
+  sandboxBoundaryExpansionSchema,
+} from './sandbox-boundary-declaration.js';
 
 export interface ForegroundBashExecuteInput {
   command: string;
@@ -154,6 +158,11 @@ export function buildManagedBashTool(
         timeout_ms: z.number().int().positive().max(MAX_SHELL_RUN_TIMEOUT_MS).optional(),
         run_in_background: z.boolean().optional(),
         pty: z.boolean().optional(),
+        required_boundary: sandboxBoundaryExpansionSchema
+          .optional()
+          .describe(
+            'Declare the exact filesystem or network sandbox authority this command requires. Do not infer it from command text.',
+          ),
       })
       .strict()
       .superRefine(({ timeout_ms, run_in_background, pty }, ctx) => {
@@ -181,7 +190,8 @@ export function buildManagedBashTool(
       }),
     toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     ...(options.executionFacts ? { executionFacts: options.executionFacts } : {}),
-    impl: async ({ command, timeout_ms, run_in_background, pty }, ctx) => {
+    impl: async ({ command, timeout_ms, run_in_background, pty, required_boundary }, ctx) => {
+      preflightDeclaredSandboxBoundary(required_boundary, ctx);
       const transformed = options.transformCommand?.({ command, pty: pty === true, ctx });
       const onCompletion = onceCompletion(transformed?.onCompletion);
       try {

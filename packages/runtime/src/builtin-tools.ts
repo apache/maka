@@ -56,6 +56,10 @@ import { buildArchiveReadTool } from './archive-read-tool.js';
 import type { ToolResultArchiveResourceReader } from './tool-result-archive-resource.js';
 import { normalizeSandboxBoundaryPath } from './sandbox-boundary-path.js';
 import type { FilesystemWorkerClient } from './filesystem-worker/client.js';
+import {
+  preflightDeclaredSandboxBoundary,
+  sandboxBoundaryExpansionSchema,
+} from './sandbox-boundary-declaration.js';
 
 // Generous wall-clock cap for the ripgrep-backed Grep tool. A search should be
 // near-instant; this only bounds a pathological hang now that the stream
@@ -609,11 +613,17 @@ function buildExecutorBashTool(
       .object({
         command: z.string().describe('The shell command to execute'),
         timeout_ms: z.number().int().positive().max(600_000).optional(),
+        required_boundary: sandboxBoundaryExpansionSchema
+          .optional()
+          .describe(
+            'Declare the exact filesystem or network sandbox authority this command requires. Do not infer it from command text.',
+          ),
       })
       .strict(),
     toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     executionFacts: executor.facts,
-    impl: async ({ command, timeout_ms }, ctx) => {
+    impl: async ({ command, timeout_ms, required_boundary }, ctx) => {
+      preflightDeclaredSandboxBoundary(required_boundary, ctx);
       const { cwd, abortSignal, emitOutput } = ctx;
       const timeout = timeout_ms ?? 120_000;
       const transformed = sandboxOptions.sandboxManager
