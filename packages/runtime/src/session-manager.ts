@@ -1112,18 +1112,16 @@ export class SessionManager {
       labels,
     });
     const next = await this.deps.store.readHeader(sessionId);
-    await this.deps.store.appendMessage(sessionId, {
-      type: 'system_note',
-      id: this.deps.newId(),
-      ts: this.deps.now(),
-      kind: 'mode_change',
-      data: { from: previous.permissionMode, to: mode },
-    } satisfies SystemNoteMessage);
-
     this.runtimeKernel.updateCachedHeader(sessionId, next);
-    // AiSdkBackend snapshots the header at construction time. Rebuild the
-    // backend before the next turn so it receives the new legacy-compatible mode.
-    await this.runtimeKernel.disposeBackend(sessionId);
+    await this.deps.store
+      .appendMessage(sessionId, {
+        type: 'system_note',
+        id: this.deps.newId(),
+        ts: this.deps.now(),
+        kind: 'mode_change',
+        data: { from: previous.permissionMode, to: mode },
+      } satisfies SystemNoteMessage)
+      .catch(() => undefined);
     return headerToSummary(next);
   }
 
@@ -1140,7 +1138,6 @@ export class SessionManager {
     }
     const current = await this.deps.store.readExecutionBoundary(sessionId);
     const boundary = await this.commitExecutionBoundaryTransition(sessionId, current, kind);
-    await this.runtimeKernel.disposeBackend(sessionId);
     return boundary;
   }
 
@@ -1159,6 +1156,10 @@ export class SessionManager {
         : undefined;
     let boundary: ExecutionBoundary;
     try {
+      // Backends snapshot boundary-related session state at construction time.
+      // Dispose before the authority commit so a disposal failure cannot leave
+      // callers observing a rejected transition that was already committed.
+      await this.runtimeKernel.disposeBackend(sessionId);
       boundary = await this.deps.store.setExecutionBoundaryKind(sessionId, kind, projection);
     } catch (error) {
       if (shellRunClose) this.deps.shellRuns?.rollbackSessionClose(shellRunClose);

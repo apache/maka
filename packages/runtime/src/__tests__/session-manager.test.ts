@@ -3798,6 +3798,23 @@ describe('SessionManager permission mode updates', () => {
     ]);
   });
 
+  test('reports the committed transition when the best-effort audit note fails', async () => {
+    const store = new AtomicBoundaryMemorySessionStore();
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(925),
+    });
+    const session = await manager.createSession(makeInput({ permissionMode: 'ask' }));
+    store.failAppends = true;
+
+    const summary = await manager.setPermissionMode(session.id, 'explore');
+
+    expect(summary.permissionMode).toBe('explore');
+    expect((await store.readExecutionBoundary(session.id)).kind).toBe('managed');
+  });
+
   test('routes generic permission updates through the boundary transition', async () => {
     const store = new AtomicBoundaryMemorySessionStore();
     const manager = new SessionManager({
@@ -18996,6 +19013,7 @@ class MemorySessionStore implements SessionStore {
 }
 
 class AtomicBoundaryMemorySessionStore extends MemorySessionStore {
+  failAppends = false;
   readonly boundaryCalls: Array<{
     sessionId: string;
     kind: 'managed' | 'bypass';
@@ -19059,6 +19077,11 @@ class AtomicBoundaryMemorySessionStore extends MemorySessionStore {
       throw new Error('permissionMode must be projected by the boundary transition');
     }
     return super.updateHeader(sessionId, patch);
+  }
+
+  override async appendMessage(sessionId: string, message: StoredMessage): Promise<void> {
+    if (this.failAppends) throw new Error('audit append failed');
+    return super.appendMessage(sessionId, message);
   }
 }
 
