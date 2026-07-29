@@ -61,6 +61,7 @@ export type MemoryQueryInput =
 
 export interface MemoryBackupProjection {
   readonly kind: MemoryBackupKind;
+  readonly revision: MemoryRevision;
   readonly updatedAt: number;
   readonly sizeBytes: number;
   readonly entryCount: number;
@@ -192,6 +193,7 @@ export type MemoryMutateInput =
       readonly kind: 'restore_backup';
       readonly expectedRevision: MemoryRevision;
       readonly backupKind: MemoryBackupKind;
+      readonly expectedBackupRevision: MemoryRevision;
     }
   | {
       readonly kind: 'replace_begin';
@@ -252,6 +254,12 @@ export type MemoryMutateResult =
     }
   | {
       readonly kind: 'revision_conflict';
+      readonly expectedRevision: MemoryRevision;
+      readonly actualRevision: MemoryRevision;
+    }
+  | {
+      readonly kind: 'backup_revision_conflict';
+      readonly backupKind: MemoryBackupKind;
       readonly expectedRevision: MemoryRevision;
       readonly actualRevision: MemoryRevision;
     }
@@ -458,6 +466,7 @@ export function decodeMemoryMutateInput(value: unknown): MemoryMutateInput {
         'kind',
         'expectedRevision',
         'backupKind',
+        'expectedBackupRevision',
       ]);
       return {
         kind: 'restore_backup',
@@ -466,6 +475,10 @@ export function decodeMemoryMutateInput(value: unknown): MemoryMutateInput {
           'expected Memory bundle revision',
         ),
         backupKind: requireBackupKind(exact.backupKind),
+        expectedBackupRevision: requireRevision(
+          exact.expectedBackupRevision,
+          'expected Memory backup revision',
+        ),
       };
     }
     case 'replace_begin': {
@@ -585,6 +598,23 @@ export function decodeMemoryMutateResult(value: unknown): MemoryMutateResult {
           'expected Memory bundle revision',
         ),
         actualRevision: requireRevision(exact.actualRevision, 'actual Memory bundle revision'),
+      };
+    }
+    case 'backup_revision_conflict': {
+      const exact = requireExactRecord(result, 'Memory backup revision conflict', [
+        'kind',
+        'backupKind',
+        'expectedRevision',
+        'actualRevision',
+      ]);
+      return {
+        kind: 'backup_revision_conflict',
+        backupKind: requireBackupKind(exact.backupKind),
+        expectedRevision: requireRevision(
+          exact.expectedRevision,
+          'expected Memory backup revision',
+        ),
+        actualRevision: requireRevision(exact.actualRevision, 'actual Memory backup revision'),
       };
     }
     case 'rejected': {
@@ -799,6 +829,7 @@ function decodeBackup(value: unknown): MemoryBackupProjection {
   const backup = requireRecord(value, 'Memory backup');
   const required = [
     'kind',
+    'revision',
     'updatedAt',
     'sizeBytes',
     'entryCount',
@@ -812,6 +843,7 @@ function decodeBackup(value: unknown): MemoryBackupProjection {
   }
   return {
     kind: requireBackupKind(backup.kind),
+    revision: requireRevision(backup.revision, 'Memory backup revision'),
     updatedAt: requireCount(backup.updatedAt, 'Memory backup timestamp'),
     sizeBytes: requireCount(backup.sizeBytes, 'Memory backup size'),
     entryCount: requireCount(backup.entryCount, 'Memory backup entry count'),

@@ -64,6 +64,29 @@ describe('local MEMORY.md contract', () => {
     assert.match(parsed.entries[1]?.content ?? '', /metadata/);
   });
 
+  it('treats only the first metadata comment in a section as authoritative', () => {
+    const parsed = parseLocalMemoryMarkdown(
+      [
+        '# Maka Memory',
+        '',
+        '## Canonical preference',
+        '<!-- maka-memory: id=canonical status=active scope=workspace -->',
+        'Keep this entry active.',
+        '<!-- maka-memory: id=shadow status=archived scope=session sessionId=other-session -->',
+        'Keep parsing content after the ignored metadata comment.',
+      ].join('\n'),
+    );
+
+    assert.equal(parsed.entries.length, 1);
+    assert.equal(parsed.entries[0]?.id, 'canonical');
+    assert.equal(parsed.entries[0]?.status, 'active');
+    assert.equal(parsed.entries[0]?.scope, 'workspace');
+    assert.equal(parsed.entries[0]?.sessionId, undefined);
+    assert.match(parsed.entries[0]?.content ?? '', /Keep this entry active/);
+    assert.match(parsed.entries[0]?.content ?? '', /Keep parsing content/);
+    assert.doesNotMatch(parsed.entries[0]?.content ?? '', /maka-memory|shadow/);
+  });
+
   it('parses V0.2 metadata fail-open and splits archived entries', () => {
     const parsed = parseLocalMemoryMarkdown(
       [

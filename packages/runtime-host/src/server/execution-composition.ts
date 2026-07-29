@@ -322,7 +322,7 @@ export async function createExecutionRuntimeHostComposition(
           errors.push(error);
         }
         try {
-          memory?.close();
+          await memory?.close();
         } catch (error) {
           errors.push(error);
         }

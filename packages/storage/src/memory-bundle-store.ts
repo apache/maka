@@ -9,6 +9,7 @@ import {
   isRevision,
   memoryBundleIoFailed,
   type CommitMemoryBundleInput,
+  MemoryBundleBackupRevisionConflictError,
   MemoryBundleBackupNotFoundError,
   type MemoryBackupSnapshot,
   type MemoryBundleMutationResult,
@@ -28,6 +29,7 @@ import { SerializedOperationLane } from './serialized-operation-lane.js';
 
 export {
   MEMORY_DOCUMENT_MAX_BYTES,
+  MemoryBundleBackupRevisionConflictError,
   MemoryBundleBackupNotFoundError,
   MemoryBundleRevisionConflictError,
   MemoryBundleStoreError,
@@ -197,10 +199,17 @@ function admitRestoreInput(input: RestoreMemoryBackupInput): RestoreMemoryBackup
   if (!isRevision(input.expectedRevision)) {
     throw invalidMemoryDocument('Expected Memory bundle revision must be SHA-256');
   }
+  if (!isRevision(input.expectedBackupRevision)) {
+    throw invalidMemoryDocument('Expected Memory backup revision must be SHA-256');
+  }
   if (input.kind !== 'save' && input.kind !== 'reset' && input.kind !== 'restore') {
     throw invalidMemoryDocument('Memory backup kind is invalid');
   }
-  return { expectedRevision: input.expectedRevision, kind: input.kind };
+  return {
+    expectedRevision: input.expectedRevision,
+    expectedBackupRevision: input.expectedBackupRevision,
+    kind: input.kind,
+  };
 }
 
 function requireCommitBackupKind(input: unknown): 'save' | 'reset' {
@@ -218,6 +227,7 @@ function rethrowMemoryStoreError(error: unknown): never {
   if (
     error instanceof MemoryBundleStoreError ||
     error instanceof MemoryBundleRevisionConflictError ||
+    error instanceof MemoryBundleBackupRevisionConflictError ||
     error instanceof MemoryBundleBackupNotFoundError ||
     error instanceof StorageRootAuthorityError
   ) {

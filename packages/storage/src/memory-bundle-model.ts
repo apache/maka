@@ -34,6 +34,7 @@ export interface MemoryBundleSnapshot {
 
 export interface MemoryBackupSnapshot {
   readonly kind: MemoryBackupKind;
+  readonly revision: MemoryRevision;
   readonly updatedAt: number;
   readonly document: Exclude<MemoryDocumentSnapshot, { kind: 'missing' }>;
 }
@@ -47,6 +48,7 @@ export interface CommitMemoryBundleInput {
 
 export interface RestoreMemoryBackupInput {
   readonly expectedRevision: MemoryRevision;
+  readonly expectedBackupRevision: MemoryRevision;
   readonly kind: MemoryBackupKind;
 }
 
@@ -93,6 +95,21 @@ export class MemoryBundleBackupNotFoundError extends Error {
   constructor(readonly kind: MemoryBackupKind) {
     super(`Memory backup not found: ${kind}`);
     this.name = 'MemoryBundleBackupNotFoundError';
+  }
+}
+
+export class MemoryBundleBackupRevisionConflictError extends Error {
+  readonly code = 'backup_revision_conflict';
+
+  constructor(
+    readonly kind: MemoryBackupKind,
+    readonly expectedRevision: MemoryRevision,
+    readonly actualRevision: MemoryRevision,
+  ) {
+    super(
+      `Memory ${kind} backup revision conflict: expected ${expectedRevision}, actual ${actualRevision}`,
+    );
+    this.name = 'MemoryBundleBackupRevisionConflictError';
   }
 }
 

@@ -691,7 +691,7 @@ function parseLocalMemoryMarkdownRaw(input: string): LocalMemoryRawParseResult {
     if (!current) continue;
     const meta = parseMetaComment(line);
     if (meta) {
-      current.meta = meta;
+      current.meta ??= meta;
       continue;
     }
     current.body.push(line);
@@ -833,8 +833,8 @@ function findLocalMemoryEntryFullSection(
     }
     if (!current) continue;
     const meta = parseMetaComment(line);
-    if (meta && !current.meta) {
-      current.meta = meta;
+    if (meta) {
+      current.meta ??= meta;
       continue;
     }
     current.body.push(line);

@@ -341,6 +341,8 @@ describe('Host Memory coordinator', () => {
         new Set(beforeRestore.backups.map((backup) => backup.kind)),
         new Set(['save', 'reset']),
       );
+      const resetBackup = beforeRestore.backups.find((backup) => backup.kind === 'reset');
+      assert.ok(resetBackup);
 
       const restored = await mutate(
         coordinator,
@@ -348,6 +350,7 @@ describe('Host Memory coordinator', () => {
           kind: 'restore_backup',
           expectedRevision: mutationRevision(reset),
           backupKind: 'reset',
+          expectedBackupRevision: resetBackup.revision,
         },
         context,
       );
@@ -360,6 +363,65 @@ describe('Host Memory coordinator', () => {
         new Set((await state(coordinator, context)).backups.map((backup) => backup.kind)),
         new Set(['save', 'reset', 'restore']),
       );
+    });
+  });
+
+  test('reports a stale backup candidate without restoring replacement content', async () => {
+    await withCoordinator(async ({ coordinator, memoryStore, context }) => {
+      await coordinator.recover();
+      const initial = await state(coordinator, context);
+      const remembered = await mutate(
+        coordinator,
+        {
+          kind: 'remember',
+          expectedRevision: initial.revision,
+          title: 'Current preference',
+          content: 'Keep the current candidate.',
+          scope: { kind: 'workspace' },
+        },
+        context,
+      );
+      assert.equal(remembered.kind, 'committed');
+
+      const selectedState = await state(coordinator, context);
+      const selected = selectedState.backups.find((backup) => backup.kind === 'save');
+      assert.ok(selected);
+      const snapshot = await memoryStore.read();
+      assert.equal(snapshot.memory.kind, 'document');
+      assert.notEqual(snapshot.pending.kind, 'safe_mode');
+      if (snapshot.memory.kind !== 'document' || snapshot.pending.kind === 'safe_mode') return;
+      const unchanged = await memoryStore.commit({
+        expectedRevision: snapshot.revision,
+        memory: snapshot.memory.bytes,
+        pending: snapshot.pending.kind === 'document' ? snapshot.pending.bytes : null,
+        backup: 'save',
+      });
+      assert.equal(unchanged.changed, false);
+
+      const currentState = await state(coordinator, context);
+      assert.equal(currentState.revision, selectedState.revision);
+      const replacement = currentState.backups.find((backup) => backup.kind === 'save');
+      assert.ok(replacement);
+      assert.notEqual(replacement.revision, selected.revision);
+      assert.deepEqual(
+        await mutate(
+          coordinator,
+          {
+            kind: 'restore_backup',
+            expectedRevision: selectedState.revision,
+            backupKind: 'save',
+            expectedBackupRevision: selected.revision,
+          },
+          context,
+        ),
+        {
+          kind: 'backup_revision_conflict',
+          backupKind: 'save',
+          expectedRevision: selected.revision,
+          actualRevision: replacement.revision,
+        },
+      );
+      assert.equal((await state(coordinator, context)).revision, selectedState.revision);
     });
   });
 
@@ -552,6 +614,66 @@ describe('Host Memory coordinator', () => {
         ok: false,
         error: { code: 'host_draining', message: 'Runtime Host is draining' },
       });
+      await coordinator.close();
+    });
+  });
+
+  test('drain preserves staged uploads until already accepted mutations settle', async () => {
+    await withCoordinator(async ({ coordinator, memoryStore, activation, context }) => {
+      await coordinator.recover();
+      const initial = await state(coordinator, context);
+      const bytes = Buffer.from('# Maka Memory\n\n## Accepted replacement\nCommit during drain.\n');
+      const opened = await mutate(
+        coordinator,
+        {
+          kind: 'replace_begin',
+          expectedRevision: initial.revision,
+          totalBytes: bytes.byteLength,
+          contentSha256: revision(bytes),
+        },
+        context,
+      );
+      assert.equal(opened.kind, 'upload_opened');
+      if (opened.kind !== 'upload_opened') return;
+      await mutate(
+        coordinator,
+        {
+          kind: 'replace_chunk',
+          uploadId: opened.uploadId,
+          offset: 0,
+          chunkBase64: bytes.toString('base64'),
+        },
+        context,
+      );
+
+      const blockerEntered = deferred<void>();
+      const releaseBlocker = deferred<void>();
+      const blocker = activation.runMutation(async () => {
+        blockerEntered.resolve();
+        await releaseBlocker.promise;
+      });
+      await blockerEntered.promise;
+      const acceptedCommit = mutate(
+        coordinator,
+        { kind: 'replace_commit', uploadId: opened.uploadId },
+        context,
+      );
+
+      coordinator.beginDrain();
+      assert.deepEqual(await coordinator.handlers['memory.query']({ kind: 'state' }, context), {
+        ok: false,
+        error: { code: 'host_draining', message: 'Runtime Host is draining' },
+      });
+      releaseBlocker.resolve();
+      await blocker;
+      assert.equal((await acceptedCommit).kind, 'committed');
+      await coordinator.close();
+
+      const snapshot = await memoryStore.read();
+      assert.equal(snapshot.memory.kind, 'document');
+      if (snapshot.memory.kind === 'document') {
+        assert.deepEqual(Buffer.from(snapshot.memory.bytes), bytes);
+      }
     });
   });
 });
@@ -563,6 +685,7 @@ async function withCoordinator(
     coordinator: HostMemoryCoordinator;
     memoryStore: Awaited<ReturnType<typeof openInteractiveMemoryBundleStoreForWrite>>;
     policyStores: PolicyStores;
+    activation: RuntimePolicyActivationGate;
     root: string;
     context: ConnectionContext;
   }) => Promise<void>,
@@ -584,14 +707,15 @@ async function withCoordinator(
   try {
     const policyStores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
     const memoryStore = await openInteractiveMemoryBundleStoreForWrite(owner.lease);
+    const activation = new RuntimePolicyActivationGate();
     const coordinator = new HostMemoryCoordinator({
       store: memoryStore,
       runtimePolicyStores: policyStores,
-      activation: new RuntimePolicyActivationGate(),
+      activation,
       newId: () => `upload-${++uploadSequence}`,
       now: () => 1_700_000_000_000 + uploadSequence,
     });
-    await run({ coordinator, memoryStore, policyStores, root, context });
+    await run({ coordinator, memoryStore, policyStores, activation, root, context });
   } finally {
     await owner.close();
     await rm(base, { recursive: true, force: true });
@@ -659,4 +783,14 @@ async function setIncognito(stores: PolicyStores, incognitoActive: boolean): Pro
 
 function revision(bytes: Uint8Array): `sha256:${string}` {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }

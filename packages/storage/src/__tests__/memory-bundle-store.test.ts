@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import {
+  MemoryBundleBackupRevisionConflictError,
   MemoryBundleRevisionConflictError,
   MemoryBundleBackupNotFoundError,
   MemoryBundleStoreError,
@@ -147,6 +148,7 @@ describe('interactive Memory bundle storage authority', () => {
       assert.equal(backups.length, 1);
       assert.equal(backups[0]?.kind, 'save');
       assert.equal(backups[0]?.document.kind, 'document');
+      assert.equal(backups[0]?.revision, revision(first));
       if (backups[0]?.document.kind === 'document') {
         assert.deepEqual(Buffer.from(backups[0].document.bytes), first);
       }
@@ -184,9 +186,12 @@ describe('interactive Memory bundle storage authority', () => {
         pending,
         backup: 'save',
       });
+      const saveBackup = (await store.listBackups()).find((backup) => backup.kind === 'save');
+      assert.ok(saveBackup);
 
       const restoredFirst = await store.restoreBackup({
         expectedRevision: secondCommit.snapshot.revision,
+        expectedBackupRevision: saveBackup.revision,
         kind: 'save',
       });
       assert.deepEqual(await readFile(memoryPath(root)), first);
@@ -195,9 +200,12 @@ describe('interactive Memory bundle storage authority', () => {
         await readFile(join(memoryDirectory(root), 'MEMORY.md.restore.bak')),
         second,
       );
+      const restoreBackup = (await store.listBackups()).find((backup) => backup.kind === 'restore');
+      assert.ok(restoreBackup);
 
       const restoredSecond = await store.restoreBackup({
         expectedRevision: restoredFirst.snapshot.revision,
+        expectedBackupRevision: restoreBackup.revision,
         kind: 'restore',
       });
       assert.deepEqual(await readFile(memoryPath(root)), second);
@@ -211,6 +219,7 @@ describe('interactive Memory bundle storage authority', () => {
       await assert.rejects(
         store.restoreBackup({
           expectedRevision: restoredSecond.snapshot.revision,
+          expectedBackupRevision: revision(Buffer.from('missing reset backup')),
           kind: 'reset',
         }),
         (error: unknown) =>
@@ -230,9 +239,12 @@ describe('interactive Memory bundle storage authority', () => {
       });
       const oversized = Buffer.alloc(128 * 1024 + 1, 0x61);
       await writeFile(join(memoryDirectory(root), 'MEMORY.md.bak'), oversized);
+      const saveBackup = (await store.listBackups()).find((backup) => backup.kind === 'save');
+      assert.ok(saveBackup);
 
       const restored = await store.restoreBackup({
         expectedRevision: current.snapshot.revision,
+        expectedBackupRevision: saveBackup.revision,
         kind: 'save',
       });
       assert.equal(restored.snapshot.memory.kind, 'safe_mode');
@@ -241,6 +253,55 @@ describe('interactive Memory bundle storage authority', () => {
         assert.equal(restored.snapshot.memory.byteLength, oversized.byteLength);
       }
       assert.deepEqual(await readFile(memoryPath(root)), oversized);
+    });
+  });
+
+  test('rejects a stale backup candidate even when the bundle revision is unchanged', async () => {
+    await withInteractiveOwner(async ({ root, owner }) => {
+      const store = await openInteractiveMemoryBundleStoreForWrite(owner.lease);
+      const initial = await store.read();
+      const first = Buffer.from('# First memory\n');
+      const firstCommit = await store.commit({
+        expectedRevision: initial.revision,
+        memory: first,
+        pending: null,
+      });
+      const second = Buffer.from('# Second memory\n');
+      const secondCommit = await store.commit({
+        expectedRevision: firstCommit.snapshot.revision,
+        memory: second,
+        pending: null,
+        backup: 'save',
+      });
+      const selected = (await store.listBackups()).find((backup) => backup.kind === 'save');
+      assert.ok(selected);
+      assert.equal(selected.revision, revision(first));
+
+      const unchanged = await store.commit({
+        expectedRevision: secondCommit.snapshot.revision,
+        memory: second,
+        pending: null,
+        backup: 'save',
+      });
+      assert.equal(unchanged.changed, false);
+      assert.equal(unchanged.snapshot.revision, secondCommit.snapshot.revision);
+      const replaced = (await store.listBackups()).find((backup) => backup.kind === 'save');
+      assert.ok(replaced);
+      assert.equal(replaced.revision, revision(second));
+
+      await assert.rejects(
+        store.restoreBackup({
+          expectedRevision: secondCommit.snapshot.revision,
+          expectedBackupRevision: selected.revision,
+          kind: 'save',
+        }),
+        (error: unknown) =>
+          error instanceof MemoryBundleBackupRevisionConflictError &&
+          error.kind === 'save' &&
+          error.expectedRevision === selected.revision &&
+          error.actualRevision === replaced.revision,
+      );
+      assert.deepEqual(await readFile(memoryPath(root)), second);
     });
   });
 

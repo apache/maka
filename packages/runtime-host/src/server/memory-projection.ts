@@ -89,6 +89,7 @@ function projectBackup(backup: MemoryBackupSnapshot) {
       : undefined;
   return {
     kind: backup.kind,
+    revision: backup.revision,
     updatedAt: boundedCount(backup.updatedAt),
     sizeBytes: backup.document.byteLength,
     entryCount: parsed?.entries.length ?? 0,

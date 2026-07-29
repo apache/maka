@@ -12,6 +12,7 @@ import {
   memoryBundleRecoveryConflict,
   missingDocument,
   MEMORY_DOCUMENT_MAX_BYTES,
+  MemoryBundleBackupRevisionConflictError,
   MemoryBundleBackupNotFoundError,
   MemoryBundleRevisionConflictError,
   MemoryBundleStoreError,
@@ -192,6 +193,14 @@ export async function restoreMemoryBackup(
   if (!directory) throw new MemoryBundleBackupNotFoundError(input.kind);
   const selected = await readBackupBytes(directory, input.kind);
   if (!selected) throw new MemoryBundleBackupNotFoundError(input.kind);
+  const selectedRevision = revision(selected);
+  if (selectedRevision !== input.expectedBackupRevision) {
+    throw new MemoryBundleBackupRevisionConflictError(
+      input.kind,
+      input.expectedBackupRevision,
+      selectedRevision,
+    );
+  }
 
   const currentBeforePublication = await readMemoryBundle(root);
   if (currentBeforePublication.revision !== input.expectedRevision) {
@@ -786,6 +795,7 @@ async function readBackupCandidate(
   const document = snapshotForBytes(bytes);
   return {
     kind,
+    revision: document.revision,
     updatedAt: Math.round(Number(metadata.mtimeMs)),
     document,
   };

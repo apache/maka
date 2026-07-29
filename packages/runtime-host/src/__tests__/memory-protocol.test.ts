@@ -40,6 +40,22 @@ describe('Memory protocol', () => {
         scope: { kind: 'session', sessionId: 'session-1' },
       }),
     );
+    assert.doesNotThrow(() =>
+      request('memory.mutate', {
+        kind: 'restore_backup',
+        expectedRevision: revision,
+        backupKind: 'save',
+        expectedBackupRevision: revision,
+      }),
+    );
+    assert.doesNotThrow(() =>
+      mutationResponse({
+        kind: 'backup_revision_conflict',
+        backupKind: 'save',
+        expectedRevision: revision,
+        actualRevision: `sha256:${'b'.repeat(64)}`,
+      }),
+    );
     assert.throws(
       () =>
         request('memory.mutate', {
@@ -171,6 +187,10 @@ function request(operation: 'memory.query' | 'memory.mutate', input: unknown): v
 
 function response(operation: 'memory.query', result: unknown): void {
   decodeHostFrame({ requestId: 'response', operation, ok: true, result });
+}
+
+function mutationResponse(result: unknown): void {
+  decodeHostFrame({ requestId: 'response', operation: 'memory.mutate', ok: true, result });
 }
 
 function failure(operation: 'memory.query' | 'memory.mutate', code: string): void {

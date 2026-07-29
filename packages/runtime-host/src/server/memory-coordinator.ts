@@ -15,6 +15,7 @@ import {
 import { redactSecrets } from '@maka/core/redaction';
 import {
   authenticateInteractiveMemoryBundleStoreWriter,
+  MemoryBundleBackupRevisionConflictError,
   MemoryBundleBackupNotFoundError,
   MemoryBundleRevisionConflictError,
   MemoryBundleStoreError,
@@ -87,8 +88,10 @@ export class HostMemoryCoordinator {
   readonly #now: () => number;
   readonly #newId: () => string;
   readonly #uploads = new Map<string, UploadState>();
+  readonly #acceptedMutations = new Set<Promise<void>>();
   #policyAccess: 'enabled' | 'disabled' | 'incognito_active' | undefined;
   #draining = false;
+  #uploadCleanupTask: Promise<void> | undefined;
 
   constructor(deps: HostMemoryCoordinatorDeps) {
     this.#store = authenticateInteractiveMemoryBundleStoreWriter(deps.store);
@@ -114,11 +117,14 @@ export class HostMemoryCoordinator {
   beginDrain(): void {
     if (this.#draining) return;
     this.#draining = true;
-    this.#uploads.clear();
+    this.#uploadCleanupTask = Promise.all([...this.#acceptedMutations]).then(() => {
+      this.#uploads.clear();
+    });
   }
 
-  close(): void {
+  async close(): Promise<void> {
     this.beginDrain();
+    await this.#uploadCleanupTask;
   }
 
   releaseConnection(connectionId: string): void {
@@ -189,21 +195,23 @@ export class HostMemoryCoordinator {
     context: ConnectionContext,
   ): Promise<OperationOutcome<'memory.mutate'>> {
     if (this.#draining) return hostDraining();
-    try {
-      return await this.#activation.runMutation(async () => {
-        try {
-          this.#sweepExpiredUploads();
-          const policy = await this.#runtimePolicyStores.runtimePolicy.getSnapshot();
-          const blocked = blockedByPolicy(policy.policy);
-          if (blocked) {
-            this.releaseConnection(context.connectionId);
-            return { ok: true, result: { kind: 'rejected', reason: blocked.reason } };
-          }
-          return await this.#mutateAllowed(input, context);
-        } catch (error) {
-          return await this.#mutationFailure(error);
+    const accepted = this.#activation.runMutation(async () => {
+      try {
+        this.#sweepExpiredUploads();
+        const policy = await this.#runtimePolicyStores.runtimePolicy.getSnapshot();
+        const blocked = blockedByPolicy(policy.policy);
+        if (blocked) {
+          this.releaseConnection(context.connectionId);
+          return { ok: true, result: { kind: 'rejected', reason: blocked.reason } } as const;
         }
-      });
+        return await this.#mutateAllowed(input, context);
+      } catch (error) {
+        return await this.#mutationFailure(error);
+      }
+    });
+    this.#trackAcceptedMutation(accepted);
+    try {
+      return await accepted;
     } catch (error) {
       if (error instanceof RuntimePolicyStoreError) return persistenceMutationFailure();
       throw error;
@@ -347,6 +355,7 @@ export class HostMemoryCoordinator {
       if (snapshot.pending.kind === 'safe_mode') return rejected('safe_mode');
       const result = await this.#store.restoreBackup({
         expectedRevision: input.expectedRevision,
+        expectedBackupRevision: input.expectedBackupRevision,
         kind: input.backupKind,
       });
       return { ok: true, result: projectMutationResult(result) };
@@ -469,6 +478,17 @@ export class HostMemoryCoordinator {
     if (error instanceof MemoryBundleBackupNotFoundError) {
       return rejected('backup_not_found');
     }
+    if (error instanceof MemoryBundleBackupRevisionConflictError) {
+      return {
+        ok: true,
+        result: {
+          kind: 'backup_revision_conflict',
+          backupKind: error.kind,
+          expectedRevision: error.expectedRevision,
+          actualRevision: error.actualRevision,
+        },
+      };
+    }
     if (error instanceof MemoryBundleRevisionConflictError) {
       return revisionConflict(error.expectedRevision, error.actual.revision);
     }
@@ -498,6 +518,17 @@ export class HostMemoryCoordinator {
     return upload?.hostEpoch === context.hostEpoch && upload.connectionId === context.connectionId
       ? upload
       : undefined;
+  }
+
+  #trackAcceptedMutation(operation: Promise<unknown>): void {
+    const completion = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.#acceptedMutations.add(completion);
+    void completion.then(() => {
+      this.#acceptedMutations.delete(completion);
+    });
   }
 
   #sweepExpiredUploads(): void {
