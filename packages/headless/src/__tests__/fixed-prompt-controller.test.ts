@@ -154,6 +154,38 @@ describe('fixed prompt controller', () => {
     });
   });
 
+  test('accepts an execution identity whose prompt is owned by the competitor harness', async () => {
+    await withDir(async (dir) => {
+      const systemPromptPath = join(dir, 'system_prompt.md');
+      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+      const output = harborOutput({
+        taskId: 'task-a',
+        executionIdentity: {
+          llmConnectionSlug: 'fake',
+          model: 'fake-model',
+          systemPromptAuthority: 'harness-native',
+          systemPromptToolchain: 'sha256:opencode-toolchain',
+          pricingProfile: 'test-profile',
+        },
+      });
+
+      const result = await runFixedPromptController({
+        runId: 'run-1',
+        roundId: 'round-1',
+        config,
+        systemPromptPath,
+        resultsJsonlPath: join(dir, 'results.jsonl'),
+        resultsTsvPath: join(dir, 'results.tsv'),
+        tasks: [{ id: 'task-a', path: '/bench/task-a' }],
+        requireExecutionIdentity: true,
+        expectedPricingProfile: 'test-profile',
+        taskRunner: async () => output,
+      });
+
+      assert.equal(result.events[0]?.type, 'task_completed');
+    });
+  });
+
   test('resumes from completed task events in the WAL', async () => {
     await withDir(async (dir) => {
       const systemPromptPath = join(dir, 'system_prompt.md');

@@ -1104,7 +1104,8 @@ function classifyExecutionIdentityFailure(
         ? !identity.productToolSurface.policy.disabledSurfaceIds.includes('agent')
         : identity.agentTools) !==
         (expectedConfig.agentTools === true) ||
-      identity.systemPromptHash !== expectedPromptHash ||
+      (identity.systemPromptAuthority !== 'harness-native' &&
+        identity.systemPromptHash !== expectedPromptHash) ||
       (expectedPricingProfile !== undefined && identity.pricingProfile !== expectedPricingProfile)
     ) {
       return {

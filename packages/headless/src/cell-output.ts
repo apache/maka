@@ -137,13 +137,21 @@ export interface HarborCellRuntimeRefs {
   turnId: string;
 }
 
+/** Who owns the model-visible system prompt: Maka, or the competitor harness itself. */
+export type HarborCellSystemPromptAuthority = 'maka' | 'harness-native';
+
 export interface HarborCellExecutionIdentity {
   llmConnectionSlug: string;
   model: string;
   reasoningEffort?: ThinkingLevel;
   /** Present on artifacts written after prompt-source auditing was introduced. */
   systemPromptMode?: HeadlessSystemPromptMode;
-  systemPromptHash: string;
+  /** Absent on artifacts written before harness-owned prompts were recorded, which are Maka-injected. */
+  systemPromptAuthority?: HarborCellSystemPromptAuthority;
+  /** SHA-256 of the Maka-injected prompt; absent when the harness owns the prompt. */
+  systemPromptHash?: string;
+  /** Pinned harness build that owns a native prompt Maka cannot read. */
+  systemPromptToolchain?: string;
   pricingProfile: string;
   /** Present on artifacts written after Headless Agent tool gating was introduced. */
   agentTools?: boolean;
@@ -396,7 +404,31 @@ export function validateHarborCellExecutionIdentity(value: unknown): HarborCellE
           ),
         }
       : {}),
-    systemPromptHash: requireString(value.systemPromptHash, 'executionIdentity.systemPromptHash'),
+    ...('systemPromptAuthority' in value
+      ? {
+          systemPromptAuthority: requireStringUnion(
+            value.systemPromptAuthority,
+            'executionIdentity.systemPromptAuthority',
+            ['maka', 'harness-native'] as const,
+          ),
+        }
+      : {}),
+    ...('systemPromptHash' in value
+      ? {
+          systemPromptHash: requireString(
+            value.systemPromptHash,
+            'executionIdentity.systemPromptHash',
+          ),
+        }
+      : {}),
+    ...('systemPromptToolchain' in value
+      ? {
+          systemPromptToolchain: requireString(
+            value.systemPromptToolchain,
+            'executionIdentity.systemPromptToolchain',
+          ),
+        }
+      : {}),
     pricingProfile: requireString(value.pricingProfile, 'executionIdentity.pricingProfile'),
     ...('agentTools' in value
       ? { agentTools: requireBoolean(value.agentTools, 'executionIdentity.agentTools') }
@@ -408,6 +440,27 @@ export function validateHarborCellExecutionIdentity(value: unknown): HarborCellE
       ? { supplementalToolSets: validateSupplementalToolSets(value.supplementalToolSets) }
       : {}),
   };
+  if (identity.systemPromptAuthority === 'harness-native') {
+    if (identity.systemPromptHash !== undefined) {
+      throw new Error(
+        'executionIdentity.systemPromptHash must be absent when the harness owns the system prompt',
+      );
+    }
+    if (identity.systemPromptToolchain === undefined) {
+      throw new Error(
+        'executionIdentity.systemPromptToolchain must pin the harness build that owns the system prompt',
+      );
+    }
+  } else {
+    if (identity.systemPromptHash === undefined) {
+      throw new Error('executionIdentity.systemPromptHash must be a non-empty string');
+    }
+    if (identity.systemPromptToolchain !== undefined) {
+      throw new Error(
+        'executionIdentity.systemPromptToolchain must be absent when Maka owns the system prompt',
+      );
+    }
+  }
   if (
     identity.productToolSurface &&
     identity.agentTools !== undefined &&

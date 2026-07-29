@@ -3684,6 +3684,9 @@ try:
         assert cell["executionIdentity"]["model"] == "glm-5.2", cell
         assert cell["executionIdentity"]["reasoningEffort"] == "max", cell
         assert cell["executionIdentity"]["agentTools"] is False, cell
+        assert cell["executionIdentity"]["systemPromptAuthority"] == "harness-native", cell
+        assert cell["executionIdentity"]["systemPromptToolchain"] == "sha256:" + "a" * 64, cell
+        assert "systemPromptHash" not in cell["executionIdentity"], cell
         assert cell["tokenSummary"]["cachedInput"] == 40, cell
         assert cell["tokenSummary"]["input"] == 110, cell
         assert cell["tokenSummary"]["output"] == 25, cell
@@ -3693,6 +3696,17 @@ try:
         assert cell["tokenSummary"]["reasoning"] == 5, cell
         assert cell["toolSummary"]["actualToolCallCounts"] == {"bash": 1}, cell
         assert "test-zai-key" not in json.dumps(cell), cell
+
+        def prompt_identity(system_prompt):
+            return MakaOpenCodeAgent(Path(tmp), extra_env={
+                "MAKA_LLM_CONNECTION_SLUG": "zai-coding-plan",
+                "MAKA_SYSTEM_PROMPT": system_prompt,
+                "MAKA_OPENCODE_TOOLCHAIN_FINGERPRINT": "sha256:" + "a" * 64,
+            }, model_name="zai-coding-plan/glm-5.2")._execution_identity()
+
+        first_prompt_identity = prompt_identity("benchmark prompt one")
+        second_prompt_identity = prompt_identity("benchmark prompt two")
+        assert first_prompt_identity == second_prompt_identity, first_prompt_identity
 
         missing_usage_agent = MakaOpenCodeAgent(Path(tmp), extra_env={
             "MAKA_SYSTEM_PROMPT": "",

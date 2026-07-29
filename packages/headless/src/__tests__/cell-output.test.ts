@@ -118,6 +118,70 @@ describe('Harbor cell output contract', () => {
     );
   });
 
+  test('records a harness-owned prompt against its pinned build instead of a Maka hash', () => {
+    assert.deepEqual(
+      validateHarborCellExecutionIdentity({
+        llmConnectionSlug: 'zai-coding-plan',
+        model: 'glm-5.2',
+        systemPromptAuthority: 'harness-native',
+        systemPromptToolchain: 'sha256:opencode-toolchain',
+        pricingProfile: 'zai-public',
+        agentTools: false,
+      }),
+      {
+        llmConnectionSlug: 'zai-coding-plan',
+        model: 'glm-5.2',
+        systemPromptAuthority: 'harness-native',
+        systemPromptToolchain: 'sha256:opencode-toolchain',
+        pricingProfile: 'zai-public',
+        agentTools: false,
+      },
+    );
+  });
+
+  test('rejects a harness-owned prompt identity that also claims a Maka prompt hash', () => {
+    assert.throws(
+      () =>
+        validateHarborCellExecutionIdentity({
+          llmConnectionSlug: 'zai-coding-plan',
+          model: 'glm-5.2',
+          systemPromptAuthority: 'harness-native',
+          systemPromptHash: 'sha256:prompt-a',
+          systemPromptToolchain: 'sha256:opencode-toolchain',
+          pricingProfile: 'zai-public',
+          agentTools: false,
+        }),
+      /systemPromptHash must be absent when the harness owns the system prompt/,
+    );
+  });
+
+  test('rejects a harness-owned prompt identity without a pinned build', () => {
+    assert.throws(
+      () =>
+        validateHarborCellExecutionIdentity({
+          llmConnectionSlug: 'zai-coding-plan',
+          model: 'glm-5.2',
+          systemPromptAuthority: 'harness-native',
+          pricingProfile: 'zai-public',
+          agentTools: false,
+        }),
+      /systemPromptToolchain must pin the harness build/,
+    );
+  });
+
+  test('keeps decoding a legacy identity that omits the prompt authority', () => {
+    const identity = validateHarborCellExecutionIdentity({
+      llmConnectionSlug: 'deepseek',
+      model: 'deepseek-v4-flash',
+      systemPromptHash: 'sha256:prompt-a',
+      pricingProfile: 'public',
+      agentTools: false,
+    });
+
+    assert.equal(identity.systemPromptAuthority, undefined);
+    assert.equal(identity.systemPromptHash, 'sha256:prompt-a');
+  });
+
   test('summarizes runtime outcome, prompt hash, token cost, and event path', () => {
     const events: RuntimeEvent[] = [
       runtimeEvent({ id: 'user-event' }),
