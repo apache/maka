@@ -53,7 +53,7 @@ describe('Desktop explicit Skill invocation contract', () => {
 
     const preparationAt = sessions.indexOf('const sendPlan = await prepareSessionSendSkillPlan');
     const resolveAt = sessions.indexOf('resolveSessionSend({', preparationAt);
-    const sendAt = sessions.indexOf('const iterator = runtime.sendMessage(sessionId', resolveAt);
+    const sendAt = sessions.indexOf('const iterator = runtime.sendMessage(', resolveAt);
     assert.ok(preparationAt >= 0 && resolveAt > preparationAt && sendAt > resolveAt);
     assert.match(sessions, /prepareSkillInvocation\(sessionId, sendCommand\.text, sendCommand\.skillIds\)/);
     assert.match(sendPlan, /if \(preparation\.disposition === 'blocked'\)/);
