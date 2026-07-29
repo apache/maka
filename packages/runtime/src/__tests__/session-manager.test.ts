@@ -1688,6 +1688,56 @@ describe('SessionManager child-session runtime primitive', () => {
     while (!(await parentTurn.next()).done) {}
   });
 
+  test('does not resume a linked child after its parent boundary narrows', async () => {
+    const store = new AtomicBoundaryMemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    const parentGate = makeGate();
+    backends.register(
+      'fake',
+      (ctx) => new TestBackend(ctx, ctx.header.subagentRuntime ? undefined : parentGate),
+    );
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+      newId: nextId(),
+      now: nextNow(140),
+      runtimeSource: 'test',
+    });
+    const parent = await manager.createSession(makeInput({ permissionMode: 'bypass' }));
+    const parentTurn = manager
+      .sendMessage(parent.id, { turnId: 'parent-turn', text: 'keep parent active' })
+      [Symbol.asyncIterator]();
+    await parentTurn.next();
+    const [parentRun] = await runStore.listSessionRuns(parent.id);
+    if (!parentRun) throw new Error('parent run was not recorded');
+
+    const child = await manager.spawnChildSession(parent.id, {
+      spawnedBy: {
+        parentRunId: parentRun.runId,
+        parentTurnId: parentRun.turnId,
+        toolCallId: 'stale-boundary-child',
+      },
+      agentProfile: LOCAL_READ_AGENT_PROFILE,
+      prompt: 'inspect before the boundary narrows',
+    });
+    store.forceBoundary(parent.id, {
+      ...createGenesisExecutionBoundary('ask'),
+      revision: 1,
+    });
+
+    await expectRejects(
+      manager.prepareChildAgentResume(parent.id, child.runId),
+      /execution boundary no longer matches its parent/,
+    );
+
+    parentGate.release();
+    while (!(await parentTurn.next()).done) {}
+  });
+
   test('retries a rate-limited fresh child inside the same linked Session', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();

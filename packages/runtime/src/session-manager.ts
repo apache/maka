@@ -53,8 +53,10 @@ import type { PermissionMode } from '@maka/core/permission';
 import type {
   CreateSandboxBoundaryRequest,
   ExecutionBoundary,
+  FileSystemSandboxEntry,
   SandboxBoundaryRequest,
   SandboxBoundarySettlement,
+  SandboxProfile,
   SettleSandboxBoundaryRequest,
 } from '@maka/core';
 import type { CollaborationMode } from '@maka/core/collaboration';
@@ -1955,6 +1957,10 @@ export class SessionManager {
     ) {
       throw new Error('Claimed graph execution target must be a linked child session');
     }
+    await this.assertLinkedChildBoundaryMatchesParent(
+      child.subagentParent.parentSessionId,
+      child.id,
+    );
     const rootExecution: RootExecutionDescriptor = {
       kind: 'claimed_agent_graph_intent',
       claim,
@@ -2728,6 +2734,7 @@ export class SessionManager {
     ) {
       throw new Error(`Child AgentRun resume source ${sourceRunId} was not found`);
     }
+    await this.assertLinkedChildBoundaryMatchesParent(parentSessionId, child.id);
     const runnableTools = buildToolsForAgentDefinition(this.deps.childTools ?? [], {
       id: snapshot.agentId,
       permissionMode: child.permissionMode,
@@ -3163,6 +3170,19 @@ export class SessionManager {
     }
   }
 
+  private async assertLinkedChildBoundaryMatchesParent(
+    parentSessionId: string,
+    childSessionId: string,
+  ): Promise<void> {
+    const [parentBoundary, childBoundary] = await Promise.all([
+      this.deps.store.readExecutionBoundary(parentSessionId),
+      this.deps.store.readExecutionBoundary(childSessionId),
+    ]);
+    if (!executionBoundaryContains(parentBoundary, childBoundary)) {
+      throw new Error('Linked child execution boundary no longer matches its parent');
+    }
+  }
+
   private async retryChildAgentWithExecution(
     sessionId: string,
     input: RetryChildAgentInput,
@@ -3200,6 +3220,7 @@ export class SessionManager {
       ) {
         throw new Error('Child agent retry source does not belong to the parent Session');
       }
+      await this.assertLinkedChildBoundaryMatchesParent(sessionId, child.id);
       definition = {
         id: snapshot.agentId,
         name: snapshot.agentName,
@@ -4714,6 +4735,78 @@ function executionBoundaryMatchesPermissionMode(
   return mode === 'explore'
     ? boundary.profile.name === 'read-only'
     : boundary.profile.name !== 'read-only';
+}
+
+function executionBoundaryContains(parent: ExecutionBoundary, child: ExecutionBoundary): boolean {
+  if (parent.kind === 'bypass') return true;
+  if (parent.kind === 'external') return child.kind === 'external';
+  if (child.kind !== 'managed') return false;
+  return sandboxProfileContains(parent.profile, child.profile);
+}
+
+function sandboxProfileContains(parent: SandboxProfile, child: SandboxProfile): boolean {
+  if (child.network.kind === 'enabled' && parent.network.kind !== 'enabled') return false;
+  if (child.fileSystem.kind === 'unrestricted' && parent.fileSystem.kind !== 'unrestricted') {
+    return false;
+  }
+  if (
+    !child.fileSystem.entries
+      .filter((entry) => entry.access !== 'deny')
+      .every((requested) =>
+        parent.fileSystem.entries.some(
+          (existing) =>
+            existing.access !== 'deny' && sandboxEntryContains(existing, requested, false),
+        ),
+      ) &&
+    parent.fileSystem.kind !== 'unrestricted'
+  ) {
+    return false;
+  }
+  if (
+    !parent.fileSystem.entries
+      .filter((entry) => entry.access === 'deny')
+      .every((requiredDeny) =>
+        child.fileSystem.entries.some(
+          (candidate) =>
+            candidate.access === 'deny' && sandboxEntryContains(candidate, requiredDeny, true),
+        ),
+      )
+  ) {
+    return false;
+  }
+  const parentProtected = parent.fileSystem.protectedMetadata?.names ?? [];
+  const childProtected = new Set(child.fileSystem.protectedMetadata?.names ?? []);
+  return parentProtected.every((name) => childProtected.has(name));
+}
+
+function sandboxEntryContains(
+  existing: FileSystemSandboxEntry,
+  requested: FileSystemSandboxEntry,
+  ignoreAccess: boolean,
+): boolean {
+  if (
+    !ignoreAccess &&
+    existing.access !== 'write' &&
+    (existing.access !== 'read' || requested.access !== 'read')
+  ) {
+    return false;
+  }
+  if (existing.kind === 'special' || requested.kind === 'special') {
+    return (
+      existing.kind === 'special' &&
+      requested.kind === 'special' &&
+      existing.special === requested.special
+    );
+  }
+  const existingMatch = existing.match ?? 'subtree';
+  const requestedMatch = requested.match ?? 'subtree';
+  if (existingMatch === 'exact') {
+    return requestedMatch === 'exact' && existing.path === requested.path;
+  }
+  return (
+    requested.path === existing.path ||
+    requested.path.startsWith(existing.path.endsWith('/') ? existing.path : `${existing.path}/`)
+  );
 }
 
 function agentRunStatusForSpawnResult(
