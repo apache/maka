@@ -79,12 +79,13 @@ const HIDDEN_TRAFFIC_LIGHT_POSITION = { x: -100, y: -100 } as const;
 // wedged renderer still cannot leave the window invisible forever.
 const SHOW_FALLBACK_TIMEOUT_MS = 4000;
 
-// PR-WINDOW-TITLEBAR-0: the Windows titleBarOverlay height matches the
-// renderer `--h-titlebar: 36px` token so the native control strip and the
-// in-app top chrome share a baseline. The overlay color/symbolColor are
-// reused both at window creation (to avoid a first-frame flash against the
-// window `backgroundColor`) and on runtime mode/palette changes via
-// `setTitleBarOverlayTheme`.
+// PR-WINDOW-TITLEBAR-0: the titleBarOverlay height matches the renderer
+// `--h-titlebar: 36px` token so the native control strip and the in-app top
+// chrome share a baseline; `window-titlebar-contract.test.ts` fails if the two
+// numbers drift. The overlay color/symbolColor are reused both at window
+// creation (to avoid a first-frame flash against the window `backgroundColor`)
+// and on runtime mode/palette changes via `setTitleBarOverlayTheme` — Windows
+// only, which is why macOS passes the height alone.
 const TITLEBAR_OVERLAY_HEIGHT = 36;
 const titleBarOverlayOptions = (
   isDark: boolean,
@@ -209,10 +210,23 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
       // flash; `setTitleBarOverlayTheme` re-syncs it when the theme
       // changes at runtime. Linux falls back to the default frame (no
       // overlay support is wired up yet).
+      //
+      // `titleBarOverlay` on macOS is NOT about drawing an overlay — the OS
+      // draws the traffic lights either way. It enables the Window Controls
+      // Overlay CSS environment variables, which is how the renderer learns
+      // where the native controls end instead of hard-coding a hand-measured
+      // gutter. Measured on this Electron (43.1.1, macOS): without it,
+      // `env(titlebar-area-x)` is unsupported and every fallback applies; with
+      // `{ height }` it reports the traffic lights' safe-area edge (83px) and
+      // keeps tracking window resizes. Only `height` is supported on macOS, so
+      // the color pair stays on the Windows path. The object form matters: the
+      // documented `titleBarOverlay: true` shorthand crashes this Electron on
+      // macOS (ERR_FAILED on first load, then SIGTRAP).
       ...(process.platform === 'darwin'
         ? {
             titleBarStyle: 'hiddenInset' as const,
             trafficLightPosition: MAIN_WINDOW_TRAFFIC_LIGHT_POSITION,
+            titleBarOverlay: { height: TITLEBAR_OVERLAY_HEIGHT },
           }
         : process.platform === 'win32'
           ? {

@@ -552,17 +552,6 @@
   --h-toolbar: 40px;
   --h-composer-min: 44px;
 
-  /* Where the macOS traffic lights stop. The OS draws them over the renderer, so
-     this is the one titlebar measurement the DOM cannot derive; it is the
-     titlebar row's left gutter.
-
-     A companion `--maka-titlebar-control-safe-top: 20px` (the lights' optical
-     center, pixel-measured — 20.75, not the theoretical 20) is gone with the
-     absolutely-positioned rail it aligned. The titlebar is a `--h-titlebar` row
-     with `align-items: center` now, which puts the buttons' center at 20 — 0.75px
-     off the lights, closer than the 21 the hand-tuned offset produced. */
-  --maka-titlebar-control-safe-left: 94px;
-
   /* OS window-resize corridor. A draggable app-region rect flush against a
      window edge takes the native resize hit area with it — that is the P0 WAWQAQ
      reported on `af681c1` (msg `5b85fdb1`): the window could not be resized from
@@ -571,33 +560,28 @@
      left implicitly (the chat header started at y=4). */
   --maka-window-resize-edge: 4px;
 
-  /* Shared top chrome geometry for .maka-workspace-top-actions
-     (sidebar.css) and the in-flow chat status row (module-pages.css).
-     The status row only shares the toolbar's right edge; it no longer
-     anchors off the toolbar bottom. */
-  /* Right-hand gutter of the titlebar row: our own 24px plus however wide the
-     platform's native controls are on that side (0 on macOS, where they sit
-     left; the Windows `titleBarOverlay` width on Windows).
+  /* PR-WINDOW-TITLEBAR-0: where the OS-drawn window controls are, straight from
+     the platform. Electron enables Chromium's Window Controls Overlay env vars
+     on every platform where we hide the native titlebar (see main-window.ts), so
+     the safe area — the usable titlebar rectangle next to the native controls —
+     is a fact the renderer can read instead of a number someone measured. macOS
+     reports the traffic lights on the left (x ≈ 83, width to the window edge);
+     Windows reports its caption buttons on the right (x = 0, width short of the
+     edge), so the right-side control strip is the viewport minus the x/width
+     pair. The `env()` fallbacks make both gutters collapse to the design floor
+     on a platform with a native frame (Linux), where nothing overlaps.
 
-     There used to be a companion `--maka-workspace-top-actions-inset` adding
-     "two 28px buttons + a 6px gap + 12px clearance = 74px" so the chat header
-     could reserve the toolbar's footprint, with a contract test recomputing that
-     sum from the rendered button count. Both are gone: the toolbar is an in-flow
-     child of the titlebar row, so nothing has to know how wide it is. */
-  --maka-workspace-top-actions-right: 24px;
-
-  /* PR-WINDOW-TITLEBAR-0: Electron exposes the titlebar safe area through
-     `titlebar-area-*` CSS env vars. The safe area is the usable titlebar
-     rectangle next to the native controls, so the right-side control overlay is
-     the viewport width minus the safe-area x/width pair. `env()` fallbacks keep
-     the overlay inset at 0px on platforms/windows without titleBarOverlay. */
+     `--maka-titlebar-control-safe-left: 94px` used to stand in for the macOS
+     side, with a comment claiming the DOM could not know it. It could: enabling
+     the overlay on macOS reports 83, and the hand-measured value was 11px of
+     slop applied on every platform — including the two that draw no controls
+     there at all. */
   --maka-titlebar-area-x: env(titlebar-area-x, 0px);
   --maka-titlebar-area-width: env(titlebar-area-width, 100vw);
   --maka-titlebar-overlay-right-width: max(
     0px,
     calc(100vw - var(--maka-titlebar-area-x) - var(--maka-titlebar-area-width))
   );
-  --maka-workspace-top-actions-right: calc(24px + var(--maka-titlebar-overlay-right-width));
 
   /* session list geometry */
   --w-sessionlist: 240px;

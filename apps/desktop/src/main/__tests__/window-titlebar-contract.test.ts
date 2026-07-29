@@ -1,6 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { readRendererContractCss } from './contract-css-helpers.js';
+import { REPO_ROOT } from './main-process-contract-source-helpers.js';
+
+function readMainWindowSource(): Promise<string> {
+  return readFile(resolve(REPO_ROOT, 'apps/desktop/src/main/main-window.ts'), 'utf8');
+}
 
 /**
  * Static CSS contract for the window titlebar's LAYOUT.
@@ -83,14 +90,21 @@ describe('window titlebar layout contract', () => {
     // removed, or resized — one was 12px out of sync with the button size it
     // claimed to add up, and only looked right because the detail panel
     // contributed a 4px margin of its own.
+    // Declarations only, not prose: the comments explaining why each ruler was
+    // retired are allowed to name it, and one of them writes out the old
+    // `name: value` pair verbatim.
+    const declarations = stripComments(css);
     for (const ruler of [
       '--maka-sidebar-collapsed-topbar-inset',
       '--maka-workspace-top-actions-inset',
       '--maka-sidebar-topbar-button-size',
       '--maka-titlebar-drag-band-height',
+      // Not a sibling ruler but the same habit: a hand-measured stand-in for a
+      // number the platform reports (see the gutter test below).
+      '--maka-titlebar-control-safe-left',
     ]) {
       assert.doesNotMatch(
-        css,
+        declarations,
         new RegExp(`${ruler}\\s*:`),
         `${ruler} reserved space for a sibling by restating facts the layout already knows (button count, button size, titlebar height). The titlebar row makes all of them unnecessary; reintroducing one means the overlay arrangement is back.`,
       );
@@ -101,34 +115,28 @@ describe('window titlebar layout contract', () => {
     const css = await readRendererContractCss();
     const titlebar = ruleBody(css, '.maka-window-titlebar');
 
-    // macOS draws the traffic lights over the renderer, so their width is the one
-    // titlebar fact the DOM cannot read. Windows puts its controls on the other
-    // side and DOES expose them, through the `titlebar-area-*` env vars — that
-    // path must not regress into a hardcoded native width or a platform
-    // attribute selector (it was both, once).
-    // A plain token reference, not `calc(token - resize-edge)`: both are
-    // safe-AREA minimums, so the row's own 4px inset just yields more clearance
-    // than required. Subtracting it would restate the inset here and on the right
-    // gutter purely to pin an exact pixel.
+    // Both gutters are "our design floor, or the platform's safe area when that
+    // is wider" — no platform branch, no measured control width. Chromium's
+    // Window Controls Overlay reports the safe area on every platform where we
+    // hide the native titlebar (main-window.ts enables it), and the `env()`
+    // fallbacks collapse to the floor where nothing overlaps.
+    //
+    // A hand-measured `--maka-titlebar-control-safe-left: 94px` stood in for the
+    // macOS side until the overlay was enabled there and reported 83.
+    //
+    // Plain gutters, not `calc(gutter - resize-edge)`: both are safe-AREA
+    // minimums, so the row's own 4px inset just yields more clearance than
+    // required. Subtracting it would restate the inset twice more to pin an exact
+    // pixel.
     assert.match(
       titlebar,
-      /padding-left:\s*var\(--maka-titlebar-control-safe-left\)\s*;/,
-      "the titlebar row's left gutter must come from the traffic-light safe-area token",
+      /padding-left:\s*max\(\s*var\(--space-6\),\s*var\(--maka-titlebar-area-x\)\s*\)\s*;/,
+      "the titlebar row's left gutter must be the larger of the design floor and the platform's reported safe-area start",
     );
     assert.match(
       titlebar,
-      /padding-right:\s*var\(--maka-workspace-top-actions-right\)\s*;/,
-      "the titlebar row's right gutter must come from the native-overlay-derived token",
-    );
-    assert.doesNotMatch(
-      css,
-      /\[data-platform=["']win32["']\]/,
-      'Windows titlebar avoidance must not depend on a renderer platform attribute',
-    );
-    assert.doesNotMatch(
-      css,
-      /\b138px\b/,
-      'Windows titlebar avoidance must not hard-code the native control width',
+      /padding-right:\s*calc\(\s*var\(--space-6\)\s*\+\s*var\(--maka-titlebar-overlay-right-width\)\s*\)\s*;/,
+      "the titlebar row's right gutter must add the platform's reported right-hand control width to the design floor",
     );
     assert.match(css, /--maka-titlebar-area-x:\s*env\(titlebar-area-x,\s*0px\)\s*;/);
     assert.match(css, /--maka-titlebar-area-width:\s*env\(titlebar-area-width,\s*100vw\)\s*;/);
@@ -136,6 +144,54 @@ describe('window titlebar layout contract', () => {
       css,
       /--maka-titlebar-overlay-right-width:\s*max\(\s*0px,\s*calc\(100vw - var\(--maka-titlebar-area-x\) - var\(--maka-titlebar-area-width\)\s*\)\s*\)\s*;/,
       'the right-side native control width must be derived from the titlebar safe-area x/width pair',
+    );
+    // Two blacklists used to live here: no `138px` anywhere in the renderer CSS,
+    // and no `[data-platform="win32"]` selector — the two shapes the Windows
+    // gutter took before it was derived. The assertions above pin the mechanism
+    // positively, which subsumes both, and neither ban could tell a titlebar
+    // regression apart from an unrelated rule that happens to use 138px or to
+    // style something else per platform.
+  });
+
+  it('hands the native titlebar overlay the same height the shell row uses', async () => {
+    // The one number that genuinely exists twice: CSS cannot read the main
+    // process and main cannot read CSS. So it is stated in both and gated here —
+    // the failure Chromium would produce is a native control strip taller or
+    // shorter than the row of app controls beside it.
+    const css = await readRendererContractCss();
+    const rowHeight = /--h-titlebar:\s*(\d+)px\s*;/.exec(css)?.[1];
+    assert.ok(rowHeight, '--h-titlebar must be declared as a px value');
+
+    const mainSrc = await readMainWindowSource();
+    const overlayHeight = /const TITLEBAR_OVERLAY_HEIGHT\s*=\s*(\d+)\s*;/.exec(mainSrc)?.[1];
+    assert.ok(overlayHeight, 'main-window.ts must declare TITLEBAR_OVERLAY_HEIGHT');
+    assert.equal(
+      overlayHeight,
+      rowHeight,
+      `the native titleBarOverlay height (${overlayHeight}) must equal the shell titlebar row height --h-titlebar (${rowHeight})`,
+    );
+  });
+
+  it('enables the Window Controls Overlay wherever the native titlebar is hidden', async () => {
+    // This is what makes the gutters derivable: without `titleBarOverlay` the
+    // `titlebar-area-*` env vars are unsupported and every fallback applies, so
+    // the renderer is back to hard-coding where the OS controls end. macOS gets
+    // the height alone (the only option it supports there); Windows also gets the
+    // color pair, which `setTitleBarOverlayTheme` re-syncs.
+    const mainSrc = await readMainWindowSource();
+    const darwinBranch = /platform === 'darwin'\s*\?\s*\{([\s\S]*?)\n\s*\}\s*:/.exec(mainSrc)?.[1];
+    assert.ok(darwinBranch, 'the BrowserWindow options must keep a darwin branch');
+    assert.match(
+      darwinBranch,
+      /titleBarOverlay:\s*\{\s*height:\s*TITLEBAR_OVERLAY_HEIGHT\s*\}/,
+      'macOS must enable titleBarOverlay (height only) so the renderer can read the traffic lights\u2019 safe area from `env(titlebar-area-x)` instead of hard-coding it',
+    );
+    const win32Branch = /platform === 'win32'\s*\?\s*\{([\s\S]*?)\n\s*\}\s*:/.exec(mainSrc)?.[1];
+    assert.ok(win32Branch, 'the BrowserWindow options must keep a win32 branch');
+    assert.match(
+      win32Branch,
+      /titleBarOverlay:\s*titleBarOverlayOptions\(/,
+      'Windows must enable titleBarOverlay so its caption-button width is reported through the titlebar safe area',
     );
   });
 
@@ -159,6 +215,12 @@ describe('window titlebar layout contract', () => {
     );
   });
 });
+
+/** Drop `/* … *\/` blocks so a negative assertion cannot be tripped by a comment
+ *  that names the very thing it explains as retired. */
+function stripComments(css: string): string {
+  return css.replace(/\/\*[\s\S]*?\*\//g, '');
+}
 
 function ruleBody(css: string, selector: string): string {
   const body = optionalRuleBody(css, selector);

@@ -34,7 +34,6 @@
 }
 
 .maka-shell-2col {
-  --maka-sidebar-topbar-gap: 8px;
   --maka-sidebar-exit-offset: calc(var(--space-2) * -1);
   position: relative;
   display: grid;
@@ -43,8 +42,9 @@
      reach into a row it is not in. This replaced four separate titlebar-
      avoidance paddings and two hand-summed "how wide is my sibling" insets,
      one of which had drifted 12px out of sync with the button size it claimed
-     to add up. `--h-titlebar` is the one height, shared with the Windows
-     native `titleBarOverlay`. */
+     to add up. `--h-titlebar` is the one height: main-window.ts hands the same
+     number to the native `titleBarOverlay`, and a contract test fails if the
+     two drift. */
   grid-template-rows: var(--h-titlebar) minmax(0, 1fr);
   align-items: stretch;
   gap: 0;
@@ -168,21 +168,21 @@
   margin: var(--maka-window-resize-edge) var(--maka-window-resize-edge) 0;
   display: flex;
   align-items: center;
-  gap: var(--maka-sidebar-topbar-gap);
-  /* The one irreducible platform constant left in this area: the macOS traffic
-     lights are drawn by the OS over the renderer, so nothing in the DOM knows
-     where they end. Windows puts its native controls on the right instead, and
-     that width IS knowable — `--maka-workspace-top-actions-right` derives it
-     from the `titlebar-area-*` env vars. */
-  padding-left: var(--maka-titlebar-control-safe-left);
-  padding-right: var(--maka-workspace-top-actions-right);
+  gap: var(--space-2);
+  /* One gutter rule per side: our own `--space-6` of breathing room, or the
+     platform's native-control safe area when that is wider. Nothing here knows
+     which platform it is on or how wide any control is — `max()` picks whichever
+     the OS reports (macOS: traffic lights on the left; Windows: caption buttons
+     on the right; Linux: neither, so the design floor stands). */
+  padding-left: max(var(--space-6), var(--maka-titlebar-area-x));
+  padding-right: calc(var(--space-6) + var(--maka-titlebar-overlay-right-width));
   -webkit-app-region: drag;
 }
 
 .maka-shell-topbar-rail {
   display: flex;
   align-items: center;
-  gap: var(--maka-sidebar-topbar-gap);
+  gap: var(--space-2);
   opacity: 1;
   pointer-events: auto;
   transform: translateX(0);
