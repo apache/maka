@@ -418,9 +418,17 @@ function decodeSandboxProfile(input: unknown): SandboxProfile {
     hasUnexpectedKeys(input, ['type', 'name', 'fileSystem', 'network']) ||
     (input.name !== undefined && typeof input.name !== 'string') ||
     !isRecord(input.fileSystem) ||
-    hasUnexpectedKeys(input.fileSystem, ['kind', 'entries']) ||
+    hasUnexpectedKeys(input.fileSystem, ['kind', 'entries', 'protectedMetadata']) ||
     (input.fileSystem.kind !== 'restricted' && input.fileSystem.kind !== 'unrestricted') ||
     !Array.isArray(input.fileSystem.entries) ||
+    (input.fileSystem.protectedMetadata !== undefined &&
+      (!isRecord(input.fileSystem.protectedMetadata) ||
+        hasUnexpectedKeys(input.fileSystem.protectedMetadata, ['access', 'names']) ||
+        input.fileSystem.protectedMetadata.access !== 'deny_write' ||
+        !Array.isArray(input.fileSystem.protectedMetadata.names) ||
+        !input.fileSystem.protectedMetadata.names.every(
+          (name): name is string => typeof name === 'string',
+        ))) ||
     !isRecord(input.network) ||
     hasUnexpectedKeys(input.network, ['kind']) ||
     (input.network.kind !== 'restricted' && input.network.kind !== 'enabled')
@@ -466,6 +474,14 @@ function decodeSandboxProfile(input: unknown): SandboxProfile {
     fileSystem: {
       kind: input.fileSystem.kind,
       entries,
+      ...(input.fileSystem.protectedMetadata === undefined
+        ? {}
+        : {
+            protectedMetadata: {
+              access: 'deny_write' as const,
+              names: [...(input.fileSystem.protectedMetadata.names as string[])],
+            },
+          }),
     },
     network: { kind: input.network.kind },
   };

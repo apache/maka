@@ -218,4 +218,24 @@ describe('ExecutionBoundary', () => {
       assert.throws(() => decodeExecutionBoundary(invalid));
     }
   });
+
+  test('round-trips managed protected-metadata policy', () => {
+    const managed = createGenesisExecutionBoundary('ask');
+    if (managed.kind !== 'managed') throw new Error('expected managed boundary');
+    const boundary = {
+      ...managed,
+      profile: {
+        ...managed.profile,
+        fileSystem: {
+          ...managed.profile.fileSystem,
+          protectedMetadata: {
+            access: 'deny_write' as const,
+            names: ['.git', '.agents', '.codex'],
+          },
+        },
+      },
+    };
+
+    expect(decodeExecutionBoundary(JSON.parse(JSON.stringify(boundary)))).toEqual(boundary);
+  });
 });
