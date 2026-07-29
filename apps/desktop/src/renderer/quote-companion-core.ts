@@ -4,6 +4,7 @@ import {
   dequeueInteractionByToolUseId,
   enqueueInteraction,
   type InteractionQueues,
+  type LiveTurnProjection,
 } from '@maka/ui';
 import type {
   CreateSessionInput,
@@ -73,6 +74,23 @@ export interface EnsureCompanionForkDeps {
  *  A `running` turn is skipped so a fork never branches mid-turn. */
 export function latestSettledTurnId(turns: readonly TurnRecord[]): string | undefined {
   return [...turns].reverse().find((turn) => turn.status !== 'running')?.turnId;
+}
+
+/**
+ * The shared Composer's `streaming` input means "a turn is interruptible", not
+ * merely "a text delta has arrived". Keep the companion interruptible from the
+ * optimistic waiting projection through live output; `processing` only chooses
+ * the quieter pre-first-token presentation inside that same in-flight window.
+ */
+export function deriveCompanionComposerState(
+  turnInFlight: boolean,
+  liveTurn: LiveTurnProjection | undefined,
+): { streaming: boolean; processing: boolean } {
+  const streaming = turnInFlight && liveTurn?.terminal !== true;
+  return {
+    streaming,
+    processing: streaming && (!liveTurn || liveTurn.phase === 'waiting'),
+  };
 }
 
 /**

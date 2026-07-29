@@ -15,6 +15,7 @@ import { describe, it } from 'node:test';
 import type { SessionEvent, SessionSummary, StoredMessage, TurnRecord, TurnStatus } from '@maka/core';
 import {
   applyCompanionInteractionEvent,
+  deriveCompanionComposerState,
   isCompanionTurnTerminal,
   latestSettledTurnId,
   performCompanionTurn,
@@ -125,6 +126,46 @@ describe('latestSettledTurnId', () => {
     );
     assert.equal(latestSettledTurnId([turn('a', 'running')]), undefined);
     assert.equal(latestSettledTurnId([]), undefined);
+  });
+});
+
+describe('deriveCompanionComposerState', () => {
+  it('keeps Stop and Escape available before the first token', () => {
+    assert.deepEqual(
+      deriveCompanionComposerState(true, {
+        turnId: 'waiting-turn',
+        phase: 'waiting',
+        steps: [],
+      }),
+      { streaming: true, processing: true },
+    );
+  });
+
+  it('keeps the turn interruptible after streaming starts without the wait presentation', () => {
+    assert.deepEqual(
+      deriveCompanionComposerState(true, {
+        turnId: 'streaming-turn',
+        phase: 'streamed',
+        steps: [],
+      }),
+      { streaming: true, processing: false },
+    );
+  });
+
+  it('leaves the Composer idle once the turn is terminal or no longer in flight', () => {
+    assert.deepEqual(
+      deriveCompanionComposerState(true, {
+        turnId: 'terminal-turn',
+        phase: 'streamed',
+        terminal: true,
+        steps: [],
+      }),
+      { streaming: false, processing: false },
+    );
+    assert.deepEqual(deriveCompanionComposerState(false, undefined), {
+      streaming: false,
+      processing: false,
+    });
   });
 });
 

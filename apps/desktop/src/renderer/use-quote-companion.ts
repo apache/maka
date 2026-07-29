@@ -21,6 +21,7 @@ import type {
 } from '@maka/core';
 import {
   applyCompanionInteractionEvent,
+  deriveCompanionComposerState,
   isCompanionTurnTerminal,
   performCompanionTurn,
   type CompanionErrorCode,
@@ -287,8 +288,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const messages = allMessages.filter(
     (message) => message.turnId !== undefined && ownTurnIdsRef.current.has(message.turnId),
   );
-  const streaming = Boolean(liveTurn && !liveTurn.terminal && liveTurn.phase === 'streamed');
-  const processing = turnInFlight && (!liveTurn || liveTurn.phase === 'waiting');
+  const { streaming, processing } = deriveCompanionComposerState(turnInFlight, liveTurn);
   // Inherited model (read-only): the fork's once created, else the source's.
   const activeModel = companion
     ? { llmConnectionSlug: companion.llmConnectionSlug, model: companion.model }
