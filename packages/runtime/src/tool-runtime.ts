@@ -415,7 +415,7 @@ class RuntimeCommitBoundaryError extends Error {
 export class ToolRuntime {
   private readonly sandboxBoundaryRequests = new TurnScopedAwaitRegistry<
     SandboxBoundarySettlement,
-    { toolUseId: string }
+    { toolUseId: string; creation: Promise<SandboxBoundaryRequest> }
   >();
   private readonly userQuestions = new TurnScopedAwaitRegistry<
     UserQuestionResponse,
@@ -466,9 +466,7 @@ export class ToolRuntime {
   }
 
   async endTurn(turnId: string, reason: 'completed' | 'aborted' = 'completed'): Promise<void> {
-    const boundaryRequests = this.sandboxBoundaryRequests
-      .entries(turnId)
-      .map(([requestId]) => requestId);
+    const boundaryRequests = this.sandboxBoundaryRequests.entries(turnId);
     const boundarySettlementErrors: unknown[] = [];
     if (boundaryRequests.length > 0) {
       if (!this.input.settleSandboxBoundaryRequest) {
@@ -477,13 +475,18 @@ export class ToolRuntime {
         );
       } else {
         const results = await Promise.allSettled(
-          boundaryRequests.map((requestId) =>
-            this.input.settleSandboxBoundaryRequest?.({
+          boundaryRequests.map(async ([requestId, metadata]) => {
+            try {
+              await metadata.creation;
+            } catch {
+              return;
+            }
+            await this.input.settleSandboxBoundaryRequest?.({
               sessionId: this.input.sessionId,
               requestId,
               decision: 'deny',
-            }),
-          ),
+            });
+          }),
         );
         for (const result of results) {
           if (result.status === 'rejected') boundarySettlementErrors.push(result.reason);
@@ -1784,18 +1787,34 @@ export class ToolRuntime {
     if (!this.input.createSandboxBoundaryRequest || !this.input.settleSandboxBoundaryRequest) {
       throw new Error('Sandbox boundary expansion is unavailable on this surface');
     }
-    validateSandboxBoundaryExpansion(expansion);
+    const validated = validateSandboxBoundaryExpansion(expansion);
+    if (!validated.ok) throw new Error(validated.message);
     if (typeof justification !== 'string' || justification.trim().length === 0) {
       throw new Error('Sandbox boundary justification must not be empty');
     }
     const requestId = this.input.newId();
-    const request = await this.input.createSandboxBoundaryRequest({
+    const creation = this.input.createSandboxBoundaryRequest({
       sessionId: this.input.sessionId,
       requestId,
-      expansion,
+      expansion: validated.expansion,
       justification,
     });
-    const parked = this.sandboxBoundaryRequests.park(turnId, requestId, { toolUseId });
+    const parked = this.sandboxBoundaryRequests.park(turnId, requestId, {
+      toolUseId,
+      creation,
+    });
+    void parked.catch(() => undefined);
+    let request: SandboxBoundaryRequest;
+    try {
+      request = await creation;
+    } catch (error) {
+      this.sandboxBoundaryRequests.reject(
+        turnId,
+        requestId,
+        error instanceof Error ? error : new Error(String(error)),
+      );
+      throw error;
+    }
     const requestEvent: SandboxBoundaryRequestEvent = {
       type: 'sandbox_boundary_request',
       id: this.input.newId(),

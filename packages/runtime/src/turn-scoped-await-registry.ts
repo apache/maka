@@ -80,7 +80,8 @@ export class TurnScopedAwaitRegistry<TValue, TMetadata> {
   }
 
   private requireTurn(turnId: string): Map<string, ParkedRequest<TValue, TMetadata>> {
-    this.beginTurn(turnId);
-    return this.turns.get(turnId)!;
+    const turn = this.turns.get(turnId);
+    if (!turn) throw new Error(`Turn ${turnId} is not accepting requests`);
+    return turn;
   }
 }

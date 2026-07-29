@@ -127,6 +127,55 @@ describe('ToolRuntime session sandbox boundary', () => {
     assert.equal(result.boundary.revision, 1);
   });
 
+  test('rejects an invalid expansion before creating durable pending state', async () => {
+    let createCalls = 0;
+    const runtime = new ToolRuntime({
+      sessionId: 'session-1',
+      header: header(),
+      connection: { providerType: 'openai', slug: 'test' } as never,
+      modelId: 'test',
+      appendMessage: async () => {},
+      readExecutionBoundary: async () => ({
+        kind: 'managed',
+        profile: createWorkspaceWritePermissionProfile(),
+        revision: 0,
+      }),
+      createSandboxBoundaryRequest: async () => {
+        createCalls += 1;
+        throw new Error('must not create');
+      },
+      settleSandboxBoundaryRequest: async () => {
+        throw new Error('must not settle');
+      },
+      newId: nextId(),
+      now: () => 1,
+      getPermissionPauseTarget: () => null,
+    });
+    runtime.beginTurn('turn-1');
+
+    const settlement = await runtime.settleToolCall({
+      tool: buildRequestSandboxBoundaryTool(),
+      turnId: 'turn-1',
+      toolCallId: 'tool-boundary',
+      input: {
+        expansion: {
+          filesystem: {
+            entries: [{ path: '../outside', access: 'read', scope: 'exact' }],
+          },
+        },
+        justification: 'Read outside.',
+      },
+      abortSignal: new AbortController().signal,
+      eventSink: {
+        push: () => {},
+        pushAndWaitUntilConsumed: async () => {},
+      },
+    });
+
+    assert.equal(createCalls, 0);
+    assert.match((settlement.result as { error: string }).error, /absolute/i);
+  });
+
   test('durably denies a pending boundary request before an aborted turn closes', async () => {
     const events: SessionEvent[] = [];
     const managed: ExecutionBoundary = {
@@ -195,6 +244,85 @@ describe('ToolRuntime session sandbox boundary', () => {
     await runtime.endTurn('turn-1', 'aborted');
     await pending;
     assert.deepEqual(settlements, [{ requestId: request.requestId, decision: 'deny' }]);
+  });
+
+  test('does not orphan a request created concurrently with turn shutdown', async () => {
+    const managed: ExecutionBoundary = {
+      kind: 'managed',
+      profile: createWorkspaceWritePermissionProfile(),
+      revision: 0,
+    };
+    let markCreateStarted!: () => void;
+    const createStarted = new Promise<void>((resolve) => {
+      markCreateStarted = resolve;
+    });
+    let releaseCreate!: (request: SandboxBoundaryRequest) => void;
+    const deferredCreate = new Promise<SandboxBoundaryRequest>((resolve) => {
+      releaseCreate = resolve;
+    });
+    const settlements: string[] = [];
+    const runtime = new ToolRuntime({
+      sessionId: 'session-1',
+      header: header(),
+      connection: { providerType: 'openai', slug: 'test' } as never,
+      modelId: 'test',
+      appendMessage: async () => {},
+      readExecutionBoundary: async () => managed,
+      createSandboxBoundaryRequest: async () => {
+        markCreateStarted();
+        return deferredCreate;
+      },
+      settleSandboxBoundaryRequest: async (input) => {
+        settlements.push(input.decision);
+        return {
+          request: {
+            sessionId: input.sessionId,
+            requestId: input.requestId,
+            expansion: { network: { enabled: true } },
+            justification: 'Use the network.',
+            status: 'denied',
+            baseRevision: 0,
+            createdAt: 1,
+            settledAt: 2,
+          },
+          boundary: managed,
+          changed: false,
+        };
+      },
+      newId: nextId(),
+      now: () => 1,
+      getPermissionPauseTarget: () => null,
+    });
+    runtime.beginTurn('turn-1');
+    const pending = runtime.settleToolCall({
+      tool: buildRequestSandboxBoundaryTool(),
+      turnId: 'turn-1',
+      toolCallId: 'tool-boundary',
+      input: {
+        expansion: { network: { enabled: true } },
+        justification: 'Use the network.',
+      },
+      abortSignal: new AbortController().signal,
+      eventSink: {
+        push: () => {},
+        pushAndWaitUntilConsumed: async () => {},
+      },
+    });
+    await createStarted;
+    const ending = runtime.endTurn('turn-1', 'aborted');
+    releaseCreate({
+      sessionId: 'session-1',
+      requestId: 'id-1',
+      expansion: { network: { enabled: true } },
+      justification: 'Use the network.',
+      status: 'pending',
+      baseRevision: 0,
+      createdAt: 1,
+    });
+
+    await ending;
+    await pending;
+    assert.deepEqual(settlements, ['deny']);
   });
 
   test('returns a structured boundary requirement to the agent', async () => {
