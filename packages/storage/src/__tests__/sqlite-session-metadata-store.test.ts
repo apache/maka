@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
-import { canReadPath, type SessionHeader } from '@maka/core';
+import { Worker } from 'node:worker_threads';
+import { canReadPath, type SandboxBoundarySettlement, type SessionHeader } from '@maka/core';
 import type { AgentGraphOperatorProvisionRequest } from '@maka/core/agent-graph-topology';
 import {
   createSqliteSessionMetadataStore,
@@ -213,6 +214,70 @@ describe('SqliteSessionMetadataStore', () => {
       assert.equal((await store.readExecutionBoundary('session-1')).revision, 2);
     } finally {
       store.close();
+    }
+  });
+
+  test('serializes competing approvals from independent SQLite connections', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-boundary-writer-race-'));
+    const path = join(root, 'sessions.sqlite');
+    const setup = createSqliteSessionMetadataStore(path);
+    try {
+      await setup.create(fullHeader());
+      for (const [requestId, outsidePath] of [
+        ['request-a', '/outside/a'],
+        ['request-b', '/outside/b'],
+      ] as const) {
+        await setup.createSandboxBoundaryRequest({
+          sessionId: 'session-1',
+          requestId,
+          expansion: {
+            filesystem: {
+              entries: [{ path: outsidePath, access: 'read', scope: 'subtree' }],
+            },
+          },
+          justification: `Read ${outsidePath}.`,
+        });
+      }
+    } finally {
+      setup.close();
+    }
+
+    const release = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
+    const first = boundarySettlementWorker(path, 'request-a', release);
+    let second: ReturnType<typeof boundarySettlementWorker> | undefined;
+    try {
+      await first.ready;
+      second = boundarySettlementWorker(path, 'request-b');
+      await second.ready;
+      first.start();
+      await first.holding;
+      second.start();
+      await second.attempting;
+      releaseWorker(release);
+
+      const settlements = await Promise.all([first.settled, second.settled]);
+      assert.deepEqual(
+        settlements.map((settlement) => settlement.boundary.revision).sort((a, b) => a - b),
+        [1, 2],
+      );
+      const verify = createSqliteSessionMetadataStore(path);
+      try {
+        const boundary = await verify.readExecutionBoundary('session-1');
+        assert.equal(boundary.kind, 'managed');
+        assert.equal(boundary.revision, 2);
+        if (boundary.kind === 'managed') {
+          assert.equal(canReadPath(boundary.profile, '/outside/a/file.txt'), true);
+          assert.equal(canReadPath(boundary.profile, '/outside/b/file.txt'), true);
+        }
+      } finally {
+        verify.close();
+      }
+    } finally {
+      first.start();
+      second?.start();
+      releaseWorker(release);
+      await Promise.all([first.terminate(), second?.terminate()]);
+      await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -1048,6 +1113,93 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 });
+
+function boundarySettlementWorker(
+  path: string,
+  requestId: string,
+  holdAfterBoundaryWrite?: SharedArrayBuffer,
+): {
+  ready: Promise<void>;
+  attempting: Promise<void>;
+  holding: Promise<void>;
+  settled: Promise<SandboxBoundarySettlement>;
+  start(): void;
+  terminate(): Promise<number>;
+} {
+  const startSettlement = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
+  const worker = new Worker(
+    new URL('./fixtures/settle-sandbox-boundary-worker.js', import.meta.url),
+    {
+      workerData: {
+        path,
+        requestId,
+        startSettlement,
+        ...(holdAfterBoundaryWrite ? { holdAfterBoundaryWrite } : {}),
+      },
+    },
+  );
+  const ready = promiseWithResolvers<void>();
+  const attempting = promiseWithResolvers<void>();
+  const holding = promiseWithResolvers<void>();
+  const settled = promiseWithResolvers<SandboxBoundarySettlement>();
+  worker.on(
+    'message',
+    (
+      message:
+        | { type: 'ready' }
+        | { type: 'attempting' }
+        | { type: 'holding' }
+        | { type: 'settled'; settlement: SandboxBoundarySettlement }
+        | { type: 'failed'; message: string },
+    ) => {
+      if (message.type === 'ready') ready.resolve();
+      else if (message.type === 'attempting') attempting.resolve();
+      else if (message.type === 'holding') holding.resolve();
+      else if (message.type === 'settled') settled.resolve(message.settlement);
+      else {
+        const error = new Error(message.message);
+        ready.reject(error);
+        attempting.reject(error);
+        holding.reject(error);
+        settled.reject(error);
+      }
+    },
+  );
+  worker.on('error', (error) => {
+    ready.reject(error);
+    attempting.reject(error);
+    holding.reject(error);
+    settled.reject(error);
+  });
+  return {
+    ready: ready.promise,
+    attempting: attempting.promise,
+    holding: holding.promise,
+    settled: settled.promise,
+    start: () => releaseWorker(startSettlement),
+    terminate: () => worker.terminate(),
+  };
+}
+
+function releaseWorker(signal: SharedArrayBuffer): void {
+  const state = new Int32Array(signal);
+  Atomics.store(state, 0, 1);
+  Atomics.notify(state, 0);
+}
+
+function promiseWithResolvers<T>(): {
+  promise: Promise<T>;
+  resolve(value: T | PromiseLike<T>): void;
+  reject(reason?: unknown): void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return { promise, resolve, reject };
+}
 
 describe('SQLite agent graph operator provisions', () => {
   test('atomically commits one child Session and monotonic topology row', async () => {
