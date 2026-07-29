@@ -2075,6 +2075,7 @@ export class SqliteSessionMetadataStore {
           session_id = ?
           AND applied_revision IS NOT NULL
           AND json_extract(boundary_json, '$.kind') = 'managed'
+          AND json_extract(boundary_json, '$.profile.name') != 'read-only'
         ORDER BY applied_revision DESC
         LIMIT 1
       `)

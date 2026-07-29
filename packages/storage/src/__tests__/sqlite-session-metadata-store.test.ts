@@ -411,6 +411,44 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
+  test('restores accumulated Auto authority after a temporary Explore boundary', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(225) });
+    try {
+      await store.create(fullHeader());
+      await store.createSandboxBoundaryRequest({
+        sessionId: 'session-1',
+        requestId: 'approved-before-explore',
+        expansion: {
+          filesystem: {
+            entries: [{ path: '/outside/kept', access: 'write', scope: 'subtree' }],
+          },
+        },
+        justification: 'Write generated files.',
+      });
+      await store.settleSandboxBoundaryRequest({
+        sessionId: 'session-1',
+        requestId: 'approved-before-explore',
+        decision: 'allow',
+      });
+
+      const explore = await store.setExecutionBoundaryKind('session-1', 'managed', {
+        permissionMode: 'explore',
+      });
+      assert.equal(explore.kind, 'managed');
+      if (explore.kind === 'managed') assert.equal(explore.profile.name, 'read-only');
+
+      const restored = await store.setExecutionBoundaryKind('session-1', 'managed', {
+        permissionMode: 'ask',
+      });
+      assert.equal(restored.kind, 'managed');
+      if (restored.kind === 'managed') {
+        assert.equal(canReadPath(restored.profile, '/outside/kept/file.txt'), true);
+      }
+    } finally {
+      store.close();
+    }
+  });
+
   test('projects an explicit legacy mode in the same managed-boundary transition', async () => {
     const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(250) });
     try {
