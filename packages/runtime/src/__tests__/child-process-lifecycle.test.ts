@@ -1,0 +1,84 @@
+import assert from 'node:assert/strict';
+import type { ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+import { test } from 'node:test';
+
+import {
+  manageChildProcessLifecycle,
+  trackCapturedOutputDrain,
+} from '../child-process-lifecycle.js';
+
+test('captured output drain treats premature close and error as incomplete', async () => {
+  const ended = new PassThrough();
+  const closed = new PassThrough();
+  const errored = new PassThrough();
+  const drain = trackCapturedOutputDrain(
+    [
+      { key: 'ended', stream: ended },
+      { key: 'closed', stream: closed },
+      { key: 'errored', stream: errored },
+    ],
+    100,
+  );
+  ended.resume();
+  ended.end('complete');
+  closed.emit('close');
+  errored.emit('error', new Error('capture failed'));
+  drain.startDeadline();
+
+  const result = await drain.completion;
+  assert.deepEqual([...result.incomplete].sort(), ['closed', 'errored']);
+});
+
+test('completion waits for the bounded process-tree signal attempt after root exit', async () => {
+  const child = new EventEmitter() as ChildProcess;
+  let resolveSignal!: (applied: boolean) => void;
+  const signalAttempt = new Promise<boolean>((resolve) => {
+    resolveSignal = resolve;
+  });
+  const lifecycle = manageChildProcessLifecycle(child, [], {
+    killGraceMs: 10,
+    ioDrainTimeoutMs: 10,
+    signalProcessTree: () => signalAttempt,
+  });
+  let completed = false;
+  void lifecycle.completion.then(() => {
+    completed = true;
+  });
+
+  lifecycle.terminate();
+  child.emit('exit', 0, null);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(completed, false);
+
+  resolveSignal(true);
+  assert.deepEqual(await lifecycle.completion, {
+    exitCode: 0,
+    signal: null,
+    ioDrained: true,
+    incompleteOutputs: new Set(),
+  });
+});
+
+test('forced termination rejects boundedly when the direct root never acknowledges exit', async () => {
+  const child = new EventEmitter() as ChildProcess;
+  const signals: string[] = [];
+  const lifecycle = manageChildProcessLifecycle(child, [], {
+    killGraceMs: 10,
+    exitAcknowledgementMs: 10,
+    ioDrainTimeoutMs: 10,
+    async signalProcessTree(signal) {
+      signals.push(signal);
+      return true;
+    },
+  });
+
+  lifecycle.terminate();
+
+  await assert.rejects(
+    lifecycle.completion,
+    /Child process did not acknowledge exit after forced termination/,
+  );
+  assert.deepEqual(signals, ['SIGTERM', 'SIGKILL', 'SIGKILL']);
+});

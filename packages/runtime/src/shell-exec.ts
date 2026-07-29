@@ -20,10 +20,12 @@
 import { spawn } from 'node:child_process';
 import { buildShellSpawnPlan, defaultShellPlan, type ShellPlan } from './shell-detect.js';
 import { BashTailBuffer } from './bash-tail-buffer.js';
+import { DEFAULT_PROCESS_TERMINATION_GRACE_MS } from './process-tree-terminator.js';
 import {
-  DEFAULT_PROCESS_TERMINATION_GRACE_MS,
-  terminateChildProcessTree,
-} from './process-tree-terminator.js';
+  DEFAULT_PROCESS_IO_DRAIN_TIMEOUT_MS,
+  manageChildProcessLifecycle,
+  type ChildProcessLifecycleResult,
+} from './child-process-lifecycle.js';
 import { OUTPUT_RECOVERY_HINT } from './tool-output.js';
 import {
   buildSpawnStdio,
@@ -81,6 +83,8 @@ export interface BoundedShellOptions {
   abortSignal?: AbortSignal;
   /** Grace after SIGTERM before SIGKILL on timeout/abort. */
   killGraceMs?: number;
+  /** Maximum wait for stdout/stderr after the direct child exits. */
+  ioDrainTimeoutMs?: number;
   /** Receives every raw chunk live, before tail-bounding. */
   emitOutput?: (stream: 'stdout' | 'stderr', chunk: string) => void;
   /** Shell to run the command with. Defaults to the process-wide detected shell. */
@@ -109,10 +113,9 @@ export interface BoundedShellResult {
  * Run `command` in a shell, streaming output into a memory-bounded tail. Never
  * kills the command for producing too much output — it keeps only the last
  * `maxRetainedChars` per stream. On timeout/abort it SIGTERMs (then SIGKILLs
- * after a grace period) and resolves only once the managed shell has actually
- * exited and its captured streams have closed. Resolves with the result
- * (including timeout / abort flags); rejects
- * only when the process cannot be spawned.
+ * after a grace period) and separately bounds direct-child exit and captured
+ * stream drain. Resolves with the result (including timeout / abort flags);
+ * rejects when spawn or direct-root cleanup cannot be confirmed.
  */
 export function runShellWithBoundedTail(
   command: string,
@@ -140,6 +143,19 @@ function runSpawnedProcessWithBoundedTail(
   const cap = options.maxRetainedChars ?? BASH_MAX_RETAINED_CHARS;
   const liveCap = options.maxLiveEmitChars ?? BASH_MAX_LIVE_EMIT_CHARS;
   const graceMs = options.killGraceMs ?? DEFAULT_PROCESS_TERMINATION_GRACE_MS;
+  const ioDrainTimeoutMs = options.ioDrainTimeoutMs ?? DEFAULT_PROCESS_IO_DRAIN_TIMEOUT_MS;
+  if (options.abortSignal?.aborted) {
+    closeChildFdSources(options.fdInputs);
+    return Promise.resolve({
+      exitCode: 130,
+      stdout: '',
+      stderr: '',
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      timedOut: false,
+      aborted: true,
+    });
+  }
   return new Promise<BoundedShellResult>((resolvePromise, reject) => {
     let child: ReturnType<typeof spawn>;
     try {
@@ -166,29 +182,25 @@ function runSpawnedProcessWithBoundedTail(
     // stream passes liveCap we emit one marker and stop forwarding it live.
     let liveEmitted = { stdout: 0, stderr: 0 };
     let liveSuppressed = { stdout: false, stderr: false };
-    // Set when timeout/abort begins terminating the child. 'close' is the single
-    // resolve point, so this remembers WHY we resolve once the child is gone.
+    // Keep the caller-visible reason after root exit and stream drain settle.
     let termination: { timedOut?: boolean; aborted?: boolean } | null = null;
-    let terminationTask: Promise<unknown> | undefined;
-    let killTimer: NodeJS.Timeout | undefined;
-    let closeStarted = false;
 
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
     child.stdout?.on('data', (chunk: string) => append('stdout', chunk));
     child.stderr?.on('data', (chunk: string) => append('stderr', chunk));
-    child.on('error', (error: Error) => {
-      // The process could not be spawned at all (e.g. the shell binary is
-      // missing). This is exceptional — reject so callers surface it.
-      if (settled || closeStarted) return;
-      settled = true;
-      cleanup();
-      reject(error);
-    });
-    // 'close' fires only after the process has exited AND its stdio has closed,
-    // so resolving here guarantees the child is gone and no further output can
-    // arrive — even when we triggered the kill ourselves.
-    child.on('close', (code, signal) => resolveOnce(code, signal));
+    const lifecycle = manageChildProcessLifecycle(
+      child,
+      [
+        ...(child.stdout ? [{ key: 'stdout' as const, stream: child.stdout }] : []),
+        ...(child.stderr ? [{ key: 'stderr' as const, stream: child.stderr }] : []),
+      ],
+      {
+        killGraceMs: graceMs,
+        ioDrainTimeoutMs,
+      },
+    );
+    void lifecycle.completion.then(resolveOnce, rejectOnce);
 
     const timer = setTimeout(() => beginTermination({ timedOut: true }), options.timeoutMs);
     const abort = () => beginTermination({ aborted: true });
@@ -201,7 +213,7 @@ function runSpawnedProcessWithBoundedTail(
     } catch (error) {
       settled = true;
       cleanup();
-      void terminateChildProcessTree(child, 'SIGKILL');
+      lifecycle.forceKill();
       reject(error);
     }
 
@@ -237,51 +249,49 @@ function runSpawnedProcessWithBoundedTail(
 
     // Begin terminating a still-running child (timeout or abort). SIGTERM first
     // so a well-behaved child can flush and exit; if it ignores SIGTERM, SIGKILL
-    // after a grace period guarantees the managed group is force-signalled. We do
-    // NOT resolve here: 'close' remains the single process/output resolve point.
+    // after a grace period guarantees the managed group is force-signalled.
     function beginTermination(reason: { timedOut?: boolean; aborted?: boolean }): void {
       if (termination || settled) return;
       termination = reason;
-      terminationTask = terminateTree('SIGTERM').then(() => {
-        if (settled || closeStarted) return;
-        killTimer = setTimeout(() => {
-          terminationTask = terminateTree('SIGKILL');
-        }, graceMs);
-      });
+      lifecycle.terminate();
     }
 
-    // Signal the managed process group and any detached descendants identifiable
-    // at the current snapshot. The later SIGKILL call is harmless when gone.
-    function terminateTree(signal: 'SIGTERM' | 'SIGKILL'): Promise<boolean> {
-      return terminateChildProcessTree(child, signal);
+    function rejectOnce(error: Error): void {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
     }
 
-    // Settle once, on 'close'. exitCode reflects how we terminated: 124 timeout,
-    // 130 abort, else the child's own code (or 128+signal when signal-killed).
-    function resolveOnce(code: number | null, signal: NodeJS.Signals | null): void {
-      if (settled || closeStarted) return;
-      closeStarted = true;
-      void (terminationTask ?? Promise.resolve()).then(() => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        const stdout = shellTailValueWithUnsafeDropMarker(stdoutBuf);
-        const stderr = shellTailValueWithUnsafeDropMarker(stderrBuf);
-        resolvePromise({
-          exitCode: termination ? (termination.timedOut ? 124 : 130) : (code ?? (signal ? 128 : 1)),
-          stdout,
-          stderr,
-          stdoutTruncated: stdoutChars > stdout.length || stdoutBuf.hasDroppedUnsafe(),
-          stderrTruncated: stderrChars > stderr.length || stderrBuf.hasDroppedUnsafe(),
-          timedOut: !!termination?.timedOut,
-          aborted: !!termination?.aborted,
-        });
+    function resolveOnce(outcome: ChildProcessLifecycleResult<'stdout' | 'stderr'>): void {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      const stdout = shellTailValueWithUnsafeDropMarker(stdoutBuf);
+      const stderr = shellTailValueWithUnsafeDropMarker(stderrBuf);
+      resolvePromise({
+        exitCode: termination
+          ? termination.timedOut
+            ? 124
+            : 130
+          : (outcome.exitCode ?? (outcome.signal ? 128 : 1)),
+        stdout,
+        stderr,
+        stdoutTruncated:
+          outcome.incompleteOutputs.has('stdout') ||
+          stdoutChars > stdout.length ||
+          stdoutBuf.hasDroppedUnsafe(),
+        stderrTruncated:
+          outcome.incompleteOutputs.has('stderr') ||
+          stderrChars > stderr.length ||
+          stderrBuf.hasDroppedUnsafe(),
+        timedOut: !!termination?.timedOut,
+        aborted: !!termination?.aborted,
       });
     }
 
     function cleanup(): void {
       clearTimeout(timer);
-      if (killTimer) clearTimeout(killTimer);
       if (options.abortSignal) options.abortSignal.removeEventListener('abort', abort);
     }
   });

@@ -5,6 +5,7 @@ import { wireAppLifecycle } from './app-lifecycle.js';
 import {
   collapseSessionRevisions,
   filterModelVisibleTaskLedgerTasks,
+  isActiveShellRunStatus,
   resolveSystemUiLocale,
   resolveUiLocale,
 } from '@maka/core';
@@ -879,7 +880,7 @@ const runtime = new SessionManager({
         runStore.listSessionRuns(sessionId),
       ]);
       return (
-        shellUpdates.some((update) => update.result.status === 'running') ||
+        shellUpdates.some((update) => isActiveShellRunStatus(update.result.status)) ||
         runs.some(
           (run) =>
             run.parentRunId !== undefined &&

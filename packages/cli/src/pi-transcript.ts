@@ -15,6 +15,7 @@ import {
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import {
+  isActiveShellRunStatus,
   mergeShellRunStateWithDiagnostics,
   projectToolActivityArgs,
   type ShellRunUpdate,
@@ -276,7 +277,7 @@ export function applyShellRunViewUpdateToTranscript(
     tool.toolName !== 'Bash' ||
     tool.result?.kind !== 'shell_run' ||
     tool.result.ref !== update.result.ref ||
-    tool.result.status !== 'running'
+    !isActiveShellRunStatus(tool.result.status)
   )
     return applied;
   const status =
@@ -879,6 +880,7 @@ function shellRunTranscriptStatus(
   status: Extract<ToolResultContent, { kind: 'shell_run' }>['status'],
 ): MakaPiToolEntry['status'] {
   switch (status) {
+    case 'starting':
     case 'running':
       return 'running';
     case 'completed':
@@ -1484,7 +1486,7 @@ function readArgsRef(args: unknown): string | undefined {
  * and because stored replay never routes through the notice path.
  */
 function isLiveShellRunCard(entry: MakaPiToolEntry | undefined): boolean {
-  return entry?.result?.kind === 'shell_run' && entry.result.status === 'running';
+  return entry?.result?.kind === 'shell_run' && isActiveShellRunStatus(entry.result.status);
 }
 
 /**
@@ -1504,7 +1506,7 @@ function applyLiveShellRunResultToParent(
 }
 
 function isSettledShellRunCard(entry: MakaPiToolEntry): boolean {
-  return entry.result?.kind === 'shell_run' && entry.result.status !== 'running';
+  return entry.result?.kind === 'shell_run' && !isActiveShellRunStatus(entry.result.status);
 }
 
 /**

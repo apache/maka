@@ -447,6 +447,7 @@ function ShellRunStatus(props: {
     return <><ShieldAlert size={15} aria-hidden="true" />{activityCopy.status.sandboxBlocked}{suffix}</>;
   }
   switch (props.status) {
+    case 'starting':
     case 'running':
       return <><Loader2 size={15} aria-hidden="true" className="animate-spin" />{copy.running}</>;
     case 'completed':

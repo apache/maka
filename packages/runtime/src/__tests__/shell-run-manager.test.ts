@@ -106,7 +106,8 @@ describe('ShellRunProcessManager', () => {
 
     await waitUntil(async () => {
       try {
-        return (await store.readShellRun('session-1', 'shell-run-1')).timeoutMs === 120_000;
+        const record = await store.readShellRun('session-1', 'shell-run-1');
+        return record.status === 'running' && record.timeoutMs === 120_000;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
         throw error;
@@ -242,6 +243,171 @@ describe('ShellRunProcessManager', () => {
     );
 
     assert.deepEqual(completions, [false, false, false]);
+  });
+
+  test('commits a durable starting identity before the native pipe process spawns', async () => {
+    const cwd = await workspace();
+    const marker = join(cwd, 'spawned');
+    const backingStore = createShellRunStore(cwd);
+    const createCommitted = deferred<void>();
+    const releaseCreate = deferred<void>();
+    const store: ShellRunStore = {
+      async createShellRun(record) {
+        const created = await backingStore.createShellRun(record);
+        createCommitted.resolve(undefined);
+        await releaseCreate.promise;
+        return created;
+      },
+      updateShellRun: (...args) => backingStore.updateShellRun(...args),
+      readShellRun: (...args) => backingStore.readShellRun(...args),
+      listSessionShellRuns: (...args) => backingStore.listSessionShellRuns(...args),
+    };
+    const manager = createManager(store);
+    const startup = manager.runForegroundBash(
+      shellInput({
+        cwd,
+        command: 'write spawn marker',
+        argv: [
+          process.execPath,
+          '-e',
+          `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'spawned')`,
+        ],
+      }),
+    );
+
+    try {
+      await createCommitted.promise;
+      assert.equal(
+        (await backingStore.readShellRun('session-1', 'shell-run-1')).status,
+        'starting',
+      );
+      assert.equal(await manager.recoverOrphanedSession('session-1'), 0);
+      assert.equal(
+        (await backingStore.readShellRun('session-1', 'shell-run-1')).status,
+        'starting',
+      );
+      await assert.rejects(() => readFile(marker, 'utf8'), { code: 'ENOENT' });
+      releaseCreate.resolve(undefined);
+      assert.equal((await startup).status, 'completed');
+      assert.equal(await readFile(marker, 'utf8'), 'spawned');
+    } finally {
+      releaseCreate.resolve(undefined);
+      await startup.catch(() => undefined);
+      await manager.terminateAll();
+    }
+  });
+
+  test('session close and runtime shutdown fence pipe startups blocked in durable creation', async () => {
+    for (const lifecycle of ['session', 'runtime'] as const) {
+      const cwd = await workspace();
+      const marker = join(cwd, `${lifecycle}-spawned`);
+      const backingStore = createShellRunStore(cwd);
+      const createCommitted = deferred<void>();
+      const releaseCreate = deferred<void>();
+      const store: ShellRunStore = {
+        async createShellRun(record) {
+          const created = await backingStore.createShellRun(record);
+          createCommitted.resolve(undefined);
+          await releaseCreate.promise;
+          return created;
+        },
+        updateShellRun: (...args) => backingStore.updateShellRun(...args),
+        readShellRun: (...args) => backingStore.readShellRun(...args),
+        listSessionShellRuns: (...args) => backingStore.listSessionShellRuns(...args),
+      };
+      const manager = createManager(store);
+      const startup = manager.runForegroundBash(
+        shellInput({
+          cwd,
+          command: `${lifecycle} startup fence`,
+          argv: [
+            process.execPath,
+            '-e',
+            `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'spawned')`,
+          ],
+        }),
+      );
+      const rejectedStartup = assert.rejects(
+        startup,
+        lifecycle === 'session' ? /session lifecycle changed/ : /shell runtime is shutting down/,
+      );
+      let closing: Promise<void> | undefined;
+      try {
+        await createCommitted.promise;
+        closing =
+          lifecycle === 'session'
+            ? manager.terminateSession('session-1').then((lease) => {
+                manager.rollbackSessionClose(lease);
+              })
+            : manager.terminateAll();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        await assert.rejects(() => readFile(marker, 'utf8'), { code: 'ENOENT' });
+
+        releaseCreate.resolve(undefined);
+        await rejectedStartup;
+        await closing;
+        const durable = await backingStore.readShellRun('session-1', 'shell-run-1');
+        assert.equal(durable.status, 'failed');
+        assert.ok(durable.observedAt !== undefined);
+        await assert.rejects(() => readFile(marker, 'utf8'), { code: 'ENOENT' });
+        assert.equal(manager.liveCount(), 0);
+      } finally {
+        releaseCreate.resolve(undefined);
+        await startup.catch(() => undefined);
+        await closing?.catch(() => undefined);
+        await manager.terminateAll().catch(() => undefined);
+      }
+    }
+  });
+
+  test('rechecks the session fence after the durable running commit', async () => {
+    const cwd = await workspace();
+    const backingStore = createShellRunStore(cwd);
+    const runningCommitted = deferred<void>();
+    const releaseRunning = deferred<void>();
+    const store: ShellRunStore = {
+      createShellRun: (...args) => backingStore.createShellRun(...args),
+      async updateShellRun(sessionId, shellRunId, patch) {
+        const updated = await backingStore.updateShellRun(sessionId, shellRunId, patch);
+        if (patch.status === 'running') {
+          runningCommitted.resolve(undefined);
+          await releaseRunning.promise;
+        }
+        return updated;
+      },
+      readShellRun: (...args) => backingStore.readShellRun(...args),
+      listSessionShellRuns: (...args) => backingStore.listSessionShellRuns(...args),
+    };
+    const manager = createManager(store);
+    const startup = manager.runForegroundBash(
+      shellInput({
+        cwd,
+        command: waitForeverCommand(),
+      }),
+    );
+    const rejectedStartup = assert.rejects(startup, /session lifecycle changed/);
+    let closing: Promise<void> | undefined;
+
+    try {
+      await runningCommitted.promise;
+      closing = manager.terminateSession('session-1').then((lease) => {
+        manager.rollbackSessionClose(lease);
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      releaseRunning.resolve(undefined);
+
+      await rejectedStartup;
+      await closing;
+      const durable = await backingStore.readShellRun('session-1', 'shell-run-1');
+      assert.equal(durable.status, 'failed');
+      assert.ok(durable.observedAt !== undefined);
+      assert.equal(manager.liveCount(), 0);
+    } finally {
+      releaseRunning.resolve(undefined);
+      await startup.catch(() => undefined);
+      await closing?.catch(() => undefined);
+      await manager.terminateAll().catch(() => undefined);
+    }
   });
 
   test('applies only explicit background timeouts and enforces their upper bound', async () => {
@@ -674,21 +840,71 @@ describe('ShellRunProcessManager', () => {
     assert.match(terminalText(completed.output), /VALUE:resumed/);
   });
 
-  test('recovers a durable running record without a live handle as orphaned', async () => {
+  test('recovers durable starting and running records without live handles as orphaned', async () => {
     const store = createShellRunStore(await workspace());
-    await store.createShellRun(record({ shellRunId: 'orphan-1', status: 'running' }));
+    await store.createShellRun(record({ shellRunId: 'orphan-starting', status: 'starting' }));
+    await store.createShellRun(record({ shellRunId: 'orphan-running', status: 'running' }));
+    await store.createShellRun({
+      ...record({ shellRunId: 'completed-1', status: 'running' }),
+      status: 'completed',
+      exitCode: 0,
+      completedAt: 2,
+    });
     const manager = createManager(store);
 
-    assert.equal(await manager.recoverOrphanedSession('session-1'), 1);
+    assert.equal(await manager.recoverOrphanedSession('session-1'), 2);
+    assert.equal(await manager.recoverOrphanedSession('session-1'), 0);
     const detail = await manager.readRuntimeResource(
       'session-1',
-      'maka://runtime/background-tasks/orphan-1',
+      'maka://runtime/background-tasks/orphan-starting',
       NO_ABORT,
     );
     assertShellRun(detail);
     assert.equal(detail.status, 'orphaned');
     assert.match(detail.failureMessage ?? '', /Runtime restarted/);
     assert.equal(detail.exitCode, undefined);
+    assert.equal((await store.readShellRun('session-1', 'orphan-running')).status, 'orphaned');
+    assert.equal((await store.readShellRun('session-1', 'completed-1')).status, 'completed');
+  });
+
+  test('concurrent orphan observers converge on the same durable terminal record', async () => {
+    const backingStore = createShellRunStore(await workspace());
+    await backingStore.createShellRun(
+      record({ shellRunId: 'concurrent-orphan', status: 'running' }),
+    );
+    const readsReady = deferred<void>();
+    let staleReads = 0;
+    const store: ShellRunStore = {
+      createShellRun: (...args) => backingStore.createShellRun(...args),
+      updateShellRun: (...args) => backingStore.updateShellRun(...args),
+      async readShellRun(...args) {
+        const snapshot = await backingStore.readShellRun(...args);
+        if (snapshot.shellRunId === 'concurrent-orphan' && staleReads < 2) {
+          staleReads += 1;
+          if (staleReads === 2) readsReady.resolve(undefined);
+          await readsReady.promise;
+        }
+        return snapshot;
+      },
+      listSessionShellRuns: (...args) => backingStore.listSessionShellRuns(...args),
+    };
+    const manager = createManager(store);
+    const ref = 'maka://runtime/background-tasks/concurrent-orphan';
+
+    const [detail, stopped] = await Promise.all([
+      manager.readRuntimeResource('session-1', ref, NO_ABORT),
+      manager.stopBackgroundTask('session-1', ref, NO_ABORT),
+    ]);
+
+    assertShellRun(detail);
+    assertShellRun(stopped);
+    assert.equal(detail.status, 'orphaned');
+    assert.equal(stopped.status, 'orphaned');
+    assert.equal(detail.completedAt, stopped.completedAt);
+    assert.equal(detail.failureMessage, stopped.failureMessage);
+    const durable = await backingStore.readShellRun('session-1', 'concurrent-orphan');
+    assert.equal(durable.status, 'orphaned');
+    assert.equal(durable.completedAt, detail.completedAt);
   });
 
   test('keeps unauthorized refs non-disclosing and rejects malformed selectors before storage', async () => {
@@ -1561,6 +1777,49 @@ describe('ShellRunProcessManager', () => {
     assert.doesNotMatch(text, new RegExp(secret));
   });
 
+  test('settles after root exit when a detached descendant retains inherited stdout', {
+    skip: process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false,
+  }, async () => {
+    const cwd = await workspace();
+    const childPidPath = join(cwd, 'escaped-child.pid');
+    const manager = await createTestManager(undefined, { pipeOutputDrainMs: 100 });
+    let childPid: number | undefined;
+    try {
+      const startedAt = Date.now();
+      const result = await manager.runForegroundBash(
+        shellInput({
+          cwd,
+          command: 'root exits while detached child inherits stdout',
+          argv: [
+            process.execPath,
+            '-e',
+            `const {spawn}=require('node:child_process');const {writeFileSync}=require('node:fs');const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:['ignore',process.stdout,'ignore']});child.unref();writeFileSync(${JSON.stringify(childPidPath)},String(child.pid));process.stdout.write('ROOT\\n')`,
+          ],
+        }),
+      );
+      childPid = Number.parseInt(await readFile(childPidPath, 'utf8'), 10);
+      assert.ok(Date.now() - startedAt < 2_000);
+      assert.equal(result.status, 'failed');
+      assert.equal(result.output.mode, 'pipes');
+      if (result.output.mode !== 'pipes') throw new Error('expected pipes output');
+      assert.equal(result.output.stdoutTruncated, true);
+      assert.match(result.failureMessage ?? '', /output pipes drained completely/);
+      assert.equal(manager.liveCount(), 0);
+    } finally {
+      if (childPid && isProcessAlive(childPid)) {
+        try {
+          process.kill(-childPid, 'SIGKILL');
+        } catch {
+          try {
+            process.kill(childPid, 'SIGKILL');
+          } catch {
+            /* descendant already exited */
+          }
+        }
+      }
+    }
+  });
+
   test('stops descendants that detach from the real PTY process group', async () => {
     const cwd = await workspace();
     const childPidPath = join(cwd, 'child.pid');
@@ -1791,6 +2050,7 @@ function createManager(
     maxLivePtyRuns?: number;
     killGraceMs?: number;
     flushIntervalMs?: number;
+    pipeOutputDrainMs?: number;
   } = {},
 ): ShellRunProcessManager {
   let id = 0;
@@ -1814,6 +2074,7 @@ async function createTestManager(
     maxLivePtyRuns?: number;
     killGraceMs?: number;
     flushIntervalMs?: number;
+    pipeOutputDrainMs?: number;
   },
 ): Promise<ShellRunProcessManager> {
   return createManager(createShellRunStore(await workspace()), onShellRunUpdate, options);
@@ -1914,7 +2175,12 @@ function waitForTerminalShellRun(
   ref: string,
   timeoutMs = 3_000,
 ): Promise<ShellRunResult> {
-  return waitForShellRun(manager, ref, (result) => result.status !== 'running', timeoutMs);
+  return waitForShellRun(
+    manager,
+    ref,
+    (result) => result.status !== 'starting' && result.status !== 'running',
+    timeoutMs,
+  );
 }
 
 function waitForPtyText(
@@ -2028,4 +2294,15 @@ function isProcessAlive(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'EPERM';
   }
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T | PromiseLike<T>): void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
 }

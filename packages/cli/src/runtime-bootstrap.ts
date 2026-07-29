@@ -80,7 +80,7 @@ import { resolveStorageRoot } from '@maka/storage/root-authority';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
 import { fetchProviderModels } from '@maka/runtime';
 import { createApiKeyOnboardingSurface, type MakaOnboardingSurface } from './onboarding.js';
-import { resolveModelVisionSupport } from '@maka/core';
+import { isActiveShellRunStatus, resolveModelVisionSupport } from '@maka/core';
 import type { ModelChoice, ReadySessionTarget } from './connection-target.js';
 import {
   listReadyModelChoices,
@@ -797,7 +797,7 @@ export async function createMakaCliRuntimeContext(
           runStore.listSessionRuns(sessionId),
         ]);
         return (
-          shellUpdates.some((update) => update.result.status === 'running') ||
+          shellUpdates.some((update) => isActiveShellRunStatus(update.result.status)) ||
           runs.some(
             (run) =>
               run.parentRunId !== undefined &&
