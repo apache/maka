@@ -40,7 +40,12 @@ class FakeTray {
   }
 }
 
-function makeItem(overrides: { onStopRequested?: (sessionId: string) => void } = {}) {
+function makeItem(
+  overrides: {
+    onStopRequested?: (sessionId: string) => void;
+    onLiveChanged?: (live: boolean) => void;
+  } = {},
+) {
   const trays: FakeTray[] = [];
   const images: unknown[] = [];
   const item = createComputerUseStatusItem({
@@ -314,5 +319,49 @@ test('status item wiring into the overlay hook', async (t) => {
     );
     wrapped.onActionEnd?.({ type: 'screenshot' }, undefined, { sessionId: 's1', toolCallId: 't1' });
     assert.equal(innerEnds, 1);
+  });
+});
+
+test('Computer Use status item reports when anything is driving the machine', async (t) => {
+  // The power assertion rides on this: the interval the item is visible for is
+  // exactly the interval the system must not suspend for.
+  await t.test('reports live on the first session and idle on the last', () => {
+    const live: boolean[] = [];
+    const { item } = makeItem({ onLiveChanged: (value) => live.push(value) });
+
+    item.noteSessionActive('s1');
+    item.noteSessionActive('s2');
+    assert.deepEqual(live, [true], 'the second session does not make it more live');
+
+    item.clearForSession('s1');
+    assert.deepEqual(live, [true], 'still driving something');
+
+    item.clearForSession('s2');
+    assert.deepEqual(live, [true, false]);
+  });
+
+  await t.test('a repeated action on a live session reports nothing', () => {
+    const live: boolean[] = [];
+    const { item } = makeItem({ onLiveChanged: (value) => live.push(value) });
+    item.noteSessionActive('s1');
+    item.noteSessionActive('s1');
+    assert.deepEqual(live, [true]);
+  });
+
+  await t.test('clearing a session that was never live reports nothing', () => {
+    const live: boolean[] = [];
+    const { item } = makeItem({ onLiveChanged: (value) => live.push(value) });
+    item.clearForSession('never-started');
+    assert.deepEqual(live, []);
+  });
+
+  await t.test('destroy releases a live item, and does not double-release', () => {
+    const live: boolean[] = [];
+    const { item } = makeItem({ onLiveChanged: (value) => live.push(value) });
+    item.noteSessionActive('s1');
+    item.destroy();
+    assert.deepEqual(live, [true, false]);
+    item.destroy();
+    assert.deepEqual(live, [true, false]);
   });
 });

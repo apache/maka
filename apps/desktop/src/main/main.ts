@@ -676,6 +676,7 @@ const {
   sandboxDiagnosticsProvider,
 } = assembleDesktopTools({
   mainWindow: mainWindowController,
+  keepSystemAwake,
   isComputerUseRealModelE2e,
   workspaceRoot,
   taskLedgerStore,

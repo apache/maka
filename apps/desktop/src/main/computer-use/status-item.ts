@@ -66,6 +66,17 @@ export interface ComputerUseStatusItemDeps {
   resourcesDir?: string;
   createTray?: (image: Electron.NativeImage) => Tray;
   onStopRequested?: (sessionId: string) => void;
+  /**
+   * Called when the number of live sessions crosses zero in either direction.
+   *
+   * The item's visibility already answers "is anything driving the machine",
+   * which is also the exact interval the system must not suspend for: Computer
+   * Use does its work while the user is idle — the physical-input guard
+   * requires it — and that is precisely when idle sleep lands and kills the
+   * run. Rather than a second registry of the same sessions, the authority on
+   * that question reports it.
+   */
+  onLiveChanged?: (live: boolean) => void;
   /** Test seams: the contract is drivable without an Electron main process. */
   loadImage?: () => Electron.NativeImage;
   buildMenu?: (template: Electron.MenuItemConstructorOptions[]) => MenuType;
@@ -186,6 +197,7 @@ export function createComputerUseStatusItem(
       sessions.set(sessionId, undefined);
       ensureTray();
       rebuildMenu();
+      if (sessions.size === 1) deps.onLiveChanged?.(true);
     },
 
     noteSessionApp(sessionId: string, appName: string | undefined): void {
@@ -206,14 +218,17 @@ export function createComputerUseStatusItem(
       if (!sessions.delete(endedSessionId)) return;
       if (sessions.size === 0) {
         hide();
+        deps.onLiveChanged?.(false);
         return;
       }
       rebuildMenu();
     },
 
     destroy(): void {
+      const wasLive = sessions.size > 0;
       sessions.clear();
       hide();
+      if (wasLive) deps.onLiveChanged?.(false);
     },
 
     isVisible(): boolean {

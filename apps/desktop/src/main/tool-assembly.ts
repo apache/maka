@@ -59,6 +59,13 @@ type GoalWiring = ReturnType<typeof createMainGoalWiring>;
 type AgentMailboxStore = ReturnType<typeof createAgentMailboxStore>;
 type SettingsStore = ReturnType<typeof createSettingsStore>;
 
+/**
+ * One holder name for all of Computer Use, not one per session: the assertion
+ * is about whether the machine may suspend, and that answer does not get more
+ * true with a second session.
+ */
+const COMPUTER_USE_WAKE_HOLD = 'computer-use';
+
 export interface DesktopToolAssemblyDeps {
   /** E2E computer-use flag: routes the ai-sdk backend through the raw
    *  computer-use tools and disables the economy, matching the legacy path. */
@@ -86,6 +93,12 @@ export interface DesktopToolAssemblyDeps {
     onWindowGeometryChanged(cb: () => void): () => void;
     browserWindow(): { isDestroyed(): boolean } | undefined;
   };
+  /**
+   * The power-assertion controller, so a Computer Use run holds the machine
+   * awake for as long as it is driving something. Optional: the tool surface
+   * is assembled in contexts that have no Electron power management.
+   */
+  keepSystemAwake?: { hold(reason: string): void; release(reason: string): void };
   resolveDesktopSkillHost: HostCapabilitiesResolver;
 }
 
@@ -116,6 +129,7 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     getWorkspacePrivacyContext,
     resolveDesktopSkillHost,
     mainWindow,
+    keepSystemAwake,
   } = deps;
 
   const sandboxManager = createBuiltinSandboxManager();
@@ -158,7 +172,18 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
   // Visible for as long as any session is driving the machine, unlike the
   // cursor, which stays hidden whenever the window being driven is covered by
   // something else.
-  const computerUseStatusItem = createComputerUseStatusItem();
+  const computerUseStatusItem = createComputerUseStatusItem({
+    // A run drives another app for as long as the model needs, and the
+    // physical-input guard means it works precisely while the user is not
+    // touching anything — which is when idle sleep lands and kills the run.
+    // Never `prevent-display-sleep`: that would also suppress the automatic
+    // lock, and Computer Use stops itself when the screen locks rather than
+    // preventing it.
+    onLiveChanged: (live) => {
+      if (live) keepSystemAwake?.hold(COMPUTER_USE_WAKE_HOLD);
+      else keepSystemAwake?.release(COMPUTER_USE_WAKE_HOLD);
+    },
+  });
   // Mirrors the driven window so background work is watchable at all — the
   // cursor can only be seen when its target is.
   const computerUsePip = createComputerUsePipController(
