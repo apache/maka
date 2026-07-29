@@ -1,5 +1,4 @@
 import {
-  createExternalExecutionBoundary,
   decodeCanonicalToolResultContent,
   projectAgentSwarmResult,
   projectToolActivityArgs,
@@ -291,7 +290,7 @@ export interface ToolRuntimeInput {
   connection: LlmConnection;
   modelId: string;
   appendMessage: AppendMessageFn;
-  readExecutionBoundary?: () => Promise<ExecutionBoundary>;
+  readExecutionBoundary: () => Promise<ExecutionBoundary>;
   createSandboxBoundaryRequest?: (
     input: CreateSandboxBoundaryRequest,
   ) => Promise<SandboxBoundaryRequest>;
@@ -443,11 +442,17 @@ export class ToolRuntime {
   private lastAmbiguousComputerSignature: string | undefined;
   private readonly recentSandboxDenials = new Set<string>();
   private readonly durableToolAttempts = new Map<string, DurableToolAttempt>();
+  private readonly readExecutionBoundary: NonNullable<ToolRuntimeInput['readExecutionBoundary']>;
   private readonly stepAdmissions = new Map<
     string,
     { callCount: number; exclusiveToolName?: string }
   >();
-  constructor(private readonly input: ToolRuntimeInput) {}
+  constructor(private readonly input: ToolRuntimeInput) {
+    if (!input.readExecutionBoundary) {
+      throw new Error('ToolRuntime requires explicit execution boundary authority');
+    }
+    this.readExecutionBoundary = input.readExecutionBoundary;
+  }
 
   beginTurn(turnId: string, hostedInteraction?: HostedInteractionBridge): void {
     if (
@@ -1010,9 +1015,7 @@ export class ToolRuntime {
       pauseTarget?.pause();
       try {
         const runId = this.input.getCurrentRunId?.();
-        const executionBoundary = this.input.readExecutionBoundary
-          ? await this.input.readExecutionBoundary()
-          : createExternalExecutionBoundary();
+        const executionBoundary = await this.readExecutionBoundary();
         const result = await tool.impl(structuredClone(executionArgs) as never, {
           sessionId: this.input.sessionId,
           turnId,

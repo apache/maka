@@ -1,3 +1,4 @@
+import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { LlmConnection, SessionHeader } from '@maka/core';
@@ -21,7 +22,7 @@ describe('ToolRuntime argument ownership', () => {
     };
     const providerArgs = structuredClone(initialArgs);
     const observed = new Map<string, InvocationArgs>();
-    const runtime = new ToolRuntime({
+    const runtime = createTestToolRuntime({
       sessionId: 'session-1',
       header: testHeader(),
       connection: testConnection(),

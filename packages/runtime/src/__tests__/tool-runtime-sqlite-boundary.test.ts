@@ -1,3 +1,4 @@
+import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -15,7 +16,7 @@ describe('ToolRuntime with real SQLite boundary', () => {
     const store = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
     try {
       let implementationCalls = 0;
-      const runtime = new ToolRuntime({
+      const runtime = createTestToolRuntime({
         sessionId: 'session-1',
         header: header(),
         connection: connection(),
@@ -103,7 +104,7 @@ describe('ToolRuntime with real SQLite boundary', () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-tool-sqlite-error-'));
     const store = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
     try {
-      const runtime = new ToolRuntime({
+      const runtime = createTestToolRuntime({
         sessionId: 'session-1',
         header: header(),
         connection: connection(),

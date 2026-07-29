@@ -12,44 +12,24 @@ import {
 import { buildRequestSandboxBoundaryTool } from '../sandbox-boundary-tool.js';
 import { FilesystemWorkerClientError } from '../filesystem-worker/client.js';
 import { SandboxCommandError } from '../sandbox/errors.js';
-import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
+import { ToolRuntime, type MakaTool, type ToolRuntimeInput } from '../tool-runtime.js';
 
 describe('ToolRuntime session sandbox boundary', () => {
-  test('treats an embedding without session authority as externally isolated', async () => {
-    let observed: ExecutionBoundary | undefined;
-    const runtime = new ToolRuntime({
-      sessionId: 'session-1',
-      header: header(),
-      connection: { providerType: 'openai', slug: 'test' } as never,
-      modelId: 'test',
-      appendMessage: async () => {},
-      newId: nextId(),
-      now: () => 1,
-      getPermissionPauseTarget: () => null,
-    });
-
-    const settlement = await runtime.settleToolCall({
-      tool: {
-        name: 'Read',
-        description: 'test',
-        parameters: {},
-        impl: (_input, context) => {
-          observed = context.executionBoundary;
-          return 'ok';
-        },
-      },
-      turnId: 'turn-1',
-      toolCallId: 'tool-1',
-      input: {},
-      abortSignal: new AbortController().signal,
-      eventSink: {
-        push: () => {},
-        pushAndWaitUntilConsumed: async () => {},
-      },
-    });
-
-    assert.equal(settlement.result, 'ok');
-    assert.deepEqual(observed, { kind: 'external', revision: 0 });
+  test('rejects an embedding without explicit execution boundary authority', () => {
+    assert.throws(
+      () =>
+        new ToolRuntime({
+          sessionId: 'session-1',
+          header: header(),
+          connection: { providerType: 'openai', slug: 'test' } as never,
+          modelId: 'test',
+          appendMessage: async () => {},
+          newId: nextId(),
+          now: () => 1,
+          getPermissionPauseTarget: () => null,
+        } as unknown as ToolRuntimeInput),
+      /explicit execution boundary authority/,
+    );
   });
 
   test('reads the authoritative boundary for every tool invocation', async () => {

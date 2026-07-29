@@ -1,3 +1,4 @@
+import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1152,7 +1153,7 @@ describe('subagent tools', () => {
 });
 
 function makeChildToolRuntime(cwd: string): ToolRuntime {
-  return new ToolRuntime({
+  return createTestToolRuntime({
     sessionId: 'session-1',
     header: childHeader(cwd),
     connection: testConnection(),

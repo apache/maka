@@ -1,3 +1,4 @@
+import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { SessionEvent } from '@maka/core/events';
@@ -35,7 +36,7 @@ describe('AskUserQuestion runtime round trip', () => {
     const appended: StoredMessage[] = [];
     const events: SessionEvent[] = [];
     let id = 0;
-    const runtime = new ToolRuntime({
+    const runtime = createTestToolRuntime({
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'c' } as never,
@@ -114,7 +115,7 @@ describe('AskUserQuestion runtime round trip', () => {
   test('turn abort rejects the parked tool and ignores a late response', async () => {
     const events: SessionEvent[] = [];
     let id = 0;
-    const runtime = new ToolRuntime({
+    const runtime = createTestToolRuntime({
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'c' } as never,

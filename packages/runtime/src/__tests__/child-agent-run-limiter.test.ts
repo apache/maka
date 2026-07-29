@@ -1,3 +1,4 @@
+import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { LlmConnection, SessionHeader } from '@maka/core';
@@ -296,7 +297,7 @@ function childSpec(index: number) {
 function buildRuntime(
   spawnChildAgent: NonNullable<ConstructorParameters<typeof ToolRuntime>[0]['spawnChildAgent']>,
 ): ToolRuntime {
-  return new ToolRuntime({
+  return createTestToolRuntime({
     sessionId: 'session-1',
     header: testHeader(),
     connection: testConnection(),

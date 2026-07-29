@@ -1,3 +1,4 @@
+import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { LlmConnection, SessionEvent, SessionHeader, ToolInvocationRecord } from '@maka/core';
@@ -1452,7 +1453,7 @@ function buildRuntime(
     recordToolInvocation?: ConstructorParameters<typeof ToolRuntime>[0]['recordToolInvocation'];
   } = {},
 ): ToolRuntime {
-  return new ToolRuntime({
+  return createTestToolRuntime({
     sessionId: 'session-1',
     header: testHeader(),
     connection: testConnection(),

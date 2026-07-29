@@ -1,3 +1,4 @@
+import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type {
@@ -18,7 +19,7 @@ test('Computer Use snapshots execution args and persists only the privacy summar
   const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
-  const runtime = new ToolRuntime({
+  const runtime = createTestToolRuntime({
     sessionId: 'session-1',
     header: header(),
     connection: connection(),
@@ -101,7 +102,7 @@ test('Computer Use validation failures still persist a redacted call and result'
   const messages: StoredMessage[] = [];
   const events: SessionEvent[] = [];
   const invocations: ToolInvocationRecord[] = [];
-  const runtime = new ToolRuntime({
+  const runtime = createTestToolRuntime({
     sessionId: 'session-1',
     header: header(),
     connection: connection(),

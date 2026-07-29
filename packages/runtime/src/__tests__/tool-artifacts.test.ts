@@ -1,3 +1,4 @@
+import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import { describe, test } from 'node:test';
 import type { LlmConnection, SessionHeader } from '@maka/core';
 import type { SessionEvent } from '@maka/core/events';
@@ -142,7 +143,7 @@ function makeToolRuntime(overrides: Partial<ToolRuntimeInput> = {}): {
   events: SessionEvent[];
 } {
   const events: SessionEvent[] = [];
-  const runtime = new ToolRuntime({
+  const runtime = createTestToolRuntime({
     sessionId: 'session-1',
     header: testHeader(),
     connection: testConnection(),

@@ -1,3 +1,4 @@
+import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { z } from 'zod';
@@ -53,7 +54,7 @@ function harness() {
   const calls: string[] = [];
   let stepId = 'step-1';
   let id = 0;
-  const runtime = new ToolRuntime({
+  const runtime = createTestToolRuntime({
     sessionId: 'session-1',
     header: header(),
     connection: { providerType: 'openai', slug: 'c' } as never,

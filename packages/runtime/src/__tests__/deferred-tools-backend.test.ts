@@ -30,6 +30,7 @@ import {
 } from '../subagent-tools.js';
 import { buildDeferredToolGroupsFromCatalog } from '../tool-catalog-derive.js';
 import { createDurableTurnHarness, drainWithDurableTurn } from './durable-turn-harness.js';
+import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 
 // End-to-end through the live AiSdkBackend: the availability config drives the
 // between-request activation, the durable seed reconstructs prior-turn
@@ -85,7 +86,7 @@ function backend(
 ): AiSdkBackend {
   let n = 0;
   const resolved = opts.toolAvailability === null ? undefined : (opts.toolAvailability ?? config);
-  return new AiSdkBackend({
+  return createTestAiSdkBackend({
     sessionId: 'session-1',
     header: header(),
     appendMessage: async () => {},
@@ -110,7 +111,7 @@ function agentBackend(
   let n = 0;
   const resolved =
     opts.toolAvailability === null ? undefined : (opts.toolAvailability ?? agentConfig);
-  return new AiSdkBackend({
+  return createTestAiSdkBackend({
     sessionId: 'session-1',
     header: header(opts.permissionMode),
     appendMessage: async () => {},

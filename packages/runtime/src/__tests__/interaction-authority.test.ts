@@ -1,3 +1,4 @@
+import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { SessionEvent } from '@maka/core/events';
@@ -404,7 +405,7 @@ function toolRuntime(
   getCurrentRunId: () => string | undefined = () => RUN.runId,
 ): ToolRuntime {
   let id = 0;
-  return new ToolRuntime({
+  return createTestToolRuntime({
     sessionId: RUN.sessionId,
     header: header(),
     connection: { providerType: 'openai', slug: 'c' } as never,

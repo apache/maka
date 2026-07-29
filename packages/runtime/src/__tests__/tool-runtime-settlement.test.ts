@@ -1,3 +1,4 @@
+import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { LlmConnection, SessionHeader } from '@maka/core';
@@ -309,7 +310,7 @@ describe('ToolRuntime settlement', () => {
 function makeRuntime(
   overrides: Pick<ToolRuntimeInput, 'materializeDefaultToolResultOutput'> = {},
 ): ToolRuntime {
-  return new ToolRuntime({
+  return createTestToolRuntime({
     sessionId: 'session-1',
     header: header(),
     connection: connection(),

@@ -43,6 +43,7 @@ import type {
 import type { BackendSendInput, BackendStopMode } from '@maka/core/backend-types';
 import { expect } from '../test-helpers.js';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
+import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 import type { LanguageModelV4StreamPart } from '@ai-sdk/provider';
 import { z } from 'zod';
 import type { LlmConnection } from '@maka/core';
@@ -16978,41 +16979,39 @@ async function steeringDeliverySession(
   const backends = new BackendRegistry();
   let manager!: SessionManager;
   let sessionId = '';
-  backends.register(
-    'fake',
-    (ctx) =>
-      new AiSdkBackend({
-        sessionId: ctx.sessionId,
-        header: ctx.header,
-        appendMessage: async () => {},
-        connection: {
-          slug: 'mock-main',
-          name: 'Mock',
-          providerType: 'anthropic',
-          defaultModel: 'mock-model-id',
-          enabled: true,
-          createdAt: 1,
-          updatedAt: 1,
-        } satisfies LlmConnection,
-        apiKey: 'sk-test',
-        modelId: 'mock-model-id',
-        modelFactory: () => model,
-        tools: [
-          {
-            name: 'Probe',
-            description: 'Probe description',
-            parameters: z.object({ q: z.string() }),
-            impl: async () => {
-              await duringTool(manager, sessionId);
-              return { ok: true };
-            },
+  backends.register('fake', (ctx) =>
+    createTestAiSdkBackend({
+      sessionId: ctx.sessionId,
+      header: ctx.header,
+      appendMessage: async () => {},
+      connection: {
+        slug: 'mock-main',
+        name: 'Mock',
+        providerType: 'anthropic',
+        defaultModel: 'mock-model-id',
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+      } satisfies LlmConnection,
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          name: 'Probe',
+          description: 'Probe description',
+          parameters: z.object({ q: z.string() }),
+          impl: async () => {
+            await duringTool(manager, sessionId);
+            return { ok: true };
           },
-        ],
-        loadTurnRuntimeEvents: ctx.loadTurnRuntimeEvents,
-        allowMidTurnHistoryCompaction: ctx.allowMidTurnHistoryCompaction,
-        newId: nextId(),
-        now: nextNow(1),
-      }),
+        },
+      ],
+      loadTurnRuntimeEvents: ctx.loadTurnRuntimeEvents,
+      allowMidTurnHistoryCompaction: ctx.allowMidTurnHistoryCompaction,
+      newId: nextId(),
+      now: nextNow(1),
+    }),
   );
   const managerDeps = {
     store,

@@ -22,6 +22,7 @@ import type {
 } from '../provider-request-telemetry.js';
 import { backfillRuntimeEventsFromStoredMessages } from '../runtime-event-backfill.js';
 import { createDurableTurnHarness } from './durable-turn-harness.js';
+import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 
 const servers: Array<{ close(): Promise<void> }> = [];
 
@@ -128,7 +129,7 @@ describe('Anthropic-compatible Computer Use product loops', () => {
         provider.apiProtocol,
         provider.expectedWireOutputLimit,
       );
-      const runtime = new AiSdkBackend({
+      const runtime = createTestAiSdkBackend({
         sessionId,
         header: header(provider.providerType, provider.modelId),
         appendMessage: async () => {},
@@ -259,7 +260,7 @@ describe('Anthropic-compatible Computer Use product loops', () => {
         backend: failingSemanticBackend(value),
       });
       const events: SessionEvent[] = [];
-      const runtime = new AiSdkBackend({
+      const runtime = createTestAiSdkBackend({
         sessionId,
         header: header(provider.providerType, provider.modelId),
         appendMessage: async () => {},
@@ -397,7 +398,7 @@ describe('Kimi OpenAI-compatible product loop', () => {
       newId: idGenerator(),
       now: monotonicClock(),
     });
-    const runtime = new AiSdkBackend({
+    const runtime = createTestAiSdkBackend({
       sessionId,
       header: header('kimi-coding-plan', 'k3'),
       appendMessage: async () => {},
@@ -479,7 +480,7 @@ describe('Kimi OpenAI-compatible product loop', () => {
       131_072,
     );
     const createRuntime = () =>
-      new AiSdkBackend({
+      createTestAiSdkBackend({
         sessionId,
         header: header('kimi-coding-plan', 'k3'),
         appendMessage: async (message) => {
@@ -598,7 +599,7 @@ describe('Kimi OpenAI-compatible product loop', () => {
       131_072,
     );
     const events: SessionEvent[] = [];
-    const runtime = new AiSdkBackend({
+    const runtime = createTestAiSdkBackend({
       sessionId,
       header: header('kimi-coding-plan', 'k3'),
       appendMessage: async () => {},

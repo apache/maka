@@ -11,6 +11,7 @@ import { AiSdkBackend } from '../ai-sdk-backend.js';
 import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
 import type { InvocationContext } from '../invocation-context.js';
 import type { HistoryCompactCheckpoint } from '../history-compact-checkpoint.js';
+import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 
 const RAW_SPAN_ONE = 'RAW_SPAN_ONE_'.repeat(24);
 const ANCHOR_TEXT = 'reactive overflow recovery keep my exact words';
@@ -390,7 +391,7 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
       }
     : {};
 
-  const backend = new AiSdkBackend({
+  const backend = createTestAiSdkBackend({
     sessionId: 'session-1',
     header: header(),
     appendMessage: async () => {
