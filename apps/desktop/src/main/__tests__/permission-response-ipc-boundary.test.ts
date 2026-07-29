@@ -7,7 +7,10 @@ import {
   readRendererShellSource,
   readRendererShellSources,
 } from './renderer-shell-source-helpers.js';
-import { readMainProcessCombinedSource } from './main-process-contract-source-helpers.js';
+import {
+  readMainProcessCombinedSource,
+  readSessionsIpcSource,
+} from './main-process-contract-source-helpers.js';
 
 import {
   normalizeBranchFromTurnInput,
@@ -390,6 +393,33 @@ describe('permission response IPC boundary', () => {
       shell,
       /listPendingSandboxBoundaryRequests/,
       'the renderer must not turn ownerless persisted rows into actionable prompts',
+    );
+  });
+
+  it('retires an answered e2e-fixture boundary request so a reload cannot revive it', async () => {
+    const sessionsIpc = await readSessionsIpcSource();
+    const listHandler =
+      sessionsIpc.match(
+        /ipcMain\.handle\('sessions:listActiveSandboxBoundaryRequests'[\s\S]*?\n  \}\);/,
+      )?.[0] ?? '';
+    const respondHandler =
+      sessionsIpc.match(/ipcMain\.handle\('sessions:respondToSandboxBoundary'[\s\S]*?\n  \}\);/)?.[0] ??
+      '';
+
+    // The fixture request is rebuilt from its scenario on every read, so unless
+    // the answer is remembered the prompt returns on the next hydration and
+    // retakes the composer slot. That made "does the composer come back after a
+    // reload" a coin flip between two in-flight IPC replies.
+    assert.match(respondHandler, /answeredFixtureSandboxBoundaryRequests\.add\(normalized\.requestId\)/);
+    assert.match(
+      listHandler,
+      /!answeredFixtureSandboxBoundaryRequests\.has\(fixtureRequest\.requestId\)/,
+    );
+    // Deny must retire it too: a decision that leaves the request pending is
+    // not a decision.
+    assert.doesNotMatch(
+      respondHandler,
+      /if \(normalized\.decision === 'allow'\) \{\s*answeredFixtureSandboxBoundaryRequests\.add/,
     );
   });
 

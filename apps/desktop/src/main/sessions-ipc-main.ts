@@ -334,9 +334,15 @@ export function registerSessionsIpc(
   ipcMain.handle('sessions:readExecutionBoundary', (_event, sessionId: string) =>
     runtime.readExecutionBoundary(sessionId),
   );
+  // The fixture's synthetic request is recomputed from its scenario on every
+  // read, so answering it cannot retire it the way a real request retires
+  // itself in the store. Without somewhere to remember the answer, the prompt
+  // comes back on the next hydration — after a renderer reload, say — and the
+  // fixture models a request the user is never allowed to finish answering.
+  const answeredFixtureSandboxBoundaryRequests = new Set<string>();
   ipcMain.handle('sessions:listActiveSandboxBoundaryRequests', (_event, sessionId: string) => {
     const fixtureRequest = getE2eFixtureState(e2eFixture)?.sandboxBoundaryBySession?.[sessionId];
-    return fixtureRequest
+    return fixtureRequest && !answeredFixtureSandboxBoundaryRequests.has(fixtureRequest.requestId)
       ? [fixtureRequest]
       : runtime.listActiveSandboxBoundaryRequests(sessionId);
   });
@@ -347,7 +353,10 @@ export function registerSessionsIpc(
       // The fixture request is synthetic — no runtime turn is waiting on it —
       // but allowing it must still move the real boundary, or the fixture
       // would model an "allow" that grants nothing and no surface built on the
-      // boundary could be exercised against it (#1611).
+      // boundary could be exercised against it (#1611). Answering it must also
+      // settle it, for the same reason: a decision that leaves the request
+      // pending is not a decision.
+      answeredFixtureSandboxBoundaryRequests.add(normalized.requestId);
       if (normalized.decision === 'allow') {
         await applyFixtureSandboxBoundaryExpansion(store, sessionId, fixtureRequest.expansion);
       }

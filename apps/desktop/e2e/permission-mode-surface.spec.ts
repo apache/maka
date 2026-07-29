@@ -69,12 +69,18 @@ test('approving an expansion updates the permission label at once and after a re
   // the user this session cannot write, right after they let it.
   await expect(trigger).toHaveText('自动');
 
-  // And it is the boundary saying so, not renderer state: it survives a reload.
-  // #1629: a reload also re-reads the boundary from scratch, and the composer
-  // stays hidden until that read lands. One rejection used to end it there for
-  // good; a failed read is now retried and, if it still cannot be read, says so
-  // instead of leaving an empty window — so the composer coming back with no
-  // notice is the whole recovery path holding.
+  // And it is the boundary saying so, not renderer state: it survives a reload,
+  // where the renderer starts from nothing and has to read the boundary again.
+  // The notice assertion adds that the composer came back because that read
+  // landed, not because the surface gave up and fell open. It does NOT exercise
+  // the retry — nothing rejects here — which the read model's own tests cover
+  // deterministically (#1629).
+  //
+  // The composer returning is only a stable expectation because answering the
+  // fixture's request now settles it: while an answered request kept coming
+  // back on every hydration, whether the composer or the prompt won this frame
+  // was a coin flip, and that was the real cause of the CI timeout that #1630
+  // removed this half over.
   await page.reload();
   await expect(page.locator('.maka-composer-textarea')).toBeVisible();
   await expect(page.locator('.maka-boundary-unreadable-notice')).toHaveCount(0);
