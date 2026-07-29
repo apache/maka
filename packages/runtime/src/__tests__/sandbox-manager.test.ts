@@ -64,6 +64,18 @@ describe('SandboxManager.shouldSandbox', () => {
     assert.equal(manager.shouldSandbox({ type: 'disabled', name: 'disabled' }, 'auto'), false);
   });
 
+  it('requires a sandbox when only process network remains restricted', () => {
+    const manager = new SandboxManager();
+    const profile: PermissionProfile = {
+      type: 'managed',
+      name: 'network-only',
+      fileSystem: { kind: 'unrestricted', entries: [] },
+      network: { kind: 'restricted' },
+    };
+
+    assert.equal(manager.shouldSandbox(profile, 'auto'), true);
+  });
+
   it('honors require and forbid preference overrides', () => {
     const manager = new SandboxManager();
 

@@ -825,6 +825,43 @@ describe('builtin Bash streaming output', () => {
     expect(calls.length).toBe(0);
   });
 
+  test('fails closed for an authoritative managed boundary without a sandbox manager', async () => {
+    const calls: WorkspaceExecInput[] = [];
+    const executor = fakeExecutor({
+      exec: async (input) => {
+        calls.push(input);
+        return { exitCode: 0, stdout: 'host', stderr: '', timedOut: false, aborted: false };
+      },
+    });
+    const bash = buildBuiltinTools({ executor }).find((candidate) => candidate.name === 'Bash');
+    if (!bash) throw new Error('Bash tool missing');
+
+    await assert.rejects(
+      async () => {
+        await bash.impl(
+          { command: 'echo host' },
+          {
+            sessionId: 'session-1',
+            turnId: 'turn-1',
+            toolCallId: 'tool-1',
+            cwd: '/workspace',
+            permissionMode: 'bypass',
+            executionBoundary: {
+              kind: 'managed',
+              revision: 0,
+              profile: createWorkspaceWritePermissionProfile(),
+            },
+            abortSignal: new AbortController().signal,
+            emitOutput: () => {},
+          },
+        );
+      },
+      (error: unknown) =>
+        error instanceof SandboxCommandError && error.reason === 'requires_bypass',
+    );
+    expect(calls).toHaveLength(0);
+  });
+
   test('applies the session boundary to the macOS sandbox argv without one-call permission arguments', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-bash-additional-'));
     try {

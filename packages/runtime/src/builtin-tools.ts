@@ -46,7 +46,7 @@ import {
 import type { MakaTool, MakaToolContext } from './tool-runtime.js';
 export type { MakaTool, MakaToolContext };
 import { withFileWriteLock } from './file-write-lock.js';
-import type { SandboxManager } from './sandbox/sandbox-manager.js';
+import { profileRequiresSandbox, type SandboxManager } from './sandbox/sandbox-manager.js';
 import { SandboxCommandError } from './sandbox/errors.js';
 import { isLikelySandboxDenial } from './sandbox/detect.js';
 import { linuxExecutableRoots } from './sandbox/linux-sandbox.js';
@@ -579,6 +579,9 @@ function filesystemWorkerForExecution(
   worker: Pick<FilesystemWorkerClient, 'execute'> | undefined,
   ctx: MakaToolContext,
 ): Pick<FilesystemWorkerClient, 'execute'> | undefined {
+  if (ctx.executionBoundary?.kind === 'bypass' || ctx.executionBoundary?.kind === 'external') {
+    return undefined;
+  }
   if (worker) return worker;
   if (ctx.executionBoundary?.kind !== 'managed') return undefined;
   throw new SandboxCommandError({
@@ -626,6 +629,21 @@ function buildExecutorBashTool(
       preflightDeclaredSandboxBoundary(required_boundary, ctx);
       const { cwd, abortSignal, emitOutput } = ctx;
       const timeout = timeout_ms ?? 120_000;
+      if (
+        !sandboxOptions.sandboxManager &&
+        ctx.executionBoundary?.kind === 'managed' &&
+        profileRequiresSandbox(ctx.executionBoundary.profile)
+      ) {
+        throw new SandboxCommandError({
+          domain: 'command',
+          stage: 'capability',
+          reason: 'requires_bypass',
+          recoverable: false,
+          profileName: ctx.executionBoundary.profile.name ?? ctx.executionBoundary.profile.type,
+          message:
+            'Managed Bash execution is unavailable because a command sandbox cannot be enforced.',
+        });
+      }
       const transformed = sandboxOptions.sandboxManager
         ? sandboxCommand(
             sandboxOptions.sandboxManager,
@@ -950,10 +968,6 @@ function completePreparedExactWriteTargets(targets: readonly PreparedExactWriteT
       // The target was already removed or changed; never delete an unverified replacement.
     }
   }
-}
-
-function profileRequiresSandbox(profile: PermissionProfile): boolean {
-  return profile.type === 'managed' && profile.fileSystem.kind === 'restricted';
 }
 
 function canonicalExistingPath(path: string): string {

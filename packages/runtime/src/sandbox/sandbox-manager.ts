@@ -159,7 +159,7 @@ export class SandboxManager {
   }
 }
 
-function profileRequiresSandbox(profile: PermissionProfile): boolean {
+export function profileRequiresSandbox(profile: PermissionProfile): boolean {
   if (profile.type !== 'managed') return false;
-  return profile.fileSystem.kind === 'restricted';
+  return profile.fileSystem.kind === 'restricted' || profile.network.kind === 'restricted';
 }

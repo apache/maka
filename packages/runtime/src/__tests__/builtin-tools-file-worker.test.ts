@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, parse } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
@@ -37,6 +37,40 @@ describe('builtin file tools use the sandboxed worker', () => {
     });
     assert.ok(linuxTools.find((tool) => tool.name === 'Write'));
   });
+
+  for (const kind of ['bypass', 'external'] as const) {
+    test(`uses the host filesystem path for an authoritative ${kind} boundary`, async () => {
+      const cwd = await temporaryDirectory(`maka-file-${kind}-`);
+      let workerCalled = false;
+      const tools = buildBuiltinTools({
+        filesystemWorker: {
+          execute: async () => {
+            workerCalled = true;
+            throw new Error('sandbox worker must not receive non-managed execution');
+          },
+        },
+      });
+      const tool = tools.find((candidate) => candidate.name === 'Write');
+      if (!tool) throw new Error('Write tool missing');
+
+      await tool.impl(
+        { path: 'written.txt', content: kind },
+        {
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          toolCallId: `tool-${kind}`,
+          cwd,
+          permissionMode: 'explore',
+          executionBoundary: { kind, revision: 1 },
+          abortSignal: new AbortController().signal,
+          emitOutput: () => {},
+        },
+      );
+
+      assert.equal(workerCalled, false);
+      assert.equal(await readFile(join(cwd, 'written.txt'), 'utf8'), kind);
+    });
+  }
 
   test('forwards the current session boundary to every worker operation', async () => {
     const cwd = await temporaryDirectory('maka-file-worker-cwd-');
