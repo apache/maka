@@ -26,7 +26,7 @@
 
 import { lstat, open, readdir, realpath, stat, type FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
   FOREIGN_SESSION_DIGEST_MAX_READ_BYTES,
   FOREIGN_SESSION_HEAD_BYTES,
@@ -545,14 +545,14 @@ async function probeTouchedFile(
     // report an honest `missing` for in-scope paths.
     try {
       const realParent = await realpath(dirname(candidate));
-      return isInside(realCwd, join(realParent, basename(candidate)))
+      return isInsideOrSamePath(realCwd, join(realParent, basename(candidate)))
         ? { status: 'missing' }
         : { status: 'out_of_scope' };
     } catch {
       return { status: 'missing' };
     }
   }
-  if (!isInside(realCwd, real)) return { status: 'out_of_scope' };
+  if (!isInsideOrSamePath(realCwd, real)) return { status: 'out_of_scope' };
   try {
     const st = await stat(real);
     return st.isFile() ? { status: 'ok', mtimeMs: st.mtimeMs } : { status: 'unreadable' };
@@ -561,8 +561,20 @@ async function probeTouchedFile(
   }
 }
 
-function isInside(rootReal: string, pathReal: string): boolean {
-  return pathReal === rootReal || pathReal.startsWith(rootReal + sep);
+/** Same strict-interior recipe as artifact-store.ts / session-metadata-
+ *  maintenance.ts (the family the containment-guard contract allows in
+ *  packages that cannot import @maka/runtime's isPathInside). Inputs here
+ *  are realpath-resolved absolute paths. */
+function isInsideOrSamePath(root: string, target: string): boolean {
+  if (target === root) return true;
+  const rel = relative(root, target);
+  return (
+    rel !== '' &&
+    !rel.startsWith('..') &&
+    rel !== '..' &&
+    !rel.includes(`..${sep}`) &&
+    !rel.startsWith(sep)
+  );
 }
 
 function isNotFound(error: unknown): boolean {
