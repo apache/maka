@@ -51,8 +51,15 @@ export function createTurnSizeWarmup(options: {
   chunkSize?: number;
   scheduler?: WarmupScheduler;
   /**
-   * The moment transcript geometry stops moving: the queue has drained and the
-   * last chunk has been released.
+   * The moment this walk is done: the queue has drained and the last chunk has
+   * been released.
+   *
+   * Scoped to the turns `turns()` returned when the walk was created — the
+   * queue is snapshotted once, below. A turn that appears afterwards is not
+   * walked and does not hold this back, so this says "every turn I was given
+   * has its final-layout size", not "the transcript will never move again".
+   * Warming a growing transcript would need a walk per batch, which nothing
+   * asks for: turns that arrive later arrive rendered.
    *
    * The walk is the only thing that knows this. From outside, the end looks
    * exactly like the idle gap between two chunks — no chunk is forced, and the

@@ -53,9 +53,11 @@ export function useChatScroll(input: {
     const root = viewportRef.current;
     if (!root) return;
     // Publish the walk's phase on the scroller. Until the markdown pipeline
-    // has landed and the warm-up has walked every turn, this scroller's
-    // geometry is still a placeholder-scale estimate, and nothing outside can
-    // tell that apart from a pause between chunks.
+    // has landed and the warm-up has walked the turns it started with, this
+    // scroller's geometry is still a placeholder-scale estimate, and nothing
+    // outside can tell that apart from a pause between chunks. `settled` is
+    // therefore about the transcript the walk was handed, not about turns that
+    // stream in after it — those arrive already rendered.
     //
     // Claimed before the `hasTurns` bail and dropped on teardown, so the only
     // states this element can be observed in are `running`, a `settled` that
