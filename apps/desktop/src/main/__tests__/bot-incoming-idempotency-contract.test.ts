@@ -125,9 +125,15 @@ describe('Bot incoming idempotency contract (PR-BOT-INCOMING-IDEMPOTENCY-0)', ()
       block.indexOf('ensureBotSessionExploreMode(sessionId, message, SYSTEM_NOTICE_TTL_MS)') < block.indexOf('runtime.sendMessage'),
       'existing bot sessions must be forced/refused before runtime.sendMessage',
     );
-    assert.match(guard![0], /const header = await (?:store\.readHeader|deps\.readSessionHeader)\(sessionId\)/);
-    assert.match(guard![0], /if \(header\.permissionMode === 'explore'\) return true;/);
-    assert.match(guard![0], /await (?:runtime|deps\.runtime)\.updateSession\(sessionId, \{ permissionMode: 'explore' \}\);[\s\S]*return true;/);
+    assert.match(
+      guard![0],
+      /await (?:runtime|deps\.runtime)\.setPermissionMode\(sessionId, 'explore'\);[\s\S]*return true;/,
+    );
+    assert.doesNotMatch(
+      guard![0],
+      /updateSession\(sessionId, \{ permissionMode: 'explore' \}\)/,
+      'bot read-only enforcement must update the authoritative boundary, not only its header projection',
+    );
     assert.match(guard![0], /catch \{[\s\S]*sendTransientBotNotice[\s\S]*return false;/);
   });
 });

@@ -1196,9 +1196,7 @@ const { normalizeSettingsPatch, applySettingsRuntimeEffects, handleExternalSetti
     botRegistry,
     openGateway,
     keepSystemAwake,
-    runtime,
     safeSendToRenderer,
-    emitSessionsChanged,
   });
 
 const streamEvents = createSessionStreamer({
