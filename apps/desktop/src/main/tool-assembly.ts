@@ -208,8 +208,6 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
       ...(sandboxManager ? { sandboxManager } : {}),
       ...(filesystemWorker ? {
         filesystemWorker,
-        enableBashAdditionalPermissions: true,
-        enableFileToolAdditionalPermissions: true,
       } : {}),
     }),
   ];
@@ -275,8 +273,6 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
       ...(sandboxManager ? { sandboxManager } : {}),
       ...(filesystemWorker ? {
         filesystemWorker,
-        enableBashAdditionalPermissions: true,
-        enableFileToolAdditionalPermissions: true,
       } : {}),
     }),
     webSearchTool,

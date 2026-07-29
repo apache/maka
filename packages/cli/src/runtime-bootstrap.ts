@@ -299,8 +299,6 @@ export async function createMakaCliRuntimeContext(
     ...(filesystemWorker
       ? {
           filesystemWorker,
-          enableBashAdditionalPermissions: true,
-          enableFileToolAdditionalPermissions: true,
         }
       : {}),
   });
@@ -317,8 +315,6 @@ export async function createMakaCliRuntimeContext(
           ...(filesystemWorker
             ? {
                 filesystemWorker,
-                enableBashAdditionalPermissions: true,
-                enableFileToolAdditionalPermissions: true,
               }
             : {}),
         }),

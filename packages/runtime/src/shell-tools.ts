@@ -127,7 +127,6 @@ export function buildManagedBashTool(
   options: {
     executionFacts?: ToolExecutionFacts;
     shell?: ShellPlan;
-    sandbox?: MakaTool['sandbox'];
     transformCommand?: (input: { command: string; pty: boolean; ctx: MakaToolContext }) =>
       | {
           argv?: readonly string[];
@@ -182,7 +181,6 @@ export function buildManagedBashTool(
       }),
     toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     ...(options.executionFacts ? { executionFacts: options.executionFacts } : {}),
-    ...(options.sandbox ? { sandbox: options.sandbox } : {}),
     impl: async ({ command, timeout_ms, run_in_background, pty }, ctx) => {
       const transformed = options.transformCommand?.({ command, pty: pty === true, ctx });
       const onCompletion = onceCompletion(transformed?.onCompletion);

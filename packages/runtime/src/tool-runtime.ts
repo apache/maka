@@ -118,14 +118,6 @@ export interface MakaTool<P = any, R = unknown> {
     args: P,
     context: Pick<MakaToolContext, 'sessionId' | 'turnId' | 'toolCallId'>,
   ) => unknown;
-  /** Optional trusted platform sandbox availability for this tool. */
-  sandbox?:
-    | {
-        platformSandboxAvailable: boolean;
-      }
-    | ((context: { permissionMode: PermissionMode; cwd: string; args: P }) => {
-        platformSandboxAvailable: boolean;
-      });
   /** Real tool implementation. */
   impl: (args: P, ctx: MakaToolContext) => Promise<R> | R;
   /** Optional provider-visible content mapping, used for screenshot image parts. */

@@ -443,15 +443,6 @@ describe('builtin Bash streaming output', () => {
     expect(calls[0]?.argv?.[0]).toBe('/usr/bin/bwrap');
     expect(calls[0]?.argv?.slice(-3)).toEqual(['/bin/sh', '-c', 'node --version']);
     expect(calls[0]?.fdInputs?.[0]?.fd).toBe(3);
-    expect(typeof bash.sandbox).toBe('function');
-    if (typeof bash.sandbox !== 'function') throw new Error('dynamic sandbox metadata missing');
-    expect(
-      bash.sandbox({
-        permissionMode: 'execute',
-        cwd: '/workspace',
-        args: { command: 'node --version' },
-      }),
-    ).toEqual({ platformSandboxAvailable: true });
   });
 
   test('pins a missing exact-write target and removes an untouched successful placeholder', async () => {
@@ -702,15 +693,6 @@ describe('builtin Bash streaming output', () => {
     expect(calls[0]?.fdInputs).toBe(undefined);
     expect(Boolean(calls[0]?.shell)).toBe(true);
     expect(calls[0]?.sandboxType).toBe(undefined);
-    expect(typeof bash.sandbox).toBe('function');
-    if (typeof bash.sandbox !== 'function') throw new Error('dynamic sandbox metadata missing');
-    expect(
-      bash.sandbox({
-        permissionMode: 'execute',
-        cwd: '/workspace',
-        args: { command: 'bash', run_in_background: true, pty: true },
-      }),
-    ).toEqual({ platformSandboxAvailable: false });
   });
 
   test('fails closed when a required command sandbox is unavailable', async () => {
@@ -762,15 +744,6 @@ describe('builtin Bash streaming output', () => {
     }, /sandbox is required but unavailable/);
 
     expect(calls.length).toBe(0);
-    expect(typeof bash.sandbox).toBe('function');
-    if (typeof bash.sandbox !== 'function') throw new Error('dynamic sandbox metadata missing');
-    expect(
-      bash.sandbox({
-        permissionMode: 'execute',
-        cwd: '/workspace',
-        args: { command: 'echo host' },
-      }),
-    ).toEqual({ platformSandboxAvailable: false });
   });
 
   test('applies the session boundary to the macOS sandbox argv without one-call permission arguments', async () => {

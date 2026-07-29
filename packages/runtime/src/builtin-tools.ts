@@ -166,11 +166,6 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
           shell,
           ...(options.sandboxManager
             ? {
-                sandbox: sandboxAvailabilityResolver(
-                  options.sandboxManager,
-                  options.permissionProfile,
-                  sandboxPlatform,
-                ),
                 transformCommand: ({ command, pty, ctx }) =>
                   sandboxCommand(
                     options.sandboxManager!,
@@ -595,24 +590,6 @@ function buildExecutorBashTool(
       .strict(),
     toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     executionFacts: executor.facts,
-    ...(sandboxOptions.sandboxManager
-      ? {
-          sandbox: sandboxAvailabilityResolver(
-            sandboxOptions.sandboxManager,
-            sandboxOptions.permissionProfile,
-            sandboxOptions.sandboxPlatform,
-          ),
-        }
-      : {}),
-    ...(sandboxOptions.sandboxManager
-      ? {
-          sandbox: sandboxAvailabilityResolver(
-            sandboxOptions.sandboxManager,
-            sandboxOptions.permissionProfile,
-            sandboxOptions.sandboxPlatform,
-          ),
-        }
-      : {}),
     impl: async ({ command, timeout_ms }, ctx) => {
       const { cwd, abortSignal, emitOutput } = ctx;
       const timeout = timeout_ms ?? 120_000;
@@ -662,25 +639,6 @@ function buildExecutorBashTool(
         transformed?.onCompletion?.({ successful });
       }
     },
-  };
-}
-
-function sandboxAvailabilityResolver(
-  manager: SandboxManager,
-  explicitProfile: PermissionProfile | undefined,
-  platform: SandboxPlatform,
-): NonNullable<MakaTool['sandbox']> {
-  return ({ permissionMode, cwd, args }) => {
-    const effective = effectivePermissionProfile(explicitProfile, permissionMode, cwd);
-    if (isPtyBashArgs(args) && profileRequiresSandbox(effective.profile)) {
-      return { platformSandboxAvailable: false };
-    }
-    return {
-      platformSandboxAvailable: manager.canEnforce({
-        profile: effective.profile,
-        platform,
-      }),
-    };
   };
 }
 
@@ -1000,10 +958,6 @@ async function fileToolWriteLockKey(cwd: string, path: string): Promise<string> 
     cwd,
   });
   return target.enforcementPath;
-}
-
-function isPtyBashArgs(args: unknown): boolean {
-  return typeof args === 'object' && args !== null && (args as { pty?: unknown }).pty === true;
 }
 
 function terminalError(
