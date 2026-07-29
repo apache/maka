@@ -16,7 +16,7 @@ import type { ComposerHandle, ComposerInteraction } from '@maka/ui';
  * surface cannot know what the session may do — but "hidden" on its own reads
  * as a broken window, so the slot says what happened and offers another read.
  */
-export interface BoundaryUnreadableNotice {
+interface BoundaryUnreadableNotice {
   title: string;
   detail: string;
   retryLabel: string;

@@ -1114,8 +1114,7 @@ const SHELL_COPY_BY_LOCALE = {
       loading: '加载中',
       goToModels: '去模型',
       boundaryUnreadableTitle: '暂时读不到这个对话的权限',
-      boundaryUnreadableDetail:
-        '在读到之前，这里不能输入，以免执行你没有允许的操作。可以重试，或先切换到别的对话。',
+      boundaryUnreadableDetail: '在读到之前，这里暂时不能输入。可以重试，或先切换到别的对话。',
       boundaryUnreadableRetry: '重试',
       boundaryUnreadableRetrying: '重试中…',
       permissionModeChanging: '权限模式正在切换，完成后再继续操作。',
@@ -1640,7 +1639,7 @@ const SHELL_COPY_BY_LOCALE = {
       goToModels: 'Go to Models',
       boundaryUnreadableTitle: 'Could not read this conversation’s permissions',
       boundaryUnreadableDetail:
-        'Until they are read, you cannot type here, so nothing runs that you have not allowed. Try again, or switch to another conversation.',
+        'Until they can be read, you cannot type here. Try again, or switch to another conversation.',
       boundaryUnreadableRetry: 'Try again',
       boundaryUnreadableRetrying: 'Trying again…',
       permissionModeChanging: 'The permission mode is changing. Wait for it to finish before continuing.',
