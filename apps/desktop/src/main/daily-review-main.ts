@@ -46,6 +46,7 @@ interface DailyReviewMainServiceDeps {
   archiveStore: DailyReviewArchiveStore;
   connectionStore: ConnectionStore;
   telemetryRepo: TelemetryRepo;
+  ensureUsageReady(): Promise<void>;
   listSessions(): Promise<readonly SessionSummary[]>;
   resolveConnectionSecret(slug: string): Promise<string | null>;
   buildSubscriptionModelFetch(
@@ -60,6 +61,7 @@ export function createDailyReviewMainService(deps: DailyReviewMainServiceDeps): 
   let schedulerLastMinuteKey: string | null = null;
 
   async function buildSummaryForRange(offsetDays: number, daySpan: number): Promise<DailyReviewSummary> {
+    await deps.ensureUsageReady();
     const offset = Number.isFinite(offsetDays) ? Math.trunc(offsetDays) : 0;
     const rawSpan = Number.isFinite(daySpan) ? Math.trunc(daySpan) : 1;
     const span = Math.max(1, Math.min(30, rawSpan));

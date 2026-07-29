@@ -1,0 +1,733 @@
+import assert from 'node:assert/strict';
+import { lstat, mkdir, mkdtemp, open, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, mock, test } from 'node:test';
+import { PRICING_MODEL_KEY_MAX_CHARS } from '@maka/core/usage-stats/pricing';
+import type { PricingConfig } from '@maka/core/usage-stats/types';
+import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
+import {
+  createHeadlessRootLease,
+  resolveRootControlNamespace,
+  resolveStorageRoot,
+  StorageRootAuthorityError,
+  tryAcquireInteractiveRootOwner,
+  type StorageRootLease,
+  type InteractiveRootOwner,
+} from '@maka/storage/root-authority';
+import { connectRuntimeHost, type RuntimeHostConnection } from '../client/index.js';
+import {
+  RUNTIME_HOST_PROTOCOL_VERSION,
+  type ClientSurface,
+  type PricingQueryResult,
+} from '../protocol/index.js';
+import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
+import { RuntimeHostKernel } from '../server/index.js';
+import type { ConnectionContext } from '../server/operation-dispatcher.js';
+import { HostUsagePricingCoordinator } from '../server/usage-pricing-coordinator.js';
+
+const PROTOCOL = {
+  min: RUNTIME_HOST_PROTOCOL_VERSION,
+  max: RUNTIME_HOST_PROTOCOL_VERSION,
+} as const;
+const REQUEST_TIMEOUT_MS = 5_000;
+const CONNECTION_CONTEXT: ConnectionContext = {
+  hostEpoch: 'usage-pricing-test',
+  connectionId: 'usage-pricing-test-connection',
+  surface: 'tui',
+  principal: 'local_os_user',
+  acquireResidency: () => ({ release() {} }),
+};
+
+test('Headless root leases cannot open the Interactive usage authority', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-usage-pricing-headless-'));
+  try {
+    const capability = await resolveStorageRoot({
+      path: join(base, 'headless-root'),
+      kind: 'headless',
+    });
+    const headlessLease = createHeadlessRootLease(capability, 'write');
+    await assert.rejects(
+      openInteractiveUsageStoresForWrite(
+        headlessLease as unknown as StorageRootLease<'interactive', 'write'>,
+      ),
+      (error: unknown) =>
+        error instanceof StorageRootAuthorityError && error.code === 'invalid_lease',
+    );
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('usage authority drain rejects a new pricing mutation with typed lifecycle failure', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-usage-pricing-drain-'));
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive-root'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner, 'test must acquire the real Interactive write lease');
+  try {
+    const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+    let drainRequests = 0;
+    const coordinator = new HostUsagePricingCoordinator(stores, () => {
+      drainRequests += 1;
+    });
+    await stores.beginDrain();
+    assert.deepEqual(
+      await coordinator.handlers['pricing.mutate'](
+        {
+          expectedRevision: 0,
+          mutation: { kind: 'upsert', pricing: pricing('provider:model', 1) },
+        },
+        CONNECTION_CONTEXT,
+      ),
+      {
+        ok: false,
+        error: { code: 'host_draining', message: 'Runtime Host is draining' },
+      },
+    );
+    assert.equal(drainRequests, 0);
+    await stores.close();
+  } finally {
+    await owner.close();
+    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+      recursive: true,
+      force: true,
+    });
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('pricing commit-unknown requests drain before the typed failure and poisoned read', {
+  skip: process.platform === 'win32',
+}, async () => {
+  await withUsageAuthority('pricing-commit-unknown', async ({ root, stores }) => {
+    let drainRequests = 0;
+    const coordinator = new HostUsagePricingCoordinator(stores, () => {
+      drainRequests += 1;
+    });
+    const restoreSync = await failNextDirectorySync(root);
+    let mutation;
+    try {
+      mutation = await coordinator.handlers['pricing.mutate'](
+        {
+          expectedRevision: 0,
+          mutation: { kind: 'upsert', pricing: pricing('provider:unknown', 1) },
+        },
+        CONNECTION_CONTEXT,
+      );
+    } finally {
+      restoreSync();
+    }
+    assert.deepEqual(mutation, {
+      ok: false,
+      error: {
+        code: 'commit_outcome_unknown',
+        message: 'Pricing mutation commit outcome is unknown',
+      },
+    });
+    assert.equal(drainRequests, 1);
+    assert.deepEqual(
+      await coordinator.handlers['pricing.query']({ kind: 'start' }, CONNECTION_CONTEXT),
+      {
+        ok: false,
+        error: {
+          code: 'persistence_failed',
+          message: 'Pricing authority persistence failed',
+        },
+      },
+    );
+    assert.equal(drainRequests, 1);
+  });
+});
+
+test('pricing publication failure requests drain while expected failures do not', async () => {
+  await withUsageAuthority('pricing-publication', async ({ root, stores }) => {
+    let drainRequests = 0;
+    const coordinator = new HostUsagePricingCoordinator(stores, () => {
+      drainRequests += 1;
+    });
+    assert.deepEqual(
+      await coordinator.handlers['pricing.mutate'](
+        {
+          expectedRevision: 1,
+          mutation: { kind: 'delete', modelKey: 'provider:missing' },
+        },
+        CONNECTION_CONTEXT,
+      ),
+      {
+        ok: true,
+        result: {
+          kind: 'revision_conflict',
+          expectedRevision: 1,
+          actualRevision: 0,
+        },
+      },
+    );
+    assert.deepEqual(
+      await coordinator.handlers['pricing.mutate'](
+        {
+          expectedRevision: 0,
+          mutation: {
+            kind: 'upsert',
+            pricing: { ...pricing('provider:invalid', 1), inputUsdPer1M: -1 },
+          },
+        },
+        CONNECTION_CONTEXT,
+      ),
+      {
+        ok: false,
+        error: { code: 'invalid_request', message: 'Pricing mutation is invalid' },
+      },
+    );
+    assert.equal(drainRequests, 0);
+    assert.deepEqual(
+      await coordinator.handlers['usage.query'](
+        {
+          kind: 'logs',
+          source: 'llm',
+          query: { range: 'all' },
+          offset: 1,
+        },
+        CONNECTION_CONTEXT,
+      ),
+      {
+        ok: false,
+        error: { code: 'invalid_request', message: 'Usage offset is invalid' },
+      },
+    );
+    assert.equal(drainRequests, 0);
+
+    await rm(join(root, 'pricing.json'));
+    await mkdir(join(root, 'pricing.json'));
+    assert.deepEqual(
+      await coordinator.handlers['pricing.mutate'](
+        {
+          expectedRevision: 0,
+          mutation: { kind: 'upsert', pricing: pricing('provider:publication', 1) },
+        },
+        CONNECTION_CONTEXT,
+      ),
+      {
+        ok: false,
+        error: {
+          code: 'persistence_failed',
+          message: 'Pricing authority persistence failed',
+        },
+      },
+    );
+    assert.equal(drainRequests, 1);
+  });
+});
+
+test('telemetry poisoned read fails closed and requests drain once', {
+  skip: process.platform === 'win32',
+}, async () => {
+  await withUsageAuthority('telemetry-commit-unknown', async ({ root, stores }) => {
+    let drainRequests = 0;
+    const coordinator = new HostUsagePricingCoordinator(stores, () => {
+      drainRequests += 1;
+    });
+    const restoreSync = await failNextDirectorySync(root);
+    try {
+      await assert.rejects(stores.telemetry.recordToolInvocation(toolRecord('tool-poison', 30)));
+    } finally {
+      restoreSync();
+    }
+    const query = {
+      kind: 'logs',
+      source: 'tool',
+      query: { range: 'all' },
+    } as const;
+    const expected = {
+      ok: false,
+      error: {
+        code: 'persistence_failed',
+        message: 'Usage authority persistence failed',
+      },
+    } as const;
+    assert.deepEqual(
+      await coordinator.handlers['usage.query'](query, CONNECTION_CONTEXT),
+      expected,
+    );
+    assert.equal(drainRequests, 1);
+    assert.deepEqual(
+      await coordinator.handlers['usage.query'](query, CONNECTION_CONTEXT),
+      expected,
+    );
+    assert.equal(drainRequests, 1);
+  });
+});
+
+describe('production Usage/Pricing UDS', () => {
+  test('two clients share usage projection and one revision-CAS pricing authority', {
+    skip: process.platform === 'win32',
+    timeout: 60_000,
+  }, async () => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-usage-pricing-two-client-'));
+    const root = join(base, 'root');
+    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+    let host: RuntimeHostKernel | undefined;
+    let successor: RuntimeHostKernel | undefined;
+    let firstOwner: InteractiveRootOwner | undefined;
+    let successorOwner: InteractiveRootOwner | undefined;
+    let preHostUsageStores:
+      | Awaited<ReturnType<typeof openInteractiveUsageStoresForWrite>>
+      | undefined;
+    const clients: RuntimeHostConnection[] = [];
+    let endpoint: string | undefined;
+
+    try {
+      firstOwner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(firstOwner, 'test must acquire the real Interactive write lease');
+      preHostUsageStores = await openInteractiveUsageStoresForWrite(firstOwner.lease);
+      await Promise.all([
+        preHostUsageStores.telemetry.recordLlmCall(usageRecord('usage-a', 10, 'openai', 'gpt-a')),
+        preHostUsageStores.telemetry.recordLlmCall(
+          usageRecord('usage-b', 20, 'anthropic', 'claude-b', 'error'),
+        ),
+        preHostUsageStores.telemetry.recordToolInvocation(toolRecord('tool-a', 30)),
+      ]);
+      host = await RuntimeHostKernel.start({
+        owner: firstOwner,
+        idleGraceMs: 30_000,
+        compositionFactory: createExecutionRuntimeHostComposition,
+      });
+      firstOwner = undefined;
+      preHostUsageStores = undefined;
+      endpoint = host.endpoint;
+
+      const [desktop, tui] = await Promise.all([
+        connectClient(root, 'desktop'),
+        connectClient(root, 'tui'),
+      ]);
+      clients.push(desktop, tui);
+      const [desktopUsage, tuiUsage] = await Promise.all([readUsage(desktop), readUsage(tui)]);
+      assert.deepEqual(tuiUsage, desktopUsage);
+      assert.equal(desktopUsage.summary.kind, 'summary');
+      assert.equal(desktopUsage.summary.summary.totalRequests, 2);
+      assert.equal(desktopUsage.buckets.kind, 'buckets');
+      assert.equal(desktopUsage.buckets.total, 2);
+      assert.equal(desktopUsage.logs.kind, 'logs');
+      assert.deepEqual(
+        desktopUsage.logs.rows.map((row) => row.id),
+        ['usage-b', 'usage-a'],
+      );
+      assert.equal(desktopUsage.toolLogs.kind, 'logs');
+      assert.equal(desktopUsage.toolLogs.source, 'tool');
+      assert.deepEqual(desktopUsage.toolLogs.rows, [
+        {
+          source: 'tool',
+          id: 'tool-a',
+          ts: 30,
+          toolCallId: 'call-tool-a',
+          toolName: 'Read',
+          providerId: 'openai',
+          modelId: 'gpt-a',
+          durationMs: 12,
+          status: 'success',
+          argsSummary: '{"path":"README.md"}',
+          resultSummary: { kind: 'text', itemCount: 1 },
+          bytesIn: 20,
+          bytesOut: 40,
+          startedAt: 30,
+          sessionId: 'session-a',
+          turnId: 'turn-a',
+        },
+      ]);
+
+      const initial = requirePricingPage(
+        await desktop.request('pricing.query', { kind: 'start' }, REQUEST_TIMEOUT_MS),
+      );
+      assert.deepEqual(initial, {
+        kind: 'page',
+        revision: 0,
+        offset: 0,
+        overrides: [],
+        nextOffset: null,
+      });
+      const decomposedModelKey = 'e\u0301';
+      const composedModelKey = '\u00e9';
+      const candidates = [pricing(decomposedModelKey, 1), pricing(composedModelKey, 2)] as const;
+      const outcomes = await Promise.all([
+        desktop.request(
+          'pricing.mutate',
+          {
+            expectedRevision: initial.revision,
+            mutation: { kind: 'upsert', pricing: candidates[0] },
+          },
+          REQUEST_TIMEOUT_MS,
+        ),
+        tui.request(
+          'pricing.mutate',
+          {
+            expectedRevision: initial.revision,
+            mutation: { kind: 'upsert', pricing: candidates[1] },
+          },
+          REQUEST_TIMEOUT_MS,
+        ),
+      ]);
+      assert.deepEqual(outcomes.map((outcome) => outcome.kind).sort(), [
+        'committed',
+        'revision_conflict',
+      ]);
+      const loserIndex = outcomes.findIndex((outcome) => outcome.kind === 'revision_conflict');
+      const conflict = outcomes[loserIndex];
+      assert.ok(conflict?.kind === 'revision_conflict');
+      if (!conflict || conflict.kind !== 'revision_conflict') {
+        throw new Error('Expected one pricing revision conflict');
+      }
+      assert.deepEqual(conflict, {
+        kind: 'revision_conflict',
+        expectedRevision: 0,
+        actualRevision: 1,
+      });
+
+      const loser = loserIndex === 0 ? desktop : tui;
+      const loserPricing = candidates[loserIndex];
+      const afterConflict = requirePricingPage(
+        await loser.request('pricing.query', { kind: 'start' }, REQUEST_TIMEOUT_MS),
+      );
+      assert.equal(afterConflict.revision, conflict.actualRevision);
+      const retry = await loser.request(
+        'pricing.mutate',
+        {
+          expectedRevision: afterConflict.revision,
+          mutation: { kind: 'upsert', pricing: loserPricing },
+        },
+        REQUEST_TIMEOUT_MS,
+      );
+      assert.deepEqual(retry, { kind: 'committed', revision: 2 });
+
+      const [desktopPricing, tuiPricing] = await Promise.all([
+        readPricing(desktop),
+        readPricing(tui),
+      ]);
+      assert.deepEqual(tuiPricing, desktopPricing);
+      assert.equal(desktopPricing.revision, 2);
+      assert.deepEqual(
+        desktopPricing.overrides.map((item) => item.modelKey),
+        [decomposedModelKey, composedModelKey],
+      );
+      assert.notEqual(desktopPricing.overrides[0]?.modelKey, desktopPricing.overrides[1]?.modelKey);
+
+      let revision = desktopPricing.revision;
+      for (let index = 0; index < 126; index += 1) {
+        const result = await desktop.request(
+          'pricing.mutate',
+          {
+            expectedRevision: revision,
+            mutation: { kind: 'upsert', pricing: maximumCjkPricing(index) },
+          },
+          REQUEST_TIMEOUT_MS,
+        );
+        assert.equal(result.kind, 'committed');
+        if (result.kind !== 'committed') throw new Error('CJK pricing seed did not commit');
+        revision = result.revision;
+      }
+      assert.equal(revision, 128);
+
+      const firstFullPage = requirePricingPage(
+        await desktop.request('pricing.query', { kind: 'start' }, REQUEST_TIMEOUT_MS),
+      );
+      assert.ok(firstFullPage.nextOffset);
+      const changed = await tui.request(
+        'pricing.mutate',
+        {
+          expectedRevision: firstFullPage.revision,
+          mutation: {
+            kind: 'upsert',
+            pricing: {
+              ...maximumCjkPricing(0),
+              inputUsdPer1M: 1,
+              outputUsdPer1M: 2,
+            },
+          },
+        },
+        REQUEST_TIMEOUT_MS,
+      );
+      assert.deepEqual(changed, { kind: 'committed', revision: 129 });
+      const stale = await desktop.request(
+        'pricing.query',
+        {
+          kind: 'continue',
+          revision: firstFullPage.revision,
+          offset: firstFullPage.nextOffset,
+        },
+        REQUEST_TIMEOUT_MS,
+      );
+      assert.deepEqual(stale, {
+        kind: 'revision_changed',
+        expectedRevision: 128,
+        actualRevision: 129,
+      });
+
+      const [fullDesktopPricing, fullTuiPricing] = await Promise.all([
+        readPricing(desktop),
+        readPricing(tui),
+      ]);
+      assert.deepEqual(fullTuiPricing, fullDesktopPricing);
+      assert.equal(fullDesktopPricing.revision, 129);
+      assert.equal(fullDesktopPricing.overrides.length, 128);
+      assert.ok(fullDesktopPricing.pageCount > 1);
+      assert.equal(
+        fullDesktopPricing.overrides.filter(
+          (item) => item.modelKey.length === PRICING_MODEL_KEY_MAX_CHARS,
+        ).length,
+        126,
+      );
+
+      await Promise.all([desktop.close(), tui.close()]);
+      clients.length = 0;
+      await host.close();
+      host = undefined;
+      await assert.rejects(lstat(endpoint), { code: 'ENOENT' });
+
+      successorOwner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(successorOwner, 'successor must reacquire the released Interactive owner');
+      successor = await RuntimeHostKernel.start({
+        owner: successorOwner,
+        idleGraceMs: 30_000,
+        compositionFactory: createExecutionRuntimeHostComposition,
+      });
+      successorOwner = undefined;
+      const [desktopAfterRestart, tuiAfterRestart] = await Promise.all([
+        connectClient(root, 'desktop'),
+        connectClient(root, 'tui'),
+      ]);
+      clients.push(desktopAfterRestart, tuiAfterRestart);
+      const [usageAfterRestart, pricingAfterRestart, pricingFromSecondClient] = await Promise.all([
+        readUsage(desktopAfterRestart),
+        readPricing(desktopAfterRestart),
+        readPricing(tuiAfterRestart),
+      ]);
+      assert.deepEqual(pricingFromSecondClient, pricingAfterRestart);
+      assert.equal(pricingAfterRestart.revision, 129);
+      assert.equal(pricingAfterRestart.overrides.length, 128);
+      assert.ok(pricingAfterRestart.pageCount > 1);
+      assert.equal(usageAfterRestart.summary.kind, 'summary');
+      if (usageAfterRestart.summary.kind === 'summary') {
+        assert.equal(usageAfterRestart.summary.summary.totalRequests, 2);
+      }
+      assert.equal(usageAfterRestart.toolLogs.kind, 'logs');
+      if (usageAfterRestart.toolLogs.kind === 'logs') {
+        assert.deepEqual(
+          usageAfterRestart.toolLogs.rows.map((row) => row.id),
+          ['tool-a'],
+        );
+      }
+    } finally {
+      const cleanupErrors: unknown[] = [];
+      const closedClients = await Promise.allSettled(clients.map((client) => client.close()));
+      cleanupErrors.push(...rejectedReasons(closedClients));
+      await host?.close().catch((error: unknown) => cleanupErrors.push(error));
+      await successor?.close().catch((error: unknown) => cleanupErrors.push(error));
+      if (firstOwner && !firstOwner.closed) {
+        await preHostUsageStores?.close().catch((error: unknown) => cleanupErrors.push(error));
+      }
+      await firstOwner?.close().catch((error: unknown) => cleanupErrors.push(error));
+      await successorOwner?.close().catch((error: unknown) => cleanupErrors.push(error));
+      await rm(join(resolveRootControlNamespace(), capability.rootId), {
+        recursive: true,
+        force: true,
+      }).catch((error: unknown) => cleanupErrors.push(error));
+      await rm(base, { recursive: true, force: true }).catch((error: unknown) =>
+        cleanupErrors.push(error),
+      );
+      if (cleanupErrors.length > 0) {
+        throw new AggregateError(cleanupErrors, 'Usage/Pricing UDS cleanup failed');
+      }
+    }
+  });
+});
+
+async function connectClient(
+  rootPath: string,
+  surface: ClientSurface,
+): Promise<RuntimeHostConnection> {
+  const result = await connectRuntimeHost({
+    rootPath,
+    surface,
+    protocol: PROTOCOL,
+    connectTimeoutMs: REQUEST_TIMEOUT_MS,
+    handshakeTimeoutMs: REQUEST_TIMEOUT_MS,
+  });
+  if (result.kind !== 'connected') {
+    throw new Error(`Runtime Host Client did not connect: ${result.kind}`);
+  }
+  return result.connection;
+}
+
+async function readUsage(client: RuntimeHostConnection) {
+  const query = { range: { from: 0, to: 100 } } as const;
+  const [summary, buckets, logs, toolLogs] = await Promise.all([
+    client.request('usage.query', { kind: 'summary', query }, REQUEST_TIMEOUT_MS),
+    client.request(
+      'usage.query',
+      { kind: 'buckets', query, groupBy: 'provider' },
+      REQUEST_TIMEOUT_MS,
+    ),
+    client.request('usage.query', { kind: 'logs', source: 'llm', query }, REQUEST_TIMEOUT_MS),
+    client.request(
+      'usage.query',
+      {
+        kind: 'logs',
+        source: 'tool',
+        query: { range: query.range, toolName: 'Read', status: 'success' },
+      },
+      REQUEST_TIMEOUT_MS,
+    ),
+  ]);
+  return { summary, buckets, logs, toolLogs };
+}
+
+async function readPricing(client: RuntimeHostConnection): Promise<{
+  revision: number;
+  overrides: readonly Readonly<PricingConfig>[];
+  pageCount: number;
+}> {
+  const first = requirePricingPage(
+    await client.request('pricing.query', { kind: 'start' }, REQUEST_TIMEOUT_MS),
+  );
+  const overrides = [...first.overrides];
+  let nextOffset = first.nextOffset;
+  let pageCount = 1;
+  while (nextOffset !== null) {
+    const page = requirePricingPage(
+      await client.request(
+        'pricing.query',
+        { kind: 'continue', revision: first.revision, offset: nextOffset },
+        REQUEST_TIMEOUT_MS,
+      ),
+    );
+    assert.equal(page.revision, first.revision);
+    assert.equal(page.offset, nextOffset);
+    overrides.push(...page.overrides);
+    nextOffset = page.nextOffset;
+    pageCount += 1;
+  }
+  return { revision: first.revision, overrides, pageCount };
+}
+
+function requirePricingPage(
+  result: PricingQueryResult,
+): Extract<PricingQueryResult, { kind: 'page' }> {
+  assert.equal(result.kind, 'page');
+  if (result.kind !== 'page') throw new Error('Pricing revision changed during page read');
+  return result;
+}
+
+function usageRecord(
+  id: string,
+  ts: number,
+  providerId: string,
+  modelId: string,
+  status: 'success' | 'error' = 'success',
+) {
+  return {
+    id,
+    providerId,
+    modelId,
+    inputTokens: 10,
+    outputTokens: 5,
+    cacheHitInputTokens: 2,
+    cacheMissInputTokens: 8,
+    cachedInputTokens: 2,
+    cacheWriteInputTokens: 1,
+    reasoningTokens: 0,
+    totalTokens: 15,
+    latencyMs: 25,
+    costUsd: 0.01,
+    startedAt: ts,
+    date: '2026-07-29',
+    ts,
+    status,
+  };
+}
+
+function toolRecord(id: string, ts: number) {
+  return {
+    id,
+    sessionId: 'session-a',
+    turnId: 'turn-a',
+    toolCallId: `call-${id}`,
+    toolName: 'Read',
+    providerId: 'openai',
+    modelId: 'gpt-a',
+    durationMs: 12,
+    status: 'success' as const,
+    argsSummary: '{"path":"README.md"}',
+    resultSummary: { kind: 'text', itemCount: 1 },
+    bytesIn: 20,
+    bytesOut: 40,
+    startedAt: ts,
+    date: '2026-07-29',
+    ts,
+  };
+}
+
+function pricing(modelKey: string, inputUsdPer1M: number) {
+  return { modelKey, inputUsdPer1M, outputUsdPer1M: inputUsdPer1M * 2 };
+}
+
+function maximumCjkPricing(index: number): PricingConfig {
+  return {
+    modelKey: String.fromCodePoint(0x4e00 + index).repeat(PRICING_MODEL_KEY_MAX_CHARS),
+    inputUsdPer1M: Number.MAX_VALUE,
+    outputUsdPer1M: Number.MAX_VALUE,
+    cacheReadUsdPer1M: Number.MAX_VALUE,
+    cacheWriteUsdPer1M: Number.MAX_VALUE,
+  };
+}
+
+function rejectedReasons(results: readonly PromiseSettledResult<unknown>[]): unknown[] {
+  return results.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
+}
+
+async function failNextDirectorySync(root: string): Promise<() => void> {
+  const probe = await open(root, 'r');
+  const fileHandlePrototype = Object.getPrototypeOf(probe) as {
+    sync: typeof probe.sync;
+  };
+  const originalSync = fileHandlePrototype.sync;
+  await probe.close();
+  let injected = false;
+  const syncMock = mock.method(fileHandlePrototype, 'sync', async function (this: typeof probe) {
+    const metadata = await this.stat();
+    if (!injected && metadata.isDirectory()) {
+      injected = true;
+      throw new Error('injected usage authority directory sync failure');
+    }
+    return originalSync.call(this);
+  });
+  return () => syncMock.mock.restore();
+}
+
+async function withUsageAuthority(
+  name: string,
+  run: (context: {
+    root: string;
+    stores: Awaited<ReturnType<typeof openInteractiveUsageStoresForWrite>>;
+  }) => Promise<void>,
+): Promise<void> {
+  const base = await mkdtemp(join(tmpdir(), `maka-usage-pricing-${name}-`));
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive-root'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner, 'test must acquire the real Interactive write lease');
+  const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+  try {
+    await run({ root: capability.canonicalPath, stores });
+  } finally {
+    await stores.close().catch(() => undefined);
+    await owner.close();
+    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+      recursive: true,
+      force: true,
+    });
+    await rm(base, { recursive: true, force: true });
+  }
+}

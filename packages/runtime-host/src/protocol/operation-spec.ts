@@ -27,6 +27,7 @@ export interface OperationSpec<Input, Output, ErrorCode extends HostOperationErr
   errors: readonly ErrorCode[];
   decodeInput(value: unknown): Input;
   decodeOutput(value: unknown): Output;
+  assertOutputForInput?(input: Input, output: Output): void;
 }
 
 type AnyOperationSpec = OperationSpec<unknown, unknown, HostOperationErrorCode>;

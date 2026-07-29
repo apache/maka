@@ -1,15 +1,15 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { describe, test } from 'node:test';
-import { createTelemetryRepo } from '../telemetry-repo.js';
+import { describe, mock, test } from 'node:test';
+import { createTelemetryRepo, TelemetryRepoPublicationError } from '../telemetry-repo.js';
 
 describe('FileTelemetryRepo', () => {
   test('upserts LLM calls by id and aggregates the latest record', async () => {
     await withRepo(async (repo) => {
       await repo.load();
-      repo.insertLlmCall(
+      await repo.insertLlmCall(
         llmRecord({
           id: 'usage_turn_1',
           inputTokens: 10,
@@ -18,7 +18,7 @@ describe('FileTelemetryRepo', () => {
           totalTokens: 30,
         }),
       );
-      repo.insertLlmCall(
+      await repo.insertLlmCall(
         llmRecord({
           id: 'usage_turn_1',
           inputTokens: 30,
@@ -27,7 +27,6 @@ describe('FileTelemetryRepo', () => {
           totalTokens: 70,
         }),
       );
-      await flushWrites();
 
       const summary = repo.summary({ range: 'all' });
       const logs = repo.logs({ range: 'all' });
@@ -46,7 +45,7 @@ describe('FileTelemetryRepo', () => {
   test('carries the tool-availability diagnostic and tool-schema change reason through logs()', async () => {
     await withRepo(async (repo) => {
       await repo.load();
-      repo.insertLlmCall(
+      await repo.insertLlmCall(
         llmRecord({
           id: 'usage_diag',
           systemPromptHash: 'sys-hash',
@@ -61,7 +60,6 @@ describe('FileTelemetryRepo', () => {
           },
         }),
       );
-      await flushWrites();
 
       const row = repo.logs({ range: 'all' }).rows[0];
       assert.equal(row?.systemPromptHash, 'sys-hash');
@@ -72,17 +70,106 @@ describe('FileTelemetryRepo', () => {
     });
   });
 
+  test('strictly admits current token aliases and diagnostic shapes', async () => {
+    await withRepo(async (repo) => {
+      await repo.load();
+      await repo.insertLlmCall(
+        llmRecord({
+          cachedInputTokens: 4,
+          cacheHitInputTokens: 4,
+          rawUsage: {
+            prompt_tokens: 10,
+            prompt_tokens_details: { cached_tokens: 4 },
+          },
+          promptSegments: [{ kind: 'system_prompt', chars: 12, estimatedTokens: 3 }],
+          contextBudget: {
+            enabled: true,
+            estimatedTokensBefore: 10,
+            estimatedTokensAfter: 8,
+            keptTurns: 1,
+            droppedTurns: 0,
+            keptEvents: 2,
+            droppedEvents: 0,
+          },
+        }),
+      );
+
+      assert.equal(repo.logs({ range: 'all' }).rows[0]?.cacheReadTokens, 4);
+    });
+  });
+
+  test('owns admitted records and returns detached frozen diagnostics', async () => {
+    await withRepo(async (repo, root) => {
+      await repo.load();
+      const record = llmRecord({
+        contextBudget: {
+          enabled: true,
+          estimatedTokensBefore: 10,
+          estimatedTokensAfter: 8,
+          keptTurns: 1,
+          droppedTurns: 0,
+          keptEvents: 2,
+          droppedEvents: 0,
+        },
+      });
+      const inserted = repo.insertLlmCall(record);
+      const callerContext = record.contextBudget as { keptTurns: number };
+      callerContext.keptTurns = 99;
+      record.inputTokens = 999;
+      await inserted;
+
+      const first = repo.logs({ range: 'all' }).rows[0];
+      assert.equal(repo.summary({ range: 'all' }).totalTokens.input, 10);
+      assert.equal(first?.contextBudget?.keptTurns, 1);
+      assert.equal(Object.isFrozen(first?.contextBudget), true);
+      assert.throws(() => {
+        (first?.contextBudget as { keptTurns: number }).keptTurns = 77;
+      }, TypeError);
+      assert.equal(repo.logs({ range: 'all' }).rows[0]?.contextBudget?.keptTurns, 1);
+      const bytes = await readFile(join(root, 'telemetry.json'), 'utf8');
+      assert.match(bytes, /"inputTokens": 10/);
+      assert.match(bytes, /"keptTurns": 1/);
+    });
+  });
+
+  test('rejects unknown fields and invalid diagnostics at writer admission', async () => {
+    await withRepo(async (repo) => {
+      await repo.load();
+      await assert.rejects(
+        () => repo.insertLlmCall(llmRecord({ unexpected: true })),
+        /invalid LLM row keys/,
+      );
+      await assert.rejects(
+        () =>
+          repo.insertLlmCall(
+            llmRecord({
+              contextBudget: {
+                enabled: 'yes',
+                estimatedTokensBefore: 1,
+                estimatedTokensAfter: 1,
+                keptTurns: 0,
+                droppedTurns: 0,
+                keptEvents: 0,
+                droppedEvents: 0,
+              },
+            }),
+          ),
+        /invalid contextBudget/,
+      );
+      assert.deepEqual(repo.logs({ range: 'all' }), { rows: [], total: 0 });
+    });
+  });
+
   test('carries auxiliary LLM call identity through logs()', async () => {
     await withRepo(async (repo) => {
       await repo.load();
-      repo.insertLlmCall(
+      await repo.insertLlmCall(
         llmRecord({
           id: 'usage_semantic_compact_turn_1_2_3',
           callKind: 'semantic_compact',
           callId: 'semantic_compact_turn_1_2_3',
         }),
       );
-      await flushWrites();
 
       const row = repo.logs({ range: 'all' }).rows[0];
       assert.equal(row?.callKind, 'semantic_compact');
@@ -93,10 +180,10 @@ describe('FileTelemetryRepo', () => {
   test('filters logs by range, status, provider, model, and pagination', async () => {
     await withRepo(async (repo) => {
       await repo.load();
-      repo.insertLlmCall(
+      await repo.insertLlmCall(
         llmRecord({ id: 'old', ts: 1, status: 'success', providerId: 'openai', modelId: 'gpt-4o' }),
       );
-      repo.insertLlmCall(
+      await repo.insertLlmCall(
         llmRecord({
           id: 'new-success',
           ts: 20,
@@ -105,7 +192,25 @@ describe('FileTelemetryRepo', () => {
           modelId: 'gpt-4o',
         }),
       );
-      repo.insertLlmCall(
+      await repo.insertLlmCall(
+        llmRecord({
+          id: 'middle-success',
+          ts: 15,
+          status: 'success',
+          providerId: 'openai',
+          modelId: 'gpt-4o',
+          contextBudget: {
+            enabled: true,
+            estimatedTokensBefore: 10,
+            estimatedTokensAfter: 8,
+            keptTurns: 1,
+            droppedTurns: 0,
+            keptEvents: 2,
+            droppedEvents: 0,
+          },
+        }),
+      );
+      await repo.insertLlmCall(
         llmRecord({
           id: 'new-error',
           ts: 30,
@@ -114,23 +219,36 @@ describe('FileTelemetryRepo', () => {
           modelId: 'claude',
         }),
       );
-      await flushWrites();
 
       const logs = repo.logs(
         { range: { from: 10, to: 40 }, status: 'success', providerId: 'openai', modelId: 'gpt-4o' },
-        0,
-        10,
+        1,
+        1,
       );
 
-      assert.equal(logs.total, 1);
-      assert.equal(logs.rows[0]?.id, 'new-success');
+      assert.equal(logs.total, 2);
+      assert.deepEqual(
+        logs.rows.map((row) => row.id),
+        ['middle-success'],
+      );
+      assert.equal(Object.isFrozen(logs), true);
+      assert.equal(Object.isFrozen(logs.rows), true);
+      assert.equal(Object.isFrozen(logs.rows[0]?.contextBudget), true);
+      assert.throws(() => {
+        (logs.rows[0]?.contextBudget as { keptTurns: number }).keptTurns = 99;
+      }, TypeError);
+      assert.equal(
+        repo.logs({ range: 'all' }).rows.find((row) => row.id === 'middle-success')?.contextBudget
+          ?.keptTurns,
+        1,
+      );
     });
   });
 
   test('filters and returns latest LLM runtime probes by connection slug', async () => {
     await withRepo(async (repo) => {
       await repo.load();
-      repo.insertLlmCall(
+      await repo.insertLlmCall(
         llmRecord({
           id: 'conn-a-old',
           connectionSlug: 'conn-a',
@@ -139,7 +257,7 @@ describe('FileTelemetryRepo', () => {
           status: 'success',
         }),
       );
-      repo.insertLlmCall(
+      await repo.insertLlmCall(
         llmRecord({
           id: 'conn-b-new',
           connectionSlug: 'conn-b',
@@ -148,7 +266,7 @@ describe('FileTelemetryRepo', () => {
           status: 'error',
         }),
       );
-      repo.insertLlmCall(
+      await repo.insertLlmCall(
         llmRecord({
           id: 'conn-a-new',
           connectionSlug: 'conn-a',
@@ -157,7 +275,6 @@ describe('FileTelemetryRepo', () => {
           status: 'aborted',
         }),
       );
-      await flushWrites();
 
       const logs = repo.logs({ range: 'all', connectionSlug: 'conn-a' });
       const latest = repo.latestLlmRuntimeProbe('conn-a', 'glm-4.7');
@@ -173,7 +290,7 @@ describe('FileTelemetryRepo', () => {
   test('builds provider, model, day, hour, and tool buckets', async () => {
     await withRepo(async (repo) => {
       await repo.load();
-      repo.insertLlmCall(
+      await repo.insertLlmCall(
         llmRecord({
           id: 'usage_1',
           providerId: 'openai',
@@ -182,7 +299,7 @@ describe('FileTelemetryRepo', () => {
           date: '2026-01-01',
         }),
       );
-      repo.insertLlmCall(
+      await repo.insertLlmCall(
         llmRecord({
           id: 'usage_2',
           providerId: 'openai',
@@ -191,13 +308,12 @@ describe('FileTelemetryRepo', () => {
           date: '2026-01-01',
         }),
       );
-      repo.insertToolInvocation(
+      await repo.insertToolInvocation(
         toolRecord({ id: 'tool_1', toolName: 'Bash', durationMs: 30, status: 'success' }),
       );
-      repo.insertToolInvocation(
+      await repo.insertToolInvocation(
         toolRecord({ id: 'tool_2', toolName: 'Bash', durationMs: 90, status: 'error' }),
       );
-      await flushWrites();
 
       assert.equal(repo.buckets({ range: 'all' }, 'provider')[0]?.key, 'openai');
       assert.equal(repo.buckets({ range: 'all' }, 'model').length, 2);
@@ -212,10 +328,57 @@ describe('FileTelemetryRepo', () => {
     });
   });
 
+  test('separates LLM and tool logs and rejects inapplicable filters', async () => {
+    await withRepo(async (repo) => {
+      await repo.load();
+      await repo.insertLlmCall(llmRecord());
+      await repo.insertToolInvocation(
+        toolRecord({
+          id: 'bash',
+          toolName: 'Bash',
+          resultSummary: { kind: 'shell', completedItemCount: 1 },
+        }),
+      );
+      await repo.insertToolInvocation(toolRecord({ id: 'read', toolName: 'Read' }));
+
+      assert.deepEqual(
+        repo.logs({ range: 'all' }).rows.map((row) => row.id),
+        ['usage_1'],
+      );
+      assert.deepEqual(
+        repo.toolLogs({ range: 'all', toolName: 'Bash' }).rows.map((row) => row.id),
+        ['bash'],
+      );
+      const toolResult = repo.toolLogs({ range: 'all', toolName: 'Bash' }).rows[0]?.resultSummary;
+      assert.equal(Object.isFrozen(toolResult), true);
+      assert.throws(() => {
+        (toolResult as { completedItemCount: number }).completedItemCount = 9;
+      }, TypeError);
+      assert.equal(
+        repo.toolLogs({ range: 'all', toolName: 'Bash' }).rows[0]?.resultSummary
+          ?.completedItemCount,
+        1,
+      );
+      assert.throws(
+        () => repo.logs({ range: 'all', toolName: 'Bash' }),
+        /toolName is not applicable to LLM logs/,
+      );
+      assert.throws(
+        () =>
+          repo.toolLogs({
+            range: 'all',
+            providerId: 'openai',
+          } as Parameters<typeof repo.toolLogs>[0]),
+        /accept only range, toolName, and status/,
+      );
+    });
+  });
+
   test('persists pricing overrides and reloads them from disk', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-telemetry-'));
+    const first = createTelemetryRepo(root);
+    const second = createTelemetryRepo(root);
     try {
-      const first = createTelemetryRepo(root);
       await first.load();
       await first.upsertPricing({
         modelKey: 'openai:gpt-4o',
@@ -223,23 +386,21 @@ describe('FileTelemetryRepo', () => {
         outputUsdPer1M: 10,
       });
 
-      const second = createTelemetryRepo(root);
       await second.load();
 
       assert.deepEqual(second.listPricingOverrides(), [
         { modelKey: 'openai:gpt-4o', inputUsdPer1M: 2.5, outputUsdPer1M: 10 },
       ]);
     } finally {
-      await flushWrites();
+      await Promise.all([first.close(), second.close()]);
       await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 
   test('load creates an empty telemetry file only when missing', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-telemetry-missing-'));
+    const repo = createTelemetryRepo(root);
     try {
-      const repo = createTelemetryRepo(root);
-
       await repo.load();
       const raw = await readFile(join(root, 'telemetry.json'), 'utf8');
 
@@ -247,85 +408,208 @@ describe('FileTelemetryRepo', () => {
       assert.match(raw, /"usageRecords": \[\]/);
       assert.match(raw, /"toolInvocations": \[\]/);
     } finally {
-      await flushWrites();
+      await repo.close();
       await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 
   test('load accepts legacy telemetry files with only known array sections', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-telemetry-legacy-'));
+    const repo = createTelemetryRepo(root);
     try {
       await writeFile(
         join(root, 'telemetry.json'),
         JSON.stringify({ usageRecords: [] }) + '\n',
         'utf8',
       );
-      const repo = createTelemetryRepo(root);
-
       await repo.load();
 
       assert.deepEqual(repo.logs({ range: 'all' }), { rows: [], total: 0 });
       assert.deepEqual(repo.listPricingOverrides(), []);
     } finally {
-      await flushWrites();
+      await repo.close();
       await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 
   test('load rejects corrupt telemetry.json without overwriting usage history bytes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-telemetry-corrupt-'));
+    const repo = createTelemetryRepo(root);
     try {
       const corrupt = '{"usageRecords":[{"id":"usage_1"}]';
       await writeFile(join(root, 'telemetry.json'), corrupt, 'utf8');
-      const repo = createTelemetryRepo(root);
-
       await assert.rejects(() => repo.load(), SyntaxError);
       assert.equal(await readFile(join(root, 'telemetry.json'), 'utf8'), corrupt);
     } finally {
-      await flushWrites();
+      await repo.close();
       await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 
   test('load rejects wrong telemetry schema without overwriting bytes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-telemetry-wrong-schema-'));
+    const repo = createTelemetryRepo(root);
     try {
       const wrongShape = JSON.stringify({ reminders: [] }, null, 2) + '\n';
       await writeFile(join(root, 'telemetry.json'), wrongShape, 'utf8');
-      const repo = createTelemetryRepo(root);
-
       await assert.rejects(() => repo.load(), /expected known telemetry sections/);
       assert.equal(await readFile(join(root, 'telemetry.json'), 'utf8'), wrongShape);
     } finally {
-      await flushWrites();
+      await repo.close();
       await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 
   test('load rejects known telemetry sections with non-array values', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-telemetry-bad-section-'));
+    const repo = createTelemetryRepo(root);
     try {
       const wrongShape = JSON.stringify({ usageRecords: {} }, null, 2) + '\n';
       await writeFile(join(root, 'telemetry.json'), wrongShape, 'utf8');
-      const repo = createTelemetryRepo(root);
-
       await assert.rejects(() => repo.load(), /usageRecords must be an array/);
       assert.equal(await readFile(join(root, 'telemetry.json'), 'utf8'), wrongShape);
     } finally {
-      await flushWrites();
+      await repo.close();
       await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+    }
+  });
+
+  test('version 1 rejects unknown fields and invalid canonical values without rewriting bytes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-telemetry-canonical-invalid-'));
+    const repo = createTelemetryRepo(root);
+    try {
+      const invalidCanonical =
+        JSON.stringify(
+          {
+            version: 1,
+            usageRecords: [{ ...llmRecord(), inputTokens: -1, unexpected: true }],
+            toolInvocations: [],
+          },
+          null,
+          2,
+        ) + '\n';
+      await writeFile(join(root, 'telemetry.json'), invalidCanonical);
+
+      await assert.rejects(() => repo.load(), /invalid LLM row keys/);
+      assert.equal(await readFile(join(root, 'telemetry.json'), 'utf8'), invalidCanonical);
+    } finally {
+      await repo.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('surfaces publication failure through mutation, flush, and close', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-telemetry-publication-'));
+    try {
+      const repo = createTelemetryRepo(root);
+      await repo.load();
+      await rm(join(root, 'telemetry.json'));
+      await mkdir(join(root, 'telemetry.json'));
+
+      await assert.rejects(() => repo.insertLlmCall(llmRecord()), /Unable to publish telemetry/);
+      assert.equal(repo.summary({ range: 'all' }).totalRequests, 0);
+      await assert.rejects(() => repo.flush(), /Unable to publish telemetry/);
+      await assert.rejects(() => repo.close(), /Unable to publish telemetry/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('poisons reads after rename succeeds but directory sync fails', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-telemetry-commit-unknown-'));
+    try {
+      const repo = createTelemetryRepo(root);
+      await repo.load();
+      const fault = new Error('injected telemetry directory sync failure');
+      const probe = await open(root, 'r');
+      const fileHandlePrototype = Object.getPrototypeOf(probe) as {
+        sync: typeof probe.sync;
+      };
+      const originalSync = fileHandlePrototype.sync;
+      await probe.close();
+      let injected = false;
+      const syncMock = mock.method(
+        fileHandlePrototype,
+        'sync',
+        async function (this: typeof probe) {
+          const metadata = await this.stat();
+          if (!injected && metadata.isDirectory()) {
+            injected = true;
+            throw fault;
+          }
+          return originalSync.call(this);
+        },
+      );
+      let failure: unknown;
+      try {
+        failure = await repo.insertLlmCall(llmRecord()).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+      } finally {
+        syncMock.mock.restore();
+      }
+
+      assert(failure instanceof TelemetryRepoPublicationError);
+      assert.equal(failure.commitUnknown, true);
+      assert.match(await readFile(join(root, 'telemetry.json'), 'utf8'), /"usage_1"/);
+      assert.throws(
+        () => repo.summary({ range: 'all' }),
+        (error) => error === failure,
+      );
+      await assert.rejects(
+        () => repo.flush(),
+        (error) => error === failure,
+      );
+      await assert.rejects(
+        () => repo.close(),
+        (error) => error === failure,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('close settles and aggregates telemetry and managed pricing failures', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-telemetry-close-failures-'));
+    try {
+      const repo = createTelemetryRepo(root);
+      await repo.load();
+      await Promise.all([rm(join(root, 'telemetry.json')), rm(join(root, 'pricing.json'))]);
+      await Promise.all([mkdir(join(root, 'telemetry.json')), mkdir(join(root, 'pricing.json'))]);
+
+      const pricingFailure = repo.upsertPricing({
+        modelKey: 'openai:gpt-4o',
+        inputUsdPer1M: 2.5,
+        outputUsdPer1M: 10,
+      });
+      const pricingRejected = assert.rejects(
+        () => pricingFailure,
+        /Unable to publish pricing authority/,
+      );
+      await assert.rejects(() => repo.insertLlmCall(llmRecord()), /Unable to publish telemetry/);
+      await pricingRejected;
+      await assert.rejects(
+        () => repo.close(),
+        (error) => error instanceof AggregateError && error.errors.length === 2,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 });
 
 async function withRepo(
-  fn: (repo: ReturnType<typeof createTelemetryRepo>) => Promise<void>,
+  fn: (repo: ReturnType<typeof createTelemetryRepo>, root: string) => Promise<void>,
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'maka-telemetry-'));
+  const repo = createTelemetryRepo(root);
   try {
-    await fn(createTelemetryRepo(root));
+    await fn(repo, root);
   } finally {
-    await flushWrites();
+    await repo.close();
     await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   }
 }
@@ -367,8 +651,4 @@ function toolRecord(overrides: Record<string, unknown> = {}) {
     startedAt: Date.UTC(2026, 0, 1) - 10,
     ...overrides,
   } as Parameters<ReturnType<typeof createTelemetryRepo>['insertToolInvocation']>[0];
-}
-
-function flushWrites(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 20));
 }

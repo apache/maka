@@ -18,9 +18,76 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
   PRICING_MODEL_KEY_MAX_CHARS,
+  canonicalPricingConfigsEqual,
+  comparePricingModelKeys,
   normalizePricingConfig,
   normalizePricingModelKey,
+  validateCanonicalPricingConfig,
 } from '../pricing.js';
+
+describe('comparePricingModelKeys', () => {
+  it('strictly orders exact-distinct canonically equivalent Unicode keys', () => {
+    const composed = '\u00e9';
+    const decomposed = 'e\u0301';
+
+    assert.notEqual(composed, decomposed);
+    assert.equal(comparePricingModelKeys(composed, composed), 0);
+    assert.equal(comparePricingModelKeys(decomposed, composed), -1);
+    assert.equal(comparePricingModelKeys(composed, decomposed), 1);
+    assert.deepEqual([composed, decomposed].sort(comparePricingModelKeys), [decomposed, composed]);
+  });
+});
+
+describe('canonical PricingConfig contract', () => {
+  const canonical = {
+    modelKey: 'openai:gpt-5',
+    inputUsdPer1M: 1.25,
+    outputUsdPer1M: 10,
+    cacheReadUsdPer1M: 0.25,
+  };
+
+  it('accepts only the exact already-normalized shape', () => {
+    assert.deepEqual(validateCanonicalPricingConfig(canonical), {
+      ok: true,
+      value: canonical,
+    });
+    for (const value of [
+      { ...canonical, modelKey: ' openai:gpt-5 ' },
+      { ...canonical, unknown: true },
+      { modelKey: canonical.modelKey, outputUsdPer1M: canonical.outputUsdPer1M },
+      { ...canonical, cacheWriteUsdPer1M: undefined },
+    ]) {
+      assert.equal(validateCanonicalPricingConfig(value).ok, false);
+    }
+  });
+
+  it('compares canonical values including optional-field presence', () => {
+    assert.equal(canonicalPricingConfigsEqual(canonical, { ...canonical }), true);
+    assert.equal(
+      canonicalPricingConfigsEqual(canonical, {
+        ...canonical,
+        cacheReadUsdPer1M: 0.5,
+      }),
+      false,
+    );
+    assert.equal(
+      canonicalPricingConfigsEqual(
+        {
+          modelKey: canonical.modelKey,
+          inputUsdPer1M: canonical.inputUsdPer1M,
+          outputUsdPer1M: canonical.outputUsdPer1M,
+        },
+        {
+          modelKey: canonical.modelKey,
+          inputUsdPer1M: canonical.inputUsdPer1M,
+          outputUsdPer1M: canonical.outputUsdPer1M,
+          cacheReadUsdPer1M: undefined,
+        },
+      ),
+      false,
+    );
+  });
+});
 
 describe('normalizePricingModelKey (PR-UI-IPC-3)', () => {
   describe('accept', () => {

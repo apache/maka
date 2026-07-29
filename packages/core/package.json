@@ -76,6 +76,7 @@
     "./settings/result": "./dist/settings/result.js",
     "./usage-stats/types": "./dist/usage-stats/types.js",
     "./usage-stats/pricing": "./dist/usage-stats/pricing.js",
+    "./usage-record-schema": "./dist/usage-record-schema.js",
     "./session-send-projection": "./dist/session-send-projection.js",
     "./tool-catalog": "./dist/tool-catalog.js"
   },

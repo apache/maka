@@ -33,6 +33,7 @@ const allowedServerExternalImports = new Set([
   '@maka/core/runtime-event',
   '@maka/core/session',
   '@maka/core/task-ledger',
+  '@maka/core/usage-stats/types',
   '@maka/runtime',
   '@maka/storage/agent-graph-control-store',
   '@maka/storage/artifact-stores',
@@ -40,6 +41,7 @@ const allowedServerExternalImports = new Set([
   '@maka/storage/interaction-store',
   '@maka/storage/runtime-policy-stores',
   '@maka/storage/task-ledger-authority',
+  '@maka/storage/usage-stores',
   'node:async_hooks',
 ]);
 const allowedExternalImports = {
@@ -51,6 +53,8 @@ const allowedExternalImports = {
     '@maka/core/interaction',
     '@maka/core/runtime-policy',
     '@maka/core/task-ledger',
+    '@maka/core/usage-stats/pricing',
+    '@maka/core/usage-stats/types',
     'node:util',
   ]),
 } as const;

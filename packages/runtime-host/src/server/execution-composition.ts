@@ -12,6 +12,7 @@ import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-
 import { runWithStorageRootLease } from '@maka/storage/root-authority';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
+import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import { CanonicalSessionProjectionReader } from './canonical-session-projection.js';
 import { HostCanonicalPermissionOutcomeReader } from './canonical-permission-outcome-reader.js';
 import { HostArtifactCoordinator } from './artifact-coordinator.js';
@@ -28,24 +29,29 @@ import { SessionContinuityCoordinator } from './session-continuity-coordinator.j
 import { HostSkillCatalogCoordinator } from './skill-catalog-coordinator.js';
 import { SkillCatalogRepository } from './skill-catalog-repository.js';
 import { HostTaskLedgerCoordinator } from './task-ledger-coordinator.js';
+import { HostUsagePricingCoordinator } from './usage-pricing-coordinator.js';
 
 export async function createExecutionRuntimeHostComposition(
   context: RuntimeHostCompositionContext,
 ): Promise<RuntimeHostComposition> {
   const stores = await openInteractiveExecutionStoresForWrite(context.owner.lease);
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
+  let usageStores: Awaited<ReturnType<typeof openInteractiveUsageStoresForWrite>> | undefined;
   try {
     const runtimePolicyStores = await openInteractiveRuntimePolicyStoresForWrite(
       context.owner.lease,
     );
     const taskLedgerStore = await openInteractiveTaskLedgerStoreForWrite(context.owner.lease);
     const openedArtifactStore = await openInteractiveArtifactStoreForWrite(context.owner.lease);
+    const openedUsageStores = await openInteractiveUsageStoresForWrite(context.owner.lease);
+    usageStores = openedUsageStores;
     await stores.messageReceiptStore.beginHostEpoch(context.hostEpoch);
     const backends = new BackendRegistry();
     backends.register('fake', (backendContext) => new FakeBackend(backendContext));
     const runtimePolicyActivation = new RuntimePolicyActivationGate();
     const sessionAdmission = new SessionAdmissionGate();
     const taskLedger = new HostTaskLedgerCoordinator(taskLedgerStore, sessionAdmission);
+    const usagePricing = new HostUsagePricingCoordinator(openedUsageStores, context.requestDrain);
     const openedGraphControlStore = createAgentGraphControlStore(
       context.owner.capability.canonicalPath,
     );
@@ -108,12 +114,18 @@ export async function createExecutionRuntimeHostComposition(
     let recoveryTask: Promise<void> | undefined;
     let rootCloseTask: Promise<void> | undefined;
     let closeTask: Promise<void> | undefined;
+    let usageDrain: Promise<void> | undefined;
     const beginDrain = () => {
       if (draining) return;
       draining = true;
       messages.beginDrain();
       interactions.beginDrain();
       skills.beginDrain();
+      usageDrain ??= openedUsageStores.beginDrain();
+      usageDrain.then(
+        () => undefined,
+        () => undefined,
+      );
     };
     const interactions = new HostInteractionCoordinator({
       store: stores.interactionStore,
@@ -207,6 +219,7 @@ export async function createExecutionRuntimeHostComposition(
       ...taskLedger.handlers,
       ...artifacts.handlers,
       ...skills.handlers,
+      ...usagePricing.handlers,
     } satisfies DomainOperationHandlerMap;
     const recover = () => {
       recoveryTask ??= (async () => {
@@ -276,6 +289,11 @@ export async function createExecutionRuntimeHostComposition(
           errors.push(error);
         }
         try {
+          await openedUsageStores.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
           await stores.sessionStore.close?.();
         } catch (error) {
           errors.push(error);
@@ -298,6 +316,11 @@ export async function createExecutionRuntimeHostComposition(
     const errors: unknown[] = [error];
     try {
       graphControlStore?.close();
+    } catch (closeError) {
+      errors.push(closeError);
+    }
+    try {
+      await usageStores?.close();
     } catch (closeError) {
       errors.push(closeError);
     }

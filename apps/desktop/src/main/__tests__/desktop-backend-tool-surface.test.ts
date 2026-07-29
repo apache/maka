@@ -379,6 +379,7 @@ function makeFactoryDeps(
     },
     permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
     telemetryRepo: {},
+    ensureUsageReady: async () => {},
     artifactStore: {},
     desktopSessionSkillHosts: new Map(),
     sandboxDiagnosticsProvider: { resolve: async () => undefined },
