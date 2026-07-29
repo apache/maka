@@ -938,7 +938,9 @@ def _complete_runtime_refs(value: Any) -> bool:
 
 
 def _runtime_identity(event: dict[str, Any]) -> Optional[tuple[str, str, str, str]]:
-    if not all(isinstance(event.get(key), str) for key in _RUNTIME_REF_KEYS):
+    if not all(
+        isinstance(event.get(key), str) and bool(event[key]) for key in _RUNTIME_REF_KEYS
+    ):
         return None
     return tuple(event[key] for key in _RUNTIME_REF_KEYS)  # type: ignore[return-value]
 
@@ -1023,7 +1025,7 @@ def _is_runtime_event(event: dict[str, Any]) -> bool:
     if set(event) - allowed_keys:
         return False
     if not all(
-        isinstance(event.get(key), str)
+        isinstance(event.get(key), str) and bool(event[key])
         for key in ("id", "invocationId", "runId", "sessionId", "turnId")
     ):
         return False

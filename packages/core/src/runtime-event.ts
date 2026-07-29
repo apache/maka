@@ -506,10 +506,15 @@ export function decodeRuntimeEvent(value: unknown): RuntimeEvent {
     !isRecord(value) ||
     !hasExactShape(value, RUNTIME_EVENT_SHAPE) ||
     typeof value.id !== 'string' ||
+    value.id.length === 0 ||
     typeof value.invocationId !== 'string' ||
+    value.invocationId.length === 0 ||
     typeof value.runId !== 'string' ||
+    value.runId.length === 0 ||
     typeof value.sessionId !== 'string' ||
+    value.sessionId.length === 0 ||
     typeof value.turnId !== 'string' ||
+    value.turnId.length === 0 ||
     !isFiniteNumber(value.ts) ||
     !isOptionalString(value.branch) ||
     typeof value.partial !== 'boolean' ||
