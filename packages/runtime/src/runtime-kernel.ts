@@ -885,7 +885,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
     const definition = requireResolvedAgentDefinition(input.spec.id);
     const availableChildTools = this.deps.childTools ?? [];
     assertAgentDefinitionRunnable({
-      parentPermissionMode: parentHeader.permissionMode,
       definition,
       tools: availableChildTools,
     });
@@ -993,13 +992,11 @@ export class RuntimeKernel implements RuntimeKernelLike {
           systemPrompt: linkedSnapshot.systemPrompt,
           permissionMode: parentHeader.permissionMode,
           tools: linkedSnapshot.toolNames,
-          categoryPolicy: linkedSnapshot.categoryPolicy,
         }
       : requireResolvedAgentDefinition(input.spec.id);
     const availableChildTools = this.deps.childTools ?? [];
     if (!linkedSnapshot) {
       assertAgentDefinitionRunnable({
-        parentPermissionMode: parentHeader.permissionMode,
         definition: requireResolvedAgentDefinition(input.spec.id),
         tools: availableChildTools,
       });
@@ -2560,7 +2557,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
       id: snapshot.agentId,
       permissionMode: header.permissionMode,
       tools: snapshot.toolNames,
-      categoryPolicy: snapshot.categoryPolicy,
     };
     const availableTools = this.deps.childTools ?? [];
     const tools = buildToolsForAgentDefinition(availableTools, snapshotDefinition);

@@ -1488,7 +1488,7 @@ describe('SessionManager child-session runtime primitive', () => {
       profile: LOCAL_READ_AGENT_PROFILE,
       systemPrompt: LOCAL_READ_AGENT_DEFINITION.systemPrompt,
       toolNames: ['Read', 'Glob', 'Grep'],
-      categoryPolicy: { read: 'allow' },
+      categoryPolicy: {},
       permissionCeiling: 'ask',
     });
     expect(childHeader.subagentSpawn?.schemaVersion).toBe(1);
@@ -2183,7 +2183,7 @@ describe('SessionManager child-session runtime primitive', () => {
               profile: LOCAL_READ_AGENT_PROFILE,
               systemPrompt: LOCAL_READ_AGENT_DEFINITION.systemPrompt,
               toolNames: [...LOCAL_READ_AGENT_DEFINITION.tools],
-              categoryPolicy: { ...LOCAL_READ_AGENT_DEFINITION.categoryPolicy },
+              categoryPolicy: {},
               permissionCeiling: 'ask',
             },
             subagentSpawn: {
@@ -2291,7 +2291,6 @@ describe('SessionManager child-session runtime primitive', () => {
     if (!durablePrompt) throw new Error('child runtime snapshot was not persisted');
 
     const originalPrompt = LOCAL_READ_AGENT_DEFINITION.systemPrompt;
-    const originalPolicy = LOCAL_READ_AGENT_DEFINITION.categoryPolicy;
     let parentTurnDrained = false;
     const drainParentTurn = async (): Promise<void> => {
       parentGate.release();
@@ -2300,7 +2299,6 @@ describe('SessionManager child-session runtime primitive', () => {
     };
     try {
       LOCAL_READ_AGENT_DEFINITION.systemPrompt = 'Changed catalog prompt that must not leak.';
-      LOCAL_READ_AGENT_DEFINITION.categoryPolicy = { read: 'block' };
       let refreshSettled = false;
       const refresh = manager.refreshIdleBackends().finally(() => {
         refreshSettled = true;
@@ -2319,7 +2317,6 @@ describe('SessionManager child-session runtime primitive', () => {
     } finally {
       if (!parentTurnDrained) await drainParentTurn();
       LOCAL_READ_AGENT_DEFINITION.systemPrompt = originalPrompt;
-      LOCAL_READ_AGENT_DEFINITION.categoryPolicy = originalPolicy;
     }
 
     const childContexts = contexts.filter((ctx) => ctx.sessionId === child.childSessionId);
@@ -2546,7 +2543,7 @@ describe('SessionManager child-session runtime primitive', () => {
           profile: LOCAL_READ_AGENT_PROFILE,
           systemPrompt: LOCAL_READ_AGENT_DEFINITION.systemPrompt,
           toolNames: [...LOCAL_READ_AGENT_DEFINITION.tools],
-          categoryPolicy: { ...LOCAL_READ_AGENT_DEFINITION.categoryPolicy },
+          categoryPolicy: {},
           permissionCeiling: 'ask',
         },
         subagentSpawn: {
@@ -19608,7 +19605,7 @@ function createGraphOperatorSession(
         profile: LOCAL_READ_AGENT_PROFILE,
         systemPrompt: LOCAL_READ_AGENT_DEFINITION.systemPrompt,
         toolNames: [...LOCAL_READ_AGENT_DEFINITION.tools],
-        categoryPolicy: { ...LOCAL_READ_AGENT_DEFINITION.categoryPolicy },
+        categoryPolicy: {},
         permissionCeiling: 'ask',
       },
     }),

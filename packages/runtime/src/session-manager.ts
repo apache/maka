@@ -1709,7 +1709,6 @@ export class SessionManager {
 
     const definition = requireResolvedAgentDefinition(input.agentId);
     assertAgentDefinitionRunnable({
-      parentPermissionMode: parentHeader.permissionMode,
       definition,
       tools: this.deps.childTools ?? [],
       worktreeChildExecutorAvailable: this.deps.worktreeChildExecutor !== undefined,
@@ -1739,7 +1738,7 @@ export class SessionManager {
         workspace: definition.contract.workspace,
         permissionMode: childPermissionMode,
         toolNames: [...definition.tools],
-        categoryPolicy: { ...definition.categoryPolicy },
+        categoryPolicy: {},
         systemPrompt: definition.systemPrompt,
       },
       parentPermissionCeiling: parentHeader.permissionMode,
@@ -1799,7 +1798,7 @@ export class SessionManager {
           profile: definition.profile,
           systemPrompt: definition.systemPrompt,
           toolNames: [...definition.tools],
-          categoryPolicy: { ...definition.categoryPolicy },
+          categoryPolicy: {},
           permissionCeiling: parentHeader.permissionMode,
         },
         subagentSpawn: {
@@ -2274,7 +2273,6 @@ export class SessionManager {
     const definition = requireBuiltinAgentDefinitionByProfile(input.agentProfile);
     const availableChildTools = this.deps.childTools ?? [];
     assertAgentDefinitionRunnable({
-      parentPermissionMode: parentHeader.permissionMode,
       definition,
       tools: availableChildTools,
       worktreeChildExecutorAvailable: this.deps.worktreeChildExecutor !== undefined,
@@ -2316,7 +2314,7 @@ export class SessionManager {
           profile: definition.profile,
           systemPrompt: definition.systemPrompt,
           toolNames: [...definition.tools],
-          categoryPolicy: { ...definition.categoryPolicy },
+          categoryPolicy: {},
           permissionCeiling: parentHeader.permissionMode,
         },
         subagentSpawn: {
@@ -2609,7 +2607,6 @@ export class SessionManager {
     const sessionHeader = await this.deps.store.readHeader(sessionId);
     await this.ensureChildWorkspace(sessionHeader);
     assertAgentDefinitionRunnable({
-      parentPermissionMode: sessionHeader.permissionMode,
       definition,
       tools: this.deps.childTools ?? [],
       worktreeChildExecutorAvailable: this.deps.worktreeChildExecutor !== undefined,
@@ -2742,7 +2739,6 @@ export class SessionManager {
       id: snapshot.agentId,
       permissionMode: child.permissionMode,
       tools: snapshot.toolNames,
-      categoryPolicy: snapshot.categoryPolicy,
     });
     if (runnableTools.length !== snapshot.toolNames.length) {
       throw new Error('Child Session durable runtime tool snapshot is unavailable');
@@ -3426,9 +3422,7 @@ export class SessionManager {
   }
 
   async listChildAgents(sessionId: string): Promise<AgentListResult> {
-    const header = await this.deps.store.readHeader(sessionId);
     const definitions = listBuiltinAgentDefinitions({
-      parentPermissionMode: header.permissionMode,
       tools: this.deps.childTools ?? [],
       worktreeChildExecutorAvailable: this.deps.worktreeChildExecutor !== undefined,
     });

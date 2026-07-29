@@ -118,7 +118,6 @@ describe('subagent tools', () => {
     expect(LOCAL_READ_AGENT_DEFINITION.tools.includes('ExploreAgent')).toBe(false);
 
     const definitions = listBuiltinAgentDefinitions({
-      parentPermissionMode: 'ask',
       tools: [
         testCatalogTool('Read', 'read'),
         testCatalogTool('Glob', 'read'),
@@ -157,7 +156,6 @@ describe('subagent tools', () => {
     expect(WEB_RESEARCH_AGENT_DEFINITION.tools.includes('ExploreAgent')).toBe(false);
 
     const withWebSearch = listBuiltinAgentDefinitions({
-      parentPermissionMode: 'execute',
       tools: [
         testCatalogTool('Read', 'read'),
         testCatalogTool('Glob', 'read'),
@@ -183,7 +181,6 @@ describe('subagent tools', () => {
 
     expect(
       listBuiltinAgentDefinitions({
-        parentPermissionMode: 'execute',
         tools: [
           testCatalogTool('Read', 'read'),
           testCatalogTool('Glob', 'read'),
@@ -197,7 +194,6 @@ describe('subagent tools', () => {
     });
     expect(
       listBuiltinAgentDefinitions({
-        parentPermissionMode: 'ask',
         tools: [
           testCatalogTool('Read', 'read'),
           testCatalogTool('Glob', 'read'),
@@ -232,7 +228,6 @@ describe('subagent tools', () => {
     expect(IMPLEMENTATION_AGENT_DEFINITION.tools.includes('ExploreAgent')).toBe(false);
 
     const availability = listBuiltinAgentDefinitions({
-      parentPermissionMode: 'execute',
       tools: [
         testCatalogTool('Read', 'read'),
         testCatalogTool('Glob', 'read'),
@@ -252,7 +247,6 @@ describe('subagent tools', () => {
     await expectRejects(
       Promise.resolve().then(() =>
         assertAgentDefinitionRunnable({
-          parentPermissionMode: 'execute',
           definition: IMPLEMENTATION_AGENT_DEFINITION,
           tools: [
             testCatalogTool('Read', 'read'),
@@ -268,7 +262,6 @@ describe('subagent tools', () => {
     );
 
     const runnableAvailability = listBuiltinAgentDefinitions({
-      parentPermissionMode: 'execute',
       worktreeChildExecutorAvailable: true,
       tools: [
         testCatalogTool('Read', 'read'),
@@ -281,7 +274,6 @@ describe('subagent tools', () => {
     }).find((definition) => definition.id === IMPLEMENTATION_AGENT_ID)?.availability;
     expect(runnableAvailability).toEqual({ status: 'available' });
     assertAgentDefinitionRunnable({
-      parentPermissionMode: 'execute',
       worktreeChildExecutorAvailable: true,
       definition: IMPLEMENTATION_AGENT_DEFINITION,
       tools: [
@@ -298,7 +290,6 @@ describe('subagent tools', () => {
   test('agent definition availability depends on exposed tools, not legacy parent modes', () => {
     expect(
       evaluateAgentDefinitionAvailability({
-        parentPermissionMode: 'ask',
         definition: LOCAL_READ_AGENT_DEFINITION,
         tools: [testCatalogTool('Read', 'read')],
       }),
@@ -310,7 +301,6 @@ describe('subagent tools', () => {
 
     expect(
       evaluateAgentDefinitionAvailability({
-        parentPermissionMode: 'explore',
         definition: {
           ...LOCAL_READ_AGENT_DEFINITION,
           id: 'writer',
@@ -325,7 +315,7 @@ describe('subagent tools', () => {
     ).toEqual({ status: 'available' });
   });
 
-  test('agent definition policy evaluates each tool through allowlist and category policy', () => {
+  test('agent definition policy uses the explicit tool allowlist', () => {
     expect(
       evaluateAgentDefinitionToolAccess(
         LOCAL_READ_AGENT_DEFINITION,
@@ -350,19 +340,17 @@ describe('subagent tools', () => {
           ...LOCAL_READ_AGENT_DEFINITION,
           id: 'web-review',
           tools: ['WebSearch'],
-          categoryPolicy: { web_read: 'prompt' },
         },
         testCatalogTool('WebSearch', 'web_read'),
       ),
     ).toEqual({
       category: 'web_read',
-      decision: 'prompt',
+      decision: 'allow',
     });
   });
 
   test('legacy parent mode does not override the authoritative child boundary and tool surface', () => {
     assertAgentDefinitionRunnable({
-      parentPermissionMode: 'explore',
       definition: {
         ...LOCAL_READ_AGENT_DEFINITION,
         id: 'writer',

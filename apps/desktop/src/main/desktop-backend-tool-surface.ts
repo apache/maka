@@ -319,7 +319,6 @@ function resolveDurableChildTools(
     id: snapshot.agentId,
     permissionMode: header.permissionMode,
     tools: snapshot.toolNames,
-    categoryPolicy: snapshot.categoryPolicy,
   });
   if (tools.length !== snapshot.toolNames.length) {
     throw new Error('Subagent runtime tool snapshot is unavailable');
