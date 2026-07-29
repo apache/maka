@@ -99,17 +99,17 @@ const computerWireParams = z
       .describe(
         'Operation to perform. Required fields by action: observe/screenshot require app or window_id; click_element requires observation_id and element_id; set_value requires observation_id, element_id, and value; select_text/secondary_action require observation_id, element_id, and text; press_key requires observation_id and text; coordinate actions require observation_id plus their coordinate fields.',
       ),
+    // "Exact" was already in this description and was not enough. On a real
+    // desktop chain the model asked for "Calculator" and got nothing, because
+    // the app is named 计算器 — macOS reports the localized display name and
+    // that name is the identity. It recovered by calling list_apps, at the cost
+    // of a round trip this sentence can save.
     app: z
       .string()
       .min(1)
       .max(512)
       .optional()
       .describe(
-        // "Exact" was already here and was not enough. On a real desktop chain
-        // the model asked for "Calculator" and got nothing, because the app is
-        // named 计算器 — macOS reports the localized display name and that name
-        // is the identity. It recovered by calling list_apps, at the cost of a
-        // round trip this sentence can save.
         'Exact app id/name as list_apps reports it. Names are localized, so the English name may not match. Required for observe unless window_id is supplied.',
       ),
     window_id: z
