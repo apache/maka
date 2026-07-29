@@ -4515,7 +4515,7 @@ describe('Maka Pi TUI runner', () => {
 
     terminal.input('/permissions bypass');
     terminal.input('\r');
-    await waitFor(() => terminal.output().includes('Bypass sandbox for this session?'));
+    await waitFor(() => terminal.output().includes('Switch to Bypass?'));
     assert.deepEqual(driver.permissionModes, []);
 
     terminal.input('\r');
@@ -4544,7 +4544,7 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => driver.permissionModes.length === 1);
 
     assert.deepEqual(driver.permissionModes, ['ask']);
-    assert.doesNotMatch(terminal.output(), /Bypass sandbox for this session/);
+    assert.doesNotMatch(terminal.output(), /Switch to Bypass/);
 
     exitMaka(terminal);
     await run;
@@ -4906,7 +4906,7 @@ describe('Maka Pi TUI runner', () => {
     );
     terminal.input('\x1b[B');
     terminal.input('\r');
-    await waitFor(() => terminal.output().includes('Bypass sandbox for this session?'));
+    await waitFor(() => terminal.output().includes('Switch to Bypass?'));
     assert.deepEqual(driver.permissionModes, []);
     terminal.input('\x1b[B');
     terminal.input('\r');

@@ -1948,16 +1948,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       {
         value: 'keep',
         label: 'Keep Auto',
-        description: 'Stay inside the session sandbox',
+        description: 'Stay within the session sandbox boundary',
       },
       {
         value: 'bypass',
-        label: 'Bypass sandbox',
-        description: 'Allow unrestricted local tools for this session',
+        label: 'Enter Bypass',
+        description:
+          'Expose the host filesystem and network; use only for trusted, externally isolated tasks',
       },
     ];
     showSelectPicker(
-      'Bypass sandbox for this session?',
+      'Switch to Bypass?',
       'keep',
       confirmation,
       (choice) => {
