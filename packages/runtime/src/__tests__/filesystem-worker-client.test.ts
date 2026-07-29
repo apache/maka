@@ -46,6 +46,29 @@ test('Read image payloads fit within the filesystem worker response limit', () =
 });
 
 describe('filesystem worker client permission snapshots', () => {
+  for (const kind of ['bypass', 'external'] as const) {
+    test(`rejects an authoritative ${kind} boundary instead of falling back to legacy mode`, async () => {
+      const workspace = await temporaryDirectory(`maka-worker-client-${kind}-`);
+      const { client, requests } = fakeClient();
+
+      await assert.rejects(
+        client.execute({
+          operation: { kind: 'write', path: 'allowed-by-legacy-mode.txt', content: kind },
+          cwd: workspace,
+          executionBoundary: { kind, revision: 1 },
+          mode: 'execute',
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof FilesystemWorkerClientError);
+          assert.equal(error.reason, 'invalid_request');
+          assert.equal(error.stage, 'validation');
+          return true;
+        },
+      );
+      assert.equal(requests.length, 0);
+    });
+  }
+
   test('returns the smallest session boundary expansion for an external path', async () => {
     const workspace = await temporaryDirectory('maka-worker-client-boundary-workspace-');
     const outside = await mkdtemp(join(homedir(), '.maka-worker-client-boundary-outside-'));

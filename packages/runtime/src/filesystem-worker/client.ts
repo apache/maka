@@ -126,6 +126,14 @@ export class FilesystemWorkerClient {
   async execute(input: FilesystemWorkerExecuteInput): Promise<FilesystemWorkerResult> {
     const requestId = this.newId();
     if (input.abortSignal?.aborted) throw clientError('aborted', 'launch', requestId);
+    if (input.executionBoundary && input.executionBoundary.kind !== 'managed') {
+      throw clientError(
+        'invalid_request',
+        'validation',
+        requestId,
+        'Filesystem worker execution requires a managed boundary.',
+      );
+    }
     const canonicalCwd = await realpath(input.cwd).catch(() => {
       throw clientError(
         'invalid_operation',
