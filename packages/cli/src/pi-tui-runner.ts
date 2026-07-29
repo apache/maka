@@ -2471,6 +2471,18 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       return { consume: true };
     }
     if (tui.hasOverlay()) return undefined;
+    const pendingSandboxBoundary = activeSandboxBoundaryRequest(state);
+    if (pendingSandboxBoundary && !matchesKey(data, Key.ctrl('c'))) {
+      if (
+        !isKeyRepeat(data) &&
+        (matchesKey(data, 'y') || matchesKey(data, Key.enter) || matchesKey(data, Key.return))
+      ) {
+        respondToPendingSandboxBoundary('allow');
+      } else if (!isKeyRepeat(data) && (matchesKey(data, 'n') || matchesKey(data, Key.escape))) {
+        respondToPendingSandboxBoundary('deny');
+      }
+      return { consume: true };
+    }
     // Alt+Enter: queue a followup (during a turn) or submit (when idle). Alt+↑:
     // take back the queued messages to re-edit. Neither is an editor binding
     // (newline is shift+enter/ctrl+j; history is plain up), so intercepting
@@ -2503,17 +2515,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (matchesKey(data, Key.ctrl('t')) && !isKeyRepeat(data)) {
       if (toggleAllThinkingExpansion(state)) {
         requestRender();
-        return { consume: true };
-      }
-    }
-    const pendingSandboxBoundary = activeSandboxBoundaryRequest(state);
-    if (pendingSandboxBoundary && !isKeyRepeat(data)) {
-      if (matchesKey(data, 'y') || matchesKey(data, Key.enter) || matchesKey(data, Key.return)) {
-        respondToPendingSandboxBoundary('allow');
-        return { consume: true };
-      }
-      if (matchesKey(data, 'n') || matchesKey(data, Key.escape)) {
-        respondToPendingSandboxBoundary('deny');
         return { consume: true };
       }
     }

@@ -2040,6 +2040,48 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
+  test('freezes and preserves the editor draft while a boundary request owns input', async () => {
+    const terminal = new FakeTerminal();
+    let releaseBoundaryRequest!: () => void;
+    const boundaryRequestGate = new Promise<void>((resolve) => {
+      releaseBoundaryRequest = resolve;
+    });
+    const driver = new SandboxBoundaryPromptDriver(
+      ['/outside'],
+      async () => {},
+      async () => boundaryRequestGate,
+    );
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('run');
+    terminal.input('\r');
+    await delay(20);
+    terminal.input('keep this draft');
+    await waitFor(() => editorInputText(terminal) === 'keep this draft');
+    releaseBoundaryRequest();
+    await waitFor(() => driver.boundaryRequests === 1);
+
+    terminal.input('x');
+    await delay(20);
+    assert.equal(editorInputText(terminal), 'keep this draft');
+    assert.deepEqual(driver.boundaryResponses, []);
+
+    terminal.input('n');
+    await waitFor(() => driver.boundaryResponses.length === 1);
+    await waitFor(() => editorInputText(terminal) === 'keep this draft');
+
+    exitMaka(terminal);
+    await run;
+  });
+
   test('ignores repeated allow keys while a sandbox boundary request waits', async () => {
     const terminal = new FakeTerminal();
     const driver = new SandboxBoundaryPromptDriver();
@@ -8777,6 +8819,7 @@ class SandboxBoundaryPromptDriver implements MakaSessionDriver {
   constructor(
     private readonly paths: readonly string[] = ['/outside'],
     private readonly beforeBoundaryAck: (index: number) => Promise<void> = async () => {},
+    private readonly beforeBoundaryRequest: (index: number) => Promise<void> = async () => {},
   ) {}
 
   async listSessions(): Promise<SessionSummary[]> {
@@ -8791,6 +8834,7 @@ class SandboxBoundaryPromptDriver implements MakaSessionDriver {
 
   async *promptEvents(_prompt: string): AsyncIterable<SessionEvent> {
     for (const [index, path] of this.paths.entries()) {
+      await this.beforeBoundaryRequest(index);
       this.boundaryRequests += 1;
       yield {
         type: 'sandbox_boundary_request',
