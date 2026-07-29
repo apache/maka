@@ -27,9 +27,10 @@ export interface SandboxPathContext {
   executableRoots?: readonly string[];
   /** Host directories a trusted helper needs writable to materialize an exact result. */
   runtimeWritableRoots?: readonly string[];
-  /** Exact writable files pinned by an open host descriptor until sandbox launch. */
-  pinnedWritableFiles?: readonly {
+  /** Profile roots pinned by open host descriptors until sandbox launch. */
+  pinnedProfilePaths?: readonly {
     path: string;
+    access: 'read' | 'write';
     fd: number;
     sourceFd: number;
     releaseSource?: () => void;

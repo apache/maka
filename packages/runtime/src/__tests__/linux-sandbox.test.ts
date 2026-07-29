@@ -253,7 +253,7 @@ describe('buildBubblewrapArgv', () => {
       ...request.command,
       pathContext: {
         ...request.command.pathContext,
-        pinnedWritableFiles: [{ path: '/outside/new.txt', fd: 4, sourceFd: 27 }],
+        pinnedProfilePaths: [{ path: '/outside/new.txt', access: 'write', fd: 4, sourceFd: 27 }],
       },
     } as SandboxTransformRequest['command'];
     const backend = new LinuxBubblewrapBackend({
@@ -275,7 +275,7 @@ describe('buildBubblewrapArgv', () => {
     );
   });
 
-  it('does not require stale exact file roots to exist for an unrelated command', () => {
+  it('omits inactive exact file roots from an unrelated command', () => {
     const request = workspaceRequest({
       type: 'managed',
       name: 'custom',
@@ -298,16 +298,12 @@ describe('buildBubblewrapArgv', () => {
       hasTriple(argv, '--ro-bind', '/outside/missing-read.txt', '/outside/missing-read.txt'),
       false,
     );
-    assert.ok(
-      hasTriple(argv, '--ro-bind-try', '/outside/missing-read.txt', '/outside/missing-read.txt'),
-    );
+    assert.equal(argv.includes('/outside/missing-read.txt'), false);
     assert.equal(
       hasTriple(argv, '--bind', '/outside/missing-write.txt', '/outside/missing-write.txt'),
       false,
     );
-    assert.ok(
-      hasTriple(argv, '--bind-try', '/outside/missing-write.txt', '/outside/missing-write.txt'),
-    );
+    assert.equal(argv.includes('/outside/missing-write.txt'), false);
   });
 
   it('materializes an otherwise-unmounted worker cwd without exposing its contents', () => {
@@ -439,7 +435,7 @@ describe('LinuxBubblewrapBackend', () => {
     }
   });
 
-  it('rejects exact directory entries that bubblewrap would otherwise expose as subtrees', async () => {
+  it('omits inactive exact directory entries instead of exposing their subtrees', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'maka-linux-exact-directory-'));
     const backend = new LinuxBubblewrapBackend({
       capability: { available: true, bwrapPath: '/usr/bin/bwrap' },
@@ -455,13 +451,11 @@ describe('LinuxBubblewrapBackend', () => {
     };
 
     try {
-      assert.equal(backend.canEnforceProfile(profile), false);
+      assert.equal(backend.canEnforceProfile(profile), true);
       const result = backend.transform(workspaceRequest(profile));
-      assert.equal(result.ok, false);
-      if (!result.ok) {
-        assert.equal(result.reason, 'invalid_request');
-        assert.match(result.message ?? '', /exact director/i);
-      }
+      assert.equal(result.ok, true);
+      if (!result.ok) throw new Error('Linux transform failed');
+      assert.equal(result.exec.argv.includes(directory), false);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

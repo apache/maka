@@ -470,7 +470,9 @@ describe('builtin Bash streaming output', () => {
       await bash.impl(fixture.args, fixture.context);
 
       const pinned = launchInput.fdInputs.find(
-        (input: { sourceFd?: number }) => input.sourceFd !== undefined,
+        (input: { sourceFd?: number; fd: number }) =>
+          input.sourceFd !== undefined &&
+          hasArgTriple(launchInput.argv, '--bind', `/proc/self/fd/${input.fd}`, fixture.target),
       );
       assert.ok(pinned);
       assert.ok(Number.isInteger(pinned.sourceFd));
@@ -479,6 +481,64 @@ describe('builtin Bash streaming output', () => {
         hasArgTriple(launchInput.argv, '--bind', `/proc/self/fd/${pinned.fd}`, fixture.target),
       );
       assert.equal(await pathExists(fixture.target), false);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  test('pins an existing active exact target without deleting it after completion', async () => {
+    const fixture = await linuxMissingExactWriteFixture();
+    let launchInput: any;
+    const bash = fixture.buildBash({
+      async runForegroundBash(input: any) {
+        launchInput = input;
+        input.onCompletion?.({ successful: true });
+        return terminalResult(input, 'completed', 0);
+      },
+      async runBackgroundBash() {
+        throw new Error('not used');
+      },
+    });
+
+    try {
+      await writeFile(fixture.target, 'existing');
+      await bash.impl(fixture.args, fixture.context);
+
+      const pinned = launchInput.fdInputs.find(
+        (input: { sourceFd?: number; fd: number }) =>
+          input.sourceFd !== undefined &&
+          hasArgTriple(launchInput.argv, '--bind', `/proc/self/fd/${input.fd}`, fixture.target),
+      );
+      assert.ok(pinned);
+      assert.equal(await readFile(fixture.target, 'utf8'), 'existing');
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  test('omits an inactive exact target that was replaced by a symlink', async () => {
+    const fixture = await linuxMissingExactWriteFixture();
+    const replacement = join(dirname(fixture.target), 'replacement.txt');
+    let launchInput: any;
+    const bash = fixture.buildBash({
+      async runForegroundBash(input: any) {
+        launchInput = input;
+        return terminalResult(input, 'completed', 0);
+      },
+      async runBackgroundBash() {
+        throw new Error('not used');
+      },
+    });
+
+    try {
+      await writeFile(replacement, 'outside');
+      await symlink(replacement, fixture.target);
+
+      await bash.impl({ command: 'true' }, fixture.context);
+
+      assert.ok(launchInput);
+      assert.equal(launchInput.argv.includes(fixture.target), false);
+      assert.equal(launchInput.argv.includes(replacement), false);
     } finally {
       await fixture.cleanup();
     }
@@ -567,7 +627,9 @@ describe('builtin Bash streaming output', () => {
     const bash = fixture.buildBash({
       async runForegroundBash(input: any) {
         const pinned = input.fdInputs.find(
-          (candidate: { sourceFd?: number }) => candidate.sourceFd !== undefined,
+          (candidate: { sourceFd?: number; fd: number }) =>
+            candidate.sourceFd !== undefined &&
+            hasArgTriple(input.argv, '--bind', `/proc/self/fd/${candidate.fd}`, fixture.target),
         );
         assert.ok(pinned);
         assert.equal(typeof pinned.releaseSource, 'function');

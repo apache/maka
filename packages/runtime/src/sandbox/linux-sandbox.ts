@@ -1,5 +1,5 @@
 import { posix } from 'node:path';
-import { readdirSync, statSync } from 'node:fs';
+import { readdirSync } from 'node:fs';
 
 import type { PermissionProfile } from '@maka/core/permission-profile';
 
@@ -58,7 +58,6 @@ export class LinuxBubblewrapBackend implements SandboxBackend {
   canEnforceProfile(profile: PermissionProfile): boolean {
     if (profile.type !== 'managed' || profile.fileSystem.kind !== 'restricted') return false;
     if (profile.fileSystem.entries.some((entry) => entry.access === 'deny')) return false;
-    if (profileHasUnenforceableExactDirectory(profile)) return false;
     if (networkRestricted(profile)) {
       try {
         networkSyscalls(this.options.arch ?? process.arch);
@@ -92,15 +91,6 @@ export class LinuxBubblewrapBackend implements SandboxBackend {
         preference,
       );
     }
-    if (profileHasUnenforceableExactDirectory(command.profile)) {
-      return failure(
-        'invalid_request',
-        'Linux sandbox cannot enforce an exact directory entry without exposing its subtree.',
-        platform,
-        preference,
-      );
-    }
-
     const capability = this.capability(platform);
     if (!capability.available) {
       return failure(
@@ -142,7 +132,7 @@ export class LinuxBubblewrapBackend implements SandboxBackend {
       );
     }
 
-    const pinnedFdInputs = command.pathContext.pinnedWritableFiles?.map(
+    const pinnedFdInputs = command.pathContext.pinnedProfilePaths?.map(
       ({ fd, sourceFd, releaseSource }) => ({
         fd,
         sourceFd,
@@ -198,19 +188,6 @@ function exactProfileRoots(
   );
 }
 
-function profileHasUnenforceableExactDirectory(profile: PermissionProfile): boolean {
-  if (profile.type !== 'managed' || profile.fileSystem.kind !== 'restricted') return false;
-  return profile.fileSystem.entries.some((entry) => {
-    if (entry.kind !== 'path' || (entry.match ?? 'subtree') !== 'exact') return false;
-    try {
-      return statSync(entry.path).isDirectory();
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-      return true;
-    }
-  });
-}
-
 export function buildBubblewrapArgv(input: BuildBubblewrapArgvInput): readonly string[] {
   const { command } = input;
   const roots = resolveRoots(command.profile, command.pathContext);
@@ -248,12 +225,15 @@ export function buildBubblewrapArgv(input: BuildBubblewrapArgvInput): readonly s
   const profileWritableRoots = removeRootsCoveredBy(roots.writableRoots, runtimeWritableRoots);
   const exactReadableRoots = exactProfileRoots(command.profile, 'read');
   const exactWritableRoots = exactProfileRoots(command.profile, 'write');
-  const pinnedWritableFiles = new Map(
-    (command.pathContext.pinnedWritableFiles ?? []).map((entry) => [entry.path, entry] as const),
+  const pinnedProfilePaths = new Map(
+    (command.pathContext.pinnedProfilePaths ?? []).map((entry) => [entry.path, entry] as const),
   );
-  for (const entry of pinnedWritableFiles.values()) {
-    if (!profileWritableRoots.includes(entry.path)) {
-      throw new Error(`Pinned writable file is not an effective writable root: ${entry.path}`);
+  for (const entry of pinnedProfilePaths.values()) {
+    const effectiveRoots = entry.access === 'write' ? profileWritableRoots : profileReadableRoots;
+    if (!effectiveRoots.includes(entry.path)) {
+      throw new Error(
+        `Pinned profile path is not an effective ${entry.access} root: ${entry.path}`,
+      );
     }
     if (
       !Number.isInteger(entry.fd) ||
@@ -323,15 +303,14 @@ export function buildBubblewrapArgv(input: BuildBubblewrapArgvInput): readonly s
     argv.push('--dir', command.cwd);
   }
   for (const root of profileReadableRoots) {
-    argv.push(exactReadableRoots.has(root) ? '--ro-bind-try' : '--ro-bind', root, root);
+    const pinned = pinnedProfilePaths.get(root);
+    if (exactReadableRoots.has(root) && !pinned) continue;
+    argv.push('--ro-bind', pinned ? `/proc/self/fd/${pinned.fd}` : root, root);
   }
   for (const root of profileWritableRoots) {
-    const pinned = pinnedWritableFiles.get(root);
-    argv.push(
-      pinned ? '--bind' : exactWritableRoots.has(root) ? '--bind-try' : '--bind',
-      pinned ? `/proc/self/fd/${pinned.fd}` : root,
-      root,
-    );
+    const pinned = pinnedProfilePaths.get(root);
+    if (exactWritableRoots.has(root) && !pinned) continue;
+    argv.push('--bind', pinned ? `/proc/self/fd/${pinned.fd}` : root, root);
   }
 
   for (const root of roots.protectedWritableRoots) {

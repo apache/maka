@@ -761,25 +761,26 @@ function sandboxCommand(
     return undefined;
   }
 
-  let preparedTargets: readonly PreparedExactWriteTarget[] = [];
+  let preparedPaths: readonly PreparedProfilePath[] = [];
   try {
-    preparedTargets = prepareLinuxBashExactWriteTargets(
+    preparedPaths = prepareLinuxBashProfilePaths(
       platform,
       effective.profile,
+      effective.workspaceRoots,
       requiredBoundary,
     );
   } catch {
     throw new SandboxCommandError({
       domain,
       stage: 'validation',
-      reason: 'exact_write_target_changed',
+      reason: 'sandbox_path_changed',
       backend: 'linux',
       recoverable: false,
       profileName: effective.profile.name ?? effective.profile.type,
-      message: 'An approved exact write target could not be prepared safely.',
+      message: 'An approved sandbox path could not be pinned safely.',
     });
   }
-  const onCompletion = preparedExactWriteCompletion(preparedTargets);
+  const onCompletion = preparedProfilePathCompletion(preparedPaths);
 
   let result: ReturnType<SandboxManager['transform']>;
   try {
@@ -806,13 +807,14 @@ function sandboxCommand(
                   execPath: process.execPath,
                   path: env.PATH,
                 }),
-                ...(preparedTargets.length > 0
+                ...(preparedPaths.length > 0
                   ? {
-                      pinnedWritableFiles: preparedTargets.map((target) => ({
-                        path: target.path,
-                        fd: target.childFd,
-                        sourceFd: target.sourceFd,
-                        releaseSource: target.releaseSource,
+                      pinnedProfilePaths: preparedPaths.map((path) => ({
+                        path: path.path,
+                        access: path.access,
+                        fd: path.childFd,
+                        sourceFd: path.sourceFd,
+                        releaseSource: path.releaseSource,
                       })),
                     }
                   : {}),
@@ -848,8 +850,10 @@ function sandboxCommand(
   };
 }
 
-interface PreparedExactWriteTarget {
+interface PreparedProfilePath {
   readonly path: string;
+  readonly access: 'read' | 'write';
+  readonly created: boolean;
   readonly sourceFd: number;
   readonly releaseSource: () => void;
   readonly childFd: number;
@@ -859,11 +863,12 @@ interface PreparedExactWriteTarget {
   readonly ctimeNs: bigint;
 }
 
-function prepareLinuxBashExactWriteTargets(
+function prepareLinuxBashProfilePaths(
   platform: SandboxPlatform,
   profile: PermissionProfile,
+  workspaceRoots: readonly string[],
   requiredBoundary?: SandboxBoundaryExpansion,
-): readonly PreparedExactWriteTarget[] {
+): readonly PreparedProfilePath[] {
   if (
     platform !== 'linux' ||
     profile.type !== 'managed' ||
@@ -871,12 +876,36 @@ function prepareLinuxBashExactWriteTargets(
   ) {
     return [];
   }
-  const exactWrites = (requiredBoundary?.filesystem?.entries ?? []).flatMap((entry) =>
-    entry.access === 'write' && entry.scope === 'exact' ? [entry.path] : [],
+  const activeExactPaths = new Set(
+    (requiredBoundary?.filesystem?.entries ?? []).flatMap((entry) =>
+      entry.scope === 'exact' ? [entry.path] : [],
+    ),
   );
-  const prepared: PreparedExactWriteTarget[] = [];
+  const candidates = new Map<string, { access: 'read' | 'write'; match: 'exact' | 'subtree' }>();
+  for (const entry of profile.fileSystem.entries) {
+    if (entry.access === 'deny') continue;
+    if (entry.kind === 'special') {
+      if (entry.special !== ':workspace_roots') continue;
+      for (const workspaceRoot of workspaceRoots) {
+        const existing = candidates.get(workspaceRoot);
+        candidates.set(
+          workspaceRoot,
+          existing?.access === 'write' ? existing : { access: entry.access, match: 'subtree' },
+        );
+      }
+      continue;
+    }
+    const match = entry.match ?? 'subtree';
+    if (match === 'exact' && !activeExactPaths.has(entry.path)) continue;
+    const existing = candidates.get(entry.path);
+    candidates.set(
+      entry.path,
+      existing?.access === 'write' ? existing : { access: entry.access, match },
+    );
+  }
+  const prepared: PreparedProfilePath[] = [];
   try {
-    for (const target of exactWrites) {
+    for (const [target, { access, match }] of candidates) {
       const existing = (() => {
         try {
           return lstatSync(target);
@@ -885,8 +914,49 @@ function prepareLinuxBashExactWriteTargets(
           throw error;
         }
       })();
-      if (existing) continue;
-      const fd = openMissingExactWriteTarget(target);
+      if (!existing) {
+        if (match !== 'exact' || access !== 'write') continue;
+        const fd = openMissingExactWriteTarget(target);
+        let sourceOpen = true;
+        const releaseSource = () => {
+          if (!sourceOpen) return;
+          sourceOpen = false;
+          closeSync(fd);
+        };
+        try {
+          // A deliberately old marker distinguishes a successful no-op from an
+          // intentional empty write, which updates mtime/ctime even at size zero.
+          futimesSync(fd, 1, 1);
+          const metadata = fstatSync(fd, { bigint: true });
+          prepared.push({
+            path: target,
+            access,
+            created: true,
+            sourceFd: fd,
+            releaseSource,
+            childFd: 4 + prepared.length,
+            device: metadata.dev,
+            inode: metadata.ino,
+            mtimeNs: metadata.mtimeNs,
+            ctimeNs: metadata.ctimeNs,
+          });
+        } catch (error) {
+          releaseSource();
+          throw error;
+        }
+        continue;
+      }
+      if (
+        existing.isSymbolicLink() ||
+        (match === 'exact' ? !existing.isFile() : !existing.isDirectory())
+      ) {
+        throw new Error(`Approved sandbox path changed type: ${target}`);
+      }
+      const linuxConstants = constants as typeof constants & { O_PATH?: number };
+      const fd = openSync(
+        target,
+        (linuxConstants.O_PATH ?? constants.O_RDONLY) | (constants.O_NOFOLLOW ?? 0),
+      );
       let sourceOpen = true;
       const releaseSource = () => {
         if (!sourceOpen) return;
@@ -894,12 +964,18 @@ function prepareLinuxBashExactWriteTargets(
         closeSync(fd);
       };
       try {
-        // A deliberately old marker distinguishes a successful no-op from an
-        // intentional empty write, which updates mtime/ctime even at size zero.
-        futimesSync(fd, 1, 1);
         const metadata = fstatSync(fd, { bigint: true });
+        if (
+          metadata.dev !== BigInt(existing.dev) ||
+          metadata.ino !== BigInt(existing.ino) ||
+          (match === 'exact' ? !metadata.isFile() : !metadata.isDirectory())
+        ) {
+          throw new Error(`Approved sandbox path changed while pinning: ${target}`);
+        }
         prepared.push({
           path: target,
+          access,
+          created: false,
           sourceFd: fd,
           releaseSource,
           childFd: 4 + prepared.length,
@@ -915,7 +991,7 @@ function prepareLinuxBashExactWriteTargets(
     }
     return prepared;
   } catch (error) {
-    completePreparedExactWriteTargets(prepared);
+    completePreparedProfilePaths(prepared);
     throw error;
   }
 }
@@ -947,25 +1023,26 @@ export function openMissingExactWriteTarget(path: string, afterParentPinned?: ()
   }
 }
 
-function preparedExactWriteCompletion(
-  targets: readonly PreparedExactWriteTarget[],
+function preparedProfilePathCompletion(
+  paths: readonly PreparedProfilePath[],
 ): ((outcome: { successful: boolean }) => void) | undefined {
-  if (targets.length === 0) return undefined;
+  if (paths.length === 0) return undefined;
   let completed = false;
   return () => {
     if (completed) return;
     completed = true;
-    completePreparedExactWriteTargets(targets);
+    completePreparedProfilePaths(paths);
   };
 }
 
-function completePreparedExactWriteTargets(targets: readonly PreparedExactWriteTarget[]): void {
-  for (const target of targets) {
+function completePreparedProfilePaths(paths: readonly PreparedProfilePath[]): void {
+  for (const target of paths) {
     try {
       target.releaseSource();
     } catch {
       // Launch cleanup is best effort; the close-once owner prevents fd-number reuse bugs.
     }
+    if (!target.created) continue;
     try {
       const metadata = lstatSync(target.path, { bigint: true });
       const untouched = metadata.mtimeNs === target.mtimeNs && metadata.ctimeNs === target.ctimeNs;

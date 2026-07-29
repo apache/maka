@@ -1,7 +1,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, renameSync } from 'node:fs';
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { applySandboxBoundaryExpansion } from '@maka/core';
@@ -283,6 +283,26 @@ describe('Linux sandbox smoke', () => {
       assert.equal(additionalResult.output.mode, 'pipes');
       assert.equal(additionalResult.output.stderr, '');
       assert.equal(await readFile(allowedPath, 'utf8'), 'additional-ok');
+      assert.equal(await readFile(siblingPath, 'utf8'), 'sibling-before');
+
+      await rm(allowedPath);
+      await symlink(siblingPath, allowedPath);
+      await bash.impl(
+        {
+          command:
+            `printf stale-link-write > ${shellQuote(allowedPath)} 2>/dev/null || :; ` + 'true',
+        },
+        {
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          toolCallId: 'tool-unrelated',
+          cwd: workspace,
+          permissionMode: 'execute',
+          executionBoundary: expandedBoundary,
+          abortSignal: new AbortController().signal,
+          emitOutput: () => {},
+        },
+      );
       assert.equal(await readFile(siblingPath, 'utf8'), 'sibling-before');
 
       const escalationCommand = `printf escalation-ok > ${shellQuote(escalatedPath)}`;
