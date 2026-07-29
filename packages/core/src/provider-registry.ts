@@ -696,7 +696,7 @@ const providerRegistry = {
     modelDiscovery: {
       kind: 'fallback',
       reason:
-        'Agent Plan model discovery uses an account-authenticated subscription control-plane API; the dedicated inference API key cannot call it',
+        'Agent Plan inference data plane does not expose a model-list endpoint for its dedicated API key',
     },
     category: 'domestic',
     catalogGroup: 'plans',

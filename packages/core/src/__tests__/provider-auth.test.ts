@@ -92,7 +92,7 @@ describe('ProviderAuth contract', () => {
     expect(contract.actionAvailability.fetch_models).toBe('available');
   });
 
-  test('Volcengine Agent Plan uses its dedicated API key without exposing control-plane refresh', () => {
+  test('Volcengine Agent Plan hides refresh because its inference data plane has no model list', () => {
     const contract = deriveProviderAuthContract({
       providerType: 'volcengine-agent-plan',
       hasSecret: true,
