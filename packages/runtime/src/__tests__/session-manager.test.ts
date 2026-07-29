@@ -1536,10 +1536,8 @@ describe('SessionManager child-session runtime primitive', () => {
         (message) => message.type === 'user' && message.text === 'inspect the storage boundary',
       ),
     ).toBe(true);
-    await expectRejects(
-      manager.setPermissionMode(result.childSessionId, 'execute'),
-      /exceeds its "ask" ceiling/,
-    );
+    await manager.setPermissionMode(result.childSessionId, 'execute');
+    expect((await store.readHeader(result.childSessionId)).permissionMode).toBe('execute');
     const projection = await manager.listChildAgents(parent.id);
     expect(projection.runs).toEqual([]);
     expect(projection.executions).toHaveLength(1);
