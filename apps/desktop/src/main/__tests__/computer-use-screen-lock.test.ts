@@ -17,10 +17,14 @@ import {
 function makeMonitor(initial: ScreenIdleState = 'active') {
   let state: ScreenIdleState | undefined = initial;
   let probeThrows = false;
+  let subscribeThrows = false;
   const handlers: { onLock?: () => void; onUnlock?: () => void } = {};
+  let subscribed = 0;
   let unsubscribed = 0;
   const monitor = createScreenLockMonitor({
     subscribe: ({ onLock, onUnlock }) => {
+      if (subscribeThrows) throw new Error('powerMonitor unavailable');
+      subscribed += 1;
       handlers.onLock = onLock;
       handlers.onUnlock = onUnlock;
       return () => {
@@ -34,6 +38,8 @@ function makeMonitor(initial: ScreenIdleState = 'active') {
   });
   return {
     monitor,
+    /** Nothing is subscribed until the first probe, so open the subscription. */
+    start: () => monitor.locked(),
     lock: () => handlers.onLock?.(),
     unlock: () => handlers.onUnlock?.(),
     setState: (next: ScreenIdleState | undefined) => {
@@ -42,9 +48,33 @@ function makeMonitor(initial: ScreenIdleState = 'active') {
     setProbeThrows: (value: boolean) => {
       probeThrows = value;
     },
+    setSubscribeThrows: (value: boolean) => {
+      subscribeThrows = value;
+    },
+    subscribedCount: () => subscribed,
     unsubscribedCount: () => unsubscribed,
   };
 }
+
+test('nothing is subscribed until the first probe', () => {
+  // Tool assembly runs at module load, before `app.whenReady()`, and
+  // `powerMonitor` cannot be touched before that. The first `locked()` call
+  // comes with the first dispatch, which is long after ready.
+  const { monitor, subscribedCount } = makeMonitor('active');
+  assert.equal(subscribedCount(), 0);
+  monitor.locked();
+  assert.equal(subscribedCount(), 1);
+  monitor.locked();
+  assert.equal(subscribedCount(), 1);
+});
+
+test('a platform with nothing to subscribe to still answers', () => {
+  const { monitor, setSubscribeThrows, setState } = makeMonitor('active');
+  setSubscribeThrows(true);
+  assert.equal(monitor.locked(), false);
+  setState('locked');
+  assert.equal(monitor.locked(), true);
+});
 
 test('an unlocked machine reads as unlocked', () => {
   const { monitor } = makeMonitor('active');
@@ -81,7 +111,8 @@ test('an authoritative unlocked answer clears a latched lock event', () => {
   // Without this, a platform that delivered `lock-screen` and then never
   // delivered `unlock-screen` would disable Computer Use until the app
   // restarted. The query is the way out.
-  const { monitor, lock, setState } = makeMonitor('locked');
+  const { monitor, start, lock, setState } = makeMonitor('locked');
+  start();
   lock();
   assert.equal(monitor.locked(), true);
   setState('active');
@@ -92,7 +123,8 @@ test('an authoritative unlocked answer clears a latched lock event', () => {
 });
 
 test('a throwing probe falls back to the events rather than reporting unlocked', () => {
-  const { monitor, lock, setProbeThrows } = makeMonitor('active');
+  const { monitor, start, lock, setProbeThrows } = makeMonitor('active');
+  start();
   lock();
   setProbeThrows(true);
   assert.equal(monitor.locked(), true);
@@ -133,6 +165,9 @@ function makeGuard() {
       released.push(sessionId);
     },
   });
+  // The guard subscribes lazily, on its first probe, exactly as the first
+  // dispatch would make it.
+  guard.locked();
   return { guard, released, lock: () => handlers.onLock?.(), unlock: () => handlers.onUnlock?.() };
 }
 

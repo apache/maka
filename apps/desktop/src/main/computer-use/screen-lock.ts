@@ -77,22 +77,40 @@ function defaultProbe(): ScreenIdleState | undefined {
 
 export function createScreenLockMonitor(deps: ScreenLockMonitorDeps = {}): ScreenLockMonitor {
   const probe = deps.probe ?? defaultProbe;
+  const subscribe = deps.subscribe ?? defaultSubscribe;
   let latched = false;
   let disposed = false;
-  const unsubscribe = (deps.subscribe ?? defaultSubscribe)({
-    onLock: () => {
-      latched = true;
-      deps.onLock?.();
-    },
-    onUnlock: () => {
-      latched = false;
-      deps.onUnlock?.();
-    },
-  });
+  let unsubscribe: (() => void) | undefined;
+
+  // Subscribing is deferred, not eager: tool assembly runs at module load,
+  // which is before `app.whenReady()`, and `powerMonitor` is documented as
+  // unusable until then. The first `locked()` call happens on the first
+  // dispatch, which is necessarily before any session can need releasing, and
+  // a lock that happened before it is caught by the query rather than missed.
+  function ensureSubscribed(): void {
+    if (disposed || unsubscribe) return;
+    try {
+      unsubscribe = subscribe({
+        onLock: () => {
+          latched = true;
+          deps.onLock?.();
+        },
+        onUnlock: () => {
+          latched = false;
+          deps.onUnlock?.();
+        },
+      });
+    } catch {
+      // Nothing to subscribe to on this platform. The query still answers, and
+      // if it cannot either, the guard reports unlocked rather than refusing
+      // every action forever on a machine that has no lock screen at all.
+    }
+  }
 
   return {
     locked(): boolean {
       if (disposed) return false;
+      ensureSubscribed();
       let state: ScreenIdleState | undefined;
       try {
         state = probe();
@@ -110,7 +128,8 @@ export function createScreenLockMonitor(deps: ScreenLockMonitorDeps = {}): Scree
     dispose(): void {
       if (disposed) return;
       disposed = true;
-      unsubscribe();
+      unsubscribe?.();
+      unsubscribe = undefined;
     },
   };
 }
