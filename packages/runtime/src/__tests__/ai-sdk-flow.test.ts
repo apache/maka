@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 import { decodeStoredMessageForRecovery, type BackendKind } from '@maka/core/session';
+import type { AgentRunHeader } from '@maka/core';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { SessionEvent } from '@maka/core/events';
-import type { BackendSendInput } from '@maka/core/backend-types';
+import type { BackendSendInput, BackendSessionEvent } from '@maka/core/backend-types';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
   decodeRuntimeEvent,
@@ -1031,4 +1032,214 @@ describe('mapSessionEventToRuntimeEvent (pure)', () => {
     });
     assert.equal(a.branch, 'agent-b');
   });
+});
+
+// ============================================================================
+// Projection coverage contract
+// ============================================================================
+
+/**
+ * Every backend-mappable SessionEvent variant, with the minimum companion
+ * events its own projection needs. The `Record` key type is what makes this
+ * exhaustive: a new BackendSessionEvent variant without a sample here fails to
+ * compile.
+ */
+const PROJECTION_SAMPLES: Record<BackendSessionEvent['type'], SessionEvent[]> = {
+  text_delta: [
+    { type: 'text_delta', id: 'e', turnId: 'turn-1', ts: 1, messageId: 'm1', text: 'h' },
+  ],
+  text_complete: [
+    { type: 'text_complete', id: 'e', turnId: 'turn-1', ts: 1, messageId: 'm1', text: 'hi' },
+  ],
+  thinking_delta: [
+    { type: 'thinking_delta', id: 'e', turnId: 'turn-1', ts: 1, messageId: 'm1', text: 'h' },
+  ],
+  // Thinking is held until the assistant text row that shares its message id.
+  thinking_complete: [
+    { type: 'thinking_complete', id: 'e1', turnId: 'turn-1', ts: 1, messageId: 'm1', text: 'why' },
+    { type: 'text_complete', id: 'e2', turnId: 'turn-1', ts: 2, messageId: 'm1', text: 'hi' },
+  ],
+  tool_start: [
+    {
+      type: 'tool_start',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      toolUseId: 'tool-1',
+      toolName: 'Read',
+      args: { path: '/tmp/a' },
+    },
+  ],
+  tool_output_delta: [
+    {
+      type: 'tool_output_delta',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      sessionId: 'session-1',
+      toolCallId: 'tool-1',
+      toolUseId: 'tool-1',
+      seq: 1,
+      stream: 'stdout',
+      chunk: 'out',
+      redacted: false,
+      createdAt: 1,
+    },
+  ],
+  tool_progress: [
+    { type: 'tool_progress', id: 'e', turnId: 'turn-1', ts: 1, toolUseId: 'tool-1', chunk: 'x' },
+  ],
+  // A result carries no tool name of its own; the mapper reads it from the call.
+  tool_result: [
+    {
+      type: 'tool_start',
+      id: 'e1',
+      turnId: 'turn-1',
+      ts: 1,
+      toolUseId: 'tool-1',
+      toolName: 'Read',
+      args: { path: '/tmp/a' },
+    },
+    {
+      type: 'tool_result',
+      id: 'e2',
+      turnId: 'turn-1',
+      ts: 2,
+      toolUseId: 'tool-1',
+      isError: false,
+      content: { kind: 'text', text: 'ok' },
+    },
+  ],
+  sandbox_boundary_request: [
+    {
+      type: 'sandbox_boundary_request',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      requestId: 'boundary-1',
+      toolUseId: 'tool-1',
+      justification: 'read a file outside the workspace',
+      expansion: {
+        filesystem: { entries: [{ path: '/tmp/outside.txt', access: 'read', scope: 'exact' }] },
+      },
+    },
+  ],
+  sandbox_boundary_decision_ack: [
+    {
+      type: 'sandbox_boundary_decision_ack',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      requestId: 'boundary-1',
+      toolUseId: 'tool-1',
+      decision: 'allow',
+      status: 'approved',
+      revision: 2,
+    },
+  ],
+  user_question_request: [
+    {
+      type: 'user_question_request',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      requestId: 'q-1',
+      toolUseId: 'tool-1',
+      questions: [{ question: 'Which one?', options: [{ label: 'A', description: 'a' }] }],
+    },
+  ],
+  user_question_answer_ack: [
+    {
+      type: 'user_question_answer_ack',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      requestId: 'q-1',
+      toolUseId: 'tool-1',
+    },
+  ],
+  plan_submitted: [
+    { type: 'plan_submitted', id: 'e', turnId: 'turn-1', ts: 1, planId: 'plan-1', title: 'Plan' },
+  ],
+  token_usage: [
+    { type: 'token_usage', id: 'e', turnId: 'turn-1', ts: 1, input: 10, output: 5, total: 15 },
+  ],
+  steering_message: [
+    {
+      type: 'steering_message',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      messageId: 'm2',
+      content: { text: 'steer' },
+    },
+  ],
+  provider_retry: [
+    {
+      type: 'provider_retry',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      phase: 'started',
+      attempt: 2,
+      maxAttempts: 3,
+      reason: 'rate_limit',
+    },
+  ],
+  // An error maps to non-terminal error content, which AgentRun deliberately
+  // keeps out of the ledger (see isNonTerminalErrorRuntimeEvent); the trailing
+  // complete(error) is the shape a reader actually finds. The projection's hard
+  // diagnostic for non-terminal error content stays a defensive assertion.
+  error: [{ type: 'complete', id: 'e', turnId: 'turn-1', ts: 1, stopReason: 'error' }],
+  complete: [{ type: 'complete', id: 'e', turnId: 'turn-1', ts: 1, stopReason: 'end_turn' }],
+  abort: [{ type: 'abort', id: 'e', turnId: 'turn-1', ts: 1, reason: 'user_stop' }],
+};
+
+const projectionRunHeader: AgentRunHeader = {
+  runId: 'run-1',
+  sessionId: 'session-1',
+  turnId: 'turn-1',
+  status: 'completed',
+  backendKind: 'ai-sdk',
+  llmConnectionSlug: 'anthropic',
+  modelId: 'model-1',
+  cwd: '/tmp',
+  permissionMode: 'ask',
+  createdAt: 1,
+  updatedAt: 2,
+  completedAt: 2,
+};
+
+describe('SessionEvent projection coverage', () => {
+  // RuntimeReadModel rejects a whole completed-session projection when it sees
+  // an `unsupported_event`, so a variant the projection does not claim makes
+  // every session that contains it permanently unreadable.
+  for (const [type, events] of Object.entries(PROJECTION_SAMPLES)) {
+    test(`${type} projects without an unsupported_event diagnostic`, () => {
+      let seq = 0;
+      const memory = createSessionEventMapMemory();
+      const runtimeEvents = events.map((event) =>
+        mapSessionEventToRuntimeEvent(
+          event,
+          {
+            ...ctx,
+            newId: () => {
+              seq += 1;
+              return `rt-${seq}`;
+            },
+          },
+          memory,
+        ),
+      );
+
+      const projected = projectRuntimeEventsToStoredMessages(runtimeEvents, {
+        runHeaders: [projectionRunHeader],
+      });
+
+      assert.deepEqual(
+        projected.diagnostics.filter((diagnostic) => diagnostic.code === 'unsupported_event'),
+        [],
+      );
+    });
+  }
 });

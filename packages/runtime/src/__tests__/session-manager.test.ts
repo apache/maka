@@ -13183,6 +13183,40 @@ describe('SessionManager permission mode updates', () => {
     expect((await store.readHeader(session.id)).status).toBe('active');
   });
 
+  test('reads a completed session back after a sandbox boundary decision', async () => {
+    // The boundary request and decision are durable RuntimeEvents. Reopening the
+    // conversation rebuilds the read model from that ledger, so an unclaimed
+    // control fact there makes the whole completed session unreadable.
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    backends.register('fake', (ctx) => new SandboxBoundaryWaitBackend(ctx));
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      newId: nextId(),
+      now: nextNow(9_500),
+    });
+    const session = await manager.createSession(makeInput());
+
+    const iterator = manager
+      .sendMessage(session.id, { turnId: 'turn-1', text: 'hello' })
+      [Symbol.asyncIterator]();
+    expect((await iterator.next()).value?.type).toBe('sandbox_boundary_request');
+    await manager.respondToSandboxBoundary(session.id, {
+      requestId: 'boundary-1',
+      decision: 'allow',
+    });
+    while (!(await iterator.next()).done) {}
+
+    const messages = await manager.getMessages(session.id);
+    expect(messages.some((message) => message.type === 'user')).toBe(true);
+    const turns = await manager.listTurns(session.id);
+    expect(turns.find((turn) => turn.turnId === 'turn-1')?.status).toBe('completed');
+  });
+
   test('marks backend errors as blocked with a generalized reason', async () => {
     const store = new MemorySessionStore();
     const backends = new BackendRegistry();

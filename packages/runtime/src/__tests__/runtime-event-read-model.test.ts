@@ -969,6 +969,73 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     expect(out.diagnostics).toEqual([]);
   });
 
+  test('sandbox boundary request and decision facts are accepted without creating legacy message rows', () => {
+    const out = projectRuntimeEventsToStoredMessages(
+      [
+        ev({
+          id: 'sandbox-boundary-request',
+          ts: ts + 1,
+          role: 'system',
+          author: 'system',
+          actions: {
+            stateDelta: {
+              sandboxBoundaryRequest: {
+                requestId: 'boundary-1',
+                toolUseId: 'tool-1',
+                justification: 'read a file outside the workspace',
+                expansion: { readPaths: ['/tmp/outside.txt'] },
+              },
+            },
+          },
+          refs: { toolCallId: 'tool-1' },
+        }),
+        ev({
+          id: 'sandbox-boundary-decision',
+          ts: ts + 2,
+          role: 'system',
+          author: 'user',
+          actions: {
+            stateDelta: {
+              sandboxBoundaryDecision: {
+                requestId: 'boundary-1',
+                decision: 'allow',
+                status: 'applied',
+                revision: 2,
+              },
+            },
+          },
+          refs: { toolCallId: 'tool-1' },
+        }),
+      ],
+      { runHeaders: [header] },
+    );
+
+    expect(out.messages).toEqual([]);
+    expect(out.diagnostics).toEqual([]);
+  });
+
+  test('an unmapped SessionEvent degrades to a soft diagnostic instead of failing the projection', () => {
+    // AiSdkFlow's exhaustiveness guard turns an unknown SessionEvent into this
+    // shape rather than dropping it. It must stay observable without making a
+    // completed session unreadable.
+    const out = projectRuntimeEventsToStoredMessages(
+      [
+        ev({
+          id: 'unmapped-session-event',
+          role: 'system',
+          author: 'system',
+          actions: { stateDelta: { unmappedSessionEventType: 'future_event' } },
+        }),
+      ],
+      { runHeaders: [header] },
+    );
+
+    expect(out.messages).toEqual([]);
+    expect(out.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+      'unmapped_session_event',
+    ]);
+  });
+
   test('model thinking attaches to the assistant text row that shares its step message id', () => {
     // Real emission and backfill give a step's thinking and text the same message
     // id (providerEventId / storedMessageId), so the projection pairs by id.
