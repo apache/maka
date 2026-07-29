@@ -92,7 +92,6 @@ describe('IPC surface contract', () => {
 
     // The ai-sdk backend wiring lives in session-stream.ts and its shared tool
     // surface resolver; these pins target the combined main-process source.
-    assert.match(combinedMainProcess, /const memoryPromptSnapshot = await systemPromptService\.buildLocalMemoryPromptFragment\(\)/);
     assert.match(
       combinedMainProcess,
       /systemPrompt: async \(\{ cwd, emitSkillCatalogTrace \}\) => \{/,
@@ -102,7 +101,6 @@ describe('IPC surface contract', () => {
     assert.match(combinedMainProcess, /childInstruction[\s\S]*memoryFragment: null, includePersonalization: false/);
     assert.match(combinedMainProcess, /子代理必须继承当前会话的权限、隐私、工作区和技能约束/);
     assert.match(combinedMainProcess, /子代理不会隐式继承父会话的本地记忆或个性化上下文/);
-    assert.match(combinedMainProcess, /consumePendingPromptUpdates\(\)/);
     assert.match(combinedMainProcess, /<memory-update>/);
     assert.match(
       combinedMainProcess,

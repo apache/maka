@@ -32,6 +32,22 @@ const availability: ToolAvailabilityConfig = {
 };
 
 describe('Desktop backend tool surface', () => {
+  it('builds the Memory prompt for the backend session identity', async () => {
+    const deps = makeFactoryDeps();
+    let memorySessionId: string | undefined;
+    deps.systemPromptService = {
+      ...deps.systemPromptService,
+      buildLocalMemoryPromptFragment: async (sessionId) => {
+        memorySessionId = sessionId;
+        return '';
+      },
+    };
+
+    await backendInput(createAiSdkBackendFactory(deps), undefined);
+
+    assert.equal(memorySessionId, 'session-1');
+  });
+
   it('uses the effective Agent surface as the complete child-runtime capability boundary', async () => {
     const agentTools = [
       tool('agent_spawn', 'subagent'),

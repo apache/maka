@@ -61,6 +61,7 @@ import {
   type ResolveExecutionConnectionResult,
 } from './operations.js';
 import { policySnapshot, RuntimePolicyDocumentOwner } from './policy-document.js';
+import { SerializedOperationLane } from '../serialized-operation-lane.js';
 
 type RootExecutor = <T>(operation: (root: string) => Promise<T>) => Promise<T>;
 
@@ -116,13 +117,15 @@ interface ConnectionTicketRecord {
 }
 
 export class RuntimePolicyCoordinator {
-  private readonly lane = new MutationLane();
+  private readonly lane: SerializedOperationLane<string>;
   private readonly policy = new RuntimePolicyDocumentOwner();
   private readonly catalog = new ConnectionCatalogDocumentOwner();
   private readonly vault = new CredentialVaultDocumentOwner();
   private readonly tickets = new WeakMap<object, ConnectionTicketRecord>();
 
-  constructor(private readonly execute: RootExecutor) {}
+  constructor(private readonly execute: RootExecutor) {
+    this.lane = new SerializedOperationLane(execute);
+  }
 
   recoverForWrite(): Promise<void> {
     return this.inLane(async (root) => {
@@ -644,26 +647,7 @@ export class RuntimePolicyCoordinator {
   }
 
   private inLane<T>(operation: (root: string) => Promise<T>): Promise<T> {
-    const reservation = this.lane.reserve();
-    let entered = false;
-    let execution: Promise<T>;
-    try {
-      execution = this.execute(async (root) => {
-        entered = true;
-        await reservation.ready;
-        try {
-          return await operation(root);
-        } finally {
-          reservation.release();
-        }
-      });
-    } catch (error) {
-      reservation.release();
-      throw error;
-    }
-    return execution.finally(() => {
-      if (!entered) reservation.release();
-    });
+    return this.lane.run(operation);
   }
 }
 
@@ -802,32 +786,6 @@ function sameCredentialLocator(actual: CredentialLocator, expected: CredentialLo
 
 function ticketLabel(kind: ConnectionTicketKind): string {
   return kind === 'model_fetch' ? 'model fetch' : 'connection test';
-}
-
-interface MutationReservation {
-  readonly ready: Promise<void>;
-  release(): void;
-}
-
-class MutationLane {
-  private tail: Promise<void> = Promise.resolve();
-
-  reserve(): MutationReservation {
-    const ready = this.tail;
-    let resolve!: () => void;
-    this.tail = new Promise<void>((release) => {
-      resolve = release;
-    });
-    let released = false;
-    return {
-      ready,
-      release: () => {
-        if (released) return;
-        released = true;
-        resolve();
-      },
-    };
-  }
 }
 
 function networkProxyCredentialLocator(): Extract<CredentialLocator, { scope: 'network_proxy' }> {

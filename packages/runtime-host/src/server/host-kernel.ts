@@ -67,6 +67,7 @@ export interface RuntimeHostCompositionContext {
 export interface RuntimeHostComposition {
   readonly handlers: DomainOperationHandlerMap;
   readonly continuity?: SessionContinuityService;
+  releaseConnection?(connectionId: string): void;
   beginDrain(): void;
   recover(): Promise<void>;
   close(): Promise<void>;
@@ -250,11 +251,11 @@ export class RuntimeHostKernel {
   }
 
   async #serveConnection(transport: FramedTransport): Promise<void> {
-    let connectionAccepted = false;
-    let connectionReleased = false;
-    const releaseConnection = () => {
-      if (!connectionAccepted || connectionReleased) return;
-      connectionReleased = true;
+    let transportReleased = false;
+    let connectionId: string | undefined;
+    const releaseTransport = () => {
+      if (!connectionId || transportReleased) return;
+      transportReleased = true;
       this.#releaseConnection(transport);
     };
     try {
@@ -263,7 +264,7 @@ export class RuntimeHostKernel {
         throw new Error('First Runtime Host frame must be a hello');
       }
       const result = await this.#admitHandshake(frame, transport);
-      connectionAccepted = result.kind === 'accepted';
+      connectionId = result.kind === 'accepted' ? result.connectionId : undefined;
       await transport.write(result);
       if (result.kind !== 'accepted') {
         transport.destroyAfterFlush();
@@ -280,13 +281,17 @@ export class RuntimeHostKernel {
         resolveHandlers: () => this.#operationHandlers,
         resolveContinuity: () => this.#composition?.continuity,
         beginOperation: (request) => this.#beginOperation(request),
-        onTeardown: releaseConnection,
+        onTeardown: releaseTransport,
       });
       await session.run();
     } catch {
       transport.destroy();
     } finally {
-      releaseConnection();
+      try {
+        if (connectionId) this.#composition?.releaseConnection?.(connectionId);
+      } finally {
+        releaseTransport();
+      }
     }
   }
 

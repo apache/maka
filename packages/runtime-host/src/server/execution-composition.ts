@@ -9,6 +9,7 @@ import {
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
+import { openInteractiveMemoryBundleStoreForWrite } from '@maka/storage/memory-bundle-store';
 import { runWithStorageRootLease } from '@maka/storage/root-authority';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
@@ -19,6 +20,7 @@ import { HostArtifactCoordinator } from './artifact-coordinator.js';
 import { HostConnectionEffectCoordinator } from './connection-effect-coordinator.js';
 import type { RuntimeHostComposition, RuntimeHostCompositionContext } from './host-kernel.js';
 import { HostInteractionCoordinator } from './interaction-coordinator.js';
+import { HostMemoryCoordinator } from './memory-coordinator.js';
 import { type HostMessageRootPort, HostMessageCoordinator } from './message-coordinator.js';
 import type { DomainOperationHandlerMap } from './operation-dispatcher.js';
 import { RootAdmissionOwner } from './root-admission-owner.js';
@@ -42,6 +44,7 @@ export async function createExecutionRuntimeHostComposition(
     const runtimePolicyStores = await openInteractiveRuntimePolicyStoresForWrite(
       context.owner.lease,
     );
+    const memoryStore = await openInteractiveMemoryBundleStoreForWrite(context.owner.lease);
     const taskLedgerStore = await openInteractiveTaskLedgerStoreForWrite(context.owner.lease);
     const openedArtifactStore = await openInteractiveArtifactStoreForWrite(context.owner.lease);
     const openedUsageStores = await openInteractiveUsageStoresForWrite(context.owner.lease);
@@ -50,14 +53,6 @@ export async function createExecutionRuntimeHostComposition(
     const backends = new BackendRegistry();
     backends.register('fake', (backendContext) => new FakeBackend(backendContext));
     const runtimePolicyActivation = new RuntimePolicyActivationGate();
-    const invalidateRuntimePolicy = async () => {
-      try {
-        await manager.refreshIdleBackends();
-      } catch (error) {
-        context.requestDrain();
-        throw error;
-      }
-    };
     const sessionAdmission = new SessionAdmissionGate();
     const taskLedger = new HostTaskLedgerCoordinator(taskLedgerStore, sessionAdmission);
     const usagePricing = new HostUsagePricingCoordinator(openedUsageStores, context.requestDrain);
@@ -74,6 +69,7 @@ export async function createExecutionRuntimeHostComposition(
     let rootCoordinator: RootTurnCoordinator | undefined;
     let continuity: SessionContinuityCoordinator | undefined;
     let canonicalProjection: CanonicalSessionProjectionReader | undefined;
+    let memory: HostMemoryCoordinator | undefined;
     const rootPort: HostMessageRootPort = {
       readSessionHeader: (sessionId) =>
         requireRootCoordinator(rootCoordinator).readSessionHeader(sessionId),
@@ -131,6 +127,7 @@ export async function createExecutionRuntimeHostComposition(
       interactions.beginDrain();
       connectionEffects.beginDrain();
       skills.beginDrain();
+      memory?.beginDrain();
       usageDrain ??= openedUsageStores.beginDrain();
       usageDrain.then(
         () => undefined,
@@ -195,6 +192,22 @@ export async function createExecutionRuntimeHostComposition(
       runtime: manager,
       newId: randomUUID,
     });
+    memory = new HostMemoryCoordinator({
+      store: memoryStore,
+      runtimePolicyStores,
+      activation: runtimePolicyActivation,
+      requestDrain: context.requestDrain,
+    });
+    const runPostCommitInvalidation = async (invalidate: () => Promise<void>) => {
+      try {
+        await invalidate();
+      } catch (error) {
+        context.requestDrain();
+        throw error;
+      }
+    };
+    const invalidateRuntimePolicy = () =>
+      runPostCommitInvalidation(() => manager.refreshIdleBackends());
     rootCoordinator = new RootTurnCoordinator(
       manager,
       stores,
@@ -210,7 +223,11 @@ export async function createExecutionRuntimeHostComposition(
     const runtimePolicy = new HostRuntimePolicyCoordinator(
       runtimePolicyStores,
       runtimePolicyActivation,
-      invalidateRuntimePolicy,
+      () =>
+        runPostCommitInvalidation(async () => {
+          await requireMemory(memory).refreshAfterPolicyMutation();
+          await manager.refreshIdleBackends();
+        }),
     );
     const connectionEffects = new HostConnectionEffectCoordinator({
       stores: runtimePolicyStores,
@@ -229,9 +246,11 @@ export async function createExecutionRuntimeHostComposition(
       ...artifacts.handlers,
       ...skills.handlers,
       ...usagePricing.handlers,
+      ...requireMemory(memory).handlers,
     } satisfies DomainOperationHandlerMap;
     const recover = () => {
       recoveryTask ??= (async () => {
+        await requireMemory(memory).recover();
         await skills.recover();
         const sessions = await stores.sessionStore.listForRecovery();
         for (const session of sessions) {
@@ -303,6 +322,11 @@ export async function createExecutionRuntimeHostComposition(
           errors.push(error);
         }
         try {
+          memory?.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
           await openedUsageStores.close();
         } catch (error) {
           errors.push(error);
@@ -322,6 +346,8 @@ export async function createExecutionRuntimeHostComposition(
     return {
       handlers,
       continuity: continuityCoordinator,
+      releaseConnection: (connectionId: string) =>
+        requireMemory(memory).releaseConnection(connectionId),
       beginDrain,
       recover,
       close,
@@ -365,4 +391,9 @@ function requireCanonicalProjection(
 ): CanonicalSessionProjectionReader {
   if (!projection) throw new Error('Runtime Host canonical projection is not composed');
   return projection;
+}
+
+function requireMemory(memory: HostMemoryCoordinator | undefined): HostMemoryCoordinator {
+  if (!memory) throw new Error('Runtime Host Memory coordinator is not composed');
+  return memory;
 }

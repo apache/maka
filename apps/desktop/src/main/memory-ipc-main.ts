@@ -25,6 +25,7 @@ export function registerMemoryIpc(deps: MemoryIpcDeps): void {
       title: proposal.title,
       content: proposal.content,
       scope: proposal.scope,
+      sessionId: proposal.sessionId,
     });
   });
   ipcMain.handle('memory:remember', async (_event, input: unknown) => {
@@ -41,6 +42,7 @@ export function registerMemoryIpc(deps: MemoryIpcDeps): void {
       title: memory.title,
       content: memory.content,
       scope: memory.scope,
+      sessionId: memory.sessionId,
     });
   });
   ipcMain.handle('memory:approveProposal', async (_event, proposalId: unknown) => {
@@ -134,15 +136,22 @@ function normalizeMemoryTextInput(input: unknown): {
   title: string;
   content: string;
   scope?: 'workspace' | 'session';
+  sessionId?: string;
 } | null {
   if (!input || typeof input !== 'object') return null;
   const value = input as Record<string, unknown>;
   if (typeof value.title !== 'string' || typeof value.content !== 'string') return null;
   const scope = value.scope === 'session' ? 'session' : value.scope === 'workspace' ? 'workspace' : undefined;
+  const sessionId =
+    typeof value.sessionId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value.sessionId)
+      ? value.sessionId
+      : undefined;
+  if (scope === 'session' && !sessionId) return null;
   return {
     title: value.title,
     content: value.content,
     ...(scope ? { scope } : {}),
+    ...(scope === 'session' && sessionId ? { sessionId } : {}),
   };
 }
 

@@ -60,6 +60,8 @@ describe('Runtime Host bootstrap protocol', () => {
       'host.status',
       'interaction.answer',
       'interaction.query',
+      'memory.mutate',
+      'memory.query',
       'pricing.mutate',
       'pricing.query',
       'queue.retract',

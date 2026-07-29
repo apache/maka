@@ -128,7 +128,7 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
       admitsAgentChildren,
     } = toolSurface;
     const modelFetch = buildSubscriptionModelFetch(connection, ctx.sessionId, model);
-    const memoryPromptSnapshot = await systemPromptService.buildLocalMemoryPromptFragment();
+    const memoryPromptSnapshot = await systemPromptService.buildLocalMemoryPromptFragment(ctx.sessionId);
     // Legacy child-run backends share the parent sessionId; linked child
     // sessions have their own id. Both receive a narrower tool surface without
     // the Desktop Skill tool, so only a session's full backend owns this entry.

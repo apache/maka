@@ -29,6 +29,8 @@ const allowedServerExternalImports = new Set([
   '@maka/core/backend-types',
   '@maka/core/events',
   '@maka/core/interaction',
+  '@maka/core/local-memory',
+  '@maka/core/redaction',
   '@maka/core/runtime-policy',
   '@maka/core/runtime-event',
   '@maka/core/session',
@@ -39,6 +41,7 @@ const allowedServerExternalImports = new Set([
   '@maka/storage/artifact-stores',
   '@maka/storage/execution-stores',
   '@maka/storage/interaction-store',
+  '@maka/storage/memory-bundle-store',
   '@maka/storage/runtime-policy-stores',
   '@maka/storage/task-ledger-authority',
   '@maka/storage/usage-stores',
@@ -51,6 +54,7 @@ const allowedExternalImports = {
     '@maka/core/artifacts',
     '@maka/core/events',
     '@maka/core/interaction',
+    '@maka/core/local-memory',
     '@maka/core/runtime-policy',
     '@maka/core/task-ledger',
     '@maka/core/usage-stats/pricing',
@@ -146,6 +150,8 @@ test('the production Candidate dependency graph remains non-serving', () => {
     'server/execution-candidate.ts',
     'server/execution-composition.ts',
     'server/root-turn-coordinator.ts',
+    'server/memory-coordinator.ts',
+    'server/memory-projection.ts',
     'server/runtime-policy-coordinator.ts',
     'server/session-continuity-coordinator.ts',
     'server/task-ledger-coordinator.ts',
@@ -159,6 +165,7 @@ test('the production Candidate dependency graph remains non-serving', () => {
         specifier === '@maka/runtime' ||
         specifier === '@maka/storage/agent-graph-control-store' ||
         specifier === '@maka/storage/execution-stores' ||
+        specifier === '@maka/storage/memory-bundle-store' ||
         specifier === '@maka/storage/runtime-policy-stores' ||
         specifier === '@maka/storage/task-ledger-authority'
       ) {
@@ -176,6 +183,8 @@ test('the public server entrypoint does not expose the test execution compositio
   const forbidden = new Set([
     'server/execution-candidate.ts',
     'server/execution-composition.ts',
+    'server/memory-coordinator.ts',
+    'server/memory-projection.ts',
     'server/root-turn-coordinator.ts',
     'server/session-continuity-coordinator.ts',
   ]);

@@ -5,6 +5,7 @@ import { invalidProtocolFrame } from './errors.js';
 import { HOST_STATUS_OPERATION_SPECS } from './host-status.js';
 import { INTERACTION_OPERATION_SPECS } from './interaction.js';
 import { MESSAGE_OPERATION_SPECS } from './message.js';
+import { MEMORY_OPERATION_SPECS } from './memory.js';
 import {
   composeOperationSpecMaps,
   type HostOperationError,
@@ -72,6 +73,7 @@ export type {
   TurnStopInput,
 } from './turn.js';
 export * from './connection-effects.js';
+export * from './memory.js';
 export * from './runtime-policy.js';
 export * from './skill-catalog.js';
 export * from './usage-pricing.js';
@@ -118,14 +120,19 @@ const CORE_MESSAGE_TASK_LEDGER_INTERACTION_CONTINUITY_AND_ARTIFACT_OPERATION_SPE
     ARTIFACT_OPERATION_SPECS,
   );
 
-const ALL_WITH_SKILL_CATALOG_OPERATION_SPECS = composeOperationSpecMaps(
+const ALL_BUT_MEMORY_OPERATION_SPECS = composeOperationSpecMaps(
   CORE_MESSAGE_TASK_LEDGER_INTERACTION_CONTINUITY_AND_ARTIFACT_OPERATION_SPECS,
   SKILL_CATALOG_OPERATION_SPECS,
 );
 
-export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
-  ALL_WITH_SKILL_CATALOG_OPERATION_SPECS,
+const ALL_WITH_USAGE_PRICING_OPERATION_SPECS = composeOperationSpecMaps(
+  ALL_BUT_MEMORY_OPERATION_SPECS,
   USAGE_PRICING_OPERATION_SPECS,
+);
+
+export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
+  ALL_WITH_USAGE_PRICING_OPERATION_SPECS,
+  MEMORY_OPERATION_SPECS,
 );
 
 export type OperationSpecMap = typeof HOST_OPERATION_SPECS;

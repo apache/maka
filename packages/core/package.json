@@ -56,6 +56,7 @@
     "./foreign-session": "./dist/foreign-session.js",
     "./deep-research-run": "./dist/deep-research-run.js",
     "./memory": "./dist/memory.js",
+    "./local-memory": "./dist/local-memory.js",
     "./voice": "./dist/voice.js",
     "./incognito": "./dist/incognito.js",
     "./backend-types": "./dist/backend-types.js",

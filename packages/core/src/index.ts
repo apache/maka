@@ -1125,6 +1125,7 @@ export type {
   LocalMemoryBackupInfo,
   LocalMemoryOrigin,
   LocalMemoryParseResult,
+  LocalMemoryPromptContext,
   LocalMemorySettings,
   LocalMemoryScope,
   LocalMemorySource,

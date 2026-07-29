@@ -104,9 +104,9 @@ test('production composition shares one gate across mutation and backend activat
 
     assert.equal(mutated.ok, true);
     assert.equal(started.ok, true);
-    assert.equal(mutationGates.length, 1);
+    assert.ok(mutationGates.length >= 2);
     assert.equal(backendActivationGates.length, 1);
-    assert.equal(mutationGates[0], backendActivationGates[0]);
+    assert.ok(mutationGates.every((gate) => gate === backendActivationGates[0]));
     if (started.ok) {
       await composition.handlers['turn.stop'](
         { sessionId: session.id, turnId, runId: started.result.runId },

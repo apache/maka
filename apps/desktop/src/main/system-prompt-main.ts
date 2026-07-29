@@ -123,7 +123,9 @@ export function createSystemPromptMainService(deps: SystemPromptMainDeps) {
         }),
       );
     }
-    const memoryUpdate = buildLocalMemoryUpdateTailFragment(deps.localMemory.consumePendingPromptUpdates());
+    const memoryUpdate = buildLocalMemoryUpdateTailFragment(
+      deps.localMemory.consumePendingPromptUpdates(sessionId),
+    );
     if (memoryUpdate) fragments.push(memoryUpdate);
     const taskLedger = sessionId ? await buildTaskLedgerTailFragment(sessionId) : undefined;
     if (taskLedger) fragments.push(taskLedger);
@@ -169,11 +171,11 @@ export function createSystemPromptMainService(deps: SystemPromptMainDeps) {
     }
   }
 
-  async function buildLocalMemoryPromptFragment(): Promise<string | undefined> {
+  async function buildLocalMemoryPromptFragment(sessionId?: string): Promise<string | undefined> {
     try {
       const state = await deps.localMemory.getState();
       if (!state.agentReadEnabled || state.status !== 'ok') return undefined;
-      const body = buildLocalMemoryPromptBody(state.content);
+      const body = buildLocalMemoryPromptBody(state.content, { sessionId });
       if (!body) return undefined;
       return [
         '本地 MEMORY.md（用户已显式允许 agent 读取，'

@@ -523,10 +523,10 @@ const makaBridge = {
     listProposals(): Promise<ReadonlyArray<LocalMemoryEntryPreview>> {
       return ipcRenderer.invoke('memory:listProposals');
     },
-    propose(input: { title: string; content: string; scope?: 'workspace' | 'session' }): Promise<LocalMemoryMutationResult> {
+    propose(input: { title: string; content: string; scope?: 'workspace' | 'session'; sessionId?: string }): Promise<LocalMemoryMutationResult> {
       return ipcRenderer.invoke('memory:propose', input);
     },
-    remember(input: { title: string; content: string; scope?: 'workspace' | 'session' }): Promise<LocalMemoryMutationResult> {
+    remember(input: { title: string; content: string; scope?: 'workspace' | 'session'; sessionId?: string }): Promise<LocalMemoryMutationResult> {
       return ipcRenderer.invoke('memory:remember', input);
     },
     approveProposal(proposalId: string): Promise<LocalMemoryMutationResult> {

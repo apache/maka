@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { describe, it } from 'node:test';
 import { createDefaultSettings, type AppSettings } from '@maka/core';
 import { LocalMemoryService } from '../local-memory-service.js';
+import { createSystemPromptMainService } from '../system-prompt-main.js';
 
 function makeService(now = 1_700_000_000_000) {
   return async () => {
@@ -489,6 +490,30 @@ describe('LocalMemoryService', () => {
     assert.deepEqual(updates.map((update) => update.action), ['archived', 'restored']);
     assert.equal(updates[0]?.entryId, entryId);
     assert.equal(updates[1]?.entryId, entryId);
+  });
+
+  it('builds session-scoped prompt updates only for their owning session', async () => {
+    const { service, workspaceRoot } = await makeService(1_700_000_000_000)();
+    const remembered = await service.rememberUserAuthored({
+      title: 'Session tone',
+      content: 'Prefer direct answers in this session.',
+      scope: 'session',
+      sessionId: 'session-a',
+    });
+    assert.equal(remembered.ok, true);
+
+    const prompts = createSystemPromptMainService({
+      settingsStore: { get: async () => createDefaultSettings() },
+      workspaceRoot,
+      localMemory: service,
+      taskLedger: { list: async () => [] },
+    });
+    assert.equal(await prompts.buildTurnTailPrompt(undefined, undefined), undefined);
+    assert.equal(await prompts.buildTurnTailPrompt(undefined, 'session-b'), undefined);
+    const update = await prompts.buildTurnTailPrompt(undefined, 'session-a');
+    assert.match(update ?? '', /<memory-update>/);
+    assert.match(update ?? '', /Session tone/);
+    assert.equal(await prompts.buildTurnTailPrompt(undefined, 'session-a'), undefined);
   });
 
   it('blocks proposal and approval mutations while incognito is active', async () => {

@@ -858,6 +858,91 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
+  test('releases composition connection resources after admitted requests settle', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      if (!owner) return;
+
+      let markHandlerEntered!: (connectionId: string) => void;
+      const handlerEntered = new Promise<string>((resolve) => {
+        markHandlerEntered = resolve;
+      });
+      let releaseHandler!: () => void;
+      const handlerReleased = new Promise<void>((resolve) => {
+        releaseHandler = resolve;
+      });
+      let markConnectionReleased!: (connectionId: string) => void;
+      const connectionReleased = new Promise<string>((resolve) => {
+        markConnectionReleased = resolve;
+      });
+      const releasedConnectionIds: string[] = [];
+      const host = await RuntimeHostKernel.start({
+        owner,
+        idleGraceMs: 10_000,
+        compositionFactory: async () => ({
+          handlers: {
+            ...createUnavailableDomainOperationHandlers(),
+            'memory.mutate': async (_input, context) => {
+              markHandlerEntered(context.connectionId);
+              await handlerReleased;
+              return {
+                ok: true,
+                result: { kind: 'rejected', reason: 'invalid_state' },
+              };
+            },
+          },
+          releaseConnection(connectionId) {
+            releasedConnectionIds.push(connectionId);
+            markConnectionReleased(connectionId);
+          },
+          beginDrain() {},
+          async recover() {},
+          async close() {},
+        }),
+      });
+      const transport = new FramedTransport(await openSocket(host.endpoint));
+      try {
+        await transport.write({
+          kind: 'hello',
+          clientInstanceId: 'composition-connection-release',
+          surface: 'tui',
+          protocolMin: CURRENT_PROTOCOL.min,
+          protocolMax: CURRENT_PROTOCOL.max,
+        });
+        const handshake = decodeHostFrame(await transport.read(2_000));
+        assert.ok('kind' in handshake && handshake.kind === 'accepted');
+        if (!('kind' in handshake) || handshake.kind !== 'accepted') return;
+
+        await transport.write({
+          requestId: 'blocked-memory-mutation',
+          operation: 'memory.mutate',
+          input: {
+            kind: 'replace_begin',
+            expectedRevision: `sha256:${'a'.repeat(64)}`,
+            totalBytes: 0,
+            contentSha256: `sha256:${'b'.repeat(64)}`,
+          },
+        });
+        const admittedConnectionId = await handlerEntered;
+        assert.equal(admittedConnectionId, handshake.connectionId);
+
+        transport.destroy();
+        await transport.closed;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.deepEqual(releasedConnectionIds, []);
+
+        releaseHandler();
+        assert.equal(await connectionReleased, handshake.connectionId);
+      } finally {
+        releaseHandler();
+        transport.destroy();
+        await host.close().catch(() => undefined);
+      }
+    });
+  });
+
   test('shutdown releases ownership after bounded handling of accepted and incomplete Clients', async () => {
     await withHostPaths(async (paths) => {
       const candidate = await startTestRuntimeHostCandidate(paths, {
