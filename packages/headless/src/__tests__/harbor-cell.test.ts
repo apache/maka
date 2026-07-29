@@ -1104,6 +1104,26 @@ describe('runHarborCell', () => {
     });
   });
 
+  test('uses the external boundary instead of a legacy Execute mode authority', async () => {
+    await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
+      const result = await runHarborCell({
+        config,
+        instruction: 'run under harness isolation',
+        cwd: workspaceDir,
+        outputDir,
+        storageRoot,
+      });
+      const sessions = createSessionStore(storageRoot);
+
+      const header = await sessions.readHeaderSnapshot(result.invocation.sessionId);
+      const boundary = await sessions.readExecutionBoundary(result.invocation.sessionId);
+      await sessions.close?.();
+
+      assert.equal(header?.permissionMode, 'ask');
+      assert.equal(boundary.kind, 'external');
+    });
+  });
+
   test('rejects resuming a session that is not externally isolated', async () => {
     await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
       const sessions = createSessionStore(storageRoot);

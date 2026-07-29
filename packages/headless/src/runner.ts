@@ -184,7 +184,7 @@ export async function runExperimentWithStorage(
         backend: config.backend,
         llmConnectionSlug: config.llmConnectionSlug,
         model: config.model,
-        permissionMode: 'execute',
+        permissionMode: 'ask',
         ...(deps.orchestrationMode ? { orchestrationMode: deps.orchestrationMode } : {}),
         name: `lab:${config.id}:${task.id}`,
       },

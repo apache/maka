@@ -109,7 +109,6 @@ export interface RunTaskOnceDeps extends RunExperimentDeps {
   closeTaskRun?: boolean;
   instructionOverride?: string;
   priorRuntimeContext?: readonly RuntimeEvent[];
-  permissionMode?: 'execute';
   interventionPolicy?: TaskInterventionPolicy;
   /** Absolute wall-clock deadline for settling the active runtime before its outer watchdog. */
   deadlineAtMs?: number;
@@ -359,7 +358,7 @@ export async function runTaskOnceWithStorage(
         ...(effectiveConfig.thinkingLevel !== undefined
           ? { thinkingLevel: effectiveConfig.thinkingLevel }
           : {}),
-        permissionMode: deps.permissionMode ?? 'execute',
+        permissionMode: 'ask',
         ...(deps.orchestrationMode ? { orchestrationMode: deps.orchestrationMode } : {}),
         name: `task:${config.id}:${task.id}`,
       },

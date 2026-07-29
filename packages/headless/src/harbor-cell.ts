@@ -332,7 +332,6 @@ export async function runHarborCellWithStorage(
       ['llmConnectionSlug', config.llmConnectionSlug, resumedSession.llmConnectionSlug],
       ['model', config.model, resumedSession.model],
       ['thinkingLevel', config.thinkingLevel, resumedSession.thinkingLevel],
-      ['permissionMode', 'execute', resumedSession.permissionMode],
     ] as const;
     for (const [name, expected, observed] of executionFacts) {
       if (expected !== observed) {
@@ -408,7 +407,7 @@ export async function runHarborCellWithStorage(
         llmConnectionSlug: config.llmConnectionSlug,
         model: config.model,
         ...(config.thinkingLevel ? { thinkingLevel: config.thinkingLevel } : {}),
-        permissionMode: 'execute',
+        permissionMode: 'ask',
         name: `harbor-cell:${input.config.id}`,
       },
       { initialBoundary: { kind: 'external', revision: 0 } },
