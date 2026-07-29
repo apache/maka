@@ -188,7 +188,7 @@ const VOLCENGINE_CODING_PLAN_MODEL_METADATA: Record<string, ModelMetadata> = {
   'kimi-k2.7-code': planModel('Kimi-K2.7-Code', true, 256_000, 32_000),
 };
 const VOLCENGINE_AGENT_PLAN_MODEL_METADATA: Record<string, ModelMetadata> = {
-  'ark-code-latest': agentPlanModel('Ark Code Latest'),
+  'ark-code-latest': agentPlanModel('Ark Code Latest', 256_000, 32_000),
   'doubao-seed-2.0-mini': agentPlanModel('Doubao Seed 2.0 Mini', 256_000, 128_000),
   'doubao-seed-2.0-lite': agentPlanModel('Doubao Seed 2.0 Lite', 256_000, 128_000),
   'deepseek-v4-flash': agentPlanModel('DeepSeek-V4-Flash', 1_024_000, 384_000),
