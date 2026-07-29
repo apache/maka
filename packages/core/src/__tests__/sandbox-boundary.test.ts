@@ -175,6 +175,40 @@ describe('SandboxBoundaryExpansion', () => {
     ).toEqual({ outcome: 'conflict', reason: 'explicit_deny' });
   });
 
+  test('keeps protected metadata deny-write authoritative over exact write expansions', () => {
+    const base: PermissionProfileManaged = {
+      type: 'managed',
+      name: 'custom',
+      fileSystem: {
+        kind: 'restricted',
+        entries: [{ kind: 'path', access: 'write', path: '/workspace', match: 'subtree' }],
+        protectedMetadata: {
+          access: 'deny_write',
+          names: ['.git'],
+        },
+      },
+      network: { kind: 'restricted' },
+    };
+
+    expect(
+      assessSandboxBoundaryExpansion(
+        base,
+        {
+          filesystem: {
+            entries: [
+              {
+                path: '/workspace/.git/config',
+                access: 'write',
+                scope: 'exact',
+              },
+            ],
+          },
+        },
+        { workspaceRoots: ['/workspace'] },
+      ),
+    ).toEqual({ outcome: 'conflict', reason: 'explicit_deny' });
+  });
+
   test('uses the same default slash-tmp root as permission enforcement', () => {
     const assessment = assessSandboxBoundaryExpansion(createWorkspaceWritePermissionProfile(), {
       filesystem: {

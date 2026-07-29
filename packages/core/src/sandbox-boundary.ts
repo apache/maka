@@ -4,6 +4,7 @@ import {
   FILE_SYSTEM_SPECIAL_PATHS,
   createReadOnlyPermissionProfile,
   createWorkspaceWritePermissionProfile,
+  isProtectedMetadataPath,
   type FileSystemPathMatch,
   type FileSystemSandboxEntry,
   type PermissionProfileManaged,
@@ -315,12 +316,32 @@ function expansionConflictsWithExplicitDeny(
     .filter((entry) => entry.access === 'deny')
     .flatMap((entry) => resolvedEntryRoots(entry, context));
 
-  return (expansion.filesystem?.entries ?? []).some((requested) =>
-    deniedRoots.some((denied) =>
-      requested.scope === 'exact'
-        ? pathCoveredByRoot(requested.path, denied)
-        : pathWithinRoot(denied.path, requested.path) || pathCoveredByRoot(requested.path, denied),
-    ),
+  return (expansion.filesystem?.entries ?? []).some(
+    (requested) =>
+      deniedRoots.some((denied) =>
+        requested.scope === 'exact'
+          ? pathCoveredByRoot(requested.path, denied)
+          : pathWithinRoot(denied.path, requested.path) ||
+            pathCoveredByRoot(requested.path, denied),
+      ) || expansionWeakensProtectedMetadata(profile, requested, context),
+  );
+}
+
+function expansionWeakensProtectedMetadata(
+  profile: SandboxProfile,
+  requested: SandboxBoundaryFilesystemEntry,
+  context: PermissionProfileMatchContext,
+): boolean {
+  const policy = profile.fileSystem.protectedMetadata;
+  if (policy?.access !== 'deny_write' || requested.access !== 'write') return false;
+  const workspaceRoots = context.workspaceRoots ?? [];
+  if (requested.scope === 'exact') {
+    return isProtectedMetadataPath(requested.path, workspaceRoots, policy.names);
+  }
+  return workspaceRoots.some(
+    (workspaceRoot) =>
+      pathWithinRoot(requested.path, workspaceRoot) ||
+      pathWithinRoot(workspaceRoot, requested.path),
   );
 }
 
