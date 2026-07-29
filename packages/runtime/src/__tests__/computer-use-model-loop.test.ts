@@ -422,7 +422,6 @@ function latestObservation(prompt: unknown): ParsedObservation {
   return latest;
 }
 
-
 async function collect(iterable: AsyncIterable<SessionEvent>): Promise<SessionEvent[]> {
   const events: SessionEvent[] = [];
   for await (const event of iterable) events.push(event);

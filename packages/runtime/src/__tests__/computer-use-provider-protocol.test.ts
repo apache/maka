@@ -796,9 +796,7 @@ function failingSemanticBackend(value: { current: string }): CuDispatchBackend {
 function semanticInputFromMessages(messages: unknown) {
   const observation = latestObservationIn(messages);
   assert.ok(observation, 'provider request must include the observation tool result');
-  const field = observation.elements.find(
-    (element) => element.label === 'CUA Lab Set Value Field',
-  );
+  const field = observation.elements.find((element) => element.label === 'CUA Lab Set Value Field');
   assert.ok(field);
   return {
     action: 'set_value',
@@ -807,7 +805,6 @@ function semanticInputFromMessages(messages: unknown) {
     value: 'provider-loop',
   };
 }
-
 
 function containsToolResult(value: unknown, toolUseId: string): boolean {
   return Boolean(findToolResult(value, toolUseId));
