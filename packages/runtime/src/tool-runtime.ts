@@ -465,29 +465,60 @@ export class ToolRuntime {
     this.userQuestions.beginTurn(turnId);
   }
 
-  endTurn(turnId: string, reason: 'completed' | 'aborted' = 'completed'): void {
+  async endTurn(turnId: string, reason: 'completed' | 'aborted' = 'completed'): Promise<void> {
+    const boundaryRequests = this.sandboxBoundaryRequests
+      .entries(turnId)
+      .map(([requestId]) => requestId);
+    const boundarySettlementErrors: unknown[] = [];
+    if (boundaryRequests.length > 0) {
+      if (!this.input.settleSandboxBoundaryRequest) {
+        boundarySettlementErrors.push(
+          new Error('Sandbox boundary settlement is unavailable on this surface'),
+        );
+      } else {
+        const results = await Promise.allSettled(
+          boundaryRequests.map((requestId) =>
+            this.input.settleSandboxBoundaryRequest?.({
+              sessionId: this.input.sessionId,
+              requestId,
+              decision: 'deny',
+            }),
+          ),
+        );
+        for (const result of results) {
+          if (result.status === 'rejected') boundarySettlementErrors.push(result.reason);
+        }
+      }
+    }
+
     const hasHostedPending = this.userQuestions
       .entries(turnId)
       .some(([, question]) => question.hosted);
     this.hostedInteractions.delete(turnId);
-    if (hasHostedPending) {
-      this.deferredQuestionTurnClosures.add(turnId);
-      this.finishDeferredQuestionTurnClosure(turnId);
-      this.resetTurnState();
-      return;
-    }
-    this.userQuestions.endTurn(
-      turnId,
-      (requestId) =>
-        new Error(`Turn ${turnId} ${reason} before user question ${requestId} was answered`),
-    );
     this.sandboxBoundaryRequests.endTurn(
       turnId,
       (requestId) =>
         new Error(`Turn ${turnId} ${reason} before sandbox boundary ${requestId} was settled`),
     );
-    this.deferredQuestionTurnClosures.delete(turnId);
-    this.resetTurnState();
+    if (hasHostedPending) {
+      this.deferredQuestionTurnClosures.add(turnId);
+      this.finishDeferredQuestionTurnClosure(turnId);
+      this.resetTurnState();
+    } else {
+      this.userQuestions.endTurn(
+        turnId,
+        (requestId) =>
+          new Error(`Turn ${turnId} ${reason} before user question ${requestId} was answered`),
+      );
+      this.deferredQuestionTurnClosures.delete(turnId);
+      this.resetTurnState();
+    }
+    if (boundarySettlementErrors.length > 0) {
+      throw new AggregateError(
+        boundarySettlementErrors,
+        `Could not durably deny every sandbox boundary request for turn ${turnId}`,
+      );
+    }
   }
 
   respondToUserQuestion(turnId: string, response: UserQuestionResponse): boolean {

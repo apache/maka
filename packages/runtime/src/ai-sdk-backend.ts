@@ -799,7 +799,7 @@ export class AiSdkBackend implements AgentBackend {
         stopReason: 'error',
       } satisfies CompleteEvent);
       queue.close();
-      this.cleanupAfterTurn(turnId);
+      await this.cleanupAfterTurn(turnId);
       yield* this.drain(queue);
       return;
     }
@@ -860,7 +860,7 @@ export class AiSdkBackend implements AgentBackend {
         stopReason: 'error',
       } satisfies CompleteEvent);
       queue.close();
-      this.cleanupAfterTurn(turnId);
+      await this.cleanupAfterTurn(turnId);
       yield* this.drain(queue);
       return;
     }
@@ -1878,7 +1878,7 @@ export class AiSdkBackend implements AgentBackend {
     } finally {
       if (!drainedNormally) turnAbortController.abort();
       await pumpDone.catch(() => {});
-      this.cleanupAfterTurn(turnId);
+      await this.cleanupAfterTurn(turnId);
     }
   }
 
@@ -1942,7 +1942,7 @@ export class AiSdkBackend implements AgentBackend {
     this.abortController?.abort();
     this.compaction.abortHistoryCompact();
     if (this.currentTurnId !== null) {
-      this.toolRuntime.endTurn(this.currentTurnId, 'aborted');
+      await this.toolRuntime.endTurn(this.currentTurnId, 'aborted');
     }
     this.currentRunTrace?.abortRequested(_reason);
   }
@@ -2844,7 +2844,7 @@ export class AiSdkBackend implements AgentBackend {
     }
   }
 
-  private cleanupAfterTurn(turnId: string): void {
+  private async cleanupAfterTurn(turnId: string): Promise<void> {
     this.abortController = null;
     this.currentQueue = null;
     this.currentTurnId = null;
@@ -2856,8 +2856,11 @@ export class AiSdkBackend implements AgentBackend {
     this.loopStopRequested = false;
     this.handoffStopReason = undefined;
     this.injectedSteeringMessages = [];
-    this.toolRuntime.endTurn(turnId, this.aborted ? 'aborted' : 'completed');
-    this.aborted = false;
+    try {
+      await this.toolRuntime.endTurn(turnId, this.aborted ? 'aborted' : 'completed');
+    } finally {
+      this.aborted = false;
+    }
   }
 
   /**

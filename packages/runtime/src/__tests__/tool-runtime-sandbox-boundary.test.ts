@@ -127,6 +127,76 @@ describe('ToolRuntime session sandbox boundary', () => {
     assert.equal(result.boundary.revision, 1);
   });
 
+  test('durably denies a pending boundary request before an aborted turn closes', async () => {
+    const events: SessionEvent[] = [];
+    const managed: ExecutionBoundary = {
+      kind: 'managed',
+      profile: createWorkspaceWritePermissionProfile(),
+      revision: 0,
+    };
+    let created: SandboxBoundaryRequest | undefined;
+    const settlements: Array<{ requestId: string; decision: string }> = [];
+    const runtime = new ToolRuntime({
+      sessionId: 'session-1',
+      header: header(),
+      connection: { providerType: 'openai', slug: 'test' } as never,
+      modelId: 'test',
+      appendMessage: async () => {},
+      readExecutionBoundary: async () => managed,
+      createSandboxBoundaryRequest: async (input) => {
+        created = {
+          ...input,
+          status: 'pending',
+          baseRevision: 0,
+          createdAt: 1,
+        };
+        return created;
+      },
+      settleSandboxBoundaryRequest: async (input) => {
+        assert.ok(created);
+        settlements.push({ requestId: input.requestId, decision: input.decision });
+        return {
+          request: {
+            ...created,
+            status: 'denied',
+            settledAt: 2,
+          },
+          boundary: managed,
+          changed: false,
+        };
+      },
+      newId: nextId(),
+      now: () => 1,
+      getPermissionPauseTarget: () => null,
+    });
+    runtime.beginTurn('turn-1');
+    const pending = runtime.settleToolCall({
+      tool: buildRequestSandboxBoundaryTool(),
+      turnId: 'turn-1',
+      toolCallId: 'tool-boundary',
+      input: {
+        expansion: {
+          filesystem: {
+            entries: [{ path: '/outside/file.txt', access: 'read', scope: 'exact' }],
+          },
+        },
+        justification: 'Read the user-selected file.',
+      },
+      abortSignal: new AbortController().signal,
+      eventSink: {
+        push: (event) => events.push(event),
+        pushAndWaitUntilConsumed: async (event) => {
+          events.push(event);
+        },
+      },
+    });
+
+    const request = await waitForBoundaryRequest(events);
+    await runtime.endTurn('turn-1', 'aborted');
+    await pending;
+    assert.deepEqual(settlements, [{ requestId: request.requestId, decision: 'deny' }]);
+  });
+
   test('returns a structured boundary requirement to the agent', async () => {
     const runtime = new ToolRuntime({
       sessionId: 'session-1',
