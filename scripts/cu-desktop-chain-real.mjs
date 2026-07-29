@@ -158,7 +158,9 @@ try {
     }
     for (const w of now) {
       if (!seen.has(w.id)) {
-        note(`window appeared: ${w.id} ${w.url || '(loading)'} ${JSON.stringify(w.bounds)} parent=${w.parentId} onTop=${w.alwaysOnTop} focused=${w.focused}`);
+        note(
+          `window appeared: ${w.id} ${w.url || '(loading)'} ${JSON.stringify(w.bounds)} parent=${w.parentId} onTop=${w.alwaysOnTop} focused=${w.focused}`,
+        );
       }
       // Keep the latest state, not the first. A window's URL is empty on the
       // sample that catches it being created, and identifying it by that empty
@@ -184,7 +186,11 @@ try {
     }
     await sleep(400);
   }
-  check('the turn started', started, started ? '' : 'the composer never entered the streaming state');
+  check(
+    'the turn started',
+    started,
+    started ? '' : 'the composer never entered the streaming state',
+  );
 
   const endBy = Date.now() + 240_000;
   while (started && Date.now() < endBy) {
@@ -203,14 +209,19 @@ try {
   );
 
   const pip = [...seen.values()].find((w) => w.url.startsWith('pip'));
-  check('the picture-in-picture mirror opened', sawPip, pip ? JSON.stringify(pip.bounds) : 'never appeared');
+  check(
+    'the picture-in-picture mirror opened',
+    sawPip,
+    pip ? JSON.stringify(pip.bounds) : 'never appeared',
+  );
   if (pip) {
     check('the mirror is the app window’s child', pip.parentId !== null, `parent=${pip.parentId}`);
     check('the mirror does not float above other apps', pip.alwaysOnTop === false);
     check('the mirror never took focus', pip.focused === false);
     check(
       'the mirror is Codex-sized',
-      Math.max(pip.bounds.width, pip.bounds.height) <= 400 && Math.max(pip.bounds.width, pip.bounds.height) >= 100,
+      Math.max(pip.bounds.width, pip.bounds.height) <= 400 &&
+        Math.max(pip.bounds.width, pip.bounds.height) >= 100,
       `${pip.bounds.width}x${pip.bounds.height}`,
     );
   }
@@ -223,7 +234,11 @@ try {
     .allInnerTexts()
     .catch(() => []);
   const text = transcript.join('\n');
-  check('the turn produced a Computer Use tool call', /Maka Computer|computer/i.test(text), text.slice(-260));
+  check(
+    'the turn produced a Computer Use tool call',
+    /Maka Computer|computer/i.test(text),
+    text.slice(-260),
+  );
   // A failed tool call inside a turn that recovered is not a failed turn — but
   // it is worth naming, because a model that has to guess twice is a model the
   // tool surface told something unhelpful the first time.

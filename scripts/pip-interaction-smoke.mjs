@@ -141,12 +141,21 @@ app.whenReady().then(async () => {
   // ── throw it at the opposite corner ───────────────────────────────────────
   const before = mirror.getBounds();
   pointer = { x: before.x + 20, y: before.y + 20 };
-  contents.sendInputEvent({ type: 'mouseDown', ...inMirror(20, 20), button: 'left', clickCount: 1 });
+  contents.sendInputEvent({
+    type: 'mouseDown',
+    ...inMirror(20, 20),
+    button: 'left',
+    clickCount: 1,
+  });
   await sleep(60);
   const appNow = parent.getBounds();
   // Three samples so the tracker sees real motion, ending fast enough that the
   // release reads as a throw rather than a place.
-  for (const [fx, fy] of [[0.7, 0.7], [0.4, 0.4], [0.22, 0.18]]) {
+  for (const [fx, fy] of [
+    [0.7, 0.7],
+    [0.4, 0.4],
+    [0.22, 0.18],
+  ]) {
     pointer = { x: appNow.x + appNow.width * fx, y: appNow.y + appNow.height * fy };
     contents.sendInputEvent({ type: 'mouseMove', ...inMirror(20, 20) });
     await sleep(30);
@@ -159,7 +168,11 @@ app.whenReady().then(async () => {
     landed.x === appNow.x + 24 && landed.y === appNow.y + 24,
     `${JSON.stringify(landed)} against app ${JSON.stringify(appNow)}`,
   );
-  check('and the controller agrees which corner that is', pip.currentAlignment() === 'top-left', pip.currentAlignment());
+  check(
+    'and the controller agrees which corner that is',
+    pip.currentAlignment() === 'top-left',
+    pip.currentAlignment(),
+  );
 
   // ── a resize returns it to the corner the user chose ──────────────────────
   parent.setBounds({ ...appNow, width: appNow.width - 200, height: appNow.height - 120 });
@@ -176,7 +189,7 @@ app.whenReady().then(async () => {
   contents.sendInputEvent({ type: 'mouseMove', ...inMirror(60, 20) });
   await sleep(200);
   const hideAt = await contents.executeJavaScript(
-    "(() => { const b = document.querySelector('[data-control=\"hide\"]'); const r = b.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()",
+    '(() => { const b = document.querySelector(\'[data-control="hide"]\'); const r = b.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()',
   );
   contents.sendInputEvent({ type: 'mouseMove', ...hideAt });
   await sleep(80);
