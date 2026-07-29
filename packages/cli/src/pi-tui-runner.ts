@@ -2507,7 +2507,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       }
     }
     const pendingSandboxBoundary = activeSandboxBoundaryRequest(state);
-    if (pendingSandboxBoundary) {
+    if (pendingSandboxBoundary && !isKeyRepeat(data)) {
       if (matchesKey(data, 'y') || matchesKey(data, Key.enter) || matchesKey(data, Key.return)) {
         respondToPendingSandboxBoundary('allow');
         return { consume: true };

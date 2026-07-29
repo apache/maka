@@ -2040,6 +2040,32 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
+  test('ignores repeated allow keys while a sandbox boundary request waits', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SandboxBoundaryPromptDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('run');
+    terminal.input('\r');
+    await waitFor(() => driver.boundaryRequests === 1);
+    terminal.input('\x1b[121;1:2u');
+    await delay(20);
+    assert.deepEqual(driver.boundaryResponses, []);
+
+    terminal.input('y');
+    await waitFor(() => driver.boundaryResponses.length === 1);
+    exitMaka(terminal);
+    await run;
+  });
+
   test('ignores the removed turn-wide approval key while a boundary request waits', async () => {
     const terminal = new FakeTerminal();
     const driver = new SandboxBoundaryPromptDriver(['/outside']);

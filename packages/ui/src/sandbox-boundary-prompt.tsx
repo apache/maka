@@ -19,10 +19,12 @@ export function SandboxBoundaryPrompt({
   const titleId = useId();
   const [responsePending, setResponsePending] = useState(false);
   const responsePendingRef = useRef(false);
+  const activeRequestIdRef = useRef(request.requestId);
   const rejectButtonRef = useRef<HTMLButtonElement>(null);
   const mountedRef = useMountedRef();
 
   useEffect(() => {
+    activeRequestIdRef.current = request.requestId;
     responsePendingRef.current = false;
     setResponsePending(false);
     const frame = window.requestAnimationFrame(() => rejectButtonRef.current?.focus());
@@ -31,13 +33,16 @@ export function SandboxBoundaryPrompt({
 
   async function respond(decision: 'allow' | 'deny'): Promise<void> {
     if (responsePendingRef.current) return;
+    const requestId = request.requestId;
     responsePendingRef.current = true;
     setResponsePending(true);
     try {
-      await onRespond({ requestId: request.requestId, decision });
+      await onRespond({ requestId, decision });
     } finally {
-      responsePendingRef.current = false;
-      if (mountedRef.current) setResponsePending(false);
+      if (activeRequestIdRef.current === requestId) {
+        responsePendingRef.current = false;
+        if (mountedRef.current) setResponsePending(false);
+      }
     }
   }
 
