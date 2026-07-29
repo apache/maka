@@ -278,6 +278,11 @@ describe('permission response IPC boundary', () => {
     assert.match(stopHandler, /emitSessionsChanged\('turn-status-change',\s*sessionId\)/);
     assert.match(stopHandler, /emitSessionsChanged\('message-appended',\s*sessionId\)/);
     assert.match(sendHandler, /normalizeSessionSendCommand\(command\)/);
+    assert.match(
+      sendHandler,
+      /await runtime\.readExecutionBoundary\(sessionId\)[\s\S]*boundary\.kind === 'external'[\s\S]*externally isolated session/,
+      'Desktop must reject external-boundary sessions outside their owning harness',
+    );
     assert.doesNotMatch(sendHandler, /command\.text/);
     assert.doesNotMatch(sendHandler, /command\.attachments/);
   });

@@ -6,7 +6,7 @@ import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import type { QueueEnqueueOutcome, SessionEvent } from '@maka/core/events';
 import type { PermissionMode } from '@maka/core/permission';
-import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import type { ExecutionBoundary, SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type {
   BranchFromTurnInput,
@@ -35,6 +35,7 @@ export type InspectCwdChanges = (cwd: string) => Promise<boolean | undefined>;
 export interface MakaSessionRuntime {
   createSession(input: CreateSessionInput): Promise<SessionSummary>;
   listSessions(): Promise<SessionSummary[]>;
+  readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary>;
   getMessages(sessionId: string): Promise<StoredMessage[]>;
   sendMessage(sessionId: string, input: UserMessageInput): AsyncIterable<SessionEvent>;
   compactSession(sessionId: string, input?: { turnId?: string }): AsyncIterable<SessionEvent>;
@@ -392,15 +393,25 @@ class RuntimeMakaSessionDriver implements MakaSessionDriver {
       throw new Error(`Session cwd no longer exists: ${summary.cwd}`);
     }
     const sessionCwd = summary.cwd!;
-    const messages = await this.input.runtime.getMessages(summary.id);
-    this.sessionId = summary.id;
+    const boundary = await this.input.runtime.readExecutionBoundary(summary.id);
+    if (boundary.kind === 'external') {
+      throw new Error(
+        `Cannot resume externally isolated session ${summary.id} outside its owning harness.`,
+      );
+    }
+    const effectiveSummary: SessionSummary = {
+      ...summary,
+      permissionMode: boundary.kind === 'bypass' ? 'bypass' : 'ask',
+    };
+    const messages = await this.input.runtime.getMessages(effectiveSummary.id);
+    this.sessionId = effectiveSummary.id;
     this.cwd = sessionCwd;
-    this.model = summary.model;
-    this.llmConnectionSlug = summary.llmConnectionSlug;
-    this.thinkingLevel = summary.thinkingLevel;
-    this.permissionMode = summary.permissionMode;
-    this.orchestrationMode = summary.orchestrationMode ?? 'default';
-    return { summary, messages };
+    this.model = effectiveSummary.model;
+    this.llmConnectionSlug = effectiveSummary.llmConnectionSlug;
+    this.thinkingLevel = effectiveSummary.thinkingLevel;
+    this.permissionMode = effectiveSummary.permissionMode;
+    this.orchestrationMode = effectiveSummary.orchestrationMode ?? 'default';
+    return { summary: effectiveSummary, messages };
   }
 
   async listRewindTargets(): Promise<RewindTarget[]> {

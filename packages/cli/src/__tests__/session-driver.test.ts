@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import type {
   CreateSessionInput,
+  ExecutionBoundary,
   PermissionMode,
   QueueEnqueueOutcome,
   SessionEvent,
@@ -468,6 +469,52 @@ describe('Maka session driver', () => {
       driver.startNewSession();
       await collectPrompt(driver, 'new session keeps swarm');
       assert.equal(runtime.created[0]?.orchestrationMode, 'swarm');
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects externally isolated sessions outside their owning harness', async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'maka-external-session-'));
+    try {
+      const runtime = new RecordingRuntime();
+      runtime.sessionSummaries = [sessionSummary({ id: 'external', cwd: repo })];
+      runtime.executionBoundaries.set('external', { kind: 'external', revision: 0 });
+      const driver = createMakaSessionDriver({
+        runtime,
+        cwd: repo,
+        llmConnectionSlug: 'anthropic',
+        model: 'claude-sonnet-4-5',
+      });
+
+      await assert.rejects(
+        driver.switchSession('external'),
+        /externally isolated session external/,
+      );
+      assert.equal(driver.getSessionId(), null);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('derives the resumed TUI mode from the authoritative boundary', async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'maka-bypass-session-'));
+    try {
+      const runtime = new RecordingRuntime();
+      runtime.sessionSummaries = [
+        sessionSummary({ id: 'bypass', cwd: repo, permissionMode: 'ask' }),
+      ];
+      runtime.executionBoundaries.set('bypass', { kind: 'bypass', revision: 3 });
+      const driver = createMakaSessionDriver({
+        runtime,
+        cwd: repo,
+        llmConnectionSlug: 'anthropic',
+        model: 'claude-sonnet-4-5',
+      });
+
+      const resumed = await driver.switchSession('bypass');
+
+      assert.equal(resumed.summary.permissionMode, 'bypass');
     } finally {
       await rm(repo, { recursive: true, force: true });
     }
@@ -1016,6 +1063,7 @@ class RecordingRuntime {
   readonly branched: Array<{ sessionId: string; sourceTurnId: string }> = [];
   readonly branchedBefore: Array<{ sessionId: string; sourceTurnId: string }> = [];
   readonly sessionMessages = new Map<string, StoredMessage[]>();
+  readonly executionBoundaries = new Map<string, ExecutionBoundary>();
   sessionSummaries: SessionSummary[] = [];
   updatedSessionName = 'New Chat';
 
@@ -1212,6 +1260,20 @@ class RecordingRuntime {
 
   async getMessages(sessionId: string): Promise<StoredMessage[]> {
     return this.sessionMessages.get(sessionId) ?? [];
+  }
+
+  async readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary> {
+    return (
+      this.executionBoundaries.get(sessionId) ?? {
+        kind: 'managed',
+        profile: {
+          type: 'managed',
+          fileSystem: { kind: 'restricted', entries: [] },
+          network: { kind: 'restricted' },
+        },
+        revision: 0,
+      }
+    );
   }
 
   async branchFromTurn(

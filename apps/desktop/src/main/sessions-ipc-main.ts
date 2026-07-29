@@ -343,6 +343,12 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
   ipcMain.handle('sessions:send', async (event, sessionId: string, command: unknown) => {
     const sendCommand = normalizeSessionSendCommand(command);
     if (!sendCommand) return;
+    const boundary = await runtime.readExecutionBoundary(sessionId);
+    if (boundary.kind === 'external') {
+      throw new Error(
+        `Cannot send to externally isolated session ${sessionId} outside its owning harness.`,
+      );
+    }
     const sendPlan = await prepareSessionSendSkillPlan({
       prepare: () =>
         prepareSkillInvocation
