@@ -40,6 +40,7 @@ export function createAppShellSessionEventHandlers(options: {
   refreshSessions: () => Promise<unknown>;
   setLiveTurnBySession: StateUpdater<Record<string, LiveTurnProjection>>;
   setInteractionBySession: StateUpdater<InteractionQueues>;
+  onSandboxBoundaryInteractionChanged?: (sessionId: string) => void;
   showModelSetupToast: (description: string, reason?: string) => void;
   toastApi: ToastApi;
   notifyRunEnded?: (payload: { kind: 'completed' | 'errored'; sessionId: string; body?: string }) => void;
@@ -52,6 +53,7 @@ export function createAppShellSessionEventHandlers(options: {
     refreshSessions,
     setLiveTurnBySession,
     setInteractionBySession,
+    onSandboxBoundaryInteractionChanged,
     showModelSetupToast,
     toastApi,
     notifyRunEnded,
@@ -118,12 +120,14 @@ export function createAppShellSessionEventHandlers(options: {
         void refreshMessages(sessionId, { requiredAssistantMessageId: event.messageId }).catch(() => false);
         break;
       case 'sandbox_boundary_request':
+        onSandboxBoundaryInteractionChanged?.(sessionId);
         setInteractionBySession((current) => enqueueInteraction(current, sessionId, event));
         break;
       case 'user_question_request':
         setInteractionBySession((current) => enqueueInteraction(current, sessionId, event));
         break;
       case 'sandbox_boundary_decision_ack':
+        onSandboxBoundaryInteractionChanged?.(sessionId);
         setInteractionBySession((current) =>
           dequeueInteractionByRequestId(current, sessionId, event.requestId),
         );
@@ -133,6 +137,7 @@ export function createAppShellSessionEventHandlers(options: {
         void refreshMessages(sessionId);
         break;
       case 'error':
+        onSandboxBoundaryInteractionChanged?.(sessionId);
         setInteractionBySession((current) => clearInteractions(current, sessionId));
         if (activeIdRef.current === sessionId) {
           if (isNoRealConnectionEvent(event)) {
@@ -148,11 +153,13 @@ export function createAppShellSessionEventHandlers(options: {
         void refreshMessages(sessionId, terminalRefreshOptions(before));
         break;
       case 'abort':
+        onSandboxBoundaryInteractionChanged?.(sessionId);
         setInteractionBySession((current) => clearInteractions(current, sessionId));
         void refreshSessions();
         void refreshMessages(sessionId, terminalRefreshOptions(before));
         break;
       case 'complete': {
+        onSandboxBoundaryInteractionChanged?.(sessionId);
         setInteractionBySession((current) => clearInteractions(current, sessionId));
         if (event.stopReason === 'end_turn' || event.stopReason === 'max_tokens') {
           const body = [...(before?.steps ?? [])].reverse().find((step) => step.text?.text)?.text?.text;

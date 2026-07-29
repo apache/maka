@@ -48,6 +48,7 @@ import {
   enqueueInteraction,
   getConversationCopy,
   getSharedUiCopy,
+  reconcileSandboxBoundaryInteractions,
 } from '@maka/ui';
 import { useKeyboardHelp } from './keyboard-help';
 import { useCommandPalette } from './command-palette';
@@ -230,6 +231,11 @@ function AppShellContent({
     setPendingSessionModelBySession,
     clearTurnTransientState,
   } = useAppShellSessionWorkspace(toastApi);
+  const sandboxBoundaryInteractionEpochRef = useRef(new Map<string, number>());
+  const markSandboxBoundaryInteractionChanged = useCallback((sessionId: string) => {
+    const epochs = sandboxBoundaryInteractionEpochRef.current;
+    epochs.set(sessionId, (epochs.get(sessionId) ?? 0) + 1);
+  }, []);
   const attachmentDraftKey = activeId ?? 'new-session';
   const {
     pendingAttachments,
@@ -1008,15 +1014,18 @@ function AppShellContent({
   useEffect(() => {
     if (!activeId) return;
     let cancelled = false;
+    const hydrationEpoch = sandboxBoundaryInteractionEpochRef.current.get(activeId) ?? 0;
     void window.maka.sessions
       .listActiveSandboxBoundaryRequests(activeId)
       .then((requests) => {
-        if (cancelled) return;
+        if (
+          cancelled ||
+          (sandboxBoundaryInteractionEpochRef.current.get(activeId) ?? 0) !== hydrationEpoch
+        ) {
+          return;
+        }
         setInteractionBySession((current) =>
-          requests.reduce(
-            (next, request) => enqueueInteraction(next, activeId, request),
-            current,
-          ),
+          reconcileSandboxBoundaryInteractions(current, activeId, requests),
         );
       })
       .catch(() => {});
@@ -1328,6 +1337,7 @@ function AppShellContent({
     setNavSelection,
     setLiveTurnBySession,
     setInteractionBySession,
+    onSandboxBoundaryInteractionChanged: markSandboxBoundaryInteractionChanged,
     showModelSetupToast,
     toastApi,
     upsertSessionSummary,
@@ -1537,6 +1547,7 @@ function AppShellContent({
     refreshSessions,
     setLiveTurnBySession,
     setInteractionBySession,
+    onSandboxBoundaryInteractionChanged: markSandboxBoundaryInteractionChanged,
     showModelSetupToast,
     toastApi,
     notifyRunEnded: ({ kind, sessionId, body }) => {

@@ -380,8 +380,9 @@ describe('permission response IPC boundary', () => {
     const shell = await readRendererShellSource('app-shell.tsx');
     assert.match(
       shell,
-      /listActiveSandboxBoundaryRequests\(activeId\)[\s\S]*requests\.reduce\([\s\S]*enqueueInteraction\(next, activeId, request\)/,
+      /listActiveSandboxBoundaryRequests\(activeId\)[\s\S]*reconcileSandboxBoundaryInteractions\(current, activeId, requests\)/,
     );
+    assert.match(shell, /sandboxBoundaryInteractionEpochRef[\s\S]*hydrationEpoch/);
     assert.doesNotMatch(
       shell,
       /listPendingSandboxBoundaryRequests/,

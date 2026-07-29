@@ -138,6 +138,7 @@ export function createAppShellChatActions(deps: {
    * window opens before any SessionEvent arrives (turn_started is not one). */
   setLiveTurnBySession: LiveTurnRecordUpdater;
   setInteractionBySession: InteractionQueueUpdater;
+  onSandboxBoundaryInteractionChanged?: (sessionId: string) => void;
   showModelSetupToast: (description: string, reason?: string) => void;
   toastApi: ToastApi;
   upsertSessionSummary: (session: SessionSummary) => void;
@@ -166,6 +167,7 @@ export function createAppShellChatActions(deps: {
     setNavSelection,
     setLiveTurnBySession,
     setInteractionBySession,
+    onSandboxBoundaryInteractionChanged,
     showModelSetupToast,
     toastApi,
     upsertSessionSummary,
@@ -436,6 +438,7 @@ export function createAppShellChatActions(deps: {
     if (!sessionId) return;
     try {
       await window.maka.sessions.respondToSandboxBoundary(sessionId, response);
+      onSandboxBoundaryInteractionChanged?.(sessionId);
       setInteractionBySession((current) =>
         dequeueInteractionByRequestId(current, sessionId, response.requestId),
       );

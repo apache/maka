@@ -11,6 +11,7 @@ import {
   dequeueInteractionByRequestId,
   dequeueInteractionByToolUseId,
   enqueueInteraction,
+  reconcileSandboxBoundaryInteractions,
   type InteractionQueues,
 } from '../interaction-queue.js';
 
@@ -75,5 +76,22 @@ describe('composer interaction queue', () => {
 
     queues = clearInteractions(queues, 's');
     assert.equal(activeInteractionFor(queues, 's'), undefined);
+  });
+
+  test('rehydration replaces only boundary prompts and preserves user questions', () => {
+    let queues: InteractionQueues = {};
+    queues = enqueueInteraction(queues, 's', boundary('stale'));
+    queues = enqueueInteraction(queues, 's', question('question'));
+    queues = enqueueInteraction(queues, 's', boundary('live'));
+
+    const reconciled = reconcileSandboxBoundaryInteractions(queues, 's', [
+      boundary('live'),
+      boundary('new'),
+    ]);
+
+    assert.deepEqual(
+      reconciled.s.map((interaction) => interaction.requestId),
+      ['question', 'live', 'new'],
+    );
   });
 });
