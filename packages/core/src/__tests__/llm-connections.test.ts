@@ -1327,6 +1327,7 @@ describe('provider compatibility contract', () => {
       'minimax-m2.7',
       'minimax-m3',
       'glm-5.2',
+      'glm-latest',
       'kimi-k2.6',
       'kimi-k2.7-code',
       'deepseek-v4-pro',

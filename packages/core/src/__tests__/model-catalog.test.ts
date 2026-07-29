@@ -242,9 +242,54 @@ describe('ModelCatalogEntry', () => {
     assert.equal(entries[0]?.contextWindow, 256_000);
     assert.equal(entries[0]?.maxOutputTokens, 32_000);
     assert.deepEqual(entries[0]?.capabilities, {
+      vision: true,
       reasoning: true,
       functionCalling: true,
     });
+
+    for (const entry of entries) {
+      assert.equal(entry.docsUrl, 'https://www.volcengine.com/docs/82379/2366394', entry.id);
+      assert.ok(entry.contextWindow, entry.id);
+      assert.ok(entry.maxOutputTokens, entry.id);
+      assert.equal(entry.capabilities.reasoning, true, entry.id);
+      assert.equal(entry.capabilities.functionCalling, true, entry.id);
+    }
+
+    for (const modelId of [
+      'ark-code-latest',
+      'doubao-seed-2.0-mini',
+      'doubao-seed-2.0-lite',
+      'doubao-seed-2.1-turbo',
+      'doubao-seed-evolving',
+      'minimax-m3',
+      'kimi-k2.6',
+      'kimi-k2.7-code',
+      'kimi-k3',
+    ]) {
+      assert.equal(
+        entries.find((entry) => entry.id === modelId)?.capabilities.vision,
+        true,
+        modelId,
+      );
+    }
+
+    for (const modelId of [
+      'deepseek-v4-flash',
+      'deepseek-v4-pro',
+      'glm-5.2',
+      'glm-latest',
+      'minimax-m2.7',
+    ]) {
+      assert.equal(
+        entries.find((entry) => entry.id === modelId)?.capabilities.vision,
+        undefined,
+        modelId,
+      );
+    }
+
+    const glmLatest = entries.find((entry) => entry.id === 'glm-latest');
+    assert.equal(glmLatest?.contextWindow, 1_024_000);
+    assert.equal(glmLatest?.maxOutputTokens, 128_000);
 
     const deepseek = entries.find((entry) => entry.id === 'deepseek-v4-pro');
     assert.equal(deepseek?.contextWindow, 1_024_000);

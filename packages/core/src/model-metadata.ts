@@ -188,21 +188,34 @@ const VOLCENGINE_CODING_PLAN_MODEL_METADATA: Record<string, ModelMetadata> = {
   'kimi-k2.7-code': planModel('Kimi-K2.7-Code', true, 256_000, 32_000),
 };
 const VOLCENGINE_AGENT_PLAN_MODEL_METADATA: Record<string, ModelMetadata> = {
-  'ark-code-latest': agentPlanModel('Ark Code Latest', 256_000, 32_000),
-  'doubao-seed-2.0-mini': agentPlanModel('Doubao Seed 2.0 Mini', 256_000, 128_000),
-  'doubao-seed-2.0-lite': agentPlanModel('Doubao Seed 2.0 Lite', 256_000, 128_000),
+  'ark-code-latest': agentPlanModel('Ark Code Latest', 256_000, 32_000, { vision: true }),
+  'doubao-seed-2.0-mini': agentPlanModel('Doubao Seed 2.0 Mini', 256_000, 128_000, {
+    vision: true,
+  }),
+  'doubao-seed-2.0-lite': agentPlanModel('Doubao Seed 2.0 Lite', 256_000, 128_000, {
+    vision: true,
+  }),
   'deepseek-v4-flash': agentPlanModel('DeepSeek-V4-Flash', 1_024_000, 384_000),
-  'doubao-seed-2.1-turbo': agentPlanModel('Doubao Seed 2.1 Turbo', 256_000, 256_000),
-  'doubao-seed-evolving': agentPlanModel('Doubao Seed Evolving', 1_024_000, 256_000),
-  'doubao-seed-2.0-code': agentPlanModel('Doubao Seed 2.0 Code', 256_000, 128_000, 'deprecated'),
-  'doubao-seed-2.0-pro': agentPlanModel('Doubao Seed 2.0 Pro', 256_000, 128_000, 'deprecated'),
+  'doubao-seed-2.1-turbo': agentPlanModel('Doubao Seed 2.1 Turbo', 256_000, 256_000, {
+    vision: true,
+  }),
+  'doubao-seed-evolving': agentPlanModel('Doubao Seed Evolving', 1_024_000, 256_000, {
+    vision: true,
+  }),
+  'doubao-seed-2.0-code': agentPlanModel('Doubao Seed 2.0 Code', 256_000, 128_000, {
+    lifecycle: 'deprecated',
+  }),
+  'doubao-seed-2.0-pro': agentPlanModel('Doubao Seed 2.0 Pro', 256_000, 128_000, {
+    lifecycle: 'deprecated',
+  }),
   'minimax-m2.7': agentPlanModel('MiniMax-M2.7', 200_000, 128_000),
-  'minimax-m3': agentPlanModel('MiniMax-M3', 512_000, 128_000),
+  'minimax-m3': agentPlanModel('MiniMax-M3', 512_000, 128_000, { vision: true }),
   'glm-5.2': agentPlanModel('GLM-5.2', 1_024_000, 128_000),
-  'kimi-k2.6': agentPlanModel('Kimi-K2.6', 256_000, 32_000),
-  'kimi-k2.7-code': agentPlanModel('Kimi-K2.7-Code', 256_000, 32_000),
+  'glm-latest': agentPlanModel('GLM Latest', 1_024_000, 128_000),
+  'kimi-k2.6': agentPlanModel('Kimi-K2.6', 256_000, 32_000, { vision: true }),
+  'kimi-k2.7-code': agentPlanModel('Kimi-K2.7-Code', 256_000, 32_000, { vision: true }),
   'deepseek-v4-pro': agentPlanModel('DeepSeek-V4-Pro', 1_024_000, 384_000),
-  'kimi-k3': agentPlanModel('Kimi-K3', 1_024_000, 128_000),
+  'kimi-k3': agentPlanModel('Kimi-K3', 1_024_000, 128_000, { vision: true }),
 };
 
 // Ollama Cloud accepts reasoning_effort for every active reasoning model in its
@@ -394,17 +407,23 @@ function planModel(
 
 function agentPlanModel(
   displayName: string,
-  contextWindow?: number,
-  maxOutputTokens?: number,
-  lifecycle: ModelMetadata['lifecycle'] = 'active',
+  contextWindow: number,
+  maxOutputTokens: number,
+  options: {
+    lifecycle?: ModelMetadata['lifecycle'];
+    vision?: true;
+  } = {},
 ): ModelMetadata {
   return {
     displayName,
-    lifecycle,
+    lifecycle: options.lifecycle ?? 'active',
     docsUrl: VOLCENGINE_AGENT_PLAN_DOCS,
-    ...(contextWindow === undefined ? {} : { contextWindow }),
-    ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
-    capabilities: REASONING_FUNCTION_CALLING,
+    contextWindow,
+    maxOutputTokens,
+    capabilities: {
+      ...REASONING_FUNCTION_CALLING,
+      ...(options.vision ? { vision: true } : {}),
+    },
   };
 }
 
