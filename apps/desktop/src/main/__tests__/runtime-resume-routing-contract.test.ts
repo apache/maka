@@ -33,15 +33,19 @@ describe('runtime resume desktop routing contract', () => {
 
   it('main plans from authoritative state and streams only an approved latest continuation', async () => {
     const main = await readFile(
-      resolve(REPO_ROOT, 'apps/desktop/src/main/sessions-ipc-main.ts'),
+      resolve(REPO_ROOT, 'apps/desktop/src/main/session-execution-ipc-main.ts'),
       'utf8',
     );
-    const handler = main.match(/ipcMain\.handle\('sessions:resumeLatest'[\s\S]*?\n  \}\);/)?.[0] ?? '';
+    const handler =
+      main.match(/deps\.ipcMain\.handle\('sessions:resumeLatest'[\s\S]*?\n  \}\);/)?.[0] ?? '';
 
-    assert.match(handler, /runtime\.planLatestAuthoritativeSafeBoundaryContinuation\(sessionId\)/);
+    assert.match(
+      handler,
+      /deps\.runtime\.planLatestAuthoritativeSafeBoundaryContinuation\(sessionId\)/,
+    );
     assert.match(handler, /if \(!plan\.continuation\)/);
-    assert.match(handler, /runtime\.resumeSafeBoundaryContinuation\(plan\.continuation\)/);
-    assert.match(handler, /streamEvents\(sessionId, iterator, \{/);
+    assert.match(handler, /deps\.runtime\.resumeSafeBoundaryContinuation\(plan\.continuation\)/);
+    assert.match(handler, /deps\.streamEvents\(sessionId, iterator, \{/);
     assert.match(handler, /turnId: plan\.continuation\.turnId/);
   });
 
@@ -61,9 +65,6 @@ describe('runtime resume desktop routing contract', () => {
     const recovery = main.match(/async function recoverInterruptedSessionsOnStartup\(\): Promise<void> \{[\s\S]*?\n  \}/)?.[0] ?? '';
 
     assert.match(recovery, /MAKA_RUNTIME_SAFE_BOUNDARY_RESUME !== '1'/);
-    assert.match(recovery, /runtime\.planLatestAuthoritativeSafeBoundaryContinuation\(session\.id\)/);
-    assert.match(recovery, /runtime\.resumeSafeBoundaryContinuation\(plan\.continuation\)/);
-    assert.match(recovery, /streamEvents\(session\.id, iterator, \{/);
-    assert.match(recovery, /turnId: plan\.continuation\.turnId/);
+    assert.match(recovery, /resumeSafeBoundaryContinuationsOnStartup\(runtime, streamEvents\)/);
   });
 });

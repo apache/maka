@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import { stat } from 'node:fs/promises';
-import { ipcMain } from 'electron';
+import { ipcMain as electronIpcMain } from 'electron';
 import {
   isCollaborationMode,
   isOrchestrationMode,
@@ -33,7 +33,6 @@ import { sessionReadMessagesFailureMessage } from './session-read-error-copy.js'
 import { resolveCreateSessionInput } from './create-session-input.js';
 import {
   normalizeSandboxBoundaryResponse,
-  normalizeRegenerateTurnInput,
   normalizeSessionSendCommand,
   normalizeStopSessionInput,
   normalizeUserQuestionResponse,
@@ -49,6 +48,7 @@ import { handleBranchFromTurn } from './session-branch.js';
 import { handleReviseBeforeTurn } from './session-revision.js';
 import { prepareSessionSendSkillPlan } from './session-send-skill-plan.js';
 import type { DesktopCreateSessionInput } from './new-session-project.js';
+import { registerSessionExecutionIpc } from './session-execution-ipc-main.js';
 
 type SessionStore = ReturnType<typeof createSessionStore>;
 type ArtifactStore = ReturnType<typeof createArtifactStore>;
@@ -171,7 +171,10 @@ async function resolveSessionActionIds(
   return revisionFamilySessionIds(await runtime.listSessions(), sessionId);
 }
 
-export function registerSessionsIpc(deps: SessionsIpcDeps): void {
+export function registerSessionsIpc(
+  deps: SessionsIpcDeps,
+  ipcMain: Pick<typeof electronIpcMain, 'handle'> = electronIpcMain,
+): void {
   const {
     runtime,
     store,
@@ -200,6 +203,14 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
     getWorkspacePrivacyContext,
     canCreateFakeSession,
   } = deps;
+  registerSessionExecutionIpc({
+    ipcMain,
+    runtime,
+    ensureSessionCanSend,
+    ensureSessionWorkspaceAvailable,
+    streamEvents,
+    emitModeChanged: (sessionId) => emitSessionsChanged('mode-change', sessionId),
+  });
   ipcMain.handle('shell-runs:list', (_event, sessionId: string) => runtime.listShellRunUpdates(sessionId));
   ipcMain.handle('tasks:list', async (_event, sessionId: string) => {
     const tasks = await taskLedgerStore.list(sessionId, {
@@ -437,44 +448,6 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
       return { ok: true, base64: result.base64, mimeType: result.mimeType };
     },
   );
-  ipcMain.handle('sessions:compact', async (_event, sessionId: string) => {
-    await ensureSessionCanSend(sessionId);
-    const turnId = randomUUID();
-    void streamEvents(sessionId, runtime.compactSession(sessionId, { turnId }), {
-      turnId,
-      goalBoundary: 'none',
-    });
-  });
-  ipcMain.handle('sessions:resumeLatest', async (_event, sessionId: string) => {
-    await ensureSessionCanSend(sessionId);
-    const plan = await runtime.planLatestAuthoritativeSafeBoundaryContinuation(sessionId);
-    if (!plan.continuation) {
-      return {
-        disposition: 'park' as const,
-        rejectionReasons: plan.rejectionReasons,
-        diagnostics: plan.diagnostics,
-      };
-    }
-    const iterator = runtime.resumeSafeBoundaryContinuation(plan.continuation);
-    void streamEvents(sessionId, iterator, {
-      turnId: plan.continuation.turnId,
-      goalBoundary: 'none',
-    });
-    return {
-      disposition: 'started' as const,
-      runId: plan.continuation.runId,
-      turnId: plan.continuation.turnId,
-    };
-  });
-  ipcMain.handle('sessions:regenerateTurn', async (_event, sessionId: string, input: unknown) => {
-    await ensureSessionCanSend(sessionId);
-    const normalized = normalizeRegenerateTurnInput(input);
-    const turnId = normalized.turnId ?? randomUUID();
-    void streamEvents(sessionId, runtime.regenerateTurn(sessionId, { ...normalized, turnId }), {
-      turnId,
-      goalBoundary: 'external',
-    });
-  });
   ipcMain.handle('sessions:branchFromTurn', async (_event, sessionId: string, input: unknown) => {
     return handleBranchFromTurn(sessionId, input, {
       ensureSessionWorkspaceAvailable,
@@ -574,49 +547,6 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
     const result = await runtime.abandonPlanProposal(sessionId, proposalId);
     emitSessionsChanged('mode-change', sessionId);
     return result.state;
-  });
-  ipcMain.handle('plan-mode:approve', async (_event, sessionId: string, input: unknown) => {
-    if (!input || typeof input !== 'object') throw new Error('Invalid plan approval');
-    const proposalId = (input as { proposalId?: unknown }).proposalId;
-    const expectedRevision = (input as { expectedRevision?: unknown }).expectedRevision;
-    const expectedStoreVersion = (input as { expectedStoreVersion?: unknown }).expectedStoreVersion;
-    if (typeof proposalId !== 'string' || !proposalId ||
-        typeof expectedRevision !== 'number' || !Number.isSafeInteger(expectedRevision) ||
-        (expectedStoreVersion !== undefined &&
-          (typeof expectedStoreVersion !== 'number' || !Number.isSafeInteger(expectedStoreVersion)))) {
-      throw new Error('Invalid plan approval');
-    }
-    await ensureSessionCanSend(sessionId);
-    await ensureSessionWorkspaceAvailable(sessionId);
-    const result = await runtime.approvePlan({
-      sessionId,
-      proposalId,
-      expectedRevision,
-      ...(expectedStoreVersion !== undefined ? { expectedStoreVersion } : {}),
-    });
-    if (result.event.type !== 'plan_approved') throw new Error('Plan approval did not create an execution');
-    const turnId = randomUUID();
-    const iterator = runtime.sendMessage(sessionId, {
-      turnId,
-      text: `Execute the approved plan ${result.event.execution.planId}.`,
-    });
-    void streamEvents(sessionId, iterator, { turnId, goalBoundary: 'external' });
-    emitSessionsChanged('mode-change', sessionId);
-    return { state: result.state, turnId, executionId: result.event.execution.executionId };
-  });
-  ipcMain.handle('plan-mode:resume', async (_event, sessionId: string, executionId: unknown) => {
-    if (typeof executionId !== 'string' || !executionId) throw new Error('Invalid execution id');
-    await ensureSessionCanSend(sessionId);
-    await ensureSessionWorkspaceAvailable(sessionId);
-    const result = await runtime.resumePlanExecution(sessionId, executionId);
-    const turnId = randomUUID();
-    const iterator = runtime.sendMessage(sessionId, {
-      turnId,
-      text: `Resume the approved plan execution ${executionId}.`,
-    });
-    void streamEvents(sessionId, iterator, { turnId, goalBoundary: 'external' });
-    emitSessionsChanged('mode-change', sessionId);
-    return { state: result.state, turnId, executionId };
   });
   ipcMain.handle('plan-mode:abandonExecution', async (
     _event,

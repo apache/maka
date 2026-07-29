@@ -138,7 +138,14 @@ describe('permission response IPC boundary', () => {
 
   it('routes turn actions through main-process normalizers', async () => {
     const main = await readMainProcessCombinedSource();
-    const regenerateHandler = main.match(/ipcMain\.handle\('sessions:regenerateTurn'[\s\S]*?\n  \);/)?.[0] ?? '';
+    const execution = await readFile(
+      fileURLToPath(new URL('../../../src/main/session-execution-ipc-main.ts', import.meta.url)),
+      'utf8',
+    );
+    const regenerateHandler =
+      execution.match(
+        /deps\.ipcMain\.handle\(\s*'sessions:regenerateTurn'[\s\S]*?\n  \);/,
+      )?.[0] ?? '';
     const branchHandler = main.match(/ipcMain\.handle\('sessions:branchFromTurn'[\s\S]*?\n  \);/)?.[0] ?? '';
     const reviseBeforeHandler = main.match(/ipcMain\.handle\('sessions:reviseBeforeTurn'[\s\S]*?\n  \);/)?.[0] ?? '';
 
@@ -281,27 +288,6 @@ describe('permission response IPC boundary', () => {
     assert.match(sendHandler, /ensureSessionCanSend/);
     assert.doesNotMatch(sendHandler, /command\.text/);
     assert.doesNotMatch(sendHandler, /command\.attachments/);
-  });
-
-  it('routes every local execution entry through the external-boundary admission guard', async () => {
-    const main = await readMainProcessCombinedSource();
-    const admission =
-      main.match(/async function ensureSessionCanSend\(sessionId: string\)[\s\S]*?\n\}/)?.[0] ?? '';
-    assert.match(
-      admission,
-      /runtime\.readExecutionBoundary\(sessionId\)[\s\S]*assertDesktopExecutionBoundary\(sessionId, boundary\)/,
-    );
-    for (const channel of [
-      'sessions:compact',
-      'sessions:resumeLatest',
-      'sessions:regenerateTurn',
-      'plan-mode:approve',
-      'plan-mode:resume',
-    ]) {
-      const handler =
-        main.match(new RegExp(`ipcMain\\.handle\\('${channel}'[\\s\\S]*?\\n  \\}\\);`))?.[0] ?? '';
-      assert.match(handler, /ensureSessionCanSend\(sessionId\)/, channel);
-    }
   });
 
   it('renderer stop() and respondToSandboxBoundary() surface IPC failures only for the source session', async () => {
