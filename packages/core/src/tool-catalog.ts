@@ -26,7 +26,7 @@ export interface CatalogToolDef {
   readonly name: string;
   /** Optional future policy tags; unused by v1 product paths. */
   readonly effects?: readonly ToolEffect[];
-  /** Feeds HostCapabilities.capabilities when the tool is bound (e.g. office). */
+  /** Feeds HostCapabilities.capabilities when the tool is bound. */
   readonly capabilityTags?: readonly string[];
 }
 
@@ -114,9 +114,6 @@ export const MAKA_CATALOG_TOOLS: readonly CatalogToolDef[] = Object.freeze(
     { name: 'team_task_list' },
     { name: 'team_task_claim' },
     { name: 'expert_dispatch' },
-    // office surface
-    { name: 'OfficeDocument', capabilityTags: ['office'] },
-    { name: 'OfficeDocumentEdit', capabilityTags: ['office'] },
     // browser surface
     { name: 'browser_navigate' },
     { name: 'browser_snapshot' },
@@ -153,14 +150,6 @@ export const MAKA_CATALOG_SURFACES: readonly CatalogSurfaceDef[] = Object.freeze
         'Durable multi-agent Rive workflows: validate/import/run/status, scheduler, retries.',
       economy: 'deferred' as const,
       toolNames: ['RiveWorkflow'],
-      hosts: desktopOnlyHosts(),
-    },
-    {
-      id: 'office',
-      label: 'Office',
-      description: 'Read and edit Office documents (Word, Excel, PowerPoint, PDF).',
-      economy: 'deferred' as const,
-      toolNames: ['OfficeDocument', 'OfficeDocumentEdit'],
       hosts: desktopOnlyHosts(),
     },
     {

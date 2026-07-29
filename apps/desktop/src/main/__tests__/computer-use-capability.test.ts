@@ -44,7 +44,7 @@ describe('Desktop Computer Use production wiring', () => {
       readMainProcessCombinedSource(),
     ]);
     const capability = snapshot.match(
-      /function computerUseCapability[\s\S]*?(?=function officeDocumentsCapability)/,
+      /function computerUseCapability[\s\S]*?(?=function staticCapability)/,
     )?.[0];
     assert.ok(capability, 'Computer Use capability block must exist');
     assert.match(capability, /required_scoped_lease/);

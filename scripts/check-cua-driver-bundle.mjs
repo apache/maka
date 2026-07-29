@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Release gate: assert the cua-driver binary is present, non-empty, executable,
 // and matches the pinned checksum before packaging. Analogous to
-// scripts/check-officecli-bundle.mjs. macOS-only; a no-op elsewhere.
+// This check is macOS-only and is a no-op elsewhere.
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';

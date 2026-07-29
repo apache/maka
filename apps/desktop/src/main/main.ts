@@ -662,7 +662,6 @@ const {
 
 const {
   riveTools,
-  officeTools,
   browserTools,
   computerUse,
   computerUseOverlay,
@@ -747,7 +746,6 @@ const resolveProjectRootForContext = (sessionId: unknown): Promise<string> =>
     readSessionCwd: async (id) => (await store.readHeader(id)).cwd,
   });
 const botRegistry = new BotRegistry({
-  botDataDir: join(app.getPath('userData'), 'bots'),
   onIncomingMessage: (message: BotIncomingMessage) => {
     // Only log incoming bot messages in dev — production stdout leaking
     // platform + chatId is operational noise at best and a small privacy
@@ -1161,7 +1159,6 @@ function registerIpc(): void {
   settingsIpc = registerSettingsIpc({
     settingsStore,
     botRegistry,
-    botDataDir: join(app.getPath('userData'), 'bots'),
     normalizeSettingsPatch,
     applySettingsRuntimeEffects,
     ...(e2eFixture?.scenario === 'settings-bots'

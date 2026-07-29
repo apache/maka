@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import { promisify } from 'node:util';
 
 const repoRoot = new URL('../', import.meta.url);
+const execFileAsync = promisify(execFile);
 
 async function readRepoFile(path) {
   return readFile(new URL(path, repoRoot), 'utf8');
@@ -41,4 +44,13 @@ test('public documentation links the license and attribution notice', async () =
     assert.match(content, /\[.*Apache License 2\.0.*\]\(\.\/LICENSE\)/);
     assert.match(content, /\[NOTICE\]\(\.\/NOTICE\)/);
   }
+});
+
+test('production dependency and asset notices are complete and current', async () => {
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ['scripts/generate-third-party-notices.mjs', '--check'],
+    { cwd: repoRoot, maxBuffer: 16 * 1024 * 1024 },
+  );
+  assert.match(stdout, /production dependency inventory is current/);
 });

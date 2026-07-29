@@ -58,7 +58,7 @@ describe('tool and permission args redaction', () => {
 
   it('redacts permission summary previews before rendering command, path, or file content', async () => {
     const source = await readFile(join(process.cwd(), '../../packages/ui/src/permission-dialog.tsx'), 'utf8');
-    const presentation = source.match(/function renderPermissionSummary[\s\S]*?function permissionValuePreview/)?.[0] ?? '';
+    const presentation = source.match(/function renderPermissionSummary[\s\S]*?function permissionTextPreview/)?.[0] ?? '';
 
     assert.match(presentation, /\{redactSecrets\(command\)\}/);
     assert.match(presentation, /\{redactSecrets\(path\)\}/);

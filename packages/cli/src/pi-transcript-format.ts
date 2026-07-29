@@ -67,11 +67,6 @@ export function formatToolResultContent(content: ToolResultContent): string {
       ].join('\n\n');
     case 'web_search_error':
       return content.message;
-    case 'office_document':
-      return (
-        content.message ??
-        [content.operation, content.path, content.stdout, content.stderr].filter(Boolean).join('\n')
-      );
     case 'explore_agent':
       return (
         content.report ??

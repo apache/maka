@@ -86,10 +86,6 @@ export function ToolResultPreview(props: {
     return <ShellRunPreview result={content} source={props.shellRunSource} />;
   }
 
-  if (content.kind === 'office_document') {
-    return <OfficeDocumentPreview result={content} />;
-  }
-
   if (content.kind === 'explore_agent') {
     return <ExploreAgentPreview result={content} />;
   }
@@ -543,61 +539,6 @@ function shellRunStatusLabel(status: string, locale: import('@maka/core').UiLoca
   const copy = getToolActivityCopy(locale).result;
   const label = (copy.backgroundStatus as Readonly<Record<string, string>>)[status];
   return label ?? copy.backgroundUnknown(status);
-}
-
-function OfficeDocumentPreview(props: {
-  result: Extract<ToolResultContent, { kind: 'office_document' }>;
-}) {
-  const locale = useUiLocale();
-  const copy = getToolActivityCopy(locale).result;
-  const { result } = props;
-  const stdout = capLines(redactSecrets(result.stdout ?? ''));
-  const stderr = capLines(redactSecrets(result.stderr ?? ''));
-  const message = result.message ? redactSecrets(result.message) : '';
-  const args = result.args?.map((arg) => redactSecrets(arg)).join(' ');
-  const title = result.path ? redactSecrets(result.path) : copy.officeDocument;
-  const operation = result.operation ? redactSecrets(result.operation) : copy.notExecuted;
-  const reason = presentOfficeDocumentReason(result.reason, locale);
-  const hasOutput = stdout.body.length > 0 || stderr.body.length > 0;
-
-  return (
-    <div className="grid gap-1.5" data-kind="office_document" data-ok={result.ok ? 'true' : 'false'}>
-      <header className="grid gap-0.5">
-        <strong className="text-[length:var(--font-size-base)] text-[color:var(--foreground)]">{title}</strong>
-        <small className="text-[length:var(--font-size-base)] text-[color:var(--muted-foreground)]">
-          {operation}
-          {result.ok ? copy.completedSuffix : copy.incompleteSuffix}
-          {result.truncated ? copy.truncatedSuffix : ''}
-        </small>
-      </header>
-      {args && <code className={TOOL_OUTPUT_COMMAND_CLASS}>officecli {args}</code>}
-      {!result.ok && (
-        <div className="grid gap-0.5 text-[length:var(--font-size-base)] text-[color:var(--destructive)]" role="note">
-          <span>{message || copy.officeIncomplete}</span>
-          {reason && <small className="text-[color:var(--muted-foreground)]">{copy.diagnostic(reason)}</small>}
-        </div>
-      )}
-      {result.ok && !hasOutput && <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.noOutput}</p>}
-      {stdout.body.length > 0 && (
-        <pre className={TOOL_OUTPUT_BODY_CLASS} data-stream="stdout">
-          {stdout.body}
-          {stdout.capped > 0 && `\n\n${copy.streamHidden('stdout', stdout.capped)}`}
-        </pre>
-      )}
-      {stderr.body.length > 0 && (
-        <pre className={cn(TOOL_OUTPUT_BODY_CLASS, 'text-[color:var(--destructive)]')} data-stream="stderr">
-          {stderr.body}
-          {stderr.capped > 0 && `\n\n${copy.streamHidden('stderr', stderr.capped)}`}
-        </pre>
-      )}
-    </div>
-  );
-}
-
-function presentOfficeDocumentReason(reason: string | undefined, locale: import('@maka/core').UiLocale): string | undefined {
-  if (reason === undefined) return undefined;
-  const copy = getToolActivityCopy(locale).result;
-  return (copy.officeReason as Readonly<Record<string, string>>)[reason] ?? copy.unknownDiagnostic;
 }
 
 function RiveWorkflowPreview(props: {

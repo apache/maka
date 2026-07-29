@@ -215,34 +215,11 @@ const exploreAgentResult = {
   ],
   matches: [
     { path: 'packages/ui/src/tool-activity.tsx', line: 395, query: 'terminal', snippet: "if (content.kind === 'terminal')" },
-    { path: 'packages/ui/src/tool-activity.tsx', line: 407, query: 'office_document', snippet: "if (content.kind === 'office_document')" },
+    { path: 'packages/ui/src/tool-activity.tsx', line: 407, query: 'file_diff', snippet: "if (content.kind === 'file_diff')" },
   ],
   notes: ['Read-only mode kept production files untouched.', 'One sensitive path was skipped.'],
   reason: 'aborted',
   message: 'Exploration was canceled after collecting enough fixture evidence.',
-} satisfies ToolResultContent;
-
-const officeDocumentResult = {
-  kind: 'office_document',
-  ok: true,
-  operation: 'inspect',
-  path: 'docs/review-notes.docx',
-  args: ['inspect', 'docs/review-notes.docx'],
-  stdout: 'Title: Review Notes\nPages: 4\nTables: 2\nImages: 1',
-  stderr: '',
-} satisfies ToolResultContent;
-
-const officeDocumentErrorResult = {
-  kind: 'office_document',
-  ok: false,
-  operation: 'replace-text',
-  path: 'docs/review-notes.docx',
-  args: ['replace-text', 'docs/review-notes.docx', '--selector', 'missing-heading'],
-  stdout: '',
-  stderr: 'selector "missing-heading" matched no document nodes',
-  truncated: true,
-  reason: 'invalid_selector',
-  message: 'The requested selector was not found.',
 } satisfies ToolResultContent;
 
 const liveOutputChunks: ToolOutputChunk[] = [
@@ -412,29 +389,6 @@ export const subagentAndExploreItems = [
   }),
 ] satisfies ToolActivityItem[];
 
-export const officeDocumentItems = [
-  toolItem({
-    toolUseId: 'office-success',
-    toolName: 'office_document',
-    displayName: 'Inspect document',
-    intent: 'Inspect a Word document without opening the desktop app.',
-    status: 'completed',
-    args: { operation: officeDocumentResult.operation, path: officeDocumentResult.path },
-    result: officeDocumentResult,
-    durationMs: 1_640,
-  }),
-  toolItem({
-    toolUseId: 'office-error',
-    toolName: 'office_document',
-    displayName: 'Replace document text',
-    intent: 'Show a failed Office operation with diagnostics.',
-    status: 'errored',
-    args: { operation: officeDocumentErrorResult.operation, path: officeDocumentErrorResult.path },
-    result: officeDocumentErrorResult,
-    durationMs: 2_940,
-  }),
-] satisfies ToolActivityItem[];
-
 export const errorsAndPermissionDeniedItems = [
   toolItem({
     toolUseId: 'terminal-error',
@@ -465,6 +419,6 @@ export const denseMixedResultItems = [
   fileDiffAndWebSearchItems[1],
   subagentAndExploreItems[0],
   subagentAndExploreItems[2],
-  officeDocumentItems[0],
+  fileDiffAndWebSearchItems[2],
   errorsAndPermissionDeniedItems[0],
 ] satisfies ToolActivityItem[];

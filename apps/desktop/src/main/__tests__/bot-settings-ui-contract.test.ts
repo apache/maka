@@ -59,7 +59,7 @@ describe('Bot settings UI contract', () => {
     assert.match(page, /<BotBrandMark[\s\S]*provider=\{props\.provider\}/, 'Bot settings must pass provider directly to the local brand logo renderer');
     assert.match(page, /<Item\b/, 'Remote access rows must use the shared Item primitive');
     assert.match(botBrand, /export const BOT_BRAND:/, 'Shared bot brand metadata must stay exported from @maka/ui');
-    for (const provider of ['telegram', 'feishu', 'wecom', 'wechat', 'discord', 'dingtalk', 'qq', 'slack', 'whatsapp']) {
+    for (const provider of ['telegram', 'feishu', 'wecom', 'wechat', 'discord', 'dingtalk', 'qq', 'slack']) {
       assert.match(botBrand, new RegExp(`${provider}:\\s*\\{[\\s\\S]*?configDocUrl:`), `${provider} needs a visible configuration-document link target`);
     }
     assert.match(page, /function BotBrandLogo\b/, 'Bot settings must use the shared brand-logo component');
@@ -366,9 +366,7 @@ describe('Bot settings UI contract', () => {
     assert.match(settings, /setWechatQrOpen\(true\)/, 'Scan-login button must open the QR modal');
     assert.match(settings, /async function disconnectLinkedSession\(\)/, 'Saved QR session credentials must have a visible disconnect path');
     assert.match(settings, /detailCopy\.disconnectWechat/, 'WeChat action stack must expose the localized disconnect label after login');
-    assert.match(settings, /detailCopy\.disconnectWhatsapp/, 'WhatsApp action stack must expose a localized unlink label after pairing');
     assert.match(settings, /token:\s*''[\s\S]*connected:\s*false[\s\S]*readiness:\s*'scaffolded'/, 'Disconnect must clear saved scan-login credentials and readiness');
-    assert.match(settings, /sessionConfigured:\s*false[\s\S]*readiness:\s*'scaffolded'/, 'WhatsApp unlink must clear the local-session marker and readiness');
     assert.match(settings, /const saved = await updateChannelFor\([\s\S]*token:\s*''[\s\S]*if \(!saved\) return;[\s\S]*toast\.success\(/, 'Disconnect must not report success if clearing saved credentials fails');
     assert.doesNotMatch(settings, /扫码登录由本机 wechat-bridge 处理/, 'Scan login must not be a toast-only handoff');
     assert.match(styles, /\.settingsWechatQrModal\b/, 'QR modal styles must be present');

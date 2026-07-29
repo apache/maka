@@ -1121,7 +1121,6 @@ export {
   normalizeWechatBridgeUrl,
   normalizeWechatIlinkBaseUrl,
   proxiedFetch,
-  startWhatsAppQrLogin,
   testBotChannel,
   testWechatBridge,
   testWechatIlinkCredentials,
@@ -1134,8 +1133,6 @@ export type {
   BotPlatform,
   BotStatus,
   BotTestResult,
-  WhatsAppQrLogin,
-  WhatsAppQrLoginPollResult,
   WechatBridgeQrCodeResult,
   SendCapable,
 } from './bots/index.js';

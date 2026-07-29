@@ -11,7 +11,6 @@ import type { createTelemetryRepo } from '@maka/storage';
 import { buildCapabilitySnapshotCollection, buildPermissionSnapshot } from './capability-snapshot.js';
 import { openSystemPermissionPane, requestPermissionAccess } from './permissions-actions.js';
 import { permissionSnapshotE2eFixture } from './permission-snapshot-e2e-fixture.js';
-import { probeOfficeCli } from './officecli-probe.js';
 
 /**
  * #1361: the `settings-permissions` e2e fixture pins a typed OS-permission
@@ -49,12 +48,10 @@ export function registerPermissionsIpc(deps: PermissionsIpcDeps): void {
   ipcMain.handle('capabilities:getSnapshot', async () => {
     const permissions = resolvePermissionSnapshot();
     const settings = await settingsStore.get();
-    const officeCliProbe = await probeOfficeCli({ now: permissions.checkedAt });
     return buildCapabilitySnapshotCollection({
       settings,
       permissions,
       botStatuses: botRegistry.allStatuses(),
-      officeCliProbe,
       computerUse: getComputerUseCapabilityInput(),
       now: permissions.checkedAt,
     });
@@ -63,12 +60,10 @@ export function registerPermissionsIpc(deps: PermissionsIpcDeps): void {
     const now = Date.now();
     const permissions = resolvePermissionSnapshot(now);
     const settings = await settingsStore.get();
-    const officeCliProbe = await probeOfficeCli({ now });
     const capabilitySnapshot = buildCapabilitySnapshotCollection({
       settings,
       permissions,
       botStatuses: botRegistry.allStatuses(),
-      officeCliProbe,
       computerUse: getComputerUseCapabilityInput(),
       now,
     });

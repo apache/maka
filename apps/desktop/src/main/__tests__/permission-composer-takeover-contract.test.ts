@@ -221,11 +221,8 @@ describe('permission composer takeover', () => {
     assert.match(summary, /case 'Edit':[\s\S]*?countTextLines\(oldString\)[\s\S]*?copy\.editLineCount\(oldLines, newLines\)/);
     assert.doesNotMatch(summary, /即将修改文件/);
     assert.doesNotMatch(summary, /即将写入文件/);
-    assert.doesNotMatch(summary, /即将编辑 Office 文档/);
-    assert.doesNotMatch(summary, /case 'OfficeDocumentEdit':[\s\S]*?操作 <strong>/);
     assert.match(summary, /case 'WebFetch':[\s\S]*?args\.url[\s\S]*?maka-permission-path/);
     assert.match(summary, /default:[\s\S]*?request\.toolName[\s\S]*?maka-permission-line/);
-    assert.match(details, /case 'OfficeDocumentEdit':[\s\S]*?operation[\s\S]*?target[\s\S]*?propEntries/);
     assert.doesNotMatch(summary, /maka-permission-diff/, 'diffs do not belong in the compact summary');
     assert.match(details, /maka-permission-diff/, 'diffs remain inspectable in expanded details');
     assert.doesNotMatch(details, /maka-permission-diff-tag/, 'expanded edits use one unified diff instead of stacked labeled cards');

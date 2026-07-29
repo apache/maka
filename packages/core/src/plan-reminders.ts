@@ -677,8 +677,6 @@ function botProviderLabel(provider: BotProvider): string {
       return 'QQ';
     case 'slack':
       return 'Slack';
-    case 'whatsapp':
-      return 'WhatsApp';
   }
 }
 

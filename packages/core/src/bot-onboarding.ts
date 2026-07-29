@@ -6,7 +6,6 @@ export const BOT_ONBOARDING_PROVIDERS = [
   'wecom',
   'wechat',
   'qq',
-  'whatsapp',
 ] as const satisfies ReadonlyArray<BotProvider>;
 
 export type BotOnboardingProvider = (typeof BOT_ONBOARDING_PROVIDERS)[number];

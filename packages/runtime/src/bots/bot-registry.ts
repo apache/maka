@@ -1,5 +1,4 @@
 import { EventEmitter } from 'node:events';
-import { join } from 'node:path';
 import {
   hasBotChannelCredentials,
   type BotChannelSettings,
@@ -24,13 +23,10 @@ import type {
 } from './types.js';
 import { WechatBridge } from './wechat-bridge.js';
 import { WeComBotBridge } from './wecom-bridge.js';
-import { WhatsAppBotBridge } from './whatsapp-bridge.js';
 
 export interface BotRegistryDeps {
   onIncomingMessage: (message: BotIncomingMessage) => void;
   onStatusChange: (status: BotStatus) => void;
-  /** Main-owned local directory for channel session state such as WhatsApp. */
-  botDataDir?: string;
 }
 
 export class BotRegistry extends EventEmitter {
@@ -164,14 +160,7 @@ export class BotRegistry extends EventEmitter {
                   ? new QQBotBridge(platform, settings)
                   : platform === 'slack'
                     ? new SlackBotBridge(settings)
-                    : platform === 'whatsapp'
-                      ? new WhatsAppBotBridge(
-                          settings,
-                          this.deps.botDataDir
-                            ? join(this.deps.botDataDir, 'whatsapp', 'default')
-                            : undefined,
-                        )
-                      : new SimpleBotBridge(platform, settings);
+                    : new SimpleBotBridge(platform, settings);
     this.wire(bridge);
     this.bridges.set(platform, bridge);
     await bridge
@@ -197,8 +186,7 @@ function isImplemented(platform: BotPlatform): boolean {
     platform === 'discord' ||
     platform === 'dingtalk' ||
     platform === 'qq' ||
-    platform === 'slack' ||
-    platform === 'whatsapp'
+    platform === 'slack'
   );
 }
 

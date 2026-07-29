@@ -8,8 +8,7 @@ import { resolveProjectGitInfo } from '@maka/runtime';
  * the build-time module to a `git` binary). Branch switching needs the
  * real git CLI to honor worktrees, hooks, and conflict semantics.
  *
- * The execFile shape mirrors officecli-probe.ts: an injectable
- * `execFileImpl` lets unit tests fake the child process.
+ * The injectable `execFileImpl` lets unit tests fake the child process.
  */
 
 export type GitBranchReason = 'missing-git' | 'not-a-repo' | 'failed' | 'timeout' | 'dirty';

@@ -17,24 +17,24 @@ export default {
       to: 'workers/filesystem-worker.js',
     },
     {
-      from: 'resources/tools/officecli',
-      to: 'tools/officecli',
-    },
-    {
-      from: '../../LICENSE',
-      to: 'licenses/officecli/LICENSE',
-    },
-    {
-      from: 'resources/licenses/officecli/ATTRIBUTION.md',
-      to: 'licenses/officecli/ATTRIBUTION.md',
-    },
-    {
       from: '../../LICENSE',
       to: 'licenses/maka/LICENSE',
     },
     {
       from: '../../NOTICE',
       to: 'licenses/maka/NOTICE',
+    },
+    {
+      from: '../../node_modules/electron/dist/LICENSE',
+      to: 'licenses/electron/LICENSE',
+    },
+    {
+      from: '../../node_modules/electron/dist/LICENSES.chromium.html',
+      to: 'licenses/electron/LICENSES.chromium.html',
+    },
+    {
+      from: 'resources/licenses/npm/THIRD_PARTY_NOTICES.txt',
+      to: 'licenses/npm/THIRD_PARTY_NOTICES.txt',
     },
     {
       from: 'src/renderer/public/THIRD_PARTY_LICENSES.txt',
@@ -53,6 +53,22 @@ export default {
       to: 'licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt',
     },
     {
+      from: 'resources/licenses/renderer/TDESIGN_ICONS_LICENSE.txt',
+      to: 'licenses/renderer/TDESIGN_ICONS_LICENSE.txt',
+    },
+    {
+      from: 'resources/licenses/renderer/ALLOGO_LICENSE.txt',
+      to: 'licenses/renderer/ALLOGO_LICENSE.txt',
+    },
+    {
+      from: 'resources/licenses/renderer/SEMI_ICONS_LICENSE.txt',
+      to: 'licenses/renderer/SEMI_ICONS_LICENSE.txt',
+    },
+    {
+      from: '../../LICENSE',
+      to: 'licenses/renderer/MINGCUTE_APACHE_LICENSE.txt',
+    },
+    {
       from: 'node_modules/simple-icons/LICENSE.md',
       to: 'licenses/renderer/SIMPLE_ICONS_LICENSE.md',
     },
@@ -69,7 +85,6 @@ export default {
     notarize: true,
     entitlements: 'build/entitlements.mac.plist',
     entitlementsInherit: 'build/entitlements.mac.inherit.plist',
-    binaries: ['Contents/Resources/tools/officecli'],
     extendInfo: {
       NSMicrophoneUsageDescription:
         'Maka uses the microphone only when you test or use voice input.',

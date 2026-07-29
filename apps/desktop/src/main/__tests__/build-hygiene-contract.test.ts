@@ -29,8 +29,8 @@ describe('build-hygiene contract (PR-BUILD-HYGIENE-0)', () => {
     );
     assert.match(
       scripts['check:release']!,
-      /check:officecli-bundle/,
-      '`check:release` must continue to gate on OfficeCLI bundle integrity.',
+      /check:third-party-notices/,
+      '`check:release` must continue to gate on third-party notice integrity.',
     );
     assert.match(
       scripts['check:release']!,

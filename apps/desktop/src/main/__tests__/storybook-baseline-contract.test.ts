@@ -258,7 +258,6 @@ describe('Storybook baseline contract', () => {
       'TerminalAndLiveOutput',
       'FileDiffAndWebSearch',
       'SubagentAndExplore',
-      'OfficeDocument',
       'ErrorsAndPermissionDenied',
       'CopyFeedback',
       'DenseMixedResults',
@@ -273,7 +272,6 @@ describe('Storybook baseline contract', () => {
       'web_search_error',
       'subagent',
       'explore_agent',
-      'office_document',
     ]) {
       assert.match(fixtures, new RegExp(`kind:\\s*'${requiredKind}'`), `${requiredKind} fixture must exist`);
     }
@@ -305,7 +303,7 @@ describe('Storybook baseline contract', () => {
     assert.match(story, /OMITTED_RUNTIME_EXPORTS/);
     assert.match(story, /BotBrandLogo/);
     assert.match(story, /BOT_BRAND/);
-    for (const provider of ['telegram', 'feishu', 'wecom', 'wechat', 'discord', 'dingtalk', 'qq', 'slack', 'whatsapp']) {
+    for (const provider of ['telegram', 'feishu', 'wecom', 'wechat', 'discord', 'dingtalk', 'qq', 'slack']) {
       assert.match(story, new RegExp(`['"]${provider}['"]`), `${provider} must appear in the bot brand icon story`);
     }
   });

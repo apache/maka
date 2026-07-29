@@ -139,7 +139,6 @@ export interface ConversationCopy {
     additionalPermission: string;
     sandboxEscalation: string;
     editFile: string;
-    editOffice: string;
     disclosure: { changes: string; content: string; input: string; fullArguments: string; details: string };
     unsupportedValue: string;
     browser: { navigate: (url: string) => string; click: (ref: string) => string; type: (ref: string) => string; snapshot: string; extract: (selector: string) => string; wait: string; generic: string; urlFallback: string };
@@ -160,8 +159,6 @@ export interface ConversationCopy {
     targetSize: (cols: number, rows: number) => string;
     byteLineCount: (bytes: number, lines: number) => string;
     editLineCount: (removed: number, added: number) => string;
-    officeField: { operation: string; target: string; element: string; position: string };
-    hiddenProperties: (count: number) => string;
   };
   questions: {
     other: string;
@@ -378,10 +375,10 @@ const CONVERSATION_COPY = {
       rememberBrowser: '勾选后，本轮接下来的浏览、读取页面、导航、点击和输入都不再逐次询问。你会全程看到操作页面并可随时停止；本轮结束后授权失效。',
       rememberScoped: '只会记住上方显示的目标、动作和授权类别。读取授权不会扩展为截图或输入授权；目标或动作类别变化时仍会再次询问。',
       rememberTurn: '本轮记住', actionsAriaLabel: '权限操作', stop: '停止', stopping: '停止中…', deny: '拒绝操作', submitting: '正在提交…', allowOnce: '允许这一次', allow: '允许操作',
-      additionalPermission: '允许本次额外权限？', sandboxEscalation: '允许本次在 sandbox 外执行？', editFile: '允许修改文件？', editOffice: '允许编辑 Office 文档？',
+      additionalPermission: '允许本次额外权限？', sandboxEscalation: '允许本次在 sandbox 外执行？', editFile: '允许修改文件？',
       disclosure: { changes: '查看变更', content: '查看内容', input: '查看输入', fullArguments: '完整参数', details: '查看详情' }, unsupportedValue: '不支持的属性值',
       browser: { navigate: (url) => `即将在浏览器中打开 ${url}`, click: (ref) => `即将在当前页面点击元素 ${ref}`.trim(), type: (ref) => `即将在当前页面输入文本${ref ? ` 到元素 ${ref}` : ''}`, snapshot: '即将读取当前页面的可交互元素列表', extract: (selector) => `即将读取当前页面内容${selector ? `（${selector}）` : ''}`, wait: '即将等待当前页面满足某个条件', generic: '即将操作当前浏览器页面', urlFallback: '一个网址' },
-      workingDirectory: '工作目录', readWrite: '读写', readOnly: '只读', exactPath: '仅此路径', directoryTree: '目录及子目录', temporaryNetwork: '本次调用将临时允许网络访问。', outsideWorkspace: '包含工作区外路径。', protectedMetadata: '包含受保护的 Git/Agent 元数据。', outsideSandbox: '本次命令将不经过平台 sandbox，可访问工作区外文件、网络和受保护元数据。', target: '目标', currentApp: '当前应用', inDirectory: (cwd) => `在 ${cwd}`, terminalInteraction: '即将与后台终端交互', fullInputBytes: (bytes) => `完整输入共 ${bytes} 字节`, targetSize: (cols, rows) => `目标尺寸 ${cols}x${rows}`, byteLineCount: (bytes, lines) => `${bytes} 字节 · ${lines} 行`, editLineCount: (removed, added) => `删除 ${removed} 行 · 写入 ${added} 行`, officeField: { operation: '操作', target: '目标', element: '元素', position: '位置' }, hiddenProperties: (count) => `另有 ${count} 个属性`,
+      workingDirectory: '工作目录', readWrite: '读写', readOnly: '只读', exactPath: '仅此路径', directoryTree: '目录及子目录', temporaryNetwork: '本次调用将临时允许网络访问。', outsideWorkspace: '包含工作区外路径。', protectedMetadata: '包含受保护的 Git/Agent 元数据。', outsideSandbox: '本次命令将不经过平台 sandbox，可访问工作区外文件、网络和受保护元数据。', target: '目标', currentApp: '当前应用', inDirectory: (cwd) => `在 ${cwd}`, terminalInteraction: '即将与后台终端交互', fullInputBytes: (bytes) => `完整输入共 ${bytes} 字节`, targetSize: (cols, rows) => `目标尺寸 ${cols}x${rows}`, byteLineCount: (bytes, lines) => `${bytes} 字节 · ${lines} 行`, editLineCount: (removed, added) => `删除 ${removed} 行 · 写入 ${added} 行`,
     },
     questions: { other: '其他', otherDescription: '输入一个不同的答案。', otherAriaLabel: '其他答案', otherPlaceholder: '输入你的答案', stop: '停止', stopping: '停止中…', previous: '上一题', submitting: '正在提交…', submit: '提交答案', next: '下一题' },
     mentions: { noFiles: '未找到文件', noSkills: '暂无技能', filesAriaLabel: '工作区文件', skillsAriaLabel: '技能', loading: '加载中…' },
@@ -516,10 +513,10 @@ const CONVERSATION_COPY = {
       rememberBrowser: 'For the rest of this turn, do not ask again for browsing, page reading, navigation, clicking, or typing. You can watch the page and stop at any time; access expires when the turn ends.',
       rememberScoped: 'Remember only the target, action, and permission category shown above. Read access does not expand to screenshots or typing; a different target or action category still requires confirmation.',
       rememberTurn: 'Remember for this turn', actionsAriaLabel: 'Permission actions', stop: 'Stop', stopping: 'Stopping…', deny: 'Deny', submitting: 'Submitting…', allowOnce: 'Allow once', allow: 'Allow',
-      additionalPermission: 'Allow these additional permissions?', sandboxEscalation: 'Allow this command to run outside the sandbox?', editFile: 'Allow file changes?', editOffice: 'Allow editing an Office document?',
+      additionalPermission: 'Allow these additional permissions?', sandboxEscalation: 'Allow this command to run outside the sandbox?', editFile: 'Allow file changes?',
       disclosure: { changes: 'View changes', content: 'View content', input: 'View input', fullArguments: 'Full arguments', details: 'View details' }, unsupportedValue: 'Unsupported property value',
       browser: { navigate: (url) => `About to open ${url} in the browser`, click: (ref) => `About to click element ${ref} on the current page`.trim(), type: (ref) => `About to type text${ref ? ` into element ${ref}` : ''} on the current page`, snapshot: 'About to read the interactive elements on the current page', extract: (selector) => `About to read the current page${selector ? ` (${selector})` : ''}`, wait: 'About to wait for a condition on the current page', generic: 'About to control the current browser page', urlFallback: 'a URL' },
-      workingDirectory: 'Working directory', readWrite: 'Read and write', readOnly: 'Read only', exactPath: 'This path only', directoryTree: 'Directory and descendants', temporaryNetwork: 'This call will temporarily allow network access.', outsideWorkspace: 'Includes paths outside the workspace.', protectedMetadata: 'Includes protected Git/agent metadata.', outsideSandbox: 'This command will run outside the platform sandbox and can access files outside the workspace, the network, and protected metadata.', target: 'Target', currentApp: 'Current app', inDirectory: (cwd) => `In ${cwd}`, terminalInteraction: 'About to interact with a background terminal', fullInputBytes: (bytes) => `Full input is ${bytes} bytes`, targetSize: (cols, rows) => `Target size ${cols}x${rows}`, byteLineCount: (bytes, lines) => `${bytes} bytes · ${lines} ${lines === 1 ? 'line' : 'lines'}`, editLineCount: (removed, added) => `Remove ${removed} ${removed === 1 ? 'line' : 'lines'} · Write ${added} ${added === 1 ? 'line' : 'lines'}`, officeField: { operation: 'Operation', target: 'Target', element: 'Element', position: 'Position' }, hiddenProperties: (count) => `${count} more ${count === 1 ? 'property' : 'properties'}`,
+      workingDirectory: 'Working directory', readWrite: 'Read and write', readOnly: 'Read only', exactPath: 'This path only', directoryTree: 'Directory and descendants', temporaryNetwork: 'This call will temporarily allow network access.', outsideWorkspace: 'Includes paths outside the workspace.', protectedMetadata: 'Includes protected Git/agent metadata.', outsideSandbox: 'This command will run outside the platform sandbox and can access files outside the workspace, the network, and protected metadata.', target: 'Target', currentApp: 'Current app', inDirectory: (cwd) => `In ${cwd}`, terminalInteraction: 'About to interact with a background terminal', fullInputBytes: (bytes) => `Full input is ${bytes} bytes`, targetSize: (cols, rows) => `Target size ${cols}x${rows}`, byteLineCount: (bytes, lines) => `${bytes} bytes · ${lines} ${lines === 1 ? 'line' : 'lines'}`, editLineCount: (removed, added) => `Remove ${removed} ${removed === 1 ? 'line' : 'lines'} · Write ${added} ${added === 1 ? 'line' : 'lines'}`,
     },
     questions: { other: 'Other', otherDescription: 'Enter a different answer.', otherAriaLabel: 'Other answer', otherPlaceholder: 'Enter your answer', stop: 'Stop', stopping: 'Stopping…', previous: 'Previous', submitting: 'Submitting…', submit: 'Submit answers', next: 'Next' },
     mentions: { noFiles: 'No files found', noSkills: 'No skills available', filesAriaLabel: 'Workspace files', skillsAriaLabel: 'Skills', loading: 'Loading…' },

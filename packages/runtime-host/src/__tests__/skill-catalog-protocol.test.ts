@@ -199,9 +199,9 @@ describe('Runtime Host Skill catalog protocol', () => {
       page('bundled', [
         {
           kind: 'bundled',
-          id: 'officecli-docx',
-          name: 'Documents',
-          description: 'Work with documents',
+          id: 'deep-research',
+          name: 'Deep research',
+          description: 'Research a topic',
           category: 'Productivity',
           declaredTools: ['Read'],
           metadataTruncated: false,
@@ -257,7 +257,7 @@ describe('Runtime Host Skill catalog protocol', () => {
     assertInvalidResponse('skill.catalog.query', page('bundled', [pages[2].items[0]]));
   });
 
-  test('encodes actual Office catalog metadata through the Host bundled output codec', async () => {
+  test('encodes actual bundled catalog metadata through the Host output codec', async () => {
     const base = await mkdtemp(join(tmpdir(), 'maka-skill-catalog-protocol-'));
     const dataRoot = join(base, 'data');
     const projectRoot = join(base, 'project');
@@ -282,12 +282,15 @@ describe('Runtime Host Skill catalog protocol', () => {
       assert.equal(result.kind, 'page');
       if (result.kind !== 'page') return;
 
-      const officeItems = result.items.filter(
-        (item): item is SkillCatalogBundledItem =>
-          item.kind === 'bundled' && OFFICE_IDS.has(item.id),
+      const bundledItems = result.items.filter(
+        (item): item is SkillCatalogBundledItem => item.kind === 'bundled',
       );
-      assert.equal(officeItems.length, OFFICE_IDS.size);
-      assert.deepEqual(new Set(officeItems.map((item) => item.category)), new Set(['效率工具']));
+      assert.ok(bundledItems.length > 0);
+      assert.ok(bundledItems.some((item) => item.id === 'deep-research'));
+      assert.equal(
+        bundledItems.every((item) => item.category.length > 0),
+        true,
+      );
 
       const frame = response('skill.catalog.query', result);
       assert.deepEqual(decodeHostFrame(frame), frame);
@@ -354,7 +357,7 @@ describe('Runtime Host Skill catalog protocol', () => {
     const maximumLengthId = `s${'a'.repeat(80)}`;
     const mutations: readonly SkillCatalogMutation[] = [
       { kind: 'create_starter' },
-      { kind: 'install', sourceType: 'bundled', sourceId: 'officecli-docx' },
+      { kind: 'install', sourceType: 'bundled', sourceId: 'deep-research' },
       { kind: 'install', sourceType: 'managed', sourceId: 'research-brief' },
       { kind: 'install', sourceType: 'managed', sourceId: maximumLengthId },
       {
@@ -528,8 +531,6 @@ describe('Runtime Host Skill catalog protocol', () => {
     }
   });
 });
-
-const OFFICE_IDS = new Set(['officecli-docx', 'officecli-pptx', 'officecli-xlsx']);
 
 function governanceItem(
   overrides: Partial<SkillCatalogGovernanceItem> = {},

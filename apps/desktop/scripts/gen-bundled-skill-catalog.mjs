@@ -28,23 +28,7 @@ const outFile = join(
 );
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/;
-const OFFICE_SKILL_IDS = new Set(['officecli-docx', 'officecli-xlsx', 'officecli-pptx']);
 const LEGACY_CONTENT_SHA256_BY_ID = {
-  'officecli-docx': [
-    'sha256:63f1690d1e9dea0a4e574bc3644222279fcfee336371d842c9669fbc91e89821',
-    'sha256:c0bcc16adcaa10329b4f3bbc7679f9e1c7bf99368af7fcbec8e870f5c0c5c039',
-    'sha256:ffb84262fc75e3cfc2dd952bb736af335b304627ee79501cd7254cfff223bc83',
-  ],
-  'officecli-xlsx': [
-    'sha256:dca3471c36da0628b6764711bde714958fcced13008cd8dfd4d548a5f02eda82',
-    'sha256:cc13a4c0f17bb73d1fee6a0797cd4befa34ef1d8abcb7d6ea57bce26f5abd218',
-    'sha256:d0f511370c1e98b9c974fd8e5d9d3319c896cc2ac7315653ed7f76c7ebf1bfa0',
-  ],
-  'officecli-pptx': [
-    'sha256:21a933a459c921c3d7b14c7fc1cad59c7f72b7752903cd7d4e9083a1c835d302',
-    'sha256:b9845739f855250fe55fb44efc4019856d566c7f8b299741df5c5c0fd70d6e5c',
-    'sha256:0e4f5a20bffd0d7598fbdfb8c9dd069110e6baa827554c4fdf26820afff25182',
-  ],
   'drafter-diagram': [
     'sha256:4b93ebada2f061f1dfc3d99a21bc93a9d3d640f326af6230d15813bac6a5efcf',
   ],
@@ -64,7 +48,7 @@ export function readBundledSkillSources(dir = sourcesDir) {
     return {
       id,
       body,
-      sourceName: OFFICE_SKILL_IDS.has(id) ? 'maka-officecli' : 'maka-bundled',
+      sourceName: 'maka-bundled',
       sourceVersion: '1',
       contentSha256: `sha256:${createHash('sha256').update(body).digest('hex')}`,
       legacyContentSha256: LEGACY_CONTENT_SHA256_BY_ID[id] ?? [],

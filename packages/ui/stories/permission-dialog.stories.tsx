@@ -375,34 +375,6 @@ export const ComputerUse: Story = {
   ),
 };
 
-// Real path: chat → the agent edits an Office document → file_write with a structured
-// operation rather than a text diff. `set` on an existing paragraph, because the tool's
-// four operations are create/add/set/remove (office-document-tool.ts) — this fixture
-// said `replaceText` and shipped a prompt line the app cannot produce. `preToolUse`
-// does not catch that: it classifies the call, the tool's own Zod schema is what
-// rejects it, and it rejects before the permission engine ever runs. `elementType` and
-// `index` went with it; the schema documents both as `add`-only.
-export const OfficeDocumentEdit: Story = {
-  render: () => (
-    <ComposerSlotBackdrop>
-      <PermissionPromptStory
-        request={makeRequest({
-          requestId: 'req-office',
-          toolName: 'OfficeDocumentEdit',
-          categoryHint: 'file_write',
-          args: {
-            path: 'reports/Q3-roadmap.docx',
-            operation: 'set',
-            target: '/body/p[42]',
-            props: { text: 'Q3 目标：补齐 Storybook 表面覆盖。' },
-          },
-        })}
-        onRespond={noop}
-      />
-    </ComposerSlotBackdrop>
-  ),
-};
-
 // Real path: an unanswered prompt that has been sitting for a few minutes — the user
 // came back to the session after stepping away.
 export const StaleRequest: Story = {

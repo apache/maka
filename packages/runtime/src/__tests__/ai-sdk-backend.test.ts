@@ -11027,60 +11027,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       { status: 'success', toolCallId: 'tool-completed' },
     ]);
   });
-
-  test('maps aborted OfficeDocument results to aborted tool telemetry', async () => {
-    const events: SessionEvent[] = [];
-    const telemetry: Array<{ status: string; toolCallId?: string }> = [];
-    const backend = new AiSdkBackend({
-      sessionId: 'session-1',
-      header: header('ask'),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
-      modelFactory: () => ({}),
-      tools: [],
-      newId: idGenerator(),
-      now: () => 1,
-      recordToolInvocation: (record) => {
-        telemetry.push({ status: record.status, toolCallId: record.toolCallId });
-      },
-    });
-    const tool: MakaTool = {
-      name: 'OfficeDocument',
-      description: 'read office',
-      parameters: {},
-      permissionRequired: false,
-      impl: async () => ({
-        kind: 'office_document',
-        ok: false,
-        operation: 'view',
-        path: 'slides.pptx',
-        args: ['view', 'slides.pptx', 'outline'],
-        reason: 'officecli_aborted',
-        message: 'officecli 操作已取消。',
-      }),
-    };
-    const execute = runtimeExecute(backend, tool, 'turn-1', {
-      push: (event) => events.push(event),
-    });
-
-    await execute(
-      { path: 'slides.pptx', operation: 'view' },
-      {
-        toolCallId: 'tool-office-aborted',
-        abortSignal: new AbortController().signal,
-      },
-    );
-
-    assert.equal(
-      (events.find((event) => event.type === 'tool_result') as { isError?: boolean } | undefined)
-        ?.isError,
-      true,
-    );
-    assert.deepEqual(telemetry, [{ status: 'aborted', toolCallId: 'tool-office-aborted' }]);
-  });
 });
 
 describe('AiSdkBackend tool-call repair', () => {

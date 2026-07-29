@@ -76,11 +76,11 @@ describe('categorizeBash', () => {
     expect(categorizeBash('pwd')).toBe('shell_unsafe');
     expect(categorizeBash('grep -r foo .')).toBe('shell_unsafe');
     expect(categorizeBash('git status')).toBe('shell_unsafe');
-    expect(categorizeBash('officecli view deck.pptx outline')).toBe('shell_unsafe');
+    expect(categorizeBash('pandoc deck.pptx -t plain')).toBe('shell_unsafe');
     // The review's two P1 bypasses collapse into the same rule:
     expect(categorizeBash('echo (Set-Content .\\foo.txt hi)')).toBe('shell_unsafe');
     expect(categorizeBash('echo (New-Item .\\foo.txt)')).toBe('shell_unsafe');
-    expect(categorizeBash('officecli view deck.pptx html -o out.html')).toBe('shell_unsafe');
+    expect(categorizeBash('pandoc deck.pptx -o out.html')).toBe('shell_unsafe');
   });
 
   test('cd is NOT safe (excluded by design)', () => {
@@ -294,10 +294,8 @@ describe('categorizeBash', () => {
     expect(categorizeBash('npm install lodash')).toBe('shell_unsafe');
     expect(categorizeBash('curl https://example.com')).toBe('shell_unsafe');
     expect(categorizeBash('python script.py')).toBe('shell_unsafe');
-    expect(categorizeBash('officecli set deck.pptx "/slide[1]" --prop title=Hi')).toBe(
-      'shell_unsafe',
-    );
-    expect(categorizeBash('officecli close deck.pptx')).toBe('shell_unsafe');
+    expect(categorizeBash('python scripts/update-deck.py deck.pptx')).toBe('shell_unsafe');
+    expect(categorizeBash('custom-tool close deck.pptx')).toBe('shell_unsafe');
   });
 
   test('precedence: privileged > fs_destructive > git_destructive > safe', () => {
@@ -439,7 +437,7 @@ describe('preToolUse — execute mode', () => {
     for (const command of [
       'git status',
       'ls -la',
-      'officecli view deck.pptx html -o out.html',
+      'pandoc deck.pptx -o out.html',
       'echo (New-Item .\\foo.txt)',
     ]) {
       const r = evaluate('Bash', { command }, 'execute');

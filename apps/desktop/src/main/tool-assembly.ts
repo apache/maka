@@ -21,7 +21,6 @@ import { createAgentMailboxStore, createSettingsStore } from '@maka/storage';
 import { createComputerUseOverlayHook } from '@maka/computer-use';
 import { buildWebSearchAgentTool } from './web-search/agent-tool.js';
 import { buildRiveWorkflowTool } from './rive-workflow-tool.js';
-import { buildOfficeDocumentEditTool, buildOfficeDocumentTool } from './office-document-tool.js';
 import { buildExploreAgentTool } from './explore-agent-tool.js';
 import { buildBrowserTools } from './browser/browser-tools.js';
 import { createComputerUseHost } from './computer-use-host.js';
@@ -68,7 +67,7 @@ export interface DesktopToolAssemblyDeps {
 /**
  * Assemble the desktop process's tool surface (issue #37 economy split).
  * Pure move of main.ts's module-scope tool-assembly cluster: the sandbox /
- * filesystem worker, the deferred capability groups (Rive, Office, browser,
+ * filesystem worker, the deferred capability groups (Rive, browser,
  * computer-use, agent orchestration), the WebSearch tool, the builtin + skill
  * host surface, the deferred-group tool-availability config, and the child
  * agent tool surface. Declaration order inside the function preserves the
@@ -118,14 +117,13 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
       : {}),
   });
   // Unified tool availability (issue #37). Deferred capability groups (Rive,
-  // Office, browser, agent orchestration) are withheld from the
+  // Browser and agent orchestration tools are withheld from the
   // per-turn prompt and loaded on demand via `load_tools`, keeping their schemas
   // off the wire until needed. Everything else (ungrouped) stays always-on.
   // Kill-switch: set MAKA_DISABLE_DEFERRED_TOOLS to any value to turn economy off
   // and advertise every tool every turn (legacy behavior).
   const economyEnabled = !process.env.MAKA_DISABLE_DEFERRED_TOOLS;
   const riveTools: MakaTool[] = [buildRiveWorkflowTool()];
-  const officeTools: MakaTool[] = [buildOfficeDocumentTool(), buildOfficeDocumentEditTool()];
   // Embedded-browser observe→act tools. They drive the conversation's own
   // WebContentsView via the BrowserViewHost the desktop provides in registerIpc;
   // outside the app (no host) they report the browser as unavailable.
@@ -186,7 +184,6 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
   });
   const deferredTools: MakaTool[] = [
     ...riveTools,
-    ...officeTools,
     ...browserTools,
     ...computerUseTools,
     ...agentTools,
@@ -286,7 +283,6 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
 
   return {
     riveTools,
-    officeTools,
     browserTools,
     computerUse,
     computerUseOverlay,

@@ -5,8 +5,6 @@ import test from 'node:test';
 const repoRoot = new URL('../', import.meta.url);
 const desktopRoot = new URL('../apps/desktop/', import.meta.url);
 const desktopManifest = JSON.parse(await readFile(new URL('package.json', desktopRoot), 'utf8'));
-const bundledTools = JSON.parse(await readFile(new URL('bundled-tools.json', desktopRoot), 'utf8'));
-const officeCliVersion = bundledTools.officecli.version.replace(/^v/, '');
 const signingEnvironment = {
   CSC_LINK: 'base64-certificate',
   CSC_KEY_PASSWORD: 'password',
@@ -31,7 +29,7 @@ test('desktop packager has signed macOS arm64 install and update targets', async
   assert.equal(config.mac.notarize, true);
   assert.equal(config.mac.entitlements, 'build/entitlements.mac.plist');
   assert.equal(config.mac.entitlementsInherit, 'build/entitlements.mac.inherit.plist');
-  assert.deepEqual(config.mac.binaries, ['Contents/Resources/tools/officecli']);
+  assert.equal(config.mac.binaries, undefined);
   assert.deepEqual(config.dmg, { writeUpdateInfo: true });
   assert.deepEqual(config.publish, [
     {
@@ -63,32 +61,6 @@ test('renderer build inputs are not duplicated in the packaged Node runtime', as
   }
 });
 
-test('OfficeCLI arm64 release is anchored to a repository-pinned digest', () => {
-  assert.equal(
-    bundledTools.officecli.sha256['darwin-arm64'],
-    '3ede6c3457f050f2d06d95895d7a3391183911ad729c61df990d4e27c1067510',
-  );
-});
-
-test('OfficeCLI preparation rejects a mutually consistent upstream replacement', async () => {
-  const { assertOfficeCliChecksums } = await import(
-    new URL('prepare-officecli.mjs', import.meta.url)
-  );
-  const pinned = bundledTools.officecli.sha256['darwin-arm64'];
-  const replaced = 'a'.repeat(64);
-
-  assert.throws(
-    () =>
-      assertOfficeCliChecksums({
-        asset: bundledTools.officecli.assets['darwin-arm64'],
-        actual: replaced,
-        upstream: replaced,
-        pinned,
-      }),
-    /does not match repository-pinned checksum/,
-  );
-});
-
 test('desktop packager ships only the release runtime resources', async () => {
   const { default: config } = await import(new URL('electron-builder.config.mjs', desktopRoot));
 
@@ -102,24 +74,24 @@ test('desktop packager ships only the release runtime resources', async () => {
       to: 'workers/filesystem-worker.js',
     },
     {
-      from: 'resources/tools/officecli',
-      to: 'tools/officecli',
-    },
-    {
-      from: '../../LICENSE',
-      to: 'licenses/officecli/LICENSE',
-    },
-    {
-      from: 'resources/licenses/officecli/ATTRIBUTION.md',
-      to: 'licenses/officecli/ATTRIBUTION.md',
-    },
-    {
       from: '../../LICENSE',
       to: 'licenses/maka/LICENSE',
     },
     {
       from: '../../NOTICE',
       to: 'licenses/maka/NOTICE',
+    },
+    {
+      from: '../../node_modules/electron/dist/LICENSE',
+      to: 'licenses/electron/LICENSE',
+    },
+    {
+      from: '../../node_modules/electron/dist/LICENSES.chromium.html',
+      to: 'licenses/electron/LICENSES.chromium.html',
+    },
+    {
+      from: 'resources/licenses/npm/THIRD_PARTY_NOTICES.txt',
+      to: 'licenses/npm/THIRD_PARTY_NOTICES.txt',
     },
     {
       from: 'src/renderer/public/THIRD_PARTY_LICENSES.txt',
@@ -136,6 +108,22 @@ test('desktop packager ships only the release runtime resources', async () => {
     {
       from: 'resources/licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt',
       to: 'licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt',
+    },
+    {
+      from: 'resources/licenses/renderer/TDESIGN_ICONS_LICENSE.txt',
+      to: 'licenses/renderer/TDESIGN_ICONS_LICENSE.txt',
+    },
+    {
+      from: 'resources/licenses/renderer/ALLOGO_LICENSE.txt',
+      to: 'licenses/renderer/ALLOGO_LICENSE.txt',
+    },
+    {
+      from: 'resources/licenses/renderer/SEMI_ICONS_LICENSE.txt',
+      to: 'licenses/renderer/SEMI_ICONS_LICENSE.txt',
+    },
+    {
+      from: '../../LICENSE',
+      to: 'licenses/renderer/MINGCUTE_APACHE_LICENSE.txt',
     },
     {
       from: 'node_modules/simple-icons/LICENSE.md',
@@ -171,7 +159,6 @@ test('release package script runs the single arm64 pipeline in order', async () 
 
   assert.deepEqual(calls, [
     ['npm', ['run', 'clean']],
-    ['npm', ['run', 'prepare:officecli', '--', '--platform', 'darwin', '--arch', 'arm64']],
     ['npm', ['run', 'build']],
     ['npm', ['run', 'check:release']],
     ['npm', ['--workspace', '@maka/desktop', 'run', 'package:macos-arm64']],
@@ -238,9 +225,6 @@ test('packaged app verification proves identity, notarization, resources, PTY, a
       if (command === 'lipo') {
         return { stdout: 'arm64\n', stderr: '' };
       }
-      if (args[0] === '--version') {
-        return { stdout: `officecli ${officeCliVersion}\n`, stderr: '' };
-      }
       return { stdout: '', stderr: '' };
     },
     requirePath: async (path) => {
@@ -297,14 +281,20 @@ test('packaged app verification proves identity, notarization, resources, PTY, a
     true,
   );
   for (const licensePath of [
-    '/Resources/licenses/officecli/ATTRIBUTION.md',
     '/Resources/licenses/maka/LICENSE',
     '/Resources/licenses/maka/NOTICE',
+    '/Resources/licenses/electron/LICENSE',
+    '/Resources/licenses/electron/LICENSES.chromium.html',
+    '/Resources/licenses/npm/THIRD_PARTY_NOTICES.txt',
     '/Resources/licenses/renderer/THIRD_PARTY_LICENSES.txt',
     '/Resources/licenses/renderer/GEIST_LICENSE.txt',
     '/Resources/licenses/renderer/GEIST_MONO_LICENSE.txt',
     '/Resources/licenses/renderer/ANT_DESIGN_ICONS_LICENSE.txt',
     '/Resources/licenses/renderer/SIMPLE_ICONS_LICENSE.md',
+    '/Resources/licenses/renderer/TDESIGN_ICONS_LICENSE.txt',
+    '/Resources/licenses/renderer/ALLOGO_LICENSE.txt',
+    '/Resources/licenses/renderer/SEMI_ICONS_LICENSE.txt',
+    '/Resources/licenses/renderer/MINGCUTE_APACHE_LICENSE.txt',
   ]) {
     assert.equal(
       requiredPaths.some((path) => path.endsWith(licensePath)),
@@ -314,6 +304,10 @@ test('packaged app verification proves identity, notarization, resources, PTY, a
   }
   assert.equal(
     forbiddenPaths.some((path) => path.endsWith('/Resources/bin/cua-driver')),
+    true,
+  );
+  assert.equal(
+    forbiddenPaths.some((path) => path.endsWith('/Resources/tools/officecli')),
     true,
   );
   assert.equal(rendererLaunches.length, 1);
@@ -344,7 +338,7 @@ test('packaged app verification rejects a non-arm64 executable', async () => {
         if (command === 'lipo') {
           return { stdout: 'x86_64\n', stderr: '' };
         }
-        return { stdout: `officecli ${officeCliVersion}\n`, stderr: '' };
+        return { stdout: '', stderr: '' };
       },
       requirePath: async () => {},
       forbidPath: async () => {},
@@ -422,17 +416,19 @@ test('one manual workflow packages, verifies, then creates one draft release fro
   assert.match(workflow, /\$\{\{ steps\.release\.outputs\.update_yml \}\}/);
 });
 
-test('the distributable includes OfficeCLI Apache-2.0 attribution', async () => {
-  const license = await readFile(new URL('LICENSE', repoRoot), 'utf8');
-  const attribution = await readFile(
-    new URL('resources/licenses/officecli/ATTRIBUTION.md', desktopRoot),
+test('the distributable includes governed dependency and asset notices', async () => {
+  const npmNotices = await readFile(
+    new URL('resources/licenses/npm/THIRD_PARTY_NOTICES.txt', desktopRoot),
     'utf8',
   );
-  assert.match(license, /Apache License\s+Version 2\.0, January 2004/);
-  assert.match(license, /END OF TERMS AND CONDITIONS/);
-  assert.match(attribution, new RegExp(`OfficeCLI ${bundledTools.officecli.version}`));
-  assert.match(attribution, /github\.com\/iOfficeAI\/OfficeCLI/);
-  assert.match(attribution, /Copyright 2026 OfficeCli/);
+  const assetNotices = await readFile(
+    new URL('src/renderer/public/THIRD_PARTY_LICENSES.txt', desktopRoot),
+    'utf8',
+  );
+  assert.match(npmNotices, /Maka Desktop — Production npm Third-Party Notices/);
+  assert.match(npmNotices, /Selected license: Apache-2\.0/);
+  assert.match(assetNotices, /## Simple Icons brand marks/);
+  assert.match(assetNotices, /## MingCute DingTalk mark/);
 });
 
 test('the distributable includes the governed Ant Design Icons license', async () => {

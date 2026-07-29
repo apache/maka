@@ -21,7 +21,7 @@ export interface BotBrand {
 // replaces the previous monochrome silhouettes with iOS-app-icon
 // style real brand tiles, matching the realism of
 // `provider-brand-marks.tsx` for model providers.
-// All 7 IM channels render fully offline; nothing falls through to a CDN.
+// All IM channels render fully offline; nothing falls through to a CDN.
 export const BOT_BRAND: Record<BotProvider, BotBrand> = {
   telegram: { color: '#229ED9', glyph: 'T', configDocUrl: 'https://core.telegram.org/bots/tutorial' },
   feishu:   { color: '#00C6B7', glyph: '飞', configDocUrl: 'https://open.feishu.cn/document/server-docs/bot-v3' },
@@ -31,5 +31,4 @@ export const BOT_BRAND: Record<BotProvider, BotBrand> = {
   dingtalk: { color: '#1372FB', glyph: '钉', configDocUrl: 'https://open.dingtalk.com/document/' },
   qq:       { color: '#12B7F5', glyph: 'Q', configDocUrl: 'https://bot.q.qq.com/wiki/' },
   slack:    { color: '#4A154B', glyph: 'S', configDocUrl: 'https://api.slack.com/start/quickstart' },
-  whatsapp: { color: '#25D366', glyph: 'W', configDocUrl: 'https://faq.whatsapp.com/1317564962315842' },
 };

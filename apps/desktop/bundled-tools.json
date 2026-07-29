@@ -1,17 +1,4 @@
 {
-  "officecli": {
-    "repo": "iOfficeAI/OfficeCLI",
-    "version": "v1.0.63",
-    "sha256": {
-      "darwin-arm64": "3ede6c3457f050f2d06d95895d7a3391183911ad729c61df990d4e27c1067510"
-    },
-    "assets": {
-      "darwin-arm64": "officecli-mac-arm64",
-      "darwin-x64": "officecli-mac-x64",
-      "win32-arm64": "officecli-win-arm64.exe",
-      "win32-x64": "officecli-win-x64.exe"
-    }
-  },
   "cuaDriver": {
     "repo": "hqhq1025/cua",
     "version": "v0.7.1-maka.2",

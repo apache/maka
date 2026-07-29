@@ -98,7 +98,6 @@ describe('Bot runtime / delivery / label cross-source consistency (PR-BOT-RUNTIM
       'dingtalk',
       'qq',
       'slack',
-      'whatsapp',
     ]);
     const actualRuntime = new Set<string>();
     for (const provider of BOT_PROVIDERS) {

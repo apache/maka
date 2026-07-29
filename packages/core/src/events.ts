@@ -534,18 +534,6 @@ export type ToolResultContent =
       credentialSource?: string;
     }
   | {
-      kind: 'office_document';
-      ok: boolean;
-      operation?: string;
-      path?: string;
-      args?: string[];
-      stdout?: string;
-      stderr?: string;
-      truncated?: boolean;
-      reason?: string;
-      message?: string;
-    }
-  | {
       kind: 'explore_agent';
       ok: boolean;
       partial?: boolean;

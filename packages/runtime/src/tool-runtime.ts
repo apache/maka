@@ -2734,9 +2734,6 @@ function deriveToolResultStatus(
   }
   if (content.kind === 'rive_workflow' && content.ok === false) return 'error';
   if (content.kind === 'web_search_error') return 'error';
-  if (content.kind === 'office_document' && content.ok === false) {
-    return content.reason === 'officecli_aborted' ? 'aborted' : 'error';
-  }
   // Bash returns terminal facts instead of throwing for ordinary shell failure.
   // The explicit status is the shared classification point for isError,
   // telemetry, and loop-gate failure streaks.

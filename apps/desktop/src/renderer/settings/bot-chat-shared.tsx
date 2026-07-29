@@ -38,7 +38,6 @@ export const BOT_LABELS: Record<BotProvider, { support: 'runtime' | 'credentials
   dingtalk: { support: 'runtime' },
   qq: { support: 'runtime' },
   slack: { support: 'runtime' },
-  whatsapp: { support: 'runtime' },
 };
 
 export function botReadinessCopyForSupport(support: 'runtime' | 'credentials' | 'planned', readiness: BotReadinessState, locale: UiLocale = 'zh') {

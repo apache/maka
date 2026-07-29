@@ -85,7 +85,6 @@ export type CapabilityId =
   | 'voice'
   | 'open_gateway'
   | 'memory_write'
-  | 'office_documents'
   | `bot:${BotProvider}`;
 
 export interface OsPermissionSnapshot {

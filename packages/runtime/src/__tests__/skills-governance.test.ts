@@ -25,23 +25,14 @@ import {
 } from '../skills.js';
 
 describe('shared bundled skill catalog', () => {
-  it('is the complete byte-pinned catalog with Office provenance and legacy trust', () => {
-    assert.equal(BUNDLED_SKILL_CATALOG.length, 32);
-    assert.equal(new Set(BUNDLED_SKILL_CATALOG.map((skill) => skill.id)).size, 32);
+  it('is the complete byte-pinned catalog with bundled provenance and legacy trust', () => {
+    assert.equal(BUNDLED_SKILL_CATALOG.length, 29);
+    assert.equal(new Set(BUNDLED_SKILL_CATALOG.map((skill) => skill.id)).size, 29);
     for (const skill of BUNDLED_SKILL_CATALOG) {
       assert.equal(skill.contentSha256, sha256(skill.body));
       assert.ok(skill.body.startsWith('---\n'));
-    }
-
-    const office = BUNDLED_SKILL_CATALOG.filter((skill) => skill.sourceName === 'maka-officecli');
-    assert.deepEqual(office.map((skill) => skill.id).sort(), [
-      'officecli-docx',
-      'officecli-pptx',
-      'officecli-xlsx',
-    ]);
-    for (const skill of office) {
+      assert.equal(skill.sourceName, 'maka-bundled');
       assert.equal(skill.sourceVersion, '1');
-      assert.ok(skill.legacyContentSha256.length > 0);
       assert.equal(
         new Set(skill.legacyContentSha256).size,
         skill.legacyContentSha256.length,

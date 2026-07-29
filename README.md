@@ -44,7 +44,7 @@ Read [Maka Backend Architecture](./ARCHITECTURE.md) for the complete design.
 
 - Create, archive, search, rename, retry, regenerate, and branch sessions from a Turn;
 - Artifact lists and previews, workspace instructions, model settings, and permission settings;
-- Local memory, web search, an open HTTP/SSE gateway, bot entry points, and Office workflows;
+- Local memory, web search, an open HTTP/SSE gateway, and bot entry points;
 - Integrations are configured independently, and not every experimental entry is available by default.
 
 ### Durable tasks and evolution

@@ -66,7 +66,6 @@ export function resultOwnsOwnPanel(item: ToolActivityItem): boolean {
     case 'web_search':
     case 'web_search_error':
     case 'file_diff':
-    case 'office_document':
     case 'rive_workflow':
       return true;
     default:

@@ -51,8 +51,8 @@ export function guessMimeFromName(fileName: string): string {
 /**
  * Route a MIME type to an {@link AttachmentRef} kind. The runtime
  * consumption split is image vs. everything-else (images become provider
- * image parts; other kinds are read on demand by the model via Read /
- * OfficeDocument), so this only needs to single out the kinds that change
+ * image parts; other kinds are read on demand by the model via Read), so this
+ * only needs to single out the kinds that change
  * consumption or display. Unknown / unmapped MIME falls back to `other`.
  *
  * `fileName` is consulted for kinds whose MIME is unreliable across OSes

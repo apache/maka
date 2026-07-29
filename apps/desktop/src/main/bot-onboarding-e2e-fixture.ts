@@ -128,18 +128,6 @@ export function createE2eFixtureBotOnboardingAdapters(): AdapterMap {
         };
       },
     },
-    whatsapp: {
-      async start() { return start('whatsapp'); },
-      async poll(session) {
-        await settlePoll();
-        if (nextPoll(session.opaqueToken) === 1) return { status: 'scanned' };
-        return {
-          status: 'confirmed',
-          credential: { provider: 'whatsapp', accountId: 'e2e-fixture-whatsapp' },
-          identity: { id: 'e2e-fixture-whatsapp', displayName: 'Maka WhatsApp 测试账号' },
-        };
-      },
-    },
   };
 }
 
@@ -174,6 +162,5 @@ function createWaitingHoldBotOnboardingAdapters(): AdapterMap {
     wecom: waitingHold('wecom'),
     wechat: waitingHold('wechat'),
     qq: waitingHold('qq'),
-    whatsapp: waitingHold('whatsapp'),
   };
 }

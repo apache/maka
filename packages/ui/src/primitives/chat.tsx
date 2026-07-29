@@ -419,7 +419,7 @@ export { toolVariants };
  * Retires the bespoke `OverlayPreview` family shell CSS — the shared
  * height-bounded `.maka-overlay-preview` base + `.maka-overlay-close`, the
  * structured cards (`.maka-tool-diff*`, `.maka-tool-terminal*`,
- * `.maka-office-document-*`, `.maka-explore-agent-*` / `.maka-subagent-preview`,
+ * `.maka-explore-agent-*` / `.maka-subagent-preview`,
  * `.maka-web-search-*`), and the separate `.maka-load-tool-*` result card —
  * moving each onto this one Tailwind substrate. The selectors lived across
  * `styles/tool-output.css` and `styles/tool-stream.css` (`@layer components`).
@@ -525,30 +525,6 @@ const previewVariants = cva("", {
       // `.maka-tool-terminal-copy` (UiButton) + the shared copy-state tints.
       "terminal-copy":
         "[flex:0_0_auto] data-[pending=true]:cursor-progress data-[copy-error=true]:text-[color:var(--destructive)] data-[copy-error=true]:[border-color:oklch(from_var(--destructive)_l_c_h_/_0.35)]",
-
-      // ── office document ───────────────────────────────────────────────────
-      // `.maka-office-document-preview` (+ the `[data-ok=false]` fault border).
-      office:
-        "grid gap-2 px-3 py-2.5 [border:1px_solid_var(--foreground-10)] rounded-[var(--radius-surface)] bg-[var(--foreground-3)] [white-space:normal] data-[ok=false]:[border-color:oklch(from_var(--destructive)_l_c_h_/_0.22)]",
-      // `.maka-office-document-head` (+ its `strong` title and `small` caption).
-      "office-head":
-        "grid gap-0.5 pb-1.5 [border-bottom:1px_solid_var(--foreground-10)]"
-        + " [&_strong]:min-w-0 [&_strong]:overflow-hidden [&_strong]:text-ellipsis [&_strong]:whitespace-nowrap [&_strong]:text-sm [&_strong]:text-[color:var(--foreground)]"
-        + " [&_small]:text-xs [&_small]:text-[color:var(--muted-foreground)] [&_small]:uppercase [&_small]:tracking-[0.04em]",
-      // `.maka-office-document-args`
-      "office-args":
-        "min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[color:var(--foreground-secondary)] bg-transparent text-xs",
-      // `.maka-office-document-message` (+ its `small` caption).
-      "office-message":
-        "grid gap-0.5 px-2.5 py-2 rounded-[var(--radius-control)] bg-[oklch(from_var(--destructive)_l_c_h_/_0.07)] text-[color:var(--destructive)] [font-family:var(--font-sans)] text-xs"
-        + " [&_small]:text-xs [&_small]:text-[color:var(--muted-foreground)] [&_small]:uppercase [&_small]:tracking-[0.04em]",
-      // `.maka-office-document-empty`
-      "office-empty":
-        "m-0 text-[color:var(--muted-foreground)] [font-family:var(--font-mono)] text-xs italic",
-      // `.maka-office-document-stream` (+ the `[data-stream=stderr]` tone).
-      "office-stream":
-        "m-0 px-2.5 py-2 max-h-50 overflow-auto [border:1px_solid_var(--foreground-10)] rounded-[var(--radius-control)] bg-[var(--background)] [font-family:var(--font-mono)] [font-variant-ligatures:none] text-xs [white-space:pre-wrap] [word-break:break-word]"
-        + " data-[stream=stderr]:bg-[oklch(from_var(--destructive)_l_c_h_/_0.04)] data-[stream=stderr]:text-[color:var(--destructive)]",
 
       // ── explore agent / subagent (shared shell) ───────────────────────────
       // `.maka-explore-agent-preview, .maka-subagent-preview` (+ the fault

@@ -1,20 +1,6 @@
 import type { ToolActivityKind, UiCatalog, UiLocale } from '@maka/core';
 
 type BackgroundTerminalStatus = 'running' | 'completed' | 'failed' | 'timed_out' | 'cancelled' | 'orphaned';
-type OfficeDocumentReason =
-  | 'invalid_operation'
-  | 'invalid_path'
-  | 'unsupported_extension'
-  | 'missing_file'
-  | 'not_file'
-  | 'symlink_escape'
-  | 'invalid_selector'
-  | 'invalid_query'
-  | 'invalid_props'
-  | 'file_exists'
-  | 'officecli_missing'
-  | 'officecli_timeout'
-  | 'officecli_failed';
 type WebCredentialCopyKey = 'env' | 'settings' | 'missing' | 'unknown';
 type WebGuidanceKey = 'env' | 'settings' | 'rate_limited' | 'not_configured' | 'timed_out' | 'privacy_mode' | 'unknown';
 
@@ -110,15 +96,6 @@ export interface ToolActivityCopy {
     outputRedacted: string;
     backgroundStatus: Record<BackgroundTerminalStatus, string>;
     backgroundUnknown: (status: string) => string;
-    officeDocument: string;
-    notExecuted: string;
-    completedSuffix: string;
-    incompleteSuffix: string;
-    truncatedSuffix: string;
-    officeIncomplete: string;
-    diagnostic: (reason: string) => string;
-    officeReason: Record<OfficeDocumentReason, string>;
-    unknownDiagnostic: string;
     workflow: { action: string; status: string; error: string; nodes: string; diagnostics: string };
     webNoResults: string;
     webResults: (count: number) => string;
@@ -201,8 +178,6 @@ const TOOL_ACTIVITY_COPY = {
     result: {
       hiddenLines: (n) => `… 已隐藏 ${n} 行`, ptyFailed: '后台终端交互失败', queued: '已排队', notQueued: '未排队', queuedPreview: (action, preview, bytes) => bytes === undefined ? `${action}：${preview}` : `${action}：${preview}… · 共 ${bytes} 字节`, byteCount: (action, bytes) => `${action} ${bytes} 字节`, resizeNotApplied: (size) => `未调整为 ${size}`, resized: (size) => `已调整为 ${size}`, sizeUnchanged: (size) => `尺寸已是 ${size}`, ptyCompleted: '后台终端交互已完成', terminalUnavailable: '终端输出不可用', noTerminalFrame: '（无可用终端画面）', noOutputYet: '（尚无输出）', noOutput: '（无输出）', exitCode: (code) => `退出码 ${code}`, managedBySource: '由源会话管理', sourceUnavailable: '源会话不可用', running: '运行中', success: '成功', failed: '失败', timedOut: '已超时', cancelled: '已取消', disconnected: '已断开', terminalTruncated: '终端输出已截断', terminalRedacted: '终端输出已脱敏', streamHidden: (stream, n) => `… ${stream} 已隐藏 ${n} 行`, streamsTruncated: (limit) => `输出已截断 · 每路仅展示前 ${limit} 行`, outputTruncated: '输出已截断', outputRedacted: '输出已脱敏',
       backgroundStatus: { running: '后台运行中', completed: '后台已完成', failed: '后台失败', timed_out: '后台超时', cancelled: '后台已取消', orphaned: '后台任务已断开' }, backgroundUnknown: (status) => `后台 · ${status}`,
-      officeDocument: 'Office 文档', notExecuted: '未执行', completedSuffix: ' · 已完成', incompleteSuffix: ' · 未完成', truncatedSuffix: ' · 输出已截断', officeIncomplete: 'Office 文档操作未完成。', diagnostic: (reason) => `诊断：${reason}`,
-      officeReason: { invalid_operation: '操作不支持', invalid_path: '路径无效', unsupported_extension: '文件类型不支持', missing_file: '文件不存在', not_file: '不是文件', symlink_escape: '符号链接被拒绝', invalid_selector: '选择器无效', invalid_query: '查询表达式无效', invalid_props: '属性无效', file_exists: '文件已存在', officecli_missing: 'officecli 未安装', officecli_timeout: '操作超时', officecli_failed: '操作失败' }, unknownDiagnostic: '未知诊断',
       workflow: { action: '动作', status: '状态', error: '错误', nodes: '节点摘要', diagnostics: '诊断片段' }, webNoResults: '没有结果', webResults: (n) => `${n} 条结果`, credentialSource: { env: '环境变量', settings: '本机已保存 key', missing: '未配置', unknown: '来源未知' }, webFailure: '搜索失败', webSearch: '联网搜索', webGuidance: { env: '请检查 TAVILY_API_KEY / MAKA_TAVILY_API_KEY 后重启。', settings: '请在 设置 · 联网搜索 中更新 Tavily key。', rate_limited: 'Tavily 当前限流，请稍后重试或更换可用凭据。', not_configured: '请先完成联网搜索配置后再重试。', timed_out: '请求超时，请稍后重试。', privacy_mode: '隐私模式下不会发起联网搜索。', unknown: '请检查网络或稍后重试。' },
     },
     agent: {
@@ -235,8 +210,6 @@ const TOOL_ACTIVITY_COPY = {
     result: {
       hiddenLines: (n) => `… ${n} ${n === 1 ? 'line' : 'lines'} hidden`, ptyFailed: 'Background terminal interaction failed', queued: 'Queued', notQueued: 'Not queued', queuedPreview: (action, preview, bytes) => bytes === undefined ? `${action}: ${preview}` : `${action}: ${preview}… · ${bytes} bytes total`, byteCount: (action, bytes) => `${action} ${bytes} bytes`, resizeNotApplied: (size) => `Not resized to ${size}`, resized: (size) => `Resized to ${size}`, sizeUnchanged: (size) => `Size already ${size}`, ptyCompleted: 'Background terminal interaction completed', terminalUnavailable: 'Terminal output unavailable', noTerminalFrame: '(No terminal frame available)', noOutputYet: '(No output yet)', noOutput: '(No output)', exitCode: (code) => `exit code ${code}`, managedBySource: 'Managed by source conversation', sourceUnavailable: 'Source conversation unavailable', running: 'Running', success: 'Succeeded', failed: 'Failed', timedOut: 'Timed out', cancelled: 'Cancelled', disconnected: 'Disconnected', terminalTruncated: 'Terminal output truncated', terminalRedacted: 'Terminal output redacted', streamHidden: (stream, n) => `… ${n} ${stream} ${n === 1 ? 'line' : 'lines'} hidden`, streamsTruncated: (limit) => `Output truncated · showing the first ${limit} lines of each stream`, outputTruncated: 'Output truncated', outputRedacted: 'Output redacted',
       backgroundStatus: { running: 'Running in background', completed: 'Background task completed', failed: 'Background task failed', timed_out: 'Background task timed out', cancelled: 'Background task cancelled', orphaned: 'Background task disconnected' }, backgroundUnknown: (status) => `Background · ${status}`,
-      officeDocument: 'Office document', notExecuted: 'Not run', completedSuffix: ' · Completed', incompleteSuffix: ' · Incomplete', truncatedSuffix: ' · Output truncated', officeIncomplete: 'Office document operation did not complete.', diagnostic: (reason) => `Diagnostic: ${reason}`,
-      officeReason: { invalid_operation: 'Unsupported operation', invalid_path: 'Invalid path', unsupported_extension: 'Unsupported file type', missing_file: 'File not found', not_file: 'Not a file', symlink_escape: 'Symbolic link rejected', invalid_selector: 'Invalid selector', invalid_query: 'Invalid query expression', invalid_props: 'Invalid property', file_exists: 'File already exists', officecli_missing: 'officecli is not installed', officecli_timeout: 'Operation timed out', officecli_failed: 'Operation failed' }, unknownDiagnostic: 'Unknown diagnostic',
       workflow: { action: 'Action', status: 'Status', error: 'Error', nodes: 'Node summary', diagnostics: 'Diagnostic excerpts' }, webNoResults: 'No results', webResults: (n) => `${n} ${n === 1 ? 'result' : 'results'}`, credentialSource: { env: 'Environment variable', settings: 'Locally saved key', missing: 'Not configured', unknown: 'Unknown source' }, webFailure: 'Search failed', webSearch: 'Web search', webGuidance: { env: 'Check TAVILY_API_KEY / MAKA_TAVILY_API_KEY and restart.', settings: 'Update the Tavily key in Settings · Web search.', rate_limited: 'Tavily is rate-limiting requests. Try again later or use another credential.', not_configured: 'Configure web search before retrying.', timed_out: 'The request timed out. Try again later.', privacy_mode: 'Web search is disabled in privacy mode.', unknown: 'Check the network connection or try again later.' },
     },
     agent: {

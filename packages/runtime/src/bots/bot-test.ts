@@ -32,7 +32,6 @@ export async function testBotChannel(
     provider !== 'dingtalk' &&
     provider !== 'qq' &&
     provider !== 'slack' &&
-    provider !== 'whatsapp' &&
     !channel.token.trim()
   ) {
     return { ok: false, error: 'Bot token is required' };
@@ -54,8 +53,6 @@ export async function testBotChannel(
       return testQQ(channel);
     case 'slack':
       return testSlack(channel);
-    case 'whatsapp':
-      return testWhatsApp(channel);
   }
 }
 
@@ -84,18 +81,6 @@ async function testSlack(channel: BotChannelSettings): Promise<BotTestResult> {
   } catch (error) {
     return { ok: false, error: generalizedErrorMessage(error) };
   }
-}
-
-async function testWhatsApp(channel: BotChannelSettings): Promise<BotTestResult> {
-  if (!channel.sessionConfigured) {
-    return { ok: false, error: 'WhatsApp 尚未通过二维码关联设备', verified: false };
-  }
-  return {
-    ok: true,
-    verified: false,
-    capabilities: { localSession: true },
-    hint: '本机关联凭据已保存；实际可用性以运行态连接为准。',
-  };
 }
 
 async function testWechat(channel: BotChannelSettings): Promise<BotTestResult> {

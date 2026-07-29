@@ -12,7 +12,6 @@ import {
   buildSkillsPromptFragment,
   createStarterSkill,
   deleteSkill,
-  ensureBundledOfficeSkills,
   getSkillGovernanceDetails,
   installManagedSkill,
   loadSkillInstructions,
@@ -56,15 +55,15 @@ Use concise prose.`);
 
   it('applies Desktop host tool and capability gates to the system skill prompt', async () => {
     await withWorkspace(async (workspaceRoot) => {
-      await writeSkill(workspaceRoot, 'office-helper', `---
-name: Office Helper
-description: Work with Office documents.
+      await writeSkill(workspaceRoot, 'capability-helper', `---
+name: Capability Helper
+description: Exercise host capability gating.
 allowed-tools: [Read]
-required-tools: [OfficeDocument]
-required-capabilities: [office]
+required-tools: [Write]
+required-capabilities: [documents]
 ---
-# Office Helper
-Use the Office tools.`);
+# Capability Helper
+Use the required tools.`);
 
       const makeService = (host: { toolNames: Set<string>; capabilities: Set<string> }) =>
         createSystemPromptMainService({
@@ -85,22 +84,22 @@ Use the Office tools.`);
 
       const missingTool = await makeService({
         toolNames: new Set(['Read']),
-        capabilities: new Set(['office']),
+        capabilities: new Set(['documents']),
       }).buildBackendSystemPrompt({ labels: [] }, workspaceRoot, { memoryFragment: null });
-      assert.doesNotMatch(missingTool ?? '', /office-helper/, 'missing required tools must hide the skill');
+      assert.doesNotMatch(missingTool ?? '', /capability-helper/, 'missing required tools must hide the skill');
 
       const missingCapability = await makeService({
-        toolNames: new Set(['Read', 'OfficeDocument']),
+        toolNames: new Set(['Read', 'Write']),
         capabilities: new Set(),
       }).buildBackendSystemPrompt({ labels: [] }, workspaceRoot, { memoryFragment: null });
-      assert.doesNotMatch(missingCapability ?? '', /office-helper/, 'missing required capabilities must hide the skill');
+      assert.doesNotMatch(missingCapability ?? '', /capability-helper/, 'missing required capabilities must hide the skill');
 
       const eligible = await makeService({
-        toolNames: new Set(['Read', 'OfficeDocument']),
-        capabilities: new Set(['office']),
+        toolNames: new Set(['Read', 'Write']),
+        capabilities: new Set(['documents']),
       }).buildBackendSystemPrompt({ labels: [] }, workspaceRoot, { memoryFragment: null });
       assert.ok(eligible);
-      assert.match(eligible, /<available-skill id="office-helper"/);
+      assert.match(eligible, /<available-skill id="capability-helper"/);
     });
   });
 
@@ -859,131 +858,6 @@ description: 用于测试删除已安装技能。
     });
   });
 
-  it('seeds bundled OfficeCLI skills without overwriting user edits', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      const first = await ensureBundledOfficeSkills(workspaceRoot);
-      assert.deepEqual(first.created.sort(), ['officecli-docx', 'officecli-pptx', 'officecli-xlsx']);
-      assert.deepEqual(first.updated, []);
-      assert.deepEqual(first.skipped, []);
-      assert.deepEqual(first.failed, []);
-
-      const skills = await listInstalledSkills(workspaceRoot);
-      assert.equal(skills.length, 3);
-      assert.deepEqual(skills.map((skill) => skill.id).sort(), ['officecli-docx', 'officecli-pptx', 'officecli-xlsx']);
-      assert.ok(skills.every((skill) => skill.declaredTools.includes('OfficeDocument')));
-      assert.ok(skills.every((skill) => skill.declaredTools.includes('OfficeDocumentEdit')));
-      assert.ok(skills.every((skill) => !skill.declaredTools.includes('Bash')));
-      assert.ok(skills.every((skill) => skill.requiredTools.includes('OfficeDocument')));
-      assert.ok(skills.every((skill) => skill.requiredTools.includes('OfficeDocumentEdit')));
-      assert.ok(skills.every((skill) => !skill.requiredTools.includes('Read')));
-      assert.ok(skills.every((skill) => skill.sourceType === 'bundled'));
-      assert.ok(skills.every((skill) => skill.sourceName === 'maka-officecli'));
-      assert.ok(skills.every((skill) => skill.sourceVersion === '1'));
-      assert.ok(skills.every((skill) => skill.userModified === false));
-      assert.ok(skills.every((skill) => skill.validationStatus === 'ok'));
-      assert.ok(skills.every((skill) => skill.contentSha256?.startsWith('sha256:')));
-
-      const docxPath = join(workspaceRoot, 'skills', 'officecli-docx', 'SKILL.md');
-      const docxLockPath = join(workspaceRoot, 'skills', 'officecli-docx', 'skill.lock.json');
-      const before = await readFile(docxPath, 'utf8');
-      const lockBytesBeforeSecondEnsure = await readFile(docxLockPath, 'utf8');
-      const lock = JSON.parse(await readFile(docxLockPath, 'utf8')) as Record<string, unknown>;
-      assert.deepEqual(lock, {
-        schemaVersion: 1,
-        id: 'officecli-docx',
-        sourceType: 'bundled',
-        sourceName: 'maka-officecli',
-        sourceVersion: '1',
-        contentSha256: `sha256:${sha256Hex(before)}`,
-        installedAt: lock.installedAt,
-      });
-      assert.equal(typeof lock.installedAt, 'string');
-      assert.match(lock.installedAt as string, /^\d{4}-\d{2}-\d{2}T/);
-      assert.match(before, /Use `OfficeDocument` for read-only inspection/);
-      assert.match(before, /Use `OfficeDocumentEdit` only for supported writes/);
-      assert.doesNotMatch(before, /Check `officecli --version` first/);
-      assert.doesNotMatch(before, /officecli open/);
-      assert.doesNotMatch(before, /officecli close/);
-      assert.doesNotMatch(before, /view "\$FILE" html/);
-      if (process.platform !== 'win32') {
-        assert.equal((await lstat(docxPath)).mode & 0o077, 0);
-      }
-
-      const secondClean = await ensureBundledOfficeSkills(workspaceRoot);
-      assert.deepEqual(secondClean.created, []);
-      assert.deepEqual(secondClean.updated, []);
-      assert.deepEqual(secondClean.skipped.sort(), ['officecli-docx', 'officecli-pptx', 'officecli-xlsx']);
-      assert.deepEqual(secondClean.failed, []);
-      assert.equal(await readFile(docxLockPath, 'utf8'), lockBytesBeforeSecondEnsure);
-
-      await writeFile(docxPath, `${before}\n\n# User edit\n`, 'utf8');
-      const second = await ensureBundledOfficeSkills(workspaceRoot);
-      assert.deepEqual(second.created, []);
-      assert.deepEqual(second.updated, []);
-      assert.deepEqual(second.skipped.sort(), ['officecli-docx', 'officecli-pptx', 'officecli-xlsx']);
-      assert.deepEqual(second.failed, []);
-      assert.match(await readFile(docxPath, 'utf8'), /# User edit/);
-
-      const modified = await listInstalledSkills(workspaceRoot);
-      const docx = modified.find((skill) => skill.id === 'officecli-docx');
-      assert.ok(docx);
-      assert.equal(docx.sourceType, 'bundled');
-      assert.equal(docx.sourceName, 'maka-officecli');
-      assert.equal(docx.userModified, true);
-      assert.equal(docx.validationStatus, 'modified');
-      assert.deepEqual(docx.validationCodes, ['modified']);
-    });
-  });
-
-  it('does not write bundled skill locks through symlinks', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      const outside = await mkdtemp(join(tmpdir(), 'maka-skill-lock-target-'));
-      try {
-        const skillDir = join(workspaceRoot, 'skills', 'officecli-docx');
-        const externalLock = join(outside, 'external-lock.json');
-        await mkdir(skillDir, { recursive: true, mode: 0o700 });
-        await writeFile(externalLock, 'external sentinel', 'utf8');
-        await symlink(externalLock, join(skillDir, 'skill.lock.json'));
-
-        const result = await ensureBundledOfficeSkills(workspaceRoot);
-        assert.deepEqual(result.created.sort(), ['officecli-pptx', 'officecli-xlsx']);
-        assert.deepEqual(result.updated, []);
-        assert.deepEqual(result.skipped, []);
-        assert.deepEqual(result.failed, ['officecli-docx']);
-        assert.equal(await readFile(externalLock, 'utf8'), 'external sentinel');
-      } finally {
-        await rm(outside, { recursive: true, force: true });
-      }
-    });
-  });
-
-  it('migrates unmodified legacy bundled OfficeCLI skills to tool-routed templates', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      const skillDir = join(workspaceRoot, 'skills', 'officecli-docx');
-      const skillPath = join(skillDir, 'SKILL.md');
-      await mkdir(skillDir, { recursive: true, mode: 0o700 });
-      await writeFile(skillPath, legacyOfficeCliDocxSkillTemplate(), { encoding: 'utf8', mode: 0o600 });
-
-      const result = await ensureBundledOfficeSkills(workspaceRoot);
-      assert.deepEqual(result.created.sort(), ['officecli-pptx', 'officecli-xlsx']);
-      assert.deepEqual(result.updated, ['officecli-docx']);
-      assert.deepEqual(result.skipped, []);
-      assert.deepEqual(result.failed, []);
-
-      const migrated = await readFile(skillPath, 'utf8');
-      assert.match(migrated, /Use `OfficeDocument` for read-only inspection/);
-      assert.match(migrated, /Use `OfficeDocumentEdit` only for supported writes/);
-      assert.doesNotMatch(migrated, /allowed-tools:\n  - Bash/);
-      assert.doesNotMatch(migrated, /officecli open/);
-      assert.doesNotMatch(migrated, /officecli view "\$FILE" html/);
-
-      const lock = JSON.parse(await readFile(join(skillDir, 'skill.lock.json'), 'utf8')) as Record<string, unknown>;
-      assert.equal(lock.id, 'officecli-docx');
-      assert.equal(lock.sourceType, 'bundled');
-      assert.equal(lock.contentSha256, `sha256:${sha256Hex(migrated)}`);
-    });
-  });
-
   it('treats invalid skill locks as status metadata without changing runtime behavior', async () => {
     await withWorkspace(async (workspaceRoot) => {
       await writeSkill(workspaceRoot, 'broken-lock', `---
@@ -1030,7 +904,7 @@ description: Exercise mismatched lock metadata.
         schemaVersion: 1,
         id: 'other-id',
         sourceType: 'bundled',
-        sourceName: 'maka-officecli',
+        sourceName: 'forged-bundle',
         sourceVersion: '1',
         contentSha256: `sha256:${sha256Hex(await readFile(join(workspaceRoot, 'skills', 'copied', 'SKILL.md'), 'utf8'))}`,
         installedAt: new Date(0).toISOString(),
@@ -1047,7 +921,7 @@ description: Exercise symlinked lock metadata.
           schemaVersion: 1,
           id: 'linked-lock',
           sourceType: 'bundled',
-          sourceName: 'maka-officecli',
+          sourceName: 'forged-bundle',
           sourceVersion: '1',
           contentSha256: 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
           installedAt: new Date(0).toISOString(),
@@ -1074,36 +948,36 @@ description: Exercise symlinked lock metadata.
 
   it('does not trust forged bundled or managed skill lock metadata', async () => {
     await withWorkspace(async (workspaceRoot) => {
-      await writeSkill(workspaceRoot, 'officecli-docx', `---
-name: Fake OfficeCLI DOCX
+      await writeSkill(workspaceRoot, 'deep-research', `---
+name: Fake Deep Research
 description: Exercise forged bundled metadata.
 ---
-# Fake OfficeCLI DOCX
+# Fake Deep Research
 This is not the bundled template.`);
-      const fakeOfficeContent = await readFile(join(workspaceRoot, 'skills', 'officecli-docx', 'SKILL.md'), 'utf8');
-      await writeFile(join(workspaceRoot, 'skills', 'officecli-docx', 'skill.lock.json'), JSON.stringify({
+      const fakeBundledContent = await readFile(join(workspaceRoot, 'skills', 'deep-research', 'SKILL.md'), 'utf8');
+      await writeFile(join(workspaceRoot, 'skills', 'deep-research', 'skill.lock.json'), JSON.stringify({
         schemaVersion: 1,
-        id: 'officecli-docx',
+        id: 'deep-research',
         sourceType: 'bundled',
-        sourceName: 'maka-officecli',
+        sourceName: 'maka-bundled',
         sourceVersion: '1',
-        contentSha256: `sha256:${sha256Hex(fakeOfficeContent)}`,
+        contentSha256: `sha256:${sha256Hex(fakeBundledContent)}`,
         installedAt: new Date(0).toISOString(),
       }), 'utf8');
 
-      await writeSkill(workspaceRoot, 'not-officecli', `---
-name: Not OfficeCLI
+      await writeSkill(workspaceRoot, 'unknown-bundled', `---
+name: Unknown Bundled
 description: Exercise an invalid bundled skill id.
 ---
-# Not OfficeCLI`);
-      const notOfficeContent = await readFile(join(workspaceRoot, 'skills', 'not-officecli', 'SKILL.md'), 'utf8');
-      await writeFile(join(workspaceRoot, 'skills', 'not-officecli', 'skill.lock.json'), JSON.stringify({
+# Unknown Bundled`);
+      const unknownBundledContent = await readFile(join(workspaceRoot, 'skills', 'unknown-bundled', 'SKILL.md'), 'utf8');
+      await writeFile(join(workspaceRoot, 'skills', 'unknown-bundled', 'skill.lock.json'), JSON.stringify({
         schemaVersion: 1,
-        id: 'not-officecli',
+        id: 'unknown-bundled',
         sourceType: 'bundled',
-        sourceName: 'maka-officecli',
+        sourceName: 'maka-bundled',
         sourceVersion: '1',
-        contentSha256: `sha256:${sha256Hex(notOfficeContent)}`,
+        contentSha256: `sha256:${sha256Hex(unknownBundledContent)}`,
         installedAt: new Date(0).toISOString(),
       }), 'utf8');
 
@@ -1124,19 +998,19 @@ description: Exercise forged managed metadata.
       }), 'utf8');
 
       const skills = await listInstalledSkills(workspaceRoot);
-      const fakeOffice = skills.find((skill) => skill.id === 'officecli-docx');
-      const notOffice = skills.find((skill) => skill.id === 'not-officecli');
+      const fakeBundled = skills.find((skill) => skill.id === 'deep-research');
+      const unknownBundled = skills.find((skill) => skill.id === 'unknown-bundled');
       const managed = skills.find((skill) => skill.id === 'managed-forgery');
-      assert.ok(fakeOffice);
-      assert.equal(fakeOffice.sourceType, 'unknown');
-      assert.equal(fakeOffice.sourceName, undefined);
-      assert.equal(fakeOffice.validationStatus, 'metadata_error');
-      assert.deepEqual(fakeOffice.validationCodes, ['unsupported_schema']);
-      assert.ok(notOffice);
-      assert.equal(notOffice.sourceType, 'unknown');
-      assert.equal(notOffice.sourceName, undefined);
-      assert.equal(notOffice.validationStatus, 'metadata_error');
-      assert.deepEqual(notOffice.validationCodes, ['unsupported_schema']);
+      assert.ok(fakeBundled);
+      assert.equal(fakeBundled.sourceType, 'unknown');
+      assert.equal(fakeBundled.sourceName, undefined);
+      assert.equal(fakeBundled.validationStatus, 'metadata_error');
+      assert.deepEqual(fakeBundled.validationCodes, ['unsupported_schema']);
+      assert.ok(unknownBundled);
+      assert.equal(unknownBundled.sourceType, 'unknown');
+      assert.equal(unknownBundled.sourceName, undefined);
+      assert.equal(unknownBundled.validationStatus, 'metadata_error');
+      assert.deepEqual(unknownBundled.validationCodes, ['unsupported_schema']);
       assert.ok(managed);
       assert.equal(managed.sourceType, 'unknown');
       assert.equal(managed.sourceName, undefined);
@@ -1549,12 +1423,6 @@ description: Exercise a symlinked skills directory.
 # External`, 'utf8');
         await symlink(outside, join(workspaceRoot, 'skills'));
         assert.deepEqual(await createStarterSkill(workspaceRoot), { ok: false, reason: 'blocked_path' });
-        assert.deepEqual(await ensureBundledOfficeSkills(workspaceRoot), {
-          created: [],
-          updated: [],
-          skipped: [],
-          failed: ['officecli-docx', 'officecli-xlsx', 'officecli-pptx'],
-        });
         assert.deepEqual(await listInstalledSkills(workspaceRoot), []);
       } finally {
         await rm(outside, { recursive: true, force: true });
@@ -1890,40 +1758,6 @@ body`).allowedTools,
     );
   });
 });
-
-function legacyOfficeCliDocxSkillTemplate(): string {
-  return [
-    '---',
-    'name: OfficeCLI DOCX',
-    'description: Use when a .docx, Word document, report, memo, proposal, letter, tracked changes, comments, header/footer, table of contents, or Word template is involved.',
-    'allowed-tools:',
-    '  - Bash',
-    '  - Read',
-    '---',
-    '',
-    '# OfficeCLI DOCX',
-    '',
-    "Use this skill for Word document work. It is adapted from an external OfficeCLI reference DOCX skill for Maka's permission model.",
-    '',
-    '## Boundary',
-    '',
-    '- Check `officecli --version` first. If missing, tell the user Office document automation is unavailable on this machine instead of parsing .docx as plain text.',
-    '- Prefer `officecli help docx` and `officecli help docx <element>` before guessing flags. Installed help is authoritative.',
-    '- Quote semantic paths: `"/body/p[1]"`, `"/footer[1]"`.',
-    '- Read-only inspection commands are safe: `view`, `get`, `query`, `validate`, `help`.',
-    '- Mutating commands such as `create`, `open`, `add`, `set`, `remove`, `batch`, and `close` require the normal shell permission flow.',
-    '',
-    '## Workflow',
-    '',
-    '1. Orient with `officecli view "$FILE" outline`, then `view text` or `get` the needed paths.',
-    '2. For edits, use resident mode: `officecli open "$FILE"`, make small incremental changes, verify each structural step with `get`, then `officecli close "$FILE"`.',
-    '3. For generated documents, build hierarchy first: Title, Heading 1, Heading 2, body; then tables/images/fields; then headers/footers.',
-    '4. Use explicit typography. Body 11-12pt; H1 at least 18pt; H2 around 14pt; spacing via paragraph properties, not blank paragraphs.',
-    '5. Add live page-number fields for documents longer than one page. Verify fields exist with `get "$FILE" "/footer[1]" --depth 3`.',
-    '6. Final QA: `officecli validate "$FILE"` and `officecli view "$FILE" html`. Fix placeholder tokens, clipped tables, empty-paragraph spacing, static page numbers, and missing TOC on heading-heavy documents before reporting done.',
-    '',
-  ].join('\n');
-}
 
 async function withWorkspace(fn: (workspaceRoot: string) => Promise<void>): Promise<void> {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-skills-'));

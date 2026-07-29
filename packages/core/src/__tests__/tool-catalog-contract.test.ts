@@ -63,7 +63,7 @@ describe('tool catalog contract', () => {
   });
 
   it('marks desktop-owned packs unsupported on cli and headless', () => {
-    for (const id of ['office', 'browser', 'computer_use', 'rive'] as const) {
+    for (const id of ['browser', 'computer_use', 'rive'] as const) {
       const surface = MAKA_CATALOG_SURFACES.find((entry) => entry.id === id);
       assert.ok(surface, `missing surface ${id}`);
       assert.equal(surface.hosts.desktop, 'supported');
@@ -90,19 +90,19 @@ describe('tool catalog contract', () => {
     assert.equal(Object.isFrozen(MAKA_CATALOG_TOOLS), true);
     assert.equal(Object.isFrozen(MAKA_CATALOG_SURFACES), true);
 
-    const office = MAKA_CATALOG_SURFACES.find((entry) => entry.id === 'office');
+    const computerUse = MAKA_CATALOG_SURFACES.find((entry) => entry.id === 'computer_use');
     const browser = MAKA_CATALOG_SURFACES.find((entry) => entry.id === 'browser');
-    assert.ok(office && browser);
-    assert.equal(Object.isFrozen(office), true);
-    assert.equal(Object.isFrozen(office.hosts), true);
-    assert.equal(Object.isFrozen(office.toolNames), true);
-    assert.notEqual(office.hosts, browser.hosts);
+    assert.ok(computerUse && browser);
+    assert.equal(Object.isFrozen(computerUse), true);
+    assert.equal(Object.isFrozen(computerUse.hosts), true);
+    assert.equal(Object.isFrozen(computerUse.toolNames), true);
+    assert.notEqual(computerUse.hosts, browser.hosts);
 
     assert.throws(() => {
       // @ts-expect-error intentional mutation probe against frozen hosts
-      office.hosts.cli = 'supported';
+      computerUse.hosts.cli = 'supported';
     }, TypeError);
-    assert.equal(office.hosts.cli, 'unsupported');
+    assert.equal(computerUse.hosts.cli, 'unsupported');
     assert.equal(browser.hosts.cli, 'unsupported');
 
     const names = catalogToolNameSet() as Set<string>;
@@ -137,8 +137,6 @@ describe('tool catalog contract', () => {
         'task_update',
         'task_list',
         'task_get',
-        'OfficeDocument',
-        'OfficeDocumentEdit',
         'browser_navigate',
         'browser_snapshot',
         'browser_click',

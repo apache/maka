@@ -30,15 +30,15 @@ const ctx = {
   emitOutput: () => {},
 };
 
-// rive/office grouped; Read/Write ungrouped (always visible).
+// rive/docs grouped; Read/Write ungrouped (always visible).
 function runtime(economy: boolean) {
   return new ToolAvailabilityRuntime(
-    [tool('Read'), tool('Write'), tool('rive_run'), tool('office_edit'), tool('office_read')],
+    [tool('Read'), tool('Write'), tool('rive_run'), tool('docs_edit'), tool('docs_read')],
     {
       economy,
       groups: [
         { id: 'rive', toolNames: ['rive_run'], label: 'Rive' },
-        { id: 'office', toolNames: ['office_edit', 'office_read'], description: 'Office docs' },
+        { id: 'docs', toolNames: ['docs_edit', 'docs_read'], description: 'Document tools' },
       ],
     },
     invalid,
@@ -56,7 +56,7 @@ describe('ToolAvailabilityRuntime — full mode', () => {
       plan.activeTools.includes('rive_run'),
       'grouped tools are active when economy is off',
     );
-    assert.ok(plan.activeTools.includes('office_edit'));
+    assert.ok(plan.activeTools.includes('docs_edit'));
     assert.ok(!plan.activeTools.includes(LOAD_TOOLS_NAME), 'no connector in full mode');
     assert.equal(plan.projectActiveTools, undefined);
     assert.equal(plan.gating, undefined);
@@ -78,7 +78,7 @@ describe('ToolAvailabilityRuntime — economy mode', () => {
     assert.ok(plan.activeTools.includes('Write'), 'ungrouped defaults to visible');
     assert.ok(plan.activeTools.includes(LOAD_TOOLS_NAME), 'connector is always visible');
     assert.ok(!plan.activeTools.includes('rive_run'), 'grouped tool hidden until loaded');
-    assert.ok(!plan.activeTools.includes('office_edit'));
+    assert.ok(!plan.activeTools.includes('docs_edit'));
   });
 
   test('a required orchestration tool stays pinned for the whole turn', () => {
@@ -87,7 +87,7 @@ describe('ToolAvailabilityRuntime — economy mode', () => {
     assert.ok(plan.gating?.activeNames().has('rive_run'));
     const next = plan.projectActiveTools!({ completedSteps: [] });
     assert.ok(next.activeTools.includes('rive_run'), 'required tool remains visible later');
-    assert.ok(!next.activeTools.includes('office_edit'), 'other deferred groups remain hidden');
+    assert.ok(!next.activeTools.includes('docs_edit'), 'other deferred groups remain hidden');
   });
 
   test('unknown required tool names are ignored', () => {
@@ -104,8 +104,8 @@ describe('ToolAvailabilityRuntime — economy mode', () => {
       'Read',
       'Write',
       'rive_run',
-      'office_edit',
-      'office_read',
+      'docs_edit',
+      'docs_read',
       LOAD_TOOLS_NAME,
       'invalid',
     ]) {
@@ -116,23 +116,16 @@ describe('ToolAvailabilityRuntime — economy mode', () => {
   test('the connector activates a group in the next request projection', () => {
     const plan = runtime(true).prepare([]);
     assert.ok(plan.projectActiveTools);
-    const next = plan.projectActiveTools!({ completedSteps: [loadStep('office')] });
-    assert.ok(
-      next.activeTools.includes('office_edit'),
-      'office group active after load_tools(office)',
-    );
-    assert.ok(next.activeTools.includes('office_read'));
+    const next = plan.projectActiveTools!({ completedSteps: [loadStep('docs')] });
+    assert.ok(next.activeTools.includes('docs_edit'), 'docs group active after load_tools(docs)');
+    assert.ok(next.activeTools.includes('docs_read'));
     assert.ok(!next.activeTools.includes('rive_run'), 'an unloaded group stays hidden');
   });
 
   test('gating exposes group members and tracks the current step snapshot', () => {
     const plan = runtime(true).prepare([]);
     assert.ok(plan.gating);
-    assert.deepEqual([...plan.gating!.gatedNames].sort(), [
-      'office_edit',
-      'office_read',
-      'rive_run',
-    ]);
+    assert.deepEqual([...plan.gating!.gatedNames].sort(), ['docs_edit', 'docs_read', 'rive_run']);
     assert.ok(!plan.gating!.activeNames().has('rive_run'), 'rive hidden at step 0');
     plan.projectActiveTools!({ completedSteps: [loadStep('rive')] });
     assert.ok(plan.gating!.activeNames().has('rive_run'), 'snapshot updated after rive load');
@@ -143,8 +136,8 @@ describe('ToolAvailabilityRuntime — economy mode', () => {
       .prepare([])
       .providerTools.find((t) => t.name === LOAD_TOOLS_NAME);
     assert.ok(connector);
-    assert.deepEqual(await connector!.impl({ group: 'office' }, ctx), {
-      loaded: ['office_edit', 'office_read'],
+    assert.deepEqual(await connector!.impl({ group: 'docs' }, ctx), {
+      loaded: ['docs_edit', 'docs_read'],
     });
     await assert.rejects(async () => connector!.impl({ group: 'nope' }, ctx), /Unknown tool group/);
   });
@@ -158,13 +151,13 @@ describe('ToolAvailabilityRuntime — durable ledger seed', () => {
   test('a prior-turn load_tools call re-activates the group at step 0', () => {
     const plan = runtime(true).prepare([event(LOAD_TOOLS_NAME, { group: 'rive' })]);
     assert.ok(plan.activeTools.includes('rive_run'), 'seeded group active from turn start');
-    assert.ok(!plan.activeTools.includes('office_edit'), 'unseeded group still hidden');
+    assert.ok(!plan.activeTools.includes('docs_edit'), 'unseeded group still hidden');
   });
 
   test('historical load_tool (PR#30) and connect_tool_source (PR#34) calls also seed', () => {
-    const fromDeferred = runtime(true).prepare([event('load_tool', { namespace: 'office' })]);
+    const fromDeferred = runtime(true).prepare([event('load_tool', { namespace: 'docs' })]);
     assert.ok(
-      fromDeferred.activeTools.includes('office_edit'),
+      fromDeferred.activeTools.includes('docs_edit'),
       'load_tool namespace seeds the group',
     );
 
@@ -178,7 +171,7 @@ describe('ToolAvailabilityRuntime — durable ledger seed', () => {
   test('an unknown seeded group id is ignored (forward compatible)', () => {
     const plan = runtime(true).prepare([event(LOAD_TOOLS_NAME, { group: 'ghost' })]);
     assert.ok(!plan.activeTools.includes('rive_run'));
-    assert.ok(!plan.activeTools.includes('office_edit'));
+    assert.ok(!plan.activeTools.includes('docs_edit'));
   });
 });
 
@@ -190,9 +183,9 @@ describe('ToolAvailabilityRuntime — diagnostics', () => {
     assert.equal(d!.mode, 'economy');
     assert.equal(d!.connectorToolName, LOAD_TOOLS_NAME);
     assert.deepEqual(d!.enabledSourceIds, [], 'no group loaded at step 0');
-    assert.deepEqual(d!.availableSourceIds, ['office', 'rive']);
+    assert.deepEqual(d!.availableSourceIds, ['docs', 'rive']);
     assert.deepEqual(d!.visibleToolNamesBySource, {
-      office: ['office_edit', 'office_read'],
+      docs: ['docs_edit', 'docs_read'],
       rive: ['rive_run'],
     });
     assert.ok(
@@ -202,7 +195,7 @@ describe('ToolAvailabilityRuntime — diagnostics', () => {
     assert.ok((d!.toolSchemaCharReduction ?? 0) > 0);
     // full = visible + hidden must hold (the connector is counted on both
     // sides, so it cancels — guards against the hiddenToolCount off-by-one).
-    assert.equal(d!.hiddenToolCount, 3, 'rive(1) + office(2) tools are hidden at step 0');
+    assert.equal(d!.hiddenToolCount, 3, 'rive(1) + docs(2) tools are hidden at step 0');
     assert.equal(d!.fullToolCount, (d!.visibleToolCount ?? 0) + (d!.hiddenToolCount ?? 0));
   });
 
@@ -211,7 +204,7 @@ describe('ToolAvailabilityRuntime — diagnostics', () => {
     const active = plan.projectActiveTools!({ completedSteps: [loadStep('rive')] }).activeTools;
     const d = plan.diagnostics(active, 100);
     assert.deepEqual(d!.enabledSourceIds, ['rive']);
-    assert.deepEqual(d!.availableSourceIds, ['office']);
+    assert.deepEqual(d!.availableSourceIds, ['docs']);
   });
 });
 
@@ -227,15 +220,15 @@ describe('ToolAvailabilityRuntime — connector shape', () => {
   test('lists every group in its description and never requires permission', () => {
     const c = connector();
     assert.match(c.description, /rive/);
-    assert.match(c.description, /office/);
+    assert.match(c.description, /docs/);
     assert.match(c.description, /Rive/); // rive group's label
-    assert.match(c.description, /Office docs/); // office group's description
+    assert.match(c.description, /Document tools/); // docs group's description
     assert.equal(c.permissionRequired, false);
   });
 
   test('loading a group returns exactly its tool names — a thin result, no schema', async () => {
-    const result = await connector().impl({ group: 'office' }, ctx);
-    assert.deepEqual(result, { loaded: ['office_edit', 'office_read'] });
+    const result = await connector().impl({ group: 'docs' }, ctx);
+    assert.deepEqual(result, { loaded: ['docs_edit', 'docs_read'] });
     const keys = Object.keys(result as object);
     assert.ok(
       !keys.includes('schema') && !keys.includes('parameters') && !keys.includes('inputSchema'),

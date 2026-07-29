@@ -97,7 +97,7 @@ export function BotChatChannelDetail(props: {
   const readiness = viewState.readiness;
   const readinessCopy = botReadinessCopyForSupport(support, readiness, locale);
   const quickOnboarding = supportsQuickOnboarding(provider);
-  const qrOnlyOnboarding = provider === 'wechat' || provider === 'whatsapp';
+  const qrOnlyOnboarding = provider === 'wechat';
   // PR1197 review (P1-8): the scan-login action row belongs to quick mode only.
   // WeChat has no manual mode, so it always uses the scan affordance. In manual
   // mode the runtime providers (e.g. DingTalk) must fall through to the shared
@@ -197,16 +197,9 @@ export function BotChatChannelDetail(props: {
                   <Button type="button" disabled={props.actionBusy} onClick={() => setScanLoginOpen(true)}>
                     {provider === 'wecom' ? detailCopy.quickBind : provider === 'wechat' ? detailCopy.scanLogin : detailCopy.scanConnect}
                   </Button>
-                  {(
-                    (provider === 'wechat' && (channel.token || status?.identity))
-                    || (provider === 'whatsapp' && channel.sessionConfigured)
-                  ) && (
+                  {provider === 'wechat' && (channel.token || status?.identity) && (
                     <Button type="button" variant="secondary" disabled={props.actionBusy} onClick={() => void props.onDisconnectSession()}>
-                      {props.pendingAction === 'disconnect'
-                        ? detailCopy.disconnecting
-                        : provider === 'whatsapp'
-                          ? detailCopy.disconnectWhatsapp
-                          : detailCopy.disconnectWechat}
+                      {props.pendingAction === 'disconnect' ? detailCopy.disconnecting : detailCopy.disconnectWechat}
                     </Button>
                   )}
                   {provider === 'wechat' && (
@@ -280,7 +273,7 @@ export function BotChatChannelDetail(props: {
           />
         )}
 
-        {quickOnboarding && provider !== 'wechat' && (provider === 'whatsapp' || setupMode === 'quick') && (
+        {quickOnboarding && provider !== 'wechat' && setupMode === 'quick' && (
           <section className="settingsBotQuickSetup" aria-label={detailCopy.quickAria(providerPresentation.label)}>
             <div>
               <strong>
@@ -288,18 +281,14 @@ export function BotChatChannelDetail(props: {
                   ? detailCopy.quickWecomTitle
                   : provider === 'qq'
                     ? detailCopy.quickQqTitle
-                    : provider === 'whatsapp'
-                      ? detailCopy.quickWhatsappTitle
-                      : detailCopy.quickTitle}
+                    : detailCopy.quickTitle}
               </strong>
               <p>
                 {provider === 'wecom'
                   ? detailCopy.quickWecomDetail
                   : provider === 'qq'
                     ? detailCopy.quickQqDetail
-                    : provider === 'whatsapp'
-                      ? detailCopy.quickWhatsappDetail
-                      : detailCopy.quickDetail}
+                    : detailCopy.quickDetail}
               </p>
             </div>
             {provider === 'feishu' ? (
@@ -318,12 +307,6 @@ export function BotChatChannelDetail(props: {
               {provider === 'wecom' ? detailCopy.beginQuickBind : detailCopy.scanWith(provider === 'feishu' && feishuBrand === 'lark' ? 'Lark' : providerPresentation.label)}
             </Button>
           </section>
-        )}
-
-        {provider === 'whatsapp' && (
-          <Alert variant="warning">
-            <AlertDescription>{detailCopy.whatsappProtocolNotice}</AlertDescription>
-          </Alert>
         )}
 
         {/* PR-BOT-WECHAT-SCAN-LOGIN-0 (WAWQAQ msg `2fa6ada6` screenshots):

@@ -93,8 +93,6 @@ export function botDisplayLabel(platform: BotPlatform): string {
       return 'QQ';
     case 'slack':
       return 'Slack';
-    case 'whatsapp':
-      return 'WhatsApp';
   }
 }
 

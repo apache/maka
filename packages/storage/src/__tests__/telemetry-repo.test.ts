@@ -53,10 +53,10 @@ describe('FileTelemetryRepo', () => {
           toolSchemaChangeReason: 'tool_source_enabled',
           toolAvailability: {
             mode: 'economy',
-            enabledSourceIds: ['office'],
+            enabledSourceIds: ['docs'],
             availableSourceIds: ['rive'],
             connectorToolName: 'load_tools',
-            visibleToolNamesBySource: { office: ['office_edit'] },
+            visibleToolNamesBySource: { docs: ['docs_edit'] },
             hiddenToolCount: 1,
           },
         }),
@@ -67,7 +67,7 @@ describe('FileTelemetryRepo', () => {
       assert.equal(row?.systemPromptHash, 'sys-hash');
       assert.equal(row?.toolSchemaChangeReason, 'tool_source_enabled');
       assert.equal(row?.toolAvailability?.mode, 'economy');
-      assert.deepEqual(row?.toolAvailability?.enabledSourceIds, ['office']);
+      assert.deepEqual(row?.toolAvailability?.enabledSourceIds, ['docs']);
       assert.equal(row?.toolAvailability?.hiddenToolCount, 1);
     });
   });

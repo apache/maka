@@ -75,8 +75,7 @@ export async function seedSkillsMarketFixture(workspaceRoot: string): Promise<vo
   }
 
   // A couple of workspace skills so 已安装 is not empty and one managed
-  // source shows as installed in the grid. The bundled OfficeCLI skills
-  // (seeded separately after the fixture) populate the 内置 tab.
+  // source shows as installed in the grid.
   const workspaceSkills: ReadonlyArray<{ id: string; name: string; description: string }> = [
     { id: 'meeting-followup', name: '会议跟进', description: '从会议记录里抽取决定、风险和 owner，生成下一步任务清单。' },
     { id: 'daily-standup', name: '每日站会', description: '汇总昨日进展、今日计划和阻塞，生成简短的站会同步。' },

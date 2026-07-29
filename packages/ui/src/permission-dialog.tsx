@@ -106,7 +106,7 @@ export function PermissionPrompt(props: {
   const reason = props.request.reason in REASON_TONE ? props.request.reason as ReasonKind : 'custom';
   const preset: ReasonPreset = { prompt: copy.reason[reason], tone: REASON_TONE[reason] };
   const summary = renderPermissionSummary(props.request, copy);
-  const details = renderPermissionDetails(props.request, fullArgsOpen, copy);
+  const details = renderPermissionDetails(props.request, fullArgsOpen);
   const additionalArgs = permissionAdditionalArgs(props.request);
   const showDisclosure = props.request.toolName === 'WriteStdin'
     || details !== undefined
@@ -386,11 +386,6 @@ function renderPermissionSummary(request: AnyPermissionRequestEvent, copy: Conve
         </>
       );
     }
-    case 'OfficeDocumentEdit': {
-      const path = typeof args.path === 'string' ? args.path : undefined;
-      if (!path) return undefined;
-      return <p className="maka-permission-path"><code>{redactSecrets(path)}</code></p>;
-    }
     case 'WebFetch': {
       const url = typeof args.url === 'string' ? args.url : undefined;
       if (!url) return undefined;
@@ -406,7 +401,6 @@ function renderPermissionSummary(request: AnyPermissionRequestEvent, copy: Conve
 function renderPermissionDetails(
   request: AnyPermissionRequestEvent,
   writeStdinExpanded: boolean,
-  copy: ConversationCopy['permissionPrompt'],
 ): ReactNode | undefined {
   if (isAdditionalPermissionRequest(request)) return undefined;
   const args = (request.args ?? {}) as Record<string, unknown>;
@@ -440,31 +434,6 @@ function renderPermissionDetails(
         </div>
       );
     }
-    case 'OfficeDocumentEdit': {
-      const operation = typeof args.operation === 'string' ? args.operation : undefined;
-      const target = typeof args.target === 'string' ? args.target : undefined;
-      const elementType = typeof args.elementType === 'string' ? args.elementType : undefined;
-      const index = typeof args.index === 'number' ? args.index : undefined;
-      const propsArg = args.props && typeof args.props === 'object' && !Array.isArray(args.props)
-        ? args.props as Record<string, unknown>
-        : {};
-      const propEntries = Object.entries(propsArg).slice(0, 6);
-      const hiddenProps = Math.max(0, Object.keys(propsArg).length - propEntries.length);
-      const lines = [
-        operation && `${copy.officeField.operation}=${redactSecrets(operation)}`,
-        target && `${copy.officeField.target}=${redactSecrets(target)}`,
-        elementType && `${copy.officeField.element}=${redactSecrets(elementType)}`,
-        index !== undefined && `${copy.officeField.position}=${index}`,
-        ...propEntries.map(([key, value]) => `${redactSecrets(key)}=${permissionValuePreview(value, copy)}`),
-      ].filter((line): line is string => Boolean(line));
-      if (lines.length === 0) return undefined;
-      return (
-        <pre className="maka-code maka-permission-preview">
-          {lines.join('\n')}
-          {hiddenProps > 0 && `\n… ${copy.hiddenProperties(hiddenProps)}`}
-        </pre>
-      );
-    }
     default:
       return undefined;
   }
@@ -480,7 +449,6 @@ function permissionAdditionalArgs(request: AnyPermissionRequestEvent): Record<st
     }
     case 'Write':
     case 'Edit':
-    case 'OfficeDocumentEdit':
     case 'WriteStdin':
       return undefined;
     default:
@@ -507,7 +475,6 @@ function permissionPrompt(request: AnyPermissionRequestEvent, preset: ReasonPres
   if (isAdditionalPermissionRequest(request)) return copy.additionalPermission;
   if (isSandboxEscalationRequest(request)) return copy.sandboxEscalation;
   if (request.toolName === 'Edit') return copy.editFile;
-  if (request.toolName === 'OfficeDocumentEdit') return copy.editOffice;
   return preset.prompt;
 }
 
@@ -523,8 +490,6 @@ function permissionDisclosureLabel(
       return copy.disclosure.content;
     case 'WriteStdin':
       return copy.disclosure.input;
-    case 'OfficeDocumentEdit':
-      return copy.disclosure.changes;
     default:
       return additionalArgs ? copy.disclosure.fullArguments : copy.disclosure.details;
   }
@@ -544,14 +509,4 @@ function isSandboxEscalationRequest(
 
 function isOneShotPermissionRequest(request: AnyPermissionRequestEvent): boolean {
   return isAdditionalPermissionRequest(request) || isSandboxEscalationRequest(request);
-}
-
-function permissionValuePreview(value: unknown, copy: ConversationCopy['permissionPrompt']): string {
-  if (typeof value === 'string') {
-    const safe = redactSecrets(value);
-    return safe.length > 160 ? `${safe.slice(0, 160)}…` : safe;
-  }
-  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
-  if (typeof value === 'boolean') return value ? 'true' : 'false';
-  return copy.unsupportedValue;
 }

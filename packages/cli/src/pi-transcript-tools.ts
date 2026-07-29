@@ -532,7 +532,7 @@ function renderToolResult(entry: MakaPiToolEntry, width: number): string[] {
     return renderCappedResultText(plainResultText(entry), width);
   }
   // Everything else — json lists (Grep/Glob), agent reports, web-search results,
-  // subagent / workflow summaries, office-doc output — is content the user
+  // subagent / workflow summaries, structured tool output — is content the user
   // expands to read in full, so render it without the cap, like a diff.
   return renderToolText(plainResultText(entry), width);
 }

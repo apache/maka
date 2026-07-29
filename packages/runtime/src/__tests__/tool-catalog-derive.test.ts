@@ -50,8 +50,8 @@ describe('projectEffectiveProductToolSurface', () => {
       host: 'desktop',
       tools: [
         tool('Read'),
-        tool('OfficeDocument'),
-        tool('OfficeDocumentEdit'),
+        tool('browser_navigate'),
+        tool('browser_click'),
         tool('agent_spawn'),
         tool('agent_swarm'),
         tool('agent_list'),
@@ -67,42 +67,43 @@ describe('projectEffectiveProductToolSurface', () => {
 
     assert.deepEqual(
       surface.tools.map((candidate) => candidate.name),
-      ['Read', 'OfficeDocument', 'OfficeDocumentEdit', 'benchmark_progress', 'mcp__server__tool'],
+      ['Read', 'browser_navigate', 'browser_click', 'benchmark_progress', 'mcp__server__tool'],
     );
     assert.deepEqual([...surface.toolNames].sort(), [
-      'OfficeDocument',
-      'OfficeDocumentEdit',
       'Read',
       'benchmark_progress',
+      'browser_click',
+      'browser_navigate',
       'mcp__server__tool',
     ]);
     assert.deepEqual([...surface.hostCapabilities.toolNames].sort(), [...surface.toolNames].sort());
-    assert.deepEqual([...(surface.hostCapabilities.capabilities ?? [])], ['office']);
+    assert.equal(surface.hostCapabilities.capabilities, undefined);
     assert.deepEqual(surface.toolAvailability, {
       economy: true,
       groups: [
         {
-          id: 'office',
-          label: 'Office',
-          description: 'Read and edit Office documents (Word, Excel, PowerPoint, PDF).',
-          toolNames: ['OfficeDocument', 'OfficeDocumentEdit'],
+          id: 'browser',
+          label: 'Browser',
+          description:
+            'Drive the embedded browser: navigate, snapshot, click, type, wait, extract.',
+          toolNames: ['browser_navigate', 'browser_click'],
         },
       ],
     });
-    assert.deepEqual(surface.boundSurfaceIds, ['office']);
+    assert.deepEqual(surface.boundSurfaceIds, ['browser']);
     assert.deepEqual(surface.identity, {
       policy: {
         economy: true,
         disabledSurfaceIds: ['agent'],
       },
-      productToolNames: ['OfficeDocument', 'OfficeDocumentEdit', 'Read'],
+      productToolNames: ['Read', 'browser_click', 'browser_navigate'],
     });
   });
 
   it('keeps every derived surface snapshot immutable at runtime', () => {
     const surface = projectEffectiveProductToolSurface({
       host: 'desktop',
-      tools: [tool('Read'), tool('OfficeDocument')],
+      tools: [tool('Read'), tool('browser_navigate')],
       policy: { economy: true },
     });
     const group = surface.toolAvailability.groups[0];
@@ -110,10 +111,6 @@ describe('projectEffectiveProductToolSurface', () => {
     assert.throws(() => (surface.toolNames as Set<string>).clear(), TypeError);
     assert.throws(
       () => (surface.hostCapabilities.toolNames as Set<string>).add('Write'),
-      TypeError,
-    );
-    assert.throws(
-      () => (surface.hostCapabilities.capabilities as Set<string>).delete('office'),
       TypeError,
     );
     assert.throws(
@@ -128,30 +125,30 @@ describe('projectEffectiveProductToolSurface', () => {
       isSubsetOf(other: ReadonlySet<unknown>): boolean;
     };
     assert.deepEqual([...setAlgebra.union(new Set(['Write']))].sort(), [
-      'OfficeDocument',
       'Read',
       'Write',
+      'browser_navigate',
     ]);
     assert.deepEqual([...setAlgebra.intersection(new Set(['Read']))], ['Read']);
-    assert.equal(setAlgebra.isSubsetOf(new Set(['OfficeDocument', 'Read', 'Write'])), true);
-    assert.deepEqual([...surface.toolNames].sort(), ['OfficeDocument', 'Read']);
-    assert.deepEqual([...surface.hostCapabilities.toolNames].sort(), ['OfficeDocument', 'Read']);
-    assert.deepEqual([...(surface.hostCapabilities.capabilities ?? [])], ['office']);
+    assert.equal(setAlgebra.isSubsetOf(new Set(['Read', 'Write', 'browser_navigate'])), true);
+    assert.deepEqual([...surface.toolNames].sort(), ['Read', 'browser_navigate']);
+    assert.deepEqual([...surface.hostCapabilities.toolNames].sort(), ['Read', 'browser_navigate']);
+    assert.equal(surface.hostCapabilities.capabilities, undefined);
     assert.deepEqual(surface.toolAvailability.groups, [
       {
-        id: 'office',
-        label: 'Office',
-        description: 'Read and edit Office documents (Word, Excel, PowerPoint, PDF).',
-        toolNames: ['OfficeDocument'],
+        id: 'browser',
+        label: 'Browser',
+        description: 'Drive the embedded browser: navigate, snapshot, click, type, wait, extract.',
+        toolNames: ['browser_navigate'],
       },
     ]);
-    assert.deepEqual(surface.identity.productToolNames, ['OfficeDocument', 'Read']);
+    assert.deepEqual(surface.identity.productToolNames, ['Read', 'browser_navigate']);
   });
 
   it('removes a catalog surface that is unsupported on the selected host', () => {
     const surface = projectEffectiveProductToolSurface({
       host: 'headless',
-      tools: [tool('Read'), tool('OfficeDocument'), tool('mcp__server__tool')],
+      tools: [tool('Read'), tool('browser_navigate'), tool('mcp__server__tool')],
       policy: { economy: true },
     });
 
@@ -235,7 +232,7 @@ describe('projectEffectiveProductToolSurface', () => {
   it('applies catalog affinity consistently across Desktop, CLI, and Headless', () => {
     const tools = [
       tool('Read'),
-      tool('OfficeDocument'),
+      tool('browser_navigate'),
       tool('agent_spawn'),
       tool('agent_swarm'),
       tool('agent_list'),
@@ -244,14 +241,14 @@ describe('projectEffectiveProductToolSurface', () => {
     const expected = {
       desktop: {
         productToolNames: [
-          'OfficeDocument',
           'Read',
           'agent_list',
           'agent_output',
           'agent_spawn',
           'agent_swarm',
+          'browser_navigate',
         ],
-        groupIds: ['office', 'agent'],
+        groupIds: ['browser', 'agent'],
       },
       cli: {
         productToolNames: ['Read', 'agent_list', 'agent_output', 'agent_spawn', 'agent_swarm'],
@@ -281,10 +278,10 @@ describe('projectEffectiveProductToolSurface', () => {
 });
 
 describe('buildHostCapabilitiesFromBinding', () => {
-  it('collects bound tool names and capability tags from catalog rows', () => {
-    const host = buildHostCapabilitiesFromBinding(['Read', 'OfficeDocument', 'OfficeDocumentEdit']);
-    assert.deepEqual([...host.toolNames].sort(), ['OfficeDocument', 'OfficeDocumentEdit', 'Read']);
-    assert.deepEqual([...(host.capabilities ?? [])].sort(), ['office']);
+  it('collects bound tool names without inventing capability tags', () => {
+    const host = buildHostCapabilitiesFromBinding(['Read', 'maka_computer']);
+    assert.deepEqual([...host.toolNames].sort(), ['Read', 'maka_computer']);
+    assert.equal(host.capabilities, undefined);
   });
 
   it('omits capabilities when no bound tool carries tags', () => {
@@ -298,22 +295,21 @@ describe('buildDeferredToolGroupsFromCatalog', () => {
   it('includes only supported deferred surfaces that have bound members', () => {
     const groups = buildDeferredToolGroupsFromCatalog('desktop', [
       'Read',
-      'OfficeDocument',
+      'maka_computer',
       'agent_spawn',
       'agent_list',
       'RiveWorkflow',
     ]);
-    assert.deepEqual(groups.map((group) => group.id).sort(), ['agent', 'office', 'rive']);
-    const office = groups.find((group) => group.id === 'office');
-    assert.deepEqual(office?.toolNames, ['OfficeDocument']);
-    assert.equal(office?.label, 'Office');
+    assert.deepEqual(groups.map((group) => group.id).sort(), ['agent', 'computer_use', 'rive']);
+    const computerUse = groups.find((group) => group.id === 'computer_use');
+    assert.deepEqual(computerUse?.toolNames, ['maka_computer']);
+    assert.equal(computerUse?.label, 'Computer');
     const agent = groups.find((group) => group.id === 'agent');
     assert.deepEqual(agent?.toolNames, ['agent_spawn', 'agent_list']);
   });
 
   it('never advertises desktop-only packs on cli or headless', () => {
     const bound = [
-      'OfficeDocument',
       'browser_navigate',
       'maka_computer',
       'RiveWorkflow',
@@ -329,7 +325,7 @@ describe('buildDeferredToolGroupsFromCatalog', () => {
         ['agent'],
       );
       assert.equal(
-        groups.some((group) => ['office', 'browser', 'computer_use', 'rive'].includes(group.id)),
+        groups.some((group) => ['browser', 'computer_use', 'rive'].includes(group.id)),
         false,
       );
     }

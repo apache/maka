@@ -265,15 +265,12 @@ export function BotChatSettingsPage(props: {
   async function disconnectLinkedSession() {
     const provider = selected;
     const providerChannel = props.settings.botChat.channels[provider];
-    if (provider !== 'wechat' && provider !== 'whatsapp') return;
+    if (provider !== 'wechat') return;
     if (!beginBotAction(provider, 'disconnect')) return;
     try {
-      const isWhatsApp = provider === 'whatsapp';
       const ok = await toast.confirm({
-        title: isWhatsApp ? copy.disconnectWhatsappTitle : copy.disconnectTitle,
-        description: isWhatsApp
-          ? copy.disconnectWhatsappDescription
-          : copy.disconnectDescription,
+        title: copy.disconnectTitle,
+        description: copy.disconnectDescription,
         confirmLabel: copy.disconnect,
         cancelLabel: copy.cancel,
         destructive: true,
@@ -282,36 +279,22 @@ export function BotChatSettingsPage(props: {
       const isIlink = providerChannel.webhookUrl?.trim().startsWith('https://ilinkai.weixin.qq.com') ?? false;
       const saved = await updateChannelFor(
         provider,
-        isWhatsApp
-          ? {
-              enabled: false,
-              sessionConfigured: false,
-              botUserId: undefined,
-              connected: false,
-              readiness: 'scaffolded',
-              readinessReason: undefined,
-              readinessUpdatedAt: Date.now(),
-              lastError: undefined,
-            }
-          : {
-              token: '',
-              ...(isIlink ? { webhookUrl: '' } : {}),
-              botUserId: undefined,
-              connected: false,
-              readiness: 'scaffolded',
-              readinessReason: undefined,
-              readinessUpdatedAt: Date.now(),
-              lastError: undefined,
-            },
+        {
+          token: '',
+          ...(isIlink ? { webhookUrl: '' } : {}),
+          botUserId: undefined,
+          connected: false,
+          readiness: 'scaffolded',
+          readinessReason: undefined,
+          readinessUpdatedAt: Date.now(),
+          lastError: undefined,
+        },
       );
       if (!saved) return;
       if (!botPageMountedRef.current) return;
       await refreshBotStatuses();
       if (botPageMountedRef.current) {
-        toast.success(
-          isWhatsApp ? copy.whatsappDisconnected : copy.disconnected,
-          copy.credentialsCleared,
-        );
+        toast.success(copy.disconnected, copy.credentialsCleared);
       }
     } finally {
       finishBotAction(provider, 'disconnect');

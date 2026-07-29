@@ -56,10 +56,6 @@ const WEB_SEARCH_ERROR_SHAPE = defineObjectShape<Result<'web_search_error'>>()(
   ['kind', 'ok', 'provider', 'reason', 'message'],
   ['query', 'credentialSource'],
 );
-const OFFICE_DOCUMENT_SHAPE = defineObjectShape<Result<'office_document'>>()(
-  ['kind', 'ok'],
-  ['operation', 'path', 'args', 'stdout', 'stderr', 'truncated', 'reason', 'message'],
-);
 const EXPLORE_SHAPE = defineObjectShape<ExploreResult>()(
   [
     'kind',
@@ -283,19 +279,6 @@ function isNonShellToolResultContent(value: unknown): value is ToolResultContent
         typeof value.reason === 'string' &&
         typeof value.message === 'string' &&
         isOptionalString(value.credentialSource)
-      );
-    case 'office_document':
-      return (
-        hasExactShape(value, OFFICE_DOCUMENT_SHAPE) &&
-        typeof value.ok === 'boolean' &&
-        isOptionalString(value.operation) &&
-        isOptionalString(value.path) &&
-        (value.args === undefined || isStringArray(value.args)) &&
-        isOptionalString(value.stdout) &&
-        isOptionalString(value.stderr) &&
-        (value.truncated === undefined || typeof value.truncated === 'boolean') &&
-        isOptionalString(value.reason) &&
-        isOptionalString(value.message)
       );
     case 'explore_agent':
       return isExploreResult(value);

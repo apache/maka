@@ -51,9 +51,6 @@ const OS_PERMISSION_ICONS: Record<OsPermissionId, ComponentType<LucideProps>> = 
   automation: MousePointer2,
 };
 
-const OFFICECLI_INSTALL_COMMAND = 'curl -fsSL https://raw.githubusercontent.com/iOfficeAI/OfficeCLI/main/install.sh | bash';
-const OFFICECLI_RELEASES_URL = 'https://github.com/iOfficeAI/OfficeCLI/releases';
-
 export function PermissionCenterPage() {
   const locale = useUiLocale();
   const copy = getPermissionCenterCopy(locale);
@@ -298,38 +295,12 @@ function permissionActionFailureCopy(reason: string, message: string | undefined
 function CapabilityRow(props: { capability: CapabilitySnapshot; copy: PermissionCenterCopy; locale: UiLocale }) {
   const { capability } = props;
   const { copy, locale } = props;
-  const toast = useToast();
-  const [copyingOfficeCliInstall, setCopyingOfficeCliInstall] = useState(false);
-  const copyOfficeCliInstallGuard = useActionGuard<'copy'>();
-  const capabilityRowMountedRef = useMountedRef();
   const readinessCopy = copy.readiness[capability.readiness];
   const capabilityLabel = localizedCapabilityLabel(capability, locale);
   const featureReason = localizedSnapshotText(capability.feature.reason, locale);
   const configurationReason = localizedSnapshotText(capability.configuration.reason, locale);
   const runtimeReason = localizedSnapshotText(capability.runtimeProbe.reason, locale);
   const guidance = localizedCapabilityGuidance(capability, locale, copy);
-  const showOfficeCliInstallActions =
-    capability.id === 'office_documents' && capability.runtimeProbe.state !== 'healthy';
-
-  async function copyOfficeCliInstallCommand() {
-    if (!copyOfficeCliInstallGuard.begin('copy')) return;
-    setCopyingOfficeCliInstall(true);
-    try {
-      await navigator.clipboard.writeText(OFFICECLI_INSTALL_COMMAND);
-      if (capabilityRowMountedRef.current) {
-        toast.success(copy.installCopied, copy.installCopiedDetail);
-      }
-    } catch {
-      if (capabilityRowMountedRef.current) {
-        toast.error(copy.copyFailed, copy.copyFailedDetail);
-      }
-    } finally {
-      copyOfficeCliInstallGuard.finish();
-      if (capabilityRowMountedRef.current) {
-        setCopyingOfficeCliInstall(false);
-      }
-    }
-  }
 
   return (
     <li className="settingsCapabilityRow" data-readiness={capability.readiness}>
@@ -399,24 +370,6 @@ function CapabilityRow(props: { capability: CapabilitySnapshot; copy: Permission
               <li key={`${capability.id}-guidance-${index}`}>{item}</li>
             ))}
           </ul>
-          {showOfficeCliInstallActions && (
-            <div className="settingsCapabilityGuidanceActions" role="group" aria-label={copy.officeAria}>
-              <code>{OFFICECLI_INSTALL_COMMAND}</code>
-              <div>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  disabled={copyingOfficeCliInstall}
-                  onClick={() => void copyOfficeCliInstallCommand()}
-                >
-                  {copyingOfficeCliInstall ? copy.copying : copy.copyInstall}
-                </Button>
-                <a href={OFFICECLI_RELEASES_URL} target="_blank" rel="noreferrer noopener" aria-label={copy.openDownload}>
-                  {copy.openDownload}
-                </a>
-              </div>
-            </div>
-          )}
         </div>
       )}
       {/*
@@ -552,7 +505,6 @@ function prettyCapabilityId(id: CapabilityId): string {
 }
 
 function localizedCapabilityLabel(capability: CapabilitySnapshot, locale: UiLocale): string {
-  if (locale === 'en' && capability.id === 'office_documents') return 'Office documents';
   return capability.label;
 }
 
@@ -566,7 +518,6 @@ function localizedCapabilityGuidance(
   locale: UiLocale,
   copy: PermissionCenterCopy,
 ): readonly string[] {
-  if (locale === 'en' && capability.id === 'office_documents') return copy.officeGuidance;
   return capability.guidance.filter((item) => locale === 'zh' || !/[\u3400-\u9fff]/u.test(item));
 }
 

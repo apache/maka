@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { lstat, mkdir, readFile, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {
@@ -10,7 +9,6 @@ import {
   getSkillRuntimePreference,
   getBundledSkillSource,
   invalidSkillLockStatus,
-  isCurrentBundledSkillLock,
   isPathInside,
   isSafeSkillId,
   isSkillPreferenceReviewPending,
@@ -51,7 +49,7 @@ import {
 
 // Re-export runtime-facing skill exports so existing call sites and tests
 // keep importing from './skills.js' unchanged. Governance (lock, provenance,
-// managed-source status, Office seeding) stays defined below.
+// managed-source status and built-in skill seeding) stays defined below.
 export {
   buildSkillAgentTool,
   buildSkillSearchAgentTool,
@@ -214,15 +212,8 @@ interface ManagedSkillUpdateOptions {
   expectedSourceSha256?: string;
 }
 
-const BUNDLED_OFFICE_SKILLS = ['officecli-docx', 'officecli-xlsx', 'officecli-pptx']
-  .map((id) => getBundledSkillSource(id))
-  .filter((skill): skill is NonNullable<typeof skill> => skill !== undefined);
-
-// Reverse-engineered built-in skills (shipped, install-on-demand). Distinct
-// from the auto-seeded Office skills above: these never auto-install — the 内置
-// tab offers a per-skill install action (installBundledSkill). Their installed
-// copies carry a trusted `bundled` lock (sourceName maka-bundled) validated
-// against these hashes.
+// Shipped built-in skills are installed on demand from the 内置 tab. Their
+// installed copies carry a trusted `bundled` lock (sourceName maka-bundled).
 const BUNDLED_CATALOG_BODY_BY_ID = new Map(
   BUNDLED_SKILL_CATALOG.map((skill) => [skill.id, skill.body]),
 );
@@ -392,109 +383,6 @@ export function toSkillEntry(
   };
 }
 
-export async function ensureBundledOfficeSkills(root: string): Promise<{ created: string[]; updated: string[]; skipped: string[]; failed: string[] }> {
-  const created: string[] = [];
-  const updated: string[] = [];
-  const skipped: string[] = [];
-  const failed: string[] = [];
-  const skillsDir = join(root, 'skills');
-
-  let rootReal: string;
-  let skillsReal: string;
-  try {
-    await mkdir(skillsDir, { recursive: true, mode: 0o700 });
-    const skillsStat = await lstat(skillsDir);
-    if (!skillsStat.isDirectory() || skillsStat.isSymbolicLink()) {
-      return { created, updated, skipped, failed: BUNDLED_OFFICE_SKILLS.map((skill) => skill.id) };
-    }
-    [rootReal, skillsReal] = await Promise.all([realpath(root), realpath(skillsDir)]);
-    if (!isPathInside(rootReal, skillsReal)) {
-      return { created, updated, skipped, failed: BUNDLED_OFFICE_SKILLS.map((skill) => skill.id) };
-    }
-  } catch {
-    return { created, updated, skipped, failed: BUNDLED_OFFICE_SKILLS.map((skill) => skill.id) };
-  }
-
-  for (const skill of BUNDLED_OFFICE_SKILLS) {
-    const skillDir = join(skillsDir, skill.id);
-    const skillFile = join(skillDir, 'SKILL.md');
-    try {
-      await mkdir(skillDir, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
-        if (error.code !== 'EEXIST') throw error;
-      });
-      const skillReal = await realpath(skillDir);
-      if (!isPathInside(skillsReal, skillReal)) {
-        failed.push(skill.id);
-        continue;
-      }
-      await writeFile(skillFile, skill.body, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
-      if (!await writeBundledSkillLock(skillDir, skill.id, skill.body)) {
-        throw new Error('failed to write bundled skill lock');
-      }
-      created.push(skill.id);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-        const migration = await migrateLegacyBundledOfficeSkill(skill.id, skillFile, skill.body);
-        if (migration === 'updated') {
-          updated.push(skill.id);
-          continue;
-        }
-        if (migration === 'failed') {
-          failed.push(skill.id);
-          continue;
-        }
-        skipped.push(skill.id);
-        continue;
-      }
-      failed.push(skill.id);
-    }
-  }
-
-  return { created, updated, skipped, failed };
-}
-
-async function migrateLegacyBundledOfficeSkill(id: string, skillFile: string, currentBody: string): Promise<'updated' | 'skipped' | 'failed'> {
-  const source = getBundledSkillSource(id);
-  const legacyHashes =
-    source?.legacyContentSha256.map((hash) => hash.replace(/^sha256:/i, '')) ?? [];
-  if (legacyHashes.length === 0) return 'skipped';
-  try {
-    const existingStat = await lstat(skillFile);
-    if (!existingStat.isFile() || existingStat.isSymbolicLink()) return 'skipped';
-    const existing = await readFile(skillFile, 'utf8');
-    const existingHash = `sha256:${createHash('sha256').update(existing).digest('hex')}`;
-    if (!source?.legacyContentSha256.includes(existingHash)) {
-      if (existingHash === source?.contentSha256) {
-        if (!await writeBundledSkillLock(dirname(skillFile), id, currentBody)) return 'failed';
-      }
-      return 'skipped';
-    }
-    await writeFile(skillFile, currentBody, { encoding: 'utf8', mode: 0o600 });
-    if (!await writeBundledSkillLock(dirname(skillFile), id, currentBody)) return 'failed';
-    return 'updated';
-  } catch {
-    return 'failed';
-  }
-}
-
-async function writeBundledSkillLock(skillDir: string, id: string, body: string): Promise<boolean> {
-  const lockPath = join(skillDir, 'skill.lock.json');
-  const source = getBundledSkillSource(id);
-  if (!source || source.body !== body) return false;
-  const existing = await readExistingRegularFile(lockPath);
-  if (existing.kind === 'blocked') return false;
-  if (existing.kind === 'file') {
-    try {
-      const parsed = JSON.parse(existing.content);
-      if (isCurrentBundledSkillLock(parsed, source)) return true;
-    } catch {
-      // Invalid lock metadata is replaced by the trusted bundled writer.
-    }
-  }
-
-  return writeSkillLock(skillDir, createBundledSkillLock(source));
-}
-
 async function writeSkillLock(skillDir: string, lock: SkillLockFile): Promise<boolean> {
   const lockPath = join(skillDir, 'skill.lock.json');
   const tempPath = join(skillDir, `.skill.lock.json.${process.pid}.${Date.now()}.tmp`);
@@ -510,17 +398,6 @@ async function writeSkillLock(skillDir: string, lock: SkillLockFile): Promise<bo
   } catch {
     await unlink(tempPath).catch(() => {});
     return false;
-  }
-}
-
-async function readExistingRegularFile(path: string): Promise<{ kind: 'missing' } | { kind: 'blocked' } | { kind: 'file'; content: string }> {
-  try {
-    const existingStat = await lstat(path);
-    if (!existingStat.isFile() || existingStat.isSymbolicLink()) return { kind: 'blocked' };
-    return { kind: 'file', content: await readFile(path, 'utf8') };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'missing' };
-    return { kind: 'blocked' };
   }
 }
 
@@ -846,10 +723,9 @@ function parseBundledSkillCategory(body: string): ManagedSkillCategory {
 }
 
 /**
- * The built-in (内置) catalog: the auto-seeded Office skills plus the
- * reverse-engineered skills. `installed` reflects whether the current workspace
- * already has skills/<id>. The renderer surfaces this under the 内置 tab with a
- * per-entry install action that calls `installBundledSkill`.
+ * The built-in (内置) catalog. `installed` reflects whether the current
+ * workspace already has skills/<id>. The renderer surfaces this under the 内置
+ * tab with a per-entry install action that calls `installBundledSkill`.
  */
 export async function listBundledSkillCatalog(root: string): Promise<BundledSkillCatalogEntry[]> {
   const installedIds = new Set((await listInstalledSkills(root)).map((skill) => skill.id));
@@ -877,12 +753,10 @@ async function writeBundledCatalogLock(skillDir: string, id: string, body: strin
 /**
  * Install a built-in catalog skill into {root}/skills/<id> on demand. Mirrors
  * installManagedSkill's hardened write path (containment checks, fail-if-exists)
- * but sources the body from the shipped catalog. Office ids get the Office
- * bundled lock; reverse-engineered ids get the maka-bundled catalog lock.
+ * but sources the body from the shipped catalog.
  */
 export async function installBundledSkill(root: string, id: string): Promise<InstallBundledSkillResult> {
   if (!isSafeSkillId(id)) return { ok: false, reason: 'not_found' };
-  const officeBody = BUNDLED_OFFICE_SKILLS.find((skill) => skill.id === id)?.body;
   const body = BUNDLED_CATALOG_BODY_BY_ID.get(id);
   if (body === undefined) return { ok: false, reason: 'not_found' };
 
@@ -911,9 +785,7 @@ export async function installBundledSkill(root: string, id: string): Promise<Ins
       return { ok: false, reason: 'blocked_path' };
     }
     await writeFile(skillFile, body, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
-    const lockWritten = officeBody !== undefined
-      ? await writeBundledSkillLock(skillDir, id, body)
-      : await writeBundledCatalogLock(skillDir, id, body);
+    const lockWritten = await writeBundledCatalogLock(skillDir, id, body);
     if (!lockWritten) {
       await rm(skillDir, { recursive: true, force: true }).catch(() => {});
       return { ok: false, reason: 'write_failed' };

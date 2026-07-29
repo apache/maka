@@ -4,8 +4,7 @@
 // https://github.com/lobehub/lobe-icons) — the React package was NOT
 // adopted because its peerDependencies pull in antd + @lobehub/ui, which
 // we don't use. We copy only the handful of marks we render, so there is
-// zero runtime dependency. MiniMax comes directly from its official brand
-// package, documented beside the import below. Each brand logo remains the
+// zero runtime dependency. MiniMax comes from Simple Icons (CC0-1.0). Each brand logo remains the
 // trademark of its owner and is used here only to identify the provider.
 //
 // Color marks keep their brand fill; monochrome marks use `currentColor`
@@ -15,6 +14,7 @@
 
 import type { ProviderType } from '@maka/core';
 import type { ReactElement } from 'react';
+import { siMinimax } from 'simple-icons';
 import alibabaBrandMark from '../assets/provider-brands/alibabacloud.svg';
 import cerebrasBrandMark from '../assets/provider-brands/cerebras.svg';
 import cohereBrandMark from '../assets/provider-brands/cohere.svg';
@@ -28,7 +28,6 @@ import hunyuanBrandMark from '../assets/provider-brands/hunyuan.svg';
 import tencentCloudBrandMark from '../assets/provider-brands/tencentcloud.svg';
 import lmStudioBrandMark from '../assets/provider-brands/lmstudio.svg';
 import localAiBrandMark from '../assets/provider-brands/localai.svg';
-import minimaxBrandMark from '../assets/provider-brands/minimax-logo-only-vertical-color-bg-white-text.svg';
 import mistralBrandMark from '../assets/provider-brands/mistral.svg';
 import togetherBrandMark from '../assets/provider-brands/together.svg';
 import nvidiaMarkUrl from '../assets/provider-brands/nvidia.svg';
@@ -324,13 +323,13 @@ function ZAI(): ReactElement {
   return <ProviderAssetMask src={zaiMarkUrl} />;
 }
 
-// Vendored byte-for-byte from MiniMax's official brand package:
-// https://platform.minimax.io/docs/faq/contact-us#brand-resources
-// https://file.cdn.minimax.io/public/MiniMax_Logo.zip
-// Source member:
-// MiniMax_Logo/svg/logo-only/vertical/minimax_logo-only_vertical_color-bg_white-text.svg
+// MiniMax mark from simple-icons@15.22.0 (CC0-1.0).
 function MiniMaxMark(): ReactElement {
-  return <img src={minimaxBrandMark} alt="" />;
+  return (
+    <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
+      <path fill={`#${siMinimax.hex}`} d={siMinimax.path} />
+    </svg>
+  );
 }
 
 function GenericProviderMark(): ReactElement {
