@@ -503,6 +503,7 @@ async function exportSelectedSessionMetadata(
       workspaceRoot: plan.stateRoot,
       destinationRoot: stagingRoot,
       records: [snapshot.record],
+      boundaries: new Map([[plan.sessionId, snapshot.boundary]]),
       sessionIds: [plan.sessionId],
     });
     const relativePath = `sessions/${plan.sessionId}/session.jsonl`;

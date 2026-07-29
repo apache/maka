@@ -67,7 +67,7 @@ export async function exportLegacySessionTreeSnapshot(input: {
   workspaceRoot: string;
   destinationRoot: string;
   records: readonly SessionMetadataRecord[];
-  boundaries?: ReadonlyMap<string, ExecutionBoundary>;
+  boundaries: ReadonlyMap<string, ExecutionBoundary>;
   /** Optional selected-session export; omitted preserves the full backup behavior. */
   sessionIds?: readonly string[];
   now?: () => number;
@@ -104,6 +104,14 @@ export async function exportLegacySessionTreeSnapshot(input: {
         throw new Error('Session metadata export requires at least one selected session');
       }
     }
+    const missingBoundaryIds = records
+      .map((record) => record.header.id)
+      .filter((sessionId) => !input.boundaries.has(sessionId));
+    if (missingBoundaryIds.length > 0) {
+      throw new Error(
+        `Session metadata export execution boundary is missing: ${missingBoundaryIds.join(', ')}`,
+      );
+    }
     await mkdir(join(stagingRoot, 'sessions'), { recursive: true });
     for (const record of records) {
       const sourcePath = join(sourceSessionsRoot, record.header.id, 'session.jsonl');
@@ -112,14 +120,12 @@ export async function exportLegacySessionTreeSnapshot(input: {
       const destinationPath = join(stagingRoot, 'sessions', record.header.id, 'session.jsonl');
       await mkdir(dirname(destinationPath), { recursive: true });
       await writeFile(destinationPath, body, 'utf8');
-      const boundary = input.boundaries?.get(record.header.id);
-      if (boundary) {
-        await writeFile(
-          join(dirname(destinationPath), EXECUTION_BOUNDARY_TRANSFER_FILE),
-          encodeExecutionBoundaryTransfer(boundary),
-          'utf8',
-        );
-      }
+      const boundary = input.boundaries.get(record.header.id)!;
+      await writeFile(
+        join(dirname(destinationPath), EXECUTION_BOUNDARY_TRANSFER_FILE),
+        encodeExecutionBoundaryTransfer(boundary),
+        'utf8',
+      );
     }
     const manifest: SessionMetadataExportManifest = {
       format: SESSION_METADATA_EXPORT_FORMAT,

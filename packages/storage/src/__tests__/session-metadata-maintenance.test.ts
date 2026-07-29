@@ -7,6 +7,7 @@ import { createExternalExecutionBoundary, type CreateSessionInput } from '@maka/
 import {
   backupSessionMetadataDatabase,
   exportLegacySessionTree,
+  exportLegacySessionTreeSnapshot,
   SESSION_METADATA_EXPORT_FORMAT,
 } from '../session-metadata-maintenance.js';
 import {
@@ -116,6 +117,38 @@ describe('session metadata migration maintenance', () => {
     } finally {
       await store.close?.();
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('refuses to publish a snapshot without every selected execution boundary', async () => {
+    const container = await mkdtemp(join(tmpdir(), 'maka-session-metadata-boundary-export-'));
+    const workspaceRoot = join(container, 'workspace');
+    const destinationRoot = join(container, 'export');
+    const store = createSessionStore(workspaceRoot);
+    try {
+      const created = await store.create(makeInput());
+      const metadata = createSqliteSessionMetadataStore(
+        join(workspaceRoot, SQLITE_SESSION_METADATA_DATABASE_NAME),
+      );
+      try {
+        const record = await metadata.read(created.id);
+        await assert.rejects(
+          () =>
+            exportLegacySessionTreeSnapshot({
+              workspaceRoot,
+              destinationRoot,
+              records: [record],
+              boundaries: new Map(),
+            }),
+          /execution boundary.*missing/i,
+        );
+        await assert.rejects(() => readFile(destinationRoot), /ENOENT/);
+      } finally {
+        metadata.close();
+      }
+    } finally {
+      await store.close?.();
+      await rm(container, { recursive: true, force: true });
     }
   });
 });
