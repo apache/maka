@@ -312,21 +312,85 @@ test('Computer Use picture-in-picture mirror', async (t) => {
   });
 
   await t.test('the mirror is click-through until the pointer is on it', () => {
-    // Codex's tile always takes the click. This keeps the older promise that
-    // the mirror never blocks what is underneath it, and gives that up only
-    // for as long as someone is actually pointing at it — which the window can
-    // tell because `setIgnoreMouseEvents(true, {forward: true})` still
-    // forwards moves to the page.
-    const { pip, windows } = makePip();
+    // Hover is decided here, from the pointer, the way Codex decides it with a
+    // global NSEvent monitor rather than by asking its window. The first
+    // version let the page decide from forwarded mouse moves, and those drop —
+    // five injected moves arrived as two on a real machine.
+    let cursor = { x: 0, y: 0 };
+    const ticks: Array<() => void> = [];
+    const { pip, windows } = makePip({
+      cursorPoint: () => cursor,
+      scheduleHoverCheck: (cb: () => void) => {
+        ticks.push(cb);
+        return () => {};
+      },
+      resolveBounds: () => ({ x: 100, y: 100, width: 200, height: 125 }),
+    });
     pip.present({ sessionId: 's1', ...FRAME });
-    windows[0]!.fireReady();
-    assert.equal(windows[0]!.ignoringMouse, true, 'transparent to clicks at rest');
+    const w = windows[0]!;
+    w.setBounds({ x: 100, y: 100, width: 200, height: 125 });
+    w.fireReady();
+    const poll = () => {
+      const next = ticks.shift();
+      if (next) next();
+    };
 
-    windows[0]!.fireMessage('pip:hover', { inside: true });
-    assert.equal(windows[0]!.ignoringMouse, false, 'takes the pointer while hovered');
+    assert.equal(w.ignoringMouse, true, 'transparent to clicks at rest');
+    poll();
+    assert.equal(w.ignoringMouse, true, 'and while the pointer is elsewhere');
 
-    windows[0]!.fireMessage('pip:hover', { inside: false });
-    assert.equal(windows[0]!.ignoringMouse, true, 'and gives it straight back');
+    cursor = { x: 150, y: 150 };
+    poll();
+    assert.equal(w.ignoringMouse, false, 'takes the pointer while it is on the mirror');
+    assert.deepEqual(
+      w.sent.filter((m) => m.channel === 'pip:controls').at(-1)?.payload,
+      { visible: true },
+      'and the controls appear with it',
+    );
+
+    cursor = { x: 900, y: 900 };
+    poll();
+    assert.equal(w.ignoringMouse, true, 'and gives it straight back');
+    assert.deepEqual(
+      w.sent.filter((m) => m.channel === 'pip:controls').at(-1)?.payload,
+      { visible: false },
+    );
+  });
+
+  await t.test('a drag keeps the pointer, wherever the spring has got to', () => {
+    // The mirror trails the cursor by design, so mid-drag the pointer is often
+    // outside its bounds. Reading that as "the user left" would hand the clicks
+    // back in the middle of the gesture that needs them.
+    let cursor = { x: 150, y: 150 };
+    const ticks: Array<() => void> = [];
+    const { pip, windows } = makePip({
+      cursorPoint: () => cursor,
+      scheduleHoverCheck: (cb: () => void) => {
+        ticks.push(cb);
+        return () => {};
+      },
+      scheduleFrame: () => () => {},
+      resolveBounds: () => ({ x: 100, y: 100, width: 200, height: 125 }),
+    });
+    pip.present({ sessionId: 's1', ...FRAME });
+    const w = windows[0]!;
+    w.setBounds({ x: 100, y: 100, width: 200, height: 125 });
+    w.fireReady();
+    const poll = () => {
+      const next = ticks.shift();
+      if (next) next();
+    };
+    poll();
+    assert.equal(w.ignoringMouse, false, 'hovered before the press');
+
+    w.fireMessage('pip:pointer-down');
+    cursor = { x: 900, y: 900 };
+    poll();
+    assert.equal(w.ignoringMouse, false, 'still holding it mid-drag');
+
+    w.fireMessage('pip:pointer-up');
+    poll();
+    assert.equal(w.ignoringMouse, true, 'and released once the drag ends');
   });
 
   await t.test('a drag moves the mirror, and a release settles it on a corner', () => {

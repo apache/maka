@@ -386,16 +386,23 @@ export function createComputerUsePipController(
   let stopHandler: ((sessionId: string) => void) | undefined;
 
   const now = deps.now ?? (() => Date.now());
+  // `unref` on both, because neither is work the process should stay alive
+  // for. The hover poll in particular runs for as long as a mirror exists and
+  // is cancelled only by teardown, so a referenced timer keeps the event loop
+  // open forever — which is exactly what it did: `node --test` stopped exiting
+  // the moment the poll landed, and sat there until it was killed.
   const scheduleFrame =
     deps.scheduleFrame ??
     ((cb: () => void) => {
       const handle = setTimeout(cb, 16);
+      handle.unref?.();
       return () => clearTimeout(handle);
     });
   const scheduleHoverCheck =
     deps.scheduleHoverCheck ??
     ((cb: () => void) => {
       const handle = setTimeout(cb, 50);
+      handle.unref?.();
       return () => clearTimeout(handle);
     });
 
