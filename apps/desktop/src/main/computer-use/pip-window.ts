@@ -112,7 +112,7 @@ export interface PipWindowLike {
  * window at a time, so those two are the same gesture and only one of them
  * earns a button.
  */
-export type PipControlId = 'stop' | 'hide';
+type PipControlId = 'stop' | 'hide';
 
 
 export interface CreatePipControllerDeps {
@@ -621,11 +621,13 @@ export function createComputerUsePipController(
           ? (payload as { id: unknown }).id
           : null;
         const session = sessionId;
-        if (id === 'stop') {
+        const control: PipControlId | null =
+          id === 'stop' || id === 'hide' ? id : null;
+        if (control === 'stop') {
           if (session) stopHandler?.(session);
           return;
         }
-        if (id === 'hide') {
+        if (control === 'hide') {
           hiddenSessionId = session;
           teardown();
         }
