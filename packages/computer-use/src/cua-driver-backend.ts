@@ -1,6 +1,8 @@
 // PR-RUNTIME-CU — the cua-driver CuDispatchBackend (Tier-2 alternative to the
-// public-API Swift helper). Spawns trycua/cua-driver (MIT, v0.7.1) in EMBEDDED
-// mode and speaks its line-delimited JSON-RPC 2.0 over stdio.
+// public-API Swift helper). Spawns trycua/cua-driver (MIT) in EMBEDDED
+// mode and speaks its line-delimited JSON-RPC 2.0 over stdio. The pinned
+// version, checksums and license live in apps/desktop/bundled-tools.json and
+// apps/desktop/resources/licenses/cua-driver/; see docs/computer-use-provenance.md.
 //
 // Why embedded + direct spawn: cua-driver's embedded mode inherits the host
 // app's TCC grants via the macOS responsibility chain (no second Accessibility/

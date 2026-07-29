@@ -17,6 +17,11 @@ import {
   type CuObservation,
   type CuSemanticAction,
 } from '../computer-use-tools.js';
+import {
+  latestObservationIn,
+  stringsIn,
+  type ParsedObservation,
+} from './observation-text-reader.js';
 import { createDurableTurnHarness, drainWithDurableTurn } from './durable-turn-harness.js';
 import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 
@@ -411,46 +416,12 @@ function textCompletion(text: string): LanguageModelV4StreamPart[] {
   ];
 }
 
-function latestObservation(prompt: unknown): {
-  observation_id: string;
-  elements: Array<{
-    element_id: string;
-    label?: string;
-    value?: string;
-  }>;
-} {
-  const candidates = stringsIn(prompt).flatMap((text) => {
-    const marker = text.lastIndexOf('Fresh observation:\n');
-    const json =
-      marker >= 0
-        ? text.slice(marker + 'Fresh observation:\n'.length)
-        : text.trim().startsWith('{')
-          ? text.trim()
-          : '';
-    if (!json) return [];
-    try {
-      const value = JSON.parse(json) as Record<string, unknown>;
-      return typeof value.observation_id === 'string' && Array.isArray(value.elements)
-        ? [value]
-        : [];
-    } catch {
-      return [];
-    }
-  });
-  const latest = candidates.at(-1);
+function latestObservation(prompt: unknown): ParsedObservation {
+  const latest = latestObservationIn(prompt);
   assert.ok(latest, `model prompt did not contain an observation: ${JSON.stringify(prompt)}`);
-  return latest as {
-    observation_id: string;
-    elements: Array<{ element_id: string; label?: string; value?: string }>;
-  };
+  return latest;
 }
 
-function stringsIn(value: unknown): string[] {
-  if (typeof value === 'string') return [value];
-  if (Array.isArray(value)) return value.flatMap(stringsIn);
-  if (!value || typeof value !== 'object') return [];
-  return Object.values(value).flatMap(stringsIn);
-}
 
 async function collect(iterable: AsyncIterable<SessionEvent>): Promise<SessionEvent[]> {
   const events: SessionEvent[] = [];

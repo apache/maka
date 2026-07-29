@@ -16,6 +16,7 @@ import {
   type ComputerUseWindowIdentity,
 } from '@maka/core';
 import { redactSecrets } from '@maka/core/redaction';
+import { renderObservationForModel } from './computer-use-observation-text.js';
 import type { MakaTool } from './tool-runtime.js';
 import {
   bindCuaActionToObservation,
@@ -201,31 +202,7 @@ export interface ComputerUseToolSet extends Array<MakaTool> {
 }
 
 function observationText(observation: CuObservation): string {
-  return JSON.stringify({
-    observation_id: observation.observationId,
-    app: observation.appId,
-    pid: observation.pid,
-    window_id: observation.windowId,
-    ...(observation.windowTitle ? { window_title: observation.windowTitle } : {}),
-    elements: observation.elements.map((element) => ({
-      element_id: element.elementId,
-      role: element.role,
-      ...(element.label ? { label: element.label } : {}),
-      ...(element.value !== undefined ? { value: element.value } : {}),
-      // Interaction state: without it the model cannot tell a control it may
-      // not actuate from one it simply failed to hit, and retries the same
-      // dead element across a long run.
-      ...(element.enabled !== undefined ? { enabled: element.enabled } : {}),
-      ...(element.selected !== undefined ? { selected: element.selected } : {}),
-      // Tree position: a flat list hides which panel, dialog, or row group an
-      // element belongs to, which matters as soon as a modal or secondary
-      // window is on screen.
-      ...(element.parentElementId !== undefined
-        ? { parent_element_id: element.parentElementId }
-        : {}),
-      ...(element.frame ? { frame: element.frame } : {}),
-    })),
-  });
+  return renderObservationForModel(observation);
 }
 
 function persistedObservationText(observation: CuObservation): string {
@@ -818,6 +795,10 @@ export function buildComputerUseTools(deps: {
       'and controlled path/effect/verified evidence; inspect that new state before retrying or continuing. ' +
       'The retained background mutation paths are native Accessibility element actions and exact Electron page semantic actions. ' +
       'Prefer click_element or set_value using an element_id from the immediately preceding observation. ' +
+      'An observation is a header line of observation_id/app/pid/window_id followed by one line per element, ' +
+      'indented to show containment: "<element_id> <role> \\"<label>\\" =\\"<value>\\" [<state>] @x,y wxh". ' +
+      'Absent parts are omitted, and state is written only when it is not the default, so an element carrying ' +
+      'no [disabled] is enabled. A value ending in "…(+N chars)" was shortened for length and is not the whole value. ' +
       'Coordinate click, pointer move, scroll, drag, press_key, type, and other pixel-compatibility input paths are disabled by default ' +
       "because they can interfere with the user's physical input; they fail closed with unsupported_action unless a host policy explicitly enables them. " +
       'Do not describe exact Electron semantic dispatch as pixel compatibility: it uses a uniquely resolved page identity plus DOM/CDP read-back. ' +

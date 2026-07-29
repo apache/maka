@@ -14,6 +14,16 @@ import {
 } from '../computer-use-tools.js';
 import type { MakaToolContext } from '../tool-runtime.js';
 
+/**
+ * Pull the observation id out of the model-facing text.
+ *
+ * It is the first field of the header line precisely because the model has to
+ * quote it back on every bound action.
+ */
+function observationIdOf(modelText: string | undefined): string {
+  return /observation_id=(\S+)/.exec(modelText ?? '')?.[1] ?? '';
+}
+
 function ctx(signal?: AbortSignal, overrides: Partial<MakaToolContext> = {}): MakaToolContext {
   return {
     sessionId: 's1',
@@ -348,7 +358,7 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     )) as {
       modelText?: string;
     };
-    const observationId = JSON.parse(observed.modelText ?? '{}').observation_id;
+    const observationId = observationIdOf(observed.modelText);
     const pending = tool.impl(
       {
         action: 'left_click',
@@ -424,7 +434,7 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     )) as {
       modelText?: string;
     };
-    const observationId = JSON.parse(observed.modelText ?? '{}').observation_id;
+    const observationId = observationIdOf(observed.modelText);
     await tool.impl(
       {
         action: 'left_click',
@@ -476,7 +486,7 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     )) as {
       modelText?: string;
     };
-    const observationId = JSON.parse(observed.modelText ?? '{}').observation_id;
+    const observationId = observationIdOf(observed.modelText);
     const result = (await tool.impl(
       {
         action: 'left_click',
@@ -544,7 +554,7 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     await tool.impl(
       {
         action: 'left_click',
-        observation_id: JSON.parse(observed.modelText ?? '{}').observation_id,
+        observation_id: observationIdOf(observed.modelText),
         coordinate,
       } as never,
       ctx(),
@@ -818,20 +828,13 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
       } as never,
       ctx(),
     )) as { text: string; modelText?: string; screenshot?: unknown };
-    assert.deepEqual(
-      {
-        ...JSON.parse(observation.modelText ?? ''),
-        observation_id: '<runtime-generated>',
-      },
-      {
-        observation_id: '<runtime-generated>',
-        app: 'Fixture',
-        pid: 42,
-        window_id: 7,
-        window_title: 'Fixture Window',
-        elements: [{ element_id: '5', role: 'AXButton', label: 'Continue' }],
-      },
+    const observationLines = (observation.modelText ?? '').split('\n');
+    assert.equal(
+      observationLines[0]?.replace(/observation_id=\S+/, 'observation_id=<runtime-generated>'),
+      'observation_id=<runtime-generated> app=Fixture pid=42 window_id=7 ' +
+        'window="Fixture Window" elements=1',
     );
+    assert.deepEqual(observationLines.slice(1), ['5 AXButton "Continue"']);
     assert.doesNotMatch(observation.text, /Fixture Window|Continue/);
     assert.ok(observation.screenshot);
     const modelOutput = tool.toModelOutput?.({
@@ -2070,9 +2073,9 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
       base64: 'AQ==',
       mimeType: 'image/png',
     });
-    const freshObservationId = JSON.parse(
-      (result.modelText ?? '').split('Fresh observation:\n')[1] ?? '{}',
-    ).observation_id as string;
+    const freshObservationId = observationIdOf(
+      (result.modelText ?? '').split('Fresh observation:\n')[1],
+    );
     const followUp = (await tool.impl(
       {
         action: 'left_click',
