@@ -95,6 +95,29 @@ test('Computer Use picture-in-picture mirror', async (t) => {
     assert.equal(options.webPreferences?.sandbox, true);
   });
 
+  await t.test('attaches to the app window rather than floating above every app', () => {
+    // Codex's `RemoteHostedPIPContentCreateStackPanel` sets `setLevel: 0` —
+    // plain NSNormalWindowLevel — and attaches the panel to its owner with
+    // `addChildWindow:ordered:`. A child window is ordered against its parent,
+    // so it sits above the app it belongs to and below everything else. The
+    // mirror used to pass `alwaysOnTop` with no level, which defaults to
+    // `floating` and put it above unrelated apps.
+    const parent = { isDestroyed: () => false };
+    const attached = pipWindowOptions({ x: 0, y: 0, width: 200, height: 125 }, '/p.cjs', parent);
+    assert.equal(attached.parent, parent as never, 'parented to the app window');
+    assert.equal(attached.alwaysOnTop, undefined, 'and therefore claims no level of its own');
+
+    // With no app window there is nothing to sit above, so the mirror has to
+    // claim a level or be buried. Codex's own fallbackAnchor path.
+    const detached = pipWindowOptions({ x: 0, y: 0, width: 200, height: 125 }, '/p.cjs');
+    assert.equal(detached.parent, undefined);
+    assert.equal(detached.alwaysOnTop, true);
+
+    // Codex's `setHasShadow: NO`. pip.html draws its own; the native one would
+    // be a second shadow, recomputed from the content's alpha on every frame.
+    assert.equal(attached.hasShadow, false);
+  });
+
   await t.test('sizes the mirror the way Codex does', () => {
     // Recovered from Codex: default longest edge 200pt, clamped to [100, 400],
     // shorter edge scaled to preserve aspect, non-finite falling back to the
@@ -155,8 +178,59 @@ test('Computer Use picture-in-picture mirror', async (t) => {
     assert.ok(clamped.y >= work.y, 'inside at the top');
   });
 
-  await t.test('follows the app window when it moves', () => {
-    const moves: Array<() => void> = [];
+  await t.test('lets the window server carry the mirror, and only reacts to resizes', () => {
+    // Measured on Electron 43: a child window follows its parent's *move*
+    // inside the same window-server transaction, and does not move when the
+    // parent *resizes*. So repositioning on a move is redundant and a frame
+    // late — that lateness is the trailing the mirror showed during a drag —
+    // while a resize genuinely moves the corner out from under it.
+    const changes: Array<() => void> = [];
+    const windows: FakeWindow[] = [];
+    let appRect = { x: 0, y: 0, width: 800, height: 600 };
+    const pip = createComputerUsePipController({
+      createWindow: () => {
+        const w = new FakeWindow();
+        windows.push(w);
+        return w as never;
+      },
+      resolveAnchorRect: () => appRect,
+      resolveParentWindow: () => ({ isDestroyed: () => false }),
+      subscribeAnchorChanges: (cb) => {
+        changes.push(cb);
+        return () => {};
+      },
+      resolveBounds: (aspect) =>
+        pipBoundsForAnchor(aspect, appRect, { x: 0, y: 0, width: 3000, height: 2000 }),
+      preloadPath: '/p.cjs',
+      htmlPath: '/p.html',
+    });
+    pip.present({ sessionId: 's1', ...FRAME });
+    windows[0]!.fireReady();
+    windows[0]!.bounds = null;
+
+    // A drag: the origin moves, the size does not.
+    appRect = { x: 1000, y: 500, width: 800, height: 600 };
+    for (const cb of changes) cb();
+    assert.equal(windows[0]!.bounds, null, 'a move is left to the window server');
+
+    // A resize: the corner the mirror hangs off has moved relative to it.
+    appRect = { x: 1000, y: 500, width: 1200, height: 900 };
+    for (const cb of changes) cb();
+    assert.deepEqual(
+      windows[0]!.bounds,
+      pipBoundsForAnchor(FRAME.widthPx / FRAME.heightPx, appRect, {
+        x: 0,
+        y: 0,
+        width: 3000,
+        height: 2000,
+      }),
+      'a resize is recomputed',
+    );
+  });
+
+  await t.test('with no app window to attach to, the mirror moves itself', () => {
+    // Nothing is carrying it, so every geometry change has to be acted on.
+    const changes: Array<() => void> = [];
     const windows: FakeWindow[] = [];
     let appRect = { x: 0, y: 0, width: 800, height: 600 };
     const pip = createComputerUsePipController({
@@ -167,7 +241,7 @@ test('Computer Use picture-in-picture mirror', async (t) => {
       },
       resolveAnchorRect: () => appRect,
       subscribeAnchorChanges: (cb) => {
-        moves.push(cb);
+        changes.push(cb);
         return () => {};
       },
       resolveBounds: (aspect) =>
@@ -177,11 +251,34 @@ test('Computer Use picture-in-picture mirror', async (t) => {
     });
     pip.present({ sessionId: 's1', ...FRAME });
     windows[0]!.fireReady();
-    const before = windows[0]!.bounds;
+    windows[0]!.bounds = null;
 
     appRect = { x: 1000, y: 500, width: 800, height: 600 };
-    for (const cb of moves) cb();
-    assert.notDeepEqual(windows[0]!.bounds, before, 'the mirror moved with the app');
+    for (const cb of changes) cb();
+    assert.notEqual(windows[0]!.bounds, null, 'the mirror moved with the app');
+  });
+
+  await t.test('a destroyed app window is not used as a parent', () => {
+    // The window can go while a session is still running. Passing a dead
+    // BrowserWindow to `parent` throws inside Electron, and the mirror must
+    // fail to the level it would have used had there never been a window.
+    const seen: Array<{ parent?: unknown; alwaysOnTop?: boolean }> = [];
+    const windows: FakeWindow[] = [];
+    const pip = createComputerUsePipController({
+      createWindow: (options) => {
+        seen.push(options);
+        const w = new FakeWindow();
+        windows.push(w);
+        return w as never;
+      },
+      resolveParentWindow: () => ({ isDestroyed: () => true }),
+      resolveBounds: () => ({ x: 0, y: 0, width: 200, height: 125 }),
+      preloadPath: '/p.cjs',
+      htmlPath: '/p.html',
+    });
+    pip.present({ sessionId: 's1', ...FRAME });
+    assert.equal(seen[0]?.parent, undefined);
+    assert.equal(seen[0]?.alwaysOnTop, true);
   });
 
   await t.test('stays absent until a frame arrives', () => {

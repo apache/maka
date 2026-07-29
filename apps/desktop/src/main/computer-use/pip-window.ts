@@ -51,6 +51,17 @@ export interface PipPresentInput {
   title?: string;
 }
 
+/**
+ * The subset of a BrowserWindow needed to parent the mirror.
+ *
+ * Structural rather than `BrowserWindow` so the controller stays testable
+ * without Electron; the one place that needs the real thing is the `parent`
+ * constructor option, which is cast at that boundary.
+ */
+export interface ParentWindowLike {
+  isDestroyed(): boolean;
+}
+
 export interface PipWindowLike {
   send(channel: string, payload: unknown): void;
   onReady(cb: () => void): void;
@@ -67,18 +78,49 @@ export interface CreatePipControllerDeps {
   /**
    * Where the app window is, so the mirror can sit against it.
    *
-   * Codex anchors its tiles 24pt inside its own window's anchor rect and moves
-   * them when that window moves (`ownerWindowFrameMayHaveChanged:`), rather
-   * than pinning to a screen corner. Anchoring to the app keeps the mirror
-   * with the thing it belongs to — pin it to a display and it stays behind on
-   * the old screen the moment the user drags the app to another one.
+   * Codex's `PIPStackHost` is built from an owner window plus an anchor rect
+   * and a set of corner anchors (`initWithHostID:ownerWindow:anchorContentRect:
+   * anchors:presentationScope:`), rather than from a screen. Anchoring to the
+   * app keeps the mirror with the thing it belongs to — pin it to a display and
+   * it stays behind on the old screen the moment the user drags the app to
+   * another one.
    *
    * Returns undefined when there is no app window, in which case the mirror
-   * falls back to the primary display's corner.
+   * falls back to the primary display's corner, as Codex's own
+   * `defaultHostForPositioning` / `fallbackAnchor` do.
    */
   resolveAnchorRect?: () => Rectangle | undefined;
-  /** Subscribe to app-window moves; return an unsubscribe. */
+  /**
+   * Subscribe to app-window geometry changes; return an unsubscribe.
+   *
+   * Only resizes are acted on — see the subscription below for why a move is
+   * deliberately ignored.
+   */
   subscribeAnchorChanges?: (cb: () => void) => () => void;
+  /**
+   * The app window itself, to make the mirror its child.
+   *
+   * This is how Codex does it. `PIPStackWindow` is an
+   * `NSWindowStyleMaskNonactivatingPanel` at `setLevel: 0` — plain
+   * `NSNormalWindowLevel`, not floating — that becomes a child of its owner via
+   * `addChildWindow:ordered:` (`attachToOwnerWindowForPositioning`). Both of
+   * the mirror's original faults came from not doing this, and both were
+   * measured on Electron 43 before the change:
+   *
+   *   parent moves    → child follows, same window-server transaction, no code
+   *   parent resizes  → child does not move, so the anchor needs recomputing
+   *   isAlwaysOnTop() → false, so it never covers an unrelated app
+   *
+   * `alwaysOnTop` with no level defaults to `floating`, which put the mirror
+   * above every other app; repositioning on each `move` put a second
+   * transaction one frame behind the drag, so the mirror visibly trailed the
+   * window it belongs to. Child-window ordering removes the first and
+   * child-window positioning removes the second.
+   *
+   * The comment on the geometry subscription used to say repositioning a small
+   * window was "cheap enough not to debounce". It is cheap. It is also late.
+   */
+  resolveParentWindow?: () => ParentWindowLike | undefined;
   preloadPath?: string;
   htmlPath?: string;
 }
@@ -175,19 +217,43 @@ function defaultResolveBounds(aspect: number, anchor?: Rectangle): Rectangle {
   return pipBoundsForAnchor(aspect, anchor, display.workArea);
 }
 
+/**
+ * Recovered from Codex's `RemoteHostedPIPContentCreateStackPanel`, which builds
+ * the panel as:
+ *
+ *   NSPanel styleMask: 0x80  (NSWindowStyleMaskNonactivatingPanel)
+ *   setLevel: 0              (NSNormalWindowLevel — deliberately not floating)
+ *   setOpaque: NO, backgroundColor: clearColor
+ *   setHasShadow: NO         (the content draws its own)
+ *   setHidesOnDeactivate: NO
+ *   setMovableByWindowBackground: NO
+ *
+ * and then attaches it to the owner window with `addChildWindow:ordered:`.
+ * Every option below that has an Electron equivalent follows it.
+ */
 export function pipWindowOptions(
   bounds: Rectangle,
   preloadPath: string,
+  parent?: ParentWindowLike,
 ): BrowserWindowConstructorOptions {
   return {
     ...bounds,
     // Same focus contract as the cursor overlay: this reports on work happening
     // elsewhere, so taking focus would interrupt the very thing it describes.
+    // Electron's `focusable: false` is what a nonactivating panel buys Codex.
     focusable: false,
     frame: false,
     transparent: true,
-    hasShadow: true,
-    alwaysOnTop: true,
+    // Codex's `setHasShadow: NO`. pip.html already draws its own shadow, so the
+    // native one is a second shadow on top of it — and on a transparent window
+    // the window server recomputes that shadow from the content's alpha every
+    // time a frame lands, which is the one thing this window does constantly.
+    hasShadow: false,
+    // A child window is ordered against its parent, so it sits above the app it
+    // belongs to and below everything it does not. Only when there is no app
+    // window to attach to does the mirror have to claim a level of its own —
+    // otherwise it would be buried with nothing to sit above.
+    ...(parent ? { parent: parent as import('electron').BrowserWindow } : { alwaysOnTop: true }),
     skipTaskbar: true,
     resizable: false,
     movable: false,
@@ -220,6 +286,13 @@ export function createComputerUsePipController(
   let queue: Array<{ channel: string; payload: unknown }> = [];
   let aspect = 16 / 10;
   let unsubscribeAnchor: (() => void) | null = null;
+  /**
+   * The app window's size when the mirror was last positioned, and whether the
+   * mirror is that window's child. Together they decide whether a geometry
+   * change is one the window server has already handled.
+   */
+  let anchorSize: { width: number; height: number } | null = null;
+  let parented = false;
 
   function push(channel: string, payload: unknown): void {
     if (!win || win.isDestroyed()) return;
@@ -239,22 +312,34 @@ export function createComputerUsePipController(
     sessionId = null;
     ready = false;
     queue = [];
+    anchorSize = null;
+    parented = false;
     unsubscribeAnchor?.();
     unsubscribeAnchor = null;
     if (w && !w.isDestroyed()) w.destroy();
   }
 
+  function liveParent(): ParentWindowLike | undefined {
+    const candidate = deps.resolveParentWindow?.();
+    return candidate && !candidate.isDestroyed() ? candidate : undefined;
+  }
+
   function ensure(nextSessionId: string): PipWindowLike {
     if (win && !win.isDestroyed() && sessionId === nextSessionId) return win;
     if (win) teardown();
+    const parent = liveParent();
     const bounds = resolveBounds(aspect);
+    const options = pipWindowOptions(bounds, preloadPath, parent);
     const created = deps.createWindow
-      ? deps.createWindow(pipWindowOptions(bounds, preloadPath))
-      : defaultCreateWindow(pipWindowOptions(bounds, preloadPath), htmlPath);
+      ? deps.createWindow(options)
+      : defaultCreateWindow(options, htmlPath);
     win = created;
     sessionId = nextSessionId;
     ready = false;
     queue = [];
+    parented = Boolean(parent);
+    const anchor = deps.resolveAnchorRect?.();
+    anchorSize = anchor ? { width: anchor.width, height: anchor.height } : null;
     created.onReady(() => {
       if (win !== created) return;
       ready = true;
@@ -265,12 +350,22 @@ export function createComputerUsePipController(
     created.onGone(() => {
       if (win === created) teardown();
     });
-    // Follow the app window, the way Codex's tiles follow theirs. Without this
-    // the mirror stays on the display the app was launched from and becomes
-    // the unexplained thing on someone's second monitor.
+    // Keep the mirror on the app window's corner across resizes and display
+    // changes. A *move* is deliberately not acted on: a child window is carried
+    // by its parent inside the same window-server transaction, so repositioning
+    // it here would be both redundant and one frame late — and that lateness is
+    // exactly the trailing the mirror used to show during a drag. A resize
+    // leaves the child where it is while the corner moves out from under it, so
+    // that one has to be recomputed.
     unsubscribeAnchor =
       deps.subscribeAnchorChanges?.(() => {
         if (win !== created || created.isDestroyed()) return;
+        const next = deps.resolveAnchorRect?.();
+        if (parented && next && anchorSize &&
+            next.width === anchorSize.width && next.height === anchorSize.height) {
+          return;
+        }
+        anchorSize = next ? { width: next.width, height: next.height } : null;
         created.setBounds(resolveBounds(aspect));
       }) ?? null;
     return created;

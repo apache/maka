@@ -71,14 +71,16 @@ export interface DesktopToolAssemblyDeps {
   readArchivedToolResultResource: ToolArtifactPersistence['readArchivedToolResultResource'];
   getWorkspacePrivacyContext: () => Promise<WorkspacePrivacyContext>;
   /**
-   * The app window, so the Computer Use mirror can anchor to it and follow it.
-   * Codex's PiP tiles anchor 24pt inside their own window's rect and move with
-   * it; pinning to a screen corner leaves the mirror behind whenever the user
-   * drags the app to another display.
+   * The app window, so the Computer Use mirror can become its child. Codex's
+   * PiP panel attaches to its owner window with `addChildWindow:ordered:` and
+   * sits at plain normal window level; that is what keeps it above the app it
+   * belongs to, below everything else, and carried along by the app's own
+   * moves instead of chasing them.
    */
   mainWindow?: {
     windowBounds(): { x: number; y: number; width: number; height: number } | undefined;
     onWindowGeometryChanged(cb: () => void): () => void;
+    browserWindow(): { isDestroyed(): boolean } | undefined;
   };
   resolveDesktopSkillHost: HostCapabilitiesResolver;
 }
@@ -160,6 +162,7 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
       ? {
           resolveAnchorRect: () => mainWindow.windowBounds(),
           subscribeAnchorChanges: (cb) => mainWindow.onWindowGeometryChanged(cb),
+          resolveParentWindow: () => mainWindow.browserWindow(),
         }
       : {},
   );

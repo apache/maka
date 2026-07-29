@@ -37,6 +37,14 @@ export interface MainWindowController {
    * window.
    */
   windowBounds(): Electron.Rectangle | undefined;
+  /**
+   * The window itself, for surfaces that must become its child window rather
+   * than merely position against it. macOS carries a child window with its
+   * parent in one window-server transaction and orders it against the parent
+   * instead of against the whole desktop, which is what the Computer Use mirror
+   * needs and what no amount of repositioning from this side can imitate.
+   */
+  browserWindow(): BrowserWindow | undefined;
   /** Subscribe to app-window moves and resizes; returns an unsubscribe. */
   onWindowGeometryChanged(cb: () => void): () => void;
   /** Whether the main window currently holds OS focus. False when the
@@ -461,13 +469,18 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     windowBounds() {
       return mainWindow && !mainWindow.isDestroyed() ? mainWindow.getBounds() : undefined;
     },
+    browserWindow() {
+      return mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+    },
     onWindowGeometryChanged(cb: () => void) {
       const listeners: Array<() => void> = [];
       const attach = (): void => {
         const w = mainWindow;
         if (!w || w.isDestroyed()) return;
-        // 'move' and 'resize' fire continuously during a drag; the consumer is
-        // repositioning a small window, which is cheap enough not to debounce.
+        // 'move' and 'resize' both fire continuously during a drag. Consumers
+        // are expected to ignore the ones the window server already handled for
+        // them — the Computer Use mirror is a child window, so it is carried
+        // along by a move and only has to react to a resize.
         w.on('move', cb);
         w.on('resize', cb);
         listeners.push(() => {
