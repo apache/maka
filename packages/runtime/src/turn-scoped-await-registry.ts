@@ -60,6 +60,13 @@ export class TurnScopedAwaitRegistry<TValue, TMetadata> {
     );
   }
 
+  findTurn(requestId: string): string | undefined {
+    for (const [turnId, requests] of this.turns) {
+      if (requests.has(requestId)) return turnId;
+    }
+    return undefined;
+  }
+
   pendingCount(turnId: string): number {
     return this.turns.get(turnId)?.size ?? 0;
   }

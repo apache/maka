@@ -1948,8 +1948,7 @@ export class AiSdkBackend implements AgentBackend {
   }
 
   async respondToSandboxBoundary(decision: SandboxBoundaryResponse): Promise<void> {
-    if (this.currentTurnId === null) return;
-    if (await this.toolRuntime.respondToSandboxBoundaryRequest(this.currentTurnId, decision)) {
+    if (await this.toolRuntime.respondToSandboxBoundaryResponse(decision)) {
       return;
     }
     throw new Error(`No pending sandbox boundary request ${decision.requestId}`);

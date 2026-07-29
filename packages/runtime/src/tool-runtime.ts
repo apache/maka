@@ -540,6 +540,15 @@ export class ToolRuntime {
     return this.sandboxBoundaryRequests.resolve(turnId, response.requestId, settlement) !== null;
   }
 
+  async respondToSandboxBoundaryResponse(response: {
+    requestId: string;
+    decision: SandboxBoundaryDecision;
+  }): Promise<boolean> {
+    const turnId = this.sandboxBoundaryRequests.findTurn(response.requestId);
+    if (!turnId) return false;
+    return this.respondToSandboxBoundaryRequest(turnId, response);
+  }
+
   private settleUserQuestionAnswer(
     turnId: string,
     response: UserQuestionResponse,

@@ -322,6 +322,12 @@ interface BackendInvalidationState {
   failure?: Error;
 }
 
+interface SandboxBoundaryRequestOwner {
+  sessionId: string;
+  turnId: string;
+  generation: number;
+}
+
 export class RuntimeKernel implements RuntimeKernelLike {
   private readonly active = new Map<string, BackendGeneration>();
   private readonly childActive = new Map<string, BackendGeneration>();
@@ -349,6 +355,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
   private readonly pendingContinuationSessions = new Set<string>();
   private readonly steeringBySession = new Map<string, SessionSteeringState>();
   private readonly backendInvalidations = new Map<string, BackendInvalidationState>();
+  private readonly sandboxBoundaryRequestOwners = new Map<string, SandboxBoundaryRequestOwner>();
   private nextBackendGeneration = 0;
   private readonly interactionRuns = new Map<AgentRun, RuntimeInteractionRunBinding>();
 
@@ -1222,6 +1229,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           requireTerminalWrite: Boolean(this.deps.runtimeEventStore),
           allowInteractionResume: await interactionResumeAllowed(interactionRun, sessionEvent),
         });
+        this.observeSandboxBoundaryEvent(sessionId, begin.backend, sessionEvent);
         await sessionEvents.push(sessionEvent);
       },
       onError: async (error) => {
@@ -1323,6 +1331,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           },
         });
       } finally {
+        this.clearSandboxBoundaryRequestOwners(sessionId, run.turnId);
         releaseExecutionAbort();
       }
     }
@@ -1382,6 +1391,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           requireTerminalWrite: true,
           allowInteractionResume: await interactionResumeAllowed(interactionRun, sessionEvent),
         });
+        this.observeSandboxBoundaryEvent(continuation.sessionId, begin.backend, sessionEvent);
         await sessionEvents.push(sessionEvent);
       },
       onError: async (error) => {
@@ -1466,6 +1476,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           releaseOwner: () => owners.releaseMessage(),
         });
       } finally {
+        this.clearSandboxBoundaryRequestOwners(continuation.sessionId, run.turnId);
         releaseExecutionAbort();
       }
     }
@@ -1893,10 +1904,20 @@ export class RuntimeKernel implements RuntimeKernelLike {
     sessionId: string,
     response: SandboxBoundaryResponse,
   ): Promise<void> {
-    const generations = this.backendGenerationsFor(sessionId);
-    await Promise.all(
-      generations.map((active) => active.backend.respondToSandboxBoundary(response)),
-    );
+    const key = sandboxBoundaryOwnerKey(sessionId, response.requestId);
+    const owner = this.sandboxBoundaryRequestOwners.get(key);
+    if (!owner) throw new Error(`No pending sandbox boundary request ${response.requestId}`);
+    const active = this.backendGenerations.get(owner.generation);
+    if (
+      !active ||
+      active.sessionId !== sessionId ||
+      active.phase === 'terminated' ||
+      active.phase === 'failed'
+    ) {
+      this.sandboxBoundaryRequestOwners.delete(key);
+      throw new Error(`Sandbox boundary request owner is unavailable: ${response.requestId}`);
+    }
+    await active.backend.respondToSandboxBoundary(response);
   }
 
   async respondToUserQuestion(sessionId: string, response: UserQuestionResponse): Promise<void> {
@@ -2126,6 +2147,57 @@ export class RuntimeKernel implements RuntimeKernelLike {
     return [...this.backendGenerations.values()].filter(
       (generation) => generation.sessionId === sessionId && generation.phase !== 'terminated',
     );
+  }
+
+  private observeSandboxBoundaryEvent(
+    sessionId: string,
+    backend: AgentBackend,
+    event: SessionEvent,
+  ): void {
+    if (
+      event.type !== 'sandbox_boundary_request' &&
+      event.type !== 'sandbox_boundary_decision_ack'
+    ) {
+      return;
+    }
+    const key = sandboxBoundaryOwnerKey(sessionId, event.requestId);
+    if (event.type === 'sandbox_boundary_decision_ack') {
+      this.sandboxBoundaryRequestOwners.delete(key);
+      return;
+    }
+    const generation = [...this.backendGenerations.values()].find(
+      (candidate) =>
+        candidate.sessionId === sessionId &&
+        candidate.backend === backend &&
+        candidate.phase !== 'terminated',
+    );
+    if (!generation) {
+      throw new RuntimeInteractionInvariantError(
+        `Sandbox boundary request ${event.requestId} has no active backend owner`,
+      );
+    }
+    const existing = this.sandboxBoundaryRequestOwners.get(key);
+    if (
+      existing &&
+      (existing.generation !== generation.generation || existing.turnId !== event.turnId)
+    ) {
+      throw new RuntimeInteractionInvariantError(
+        `Sandbox boundary request ${event.requestId} has conflicting owners`,
+      );
+    }
+    this.sandboxBoundaryRequestOwners.set(key, {
+      sessionId,
+      turnId: event.turnId,
+      generation: generation.generation,
+    });
+  }
+
+  private clearSandboxBoundaryRequestOwners(sessionId: string, turnId: string): void {
+    for (const [key, owner] of this.sandboxBoundaryRequestOwners) {
+      if (owner.sessionId === sessionId && owner.turnId === turnId) {
+        this.sandboxBoundaryRequestOwners.delete(key);
+      }
+    }
   }
 
   private stopBackendFor(backend: AgentBackend): AgentBackend['stop'] {
@@ -3350,6 +3422,10 @@ class AsyncEventQueue<T> implements AsyncIterable<T> {
       this.waiters.push({ resolve, reject });
     });
   }
+}
+
+function sandboxBoundaryOwnerKey(sessionId: string, requestId: string): string {
+  return `${sessionId}\0${requestId}`;
 }
 
 export type { AgentRunLineage };
