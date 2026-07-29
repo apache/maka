@@ -65,6 +65,7 @@ export function selectComputerUseBackend(deps?: {
     mimeType: string,
   ) => { base64: string; mimeType: 'image/png' | 'image/jpeg' };
   physicalInputRecentlyActive?: () => boolean | Promise<boolean>;
+  screenLocked?: () => boolean | Promise<boolean>;
   onTrace?: CuaDriverBackendOptions['onTrace'];
   overlay?: CuOverlayHook;
   createBackend?: (options: CuaDriverBackendOptions) => DisposableBackend;
@@ -86,6 +87,7 @@ export function selectComputerUseBackend(deps?: {
       ...(deps?.physicalInputRecentlyActive
         ? { physicalInputRecentlyActive: deps.physicalInputRecentlyActive }
         : {}),
+      ...(deps?.screenLocked ? { screenLocked: deps.screenLocked } : {}),
       ...(deps?.onTrace ? { onTrace: deps.onTrace } : {}),
       // Typing, scrolling and dragging go through cua-driver's compatibility
       // event backend. That path was left off in the shipping build, which meant

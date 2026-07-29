@@ -116,6 +116,13 @@ const SETTLE_CEILING_MS = 2_500;
 const LAUNCH_WINDOW_TIMEOUT_MS = 8_000;
 const LAUNCH_WINDOW_POLL_MS = 250;
 
+/**
+ * Written for the model, not for a log: it says what the state is and what
+ * ends it, so the model waits for the user instead of retrying into a wall.
+ */
+const SCREEN_LOCKED_MESSAGE =
+  'the screen is locked; computer use resumes after the user unlocks it';
+
 function exceedsCuaDriverFrameCap(byteLength: number): boolean {
   return byteLength > CUA_DRIVER_FRAME_MAX_BYTES;
 }
@@ -200,6 +207,17 @@ export interface CuaDriverBackendOptions {
    * before cua-driver receives any mouse or keyboard dispatch.
    */
   physicalInputRecentlyActive?: () => boolean | Promise<boolean>;
+  /**
+   * Host-owned screen-lock probe. A locked screen means the user secured the
+   * machine and walked away, so every dispatch after that point runs
+   * unattended on a machine its owner deliberately closed off.
+   *
+   * Codex treats operating a locked machine as its own capability — a separate
+   * guardian process holding per-thread auto-unlock leases behind a privacy
+   * curtain, gated by an enterprise policy key. Maka has none of that, so the
+   * honest position is to refuse and say why.
+   */
+  screenLocked?: () => boolean | Promise<boolean>;
   /**
    * Coordinate mouse/scroll/drag dispatch uses the compatibility CGEvent
    * backend, which can interfere with physical mouse button state. Keep it
@@ -375,6 +393,28 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
         ok: false,
         error: 'user_intervened',
         message: 'physical user input is active; wait for input to settle and observe again',
+      },
+    };
+  }
+
+  /**
+   * A locked screen ends the session's ability to act, not just this dispatch.
+   * `applyTypedOutcomeState` turns this error into the `screen_locked` session
+   * state, which blocks observation too until the host reports an unlock.
+   */
+  async function screenLockFailure(): Promise<CuRunResult | undefined> {
+    if (!opts.screenLocked) return undefined;
+    try {
+      if (!(await opts.screenLocked())) return undefined;
+    } catch {
+      // Same fail-closed rule as the physical-input guard: a probe that cannot
+      // answer is not permission to drive an unattended machine.
+    }
+    return {
+      outcome: {
+        ok: false,
+        error: 'screen_locked',
+        message: SCREEN_LOCKED_MESSAGE,
       },
     };
   }
@@ -1623,6 +1663,11 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
     },
 
     async launchApp(input, signal, context) {
+      // No typed outcome to return here — a launch reports an app or throws.
+      // The refusal still reaches the model, and the next action it attempts
+      // carries the `screen_locked` code that moves the session state.
+      const locked = await screenLockFailure();
+      if (locked) throw new Error(SCREEN_LOCKED_MESSAGE);
       return withOperationQueue(
         signal,
         async () => {
@@ -1704,6 +1749,8 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
     },
 
     async runSemantic(action: CuSemanticAction, signal, context) {
+      const locked = await screenLockFailure();
+      if (locked) return locked;
       try {
         return await withOperationQueue(
           signal,
@@ -1853,6 +1900,8 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
     },
 
     async run(action, signal, context: CuRunContext): Promise<CuRunResult> {
+      const locked = await screenLockFailure();
+      if (locked) return locked;
       const sessionGeneration = sessionGenerations.get(context.sessionId) ?? 0;
       try {
         return await withOperationQueue(

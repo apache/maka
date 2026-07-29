@@ -35,6 +35,10 @@ import {
   withComputerUsePip,
 } from './computer-use/pip-window.js';
 import {
+  createComputerUseScreenLockGuard,
+  withComputerUseScreenLock,
+} from './computer-use/screen-lock.js';
+import {
   applyComputerUseRealModelPolicy,
   parseComputerUseRealModelPolicy,
 } from './computer-use-real-model-policy.js';
@@ -166,6 +170,10 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
         }
       : {},
   );
+  // Background operation is the point, but "the user is elsewhere on the same
+  // machine" and "the user locked the machine and left" are different
+  // situations, and only the first one is what Computer Use was built for.
+  const computerUseScreenLock = createComputerUseScreenLockGuard();
   const computerUseHost = createComputerUseHost({
     isPackaged: app.isPackaged,
     resourcesPath: process.resourcesPath,
@@ -183,6 +191,7 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
       }
     },
     physicalInputRecentlyActive: () => powerMonitor.getSystemIdleTime() < 1,
+    screenLocked: () => computerUseScreenLock.locked(),
     ...(isComputerUseRealModelE2e
       ? {
           onTrace: (event) => {
@@ -199,13 +208,17 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
       : {}),
     overlay: withComputerUsePip(
       withComputerUseStatusItem(
-        createComputerUseOverlayHook(computerUseOverlay),
+        withComputerUseScreenLock(
+          createComputerUseOverlayHook(computerUseOverlay),
+          computerUseScreenLock,
+        ),
         computerUseStatusItem,
       ),
       computerUsePip,
     ),
   });
   const computerUse = computerUseHost.selected;
+  computerUseScreenLock.setSessionEvents(computerUse.tools.sessionEvents);
   const computerUseTools = applyComputerUseRealModelPolicy(
     computerUse.tools,
     isComputerUseRealModelE2e
@@ -328,6 +341,7 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     computerUseOverlay,
     computerUseStatusItem,
     computerUsePip,
+    computerUseScreenLock,
     computerUseTools,
     agentTeamLeadTools,
     desktopProductToolSurface,

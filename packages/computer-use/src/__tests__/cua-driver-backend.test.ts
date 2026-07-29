@@ -523,6 +523,7 @@ function makeBackend(
     refetchMode?: 'replacement' | 'moved' | 'missing' | 'ambiguous';
     resolveDisplays?: CuaDriverBackendOptions['resolveDisplays'];
     physicalInputRecentlyActive?: CuaDriverBackendOptions['physicalInputRecentlyActive'];
+    screenLocked?: CuaDriverBackendOptions['screenLocked'];
     onTrace?: CuaDriverBackendOptions['onTrace'];
     allowCompatibilityInputDispatch?: boolean;
     snapshotDelayMs?: number;
@@ -578,6 +579,7 @@ function makeBackend(
     ...(opts.physicalInputRecentlyActive
       ? { physicalInputRecentlyActive: opts.physicalInputRecentlyActive }
       : {}),
+    ...(opts.screenLocked ? { screenLocked: opts.screenLocked } : {}),
     ...(opts.onTrace ? { onTrace: opts.onTrace } : {}),
     allowCompatibilityInputDispatch: opts.allowCompatibilityInputDispatch ?? true,
     ...(opts.settleAfterAction !== undefined ? { settleAfterAction: opts.settleAfterAction } : {}),
@@ -1026,6 +1028,86 @@ describe('cua-driver backend', () => {
     assert.equal(result.outcome.ok, false);
     if (!result.outcome.ok) assert.equal(result.outcome.error, 'user_intervened');
     assert.equal(toolCalls(await readRecords(logPath), 'click').length, 0);
+  });
+
+  it('refuses semantic dispatch while the screen is locked', async () => {
+    // A locked screen is the user saying they left. Semantic dispatch is the
+    // path that is otherwise safe to run in the background, which is exactly
+    // why it needs saying here: "background" was never meant to include
+    // "unattended behind a lock screen".
+    const { backend, logPath } = makeBackend({
+      axRole: 'AXButton',
+      screenLocked: () => true,
+    });
+    const signal = new AbortController().signal;
+    const context = { sessionId: 's1', turnId: 't1', toolCallId: 'lock-guard' };
+    const result = await backend.runSemantic!(
+      { type: 'click_element', observationId: 'never-taken', elementId: '7' },
+      signal,
+      context,
+    );
+    assert.equal(result.outcome.ok, false);
+    if (!result.outcome.ok) {
+      assert.equal(result.outcome.error, 'screen_locked');
+      assert.match(result.outcome.message ?? '', /unlock/);
+    }
+    // Refused before the observation is even consumed, so nothing about the
+    // session is spent by an attempt that could not have run.
+    assert.equal(toolCalls(await readRecords(logPath), 'click').length, 0);
+  });
+
+  it('refuses coordinate dispatch while the screen is locked', async () => {
+    const { backend, logPath } = makeBackend({ screenLocked: () => true });
+    const signal = new AbortController().signal;
+    const result = await backend.run({ type: 'left_click', coordinate: { x: 10, y: 10 } }, signal, {
+      sessionId: 's1',
+      turnId: 't1',
+      toolCallId: 'lock-guard-coord',
+    });
+    assert.equal(result.outcome.ok, false);
+    if (!result.outcome.ok) assert.equal(result.outcome.error, 'screen_locked');
+    assert.equal(toolCalls(await readRecords(logPath), 'click').length, 0);
+  });
+
+  it('refuses to start an app while the screen is locked', async () => {
+    const { backend, logPath } = makeBackend({ screenLocked: () => true });
+    const signal = new AbortController().signal;
+    await assert.rejects(
+      backend.launchApp!({ app: 'com.apple.calculator' }, signal, {
+        sessionId: 's1',
+        turnId: 't1',
+        toolCallId: 'lock-guard-launch',
+      }),
+      /unlock/,
+    );
+    assert.equal(toolCalls(await readRecords(logPath), 'launch_app').length, 0);
+  });
+
+  it('a probe that throws refuses rather than falling through to dispatch', async () => {
+    // The guard is a safety boundary, so an unanswerable probe is a refusal,
+    // matching how the physical-input guard already fails closed.
+    const { backend } = makeBackend({
+      screenLocked: () => {
+        throw new Error('probe unavailable');
+      },
+    });
+    const result = await backend.run(
+      { type: 'left_click', coordinate: { x: 10, y: 10 } },
+      new AbortController().signal,
+      { sessionId: 's1', turnId: 't1', toolCallId: 'lock-guard-throw' },
+    );
+    assert.equal(result.outcome.ok, false);
+    if (!result.outcome.ok) assert.equal(result.outcome.error, 'screen_locked');
+  });
+
+  it('does not refuse when the screen is unlocked', async () => {
+    const { backend } = makeBackend({ screenLocked: () => false });
+    const result = await backend.run(
+      { type: 'left_click', coordinate: { x: 10, y: 10 } },
+      new AbortController().signal,
+      { sessionId: 's1', turnId: 't1', toolCallId: 'lock-guard-open' },
+    );
+    if (!result.outcome.ok) assert.notEqual(result.outcome.error, 'screen_locked');
   });
 
   it('refetches a unique labeled element when the ephemeral token changes', async () => {
