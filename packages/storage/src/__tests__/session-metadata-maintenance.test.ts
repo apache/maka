@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import type { CreateSessionInput } from '@maka/core';
+import { createExternalExecutionBoundary, type CreateSessionInput } from '@maka/core';
 import {
   backupSessionMetadataDatabase,
   exportLegacySessionTree,
@@ -24,7 +24,7 @@ describe('session metadata migration maintenance', () => {
     const backupPath = join(container, 'backups', 'sessions.sqlite');
     const store = createSessionStore(workspaceRoot);
     try {
-      const created = await store.create(makeInput());
+      const created = await store.create(makeInput(), createExternalExecutionBoundary());
       await store.appendMessage(created.id, {
         type: 'user',
         id: 'user-1',
@@ -44,6 +44,12 @@ describe('session metadata migration maintenance', () => {
       const legacy = createLegacyFileSessionStore(exportRoot);
       assert.equal((await legacy.readHeader(created.id)).name, 'Canonical SQLite title');
       assert.equal((await legacy.readMessages(created.id))[0]?.type, 'user');
+      const restoredExport = createSessionStore(exportRoot);
+      try {
+        assert.equal((await restoredExport.readExecutionBoundary(created.id)).kind, 'external');
+      } finally {
+        await restoredExport.close?.();
+      }
 
       const manifest = JSON.parse(await readFile(exported.manifestPath, 'utf8')) as {
         format: string;

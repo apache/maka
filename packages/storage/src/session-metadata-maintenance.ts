@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
-import type { SessionHeader } from '@maka/core';
+import type { ExecutionBoundary, SessionHeader } from '@maka/core';
+import { EXECUTION_BOUNDARY_TRANSFER_FILE } from './session-metadata-transfer.js';
 import { decodeSessionHeader, SQLITE_SESSION_METADATA_DATABASE_NAME } from './session-store.js';
 import {
   createSqliteSessionMetadataStore,
@@ -42,9 +43,17 @@ export async function exportLegacySessionTree(input: {
   await assertFileExists(databasePath, 'SQLite session metadata database');
   const metadata = createSqliteSessionMetadataStore(databasePath);
   try {
+    const snapshots = await Promise.all(
+      (await metadata.list()).map((record) =>
+        metadata.readSessionAuthoritySnapshot(record.header.id),
+      ),
+    );
     return exportLegacySessionTreeSnapshot({
       ...input,
-      records: await metadata.list(),
+      records: snapshots.map((snapshot) => snapshot.record),
+      boundaries: new Map(
+        snapshots.map((snapshot) => [snapshot.record.header.id, snapshot.boundary]),
+      ),
     });
   } finally {
     metadata.close();
@@ -55,6 +64,7 @@ export async function exportLegacySessionTreeSnapshot(input: {
   workspaceRoot: string;
   destinationRoot: string;
   records: readonly SessionMetadataRecord[];
+  boundaries?: ReadonlyMap<string, ExecutionBoundary>;
   /** Optional selected-session export; omitted preserves the full backup behavior. */
   sessionIds?: readonly string[];
   now?: () => number;
@@ -99,6 +109,14 @@ export async function exportLegacySessionTreeSnapshot(input: {
       const destinationPath = join(stagingRoot, 'sessions', record.header.id, 'session.jsonl');
       await mkdir(dirname(destinationPath), { recursive: true });
       await writeFile(destinationPath, body, 'utf8');
+      const boundary = input.boundaries?.get(record.header.id);
+      if (boundary) {
+        await writeFile(
+          join(dirname(destinationPath), EXECUTION_BOUNDARY_TRANSFER_FILE),
+          `${JSON.stringify({ schemaVersion: 1, boundary })}\n`,
+          'utf8',
+        );
+      }
     }
     const manifest: SessionMetadataExportManifest = {
       format: SESSION_METADATA_EXPORT_FORMAT,
