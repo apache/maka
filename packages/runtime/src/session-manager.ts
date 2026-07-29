@@ -427,16 +427,20 @@ export interface AgentOutputResult {
 export interface SessionStore {
   create(input: CreateSessionInput): Promise<SessionHeader>;
   createSubagent(input: CreateSessionInput): Promise<{ header: SessionHeader; created: boolean }>;
-  readExecutionBoundary?(sessionId: string): Promise<ExecutionBoundary>;
+  readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary>;
   createSandboxBoundaryRequest?(
     input: CreateSandboxBoundaryRequest,
   ): Promise<SandboxBoundaryRequest>;
   settleSandboxBoundaryRequest?(
     input: SettleSandboxBoundaryRequest,
   ): Promise<SandboxBoundarySettlement>;
-  setExecutionBoundaryKind?(
+  setExecutionBoundaryKind(
     sessionId: string,
     kind: 'managed' | 'bypass',
+    projection?: {
+      permissionMode: SessionHeader['permissionMode'];
+      labels?: readonly string[];
+    },
   ): Promise<ExecutionBoundary>;
   createAgentGraphOperator?(
     input: CreateSessionInput,
@@ -949,14 +953,22 @@ export class SessionManager {
       throw new Error('Cannot change backend configuration while a turn is running');
     }
 
-    const { name, titleIsManual: _titleIsManual, ...rest } = patch;
+    const { permissionMode, name, titleIsManual: _titleIsManual, ...rest } = patch;
+    const permissionSummary =
+      permissionMode === undefined
+        ? undefined
+        : await this.setPermissionMode(sessionId, permissionMode);
+    if (name === undefined && Object.keys(rest).length === 0) {
+      return permissionSummary ?? headerToSummary(await this.deps.store.readHeader(sessionId));
+    }
+
     if (name !== undefined) await this.deps.store.rename(sessionId, name);
     const next =
       Object.keys(rest).length > 0
         ? await this.deps.store.updateHeader(sessionId, rest)
         : await this.deps.store.readHeader(sessionId);
     this.runtimeKernel.updateCachedHeader(sessionId, next);
-    if (backendConfigChanged) {
+    if (changesBackendConfig(rest)) {
       // AgentBackend instances snapshot backend/model config at construction
       // time. If a stale session is rebound to a real default connection, the
       // next turn must build a fresh backend instead of reusing FakeBackend or
@@ -1024,6 +1036,7 @@ export class SessionManager {
 
   async setPermissionMode(sessionId: string, mode: PermissionMode): Promise<SessionSummary> {
     const previous = await this.deps.store.readHeader(sessionId);
+    const boundary = await this.deps.store.readExecutionBoundary(sessionId);
     if (
       previous.subagentRuntime &&
       !isPermissionModeWithinCeiling(mode, previous.subagentRuntime.permissionCeiling)
@@ -1033,7 +1046,13 @@ export class SessionManager {
       );
     }
     const leavingDeepResearch = isDeepResearchSession(previous.labels) && mode !== 'explore';
-    if (previous.permissionMode === mode && !leavingDeepResearch) return headerToSummary(previous);
+    if (
+      previous.permissionMode === mode &&
+      executionBoundaryMatchesPermissionMode(boundary, mode) &&
+      !leavingDeepResearch
+    ) {
+      return headerToSummary(previous);
+    }
 
     if (this.runtimeKernel.hasActiveRuns(sessionId)) {
       throw new Error('当前对话正在运行，等结束后再切换权限模式。');
@@ -1042,16 +1061,18 @@ export class SessionManager {
       throw new Error('当前有工具调用正在等待确认，处理后再切换权限模式。');
     }
 
-    await this.deps.store.setExecutionBoundaryKind?.(
+    const labels = leavingDeepResearch
+      ? previous.labels.filter((label) => label !== DEEP_RESEARCH_SESSION_LABEL)
+      : previous.labels;
+    await this.deps.store.setExecutionBoundaryKind(
       sessionId,
       mode === 'bypass' ? 'bypass' : 'managed',
+      {
+        permissionMode: mode,
+        labels,
+      },
     );
-    const next = await this.deps.store.updateHeader(sessionId, {
-      permissionMode: mode,
-      labels: leavingDeepResearch
-        ? previous.labels.filter((label) => label !== DEEP_RESEARCH_SESSION_LABEL)
-        : previous.labels,
-    });
+    const next = await this.deps.store.readHeader(sessionId);
     await this.deps.store.appendMessage(sessionId, {
       type: 'system_note',
       id: this.deps.newId(),
@@ -1077,9 +1098,6 @@ export class SessionManager {
     const header = await this.deps.store.readHeader(sessionId);
     if (header.status === 'waiting_for_user') {
       throw new Error('当前有沙箱边界请求正在等待确认，处理后再切换。');
-    }
-    if (!this.deps.store.setExecutionBoundaryKind) {
-      throw new Error('Session store does not support execution boundaries');
     }
     const boundary = await this.deps.store.setExecutionBoundaryKind(sessionId, kind);
     await this.runtimeKernel.disposeBackend(sessionId);
@@ -4624,6 +4642,17 @@ export function changesBackendConfig(patch: Partial<SessionHeader>): boolean {
     // serving the remote sender.
     'permissionMode' in patch
   );
+}
+
+function executionBoundaryMatchesPermissionMode(
+  boundary: ExecutionBoundary,
+  mode: PermissionMode,
+): boolean {
+  if (mode === 'bypass') return boundary.kind === 'bypass';
+  if (boundary.kind !== 'managed') return false;
+  return mode === 'explore'
+    ? boundary.profile.name === 'read-only'
+    : boundary.profile.name !== 'read-only';
 }
 
 function agentRunStatusForSpawnResult(

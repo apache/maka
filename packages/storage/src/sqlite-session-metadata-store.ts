@@ -409,6 +409,10 @@ export class SqliteSessionMetadataStore {
   async setExecutionBoundaryKind(
     sessionId: string,
     kind: 'managed' | 'bypass',
+    projection?: {
+      permissionMode: SessionHeader['permissionMode'];
+      labels?: readonly string[];
+    },
   ): Promise<ExecutionBoundary> {
     this.assertOpen();
     assertSafeSessionId(sessionId);
@@ -422,40 +426,76 @@ export class SqliteSessionMetadataStore {
           'An externally isolated session cannot enter Auto or Bypass',
         );
       }
-      if (current.kind === kind) return current;
+      const projectedMode =
+        projection?.permissionMode ??
+        (kind === 'bypass'
+          ? 'bypass'
+          : record.header.permissionMode === 'bypass'
+            ? 'ask'
+            : record.header.permissionMode);
+      if ((projectedMode === 'bypass') !== (kind === 'bypass')) {
+        throw new Error('Execution boundary kind and legacy permission mode disagree');
+      }
 
-      const revision = current.revision + 1;
-      const boundary: ExecutionBoundary =
-        kind === 'bypass'
-          ? { kind: 'bypass', revision }
-          : {
-              kind: 'managed',
-              profile: this.readLatestManagedSandboxProfileSync(sessionId),
-              revision,
-            };
-      const committedAt = this.now();
-      this.db
-        .prepare(`
-          INSERT INTO sandbox_boundary_log(
-            session_id,
-            entry_id,
-            entry_kind,
-            status,
-            applied_revision,
-            boundary_json,
-            created_at,
-            settled_at
-          ) VALUES (?, ?, 'user_change', 'applied', ?, ?, ?, ?)
-        `)
-        .run(
-          sessionId,
-          `change:${revision}`,
-          revision,
-          JSON.stringify(boundary),
-          committedAt,
-          committedAt,
-        );
-      this.options.failpoint?.('after_sandbox_boundary_write');
+      let boundary: ExecutionBoundary = current;
+      const nextManagedProfile =
+        kind === 'managed'
+          ? projectedMode === 'explore'
+            ? requireManagedProfile(createGenesisExecutionBoundary('explore'))
+            : current.kind === 'managed' && current.profile.name !== 'read-only'
+              ? current.profile
+              : restoreAutoSandboxProfile(this.readLatestManagedSandboxProfileSync(sessionId))
+          : undefined;
+      const boundaryChanged =
+        current.kind !== kind ||
+        (kind === 'managed' &&
+          current.kind === 'managed' &&
+          !isDeepStrictEqual(current.profile, nextManagedProfile));
+      if (boundaryChanged) {
+        const revision = current.revision + 1;
+        boundary =
+          kind === 'bypass'
+            ? { kind: 'bypass', revision }
+            : {
+                kind: 'managed',
+                profile: nextManagedProfile!,
+                revision,
+              };
+        const committedAt = this.now();
+        this.db
+          .prepare(`
+            INSERT INTO sandbox_boundary_log(
+              session_id,
+              entry_id,
+              entry_kind,
+              status,
+              applied_revision,
+              boundary_json,
+              created_at,
+              settled_at
+            ) VALUES (?, ?, 'user_change', 'applied', ?, ?, ?, ?)
+          `)
+          .run(
+            sessionId,
+            `change:${revision}`,
+            revision,
+            JSON.stringify(boundary),
+            committedAt,
+            committedAt,
+          );
+        this.options.failpoint?.('after_sandbox_boundary_write');
+      }
+
+      const projectedLabels = projection?.labels ? [...projection.labels] : record.header.labels;
+      if (
+        record.header.permissionMode !== projectedMode ||
+        !isDeepStrictEqual(record.header.labels, projectedLabels)
+      ) {
+        this.updateHeaderSync(sessionId, {
+          permissionMode: projectedMode,
+          labels: projectedLabels,
+        });
+      }
       return boundary;
     });
   }
@@ -1709,81 +1749,7 @@ export class SqliteSessionMetadataStore {
     if (Object.prototype.hasOwnProperty.call(patch, 'subagentWorkspace')) {
       throw new Error('Subagent session workspace binding is immutable');
     }
-    return this.transaction(() => {
-      const current = this.readRecordSync(sessionId);
-      if (!current) throw new SessionNotFoundError(sessionId);
-      if (
-        options.expectedVersion !== undefined &&
-        options.expectedVersion !== current.metadataVersion
-      ) {
-        throw new SessionMetadataConflictError(
-          `Session metadata version conflict for ${sessionId}: expected ${options.expectedVersion}, found ${current.metadataVersion}`,
-        );
-      }
-      const next = normalizeSessionHeader({ ...current.header, ...patch }, sessionId);
-      if (next.id !== sessionId) {
-        throw new SessionMetadataConflictError('Session metadata identity cannot be changed');
-      }
-      const metadataVersion = current.metadataVersion + 1;
-      const committedAt = this.now();
-      const updated = this.db
-        .prepare(`
-          UPDATE session_metadata
-          SET
-            payload_json = ?,
-            created_at = ?,
-            last_used_at = ?,
-            last_message_at = ?,
-            name = ?,
-            is_flagged = ?,
-            is_archived = ?,
-            status = ?,
-            status_updated_at = ?,
-            parent_session_id = ?,
-            subagent_parent_session_id = ?,
-            revision_root_session_id = ?,
-            revision_index = ?,
-            has_unread = ?,
-            backend = ?,
-            llm_connection_slug = ?,
-            model = ?,
-            metadata_version = ?,
-            committed_at = ?
-          WHERE session_id = ? AND metadata_version = ?
-        `)
-        .run(
-          JSON.stringify(next),
-          next.createdAt,
-          next.lastUsedAt,
-          next.lastMessageAt ?? null,
-          next.name,
-          booleanInteger(next.isFlagged),
-          booleanInteger(next.isArchived),
-          next.status,
-          next.statusUpdatedAt ?? null,
-          next.parentSessionId ?? null,
-          next.subagentParent?.parentSessionId ?? null,
-          next.revisionRootSessionId ?? null,
-          next.revisionIndex ?? null,
-          booleanInteger(next.hasUnread),
-          next.backend,
-          next.llmConnectionSlug,
-          next.model,
-          metadataVersion,
-          committedAt,
-          sessionId,
-          current.metadataVersion,
-        );
-      if (updated.changes !== 1) {
-        throw new SessionMetadataConflictError(
-          `Session metadata compare-and-set failed: ${sessionId}`,
-        );
-      }
-      this.options.failpoint?.('after_session_row_write');
-      this.replaceLabels(next);
-      this.options.failpoint?.('after_session_labels_write');
-      return { header: next, metadataVersion, committedAt };
-    });
+    return this.transaction(() => this.updateHeaderSync(sessionId, patch, options));
   }
 
   async remove(sessionId: string): Promise<boolean> {
@@ -2130,6 +2096,86 @@ export class SqliteSessionMetadataStore {
       );
     }
     this.options.failpoint?.('after_sandbox_boundary_write');
+  }
+
+  private updateHeaderSync(
+    sessionId: string,
+    patch: Partial<SessionHeader>,
+    options: { expectedVersion?: number } = {},
+  ): SessionMetadataRecord {
+    const current = this.readRecordSync(sessionId);
+    if (!current) throw new SessionNotFoundError(sessionId);
+    if (
+      options.expectedVersion !== undefined &&
+      options.expectedVersion !== current.metadataVersion
+    ) {
+      throw new SessionMetadataConflictError(
+        `Session metadata version conflict for ${sessionId}: expected ${options.expectedVersion}, found ${current.metadataVersion}`,
+      );
+    }
+    const next = normalizeSessionHeader({ ...current.header, ...patch }, sessionId);
+    if (next.id !== sessionId) {
+      throw new SessionMetadataConflictError('Session metadata identity cannot be changed');
+    }
+    const metadataVersion = current.metadataVersion + 1;
+    const committedAt = this.now();
+    const updated = this.db
+      .prepare(`
+        UPDATE session_metadata
+        SET
+          payload_json = ?,
+          created_at = ?,
+          last_used_at = ?,
+          last_message_at = ?,
+          name = ?,
+          is_flagged = ?,
+          is_archived = ?,
+          status = ?,
+          status_updated_at = ?,
+          parent_session_id = ?,
+          subagent_parent_session_id = ?,
+          revision_root_session_id = ?,
+          revision_index = ?,
+          has_unread = ?,
+          backend = ?,
+          llm_connection_slug = ?,
+          model = ?,
+          metadata_version = ?,
+          committed_at = ?
+        WHERE session_id = ? AND metadata_version = ?
+      `)
+      .run(
+        JSON.stringify(next),
+        next.createdAt,
+        next.lastUsedAt,
+        next.lastMessageAt ?? null,
+        next.name,
+        booleanInteger(next.isFlagged),
+        booleanInteger(next.isArchived),
+        next.status,
+        next.statusUpdatedAt ?? null,
+        next.parentSessionId ?? null,
+        next.subagentParent?.parentSessionId ?? null,
+        next.revisionRootSessionId ?? null,
+        next.revisionIndex ?? null,
+        booleanInteger(next.hasUnread),
+        next.backend,
+        next.llmConnectionSlug,
+        next.model,
+        metadataVersion,
+        committedAt,
+        sessionId,
+        current.metadataVersion,
+      );
+    if (updated.changes !== 1) {
+      throw new SessionMetadataConflictError(
+        `Session metadata compare-and-set failed: ${sessionId}`,
+      );
+    }
+    this.options.failpoint?.('after_session_row_write');
+    this.replaceLabels(next);
+    this.options.failpoint?.('after_session_labels_write');
+    return { header: next, metadataVersion, committedAt };
   }
 
   private replaceLabels(header: SessionHeader): void {
@@ -2867,6 +2913,21 @@ function decodeSandboxBoundaryRequestRow(row: SandboxBoundaryRequestRow): Sandbo
 
 function booleanInteger(value: boolean): 0 | 1 {
   return value ? 1 : 0;
+}
+
+function requireManagedProfile(
+  boundary: ExecutionBoundary,
+): Extract<ExecutionBoundary, { kind: 'managed' }>['profile'] {
+  if (boundary.kind !== 'managed') throw new Error('Expected a managed execution boundary');
+  return boundary.profile;
+}
+
+function restoreAutoSandboxProfile(
+  latest: Extract<ExecutionBoundary, { kind: 'managed' }>['profile'],
+): Extract<ExecutionBoundary, { kind: 'managed' }>['profile'] {
+  return latest.name === 'read-only'
+    ? requireManagedProfile(createGenesisExecutionBoundary('ask'))
+    : latest;
 }
 
 function assertGraphLookupIdentity(value: string, name: string): void {

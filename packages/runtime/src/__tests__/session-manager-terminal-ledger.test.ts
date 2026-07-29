@@ -1479,6 +1479,14 @@ class TinySessionStore implements SessionStore {
     return clone(header);
   }
 
+  async setExecutionBoundaryKind(): Promise<never> {
+    throw new Error('not implemented');
+  }
+
+  async readExecutionBoundary(): Promise<never> {
+    throw new Error('not implemented');
+  }
+
   async list(_filter?: SessionListFilter): Promise<SessionSummary[]> {
     return Array.from(this.headers.values()).map((header) => ({
       id: header.id,

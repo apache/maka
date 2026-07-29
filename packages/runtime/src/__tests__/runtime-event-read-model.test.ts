@@ -1467,6 +1467,14 @@ class ReadOnlyStore implements SessionStore {
     throw new Error('not implemented');
   }
 
+  async setExecutionBoundaryKind(): Promise<never> {
+    throw new Error('not implemented');
+  }
+
+  async readExecutionBoundary(): Promise<never> {
+    throw new Error('not implemented');
+  }
+
   async list(_filter?: SessionListFilter): Promise<SessionSummary[]> {
     return [];
   }

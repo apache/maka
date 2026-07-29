@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { setTimeout as timerDelay } from 'node:timers/promises';
 import { createHash } from 'node:crypto';
 import {
+  createGenesisExecutionBoundary,
   DEEP_RESEARCH_SESSION_LABEL,
   deriveTurnRecords,
   isSessionInlineRun,
@@ -12,6 +13,7 @@ import {
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type {
   CreateSessionInput,
+  ExecutionBoundary,
   PermissionMode,
   QueueEnqueueOutcome,
   AgentGraphIntentClaim,
@@ -3765,6 +3767,63 @@ describe('SessionManager manual compaction', () => {
 });
 
 describe('SessionManager permission mode updates', () => {
+  test('projects the legacy mode through the atomic boundary transition', async () => {
+    const store = new AtomicBoundaryMemorySessionStore();
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(900),
+    });
+    const session = await manager.createSession(makeInput({ permissionMode: 'ask' }));
+
+    const summary = await manager.setPermissionMode(session.id, 'explore');
+
+    expect(summary.permissionMode).toBe('explore');
+    expect(store.boundaryCalls).toEqual([
+      {
+        sessionId: session.id,
+        kind: 'managed',
+        projection: { permissionMode: 'explore', labels: [] },
+      },
+    ]);
+  });
+
+  test('routes generic permission updates through the boundary transition', async () => {
+    const store = new AtomicBoundaryMemorySessionStore();
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(950),
+    });
+    const session = await manager.createSession(makeInput({ permissionMode: 'ask' }));
+
+    const summary = await manager.updateSession(session.id, {
+      permissionMode: 'explore',
+    });
+
+    expect(summary.permissionMode).toBe('explore');
+    expect(store.boundaryCalls[0]?.projection?.permissionMode).toBe('explore');
+  });
+
+  test('repairs a legacy mode projection that already disagrees with the boundary', async () => {
+    const store = new AtomicBoundaryMemorySessionStore();
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(975),
+    });
+    const session = await manager.createSession(makeInput({ permissionMode: 'ask' }));
+    store.forceBoundary(session.id, { kind: 'bypass', revision: 4 });
+
+    await manager.setPermissionMode(session.id, 'ask');
+
+    expect(store.boundaryCalls).toHaveLength(1);
+    expect((await store.readExecutionBoundary(session.id)).kind).toBe('managed');
+  });
+
   test('updates header, rebuilds active backend, and writes an audit note', async () => {
     const store = new MemorySessionStore();
     const backends = new BackendRegistry();
@@ -18578,6 +18637,33 @@ class MemorySessionStore implements SessionStore {
     return header;
   }
 
+  async setExecutionBoundaryKind(
+    sessionId: string,
+    kind: 'managed' | 'bypass',
+    projection?: {
+      permissionMode: SessionHeader['permissionMode'];
+      labels?: readonly string[];
+    },
+  ) {
+    const current = await this.readHeader(sessionId);
+    const permissionMode =
+      projection?.permissionMode ??
+      (kind === 'bypass'
+        ? 'bypass'
+        : current.permissionMode === 'bypass'
+          ? 'ask'
+          : current.permissionMode);
+    await this.updateHeader(sessionId, {
+      permissionMode,
+      ...(projection?.labels ? { labels: [...projection.labels] } : {}),
+    });
+    return createGenesisExecutionBoundary(permissionMode);
+  }
+
+  async readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary> {
+    return createGenesisExecutionBoundary((await this.readHeader(sessionId)).permissionMode);
+  }
+
   async list(_filter?: SessionListFilter): Promise<SessionSummary[]> {
     return Array.from(this.headers.values()).map(headerToSummary);
   }
@@ -18696,6 +18782,73 @@ class MemorySessionStore implements SessionStore {
   async remove(sessionId: string): Promise<void> {
     this.headers.delete(sessionId);
     this.messages.delete(sessionId);
+  }
+}
+
+class AtomicBoundaryMemorySessionStore extends MemorySessionStore {
+  readonly boundaryCalls: Array<{
+    sessionId: string;
+    kind: 'managed' | 'bypass';
+    projection:
+      | {
+          permissionMode: SessionHeader['permissionMode'];
+          labels?: readonly string[];
+        }
+      | undefined;
+  }> = [];
+  private readonly boundaries = new Map<string, ExecutionBoundary>();
+  private projectingBoundary = false;
+
+  forceBoundary(sessionId: string, boundary: ExecutionBoundary): void {
+    this.boundaries.set(sessionId, boundary);
+  }
+
+  override async readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary> {
+    return this.boundaries.get(sessionId) ?? super.readExecutionBoundary(sessionId);
+  }
+
+  async setExecutionBoundaryKind(
+    sessionId: string,
+    kind: 'managed' | 'bypass',
+    projection?: {
+      permissionMode: SessionHeader['permissionMode'];
+      labels?: readonly string[];
+    },
+  ) {
+    this.boundaryCalls.push({ sessionId, kind, projection });
+    const current = await this.readHeader(sessionId);
+    const permissionMode =
+      projection?.permissionMode ??
+      (kind === 'bypass'
+        ? 'bypass'
+        : current.permissionMode === 'bypass'
+          ? 'ask'
+          : current.permissionMode);
+    this.projectingBoundary = true;
+    try {
+      await super.updateHeader(sessionId, {
+        permissionMode,
+        ...(projection?.labels ? { labels: [...projection.labels] } : {}),
+      });
+    } finally {
+      this.projectingBoundary = false;
+    }
+    const boundary = {
+      ...createGenesisExecutionBoundary(permissionMode),
+      revision: 1,
+    };
+    this.boundaries.set(sessionId, boundary);
+    return boundary;
+  }
+
+  override async updateHeader(
+    sessionId: string,
+    patch: Partial<SessionHeader>,
+  ): Promise<SessionHeader> {
+    if (!this.projectingBoundary && Object.hasOwn(patch, 'permissionMode')) {
+      throw new Error('permissionMode must be projected by the boundary transition');
+    }
+    return super.updateHeader(sessionId, patch);
   }
 }
 

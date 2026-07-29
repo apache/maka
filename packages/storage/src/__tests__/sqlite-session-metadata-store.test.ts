@@ -230,6 +230,7 @@ describe('SqliteSessionMetadataStore', () => {
 
       const bypass = await store.setExecutionBoundaryKind('session-1', 'bypass');
       assert.deepEqual(bypass, { kind: 'bypass', revision: 2 });
+      assert.equal((await store.read('session-1')).header.permissionMode, 'bypass');
       const conflict = await store.settleSandboxBoundaryRequest({
         sessionId: 'session-1',
         requestId: 'stale-after-bypass',
@@ -242,10 +243,60 @@ describe('SqliteSessionMetadataStore', () => {
       const restored = await store.setExecutionBoundaryKind('session-1', 'managed');
       assert.equal(restored.kind, 'managed');
       assert.equal(restored.revision, 3);
+      assert.equal((await store.read('session-1')).header.permissionMode, 'ask');
       if (restored.kind === 'managed') {
         assert.equal(canReadPath(restored.profile, '/outside/kept/file.txt'), true);
       }
       assert.equal((await store.setExecutionBoundaryKind('session-1', 'managed')).revision, 3);
+    } finally {
+      store.close();
+    }
+  });
+
+  test('projects an explicit legacy mode in the same managed-boundary transition', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNow(250) });
+    try {
+      await store.create(fullHeader({ labels: ['deep-research', 'kept'] }));
+
+      const explore = await store.setExecutionBoundaryKind('session-1', 'managed', {
+        permissionMode: 'explore',
+        labels: ['kept'],
+      });
+
+      assert.equal(explore.kind, 'managed');
+      assert.equal(explore.revision, 1);
+      if (explore.kind === 'managed') assert.equal(explore.profile.name, 'read-only');
+      const projected = (await store.read('session-1')).header;
+      assert.equal(projected.permissionMode, 'explore');
+      assert.deepEqual(projected.labels, ['kept']);
+    } finally {
+      store.close();
+    }
+  });
+
+  test('rolls back a boundary kind and header projection as one transaction', async () => {
+    let armed = false;
+    const store = createSqliteSessionMetadataStore(':memory:', {
+      failpoint: (point) => {
+        if (armed && point === 'after_sandbox_boundary_write') {
+          throw new Error('injected boundary projection failure');
+        }
+      },
+    });
+    try {
+      await store.create(fullHeader());
+      armed = true;
+
+      await assert.rejects(
+        () =>
+          store.setExecutionBoundaryKind('session-1', 'bypass', {
+            permissionMode: 'bypass',
+          }),
+        /injected boundary projection failure/,
+      );
+
+      assert.equal((await store.readExecutionBoundary('session-1')).kind, 'managed');
+      assert.equal((await store.read('session-1')).header.permissionMode, 'ask');
     } finally {
       store.close();
     }

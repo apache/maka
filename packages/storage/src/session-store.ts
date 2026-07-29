@@ -87,6 +87,10 @@ export interface SessionStore {
   setExecutionBoundaryKind(
     sessionId: string,
     kind: 'managed' | 'bypass',
+    projection?: {
+      permissionMode: SessionHeader['permissionMode'];
+      labels?: readonly string[];
+    },
   ): Promise<ExecutionBoundary>;
   list(filter?: SessionListFilter): Promise<SessionSummary[]>;
   /** Enumerate durable metadata without reading transcript bodies. */
@@ -224,9 +228,13 @@ class SqliteSessionStore implements SessionStore {
   async setExecutionBoundaryKind(
     sessionId: string,
     kind: 'managed' | 'bypass',
+    projection?: {
+      permissionMode: SessionHeader['permissionMode'];
+      labels?: readonly string[];
+    },
   ): Promise<ExecutionBoundary> {
     await this.ensureReady();
-    return this.metadata.setExecutionBoundaryKind(sessionId, kind);
+    return this.metadata.setExecutionBoundaryKind(sessionId, kind, projection);
   }
 
   async list(filter?: SessionListFilter): Promise<SessionSummary[]> {
@@ -486,6 +494,10 @@ class FileSessionStore implements SessionStore {
   async setExecutionBoundaryKind(
     _sessionId: string,
     _kind: 'managed' | 'bypass',
+    _projection?: {
+      permissionMode: SessionHeader['permissionMode'];
+      labels?: readonly string[];
+    },
   ): Promise<ExecutionBoundary> {
     throw new Error('Execution boundaries require the SQLite metadata control plane');
   }
