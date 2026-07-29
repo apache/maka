@@ -278,13 +278,29 @@ describe('permission response IPC boundary', () => {
     assert.match(stopHandler, /emitSessionsChanged\('turn-status-change',\s*sessionId\)/);
     assert.match(stopHandler, /emitSessionsChanged\('message-appended',\s*sessionId\)/);
     assert.match(sendHandler, /normalizeSessionSendCommand\(command\)/);
-    assert.match(
-      sendHandler,
-      /await runtime\.readExecutionBoundary\(sessionId\)[\s\S]*boundary\.kind === 'external'[\s\S]*externally isolated session/,
-      'Desktop must reject external-boundary sessions outside their owning harness',
-    );
+    assert.match(sendHandler, /ensureSessionCanSend/);
     assert.doesNotMatch(sendHandler, /command\.text/);
     assert.doesNotMatch(sendHandler, /command\.attachments/);
+  });
+
+  it('routes every local execution entry through the external-boundary admission guard', async () => {
+    const main = await readMainProcessCombinedSource();
+    const admission =
+      main.match(/async function ensureSessionCanSend\(sessionId: string\)[\s\S]*?\n\}/)?.[0] ?? '';
+    assert.match(
+      admission,
+      /runtime\.readExecutionBoundary\(sessionId\)[\s\S]*boundary\.kind === 'external'/,
+    );
+    for (const channel of [
+      'sessions:compact',
+      'sessions:resumeLatest',
+      'sessions:regenerateTurn',
+      'plan-mode:approve',
+    ]) {
+      const handler =
+        main.match(new RegExp(`ipcMain\\.handle\\('${channel}'[\\s\\S]*?\\n  \\}\\);`))?.[0] ?? '';
+      assert.match(handler, /ensureSessionCanSend\(sessionId\)/, channel);
+    }
   });
 
   it('renderer stop() and respondToSandboxBoundary() surface IPC failures only for the source session', async () => {

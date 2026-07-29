@@ -1212,6 +1212,12 @@ const streamEvents = createSessionStreamer({
 });
 
 async function ensureSessionCanSend(sessionId: string): Promise<void> {
+  const boundary = await runtime.readExecutionBoundary(sessionId);
+  if (boundary.kind === 'external') {
+    throw new Error(
+      `Cannot run externally isolated session ${sessionId} outside its owning harness.`,
+    );
+  }
   const header = await readAvailableSessionHeader(sessionId);
   let result: Awaited<ReturnType<typeof ensureSessionCanSendOrRebind>>;
   try {

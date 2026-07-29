@@ -346,12 +346,6 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
   ipcMain.handle('sessions:send', async (event, sessionId: string, command: unknown) => {
     const sendCommand = normalizeSessionSendCommand(command);
     if (!sendCommand) return;
-    const boundary = await runtime.readExecutionBoundary(sessionId);
-    if (boundary.kind === 'external') {
-      throw new Error(
-        `Cannot send to externally isolated session ${sessionId} outside its owning harness.`,
-      );
-    }
     const sendPlan = await prepareSessionSendSkillPlan({
       prepare: () =>
         prepareSkillInvocation
@@ -452,6 +446,7 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
     });
   });
   ipcMain.handle('sessions:resumeLatest', async (_event, sessionId: string) => {
+    await ensureSessionCanSend(sessionId);
     const plan = await runtime.planLatestAuthoritativeSafeBoundaryContinuation(sessionId);
     if (!plan.continuation) {
       return {
@@ -591,6 +586,7 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
           (typeof expectedStoreVersion !== 'number' || !Number.isSafeInteger(expectedStoreVersion)))) {
       throw new Error('Invalid plan approval');
     }
+    await ensureSessionCanSend(sessionId);
     await ensureSessionWorkspaceAvailable(sessionId);
     const result = await runtime.approvePlan({
       sessionId,
