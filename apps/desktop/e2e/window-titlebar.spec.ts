@@ -20,8 +20,8 @@ import type { Page } from '@playwright/test';
  *      intersects loses that part of its hit area, and a rect touching the window
  *      frame steals the OS resize corridor (the P0 WAWQAQ reported in `af681c1`,
  *      msg `5b85fdb1`).
- *   3. A drag rect with no usable empty area, or no height at all: the window
- *      simply cannot be dragged, and nothing else in the suite notices.
+ *   3. A drag rect with no height at all: the window simply cannot be dragged,
+ *      and nothing else in the suite notices.
  *
  * None of these is visible to static analysis, and none is caught by clicking:
  * Playwright and CDP synthesise input into the renderer, bypassing the OS
@@ -30,15 +30,15 @@ import type { Page } from '@playwright/test';
  *   (a) the titlebar is the shell's first element child, so every `no-drag`
  *       below it can be subtracted from it;
  *   (b) it keeps a resize corridor on the top, left, and right window edges;
- *   (c) it leaves a non-empty run for the user to grab;
- *   (d) its bottom edge does not reach into the content row;
- *   (e) every interactive element intersecting it resolves to `no-drag` — via an
- *       ancestor whose own rect actually covers the intersection — and sits after
- *       it in document order.
+ *   (c) its bottom edge does not reach into the content row;
+ *   (d) every interactive element REACHABLE inside it resolves to `no-drag` — via
+ *       an ancestor whose own rect actually covers the intersection — and sits
+ *       after it in document order.
  *
  * It sweeps the states where the titlebar's neighbours change: both sidebar
- * states, the chat surface and the module surfaces, and a viewport narrow enough
- * to cross the 820px module-shell breakpoint.
+ * states, the chat and module surfaces, a viewport narrow enough to cross the
+ * 820px module-shell breakpoint, and the overlays — which render after the shell
+ * without removing it, so the drag rect is still underneath them.
  */
 
 const SHELL = '.maka-shell-2col';
@@ -63,8 +63,6 @@ interface TitlebarReport {
   band: { top: number; left: number; right: number; bottom: number; width: number; height: number };
   viewport: { width: number; height: number };
   edges: { top: number; left: number; right: number };
-  /** Widest run of the titlebar not covered by a `no-drag` cluster. */
-  dragGapPx: number;
   /** Topmost edge of anything in the shell's content row. */
   contentTop: number | null;
   offenders: Array<{
@@ -150,6 +148,19 @@ async function readTitlebar(page: Page, interactiveSelector: string): Promise<Ti
         Math.min(rect.right, band.right) - Math.max(rect.left, band.left),
         overlap,
       );
+
+      // Only a control the user can actually REACH inside the drag rect can lose
+      // hit area to it. A rect overlapping the titlebar is not enough: a chat
+      // transcript row scrolled above its viewport reports a rect at negative y,
+      // clipped by an `overflow: auto` ancestor and unreachable there. Asking the
+      // browser what is at the point is both more faithful than re-deriving
+      // clipping and occlusion, and shorter.
+      const probe = document.elementFromPoint(
+        intersection.left + intersection.width / 2,
+        intersection.top + intersection.height / 2,
+      );
+      if (!probe || !(probe === el || el.contains(probe))) continue;
+
       const { region, covered } = resolveRegion(el, intersection);
       const afterTitlebar = Boolean(
         titlebar.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING,
@@ -175,23 +186,6 @@ async function readTitlebar(page: Page, interactiveSelector: string): Promise<Ti
       });
     }
 
-    // Widest horizontal run of the titlebar not covered by a `no-drag` cluster:
-    // the area the user can actually grab. Zero means the window is undraggable
-    // even though every other assertion here would still pass.
-    const blocked = [...titlebar.querySelectorAll('*')]
-      .filter((node) => regionOf(node) === 'no-drag')
-      .map((node) => node.getBoundingClientRect())
-      .filter((rect) => rect.width > 0 && rect.bottom > band.top && rect.top < band.bottom)
-      .map((rect) => [Math.max(rect.left, band.left), Math.min(rect.right, band.right)] as const)
-      .sort((a, b) => a[0] - b[0]);
-    let cursor = band.left;
-    let dragGapPx = 0;
-    for (const [start, end] of blocked) {
-      if (start > cursor) dragGapPx = Math.max(dragGapPx, start - cursor);
-      cursor = Math.max(cursor, end);
-    }
-    dragGapPx = Math.max(dragGapPx, band.right - cursor);
-
     const contentTops = [...shell.children]
       .filter((child) => child !== titlebar)
       .map((child) => child.getBoundingClientRect())
@@ -214,7 +208,6 @@ async function readTitlebar(page: Page, interactiveSelector: string): Promise<Ti
         left: Math.round(band.left),
         right: Math.round(window.innerWidth - band.right),
       },
-      dragGapPx: Math.round(dragGapPx),
       contentTop: contentTops.length ? Math.round(Math.min(...contentTops)) : null,
       offenders,
     };
@@ -246,11 +239,14 @@ async function assertTitlebarIsWellFormed(page: Page, label: string): Promise<vo
     ).toBeGreaterThan(0);
   }
 
-  // Having a drag rect is not the same as having somewhere to grab it.
-  expect(
-    report.dragGapPx,
-    `${label}: the titlebar must leave an uncovered run for the user to drag the window by; its action clusters cover the rest. ${context}`,
-  ).toBeGreaterThan(0);
+  // "the drag rect keeps an uncovered run to grab" is deliberately NOT asserted.
+  // Reverse-injection showed it cannot discriminate: the row's own padding
+  // gutters are part of the drag rect and are never carved out, so a run always
+  // exists — even with a cluster stretched across the whole row. `height > 0`
+  // above already covers the case that motivated it (a drag rect with no surface
+  // at all), and filling the titlebar edge-to-edge with controls would be a
+  // visible design change rather than the silent geometry drift this spec exists
+  // to catch.
 
   // The titlebar owns a row. If its rect reached past the row into content, the
   // overlapping content would silently lose its hit area — the failure mode the
@@ -315,4 +311,19 @@ test('the window titlebar owns its row across surfaces, sidebar states, and the 
     await assertTitlebarIsWellFormed(page, `${destination} surface, narrow`);
     await page.setViewportSize(wide);
   }
+
+  // Overlays render after the shell but do not remove it, so the titlebar's drag
+  // rect is still there underneath them. Any control an overlay puts in the top
+  // 36px is inside that rect: Settings already needs `no-drag` on its back
+  // button for exactly this reason. These states are the remaining place the
+  // carve-out can silently break.
+  await page.getByRole('button', { name: '搜索对话' }).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await assertTitlebarIsWellFormed(page, 'search modal open');
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toBeHidden();
+
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await expect(page.getByRole('main', { name: '设置内容' })).toBeVisible();
+  await assertTitlebarIsWellFormed(page, 'settings surface open');
 });

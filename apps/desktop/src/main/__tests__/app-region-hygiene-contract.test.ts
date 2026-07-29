@@ -57,24 +57,18 @@ const TOKENS_PATH = join(process.cwd(), 'src', 'renderer', 'maka-tokens.css');
 const DRAG_AUTHORITY_SELECTOR = '.maka-window-titlebar';
 
 /**
- * Selectors that, if they ever carry `-webkit-app-region: drag`,
- * would cover the full window and defeat the OS resize handler.
- * The test asserts none of them appear in a rule body containing
- * the drag declaration.
+ * There used to be a nine-case loop here asserting that `.appFrame`, `.app`,
+ * `.maka-shell-2col`, the four modal backdrops, `html` and `body` each do NOT
+ * declare `drag` — full-window containers whose drag region would swallow the OS
+ * resize handler (WAWQAQ `5b85fdb1`, gated by xuan `eea556cd` + kenji
+ * `0b94f7e9`).
+ *
+ * The "exactly one drag selector" test below subsumes all nine: it asserts the
+ * ONLY rule declaring `drag` has the selector `.maka-window-titlebar`, so any of
+ * them acquiring it fails there, by name, with the same diagnosis. Nine test
+ * cases restating one constraint is nine places to update for every future
+ * backdrop, and it would still miss the tenth.
  */
-const FORBIDDEN_DRAG_HOSTS = [
-  '.appFrame',
-  '.app',
-  '.maka-modal-backdrop',
-  '.settingsModalBackdrop',
-  '.maka-search-modal-backdrop',
-  '.permissionBackdrop',
-  '.maka-shell-2col',
-  // Generic html/body — if someone ever adds a global rule we
-  // want it flagged immediately.
-  'html',
-  'body',
-];
 
 describe('app-region hygiene contract (PR-SIDEBAR-IA-0 Phase 3 P0 fixup v5)', () => {
   it('BrowserWindow declares `resizable: true` explicitly (defensive against future silent disable)', async () => {
@@ -109,23 +103,6 @@ describe('app-region hygiene contract (PR-SIDEBAR-IA-0 Phase 3 P0 fixup v5)', ()
     );
   });
 
-  for (const host of FORBIDDEN_DRAG_HOSTS) {
-    it(`'${host}' selector does NOT carry -webkit-app-region: drag (would steal OS resize hit area)`, async () => {
-      const stylesSources = [
-        ['renderer CSS', await readRendererContractCss()],
-        [TOKENS_PATH, await readFile(TOKENS_PATH, 'utf8')],
-      ] as const;
-      for (const [sourceLabel, src] of stylesSources) {
-        const offender = findRuleWithBoth(src, host, 'drag');
-        assert.equal(
-          offender,
-          null,
-          `selector '${host}' must NOT declare \`-webkit-app-region: drag\` in ${sourceLabel} — full-window containers steal the OS resize hit area (WAWQAQ ${'`5b85fdb1`'}, xuan ${'`eea556cd`'}). Found rule:\n${offender}`,
-        );
-      }
-    });
-  }
-
   it(`declares -webkit-app-region: drag on exactly one selector (${DRAG_AUTHORITY_SELECTOR})`, async () => {
     const stylesSources = [
       ['renderer CSS', await readRendererContractCss()],
@@ -138,7 +115,7 @@ describe('app-region hygiene contract (PR-SIDEBAR-IA-0 Phase 3 P0 fixup v5)', ()
         assert.equal(
           rule.selector.trim(),
           DRAG_AUTHORITY_SELECTOR,
-          `\`-webkit-app-region: drag\` on selector '${rule.selector}' (in ${sourceLabel}) adds a second window-drag authority. Drag belongs to ${DRAG_AUTHORITY_SELECTOR} alone; a container that merely sits in the titlebar band should declare nothing, and a control inside the band should declare \`no-drag\`.`,
+          `\`-webkit-app-region: drag\` on selector '${rule.selector}' (in ${sourceLabel}) adds a second window-drag authority. Drag belongs to ${DRAG_AUTHORITY_SELECTOR} alone; a container that merely sits in the titlebar row should declare nothing, and a control inside it should declare \`no-drag\`. If '${rule.selector}' is a full-window container (\`.appFrame\`, \`.app\`, a modal backdrop, \`html\`/\`body\`), it also swallows the OS resize hit area — the P0 in WAWQAQ ${'`5b85fdb1`'}.`,
         );
       }
     }
