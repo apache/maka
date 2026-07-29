@@ -15,8 +15,17 @@ import type {
 
 const LEGACY_SESSION_HEADER_MAX_BYTES = 1024 * 1024;
 const LEGACY_SESSION_HEADER_READ_BYTES = 8192;
-const EXECUTION_BOUNDARY_TRANSFER_MAX_BYTES = 64 * 1024;
+// A transfer contains the cumulative session boundary, not one 64 KiB expansion request.
+export const EXECUTION_BOUNDARY_TRANSFER_MAX_BYTES = 1024 * 1024;
 export const EXECUTION_BOUNDARY_TRANSFER_FILE = 'execution-boundary.json';
+
+export function encodeExecutionBoundaryTransfer(boundary: ExecutionBoundary): string {
+  const raw = `${JSON.stringify({ schemaVersion: 1, boundary })}\n`;
+  if (Buffer.byteLength(raw, 'utf8') > EXECUTION_BOUNDARY_TRANSFER_MAX_BYTES) {
+    throw new Error('Execution boundary transfer exceeds the serialized size limit');
+  }
+  return raw;
+}
 
 class MalformedLegacySessionHeaderError extends Error {
   constructor(sourcePath: string, cause?: unknown) {

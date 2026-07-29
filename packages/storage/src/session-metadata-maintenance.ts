@@ -2,7 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import type { ExecutionBoundary, SessionHeader } from '@maka/core';
-import { EXECUTION_BOUNDARY_TRANSFER_FILE } from './session-metadata-transfer.js';
+import {
+  encodeExecutionBoundaryTransfer,
+  EXECUTION_BOUNDARY_TRANSFER_FILE,
+} from './session-metadata-transfer.js';
 import { decodeSessionHeader, SQLITE_SESSION_METADATA_DATABASE_NAME } from './session-store.js';
 import {
   createSqliteSessionMetadataStore,
@@ -113,7 +116,7 @@ export async function exportLegacySessionTreeSnapshot(input: {
       if (boundary) {
         await writeFile(
           join(dirname(destinationPath), EXECUTION_BOUNDARY_TRANSFER_FILE),
-          `${JSON.stringify({ schemaVersion: 1, boundary })}\n`,
+          encodeExecutionBoundaryTransfer(boundary),
           'utf8',
         );
       }

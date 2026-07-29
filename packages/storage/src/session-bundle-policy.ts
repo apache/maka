@@ -22,7 +22,10 @@ import {
 import { decodeArtifactMetadata } from './artifact-metadata-codec.js';
 import { withArtifactWriterLock } from './artifact-writer-lock.js';
 import { exportLegacySessionTreeSnapshot } from './session-metadata-maintenance.js';
-import { EXECUTION_BOUNDARY_TRANSFER_FILE } from './session-metadata-transfer.js';
+import {
+  encodeExecutionBoundaryTransfer,
+  EXECUTION_BOUNDARY_TRANSFER_FILE,
+} from './session-metadata-transfer.js';
 import { SQLITE_SESSION_METADATA_DATABASE_NAME } from './session-store.js';
 import { createSqliteSessionMetadataStore } from './sqlite-session-metadata-store.js';
 import type { SessionAuthoritySnapshot } from './sqlite-session-metadata-store.js';
@@ -523,11 +526,7 @@ async function exportSelectedSessionBoundary(
     EXECUTION_BOUNDARY_TRANSFER_FILE,
   );
   await mkdir(dirname(destinationPath), { recursive: true });
-  await writeFile(
-    destinationPath,
-    `${JSON.stringify({ schemaVersion: 1, boundary: snapshot.boundary })}\n`,
-    'utf8',
-  );
+  await writeFile(destinationPath, encodeExecutionBoundaryTransfer(snapshot.boundary), 'utf8');
 }
 
 async function readSelectedSessionAuthoritySnapshot(

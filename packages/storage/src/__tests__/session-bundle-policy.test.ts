@@ -15,7 +15,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
-import type { RuntimeEvent } from '@maka/core';
+import { MAX_SANDBOX_BOUNDARY_SERIALIZED_BYTES, type RuntimeEvent } from '@maka/core';
 import {
   assertSessionBundleRootLayout,
   exportSessionBundleState,
@@ -267,6 +267,57 @@ test('restores the accumulated managed boundary from a session bundle', async ()
       if (sourceBoundary.kind !== 'managed' || restoredBoundary.kind !== 'managed') return;
       assert.deepEqual(restoredBoundary.profile, sourceBoundary.profile);
       assert.equal(restoredBoundary.revision, 0);
+    } finally {
+      await restoredSessions.close?.();
+    }
+  });
+});
+
+test('round-trips a cumulative boundary larger than one expansion payload', async () => {
+  await withBundleRoots(async ({ stateRoot, configRoot, destinationRoot }) => {
+    const sessions = createSessionStore(stateRoot);
+    const selected = await sessions.create(sessionInput('Selected'));
+    for (let request = 0; request < 3; request += 1) {
+      const requestId = `request-${request}`;
+      await sessions.createSandboxBoundaryRequest({
+        sessionId: selected.id,
+        requestId,
+        expansion: {
+          filesystem: {
+            entries: Array.from({ length: 32 }, (_, entry) => ({
+              path: `/outside/${request}/${entry}-${'x'.repeat(700)}`,
+              access: 'read' as const,
+              scope: 'exact' as const,
+            })),
+          },
+        },
+        justification: 'Read generated inputs.',
+      });
+      await sessions.settleSandboxBoundaryRequest({
+        sessionId: selected.id,
+        requestId,
+        decision: 'allow',
+      });
+    }
+    const sourceBoundary = await sessions.readExecutionBoundary(selected.id);
+    await sessions.close?.();
+
+    await exportSessionBundleState({
+      stateRoot,
+      configRoot,
+      destinationRoot,
+      sessionId: selected.id,
+    });
+    const transferPath = join(destinationRoot, 'sessions', selected.id, 'execution-boundary.json');
+    assert.ok((await lstat(transferPath)).size > MAX_SANDBOX_BOUNDARY_SERIALIZED_BYTES);
+
+    const restoredSessions = createSessionStore(destinationRoot);
+    try {
+      const restoredBoundary = await restoredSessions.readExecutionBoundary(selected.id);
+      assert.equal(sourceBoundary.kind, 'managed');
+      assert.equal(restoredBoundary.kind, 'managed');
+      if (sourceBoundary.kind !== 'managed' || restoredBoundary.kind !== 'managed') return;
+      assert.deepEqual(restoredBoundary.profile, sourceBoundary.profile);
     } finally {
       await restoredSessions.close?.();
     }
