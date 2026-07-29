@@ -44,8 +44,8 @@ const SKILL_SEARCH_QUERY_MAX_CHARS = 512;
  * `capabilities` is an optional set of capability tags (e.g. `office`).
  */
 export interface HostCapabilities {
-  toolNames: Set<string>;
-  capabilities?: Set<string>;
+  toolNames: ReadonlySet<string>;
+  capabilities?: ReadonlySet<string>;
 }
 
 /** Resolves the capability surface for the session executing a Skill call. */

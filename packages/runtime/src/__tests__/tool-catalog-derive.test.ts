@@ -7,7 +7,7 @@ import {
   projectEffectiveProductToolSurface,
 } from '../tool-catalog-derive.js';
 import type { MakaTool } from '../tool-runtime.js';
-import { LOAD_TOOLS_NAME, ToolAvailabilityRuntime } from '../tool-availability.js';
+import { LOAD_TOOLS_NAME, type ToolGroup, ToolAvailabilityRuntime } from '../tool-availability.js';
 
 function tool(name: string): MakaTool {
   return {
@@ -97,6 +97,55 @@ describe('projectEffectiveProductToolSurface', () => {
       },
       productToolNames: ['OfficeDocument', 'OfficeDocumentEdit', 'Read'],
     });
+  });
+
+  it('keeps every derived surface snapshot immutable at runtime', () => {
+    const surface = projectEffectiveProductToolSurface({
+      host: 'desktop',
+      tools: [tool('Read'), tool('OfficeDocument')],
+      policy: { economy: true },
+    });
+    const group = surface.toolAvailability.groups[0];
+
+    assert.throws(() => (surface.toolNames as Set<string>).clear(), TypeError);
+    assert.throws(
+      () => (surface.hostCapabilities.toolNames as Set<string>).add('Write'),
+      TypeError,
+    );
+    assert.throws(
+      () => (surface.hostCapabilities.capabilities as Set<string>).delete('office'),
+      TypeError,
+    );
+    assert.throws(
+      () => (surface.toolAvailability.groups as ToolGroup[]).push({ id: 'agent', toolNames: [] }),
+      TypeError,
+    );
+    assert.throws(() => (group.toolNames as string[]).push('Write'), TypeError);
+
+    const setAlgebra = surface.toolNames as ReadonlySet<string> & {
+      union(other: ReadonlySet<string>): Set<string>;
+      intersection(other: ReadonlySet<string>): Set<string>;
+      isSubsetOf(other: ReadonlySet<unknown>): boolean;
+    };
+    assert.deepEqual([...setAlgebra.union(new Set(['Write']))].sort(), [
+      'OfficeDocument',
+      'Read',
+      'Write',
+    ]);
+    assert.deepEqual([...setAlgebra.intersection(new Set(['Read']))], ['Read']);
+    assert.equal(setAlgebra.isSubsetOf(new Set(['OfficeDocument', 'Read', 'Write'])), true);
+    assert.deepEqual([...surface.toolNames].sort(), ['OfficeDocument', 'Read']);
+    assert.deepEqual([...surface.hostCapabilities.toolNames].sort(), ['OfficeDocument', 'Read']);
+    assert.deepEqual([...(surface.hostCapabilities.capabilities ?? [])], ['office']);
+    assert.deepEqual(surface.toolAvailability.groups, [
+      {
+        id: 'office',
+        label: 'Office',
+        description: 'Read and edit Office documents (Word, Excel, PowerPoint, PDF).',
+        toolNames: ['OfficeDocument'],
+      },
+    ]);
+    assert.deepEqual(surface.identity.productToolNames, ['OfficeDocument', 'Read']);
   });
 
   it('removes a catalog surface that is unsupported on the selected host', () => {
