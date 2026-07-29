@@ -1483,7 +1483,12 @@ function isInteractionResumeAck(event: SessionEvent): boolean {
   );
 }
 
-function isNonTerminalErrorRuntimeEvent(event: RuntimeEvent): boolean {
+/**
+ * Non-terminal error content never reaches the ledger: the trailing terminal
+ * event carries the failure. Exported so readers can reason about which mapped
+ * RuntimeEvents a projection will ever be asked to read.
+ */
+export function isNonTerminalErrorRuntimeEvent(event: RuntimeEvent): boolean {
   return event.content?.kind === 'error' && !isTerminalRuntimeEvent(event);
 }
 

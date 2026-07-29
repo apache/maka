@@ -1018,26 +1018,146 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     expect(out.diagnostics).toEqual([]);
   });
 
-  test('a malformed sandbox boundary state delta stays an unsupported event', () => {
-    // Claiming the key alone would let any shape ride in under a control-fact
-    // name. Only a well-formed request or decision is a canonical fact.
-    const out = projectRuntimeEventsToStoredMessages(
-      [
-        ev({
-          id: 'sandbox-boundary-malformed',
-          ts: ts + 1,
-          role: 'system',
-          author: 'system',
-          actions: { stateDelta: { sandboxBoundaryRequest: { toolUseId: 'tool-1' } } },
-          refs: { toolCallId: 'tool-1' },
-        }),
-      ],
-      { runHeaders: [header] },
-    );
+  // Claiming the key alone would let any shape ride in under a control-fact
+  // name. Only what AiSdkFlow actually emits is a canonical fact: every field,
+  // the system/user identity, and the tool-call reference.
+  const wellFormedBoundaryRequest = () =>
+    ev({
+      id: 'sandbox-boundary-request-case',
+      ts: ts + 1,
+      role: 'system',
+      author: 'system',
+      actions: {
+        stateDelta: {
+          sandboxBoundaryRequest: {
+            requestId: 'boundary-1',
+            toolUseId: 'tool-1',
+            justification: 'read a file outside the workspace',
+            expansion: {
+              filesystem: {
+                entries: [{ path: '/tmp/outside.txt', access: 'read', scope: 'exact' }],
+              },
+            },
+          },
+        },
+      },
+      refs: { toolCallId: 'tool-1' },
+    });
 
-    expect(out.messages).toEqual([]);
-    expect(out.diagnostics.map((diagnostic) => diagnostic.code)).toEqual(['unsupported_event']);
-  });
+  const wellFormedBoundaryDecision = () =>
+    ev({
+      id: 'sandbox-boundary-decision-case',
+      ts: ts + 2,
+      role: 'system',
+      author: 'user',
+      actions: {
+        stateDelta: {
+          sandboxBoundaryDecision: {
+            requestId: 'boundary-1',
+            decision: 'allow',
+            status: 'approved',
+            revision: 2,
+          },
+        },
+      },
+      refs: { toolCallId: 'tool-1' },
+    });
+
+  function corruptedBoundaryEvent(
+    base: RuntimeEvent,
+    key: 'sandboxBoundaryRequest' | 'sandboxBoundaryDecision',
+    mutate: (payload: Record<string, unknown>, event: RuntimeEvent) => RuntimeEvent | void,
+  ): RuntimeEvent {
+    const clone = structuredClone(base) as RuntimeEvent;
+    const payload = clone.actions?.stateDelta?.[key] as Record<string, unknown>;
+    return mutate(payload, clone) ?? clone;
+  }
+
+  const malformedBoundaryCases: Array<[string, () => RuntimeEvent]> = [
+    [
+      'request without a justification',
+      () =>
+        corruptedBoundaryEvent(wellFormedBoundaryRequest(), 'sandboxBoundaryRequest', (payload) => {
+          delete payload.justification;
+        }),
+    ],
+    [
+      'request with an unusable expansion',
+      () =>
+        corruptedBoundaryEvent(wellFormedBoundaryRequest(), 'sandboxBoundaryRequest', (payload) => {
+          payload.expansion = {};
+        }),
+    ],
+    [
+      'request that lost its tool-call reference',
+      () =>
+        corruptedBoundaryEvent(
+          wellFormedBoundaryRequest(),
+          'sandboxBoundaryRequest',
+          (_payload, event) => ({ ...event, refs: undefined }),
+        ),
+    ],
+    [
+      'request attributed to someone other than the system',
+      () =>
+        corruptedBoundaryEvent(
+          wellFormedBoundaryRequest(),
+          'sandboxBoundaryRequest',
+          (_payload, event) => ({ ...event, role: 'user', author: 'tool' }),
+        ),
+    ],
+    [
+      'decision without a status',
+      () =>
+        corruptedBoundaryEvent(
+          wellFormedBoundaryDecision(),
+          'sandboxBoundaryDecision',
+          (payload) => {
+            delete payload.status;
+          },
+        ),
+    ],
+    [
+      'decision with a status the boundary never settles to',
+      () =>
+        corruptedBoundaryEvent(
+          wellFormedBoundaryDecision(),
+          'sandboxBoundaryDecision',
+          (payload) => {
+            payload.status = 'pending';
+          },
+        ),
+    ],
+    [
+      'decision without a revision',
+      () =>
+        corruptedBoundaryEvent(
+          wellFormedBoundaryDecision(),
+          'sandboxBoundaryDecision',
+          (payload) => {
+            delete payload.revision;
+          },
+        ),
+    ],
+    [
+      'decision attributed to the agent instead of the user',
+      () =>
+        corruptedBoundaryEvent(
+          wellFormedBoundaryDecision(),
+          'sandboxBoundaryDecision',
+          (_payload, event) => ({ ...event, author: 'agent' }),
+        ),
+    ],
+  ];
+
+  for (const [name, makeEvent] of malformedBoundaryCases) {
+    test(`a sandbox boundary ${name} stays an unsupported event`, () => {
+      const out = projectRuntimeEventsToStoredMessages([makeEvent()], { runHeaders: [header] });
+
+      expect(out.messages).toEqual([]);
+      expect(out.diagnostics.map((diagnostic) => diagnostic.code)).toEqual(['unsupported_event']);
+    });
+  }
 
   test('model thinking attaches to the assistant text row that shares its step message id', () => {
     // Real emission and backfill give a step's thinking and text the same message

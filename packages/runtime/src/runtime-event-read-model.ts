@@ -9,12 +9,24 @@ import type {
   TurnStatus,
 } from '@maka/core';
 import {
+  SANDBOX_BOUNDARY_REQUEST_STATUSES,
   TOOL_ACTIVITY_KINDS,
   isPartialRuntimeEvent,
   isTerminalRuntimeEvent,
   isTerminalRuntimeEventStatus,
   normalizeToolResultContentForRead,
+  validateSandboxBoundaryExpansion,
 } from '@maka/core';
+
+/** The statuses a settled boundary decision can carry — every status but `pending`. */
+type SettledSandboxBoundaryStatus = Exclude<
+  (typeof SANDBOX_BOUNDARY_REQUEST_STATUSES)[number],
+  'pending'
+>;
+const SETTLED_SANDBOX_BOUNDARY_STATUSES: readonly SettledSandboxBoundaryStatus[] =
+  SANDBOX_BOUNDARY_REQUEST_STATUSES.filter(
+    (status): status is SettledSandboxBoundaryStatus => status !== 'pending',
+  );
 import type { CanonicalPermissionOutcomeRecord } from './interaction-authority.js';
 import { isArchivedToolResultPlaceholder } from './tool-result-archive.js';
 
@@ -1184,27 +1196,38 @@ function isPlanProposalStateDelta(event: RuntimeEvent): boolean {
   );
 }
 
+/**
+ * A boundary fact is canonical only in the exact shape AiSdkFlow emits: every
+ * field of the source SessionEvent, the identity it maps to, and the tool call
+ * it settles. A partial match is worse than none — it would claim a corrupt
+ * ledger as sound while still paying the cost of rejecting a malformed one.
+ */
 function isSandboxBoundaryStateDelta(event: RuntimeEvent): boolean {
   const stateDelta = event.actions?.stateDelta;
   if (!stateDelta) return false;
   const request = stateDelta.sandboxBoundaryRequest;
   const decision = stateDelta.sandboxBoundaryDecision;
+  if (request === undefined && decision === undefined) return false;
+  if (event.role !== 'system' || typeof event.refs?.toolCallId !== 'string') return false;
   if (request !== undefined) {
     return (
+      event.author === 'system' &&
       isRecord(request) &&
       typeof request.requestId === 'string' &&
       typeof request.toolUseId === 'string' &&
-      isRecord(request.expansion)
+      typeof request.justification === 'string' &&
+      validateSandboxBoundaryExpansion(request.expansion).ok
     );
   }
-  if (decision !== undefined) {
-    return (
-      isRecord(decision) &&
-      typeof decision.requestId === 'string' &&
-      (decision.decision === 'allow' || decision.decision === 'deny')
-    );
-  }
-  return false;
+  return (
+    event.author === 'user' &&
+    isRecord(decision) &&
+    typeof decision.requestId === 'string' &&
+    (decision.decision === 'allow' || decision.decision === 'deny') &&
+    SETTLED_SANDBOX_BOUNDARY_STATUSES.includes(decision.status as SettledSandboxBoundaryStatus) &&
+    typeof decision.revision === 'number' &&
+    Number.isFinite(decision.revision)
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
