@@ -95,8 +95,10 @@ describe('subagent session parent relation', () => {
     assert.equal(isSubagentSessionParent({ ...relation, unexpected: true }), false);
   });
 
-  test('strictly decodes the immutable runtime snapshot and permission ceiling', () => {
+  test('strictly decodes current runtime snapshots and optional legacy permission ceilings', () => {
     assert.equal(isSubagentSessionRuntime(runtime), true);
+    const { permissionCeiling: _legacyPermissionCeiling, ...currentRuntime } = runtime;
+    assert.equal(isSubagentSessionRuntime(currentRuntime), true);
     assert.equal(isSubagentSessionRuntime({ ...runtime, toolNames: ['Read', 'Read'] }), false);
     assert.equal(isSubagentSessionRuntime({ ...runtime, definitionVersion: 0 }), false);
     assert.equal(

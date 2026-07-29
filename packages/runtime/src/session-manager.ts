@@ -1739,7 +1739,6 @@ export class SessionManager {
         categoryPolicy: {},
         systemPrompt: definition.systemPrompt,
       },
-      parentPermissionCeiling: parentHeader.permissionMode,
     });
     const workspace = await this.provisionChildWorkspace(
       parentHeader,
@@ -1797,7 +1796,6 @@ export class SessionManager {
           systemPrompt: definition.systemPrompt,
           toolNames: [...definition.tools],
           categoryPolicy: {},
-          permissionCeiling: parentHeader.permissionMode,
         },
         subagentSpawn: {
           schemaVersion: SUBAGENT_SESSION_SPAWN_SCHEMA_VERSION,
@@ -2317,7 +2315,6 @@ export class SessionManager {
           systemPrompt: definition.systemPrompt,
           toolNames: [...definition.tools],
           categoryPolicy: {},
-          permissionCeiling: parentHeader.permissionMode,
         },
         subagentSpawn: {
           schemaVersion: SUBAGENT_SESSION_SPAWN_SCHEMA_VERSION,

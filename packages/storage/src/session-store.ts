@@ -25,7 +25,6 @@ import {
   isCollaborationMode,
   isOrchestrationMode,
   isPermissionMode,
-  isPermissionModeWithinCeiling,
   isSessionBlockedReason,
   isSubagentSessionParent,
   isSubagentSessionRuntime,
@@ -1389,11 +1388,7 @@ function isValidSubagentSessionLineage(header: SessionHeader): boolean {
     (isSubagentSessionRuntime(header.subagentRuntime) &&
       isSubagentSessionSpawn(header.subagentSpawn) &&
       (header.subagentWorkspace === undefined ||
-        isSubagentWorkspaceBinding(header.subagentWorkspace)) &&
-      isPermissionModeWithinCeiling(
-        header.permissionMode,
-        header.subagentRuntime.permissionCeiling,
-      ))
+        isSubagentWorkspaceBinding(header.subagentWorkspace)))
   );
 }
 

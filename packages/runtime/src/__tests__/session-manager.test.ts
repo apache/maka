@@ -250,7 +250,7 @@ describe('SessionManager graph operator provisioning', () => {
       makeInput({
         cwd: '/tmp/project',
         projectId: 'project-1',
-        permissionMode: 'bypass',
+        permissionMode: 'ask',
       }),
     );
     await runStore.createRun(
@@ -279,7 +279,12 @@ describe('SessionManager graph operator provisioning', () => {
 
     expect(provisioned).toHaveLength(1);
     expect(result.header.projectId).toBe('project-1');
-    expect(result.header.permissionMode).toBe('bypass');
+    expect(result.header.permissionMode).toBe('execute');
+    expect(
+      result.header.subagentRuntime
+        ? 'permissionCeiling' in result.header.subagentRuntime
+        : undefined,
+    ).toBe(false);
     expect(result.header.cwd).toBe(result.header.subagentWorkspace?.worktreePath);
     expect(result.header.subagentWorkspace?.kind).toBe('git_worktree');
     expect(result.header.subagentWorkspace?.branch).toMatch(/^maka\/subagent\//);
@@ -1490,7 +1495,6 @@ describe('SessionManager child-session runtime primitive', () => {
       systemPrompt: LOCAL_READ_AGENT_DEFINITION.systemPrompt,
       toolNames: ['Read', 'Glob', 'Grep'],
       categoryPolicy: {},
-      permissionCeiling: 'ask',
     });
     expect(childHeader.subagentSpawn?.schemaVersion).toBe(1);
     expect(childHeader.subagentSpawn?.requestFingerprint).toMatch(/^[a-f0-9]{64}$/);

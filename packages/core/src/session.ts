@@ -111,9 +111,9 @@ export interface SubagentSessionParent {
  * Durable execution snapshot for a linked subagent session.
  *
  * The snapshot prevents a reopened child session from silently inheriting a
- * wider tool surface or permission ceiling from a later parent/default
- * configuration. The concrete SessionHeader continues to own backend/model/
- * cwd and the active permission mode.
+ * wider tool surface from a later parent/default configuration. The concrete
+ * SessionHeader continues to own backend/model/cwd while ExecutionBoundary is
+ * the authoritative local execution authority.
  */
 export interface SubagentSessionRuntime {
   schemaVersion: typeof SUBAGENT_SESSION_RUNTIME_SCHEMA_VERSION;
@@ -124,7 +124,8 @@ export interface SubagentSessionRuntime {
   systemPrompt: string;
   toolNames: string[];
   categoryPolicy: Partial<Record<ToolCategory, PolicyDecision>>;
-  permissionCeiling: PermissionMode;
+  /** Legacy decode-only metadata. Current child sessions do not write it. */
+  permissionCeiling?: PermissionMode;
 }
 
 /**
@@ -326,9 +327,8 @@ const SUBAGENT_SESSION_RUNTIME_SHAPE = defineObjectShape<SubagentSessionRuntime>
     'systemPrompt',
     'toolNames',
     'categoryPolicy',
-    'permissionCeiling',
   ],
-  [],
+  ['permissionCeiling'],
 );
 const SUBAGENT_SESSION_SPAWN_IDENTITY_SHAPE = defineObjectShape<SubagentSessionSpawn>()(
   ['schemaVersion', 'requestFingerprint', 'initialTurnId', 'initialRunId'],
@@ -399,7 +399,7 @@ export function isSubagentSessionRuntime(value: unknown): value is SubagentSessi
   ) {
     return false;
   }
-  return isPermissionMode(value.permissionCeiling);
+  return value.permissionCeiling === undefined || isPermissionMode(value.permissionCeiling);
 }
 
 /** Strict decoder guard for durable child-spawn idempotency metadata. */
