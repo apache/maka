@@ -436,6 +436,9 @@ export function createAppShellChatActions(deps: {
     if (!sessionId) return;
     try {
       await window.maka.sessions.respondToSandboxBoundary(sessionId, response);
+      setInteractionBySession((current) =>
+        dequeueInteractionByRequestId(current, sessionId, response.requestId),
+      );
     } catch (error) {
       // Same fire-and-forget call site as stop(), wrap so a failed
       // permission response (main process busy / session dropped)

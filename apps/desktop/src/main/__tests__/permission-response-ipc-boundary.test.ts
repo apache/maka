@@ -351,6 +351,18 @@ describe('permission response IPC boundary', () => {
     assert.match(respond, /catch \(error\)[\s\S]*activeIdRef\.current !== sessionId\) return/);
   });
 
+  it('renderer dequeues a boundary prompt only after main accepts its decision', async () => {
+    const renderer = await readRendererShellSource('app-shell-chat-actions.ts');
+    const respond =
+      renderer.match(/async function respondToSandboxBoundary\([\s\S]*?\n  \}/)?.[0] ?? '';
+
+    assert.match(
+      respond,
+      /await window\.maka\.sessions\.respondToSandboxBoundary\(sessionId, response\);[\s\S]*dequeueInteractionByRequestId\(current, sessionId, response\.requestId\)/,
+    );
+    assert.match(respond, /catch \(error\)[\s\S]*activeIdRef\.current !== sessionId\) return/);
+  });
+
   it('renderer lets either interaction type take over the mounted composer slot', async () => {
     const shell = await readRendererShellSource('app-shell.tsx');
     const composerRegion = await readRendererShellSource('chat-composer-region.tsx');

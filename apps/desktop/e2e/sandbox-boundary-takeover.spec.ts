@@ -36,4 +36,9 @@ test('sandbox boundary request takes over the composer slot without hiding the w
   await sandboxBoundaryWindow.getByRole('button', { name: '展开侧边栏' }).click();
   await expect(composer).toBeHidden();
   await expect(textarea).toHaveValue(draft);
+
+  await prompt.getByRole('button', { name: '本会话允许' }).click();
+  await expect(prompt).toHaveCount(0);
+  await expect(composer).toBeVisible();
+  await expect(textarea).toHaveValue(draft);
 });

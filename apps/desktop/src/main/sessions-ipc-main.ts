@@ -327,6 +327,8 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
   );
   ipcMain.handle('sessions:respondToSandboxBoundary', async (_event, sessionId: string, response) => {
     const normalized = normalizeSandboxBoundaryResponse(response);
+    const fixtureRequest = getE2eFixtureState(e2eFixture)?.sandboxBoundaryBySession?.[sessionId];
+    if (fixtureRequest?.requestId === normalized.requestId) return;
     if (normalized.decision === 'allow') {
       await ensureSessionWorkspaceAvailable(sessionId);
     }
