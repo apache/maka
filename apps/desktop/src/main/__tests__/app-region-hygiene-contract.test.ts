@@ -42,7 +42,6 @@ const APP_SHELL_CHROME_ACTIONS_PATH = join(
   'renderer',
   'app-shell-chrome-actions.tsx',
 );
-const APP_SHELL_PATH = join(process.cwd(), 'src', 'renderer', 'app-shell.tsx');
 
 /**
  * The single element allowed to declare `-webkit-app-region: drag`.
@@ -156,35 +155,14 @@ describe('app-region hygiene contract (PR-SIDEBAR-IA-0 Phase 3 P0 fixup v5)', ()
     );
   });
 
-  it('keeps the drag layer ahead of every titlebar control in document order', async () => {
-    // The ordering IS the mechanism (see DRAG_AUTHORITY_SELECTOR above), so it
-    // has to be a contract and not a convention: moving the layer below a
-    // titlebar control, or hoisting a control above the layer, makes that
-    // control swallow clicks as window drags with no build or type error.
-    const src = await readFile(APP_SHELL_PATH, 'utf8');
-    const shellIdx = src.indexOf('className="app maka-shell-2col');
-    assert.ok(shellIdx > -1, 'app-shell.tsx must render the `.maka-shell-2col` shell container');
-
-    const layerIdx = src.indexOf(DRAG_AUTHORITY_SELECTOR.slice(1), shellIdx);
-    assert.ok(
-      layerIdx > shellIdx,
-      `app-shell.tsx must render ${DRAG_AUTHORITY_SELECTOR} inside the shell container`,
-    );
-
-    const controlsAfterTheLayer: Array<[string, string]> = [
-      ['the topbar rail', '<AppShellTopbarActions'],
-      ['the column resize handle', 'className="maka-resize-handle"'],
-      ['the detail panel (chat header + workspace actions)', '<AppShellDetailPanel'],
-    ];
-    for (const [label, needle] of controlsAfterTheLayer) {
-      const idx = src.indexOf(needle, shellIdx);
-      assert.ok(idx > -1, `app-shell.tsx must render ${label} (${needle})`);
-      assert.ok(
-        layerIdx < idx,
-        `${DRAG_AUTHORITY_SELECTOR} must be declared BEFORE ${label} in app-shell.tsx so its \`no-drag\` regions can be subtracted from the drag band. Found the layer at ${layerIdx} and ${label} at ${idx}.`,
-      );
-    }
-  });
+  // The document-order requirement — the layer must precede every control that
+  // carves itself out of it — is NOT gated here. Its owner is the rendered tree,
+  // so `e2e/titlebar-drag-band.spec.ts` asserts `shell.firstElementChild === layer`
+  // against the live window, along with the band's rectangle and the carve-out of
+  // every interactive element that overlaps it. A source-text approximation was
+  // tried first and rejected: matching a fixed set of JSX needles by string
+  // position passes for any control it does not know about, which is precisely
+  // the failure mode (an unlisted titlebar control) it would need to catch.
 
   it('carves the full-height column resize handle out of the drag band', async () => {
     // The handle spans the whole window height, so its top overlaps the drag

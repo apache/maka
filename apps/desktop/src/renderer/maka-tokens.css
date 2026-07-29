@@ -556,6 +556,14 @@
   --maka-titlebar-control-safe-left: 94px;
   --maka-titlebar-control-safe-top: 20px;
 
+  /* OS window-resize corridor. A draggable app-region rect flush against a
+     window edge takes the native resize hit area with it — that is the P0 WAWQAQ
+     reported on `af681c1` (msg `5b85fdb1`): the window could not be resized from
+     its edges. Every drag surface therefore stays inset from the frame by this
+     much. The value matches the corridor the previous per-container drag strips
+     left implicitly (the chat header started at y=4). */
+  --maka-window-resize-edge: 4px;
+
   /* Shared top chrome geometry for .maka-workspace-top-actions
      (sidebar.css) and the in-flow chat status row (module-pages.css).
      The status row only shares the toolbar's right edge; it no longer

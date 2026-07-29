@@ -165,13 +165,18 @@
    reserved room for two, and the third button landed in the 36px nobody had
    reserved — clicks on it reached the OS as window drags. A single band plus
    `no-drag` controls makes the geometry follow the layout instead of a number
-   someone has to remember to update. */
+   someone has to remember to update.
+
+   Inset from the window frame by `--maka-window-resize-edge` on all three sides
+   it touches: a drag rect flush against an edge takes the OS resize hit area
+   with it, which is the other half of this area's bug history (`af681c1`). The
+   band's bottom edge still lands at `--maka-titlebar-drag-band-height`. */
 .maka-titlebar-drag-layer {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: var(--maka-titlebar-drag-band-height);
+  top: var(--maka-window-resize-edge);
+  left: var(--maka-window-resize-edge);
+  right: var(--maka-window-resize-edge);
+  height: calc(var(--maka-titlebar-drag-band-height) - var(--maka-window-resize-edge));
   -webkit-app-region: drag;
 }
 
