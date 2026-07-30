@@ -2,9 +2,8 @@ import type { ReactNode } from 'react';
 import type { AutomationModule, ExtensionModule } from './nav-selection.js';
 import { useUiLocale } from './locale-context.js';
 import { Blocks, CalendarCheck, ChevronDown, Plug, Sun } from './icons.js';
-import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from './primitives/menu.js';
+import { Menu, MenuRadioGroup, MenuRadioItem } from './primitives/menu.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
-import { buttonVariants, cn } from './ui.js';
 
 export type ModuleHubHeader = {
   title: string;
@@ -38,30 +37,29 @@ function Selector(props: {
   return (
     <span className="maka-module-hub-selector">
       <span className="maka-module-hub-separator" aria-hidden="true">/</span>
-      <Menu>
-        {/* #1565 PR 3: Base UI render-prop composition stays on the legacy
-            buttonVariants classes until PR 6 (Menu) retires it. */}
-        <MenuTrigger
-          render={<button type="button" className={cn(buttonVariants({ variant: 'quiet' }))} />}
-          className="maka-module-hub-selector-trigger"
-          aria-label={props.ariaLabel}
-        >
-          {selected[2]}
-          <span>{selected[1]}</span>
-          <ChevronDown className="maka-module-hub-selector-chevron" size={15} aria-hidden="true" />
-        </MenuTrigger>
-        <MenuPopup className="maka-module-hub-selector-menu" align="start" sideOffset={6}>
-          <MenuRadioGroup value={props.value} onValueChange={props.onChange}>
+      <Menu
+        button={{
+          label: props.ariaLabel,
+          icon: selected[2],
+          endContent: (
+            <ChevronDown
+              className="maka-module-hub-selector-chevron"
+              size={15}
+              aria-hidden="true"
+            />
+          ),
+          variant: 'ghost',
+          size: 'sm',
+          className: 'maka-module-hub-selector-trigger',
+          children: selected[1],
+        }}
+        className="maka-module-hub-selector-menu"
+      >
+          <MenuRadioGroup value={props.value} onChange={props.onChange} aria-label={props.ariaLabel}>
             {props.options.map(([value, label, icon]) => (
-              <MenuRadioItem key={value} value={value}>
-                <span className="maka-module-hub-selector-option">
-                  {icon}
-                  <span>{label}</span>
-                </span>
-              </MenuRadioItem>
+              <MenuRadioItem key={value} value={value} icon={icon} label={label} />
             ))}
           </MenuRadioGroup>
-        </MenuPopup>
       </Menu>
     </span>
   );

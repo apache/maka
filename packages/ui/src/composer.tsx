@@ -35,13 +35,12 @@ import { useMentionPopup } from './use-mention-popup.js';
 import { ComposerWorkspaceRow, type ComposerBranchPicker, type ComposerWorkspacePicker } from './composer-workspace-row.js';
 import type { AttachmentRef, PermissionMode, ProviderType, QuoteRef, SessionSummary } from '@maka/core';
 import { Button as UiButton, IconButton } from '@astryxdesign/core';
-import { buttonVariants, cn } from './ui.js';
 import { Textarea as UiTextarea } from './primitives/textarea.js';
 import { AttachmentFileCard } from './attachment-file-card.js';
 import { QuoteRefChip } from './quote-ref-chip.js';
 import { Kbd } from './primitives/kbd.js';
 import { PermissionModeSelect } from './permission-mode-menu.js';
-import { Menu, MenuCheckboxItem, MenuItem, MenuPopup, MenuSeparator, MenuSub, MenuSubPopup, MenuSubTrigger, MenuTrigger } from './primitives/menu.js';
+import { Menu, MenuCheckboxItem, MenuItem, MenuSeparator } from './primitives/menu.js';
 
 const COMPOSER_MAX_HEIGHT = 240;
 
@@ -775,54 +774,46 @@ export const Composer = forwardRef<
                 target), so the attach item is disabled rather than
                 vanishing the whole menu (and Plan/Swarm / expert teams). */}
             {(props.onPickAttachments || (props.expertTeams?.length ?? 0) > 0 || props.onPlanModeChange || props.onSwarmModeChange || props.onGraphModeChange) ? (
-              <Menu>
-                {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
-                <MenuTrigger
-                  render={({ onClick: menuToggleClick, ...triggerRest }) => (
-                    <button
-                      {...triggerRest}
-                      type="button"
-                      className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm', shape: 'pill' }))}
-                      disabled={props.disabled || importActionBusy}
-                      onClick={(e) => { menuToggleClick?.(e); }}
-                      aria-label={pendingImportAction === 'pick' ? copy.addingAttachment : copy.add}
-                      aria-busy={importActionBusy ? 'true' : undefined}
-                      data-pending={importActionBusy ? 'true' : undefined}
-                      title={copy.addTitle}
-                    >
-                      <Plus size={15} aria-hidden="true" />
-                    </button>
-                  )}
-                />
-                <MenuPopup className="maka-composer-context-menu" align="start" side="top" sideOffset={6}>
+              <Menu
+                placement="above"
+                button={{
+                  label:
+                    pendingImportAction === 'pick'
+                      ? copy.addingAttachment
+                      : copy.add,
+                  icon: <Plus size={15} aria-hidden="true" />,
+                  isIconOnly: true,
+                  variant: 'ghost',
+                  size: 'sm',
+                  isDisabled: props.disabled || importActionBusy,
+                  'aria-busy': importActionBusy ? 'true' : undefined,
+                  'data-pending': importActionBusy ? 'true' : undefined,
+                  tooltip: copy.addTitle,
+                }}
+                className="maka-composer-context-menu"
+              >
                   {props.onPickAttachments ? (
                     <MenuItem
-                      disabled={props.disabled || props.streaming === true || importActionBusy}
+                      isDisabled={props.disabled || props.streaming === true || importActionBusy}
                       onClick={() => void runImportAction('pick', props.onPickAttachments)}
-                    >
-                      <Paperclip size={13} aria-hidden="true" />
-                      <span>{copy.addFileOrDirectory}</span>
-                    </MenuItem>
+                      icon={<Paperclip size={13} aria-hidden="true" />}
+                      label={copy.addFileOrDirectory}
+                    />
                   ) : null}
                   {(props.expertTeams?.length ?? 0) > 0 ? (
-                    <MenuSub>
-                      <MenuSubTrigger disabled={props.disabled}>
-                        <Blocks size={13} aria-hidden="true" />
-                        <span>{copy.expertTeam}</span>
-                      </MenuSubTrigger>
-                      <MenuSubPopup>
+                    <>
+                      <MenuSeparator label={copy.expertTeam} />
                         {props.expertTeams?.map((team) => (
                           <MenuItem
                             key={team.id}
-                            disabled={props.disabled}
+                            isDisabled={props.disabled}
                             onClick={() => props.onStartExpertTeam?.(team.id)}
-                            {...(team.description ? { title: team.description } : {})}
-                          >
-                            <span>{team.name}</span>
-                          </MenuItem>
+                            icon={<Blocks size={13} aria-hidden="true" />}
+                            label={team.name}
+                            description={team.description}
+                          />
                         ))}
-                      </MenuSubPopup>
-                    </MenuSub>
+                    </>
                   ) : null}
                   {/* #1433 subtraction: Plan/Swarm live here as switch
                       items instead of standalone toolbar switches — the
@@ -837,67 +828,54 @@ export const Composer = forwardRef<
                       ) : null}
                       {props.onPlanModeChange ? (
                         <MenuCheckboxItem
-                          variant="switch"
-                          checked={props.planModeActive === true}
-                          disabled={
+                          label={copy.planModeLabel}
+                          value={props.planModeActive === true}
+                          isDisabled={
                             props.disabled
                             || props.planModePending === true
                             || Boolean(props.planModeDisabledReason)
                           }
-                          onCheckedChange={(checked) => {
+                          onChange={(checked) => {
                             void props.onPlanModeChange?.(checked);
                           }}
-                          title={
-                            props.planModeDisabledReason
-                            ?? (props.planModeActive ? copy.disablePlanMode : copy.enablePlanMode)
-                          }
-                        >
-                          {copy.planModeLabel}
-                        </MenuCheckboxItem>
+                          aria-description={props.planModeDisabledReason
+                            ?? (props.planModeActive ? copy.disablePlanMode : copy.enablePlanMode)}
+                        />
                       ) : null}
                       {props.onSwarmModeChange ? (
                         <MenuCheckboxItem
-                          variant="switch"
-                          checked={props.swarmModeActive === true}
-                          disabled={
+                          label={copy.swarmModeLabel}
+                          value={props.swarmModeActive === true}
+                          isDisabled={
                             props.disabled
                             || props.swarmModePending === true
                             || Boolean(props.swarmModeDisabledReason)
                           }
-                          onCheckedChange={(checked) => {
+                          onChange={(checked) => {
                             void props.onSwarmModeChange?.(checked);
                           }}
-                          title={
-                            props.swarmModeDisabledReason
-                            ?? (props.swarmModeActive ? copy.disableSwarmMode : copy.enableSwarmMode)
-                          }
-                        >
-                          {copy.swarmModeLabel}
-                        </MenuCheckboxItem>
+                          aria-description={props.swarmModeDisabledReason
+                            ?? (props.swarmModeActive ? copy.disableSwarmMode : copy.enableSwarmMode)}
+                        />
                       ) : null}
                       {props.onGraphModeChange ? (
                         <MenuCheckboxItem
-                          variant="switch"
-                          checked={props.graphModeActive === true}
-                          disabled={
+                          label={copy.graphModeLabel}
+                          value={props.graphModeActive === true}
+                          isDisabled={
                             props.disabled
                             || props.graphModePending === true
                             || Boolean(props.graphModeDisabledReason)
                           }
-                          onCheckedChange={(checked) => {
+                          onChange={(checked) => {
                             void props.onGraphModeChange?.(checked);
                           }}
-                          title={
-                            props.graphModeDisabledReason
-                            ?? (props.graphModeActive ? copy.disableGraphMode : copy.enableGraphMode)
-                          }
-                        >
-                          {copy.graphModeLabel}
-                        </MenuCheckboxItem>
+                          aria-description={props.graphModeDisabledReason
+                            ?? (props.graphModeActive ? copy.disableGraphMode : copy.enableGraphMode)}
+                        />
                       ) : null}
                     </>
                   ) : null}
-                </MenuPopup>
               </Menu>
             ) : null}
             {/* PR-MOVE-PERMISSION-MODE: the static "通用" role chip

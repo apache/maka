@@ -70,21 +70,19 @@ describe('model thinking-level picker contract', () => {
     assert.doesNotMatch(css, /bottom:\s*calc\(-1 \* var\(--space-2\)\)/, 'no negative-bottom padding hack should remain');
   });
 
-  it('renders the side flyout as a Base UI Menu anchored to the row', async () => {
+  it('renders the side flyout as an Astryx DropdownMenu anchored to the row', async () => {
     const source = await readModelPickerSources();
 
-    assert.match(source, /<Menu\s+open=\{open\}\s+onOpenChange=\{setOpen\}>/, 'flyout must be a controlled Base UI Menu');
-    assert.match(source, /<MenuTrigger[\s\S]*?render=\{\(triggerProps\) =>/, 'trigger must render-prop the row div');
-    assert.match(source, /<MenuPopup[\s\S]*className="maka-thinking-flyout"/, 'flyout popup uses MenuPopup');
+    assert.match(source, /<Menu[\s\S]*isMenuOpen=\{open\}[\s\S]*onOpenChange=\{setOpen\}/, 'flyout must be a controlled Astryx DropdownMenu');
     assert.match(
       source,
-      /<MenuPopup[\s\S]*className="maka-thinking-flyout"[\s\S]*align="start"[\s\S]*side="inline-end"[\s\S]*sideOffset=\{8\}/,
-      'flyout side offset must match the host popup padding so it starts at the popup outer edge, not inside it',
+      /placement="end"[\s\S]*className:\s*'maka-thinking-section-row'[\s\S]*className="maka-thinking-flyout"/,
+      'flyout must use Astryx logical end placement and preserve the product layout hooks',
     );
-    assert.match(source, /<MenuItem[\s\S]*?onClick=\{\(\) => choose\(/, 'levels render as MenuItems that call choose');
+    assert.match(source, /<MenuItem[\s\S]*?onClick=\{\(\) => choose\([\s\S]*?label=/, 'levels render as Astryx MenuItems that call choose');
     assert.doesNotMatch(source, /onPointerDownCapture/, 'no pointerdown commit hack — Menu handles dismiss');
     assert.doesNotMatch(source, /THINKING_FLYOUT_VIEWPORT_MARGIN/, 'no hand-rolled viewport clamp — floating-ui positions');
-    assert.doesNotMatch(source, /createPortal/, 'no manual portal — MenuPortal does it');
+    assert.doesNotMatch(source, /MenuPopup|createPortal/, 'no compatibility popup or manual portal — Astryx owns the layer');
   });
 
   it('uses native light-dismiss without retaining the Base UI outside-press patch', async () => {

@@ -22,6 +22,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -268,6 +269,10 @@ function ToastViewport() {
 }
 
 function ConfirmDialog(props: { request: PendingConfirm; onResolve(result: boolean): void }) {
+  const openerRef = useRef<HTMLElement | null>(
+    document.activeElement instanceof HTMLElement ? document.activeElement : null,
+  );
+  const restoreFrameRef = useRef(0);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const copy = getSharedUiCopy(useUiLocale()).toast;
   const {
@@ -277,6 +282,16 @@ function ConfirmDialog(props: { request: PendingConfirm; onResolve(result: boole
     cancelLabel = copy.cancel,
     destructive = false,
   } = props.request;
+
+  useLayoutEffect(() => {
+    cancelAnimationFrame(restoreFrameRef.current);
+    return () => {
+      const opener = openerRef.current;
+      restoreFrameRef.current = requestAnimationFrame(() => {
+        if (opener?.isConnected) opener.focus();
+      });
+    };
+  }, []);
 
   // Escape / backdrop close = cancel (onResolve(false)). Base UI AlertDialog
   // disables pointer dismissal; Escape triggers onOpenChange(false).

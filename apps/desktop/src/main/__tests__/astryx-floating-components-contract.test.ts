@@ -25,4 +25,25 @@ describe('#1565 PR 6 Astryx floating-component authority', () => {
     assert.match(source, /usePopover[\s\S]*from '@astryxdesign\/core\/Popover'/);
     assert.doesNotMatch(source, /@base-ui\/react\/combobox|BaseCombobox/);
   });
+
+  it('makes Astryx DropdownMenu the only menu behavior authority', async () => {
+    const source = await readUiSource('primitives/menu.tsx');
+    assert.match(source, /from '@astryxdesign\/core\/DropdownMenu'/);
+    assert.doesNotMatch(source, /@base-ui\/react\/menu/);
+
+    const consumerPaths = [
+      'chat-model-switcher.tsx',
+      'composer-workspace-row.tsx',
+      'composer.tsx',
+      'module-hub-selector.tsx',
+      'plan-reminder-form-dialog.tsx',
+      'plan-reminder-panel.tsx',
+      'session-history-list.tsx',
+      'session-list-panel.tsx',
+    ];
+    const consumers = (
+      await Promise.all(consumerPaths.map((path) => readUiSource(path)))
+    ).join('\n');
+    assert.doesNotMatch(consumers, /<Menu(?:Trigger|Popup|Sub)/);
+  });
 });

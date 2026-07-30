@@ -400,15 +400,6 @@
   min-width: 220px;
   max-width: min(320px, calc(100vw - var(--space-6)));
 }
-.maka-composer-workspace-menu [data-slot="menu-item"] svg {
-  flex: 0 0 auto;
-}
-.maka-composer-workspace-menu [data-slot="menu-item"] span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
 .maka-composer-project-scroll {
   max-height: 224px;

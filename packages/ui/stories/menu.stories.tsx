@@ -1,21 +1,15 @@
+import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { Plus, Trash2 } from '@maka/ui/icons';
 import {
   Menu,
   MenuCheckboxItem,
-  MenuGroupLabel,
   MenuItem,
-  MenuPopup,
   MenuRadioGroup,
   MenuRadioItem,
   MenuSeparator,
   MenuShortcut,
-  MenuSub,
-  MenuSubPopup,
-  MenuSubTrigger,
-  MenuTrigger,
 } from '../src/primitives/menu.js';
-import { buttonVariants, cn } from '../src/ui.js';
 
 const meta = {
   title: 'Primitives/Menu',
@@ -28,13 +22,20 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-function OpenMenuCell({ label, children }: { label: string; children: React.ReactNode }) {
+function OpenMenuCell({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
   return (
     <div style={{ minHeight: 220, minWidth: 180 }}>
-      <Menu open>
-        {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
-        <MenuTrigger render={<button type="button" className={cn(buttonVariants({ variant: 'secondary', size: 'sm' }))} />}>{label}</MenuTrigger>
-        <MenuPopup>{children}</MenuPopup>
+      <Menu
+        isMenuOpen
+        button={{ label, variant: 'secondary', size: 'sm' }}
+      >
+        {children}
       </Menu>
     </div>
   );
@@ -42,84 +43,99 @@ function OpenMenuCell({ label, children }: { label: string; children: React.Reac
 
 export const Basic: Story = {
   render: () => (
-    <Menu>
-      {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
-      <MenuTrigger render={<button type="button" className={cn(buttonVariants({ variant: 'secondary' }))} />}>打开菜单</MenuTrigger>
-      <MenuPopup>
-        <MenuItem>新建文件</MenuItem>
-        <MenuItem>打开…</MenuItem>
-        <MenuItem>
-          保存
-          <MenuShortcut>⌘S</MenuShortcut>
-        </MenuItem>
-        <MenuSeparator />
-        <MenuItem variant="destructive">删除</MenuItem>
-      </MenuPopup>
+    <Menu button={{ label: '打开菜单', variant: 'secondary' }}>
+      <MenuItem label="新建文件" />
+      <MenuItem label="打开…" />
+      <MenuItem label="保存" endContent={<MenuShortcut>⌘S</MenuShortcut>} />
+      <MenuSeparator />
+      <MenuItem
+        label="删除"
+        icon={<Trash2 size={14} aria-hidden="true" />}
+        style={{ color: 'var(--destructive-text)' }}
+      />
     </Menu>
   ),
 };
 
+function SelectionExamples() {
+  const [showLines, setShowLines] = useState(true);
+  const [wrap, setWrap] = useState(false);
+  const [theme, setTheme] = useState('system');
+  return (
+    <>
+      <OpenMenuCell label="checkbox">
+        <MenuCheckboxItem
+          label="显示行号"
+          value={showLines}
+          onChange={setShowLines}
+        />
+        <MenuCheckboxItem label="自动换行" value={wrap} onChange={setWrap} />
+      </OpenMenuCell>
+      <OpenMenuCell label="radio">
+        <MenuRadioGroup
+          value={theme}
+          onChange={setTheme}
+          aria-label="主题"
+        >
+          <MenuRadioItem value="light" label="浅色" />
+          <MenuRadioItem value="dark" label="深色" />
+          <MenuRadioItem value="system" label="跟随系统" />
+        </MenuRadioGroup>
+      </OpenMenuCell>
+    </>
+  );
+}
+
 export const OpenMatrix: Story = {
   render: () => (
-    <div style={{ display: 'grid', gap: 48, padding: 40, gridTemplateColumns: 'repeat(3, 200px)' }}>
+    <div
+      style={{
+        display: 'grid',
+        gap: 48,
+        padding: 40,
+        gridTemplateColumns: 'repeat(3, 200px)',
+      }}
+    >
       <OpenMenuCell label="basic">
-        <MenuGroupLabel>文件</MenuGroupLabel>
-        <MenuItem>新建文件</MenuItem>
-        <MenuItem>打开…</MenuItem>
+        <MenuSeparator label="文件" />
+        <MenuItem label="新建文件" />
+        <MenuItem label="打开…" />
         <MenuSeparator />
-        <MenuItem variant="destructive">删除</MenuItem>
+        <MenuItem
+          label="删除"
+          style={{ color: 'var(--destructive-text)' }}
+        />
       </OpenMenuCell>
 
       <OpenMenuCell label="shortcuts">
-        <MenuItem>
-          新建
-          <MenuShortcut>⌘N</MenuShortcut>
-        </MenuItem>
-        <MenuItem>
-          打开
-          <MenuShortcut>⌘O</MenuShortcut>
-        </MenuItem>
-        <MenuItem>
-          保存
-          <MenuShortcut>⌘S</MenuShortcut>
-        </MenuItem>
+        <MenuItem label="新建" endContent={<MenuShortcut>⌘N</MenuShortcut>} />
+        <MenuItem label="打开" endContent={<MenuShortcut>⌘O</MenuShortcut>} />
+        <MenuItem label="保存" endContent={<MenuShortcut>⌘S</MenuShortcut>} />
       </OpenMenuCell>
 
-      <OpenMenuCell label="checkbox">
-        <MenuCheckboxItem checked>显示行号</MenuCheckboxItem>
-        <MenuCheckboxItem checked={false}>自动换行</MenuCheckboxItem>
-      </OpenMenuCell>
+      <SelectionExamples />
 
-      <OpenMenuCell label="radio">
-        <MenuGroupLabel>主题</MenuGroupLabel>
-        <MenuRadioGroup defaultValue="system">
-          <MenuRadioItem value="light">浅色</MenuRadioItem>
-          <MenuRadioItem value="dark">深色</MenuRadioItem>
-          <MenuRadioItem value="system">跟随系统</MenuRadioItem>
-        </MenuRadioGroup>
-      </OpenMenuCell>
-
-      <OpenMenuCell label="submenu">
-        <MenuItem>新建</MenuItem>
-        <MenuSub open>
-          <MenuSubTrigger>导出为…</MenuSubTrigger>
-          <MenuSubPopup>
-            <MenuItem>PDF</MenuItem>
-            <MenuItem>Markdown</MenuItem>
-            <MenuItem>HTML</MenuItem>
-          </MenuSubPopup>
-        </MenuSub>
+      <OpenMenuCell label="flat export actions">
+        <MenuItem
+          icon={<Plus size={14} aria-hidden="true" />}
+          label="新建"
+        />
+        <MenuSeparator label="导出为" />
+        <MenuItem label="PDF" />
+        <MenuItem label="Markdown" />
+        <MenuItem label="HTML" />
       </OpenMenuCell>
 
       <OpenMenuCell label="icons">
-        <MenuItem>
-          <Plus size={14} aria-hidden="true" />
-          新建
-        </MenuItem>
-        <MenuItem variant="destructive">
-          <Trash2 size={14} aria-hidden="true" />
-          删除
-        </MenuItem>
+        <MenuItem
+          icon={<Plus size={14} aria-hidden="true" />}
+          label="新建"
+        />
+        <MenuItem
+          icon={<Trash2 size={14} aria-hidden="true" />}
+          label="删除"
+          style={{ color: 'var(--destructive-text)' }}
+        />
       </OpenMenuCell>
     </div>
   ),

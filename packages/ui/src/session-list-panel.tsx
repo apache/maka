@@ -7,8 +7,7 @@ import {
   type SessionRowActions,
 } from './session-history-list.js';
 import { SessionSidebarFooter, SessionSidebarNav, type SidebarUpdateReminder } from './session-sidebar-nav.js';
-import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from './primitives/menu.js';
-import { buttonVariants, cn } from './ui.js';
+import { Menu, MenuRadioGroup, MenuRadioItem } from './primitives/menu.js';
 import { ListTodo } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
@@ -59,22 +58,24 @@ export function SessionListPanel(props: {
       {onViewModeChange && (
         <div className="maka-session-list-toolbar">
           <span className="maka-session-list-heading">{copy.title}</span>
-          <Menu>
-            {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
-            <MenuTrigger
-              render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }))} />}
-              type="button"
-              aria-label={copy.groupingAriaLabel}
-              title={copy.groupingAriaLabel}
-            >
-              <ListTodo size={15} aria-hidden="true" />
-            </MenuTrigger>
-            <MenuPopup className="w-max !min-w-0" align="end">
-              <MenuRadioGroup value={viewMode} onValueChange={(mode) => onViewModeChange(mode as SessionViewMode)}>
-                <MenuRadioItem value="conversation">{copy.groupByTime}</MenuRadioItem>
-                <MenuRadioItem value="project">{copy.groupByProject}</MenuRadioItem>
+          <Menu
+            button={{
+              label: copy.groupingAriaLabel,
+              icon: <ListTodo size={15} aria-hidden="true" />,
+              isIconOnly: true,
+              variant: 'ghost',
+              size: 'sm',
+              tooltip: copy.groupingAriaLabel,
+            }}
+          >
+              <MenuRadioGroup
+                value={viewMode}
+                onChange={(mode) => onViewModeChange(mode as SessionViewMode)}
+                aria-label={copy.groupingAriaLabel}
+              >
+                <MenuRadioItem value="conversation" label={copy.groupByTime} />
+                <MenuRadioItem value="project" label={copy.groupByProject} />
               </MenuRadioGroup>
-            </MenuPopup>
           </Menu>
         </div>
       )}

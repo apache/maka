@@ -10,7 +10,7 @@
 
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
-import { Menu, MenuItem, MenuPopup, MenuTrigger } from './primitives/menu.js';
+import { Menu, MenuItem } from './primitives/menu.js';
 import { Button as UiButton } from '@astryxdesign/core';
 import { ModelPicker } from './model-picker.js';
 import { Settings } from './icons.js';
@@ -25,9 +25,8 @@ import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 
 /**
- * Static footer row for per-model thinking levels. The flyout uses the shared
- * Base UI Menu primitive; ModelPicker keeps the host popup open while pointer
- * events land inside the portaled flyout via `data-model-picker-nested-popup`.
+ * Static footer row for per-model thinking levels. Astryx DropdownMenu owns
+ * the side flyout, while choosing a level closes the host model picker.
  */
 function ThinkingLevelSection(props: {
   levels: readonly ThinkingLevel[];
@@ -52,57 +51,47 @@ function ThinkingLevelSection(props: {
 
   return (
     <div className="maka-thinking-section">
-      <Menu open={open} onOpenChange={setOpen}>
-        <MenuTrigger
-          nativeButton={false}
-          disabled={!hasVariants}
-          render={(triggerProps) => (
-            <div
-              {...triggerProps}
-              role="button"
-              tabIndex={hasVariants ? 0 : -1}
-              aria-disabled={!hasVariants || undefined}
-              aria-haspopup={hasVariants ? 'menu' : undefined}
-              className="maka-thinking-section-row"
-              data-disabled={!hasVariants || undefined}
-              title={hasVariants ? copy.changeThinkingLevel : copy.thinkingUnsupported}
-            >
+      <Menu
+        isMenuOpen={open}
+        onOpenChange={setOpen}
+        placement="end"
+        button={{
+          label: hasVariants ? copy.changeThinkingLevel : copy.thinkingUnsupported,
+          variant: 'ghost',
+          size: 'sm',
+          isDisabled: !hasVariants,
+          className: 'maka-thinking-section-row',
+          tooltip: hasVariants ? copy.changeThinkingLevel : copy.thinkingUnsupported,
+          children: (
+            <>
               <span className="maka-thinking-section-label">{copy.thinkingLevel}</span>
               <span className="maka-thinking-section-value">
                 {currentLabel}
                 {hasVariants && <span className="maka-thinking-section-chev" aria-hidden="true">▸</span>}
               </span>
-            </div>
-          )}
-        />
+            </>
+          ),
+        }}
+        className="maka-thinking-flyout"
+      >
         {hasVariants && (
-          <MenuPopup
-            className="maka-thinking-flyout"
-            align="start"
-            side="inline-end"
-            sideOffset={8}
-            data-model-picker-nested-popup=""
-          >
+          <>
             <MenuItem
               onClick={() => choose(undefined)}
               className="maka-thinking-flyout-item"
-              data-selected={!props.current || undefined}
-            >
-              <span>{copy.defaultLevel}</span>
-              {!props.current && <span className="maka-thinking-flyout-check" aria-hidden="true">✓</span>}
-            </MenuItem>
+              label={copy.defaultLevel}
+              endContent={!props.current ? <span className="maka-thinking-flyout-check" aria-hidden="true">✓</span> : undefined}
+            />
             {props.levels.map((level) => (
               <MenuItem
                 key={level}
                 onClick={() => choose(level)}
                 className="maka-thinking-flyout-item"
-                data-selected={props.current === level || undefined}
-              >
-                <span>{copy.level[level]}</span>
-                {props.current === level && <span className="maka-thinking-flyout-check" aria-hidden="true">✓</span>}
-              </MenuItem>
+                label={copy.level[level]}
+                endContent={props.current === level ? <span className="maka-thinking-flyout-check" aria-hidden="true">✓</span> : undefined}
+              />
             ))}
-          </MenuPopup>
+          </>
         )}
       </Menu>
     </div>

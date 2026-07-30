@@ -308,7 +308,6 @@ const COMPONENT_RADIUS: ComponentRadiusCheck[] = [
   // #1565 PR 3: the Badge entry left this table — it is the Astryx primitive
   // now, whose pill radius is Astryx-owned.
   { file: 'packages/ui/src/primitives/item.tsx', name: 'itemVariants', tier: 'surface' },
-  { file: 'packages/ui/src/primitives/menu.tsx', name: 'MenuPopup', tier: 'surface' },
   { file: 'packages/ui/src/primitives/alert.tsx', name: 'alertVariants', tier: 'surface' },
   { file: 'packages/ui/src/primitives/toolbar.tsx', name: 'Toolbar', tier: 'surface' },
   { file: 'packages/ui/src/session-sidebar-nav.tsx', name: 'navRowVariants', tier: 'control' },

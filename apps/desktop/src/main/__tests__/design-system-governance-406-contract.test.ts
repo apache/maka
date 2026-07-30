@@ -105,7 +105,9 @@ describe('issue #406 design-system governance contract', () => {
       ])
     ).flat();
     const violations = sources
-      .filter(({ source }) => /\bisIconOnly\b/.test(source))
+      .filter(({ source }) =>
+        /<(?:Button|UiButton)\b[^>]*\bisIconOnly\b/s.test(source),
+      )
       .map(({ path }) => relative(REPO_ROOT, path));
 
     assert.deepEqual(

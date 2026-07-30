@@ -26,8 +26,7 @@ import {
 } from './icons.js';
 import { EmptyState } from './empty-state.js';
 import { OverlayScrollArea } from './overlay-scroll-area.js';
-import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from './primitives/menu.js';
-import { buttonVariants, cn } from './ui.js';
+import { Menu, MenuItem, MenuSeparator } from './primitives/menu.js';
 import { Button as BaseButton } from '@base-ui/react/button';
 import { describeBlockedReason, presentSessionStatus } from './session-status-presentation.js';
 import { useUiLocale } from './locale-context.js';
@@ -493,30 +492,29 @@ function ProjectSessionGroup(props: ProjectGroupSharedProps & {
           </BaseButton>
         )}
         {project && props.projectActions && !editing && (
-          <Menu>
-            {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
-            <MenuTrigger
-              render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }))} />}
-              className="maka-list-project-menu-trigger"
-              aria-label={copy.projectActionsAriaLabel(project.name)}
-              disabled={pendingAction !== null}
-            >
-              {pendingAction ? (
+          <Menu
+            button={{
+              label: copy.projectActionsAriaLabel(project.name),
+              icon: pendingAction ? (
                 <Loader2 size={14} aria-hidden="true" />
               ) : (
                 <MoreHorizontal size={14} aria-hidden="true" />
-              )}
-            </MenuTrigger>
-            <MenuPopup align="end" side="bottom">
+              ),
+              isIconOnly: true,
+              variant: 'ghost',
+              size: 'sm',
+              className: 'maka-list-project-menu-trigger',
+              isDisabled: pendingAction !== null,
+            }}
+          >
               {project.archivedAt !== undefined ? (
                 <MenuItem
                   onClick={() =>
                     runProjectAction('restore', () => props.projectActions!.onRestore(project.id))
                   }
-                >
-                  <ArchiveRestore size={15} aria-hidden="true" />
-                  {copy.projectRestore}
-                </MenuItem>
+                  icon={<ArchiveRestore size={15} aria-hidden="true" />}
+                  label={copy.projectRestore}
+                />
               ) : (
                 <>
                   {project.available ? (
@@ -524,42 +522,37 @@ function ProjectSessionGroup(props: ProjectGroupSharedProps & {
                       onClick={() =>
                         runProjectAction('new', () => props.projectActions!.onNew(project.id))
                       }
-                    >
-                      <Plus size={15} aria-hidden="true" />
-                      {copy.projectNewTask}
-                    </MenuItem>
+                      icon={<Plus size={15} aria-hidden="true" />}
+                      label={copy.projectNewTask}
+                    />
                   ) : (
                     <MenuItem
                       onClick={() =>
                         runProjectAction('relink', () =>
                           props.projectActions!.onRelink(project.id))
                       }
-                    >
-                      <FolderOpen size={15} aria-hidden="true" />
-                      {copy.projectRelink}
-                    </MenuItem>
+                      icon={<FolderOpen size={15} aria-hidden="true" />}
+                      label={copy.projectRelink}
+                    />
                   )}
                   <MenuSeparator />
                   <MenuItem
                     onClick={() => {
                       if (!pendingActionRef.current) setEditing(true);
                     }}
-                  >
-                    <Pencil size={15} aria-hidden="true" />
-                    {copy.projectRename}
-                  </MenuItem>
+                    icon={<Pencil size={15} aria-hidden="true" />}
+                    label={copy.projectRename}
+                  />
                   <MenuItem
                     onClick={() =>
                       runProjectAction('archive', () =>
                         props.projectActions!.onArchive(project.id))
                     }
-                  >
-                    <Archive size={15} aria-hidden="true" />
-                    {copy.projectArchive}
-                  </MenuItem>
+                    icon={<Archive size={15} aria-hidden="true" />}
+                    label={copy.projectArchive}
+                  />
                 </>
               )}
-            </MenuPopup>
           </Menu>
         )}
       </div>
@@ -970,54 +963,56 @@ const SessionRow = memo(function SessionRow(props: {
         </BaseButton>
       )}
       {actions && !editing && (
-        <Menu open={menuOpen} onOpenChange={setMenuOpen}>
-          <MenuTrigger
-            aria-label={copy.actionsAriaLabel}
-            aria-hidden={actionTriggerVisible ? undefined : 'true'}
-            className="maka-list-row-menu-trigger"
-            data-visible={actionTriggerVisible ? 'true' : undefined}
-            disabled={actionBusy}
-            tabIndex={actionTriggerVisible ? 0 : -1}
-          >
-            <MoreHorizontal size={16} aria-hidden="true" />
-          </MenuTrigger>
-          <MenuPopup align="end" side="bottom">
+        <Menu
+          isMenuOpen={menuOpen}
+          onOpenChange={setMenuOpen}
+          button={{
+            label: copy.actionsAriaLabel,
+            icon: <MoreHorizontal size={16} aria-hidden="true" />,
+            isIconOnly: true,
+            variant: 'ghost',
+            size: 'sm',
+            className: 'maka-list-row-menu-trigger',
+            isDisabled: actionBusy,
+            'aria-hidden': actionTriggerVisible ? undefined : 'true',
+            'data-visible': actionTriggerVisible ? 'true' : undefined,
+            tabIndex: actionTriggerVisible ? 0 : -1,
+          }}
+        >
             <MenuItem
-              disabled={actionBusy}
+              isDisabled={actionBusy}
               onClick={() => runRowAction('flag', () => actions.onToggleFlag(session.id, !session.isFlagged))}
-            >
-              {session.isFlagged
+              icon={session.isFlagged
                 ? <PinOff size={16} aria-hidden="true" />
                 : <Pin size={16} aria-hidden="true" />}
-              {session.isFlagged ? copy.unpin : copy.pin}
-            </MenuItem>
-            <MenuItem disabled={actionBusy} onClick={startRename}>
-              <Pencil size={16} aria-hidden="true" />
-              {copy.rename}
-            </MenuItem>
+              label={session.isFlagged ? copy.unpin : copy.pin}
+            />
             <MenuItem
-              disabled={actionBusy}
+              isDisabled={actionBusy}
+              onClick={startRename}
+              icon={<Pencil size={16} aria-hidden="true" />}
+              label={copy.rename}
+            />
+            <MenuItem
+              isDisabled={actionBusy}
               onClick={() => runRowAction('archive', () => (
                 session.isArchived
                   ? actions.onUnarchive(session.id)
                   : actions.onArchive(session.id)
               ))}
-            >
-              {session.isArchived
+              icon={session.isArchived
                 ? <ArchiveRestore size={16} aria-hidden="true" />
                 : <Archive size={16} aria-hidden="true" />}
-              {session.isArchived ? copy.unarchive : copy.archive}
-            </MenuItem>
+              label={session.isArchived ? copy.unarchive : copy.archive}
+            />
             <MenuSeparator />
             <MenuItem
-              variant="destructive"
-              disabled={actionBusy}
+              isDisabled={actionBusy}
               onClick={handleDelete}
-            >
-              <Trash2 size={16} aria-hidden="true" />
-              {copy.delete}
-            </MenuItem>
-          </MenuPopup>
+              icon={<Trash2 size={16} aria-hidden="true" />}
+              label={copy.delete}
+              style={{ color: 'var(--destructive-text)' }}
+            />
         </Menu>
       )}
     </div>

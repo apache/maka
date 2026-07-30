@@ -48,8 +48,6 @@ import { Textarea as UiTextarea } from './primitives/textarea.js';
 import {
   Menu,
   MenuItem,
-  MenuPopup,
-  MenuTrigger,
 } from './primitives/menu.js';
 import {
   getPlanReminderCopy,
@@ -203,23 +201,24 @@ export function PlanReminderFormDialog(props: {
             </div>
             <div className="maka-plan-form-header-actions">
               {!isEditing && (
-                <Menu>
-                  {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
-                  <MenuTrigger
-                    render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'sm' }))} />}
-                    disabled={formInteractionDisabled}
-                    aria-label={copy.useTemplate}
-                  >
-                    {copy.useTemplate}
-                  </MenuTrigger>
-                  <MenuPopup className="min-w-[240px]" align="end" aria-label={copy.templatesAriaLabel}>
+                <Menu
+                  button={{
+                    label: copy.useTemplate,
+                    variant: 'ghost',
+                    size: 'sm',
+                    isDisabled: formInteractionDisabled,
+                  }}
+                  menuWidth={240}
+                  className="maka-plan-template-menu"
+                >
                     {templates.map((template) => (
-                      <MenuItem key={template.id} onClick={() => applyTemplate(template)}>
-                        <span>{template.title}</span>
-                        <span className="ml-auto text-muted-foreground">{template.scheduleLabel}</span>
-                      </MenuItem>
+                      <MenuItem
+                        key={template.id}
+                        onClick={() => applyTemplate(template)}
+                        label={template.title}
+                        endContent={template.scheduleLabel}
+                      />
                     ))}
-                  </MenuPopup>
                 </Menu>
               )}
               {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
