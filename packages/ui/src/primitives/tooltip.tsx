@@ -1,6 +1,7 @@
 "use client";
 
 import { useTooltip } from "@astryxdesign/core/Tooltip";
+import { mergeRefs } from "@astryxdesign/core/utils";
 import {
   cloneElement,
   createContext,
@@ -13,7 +14,7 @@ import {
   type Ref,
   type RefCallback,
 } from "react";
-import { cn, composeRefs } from "../utils.js";
+import { cn } from "../utils.js";
 
 // Astryx tooltip behavior behind the frozen Tooltip/TooltipTrigger/
 // TooltipContent composition API (#1565 barrel freeze). Astryx's primitive is
@@ -96,14 +97,18 @@ export function TooltipTrigger({
   ...props
 }: TooltipTriggerProps): ReactElement {
   const tooltip = useTooltipContext("TooltipTrigger");
-  const describedBy = props["aria-describedby"]
-    ? `${props["aria-describedby"]} ${tooltip.describedBy}`
+  // Compose with any description the render element (or the call site)
+  // already carries — the Base UI trigger merged these the same way.
+  const existingDescribedBy =
+    props["aria-describedby"] ?? render?.props["aria-describedby"];
+  const describedBy = existingDescribedBy
+    ? `${existingDescribedBy} ${tooltip.describedBy}`
     : tooltip.describedBy;
   if (render) {
     const merged = {
       ...props,
       className: cn(render.props.className, className),
-      ref: composeRefs<HTMLElement>(tooltip.ref, render.props.ref),
+      ref: mergeRefs<HTMLElement>(tooltip.ref, render.props.ref),
       "aria-describedby": describedBy,
       "data-slot": "tooltip-trigger",
     };
