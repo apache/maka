@@ -1615,10 +1615,11 @@ export class ShellRunProcessManager
 
   private armTimeout(live: LiveShellRun): void {
     if (live.timeoutMs === undefined) return;
-    live.timeoutTimer = setTimeout(
-      () => this.requestForcedTermination(live, 'timeout'),
-      live.timeoutMs,
-    );
+    live.timeoutTimer = setTimeout(() => {
+      if (live.rootExited || live.finalizeOnce) return;
+      live.lifecycleCause ??= 'timeout';
+      this.requestForcedTermination(live, 'timeout');
+    }, live.timeoutMs);
   }
 
   private clearLiveTimers(live: LiveShellRun): void {
