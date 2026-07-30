@@ -71,6 +71,7 @@ interface FrozenToolBinding {
 type SessionCapabilityBinding =
   | { readonly kind: 'bound'; readonly connectionId: string }
   | { readonly kind: 'lost' };
+type SessionBindingMode = 'strict' | 'degrade';
 
 interface SessionCapabilityState {
   readonly initiatingConnectionId: string;
@@ -148,6 +149,21 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
     sessionId: string,
     initiatingConnectionId: string,
   ): Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }> {
+    return this.#bindSession(sessionId, initiatingConnectionId, 'strict');
+  }
+
+  async bindConfirmedFollowup(sessionId: string, initiatingConnectionId: string): Promise<void> {
+    const result = await this.#bindSession(sessionId, initiatingConnectionId, 'degrade');
+    if (!result.ok) {
+      throw new Error(`Confirmed follow-up capability binding failed: ${result.message}`);
+    }
+  }
+
+  async #bindSession(
+    sessionId: string,
+    initiatingConnectionId: string,
+    mode: SessionBindingMode,
+  ): Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }> {
     return this.#activation.runMutation(async () => {
       const previousState = this.#sessions.get(sessionId);
       const previous = previousState?.sessionBindings ?? new Map();
@@ -171,6 +187,10 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
             (entry) => entry.registration.connectionId === previousBinding.connectionId,
           );
           if (!candidate) {
+            if (mode === 'degrade') {
+              next.set(contractId, { kind: 'lost' });
+              continue;
+            }
             return {
               ok: false,
               message:
@@ -183,6 +203,10 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
               (entry) => entry.registration.connectionId === initiatingConnectionId,
             ) ?? (candidates.length === 1 ? candidates[0] : undefined);
           if (!candidate) {
+            if (mode === 'degrade') {
+              next.set(contractId, previousBinding);
+              continue;
+            }
             return {
               ok: false,
               message:
@@ -195,6 +219,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
               (entry) => entry.registration.connectionId === initiatingConnectionId,
             ) ?? (candidates.length === 1 ? candidates[0] : undefined);
           if (!candidate && candidates.length > 1) {
+            if (mode === 'degrade') continue;
             return {
               ok: false,
               message:
@@ -212,17 +237,21 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
 
       const proxyNames = new Map<string, string>();
       for (const candidate of selected) {
-        for (const descriptor of candidate.offer.offer.tools) {
-          const proxyName = mcpProxyToolName(descriptor.serverId, descriptor.name);
-          const existingContract = proxyNames.get(proxyName);
-          if (existingContract && existingContract !== candidate.offer.contractId) {
-            return {
-              ok: false,
-              message: 'Client Capability contracts expose conflicting model tool identities',
-            };
+        if (offerConflictsWithProxyNames(candidate.offer, proxyNames)) {
+          if (mode === 'degrade') {
+            if (previous.has(candidate.offer.contractId)) {
+              next.set(candidate.offer.contractId, { kind: 'lost' });
+            } else {
+              next.delete(candidate.offer.contractId);
+            }
+            continue;
           }
-          proxyNames.set(proxyName, candidate.offer.contractId);
+          return {
+            ok: false,
+            message: 'Client Capability contracts expose conflicting model tool identities',
+          };
         }
+        rememberOfferProxyNames(candidate.offer, proxyNames);
       }
 
       const previousTurn = previousState?.turnBindings ?? new Map();
@@ -268,8 +297,8 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
     for (const [contractId, binding] of [...(bindings ?? [])].sort(([left], [right]) =>
       left.localeCompare(right),
     )) {
-      const provider =
-        binding.kind === 'bound' ? this.#providers.get(binding.connectionId) : undefined;
+      if (binding.kind === 'lost') continue;
+      const provider = this.#providers.get(binding.connectionId);
       const registration = provider?.current;
       const offer = registration?.offersByContract.get(contractId);
       if (!provider?.sender || !registration || !offer) {
@@ -455,6 +484,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
       this.#revision += 1;
       this.#onRegistryChanged();
       if (previous) this.#releaseRegistrationIfUnused(previous);
+      this.#pruneEmptySessions();
       return {
         ok: true,
         result: {
@@ -488,6 +518,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
       this.#revision += 1;
       this.#onRegistryChanged();
       this.#releaseRegistrationIfUnused(registration);
+      this.#pruneEmptySessions();
       return {
         ok: true,
         result: {

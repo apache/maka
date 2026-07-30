@@ -1162,9 +1162,14 @@ test('queued follow-up binds Client Capabilities to its submitting connection', 
   }
 });
 
-test('queued follow-up survives capability loss without fail-stopping the Host', {
+test('queued follow-up degrades lost Session tools and rebinds ephemeral tools to its Client', {
   timeout: 20_000,
 }, async () => {
+  await assertFollowupCapabilityRebinding('call');
+  await assertFollowupCapabilityRebinding('turn');
+});
+
+async function assertFollowupCapabilityRebinding(affinity: 'call' | 'turn'): Promise<void> {
   const clientCapabilities = new HostClientCapabilityCoordinator({
     activation: new RuntimePolicyActivationGate(),
     onRegistryChanged: () => undefined,
@@ -1179,55 +1184,145 @@ test('queued follow-up survives capability loss without fail-stopping the Host',
       });
     },
   });
-  const provider = clientCapabilities.attachConnection('provider-a', { send: async () => {} });
+  const sessionProvider = clientCapabilities.attachConnection('provider-session', {
+    send: async () => {},
+  });
+  const calls: string[] = [];
+  let previousProvider!: ReturnType<HostClientCapabilityCoordinator['attachConnection']>;
+  previousProvider = clientCapabilities.attachConnection('provider-previous', {
+    send: async (frame) => {
+      if (frame.kind !== 'client.capability.call') return;
+      calls.push('provider-previous');
+      previousProvider.accept({
+        kind: 'client.capability.accepted',
+        invocationId: frame.invocationId,
+      });
+      previousProvider.accept({
+        kind: 'client.capability.result',
+        invocationId: frame.invocationId,
+        result: { content: [{ type: 'text', text: 'previous' }] },
+      });
+    },
+  });
+  let followupProvider!: ReturnType<HostClientCapabilityCoordinator['attachConnection']>;
+  followupProvider = clientCapabilities.attachConnection('provider-followup', {
+    send: async (frame) => {
+      if (frame.kind !== 'client.capability.call') return;
+      calls.push('provider-followup');
+      followupProvider.accept({
+        kind: 'client.capability.accepted',
+        invocationId: frame.invocationId,
+      });
+      followupProvider.accept({
+        kind: 'client.capability.result',
+        invocationId: frame.invocationId,
+        result: { content: [{ type: 'text', text: 'followup' }] },
+      });
+    },
+  });
 
   try {
-    const replaced = await clientCapabilities.handlers['client.capability.replace'](
+    const sessionReplaced = await clientCapabilities.handlers['client.capability.replace'](
       {
-        registrationId: 'registration-a',
+        registrationId: 'registration-session',
         offers: [
           {
-            offerId: 'browser',
+            offerId: 'session-browser',
             version: '0',
             affinity: 'session',
-            label: 'Browser',
+            label: 'Session browser',
             tools: [
               {
-                serverId: 'browser',
-                name: 'navigate',
+                serverId: 'session_browser',
+                name: 'navigate_session',
                 inputSchema: { type: 'object' },
               },
             ],
           },
         ],
       },
-      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-a'),
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-session'),
     );
-    assert.equal(replaced.ok, true);
+    assert.equal(sessionReplaced.ok, true);
+    for (const [connectionId, registrationId] of [
+      ['provider-previous', 'registration-previous'],
+      ['provider-followup', 'registration-followup'],
+    ] as const) {
+      const replaced = await clientCapabilities.handlers['client.capability.replace'](
+        {
+          registrationId,
+          offers: [
+            {
+              offerId: 'ephemeral-browser',
+              version: '0',
+              affinity,
+              label: 'Ephemeral browser',
+              tools: [
+                {
+                  serverId: 'ephemeral_browser',
+                  name: 'navigate_ephemeral',
+                  inputSchema: { type: 'object' },
+                },
+              ],
+            },
+          ],
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency, connectionId),
+      );
+      assert.equal(replaced.ok, true);
+    }
 
-    const firstTurnId = 'turn-client-capability-loss';
+    const firstTurnId = `turn-client-capability-loss-${affinity}`;
     const started = await fixture.coordinator.handlers['turn.start'](
       {
         sessionId: fixture.sessionId,
         turnId: firstTurnId,
         content: { text: HOLD_EXTERNAL_PROMPT },
       },
-      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-a'),
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-previous'),
     );
     assert.equal(started.ok, true);
     const queued = await fixture.messages.handlers['turn.message.submit'](
       {
         originHostEpoch: fixture.hostEpoch,
         sessionId: fixture.sessionId,
-        messageId: 'followup-after-provider-loss',
-        content: { text: 'preserve this acknowledged follow-up' },
+        messageId: `followup-after-provider-loss-${affinity}`,
+        content: { text: HOLD_EXTERNAL_PROMPT },
         placement: 'next_turn',
       },
-      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-a'),
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-followup'),
     );
     assert.equal(queued.ok && queued.result.disposition, 'followup');
 
-    provider.close();
+    sessionProvider.close();
+    backend?.release();
+    await waitUntil(() => {
+      const state = fixture.coordinator.readRootState(fixture.sessionId);
+      return state.kind === 'active' && state.turnId !== firstTurnId;
+    });
+    const snapshot = clientCapabilities.snapshotForSession(fixture.sessionId);
+    assert.ok(snapshot);
+    assert.equal(
+      snapshot.tools.some((tool) => tool.name.endsWith('navigate_session')),
+      false,
+    );
+    const ephemeral = snapshot.tools.find((tool) => tool.name.endsWith('navigate_ephemeral'));
+    assert.ok(ephemeral);
+    await ephemeral.impl(
+      {},
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'followup-turn',
+        cwd: '/tmp',
+        toolCallId: `followup-${affinity}`,
+        abortSignal: new AbortController().signal,
+        emitOutput: () => undefined,
+      },
+    );
+    assert.deepEqual(calls, ['provider-followup']);
+    snapshot.release();
+
+    await waitUntil(() => backend?.sendCount === 2);
     backend?.release();
     await waitUntil(
       () => fixture.coordinator.readRootState(fixture.sessionId).kind === 'idle',
@@ -1245,11 +1340,13 @@ test('queued follow-up survives capability loss without fail-stopping the Host',
     );
     assert.equal(fixture.drainRequested(), false);
   } finally {
-    provider.close();
+    sessionProvider.close();
+    previousProvider.close();
+    followupProvider.close();
     clientCapabilities.close();
     await fixture.dispose();
   }
-});
+}
 
 test('an exact terminal retry does not require a live Client Capability binding', {
   timeout: 20_000,

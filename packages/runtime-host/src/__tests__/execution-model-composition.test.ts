@@ -20,8 +20,10 @@ import {
   createHostExecutionModelComposition,
   type HostAiSdkBackendInput,
 } from '../server/execution-model-composition.js';
+import { HostClientCapabilityCoordinator } from '../server/client-capability-coordinator.js';
 import type { HostMemoryCoordinator } from '../server/memory-coordinator.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
+import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
 import type { HostSkillCatalogCoordinator } from '../server/skill-catalog-coordinator.js';
 
 const MODEL_ID = 'hosted-real-model';
@@ -98,6 +100,62 @@ test('backend creation does not acquire Client Capabilities beyond a bound tool 
     assert.equal(snapshotCalls, 0);
   } finally {
     await backend.dispose();
+  }
+});
+
+test('production backend creation continues after a Session Client Capability is lost', async () => {
+  const coordinator = new HostClientCapabilityCoordinator({
+    activation: new RuntimePolicyActivationGate(),
+    onRegistryChanged: () => undefined,
+  });
+  const provider = coordinator.attachConnection('provider-a', { send: async () => undefined });
+  const context: ConnectionContext = {
+    hostEpoch: 'backend-creation-epoch',
+    connectionId: 'provider-a',
+    surface: 'desktop',
+    principal: 'local_os_user',
+    acquireResidency: () => ({ release() {} }),
+  };
+  const replaced = await coordinator.handlers['client.capability.replace'](
+    {
+      registrationId: 'registration-a',
+      offers: [
+        {
+          offerId: 'browser',
+          version: '0',
+          affinity: 'session',
+          label: 'Browser',
+          tools: [
+            {
+              serverId: 'browser',
+              name: 'navigate',
+              inputSchema: { type: 'object' },
+            },
+          ],
+        },
+      ],
+    },
+    context,
+  );
+  assert.equal(replaced.ok, true);
+  assert.deepEqual(await coordinator.bindSession('backend-creation-session', 'provider-a'), {
+    ok: true,
+  });
+  provider.close();
+
+  const backend = await createHostAiSdkBackend(
+    backendCreationFixture({
+      abortSignal: new AbortController().signal,
+      resolveExecutionConnection: async () => readyExecutionConnection(),
+      readPricing: async () => ({ revision: 0, overrides: [] }),
+      snapshotClientCapabilities: () => coordinator.snapshotForSession('backend-creation-session'),
+    }),
+  );
+  try {
+    assert.equal(coordinator.snapshotForSession('backend-creation-session'), undefined);
+  } finally {
+    await backend.dispose();
+    coordinator.close();
   }
 });
 

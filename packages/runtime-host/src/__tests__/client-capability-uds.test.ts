@@ -224,7 +224,7 @@ test('unknown Client Capability loads, invokes, chunks, and disconnects over rea
     client = undefined;
     await disconnectedClient.close();
     assert.equal(providerCloseCalls, 1);
-    await waitForCapabilityLoss(coordinator, 'session-uds');
+    await waitForCapabilityOmission(coordinator, 'session-uds');
     await assert.rejects(
       async () => tool.impl({ prefix: 'after-disconnect' }, toolContext),
       (error: unknown) =>
@@ -247,20 +247,15 @@ function invalidTool(): MakaTool {
   };
 }
 
-async function waitForCapabilityLoss(
+async function waitForCapabilityOmission(
   coordinator: HostClientCapabilityCoordinator,
   sessionId: string,
 ): Promise<void> {
   const deadline = Date.now() + 2_000;
   while (Date.now() < deadline) {
-    try {
-      coordinator.snapshotForSession(sessionId)?.release();
-    } catch (error) {
-      if (error instanceof ClientCapabilityInvocationError && error.code === 'capability_lost') {
-        return;
-      }
-      throw error;
-    }
+    const snapshot = coordinator.snapshotForSession(sessionId);
+    if (!snapshot) return;
+    snapshot.release();
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error('Client Capability provider remained available after disconnect');

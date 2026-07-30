@@ -14,7 +14,6 @@ import {
   BrowserActionCanceledError,
   BrowserActionRevokedError,
   BrowserToolTimeoutError,
-  releaseBrowserAutomationSession,
   releaseBrowserSession,
   resetBrowserSessionsForTest,
   revokeHiddenBrowserActions,
@@ -269,63 +268,6 @@ describe('BrowserSession', () => {
     assert.equal(bridges[0]?.closed, true);
     // disposed twice: once by the release, once by the acquire unwinding itself.
     assert.ok(spy.disposed.filter((id) => id === 's1').length >= 1);
-  });
-
-  it('never downgrades a pending Session disposal to an automation detach', async () => {
-    const gate = deferred<void>();
-    const spy = installHost({
-      resolveEndpoint: async (id) => {
-        await gate.promise;
-        return { cdpEndpoint: `ws://127.0.0.1:1/${id}` };
-      },
-    });
-    installBridges([makeFakePage()]);
-    const pending = withBrowserPage('s1', 'snapshot', async () => 'never');
-    await tick();
-
-    await releaseBrowserSession('s1');
-    await releaseBrowserAutomationSession('s1');
-    gate.resolve();
-
-    await assert.rejects(pending, /deleted while the browser was connecting/);
-    assert.deepEqual(spy.released, []);
-    assert.equal(spy.disposed.filter((id) => id === 's1').length, 3);
-  });
-
-  it('starts a fresh detach lifecycle after a disposed Session reconnects', async () => {
-    const spy = installHost();
-    const bridges = installBridges([makeFakePage(), makeFakePage()]);
-    await withBrowserPage('s1', 'snapshot', async () => 'before archive');
-    await releaseBrowserSession('s1');
-
-    await withBrowserPage('s1', 'snapshot', async () => 'after restore');
-    await releaseBrowserAutomationSession('s1');
-
-    assert.equal(bridges[0]?.closed, true);
-    assert.equal(bridges[1]?.closed, true);
-    assert.deepEqual(spy.disposed, ['s1']);
-    assert.deepEqual(spy.released, ['s1']);
-  });
-
-  it('starts the fresh detach lifecycle before a restored Session finishes reconnecting', async () => {
-    const gate = deferred<void>();
-    const spy = installHost({
-      resolveEndpoint: async (id) => {
-        await gate.promise;
-        return { cdpEndpoint: `ws://127.0.0.1:1/${id}` };
-      },
-    });
-    installBridges([makeFakePage()]);
-    await releaseBrowserSession('s1');
-
-    const pending = withBrowserPage('s1', 'snapshot', async () => 'never');
-    await tick();
-    await releaseBrowserAutomationSession('s1');
-    gate.resolve();
-
-    await assert.rejects(pending, /automation was released while connecting/);
-    assert.deepEqual(spy.disposed, ['s1']);
-    assert.deepEqual(spy.released, ['s1', 's1']);
   });
 
   it('visible-lease gate: blocks every vetoed kind — incl. observe — before connecting', async () => {

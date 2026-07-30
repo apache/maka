@@ -150,6 +150,7 @@ describe('Host Client Capability coordinator', () => {
     await replace(coordinator, 'connection-a', 'registration-a', 'inspect');
     assert.deepEqual(await coordinator.bindSession('session-a', 'connection-a'), { ok: true });
     first.close();
+    assert.equal(coordinator.snapshotForSession('session-a'), undefined);
 
     const replacement = coordinator.attachConnection('connection-b', { send: async () => {} });
     await replace(coordinator, 'connection-b', 'registration-b', 'inspect');
@@ -159,6 +160,72 @@ describe('Host Client Capability coordinator', () => {
     snapshot?.release();
     replacement.close();
     coordinator.close();
+  });
+
+  test('forgets initiating Clients when replacement or unregister removes all call-affine offers', async () => {
+    for (const mutation of ['replace', 'unregister'] as const) {
+      const coordinator = createCoordinator();
+      const first = coordinator.attachConnection('connection-a', { send: async () => {} });
+      const second = coordinator.attachConnection('connection-b', { send: async () => {} });
+      await replace(
+        coordinator,
+        'connection-a',
+        'registration-a',
+        'inspect',
+        '0',
+        'opaque_offer',
+        'call',
+      );
+      assert.deepEqual(await coordinator.bindSession('session-a', 'connection-a'), { ok: true });
+
+      if (mutation === 'replace') {
+        await replace(
+          coordinator,
+          'connection-a',
+          'registration-non-call',
+          'inspect_session',
+          '0',
+          'session_offer',
+          'session',
+        );
+      } else {
+        const result = await coordinator.handlers['client.capability.unregister'](
+          { registrationId: 'registration-a' },
+          connectionContext('connection-a'),
+        );
+        assert.equal(result.ok, true);
+      }
+
+      await replace(
+        coordinator,
+        'connection-a',
+        'registration-a-next',
+        'inspect',
+        '0',
+        'opaque_offer',
+        'call',
+      );
+      await replace(
+        coordinator,
+        'connection-b',
+        'registration-b',
+        'inspect',
+        '0',
+        'opaque_offer',
+        'call',
+      );
+      const snapshot = coordinator.snapshotForSession('session-a');
+      assert.ok(snapshot);
+      await assert.rejects(
+        () => invoke(snapshot.tools[0]),
+        (error: unknown) =>
+          error instanceof ClientCapabilityInvocationError && error.code === 'capability_ambiguous',
+      );
+      snapshot.release();
+      first.close();
+      second.close();
+      coordinator.close();
+    }
   });
 
   test('does not retain an initiating Client for a Session with no capability state', async () => {
