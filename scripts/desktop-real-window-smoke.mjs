@@ -125,6 +125,7 @@ function parseArgs(argv) {
     unverifiedNote: null,
     diagnosticWaitMs: DEFAULT_DIAGNOSTIC_WAIT_MS,
     programmaticOnly: false,
+    manual: false,
     help: false,
   };
   for (let i = 2; i < argv.length; i += 1) {
@@ -139,6 +140,7 @@ function parseArgs(argv) {
     else if (arg === '--unverified-note') args.unverifiedNote = argv[++i] ?? '';
     else if (arg === '--diagnostic-wait-ms') args.diagnosticWaitMs = Number(argv[++i]);
     else if (arg === '--programmatic-only') args.programmaticOnly = true;
+    else if (arg === '--manual') args.manual = true;
     else if (arg === '--help' || arg === '-h') args.help = true;
     else {
       console.error(`[real-window-smoke] unknown arg: ${arg}`);
@@ -149,10 +151,14 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  console.log(`Usage: desktop-real-window-smoke.mjs [--scenario name] [--width n] [--height n] [--no-launch] [--no-cleanup-stale] [--fail-note text] [--unverified-note text] [--diagnostic-wait-ms n] [--programmatic-only]
+  console.log(`Usage: desktop-real-window-smoke.mjs [--scenario name] [--width n] [--height n] [--no-launch] [--no-cleanup-stale] [--fail-note text] [--unverified-note text] [--diagnostic-wait-ms n] [--programmatic-only] [--manual]
 
 Launches a real Electron window with an isolated smoke workspace, then prompts
 the reviewer to confirm native desktop behavior that screenshots cannot prove.
+
+--manual launches the same window and stops there: no checklist, no report.
+Use it to look at a fixture route in the running app — the window stays up
+until you close it or press Ctrl-C.
 
 Default scenario: ${DEFAULT_SCENARIO}
 Report dir: ${relative(REPO_ROOT, REPORT_DIR)}
@@ -586,6 +592,30 @@ function escapeMd(value) {
   return String(value).replaceAll('|', '\\|').replaceAll('\n', '<br>');
 }
 
+// Launch-only mode. The checklist and the report belong to the smoke gate;
+// looking at a route in the running app needs neither, and a migration that
+// must stay visually neutral needs to look constantly. Same launch path as
+// the gate, so the window a reviewer inspects is the window the gate checks.
+async function runManualLaunch(args, diagnostics) {
+  console.log(
+    `[real-window-smoke] manual launch: scenario=${args.scenario} viewport=${args.width}x${args.height}`,
+  );
+  const launchInfo = await launchElectron(args, diagnostics);
+  if (!launchInfo?.child) {
+    console.error('[real-window-smoke] manual launch requires a window; --no-launch is redundant.');
+    process.exit(2);
+  }
+  console.log('[real-window-smoke] close the window or press Ctrl-C to stop it.');
+  await new Promise((resolve) => {
+    const stop = () => {
+      if (!launchInfo.child.killed) launchInfo.child.kill('SIGTERM');
+    };
+    process.on('SIGINT', stop);
+    process.on('SIGTERM', stop);
+    launchInfo.child.on('exit', resolve);
+  });
+}
+
 async function main() {
   const args = parseArgs(process.argv);
   if (args.help) {
@@ -597,6 +627,10 @@ async function main() {
     argv: process.argv.slice(2),
     staleElectronProcesses: await cleanupStaleElectronProcesses(args.cleanupStale),
   };
+  if (args.manual) {
+    await runManualLaunch(args, diagnostics);
+    return;
+  }
   console.log('[real-window-smoke] This gate requires a human to test native window behavior.');
   console.log(
     '[real-window-smoke] Build first via `npm --workspace @maka/desktop run smoke:real-window`.',

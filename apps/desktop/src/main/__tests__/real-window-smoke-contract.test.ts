@@ -37,14 +37,21 @@ describe('real Electron window smoke gate', () => {
     const pkg = JSON.parse(await readFile(DESKTOP_PACKAGE_JSON, 'utf8')) as {
       scripts?: Record<string, string>;
     };
-    const script = pkg.scripts?.['smoke:real-window'] ?? '';
+    const scripts = pkg.scripts ?? {};
+    // Follow one level of `npm run <name>` so this stays a contract about what
+    // the gate builds, not about whether the chain is spelled out inline. The
+    // launch scripts share it through `build:with-deps` rather than repeating
+    // it verbatim three times.
+    const expand = (script: string) =>
+      script.replace(/npm run ([\w:-]+)/g, (match, name: string) => scripts[name] ?? match);
+    const script = expand(scripts['smoke:real-window'] ?? '');
     assert.match(script, /npm --workspace @maka\/core run build/);
     assert.match(script, /npm --workspace @maka\/storage run build/);
     assert.match(script, /npm --workspace @maka\/runtime run build/);
     assert.match(script, /npm --workspace @maka\/ui run build/);
     assert.match(script, /npm run build/);
     assert.match(script, /desktop-real-window-smoke\.mjs/);
-    const programmaticScript = pkg.scripts?.['smoke:programmatic-window'] ?? '';
+    const programmaticScript = expand(scripts['smoke:programmatic-window'] ?? '');
     assert.match(programmaticScript, /desktop-real-window-smoke\.mjs --programmatic-only/);
   });
 
