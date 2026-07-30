@@ -3,16 +3,24 @@ import { expect, test } from './fixtures';
 
 async function hoverBackground(locator: Locator): Promise<string> {
   await locator.hover();
-  let background = '';
-  await expect
-    .poll(async () => {
-      background = await locator.evaluate(
-        (element) => getComputedStyle(element).backgroundColor,
-      );
-      return background;
-    })
-    .not.toBe('rgba(0, 0, 0, 0)');
-  return background;
+  const background = await locator.evaluate(async (element) => {
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => resolve()),
+    );
+    await Promise.allSettled(
+      element.getAnimations().map((animation) => animation.finished),
+    );
+
+    const color = getComputedStyle(element).backgroundColor;
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('2D canvas context is unavailable');
+    context.fillStyle = color;
+    context.fillRect(0, 0, 1, 1);
+    return { color, alpha: context.getImageData(0, 0, 1, 1).data[3] };
+  });
+  expect(background.alpha).toBeGreaterThan(0);
+  return background.color;
 }
 
 async function enableMode(
