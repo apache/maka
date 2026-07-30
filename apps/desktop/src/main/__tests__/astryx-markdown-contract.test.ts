@@ -8,7 +8,7 @@ const uiSource = (name: string) => readFile(
   'utf8',
 );
 
-it('uses Astryx as the sole Markdown core without taking streaming ownership from PR 8', async () => {
+it('uses Astryx as the sole Markdown core without adding a second stream smoother', async () => {
   const [body, wrapper, chat] = await Promise.all([
     uiSource('markdown-body.tsx'),
     uiSource('markdown.tsx'),
@@ -18,6 +18,7 @@ it('uses Astryx as the sole Markdown core without taking streaming ownership fro
   assert.match(body, /Markdown as AstryxMarkdown/);
   assert.match(body, /autolink="gfm"/);
   assert.doesNotMatch(body, /Streamdown|rehype|remark|isStreaming=/);
+  assert.match(body, /trimStreamingArtifacts\(props\.text\)/);
   assert.match(wrapper, /const safeText = redactSecrets\(props\.text\)/);
   assert.match(wrapper, /MarkdownBody text=\{safeText\} streaming=\{props\.streaming\}/);
   assert.match(chat, /<Markdown text=\{displayed\} streaming \/>/);

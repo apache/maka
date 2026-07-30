@@ -6,10 +6,9 @@
  * product trust boundaries that a design-system component cannot know about:
  * eager display-layer redaction and the closed-world URL policy.
  *
- * Streaming ownership intentionally stays outside this module for PR 7. The
- * conversation already smooths text before it reaches Markdown; enabling
- * Astryx's `isStreaming` here would create a second smoother. PR 8 transfers
- * the conversation, streaming, and scroll-anchoring boundary together.
+ * The conversation owns stream pacing. This layer only applies Astryx's pure
+ * incomplete-syntax repair before parsing; enabling `isStreaming` would add a
+ * second text smoother. PR 8 transfers the wider streaming and scroll boundary.
  */
 
 import { useContext, type ReactNode } from 'react';
@@ -17,6 +16,7 @@ import {
   Markdown as AstryxMarkdown,
   type MarkdownComponents,
 } from '@astryxdesign/core/Markdown';
+import { trimStreamingArtifacts } from '@astryxdesign/core/Markdown/utils';
 import { Link as AstryxLink } from '@astryxdesign/core/Link';
 import {
   isMakaUriCandidate,
@@ -33,7 +33,10 @@ const MAKA_MARKDOWN_COMPONENTS = {
 } satisfies Partial<MarkdownComponents>;
 
 export function MarkdownBody(props: { text: string; streaming?: boolean }) {
-  const safeText = neutralizeUnsafeMarkdownImages(props.text);
+  const parseableText = props.streaming
+    ? trimStreamingArtifacts(props.text)
+    : props.text;
+  const safeText = neutralizeUnsafeMarkdownImages(parseableText);
   return (
     <div
       data-maka-contract="markdown"
