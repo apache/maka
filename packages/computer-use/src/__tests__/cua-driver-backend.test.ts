@@ -1070,11 +1070,11 @@ describe('cua-driver backend', () => {
     const { backend, logPath } = makeBackend({ screenLocked: () => true });
     const signal = new AbortController().signal;
     await assert.rejects(
-      backend.observeApp!(
-        { app: 'Fixture', windowId: 77, includeScreenshot: false },
-        signal,
-        { sessionId: 's1', turnId: 't1', toolCallId: 'lock-guard-observe' },
-      ),
+      backend.observeApp!({ app: 'Fixture', windowId: 77, includeScreenshot: false }, signal, {
+        sessionId: 's1',
+        turnId: 't1',
+        toolCallId: 'lock-guard-observe',
+      }),
       /unlock/,
     );
     assert.equal(toolCalls(await readRecords(logPath), 'get_window_state').length, 0);
