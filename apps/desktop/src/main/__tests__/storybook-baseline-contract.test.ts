@@ -202,7 +202,7 @@ describe('Storybook baseline contract', () => {
     const allStorySrc = storyFiles.map((f) => readFileSync(join(storiesDir, f), 'utf8')).join('\n');
 
     const curatedPrimitives = [
-      'Button', 'Badge', 'Input', 'Textarea', 'Separator',
+      'Button', 'Badge', 'Input', 'Textarea', 'Divider',
       'DialogRoot', 'TabsRoot', 'SelectRoot', 'Label', 'Switch', 'Toggle', 'ToggleGroup',
       'RadioGroup', 'Radio', 'Progress', 'Alert', 'Empty', 'Spinner', 'Kbd',
       'Menu', 'Accordion', 'Toolbar', 'ToastProvider',

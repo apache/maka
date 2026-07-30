@@ -9,7 +9,6 @@ import { Switch as BaseSwitch } from '@base-ui/react/switch';
 import { Toggle as BaseToggle } from '@base-ui/react/toggle';
 import { ToggleGroup as BaseToggleGroup } from '@base-ui/react/toggle-group';
 import { Select as BaseSelect } from '@base-ui/react/select';
-import { Separator as BaseSeparator } from '@base-ui/react/separator';
 import { usePopover, type UsePopoverReturn } from '@astryxdesign/core/Popover';
 import { mergeRefs } from '@astryxdesign/core/utils';
 import { Check, ChevronDown, X } from './icons.js';
@@ -139,25 +138,6 @@ export const buttonVariants = cva(
 // Input + ported chrome, single element, no span wrapper). Re-exported from
 // the barrel via index.ts; number-field imports inputClasses/bareFieldClasses
 // from primitives/input.js.
-
-export const Separator = forwardRef<HTMLDivElement, React.ComponentPropsWithoutRef<typeof BaseSeparator>>(function Separator(
-  { className, orientation = 'horizontal', ...props },
-  ref,
-) {
-  return (
-    <BaseSeparator
-      ref={ref}
-      orientation={orientation}
-      className={cn(
-        'shrink-0 bg-border',
-        orientation === 'horizontal' ? 'h-px w-full' : 'h-full w-px',
-        className,
-      )}
-      data-slot="separator"
-      {...props}
-    />
-  );
-});
 
 export const DialogRoot = BaseDialog.Root;
 export const DialogClose = BaseDialog.Close;
