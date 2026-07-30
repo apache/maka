@@ -101,4 +101,48 @@ test('copies Markdown code and reports a clipboard failure', async ({ window: pa
   await expect(copyStatus).toBeVisible();
   await expect(copyStatus).toHaveText('复制代码失败');
   await expect(astryxPoliteRegion).toHaveText('复制代码失败');
+
+  await page.evaluate(() => {
+    Object.defineProperty(navigator.clipboard, 'writeText', {
+      configurable: true,
+      value: () => new Promise<void>((resolve) => {
+        (window as typeof window & {
+          __completeClipboardWriteAfterUnmount?: () => void;
+        }).__completeClipboardWriteAfterUnmount = resolve;
+      }),
+    });
+  });
+  await codeBlock.getByRole('button', { name: '复制代码' }).click();
+  await page.getByRole('button', { name: '新任务' }).click();
+  await expect(page.getByRole('region', { name: '开始对话' })).toBeVisible();
+
+  await page.evaluate(async () => {
+    const liveRegion = document.querySelector<HTMLElement>(
+      '[data-astryx-live-region="polite"]',
+    );
+    if (!liveRegion) throw new Error('Astryx polite live region is missing');
+    liveRegion.textContent = 'Copied';
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+  });
+  await expect(astryxPoliteRegion).toHaveText('Copied');
+
+  await page.evaluate(async () => {
+    const liveRegion = document.querySelector<HTMLElement>(
+      '[data-astryx-live-region="polite"]',
+    );
+    const complete = (window as typeof window & {
+      __completeClipboardWriteAfterUnmount?: () => void;
+    }).__completeClipboardWriteAfterUnmount;
+    if (!liveRegion || !complete) {
+      throw new Error('pending clipboard write was not captured');
+    }
+    liveRegion.textContent = 'after-unmount';
+    complete();
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+  });
+  await expect(astryxPoliteRegion).toHaveText('after-unmount');
 });

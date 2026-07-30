@@ -14,6 +14,7 @@
 import {
   useContext,
   useEffect,
+  useRef,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from 'react';
@@ -52,6 +53,14 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
   const copyFeedback = useClipboardCopyFeedback(1400, { redact: false });
   const copyPhase = copyFeedback.phaseFor('code');
   const translate = useTranslator();
+  const activeCopyCleanupsRef = useRef(new Set<() => void>());
+  useEffect(() => {
+    const activeCopyCleanups = activeCopyCleanupsRef.current;
+    return () => {
+      for (const cleanup of activeCopyCleanups) cleanup();
+      activeCopyCleanups.clear();
+    };
+  }, []);
 
   // Astryx 0.1.9 owns this button and the authoritative `code` value but
   // discards clipboard rejections. Wrap its next write without stopping the
@@ -74,6 +83,7 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
     const originalWrite = clipboard.writeText.bind(clipboard);
     let restored = false;
     let writeStarted = false;
+    let operationActive = true;
     let cancelAnnouncementLocalization = () => {};
 
     function restoreWriteText() {
@@ -86,6 +96,13 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
       }
     }
 
+    function cancelOperation() {
+      if (!operationActive) return;
+      operationActive = false;
+      cancelAnnouncementLocalization();
+      activeCopyCleanupsRef.current.delete(cancelOperation);
+    }
+
     try {
       Object.defineProperty(clipboard, 'writeText', {
         configurable: true,
@@ -96,21 +113,22 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
             'code',
             () => originalWrite(text),
           );
-          if (!copied) {
-            cancelAnnouncementLocalization();
+          if (!copied || !operationActive) {
+            cancelOperation();
             throw new Error('Clipboard write failed');
           }
           window.requestAnimationFrame(() => {
-            window.requestAnimationFrame(cancelAnnouncementLocalization);
+            window.requestAnimationFrame(cancelOperation);
           });
         },
       });
       cancelAnnouncementLocalization = localizeNextAstryxCopyAnnouncement(
         translate('@astryx.codeBlock.copied'),
       );
+      activeCopyCleanupsRef.current.add(cancelOperation);
       window.setTimeout(() => {
         restoreWriteText();
-        if (!writeStarted) cancelAnnouncementLocalization();
+        if (!writeStarted) cancelOperation();
       }, 0);
     } catch {
       // If the browser forbids wrapping the method, keep Astryx's native path.
