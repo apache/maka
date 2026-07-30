@@ -118,7 +118,21 @@ weight. The dot-product term is what makes a deliberate throw across the window
 land where it was aimed; distance alone picks the corner you are leaving.
 
 **Size**: default longest edge 200pt, clamped to [100, 400], aspect preserved by
-scaling to the shorter edge. Anchor inset 24pt.
+scaling to the shorter edge. Anchor inset 24pt. The three bounds are the
+literal doubles `0x4069…`, `0x4059…`, `0x4079…`.
+
+**Resize**, from `-[PIPStackResizeInteraction maxDisplaySizeForPointerScreenPoint:]`,
+which is four instructions:
+
+```
+sign = (alignment & ~1) == 2 ? +1 : -1
+size = initialMaxDisplaySize + (pointer.y - initialPointer.y) * sign
+```
+
+Only the vertical component moves it, and the sign comes from the corner the
+mirror rests on, so the gesture reads the same everywhere: away from the anchor
+grows it. Nothing is incremental — the interaction keeps the edge and pointer
+height it started from — so a jittery pointer cannot accumulate drift.
 
 **Controls**: `performControlWithIdentifier:` takes `stop`, `hide`, `close`;
 `setHoveredControlIdentifier:` and `_pressedControlIdentifier` drive their
@@ -173,6 +187,10 @@ still delivers moves, so main can tell when to take the clicks back.
 **No stack.** Codex mirrors several tiles with a lead item and followers; the
 follower spring column and its index falloff have nothing to apply to here.
 
+**The grip appears with the controls.** Codex's resize handles are part of the
+same hover chrome; at rest the tile carries none. Same here — a 200pt window
+cannot afford permanent affordances.
+
 **Frames, not video.** Codex streams via ScreenCaptureKit across XPC. Every
 mutating Computer Use action already returns a screenshot of the target,
 captured after the settle wait, so the mirror is a flipbook of post-action
@@ -189,8 +207,14 @@ mirror is the app window's child and goes wherever that window goes.
 `scripts/pip-interaction-smoke.mjs` runs the real thing: a real parent window, a
 real child panel, the real preload and renderer, real input events. It asserts
 the child-window properties, the seat position, the carry-on-move, hover, a
-throw settling on the anchor it was aimed at, a resize returning to the chosen
-corner rather than the default one, and the hide control.
+throw settling on the anchor it was aimed at, an app resize returning the mirror
+to the chosen corner rather than the default one, a grip drag growing it
+(measured 200x160 → 290x232, aspect held, still on its corner, inside the
+clamp), and the hide control.
+
+It needs no accessibility and no unlocked screen — it drives Electron windows
+only — which makes it the one real-machine check that keeps working when the
+rest cannot run.
 
 The physics and the anchor scoring are covered exactly, without a desktop, in
 `apps/desktop/src/main/__tests__/computer-use-pip-motion.test.ts`.
