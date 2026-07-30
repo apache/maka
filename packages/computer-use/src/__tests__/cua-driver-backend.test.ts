@@ -2257,6 +2257,52 @@ describe('cua-driver backend', () => {
     );
   });
 
+  it('type after a semantic click on an editable element, without any pixel click', async () => {
+    // The deadlock this removes: `type` refused without a keyboard target, and
+    // only `left_click` — the pixel path — could establish one. So the safest
+    // way to reach a field, the AX path that works on a window behind
+    // something else, was also the only way that could never type into it.
+    //
+    // A semantic click has no meaningful screen point, so the target carries
+    // the element's identity and the fill re-finds it in the fresh snapshot.
+    const { backend, logPath } = makeBackend();
+    const sig = new AbortController().signal;
+    const observation = await backend.observeApp!(
+      { app: 'Fixture', windowId: 77, includeScreenshot: false },
+      sig,
+      DEFAULT_RUN_CONTEXT,
+    );
+    const clicked = await backend.runSemantic!(
+      {
+        type: 'click_element',
+        observationId: observation.observationId,
+        elementId: '7',
+        elementIdentity: observation.elements[0]!.identity,
+      },
+      sig,
+      {
+        ...DEFAULT_RUN_CONTEXT,
+        toolCallId: 'semantic-click',
+        boundAction: boundElementAction(observation, '7'),
+      },
+    );
+    assert.equal(clicked.outcome.ok, true);
+
+    const typed = await backend.run({ type: 'type', text: 'typed via ax' } as CuAction, sig, {
+      ...DEFAULT_RUN_CONTEXT,
+      toolCallId: 'type-after-semantic',
+    });
+    assert.equal(typed.outcome.ok, true, 'the semantic click was enough to establish a target');
+
+    const records = await readRecords(logPath);
+    const call = toolCall(records, 'set_value');
+    assert.ok(call, 'the fill went through AXValue');
+    assert.equal(call!.value, 'typed via ax');
+    // Red line unchanged: no pixel click, and no frontmost lookup.
+    assert.equal(toolCalls(records, 'click').filter((c) => c.x !== undefined).length, 0);
+    assert.ok(!methodTrace(records).includes('tools/call:list_apps'));
+  });
+
   it('parallel click then type waits for the new click target instead of using the old window', async () => {
     const { backend, logPath } = makeBackend({ delayTool: 'click', delayMs: 120 });
     const sig = new AbortController().signal;

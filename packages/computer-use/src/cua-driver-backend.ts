@@ -305,10 +305,29 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
 
   // Keyboard ownership is session + turn scoped. Only a successful click may
   // establish it; pointer-only scroll/drag actions do not imply text focus.
+  /**
+   * AX roles that take typed text.
+   *
+   * A role not listed here still binds the window — the click happened and the
+   * keyboard now belongs to that window — it just does not claim the target is
+   * something a `type` may fill.
+   */
+  const EDITABLE_AX_ROLES = new Set(['AXTextField', 'AXTextArea', 'AXComboBox', 'AXSearchField']);
+
   interface KeyboardTarget {
     window: CuaResolvedWindow;
     editable: boolean;
     pageTarget?: CuaResolvedPageTextTarget;
+    /**
+     * Which element the click landed on, when a semantic click established
+     * this target.
+     *
+     * The pixel path has a screen point and finds the field under it. A
+     * semantic click has no such point — it addressed an element — so it
+     * carries the element's identity instead and the fill re-finds it in the
+     * fresh snapshot the same way `refetchSemanticElement` does.
+     */
+    element?: { role: string; label?: string };
   }
   const targetsBySession = new Map<string, { turnId: string; target: KeyboardTarget }>();
   const sessionGenerations = new Map<string, number>();
@@ -1076,7 +1095,21 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
       };
     }
     const snapshot = await snapshotTarget(target.window, signal);
-    const element = editableElementAtScreenPoint(snapshot.elements, target.window.screenPoint);
+    // A semantic click named an element; a pixel click named a point. Prefer
+    // the name when there is one — the window's centre, which is what a
+    // semantic target's `screenPoint` holds, is not where the field is.
+    const findEditable = (elements: TargetSnapshot['elements']) =>
+      (target.element
+        ? elements
+            .map(normalizeCuaSnapshotElement)
+            .find(
+              (candidate) =>
+                candidate !== undefined &&
+                candidate.role === target.element?.role &&
+                (target.element.label === undefined || candidate.label === target.element.label),
+            )
+        : undefined) ?? editableElementAtScreenPoint(elements, target.window.screenPoint);
+    const element = findEditable(snapshot.elements);
     if (!element) {
       return {
         ok: false,
@@ -1119,8 +1152,7 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
     } catch {
       return deliveredVerificationFailure('AXValue write', 'ax').outcome;
     }
-    const verified =
-      editableElementAtScreenPoint(after.elements, target.window.screenPoint)?.value === text;
+    const verified = findEditable(after.elements)?.value === text;
     return verified
       ? {
           ok: true,
@@ -1463,6 +1495,9 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
     },
 
     async runSemantic(action: CuSemanticAction, signal, context) {
+      // Read before the dispatch, so a session invalidated while it was in
+      // flight cannot have its keyboard target set by the reply.
+      const semanticGeneration = sessionGenerations.get(context.sessionId) ?? 0;
       try {
         return await withOperationQueue(
           signal,
@@ -1571,6 +1606,34 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
             }
             const outcome = normalizeCuaDriverOutcome(result);
             if (!outcome.ok) return { outcome };
+            // A semantic click binds the keyboard target, the same way a pixel
+            // click does.
+            //
+            // Only `left_click` used to, which is backwards: that is the pixel
+            // path, and the semantic one is the safer of the two — it addresses
+            // an element rather than a coordinate and it reaches a window that
+            // is behind something else. The effect was a deadlock: `type`
+            // refused without a target, and the only gesture that could set one
+            // was the gesture Maka exists to avoid. Clicking a text area
+            // semantically is refused by AppKit anyway
+            // (`AXPress` on `AXTextArea` is `kAXErrorActionUnsupported`), but a
+            // text *field* presses fine, and that is the common case.
+            if (
+              action.type === 'click_element' &&
+              (sessionGenerations.get(context.sessionId) ?? 0) === semanticGeneration
+            ) {
+              const role = String(refetched.role ?? '');
+              targetsBySession.set(context.sessionId, {
+                turnId: context.turnId,
+                target: {
+                  window: validated,
+                  editable: EDITABLE_AX_ROLES.has(role),
+                  ...(role
+                    ? { element: { role, ...(refetched.label ? { label: refetched.label } : {}) } }
+                    : {}),
+                },
+              });
+            }
             let fresh: CuObservation;
             try {
               fresh = await observeResolvedWindow(validated, true, signal, context);
