@@ -290,28 +290,61 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
    * with the app shell.
    */
   async function runBackgroundStartup(): Promise<void> {
+    // Each step stands alone, because the doc comment above is a promise the
+    // old shape could not keep: this was a run of bare `await`s, so the first
+    // rejection skipped every step after it, silently.
+    //
+    // Seen for real: one telemetry record written by an older build failed
+    // `decodePersistedLlmCallRecord`, `ensureUsageReady()` rejected, and
+    // session recovery, the Open Gateway sync, plan reminders, the daily
+    // review scheduler, the config watcher and the automation scheduler all
+    // never ran. Nothing said so — the only trace was an unhandled rejection
+    // warning about `contextBudget`, which names the record and not one of the
+    // things that stopped working because of it.
+    const step = async (name: string, run: () => unknown): Promise<void> => {
+      try {
+        await run();
+      } catch (error) {
+        console.error(`[startup] ${name} failed; continuing:`, error);
+      }
+    };
+
     // E2e-fixture seeding happens synchronously in `whenReady` before the
     // window opens (see there for why); only the real bootstrap runs here.
     if (!e2eFixture) {
-      await ensureBootstrapConnection();
+      await step('bootstrap connection', () => ensureBootstrapConnection());
     }
-    const settings = await settingsStore.get();
-    setActiveProxy(toContractNetworkSettings(settings.network).proxy);
-    // Re-hold the power-save blocker at launch if the user left it enabled, so
-    // scheduled tasks survive machine sleep across restarts.
-    keepSystemAwake.apply(settings.system.keepSystemAwake);
-    await ensureUsageReady();
-    await migrateSessionProjectsOnStartup();
-    await recoverInterruptedSessionsOnStartup();
-    await botRegistry.applySettings(settings.botChat);
-    await openGateway.sync(settings.openGateway);
-    await planReminders.refreshTimers();
-    dailyReview.startScheduler();
-    configWatcher = startConfigFileWatcher(workspaceRoot, {
-      onConnectionsChanged: () => emitConnectionListChanged(),
-      onSettingsChanged: () => void handleExternalSettingsChange(),
+    // The settings read is the one genuine dependency: three steps below take
+    // their argument from it, and guessing a default for any of them would be
+    // worse than not running them.
+    let settings: Awaited<ReturnType<typeof settingsStore.get>> | undefined;
+    await step('settings read', async () => {
+      settings = await settingsStore.get();
     });
-    automationWiring.scheduler.start();
+    if (settings) {
+      const resolved = settings;
+      await step('proxy', () => setActiveProxy(toContractNetworkSettings(resolved.network).proxy));
+      // Re-hold the power-save blocker at launch if the user left it enabled, so
+      // scheduled tasks survive machine sleep across restarts.
+      await step('keep-awake', () => keepSystemAwake.apply(resolved.system.keepSystemAwake));
+    }
+    await step('usage readiness', () => ensureUsageReady());
+    await step('project migration', () => migrateSessionProjectsOnStartup());
+    await step('session recovery', () => recoverInterruptedSessionsOnStartup());
+    if (settings) {
+      const resolved = settings;
+      await step('bot registry', () => botRegistry.applySettings(resolved.botChat));
+      await step('open gateway', () => openGateway.sync(resolved.openGateway));
+    }
+    await step('plan reminders', () => planReminders.refreshTimers());
+    await step('daily review scheduler', () => dailyReview.startScheduler());
+    await step('config watcher', () => {
+      configWatcher = startConfigFileWatcher(workspaceRoot, {
+        onConnectionsChanged: () => emitConnectionListChanged(),
+        onSettingsChanged: () => void handleExternalSettingsChange(),
+      });
+    });
+    await step('automation scheduler', () => automationWiring.scheduler.start());
   }
 
   app.on('window-all-closed', () => {
