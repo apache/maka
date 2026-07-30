@@ -5,9 +5,9 @@
 //   node scripts/check-visual-contract.mjs --route chat --theme dark --platform win32
 //
 // One command captures BOTH sides and diffs them in memory: the base ref is
-// checked out into a cached temporary worktree (node_modules shared — the
-// compare refuses to run across a package-lock change), both sides are built,
-// and every route × theme × platform is captured from each build in turn.
+// checked out into a cached temporary worktree with its own `npm ci` (see
+// ensureBaseBuild — a slice may legitimately change dependencies), both sides
+// are built, and every route × theme × platform is captured from each build.
 // There is no baseline file. An earlier version had one, captured by hand on
 // the base branch and compared by hand after switching: every step a human
 // could skip (rebuild after switching, recapture after rebasing) produced a
@@ -19,9 +19,11 @@
 // captures comparable at all — font metrics and the macOS traffic-light inset
 // are host facts, encoded in every capture.
 //
-// The win32 column runs on any host: MAKA_E2E_FIXTURE_PLATFORM drives the
-// production `app:info → data-os` path, which is what keys the per-OS CSS.
-// It covers the cascade, not native chrome.
+// The win32 column runs on any darwin/linux host: MAKA_E2E_FIXTURE_PLATFORM
+// drives the production `app:info → data-os` path, which is what keys the
+// per-OS CSS. It covers the cascade, not native chrome. (A Windows *host* is
+// not supported — the dev fleet is darwin/linux and the plain `spawn('npm')`
+// calls would need `.cmd` resolution there.)
 //
 // This gates NO-CHANGE, not correctness. A pre-existing visual bug on the
 // base is out of scope for the migration: "zero diff" means "the migration
@@ -39,6 +41,12 @@
 //     under an opacity:0 ancestor, but the walk prunes that subtree. Nothing
 //     in the app uses the native top layer today; if that changes, the prune
 //     needs a top-layer exemption.
+//   - Animations and transitions are disabled for the duration of the
+//     capture: a running spinner's transform is a read of the clock, not of
+//     the cascade, and two captures at arbitrary phases would diff forever.
+//     The cost is that motion itself is out of contract: a migration that
+//     drops an `animation` rule is invisible here, because both sides are
+//     captured with animations off.
 //
 // Migration-only scaffolding. It is deliberately not wired into CI, following
 // the check:chat-visual precedent, and is removed in PR 14 together with the
@@ -47,7 +55,7 @@ import { spawn } from 'node:child_process';
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { withFixtureWindow } from './fixture-window.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -110,6 +118,16 @@ export const PROPERTIES = [
   'boxShadow',
   'outline',
   'mixBlendMode',
+  // The paint-only channels: none of these move the rect, so losing one is
+  // invisible to every other property here. All four are live in this
+  // renderer — grayscale() on disabled provider rows, backdrop blur on the
+  // glass theme, clip-path as visually-hidden, rotate() on chevrons (a
+  // square rotated 90° has an identical bounding box).
+  'filter',
+  'backdropFilter',
+  'clipPath',
+  'transform',
+  'transformOrigin',
   'fontFamily',
   'fontSize',
   'fontWeight',
@@ -152,6 +170,10 @@ export const INITIAL_VALUES = {
   borderRadius: '0px',
   boxShadow: 'none',
   mixBlendMode: 'normal',
+  filter: 'none',
+  backdropFilter: 'none',
+  clipPath: 'none',
+  transform: 'none',
   backgroundColor: 'rgba(0, 0, 0, 0)',
   backgroundImage: 'none',
   alignItems: 'normal',
@@ -184,6 +206,18 @@ const CAPTURE_EXPR = `(() => {
   const PROPERTIES = ${JSON.stringify(PROPERTIES)};
   const INITIAL_VALUES = ${JSON.stringify(INITIAL_VALUES)};
   const INHERITED = new Set(${JSON.stringify(INHERITED_PROPERTIES)});
+  // Stop the clock before reading a single style. transform is sampled, and a
+  // running spinner serialises a different matrix at every phase — the two
+  // sides are captured seconds apart, so animated values would diff on time,
+  // not on the cascade. Both sides get the identical freeze; see the header's
+  // blind-spot note for what that trades away.
+  if (!document.getElementById('maka-visual-contract-freeze')) {
+    const freeze = document.createElement('style');
+    freeze.id = 'maka-visual-contract-freeze';
+    freeze.textContent =
+      '*, *::before, *::after { animation: none !important; transition: none !important; }';
+    document.head.append(freeze);
+  }
   // Round to 0.5px. Sub-pixel layout differs run to run on the same build
   // (fractional scroll offsets, font metrics), and that jitter is not a
   // migration signal.
@@ -237,6 +271,10 @@ const CAPTURE_EXPR = `(() => {
       // zero-width border carries a style and a colour that paint nothing.
       if (!paintsBorder && (property === 'borderStyle' || property === 'borderColor')) continue;
       if (!paintsOutline && property === 'outline') continue;
+      // transform-origin computes to a concrete px pair on every element (it
+      // depends on the box, so it has no fixed initial to omit against), and
+      // it paints nothing until a transform exists.
+      if (property === 'transformOrigin' && style.transform === 'none') continue;
       if (INHERITED.has(property) && inheritedBase[property] === value) continue;
       record[property] = value;
     }
@@ -758,7 +796,10 @@ async function main() {
 }
 
 // Only when run directly: the pure helpers above are imported by
-// check-visual-contract.test.mjs, which must not launch Electron.
-if (import.meta.url === `file://${process.argv[1]}`) {
+// check-visual-contract.test.mjs, which must not launch Electron. Compared
+// through pathToFileURL, not string concatenation — a checkout path with a
+// space or non-ASCII segment percent-encodes in import.meta.url, and the
+// mismatch would make this instrument exit 0 having measured nothing.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   await main();
 }
