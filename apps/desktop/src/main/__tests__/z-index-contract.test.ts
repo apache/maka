@@ -136,11 +136,16 @@ describe('PR-FE-BUG-HUNT-9 z-index contract', () => {
    * modal won every hit-test. DOM-level e2e cannot see it; only paint
    * order can.
    *
-   * The layer now lives on the wrapped `SelectPositioner`/`PopoverPositioner`
-   * in `packages/ui/src/ui.tsx`, so every consumer inherits it. This test
+   * The layer now lives on the wrapped `SelectPositioner` in
+   * `packages/ui/src/ui.tsx`, so every consumer inherits it. This test
    * pins that, and pins that the layer is NOT written onto the popup —
    * Base UI renders popups `position: static`, where `z-index` is inert
    * and reads as protection that isn't there.
+   *
+   * Popover left this contract in #1565 PR 5: it is Astryx-backed and its
+   * surface lives in the native-Popover top layer, which paints above every
+   * z-index by definition — there is no positioner to pin. Select follows in
+   * PR 6, and this test shrinks again then.
    */
   it('carries the overlay layer on the positioner wrappers, never on the static popup', async () => {
     const ui = await readFile(
@@ -153,7 +158,7 @@ describe('PR-FE-BUG-HUNT-9 z-index contract', () => {
     const element = (tag: string): string =>
       ui.match(new RegExp(`<${tag.replace('.', '\\.')}\\b[^>]*/>`))?.[0] ?? '';
 
-    for (const tag of ['BaseSelect.Positioner', 'BasePopover.Positioner']) {
+    for (const tag of ['BaseSelect.Positioner']) {
       const el = element(tag);
       assert.notEqual(el, '', `${tag} wrapper not found in packages/ui/src/ui.tsx`);
       assert.match(
@@ -163,7 +168,7 @@ describe('PR-FE-BUG-HUNT-9 z-index contract', () => {
       );
     }
 
-    for (const tag of ['BaseSelect.Popup', 'BasePopover.Popup']) {
+    for (const tag of ['BaseSelect.Popup']) {
       const el = element(tag);
       assert.notEqual(el, '', `${tag} wrapper not found in packages/ui/src/ui.tsx`);
       assert.doesNotMatch(
@@ -172,5 +177,29 @@ describe('PR-FE-BUG-HUNT-9 z-index contract', () => {
         `${tag} must NOT carry the overlay layer — it is position:static, so the z-index is inert and only disguises a missing layer on the positioner.`,
       );
     }
+  });
+
+  /**
+   * #1565 PR 5: Popover is Astryx-backed. Its surface renders in the native
+   * Popover-API top layer — above every `--z-*` value by definition — so a
+   * `--z-overlay` pin would be dead code that reads as protection. Pin the
+   * implementation authority instead: Base UI's popover must not return, and
+   * the Astryx hook is the only behavior source.
+   */
+  it('Popover is Astryx-backed with no Base UI popover or z-layer pin', async () => {
+    const ui = await readFile(
+      resolve(REPO_ROOT, 'packages', 'ui', 'src', 'ui.tsx'),
+      'utf8',
+    );
+    assert.doesNotMatch(
+      ui,
+      /@base-ui\/react\/popover/,
+      'ui.tsx must not import @base-ui/react/popover — Popover behavior is owned by @astryxdesign/core/Popover (#1565 PR 5, one behavior authority per component).',
+    );
+    assert.match(
+      ui,
+      /@astryxdesign\/core\/Popover/,
+      'ui.tsx must source Popover behavior from @astryxdesign/core/Popover.',
+    );
   });
 });

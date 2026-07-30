@@ -9,12 +9,12 @@ import { RadioGroup as BaseRadioGroup } from '@base-ui/react/radio-group';
 import { Switch as BaseSwitch } from '@base-ui/react/switch';
 import { Toggle as BaseToggle } from '@base-ui/react/toggle';
 import { ToggleGroup as BaseToggleGroup } from '@base-ui/react/toggle-group';
-import { Popover as BasePopover } from '@base-ui/react/popover';
 import { Select as BaseSelect } from '@base-ui/react/select';
 import { Separator as BaseSeparator } from '@base-ui/react/separator';
+import { usePopover, type UsePopoverReturn } from '@astryxdesign/core/Popover';
 import { Check, ChevronDown, X } from './icons.js';
 import { cva, type VariantProps } from 'class-variance-authority';
-import { cn } from './utils.js';
+import { cn, composeRefs } from './utils.js';
 import { inputClasses } from './primitives/input.js';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
@@ -364,35 +364,143 @@ export const SelectItem = forwardRef<HTMLDivElement, React.ComponentPropsWithout
  * picker, whose popup holds two independent columns and so has no single
  * "selected item" for Select to own.
  *
- * The popup pins the same `--z-overlay` layer as `SelectPopup`: the
- * Settings modal sits on its own layer, and a bare Tailwind z-utility
- * would render the popup *beneath* the modal that triggered it — the bug
- * fixed for Select in WAWQAQ msg `d3ea9a33`.
+ * Astryx-backed (#1565 PR 5): the five-part composition API is frozen
+ * (barrel append-only), but behind it one `usePopover` instance — owned by
+ * `PopoverRoot`, shared through context — provides anchor positioning,
+ * light dismiss, Escape, and the focus trap. The surface lives in the
+ * native-Popover top layer, so there is no portal and no `--z-overlay`
+ * pin: the top layer paints above every z-index by definition, which is
+ * how the popup outranks the Settings modal that triggers it (the bug
+ * fixed for Select in WAWQAQ msg `d3ea9a33`). Focus restore on close is
+ * the native Popover API's own hide behavior.
  */
-export const PopoverRoot = BasePopover.Root;
-export const PopoverTrigger = BasePopover.Trigger;
-export const PopoverPortal = BasePopover.Portal;
-/** Carries the overlay layer for the same reason `SelectPositioner` does —
- *  the popup below is `position: static`, so a z-index there is inert. */
-export const PopoverPositioner = forwardRef<HTMLDivElement, React.ComponentPropsWithoutRef<typeof BasePopover.Positioner>>(function PopoverPositioner(
-  { className, ...props },
+interface PopoverContextValue {
+  popover: UsePopoverReturn;
+  notifySettled(open: boolean): void;
+}
+
+const PopoverContext = React.createContext<PopoverContextValue | null>(null);
+
+function usePopoverContext(component: string): PopoverContextValue {
+  const context = React.useContext(PopoverContext);
+  if (context === null) throw new Error(`${component} must be used inside <PopoverRoot>`);
+  return context;
+}
+
+interface PopoverRootProps {
+  children?: React.ReactNode;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  /** Fires after the open transition settles: the popup is shown and initial focus has landed. */
+  onOpenChangeComplete?: (open: boolean) => void;
+  /** Accessible name for the popover dialog (Astryx `dialogLabel`). */
+  label?: string;
+}
+
+export function PopoverRoot({ children, open, onOpenChange, onOpenChangeComplete, label }: PopoverRootProps): React.ReactElement {
+  const callbacksRef = React.useRef({ onOpenChange, onOpenChangeComplete });
+  callbacksRef.current = { onOpenChange, onOpenChangeComplete };
+  const onShow = React.useCallback(() => callbacksRef.current.onOpenChange?.(true), []);
+  const onHide = React.useCallback(() => {
+    callbacksRef.current.onOpenChange?.(false);
+    callbacksRef.current.onOpenChangeComplete?.(false);
+  }, []);
+  // Auto-focus is owned here (not by Astryx) so `initialFocus` can land on a
+  // specific element instead of the first focusable one; see PopoverPopup.
+  const popover = usePopover({ onShow, onHide, hasAutoFocus: false, dialogLabel: label });
+  const context = React.useMemo<PopoverContextValue>(
+    () => ({
+      popover,
+      notifySettled(isOpen) {
+        if (isOpen) callbacksRef.current.onOpenChangeComplete?.(true);
+      },
+    }),
+    [popover],
+  );
+
+  // Controlled mode: reconcile the `open` prop with the layer state. The
+  // trigger still toggles directly (and reports through onOpenChange), so a
+  // matching prop round-trip lands here as a no-op.
+  const { isOpen, show, hide } = popover;
+  React.useEffect(() => {
+    if (open === undefined) return;
+    if (open && !isOpen) show();
+    else if (!open && isOpen) hide();
+  }, [open, isOpen, show, hide]);
+
+  return <PopoverContext.Provider value={context}>{children}</PopoverContext.Provider>;
+}
+
+export const PopoverTrigger = forwardRef<HTMLButtonElement, React.ButtonHTMLAttributes<HTMLButtonElement>>(function PopoverTrigger(
+  { onClick, ...props },
   ref,
 ) {
-  return <BasePopover.Positioner ref={ref} className={cn('z-[var(--z-overlay)]', className)} data-slot="popover-positioner" {...props} />;
-});
-export const PopoverPopup = forwardRef<HTMLDivElement, React.ComponentPropsWithoutRef<typeof BasePopover.Popup>>(function PopoverPopup(
-  { className, ...props },
-  ref,
-) {
+  const { popover } = usePopoverContext('PopoverTrigger');
   return (
-    <BasePopover.Popup
-      ref={ref}
-      className={cn('rounded-md bg-popover p-1 text-popover-foreground shadow-maka-panel outline-none', className)}
-      data-slot="popover-popup"
+    <button
+      type="button"
       {...props}
+      {...popover.triggerProps}
+      ref={composeRefs<HTMLButtonElement>(popover.triggerRef, ref)}
+      data-popup-open={popover.isOpen ? '' : undefined}
+      data-slot="popover-trigger"
+      onClick={(event) => {
+        onClick?.(event);
+        if (!event.defaultPrevented) popover.toggle();
+      }}
     />
   );
 });
+
+/** Layer placement is the native top layer now; this is a pass-through kept for the frozen call shape. */
+export function PopoverPortal({ children }: { children?: React.ReactNode }): React.ReactElement {
+  return <>{children}</>;
+}
+
+const PopoverPositionContext = React.createContext<{ alignment?: 'start' | 'center' | 'end' }>({});
+
+interface PopoverPositionerProps {
+  children?: React.ReactNode;
+  align?: 'start' | 'center' | 'end';
+  /** Ignored: Astryx owns the anchor gap. Kept so frozen call sites stay valid. */
+  sideOffset?: number;
+}
+
+export function PopoverPositioner({ children, align }: PopoverPositionerProps): React.ReactElement {
+  const value = React.useMemo(() => ({ alignment: align }), [align]);
+  return <PopoverPositionContext.Provider value={value}>{children}</PopoverPositionContext.Provider>;
+}
+
+const POPOVER_FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+
+interface PopoverPopupProps extends React.HTMLAttributes<HTMLDivElement> {
+  /** Lands initial focus on a specific element instead of the first focusable one. */
+  initialFocus?: React.RefObject<HTMLElement | null>;
+}
+
+export function PopoverPopup({ className, initialFocus, children, ...props }: PopoverPopupProps): React.ReactNode {
+  const { popover, notifySettled } = usePopoverContext('PopoverPopup');
+  const { alignment } = React.useContext(PopoverPositionContext);
+  const { isOpen, contentRef } = popover;
+  React.useEffect(() => {
+    if (!isOpen) return;
+    // rAF: the native popover is shown synchronously, but focus waits a frame
+    // so the popup has painted and scroll-into-view measures real boxes.
+    const frame = requestAnimationFrame(() => {
+      const target =
+        initialFocus?.current ?? contentRef.current?.querySelector<HTMLElement>(POPOVER_FOCUSABLE);
+      target?.focus();
+      notifySettled(true);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [isOpen, initialFocus, contentRef, notifySettled]);
+  return popover.render(
+    <div className={cn(className)} data-slot="popover-popup" {...props}>
+      {children}
+    </div>,
+    { placement: 'below', alignment },
+  );
+}
 
 // =============================================================
 // Field + Form

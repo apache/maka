@@ -94,6 +94,7 @@ export function TimePicker(props: TimePickerProps): ReactElement {
       open={open}
       onOpenChange={setOpen}
       onOpenChangeComplete={(isOpen) => setSettled(isOpen)}
+      label={props.ariaLabel}
     >
       <PopoverTrigger
         aria-label={props.ariaLabel}

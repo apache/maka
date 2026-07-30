@@ -43,3 +43,30 @@ test('tooltip opens on hover in the top layer and dismisses on Escape', async ({
   await expect(tooltip).toBeHidden();
 });
 
+test('time-picker popover traps focus on the selected hour and restores the trigger on Escape', async ({
+  window: page,
+}) => {
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  await page.getByRole('button', { name: '设置' }).click();
+  const settings = page.getByRole('main', { name: '设置内容' });
+  await settings.getByRole('button', { name: '每日回顾', exact: true }).click();
+
+  const trigger = settings.getByRole('button', { name: '每日回顾执行时间' });
+  await expect(trigger).toBeVisible();
+  await expect(trigger).toBeEnabled();
+
+  await trigger.click();
+  const dialog = page.getByRole('dialog', { name: '每日回顾执行时间' });
+  await expect(dialog).toBeVisible();
+
+  // Initial focus lands on the *selected* hour (08 from the default 08:00),
+  // not the first row — the `initialFocus` contract the old Base UI popup
+  // honored and the Astryx-backed PopoverPopup must keep honoring.
+  const selectedHour = dialog.getByRole('listbox', { name: '时' }).getByRole('option', { name: '08' });
+  await expect(selectedHour).toBeFocused();
+
+  // Escape closes the popover and hands focus back to the trigger.
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(trigger).toBeFocused();
+});
