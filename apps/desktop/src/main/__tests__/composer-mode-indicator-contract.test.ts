@@ -50,7 +50,7 @@ describe('composer active-mode indicator visual contract', () => {
   it('shares the composer picker footprint and hover treatment without a private geometry path', async () => {
     const cssRules = rules(await readFile(COMPOSER_CSS, 'utf8'));
     const baseSelectors = [
-      '.maka-composer-left-controls [data-slot="select-trigger"]',
+      '.maka-composer-left-controls .permissionModeSelector',
       '.maka-composer-right-controls .maka-model-switcher-trigger',
       '.maka-composer-model-chip',
       '.maka-composer-mode-indicator',
@@ -75,7 +75,7 @@ describe('composer active-mode indicator visual contract', () => {
     );
 
     const hoverSelectors = [
-      '.maka-composer-left-controls [data-slot="select-trigger"]:hover',
+      '.maka-composer-left-controls .permissionModeSelector:hover',
       '.maka-composer-right-controls .maka-model-switcher-trigger:hover:not(:disabled):not([data-disabled])',
       '.maka-composer-model-chip:hover',
       '.maka-composer-mode-indicator:hover:not(:disabled)',

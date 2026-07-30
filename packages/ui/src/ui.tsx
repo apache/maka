@@ -8,10 +8,10 @@ import { RadioGroup as BaseRadioGroup } from '@base-ui/react/radio-group';
 import { Switch as BaseSwitch } from '@base-ui/react/switch';
 import { Toggle as BaseToggle } from '@base-ui/react/toggle';
 import { ToggleGroup as BaseToggleGroup } from '@base-ui/react/toggle-group';
-import { Select as BaseSelect } from '@base-ui/react/select';
 import { usePopover, type UsePopoverReturn } from '@astryxdesign/core/Popover';
+import { Selector } from '@astryxdesign/core/Selector';
 import { mergeRefs } from '@astryxdesign/core/utils';
-import { Check, ChevronDown, X } from './icons.js';
+import { X } from './icons.js';
 import { cva, type VariantProps } from 'class-variance-authority';
 import { cn } from './utils.js';
 import { inputClasses } from './primitives/input.js';
@@ -229,100 +229,131 @@ export const AlertDialogContent = createModalContent({
 // maka-tab + the correct data-active attribute.
 export { Tabs as TabsRoot, TabsList, TabsTab as TabsTrigger, TabsPanel } from './primitives/tabs.js';
 
-export const SelectRoot = BaseSelect.Root;
+interface LegacySelectItem {
+  value: string;
+  label?: string;
+}
+
+interface LegacySelectContextValue {
+  value: string | null;
+  items: LegacySelectItem[];
+  disabled?: boolean;
+  setValue(value: string): void;
+}
+
+const LegacySelectContext =
+  React.createContext<LegacySelectContextValue | null>(null);
+
+/**
+ * Frozen compound Select compatibility shell.
+ *
+ * All Maka call sites use SettingsSelect/PermissionModeSelect, where Astryx
+ * Selector owns the full implementation. These exports remain append-only
+ * API compatibility: the trigger renders that same Astryx authority and the
+ * retired popup marker components contribute no second listbox or layer.
+ */
+export function SelectRoot(props: {
+  children?: React.ReactNode;
+  value?: string | null;
+  defaultValue?: string | null;
+  items?: LegacySelectItem[];
+  disabled?: boolean;
+  onValueChange?(value: string | null): void;
+}) {
+  const [uncontrolledValue, setUncontrolledValue] = React.useState(
+    props.defaultValue ?? null,
+  );
+  const controlled = props.value !== undefined;
+  const value = controlled ? props.value ?? null : uncontrolledValue;
+  const context = React.useMemo<LegacySelectContextValue>(
+    () => ({
+      value,
+      items: props.items ?? [],
+      disabled: props.disabled,
+      setValue(nextValue) {
+        if (!controlled) setUncontrolledValue(nextValue);
+        props.onValueChange?.(nextValue);
+      },
+    }),
+    [controlled, props.disabled, props.items, props.onValueChange, value],
+  );
+  return (
+    <LegacySelectContext.Provider value={context}>
+      {props.children}
+    </LegacySelectContext.Provider>
+  );
+}
+
 export const SelectTrigger = forwardRef<
   HTMLButtonElement,
-  React.ComponentPropsWithoutRef<typeof BaseSelect.Trigger> & { appearance?: PickerTriggerAppearance }
+  React.ButtonHTMLAttributes<HTMLButtonElement> & {
+    appearance?: PickerTriggerAppearance;
+  }
 >(function SelectTrigger(
-  { appearance = 'field', className, children, ...props },
-  ref,
+  { appearance: _appearance = 'field', className, children: _children, ...props },
+  _ref,
 ) {
+  const context = React.useContext(LegacySelectContext);
+  if (!context) throw new Error('SelectTrigger must be used inside SelectRoot');
+  const label =
+    props['aria-label'] ??
+    context.items.find((item) => item.value === context.value)?.label ??
+    '';
   return (
-    <BaseSelect.Trigger
-      ref={ref}
-      className={cn(pickerTriggerClasses(appearance), 'justify-between', className)}
-      data-slot="select-trigger"
-      {...props}
-    >
-      {children}
-      <BaseSelect.Icon>
-        <ChevronDown size={14} aria-hidden="true" />
-      </BaseSelect.Icon>
-    </BaseSelect.Trigger>
+    <Selector
+      label={String(props['aria-label'] ?? label)}
+      isLabelHidden
+      value={context.value ?? undefined}
+      placeholder={label}
+      options={context.items}
+      onChange={context.setValue}
+      isDisabled={context.disabled ?? props.disabled}
+      className={className}
+    />
   );
 });
 
-export const SelectValue = BaseSelect.Value;
-export const SelectPortal = BaseSelect.Portal;
-/**
- * The overlay layer belongs on the POSITIONER, not the popup.
- *
- * Base UI renders the popup `position: static` inside an absolutely
- * positioned positioner. `z-index` has no effect on a static box, so the
- * layer that used to sit on `SelectPopup` was inert; what actually kept
- * settings selects above the modal was `.settingsSelectPositioner`
- * (styles/settings/select.css), applied by hand at each call site. Any
- * call site that forgot it portalled a popup that paints *below* the
- * `.settingsModal` layer — invisible, and unclickable because the modal
- * wins the hit-test. Settings → 通用 → 默认权限模式 shipped that way and
- * read as "clicking does nothing at all".
- *
- * Carrying the layer here makes it structural: every Select consumer
- * gets it by construction instead of by remembering a class name.
- */
-export const SelectPositioner = forwardRef<HTMLDivElement, React.ComponentPropsWithoutRef<typeof BaseSelect.Positioner>>(function SelectPositioner(
-  { className, ...props },
-  ref,
-) {
-  return <BaseSelect.Positioner ref={ref} className={cn('z-[var(--z-overlay)]', className)} data-slot="select-positioner" {...props} />;
-});
-export const SelectPopup = forwardRef<HTMLDivElement, React.ComponentPropsWithoutRef<typeof BaseSelect.Popup>>(function SelectPopup(
-  { className, ...props },
-  ref,
-) {
-  return <BaseSelect.Popup ref={ref} className={cn('min-w-40 rounded-md bg-popover p-1 text-popover-foreground shadow-maka-panel', className)} data-slot="select-popup" {...props} />;
-});
-export const SelectGroup = forwardRef<HTMLDivElement, React.ComponentPropsWithoutRef<typeof BaseSelect.Group>>(function SelectGroup(
-  { className, ...props },
-  ref,
-) {
-  return <BaseSelect.Group ref={ref} className={cn('py-1', className)} data-slot="select-group" {...props} />;
-});
-export const SelectGroupLabel = forwardRef<HTMLDivElement, React.ComponentPropsWithoutRef<typeof BaseSelect.GroupLabel>>(function SelectGroupLabel(
-  { className, ...props },
-  ref,
-) {
-  return <BaseSelect.GroupLabel ref={ref} className={cn('px-2 py-1 text-xs font-medium text-foreground-secondary', className)} data-slot="select-group-label" {...props} />;
-});
-export const SelectSeparator = forwardRef<HTMLDivElement, React.ComponentPropsWithoutRef<typeof BaseSelect.Separator>>(function SelectSeparator(
-  { className, ...props },
-  ref,
-) {
-  return <BaseSelect.Separator ref={ref} className={cn('my-1 h-px bg-border', className)} data-slot="select-separator" {...props} />;
-});
+export function SelectValue(props: {
+  children?: React.ReactNode | ((value: string) => React.ReactNode);
+}) {
+  const context = React.useContext(LegacySelectContext);
+  if (!context?.value) return null;
+  return typeof props.children === 'function'
+    ? props.children(context.value)
+    : props.children;
+}
 
-export const SelectItem = forwardRef<HTMLDivElement, React.ComponentPropsWithoutRef<typeof BaseSelect.Item>>(function SelectItem(
-  { className, children, ...props },
-  ref,
+export function SelectPortal(_props: { children?: React.ReactNode }) {
+  return null;
+}
+
+export function SelectPositioner(_props: React.HTMLAttributes<HTMLDivElement>) {
+  return null;
+}
+
+export function SelectPopup(_props: React.HTMLAttributes<HTMLDivElement>) {
+  return null;
+}
+
+export function SelectGroup(_props: React.HTMLAttributes<HTMLDivElement>) {
+  return null;
+}
+
+export function SelectGroupLabel(
+  _props: React.HTMLAttributes<HTMLDivElement>,
 ) {
-  return (
-    <BaseSelect.Item
-      ref={ref}
-      className={cn('grid cursor-default grid-cols-[1rem_1fr] items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none data-[highlighted]:bg-muted data-[selected]:text-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50', className)}
-      data-slot="select-item"
-      {...props}
-    >
-      <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
-        <BaseSelect.ItemIndicator>
-          <Check size={13} aria-hidden="true" />
-        </BaseSelect.ItemIndicator>
-      </span>
-      <span className="min-w-0">
-        <BaseSelect.ItemText>{children}</BaseSelect.ItemText>
-      </span>
-    </BaseSelect.Item>
-  );
-});
+  return null;
+}
+
+export function SelectSeparator(_props: React.HTMLAttributes<HTMLDivElement>) {
+  return null;
+}
+
+export function SelectItem(
+  _props: React.HTMLAttributes<HTMLDivElement> & { value: string },
+) {
+  return null;
+}
 
 /**
  * Popover — the anchored-surface primitive for pickers that are NOT a

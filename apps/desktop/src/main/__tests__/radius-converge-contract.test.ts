@@ -289,13 +289,11 @@ const COMPONENT_RADIUS: ComponentRadiusCheck[] = [
   // shape on the control-tier Button — both tiers must stay present.
   { file: 'packages/ui/src/ui.tsx', name: 'buttonVariants', tier: 'control', alsoTiers: ['pill'] },
   { file: 'packages/ui/src/primitives/input.tsx', name: 'inputClasses', tier: 'control' },
-  { file: 'packages/ui/src/ui.tsx', name: 'SelectItem', tier: 'control' },
   { file: 'packages/ui/src/ui.tsx', name: 'Toggle', tier: 'control' },
   // #520 PR9: legacy ui.tsx badgeVariants retired onto primitives/badge.tsx.
   // DialogPopup/AlertDialogPopup were merged into createModalContent (PR6
   // review P3.1); the modal popup class now lives in MODAL_POPUP_CLASS.
   { file: 'packages/ui/src/ui.tsx', name: 'MODAL_POPUP_CLASS', tier: 'modal' },
-  { file: 'packages/ui/src/ui.tsx', name: 'SelectPopup', tier: 'surface' },
   { file: 'packages/ui/src/ui.tsx', name: 'ToggleGroup', tier: 'surface' },
   // TabsTrigger/TabsList were dropped from this table when #499 P0-3 moved
   // them to primitives/tabs.tsx, on the stated grounds that they became

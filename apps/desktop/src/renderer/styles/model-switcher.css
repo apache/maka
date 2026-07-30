@@ -139,19 +139,6 @@
   font-size: var(--font-size-caption); font-weight: var(--font-weight-semibold); line-height: var(--leading-snug); flex: 0 0 auto;
 }
 
-/* Model picker (ModelPicker combobox) — relocated from settings-select.css — issue #546 PR1. */
-/* Model picker (`ModelPicker` in `@maka/ui`): a Combobox-backed variant of
-   the grouped select above, with a search `<input>` pinned above the list so
-   long catalogs (dozens of models across many connections) stay findable.
-   Reuses every `.settingsSelectMenu*` row/heading/logo rule as-is — only the
-   search bar and empty state are new. */
-.modelPickerPopup {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  overflow: hidden;
-}
-
 .modelPickerSearchInput {
   flex: 0 0 auto;
   height: var(--h-control-md);

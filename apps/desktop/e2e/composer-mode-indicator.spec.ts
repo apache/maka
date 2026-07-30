@@ -48,7 +48,7 @@ test('Plan and Swarm indicators match composer controls and close directly', asy
   await expect(page.getByText(/Fake backend received: open composer/)).toBeVisible();
 
   const permissionTrigger = page.locator(
-    '.maka-composer-left-controls [data-slot="select-trigger"]',
+    '.maka-composer-left-controls .permissionModeSelector',
   );
   await expect(permissionTrigger).toBeVisible();
 

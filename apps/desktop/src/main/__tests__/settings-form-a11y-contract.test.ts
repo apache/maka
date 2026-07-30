@@ -131,7 +131,10 @@ describe('Settings form accessibility labels', () => {
     const styles = await readRendererContractCss();
 
     assert.match(settings, /SettingsSelect,/);
-    assert.match(settingsSelect, /SelectItem,[\s\S]*SelectPopup,[\s\S]*SelectPortal,[\s\S]*SelectPositioner,[\s\S]*SelectRoot,[\s\S]*SelectTrigger,[\s\S]*SelectValue,/);
+    assert.match(
+      settingsSelect,
+      /import \{[\s\S]*\bSelector\b[\s\S]*\bSelectorOption\b[\s\S]*\} from '@astryxdesign\/core\/Selector';/,
+    );
     assert.match(
       passwordInput,
       /import \{[^}]*\bIconButton\b[^}]*\bInput\b[^}]*\buseMountedRef\b[^}]*\buseToast\b[^}]*\buseUiLocale\b[^}]*\} from '@maka\/ui';/,
@@ -143,12 +146,8 @@ describe('Settings form accessibility labels', () => {
       assert.ok(providersPanelUiImports.includes(name), `Providers provider files should import ${name} from @maka/ui`);
     }
     assert.match(settingsSelect, /export function SettingsSelect<T extends string>/);
-    assert.match(settingsSelect, /<SelectPositioner alignItemWithTrigger=\{false\} sideOffset=\{6\} className="settingsSelectPositioner">/);
-    assert.match(
-      styles,
-      /\.settingsSelectPositioner\s*\{[\s\S]*z-index:\s*var\(--z-overlay\);[\s\S]*\}/,
-      'SettingsSelect popups must share the overlay layer so visible options stay clickable above Settings rows, modals, and the Composer.',
-    );
+    assert.match(settingsSelect, /<Selector[\s\S]*isLabelHidden[\s\S]*options=\{options\}/);
+    assert.doesNotMatch(settingsSelect, /SelectPositioner|SelectPortal|@base-ui\/react/);
 
     // ThemeSettingsPage uses native <button> on purpose for the radio-card
     // pickers (mode / palette): the cards are a custom grid with a preview
@@ -182,14 +181,14 @@ describe('Settings form accessibility labels', () => {
     ] as const) {
       assert.doesNotMatch(source, /<input\b/, `${path} must use the shared Input primitive for Settings text fields`);
       assert.doesNotMatch(source, /<textarea\b/, `${path} must use the shared Textarea primitive for Settings text areas`);
-      assert.doesNotMatch(source, /<select\b/, `${path} must use the Base UI Select primitive for Settings selects`);
+      assert.doesNotMatch(source, /<select\b/, `${path} must use the Astryx Selector primitive for Settings selects`);
       assert.doesNotMatch(source, /<button\b/, `${path} must use the shared Button primitive for Settings buttons`);
       assert.doesNotMatch(source, /className="maka-button/, `${path} must not keep legacy maka-button styling on migrated actions`);
     }
 
     assert.doesNotMatch(providersPanel, /<input\b/, 'ProvidersPanel must use the shared Input primitive for Settings text fields');
     assert.doesNotMatch(providersPanel, /<textarea\b/, 'ProvidersPanel must use the shared Textarea primitive for Settings text areas');
-    assert.doesNotMatch(providersPanel, /<select\b/, 'ProvidersPanel must use the Base UI Select primitive for Settings selects');
+    assert.doesNotMatch(providersPanel, /<select\b/, 'ProvidersPanel must use the Astryx Selector primitive for Settings selects');
     assert.doesNotMatch(providersPanel, /className="maka-button/, 'ProvidersPanel governed Buttons must not layer the legacy maka-button class (inert under the @maka/ui Button utilities, so it is dead weight)');
     assert.match(providersPanel, /aria-label=\{copy\.searchModels\}/);
     assert.match(providersPanel, /className="providerModelChoiceList"\s+aria-label=\{copy\.modelListAria\}/);

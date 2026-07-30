@@ -149,3 +149,21 @@ test('time-picker popover owns focus placement and every dismiss path', async ({
   await page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
 });
+
+test('model picker only exposes a rendered active descendant', async ({
+  window: page,
+}) => {
+  await page.getByRole('button', { name: /选择新对话模型/ }).click();
+
+  const search = page.getByRole('combobox', { name: '搜索模型' });
+  await expect(search).toBeFocused();
+
+  await search.fill('no-such-model');
+  await expect(page.getByText('没有匹配的模型')).toBeVisible();
+  await expect(search).not.toHaveAttribute('aria-activedescendant');
+
+  await search.fill('sonnet');
+  const activeDescendant = await search.getAttribute('aria-activedescendant');
+  expect(activeDescendant).not.toBeNull();
+  await expect(page.locator(`#${activeDescendant}`)).toHaveRole('option');
+});

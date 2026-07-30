@@ -95,8 +95,7 @@ const CONTROL_HEIGHT: ControlHeightCheck[] = [
   // sidebars share one row rhythm (PR settings-rows-convergence).
   { selector: '.settingsBackButton', props: ['height', 'min-height'], token: '--h-control-lg' },
   { selector: '.settingsNavItem', props: ['height', 'min-height'], token: '--h-control-lg' },
-  { selector: '.settingsSelectTrigger', props: ['height'], token: '--h-control-lg' },
-  { selector: '.settingsSelectMenuPopup [role="option"]', props: ['min-height'], token: '--h-control-lg' },
+  { selector: '.modelPickerOption', props: ['min-height'], token: '--h-control-lg' },
   { selector: '.maka-model-switcher-trigger', props: ['height'], token: '--h-control-sm' },
   // chat-header / palette controls
   { selector: '.maka-chat-jump-bottom', props: ['width', 'height'], token: '--h-control-md' },

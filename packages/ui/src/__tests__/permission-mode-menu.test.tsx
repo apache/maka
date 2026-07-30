@@ -23,8 +23,12 @@ describe('Permission mode surface', () => {
       const markup = render(locale, 'explore');
 
       assert.match(markup, new RegExp(escapeRegExp(escapeMarkup(meta.explore.label))));
-      assert.match(markup, new RegExp(escapeRegExp(escapeMarkup(meta.explore.hint))));
-      assert.doesNotMatch(markup, new RegExp(escapeRegExp(escapeMarkup(meta.ask.hint))));
+      assert.match(
+        markup,
+        new RegExp(
+          `role="combobox"[^>]*aria-description="${escapeRegExp(escapeMarkup(meta.explore.hint))}"`,
+        ),
+      );
     }
   });
 
@@ -45,18 +49,19 @@ describe('Permission mode surface', () => {
     assert.match(render('en', 'bypass'), /Full access/);
   });
 
-  it('carries no Select value when the display state is not one of the options', () => {
-    // The read-only state has no option to select, which the Select must be
-    // told as "no value". Passing an unmatched value instead would leave the
-    // control depending on Base UI treating it as stale and resetting it.
+  it('leaves every Astryx option unselected when the display state is not selectable', () => {
+    // The read-only state has no option to select. Astryx exposes that through
+    // the public listbox contract: the trigger shows the read-only placeholder
+    // while every offered option remains aria-selected=false.
     const readOnly = render('zh', 'explore');
-    assert.match(readOnly, /hidden-input[^>]*value=""/);
-    assert.doesNotMatch(readOnly, /hidden-input[^>]*value="explore"/);
+    assert.match(readOnly, /role="combobox"[^>]*>[\s\S]*?>只读</);
+    assert.equal(readOnly.match(/aria-selected="false"/g)?.length, 2);
+    assert.doesNotMatch(readOnly, /aria-selected="true"/);
 
-    // A state that IS an option still selects it, so the check indicator and
-    // keyboard restore keep working.
-    assert.match(render('zh', 'ask'), /hidden-input[^>]*value="ask"/);
-    assert.match(render('zh', 'bypass'), /hidden-input[^>]*value="bypass"/);
+    // A selectable state marks exactly one option, so the check indicator and
+    // keyboard restore have a stable selected item.
+    assert.equal(render('zh', 'ask').match(/aria-selected="true"/g)?.length, 1);
+    assert.equal(render('zh', 'bypass').match(/aria-selected="true"/g)?.length, 1);
   });
 
   it('never hands the reader the word "sandbox" in a permission label or hint (#1616)', () => {

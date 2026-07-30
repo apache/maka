@@ -43,11 +43,13 @@ describe('model thinking-level picker contract', () => {
     const css = await readModelPickerCss();
 
     assert.match(source, /footer\?\(context: \{ open: boolean; close\(\): void \}\): ReactNode;/, 'ModelPicker must expose a static footer slot');
-    assert.match(source, /<BaseCombobox\.List className="modelPickerList">/, 'only the model rows render in the Base UI Combobox list');
-    assert.match(source, /props\.footer\?\.\(\{[\s\S]*open,[\s\S]*close: \(\) => \{[\s\S]*setOpen\(false\);[\s\S]*setQuery\(''\);/, 'closing through the footer must clear the search query');
+    assert.match(source, /role="listbox"[\s\S]*className="modelPickerList"/, 'only the model rows render in the Astryx-backed listbox');
+    assert.match(source, /const close = useCallback\(\(\) => \{[\s\S]*hide\(\);[\s\S]*setQuery\(''\);/, 'closing through the footer must hide the native popover and clear the search query');
+    assert.match(source, /props\.footer\?\.\(\{ open: isOpen, close \}\)/, 'the footer receives the live native-popover state and close action');
     assert.equal(source.match(/footer=\{\(\{ open, close \}\) => \(/g)?.length, 2, 'both model pickers must render the thinking section through ModelPicker footer');
-    assert.doesNotMatch(source, /<SelectPopup className="settingsSelectMenuPopup">/, 'model pickers should not use the generic scrolling select popup directly');
-    assert.doesNotMatch(source, /<SelectList>/, 'model pickers should not let the generic SelectList own this popup scroll');
+    assert.match(source, /useCombobox[\s\S]*@astryxdesign\/core\/Selector/, 'Astryx must own combobox keyboard and selection behavior');
+    assert.match(source, /usePopover[\s\S]*@astryxdesign\/core\/Popover/, 'Astryx must own popup positioning and dismissal');
+    assert.doesNotMatch(source, /@base-ui\/react\/combobox|BaseCombobox/, 'the replaced Base UI combobox path must be absent');
 
     assert.match(
       css,
@@ -85,17 +87,17 @@ describe('model thinking-level picker contract', () => {
     assert.doesNotMatch(source, /createPortal/, 'no manual portal — MenuPortal does it');
   });
 
-  it('does not swallow ordinary outside presses while protecting clicks inside the portaled thinking flyout', async () => {
+  it('uses native light-dismiss without retaining the Base UI outside-press patch', async () => {
     const source = await readModelPickerSources();
 
+    assert.match(source, /usePopover\(\{[\s\S]*hasLightDismiss:\s*true/, 'the host picker must use Astryx native light dismiss');
     assert.doesNotMatch(
       source,
       /if \(!open && details\.reason === 'outside-press'\) return;/,
       'model pickers must not make every outside press a no-op; ordinary outside clicks should close the picker',
     );
-    assert.match(source, /target\.closest\('\[data-model-picker-nested-popup\]'\)/, 'outside-press protection must be target-specific to nested portaled popups');
-    assert.match(source, /data-model-picker-nested-popup=""/, 'the thinking flyout marks itself as a nested model-picker popup');
-    assert.match(source, /details\.cancel\(\);/, 'guarded flyout presses should cancel Base UI closing instead of ignoring all outside presses');
+    assert.doesNotMatch(source, /target\.closest\('\[data-model-picker-nested-popup\]'\)/, 'native popover nesting must not retain a target-specific Base UI patch');
+    assert.doesNotMatch(source, /details\.cancel\(\);/, 'no Base UI outside-press cancellation should remain');
   });
 
   it('closes the host model menu after a thinking-level choice commits', async () => {

@@ -316,12 +316,11 @@ describe('issue #406 design-system governance contract', () => {
   it('keeps core visual surfaces on shadow rings instead of hard borders', async () => {
     const ui = await readUiSource();
     const styles = await readFile(resolve(REPO_ROOT, 'apps/desktop/src/renderer/styles.css'), 'utf8');
-    const dialogClass = ui.match(/className=\{cn\(\s*'([^']*shadow-maka-panel[^']*)'/)?.[1] ?? '';
-    const selectClass = ui.match(/SelectPopup[\s\S]*?className=\{cn\('([^']*shadow-maka-panel[^']*)'/)?.[1] ?? '';
+    const dialogClass = ui.match(/const MODAL_POPUP_CLASS =\s*'([^']*shadow-maka-panel[^']*)'/)?.[1] ?? '';
     const panelShadow = styles.match(/--shadow-maka-panel:\s*([^;]+);/)?.[1] ?? '';
 
     assert.match(panelShadow, /0\s+0\s+0\s+1px\s+var\(--border\)/);
-    for (const [name, className] of [['DialogPopup', dialogClass], ['SelectPopup', selectClass]] as const) {
+    for (const [name, className] of [['DialogPopup', dialogClass]] as const) {
       assert.ok(className.includes('shadow-maka-panel'), `${name} must keep the shadow-ring recipe`);
       assert.ok(!/\bborder\b|\bborder-border\b/.test(className), `${name} must not use a hard visual border`);
     }

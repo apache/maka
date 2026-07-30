@@ -114,69 +114,23 @@ describe('PR-FE-BUG-HUNT-9 z-index contract', () => {
     }
   });
 
-  it('keeps Select positioners in the overlay layer so popup hit-testing can outrank composer chrome', async () => {
+  it('removes the retired Select positioner layer now that Astryx uses the native top layer', async () => {
     const stripped = stripCssComments(await readAllRendererCss());
-    const positionerRule = stripped.match(/\.settingsSelectPositioner\s*\{[\s\S]*?\}/)?.[0] ?? '';
-
-    assert.notEqual(positionerRule, '', '.settingsSelectPositioner rule not found in renderer CSS');
-    assert.match(
-      positionerRule,
-      /z-index:\s*var\(--z-overlay\)\s*;/,
-      'SettingsSelect positioner must share SelectPopup\'s --z-overlay layer. The positioner creates the root stacking context for portaled selects; if it stays at --z-dropdown, the popup cannot reliably win hit-tests over composer chrome when it opens upward.',
-    );
+    assert.doesNotMatch(stripped, /\.settingsSelectPositioner\s*\{/, 'the Base UI Select positioner recipe must be deleted');
   });
 
-  /**
-   * The rule above only proves the CSS class carries the layer — it says
-   * nothing about whether a given call site remembered to apply it. That
-   * gap shipped a real bug: `PermissionModeSelect` rendered a bare
-   * `<SelectPositioner>`, so Settings → 通用 → 默认权限模式 portalled its
-   * popup *below* the `.settingsModal` layer. The popup was in the DOM
-   * with `aria-expanded="true"`, but invisible and unclickable — the
-   * modal won every hit-test. DOM-level e2e cannot see it; only paint
-   * order can.
-   *
-   * The layer now lives on the wrapped `SelectPositioner` in
-   * `packages/ui/src/ui.tsx`, so every consumer inherits it. This test
-   * pins that, and pins that the layer is NOT written onto the popup —
-   * Base UI renders popups `position: static`, where `z-index` is inert
-   * and reads as protection that isn't there.
-   *
-   * Popover left this contract in #1565 PR 5: it is Astryx-backed and its
-   * surface lives in the native-Popover top layer, which paints above every
-   * z-index by definition — there is no positioner to pin. Select follows in
-   * PR 6, and this test shrinks again then.
-   */
-  it('carries the overlay layer on the positioner wrappers, never on the static popup', async () => {
-    const ui = await readFile(
-      resolve(REPO_ROOT, 'packages', 'ui', 'src', 'ui.tsx'),
-      'utf8',
-    );
-
-    // `[^>]*` keeps each match inside a single self-closing JSX tag, so a
-    // later element's layer can't be mistaken for this one's.
-    const element = (tag: string): string =>
-      ui.match(new RegExp(`<${tag.replace('.', '\\.')}\\b[^>]*/>`))?.[0] ?? '';
-
-    for (const tag of ['BaseSelect.Positioner']) {
-      const el = element(tag);
-      assert.notEqual(el, '', `${tag} wrapper not found in packages/ui/src/ui.tsx`);
-      assert.match(
-        el,
-        /z-\[var\(--z-overlay\)\]/,
-        `${tag} must carry the --z-overlay layer: the popup it wraps is position:static, so a z-index there does nothing and the portalled subtree paints under .settingsModal.`,
-      );
-    }
-
-    for (const tag of ['BaseSelect.Popup']) {
-      const el = element(tag);
-      assert.notEqual(el, '', `${tag} wrapper not found in packages/ui/src/ui.tsx`);
-      assert.doesNotMatch(
-        el,
-        /z-\[var\(--z-overlay\)\]/,
-        `${tag} must NOT carry the overlay layer — it is position:static, so the z-index is inert and only disguises a missing layer on the positioner.`,
-      );
-    }
+  it('Select and Combobox are Astryx-backed with no Base UI or z-layer pin', async () => {
+    const [ui, settingsSelect, permissionMode, modelPicker] = await Promise.all([
+      readFile(resolve(REPO_ROOT, 'packages', 'ui', 'src', 'ui.tsx'), 'utf8'),
+      readFile(resolve(REPO_ROOT, 'packages', 'ui', 'src', 'primitives', 'settings-select.tsx'), 'utf8'),
+      readFile(resolve(REPO_ROOT, 'packages', 'ui', 'src', 'permission-mode-menu.tsx'), 'utf8'),
+      readFile(resolve(REPO_ROOT, 'packages', 'ui', 'src', 'model-picker.tsx'), 'utf8'),
+    ]);
+    const source = `${ui}\n${settingsSelect}\n${permissionMode}\n${modelPicker}`;
+    assert.doesNotMatch(source, /@base-ui\/react\/(?:select|combobox)/);
+    assert.match(source, /@astryxdesign\/core\/Selector/);
+    assert.match(modelPicker, /@astryxdesign\/core\/Popover/);
+    assert.doesNotMatch(source, /z-\[var\(--z-overlay\)\]/);
   });
 
   /**

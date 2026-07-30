@@ -228,12 +228,12 @@ function GeneralDefaultsCard(props: {
           renderProviderMark={(type) => <ProviderLogo type={type} compact />}
           ariaLabel={copy.defaultModel}
           disabled={saving}
-          triggerClassName="settingsSelectTrigger max-w-[320px] w-full"
+          triggerClassName="settingsModelPickerTrigger"
           onValueChange={(value) => {
             void persistDefault(value);
           }}
         >
-          <span className="settingsSelectMenuOption">{selectedLabel}</span>
+          <span className="modelPickerOptionLabel">{selectedLabel}</span>
         </ModelPicker>
       </div>
       <div className="settingsRow" data-control-width="select">
@@ -254,7 +254,6 @@ function GeneralDefaultsCard(props: {
           align="end"
           disabled={savingPermissionMode}
           ariaLabel={copy.defaultPermission}
-          className="settingsSelectTrigger max-w-[320px] w-full justify-between"
         />
       </div>
     </SettingsRows>
