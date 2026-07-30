@@ -63,24 +63,37 @@ export function useClipboardCopyFeedback(resetDelay = 1400, options: { redact?: 
     }, resetDelay);
   }
 
-  async function copy(key: string, text: string) {
-    if (text.length === 0 || pendingCopyRef.current) return;
+  async function attempt(key: string, operation: () => Promise<void>): Promise<boolean> {
+    if (pendingCopyRef.current) return false;
     pendingCopyRef.current = key;
     clearResetTimer();
     setCopyState({ key, phase: 'pending' });
     try {
-      await navigator.clipboard.writeText(options.redact === false ? text : redactSecrets(text));
+      await operation();
       settle(key, 'copied');
+      return true;
     } catch {
       settle(key, 'failed');
+      return false;
     } finally {
       pendingCopyRef.current = null;
     }
+  }
+
+  async function copy(key: string, text: string) {
+    if (text.length === 0) return;
+    const output = options.redact === false ? text : redactSecrets(text);
+    await attempt(key, () => navigator.clipboard.writeText(output));
   }
 
   function phaseFor(key: string): ClipboardCopyPhase | null {
     return copyState?.key === key ? copyState.phase : null;
   }
 
-  return { copy, phaseFor, isPending: copyState?.phase === 'pending' };
+  return {
+    copy,
+    attempt,
+    phaseFor,
+    isPending: copyState?.phase === 'pending',
+  };
 }

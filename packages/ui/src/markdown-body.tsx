@@ -22,7 +22,7 @@ import {
 } from '@astryxdesign/core/Markdown';
 import { trimStreamingArtifacts } from '@astryxdesign/core/Markdown/utils';
 import { Link as AstryxLink } from '@astryxdesign/core/Link';
-import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
+import { Text as AstryxText } from '@astryxdesign/core/Text';
 import {
   isMakaUriCandidate,
   isSafeExternalScheme,
@@ -49,17 +49,49 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
   const copyFeedback = useClipboardCopyFeedback(1400, { redact: false });
   const copyPhase = copyFeedback.phaseFor('code');
 
-  // Astryx 0.1.9 owns this button but discards clipboard rejections. Capture
-  // only its CodeBlock copy action until Astryx exposes an error callback.
+  // Astryx 0.1.9 owns this button and the authoritative `code` value but
+  // discards clipboard rejections. Wrap its next write without stopping the
+  // event, so Astryx keeps its native success state while Maka observes errors.
   function handleClickCapture(event: ReactMouseEvent<HTMLDivElement>) {
     if (!(event.target instanceof Element)) return;
     const button = event.target.closest('button');
     const codeBlock = button?.closest('pre.astryx-codeblock');
     if (!codeBlock || !event.currentTarget.contains(codeBlock)) return;
 
-    event.preventDefault();
-    event.stopPropagation();
-    void copyFeedback.copy('code', readCodeBlockText(codeBlock));
+    const clipboard = navigator.clipboard;
+    const originalDescriptor = Object.getOwnPropertyDescriptor(
+      clipboard,
+      'writeText',
+    );
+    const originalWrite = clipboard.writeText.bind(clipboard);
+    let restored = false;
+
+    function restoreWriteText() {
+      if (restored) return;
+      restored = true;
+      if (originalDescriptor) {
+        Object.defineProperty(clipboard, 'writeText', originalDescriptor);
+      } else {
+        Reflect.deleteProperty(clipboard, 'writeText');
+      }
+    }
+
+    try {
+      Object.defineProperty(clipboard, 'writeText', {
+        configurable: true,
+        value: async (text: string) => {
+          restoreWriteText();
+          const copied = await copyFeedback.attempt(
+            'code',
+            () => originalWrite(text),
+          );
+          if (!copied) throw new Error('Clipboard write failed');
+        },
+      });
+      window.setTimeout(restoreWriteText, 0);
+    } catch {
+      // If the browser forbids wrapping the method, keep Astryx's native path.
+    }
   }
 
   return (
@@ -82,14 +114,6 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
   );
 }
 
-function readCodeBlockText(codeBlock: Element): string {
-  const lines = codeBlock.querySelectorAll<HTMLElement>('[data-line]');
-  if (lines.length > 0) {
-    return Array.from(lines, (line) => line.textContent ?? '').join('\n');
-  }
-  return codeBlock.querySelector('code')?.textContent ?? '';
-}
-
 function MarkdownCodeCopyStatus(props: { phase: ClipboardCopyPhase }) {
   const copy = getSharedUiCopy(useUiLocale()).markdown;
   const label = props.phase === 'pending'
@@ -98,14 +122,16 @@ function MarkdownCodeCopyStatus(props: { phase: ClipboardCopyPhase }) {
       ? copy.copiedCode
       : copy.copyCodeFailed;
   return (
-    <VisuallyHidden
+    <AstryxText
       as="div"
+      type="supporting"
+      display="block"
       role="status"
       aria-live="polite"
       data-copy-feedback={props.phase}
     >
       {label}
-    </VisuallyHidden>
+    </AstryxText>
   );
 }
 

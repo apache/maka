@@ -29,6 +29,8 @@ test('copies Markdown code and reports a clipboard failure', async ({ window: pa
     '',
     '```ts',
     'const answer = 42;',
+    '',
+    'return answer;',
     '```',
   ].join('\n'));
   await composer.press('Enter');
@@ -48,10 +50,14 @@ test('copies Markdown code and reports a clipboard failure', async ({ window: pa
   });
 
   await codeBlock.getByRole('button', { name: '复制代码' }).click();
+  await expect(codeBlock.getByRole('button', { name: '已复制代码' })).toBeVisible();
+  await expect(copyStatus).toBeVisible();
   await expect(copyStatus).toHaveText('已复制代码');
   expect(await page.evaluate(
     () => (window as typeof window & { __copiedCode?: string }).__copiedCode,
-  )).toBe('const answer = 42;');
+  )).toBe('const answer = 42;\n\nreturn answer;');
+
+  await expect(codeBlock.getByRole('button', { name: '复制代码' })).toBeVisible();
 
   await page.evaluate(() => {
     Object.defineProperty(navigator.clipboard, 'writeText', {
@@ -63,5 +69,6 @@ test('copies Markdown code and reports a clipboard failure', async ({ window: pa
   });
 
   await codeBlock.getByRole('button', { name: '复制代码' }).click();
+  await expect(copyStatus).toBeVisible();
   await expect(copyStatus).toHaveText('复制代码失败');
 });
