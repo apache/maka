@@ -44,6 +44,7 @@ test('copies Markdown code and reports a clipboard failure', async ({ window: pa
   );
   await expect(codeBlock).toBeVisible();
   await expect(page.getByRole('button', { name: '重新生成' })).toBeVisible();
+  await expect(page.locator('.maka-bubble-streaming')).toHaveCount(0);
   await page.evaluate(() => {
     Object.defineProperty(navigator.clipboard, 'writeText', {
       configurable: true,
