@@ -537,6 +537,11 @@ function emitRealWindowSmokeDiagnostic(stage: string): void {
     isResizable: target.isResizable(),
     isMovable: target.isMovable(),
     isModal: target.isModal(),
+    // A hidden dock icon makes the run an accessory app: the window still
+    // takes clicks and keyboard focus, but it has no Dock tile and no
+    // Cmd+Tab entry, so a reviewer who switches away cannot switch back.
+    // null on platforms without a dock.
+    dockVisible: process.platform === 'darwin' ? (app.dock?.isVisible() ?? null) : null,
     webContentsUrl: target.webContents.getURL(),
   };
   target.webContents

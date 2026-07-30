@@ -586,6 +586,9 @@ const resolveDesktopSkillHost: HostCapabilitiesResolver = ({ sessionId }) =>
 // BeginFrames on Linux, which stalls content-visibility inflation and any
 // frame-paced E2E protocol (measured in the scroll-geometry climb: 38 frames
 // over 31s). The E2E harness sets it, not the workflow — see fixtures.ts.
+// This value is also what hides the macOS dock icon (see app-lifecycle.ts):
+// staying out of sight and staying out of the Dock are one decision, so a run
+// that opts into a visible window also opts back into Dock and Cmd+Tab.
 const startHidden = (Boolean(e2eFixture) || isIsolatedE2e)
   && process.env.MAKA_E2E_SHOW_WINDOW !== '1';
 let onMainWindowClose = (): void => {};
@@ -1407,6 +1410,7 @@ registerIpc();
 
 wireAppLifecycle({
   isIsolatedE2e,
+  startHidden,
   e2eFixture,
   workspaceRoot,
   sessionStore: store,

@@ -52,6 +52,11 @@ export const PROGRAMMATIC_SMOKE_CHECKS = [
     id: 'programmatic-no-error-boundary',
     prompt: 'Renderer does not show the React ErrorBoundary surface.',
   },
+  {
+    id: 'programmatic-dock-visible',
+    prompt:
+      'macOS: the app keeps its Dock tile, so a reviewer who switches away can switch back via Dock or Cmd+Tab.',
+  },
 ];
 
 export const REAL_WINDOW_SMOKE_CHECKS = [
@@ -421,6 +426,16 @@ function buildProgrammaticResults(args, diagnostics) {
       check: PROGRAMMATIC_SMOKE_CHECKS[5],
       ok: renderer.errorBoundaryPresent === false,
       note: `errorBoundaryPresent=${renderer.errorBoundaryPresent ?? 'unknown'}`,
+    },
+    {
+      check: PROGRAMMATIC_SMOKE_CHECKS[6],
+      // Only macOS has a dock; elsewhere the diagnostic reports null and the
+      // check is vacuously satisfied.
+      ok: process.platform !== 'darwin' || diagnostic?.dockVisible === true,
+      note:
+        process.platform === 'darwin'
+          ? `dockVisible=${diagnostic?.dockVisible ?? 'unknown'}`
+          : `skipped on ${process.platform}`,
     },
   ];
   return checks.map(({ check, ok, note }) => ({

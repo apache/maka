@@ -42,6 +42,10 @@ import { resumeSafeBoundaryContinuationsOnStartup } from './startup-safe-boundar
 type AssembledTools = ReturnType<typeof assembleDesktopTools>;
 export interface AppLifecycleDeps {
   isIsolatedE2e: boolean;
+  // Whether this run stays out of the developer's way. main.ts owns the
+  // condition; the dock icon follows it so window visibility and dock
+  // presence can never drift apart.
+  startHidden: boolean;
   e2eFixture: ReturnType<typeof resolveE2eFixture>;
   workspaceRoot: string;
   sessionStore: ReturnType<typeof createSessionStore>;
@@ -95,6 +99,7 @@ export interface AppLifecycleDeps {
 export function wireAppLifecycle(deps: AppLifecycleDeps): void {
   const {
     isIsolatedE2e,
+    startHidden,
     e2eFixture,
     workspaceRoot,
     sessionStore,
@@ -203,11 +208,19 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     // builds get the icon via .app bundle Info.plist; this covers the
     // dev path.
     if (process.platform === 'darwin' && app.dock) {
-      if (process.env.MAKA_E2E_FIXTURE || isIsolatedE2e) {
+      if (startHidden) {
         // PR-VISUAL-SMOKE-HEADLESS: hide the dock icon so the spawned
         // Electron runs as an accessory app — no dock bounce, and it
         // never becomes frontmost / steals focus from the developer's
         // active window during a capture run or an E2E run.
+        //
+        // Keyed off the same startHidden that decides whether the window
+        // shows at all, so MAKA_E2E_SHOW_WINDOW opts out of both together.
+        // A fixture window someone asked to see is clickable either way,
+        // but as an accessory app it has no Dock tile and no Cmd+Tab
+        // entry — switch away during a manual review and there is no way
+        // back. Capture and CI runs leave the variable unset and keep the
+        // accessory behavior.
         app.dock.hide();
       } else {
         try {
