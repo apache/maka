@@ -104,7 +104,7 @@ test('Desktop isolation gate does not enable FakeBackend', () => {
   );
   assert.match(
     main,
-    /projectEffectiveProductToolSurface\(\{[\s\S]*policy: \{ economy: toolEconomy \}/,
+    /const productToolSurface = projectEffectiveProductToolSurface\(\{[\s\S]*?policy:\s*\{[\s\S]*?economy: toolEconomy,[\s\S]*?editingProtocol: input\.header\.editingProtocol \?\? 'edit_write'/,
   );
   assert.doesNotMatch(main, /if \(isComputerUseRealModelE2e\) \{[\s\S]*backends\.register\('fake'/);
 });
