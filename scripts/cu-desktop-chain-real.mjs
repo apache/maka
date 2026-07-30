@@ -18,7 +18,8 @@
 import { _electron as electron } from 'playwright';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { writeFile, mkdir } from 'node:fs/promises';
+import { writeFile, mkdir, mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -84,6 +85,36 @@ async function windowInventory(app) {
 }
 
 await mkdir(OUT, { recursive: true });
+
+// Rule out the one piece of machine state that changes every accessibility
+// tree at once, before anything else runs.
+//
+// With the screen locked the window server stops exposing window contents, so
+// every app observes as its menu bar and nothing else — a tree indistinguishable
+// from an app that genuinely has no controls. Read that way it cost most of an
+// afternoon and one pull request built on the wrong diagnosis. It is one
+// syscall to rule out, so it is ruled out first.
+{
+  const probe = join(await mkdtemp(join(tmpdir(), 'cu-lock-')), 'probe.swift');
+  await writeFile(
+    probe,
+    'import CoreGraphics\nimport Foundation\n' +
+      'let d = CGSessionCopyCurrentDictionary() as? [String: Any]\n' +
+      'print((d?["CGSSessionScreenIsLocked"] as? Int) == 1 ? "locked" : "unlocked")\n',
+    'utf8',
+  );
+  const { stdout } = await exec('swift', [probe], { timeout: 90_000 }).catch(() => ({
+    stdout: '',
+  }));
+  if (stdout.trim() === 'locked') {
+    console.log(
+      'the screen is locked. Computer Use refuses to observe a locked screen, and an\n' +
+        'unguarded observation returns a menu-only tree that reads like an app with no\n' +
+        'controls. Unlock and re-run.',
+    );
+    process.exit(2);
+  }
+}
 
 // The target must be running and in the background before anything starts:
 // Computer Use exists to drive what the user is not looking at.
