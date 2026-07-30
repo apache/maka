@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { createServer, request as httpRequest } from 'node:http';
+import { createSecureServer as http2CreateSecureServer } from 'node:http2';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
+  createProviderUpstreamDispatcher,
   listenProviderAuthProxyServer,
   startProviderAuthProxy,
   startProviderAuthProxyHub,
@@ -1068,5 +1070,85 @@ test('proxy listen removes its bind-error listener so later socket errors stay l
     assert.equal(server.listenerCount('error'), 0);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+// Throwaway self-signed localhost keypair for the ALPN test upstream below.
+// Generated for this test only; it protects nothing and is not a secret.
+const TEST_TLS_KEY = `-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgY/Gn4UXA4CkakyTU
+KH7HnQuoCm+oijhMxnJbUn3HfPOhRANCAARcPHil4Wicklox28LLlCyOwgbCnPMT
+0MCUE+IIO1FQ0R2Kf9jNkrLDap94ZVfX+rqL/IS9YwlK3D71yoRuc5Dt
+-----END PRIVATE KEY-----
+`;
+const TEST_TLS_CERT = `-----BEGIN CERTIFICATE-----
+MIIBmzCCAUGgAwIBAgIURwBeV0GMeaqMHreWbCO4eKNJyHkwCgYIKoZIzj0EAwIw
+FDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI2MDczMDExNDAwNFoYDzIxMjYwNzA2
+MTE0MDA0WjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwWTATBgcqhkjOPQIBBggqhkjO
+PQMBBwNCAARcPHil4Wicklox28LLlCyOwgbCnPMT0MCUE+IIO1FQ0R2Kf9jNkrLD
+ap94ZVfX+rqL/IS9YwlK3D71yoRuc5Dto28wbTAdBgNVHQ4EFgQUtk79/6lCuMrN
+XPtVzMqcpPRz34QwHwYDVR0jBBgwFoAUtk79/6lCuMrNXPtVzMqcpPRz34QwDwYD
+VR0TAQH/BAUwAwEB/zAaBgNVHREEEzARgglsb2NhbGhvc3SHBH8AAAEwCgYIKoZI
+zj0EAwIDSAAwRQIhALT3Bbd5MAAF9FiqGe01guMcQeYKTnTuT3PSGxHUyoz8AiBp
+5VIucZiXGvcT4yv/bEddde8Ql2N7bI+YerEXJR3dsg==
+-----END CERTIFICATE-----
+`;
+
+test('proxy keeps upstream on HTTP/1.1 and forwards concurrent streams in parallel', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-provider-proxy-'));
+  const keyFile = join(dir, 'provider-key');
+  await writeFile(keyFile, 'provider-secret-key\n', 'utf8');
+  // An upstream that offers h2 via ALPN, like real provider gateways. If the
+  // upstream dispatcher ever negotiates h2, undici services one request at a
+  // time per connection: the second request below would never reach the
+  // upstream while the first stream is held open, and requests would report
+  // httpVersion 2.0.
+  const seenHttpVersions: string[] = [];
+  let releaseBoth: () => void = () => {};
+  const bothArrived = new Promise<void>((resolve) => {
+    releaseBoth = resolve;
+  });
+  const upstream = http2CreateSecureServer(
+    { key: TEST_TLS_KEY, cert: TEST_TLS_CERT, allowHTTP1: true },
+    (request, response) => {
+      seenHttpVersions.push(request.httpVersion);
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.write('data: {"choices":[{"delta":{"content":"x"}}]}\n\n');
+      if (seenHttpVersions.length >= 2) releaseBoth();
+      // Hold every stream open until both requests have arrived, so a
+      // serialized upstream path deadlocks instead of passing by luck.
+      void bothArrived.then(() => response.end('data: [DONE]\n\n'));
+    },
+  );
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  const upstreamAddress = upstream.address();
+  assert.ok(upstreamAddress && typeof upstreamAddress !== 'string');
+  const proxy = await startProviderAuthProxy({
+    upstreamBaseUrl: `https://127.0.0.1:${upstreamAddress.port}/api/v4/`,
+    apiKeyFile: keyFile,
+    advertisedHost: '127.0.0.1',
+    upstreamDispatcher: createProviderUpstreamDispatcher({
+      connect: { ca: TEST_TLS_CERT },
+    }),
+  });
+  try {
+    const one = async () => {
+      const response = await fetch(`${proxy.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${proxy.token}`, 'content-type': 'application/json' },
+        body: '{}',
+        signal: AbortSignal.timeout(10_000),
+      });
+      assert.equal(response.status, 200);
+      return response.text();
+    };
+    const [first, second] = await Promise.all([one(), one()]);
+    assert.match(first, /\[DONE\]/);
+    assert.match(second, /\[DONE\]/);
+    assert.deepEqual(seenHttpVersions, ['1.1', '1.1']);
+  } finally {
+    await proxy.close();
+    upstream.close();
+    await rm(dir, { recursive: true, force: true });
   }
 });

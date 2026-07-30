@@ -7,6 +7,18 @@ import {
   type ServerResponse,
 } from 'node:http';
 import type { Socket } from 'node:net';
+import { Agent, type Dispatcher, Headers, fetch as upstreamFetch } from 'undici';
+
+/** Upstream connections must stay on HTTP/1.1. Providers negotiate h2 via
+ * ALPN, and undici's HTTP/2 client runs one request at a time per origin
+ * connection, so concurrent streaming completions from parallel cells
+ * serialize behind each other's full generation streams — observed as
+ * multi-minute first-token waits attributed to the provider. */
+export function createProviderUpstreamDispatcher(options: Agent.Options = {}): Dispatcher {
+  return new Agent({ ...options, allowH2: false });
+}
+
+const defaultUpstreamDispatcher = createProviderUpstreamDispatcher();
 
 export interface ProviderAuthProxy {
   baseUrl: string;
@@ -153,6 +165,9 @@ type ProviderAuthProxyRouteConfig = {
   usageProtocol?: ProviderUsageProtocol;
   /** Injectable monotonic clock for deterministic tests. */
   now?: () => number;
+  /** Injectable upstream dispatcher for tests (e.g. to trust a test CA).
+   * Build it with createProviderUpstreamDispatcher to keep h2 disabled. */
+  upstreamDispatcher?: Dispatcher;
 } & (
   | { apiKeyFile: string; resolveUpstreamCredential?: never }
   | { apiKeyFile?: never; resolveUpstreamCredential: ProviderUpstreamCredentialResolver }
@@ -208,6 +223,7 @@ interface ProviderAuthProxyRoute {
   readonly usage: ProviderUsageAccumulator;
   readonly telemetry: ProviderTelemetryAccumulator;
   readonly now: () => number;
+  readonly upstreamDispatcher: Dispatcher;
   readonly activeRequests: Set<AbortController>;
   readonly activeResponses: Set<ServerResponse>;
   readonly activeForwards: Set<Promise<void>>;
@@ -248,6 +264,7 @@ export async function startProviderAuthProxyHub(
       usage: route.usage,
       telemetry: route.telemetry,
       now: route.now,
+      upstreamDispatcher: route.upstreamDispatcher,
       signal: controller.signal,
     }).finally(() => {
       request.off('aborted', abortOnRequest);
@@ -335,6 +352,7 @@ function providerAuthProxyRoute(input: ProviderAuthProxyRouteInput): ProviderAut
     usage: new ProviderUsageAccumulator(),
     telemetry: new ProviderTelemetryAccumulator(),
     now: input.now ?? performance.now.bind(performance),
+    upstreamDispatcher: input.upstreamDispatcher ?? defaultUpstreamDispatcher,
     activeRequests: new Set<AbortController>(),
     activeResponses: new Set<ServerResponse>(),
     activeForwards: new Set<Promise<void>>(),
@@ -373,6 +391,7 @@ async function forwardProviderRequest(input: {
   usage: ProviderUsageAccumulator;
   telemetry: ProviderTelemetryAccumulator;
   now: () => number;
+  upstreamDispatcher: Dispatcher;
   signal: AbortSignal;
 }): Promise<void> {
   let requestTelemetry: MutableProviderRequestTelemetry | null = null;
@@ -423,10 +442,11 @@ async function forwardProviderRequest(input: {
       input.request.method === 'GET' || input.request.method === 'HEAD'
         ? undefined
         : await readRequestBody(input.request);
-    const upstreamResponse = await fetch(upstreamUrl, {
+    const upstreamResponse = await upstreamFetch(upstreamUrl, {
       method: input.request.method,
       headers,
       signal: input.signal,
+      dispatcher: input.upstreamDispatcher,
       ...(body ? { body: new Uint8Array(body) } : {}),
     });
     requestTelemetry.status = upstreamResponse.status;
