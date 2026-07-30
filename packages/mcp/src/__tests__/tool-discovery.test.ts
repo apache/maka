@@ -18,7 +18,7 @@ describe('discoverMcpTools', () => {
     const result = await discoverMcpTools(source, 'fixture', 25);
 
     assert.deepEqual(
-      result.map((definition) => definition.name),
+      result.map(({ definition }) => definition.name),
       ['first', 'second'],
     );
     assert.deepEqual(source.cursors, [undefined, '']);

@@ -23,6 +23,11 @@ export interface McpToolDiscoveryLimits {
   readonly maxDefinitionBytes: number;
 }
 
+export interface McpDiscoveredTool {
+  readonly definition: Tool;
+  readonly definitionFingerprint: string;
+}
+
 /**
  * Walk tools/list without delegating aggregation or cache ownership to the SDK.
  *
@@ -34,8 +39,8 @@ export async function discoverMcpTools(
   serverId: string,
   timeoutMs: number,
   limits: McpToolDiscoveryLimits = DEFAULT_TOOL_DISCOVERY_LIMITS,
-): Promise<Tool[]> {
-  const result: Tool[] = [];
+): Promise<McpDiscoveredTool[]> {
+  const result: McpDiscoveredTool[] = [];
   const seenCursors = new Set<string>();
   const seenNames = new Set<string>();
   let definitionBytes = 0;
@@ -62,7 +67,10 @@ export async function discoverMcpTools(
           `MCP server "${serverId}" exceeded ${limits.maxDefinitionBytes} tool definition bytes`,
         );
       }
-      result.push(structuredClone(tool));
+      result.push({
+        definition: structuredClone(tool),
+        definitionFingerprint: fingerprint.value,
+      });
     }
 
     if (response.nextCursor === undefined) return result;

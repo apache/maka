@@ -42,6 +42,21 @@ export interface McpToolDescriptor {
   annotations?: McpToolAnnotations;
 }
 
+declare const mcpToolBindingBrand: unique symbol;
+
+/**
+ * Opaque consistency handle for one tool definition on one live MCP
+ * connection. It prevents stale-definition calls; it is not a permission
+ * capability. Consumers may retain and return it, but only the MCP manager can
+ * interpret or mint it.
+ */
+export type McpToolBinding = string & { readonly [mcpToolBindingBrand]: true };
+
+export interface McpBoundTool {
+  descriptor: McpToolDescriptor;
+  binding: McpToolBinding;
+}
+
 export interface McpServerStatus {
   serverId: string;
   state: McpConnectionState;
