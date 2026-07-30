@@ -43,6 +43,7 @@ const MARKDOWN_BODY = resolve(REPO_ROOT, 'packages', 'ui', 'src', 'markdown-body
 const CHAT_MESSAGE_CSS = resolve(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer', 'styles', 'chat-message.css');
 const TOKENS_CSS = resolve(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer', 'maka-tokens.css');
 const CHAT_PRIMITIVE = resolve(REPO_ROOT, 'packages', 'ui', 'src', 'primitives', 'chat.tsx');
+const CHAT_TURN = resolve(REPO_ROOT, 'packages', 'ui', 'src', 'chat-turn.tsx');
 
 /** Markdown block + inline elements whose typography the prose layer owns. */
 const PROSE_ELEMENTS = [
@@ -71,6 +72,12 @@ function leafSelectors(css: string): string[] {
 }
 
 describe('MARKDOWN-PROSE-CONVERGE-0 contract (#546 PR4)', () => {
+  it('declares the turn reflow boundary for the Markdown migration harness', async () => {
+    const src = await readFile(CHAT_TURN, 'utf8');
+    assert.match(src, /data-maka-contract="markdown-flow"/);
+    assert.doesNotMatch(src, /\[data-maka-contract(?:=|])/);
+  });
+
   it('every Markdown prose element has a rule scoped under .maka-prose', async () => {
     const css = await readFile(PROSE_CSS, 'utf8');
     const selectors = leafSelectors(css);

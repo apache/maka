@@ -393,6 +393,7 @@ export const TurnView = memo(function TurnView(props: {
   return (
     <section
       className="maka-turn"
+      data-maka-contract="markdown-flow"
       data-turn-id={turn.turnId}
       data-live-streaming={props.liveStreaming ? 'true' : undefined}
       data-search-highlight={props.searchHighlighted ? 'true' : undefined}
