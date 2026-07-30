@@ -1409,7 +1409,6 @@ function emitSessionsChanged(
 registerIpc();
 
 wireAppLifecycle({
-  isIsolatedE2e,
   startHidden,
   e2eFixture,
   workspaceRoot,

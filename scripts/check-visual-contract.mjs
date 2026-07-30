@@ -2,23 +2,36 @@
 //
 // Walks the representative fixture routes in light and dark, records a
 // computed-style signature for every visible element, and compares the result
-// against committed JSON baselines.
+// against a baseline captured earlier on the same machine.
 //
+//   node scripts/check-visual-contract.mjs --update   # capture, on main
+//   …apply the migration slice…
 //   node scripts/check-visual-contract.mjs            # compare, exit 1 on diff
-//   node scripts/check-visual-contract.mjs --update   # rewrite the baselines
 //   node scripts/check-visual-contract.mjs --route chat --theme dark
+//
+// Baselines are NOT committed. They encode the capturing host: font metrics,
+// and on macOS the traffic-light inset the titlebar reserves. A baseline taken
+// on one machine reads as thousands of diffs on another, so committing one
+// would publish a reference nobody else can use — while adding a megabyte to
+// every review. Capture on `main`, apply the slice, compare: the two captures
+// that matter always come from the same host.
 //
 // This gates NO-CHANGE, not correctness. A pre-existing visual bug on main is
 // out of scope for the migration: "zero diff" means "the migration did not
 // move this element", never "this element is right".
 //
+// Known blind spot, stated rather than papered over: elements inside a
+// `display: none` subtree have no box and never enter the capture, so closed
+// menus, popovers and unmounted dialogs are out of contract. Covering them
+// means driving the UI open, which is an interaction test, not a snapshot.
+//
 // Migration-only scaffolding. It is deliberately not wired into CI, following
 // the check:chat-visual precedent, and is removed in PR 14 together with the
 // maka.legacy layer.
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { withFixtureWindow } from './fixture-cdp.mjs';
+import { withFixtureWindow } from './fixture-window.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const BASELINE_DIR = join(ROOT, 'apps', 'desktop', 'tests', 'visual-contract');
@@ -26,23 +39,36 @@ const BASELINE_DIR = join(ROOT, 'apps', 'desktop', 'tests', 'visual-contract');
 // The five representative routes from #1565. The issue names product routes;
 // these are the MAKA_E2E_FIXTURE scenarios that actually open them on main —
 // there is no scenario literally named "settings-providers" or "chat".
+// `ready` is the element that means "this surface has rendered". Without it
+// the only alternative is a fixed sleep, which captures a half-mounted route
+// as a clean one on a slow machine — and writes that into the baseline.
 const ROUTES = [
-  // Long chat session with the task workbar open.
-  { id: 'chat', scenario: 'turn-narrative' },
-  { id: 'settings-general', scenario: 'settings-general' },
+  // Chat session with the task workbar open.
+  { id: 'chat', scenario: 'turn-narrative', ready: '.maka-session-workbar' },
+  { id: 'settings-general', scenario: 'settings-general', ready: '.settingsRows' },
   // Providers live under the 模型 settings section.
-  { id: 'settings-providers', scenario: 'provider-workspace' },
-  { id: 'mcp-hub', scenario: 'module-mcp' },
+  { id: 'settings-providers', scenario: 'provider-workspace', ready: '.providersPanel' },
+  { id: 'mcp-hub', scenario: 'module-mcp', ready: '.maka-module-main-header' },
   // Empty profile, first launch.
-  { id: 'onboarding', scenario: 'first-run' },
+  { id: 'onboarding', scenario: 'first-run', ready: '.maka-onboarding-surface' },
 ];
 const THEMES = ['light', 'dark'];
 
-// #1565 mandates the alignment properties (alignItems/justifyContent/
-// placeItems/gap/gridArea) alongside the usual box and paint set: flex and
-// grid misalignment is the regression class a style-only property set cannot
-// see. Shorthands are recorded where Chromium resolves them, which keeps the
-// baselines a third of the size of their longhand equivalents. Computed
+// #1565 mandates the alignment properties (alignItems/justifyContent/gap/
+// gridArea) alongside the usual box and paint set: flex and grid misalignment
+// is the regression class a style-only property set cannot see. `placeItems`
+// is deliberately absent — it is the shorthand of `alignItems`/`justifyItems`,
+// and across a full capture its first token equalled `alignItems` on every
+// single record, so it carried no independent signal.
+//
+// The paint properties past the box set exist because a cascade-layer flip is
+// exactly the change that alters them without moving anything: a utility that
+// now beats a product rule can change elevation (boxShadow), text placement
+// inside an unchanged box (textAlign), or the axis a row lays out on
+// (flexDirection/flexWrap) with an identical rect.
+//
+// Shorthands are recorded where Chromium resolves them, which keeps the
+// capture a third of the size of its longhand equivalent. Computed
 // width/height are omitted because the recorded rect already carries the
 // used box, and it also reflects transforms and flex stretching.
 const PROPERTIES = [
@@ -60,16 +86,20 @@ const PROPERTIES = [
   'borderStyle',
   'borderColor',
   'borderRadius',
+  'boxShadow',
+  'outline',
   'fontFamily',
   'fontSize',
   'fontWeight',
   'lineHeight',
   'color',
+  'textAlign',
   'backgroundColor',
   'backgroundImage',
   'alignItems',
   'justifyContent',
-  'placeItems',
+  'flexDirection',
+  'flexWrap',
   'gap',
   'gridArea',
 ];
@@ -81,6 +111,12 @@ const PROPERTIES = [
 // means unchanged", so a migration that starts setting one shows up as a
 // diff from ∅. Without this the baselines are three times the size and the
 // signal is buried.
+//
+// Every value here is what Chromium actually serialises, verified against a
+// real capture — the previous table guessed at three of them (`normal normal`,
+// `auto / auto / auto / auto`) and those entries never matched once, so the
+// properties they were meant to suppress appeared on all 3,964 records.
+// `findDeadOmissionRules` below fails the run if that regresses.
 const INITIAL_VALUES = {
   position: 'static',
   inset: 'auto',
@@ -92,13 +128,16 @@ const INITIAL_VALUES = {
   borderWidth: '0px',
   borderStyle: 'none',
   borderRadius: '0px',
+  boxShadow: 'none',
+  textAlign: 'start',
   backgroundColor: 'rgba(0, 0, 0, 0)',
   backgroundImage: 'none',
   alignItems: 'normal',
   justifyContent: 'normal',
-  placeItems: 'normal normal',
-  gap: 'normal normal',
-  gridArea: 'auto / auto / auto / auto',
+  flexDirection: 'row',
+  flexWrap: 'nowrap',
+  gap: 'normal',
+  gridArea: 'auto',
 };
 const INHERITED_PROPERTIES = [
   'cursor',
@@ -141,6 +180,14 @@ const CAPTURE_EXPR = `(() => {
   // whole.
   const DECORATION = '.os-scrollbar, .os-trinsic-observer';
   const out = [];
+  // The 'inherited' argument is the inherited state of the nearest RECORDED
+  // ancestor, not of the parent element. Those differ whenever a wrapper has
+  // no box — a zero-size or display:contents node is skipped, so nothing in
+  // the capture carries its values. Comparing against the parent there let a
+  // visible child omit a property because it matched an ancestor the reader
+  // cannot see: flip that wrapper's color and the child really repaints while
+  // the capture stays byte-identical. Comparing against the nearest recorded
+  // ancestor keeps every omission recoverable by a reader of the file.
   const walk = (el, path, inherited) => {
     if (el.matches(DECORATION)) return;
     const rect = el.getBoundingClientRect();
@@ -175,7 +222,18 @@ const CAPTURE_EXPR = `(() => {
         .filter((name) => name.startsWith('maka-') || /[A-Z]/.test(name))
         .slice(0, 3);
       if (named.length > 0) record.classes = named.join(' ');
+      // Tailwind's preflight sets border-style:solid on every element, so
+      // a zero-width border carries a style and a colour that paint nothing.
+      // Recording them put two constants on nearly every record.
+      const paintsBorder = Number.parseFloat(style.borderWidth) > 0;
+      // Same shape for outline, with a twist: its shorthand resolves the
+      // colour from currentColor, so an unpainted outline still serialises a
+      // per-element value that can never equal a fixed initial. Style is what
+      // decides whether it paints.
+      const paintsOutline = style.outlineStyle !== 'none';
       for (const property of PROPERTIES) {
+        if (!paintsBorder && (property === 'borderStyle' || property === 'borderColor')) continue;
+        if (!paintsOutline && property === 'outline') continue;
         const value = roundPx(style[property]);
         if (value === '' || value == null) continue;
         if (INITIAL_VALUES[property] === value) continue;
@@ -185,14 +243,16 @@ const CAPTURE_EXPR = `(() => {
       out.push(record);
     }
     // Descend even through invisible parents: a zero-size wrapper can still
-    // hold visible children (common for absolutely positioned overlays).
+    // hold visible children (common for absolutely positioned overlays). Only
+    // a recorded element updates the inherited baseline (see walk above).
+    const nextInherited = visible ? ownInherited : inherited;
     const children = el.children;
     const counts = new Map();
     for (const child of children) {
       const tag = child.tagName.toLowerCase();
       const index = (counts.get(tag) ?? 0) + 1;
       counts.set(tag, index);
-      walk(child, path + '>' + tag + (index > 1 ? ':' + index : ''), ownInherited);
+      walk(child, path + '>' + tag + (index > 1 ? ':' + index : ''), nextInherited);
     }
   };
   walk(document.body, 'body', {});
@@ -256,24 +316,53 @@ const SALVAGED_ANCHORS = [
   },
 ];
 
-function checkSalvagedAnchors(baselines) {
+// Exact class-token match, not substring: `maka-list-row` as a substring is
+// satisfied by `maka-list-row-meta`, so a loose check would report an anchor
+// as watched by an element that is not the one the regression happened on.
+export function checkSalvagedAnchors(baselines, anchors = SALVAGED_ANCHORS) {
   const missing = [];
-  for (const entry of SALVAGED_ANCHORS) {
+  for (const entry of anchors) {
     const records = baselines.get(`${entry.route}.light`);
     if (!records) continue;
-    const present = records.some((record) => (record.classes ?? '').includes(entry.anchor));
+    const present = records.some((record) =>
+      (record.classes ?? '').split(' ').includes(entry.anchor),
+    );
     if (!present) missing.push(entry);
   }
   return missing;
 }
 
-function parseArgs(argv) {
+/**
+ * Fail loudly when an omission rule stops matching what Chromium serialises.
+ * The previous table guessed three values, none of them ever matched, and the
+ * properties they were meant to drop ended up on every record — invisible,
+ * because over-recording never fails anything.
+ */
+export function findDeadOmissionRules(records, initialValues = INITIAL_VALUES) {
+  if (records.length === 0) return [];
+  const dead = [];
+  for (const property of Object.keys(initialValues)) {
+    const present = records.filter((record) => property in record).length;
+    if (present === records.length) dead.push({ property, present, total: records.length });
+  }
+  return dead;
+}
+
+export function parseArgs(argv) {
   const args = { update: false, routes: null, themes: null, help: false };
+  const value = (index, flag) => {
+    const next = argv[index];
+    if (next === undefined || next.startsWith('--')) {
+      console.error(`[visual-contract] ${flag} needs a value`);
+      process.exit(2);
+    }
+    return next;
+  };
   for (let i = 2; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--update') args.update = true;
-    else if (arg === '--route') (args.routes ??= []).push(argv[++i]);
-    else if (arg === '--theme') (args.themes ??= []).push(argv[++i]);
+    else if (arg === '--route') (args.routes ??= []).push(value(++i, arg));
+    else if (arg === '--theme') (args.themes ??= []).push(value(++i, arg));
     else if (arg === '--help' || arg === '-h') args.help = true;
     else {
       console.error(`[visual-contract] unknown arg: ${arg}`);
@@ -299,7 +388,15 @@ async function readBaseline(routeId, theme) {
 // Report every element that appeared, disappeared, or changed any recorded
 // property — with the property names, so a reviewer can tell "this moved 4px"
 // from "this lost its background".
-function diffRecords(baseline, current) {
+//
+// Identity is the element's position in the tree, which holds exactly as long
+// as the tree does. That is the right trade for the slice this harness was
+// built for — PR 1 normalises the cascade without touching a single element —
+// but it does not survive a structural edit: inserting one wrapper renames
+// every path beneath it, and each renamed record reads as a `removed` plus an
+// `added`. `summarise` below names that case instead of letting a reviewer
+// read hundreds of truncated lines as hundreds of regressions.
+export function diffRecords(baseline, current) {
   const byPath = (records) => new Map(records.map((record) => [record.path, record]));
   const before = byPath(baseline);
   const after = byPath(current);
@@ -324,7 +421,28 @@ function diffRecords(baseline, current) {
   for (const [path, record] of after) {
     if (!before.has(path)) changes.push({ kind: 'added', path, label: record.label });
   }
-  return changes;
+  // `changed` first: those are diffs on elements that still exist, which is
+  // the signal. A structural edit produces a flood of removed/added that would
+  // otherwise push every real property change past the print limit.
+  const rank = { changed: 0, removed: 1, added: 2 };
+  return changes.sort((a, b) => rank[a.kind] - rank[b.kind]);
+}
+
+/**
+ * Describe a diff in one line, and say so when its shape means the tree moved
+ * rather than the styles.
+ */
+export function summarise(changes, baselineSize) {
+  const counts = { changed: 0, removed: 0, added: 0 };
+  for (const change of changes) counts[change.kind] += 1;
+  const parts = [];
+  for (const kind of ['changed', 'removed', 'added']) {
+    if (counts[kind] > 0) parts.push(`${counts[kind]} ${kind}`);
+  }
+  // Losing most of the baseline to `removed` is what a wrapper insertion looks
+  // like; it is not most of the UI disappearing.
+  const structural = baselineSize > 0 && counts.removed > baselineSize / 2;
+  return { text: parts.join(', '), structural };
 }
 
 function formatChange(change) {
@@ -364,8 +482,10 @@ async function main() {
     for (const theme of themes) {
       let records;
       try {
-        records = await withFixtureWindow(route.scenario, { theme }, async ({ evaluate }) =>
-          JSON.parse(await evaluate(CAPTURE_EXPR)),
+        records = await withFixtureWindow(
+          route.scenario,
+          { theme, readySelector: route.ready },
+          async ({ evaluate }) => JSON.parse(await evaluate(CAPTURE_EXPR)),
         );
       } catch (err) {
         console.log(`FAIL ${route.id} ${theme}: ${err.message}`);
@@ -374,6 +494,13 @@ async function main() {
       }
       captured += 1;
       baselines.set(`${route.id}.${theme}`, records);
+      // An omission rule that never matches silently inflates every record.
+      for (const dead of findDeadOmissionRules(records)) {
+        failures += 1;
+        console.log(
+          `FAIL ${route.id} ${theme}: "${dead.property}" survives on all ${dead.total} records, so its INITIAL_VALUES entry never matches what Chromium serialises`,
+        );
+      }
       if (args.update) {
         await writeFile(baselinePath(route.id, theme), `${JSON.stringify(records, null, 1)}\n`);
         console.log(`wrote ${route.id} ${theme} (${records.length} elements)`);
@@ -381,7 +508,9 @@ async function main() {
       }
       const baseline = await readBaseline(route.id, theme);
       if (!baseline) {
-        console.log(`FAIL ${route.id} ${theme}: no baseline; run with --update`);
+        console.log(
+          `FAIL ${route.id} ${theme}: no baseline. Capture one on the branch you are comparing against: git stash && node scripts/check-visual-contract.mjs --update`,
+        );
         failures += 1;
         continue;
       }
@@ -391,7 +520,13 @@ async function main() {
         continue;
       }
       failures += 1;
-      console.log(`FAIL ${route.id} ${theme}: ${changes.length} change(s)`);
+      const { text, structural } = summarise(changes, baseline.length);
+      console.log(`FAIL ${route.id} ${theme}: ${text}`);
+      if (structural) {
+        console.log(
+          '  note: most of the baseline was replaced rather than changed, which is what inserting or removing a wrapper element looks like — element identity is the path through the tree, so everything below the edit is re-keyed. Compare the surviving `changed` entries; the removed/added pairs are the same elements under new paths.',
+        );
+      }
       for (const change of changes.slice(0, 40)) console.log(formatChange(change));
       if (changes.length > 40) console.log(`  … ${changes.length - 40} more`);
     }
@@ -404,21 +539,6 @@ async function main() {
       `FAIL salvaged anchor "${entry.anchor}" is gone from ${entry.route}: nothing now watches the spot where ${entry.commit} fixed "${entry.regression}"`,
     );
   }
-
-  // A stale baseline for a route that no longer exists is a silent hole in
-  // the contract: it would keep passing while nothing checks it.
-  if (!args.update && routes.length === ROUTES.length && themes.length === THEMES.length) {
-    const expected = new Set(
-      ROUTES.flatMap((route) => THEMES.map((theme) => `${route.id}.${theme}.json`)),
-    );
-    const present = (await readdir(BASELINE_DIR)).filter((name) => name.endsWith('.json'));
-    for (const name of present) {
-      if (!expected.has(name)) {
-        console.log(`FAIL orphan baseline ${name}: no route captures it`);
-        failures += 1;
-      }
-    }
-  }
   console.log(
     failures === 0
       ? `visual contract: ${captured} capture(s) clean`
@@ -427,4 +547,8 @@ async function main() {
   process.exit(failures === 0 ? 0 : 1);
 }
 
-await main();
+// Only when run directly: the pure helpers above are imported by
+// check-visual-contract.test.mjs, which must not launch Electron.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  await main();
+}

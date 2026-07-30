@@ -11,22 +11,28 @@
 // hit-testing path, so every target reads as swallowed. Making the window
 // visible to fix that turns the check into something that steals focus and
 // fires real product actions — one probe opened a native file dialog and hung
-// the run. Resolving -webkit-app-region from the stylesheet rules instead
-// answers the same question with no side effects: the property is missing
-// from getComputedStyle, but not from the rules that declare it.
+// the run. So this asks the browser what is at a point instead of clicking it.
+//
+// The window-drag question is NOT asked here. `e2e/window-titlebar.spec.ts`
+// already answers it in CI, against the rendered geometry, with the document
+// order Chromium actually composes drag rects in — and `.maka-window-titlebar`
+// is the only element in the product allowed to declare `drag`, so the
+// titlebar band that spec sweeps is the whole surface where the question
+// exists. This file covers what that spec does not: whether a control
+// anywhere in the window can be reached at all.
 //
 //   node scripts/check-hit-test.mjs               # all routes
 //   node scripts/check-hit-test.mjs --route chat
 //
 // Migration-only scaffolding: not in CI, removed in PR 14.
-import { withFixtureWindow } from './fixture-cdp.mjs';
+import { withFixtureWindow } from './fixture-window.mjs';
 
 const ROUTES = [
-  { id: 'chat', scenario: 'turn-narrative' },
-  { id: 'settings-general', scenario: 'settings-general' },
-  { id: 'settings-providers', scenario: 'provider-workspace' },
-  { id: 'mcp-hub', scenario: 'module-mcp' },
-  { id: 'onboarding', scenario: 'first-run' },
+  { id: 'chat', scenario: 'turn-narrative', ready: '.maka-session-workbar' },
+  { id: 'settings-general', scenario: 'settings-general', ready: '.settingsRows' },
+  { id: 'settings-providers', scenario: 'provider-workspace', ready: '.providersPanel' },
+  { id: 'mcp-hub', scenario: 'module-mcp', ready: '.maka-module-main-header' },
+  { id: 'onboarding', scenario: 'first-run', ready: '.maka-onboarding-surface' },
 ];
 
 // #1565's selector list.
@@ -106,51 +112,6 @@ const PROBE_EXPR = `(() => {
   });
   const inScope = (el) => !overlay || overlay.contains(el) || el.contains(overlay);
 
-  // Collect every selector that declares -webkit-app-region, in sheet order.
-  // Later declarations win, which approximates the cascade closely enough for
-  // a property that is only ever set as a flat drag/no-drag pair.
-  const regionRules = [];
-  const collectRules = (rules) => {
-    for (const rule of rules) {
-      if (rule.cssRules) {
-        collectRules(rule.cssRules);
-        continue;
-      }
-      if (!rule.selectorText || !rule.style) continue;
-      const value =
-        rule.style.getPropertyValue('-webkit-app-region') ||
-        rule.style.getPropertyValue('app-region');
-      if (value) regionRules.push({ selector: rule.selectorText, value: value.trim() });
-    }
-  };
-  for (const sheet of document.styleSheets) {
-    try {
-      collectRules(sheet.cssRules);
-    } catch {
-      // cross-origin sheet; nothing product-owned lands here
-    }
-  }
-  // Resolve the rules to elements once, rather than matching every element
-  // against every rule while walking ancestries: that was elements ×
-  // ancestors × rules calls to matches(), and it timed out the chat route.
-  // Later rules overwrite earlier ones, preserving source order.
-  const regionByElement = new Map();
-  for (const rule of regionRules) {
-    try {
-      for (const el of document.querySelectorAll(rule.selector)) {
-        regionByElement.set(el, rule.value);
-      }
-    } catch {
-      // selector Chromium cannot match here (::part etc.)
-    }
-  }
-  const appRegionOf = (el) => {
-    const inline =
-      el.style.getPropertyValue('-webkit-app-region') || el.style.getPropertyValue('app-region');
-    if (inline) return inline.trim();
-    return regionByElement.get(el) ?? '';
-  };
-
   // The part of an element a pointer could actually reach: its box clipped by
   // every scrolling or hidden-overflow ancestor, then by the viewport. A row
   // scrolled half out of its list still has a hittable strip, and probing the
@@ -188,6 +149,10 @@ const PROBE_EXPR = `(() => {
   };
 
   const results = [];
+  // Why each element left the probe, so a shrinking probe set is visible
+  // rather than being reported as a cleaner run.
+  const skipped = { invisible: 0, outOfScope: 0, disabled: 0, transparent: 0, clipped: 0 };
+  let probed = 0;
   for (const el of elements) {
     const rect = rectOf(el);
     const style = styleOf(el);
@@ -197,11 +162,14 @@ const PROBE_EXPR = `(() => {
       style.visibility === 'hidden' ||
       style.display === 'none' ||
       Number.parseFloat(style.opacity) === 0
-    ) continue;
-    if (!inScope(el)) continue;
+    ) { skipped.invisible += 1; continue; }
+    if (!inScope(el)) { skipped.outOfScope += 1; continue; }
     // Disabled controls are meant to reject input; their opacity is styling,
     // not a defect.
-    if (el.disabled === true || el.getAttribute('aria-disabled') === 'true') continue;
+    if (el.disabled === true || el.getAttribute('aria-disabled') === 'true') {
+      skipped.disabled += 1;
+      continue;
+    }
 
     // Walk the ancestry once for the diagnostics #1565 asks for: a
     // pointer-events:none link, a hidden ancestor, or a compounded opacity
@@ -220,11 +188,12 @@ const PROBE_EXPR = `(() => {
     // Fully transparent through an ancestor means invisible, not unclickable:
     // this is how the onboarding surface hides the app behind it. Nothing to
     // assert about a control nobody can see.
-    if (opacityProduct === 0) continue;
+    if (opacityProduct === 0) { skipped.transparent += 1; continue; }
 
     // Scrolled out of view, or clipped to nothing.
     const reach = reachableRect(el);
-    if (reach.width <= 0 || reach.height <= 0) continue;
+    if (reach.width <= 0 || reach.height <= 0) { skipped.clipped += 1; continue; }
+    probed += 1;
 
     // Corner probes must clear the border radius, or a pill-shaped control
     // reports its own parent as the hit at every corner. The arc passes 0.29r
@@ -268,23 +237,7 @@ const PROBE_EXPR = `(() => {
     const cornersMissed = misses.length - (centerMissed ? 1 : 0);
     const unhittable = centerMissed || cornersMissed >= 3;
 
-    // An interactive control inside an -webkit-app-region: drag area never
-    // sees the click: the window consumes the press as a titlebar drag. The
-    // property is absent from getComputedStyle, so resolve it from the rules
-    // that declare it plus inline styles, then walk up to the nearest
-    // declaration — app-region is not inherited, but a drag area does cover
-    // its descendants until one of them opts out with no-drag.
-    let region = null;
-    for (let node = el; node && node !== document.documentElement; node = node.parentElement) {
-      const value = appRegionOf(node);
-      if (value) {
-        region = { value, at: node === el ? 'self' : signature(node) };
-        break;
-      }
-    }
-    const dragged = region?.value === 'drag';
-
-    if (!unhittable && !blocker && opacityProduct === 1 && !dragged) continue;
+    if (!unhittable && !blocker && opacityProduct === 1) continue;
     results.push({
       path: signature(el),
       label: label(el),
@@ -292,10 +245,19 @@ const PROBE_EXPR = `(() => {
       ...(unhittable ? { misses } : {}),
       ...(blocker ? { blocker } : {}),
       ...(opacityProduct !== 1 ? { opacityProduct } : {}),
-      ...(dragged ? { dragRegion: region.at } : {}),
     });
   }
-  return JSON.stringify({ probed: elements.length, overlay: overlay ? overlay.className || overlay.tagName : null, findings: results });
+  // \`probed\` counts what was actually probed, not what the selector matched.
+  // Reporting the raw match count read as full coverage while more than half
+  // the elements had been filtered out — and a migration that filters MORE
+  // would have looked like it was passing harder.
+  return JSON.stringify({
+    matched: elements.length,
+    probed,
+    skipped,
+    overlay: overlay ? overlay.className || overlay.tagName : null,
+    findings: results,
+  });
 })()`;
 
 function parseArgs(argv) {
@@ -320,20 +282,26 @@ function parseArgs(argv) {
 // mapped — against a hidden fixture window it reports unrelated elements and
 // buries the run in false positives. So this probe asks for a visible window
 // and accepts that it steals focus for a few seconds per route.
+//
+// No retry. An earlier version retried once on any error, which also swallowed
+// a genuine renderer exception in the probe and reported the second identical
+// failure as if it were new information. `playwright.config.ts` states the
+// house rule for the sibling harness: flakes should fail loudly.
 async function probeRoute(route) {
-  const run = () =>
-    withFixtureWindow(route.scenario, { theme: 'light', showWindow: true }, async ({ evaluate }) =>
-      JSON.parse(await evaluate(PROBE_EXPR)),
-    );
-  try {
-    return await run();
-  } catch (err) {
-    // One retry: booting a visible Electron window is the flaky part, not the
-    // probe. A second failure is reported rather than papered over.
-    console.log(`     ${route.id}: ${err.message} — retrying once`);
-    await new Promise((resolve) => setTimeout(resolve, 2_000));
-    return await run();
-  }
+  return withFixtureWindow(
+    route.scenario,
+    { theme: 'light', showWindow: true, readySelector: route.ready },
+    async ({ evaluate }) => JSON.parse(await evaluate(PROBE_EXPR)),
+  );
+}
+
+function coverage(report) {
+  const dropped = Object.entries(report.skipped)
+    .filter(([, count]) => count > 0)
+    .map(([reason, count]) => `${count} ${reason}`)
+    .join(', ');
+  const scope = report.overlay ? `, scoped to overlay ${report.overlay}` : '';
+  return `${report.probed} of ${report.matched} probed${dropped ? ` (${dropped})` : ''}${scope}`;
 }
 
 async function main() {
@@ -354,13 +322,11 @@ async function main() {
       const report = await probeRoute(route);
       const problems = report.findings.length;
       if (problems === 0) {
-        console.log(
-          `ok   ${route.id} (${report.probed} interactive elements${report.overlay ? `, scoped to overlay ${report.overlay}` : ''})`,
-        );
+        console.log(`ok   ${route.id} (${coverage(report)})`);
         continue;
       }
       failures += 1;
-      console.log(`FAIL ${route.id}: ${problems} finding(s) of ${report.probed} probed`);
+      console.log(`FAIL ${route.id}: ${problems} finding(s), ${coverage(report)}`);
       for (const finding of report.findings.slice(0, 20)) {
         const parts = [];
         if (finding.misses) {
@@ -371,9 +337,6 @@ async function main() {
         if (finding.blocker) parts.push(`${finding.blocker.reason} on ${finding.blocker.at}`);
         if (finding.opacityProduct !== undefined) {
           parts.push(`ancestor opacity product ${finding.opacityProduct}`);
-        }
-        if (finding.dragRegion) {
-          parts.push(`inside an app-region: drag area (${finding.dragRegion})`);
         }
         console.log(`  "${finding.label}" ${finding.path}\n      ${parts.join('; ')}`);
       }

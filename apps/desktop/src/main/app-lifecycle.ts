@@ -37,14 +37,17 @@ import type { StreamEvents } from './session-stream.js';
 import type { SettingsIpcHandle } from './settings-ipc-main.js';
 import { runProjectStartupMigration } from './project-startup-migration.js';
 import { createAppQuitCoordinator } from './app-quit-coordinator.js';
+import { resolveDockPresentation } from './dock-presentation.js';
 import { resumeSafeBoundaryContinuationsOnStartup } from './startup-safe-boundary-resume.js';
 
 type AssembledTools = ReturnType<typeof assembleDesktopTools>;
 export interface AppLifecycleDeps {
-  isIsolatedE2e: boolean;
   // Whether this run stays out of the developer's way. main.ts owns the
   // condition; the dock icon follows it so window visibility and dock
-  // presence can never drift apart.
+  // presence can never drift apart. A fixture window someone asked to see
+  // (MAKA_E2E_SHOW_WINDOW) opts out of both together: as an accessory app it
+  // has no dock tile and no Cmd+Tab entry, so switching away during a manual
+  // review would leave no way back.
   startHidden: boolean;
   e2eFixture: ReturnType<typeof resolveE2eFixture>;
   workspaceRoot: string;
@@ -98,7 +101,6 @@ export interface AppLifecycleDeps {
  */
 export function wireAppLifecycle(deps: AppLifecycleDeps): void {
   const {
-    isIsolatedE2e,
     startHidden,
     e2eFixture,
     workspaceRoot,
@@ -202,27 +204,13 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
   }
 
   app.whenReady().then(async () => {
-    // PR-GRAY-CARD-LIFT-0 (WAWQAQ msg `0eb99429` 2026-06-20): set the
-    // app's dock icon (macOS) so the dev `npm start` run shows Maka's
-    // brand mark instead of the generic Electron icon. Packaged
-    // builds get the icon via .app bundle Info.plist; this covers the
-    // dev path.
-    if (process.platform === 'darwin' && app.dock) {
-      if (startHidden) {
-        // PR-VISUAL-SMOKE-HEADLESS: hide the dock icon so the spawned
-        // Electron runs as an accessory app — no dock bounce, and it
-        // never becomes frontmost / steals focus from the developer's
-        // active window during a capture run or an E2E run.
-        //
-        // Keyed off the same startHidden that decides whether the window
-        // shows at all, so MAKA_E2E_SHOW_WINDOW opts out of both together.
-        // A fixture window someone asked to see is clickable either way,
-        // but as an accessory app it has no Dock tile and no Cmd+Tab
-        // entry — switch away during a manual review and there is no way
-        // back. Capture and CI runs leave the variable unset and keep the
-        // accessory behavior.
+    // PR-GRAY-CARD-LIFT-0 (WAWQAQ msg `0eb99429` 2026-06-20) and
+    // PR-VISUAL-SMOKE-HEADLESS: see resolveDockPresentation for the rule.
+    const dockPresentation = resolveDockPresentation(process.platform, startHidden);
+    if (app.dock) {
+      if (dockPresentation === 'hide') {
         app.dock.hide();
-      } else {
+      } else if (dockPresentation === 'icon') {
         try {
           const iconPath = join(import.meta.dirname, '..', '..', 'assets', 'icon.png');
           app.dock.setIcon(nativeImage.createFromPath(iconPath));

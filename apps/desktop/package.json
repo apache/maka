@@ -30,7 +30,7 @@
     "test": "npm run clean:main && npm run build:main && node --test \"dist/main/**/*.test.js\"",
     "test:checks": "node ../../scripts/check-console.mjs && node ../../scripts/check-a11y.mjs && node ../../scripts/check-copy.mjs",
     "test:dist": "npm run test:checks && node --test \"dist/main/**/*.test.js\"",
-    "e2e": "npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/computer-use run build && npm --workspace @maka/ui run build && npm run build && playwright test --config e2e/playwright.config.ts",
+    "e2e": "npm run build:with-deps && playwright test --config e2e/playwright.config.ts",
     "build:with-deps": "npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/computer-use run build && npm --workspace @maka/ui run build && npm run build",
     "smoke:real-window": "npm run build:with-deps && node ../../scripts/desktop-real-window-smoke.mjs",
     "smoke:programmatic-window": "npm run build:with-deps && node ../../scripts/desktop-real-window-smoke.mjs --programmatic-only",

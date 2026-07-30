@@ -17,6 +17,22 @@ const ROOT_PACKAGE_JSON = join(process.cwd(), '..', '..', 'package.json');
 const REAL_WINDOW_SMOKE_SCRIPT = join(process.cwd(), '..', '..', 'scripts', 'desktop-real-window-smoke.mjs');
 const SMOKE_DOC = join(process.cwd(), 'tests', 'smoke.md');
 
+/**
+ * The accessibility-independent layer. These were unpinned while the OS
+ * hit-test ids below were pinned, so any of them could be deleted with the
+ * suite staying green — including `programmatic-dock-visible`, which is the
+ * only check anywhere that exercises the dock rule against a real launch.
+ */
+const REQUIRED_PROGRAMMATIC_CHECK_IDS = [
+  'programmatic-window-visible',
+  'programmatic-window-flags',
+  'programmatic-renderer-mounted',
+  'programmatic-search-modal-open',
+  'programmatic-focus-target',
+  'programmatic-no-error-boundary',
+  'programmatic-dock-visible',
+];
+
 const REQUIRED_CHECK_IDS = [
   'launch-clean-window',
   'resize-left-edge',
@@ -38,21 +54,29 @@ describe('real Electron window smoke gate', () => {
       scripts?: Record<string, string>;
     };
     const scripts = pkg.scripts ?? {};
-    // Follow one level of `npm run <name>` so this stays a contract about what
-    // the gate builds, not about whether the chain is spelled out inline. The
-    // launch scripts share it through `build:with-deps` rather than repeating
-    // it verbatim three times.
-    const expand = (script: string) =>
-      script.replace(/npm run ([\w:-]+)/g, (match, name: string) => scripts[name] ?? match);
-    const script = expand(scripts['smoke:real-window'] ?? '');
-    assert.match(script, /npm --workspace @maka\/core run build/);
-    assert.match(script, /npm --workspace @maka\/storage run build/);
-    assert.match(script, /npm --workspace @maka\/runtime run build/);
-    assert.match(script, /npm --workspace @maka\/ui run build/);
-    assert.match(script, /npm run build/);
-    assert.match(script, /desktop-real-window-smoke\.mjs/);
-    const programmaticScript = expand(scripts['smoke:programmatic-window'] ?? '');
-    assert.match(programmaticScript, /desktop-real-window-smoke\.mjs --programmatic-only/);
+    // One place defines what a launch builds; every launcher points at it.
+    // Asserting the chain here and the reference below keeps this a contract
+    // about what gets built without re-stating the chain per launcher — which
+    // is what let `e2e` drift into repeating it verbatim.
+    const chain = scripts['build:with-deps'] ?? '';
+    assert.match(chain, /npm --workspace @maka\/core run build/);
+    assert.match(chain, /npm --workspace @maka\/storage run build/);
+    assert.match(chain, /npm --workspace @maka\/runtime run build/);
+    assert.match(chain, /npm --workspace @maka\/ui run build/);
+    assert.match(chain, /&& npm run build$/, 'the chain must end by building the desktop app itself');
+    for (const launcher of ['smoke:real-window', 'smoke:programmatic-window', 'launch:fixture', 'e2e']) {
+      assert.match(
+        scripts[launcher] ?? '',
+        /npm run build:with-deps &&/,
+        `${launcher} must build through the shared chain, so a reviewer can never smoke a stale dist`,
+      );
+    }
+    assert.match(scripts['smoke:real-window'] ?? '', /desktop-real-window-smoke\.mjs/);
+    assert.match(
+      scripts['smoke:programmatic-window'] ?? '',
+      /desktop-real-window-smoke\.mjs --programmatic-only/,
+    );
+    assert.match(scripts['launch:fixture'] ?? '', /desktop-real-window-smoke\.mjs --manual/);
   });
 
   it('root dev scripts keep fast HMR and full build launch paths explicit', async () => {
@@ -73,9 +97,14 @@ describe('real Electron window smoke gate', () => {
 
   it('real-window smoke script contains the required native-window checks', async () => {
     const src = await readFile(REAL_WINDOW_SMOKE_SCRIPT, 'utf8');
-    for (const id of REQUIRED_CHECK_IDS) {
+    for (const id of [...REQUIRED_CHECK_IDS, ...REQUIRED_PROGRAMMATIC_CHECK_IDS]) {
       assert.match(src, new RegExp(`id:\\s*['"]${escapeRegExp(id)}['"]`));
     }
+    assert.match(
+      src,
+      /MAKA_E2E_SHOW_WINDOW/,
+      'the programmatic layer must launch a window it can actually see; without this the visibility and focus checks assert against a window that was never mapped',
+    );
     assert.match(src, /--user-data-dir=/, 'real-window smoke must isolate Electron user data');
     assert.match(src, /MAKA_E2E_FIXTURE/, 'real-window smoke must launch a deterministic fixture');
     assert.match(src, /cleanupStaleElectronProcesses/, 'real-window smoke must clean/report stale Electron smoke processes');

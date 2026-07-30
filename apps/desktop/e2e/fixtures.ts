@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createConnectionStore, createFileCredentialStore, createSettingsStore } from '@maka/storage';
+import { buildFixtureEnv } from '../../../scripts/fixture-env.mjs';
 import { closeElectronApplication } from './electron-lifecycle.js';
 
 const DESKTOP_ROOT = process.cwd();
@@ -92,69 +93,6 @@ async function seedE2eInvocableSkills(userDataDir: string): Promise<void> {
 }
 
 /**
- * Build the minimal env for an E2E Electron launch. Inheriting `process.env`
- * wholesale would leak the host's provider keys (which auto-bootstrap a
- * connection and break the "true first-run" assertion) and `VITE_DEV_SERVER_URL`
- * (which loads the dev server instead of the built bundle). Deny-list rather
- * than allow-list: Electron relies on undocumented platform env (macOS
- * CoreFoundation / X11 / sandbox session) that an allow-list would silently
- * drop and break the launch.
- */
-function buildE2eEnv(
-  userDataDir: string,
-  homeDir: string,
-  e2eFixtureScenario?: string,
-  locale?: 'zh' | 'en',
-  platform?: 'darwin' | 'win32' | 'linux',
-): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  for (const key of Object.keys(env)) {
-    if (
-      key === 'VITE_DEV_SERVER_URL' ||
-      key === 'MAKA_E2E' ||
-      key === 'MAKA_E2E_USER_DATA_DIR' ||
-      key === 'MAKA_E2E_SHOW_WINDOW' ||
-      key === 'MAKA_E2E_FIXTURE' ||
-      key === 'MAKA_E2E_FIXTURE_LOCALE' ||
-      key === 'MAKA_E2E_FIXTURE_PLATFORM' ||
-      /_API_KEY$/.test(key) ||
-      /_API_TOKEN$/.test(key) ||
-      /_API_SECRET$/.test(key)
-    ) {
-      delete env[key];
-    }
-  }
-  env.MAKA_E2E = '1';
-  // The login-shell PATH probe must not make E2E command resolution depend on
-  // the developer or CI account. buildE2eEnv owns the launched environment,
-  // so it owns the deterministic skip flag (unlike relying on TERM, which is
-  // unset under xvfb).
-  env.MAKA_SKIP_SHELL_ENV = '1';
-  env.MAKA_E2E_USER_DATA_DIR = userDataDir;
-  // Sandbox the home directory. User-scope skill discovery reads
-  // `~/.maka/skills` and `~/.agents/skills` via `os.homedir()`, and the Skills
-  // panel can now DELETE from those (#1517) — so without this a suite run
-  // would enumerate, and could remove, the developer's own installed skills.
-  // Overriding HOME sandboxes every consumer of the home dir at once, rather
-  // than plumbing an override through each skills API and hoping none is
-  // missed; `os.homedir()` returns $HOME on POSIX and %USERPROFILE% on
-  // Windows, so both are set. userData is pinned separately above, so this
-  // does not move the app's data dir.
-  env.HOME = homeDir;
-  env.USERPROFILE = homeDir;
-  if (e2eFixtureScenario) env.MAKA_E2E_FIXTURE = e2eFixtureScenario;
-  if (locale) env.MAKA_E2E_FIXTURE_LOCALE = locale;
-  if (platform) env.MAKA_E2E_FIXTURE_PLATFORM = platform;
-  // E2E windows launch hidden so local and macOS runs never steal the
-  // developer's focus. Linux CI runs under xvfb, where a hidden window's
-  // compositor is throttled to ~1fps — content-visibility turns never inflate
-  // and frame-paced protocols crawl. Only that isolated display needs a
-  // visible window.
-  if (process.env.CI && process.platform === 'linux') env.MAKA_E2E_SHOW_WINDOW = '1';
-  return env;
-}
-
-/**
  * The sandboxed HOME of the run currently under test. Set by withE2eWindow
  * before Electron launches.
  *
@@ -206,7 +144,11 @@ async function withE2eWindow(
     app = await electron.launch({
       args: ['.'],
       cwd: DESKTOP_ROOT,
-      env: buildE2eEnv(userDataDir, homeDir, e2eFixtureScenario, locale, platform),
+      env: buildFixtureEnv(userDataDir, homeDir, {
+        scenario: e2eFixtureScenario,
+        locale,
+        platform,
+      }),
     });
     app.on('console', (message) => {
       mainLogs.push(message.text());

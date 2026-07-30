@@ -229,12 +229,24 @@ describe('window reveal gate (PR-SHOW-AFTER-FIRST-COMMIT)', () => {
 });
 
 describe('window reveal wiring (PR-SHOW-AFTER-FIRST-COMMIT)', () => {
-  it('only reveals E2E windows for Linux CI under xvfb', async () => {
-    const src = await readRepoFile('apps/desktop/e2e/fixtures.ts');
+  it('only reveals fixture windows for Linux CI under xvfb, or when a caller asks', async () => {
+    // The rule lives in the launch-environment builder shared by the E2E suite
+    // and the migration contract harness, so both get the same isolation.
+    const src = await readRepoFile('scripts/fixture-env.mjs');
     assert.match(
       src,
-      /if \(process\.env\.CI && process\.platform === 'linux'\) env\.MAKA_E2E_SHOW_WINDOW = '1';/,
-      'visible E2E windows are only needed for Linux compositor pacing under xvfb',
+      /process\.env\.CI && process\.platform === 'linux'/,
+      'visible windows are only needed for Linux compositor pacing under xvfb',
+    );
+    assert.match(
+      src,
+      /env\.MAKA_E2E_SHOW_WINDOW = '1'/,
+      'the builder owns the variable; nothing else may set it',
+    );
+    assert.match(
+      src,
+      /options\.showWindow \|\|/,
+      'a caller that needs the compositor (hit testing, real input) must be able to ask for a visible window explicitly rather than exporting the variable',
     );
   });
 

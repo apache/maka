@@ -8,7 +8,7 @@
 //                       role=switch is pill by design and exempt)
 // Usage: node scripts/audit-alignment.mjs   (expects a built renderer)
 // Rule of thumb: mixed types align CENTERS; same types also match heights.
-import { DEFAULT_SETTLE_MS, withFixtureWindow } from './fixture-cdp.mjs';
+import { DEFAULT_SETTLE_MS, withFixtureWindow } from './fixture-window.mjs';
 
 const FIXTURES = [
   'module-skills',
@@ -28,7 +28,6 @@ const FIXTURES = [
   'settings-bots-onboarding',
 ];
 const SETTLE_MS = Number(process.env.AUDIT_SETTLE_MS ?? DEFAULT_SETTLE_MS);
-const BOOT_TIMEOUT_MS = Number(process.env.AUDIT_BOOT_TIMEOUT_MS ?? 30_000);
 let totalIssues = 0;
 let fixtureErrors = 0;
 
@@ -71,7 +70,7 @@ for (const fixture of FIXTURES) {
   try {
     const issues = await withFixtureWindow(
       fixture,
-      { theme: 'light', settleMs: SETTLE_MS, bootTimeoutMs: BOOT_TIMEOUT_MS },
+      { theme: 'light', settleMs: SETTLE_MS },
       async ({ evaluate }) => JSON.parse(await evaluate(EXPR)),
     );
     console.log('==', fixture, '==');
