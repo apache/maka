@@ -1153,6 +1153,20 @@ export class RootTurnCoordinator {
     previous: ActiveRootTurn,
     admissionLease: SessionAdmissionLease,
   ): Promise<void> {
+    const initiatingConnectionId = batch.initiatingConnectionId;
+    if (!initiatingConnectionId) {
+      throw new RuntimeMessageAuthorityInvariantError(
+        'Follow-up batch lost its initiating Client identity',
+      );
+    }
+    const binding = await this.clientCapabilities?.bindSession(
+      batch.sessionId,
+      initiatingConnectionId,
+    );
+    if (binding && !binding.ok) {
+      throw new RuntimeMessageAuthorityInvariantError(binding.message);
+    }
+
     const turnId = randomUUID();
     const admitted = await this.rootAdmissionOwner.admitRootTurn({
       sessionId: batch.sessionId,

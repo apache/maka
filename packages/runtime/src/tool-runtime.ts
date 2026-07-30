@@ -278,6 +278,8 @@ export const LOOP_GATE_IDENTICAL_THRESHOLD = 3;
 
 const SUBAGENT_TOOL_LIMIT_MESSAGE =
   '只读探索并发过多：同一轮最多 5 个子代理。请等待已有探索完成后再继续。';
+const CLIENT_CAPABILITY_BOUNDARY_MESSAGE =
+  'Client Capability tools require the Bypass execution boundary because their client-side effects cannot be sandboxed by the Host. Switch this Session to Bypass and retry.';
 
 function composeChildAbortSignal(
   invocationSignal: AbortSignal,
@@ -963,6 +965,39 @@ export class ToolRuntime {
     }
 
     this.assertCapturedRunOwner(tool.name, runId);
+    let clientCapabilityBoundary: ExecutionBoundary | undefined;
+    if (tool.categoryHint === 'client_capability') {
+      try {
+        clientCapabilityBoundary = await this.readExecutionBoundary();
+      } catch (error) {
+        const reason = formatSyntheticToolErrorText(error);
+        await this.writeSyntheticToolResult(toolUseId, turnId, reason, queue);
+        trace?.emit('tool', 'tool_failed', 'Client Capability boundary read failed', {
+          toolUseId,
+          toolName: tool.name,
+          status: 'error',
+          errorClass: 'ExecutionBoundaryUnavailable',
+        });
+        this.recordLoopGateOutcome(callSignature, true);
+        return this.errorReturn(reason);
+      }
+      if (clientCapabilityBoundary.kind !== 'bypass') {
+        await this.writeSyntheticToolResult(
+          toolUseId,
+          turnId,
+          CLIENT_CAPABILITY_BOUNDARY_MESSAGE,
+          queue,
+        );
+        trace?.emit('tool', 'tool_failed', 'Client Capability blocked by execution boundary', {
+          toolUseId,
+          toolName: tool.name,
+          status: 'error',
+          errorClass: 'ClientCapabilityBoundary',
+        });
+        this.recordLoopGateOutcome(callSignature, true);
+        return this.errorReturn(CLIENT_CAPABILITY_BOUNDARY_MESSAGE);
+      }
+    }
 
     const reservedSubagentSlot = this.reserveSubagentSlot(tool);
     if (!reservedSubagentSlot) {
@@ -1022,7 +1057,7 @@ export class ToolRuntime {
       pauseTarget?.pause();
       try {
         const runId = this.input.getCurrentRunId?.();
-        const executionBoundary = await this.readExecutionBoundary();
+        const executionBoundary = clientCapabilityBoundary ?? (await this.readExecutionBoundary());
         const result = await tool.impl(structuredClone(executionArgs) as never, {
           sessionId: this.input.sessionId,
           turnId,

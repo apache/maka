@@ -72,6 +72,58 @@ test('invalidates the canonical projection after each observable queue mutation'
   await fixture.coordinator.close();
 });
 
+test('preserves the first folded follow-up Client identity across root handoff', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const owner = fixture.coordinator.bindRun(ROOT);
+  const input = (messageId: string, text: string, placement: 'current_turn' | 'next_turn') => ({
+    originHostEpoch: 'epoch-1',
+    sessionId: ROOT.sessionId,
+    messageId,
+    content: { text },
+    placement,
+  });
+
+  const steering = await fixture.coordinator.handlers['turn.message.submit'](
+    input('steering-from-b', 'first aggregate source', 'current_turn'),
+    operationContext('connection-b'),
+  );
+  const followup = await fixture.coordinator.handlers['turn.message.submit'](
+    input('followup-from-c', 'second aggregate source', 'next_turn'),
+    operationContext('connection-c'),
+  );
+  assert.equal(steering.ok, true);
+  assert.equal(followup.ok, true);
+
+  owner.release();
+  const batch = fixture.coordinator.beginTerminalTransition(ROOT);
+  assert.deepEqual(
+    batch.sources.map((source) => source.messageId),
+    ['steering-from-b', 'followup-from-c'],
+  );
+  assert.equal(batch.initiatingConnectionId, 'connection-b');
+
+  fixture.coordinator.commitNextRoot(batch, {
+    sessionId: ROOT.sessionId,
+    turnId: 'turn-2',
+    runId: 'run-2',
+  });
+  const nextOwner = fixture.coordinator.bindRun({
+    sessionId: ROOT.sessionId,
+    turnId: 'turn-2',
+    runId: 'run-2',
+  });
+  nextOwner.release();
+  fixture.coordinator.completeIdle(
+    fixture.coordinator.beginTerminalTransition({
+      sessionId: ROOT.sessionId,
+      turnId: 'turn-2',
+      runId: 'run-2',
+    }),
+  );
+  await fixture.coordinator.close();
+});
+
 test('binds the exact reserved Run after a pre-bind stop fence', async () => {
   const fixture = createFixture();
   fixture.coordinator.reserveRootTurn(ROOT);

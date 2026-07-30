@@ -118,8 +118,12 @@ const pendingAcquires = new Map<string, Promise<Connection>>();
 // acquire notices the bump after connecting and unwinds itself — otherwise its
 // resolveEndpoint would resurrect the just-disposed view and the connection
 // would outlive the conversation with nothing left to ever clean it up.
-const releaseEpochs = new Map<string, number>();
-const releaseDispositions = new Map<string, 'detach' | 'dispose'>();
+type BrowserSessionRelease = {
+  readonly epoch: number;
+  readonly disposition: 'detach' | 'dispose';
+};
+
+const releases = new Map<string, BrowserSessionRelease>();
 // In-flight actions per conversation, so the visible lease can REVOKE — not just
 // preflight. canDrive gates the START on screen; this severs an action that was
 // still running when the user switched away (browser:active-session), so a
@@ -223,7 +227,14 @@ async function acquire(sessionId: string): Promise<Connection> {
   const inflight = pendingAcquires.get(sessionId);
   if (inflight) return inflight;
   const promise = (async () => {
-    const epoch = releaseEpochs.get(sessionId);
+    const release = releases.get(sessionId);
+    const epoch = release?.epoch;
+    if (release?.disposition === 'dispose') {
+      // Starting a fresh Browser view consumes disposal from an older lifecycle,
+      // such as after an archived Session is restored. Any release that races
+      // this acquire advances the epoch and publishes its own disposition.
+      releases.set(sessionId, { epoch: release.epoch, disposition: 'detach' });
+    }
     const endpoint = await browserViewHost().resolveEndpoint(sessionId);
     let conn: Connection;
     try {
@@ -237,13 +248,13 @@ async function acquire(sessionId: string): Promise<Connection> {
         .catch(() => {});
       throw err;
     }
-    if (releaseEpochs.get(sessionId) !== epoch) {
+    if (releases.get(sessionId)?.epoch !== epoch) {
       // The conversation was deleted or archived while we were connecting —
       // resolveEndpoint resurrected its view after the release disposed it.
       // Unwind completely: close the socket, dispose the recreated view.
       conn.closed = true;
       await conn.bridge.close().catch(() => {});
-      const disposition = releaseDispositions.get(sessionId) ?? 'detach';
+      const disposition = releases.get(sessionId)?.disposition ?? 'detach';
       await (
         disposition === 'dispose'
           ? browserViewHost().disposeSession(sessionId)
@@ -401,7 +412,7 @@ export async function releaseBrowserSession(sessionId: string): Promise<void> {
 
 /** Detach automation while preserving the user's visible embedded browser view. */
 export async function releaseBrowserAutomationSession(sessionId: string): Promise<void> {
-  markBrowserSessionReleased(sessionId, 'detach');
+  const disposition = markBrowserSessionReleased(sessionId, 'detach');
   const conn = bySession.get(sessionId);
   if (conn) {
     bySession.delete(sessionId);
@@ -409,18 +420,26 @@ export async function releaseBrowserAutomationSession(sessionId: string): Promis
     await conn.bridge.close().catch(() => {});
   }
   if (browserAutomationAvailable()) {
-    await browserViewHost()
-      .releaseSession(sessionId)
-      .catch(() => {});
+    await (
+      disposition === 'dispose'
+        ? browserViewHost().disposeSession(sessionId)
+        : browserViewHost().releaseSession(sessionId)
+    ).catch(() => {});
   }
 }
 
 function markBrowserSessionReleased(
   sessionId: string,
   disposition: 'detach' | 'dispose',
-): void {
-  releaseEpochs.set(sessionId, (releaseEpochs.get(sessionId) ?? 0) + 1);
-  releaseDispositions.set(sessionId, disposition);
+): 'detach' | 'dispose' {
+  const previous = releases.get(sessionId);
+  const effective =
+    previous?.disposition === 'dispose' || disposition === 'dispose' ? 'dispose' : 'detach';
+  releases.set(sessionId, {
+    epoch: (previous?.epoch ?? 0) + 1,
+    disposition: effective,
+  });
+  return effective;
 }
 
 export { browserAutomationAvailable };
@@ -433,7 +452,6 @@ export function resetBrowserSessionsForTest(): void {
   }
   bySession.clear();
   pendingAcquires.clear();
-  releaseEpochs.clear();
-  releaseDispositions.clear();
+  releases.clear();
   inFlightBySession.clear();
 }

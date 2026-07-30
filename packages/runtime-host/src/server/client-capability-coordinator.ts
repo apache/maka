@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import {
   buildMcpTools,
   mcpProxyToolName,
@@ -7,17 +7,16 @@ import {
   type ToolGroup,
 } from '@maka/runtime';
 import {
-  CLIENT_CAPABILITY_MAX_RESULT_BYTES,
-  CLIENT_CAPABILITY_RESULT_CHUNK_MAX_BYTES,
-  decodeClientCapabilityResult,
-  type ClientCapabilityCallResult,
-  type ClientCapabilityClientFrame,
   type ClientCapabilityOffer,
   type ClientCapabilityReplaceInput,
   type ClientCapabilityToolDescriptor,
   type ClientCapabilityUnregisterInput,
-  type ClientSurface,
 } from '../protocol/index.js';
+import {
+  ClientCapabilityInvocationBroker,
+  ClientCapabilityInvocationError,
+  type ClientCapabilityInvocationFailure,
+} from './client-capability-invocation-broker.js';
 import type {
   ClientCapabilityOperationHandlerMap,
   ConnectionContext,
@@ -29,28 +28,12 @@ import type {
   ClientCapabilityService,
 } from './client-capability-service.js';
 
-const DEFAULT_CALL_TIMEOUT_MS = 120_000;
-const MAX_CONCURRENT_INVOCATIONS_PER_CONNECTION = 8;
-const MAX_RETIRED_INVOCATIONS = 1_024;
+// Leave the Host deadline outside the provider's bounded action deadline so an
+// accepted call can return its real terminal result instead of outcome_unknown.
+const DEFAULT_CALL_TIMEOUT_MS = 150_000;
 
-export type ClientCapabilityInvocationFailure =
-  | 'capability_ambiguous'
-  | 'capability_lost'
-  | 'outcome_unknown'
-  | 'provider_overloaded'
-  | 'provider_rejected'
-  | 'provider_failed'
-  | 'timed_out';
-
-export class ClientCapabilityInvocationError extends Error {
-  constructor(
-    readonly code: ClientCapabilityInvocationFailure,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'ClientCapabilityInvocationError';
-  }
-}
+export { ClientCapabilityInvocationError };
+export type { ClientCapabilityInvocationFailure };
 
 export interface ClientCapabilitySnapshot {
   readonly registrationIds: readonly string[];
@@ -61,7 +44,6 @@ export interface ClientCapabilitySnapshot {
 
 interface ClientProviderState {
   readonly connectionId: string;
-  surface?: ClientSurface;
   sender?: ClientCapabilityConnectionSender;
   current?: CapabilityRegistration;
   readonly registrations: Map<string, CapabilityRegistration>;
@@ -70,7 +52,6 @@ interface ClientProviderState {
 interface CapabilityRegistration {
   readonly connectionId: string;
   readonly registrationId: string;
-  readonly offers: readonly ClientCapabilityOffer[];
   readonly offersByContract: ReadonlyMap<string, FrozenOfferBinding>;
   current: boolean;
   snapshotRefs: number;
@@ -87,8 +68,14 @@ interface FrozenToolBinding {
   readonly descriptor: ClientCapabilityToolDescriptor;
 }
 
-interface SessionCapabilityBinding {
-  readonly connectionId?: string;
+type SessionCapabilityBinding =
+  | { readonly kind: 'bound'; readonly connectionId: string }
+  | { readonly kind: 'lost' };
+
+interface SessionCapabilityState {
+  readonly initiatingConnectionId: string;
+  readonly sessionBindings: ReadonlyMap<string, SessionCapabilityBinding>;
+  readonly turnBindings: ReadonlyMap<string, SessionCapabilityBinding>;
 }
 
 interface SelectedOfferBinding {
@@ -99,23 +86,6 @@ interface SelectedOfferBinding {
 interface SnapshotOfferBinding {
   readonly offer: FrozenOfferBinding;
   readonly registration?: CapabilityRegistration;
-}
-
-interface InvocationState {
-  readonly invocationId: string;
-  readonly registration: CapabilityRegistration;
-  readonly resolve: (result: ClientCapabilityCallResult) => void;
-  readonly reject: (error: Error) => void;
-  readonly signal?: AbortSignal;
-  readonly onAbort?: () => void;
-  readonly timer: NodeJS.Timeout;
-  phase: 'dispatched' | 'accepted' | 'chunks';
-  chunks?: {
-    readonly byteLength: number;
-    readonly chunkCount: number;
-    readonly values: Buffer[];
-    receivedBytes: number;
-  };
 }
 
 export interface HostClientCapabilityCoordinatorOptions {
@@ -136,17 +106,18 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
   readonly #activation: RuntimePolicyActivationGate;
   readonly #onRegistryChanged: () => void;
   readonly #providers = new Map<string, ClientProviderState>();
-  readonly #bindings = new Map<string, ReadonlyMap<string, SessionCapabilityBinding>>();
-  readonly #turnBindings = new Map<string, ReadonlyMap<string, SessionCapabilityBinding>>();
-  readonly #initiatingConnections = new Map<string, string>();
-  readonly #invocations = new Map<string, InvocationState>();
-  readonly #retiredInvocationIds = new Set<string>();
+  readonly #sessions = new Map<string, SessionCapabilityState>();
+  readonly #invocations: ClientCapabilityInvocationBroker<CapabilityRegistration>;
   #revision = 0;
   #draining = false;
 
   constructor(options: HostClientCapabilityCoordinatorOptions) {
     this.#activation = options.activation;
     this.#onRegistryChanged = options.onRegistryChanged;
+    this.#invocations = new ClientCapabilityInvocationBroker({
+      senderFor: (connectionId) => this.#providers.get(connectionId)?.sender,
+      onRegistrationIdle: (registration) => this.#releaseRegistrationIfUnused(registration),
+    });
   }
 
   attachConnection(
@@ -163,7 +134,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
     return {
       accept: (frame) => {
         if (closed) return;
-        this.#accept(connectionId, frame);
+        this.#invocations.accept(connectionId, frame);
       },
       close: () => {
         if (closed) return;
@@ -178,9 +149,10 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
     initiatingConnectionId: string,
   ): Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }> {
     return this.#activation.runMutation(async () => {
-      const previous = this.#bindings.get(sessionId) ?? new Map();
+      const previousState = this.#sessions.get(sessionId);
+      const previous = previousState?.sessionBindings ?? new Map();
       const eligible = this.#eligibleOffersByContract();
-      const previousInitiatingConnection = this.#initiatingConnections.get(sessionId);
+      const previousInitiatingConnection = previousState?.initiatingConnectionId;
       const next = new Map<string, SessionCapabilityBinding>();
       const selected: SelectedOfferBinding[] = [];
       const sessionContractIds = new Set([
@@ -194,7 +166,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
         const previousBinding = previous.get(contractId);
         const candidates = eligible.get(contractId) ?? [];
         let candidate: SelectedOfferBinding | undefined;
-        if (previousBinding?.connectionId) {
+        if (previousBinding?.kind === 'bound') {
           candidate = candidates.find(
             (entry) => entry.registration.connectionId === previousBinding.connectionId,
           );
@@ -205,7 +177,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
                 'A Session-bound Client Capability provider is no longer available for its frozen contract',
             };
           }
-        } else if (previousBinding) {
+        } else if (previousBinding?.kind === 'lost') {
           candidate = candidates.find(
             (entry) => entry.registration.connectionId === initiatingConnectionId,
           );
@@ -230,7 +202,10 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
           }
         }
         if (!candidate) continue;
-        next.set(contractId, { connectionId: candidate.registration.connectionId });
+        next.set(contractId, {
+          kind: 'bound',
+          connectionId: candidate.registration.connectionId,
+        });
         selected.push(candidate);
       }
 
@@ -249,7 +224,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
         }
       }
 
-      const previousTurn = this.#turnBindings.get(sessionId) ?? new Map();
+      const previousTurn = previousState?.turnBindings ?? new Map();
       const nextTurn = new Map<string, SessionCapabilityBinding>();
       for (const [contractId, candidates] of [...eligible].sort(([left], [right]) =>
         left.localeCompare(right),
@@ -259,21 +234,20 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
           candidates.find((entry) => entry.registration.connectionId === initiatingConnectionId) ??
           (candidates.length === 1 ? candidates[0] : undefined);
         if (!candidate || offerConflictsWithProxyNames(candidate.offer, proxyNames)) continue;
-        nextTurn.set(contractId, { connectionId: candidate.registration.connectionId });
+        nextTurn.set(contractId, {
+          kind: 'bound',
+          connectionId: candidate.registration.connectionId,
+        });
         rememberOfferProxyNames(candidate.offer, proxyNames);
       }
 
       const bindingsChanged = !bindingMapsEqual(previous, next);
       const turnBindingsChanged = !bindingMapsEqual(previousTurn, nextTurn);
-      if (bindingsChanged) {
-        if (next.size === 0) this.#bindings.delete(sessionId);
-        else this.#bindings.set(sessionId, next);
-      }
-      if (turnBindingsChanged) {
-        if (nextTurn.size === 0) this.#turnBindings.delete(sessionId);
-        else this.#turnBindings.set(sessionId, nextTurn);
-      }
-      this.#initiatingConnections.set(sessionId, initiatingConnectionId);
+      this.#sessions.set(sessionId, {
+        initiatingConnectionId,
+        sessionBindings: next,
+        turnBindings: nextTurn,
+      });
       const callSelectionChanged =
         previousInitiatingConnection !== initiatingConnectionId &&
         [...eligible.values()].some((candidates) => candidates[0]?.offer.offer.affinity === 'call');
@@ -285,14 +259,16 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
   }
 
   snapshotForSession(sessionId: string): ClientCapabilitySnapshot | undefined {
-    const bindings = this.#bindings.get(sessionId);
-    const turnBindings = this.#turnBindings.get(sessionId);
+    const state = this.#sessions.get(sessionId);
+    const bindings = state?.sessionBindings;
+    const turnBindings = state?.turnBindings;
     const selected: SnapshotOfferBinding[] = [];
     const proxyNames = new Map<string, string>();
     for (const [contractId, binding] of [...(bindings ?? [])].sort(([left], [right]) =>
       left.localeCompare(right),
     )) {
-      const provider = binding.connectionId ? this.#providers.get(binding.connectionId) : undefined;
+      const provider =
+        binding.kind === 'bound' ? this.#providers.get(binding.connectionId) : undefined;
       const registration = provider?.current;
       const offer = registration?.offersByContract.get(contractId);
       if (!provider?.sender || !registration || !offer) {
@@ -307,7 +283,8 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
     for (const [contractId, binding] of [...(turnBindings ?? [])].sort(([left], [right]) =>
       left.localeCompare(right),
     )) {
-      const provider = binding.connectionId ? this.#providers.get(binding.connectionId) : undefined;
+      const provider =
+        binding.kind === 'bound' ? this.#providers.get(binding.connectionId) : undefined;
       const registration = provider?.current;
       const offer = registration?.offersByContract.get(contractId);
       if (
@@ -337,10 +314,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
       rememberOfferProxyNames(offer, proxyNames);
     }
     if (selected.length === 0) return;
-    const proxyProvider = this.#snapshotProvider(
-      this.#initiatingConnections.get(sessionId),
-      selected,
-    );
+    const proxyProvider = this.#snapshotProvider(state?.initiatingConnectionId, selected);
     const tools = buildMcpTools(proxyProvider, {
       callTimeoutMs: DEFAULT_CALL_TIMEOUT_MS,
       categoryHint: 'client_capability',
@@ -388,20 +362,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
       this.#revision += 1;
       this.#onRegistryChanged();
     }
-    for (const invocation of [...this.#invocations.values()]) {
-      if (invocation.registration.connectionId !== connectionId) continue;
-      this.#settleInvocation(
-        invocation,
-        undefined,
-        new ClientCapabilityInvocationError(
-          invocation.phase === 'dispatched' ? 'capability_lost' : 'outcome_unknown',
-          invocation.phase === 'dispatched'
-            ? 'Client Capability provider disconnected before accepting the call'
-            : 'Client Capability provider disconnected after accepting the call',
-        ),
-        false,
-      );
-    }
+    this.#invocations.releaseConnection(connectionId);
     for (const registration of [...provider.registrations.values()]) {
       this.#releaseRegistrationIfUnused(registration);
     }
@@ -417,13 +378,8 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
     for (const connectionId of [...this.#providers.keys()]) {
       this.releaseConnection(connectionId);
     }
-    if (this.#invocations.size !== 0) {
-      throw new Error('Client Capability registry closed with active invocations');
-    }
-    this.#bindings.clear();
-    this.#turnBindings.clear();
-    this.#initiatingConnections.clear();
-    this.#retiredInvocationIds.clear();
+    this.#invocations.close();
+    this.#sessions.clear();
   }
 
   #replace(
@@ -493,7 +449,6 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
           ),
         );
       }
-      provider.surface = context.surface;
       provider.registrations.set(registration.registrationId, registration);
       this.#revision += 1;
       this.#onRegistryChanged();
@@ -574,8 +529,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
             ),
           );
         }
-        const context = options?.context;
-        if (!context) {
+        if (!options?.context) {
           return Promise.reject(new Error('Client Capability invocation context is missing'));
         }
         const dynamicBinding = selectedBinding.registration
@@ -588,277 +542,16 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
               initiatingConnectionId,
               toolIdentity(serverId, toolName),
             );
-        return this.#invoke(
+        return this.#invocations.invoke(
           dynamicBinding.registration,
           dynamicBinding.tool,
           args,
-          context,
-          options?.signal,
-          options?.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
+          options.context,
+          options.signal,
+          options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
         );
       },
     };
-  }
-
-  #invoke(
-    registration: CapabilityRegistration,
-    binding: FrozenToolBinding,
-    args: Record<string, unknown>,
-    context: NonNullable<Parameters<McpToolProvider['callTool']>[3]>['context'] & {},
-    signal: AbortSignal | undefined,
-    timeoutMs: number,
-  ): Promise<ClientCapabilityCallResult> {
-    const provider = this.#providers.get(registration.connectionId);
-    const sender = provider?.sender;
-    if (!sender) {
-      return Promise.reject(
-        new ClientCapabilityInvocationError(
-          'capability_lost',
-          'Client Capability provider is unavailable',
-        ),
-      );
-    }
-    if (signal?.aborted) return Promise.reject(abortReason(signal));
-    const activeForConnection = [...this.#invocations.values()].filter(
-      (invocation) => invocation.registration.connectionId === registration.connectionId,
-    ).length;
-    if (activeForConnection >= MAX_CONCURRENT_INVOCATIONS_PER_CONNECTION) {
-      return Promise.reject(
-        new ClientCapabilityInvocationError(
-          'provider_overloaded',
-          'Client Capability provider has too many active invocations',
-        ),
-      );
-    }
-
-    const invocationId = randomUUID();
-    return new Promise<ClientCapabilityCallResult>((resolve, reject) => {
-      const onAbort = signal
-        ? () => {
-            const invocation = this.#invocations.get(invocationId);
-            if (!invocation) return;
-            void sender.send({ kind: 'client.capability.cancel', invocationId }).catch(() => {});
-            this.#settleInvocation(
-              invocation,
-              undefined,
-              invocation.phase === 'dispatched'
-                ? asError(abortReason(signal))
-                : new ClientCapabilityInvocationError(
-                    'outcome_unknown',
-                    'Client Capability invocation was cancelled after provider acceptance',
-                  ),
-              true,
-            );
-          }
-        : undefined;
-      const timer = setTimeout(() => {
-        const invocation = this.#invocations.get(invocationId);
-        if (!invocation) return;
-        void sender.send({ kind: 'client.capability.cancel', invocationId }).catch(() => {});
-        this.#settleInvocation(
-          invocation,
-          undefined,
-          invocation.phase === 'dispatched'
-            ? new ClientCapabilityInvocationError(
-                'timed_out',
-                'Client Capability invocation timed out before provider acceptance',
-              )
-            : new ClientCapabilityInvocationError(
-                'outcome_unknown',
-                'Client Capability invocation timed out after provider acceptance',
-              ),
-          true,
-        );
-      }, timeoutMs);
-      const invocation: InvocationState = {
-        invocationId,
-        registration,
-        resolve,
-        reject,
-        signal,
-        onAbort,
-        timer,
-        phase: 'dispatched',
-      };
-      this.#invocations.set(invocationId, invocation);
-      if (onAbort) signal?.addEventListener('abort', onAbort, { once: true });
-      void sender
-        .send({
-          kind: 'client.capability.call',
-          invocationId,
-          registrationId: registration.registrationId,
-          offerId: binding.offerId,
-          serverId: binding.descriptor.serverId,
-          toolName: binding.descriptor.name,
-          arguments: args,
-          sessionId: context.sessionId,
-          turnId: context.turnId,
-          toolCallId: context.toolCallId,
-          cwd: context.cwd,
-        })
-        .catch(() => {
-          const current = this.#invocations.get(invocationId);
-          if (!current) return;
-          this.#settleInvocation(
-            current,
-            undefined,
-            new ClientCapabilityInvocationError(
-              'capability_lost',
-              'Client Capability call could not be delivered',
-            ),
-            false,
-          );
-        });
-    });
-  }
-
-  #accept(connectionId: string, frame: ClientCapabilityClientFrame): void {
-    const invocation = this.#invocations.get(frame.invocationId);
-    if (!invocation) {
-      if (this.#retiredInvocationIds.has(frame.invocationId)) return;
-      throw new Error('Client Capability provider returned an unmatched invocation frame');
-    }
-    if (invocation.registration.connectionId !== connectionId) {
-      throw new Error('Client Capability provider returned another connection invocation');
-    }
-    switch (frame.kind) {
-      case 'client.capability.accepted':
-        if (invocation.phase !== 'dispatched') {
-          throw new Error('Client Capability invocation was accepted more than once');
-        }
-        invocation.phase = 'accepted';
-        const sender = this.#providers.get(invocation.registration.connectionId)?.sender;
-        if (!sender) {
-          this.#settleInvocation(
-            invocation,
-            undefined,
-            new ClientCapabilityInvocationError(
-              'capability_lost',
-              'Client Capability provider disappeared during acceptance',
-            ),
-            false,
-          );
-          return;
-        }
-        void sender
-          .send({
-            kind: 'client.capability.admitted',
-            invocationId: invocation.invocationId,
-          })
-          .catch(() => {
-            const current = this.#invocations.get(invocation.invocationId);
-            if (!current) return;
-            this.#settleInvocation(
-              current,
-              undefined,
-              new ClientCapabilityInvocationError(
-                'outcome_unknown',
-                'Client Capability acceptance acknowledgement could not be delivered',
-              ),
-              false,
-            );
-          });
-        return;
-      case 'client.capability.rejected':
-        if (invocation.phase !== 'dispatched') {
-          throw new Error('Accepted Client Capability invocation cannot be rejected');
-        }
-        this.#settleInvocation(
-          invocation,
-          undefined,
-          new ClientCapabilityInvocationError('provider_rejected', frame.message),
-          true,
-        );
-        return;
-      case 'client.capability.failed':
-        if (invocation.phase === 'dispatched') {
-          throw new Error('Client Capability failure arrived before acceptance');
-        }
-        this.#settleInvocation(
-          invocation,
-          undefined,
-          new ClientCapabilityInvocationError('provider_failed', frame.message),
-          true,
-        );
-        return;
-      case 'client.capability.result':
-        if (invocation.phase !== 'accepted') {
-          throw new Error('Client Capability result arrived outside the accepted phase');
-        }
-        this.#settleInvocation(invocation, frame.result, undefined, true);
-        return;
-      case 'client.capability.result_start':
-        if (invocation.phase !== 'accepted') {
-          throw new Error('Client Capability result chunks started outside the accepted phase');
-        }
-        invocation.phase = 'chunks';
-        invocation.chunks = {
-          byteLength: frame.byteLength,
-          chunkCount: frame.chunkCount,
-          values: [],
-          receivedBytes: 0,
-        };
-        return;
-      case 'client.capability.result_chunk':
-        this.#acceptChunk(invocation, frame.index, frame.data);
-    }
-  }
-
-  #acceptChunk(invocation: InvocationState, index: number, data: string): void {
-    const chunks = invocation.chunks;
-    if (invocation.phase !== 'chunks' || !chunks || index !== chunks.values.length) {
-      throw new Error('Client Capability result chunk is out of sequence');
-    }
-    const value = Buffer.from(data, 'base64');
-    const remaining = chunks.byteLength - chunks.receivedBytes;
-    const expectedLength = Math.min(CLIENT_CAPABILITY_RESULT_CHUNK_MAX_BYTES, remaining);
-    if (value.byteLength !== expectedLength || index >= chunks.chunkCount) {
-      throw new Error('Client Capability result chunk has invalid bounds');
-    }
-    chunks.values.push(value);
-    chunks.receivedBytes += value.byteLength;
-    if (chunks.values.length !== chunks.chunkCount) return;
-    if (
-      chunks.receivedBytes !== chunks.byteLength ||
-      chunks.receivedBytes > CLIENT_CAPABILITY_MAX_RESULT_BYTES
-    ) {
-      throw new Error('Client Capability chunked result length changed');
-    }
-    let decoded: unknown;
-    try {
-      decoded = JSON.parse(Buffer.concat(chunks.values).toString('utf8'));
-    } catch {
-      throw new Error('Client Capability chunked result is not valid JSON');
-    }
-    this.#settleInvocation(invocation, decodeClientCapabilityResult(decoded), undefined, true);
-  }
-
-  #settleInvocation(
-    invocation: InvocationState,
-    result: ClientCapabilityCallResult | undefined,
-    error: Error | undefined,
-    releaseRemote: boolean,
-  ): void {
-    if (this.#invocations.get(invocation.invocationId) !== invocation) return;
-    this.#invocations.delete(invocation.invocationId);
-    clearTimeout(invocation.timer);
-    if (invocation.onAbort && invocation.signal) {
-      invocation.signal.removeEventListener('abort', invocation.onAbort);
-    }
-    this.#rememberRetiredInvocation(invocation.invocationId);
-    if (releaseRemote) {
-      const sender = this.#providers.get(invocation.registration.connectionId)?.sender;
-      void sender
-        ?.send({
-          kind: 'client.capability.release',
-          invocationId: invocation.invocationId,
-        })
-        .catch(() => {});
-    }
-    if (error) invocation.reject(error);
-    else if (result) invocation.resolve(result);
-    else invocation.reject(new Error('Client Capability invocation settled without an outcome'));
-    this.#releaseRegistrationIfUnused(invocation.registration);
   }
 
   #provider(connectionId: string): ClientProviderState {
@@ -922,44 +615,57 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
   }
 
   #markBindingsLost(connectionId: string, contracts?: ReadonlySet<string>): void {
-    for (const [sessionId, bindings] of this.#bindings) {
+    for (const [sessionId, state] of this.#sessions) {
+      const bindings = state.sessionBindings;
       let next: Map<string, SessionCapabilityBinding> | undefined;
       for (const [contractId, binding] of bindings) {
-        if (binding.connectionId !== connectionId || (contracts && !contracts.has(contractId))) {
+        if (
+          binding.kind !== 'bound' ||
+          binding.connectionId !== connectionId ||
+          (contracts && !contracts.has(contractId))
+        ) {
           continue;
         }
         next ??= new Map(bindings);
-        next.set(contractId, {});
+        next.set(contractId, { kind: 'lost' });
       }
-      if (next) this.#bindings.set(sessionId, next);
+      if (next) this.#sessions.set(sessionId, { ...state, sessionBindings: next });
     }
   }
 
   #retireBindings(connectionId: string, contracts: ReadonlySet<string>): void {
-    for (const [sessionId, bindings] of this.#bindings) {
+    for (const [sessionId, state] of this.#sessions) {
+      const bindings = state.sessionBindings;
       const next = new Map(bindings);
       for (const [contractId, binding] of bindings) {
-        if (binding.connectionId === connectionId && contracts.has(contractId)) {
+        if (
+          binding.kind === 'bound' &&
+          binding.connectionId === connectionId &&
+          contracts.has(contractId)
+        ) {
           next.delete(contractId);
         }
       }
       if (next.size === bindings.size) continue;
-      if (next.size === 0) this.#bindings.delete(sessionId);
-      else this.#bindings.set(sessionId, next);
+      this.#sessions.set(sessionId, { ...state, sessionBindings: next });
     }
   }
 
   #removeTurnBindings(connectionId: string, contracts?: ReadonlySet<string>): void {
-    for (const [sessionId, bindings] of this.#turnBindings) {
+    for (const [sessionId, state] of this.#sessions) {
+      const bindings = state.turnBindings;
       const next = new Map(bindings);
       for (const [contractId, binding] of bindings) {
-        if (binding.connectionId === connectionId && (!contracts || contracts.has(contractId))) {
+        if (
+          binding.kind === 'bound' &&
+          binding.connectionId === connectionId &&
+          (!contracts || contracts.has(contractId))
+        ) {
           next.delete(contractId);
         }
       }
       if (next.size === bindings.size) continue;
-      if (next.size === 0) this.#turnBindings.delete(sessionId);
-      else this.#turnBindings.set(sessionId, next);
+      this.#sessions.set(sessionId, { ...state, turnBindings: next });
     }
   }
 
@@ -967,7 +673,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
     if (
       registration.current ||
       registration.snapshotRefs !== 0 ||
-      [...this.#invocations.values()].some((invocation) => invocation.registration === registration)
+      this.#invocations.holdsRegistration(registration)
     ) {
       return;
     }
@@ -982,13 +688,6 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
     if (!provider.current && !provider.sender && provider.registrations.size === 0) {
       this.#providers.delete(provider.connectionId);
     }
-  }
-
-  #rememberRetiredInvocation(invocationId: string): void {
-    this.#retiredInvocationIds.add(invocationId);
-    if (this.#retiredInvocationIds.size <= MAX_RETIRED_INVOCATIONS) return;
-    const oldest = this.#retiredInvocationIds.values().next().value;
-    if (typeof oldest === 'string') this.#retiredInvocationIds.delete(oldest);
   }
 }
 
@@ -1040,7 +739,6 @@ function freezeRegistration(
   return {
     connectionId,
     registrationId: input.registrationId,
-    offers: Object.freeze(offers),
     offersByContract,
     current: true,
     snapshotRefs: 0,
@@ -1110,15 +808,17 @@ function bindingMapsEqual(
 ): boolean {
   if (left.size !== right.size) return false;
   for (const [contractId, binding] of left) {
-    if (right.get(contractId)?.connectionId !== binding.connectionId) return false;
+    const candidate = right.get(contractId);
+    if (
+      !candidate ||
+      candidate.kind !== binding.kind ||
+      (binding.kind === 'bound' &&
+        (candidate.kind !== 'bound' || candidate.connectionId !== binding.connectionId))
+    ) {
+      return false;
+    }
   }
   return true;
-}
-
-function abortReason(signal: AbortSignal): unknown {
-  return (
-    signal.reason ?? new DOMException('Client Capability invocation was aborted', 'AbortError')
-  );
 }
 
 function asError(value: unknown): Error {

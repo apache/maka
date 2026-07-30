@@ -143,6 +143,7 @@ interface LiveEntry {
   readonly entryId: string;
   readonly messageId: string;
   readonly content: MessageContent;
+  readonly initiatingConnectionId: string;
   readonly placement: MessagePlacement;
   readonly disposition: 'steering' | 'followup';
   readonly generation: number;
@@ -212,6 +213,7 @@ export interface RootFollowupBatch {
   readonly transitionId: string;
   readonly sessionId: string;
   readonly previousTurnId: string;
+  readonly initiatingConnectionId: string | undefined;
   readonly content: MessageContent;
   readonly sources: readonly RootFollowupSource[];
 }
@@ -373,6 +375,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       transitionId: transition.transitionId,
       sessionId: identity.sessionId,
       previousTurnId: identity.turnId,
+      initiatingConnectionId: entries[0]?.initiatingConnectionId,
       content: followup.content,
       sources: followup.sources,
     };
@@ -614,6 +617,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         entryId,
         messageId: input.messageId,
         content: payload.content,
+        initiatingConnectionId,
         placement: input.placement,
         disposition,
         generation: state.generation,
@@ -1162,6 +1166,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       !transition ||
       transition.transitionId !== batch.transitionId ||
       transition.identity.turnId !== batch.previousTurnId ||
+      transition.entries[0]?.initiatingConnectionId !== batch.initiatingConnectionId ||
       !isDeepStrictEqual(transition.entries.map(sourceFromEntry), batch.sources) ||
       !messageContentsEqual(
         aggregateMessageContent(transition.entries.map((entry) => entry.content)),

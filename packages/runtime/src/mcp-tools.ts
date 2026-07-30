@@ -19,17 +19,19 @@ export interface McpToolProvider {
     serverId: string,
     toolName: string,
     args: Record<string, unknown>,
-    options?: {
+    options: {
       signal?: AbortSignal;
       timeoutMs?: number;
-      context?: {
-        sessionId: string;
-        turnId: string;
-        toolCallId: string;
-        cwd: string;
-      };
+      context: McpToolInvocationContext;
     },
   ): Promise<McpCallResult>;
+}
+
+export interface McpToolInvocationContext {
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly toolCallId: string;
+  readonly cwd: string;
 }
 
 export interface BuildMcpToolsOptions {

@@ -1067,6 +1067,101 @@ test('Client Capability ambiguity fails before durable root admission', async ()
   }
 });
 
+test('queued follow-up binds Client Capabilities to its submitting connection', {
+  timeout: 20_000,
+}, async () => {
+  const clientCapabilities = new HostClientCapabilityCoordinator({
+    activation: new RuntimePolicyActivationGate(),
+    onRegistryChanged: () => undefined,
+  });
+  let backend: LinkedChildAuthorityBackend | undefined;
+  const fixture = await createFailureFixture({
+    clientCapabilities,
+    registerBackend: (backends) => {
+      backends.register('fake', (context) => {
+        backend = new LinkedChildAuthorityBackend(context.sessionId);
+        return backend;
+      });
+    },
+  });
+  const first = clientCapabilities.attachConnection('provider-a', { send: async () => {} });
+  const second = clientCapabilities.attachConnection('provider-b', { send: async () => {} });
+
+  try {
+    for (const [connectionId, registrationId] of [
+      ['provider-a', 'registration-a'],
+      ['provider-b', 'registration-b'],
+    ] as const) {
+      const replaced = await clientCapabilities.handlers['client.capability.replace'](
+        {
+          registrationId,
+          offers: [
+            {
+              offerId: 'browser',
+              version: '0',
+              affinity: 'turn',
+              label: 'Browser',
+              tools: [
+                {
+                  serverId: 'browser',
+                  name: 'navigate',
+                  inputSchema: { type: 'object' },
+                },
+              ],
+            },
+          ],
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency, connectionId),
+      );
+      assert.equal(replaced.ok, true);
+    }
+
+    const firstTurnId = 'turn-client-a';
+    const started = await fixture.coordinator.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: firstTurnId,
+        content: { text: HOLD_EXTERNAL_PROMPT },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-a'),
+    );
+    assert.equal(started.ok, true);
+    const firstSnapshot = clientCapabilities.snapshotForSession(fixture.sessionId);
+    assert.deepEqual(firstSnapshot?.registrationIds, ['registration-a']);
+    firstSnapshot?.release();
+
+    const queued = await fixture.messages.handlers['turn.message.submit'](
+      {
+        originHostEpoch: fixture.hostEpoch,
+        sessionId: fixture.sessionId,
+        messageId: 'followup-from-provider-b',
+        content: { text: HOLD_EXTERNAL_PROMPT },
+        placement: 'next_turn',
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-b'),
+    );
+    assert.equal(queued.ok && queued.result.disposition, 'followup');
+
+    backend?.release();
+    await waitUntil(() => {
+      const state = fixture.coordinator.readRootState(fixture.sessionId);
+      return state.kind === 'active' && state.turnId !== firstTurnId;
+    });
+    const followupSnapshot = clientCapabilities.snapshotForSession(fixture.sessionId);
+    assert.deepEqual(followupSnapshot?.registrationIds, ['registration-b']);
+    followupSnapshot?.release();
+
+    const followup = fixture.coordinator.readRootState(fixture.sessionId);
+    assert.equal(followup.kind, 'active');
+    if (followup.kind === 'active') await fixture.coordinator.stopRoot(followup);
+  } finally {
+    first.close();
+    second.close();
+    clientCapabilities.close();
+    await fixture.dispose();
+  }
+});
+
 test('an exact terminal retry does not require a live Client Capability binding', {
   timeout: 20_000,
 }, async () => {

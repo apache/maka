@@ -66,9 +66,11 @@ describe('Desktop Computer Use production wiring', () => {
     ]);
     assert.match(main, /computerUseToolsForModel\([\s\S]*supportsVision/);
     assert.match(main, /projectEffectiveProductToolSurface\(\{[\s\S]*tools:\s*selectedTools/);
+    const scripts = (JSON.parse(packageJson) as { scripts?: Record<string, string> }).scripts ?? {};
+    assert.match(scripts['build:workspace-deps'] ?? '', /@maka\/computer-use run build/);
     assert.match(
-      packageJson,
-      /"smoke:browser":\s*"[^"]*@maka\/computer-use[^"]*build:main/,
+      scripts['smoke:browser'] ?? '',
+      /npm run build:workspace-deps && npm run build:main/,
     );
   });
 
