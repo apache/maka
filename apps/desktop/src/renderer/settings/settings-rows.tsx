@@ -2,8 +2,12 @@ import type { ReactNode } from 'react';
 import { Card } from '@maka/ui';
 
 export function SettingsRows({ className, children }: { className?: string; children: ReactNode }) {
+  // Astryx Card owns the card face (background, border, radius); rows.css
+  // keeps only the row grid, container query, and overflow clipping.
+  // padding={0} because the rows meet the card edge and carry their own
+  // insets.
   return (
-    <Card className={className ? `settingsRows ${className}` : 'settingsRows'} data-maka-contract="settings-rows">
+    <Card padding={0} className={className ? `settingsRows ${className}` : 'settingsRows'} data-maka-contract="settings-rows">
       {children}
     </Card>
   );

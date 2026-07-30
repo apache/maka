@@ -110,7 +110,10 @@ export class ErrorBoundary extends Component<{ children: ReactNode; locale: UiLo
 
     return (
       <div className="maka-error-surface" role="alert" aria-live="assertive">
-        <Card className="maka-error-card">
+        {/* Astryx Card owns the card face: red tint for the destructive
+            surface, high elevation for the former shadow-modal. The class
+            keeps only the icon/copy grid geometry. */}
+        <Card variant="red" elevation="high" padding={0} className="maka-error-card">
           <span className="maka-error-icon" aria-hidden="true">
             <AlertTriangle size={28} />
           </span>

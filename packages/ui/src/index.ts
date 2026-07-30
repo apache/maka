@@ -52,7 +52,9 @@ export * from './bot-brand.js';
 export * from './bot-brand-logo.js';
 export * from './maka-wordmark.js';
 export * from './primitives/alert.js';
-export * from './primitives/card.js';
+// #1565 PR 3: Card is the Astryx primitive now (the thin data-slot recipe is
+// retired); same barrel slot, implementation swapped behind it.
+export { Card, type CardProps, type CardVariant } from '@astryxdesign/core';
 // `markerVariants` / `toolVariants` are deliberately NOT re-exported here:
 // they are internal styling tables that the chat call sites apply via relative
 // import, so keeping them off the package barrel preserves the governance goal

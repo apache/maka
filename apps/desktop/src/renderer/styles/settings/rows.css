@@ -19,11 +19,12 @@
 /* PR-SETTINGS-GROUPED-CARD-0 (WAWQAQ msg `1abecd66`): grouped card —
    outer card + hairline dividers, no per-row chrome. The ONLY card
    primitive on settings pages (see .settingsStructuredPage note in
-   nav-sidebar.css). */
+   nav-sidebar.css). #1565 PR 3: the card face (background, border, radius)
+   is owned by the Astryx Card that settings-rows.tsx renders; this class
+   keeps only the row grid, the container query, and the overflow clip. */
 .settingsRows {
   display: grid;
   gap: 0;
-  border: var(--border-width-hairline) solid oklch(from var(--foreground) l c h / 0.08);
   overflow: hidden;
   /* #1362: the card is the query container for the row-stacking rules at the
      bottom of this file. Rows respond to the width the card actually has —

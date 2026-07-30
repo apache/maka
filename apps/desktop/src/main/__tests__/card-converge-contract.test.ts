@@ -1,16 +1,18 @@
 /**
  * CARD-CONVERGE-0 (issue #520 PR9): the hand-written settings card surfaces
- * migrate onto a shared Card primitive so the container is the primitive (with
- * `data-slot`), not a bare `<div>` carrying a hand-rolled class.
+ * migrate onto a shared Card primitive so the container is the primitive,
+ * not a bare `<div>` carrying a hand-rolled class.
  *
  * - settingsRows (row-list container) + settingsMetricCard (metric tile) +
  *   maka-error-card (crash surface) → Card
  *
- * Card is intentionally thin (`data-slot="card"` + radius-surface): each site
- * keeps its own layout/visual CSS, but the radius now comes from Card and the
- * element carries `data-slot="card"`. maka-error-card stays on Card (not Alert)
- * because it is a large crash surface with shadow-modal + stack <pre>, not a
- * small inline callout.
+ * #1565 PR 3: Card is the Astryx primitive re-exported from the barrel (the
+ * thin `data-slot="card"` recipe is retired). Astryx Card owns the card face
+ * (background, border, radius, elevation); each site's class keeps only its
+ * layout geometry. maka-error-card stays on Card (not Alert/Banner) because
+ * it is a large crash surface with stack <pre>, not a small inline callout —
+ * its destructive face is Card's own vocabulary (variant="red",
+ * elevation="high").
  *
  * The usage stats table is NOT on a public Table primitive: with only one HTML
  * <table> consumer it was premature abstraction (PR9 review P3), so
@@ -40,15 +42,19 @@ const SETTINGS_ROWS_CONSUMERS = [
   'apps/desktop/src/renderer/settings/memory-settings-page.tsx',
 ];
 
-const CARD_PRIMITIVE = 'packages/ui/src/primitives/card.tsx';
+const UI_BARREL = 'packages/ui/src/index.ts';
 
 const CARD_IMPORT_RE =
-  /import\s+\{[^}]*\bCard\b[^}]*\}\s+from\s+['"][^'"]*(?:@maka\/ui|primitives\/card)['"]/;
+  /import\s+\{[^}]*\bCard\b[^}]*\}\s+from\s+['"][^'"]*@maka\/ui['"]/;
 
 describe('card converge (#520 PR9)', () => {
-  it('ships Card primitive with data-slot', async () => {
-    const card = await readFile(resolve(REPO_ROOT, CARD_PRIMITIVE), 'utf8');
-    assert.match(card, /data-slot=["']card["']/, 'Card primitive must carry data-slot="card"');
+  it('re-exports the Astryx Card from the barrel', async () => {
+    const barrel = await readFile(resolve(REPO_ROOT, UI_BARREL), 'utf8');
+    assert.match(
+      barrel,
+      /export\s+\{[^}]*\bCard\b[^}]*\}\s+from\s+['"]@astryxdesign\/core['"]/,
+      'the @maka/ui Card must be the Astryx primitive, not a local recipe',
+    );
   });
 
   it('card sites import Card', async () => {
