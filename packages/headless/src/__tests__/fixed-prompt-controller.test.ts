@@ -3184,6 +3184,44 @@ describe('fixed prompt controller', () => {
     });
   });
 
+  test('rejects a sparse verifier attempt array as provider infrastructure output', async () => {
+    await withDir(async (dir) => {
+      const systemPromptPath = join(dir, 'system_prompt.md');
+      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+      const attempts = new Array(2) as NonNullable<
+        TaskRunOutput['harbor']['verifier']
+      >['attempts'];
+      attempts[1] = {
+        attempt: 2,
+        classification: 'failed',
+        durationMs: 20,
+        reward: 0,
+      };
+
+      const result = await runFixedPromptController({
+        runId: 'run-1',
+        roundId: 'round-1',
+        config,
+        systemPromptPath,
+        resultsJsonlPath: join(dir, 'results.jsonl'),
+        tasks: [{ id: 'task-a', path: '/bench/task-a' }],
+        taskRunner: async () =>
+          harborOutput({
+            taskId: 'task-a',
+            reward: 0,
+            status: 'failed',
+            errorClass: 'network',
+            verifier: { outcome: 'failed', attempts },
+          }),
+      });
+
+      assert.equal(result.events[0]?.type, 'task_infra_failed');
+      assert.equal(result.events[0]?.scored, false);
+      assert.equal(result.events[0]?.eligible, false);
+      assert.equal(result.events[0]?.errorClass, 'network');
+    });
+  });
+
   test('projects a stored structured verifier failure without resampling Harbor', async () => {
     await withDir(async (dir) => {
       const systemPromptPath = join(dir, 'system_prompt.md');

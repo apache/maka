@@ -1211,29 +1211,22 @@ function structuredVerifierGrade(harbor: unknown): 'passed' | 'failed' | undefin
     verifier.attempts.length > 3
   )
     return undefined;
-  if (
-    verifier.attempts.some(
-      (attempt, index) =>
-        !isRecord(attempt) ||
-        attempt.attempt !== index + 1 ||
-        typeof attempt.durationMs !== 'number' ||
-        !Number.isFinite(attempt.durationMs) ||
-        attempt.durationMs < 0 ||
-        (attempt.reward !== undefined &&
-          (typeof attempt.reward !== 'number' || !Number.isFinite(attempt.reward))),
+  for (let index = 0; index < verifier.attempts.length; index += 1) {
+    const attempt = verifier.attempts[index];
+    if (
+      !isRecord(attempt) ||
+      attempt.attempt !== index + 1 ||
+      typeof attempt.durationMs !== 'number' ||
+      !Number.isFinite(attempt.durationMs) ||
+      attempt.durationMs < 0 ||
+      (attempt.reward !== undefined &&
+        (typeof attempt.reward !== 'number' || !Number.isFinite(attempt.reward))) ||
+      (index < verifier.attempts.length - 1 &&
+        attempt.classification !== 'infra_setup_failed' &&
+        attempt.classification !== 'infra_failed')
     )
-  )
-    return undefined;
-  if (
-    verifier.attempts
-      .slice(0, -1)
-      .some(
-        (attempt) =>
-          attempt.classification !== 'infra_setup_failed' &&
-          attempt.classification !== 'infra_failed',
-      )
-  )
-    return undefined;
+      return undefined;
+  }
 
   const finalAttempt = verifier.attempts.at(-1)!;
   if (!isRecord(finalAttempt)) return undefined;
