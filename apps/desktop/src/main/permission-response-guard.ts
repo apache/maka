@@ -21,6 +21,8 @@ interface NormalizedSendSessionCommand {
   type: 'send';
   turnId?: string;
   text: string;
+  displayText?: string;
+  voiceOperationId?: string;
   skillIds?: string[];
   attachmentItems?: unknown;
   turnOrchestration?: TurnOrchestration;
@@ -106,12 +108,22 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
   const value = requireObject(input, 'Invalid session command');
   if (value.type !== 'send') return undefined;
   const text = normalizeSendText(value.text);
+  const displayText =
+    value.displayText === undefined ? undefined : normalizeSendText(value.displayText);
+  const voiceOperationId =
+    value.voiceOperationId === undefined
+      ? undefined
+      : normalizeVoiceOperationId(value.voiceOperationId);
   const skillIds = normalizeSessionSkillIds(value.skillIds);
-  if (!text.trim() && skillIds.length === 0) throw new Error('Invalid send text');
+  if (!text.trim() && skillIds.length === 0 && !voiceOperationId) {
+    throw new Error('Invalid send text');
+  }
   return {
     type: 'send',
     ...normalizeOptionalSendTurnId(value.turnId),
     text,
+    ...(displayText !== undefined ? { displayText } : {}),
+    ...(voiceOperationId ? { voiceOperationId } : {}),
     ...(skillIds.length > 0 ? { skillIds } : {}),
     ...(value.attachmentItems !== undefined ? { attachmentItems: value.attachmentItems } : {}),
     ...(value.turnOrchestration !== undefined
@@ -119,6 +131,17 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
       : {}),
     ...normalizeOptionalQuotes(value.quotes),
   };
+}
+
+function normalizeVoiceOperationId(input: unknown): string {
+  if (
+    typeof input !== 'string' ||
+    input.length > 64 ||
+    !/^[0-9a-f]{8}-[0-9a-f-]{27,36}$/i.test(input)
+  ) {
+    throw new Error('Invalid voice operation id');
+  }
+  return input;
 }
 
 function normalizeTurnOrchestration(input: unknown): TurnOrchestration {

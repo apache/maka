@@ -409,6 +409,7 @@ export class AgentRun {
         turnId: this.turnId,
         orchestration: this.effectiveOrchestration,
         text: this.input.userInput.text,
+        ...(this.input.userInput.voiceAudio ? { voiceAudio: this.input.userInput.voiceAudio } : {}),
         ...(this.input.userInput.attachments
           ? { attachments: this.input.userInput.attachments }
           : {}),

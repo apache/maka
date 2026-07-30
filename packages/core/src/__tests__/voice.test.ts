@@ -6,9 +6,14 @@ import {
   VOICE_MAX_CAPTURE_DURATION_MS,
   defaultVoiceCapabilitySnapshot,
   defaultVoicePrivacyFlags,
+  defaultVoiceSettings,
+  normalizeVoiceCoordinatorToolCall,
   normalizeVoiceInputMode,
+  normalizeVoiceSettings,
   normalizeVoiceTranscriptText,
   normalizeVoiceTtsPolicy,
+  resolveVoiceRoute,
+  type VoiceModelRouteCapability,
   validateVoiceCaptureRequest,
   validateVoiceTranscriptResult,
   validateVoiceTtsRequest,
@@ -121,6 +126,132 @@ describe('voice capture validation', () => {
   it('accepts a bounded push-to-talk capture request', () => {
     const result = validateVoiceCaptureRequest(validCapture);
     assert.equal(result.ok, true);
+  });
+
+  it('rejects zero and negative duration/byte values', () => {
+    assert.equal(validateVoiceCaptureRequest({ ...validCapture, durationMs: 0 }).ok, false);
+    assert.equal(validateVoiceCaptureRequest({ ...validCapture, durationMs: -1 }).ok, false);
+    assert.equal(validateVoiceCaptureRequest({ ...validCapture, audioBytes: 0 }).ok, false);
+    assert.equal(validateVoiceCaptureRequest({ ...validCapture, audioBytes: -1 }).ok, false);
+  });
+});
+
+describe('voice route resolver', () => {
+  const capability = (
+    kind: 'native' | 'transcription' | 'realtime',
+  ): VoiceModelRouteCapability => ({
+    connectionSlug: 'openai',
+    modelId:
+      kind === 'native'
+        ? 'gpt-audio'
+        : kind === 'transcription'
+          ? 'gpt-4o-mini-transcribe'
+          : 'gpt-realtime',
+    modalities:
+      kind === 'transcription'
+        ? { input: ['audio'], output: ['text'] }
+        : { input: ['text', 'audio'], output: ['text', 'audio'] },
+    endpointRoles: [
+      kind === 'native'
+        ? 'audio_chat'
+        : kind === 'transcription'
+          ? 'transcription'
+          : 'realtime_voice',
+    ],
+    transports: [
+      kind === 'native'
+        ? 'openai_chat_audio'
+        : kind === 'transcription'
+          ? 'openai_audio_transcriptions'
+          : 'openai_realtime',
+    ],
+    transcriptOutput: kind === 'native',
+    adapterReady: true,
+  });
+
+  it('sends raw audio to a capable current agent before considering STT', () => {
+    const result = resolveVoiceRoute({
+      intent: 'send_task',
+      currentAgent: capability('native'),
+      recognition: capability('transcription'),
+    });
+    assert.equal(result.kind, 'native_audio_task');
+    assert.equal(result.kind === 'native_audio_task' && result.transcriptProjection, 'marker_only');
+  });
+
+  it('routes dictation and unsupported agent models through configured STT', () => {
+    assert.equal(
+      resolveVoiceRoute({
+        intent: 'dictate',
+        currentAgent: capability('native'),
+        recognition: capability('transcription'),
+      }).kind,
+      'transcription_to_draft',
+    );
+    assert.equal(
+      resolveVoiceRoute({
+        intent: 'send_task',
+        recognition: capability('transcription'),
+      }).kind,
+      'transcription_to_draft',
+    );
+  });
+
+  it('fails closed without explicit recognition or realtime configuration', () => {
+    assert.deepEqual(resolveVoiceRoute({ intent: 'dictate' }), {
+      kind: 'blocked',
+      reason: 'recognition_not_configured',
+    });
+    assert.deepEqual(resolveVoiceRoute({ intent: 'voice_chat' }), {
+      kind: 'blocked',
+      reason: 'realtime_not_configured',
+    });
+  });
+
+  it('requires a ready transport adapter instead of trusting modality alone', () => {
+    const native = capability('native');
+    native.adapterReady = false;
+    assert.deepEqual(resolveVoiceRoute({ intent: 'send_task', currentAgent: native }), {
+      kind: 'blocked',
+      reason: 'recognition_not_configured',
+    });
+    const realtime = capability('realtime');
+    realtime.adapterReady = false;
+    assert.deepEqual(resolveVoiceRoute({ intent: 'voice_chat', realtime }), {
+      kind: 'blocked',
+      reason: 'adapter_unsupported',
+    });
+  });
+});
+
+describe('voice settings and coordinator input', () => {
+  it('normalizes bounded voice settings and preserves safe defaults', () => {
+    assert.deepEqual(normalizeVoiceSettings(undefined), defaultVoiceSettings());
+    const normalized = normalizeVoiceSettings({
+      recognition: { connectionSlug: ' openai ', model: ' transcribe ', language: ' zh ' },
+      realtime: { connectionSlug: ' openai ', model: ' realtime ', voice: '' },
+    });
+    assert.equal(normalized.recognition.connectionSlug, 'openai');
+    assert.equal(normalized.recognition.model, 'transcribe');
+    assert.equal(normalized.recognition.language, 'zh');
+    assert.equal(normalized.realtime.voice, 'marin');
+  });
+
+  it('accepts only the four narrow coordinator tools with bounded arguments', () => {
+    assert.deepEqual(
+      normalizeVoiceCoordinatorToolCall({
+        name: 'start_task',
+        arguments: { task: '  inspect the repository  ' },
+      }),
+      { name: 'start_task', arguments: { task: 'inspect the repository' } },
+    );
+    assert.throws(() =>
+      normalizeVoiceCoordinatorToolCall({
+        name: 'run_shell',
+        arguments: { command: 'rm -rf /' },
+      }),
+    );
+    assert.throws(() => normalizeVoiceCoordinatorToolCall({ name: 'steer_task', arguments: {} }));
   });
 });
 

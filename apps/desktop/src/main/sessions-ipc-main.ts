@@ -20,6 +20,7 @@ import type {
   SessionListFilter,
   StoredMessage,
   ThinkingLevel,
+  EphemeralVoiceAudio,
 } from '@maka/core';
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { WorkspacePrivacyContext } from '@maka/core/incognito';
@@ -116,6 +117,11 @@ export interface SessionsIpcDeps {
   ) => Promise<{ turnId: string; ok: boolean; error?: string }>;
   getWorkspacePrivacyContext: () => Promise<WorkspacePrivacyContext>;
   canCreateFakeSession: () => boolean;
+  consumeNativeAudioOperation?: (input: {
+    operationId: string;
+    connectionSlug: string;
+    model: string;
+  }) => EphemeralVoiceAudio;
 }
 
 function latestStoredMessageTs(messages: readonly StoredMessage[]): number | undefined {
@@ -210,6 +216,7 @@ export function registerSessionsIpc(
     streamEvents,
     getWorkspacePrivacyContext,
     canCreateFakeSession,
+    consumeNativeAudioOperation,
   } = deps;
   registerSessionExecutionIpc({
     ipcMain,
@@ -430,17 +437,35 @@ export function registerSessionsIpc(
     const skillInvocation = sendPlan.preparation;
     const { turnId, attachments } = sendPlan.resolved;
     const displayText =
-      sendCommand.text.trim().length > 0
+      sendCommand.displayText ??
+      (sendCommand.text.trim().length > 0
         ? sendCommand.text
         : skillInvocation.skillInvocation.loaded
             .map((skill) => `/skill:${skill.id}`)
-            .join(' ');
+            .join(' '));
+    const voiceTargetHeader = sendCommand.voiceOperationId
+      ? await store.readHeader(sessionId)
+      : undefined;
+    const voiceAudio =
+      sendCommand.voiceOperationId && voiceTargetHeader
+        ? consumeNativeAudioOperation?.({
+            operationId: sendCommand.voiceOperationId,
+            connectionSlug: voiceTargetHeader.llmConnectionSlug,
+            model: voiceTargetHeader.model,
+          })
+        : undefined;
+    if (sendCommand.voiceOperationId && !voiceAudio) {
+      throw new Error('voice_operation_unavailable');
+    }
     const iterator = runtime.sendMessage(
       sessionId,
       {
         turnId,
         text: skillInvocation.sendText,
-        ...(skillInvocation.disposition === 'ready' ? { displayText } : {}),
+        ...(voiceAudio ? { voiceAudio } : {}),
+        ...(skillInvocation.disposition === 'ready' || sendCommand.displayText !== undefined
+          ? { displayText }
+          : {}),
         ...(sendCommand.turnOrchestration
           ? { turnOrchestration: sendCommand.turnOrchestration }
           : {}),
@@ -462,6 +487,13 @@ export function registerSessionsIpc(
       attachments,
       skillInvocation: skillInvocation.skillInvocation,
     };
+  });
+  ipcMain.handle('sessions:steer', async (_event, sessionId: string, text: unknown) => {
+    if (typeof text !== 'string' || text.trim().length === 0 || text.length > 128_000) {
+      throw new Error('Invalid steering text');
+    }
+    await store.readHeader(sessionId);
+    return runtime.steer(sessionId, text.trim());
   });
   ipcMain.handle(
     'attachments:pickFiles',

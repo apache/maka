@@ -427,7 +427,13 @@ function SettingsPage(props: {
       // 语音 + 网关 是两套独立的功能（一个是本地麦克风/转写管线，
       // 一个是远程 SSE/HTTP 网关），合在一页里读起来既挤又混。
       // 拆成两个独立的 nav 项各自独立呈现。
-      return <VoiceModelsSettingsPage />;
+      return (
+        <VoiceModelsSettingsPage
+          settings={props.settings}
+          connections={props.connections}
+          onUpdate={props.onUpdateSettings}
+        />
+      );
     case 'open-gateway':
       return <OpenGatewaySettingsPage settings={props.settings} onUpdate={props.onUpdateSettings} />;
     case 'search':

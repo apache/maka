@@ -57,6 +57,23 @@ export interface ModelInfo {
     functionCalling?: boolean;
     imageGeneration?: boolean;
   };
+  /**
+   * Voice is transport-sensitive: an `audio` modality alone does not prove
+   * that the configured provider wire can carry it. These fields are kept
+   * separate from the legacy chat capability booleans so routing can require
+   * metadata, endpoint role, and an implemented adapter at the same time.
+   */
+  modalities?: {
+    input: Array<'text' | 'image' | 'audio'>;
+    output: Array<'text' | 'image' | 'audio'>;
+  };
+  endpointRoles?: Array<
+    'agent_chat' | 'audio_chat' | 'transcription' | 'realtime_voice' | 'speech_generation'
+  >;
+  transports?: Array<
+    'openai_chat_audio' | 'openai_audio_transcriptions' | 'openai_realtime' | 'provider_native'
+  >;
+  transcriptOutput?: boolean;
 }
 
 export type ModelDiscoverySource = 'fetched' | 'fallback';

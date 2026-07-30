@@ -119,6 +119,7 @@ import { createAppShellSessionRowActions } from './app-shell-session-row-actions
 import { createAppShellSessionSettingsActions } from './app-shell-session-settings-actions';
 import { createAppShellStopAction } from './app-shell-stop-action';
 import { useStableActions } from './use-stable-actions';
+import { useVoiceInput } from './use-voice-input';
 import {
   useActiveSessionEvents,
   useAppShellBootstrapSubscriptions,
@@ -1395,6 +1396,98 @@ function AppShellContent({
     newChatProjectId: selectedProjectId,
   });
 
+  const voiceInput = useVoiceInput({
+    getDraftKey: () => activeIdRef.current ?? 'new-session',
+    getCurrentAgent: () => {
+      if (activeIdRef.current && activeSessionForView) {
+        return {
+          connectionSlug: activeSessionForView.llmConnectionSlug,
+          model: activeSessionForView.model,
+        };
+      }
+      return newChatModel
+        ? {
+            connectionSlug: newChatModel.llmConnectionSlug,
+            model: newChatModel.model,
+          }
+        : undefined;
+    },
+    appendTranscript: (draftKey, text) => {
+      composerRef.current?.appendDraft?.(draftKey, text);
+    },
+    sendNativeVoice: (operationId) =>
+      send(
+        'Listen to the attached audio and carry out the user request. The audio is authoritative.',
+        undefined,
+        {
+          voiceOperationId: operationId,
+          displayText: uiLocale === 'zh' ? '🎙️ 语音任务' : '🎙️ Voice task',
+        },
+      ),
+    runCoordinatorTool: async (call) => {
+      if (call.name === 'start_task') {
+        if (!call.arguments.task) throw new Error('voice_task_missing');
+        return { ok: await send(call.arguments.task) };
+      }
+      if (call.name === 'steer_task') {
+        if (!call.arguments.guidance) throw new Error('voice_guidance_missing');
+        const sessionId = activeIdRef.current;
+        if (!sessionId) return { ok: await send(call.arguments.guidance) };
+        const outcome = await window.maka.sessions.steer(
+          sessionId,
+          call.arguments.guidance,
+        );
+        if (outcome.kind === 'fallback') {
+          return { ok: await send(call.arguments.guidance), fallback: true };
+        }
+        return { ok: true, queued: true };
+      }
+      if (call.name === 'check_task') {
+        const sessionId = activeIdRef.current;
+        const session = sessions.find((candidate) => candidate.id === sessionId);
+        return session
+          ? { ok: true, sessionId: session.id, status: session.status }
+          : { ok: false, status: 'no_active_task' };
+      }
+      const lastAssistant = [...messages]
+        .reverse()
+        .find((message) => message.type === 'assistant');
+      return {
+        ok: true,
+        summary:
+          lastAssistant?.type === 'assistant'
+            ? lastAssistant.text.slice(-4_000)
+            : uiLocale === 'zh'
+              ? '当前任务还没有可总结的回复。'
+              : 'The current task has no response to summarize yet.',
+      };
+    },
+    onBlocked: (reason) => {
+      const configure =
+        reason === 'recognition_not_configured' ||
+        reason === 'realtime_not_configured';
+      toastApi.error(
+        uiLocale === 'zh' ? '语音不可用' : 'Voice unavailable',
+        configure
+          ? uiLocale === 'zh'
+            ? '请先在设置 · 语音中配置识别或实时语音模型。'
+            : 'Configure a recognition or realtime voice model in Settings · Voice.'
+          : reason,
+      );
+      if (configure) openSettingsSection('voice');
+    },
+    onError: (error) => {
+      toastApi.error(
+        uiLocale === 'zh' ? '语音操作失败' : 'Voice operation failed',
+        localizedShellErrorMessage(
+          error,
+          uiLocale === 'zh' ? '请检查麦克风、模型配置和网络连接。' : 'Check the microphone, model configuration, and network.',
+          uiLocale,
+        ),
+      );
+    },
+  });
+
   const { handleTurnFooterAction } = useStableActions(createAppShellTurnActions, {
     uiLocale,
     activeIdRef,
@@ -2266,6 +2359,12 @@ function AppShellContent({
                 // "Maka 继续中…". Both are mutually exclusive with activeStreamingLive.
                 processing={showProcessingIndicator && !activeStreamingLive}
                 continuing={showContinuingIndicator && !activeStreamingLive}
+                voiceCaptureState={voiceInput.captureState}
+                realtimeVoiceState={voiceInput.realtimeState}
+                voiceProviderLabel={voiceInput.providerLabel}
+                onToggleVoiceCapture={voiceInput.toggleCapture}
+                onCancelVoiceCapture={voiceInput.cancelCapture}
+                onToggleRealtimeVoice={voiceInput.toggleRealtime}
                 onSend={sendWithAttachments}
                 onStop={stop}
                 revisionNotice={

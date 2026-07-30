@@ -49,6 +49,28 @@
   justify-content: flex-end;
 }
 
+.maka-composer-voice-button[data-state="recording"] {
+  color: var(--status-danger, var(--destructive));
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  animation: maka-voice-pulse 1.2s ease-in-out infinite;
+}
+
+.maka-composer-voice-button[data-state="native_ready"],
+.maka-composer-realtime-voice-button[data-state="connected"] {
+  color: var(--status-running);
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+@keyframes maka-voice-pulse {
+  50% { opacity: 0.55; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .maka-composer-voice-button[data-state="recording"] {
+    animation: none;
+  }
+}
+
 .maka-composer-status-slot {
   min-width: 0;
   flex: 1 1 auto;

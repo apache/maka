@@ -18,7 +18,11 @@
  */
 
 import { useEffect, useRef, useState, type RefObject } from 'react';
-import { readComposerDraft, rememberComposerDraft } from './composer-helpers.js';
+import {
+  appendPromptContextDraft,
+  readComposerDraft,
+  rememberComposerDraft,
+} from './composer-helpers.js';
 
 export interface ComposerDraftApi {
   /** True while the active draft holds non-whitespace text (gates Send). */
@@ -36,6 +40,8 @@ export interface ComposerDraftApi {
   clearDraft(key: string | undefined): void;
   /** Persist text under an explicit session key before the host switches it. */
   setDraft(key: string | undefined, value: string): void;
+  /** Append text under an explicit session key without overwriting its draft. */
+  appendDraft(key: string | undefined, value: string): string;
   /** The key the current textarea content is persisted under. */
   activeDraftKey(): string | undefined;
 }
@@ -68,6 +74,16 @@ export function useComposerDraft(input: {
     if (activeDraftKeyRef.current === key) setHasDraftText(Boolean(value.trim()));
   }
 
+  function appendDraft(key: string | undefined, value: string) {
+    const current =
+      activeDraftKeyRef.current === key
+        ? (input.textareaRef.current?.value ?? '')
+        : readComposerDraft(draftStoreRef.current, key);
+    const next = appendPromptContextDraft(current, value);
+    setDraft(key, next);
+    return next;
+  }
+
   function activeDraftKey() {
     return activeDraftKeyRef.current;
   }
@@ -92,5 +108,12 @@ export function useComposerDraft(input: {
     }
   }, [input.draftKey]);
 
-  return { hasDraftText, saveCurrentDraft, clearDraft, setDraft, activeDraftKey };
+  return {
+    hasDraftText,
+    saveCurrentDraft,
+    clearDraft,
+    setDraft,
+    appendDraft,
+    activeDraftKey,
+  };
 }

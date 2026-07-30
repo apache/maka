@@ -11,7 +11,7 @@ import {
   type ReactNode,
 } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
-import { ArrowUp, Blocks, Paperclip, Pencil, Plus, X } from './icons.js';
+import { ArrowUp, Blocks, Mic, Paperclip, Pencil, Plus, Volume2, X } from './icons.js';
 import { ChatModelSwitcher, ModelChipStatic, NewChatModelPicker } from './chat-model-switcher.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
@@ -65,6 +65,8 @@ export interface ComposerHandle {
   clearDraft(draftKey: string): void;
   /** Write a specific session draft before navigation changes the active key. */
   setDraft(draftKey: string, text: string): void;
+  /** Append to a specific session draft without replacing newer text. */
+  appendDraft?(draftKey: string, text: string): void;
   /** Replace structured Skills under an explicit session draft key. */
   setSkillDraft(
     draftKey: string,
@@ -223,6 +225,12 @@ export const Composer = forwardRef<
     graphModePending?: boolean;
     graphModeDisabledReason?: string;
     onGraphModeChange?(active: boolean): void | Promise<void>;
+    voiceCaptureState?: 'idle' | 'requesting' | 'recording' | 'processing' | 'native_ready' | 'sending';
+    realtimeVoiceState?: 'idle' | 'connecting' | 'connected';
+    voiceProviderLabel?: string;
+    onToggleVoiceCapture?(input?: { dictate?: boolean }): void | Promise<void>;
+    onCancelVoiceCapture?(): void;
+    onToggleRealtimeVoice?(): void | Promise<void>;
     /**
      * Composer mention popups. Both are optional and the whole feature no-ops
      * when absent (SSR contracts render Composer with minimal props):
@@ -254,7 +262,14 @@ export const Composer = forwardRef<
   // (issue #1044). `resetPromptHistoryNavigation` is a hoisted wrapper so the
   // draft hook's swap effect can reset history navigation even though the
   // history hook is created one line below it.
-  const { hasDraftText, saveCurrentDraft, clearDraft, setDraft, activeDraftKey } = useComposerDraft({
+  const {
+    hasDraftText,
+    saveCurrentDraft,
+    clearDraft,
+    setDraft,
+    appendDraft,
+    activeDraftKey,
+  } = useComposerDraft({
     textareaRef,
     draftKey: props.draftKey,
     autoResize,
@@ -360,6 +375,16 @@ export const Composer = forwardRef<
         if (!el) return;
         resetPromptHistoryNavigation();
         el.value = text;
+        autoResize();
+        focusTextInputAtEnd(el);
+      },
+      appendDraft(draftKey: string, text: string) {
+        const next = appendDraft(draftKey, text);
+        if (activeDraftKey() !== draftKey) return;
+        const el = textareaRef.current;
+        if (!el) return;
+        resetPromptHistoryNavigation();
+        el.value = next;
         autoResize();
         focusTextInputAtEnd(el);
       },
@@ -469,6 +494,15 @@ export const Composer = forwardRef<
         closeMention();
         return;
       }
+    }
+    if (
+      event.key === 'Escape' &&
+      props.voiceCaptureState &&
+      props.voiceCaptureState !== 'idle'
+    ) {
+      event.preventDefault();
+      props.onCancelVoiceCapture?.();
+      return;
     }
     if (
       event.key === 'Backspace' &&
@@ -982,6 +1016,20 @@ export const Composer = forwardRef<
                 <span className="maka-composer-permission-dot" aria-hidden="true" />
                 {copy.awaitingPermission}
               </span>
+            ) : props.voiceCaptureState === 'recording' ? (
+              copy.voiceRecording
+            ) : props.voiceCaptureState === 'requesting' ? (
+              copy.voiceRequesting
+            ) : props.voiceCaptureState === 'processing' ? (
+              copy.voiceProcessing
+            ) : props.voiceCaptureState === 'native_ready' ? (
+              copy.voiceReady
+            ) : props.voiceCaptureState === 'sending' ? (
+              copy.voiceSending
+            ) : props.realtimeVoiceState === 'connecting' ? (
+              copy.voiceConnecting
+            ) : props.realtimeVoiceState === 'connected' ? (
+              copy.voiceConnected
             ) : sendPending ? (
               copy.sending
             ) : importActionBusy ? (
@@ -1002,6 +1050,57 @@ export const Composer = forwardRef<
           <div className="maka-composer-right-controls">
             {!props.streaming && (
               <>
+                {props.onToggleVoiceCapture ? (
+                  <UiButton
+                    variant="quiet"
+                    size="icon-sm"
+                    shape="pill"
+                    type="button"
+                    className="maka-composer-voice-button"
+                    data-state={props.voiceCaptureState ?? 'idle'}
+                    disabled={
+                      props.disabled ||
+                      props.voiceCaptureState === 'requesting' ||
+                      props.voiceCaptureState === 'processing' ||
+                      props.voiceCaptureState === 'sending'
+                    }
+                    aria-label={
+                      props.voiceCaptureState === 'recording'
+                        ? copy.voiceStopRecording
+                        : props.voiceCaptureState === 'native_ready'
+                          ? copy.voiceSend
+                          : copy.voiceStart
+                    }
+                    title={`${copy.voiceStart}${props.voiceProviderLabel ? ` · ${props.voiceProviderLabel}` : ''}`}
+                    onClick={(event) => {
+                      void props.onToggleVoiceCapture?.({ dictate: event.shiftKey });
+                    }}
+                  >
+                    <Mic size={15} aria-hidden="true" />
+                  </UiButton>
+                ) : null}
+                {props.onToggleRealtimeVoice ? (
+                  <UiButton
+                    variant="quiet"
+                    size="icon-sm"
+                    shape="pill"
+                    type="button"
+                    className="maka-composer-realtime-voice-button"
+                    data-state={props.realtimeVoiceState ?? 'idle'}
+                    disabled={props.disabled || props.realtimeVoiceState === 'connecting'}
+                    aria-label={
+                      props.realtimeVoiceState === 'connected'
+                        ? copy.voiceRealtimeStop
+                        : copy.voiceRealtimeStart
+                    }
+                    title={copy.voiceRealtimeStart}
+                    onClick={() => {
+                      void props.onToggleRealtimeVoice?.();
+                    }}
+                  >
+                    <Volume2 size={15} aria-hidden="true" />
+                  </UiButton>
+                ) : null}
                 {props.activeSession ? (
                   <ChatModelSwitcher
                     activeSession={props.activeSession}

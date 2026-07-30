@@ -143,6 +143,7 @@ import {
 import { registerGatewayIpc } from './gateway-ipc-main.js';
 import { registerSessionsIpc } from './sessions-ipc-main.js';
 import { registerAgentGraphIpc } from './agent-graph-ipc-main.js';
+import { createVoiceIpcService, registerVoiceIpc } from './voice-ipc-main.js';
 import {
   assertSessionCanSendFromHeader,
   isSessionLifecycleError,
@@ -373,6 +374,12 @@ function disconnectManagedOAuthConnection(connection: LlmConnection): Promise<vo
 function resolveConnectionSecret(slug: string): Promise<string | null> {
   return oauthModelConnections.resolveConnectionSecret(slug);
 }
+
+const voiceIpcService = createVoiceIpcService({
+  settingsStore,
+  connectionStore,
+  resolveConnectionSecret,
+});
 
 /**
  * Read-only credential-presence check for status paths (onboarding's
@@ -1105,6 +1112,7 @@ function registerIpc(): void {
     coordinator: agentGraphCoordinator,
     sendToRenderer: safeSendToRenderer,
   });
+  registerVoiceIpc({ ipcMain, service: voiceIpcService });
   registerSessionsIpc({
     workspaceRoot,
     runtime,
@@ -1138,6 +1146,8 @@ function registerIpc(): void {
     streamEvents,
     getWorkspacePrivacyContext,
     canCreateFakeSession: canCreateFakeSessionFromRenderer,
+    consumeNativeAudioOperation: (input) =>
+      voiceIpcService.consumeNativeAudioOperation(input),
   });
   registerSubscriptionIpc({
     connectionStore,

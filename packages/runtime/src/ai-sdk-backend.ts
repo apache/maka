@@ -57,6 +57,7 @@ import type { AgentSpec } from '@maka/core/runtime-inputs';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
+import type { EphemeralVoiceAudio } from '@maka/core/voice';
 import {
   resolveEffectiveOrchestration,
   type EffectiveOrchestration,
@@ -918,6 +919,7 @@ export class AiSdkBackend implements AgentBackend {
           ? undefined
           : await this.buildCurrentUserContent(
               input.text,
+              input.voiceAudio,
               input.attachments,
               input.quotes,
               input.headAnchorRuntimeEvent?.id,
@@ -2775,11 +2777,12 @@ export class AiSdkBackend implements AgentBackend {
 
   private async buildCurrentUserContent(
     text: string,
+    voiceAudio?: EphemeralVoiceAudio,
     attachments?: AttachmentRef[],
     quotes?: QuoteRef[],
     runtimeEventId?: string,
   ): Promise<UserContent> {
-    return this.appendImageParts(
+    const content = await this.appendImageParts(
       formatTextWithInlineRefs(text, {
         ...(attachments !== undefined ? { attachments } : {}),
         ...(quotes !== undefined ? { quotes } : {}),
@@ -2787,6 +2790,19 @@ export class AiSdkBackend implements AgentBackend {
       attachments,
       runtimeEventId === undefined ? undefined : `runtime-event:${runtimeEventId}`,
     );
+    if (!voiceAudio) return content;
+    const parts: Exclude<UserContent, string> =
+      typeof content === 'string' ? [{ type: 'text', text: content }] : [...content];
+    parts.push({
+      type: 'audio',
+      data: voiceAudio.bytes,
+      mediaType: voiceAudio.mediaType,
+      format: voiceAudio.format,
+      durationMs: voiceAudio.durationMs,
+      ...(voiceAudio.transcript ? { transcript: voiceAudio.transcript } : {}),
+      retention: 'operation_memory',
+    });
+    return parts;
   }
 
   private async resolveSystemPrompt(turnId: string): Promise<string | undefined> {

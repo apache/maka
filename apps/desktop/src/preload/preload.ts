@@ -73,6 +73,13 @@ import type {
   PlanReminderRecurrence,
   DailyReviewArchive,
   DailyReviewArchiveSummary,
+  QueueEnqueueOutcome,
+  VoiceBeginRequest,
+  VoiceBeginResult,
+  VoiceCapturedAudio,
+  VoiceCoordinatorToolCall,
+  VoiceFinishCaptureResult,
+  VoiceRealtimeClientSession,
   DailyReviewConfig,
   DailyReviewMode,
   DailyReviewSummary,
@@ -197,6 +204,8 @@ const makaBridge = {
             type: 'send';
             turnId: string;
             text: string;
+            displayText?: string;
+            voiceOperationId?: string;
             skillIds?: string[];
             attachmentItems?: RendererIngestInput[];
             turnOrchestration?: TurnOrchestration;
@@ -232,6 +241,9 @@ const makaBridge = {
     },
     stop(sessionId: string, input?: { source?: 'stop_button' }): Promise<void> {
       return ipcRenderer.invoke('sessions:stop', sessionId, input);
+    },
+    steer(sessionId: string, text: string): Promise<QueueEnqueueOutcome> {
+      return ipcRenderer.invoke('sessions:steer', sessionId, text);
     },
     readMessages(sessionId: string): Promise<StoredMessage[]> {
       return ipcRenderer.invoke('sessions:readMessages', sessionId);
@@ -899,6 +911,29 @@ const makaBridge = {
           return ipcRenderer.invoke('settings:bots:onboarding:open', sessionId);
         },
       },
+    },
+  },
+  voice: {
+    begin(input: VoiceBeginRequest): Promise<VoiceBeginResult> {
+      return ipcRenderer.invoke('voice:begin', input);
+    },
+    finishCapture(
+      operationId: string,
+      audio: VoiceCapturedAudio,
+    ): Promise<VoiceFinishCaptureResult> {
+      return ipcRenderer.invoke('voice:finishCapture', operationId, audio);
+    },
+    cancel(operationId: string): Promise<void> {
+      return ipcRenderer.invoke('voice:cancel', operationId);
+    },
+    createRealtimeSession(): Promise<VoiceRealtimeClientSession> {
+      return ipcRenderer.invoke('voice:createRealtimeSession');
+    },
+    closeRealtimeSession(sessionId: string): Promise<void> {
+      return ipcRenderer.invoke('voice:closeRealtimeSession', sessionId);
+    },
+    validateCoordinatorToolCall(input: unknown): Promise<VoiceCoordinatorToolCall> {
+      return ipcRenderer.invoke('voice:validateCoordinatorToolCall', input);
     },
   },
   notifications: {

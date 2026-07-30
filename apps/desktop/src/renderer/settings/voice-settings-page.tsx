@@ -1,10 +1,29 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { Volume2 } from '@maka/ui/icons';
-import type { VoicePermissionStatus } from '@maka/core';
+import type {
+  AppSettings,
+  LlmConnection,
+  UpdateAppSettingsResult,
+  VoicePermissionStatus,
+} from '@maka/core';
 import { defaultVoiceCaptureCaps, validateVoiceCaptureRequest } from '@maka/core';
-import { Alert, AlertDescription, Badge, Button, PageHeader, formatBytes, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import {
+  Alert,
+  AlertDescription,
+  Badge,
+  Button,
+  Input,
+  PageHeader,
+  SettingsSelect,
+  Textarea,
+  formatBytes,
+  useMountedRef,
+  useToast,
+  useUiLocale,
+} from '@maka/ui';
 import { getVoiceSettingsCopy, type VoiceSettingsCopy } from '../locales/settings-voice-copy';
 import { useActionGuard } from './use-action-guard';
+import { startVoiceCapture } from '../voice-audio-capture';
 
 type VoiceSmokeState =
   | { status: 'idle' }
@@ -13,18 +32,83 @@ type VoiceSmokeState =
   | { status: 'ok'; durationMs: number; audioBytes: number }
   | { status: 'error'; reason: 'unsupported_media' | 'unsupported_recorder' | 'denied' | 'failed' | string };
 
-export function VoiceModelsSettingsPage() {
+export function VoiceModelsSettingsPage(props: {
+  settings: AppSettings;
+  connections: LlmConnection[];
+  onUpdate(
+    patch: Parameters<typeof window.maka.settings.update>[0],
+  ): Promise<UpdateAppSettingsResult>;
+}) {
   const locale = useUiLocale();
   const copy = getVoiceSettingsCopy(locale);
   const [permission, setPermission] = useState<VoicePermissionStatus>('unknown');
   const [smoke, setSmoke] = useState<VoiceSmokeState>({ status: 'idle' });
   const [isBusy, setIsBusy] = useState(false);
+  const [recognitionTest, setRecognitionTest] = useState<string>();
+  const [saving, setSaving] = useState(false);
   const captureSmokeGuard = useActionGuard<'smoke'>();
   const voicePageMountedRef = useMountedRef();
   const activeVoiceCaptureStreamRef = useRef<MediaStream | null>(null);
   const toast = useToast();
   const caps = defaultVoiceCaptureCaps();
   const smokeStatusId = useId();
+  const enabledConnections = props.connections.filter((connection) => connection.enabled);
+  const connectionOptions = [
+    ['', copy.notConfigured],
+    ...enabledConnections.map(
+      (connection) => [connection.slug, connection.name] as const,
+    ),
+  ] as Array<readonly [string, string]>;
+
+  async function updateVoice(
+    patch: {
+      recognition?: Partial<AppSettings['voice']['recognition']>;
+      realtime?: Partial<AppSettings['voice']['realtime']>;
+    },
+  ): Promise<void> {
+    setSaving(true);
+    try {
+      await props.onUpdate({
+        voice: {
+          recognition: {
+            ...props.settings.voice.recognition,
+            ...patch.recognition,
+          },
+          realtime: {
+            ...props.settings.voice.realtime,
+            ...patch.realtime,
+          },
+        },
+      });
+    } catch (error) {
+      toast.error(copy.saveFailed, error instanceof Error ? error.message : copy.failed);
+    } finally {
+      if (voicePageMountedRef.current) setSaving(false);
+    }
+  }
+
+  async function runRecognitionTest(): Promise<void> {
+    setRecognitionTest(copy.recognitionTesting);
+    let operationId: string | undefined;
+    try {
+      const begin = await window.maka.voice.begin({ intent: 'dictate' });
+      if (!begin.ok) throw new Error(begin.reason);
+      operationId = begin.operationId;
+      const capture = await startVoiceCapture({ maxDurationMs: 4_000 });
+      await waitMs(4_000);
+      const audio = await capture.stop();
+      const result = await window.maka.voice.finishCapture(begin.operationId, audio);
+      if (result.kind !== 'transcript') throw new Error('recognition_test_no_transcript');
+      operationId = undefined;
+      setRecognitionTest(result.text);
+      toast.success(copy.recognitionSuccess, result.text);
+    } catch (error) {
+      if (operationId) await window.maka.voice.cancel(operationId).catch(() => {});
+      const message = error instanceof Error ? error.message : copy.failed;
+      setRecognitionTest(message);
+      toast.error(copy.recognitionFailed, message);
+    }
+  }
 
   useEffect(() => {
     return () => {
@@ -189,6 +273,120 @@ export function VoiceModelsSettingsPage() {
         badge={<Badge variant="neutral" label={copy.badge} />}
         subtitle={copy.subtitle}
       />
+
+      <div className="settingsFeatureStatusHeroHeading">
+        <h3>{copy.recognitionTitle}</h3>
+      </div>
+      <div className="settingsFormGrid settingsFormGridProxy">
+        <label>
+          <span>{copy.connection}</span>
+          <SettingsSelect
+            value={props.settings.voice.recognition.connectionSlug}
+            ariaLabel={copy.recognitionConnectionAria}
+            options={connectionOptions}
+            disabled={saving}
+            onChange={(connectionSlug) =>
+              void updateVoice({ recognition: { connectionSlug } })
+            }
+          />
+        </label>
+        <label>
+          <span>{copy.model}</span>
+          <Input
+            key={`recognition-model:${props.settings.voice.recognition.model}`}
+            defaultValue={props.settings.voice.recognition.model}
+            disabled={saving}
+            placeholder="gpt-4o-mini-transcribe"
+            aria-label={copy.recognitionModelAria}
+            onBlur={(event) =>
+              void updateVoice({ recognition: { model: event.currentTarget.value } })
+            }
+          />
+        </label>
+        <label>
+          <span>{copy.language}</span>
+          <Input
+            key={`recognition-language:${props.settings.voice.recognition.language}`}
+            defaultValue={props.settings.voice.recognition.language}
+            disabled={saving}
+            placeholder="zh"
+            aria-label={copy.language}
+            onBlur={(event) =>
+              void updateVoice({ recognition: { language: event.currentTarget.value } })
+            }
+          />
+        </label>
+        <label>
+          <span>{copy.prompt}</span>
+          <Textarea
+            key={`recognition-prompt:${props.settings.voice.recognition.prompt}`}
+            defaultValue={props.settings.voice.recognition.prompt}
+            disabled={saving}
+            aria-label={copy.prompt}
+            onBlur={(event) =>
+              void updateVoice({ recognition: { prompt: event.currentTarget.value } })
+            }
+          />
+        </label>
+      </div>
+      <div className="settingsActionRow">
+        <Button
+          type="button"
+          disabled={saving || isBusy}
+          onClick={() => void runRecognitionTest()}
+        >
+          {copy.testRecognition}
+        </Button>
+      </div>
+      {recognitionTest ? (
+        <Alert variant="passive" role="status">
+          <AlertDescription>{recognitionTest}</AlertDescription>
+        </Alert>
+      ) : null}
+
+      <div className="settingsFeatureStatusHeroHeading">
+        <h3>{copy.realtimeTitle}</h3>
+      </div>
+      <div className="settingsFormGrid settingsFormGridProxy">
+        <label>
+          <span>{copy.connection}</span>
+          <SettingsSelect
+            value={props.settings.voice.realtime.connectionSlug}
+            ariaLabel={copy.realtimeConnectionAria}
+            options={connectionOptions}
+            disabled={saving}
+            onChange={(connectionSlug) =>
+              void updateVoice({ realtime: { connectionSlug } })
+            }
+          />
+        </label>
+        <label>
+          <span>{copy.model}</span>
+          <Input
+            key={`realtime-model:${props.settings.voice.realtime.model}`}
+            defaultValue={props.settings.voice.realtime.model}
+            disabled={saving}
+            placeholder="gpt-realtime"
+            aria-label={copy.realtimeModelAria}
+            onBlur={(event) =>
+              void updateVoice({ realtime: { model: event.currentTarget.value } })
+            }
+          />
+        </label>
+        <label>
+          <span>{copy.voice}</span>
+          <Input
+            key={`realtime-voice:${props.settings.voice.realtime.voice}`}
+            defaultValue={props.settings.voice.realtime.voice}
+            disabled={saving}
+            placeholder="marin"
+            aria-label={copy.voice}
+            onBlur={(event) =>
+              void updateVoice({ realtime: { voice: event.currentTarget.value } })
+            }
+          />
+        </label>
+      </div>
 
       <dl className="settingsBotStatusGrid" aria-label={copy.statusAria}>
         <div>

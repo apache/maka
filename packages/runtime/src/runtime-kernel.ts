@@ -1371,6 +1371,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
           ? { orchestration: begin.backendInput.orchestration }
           : {}),
         text: input.text,
+        ...(input.voiceAudio ? { voiceAudio: input.voiceAudio } : {}),
         ...(begin.backendInput.attachments ? { attachments: begin.backendInput.attachments } : {}),
         ...(begin.backendInput.quotes ? { quotes: begin.backendInput.quotes } : {}),
         context: begin.backendInput.context,

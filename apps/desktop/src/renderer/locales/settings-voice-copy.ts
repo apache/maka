@@ -31,6 +31,23 @@ export type VoiceSettingsCopy = {
   permissions: Record<VoicePermissionStatus, string>;
   validation: Record<'duration_exceeded' | 'audio_too_large' | 'invalid_audio_shape' | 'permission_not_granted' | 'default', string>;
   duration(seconds: string): string;
+  recognitionTitle: string;
+  realtimeTitle: string;
+  connection: string;
+  model: string;
+  language: string;
+  prompt: string;
+  voice: string;
+  notConfigured: string;
+  recognitionConnectionAria: string;
+  recognitionModelAria: string;
+  realtimeConnectionAria: string;
+  realtimeModelAria: string;
+  testRecognition: string;
+  recognitionTesting: string;
+  recognitionSuccess: string;
+  recognitionFailed: string;
+  saveFailed: string;
 };
 
 const SETTINGS_VOICE_COPY = {
@@ -82,6 +99,23 @@ const SETTINGS_VOICE_COPY = {
       default: '语音采集自检未通过。',
     },
     duration: (seconds) => `${seconds} 秒`,
+    recognitionTitle: '语音识别',
+    realtimeTitle: '实时语音协调器',
+    connection: '模型连接',
+    model: '模型 ID',
+    language: '语言（可选）',
+    prompt: '识别提示词（可选）',
+    voice: '音色',
+    notConfigured: '未配置',
+    recognitionConnectionAria: '语音识别模型连接',
+    recognitionModelAria: '语音识别模型 ID',
+    realtimeConnectionAria: '实时语音模型连接',
+    realtimeModelAria: '实时语音模型 ID',
+    testRecognition: '录音 4 秒并测试识别',
+    recognitionTesting: '正在录音并调用所配置的识别模型…',
+    recognitionSuccess: '语音识别测试通过',
+    recognitionFailed: '语音识别测试失败',
+    saveFailed: '保存语音设置失败',
   },
   en: {
     idle: 'Ready to run a local recording check.',
@@ -131,6 +165,23 @@ const SETTINGS_VOICE_COPY = {
       default: 'The voice capture check did not pass.',
     },
     duration: (seconds) => `${seconds} seconds`,
+    recognitionTitle: 'Speech recognition',
+    realtimeTitle: 'Realtime voice coordinator',
+    connection: 'Model connection',
+    model: 'Model ID',
+    language: 'Language (optional)',
+    prompt: 'Recognition prompt (optional)',
+    voice: 'Voice',
+    notConfigured: 'Not configured',
+    recognitionConnectionAria: 'Speech recognition connection',
+    recognitionModelAria: 'Speech recognition model ID',
+    realtimeConnectionAria: 'Realtime voice connection',
+    realtimeModelAria: 'Realtime voice model ID',
+    testRecognition: 'Record for four seconds and test',
+    recognitionTesting: 'Recording and calling the configured recognition model…',
+    recognitionSuccess: 'Speech recognition test passed',
+    recognitionFailed: 'Speech recognition test failed',
+    saveFailed: 'Could not save voice settings',
   },
 } satisfies UiCatalog<VoiceSettingsCopy>;
 

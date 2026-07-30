@@ -43,6 +43,147 @@ export type VoiceReadinessReason =
   | 'raw_audio_persistence_forbidden'
   | 'telemetry_forbidden';
 
+export type VoiceIntent = 'send_task' | 'dictate' | 'voice_chat';
+
+export type VoiceAudioFormat = 'wav' | 'webm' | 'mp3' | 'm4a';
+
+export interface EphemeralVoiceAudio {
+  bytes: Uint8Array;
+  mediaType: string;
+  format: VoiceAudioFormat;
+  durationMs: number;
+  sampleRate: number;
+  channels: number;
+  transcript?: string;
+  retention: 'operation_memory';
+}
+
+export interface VoiceModelRouteCapability {
+  connectionSlug: string;
+  modelId: string;
+  providerLabel?: string;
+  modalities: {
+    input: Array<'text' | 'image' | 'audio'>;
+    output: Array<'text' | 'image' | 'audio'>;
+  };
+  endpointRoles: Array<
+    'agent_chat' | 'audio_chat' | 'transcription' | 'realtime_voice' | 'speech_generation'
+  >;
+  transports: Array<
+    'openai_chat_audio' | 'openai_audio_transcriptions' | 'openai_realtime' | 'provider_native'
+  >;
+  transcriptOutput: boolean;
+  adapterReady: boolean;
+}
+
+export interface VoiceRecognitionConfig {
+  connectionSlug: string;
+  model: string;
+  language: string;
+  prompt: string;
+}
+
+export interface VoiceRealtimeConfig {
+  connectionSlug: string;
+  model: string;
+  voice: string;
+}
+
+export interface VoiceSettings {
+  recognition: VoiceRecognitionConfig;
+  realtime: VoiceRealtimeConfig;
+}
+
+export type VoiceRoutePlan =
+  | {
+      kind: 'native_audio_task';
+      target: VoiceModelRouteCapability;
+      transcriptProjection: 'provider' | 'configured_recognition' | 'marker_only';
+    }
+  | { kind: 'transcription_to_draft'; target: VoiceModelRouteCapability }
+  | { kind: 'realtime_voice'; target: VoiceModelRouteCapability; transport: 'webrtc' }
+  | {
+      kind: 'blocked';
+      reason:
+        | 'recognition_not_configured'
+        | 'realtime_not_configured'
+        | 'model_not_ready'
+        | 'adapter_unsupported'
+        | 'permission_denied';
+    };
+
+export interface ResolveVoiceRouteInput {
+  intent: VoiceIntent;
+  currentAgent?: VoiceModelRouteCapability;
+  recognition?: VoiceModelRouteCapability;
+  realtime?: VoiceModelRouteCapability;
+}
+
+export interface VoiceBeginRequest {
+  intent: VoiceIntent;
+  currentAgent?: {
+    connectionSlug: string;
+    model: string;
+  };
+}
+
+export type VoiceBeginResult =
+  | {
+      ok: true;
+      operationId: string;
+      route: VoiceRoutePlan;
+      expiresAt: number;
+    }
+  | {
+      ok: false;
+      reason: Extract<VoiceRoutePlan, { kind: 'blocked' }>['reason'];
+    };
+
+export interface VoiceCapturedAudio {
+  bytes: Uint8Array;
+  mediaType: string;
+  format: VoiceAudioFormat;
+  durationMs: number;
+  sampleRate: number;
+  channels: number;
+}
+
+export type VoiceFinishCaptureResult =
+  | {
+      kind: 'transcript';
+      operationId: string;
+      text: string;
+      providerLabel: string;
+    }
+  | {
+      kind: 'native_audio_ready';
+      operationId: string;
+      providerLabel: string;
+    };
+
+export interface VoiceRealtimeClientSession {
+  sessionId: string;
+  clientSecret: string;
+  endpoint: string;
+  model: string;
+  providerLabel: string;
+  expiresAt?: number;
+}
+
+export type VoiceCoordinatorToolName =
+  | 'start_task'
+  | 'steer_task'
+  | 'check_task'
+  | 'summarize_task';
+
+export interface VoiceCoordinatorToolCall {
+  name: VoiceCoordinatorToolName;
+  arguments: {
+    task?: string;
+    guidance?: string;
+  };
+}
+
 export interface VoiceCaptureCaps {
   maxDurationMs: number;
   maxAudioBytes: number;
@@ -147,6 +288,128 @@ export function defaultVoicePrivacyFlags(): VoicePrivacyFlags {
   };
 }
 
+export function defaultVoiceSettings(): VoiceSettings {
+  return {
+    recognition: {
+      connectionSlug: '',
+      model: '',
+      language: '',
+      prompt: '',
+    },
+    realtime: {
+      connectionSlug: '',
+      model: '',
+      voice: 'marin',
+    },
+  };
+}
+
+export function normalizeVoiceSettings(input: unknown): VoiceSettings {
+  const defaults = defaultVoiceSettings();
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return defaults;
+  const value = input as {
+    recognition?: unknown;
+    realtime?: unknown;
+  };
+  const recognition =
+    value.recognition && typeof value.recognition === 'object' && !Array.isArray(value.recognition)
+      ? (value.recognition as Record<string, unknown>)
+      : {};
+  const realtime =
+    value.realtime && typeof value.realtime === 'object' && !Array.isArray(value.realtime)
+      ? (value.realtime as Record<string, unknown>)
+      : {};
+  return {
+    recognition: {
+      connectionSlug: boundedSettingString(recognition.connectionSlug, 64),
+      model: boundedSettingString(recognition.model, 256),
+      language: boundedSettingString(recognition.language, 32),
+      prompt: boundedSettingString(recognition.prompt, 1_000),
+    },
+    realtime: {
+      connectionSlug: boundedSettingString(realtime.connectionSlug, 64),
+      model: boundedSettingString(realtime.model, 256),
+      voice: boundedSettingString(realtime.voice, 64) || defaults.realtime.voice,
+    },
+  };
+}
+
+export function resolveVoiceRoute(input: ResolveVoiceRouteInput): VoiceRoutePlan {
+  if (input.intent === 'voice_chat') {
+    if (!input.realtime) return { kind: 'blocked', reason: 'realtime_not_configured' };
+    if (!hasEndpoint(input.realtime, 'realtime_voice')) {
+      return { kind: 'blocked', reason: 'model_not_ready' };
+    }
+    if (!hasTransport(input.realtime, 'openai_realtime') || !input.realtime.adapterReady) {
+      return { kind: 'blocked', reason: 'adapter_unsupported' };
+    }
+    return { kind: 'realtime_voice', target: input.realtime, transport: 'webrtc' };
+  }
+
+  if (input.intent === 'send_task' && input.currentAgent) {
+    const native = input.currentAgent;
+    if (
+      native.modalities.input.includes('audio') &&
+      native.modalities.output.includes('text') &&
+      hasEndpoint(native, 'audio_chat') &&
+      hasTransport(native, 'openai_chat_audio') &&
+      native.adapterReady
+    ) {
+      return {
+        kind: 'native_audio_task',
+        target: native,
+        transcriptProjection: 'marker_only',
+      };
+    }
+  }
+
+  if (!input.recognition) return { kind: 'blocked', reason: 'recognition_not_configured' };
+  if (!hasEndpoint(input.recognition, 'transcription')) {
+    return { kind: 'blocked', reason: 'model_not_ready' };
+  }
+  if (
+    !hasTransport(input.recognition, 'openai_audio_transcriptions') ||
+    !input.recognition.adapterReady
+  ) {
+    return { kind: 'blocked', reason: 'adapter_unsupported' };
+  }
+  return { kind: 'transcription_to_draft', target: input.recognition };
+}
+
+export function normalizeVoiceCoordinatorToolCall(input: unknown): VoiceCoordinatorToolCall {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('Invalid voice coordinator tool call');
+  }
+  const value = input as { name?: unknown; arguments?: unknown };
+  if (
+    value.name !== 'start_task' &&
+    value.name !== 'steer_task' &&
+    value.name !== 'check_task' &&
+    value.name !== 'summarize_task'
+  ) {
+    throw new Error('Unsupported voice coordinator tool');
+  }
+  const args =
+    value.arguments && typeof value.arguments === 'object' && !Array.isArray(value.arguments)
+      ? (value.arguments as Record<string, unknown>)
+      : {};
+  const task = boundedCoordinatorText(args.task);
+  const guidance = boundedCoordinatorText(args.guidance);
+  if (value.name === 'start_task' && !task) {
+    throw new Error('Voice start_task requires a task');
+  }
+  if (value.name === 'steer_task' && !guidance) {
+    throw new Error('Voice steer_task requires guidance');
+  }
+  return {
+    name: value.name,
+    arguments: {
+      ...(task ? { task } : {}),
+      ...(guidance ? { guidance } : {}),
+    },
+  };
+}
+
 export function normalizeVoiceInputMode(input: unknown): VoiceNormalizeResult<VoiceInputMode> {
   if (input === undefined || input === null || input === '') {
     return { ok: true, value: 'off' };
@@ -231,7 +494,7 @@ export function validateVoiceCaptureRequest(
     'Capture duration must be a finite number',
   );
   if (!duration.ok) return duration;
-  if (duration.value > VOICE_MAX_CAPTURE_DURATION_MS) {
+  if (duration.value <= 0 || duration.value > VOICE_MAX_CAPTURE_DURATION_MS) {
     return {
       ok: false,
       reason: 'duration_exceeded',
@@ -245,7 +508,7 @@ export function validateVoiceCaptureRequest(
     'Audio size must be a finite number',
   );
   if (!bytes.ok) return bytes;
-  if (bytes.value > VOICE_MAX_AUDIO_BYTES) {
+  if (bytes.value <= 0 || bytes.value > VOICE_MAX_AUDIO_BYTES) {
     return {
       ok: false,
       reason: 'audio_too_large',
@@ -450,4 +713,33 @@ function finiteNumber(
     return { ok: false, reason, error };
   }
   return { ok: true, value: input };
+}
+
+function hasEndpoint(
+  capability: VoiceModelRouteCapability,
+  endpoint: VoiceModelRouteCapability['endpointRoles'][number],
+): boolean {
+  return capability.endpointRoles.includes(endpoint);
+}
+
+function hasTransport(
+  capability: VoiceModelRouteCapability,
+  transport: VoiceModelRouteCapability['transports'][number],
+): boolean {
+  return capability.transports.includes(transport);
+}
+
+function boundedSettingString(input: unknown, maxLength: number): string {
+  if (typeof input !== 'string') return '';
+  return input.replace(CONTROL_CHARS_REGEX, '').trim().slice(0, maxLength);
+}
+
+function boundedCoordinatorText(input: unknown): string {
+  if (typeof input !== 'string') return '';
+  const text = input
+    .normalize('NFC')
+    .replace(CONTROL_CHARS_REGEX, ' ')
+    .replace(WHITESPACE_REGEX, ' ')
+    .trim();
+  return Array.from(text).slice(0, VOICE_MAX_TRANSCRIPT_CHARS).join('');
 }
