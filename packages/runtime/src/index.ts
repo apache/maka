@@ -381,6 +381,7 @@ export type {
 } from '@maka/core/apply-patch';
 export { executeApplyPatchWithAdapter } from './apply-patch-engine.js';
 export type {
+  ApplyPatchAccessIntent,
   ApplyPatchEngineResult,
   ApplyPatchFsAdapter,
   ApplyPatchOperationResult,

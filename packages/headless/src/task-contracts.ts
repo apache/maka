@@ -588,6 +588,7 @@ export type HeavyTaskToolEvidenceName =
   | 'Grep'
   | 'Write'
   | 'Edit'
+  | 'ApplyPatch'
   | 'Glob'
   | string;
 

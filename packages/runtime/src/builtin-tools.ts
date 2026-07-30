@@ -18,6 +18,7 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute } from 'node:path';
 import {
+  canWritePath,
   compilePermissionProfile,
   type SandboxBoundaryExpansion,
   type StorageRef,
@@ -27,7 +28,11 @@ import { computeEditedSource } from './edit-replace.js';
 import { bashToolResultToModelOutput } from './bash-model-output.js';
 import { type EditingProtocol } from '@maka/core/apply-patch';
 export type { EditingProtocol } from '@maka/core/apply-patch';
-import { executeApplyPatchWithAdapter, type ApplyPatchFsAdapter } from './apply-patch-engine.js';
+import {
+  executeApplyPatchWithAdapter,
+  type ApplyPatchAccessIntent,
+  type ApplyPatchFsAdapter,
+} from './apply-patch-engine.js';
 import {
   buildManagedBashTool,
   buildStopBackgroundTaskTool,
@@ -47,7 +52,7 @@ import {
   type WorkspaceExecResult,
   type WorkspaceExecutor,
 } from './workspace-executor.js';
-import { mkdir, unlink } from 'node:fs/promises';
+import { mkdir, realpath, unlink } from 'node:fs/promises';
 
 // tool-runtime.ts is the single source of truth for the tool shape; this
 // re-export only keeps back-compat for callers that imported from
@@ -65,7 +70,11 @@ import type { ChildFdInput } from './child-fd-input.js';
 import { buildArchiveReadTool } from './archive-read-tool.js';
 import type { ToolResultArchiveResourceReader } from './tool-result-archive-resource.js';
 import { normalizeSandboxBoundaryPath } from './sandbox-boundary-path.js';
-import type { FilesystemWorkerClient } from './filesystem-worker/client.js';
+import {
+  FilesystemWorkerClientError,
+  filesystemWorkerRuntimeWritableRoots,
+  type FilesystemWorkerClient,
+} from './filesystem-worker/client.js';
 import {
   preflightDeclaredSandboxBoundary,
   sandboxBoundaryExpansionSchema,
@@ -1230,7 +1239,125 @@ function createRuntimeApplyPatchFs(input: RuntimeApplyPatchDeps): ApplyPatchFsAd
       await unlink(resolvedPath);
       return { path: resolvedPath };
     },
+    async preflightPermissions(accesses: readonly ApplyPatchAccessIntent[]) {
+      await preflightApplyPatchPermissions({
+        accesses,
+        cwd,
+        canonicalCwd,
+        ctx: input.ctx,
+        executor: input.executor,
+        filesystemWorker,
+        permissionProfile: input.permissionProfile,
+      });
+    },
   };
+}
+
+async function preflightApplyPatchPermissions(input: {
+  accesses: readonly ApplyPatchAccessIntent[];
+  cwd: string;
+  canonicalCwd: string;
+  ctx: MakaToolContext;
+  executor: WorkspaceExecutor;
+  filesystemWorker?: Pick<FilesystemWorkerClient, 'execute'>;
+  permissionProfile?: PermissionProfile;
+}): Promise<void> {
+  if (input.accesses.length === 0) return;
+
+  // Without a managed filesystem worker, path resolve is the host safety check.
+  if (!input.filesystemWorker) {
+    for (const intent of input.accesses) {
+      if (intent.access === 'write') {
+        await input.executor.resolveWritablePath({
+          cwd: input.cwd,
+          path: intent.path,
+          label: 'ApplyPatch preflight',
+        });
+      } else {
+        await input.executor.resolveExistingPath({
+          cwd: input.cwd,
+          path: intent.path,
+          label: 'ApplyPatch preflight',
+        });
+      }
+    }
+    return;
+  }
+
+  const managed = input.ctx.executionBoundary?.kind === 'managed';
+  const platform = process.platform as SandboxPlatform;
+  const compiled =
+    managed && input.ctx.executionBoundary?.kind === 'managed'
+      ? {
+          profile: input.ctx.executionBoundary.profile,
+          workspaceRoots: [input.canonicalCwd],
+        }
+      : input.permissionProfile
+        ? {
+            profile: input.permissionProfile,
+            workspaceRoots: [input.canonicalCwd],
+          }
+        : compilePermissionProfile({
+            mode: input.ctx.permissionMode ?? 'ask',
+            cwd: input.canonicalCwd,
+          });
+
+  const tmpCanonical = await realpath(tmpdir()).catch(() => tmpdir());
+  const slashTmpCanonical = await realpath('/tmp').catch(() => '/tmp');
+  const missingEntries: Array<{
+    path: string;
+    access: 'write';
+    scope: 'exact';
+  }> = [];
+
+  for (const intent of input.accesses) {
+    const target = await normalizeSandboxBoundaryPath({
+      path: intent.path,
+      access: 'write',
+      scope: 'exact',
+      cwd: input.canonicalCwd,
+    });
+    const runtimeWritableRoots = filesystemWorkerRuntimeWritableRoots({
+      platform,
+      access: 'write',
+      enforcementPath: target.enforcementPath,
+      targetType: target.targetType,
+    });
+    const pathContext = {
+      workspaceRoots: compiled.workspaceRoots,
+      tmpdir: tmpCanonical,
+      slashTmp: slashTmpCanonical,
+      ...(runtimeWritableRoots ? { runtimeWritableRoots } : {}),
+    };
+    const allowed = canWritePath(compiled.profile, target.enforcementPath, pathContext);
+    if (!allowed) {
+      missingEntries.push({
+        path: target.enforcementPath,
+        access: 'write',
+        scope: 'exact',
+      });
+    }
+  }
+
+  if (missingEntries.length === 0) return;
+
+  throw new FilesystemWorkerClientError({
+    reason: managed ? 'sandbox_boundary_required' : 'path_denied',
+    stage: 'validation',
+    recoverable: true,
+    message: managed
+      ? 'ApplyPatch requires sandbox boundary expansion for one or more paths before mutation.'
+      : 'ApplyPatch path is not writable under the current permission profile.',
+    ...(managed
+      ? {
+          requiredExpansion: {
+            filesystem: {
+              entries: missingEntries,
+            },
+          },
+        }
+      : {}),
+  });
 }
 
 function terminalError(

@@ -316,11 +316,29 @@ export function buildIsolatedApplyPatchTool(
     impl: async ({ patch }, ctx) => {
       const { cwd } = ctx;
       const fs = createIsolatedApplyPatchFs(executor, cwd, ctx.abortSignal);
-      // Evidence recording for ApplyPatch is intentionally deferred: the
-      // heavy-task evidence union still types Write/Edit only. The tool still
-      // runs through ToolRuntime durability like every other MakaTool.
-      void options.heavyTaskEvidence;
-      return executeApplyPatchWithAdapter(patch, fs, withFileWriteLock);
+      const result = await executeApplyPatchWithAdapter(patch, fs, withFileWriteLock);
+      await options.heavyTaskEvidence?.recordToolEvidence(
+        {
+          name: 'ApplyPatch',
+          input: { cwd, patch },
+          result: {
+            ok: result.ok,
+            operations: result.operations.map((operation) => ({
+              operation: operation.operation,
+              path: operation.path,
+              ...(operation.fromPath ? { fromPath: operation.fromPath } : {}),
+              status: operation.status,
+              ...(operation.bytes !== undefined ? { bytes: operation.bytes } : {}),
+            })),
+            completed: result.completed,
+            uncompleted: result.uncompleted,
+            ...(result.partial !== undefined ? { partial: result.partial } : {}),
+            ...(result.error ? { error: result.error } : {}),
+          },
+        },
+        ctx,
+      );
+      return result;
     },
   };
 }
@@ -370,7 +388,9 @@ function createIsolatedApplyPatchFs(
     async writeText(path, content) {
       const normalized = normalizeWorkspacePath(path, cwd, 'ApplyPatch write path');
       const bytes = Buffer.from(content, 'utf8');
-      await writeIsolatedFileBytes(executor, cwd, normalized, bytes, abortSignal);
+      // Create-capable write: Add/Move destinations must not require an existing target.
+      // Edit's atomic script uses existing_target and fails new files with "does not exist".
+      await writeIsolatedFileBytes(executor, cwd, normalized, bytes, abortSignal, 'create');
       return { path: normalized, bytes: bytes.length };
     },
     async deletePath(path) {
@@ -651,11 +671,13 @@ async function writeIsolatedFileBytes(
   path: string,
   content: Buffer,
   abortSignal: AbortSignal,
+  mode: 'edit' | 'create' = 'edit',
 ): Promise<void> {
+  const script = mode === 'create' ? CREATE_WRITE_BYTES_SCRIPT : EDIT_WRITE_BYTES_SCRIPT;
   await execFileCommand(
     executor,
     cwd,
-    shellFileCommand(EDIT_WRITE_BYTES_SCRIPT, [path, content.toString('base64')]),
+    shellFileCommand(script, [path, content.toString('base64')]),
     abortSignal,
   );
 }
@@ -998,6 +1020,36 @@ fi
 mode=$( (stat -c '%a' "$target" 2>/dev/null || stat -f '%Lp' "$target" 2>/dev/null) | head -n 1 )
 [ -n "$mode" ] && chmod "$mode" "$tmp" 2>/dev/null || true
 mv "$tmp" "$target" || fail 'Edit atomic rename failed'
+created=
+trap - EXIT HUP INT TERM
+`;
+
+// Create-or-overwrite base64 write for ApplyPatch Add/Update/Move destinations.
+// Uses writable_target (parent must exist) rather than existing_target so new files work.
+const CREATE_WRITE_BYTES_SCRIPT = `${COMMON_SHELL_HELPERS}
+root=$(pwd -P) || exit 1
+target=$(writable_target "$1" 'Write path') || exit 1
+payload=$2
+tmp=
+created=
+cleanup() {
+  [ -n "$created" ] && [ -n "$tmp" ] && rm -f "$tmp"
+}
+trap cleanup EXIT HUP INT TERM
+tmp=$(mktemp "$target.maka-write.XXXXXX") || fail 'Write temp file creation failed'
+created=1
+if printf '%s' "$payload" | base64 -d > "$tmp" 2>/dev/null; then
+  :
+elif printf '%s' "$payload" | base64 -D > "$tmp" 2>/dev/null; then
+  :
+else
+  fail 'base64 decode failed for Write payload'
+fi
+if [ -f "$target" ]; then
+  mode=$( (stat -c '%a' "$target" 2>/dev/null || stat -f '%Lp' "$target" 2>/dev/null) | head -n 1 )
+  [ -n "$mode" ] && chmod "$mode" "$tmp" 2>/dev/null || true
+fi
+mv "$tmp" "$target" || fail 'Write atomic rename failed'
 created=
 trap - EXIT HUP INT TERM
 `;

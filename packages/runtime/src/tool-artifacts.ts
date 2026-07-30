@@ -40,6 +40,8 @@ export function deriveToolArtifactCandidates(
       return deriveWriteArtifacts(args, result, input.cwd);
     case 'Edit':
       return deriveEditArtifacts(args);
+    case 'ApplyPatch':
+      return deriveApplyPatchArtifacts(result, input.cwd);
     case 'Bash':
       return deriveBashArtifacts(args, input.cwd);
     default:
@@ -98,6 +100,33 @@ function deriveEditArtifacts(args: Record<string, unknown> | null): ToolArtifact
       content: editDiff(path, oldString, newString),
     },
   ];
+}
+
+function deriveApplyPatchArtifacts(
+  result: Record<string, unknown> | null,
+  cwd: string,
+): ToolArtifactCandidate[] {
+  const operations = Array.isArray(result?.operations) ? result.operations : [];
+  const candidates: ToolArtifactCandidate[] = [];
+  const seen = new Set<string>();
+  for (const operation of operations) {
+    if (!operation || typeof operation !== 'object' || Array.isArray(operation)) continue;
+    const record = operation as Record<string, unknown>;
+    if (record.status !== 'completed') continue;
+    const rawPath = typeof record.path === 'string' ? record.path : undefined;
+    if (!rawPath || seen.has(rawPath)) continue;
+    seen.add(rawPath);
+    const path = isAbsolute(rawPath) ? rawPath : resolve(cwd, rawPath);
+    candidates.push({
+      kind: kindForPath(path),
+      name: basename(path),
+      mimeType: mimeForPath(path),
+      source: 'tool_result',
+      summary: 'ApplyPatch tool output',
+      sourcePath: path,
+    });
+  }
+  return candidates;
 }
 
 function deriveBashArtifacts(

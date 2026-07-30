@@ -201,6 +201,21 @@ describe('product-tool surface editingProtocol', () => {
     assert.equal(applyPatch.toolNames.has('Edit'), false);
     assert.equal(applyPatch.identity.policy.editingProtocol, 'apply_patch');
   });
+
+  test('builder apply_patch + default projector does not zero the editing surface', () => {
+    // Double-filter regression: builder drops Write/Edit, projector default was
+    // edit_write and also dropped ApplyPatch, leaving no editing tool.
+    const tools = buildBuiltinTools({ editingProtocol: 'apply_patch', includeEdit: true });
+    const surface = projectEffectiveProductToolSurface({
+      host: 'cli',
+      tools,
+      policy: { economy: false },
+    });
+    assert.ok(surface.toolNames.has('ApplyPatch'));
+    assert.equal(surface.toolNames.has('Write'), false);
+    assert.equal(surface.toolNames.has('Edit'), false);
+    assert.equal(surface.identity.policy.editingProtocol, 'apply_patch');
+  });
 });
 
 describe('shared ApplyPatch engine partial move failure', () => {
@@ -244,5 +259,125 @@ describe('shared ApplyPatch engine partial move failure', () => {
     assert.deepEqual(result.completed, ['dest.txt']);
     assert.ok(files.has('dest.txt'));
     assert.ok(files.has('src.txt'));
+  });
+
+  test('preflightPermissions runs before mutation and rethrows structured boundary errors', async () => {
+    const files = new Map<string, string>([
+      ['a.txt', 'a\n'],
+      ['b.txt', 'b\n'],
+    ]);
+    let writes = 0;
+    let preflighted: string[] = [];
+    const boundaryError = Object.assign(new Error('sandbox boundary required'), {
+      domain: 'filesystem',
+      reason: 'sandbox_boundary_required',
+      requiredExpansion: {
+        filesystem: {
+          entries: [{ path: '/tmp/workspace/b.txt', access: 'write', scope: 'exact' }],
+        },
+      },
+    });
+    const fs: ApplyPatchFsAdapter = {
+      async lockKey(path) {
+        return path;
+      },
+      async pathExists(path) {
+        return files.has(path);
+      },
+      async readText(path) {
+        const content = files.get(path);
+        if (content === undefined) throw new Error(`missing ${path}`);
+        return content;
+      },
+      async writeText(path, content) {
+        writes += 1;
+        files.set(path, content);
+        return { path, bytes: Buffer.byteLength(content, 'utf8') };
+      },
+      async deletePath(path) {
+        files.delete(path);
+        return { path };
+      },
+      async preflightPermissions(accesses) {
+        preflighted = accesses.map((access) => access.path).sort();
+        throw boundaryError;
+      },
+    };
+
+    await assert.rejects(
+      () =>
+        executeApplyPatchWithAdapter(
+          envelope(
+            [
+              '*** Update File: a.txt',
+              '@@',
+              '-a',
+              '+aa',
+              '*** Update File: b.txt',
+              '@@',
+              '-b',
+              '+bb',
+              '',
+            ].join('\n'),
+          ),
+          fs,
+          async (_key, run) => run(),
+        ),
+      (error: unknown) => {
+        assert.equal(error, boundaryError);
+        return true;
+      },
+    );
+    assert.equal(writes, 0);
+    assert.deepEqual(preflighted, ['a.txt', 'b.txt']);
+    assert.equal(files.get('a.txt'), 'a\n');
+    assert.equal(files.get('b.txt'), 'b\n');
+  });
+
+  test('rethrows structured boundary errors from the first mutation without partial result', async () => {
+    const files = new Map<string, string>([['a.txt', 'a\n']]);
+    const boundaryError = Object.assign(new Error('sandbox boundary required'), {
+      domain: 'filesystem',
+      reason: 'sandbox_boundary_required',
+      requiredExpansion: {
+        filesystem: {
+          entries: [{ path: '/tmp/workspace/a.txt', access: 'write', scope: 'exact' }],
+        },
+      },
+    });
+    const fs: ApplyPatchFsAdapter = {
+      async lockKey(path) {
+        return path;
+      },
+      async pathExists(path) {
+        return files.has(path);
+      },
+      async readText(path) {
+        const content = files.get(path);
+        if (content === undefined) throw new Error(`missing ${path}`);
+        return content;
+      },
+      async writeText() {
+        throw boundaryError;
+      },
+      async deletePath(path) {
+        files.delete(path);
+        return { path };
+      },
+    };
+
+    await assert.rejects(
+      () =>
+        executeApplyPatchWithAdapter(
+          envelope(['*** Update File: a.txt', '@@', '-a', '+aa', ''].join('\n')),
+          fs,
+          async (_key, run) => run(),
+        ),
+      (error: unknown) => {
+        assert.equal(error, boundaryError);
+        return true;
+      },
+    );
+    assert.equal(files.get('a.txt'), 'a\n');
   });
 });

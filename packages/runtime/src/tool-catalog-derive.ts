@@ -112,9 +112,19 @@ export function projectEffectiveProductToolSurface(input: {
     for (const name of surface.toolNames) excludedToolNames.add(name);
   }
   // Exactly one editing protocol on the effective surface (#1552).
+  // Hosts should bind both protocols (`editingProtocol: 'all'`) and select here.
+  // If the builder already filtered to ApplyPatch-only, do not drop it again when
+  // policy defaults to edit_write — that double-filter left zero editing tools.
+  const boundNames = new Set(input.tools.map((tool) => tool.name));
+  const hasClassicEditor = boundNames.has('Write') || boundNames.has('Edit');
+  const hasApplyPatch = boundNames.has('ApplyPatch');
+  let effectiveEditingProtocol: EditingProtocol = editingProtocol;
   if (editingProtocol === 'apply_patch') {
     excludedToolNames.add('Write');
     excludedToolNames.add('Edit');
+  } else if (hasApplyPatch && !hasClassicEditor) {
+    // Builder-level apply_patch surface: honor the bound tools.
+    effectiveEditingProtocol = 'apply_patch';
   } else {
     excludedToolNames.add('ApplyPatch');
   }
@@ -132,7 +142,7 @@ export function projectEffectiveProductToolSurface(input: {
   const policy = Object.freeze({
     economy: input.policy.economy,
     disabledSurfaceIds: Object.freeze(disabledSurfaceIds),
-    editingProtocol,
+    editingProtocol: effectiveEditingProtocol,
   });
   return Object.freeze({
     tools: Object.freeze(tools),

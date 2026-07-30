@@ -13,6 +13,11 @@ import {
   type ApplyPatchHunk,
 } from '@maka/core/apply-patch';
 
+/** Write/delete intent used for permission preflight before any mutation. */
+export type ApplyPatchAccessIntent =
+  | { access: 'write'; path: string }
+  | { access: 'delete'; path: string };
+
 export interface ApplyPatchFsAdapter {
   /** Stable exclusive lock key for a relative path (may not exist yet). */
   lockKey(path: string): Promise<string>;
@@ -20,6 +25,12 @@ export interface ApplyPatchFsAdapter {
   readText(path: string, label: string): Promise<string>;
   writeText(path: string, content: string): Promise<{ path: string; bytes: number }>;
   deletePath(path: string): Promise<{ path: string }>;
+  /**
+   * Optional: assert every planned mutation path is currently permitted.
+   * Must not mutate. Throws structured permission/sandbox errors (including
+   * `requiredExpansion`) so ToolRuntime can offer boundary retry before any write.
+   */
+  preflightPermissions?(accesses: readonly ApplyPatchAccessIntent[]): Promise<void>;
 }
 
 export interface ApplyPatchOperationResult {
@@ -50,6 +61,10 @@ type PreparedStep =
  * Parse, plan, lock, revalidate, and settle a Codex ApplyPatch envelope.
  * All filesystem reads used for matching and existence checks run under the
  * acquired path locks so concurrent writers cannot race the plan.
+ *
+ * Permission coverage for every mutation path is checked before the first
+ * write/delete when the adapter implements `preflightPermissions`. Structured
+ * sandbox/boundary errors rethrow so hosts keep `requiredExpansion`.
  */
 export async function executeApplyPatchWithAdapter(
   patchText: string,
@@ -80,10 +95,31 @@ export async function executeApplyPatchWithAdapter(
 
   const run = async (): Promise<ApplyPatchEngineResult> => {
     const prepared = await planUnderLocks(parsed.value.hunks, fs);
+    if (fs.preflightPermissions) {
+      await fs.preflightPermissions(collectAccessIntents(prepared));
+    }
     return settlePrepared(prepared, fs);
   };
 
   return withNestedLocks(orderedKeys, withLock, run);
+}
+
+function collectAccessIntents(prepared: readonly PreparedStep[]): ApplyPatchAccessIntent[] {
+  const byKey = new Map<string, ApplyPatchAccessIntent>();
+  for (const step of prepared) {
+    if (step.kind === 'add' || step.kind === 'update') {
+      byKey.set(`write:${step.path}`, { access: 'write', path: step.path });
+      continue;
+    }
+    if (step.kind === 'delete') {
+      byKey.set(`delete:${step.path}`, { access: 'delete', path: step.path });
+      continue;
+    }
+    // move: destination write + source delete
+    byKey.set(`write:${step.path}`, { access: 'write', path: step.path });
+    byKey.set(`delete:${step.fromPath}`, { access: 'delete', path: step.fromPath });
+  }
+  return [...byKey.values()];
 }
 
 async function planUnderLocks(
@@ -220,6 +256,9 @@ async function settlePrepared(
           bytes: written.bytes,
         });
       } catch (error) {
+        if (shouldRethrowBoundaryError(error, completed.length - 1)) {
+          // Destination already written — treat as partial, not a clean rethrow.
+        }
         failure = error instanceof Error ? error.message : String(error);
         operations.push({
           operation: 'move',
@@ -231,6 +270,11 @@ async function settlePrepared(
         });
       }
     } catch (error) {
+      // Before any successful mutation, preserve structured sandbox errors so
+      // ToolRuntime can surface requiredExpansion for boundary retry.
+      if (shouldRethrowBoundaryError(error, completed.length)) {
+        throw error;
+      }
       failure = error instanceof Error ? error.message : String(error);
       operations.push({
         operation: step.kind,
@@ -255,6 +299,24 @@ async function settlePrepared(
     completed,
     uncompleted,
   };
+}
+
+/**
+ * Boundary / permission errors must reach ToolRuntime when the workspace is
+ * still clean (no completed mutations). Once a mutation has landed we keep the
+ * partial-failure result shape instead.
+ */
+function shouldRethrowBoundaryError(error: unknown, completedCount: number): boolean {
+  if (completedCount > 0) return false;
+  if (!error || typeof error !== 'object') return false;
+  const value = error as {
+    requiredExpansion?: unknown;
+    reason?: unknown;
+    domain?: unknown;
+  };
+  if (value.requiredExpansion !== undefined) return true;
+  if (value.domain === 'filesystem' && value.reason === 'sandbox_boundary_required') return true;
+  return false;
 }
 
 async function withNestedLocks<T>(

@@ -48,6 +48,46 @@ describe('deriveToolArtifactCandidates', () => {
     ).toBe(true);
   });
 
+  test('ApplyPatch derives file candidates from completed operations', () => {
+    const candidates = deriveToolArtifactCandidates({
+      toolName: 'ApplyPatch',
+      cwd: '/workspace/maka',
+      args: { patch: '*** Begin Patch\n*** End Patch\n' },
+      result: {
+        ok: true,
+        operations: [
+          {
+            operation: 'add',
+            path: '/workspace/maka/docs/report.html',
+            status: 'completed',
+            bytes: 12,
+          },
+          {
+            operation: 'update',
+            path: '/workspace/maka/src/main.ts',
+            status: 'completed',
+            bytes: 20,
+          },
+          { operation: 'delete', path: '/workspace/maka/tmp/old.txt', status: 'failed' },
+        ],
+        completed: ['/workspace/maka/docs/report.html', '/workspace/maka/src/main.ts'],
+        uncompleted: ['/workspace/maka/tmp/old.txt'],
+      },
+    });
+
+    expect(candidates.length).toBe(2);
+    expect(candidates[0]).toEqual({
+      kind: 'html',
+      name: 'report.html',
+      mimeType: 'text/html',
+      source: 'tool_result',
+      summary: 'ApplyPatch tool output',
+      sourcePath: '/workspace/maka/docs/report.html',
+    });
+    expect(candidates[1]?.name).toBe('main.ts');
+    expect(candidates[1]?.sourcePath).toBe('/workspace/maka/src/main.ts');
+  });
+
   test('Bash derives only explicit stdout redirects and does not scan stdout/stderr text', () => {
     const [candidate] = deriveToolArtifactCandidates({
       toolName: 'Bash',
@@ -56,7 +96,10 @@ describe('deriveToolArtifactCandidates', () => {
       result: { stdout: 'wrote /tmp/guessed.html', stderr: 'see report.pdf' },
     });
 
-    expect(candidate?.sourcePath).toBe('/workspace/maka/reports/build.log');
+    // resolve() is platform-native; only assert the relative suffix contract.
+    expect(candidate?.sourcePath?.replaceAll('\\', '/').endsWith('/workspace/maka/reports/build.log')).toBe(
+      true,
+    );
     expect(candidate?.kind).toBe('file');
 
     expect(

@@ -81,6 +81,24 @@ export type HeavyTaskToolEvidenceInput =
       result: IsolatedEditFileResult;
     }
   | {
+      name: 'ApplyPatch';
+      input: { cwd: string; patch: string };
+      result: {
+        ok: boolean;
+        operations: Array<{
+          operation: string;
+          path: string;
+          fromPath?: string;
+          status: string;
+          bytes?: number;
+        }>;
+        completed: string[];
+        uncompleted: string[];
+        partial?: boolean;
+        error?: string;
+      };
+    }
+  | {
       name: 'Glob';
       input: IsolatedGlobInput;
       result: IsolatedGlobResult;
@@ -245,6 +263,30 @@ export function compactToolEvidence(
           diff: notCapturedDiff(input.result.path),
         },
       };
+    case 'ApplyPatch': {
+      const completedPaths = input.result.completed;
+      const primaryPath = completedPaths[0] ?? input.result.operations[0]?.path;
+      return {
+        ...base,
+        tool: {
+          name: 'ApplyPatch',
+          inputSummary: {
+            cwd: compactPublicString(input.input.cwd, 500),
+            patchBytes: Buffer.byteLength(input.input.patch, 'utf8'),
+            patchOmitted: true,
+            operationCount: input.result.operations.length,
+            completedPaths: completedPaths.map((path) => compactPublicString(path, 500)),
+            uncompletedPaths: input.result.uncompleted.map((path) =>
+              compactPublicString(path, 500),
+            ),
+            ...(input.result.partial !== undefined ? { partial: input.result.partial } : {}),
+          },
+          ok: input.result.ok,
+          outputs: [omittedOutput('content', Buffer.byteLength(input.input.patch, 'utf8'))],
+          diff: primaryPath ? notCapturedDiff(primaryPath) : { status: 'not_captured' },
+        },
+      };
+    }
     case 'Glob':
       return {
         ...base,
