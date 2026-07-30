@@ -1146,6 +1146,13 @@ test('proxy keeps upstream on HTTP/1.1 and forwards concurrent streams in parall
     assert.match(first, /\[DONE\]/);
     assert.match(second, /\[DONE\]/);
     assert.deepEqual(seenHttpVersions, ['1.1', '1.1']);
+    const telemetry = proxy.telemetry();
+    assert.equal(telemetry.length, 2);
+    for (const request of telemetry) {
+      assert.ok(request.upstreamStartMs !== undefined);
+      assert.ok(request.responseHeadersMs !== undefined);
+      assert.ok(request.upstreamStartMs <= request.responseHeadersMs);
+    }
   } finally {
     await proxy.close();
     upstream.close();

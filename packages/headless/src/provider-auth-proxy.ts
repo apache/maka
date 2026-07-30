@@ -54,6 +54,12 @@ export interface ProviderRequestTelemetry {
   protocol?: ProviderUsageProtocol;
   status?: number;
   outcome: 'completed' | 'interrupted' | 'failed' | 'aborted';
+  /** When the dispatcher started writing the request to an upstream
+   * connection. Time before this is credential resolution, request-body read,
+   * and the dispatcher's connection queue; `responseHeadersMs` minus this is
+   * pure upstream wait. The h2 serialization defect hid inside this interval
+   * while `responseHeadersMs` alone read as provider latency. */
+  upstreamStartMs?: number;
   responseHeadersMs?: number;
   firstBodyChunkMs?: number;
   firstOutputTokenMs?: number;
@@ -450,7 +456,12 @@ async function forwardProviderRequest(input: {
       method: input.request.method,
       headers,
       signal: input.signal,
-      dispatcher: input.upstreamDispatcher,
+      dispatcher: upstreamStartTimedDispatcher(
+        input.upstreamDispatcher,
+        requestTelemetry,
+        startedAt,
+        input.now,
+      ),
       ...(body ? { body: new Uint8Array(body) } : {}),
     });
     requestTelemetry.status = upstreamResponse.status;
@@ -523,6 +534,25 @@ async function forwardProviderRequest(input: {
     if (!input.response.headersSent) input.response.writeHead(502);
     input.response.end('provider proxy request failed');
   }
+}
+
+/** Stamp `upstreamStartMs` when the dispatcher begins writing the request to
+ * an upstream connection, so connection-queue time is separable from upstream
+ * wait in the recorded telemetry. */
+function upstreamStartTimedDispatcher(
+  dispatcher: Dispatcher,
+  requestTelemetry: MutableProviderRequestTelemetry,
+  startedAt: number,
+  now: () => number,
+): Dispatcher {
+  return dispatcher.compose((dispatch) => (options, handler) => {
+    const timed: Dispatcher.DispatchHandler = Object.create(handler);
+    timed.onRequestStart = (controller, context) => {
+      requestTelemetry.upstreamStartMs ??= elapsedMs(startedAt, now());
+      return handler.onRequestStart?.(controller, context);
+    };
+    return dispatch(options, timed);
+  });
 }
 
 async function resolveUpstreamCredentialUntilAborted(
