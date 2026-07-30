@@ -31,8 +31,11 @@ test('tooltip opens on hover in the top layer and dismisses on Escape', async ({
 
   // WCAG 1.4.13: hover content must be dismissible without moving the pointer,
   // and an Escape-dismissed tooltip must not reappear until the pointer leaves
-  // and re-enters.
+  // and re-enters. Wait past the 200ms Astryx show delay before concluding —
+  // an immediate assertion would pass vacuously while a re-show is pending.
   await page.keyboard.press('Escape');
+  await expect(tooltip).toBeHidden();
+  await page.waitForTimeout(350);
   await expect(tooltip).toBeHidden();
 
   // And it must not linger once the pointer leaves.
@@ -43,7 +46,7 @@ test('tooltip opens on hover in the top layer and dismisses on Escape', async ({
   await expect(tooltip).toBeHidden();
 });
 
-test('time-picker popover traps focus on the selected hour and restores the trigger on Escape', async ({
+test('time-picker popover owns focus placement and every dismiss path', async ({
   window: page,
 }) => {
   await page.getByRole('button', { name: '展开侧边栏' }).click();
@@ -65,7 +68,36 @@ test('time-picker popover traps focus on the selected hour and restores the trig
   const selectedHour = dialog.getByRole('listbox', { name: '时' }).getByRole('option', { name: '08' });
   await expect(selectedHour).toBeFocused();
 
-  // Escape closes the popover and hands focus back to the trigger.
+  // Picking a minute updates the value, which re-renders the picker while
+  // the popover is open. Initial focus is a once-per-open action: it must
+  // NOT re-fire on that re-render and yank focus back to the hour column.
+  const minute = dialog.getByRole('listbox', { name: '分' }).getByRole('option', { name: '30' });
+  await minute.click();
+  await expect(minute).toBeFocused();
+  await page.waitForTimeout(150);
+  await expect(minute).toBeFocused();
+
+  // Clicking the open trigger closes the popover — native light dismiss
+  // fires on pointerdown and the trailing click must not re-open it (the
+  // upstream lastHideTime guard). Hold the assertion past the race window.
+  await trigger.click();
+  await expect(dialog).toBeHidden();
+  await page.waitForTimeout(150);
+  await expect(dialog).toBeHidden();
+
+  // Clicking outside light-dismisses and the trigger ring turns off.
+  await trigger.click();
+  await expect(dialog).toBeVisible();
+  await settings.getByRole('button', { name: '每日回顾', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(trigger).not.toHaveAttribute('data-popup-open');
+
+  // Escape closes the popover and hands focus back to the trigger. No
+  // settling wait before this click: a re-open right after dismissing
+  // elsewhere must work — the gesture guard must not swallow it the way a
+  // hide-timestamp window would.
+  await trigger.click();
+  await expect(dialog).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
   await expect(trigger).toBeFocused();
