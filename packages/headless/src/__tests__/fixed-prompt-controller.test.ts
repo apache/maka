@@ -3184,6 +3184,67 @@ describe('fixed prompt controller', () => {
     });
   });
 
+  test('keeps rejected runner verifier output ungraded', async () => {
+    await withDir(async (dir) => {
+      const systemPromptPath = join(dir, 'system_prompt.md');
+      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+      const sparseAttempts = new Array(2) as NonNullable<
+        TaskRunOutput['harbor']['verifier']
+      >['attempts'];
+      sparseAttempts[1] = {
+        attempt: 2,
+        classification: 'failed',
+        durationMs: 20,
+        reward: 0,
+      };
+
+      for (const { label, reward, verifier } of [
+        { label: 'missing-attempts', reward: 0, verifier: { outcome: 'failed' } },
+        {
+          label: 'non-array-attempts',
+          reward: 0,
+          verifier: { outcome: 'failed', attempts: 'not-an-array' },
+        },
+        {
+          label: 'sparse-attempts',
+          reward: 0,
+          verifier: { outcome: 'failed', attempts: sparseAttempts },
+        },
+        {
+          label: 'reward-disagreement',
+          reward: 1,
+          verifier: {
+            outcome: 'failed',
+            attempts: [{ attempt: 1, classification: 'failed', durationMs: 20, reward: 0 }],
+          },
+        },
+      ] as const) {
+        const result = await runFixedPromptController({
+          runId: `run-${label}`,
+          roundId: 'round-1',
+          config,
+          systemPromptPath,
+          resultsJsonlPath: join(dir, `results-${label}.jsonl`),
+          tasks: [{ id: 'task-a', path: '/bench/task-a' }],
+          taskRunner: async () =>
+            harborOutput({
+              taskId: 'task-a',
+              reward,
+              status: 'failed',
+              errorClass: 'max_tokens',
+              verifier: verifier as unknown as TaskRunOutput['harbor']['verifier'],
+            }),
+        });
+
+        assert.equal(result.events[0]?.type, 'task_completed');
+        assert.equal(result.events[0]?.passed, false);
+        assert.equal(result.events[0]?.scored, false);
+        assert.equal(result.events[0]?.eligible, false);
+        assert.equal(result.events[0]?.errorClass, 'max_tokens');
+      }
+    });
+  });
+
   test('rejects a sparse verifier attempt array as provider infrastructure output', async () => {
     await withDir(async (dir) => {
       const systemPromptPath = join(dir, 'system_prompt.md');

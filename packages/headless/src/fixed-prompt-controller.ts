@@ -703,13 +703,7 @@ function taskCompletedEvent(input: {
   const deadlineSettled = output.cell.deadlineSettlement?.source === 'benchmark.deadline';
   const verifierGrade = structuredVerifierGrade(output.harbor);
   const verifierGraded =
-    output.cell.status === 'completed' ||
-    deadlineSettled ||
-    verifierGrade !== undefined ||
-    ((output.cell.errorClass === 'max_tokens' ||
-      output.cell.errorClass === 'tool_step_cap_reached' ||
-      output.cell.errorClass === 'policy_denied') &&
-      output.harbor.verifier !== undefined);
+    output.cell.status === 'completed' || deadlineSettled || verifierGrade !== undefined;
   const passed = verifierGraded && output.harbor.reward > 0;
   const rawErrorClass = output.cell.errorClass ?? 'verification_failed';
   const errorClass = passed
