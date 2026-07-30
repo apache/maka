@@ -189,6 +189,34 @@ describe('default SQLite session metadata store', () => {
     }
   });
 
+  test('advances the catalog generation once per metadata transaction', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-catalog-generation-'));
+    const store = createSessionStore(root);
+    let metadata: ReturnType<typeof createSqliteSessionMetadataStore> | undefined;
+    try {
+      const session = await store.create(makeInput({ labels: ['one', 'two'] }));
+      await store.close?.();
+      metadata = createSqliteSessionMetadataStore(
+        join(root, SQLITE_SESSION_METADATA_DATABASE_NAME),
+      );
+      const initial = await metadata.listCatalogPage({}, undefined, 10);
+
+      await metadata.update(session.id, { name: 'Renamed' });
+      const renamed = await metadata.listCatalogPage({}, undefined, 10);
+      assert.equal(renamed.revision.generation, initial.revision.generation + 1);
+      assert.deepEqual(renamed.records[0]?.header.labels, ['one', 'two']);
+
+      await metadata.update(session.id, { labels: ['three'] });
+      const relabeled = await metadata.listCatalogPage({ labelSlug: 'three' }, undefined, 10);
+      assert.equal(relabeled.revision.generation, renamed.revision.generation + 1);
+      assert.equal(relabeled.records[0]?.header.id, session.id);
+    } finally {
+      if (metadata) metadata.close();
+      else await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('repairs a transcript append left pending before its catalog projection commit', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-catalog-recovery-'));
     const store = createSessionStore(root);

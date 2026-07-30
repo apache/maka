@@ -8,6 +8,7 @@ import { AGENT_GRAPH_INTENT_CLAIM_SCHEMA_VERSION } from '@maka/core/agent-graph-
 import {
   AgentGraphIntentClaimConflictError,
   createSqliteSessionMetadataStore,
+  SQLITE_SESSION_METADATA_SCHEMA_VERSION,
 } from '../sqlite-session-metadata-store.js';
 
 describe('SQLite agent graph intent claims', () => {
@@ -187,7 +188,7 @@ describe('SQLite agent graph intent claims', () => {
 
       const migrated = createSqliteSessionMetadataStore(path);
       try {
-        assert.equal(migrated.schemaVersion(), 16);
+        assert.equal(migrated.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
         assert.deepEqual(
           await migrated.beginAgentGraphIntentExecutionAtScheduleRevision(
             'graph-1',

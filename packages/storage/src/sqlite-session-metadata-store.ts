@@ -2419,6 +2419,7 @@ export class SqliteSessionMetadataStore {
     if (next.id !== sessionId) {
       throw new SessionMetadataConflictError('Session metadata identity cannot be changed');
     }
+    const labelsChanged = !isDeepStrictEqual(next.labels, current.header.labels);
     const currentPreview =
       options.catalogPreview === undefined ? undefined : this.readCatalogPreviewSync(sessionId);
     const previewChanged =
@@ -2482,8 +2483,10 @@ export class SqliteSessionMetadataStore {
       );
     }
     this.options.failpoint?.('after_session_row_write');
-    this.replaceLabels(next);
-    this.options.failpoint?.('after_session_labels_write');
+    if (labelsChanged) {
+      this.replaceLabels(next);
+      this.options.failpoint?.('after_session_labels_write');
+    }
     if (options.catalogPreview) {
       const preview = this.db
         .prepare(`

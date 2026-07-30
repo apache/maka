@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 16;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 17;
 
 const MIGRATIONS: ReadonlyMap<number, string> = new Map([
   [
@@ -650,6 +650,37 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
       UPDATE session_catalog_state
       SET generation = generation + 1
       WHERE scope = 'catalog';
+    END;
+  `,
+  ],
+  [
+    17,
+    `
+    DROP TRIGGER IF EXISTS session_catalog_label_after_insert;
+    DROP TRIGGER IF EXISTS session_catalog_label_after_delete;
+
+    CREATE TRIGGER session_catalog_label_after_insert
+    AFTER INSERT ON session_metadata_labels
+    BEGIN
+      INSERT OR IGNORE INTO session_catalog_label_projection(session_id, label, activity_at)
+      SELECT NEW.session_id, NEW.label, projection.activity_at
+      FROM session_catalog_projection projection
+      WHERE projection.session_id = NEW.session_id;
+    END;
+
+    CREATE TRIGGER session_catalog_label_after_delete
+    AFTER DELETE ON session_metadata_labels
+    BEGIN
+      DELETE FROM session_catalog_label_projection
+      WHERE
+        session_id = OLD.session_id
+        AND label = OLD.label
+        AND NOT EXISTS (
+          SELECT 1
+          FROM session_metadata_labels labels
+          WHERE labels.session_id = OLD.session_id
+            AND labels.label = OLD.label
+        );
     END;
   `,
   ],

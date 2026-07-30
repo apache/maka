@@ -18,6 +18,7 @@ import {
   createSqliteSessionMetadataStore,
   SessionMetadataConflictError,
   SessionMetadataVersionConflictError,
+  SQLITE_SESSION_METADATA_SCHEMA_VERSION,
   type SqliteSessionMetadataStoreFailpoint,
 } from '../sqlite-session-metadata-store.js';
 import {
@@ -32,7 +33,7 @@ describe('SqliteSessionMetadataStore', () => {
     try {
       const store = createSqliteSessionMetadataStore(path, { now: () => 100 });
       const header = fullHeader();
-      assert.equal(store.schemaVersion(), 16);
+      assert.equal(store.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
       assert.equal(store.journalMode(), 'wal');
       assert.deepEqual(await store.create(header), {
         header,
@@ -43,7 +44,7 @@ describe('SqliteSessionMetadataStore', () => {
 
       const reopened = createSqliteSessionMetadataStore(path, { now: () => 200 });
       try {
-        assert.equal(reopened.schemaVersion(), 16);
+        assert.equal(reopened.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
         assert.deepEqual(await reopened.read(header.id), {
           header,
           metadataVersion: 1,
@@ -77,7 +78,7 @@ describe('SqliteSessionMetadataStore', () => {
     const metadata = createSqliteSessionMetadataStore(path);
     try {
       assert.equal(runtime.schemaVersion(), SQLITE_RUNTIME_SCHEMA_VERSION);
-      assert.equal(metadata.schemaVersion(), 16);
+      assert.equal(metadata.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
       await metadata.create(fullHeader());
       await runtime.appendRuntimeEvent('session-1', 'run-1', {
         id: 'event-1',
@@ -1052,7 +1053,7 @@ describe('SqliteSessionMetadataStore', () => {
 
     const store = createSqliteSessionMetadataStore(path);
     try {
-      assert.equal(store.schemaVersion(), 16);
+      assert.equal(store.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
       assert.deepEqual(
         (
           await store.list({
@@ -1416,7 +1417,7 @@ describe('SqliteSessionMetadataStore', () => {
 
       const migrated = createSqliteSessionMetadataStore(path);
       try {
-        assert.equal(migrated.schemaVersion(), 16);
+        assert.equal(migrated.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
         assert.equal(await migrated.remove(child.id), true);
         await assert.rejects(
           () => migrated.createSubagent({ ...child, id: 'retry-after-migration' }),

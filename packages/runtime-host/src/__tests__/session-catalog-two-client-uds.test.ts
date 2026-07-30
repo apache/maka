@@ -103,6 +103,22 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
         }),
         operationError('invalid_request'),
       );
+      await assert.rejects(
+        desktop.request('session.create', {
+          sessionId: 'unsupported-plan-session',
+          cwd: root,
+          modelTarget: { kind: 'default' },
+          collaborationMode: 'plan',
+        }),
+        operationError('operation_unavailable'),
+      );
+      assert.deepEqual(
+        await desktop.request('session.catalog.query', {
+          kind: 'get',
+          sessionId: 'unsupported-plan-session',
+        }),
+        { kind: 'session', session: null },
+      );
 
       const policy = await tui.request('runtime.policy.query', {});
       const changedPolicy = await tui.request('runtime.policy.mutate', {
