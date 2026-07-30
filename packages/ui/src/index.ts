@@ -175,3 +175,26 @@ export {
 
 // #1565 PR 2: Astryx i18n adapter — appended, never reordered (barrel freeze).
 export * from './astryx-i18n.js';
+
+// #1565 PR 3: Astryx atoms. These append-only exports leave the frozen
+// @maka/ui surface intact; the mechanical atom cut follows separately.
+export {
+  Divider,
+  type DividerProps,
+  Text,
+  type TextProps,
+  type TextType,
+  type TextSize,
+  Stack,
+  type StackProps,
+  StackItem,
+  type StackItemProps,
+  HStack,
+  type HStackProps,
+  VStack,
+  type VStackProps,
+  IconButton,
+  type IconButtonProps,
+  ClickableCard,
+  type ClickableCardProps,
+} from '@astryxdesign/core';
