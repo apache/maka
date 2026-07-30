@@ -373,9 +373,12 @@ export const SelectItem = forwardRef<HTMLDivElement, React.ComponentPropsWithout
  * pin: the top layer paints above every z-index by definition, which is
  * how the popup outranks the Settings modal that triggers it (the bug
  * fixed for Select in WAWQAQ msg `d3ea9a33`). Focus restore on close is
- * Astryx's `useFocusTrap` restore effect — the imperative `showPopover()`
- * path does NOT get the declarative Popover API focus return, so the trap
- * is the authority (see useFocusTrap.js in @astryxdesign/core).
+ * native first: the show-popover algorithm records the previously focused
+ * element even for imperative `showPopover()`, and `hidePopover()` returns
+ * focus to it. Light dismiss deliberately skips that return (focus follows
+ * the user's click), and Astryx's `useFocusTrap` restore effect backstops
+ * whatever the browser leaves behind (its guard no-ops when focus already
+ * went home — see useFocusTrap.js in @astryxdesign/core).
  *
  * Deliberate Astryx-native deviations from the Base UI predecessor, all
  * invisible to the closed-state harness: the popup gains Astryx's hidden
