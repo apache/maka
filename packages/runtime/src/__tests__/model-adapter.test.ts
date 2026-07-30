@@ -12,12 +12,8 @@ describe('ModelAdapter stream and error normalization', () => {
     const adapter = new ModelAdapter({
       connection: {
         slug: 'localai',
-        name: 'LocalAI',
         providerType: 'localai',
         defaultModel: 'qwen3-8b',
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
       },
       apiKey: '',
       modelId: 'qwen3-8b',
@@ -37,13 +33,9 @@ describe('ModelAdapter stream and error normalization', () => {
     const adapter = new ModelAdapter({
       connection: {
         slug: 'github-copilot',
-        name: 'GitHub Copilot',
         providerType: 'github-copilot',
         defaultModel: 'claude-sonnet',
         models: [{ id: 'claude-sonnet', apiProtocol: 'anthropic-messages' }],
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
       },
       apiKey: 'github-token',
       modelId: 'claude-sonnet',
@@ -59,13 +51,9 @@ describe('ModelAdapter stream and error normalization', () => {
     const adapter = new ModelAdapter({
       connection: {
         slug: 'kimi-coding-plan',
-        name: 'Kimi Coding Plan',
         providerType: 'kimi-coding-plan',
         defaultModel: 'k3',
         models: [{ id: 'k3', apiProtocol: 'openai-chat' }],
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
       },
       apiKey: 'kimi-token',
       modelId: 'k3',
@@ -87,12 +75,8 @@ describe('ModelAdapter stream and error normalization', () => {
     const adapter = new ModelAdapter({
       connection: {
         slug: 'volcengine-agent-plan',
-        name: 'Volcengine Ark Agent Plan (China)',
         providerType: 'volcengine-agent-plan',
         defaultModel: 'ark-code-latest',
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
       },
       apiKey: 'ark-plan-token',
       modelId: 'ark-code-latest',
@@ -702,12 +686,8 @@ function newAdapter(): ModelAdapter {
   return new ModelAdapter({
     connection: {
       slug: 'anthropic-main',
-      name: 'Anthropic',
       providerType: 'anthropic',
       defaultModel: 'claude-sonnet-4-5-20250929',
-      enabled: true,
-      createdAt: 1,
-      updatedAt: 1,
     },
     apiKey: 'sk-test',
     modelId: 'claude-sonnet-4-5-20250929',

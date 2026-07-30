@@ -131,7 +131,6 @@ export {
   selectSkillsForContext,
   selectSkillScanForContext,
   buildSkillsPromptFragment,
-  buildSkillsPromptFragmentFromInventory,
   buildSkillsPromptFragmentFromInventoryWithReport,
   buildSkillsPromptFragmentWithReport,
   loadSkillInstructions,

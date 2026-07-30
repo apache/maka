@@ -86,6 +86,7 @@ import type {
   UserContent,
 } from './model-protocol.js';
 import { z } from 'zod';
+import { llmCallUsageFields } from './telemetry/llm-call-usage.js';
 
 import { AsyncEventQueue } from './async-queue.js';
 import { StreamWatchdog, formatStreamWatchdogError } from './stream-watchdog.js';
@@ -1824,21 +1825,7 @@ export class AiSdkBackend implements AgentBackend {
             connectionSlug: this.input.connection.slug,
             providerId: this.input.connection.providerType,
             modelId: this.input.modelId,
-            inputTokens: tokenUsage.inputTokens,
-            outputTokens: tokenUsage.outputTokens,
-            cacheHitInputTokens: tokenUsage.cacheHitInputTokens,
-            cacheMissInputTokens: tokenUsage.cacheMissInputTokens,
-            ...(tokenUsage.cacheMissInputSource !== undefined
-              ? { cacheMissInputSource: tokenUsage.cacheMissInputSource }
-              : {}),
-            cachedInputTokens: tokenUsage.cachedInputTokens,
-            cacheWriteInputTokens: tokenUsage.cacheWriteInputTokens,
-            reasoningTokens: tokenUsage.reasoningTokens,
-            totalTokens: tokenUsage.totalTokens,
-            ...(tokenUsage.rawFinishReason !== undefined
-              ? { rawFinishReason: tokenUsage.rawFinishReason }
-              : {}),
-            ...(tokenUsage.raw !== undefined ? { rawUsage: tokenUsage.raw } : {}),
+            ...llmCallUsageFields(tokenUsage),
             latencyMs: Math.max(0, this.now() - startedAt),
             status: streamStatus,
             ...(streamErrorClass ? { errorClass: streamErrorClass } : {}),

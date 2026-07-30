@@ -49,7 +49,6 @@ import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 import type { LanguageModelV4StreamPart } from '@ai-sdk/provider';
 import { z } from 'zod';
-import type { LlmConnection } from '@maka/core';
 import { AiSdkBackend } from '../ai-sdk-backend.js';
 import {
   BackendRegistry,
@@ -17903,13 +17902,9 @@ async function steeringDeliverySession(
       appendMessage: async () => {},
       connection: {
         slug: 'mock-main',
-        name: 'Mock',
         providerType: 'anthropic',
         defaultModel: 'mock-model-id',
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
-      } satisfies LlmConnection,
+      },
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
       modelFactory: () => model,

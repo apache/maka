@@ -6,6 +6,7 @@ import {
 import { lookupModelMetadata, openAiAdapterApiProtocol } from '@maka/core/model-metadata';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import type { CacheMissInputSource } from '@maka/core/usage-stats/types';
+import { rawFinishReasonString } from './model-protocol.js';
 import type {
   ModelMessage,
   NormalizedUsage,
@@ -898,15 +899,4 @@ function rawUsageFields(usage: AiSdkUsageLike): AiSdkRawUsageFields | undefined 
     raw.completion_tokens_details = { reasoning_tokens: reasoningTokens };
   }
   return Object.keys(raw).length > 0 ? raw : undefined;
-}
-
-export function rawFinishReasonString(reason: unknown): string | undefined {
-  if (typeof reason === 'string') return reason;
-  if (reason && typeof reason === 'object') {
-    const raw = (reason as { raw?: unknown }).raw;
-    if (typeof raw === 'string') return raw;
-    const unified = (reason as { unified?: unknown }).unified;
-    if (typeof unified === 'string') return unified;
-  }
-  return undefined;
 }

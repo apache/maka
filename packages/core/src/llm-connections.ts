@@ -77,18 +77,6 @@ export interface RuntimeExecutionConnection {
   baseUrl?: string;
   defaultModel: string;
   models?: ModelInfo[];
-  /** Optional persisted metadata accepted when a full connection is passed through. */
-  name?: string;
-  enabled?: boolean;
-  enabledModelIds?: string[];
-  modelSource?: ModelDiscoverySource;
-  modelsFetchedAt?: number;
-  lastTestStatus?: ConnectionLastTestStatus;
-  lastTestAt?: string;
-  lastTestMessage?: string;
-  createdAt?: number;
-  updatedAt?: number;
-  extras?: Record<string, unknown>;
 }
 
 export interface LlmConnection extends RuntimeExecutionConnection {

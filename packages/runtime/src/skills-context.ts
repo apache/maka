@@ -392,14 +392,6 @@ export async function buildSkillsPromptFragment(
   return (await buildSkillsPromptFragmentWithReport(source, host, budgetOptions)).text;
 }
 
-export function buildSkillsPromptFragmentFromInventory(
-  inventory: readonly ScannedSkill[],
-  host?: HostCapabilities,
-  budgetOptions?: SkillCatalogBudgetOptions,
-): string | undefined {
-  return buildSkillsPromptFragmentFromInventoryWithReport(inventory, host, budgetOptions).text;
-}
-
 // ── Public API: load instructions ──────────────────────────────────────────
 
 export async function loadSkillInstructions(

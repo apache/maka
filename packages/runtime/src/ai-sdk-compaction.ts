@@ -54,6 +54,7 @@ import {
   type ModelAdapter,
   type NormalizedAiSdkUsage,
 } from './model-adapter.js';
+import { llmCallUsageFields } from './telemetry/llm-call-usage.js';
 import type {
   RequestProjection,
   RequestProjectionContext,
@@ -1037,7 +1038,6 @@ export class AiSdkCompaction {
               startedAt,
               latencyMs: Math.max(0, this.now() - startedAt),
               usage: result.usage,
-              finishReason: result.finishReason,
               status: 'success',
             });
             return result;
@@ -1141,7 +1141,6 @@ export class AiSdkCompaction {
     startedAt: number;
     latencyMs: number;
     usage?: NormalizedAiSdkUsage;
-    finishReason?: string;
     status: LlmCallRecord['status'];
     errorClass?: string;
   }): void {
@@ -1155,19 +1154,7 @@ export class AiSdkCompaction {
       connectionSlug: this.input.connection.slug,
       providerId: this.input.connection.providerType,
       modelId: input.modelId,
-      inputTokens: input.usage.inputTokens,
-      outputTokens: input.usage.outputTokens,
-      cacheHitInputTokens: input.usage.cacheHitInputTokens,
-      cacheMissInputTokens: input.usage.cacheMissInputTokens,
-      ...(input.usage.cacheMissInputSource !== undefined
-        ? { cacheMissInputSource: input.usage.cacheMissInputSource }
-        : {}),
-      cachedInputTokens: input.usage.cachedInputTokens,
-      cacheWriteInputTokens: input.usage.cacheWriteInputTokens,
-      reasoningTokens: input.usage.reasoningTokens,
-      totalTokens: input.usage.totalTokens,
-      ...(input.finishReason !== undefined ? { rawFinishReason: input.finishReason } : {}),
-      ...(input.usage.raw !== undefined ? { rawUsage: input.usage.raw } : {}),
+      ...llmCallUsageFields(input.usage),
       latencyMs: input.latencyMs,
       status: input.status,
       ...(input.errorClass ? { errorClass: input.errorClass } : {}),

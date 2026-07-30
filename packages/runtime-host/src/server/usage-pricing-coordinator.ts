@@ -43,14 +43,14 @@ export class HostUsagePricingCoordinator {
   readonly #stores: InteractiveUsageStoresWriter;
   readonly #requestDrain: () => void;
   readonly #activation: RuntimePolicyActivationGate;
-  readonly #onCommittedPricingMutation: () => Promise<void>;
+  readonly #onCommittedPricingMutation: () => void;
   #poisonDrainRequested = false;
 
   constructor(
     stores: InteractiveUsageStoresWriter,
     requestDrain: () => void,
     activation: RuntimePolicyActivationGate,
-    onCommittedPricingMutation: () => Promise<void> = async () => {},
+    onCommittedPricingMutation: () => void = () => {},
   ) {
     this.#stores = authenticateInteractiveUsageStoresWriter(stores);
     this.#requestDrain = requestDrain;
@@ -150,7 +150,7 @@ export class HostUsagePricingCoordinator {
         input.mutation.kind === 'upsert'
           ? await this.#stores.pricing.upsert(input.expectedRevision, input.mutation.pricing)
           : await this.#stores.pricing.delete(input.expectedRevision, input.mutation.modelKey);
-      if (stored.changed) await this.#invalidateCommittedPricing();
+      if (stored.changed) this.#onCommittedPricingMutation();
       return {
         ok: true,
         result: {
@@ -161,18 +161,9 @@ export class HostUsagePricingCoordinator {
     } catch (error) {
       const failure = classifyInteractiveUsageStoresFailure(error);
       if (failure.kind === 'commit_outcome_unknown') {
-        await this.#invalidateCommittedPricing();
+        this.#onCommittedPricingMutation();
       }
       return this.#mapMutationFailure(failure);
-    }
-  }
-
-  async #invalidateCommittedPricing(): Promise<void> {
-    try {
-      await this.#onCommittedPricingMutation();
-    } catch {
-      this.#activation.poison();
-      this.#requestPoisonDrain();
     }
   }
 

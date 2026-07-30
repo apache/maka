@@ -114,7 +114,7 @@ test('pricing changes invalidate backend snapshots while unchanged writes do not
         drainRequests += 1;
       },
       new RuntimePolicyActivationGate(),
-      async () => {
+      () => {
         invalidations += 1;
       },
     );
@@ -149,41 +149,15 @@ test('pricing changes invalidate backend snapshots while unchanged writes do not
     );
     assert.equal(invalidations, 1);
     assert.equal(drainRequests, 0);
-
-    const failingInvalidation = new HostUsagePricingCoordinator(
-      stores,
-      () => {
-        drainRequests += 1;
-      },
-      new RuntimePolicyActivationGate(),
-      async () => {
-        throw new Error('injected backend invalidation failure');
-      },
-    );
-    assert.deepEqual(
-      await failingInvalidation.handlers['pricing.mutate'](
-        {
-          expectedRevision: 1,
-          mutation: { kind: 'upsert', pricing: pricing('provider:model', 2) },
-        },
-        CONNECTION_CONTEXT,
-      ),
-      {
-        ok: true,
-        result: { kind: 'committed', revision: 2 },
-      },
-    );
-    assert.equal(drainRequests, 1);
   });
 });
 
-test('pricing mutation fences backend activation through the shared activation gate', async () => {
+test('pricing mutation registers backend invalidation before the next activation', async () => {
   await withUsageAuthority('pricing-activation-gate', async ({ stores }) => {
     const activation = new RuntimePolicyActivationGate();
     const priorActivationEntered = deferred();
     const releasePriorActivation = deferred();
-    const invalidationEntered = deferred();
-    const releaseInvalidation = deferred();
+    const order: string[] = [];
     const priorActivation = activation.runBackendActivation(async () => {
       priorActivationEntered.resolve();
       await releasePriorActivation.promise;
@@ -194,9 +168,8 @@ test('pricing mutation fences backend activation through the shared activation g
       stores,
       () => {},
       activation,
-      async () => {
-        invalidationEntered.resolve();
-        await releaseInvalidation.promise;
+      () => {
+        order.push('invalidation');
       },
     );
     const mutation = coordinator.handlers['pricing.mutate'](
@@ -209,6 +182,7 @@ test('pricing mutation fences backend activation through the shared activation g
     let nextActivationStarted = false;
     const nextActivation = activation.runBackendActivation(() => {
       nextActivationStarted = true;
+      order.push('activation');
     });
 
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -217,17 +191,13 @@ test('pricing mutation fences backend activation through the shared activation g
 
     releasePriorActivation.resolve();
     await priorActivation;
-    await invalidationEntered.promise;
-    assert.equal((await stores.pricing.snapshot()).revision, 1);
-    assert.equal(nextActivationStarted, false);
-
-    releaseInvalidation.resolve();
     assert.deepEqual(await mutation, {
       ok: true,
       result: { kind: 'committed', revision: 1 },
     });
     await nextActivation;
     assert.equal(nextActivationStarted, true);
+    assert.deepEqual(order, ['invalidation', 'activation']);
   });
 });
 

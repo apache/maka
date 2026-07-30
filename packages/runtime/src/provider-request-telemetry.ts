@@ -3,6 +3,7 @@ import {
   type PreparedProviderRequestCapture,
   type PreparedRequestSegment,
 } from './request-shape.js';
+import { rawFinishReasonString } from './model-protocol.js';
 
 export type ProviderRequestCacheValueSource = 'provider' | 'derived';
 
@@ -184,7 +185,7 @@ export class ProviderRequestTracker {
           }
           if (part?.type === 'finish') {
             await attempt.finalize(input.abortSignal?.aborted ? 'aborted' : 'completed', {
-              reason: finishReason(part.finishReason),
+              reason: rawFinishReasonString(part.finishReason),
               usage: asUsage(part.usage),
             });
           } else if (part?.type === 'error') {
@@ -224,7 +225,7 @@ export class ProviderRequestTracker {
     try {
       const result = await input.doGenerate();
       await attempt.finalize(input.abortSignal?.aborted ? 'aborted' : 'completed', {
-        reason: finishReason(result.finishReason),
+        reason: rawFinishReasonString(result.finishReason),
         usage: result.usage,
       });
       return result;
@@ -379,13 +380,6 @@ function secretFreeParams(params: Record<string, unknown>): Record<string, unkno
 function abortStatus(signal: AbortSignal | undefined, error: unknown): 'failed' | 'aborted' {
   if (signal?.aborted) return 'aborted';
   return error instanceof Error && error.name === 'AbortError' ? 'aborted' : 'failed';
-}
-
-function finishReason(value: unknown): string | undefined {
-  if (typeof value === 'string') return value;
-  const reason = asRecord(value);
-  if (typeof reason?.raw === 'string') return reason.raw;
-  return typeof reason?.unified === 'string' ? reason.unified : undefined;
 }
 
 function isOutputPart(type: unknown): boolean {

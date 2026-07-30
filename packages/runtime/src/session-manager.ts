@@ -617,10 +617,6 @@ export interface RuntimeHostedAgentGraphExecutionCapability {
   ): Promise<{ runId: string; userMessageId: string | null } | undefined>;
 }
 
-export interface BackendRefresh {
-  readonly completion: Promise<void>;
-}
-
 interface SessionManagerBaseDeps {
   store: SessionStore;
   planStore?: PlanStore;
@@ -799,18 +795,9 @@ export class SessionManager {
     await executor.ensure(binding);
   }
 
-  /**
-   * Register backend invalidation synchronously and expose its eventual
-   * disposal outcome separately. Mutation fences use this split so active
-   * turns can finish without holding the mutation boundary.
-   */
-  beginBackendRefresh(): BackendRefresh {
-    return { completion: this.runtimeKernel.invalidateCachedBackends() };
-  }
-
   /** Invalidate backend snapshots now, or immediately after active turns settle. */
-  async refreshIdleBackends(): Promise<void> {
-    await this.beginBackendRefresh().completion;
+  refreshIdleBackends(): Promise<void> {
+    return this.runtimeKernel.invalidateCachedBackends();
   }
 
   async getMessages(sessionId: string): Promise<StoredMessage[]> {

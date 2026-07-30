@@ -1,4 +1,4 @@
-import type { ModelMessage } from './model-protocol.js';
+import { rawFinishReasonString, type ModelMessage } from './model-protocol.js';
 import { buildRuntimeEventModelReplayPlan } from './model-history.js';
 import { toolResultOutput } from './tool-result-output.js';
 import type {
@@ -12,6 +12,7 @@ import {
   type ProviderGenerateResult,
   type ProviderRequestTrackerInput,
 } from './provider-request-telemetry.js';
+import { llmCallUsageFields } from './telemetry/llm-call-usage.js';
 
 export { HistoryCompactSummarizerError } from './history-compact-error.js';
 
@@ -147,7 +148,7 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
       if (options.telemetry && startedAt !== undefined) {
         recordHistoryCompactCall(options.telemetry, input, startedAt, result);
       }
-      if (finishReason(result.finishReason) === 'length') {
+      if (rawFinishReasonString(result.finishReason) === 'length') {
         throw new HistoryCompactSummarizerError('output_length');
       }
       return result.text;
@@ -167,7 +168,6 @@ function recordHistoryCompactCall(
   const usage = normalizeAiSdkUsage(result.usage, { rawFinishReason: result.finishReason });
   if (!usage) return;
   const completedAt = telemetry.now();
-  const rawFinishReason = finishReason(result.finishReason);
   try {
     telemetry.recordLlmCall({
       sessionId: input.sessionId,
@@ -177,19 +177,7 @@ function recordHistoryCompactCall(
       connectionSlug: telemetry.connectionSlug,
       providerId: telemetry.providerId,
       modelId: telemetry.modelId,
-      inputTokens: usage.inputTokens,
-      outputTokens: usage.outputTokens,
-      cacheHitInputTokens: usage.cacheHitInputTokens,
-      cacheMissInputTokens: usage.cacheMissInputTokens,
-      ...(usage.cacheMissInputSource !== undefined
-        ? { cacheMissInputSource: usage.cacheMissInputSource }
-        : {}),
-      cachedInputTokens: usage.cachedInputTokens,
-      cacheWriteInputTokens: usage.cacheWriteInputTokens,
-      reasoningTokens: usage.reasoningTokens,
-      totalTokens: usage.totalTokens,
-      ...(rawFinishReason !== undefined ? { rawFinishReason } : {}),
-      ...(usage.raw !== undefined ? { rawUsage: usage.raw } : {}),
+      ...llmCallUsageFields(usage),
       latencyMs: Math.max(0, completedAt - startedAt),
       status: 'success',
       startedAt,
@@ -197,14 +185,6 @@ function recordHistoryCompactCall(
   } catch {
     // Usage telemetry is diagnostic. The summary remains authoritative.
   }
-}
-
-function finishReason(value: unknown): string | undefined {
-  if (typeof value === 'string') return value;
-  if (!value || typeof value !== 'object') return undefined;
-  const reason = value as { raw?: unknown; unified?: unknown };
-  if (typeof reason.raw === 'string') return reason.raw;
-  return typeof reason.unified === 'string' ? reason.unified : undefined;
 }
 
 interface AiSdkTextModule {

@@ -218,9 +218,8 @@ export async function createExecutionRuntimeHostComposition(
         context.requestDrain();
       });
     };
-    const registerBackendInvalidation = (): Promise<void> => {
-      observeBackendInvalidation(manager.beginBackendRefresh().completion);
-      return Promise.resolve();
+    const registerBackendInvalidation = (): void => {
+      observeBackendInvalidation(manager.refreshIdleBackends());
     };
     const usagePricing = new HostUsagePricingCoordinator(
       openedUsageStores,
@@ -250,7 +249,7 @@ export async function createExecutionRuntimeHostComposition(
           context.requestDrain();
           throw error;
         }
-        await registerBackendInvalidation();
+        registerBackendInvalidation();
       },
     );
     const connectionEffects = new HostConnectionEffectCoordinator({
