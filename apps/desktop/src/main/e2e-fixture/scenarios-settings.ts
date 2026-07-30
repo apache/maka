@@ -37,6 +37,24 @@ export async function writeSettings(
     settings.usage.range = 'all';
     settings.usage.showDetails = true;
   }
+  // Settings → 联网搜索: a configured Tavily key so the live-query controls
+  // are enabled. The query itself is answered by the typed fixture in
+  // `main/web-search-e2e-fixture.ts` — no network round-trip in e2e.
+  if (scenario === 'settings-search') {
+    settings.webSearch = {
+      ...settings.webSearch,
+      enabled: true,
+      providers: {
+        ...settings.webSearch.providers,
+        tavily: {
+          ...settings.webSearch.providers.tavily,
+          apiKey: 'e2e-tavily-fixture-key',
+          credentialSource: 'saved',
+          credentialStatus: 'valid',
+        },
+      },
+    };
+  }
   await writeJson(join(workspaceRoot, 'settings.json'), settings);
 }
 
@@ -132,7 +150,7 @@ export async function writeConnections(workspaceRoot: string, now: number, scena
     // subscription token store (empty here), so the button reads 登录; the
     // hasSecret===true → 重新登录 label is pinned by the detail-sheet contract.
     connections.push({
-      slug: 'codex-oauth',
+      slug: 'codex-subscription',
       name: 'OpenAI Codex Fixture',
       providerType: 'openai-codex',
       defaultModel: 'gpt-5.5',
@@ -167,7 +185,7 @@ function connectionFocusSlug(scenario: E2eFixtureScenario): string | null {
     case 'fetched-empty':
       return 'empty-fetched';
     case 'oauth-relogin':
-      return 'codex-oauth';
+      return 'codex-subscription';
     case 'connection-error':
       return 'broken-provider';
     default:
@@ -225,8 +243,21 @@ export async function writePlanReminders(workspaceRoot: string, now: number): Pr
       createdAt: now - 3.5 * 60 * 60_000,
       updatedAt: now - 35 * 60_000,
       nextRunAt: Date.UTC(2026, 11, 21, 2, 0, 0),
-      runs: [],
-      runCount: 0,
+      lastRun: {
+        id: 'visual-plan-run-weekly-review',
+        at: now - 35 * 60_000,
+        status: 'triggered',
+        message: '已生成本周竞品动态摘要',
+      },
+      runs: [
+        {
+          id: 'visual-plan-run-weekly-review',
+          at: now - 35 * 60_000,
+          status: 'triggered',
+          message: '已生成本周竞品动态摘要',
+        },
+      ],
+      runCount: 1,
     },
     {
       id: 'visual-plan-reminder-completed',

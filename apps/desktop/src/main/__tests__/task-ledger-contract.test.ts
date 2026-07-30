@@ -198,7 +198,7 @@ describe('task ledger contract', () => {
     assert.match(tail, /后缀/);
   });
 
-  it('keeps both tools free of the permission gate', () => {
+  it('registers all task-ledger tools', () => {
     const tools = buildTaskLedgerTools({
       store: {
         list: async () => [],
@@ -212,8 +212,5 @@ describe('task ledger contract', () => {
       },
     });
     assert.deepEqual(tools.map((t) => t.name), [TASK_CREATE_TOOL_NAME, TASK_UPDATE_TOOL_NAME, TASK_LIST_TOOL_NAME, TASK_GET_TOOL_NAME]);
-    for (const tool of tools) {
-      assert.equal(tool.permissionRequired, false, `${tool.name} must not require permission`);
-    }
   });
 });

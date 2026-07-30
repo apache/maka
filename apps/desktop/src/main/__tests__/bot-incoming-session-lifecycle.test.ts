@@ -25,6 +25,7 @@ describe('bot session lifecycle bindings', () => {
         created.push(id);
         return { id };
       },
+      async setPermissionMode() {},
       sendMessage(sessionId: string, input: { turnId: string }) {
         sent.push(sessionId);
         return (async function* (): AsyncIterable<SessionEvent> {
@@ -43,7 +44,7 @@ describe('bot session lifecycle bindings', () => {
 
     const service = createBotIncomingMainService({
       runtime,
-      createSession: (input) => runtime.createSession(input),
+      createSession: (input) => runtime.createSession({ ...input, cwd: input.cwd ?? '/repo' }),
       botRegistry: {
         async sendMessage(_platform: string, _chatId: string, text: string) {
           replies.push(text);
@@ -53,7 +54,6 @@ describe('bot session lifecycle bindings', () => {
           return true;
         },
       } as unknown as BotRegistry,
-      getCurrentProjectRoot: async () => '/repo',
       getDefaultConnectionSlug: async () => 'provider',
       getReadyConnection: async () => ({ connection: { slug: 'provider' }, model: 'model' }),
       readSessionHeader: async () => ({ permissionMode: 'explore', isArchived: false, status: 'active' }),

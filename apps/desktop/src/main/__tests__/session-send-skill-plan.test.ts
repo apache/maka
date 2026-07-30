@@ -11,6 +11,14 @@ describe('Desktop Skill send gate', () => {
         skillInvocation: {
           loaded: [],
           failed: [{ request: 'missing', reason: 'not_found' }],
+          receipts: [
+            {
+              invocation: 'explicit',
+              request: 'missing',
+              success: false,
+              reason: 'not_found',
+            },
+          ],
         },
       }),
       resolveSend: async () => {
@@ -31,7 +39,11 @@ describe('Desktop Skill send gate', () => {
         return {
           disposition: 'ready',
           sendText: 'expanded',
-          skillInvocation: { loaded: [{ id: 'alpha', name: 'Alpha' }], failed: [] },
+          skillInvocation: {
+            loaded: [{ id: 'alpha', name: 'Alpha' }],
+            failed: [],
+            receipts: [],
+          },
         };
       },
       resolveSend: async () => {

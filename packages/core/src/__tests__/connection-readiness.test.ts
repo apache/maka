@@ -105,6 +105,21 @@ describe('isConnectionReady — model capability gate', () => {
     });
   });
 
+  it('keeps a runtime-backed xAI OAuth connection send-ready', () => {
+    const verdict = isConnectionReady({
+      connection: connection({
+        slug: 'xai-oauth',
+        name: 'xAI OAuth',
+        providerType: 'xai-oauth',
+        defaultModel: 'grok-4.5',
+        models: [{ id: 'grok-4.5', capabilities: { chat: true, functionCalling: true } }],
+      }),
+      hasSecret: true,
+    });
+
+    assert.deepEqual(verdict, { ready: true, model: 'grok-4.5' });
+  });
+
   it('treats an enumerated fallback model list as the local send gate', () => {
     const verdict = isConnectionReady({
       connection: connection({

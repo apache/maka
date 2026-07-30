@@ -11,28 +11,33 @@ import {
   type SharedV4ProviderMetadata,
   type SharedV4ProviderOptions,
 } from '@ai-sdk/provider';
-import { type LlmConnection, type ProviderType } from '@maka/core/llm-connections';
+import { type ProviderType, type RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import { openAiAdapterApiProtocol } from '@maka/core/model-metadata';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import { thinkingOptionsForModel, thinkingVariantsForModel } from '@maka/core/model-thinking';
+import {
+  createKimiOpenAiTransport,
+  type KimiOpenAiTransportState,
+} from './kimi-openai-transport.js';
 import { anthropicV1BaseUrl, googleV1BetaBaseUrl } from './provider-urls.js';
 import { resolveModelRuntime } from './model-runtime.js';
 import { claudeSubscriptionHeaders, openAiCodexHeaders } from './subscription-auth.js';
 
 export interface ModelFactoryInput {
-  connection: LlmConnection;
+  connection: RuntimeExecutionConnection;
   apiKey: string;
   modelId: string;
   fetch?: typeof globalThis.fetch;
+  kimiOpenAiTransportState?: KimiOpenAiTransportState;
 }
 
 const ANTHROPIC_BETA = 'interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14';
 export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
-  const { connection, apiKey, modelId, fetch } = input;
+  const { connection, apiKey, modelId, fetch, kimiOpenAiTransportState } = input;
   const { adapter, baseUrl: baseURL, apiProtocol } = resolveModelRuntime(connection, modelId);
 
   if (adapter.kind === 'google' && adapter.normalizeBaseUrl === false) {
-    return createGoogle({ apiKey, baseURL }).chat(modelId);
+    return createGoogle({ apiKey, baseURL, fetch }).chat(modelId);
   }
 
   switch (adapter.kind) {
@@ -40,6 +45,7 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
       return createAnthropic({
         ...(adapter.auth === 'bearer' ? { authToken: apiKey } : { apiKey }),
         baseURL: adapter.normalizeBaseUrl ? anthropicV1BaseUrl(baseURL) : baseURL,
+        fetch,
         headers: { 'anthropic-beta': ANTHROPIC_BETA },
       }).chat(modelId);
 
@@ -82,7 +88,7 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
       throw new Error(`${connection.providerType} is experimental and not wired yet`);
 
     case 'openai': {
-      const openai = createOpenAI({ apiKey, baseURL });
+      const openai = createOpenAI({ apiKey, baseURL, fetch });
       // Routing is declaration-driven via the ModelInfo.apiProtocol seam: an
       // account-declared protocol wins (mirrors the github-copilot case above);
       // otherwise the model's declared OpenAI-adapter protocol decides. gpt-5*
@@ -90,7 +96,7 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
       const apiProtocol =
         adapter.apiProtocol ??
         connection.models?.find((model) => model.id === modelId)?.apiProtocol ??
-        openAiAdapterApiProtocol(modelId);
+        openAiAdapterApiProtocol(modelId, connection.providerType);
       return apiProtocol === 'openai-responses' ? openai.responses(modelId) : openai.chat(modelId);
     }
 
@@ -98,6 +104,7 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
       return createGoogle({
         apiKey,
         baseURL: googleV1BetaBaseUrl(baseURL),
+        fetch,
       }).chat(modelId);
 
     case 'cohere':
@@ -109,23 +116,38 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
           `${connection.providerType} connection ${connection.slug} requires a base URL`,
         );
       }
+      const resolvedApiProtocol =
+        apiProtocol ?? openAiAdapterApiProtocol(modelId, connection.providerType);
+      if (adapter.supportsOpenAiResponses === true && resolvedApiProtocol === 'openai-responses') {
+        return createOpenAI({ apiKey, baseURL, fetch }).responses(modelId);
+      }
       const name = adapter.name === 'connection' ? connection.slug : connection.providerType;
+      const kimiTransport =
+        connection.providerType === 'kimi-coding-plan' && apiProtocol === 'openai-chat'
+          ? createKimiOpenAiTransport(fetch ?? globalThis.fetch, kimiOpenAiTransportState)
+          : undefined;
       const model = createOpenAICompatible({
         name,
         apiKey,
         baseURL,
         includeUsage: adapter.includeUsage,
-        ...(adapter.passFetch ? { fetch } : {}),
+        ...(kimiTransport
+          ? { fetch: kimiTransport.fetch }
+          : adapter.passFetch || fetch
+            ? { fetch }
+            : {}),
+        ...(kimiTransport
+          ? { transformRequestBody: kimiTransport.transformRequestBody }
+          : adapter.replayAssistantReasoningAs
+            ? {
+                transformRequestBody: replayAssistantReasoning(
+                  adapter.replayAssistantReasoningAs,
+                  adapter.replayAssistantReasoningDetails === true,
+                ),
+              }
+            : {}),
         ...(adapter.replayAssistantReasoningDetails
           ? { metadataExtractor: reasoningDetailsMetadataExtractor() }
-          : {}),
-        ...(adapter.replayAssistantReasoningAs
-          ? {
-              transformRequestBody: replayAssistantReasoning(
-                adapter.replayAssistantReasoningAs,
-                adapter.replayAssistantReasoningDetails === true,
-              ),
-            }
           : {}),
       }).chatModel(modelId);
       return adapter.replayAssistantReasoningDetails ? attachReasoningDetails(model) : model;
@@ -281,7 +303,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function buildProviderOptions(
-  connection: LlmConnection,
+  connection: RuntimeExecutionConnection,
   modelId: string,
   thinkingLevel?: ThinkingLevel,
 ): SharedV4ProviderOptions {
@@ -290,6 +312,11 @@ export function buildProviderOptions(
   const level = thinkingLevel && variants.includes(thinkingLevel) ? thinkingLevel : undefined;
   switch (connection.providerType) {
     case 'kimi-coding-plan':
+      if (connection.models?.find((model) => model.id === modelId)?.apiProtocol === 'openai-chat') {
+        return {
+          kimiCodingPlan: { reasoningEffort: 'max' },
+        };
+      }
       return {
         anthropic:
           modelId === 'k3'
@@ -315,16 +342,22 @@ export function buildProviderOptions(
     case 'anthropic':
     case 'MiniMax':
     case 'MiniMax-cn':
-    case 'claude-subscription':
+    case 'claude-subscription': {
+      let reasoning = {};
+      if (level === 'off' && thinkingOptions?.offBehavior === 'anthropic-thinking-disabled') {
+        reasoning = { thinking: { type: 'disabled' as const } };
+      } else if (level && level !== 'off') {
+        reasoning = { effort: level };
+      }
       return {
-        anthropic: level
-          ? level === 'off'
-            ? thinkingOptions?.offBehavior === 'anthropic-thinking-disabled'
-              ? { thinking: { type: 'disabled' as const } }
-              : {}
-            : { effort: level }
-          : {},
+        anthropic: {
+          ...(connection.providerType === 'anthropic'
+            ? { cacheControl: { type: 'ephemeral' as const } }
+            : {}),
+          ...reasoning,
+        },
       };
+    }
     case 'openai-codex':
       return {
         openai: {
@@ -340,6 +373,26 @@ export function buildProviderOptions(
           ...(level ? { reasoningEffort: level === 'off' ? 'none' : level } : {}),
         },
       };
+    case 'volcengine-agent-plan':
+      return {
+        openai: {
+          store: false,
+          forceReasoning: true,
+        },
+      };
+    case 'xai':
+    case 'xai-oauth':
+      return modelId === 'grok-4.5'
+        ? {
+            openai: {
+              store: false,
+              forceReasoning: true,
+              reasoningSummary: null,
+              include: ['reasoning.encrypted_content'],
+              ...(level ? { reasoningEffort: level } : {}),
+            },
+          }
+        : {};
     case 'cohere':
       return {
         cohere:
@@ -411,7 +464,6 @@ export function buildProviderOptions(
     case 'groq':
     case 'deepseek':
     case 'moonshot':
-    case 'xai':
     case 'tencent-token-plan':
     case 'zai-coding-plan':
     case 'stepfun-step-plan':

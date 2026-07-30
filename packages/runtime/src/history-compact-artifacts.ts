@@ -14,7 +14,7 @@ import type {
   HistoryCompactLoadResult,
   HistoryCompactWriteInput,
   HistoryCompactWriteResult,
-} from './ai-sdk-backend.js';
+} from './ai-sdk-compaction-contract.js';
 
 export interface HistoryCompactArtifactStore {
   create(input: {

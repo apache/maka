@@ -23,6 +23,10 @@ const withMakaRoot: Decorator = (Story, context) => {
     root.setAttribute('data-maka-theme', palette);
   }
 
+  if (context.title.startsWith('Product/')) {
+    return <LocaleProvider locale="zh"><Story /></LocaleProvider>;
+  }
+
   return (
     <LocaleProvider locale="zh">
       <div className="h-screen w-screen overflow-y-auto bg-background p-6 text-foreground antialiased">

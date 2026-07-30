@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { DailyReviewConfig, DailyReviewMode, LlmConnection } from '@maka/core';
-import { Alert, AlertDescription, Button, Input, SettingsSelect, SettingsSwitch as Switch, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { Alert, AlertDescription, Button, SettingsSelect, SettingsSwitch as Switch, TimePicker, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { buildCatalogDailyReviewModelOptions } from '../model-catalog-choices';
 import { getDailyReviewSettingsCopy, type DailyReviewSettingsCopy } from '../locales/settings-daily-review-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
@@ -166,19 +166,21 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
             <strong>{copy.executeTime}</strong>
             <small>{copy.executeTimeHelp}</small>
           </div>
-          <Input
-            type="time"
-            aria-label={copy.executeTimeAria}
+          {/* Was a native time field. WebKit draws that control's popup
+              itself — platform-blue columns, platform metrics, no dark
+              mode — and no `::-webkit-*` selector reaches it, so the only
+              way onto the design system was to own the popup. TimePicker
+              keeps the same `HH:MM` value contract, so the persisted
+              config shape is unchanged. */}
+          <TimePicker
+            ariaLabel={copy.executeTimeAria}
             className="settingsTimeInput"
             value={effectiveConfig?.executeTime ?? '08:00'}
             disabled={formDisabled || savingKey === 'executeTime'}
-            onChange={(event) => {
-              // Native time-pickers only fire `change` once the value
-              // is a complete HH:MM (or cleared); the earlier hand-
-              // rolled regex would silently drop any intermediate
-              // state the user typed (e.g. `08:0`), making the picker
-              // feel stuck. Trust the browser.
-              void patchConfig('executeTime', { executeTime: event.target.value });
+            hourLabel={copy.executeTimeHour}
+            minuteLabel={copy.executeTimeMinute}
+            onChange={(executeTime) => {
+              void patchConfig('executeTime', { executeTime });
             }}
           />
         </div>

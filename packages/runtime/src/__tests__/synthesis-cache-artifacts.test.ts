@@ -9,7 +9,7 @@ import {
   type SynthesisCacheArtifactStore,
 } from '../synthesis-cache-artifacts.js';
 import type { SynthesisCacheBlock, SynthesisSourceRef } from '../context-budget.js';
-import type { SynthesisCacheWriteInput } from '../ai-sdk-backend.js';
+import type { SynthesisCacheWriteInput } from '../ai-sdk-compaction-contract.js';
 
 /**
  * A faithful in-memory stand-in for `@maka/storage`'s `ArtifactStore`. The glue

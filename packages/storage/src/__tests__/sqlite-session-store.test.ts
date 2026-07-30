@@ -3,15 +3,65 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import type { CreateSessionInput, SessionHeader } from '@maka/core';
+import {
+  SUBAGENT_WORKSPACE_BINDING_SCHEMA_VERSION,
+  type CreateSessionInput,
+  type SessionHeader,
+  type SubagentWorkspaceBinding,
+} from '@maka/core';
 import {
   createLegacyFileSessionStore,
   createSessionStore,
+  isSessionNotFoundError,
+  SessionNotFoundError,
   SQLITE_SESSION_METADATA_DATABASE_NAME,
 } from '../session-store.js';
 import { createSqliteSessionMetadataStore } from '../sqlite-session-metadata-store.js';
 
 describe('default SQLite session metadata store', () => {
+  test('SQLite and legacy File stores expose one typed missing-Session boundary', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-store-not-found-'));
+    const stores = [
+      createSessionStore(join(root, 'sqlite')),
+      createLegacyFileSessionStore(join(root, 'legacy')),
+    ];
+    try {
+      for (const store of stores) {
+        await assert.rejects(store.readHeaderSnapshot('deleted-session'), (error) => {
+          assert.ok(error instanceof SessionNotFoundError);
+          assert.equal(isSessionNotFoundError(error), true);
+          assert.equal(error.code, 'session_not_found');
+          assert.equal(error.sessionId, 'deleted-session');
+          return true;
+        });
+      }
+    } finally {
+      await Promise.all(stores.map((store) => store.close?.()));
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('waits for in-flight legacy metadata import before closing SQLite', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-store-close-ready-'));
+    const legacy = createLegacyFileSessionStore(root);
+    const created = await legacy.create(makeInput({ name: 'Imported before close' }));
+    const store = createSessionStore(root);
+
+    try {
+      await store.close?.();
+      const metadata = createSqliteSessionMetadataStore(
+        join(root, SQLITE_SESSION_METADATA_DATABASE_NAME),
+      );
+      try {
+        assert.equal((await metadata.read(created.id)).header.name, 'Imported before close');
+      } finally {
+        metadata.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('uses SQLite as canonical metadata while keeping transcript bodies in JSONL', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-default-session-store-'));
     const store = createSessionStore(root);
@@ -49,16 +99,213 @@ describe('default SQLite session metadata store', () => {
       await stat(join(root, SQLITE_SESSION_METADATA_DATABASE_NAME));
       await assert.rejects(() => stat(join(root, 'runtime.sqlite')), { code: 'ENOENT' });
 
-      store.close?.();
+      await store.close?.();
       const reopened = createSessionStore(root);
       try {
         assert.equal((await reopened.readHeader(created.id)).name, 'SQLite title');
         assert.equal((await reopened.readMessages(created.id)).length, 1);
       } finally {
-        reopened.close?.();
+        await reopened.close?.();
       }
     } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('persists the stable project association in SQLite metadata and summaries', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-default-session-project-'));
+    const store = createSessionStore(root);
+    try {
+      const created = await store.create(makeInput({ projectId: 'project-1' }));
+
+      assert.equal(created.projectId, 'project-1');
+      assert.equal((await store.readHeaderSnapshot(created.id)).projectId, 'project-1');
+      assert.equal((await store.list())[0]?.projectId, 'project-1');
+
+      await store.close?.();
+      const reopened = createSessionStore(root);
+      try {
+        assert.equal((await reopened.readHeaderSnapshot(created.id)).projectId, 'project-1');
+        assert.equal((await reopened.list())[0]?.projectId, 'project-1');
+      } finally {
+        await reopened.close?.();
+      }
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('persists an explicit no-project association across SQLite reopen', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-default-session-no-project-'));
+    const store = createSessionStore(root);
+    try {
+      const created = await store.create(makeInput({ projectId: null }));
+
+      assert.equal(created.projectId, null);
+      assert.equal((await store.readHeaderSnapshot(created.id)).projectId, null);
+      assert.equal((await store.list())[0]?.projectId, null);
+
+      await store.close?.();
+      const reopened = createSessionStore(root);
+      try {
+        assert.equal((await reopened.readHeaderSnapshot(created.id)).projectId, null);
+        assert.equal((await reopened.list())[0]?.projectId, null);
+      } finally {
+        await reopened.close?.();
+      }
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('lists linked child sessions through SQLite without conflating ordinary branches', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-default-session-relations-'));
+    const store = createSessionStore(root);
+    try {
+      const parent = await store.create(makeInput({ name: 'Parent' }));
+      const childInput = makeInput({
+        name: 'Child',
+        permissionMode: 'execute',
+        subagentParent: {
+          kind: 'subagent',
+          parentSessionId: parent.id,
+          spawnedBy: {
+            parentRunId: 'parent-run',
+            parentTurnId: 'parent-turn',
+            toolCallId: 'tool-call',
+          },
+          lifecycle: 'foreground',
+        },
+        subagentRuntime: {
+          schemaVersion: 1,
+          definitionVersion: 1,
+          agentId: 'local-read',
+          agentName: 'Local Read',
+          profile: 'local_read',
+          systemPrompt: 'Read the assigned workspace task.',
+          toolNames: ['Read', 'Glob', 'Grep'],
+          categoryPolicy: { read: 'allow' },
+        },
+        subagentSpawn: {
+          schemaVersion: 1,
+          requestFingerprint: 'a'.repeat(64),
+          initialTurnId: 'child-turn',
+          initialRunId: 'child-run',
+        },
+      });
+      const { header: child, created } = await store.createSubagent(childInput);
+      assert.equal(created, true);
+      const retry = await store.createSubagent(childInput);
+      assert.equal(retry.created, false);
+      assert.equal(retry.header.id, child.id);
+      await assert.rejects(
+        () =>
+          store.createSubagent({
+            ...childInput,
+            subagentSpawn: {
+              ...childInput.subagentSpawn!,
+              requestFingerprint: 'b'.repeat(64),
+            },
+          }),
+        /reused for different work/,
+      );
+      await store.create(
+        makeInput({
+          name: 'Branch',
+          parentSessionId: parent.id,
+          branchOfTurnId: 'parent-turn',
+        }),
+      );
+
+      const children = await store.list({ subagentParentSessionId: parent.id });
+      assert.deepEqual(
+        children.map((session) => session.id),
+        [child.id],
+      );
+      assert.equal(children[0]?.subagentParent?.parentSessionId, parent.id);
+      assert.deepEqual(children[0]?.subagentRuntime?.toolNames, ['Read', 'Glob', 'Grep']);
+    } finally {
       store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('persists an immutable child worktree binding across summaries and reopen', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-default-session-worktree-'));
+    const store = createSessionStore(root);
+    const workspace = makeSubagentWorkspace();
+    let childId = '';
+    try {
+      const parent = await store.create(
+        makeInput({ name: 'Parent', cwd: '/workspace/repository', projectId: 'project-1' }),
+      );
+      const { header: child } = await store.createSubagent(
+        makeInput({
+          name: 'Implementation child',
+          cwd: workspace.worktreePath,
+          projectId: 'project-1',
+          permissionMode: 'execute',
+          subagentParent: {
+            kind: 'subagent',
+            parentSessionId: parent.id,
+            spawnedBy: {
+              parentRunId: 'parent-run',
+              parentTurnId: 'parent-turn',
+              toolCallId: 'tool-call',
+            },
+            lifecycle: 'foreground',
+          },
+          subagentRuntime: {
+            schemaVersion: 1,
+            definitionVersion: 1,
+            agentId: 'implementation',
+            agentName: 'Implementation',
+            profile: 'implementation',
+            systemPrompt: 'Implement the assigned task.',
+            toolNames: ['Read', 'Glob', 'Grep', 'Write', 'Edit', 'Bash'],
+            categoryPolicy: {
+              read: 'allow',
+              file_write: 'allow',
+              shell_safe: 'allow',
+              shell_unsafe: 'allow',
+            },
+            permissionCeiling: 'execute',
+          },
+          subagentSpawn: {
+            schemaVersion: 1,
+            requestFingerprint: 'c'.repeat(64),
+            initialTurnId: 'child-turn',
+            initialRunId: 'child-run',
+          },
+          subagentWorkspace: workspace,
+        }),
+      );
+      childId = child.id;
+
+      assert.deepEqual(child.subagentWorkspace, workspace);
+      assert.deepEqual(
+        (await store.list()).find((session) => session.id === child.id)?.subagentWorkspace,
+        workspace,
+      );
+      await assert.rejects(
+        () =>
+          store.updateHeader(child.id, {
+            subagentWorkspace: { ...workspace, branch: 'maka/subagent/rebound' },
+          }),
+        /workspace binding is immutable/,
+      );
+    } finally {
+      await store.close?.();
+    }
+
+    const reopened = createSessionStore(root);
+    try {
+      assert.deepEqual((await reopened.readHeaderSnapshot(childId)).subagentWorkspace, workspace);
+    } finally {
+      await reopened.close?.();
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -93,7 +340,7 @@ describe('default SQLite session metadata store', () => {
         modelId: 'fake-model',
       });
     } finally {
-      first.close?.();
+      await first.close?.();
     }
 
     const reopened = createSessionStore(root);
@@ -105,7 +352,7 @@ describe('default SQLite session metadata store', () => {
         [created.id],
       );
     } finally {
-      reopened.close?.();
+      await reopened.close?.();
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -118,7 +365,7 @@ describe('default SQLite session metadata store', () => {
       header = await store.create(makeInput({ name: 'Delete me' }));
       await store.remove(header.id);
     } finally {
-      store.close?.();
+      await store.close?.();
     }
 
     const sessionDir = join(root, 'sessions', header.id);
@@ -130,12 +377,12 @@ describe('default SQLite session metadata store', () => {
       assert.deepEqual(await reopened.list(), []);
       await assert.rejects(() => reopened.readHeader(header.id), /not found/);
     } finally {
-      reopened.close?.();
+      await reopened.close?.();
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  test('fails the whole startup migration before exposing a partial catalog', async () => {
+  test('skips a malformed header during startup migration while importing valid sessions', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-default-session-invalid-'));
     const legacy = createLegacyFileSessionStore(root);
     const valid = await legacy.create(makeInput({ name: 'Valid' }));
@@ -147,24 +394,33 @@ describe('default SQLite session metadata store', () => {
 
     const store = createSessionStore(root);
     try {
-      await assert.rejects(() => store.list(), /Invalid legacy session header/);
+      // Startup import must not fail closed: valid sessions stay available.
+      assert.deepEqual(
+        (await store.list()).map((item) => item.id),
+        [valid.id],
+      );
+      assert.equal((await store.readHeader(valid.id)).name, 'Valid');
+      await assert.rejects(() => store.readHeader(invalid.id), /not found/);
     } finally {
-      store.close?.();
+      await store.close?.();
     }
 
     const metadata = createSqliteSessionMetadataStore(
       join(root, SQLITE_SESSION_METADATA_DATABASE_NAME),
     );
     try {
-      await assert.rejects(() => metadata.read(valid.id), /not found/);
-      assert.deepEqual(await metadata.list(), []);
+      assert.equal((await metadata.read(valid.id)).header.name, 'Valid');
+      assert.equal(await metadata.has(invalid.id), false);
+      // Malformed legacy headers are skipped, not tombstoned, so a repaired
+      // header can be imported on the next startup.
+      assert.equal(await metadata.isTombstoned(invalid.id), false);
     } finally {
       metadata.close();
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  test('fails closed when a transcript marker has no canonical SQLite metadata', async () => {
+  test('recovers an exact empty transcript marker left before SQLite admission', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-default-session-orphan-marker-'));
     const sessionId = 'orphan-session';
     const sessionDir = join(root, 'sessions', sessionId);
@@ -181,9 +437,38 @@ describe('default SQLite session metadata store', () => {
 
     const store = createSessionStore(root);
     try {
-      await assert.rejects(() => store.list(), /has no SQLite metadata/);
+      assert.deepEqual(await store.list(), []);
+      await assert.rejects(
+        stat(sessionDir),
+        (error: NodeJS.ErrnoException) => error.code === 'ENOENT',
+      );
     } finally {
-      store.close?.();
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('fails closed when an orphan transcript marker contains any additional state', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-default-session-nonempty-orphan-marker-'));
+    const sessionId = 'nonempty-orphan-session';
+    const sessionDir = join(root, 'sessions', sessionId);
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      join(sessionDir, 'session.jsonl'),
+      `${JSON.stringify({
+        type: 'session_transcript',
+        sessionId,
+        schemaVersion: 1,
+      })}\n${JSON.stringify({ type: 'user', id: 'message-1', text: 'must survive' })}\n`,
+      'utf8',
+    );
+
+    const store = createSessionStore(root);
+    try {
+      await assert.rejects(() => store.list(), /has no SQLite metadata/);
+      assert.equal((await stat(join(sessionDir, 'session.jsonl'))).isFile(), true);
+    } finally {
+      await store.close?.();
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -199,5 +484,17 @@ function makeInput(overrides: Partial<CreateSessionInput> = {}): CreateSessionIn
     name: 'Session',
     labels: [],
     ...overrides,
+  };
+}
+
+function makeSubagentWorkspace(): SubagentWorkspaceBinding {
+  return {
+    schemaVersion: SUBAGENT_WORKSPACE_BINDING_SCHEMA_VERSION,
+    kind: 'git_worktree',
+    leaseId: `subagent_worktree_${'c'.repeat(32)}`,
+    gitCommonDir: '/workspace/repository/.git',
+    worktreePath: `/workspace/state/subagent-worktrees/${'c'.repeat(32)}`,
+    branch: `maka/subagent/${'c'.repeat(32)}`,
+    baseCommit: 'd'.repeat(40),
   };
 }

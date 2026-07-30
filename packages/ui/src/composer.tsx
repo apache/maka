@@ -19,7 +19,10 @@ import { type ChatModelChoice, modelChoiceValue } from './chat-model-helpers.js'
 import { appendPromptContextDraft, isReferenceSizedPaste } from './composer-helpers.js';
 import { useComposerDraft } from './use-composer-draft.js';
 import { useComposerHistory } from './use-composer-history.js';
-import { useComposerSkillDraft } from './use-composer-skill-draft.js';
+import {
+  useComposerSkillDraft,
+  type ComposerSkillSelection,
+} from './use-composer-skill-draft.js';
 import {
   createChatInputActionOwner,
   fileTransferContainsFiles,
@@ -31,13 +34,13 @@ import { ComposerMentionPopup, mentionOptionId } from './composer-mention-popup.
 import { useMentionPopup } from './use-mention-popup.js';
 import { ComposerWorkspaceRow, type ComposerBranchPicker, type ComposerWorkspacePicker } from './composer-workspace-row.js';
 import type { AttachmentRef, PermissionMode, ProviderType, QuoteRef, SessionSummary } from '@maka/core';
-import { Button as UiButton, Switch } from './ui.js';
+import { Button as UiButton } from './ui.js';
 import { Textarea as UiTextarea } from './primitives/textarea.js';
 import { AttachmentFileCard } from './attachment-file-card.js';
 import { QuoteRefChip } from './quote-ref-chip.js';
 import { Kbd } from './primitives/kbd.js';
 import { PermissionModeSelect } from './permission-mode-menu.js';
-import { Menu, MenuItem, MenuPopup, MenuSub, MenuSubPopup, MenuSubTrigger, MenuTrigger } from './primitives/menu.js';
+import { Menu, MenuCheckboxItem, MenuItem, MenuPopup, MenuSeparator, MenuSub, MenuSubPopup, MenuSubTrigger, MenuTrigger } from './primitives/menu.js';
 
 const COMPOSER_MAX_HEIGHT = 240;
 
@@ -45,11 +48,9 @@ const COMPOSER_MAX_HEIGHT = 240;
  * PR-UI-15 (@yuejing 2026-05-22): Composer copy is locale-aware.
  *
  * Audit §3.5 — placeholder + state copy were hardcoded zh and drifted
- * stylistically from OnboardingHero's quickChat input (which used a
- * long example sentence as the placeholder). Unified style: both
- * surfaces show the same short action-oriented placeholder, and
- * OnboardingHero gets a separate `<small>` example hint below the
- * textarea so first-run users still know what to type.
+ * stylistically from the first-run input that used to sit beside this
+ * one. That second input is gone (#1433), so this placeholder is the
+ * only one a user ever reads: one short, action-oriented line.
  */
 export interface ComposerHandle {
   /** Replace the textarea value and resize, leaving focus on the input. */
@@ -58,14 +59,21 @@ export interface ComposerHandle {
   appendText(text: string): void;
   /** Read the current uncontrolled textarea value. */
   getText(): string;
-  /** Clear one persisted draft without affecting a different active session. */
+  /** Snapshot the structured Skills owned by the active draft. */
+  getSkills(): ComposerSkillSelection[];
+  /** Clear one persisted text and Skill draft without affecting another session. */
   clearDraft(draftKey: string): void;
   /** Write a specific session draft before navigation changes the active key. */
   setDraft(draftKey: string, text: string): void;
+  /** Replace structured Skills under an explicit session draft key. */
+  setSkillDraft(
+    draftKey: string,
+    skills: readonly ComposerSkillSelection[],
+  ): void;
   /** Move focus to the textarea without changing its content. */
   focus(): void;
   /** Fixture/integration seam for the same structured selection state used by `/`. */
-  setSkills(skills: ReadonlyArray<{ id: string; name: string }>): void;
+  setSkills(skills: ReadonlyArray<{ ref?: string; id: string; name: string }>): void;
 }
 
 type ComposerImportActionId = 'pick' | 'attach';
@@ -78,8 +86,8 @@ export const Composer = forwardRef<
     /**
      * When true, a turn is in flight — live output OR (with `processing`) the
      * pre-first-token wait. Toolbar swaps to a working hint ("Maka 正在回答…" or
-     * "正在处理…") and the Stop button is the only visible action — Send is hidden
-     * because the model is busy.
+     * "正在处理…") and Send becomes Stop. The ＋ menu stays reachable (#1444);
+     * import actions remain blocked mid-turn until the runtime accepts them.
      */
     streaming?: boolean;
     /**
@@ -189,11 +197,10 @@ export const Composer = forwardRef<
      * PR-MOVE-PERMISSION-MODE (WAWQAQ 47fe0d0e + a667cf6c): the
      * permission mode picker lives inside the composer left-controls
      * instead of the chat header. Composer renders a dropdown labelled
-     * by the current mode (询问权限 / 自动执行 / 跳过确认);
-     * selecting an option fires `onPermissionModeChange`. When the
-     * active session is in the legacy `explore` mode the picker
-     * collapses to display 询问权限 — explore is internal-only now and
-     * won't surface here.
+     * by the mode the session's boundary is actually in (只读 / 自动 /
+     * 完全权限); selecting an option fires `onPermissionModeChange`.
+     * A read-only session displays 只读 without it becoming a third
+     * option (#1611).
      */
     permissionMode?: PermissionMode;
     permissionModePending?: boolean;
@@ -212,6 +219,10 @@ export const Composer = forwardRef<
     swarmModePending?: boolean;
     swarmModeDisabledReason?: string;
     onSwarmModeChange?(active: boolean): void | Promise<void>;
+    graphModeActive?: boolean;
+    graphModePending?: boolean;
+    graphModeDisabledReason?: string;
+    onGraphModeChange?(active: boolean): void | Promise<void>;
     /**
      * Composer mention popups. Both are optional and the whole feature no-ops
      * when absent (SSR contracts render Composer with minimal props):
@@ -221,7 +232,7 @@ export const Composer = forwardRef<
      *   - `onSearchMentionFiles` powers the `@` popup — the composer debounces
      *     the query, and selecting a file inserts `@<relativePath> `.
      */
-    mentionSkills?: ReadonlyArray<{ id: string; name: string; description?: string }>;
+    mentionSkills?: ReadonlyArray<{ ref?: string; id: string; name: string; description?: string }>;
     onSearchMentionFiles?(query: string): Promise<ReadonlyArray<{ relativePath: string }>>;
   }
 >(function Composer(props, ref) {
@@ -330,8 +341,12 @@ export const Composer = forwardRef<
       getText() {
         return textareaRef.current?.value ?? '';
       },
+      getSkills() {
+        return skillDraft.get(skillDraft.activeDraftKey());
+      },
       clearDraft(draftKey: string) {
         clearDraft(draftKey);
+        skillDraft.clear(draftKey);
         if (activeDraftKey() !== draftKey) return;
         const el = textareaRef.current;
         if (el) el.value = '';
@@ -348,12 +363,17 @@ export const Composer = forwardRef<
         autoResize();
         focusTextInputAtEnd(el);
       },
+      setSkillDraft(
+        draftKey: string,
+        skills: readonly ComposerSkillSelection[],
+      ) {
+        skillDraft.replace(draftKey, skills);
+      },
       focus() {
         textareaRef.current?.focus();
       },
       setSkills(skills) {
-        skillDraft.clear(skillDraft.activeDraftKey());
-        for (const skill of skills) skillDraft.add(skill);
+        skillDraft.replace(skillDraft.activeDraftKey(), skills);
       },
     }),
     [],
@@ -364,7 +384,10 @@ export const Composer = forwardRef<
     const textarea = textareaRef.current;
     const form = formRef.current;
     const text = (textarea?.value ?? '').trim();
-    const skillIds = skillDraft.skills.map((skill) => skill.id);
+    // `skillIds` is the legacy wire field name. New selections submit the
+    // stable scope-aware ref so send-time re-resolution cannot drift to a
+    // same-id skill discovered at a different precedence.
+    const skillIds = skillDraft.skills.map((skill) => skill.ref ?? skill.id);
     if (!text && skillIds.length === 0) return;
     const submittedDraftKey = activeDraftKey();
     const submittedSkillDraftKey = skillDraft.activeDraftKey();
@@ -383,11 +406,11 @@ export const Composer = forwardRef<
     // survives page reloads and is shared across all input surfaces.
     if (text) rememberSentEntry(text);
     clearDraft(submittedDraftKey);
+    skillDraft.clear(submittedSkillDraftKey);
     // The owner may have changed while onSend awaited (new-session creation,
     // revision branch, or user navigation). Never erase a foreign draft.
     if (activeDraftKey() !== submittedDraftKey) return;
     saveCurrentDraft('');
-    skillDraft.clear(submittedSkillDraftKey);
     skillDraft.clear(skillDraft.activeDraftKey());
     form?.reset();
     // form.reset() empties the textarea but doesn't fire input — collapse
@@ -651,6 +674,7 @@ export const Composer = forwardRef<
     >
       <div
         className="maka-composer-inner composerInner agents-parchment-paper-surface"
+        data-maka-contract="composer-inner"
         data-streaming={props.streaming ? 'true' : undefined}
       >
         {/* No px on the chip row: `.maka-composer-inner` already pads the card,
@@ -685,7 +709,7 @@ export const Composer = forwardRef<
             aria-label={copy.selectedSkillsAriaLabel}
           >
             {skillDraft.skills.map((skill) => (
-              <li className="maka-composer-skill-chip" key={skill.id}>
+              <li className="maka-composer-skill-chip" key={skill.ref ?? skill.id}>
                 <span>{skill.name}</span>
                 <UiButton
                   type="button"
@@ -695,7 +719,7 @@ export const Composer = forwardRef<
                   className="maka-composer-skill-chip-remove"
                   aria-label={copy.removeSkillAriaLabel(skill.name)}
                   onClick={() => {
-                    skillDraft.remove(skill.id);
+                    skillDraft.remove(skill.ref ?? skill.id);
                     window.requestAnimationFrame(() => textareaRef.current?.focus());
                   }}
                 >
@@ -749,7 +773,11 @@ export const Composer = forwardRef<
         )}
         <div className="maka-composer-toolbar composerActions" data-streaming={props.streaming ? 'true' : undefined}>
           <div className="maka-composer-left-controls">
-            {!props.streaming && (props.onPickAttachments || (props.expertTeams?.length ?? 0) > 0) ? (
+            {/* #1444: keep the ＋ menu reachable while streaming. Import
+                actions still no-op mid-turn (`runImportAction` / drop
+                target), so the attach item is disabled rather than
+                vanishing the whole menu (and Plan/Swarm / expert teams). */}
+            {(props.onPickAttachments || (props.expertTeams?.length ?? 0) > 0 || props.onPlanModeChange || props.onSwarmModeChange || props.onGraphModeChange) ? (
               <Menu>
                 <MenuTrigger
                   render={({ onClick: menuToggleClick, ...triggerRest }) => (
@@ -772,14 +800,17 @@ export const Composer = forwardRef<
                 />
                 <MenuPopup className="maka-composer-context-menu" align="start" side="top" sideOffset={6}>
                   {props.onPickAttachments ? (
-                    <MenuItem onClick={() => void runImportAction('pick', props.onPickAttachments)}>
+                    <MenuItem
+                      disabled={props.disabled || props.streaming === true || importActionBusy}
+                      onClick={() => void runImportAction('pick', props.onPickAttachments)}
+                    >
                       <Paperclip size={13} aria-hidden="true" />
                       <span>{copy.addFileOrDirectory}</span>
                     </MenuItem>
                   ) : null}
                   {(props.expertTeams?.length ?? 0) > 0 ? (
                     <MenuSub>
-                      <MenuSubTrigger>
+                      <MenuSubTrigger disabled={props.disabled}>
                         <Blocks size={13} aria-hidden="true" />
                         <span>{copy.expertTeam}</span>
                       </MenuSubTrigger>
@@ -787,6 +818,7 @@ export const Composer = forwardRef<
                         {props.expertTeams?.map((team) => (
                           <MenuItem
                             key={team.id}
+                            disabled={props.disabled}
                             onClick={() => props.onStartExpertTeam?.(team.id)}
                             {...(team.description ? { title: team.description } : {})}
                           >
@@ -796,18 +828,89 @@ export const Composer = forwardRef<
                       </MenuSubPopup>
                     </MenuSub>
                   ) : null}
+                  {/* #1433 subtraction: Plan/Swarm live here as switch
+                      items instead of standalone toolbar switches — the
+                      toolbar keeps only add / permission / model / send. */}
+                  {props.onPlanModeChange || props.onSwarmModeChange || props.onGraphModeChange ? (
+                    <>
+                      {/* Separator only when an attachment/expert-team group
+                          precedes it — a modes-only menu must not lead with
+                          a divider (review P3). */}
+                      {props.onPickAttachments || (props.expertTeams?.length ?? 0) > 0 ? (
+                        <MenuSeparator />
+                      ) : null}
+                      {props.onPlanModeChange ? (
+                        <MenuCheckboxItem
+                          variant="switch"
+                          checked={props.planModeActive === true}
+                          disabled={
+                            props.disabled
+                            || props.planModePending === true
+                            || Boolean(props.planModeDisabledReason)
+                          }
+                          onCheckedChange={(checked) => {
+                            void props.onPlanModeChange?.(checked);
+                          }}
+                          title={
+                            props.planModeDisabledReason
+                            ?? (props.planModeActive ? copy.disablePlanMode : copy.enablePlanMode)
+                          }
+                        >
+                          {copy.planModeLabel}
+                        </MenuCheckboxItem>
+                      ) : null}
+                      {props.onSwarmModeChange ? (
+                        <MenuCheckboxItem
+                          variant="switch"
+                          checked={props.swarmModeActive === true}
+                          disabled={
+                            props.disabled
+                            || props.swarmModePending === true
+                            || Boolean(props.swarmModeDisabledReason)
+                          }
+                          onCheckedChange={(checked) => {
+                            void props.onSwarmModeChange?.(checked);
+                          }}
+                          title={
+                            props.swarmModeDisabledReason
+                            ?? (props.swarmModeActive ? copy.disableSwarmMode : copy.enableSwarmMode)
+                          }
+                        >
+                          {copy.swarmModeLabel}
+                        </MenuCheckboxItem>
+                      ) : null}
+                      {props.onGraphModeChange ? (
+                        <MenuCheckboxItem
+                          variant="switch"
+                          checked={props.graphModeActive === true}
+                          disabled={
+                            props.disabled
+                            || props.graphModePending === true
+                            || Boolean(props.graphModeDisabledReason)
+                          }
+                          onCheckedChange={(checked) => {
+                            void props.onGraphModeChange?.(checked);
+                          }}
+                          title={
+                            props.graphModeDisabledReason
+                            ?? (props.graphModeActive ? copy.disableGraphMode : copy.enableGraphMode)
+                          }
+                        >
+                          {copy.graphModeLabel}
+                        </MenuCheckboxItem>
+                      ) : null}
+                    </>
+                  ) : null}
                 </MenuPopup>
               </Menu>
             ) : null}
             {/* PR-MOVE-PERMISSION-MODE: the static "通用" role chip
                 was replaced by the permission-mode dropdown — that
                 spot is where the reference Settings expects users to
-                pick "Ask permissions" / "Auto mode" / "Bypass
-                permissions". Maka exposes the user-facing modes
-                `ask` / `execute` / `bypass`; `explore` collapses to `ask` in the
-                display because Deep Research sessions use it
-                internally but it's not a useful runtime toggle for
-                normal chat. */}
+                pick a permission mode. Maka offers Auto (`ask`) and
+                full access (`bypass`); a session running under a
+                read-only boundary displays as such (#1611) without
+                becoming a third option. */}
             {props.onPermissionModeChange ? (
               <PermissionModeSelect
                 appearance="quiet"
@@ -820,53 +923,76 @@ export const Composer = forwardRef<
                 disabledReason={props.permissionModeDisabledReason}
               />
             ) : null}
-            {props.onPlanModeChange ? (
-              <span
-                className="maka-composer-plan-mode-control"
-                data-active={props.planModeActive ? 'true' : 'false'}
+            {/* #1433: active-mode indicators. The Plan/Swarm toggles live in
+                the ＋ menu (subtraction), so an ON mode would otherwise be
+                easy to miss without opening the menu. The indicator uses the
+                same quiet-text-button language as the permission select next
+                to it, WITHOUT a chevron: it cannot drop down. Clicking turns
+                the mode off directly; while streaming (or otherwise disabled)
+                it stays visible but disabled with the reason as its title. */}
+            {props.planModeActive ? (
+              <button
+                type="button"
+                className="maka-composer-mode-indicator"
+                data-mode="plan"
+                disabled={
+                  props.disabled
+                  || props.planModePending === true
+                  || Boolean(props.planModeDisabledReason)
+                }
+                onClick={() => {
+                  void props.onPlanModeChange?.(false);
+                }}
+                aria-label={copy.planModeOnTitle}
+                title={
+                  props.planModeDisabledReason ?? copy.planModeOnTitle
+                }
               >
-                <span className="maka-composer-plan-mode-label">{copy.planModeLabel}</span>
-                <Switch
-                  checked={props.planModeActive === true}
-                  disabled={
-                    props.disabled
-                    || props.planModePending === true
-                    || Boolean(props.planModeDisabledReason)
-                  }
-                  onCheckedChange={(checked) => {
-                    void props.onPlanModeChange?.(checked);
-                  }}
-                  aria-label={props.planModeActive ? copy.disablePlanMode : copy.enablePlanMode}
-                  title={
-                    props.planModeDisabledReason
-                    ?? (props.planModeActive ? copy.disablePlanMode : copy.enablePlanMode)
-                  }
-                />
-              </span>
+                {copy.planModeLabel}
+                <X size={12} aria-hidden="true" />
+              </button>
             ) : null}
-            {props.onSwarmModeChange ? (
-              <span
-                className="maka-composer-swarm-mode-control"
-                data-active={props.swarmModeActive ? 'true' : 'false'}
+            {props.swarmModeActive ? (
+              <button
+                type="button"
+                className="maka-composer-mode-indicator"
+                data-mode="swarm"
+                disabled={
+                  props.disabled
+                  || props.swarmModePending === true
+                  || Boolean(props.swarmModeDisabledReason)
+                }
+                onClick={() => {
+                  void props.onSwarmModeChange?.(false);
+                }}
+                aria-label={copy.swarmModeOnTitle}
+                title={
+                  props.swarmModeDisabledReason ?? copy.swarmModeOnTitle
+                }
               >
-                <span className="maka-composer-swarm-mode-label">{copy.swarmModeLabel}</span>
-                <Switch
-                  checked={props.swarmModeActive === true}
-                  disabled={
-                    props.disabled
-                    || props.swarmModePending === true
-                    || Boolean(props.swarmModeDisabledReason)
-                  }
-                  onCheckedChange={(checked) => {
-                    void props.onSwarmModeChange?.(checked);
-                  }}
-                  aria-label={props.swarmModeActive ? copy.disableSwarmMode : copy.enableSwarmMode}
-                  title={
-                    props.swarmModeDisabledReason
-                    ?? (props.swarmModeActive ? copy.disableSwarmMode : copy.enableSwarmMode)
-                  }
-                />
-              </span>
+                {copy.swarmModeLabel}
+                <X size={12} aria-hidden="true" />
+              </button>
+            ) : null}
+            {props.graphModeActive ? (
+              <button
+                type="button"
+                className="maka-composer-mode-indicator"
+                data-mode="graph"
+                disabled={
+                  props.disabled
+                  || props.graphModePending === true
+                  || Boolean(props.graphModeDisabledReason)
+                }
+                onClick={() => {
+                  void props.onGraphModeChange?.(false);
+                }}
+                aria-label={copy.graphModeOnTitle}
+                title={props.graphModeDisabledReason ?? copy.graphModeOnTitle}
+              >
+                {copy.graphModeLabel}
+                <X size={12} aria-hidden="true" />
+              </button>
             ) : null}
           </div>
           <span className="maka-composer-status-slot">

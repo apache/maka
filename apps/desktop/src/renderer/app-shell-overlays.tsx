@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback } from 'react';
 import type {
   LlmConnection,
+  ProviderType,
   SettingsSection,
   ThemePalette,
   ThemePreference,
@@ -53,6 +54,7 @@ export function AppShellOverlays(props: {
   settingsRequestedSection: SettingsSection | undefined;
   settingsProviderCatalogOpen: boolean;
   settingsConnectionDetailSlug: string | undefined;
+  settingsCreateProviderType: ProviderType | undefined;
   onOpenDailyReview(): void;
   onOpenSettingsSession(sessionId: string): void;
   helpOpen: boolean;
@@ -89,6 +91,7 @@ export function AppShellOverlays(props: {
     settingsRequestedSection,
     settingsProviderCatalogOpen,
     settingsConnectionDetailSlug,
+    settingsCreateProviderType,
     setThemePalette,
     setThemePref,
     setUiLocalePreference,
@@ -128,6 +131,7 @@ export function AppShellOverlays(props: {
             requestedSection={settingsRequestedSection}
             openProviderCatalog={settingsProviderCatalogOpen}
             initialConnectionSlug={settingsConnectionDetailSlug}
+            initialCreateProviderType={settingsCreateProviderType}
             onOpenDailyReview={props.onOpenDailyReview}
             onOpenSession={props.onOpenSettingsSession}
           />

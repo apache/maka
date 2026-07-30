@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type {
+  AgentRunEvent,
   AgentRunHeader,
   BackendKind,
   PricingConfig,
@@ -10,9 +11,10 @@ import type {
 } from '@maka/core';
 import { isTerminalRuntimeEvent, isThinkingLevel, resolveModelVisionSupport } from '@maka/core';
 import {
+  AgentGraphCoordinator,
+  AGENT_TOOL_GROUP_ID,
   AiSdkBackend,
   BackendRegistry,
-  PermissionEngine,
   PiAgentBackend,
   SessionManager,
   buildChildAgentTools,
@@ -23,22 +25,27 @@ import {
   getBuiltinPricing,
   loadSynthesisCacheBlocksFromArtifacts,
   persistSynthesisCacheBlocksToArtifacts,
+  projectEffectiveProductToolSurface,
   type InvocationResult,
   type SynthesisCacheArtifactStore,
   type SynthesisCacheLoader,
   type SynthesisCacheWriter,
+  type TurnStartOptions,
 } from '@maka/runtime';
 import {
   createAttachmentByteReader,
   createReadImageSnapshotter,
   persistProviderRequestCaptureArtifact,
 } from '@maka/storage';
+import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { registerFakeBackend } from './backends.js';
 import {
   buildHarborCellOutput,
   combineInvocations,
   countRuntimeSteps,
+  selectHarborCellTokenSummary,
   validateHarborCellOutput,
+  validateHarborCellTokenSummary,
   type HarborCellContextBudgetPolicySnapshot,
   type HarborCellDeadlineSettlement,
   type HarborCellExecutionIdentity,
@@ -58,7 +65,10 @@ import { validateRealBackendIsolation } from './isolation.js';
 import { PiCliJsonTransport } from './pi-cli-json-transport.js';
 import { providerFromEnv, resolveHarborCellAiSdkEnv } from './provider-env.js';
 import { backendNeedsIsolation } from './runner.js';
-import { buildIsolatedHeadlessToolAvailability, buildIsolatedHeadlessTools } from './tools.js';
+import {
+  buildHeadlessProductToolSurfaceForBackend,
+  buildIsolatedHeadlessSupplementalTools,
+} from './tools.js';
 import { createHeadlessSessionCapabilityBridge } from './session-capabilities.js';
 import { resolveHeadlessSystemPrompt } from './system-prompts.js';
 import {
@@ -81,6 +91,7 @@ import {
   buildHarborCellAiSdkTools,
   createHarborCellLocalToolExecutor,
 } from './harbor-cell-tool-executor.js';
+import { createProviderEnvFetch, type ProviderEnvFetch } from './provider-env-fetch.js';
 
 // The Harbor cell orchestration module keeps `#harbor-cell` (and './harbor-cell.js')
 // as the stable public surface. After the sink-file split the moved symbols live in
@@ -135,6 +146,10 @@ export interface RunHarborCellInput {
   settleAfterMs?: number;
   now?: () => number;
   newId?: () => string;
+  /** Resume one already-materialized session instead of creating a fresh session. */
+  resumeSessionId?: string;
+  /** Optional measurement hook passed through Runtime's run-start boundary. */
+  onRunStarted?: TurnStartOptions['onRunStarted'];
 }
 
 export interface HarborCellContinuationPolicy {
@@ -289,6 +304,9 @@ export async function runHarborCellWithStorage(
   const sessionStore = storage.executionStores.sessionStore;
   const agentRunStore = storage.executionStores.agentRunStore;
   const runtimeEventStore = storage.executionStores.runtimeEventStore;
+  const resumedSession = input.resumeSessionId
+    ? await sessionStore.readHeaderSnapshot(input.resumeSessionId)
+    : undefined;
   const backends = new BackendRegistry();
   const sessionCapabilities = createHeadlessSessionCapabilityBridge();
   const task: Task = {
@@ -300,6 +318,36 @@ export async function runHarborCellWithStorage(
   const economyTaskMode = resolveEconomyTaskMode(input.config, task);
   const prompt = resolveHeadlessSystemPrompt(input.config, { heavyTaskMode, economyTaskMode });
   const config = { ...input.config, systemPrompt: prompt.systemPrompt };
+  if (resumedSession) {
+    const boundary = await sessionStore.readExecutionBoundary(resumedSession.id);
+    if (boundary.kind !== 'external') {
+      throw new Error(
+        `Harbor resume session requires an external execution boundary, observed ${boundary.kind}`,
+      );
+    }
+    const executionFacts = [
+      ['cwd', input.cwd, resumedSession.cwd],
+      ['backend', input.config.backend, resumedSession.backend],
+      ['llmConnectionSlug', config.llmConnectionSlug, resumedSession.llmConnectionSlug],
+      ['model', config.model, resumedSession.model],
+      ['thinkingLevel', config.thinkingLevel, resumedSession.thinkingLevel],
+    ] as const;
+    for (const [name, expected, observed] of executionFacts) {
+      if (expected !== observed) {
+        throw new Error(
+          `Harbor resume session ${name} expected ${String(expected)}, observed ${String(observed)}`,
+        );
+      }
+    }
+  }
+  const productToolSurface = buildHeadlessProductToolSurfaceForBackend(
+    config.backend,
+    input.realBackendIsolation?.toolExecutor,
+    {
+      agentTools: config.agentTools,
+      snapshotImage: createReadImageSnapshotter(storage.artifactStore),
+    },
+  );
   const registerBackends =
     input.registerBackends ?? ((registry: BackendRegistry) => registerFakeBackend(registry));
   await registerBackends(backends, {
@@ -309,6 +357,7 @@ export async function runHarborCellWithStorage(
     workspaceDir: input.cwd,
     ...sessionCapabilities.capabilities,
     artifactStore: storage.artifactStore,
+    ...(productToolSurface ? { productToolSurface } : {}),
     ...(backendNeedsIsolation(input.config.backend)
       ? {
           realBackendIsolation: input.realBackendIsolation,
@@ -325,6 +374,8 @@ export async function runHarborCellWithStorage(
     systemPromptMode: prompt.mode,
     systemPromptHash: prompt.systemPromptHash,
     pricingProfile: input.pricingProfile ?? 'unconfigured',
+    agentTools: productToolSurface?.boundSurfaceIds.includes(AGENT_TOOL_GROUP_ID) ?? false,
+    ...(productToolSurface ? { productToolSurface: productToolSurface.identity } : {}),
   };
   await writeHarborCellExecutionIdentity(input.outputDir, executionIdentity);
 
@@ -334,11 +385,9 @@ export async function runHarborCellWithStorage(
     runStore: agentRunStore,
     runtimeEventStore,
     backends,
-    ...(input.realBackendIsolation?.toolExecutor
+    ...(productToolSurface?.boundSurfaceIds.includes(AGENT_TOOL_GROUP_ID)
       ? {
-          childTools: buildChildAgentTools(
-            buildIsolatedHeadlessTools(input.realBackendIsolation.toolExecutor),
-          ),
+          childTools: buildChildAgentTools(productToolSurface.tools),
         }
       : {}),
     newId,
@@ -348,18 +397,31 @@ export async function runHarborCellWithStorage(
       invocation = result;
     },
   });
-  sessionCapabilities.bind(manager);
-
-  const session = await manager.createSession({
-    cwd: input.cwd,
-    backend: input.config.backend,
-    llmConnectionSlug: config.llmConnectionSlug,
-    model: config.model,
-    ...(config.thinkingLevel ? { thinkingLevel: config.thinkingLevel } : {}),
-    permissionMode: 'execute',
-    name: `harbor-cell:${input.config.id}`,
+  const session =
+    resumedSession ??
+    (await manager.createSession(
+      {
+        cwd: input.cwd,
+        backend: input.config.backend,
+        llmConnectionSlug: config.llmConnectionSlug,
+        model: config.model,
+        ...(config.thinkingLevel ? { thinkingLevel: config.thinkingLevel } : {}),
+        permissionMode: 'ask',
+        name: `harbor-cell:${input.config.id}`,
+      },
+      { initialBoundary: { kind: 'external', revision: 0 } },
+    ));
+  const graphControlStore = createAgentGraphControlStore(input.storageRoot);
+  const graphCoordinator = new AgentGraphCoordinator({
+    sessionStore,
+    runStore: agentRunStore,
+    runtimeEventStore,
+    controlStore: graphControlStore,
+    runtime: manager,
+    newId,
+    rootSessionId: session.id,
   });
-
+  sessionCapabilities.bind(manager, graphCoordinator);
   let deadlineReached = false;
   let settlementError: unknown;
   let settlementAttempt: Promise<void> | undefined;
@@ -368,10 +430,9 @@ export async function runHarborCellWithStorage(
       ? undefined
       : setTimeout(() => {
           deadlineReached = true;
-          settlementAttempt = manager
-            .stopSession(session.id, {
+          settlementAttempt = sessionCapabilities
+            .settle(session.id, {
               source: 'benchmark_deadline',
-              mode: 'immediate',
             })
             .catch((error) => {
               settlementError = error;
@@ -398,19 +459,15 @@ export async function runHarborCellWithStorage(
       attemptedTurnId = turnId;
       attemptedRunId = runId;
       invocation = undefined;
-      for await (const event of manager.sendMessage(
+      for await (const _event of manager.sendMessage(
         session.id,
         { turnId, text: nextText },
-        { runId },
+        {
+          runId,
+          ...(input.onRunStarted ? { onRunStarted: input.onRunStarted } : {}),
+        },
       )) {
-        if ((event as { type?: string }).type === 'permission_request') {
-          const { requestId } = event as { requestId: string };
-          await manager.respondToPermission(session.id, {
-            requestId,
-            decision: 'deny',
-            rememberForTurn: true,
-          });
-        }
+        // Event consumption drives the externally isolated Harbor run.
       }
       if (!invocation)
         throw new Error('Harbor cell turn finished without a runtime invocation result');
@@ -427,6 +484,22 @@ export async function runHarborCellWithStorage(
     sendMessageError = error;
   } finally {
     if (settlementTimer) clearTimeout(settlementTimer);
+    try {
+      if (settlementAttempt) {
+        await settlementAttempt;
+      } else {
+        await sessionCapabilities.settle(
+          session.id,
+          deadlineReached ? { source: 'benchmark_deadline' } : undefined,
+        );
+      }
+    } finally {
+      try {
+        await graphCoordinator.close();
+      } finally {
+        graphControlStore.close();
+      }
+    }
   }
   await settlementAttempt;
   if (settlementError) throw settlementError;
@@ -492,6 +565,7 @@ export async function writeHarborCellExecutionIdentity(
   executionIdentity: HarborCellExecutionIdentity,
 ): Promise<void> {
   await mkdir(outputDir, { recursive: true });
+  await rm(join(outputDir, HARBOR_CELL_USAGE_CHECKPOINT_FILENAME), { force: true });
   await writeHarborCellArtifact(
     join(outputDir, HARBOR_CELL_EXECUTION_IDENTITY_FILENAME),
     `${JSON.stringify(executionIdentity, null, 2)}\n`,
@@ -505,7 +579,7 @@ export async function writeHarborCellArtifacts(
   const runtimeEventsPath = join(input.outputDir, HARBOR_CELL_RUNTIME_EVENTS_FILENAME);
   const outputPath = join(input.outputDir, HARBOR_CELL_OUTPUT_FILENAME);
   await writeHarborCellArtifact(runtimeEventsPath, runtimeEventsJsonl(input.invocation));
-  const output = validateHarborCellOutput(
+  const rawOutput = validateHarborCellOutput(
     buildHarborCellOutput({
       invocation: input.invocation,
       runtimeEventsPath,
@@ -519,10 +593,29 @@ export async function writeHarborCellArtifacts(
         : {}),
     }),
   );
+  const usageCheckpoint = await readHarborCellUsageCheckpoint(input.outputDir);
+  const tokenSummary = selectHarborCellTokenSummary(rawOutput.tokenSummary, usageCheckpoint);
+  const output =
+    tokenSummary && tokenSummary !== rawOutput.tokenSummary
+      ? { ...rawOutput, tokenSummary }
+      : rawOutput;
   await writeHarborCellArtifact(outputPath, `${JSON.stringify(output, null, 2)}\n`);
   return { output, outputPath, runtimeEventsPath };
 }
 
+async function readHarborCellUsageCheckpoint(
+  outputDir: string,
+): Promise<NonNullable<HarborCellOutput['tokenSummary']> | null> {
+  try {
+    return validateHarborCellTokenSummary(
+      JSON.parse(await readFile(join(outputDir, HARBOR_CELL_USAGE_CHECKPOINT_FILENAME), 'utf8')),
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** Export top-level invocation ledgers for provider-request benchmark evidence. */
 export async function writeHarborTaskRunTrace(input: {
   outputDir: string;
   storage: HeadlessStorageWriter;
@@ -530,9 +623,49 @@ export async function writeHarborTaskRunTrace(input: {
 }): Promise<string> {
   const storage = authenticateHeadlessStorageWriter(input.storage);
   const eventGroups = await Promise.all(
-    input.invocations.map((invocation) =>
-      storage.executionStores.agentRunStore.readEvents(invocation.sessionId, invocation.runId),
-    ),
+    input.invocations.map(async (invocation) => {
+      const [header, events] = await Promise.all([
+        storage.executionStores.agentRunStore.readRun(invocation.sessionId, invocation.runId),
+        storage.executionStores.agentRunStore.readEventsForEvidence(
+          invocation.sessionId,
+          invocation.runId,
+        ),
+      ]);
+      const evidenceEvents =
+        header.traceWriteError && !events.some((event) => event.type === 'trace_write_failed')
+          ? [
+              ...events,
+              {
+                type: 'trace_write_failed',
+                id: `run-header-trace-write-failed-${header.runId}`,
+                runId: header.runId,
+                sessionId: header.sessionId,
+                turnId: header.turnId,
+                ts: header.updatedAt,
+                message: header.traceWriteError,
+              } satisfies AgentRunEvent,
+            ]
+          : events;
+      if (header.backendKind !== 'ai-sdk' || evidenceEvents.some(isProviderRequestTraceEvidence)) {
+        return evidenceEvents;
+      }
+      return [
+        ...evidenceEvents,
+        {
+          type: 'event_corrupt',
+          id: `run-provider-request-evidence-missing-${header.runId}`,
+          runId: header.runId,
+          sessionId: header.sessionId,
+          turnId: header.turnId,
+          ts: header.updatedAt,
+          message: `Provider request trace evidence is missing for invocation ${invocation.invocationId}`,
+          data: {
+            reason: 'missing_provider_request_evidence',
+            invocationId: invocation.invocationId,
+          },
+        } satisfies AgentRunEvent,
+      ];
+    }),
   );
   const chunks = eventGroups.map((events) =>
     events.map((event) => JSON.stringify(event)).join('\n'),
@@ -544,6 +677,14 @@ export async function writeHarborTaskRunTrace(input: {
     nonEmptyChunks.length > 0 ? `${nonEmptyChunks.join('\n')}\n` : '',
   );
   return traceEventsPath;
+}
+
+function isProviderRequestTraceEvidence(event: AgentRunEvent): boolean {
+  return (
+    event.type === 'provider_request_captured' ||
+    event.type === 'provider_request_attempt_recorded' ||
+    event.type === 'trace_write_failed'
+  );
 }
 
 export async function runHarborCellFromEnv(
@@ -567,9 +708,11 @@ export async function runHarborCellFromEnv(
   const maxSteps = harborCellMaxStepsFromEnv(resolvedEnv);
   const settleAfterMs = harborCellSoftTimeoutMsFromEnv(resolvedEnv);
   const reasoningEffort = reasoningEffortFromEnv(resolvedEnv.MAKA_REASONING_EFFORT);
+  const agentTools = booleanEnv(resolvedEnv.MAKA_AGENT_TOOLS, 'MAKA_AGENT_TOOLS') ?? false;
   const baseConfig = {
     id: resolvedEnv.MAKA_CONFIG_ID ?? 'harbor-cell',
     backend,
+    agentTools,
     ...(reasoningEffort ? { thinkingLevel: reasoningEffort } : {}),
     ...(resolvedEnv.MAKA_SYSTEM_PROMPT !== undefined
       ? { systemPrompt: resolvedEnv.MAKA_SYSTEM_PROMPT }
@@ -578,6 +721,7 @@ export async function runHarborCellFromEnv(
   };
   let config: Config;
   let registerBackends = options.registerBackends;
+  let providerEnvFetch: ProviderEnvFetch | undefined;
 
   switch (backend) {
     case 'ai-sdk': {
@@ -590,15 +734,19 @@ export async function runHarborCellFromEnv(
         llmConnectionSlug: resolvedEnv.MAKA_LLM_CONNECTION_SLUG ?? modelSpec.provider,
         model: modelSpec.model,
       };
-      registerBackends ??= buildAiSdkCellBackendRegistration({
-        provider: modelSpec.provider,
-        model: modelSpec.model,
-        env: resolvedEnv,
-        now,
-        newId,
-        ...(maxSteps !== undefined ? { maxSteps } : {}),
-        recordUsageCheckpoint: (usage) => writeHarborCellUsageCheckpoint(outputDir, usage),
-      });
+      if (!registerBackends) {
+        providerEnvFetch = createProviderEnvFetch(resolvedEnv);
+        registerBackends = buildAiSdkCellBackendRegistration({
+          provider: modelSpec.provider,
+          model: modelSpec.model,
+          env: resolvedEnv,
+          now,
+          newId,
+          ...(providerEnvFetch ? { fetch: providerEnvFetch.fetch } : {}),
+          ...(maxSteps !== undefined ? { maxSteps } : {}),
+          recordUsageCheckpoint: (usage) => writeHarborCellUsageCheckpoint(outputDir, usage),
+        });
+      }
       break;
     }
     case 'pi-agent': {
@@ -623,7 +771,6 @@ export async function runHarborCellFromEnv(
               header: ctx.header,
               appendMessage:
                 ctx.appendMessage ?? ((message) => ctx.store.appendMessage(ctx.sessionId, message)),
-              permissionEngine: new PermissionEngine({ newId, now }),
               transport: new PiCliJsonTransport({
                 command: resolvedEnv.MAKA_PI_COMMAND ?? 'pi',
                 ...(piProvider ? { provider: piProvider } : {}),
@@ -644,30 +791,34 @@ export async function runHarborCellFromEnv(
       break;
   }
 
-  return await runHarborCell({
-    config,
-    instruction: await instructionFromEnv(resolvedEnv),
-    cwd: resolvedEnv.MAKA_WORKDIR ?? process.cwd(),
-    outputDir,
-    storageRoot,
-    pricingProfile: resolvedEnv.MAKA_TRIAL_PRICING_SOURCE ?? 'unconfigured',
-    ...(contextBudgetPolicy ? { contextBudgetPolicy } : {}),
-    ...(continuationPolicy ? { continuationPolicy } : {}),
-    ...(taskLedgerExperimentPolicy ? { taskToolSummaryEnabled: true } : {}),
-    ...(settleAfterMs !== undefined ? { settleAfterMs } : {}),
-    ...(registerBackends ? { registerBackends } : {}),
-    ...(backendNeedsIsolation(backend)
-      ? {
-          realBackendIsolation: {
-            kind: 'external',
-            label: 'Harbor task container',
-            toolExecutor: createHarborCellLocalToolExecutor(resolvedEnv),
-          },
-        }
-      : {}),
-    ...(options.now ? { now: options.now } : {}),
-    ...(options.newId ? { newId: options.newId } : {}),
-  });
+  try {
+    return await runHarborCell({
+      config,
+      instruction: await instructionFromEnv(resolvedEnv),
+      cwd: resolvedEnv.MAKA_WORKDIR ?? process.cwd(),
+      outputDir,
+      storageRoot,
+      pricingProfile: resolvedEnv.MAKA_TRIAL_PRICING_SOURCE ?? 'unconfigured',
+      ...(contextBudgetPolicy ? { contextBudgetPolicy } : {}),
+      ...(continuationPolicy ? { continuationPolicy } : {}),
+      ...(taskLedgerExperimentPolicy ? { taskToolSummaryEnabled: true } : {}),
+      ...(settleAfterMs !== undefined ? { settleAfterMs } : {}),
+      ...(registerBackends ? { registerBackends } : {}),
+      ...(backendNeedsIsolation(backend)
+        ? {
+            realBackendIsolation: {
+              kind: 'external',
+              label: 'Harbor task container',
+              toolExecutor: createHarborCellLocalToolExecutor(resolvedEnv),
+            },
+          }
+        : {}),
+      ...(options.now ? { now: options.now } : {}),
+      ...(options.newId ? { newId: options.newId } : {}),
+    });
+  } finally {
+    await providerEnvFetch?.close();
+  }
 }
 
 export function reasoningEffortFromEnv(
@@ -832,6 +983,7 @@ export function buildAiSdkCellBackendRegistration(input: {
   env: RunHarborCellEnv;
   now: () => number;
   newId: () => string;
+  fetch?: typeof globalThis.fetch;
   maxSteps?: number;
   recordUsageCheckpoint?: (usage: HarborCellUsageCheckpoint) => void | Promise<void>;
 }): NonNullable<RunHarborCellInput['registerBackends']> {
@@ -847,7 +999,6 @@ export function buildAiSdkCellBackendRegistration(input: {
     ? (key: string): PricingConfig | null =>
         key === modelKey ? pricingOverride : getBuiltinPricing(key)
     : getBuiltinPricing;
-  const permissionEngine = new PermissionEngine({ newId: input.newId, now: input.now });
   const contextBudgetBackendOptions = buildHarborCellContextBudgetBackendOptions(input.env);
   const streamConnectTimeoutMs = positiveIntEnv(
     input.env.MAKA_STREAM_CONNECT_TIMEOUT_MS,
@@ -863,9 +1014,14 @@ export function buildAiSdkCellBackendRegistration(input: {
   const taskLedgerExperimentStore = taskLedgerExperimentPolicy
     ? createInMemoryTaskLedgerExperimentStore({ now: input.now, newId: input.newId })
     : undefined;
+  const backendUsageCheckpoints = new Map<symbol, HarborCellUsageCheckpoint>();
+  let usageCheckpointQueue = Promise.resolve();
   return (registry, context) => {
     if (!context.toolExecutor) {
       throw new Error('Harbor ai-sdk backend requires an isolated tool executor');
+    }
+    if (!context.productToolSurface) {
+      throw new Error('Harbor ai-sdk backend requires the projected product-tool surface');
     }
     // Artifact consumers share the same lease-bound store and metadata index.
     const artifactStore = context.artifactStore;
@@ -874,54 +1030,89 @@ export function buildAiSdkCellBackendRegistration(input: {
       synthesisCacheEnabled,
     );
     registry.register('ai-sdk', (ctx) => {
+      const backendUsageKey = Symbol('harbor-cell-backend-usage');
       const subscriptionFetch = buildSubscriptionModelFetch({
         connection,
         sessionId: ctx.sessionId,
         modelId: input.model,
+        ...(input.fetch ? { fetchFn: input.fetch } : {}),
       });
-      const tools = buildHarborCellAiSdkTools(context.toolExecutor!, {
-        ...(context.heavyTaskEvidence ? { heavyTaskEvidence: context.heavyTaskEvidence } : {}),
-        ...(context.heavyTaskProgress ? { heavyTaskProgress: context.heavyTaskProgress } : {}),
-        ...(context.heavyTaskSelfCheck ? { heavyTaskSelfCheck: context.heavyTaskSelfCheck } : {}),
-        ...(taskLedgerExperimentStore && taskLedgerExperimentPolicy
-          ? { taskLedgerExperiment: { store: taskLedgerExperimentStore } }
-          : {}),
-        snapshotImage: createReadImageSnapshotter(artifactStore),
-      });
+      const providerFetch = subscriptionFetch ?? input.fetch;
+      const productToolSurface = ctx.tools
+        ? projectEffectiveProductToolSurface({
+            host: 'headless',
+            tools: ctx.tools,
+            policy: context.productToolSurface!.identity.policy,
+          })
+        : context.productToolSurface!;
+      const productTools = [...productToolSurface.tools];
+      const supplementalTools = ctx.tools
+        ? []
+        : buildIsolatedHeadlessSupplementalTools({
+            ...(context.heavyTaskProgress ? { heavyTaskProgress: context.heavyTaskProgress } : {}),
+            ...(context.heavyTaskSelfCheck
+              ? { heavyTaskSelfCheck: context.heavyTaskSelfCheck }
+              : {}),
+            ...(taskLedgerExperimentStore && taskLedgerExperimentPolicy
+              ? { taskLedgerExperiment: { store: taskLedgerExperimentStore } }
+              : {}),
+          });
+      const tools = [...productTools, ...supplementalTools];
+      const admitsAgentChildren = productToolSurface.boundSurfaceIds.includes(AGENT_TOOL_GROUP_ID);
       return new AiSdkBackend({
         sessionId: ctx.sessionId,
         header: { ...ctx.header, model: input.model },
         appendMessage:
           ctx.appendMessage ?? ((message) => ctx.store.appendMessage(ctx.sessionId, message)),
+        readExecutionBoundary: () => ctx.store.readExecutionBoundary(ctx.sessionId),
         connection,
         apiKey,
         modelId: input.model,
-        permissionEngine,
         modelFactory: (modelInput) =>
           getAIModel({
             ...modelInput,
-            ...(subscriptionFetch ? { fetch: subscriptionFetch } : {}),
+            ...(providerFetch ? { fetch: providerFetch } : {}),
           }),
         tools,
-        toolAvailability: buildIsolatedHeadlessToolAvailability(tools.map((tool) => tool.name)),
-        spawnChildAgent: context.spawnChildAgent
-          ? (childInput) => context.spawnChildAgent!(ctx.sessionId, childInput)
-          : undefined,
-        prepareChildAgentResume: context.prepareChildAgentResume
-          ? (sourceRunId) => context.prepareChildAgentResume!(ctx.sessionId, sourceRunId)
-          : undefined,
-        resumeChildAgent: context.resumeChildAgent
-          ? (childInput) => context.resumeChildAgent!(ctx.sessionId, childInput)
-          : undefined,
-        retryChildAgent: context.retryChildAgent
-          ? (childInput) => context.retryChildAgent!(ctx.sessionId, childInput)
-          : undefined,
-        listChildAgents: context.listChildAgents
-          ? () => context.listChildAgents!(ctx.sessionId)
-          : undefined,
-        readChildAgentOutput: context.readChildAgentOutput
-          ? (childInput) => context.readChildAgentOutput!(ctx.sessionId, childInput)
-          : undefined,
+        toolAvailability: productToolSurface.toolAvailability,
+        ...(admitsAgentChildren
+          ? {
+              spawnChildAgent: context.spawnChildAgent
+                ? (childInput) => context.spawnChildAgent!(ctx.sessionId, childInput)
+                : undefined,
+              spawnChildSession: context.spawnChildSession
+                ? (childInput) =>
+                    context.spawnChildSession!(ctx.sessionId, {
+                      spawnedBy: {
+                        parentRunId: childInput.parentRunId,
+                        parentTurnId: childInput.parentTurnId,
+                        toolCallId: childInput.toolCallId,
+                      },
+                      agentProfile: childInput.agentProfile,
+                      prompt: childInput.prompt,
+                      ...(childInput.swarm ? { swarm: childInput.swarm } : {}),
+                      abortSignal: childInput.abortSignal,
+                      ...(childInput.onReady ? { onReady: childInput.onReady } : {}),
+                      ...(childInput.onEvent ? { onEvent: childInput.onEvent } : {}),
+                    })
+                : undefined,
+              prepareChildAgentResume: context.prepareChildAgentResume
+                ? (sourceRunId) => context.prepareChildAgentResume!(ctx.sessionId, sourceRunId)
+                : undefined,
+              resumeChildAgent: context.resumeChildAgent
+                ? (childInput) => context.resumeChildAgent!(ctx.sessionId, childInput)
+                : undefined,
+              retryChildAgent: context.retryChildAgent
+                ? (childInput) => context.retryChildAgent!(ctx.sessionId, childInput)
+                : undefined,
+              listChildAgents: context.listChildAgents
+                ? () => context.listChildAgents!(ctx.sessionId)
+                : undefined,
+              readChildAgentOutput: context.readChildAgentOutput
+                ? (childInput) => context.readChildAgentOutput!(ctx.sessionId, childInput)
+                : undefined,
+            }
+          : {}),
         providerOptions: buildProviderOptions(connection, input.model, ctx.header.thinkingLevel),
         supportsVision: resolveModelVisionSupport(
           connection.providerType,
@@ -934,7 +1125,7 @@ export function buildAiSdkCellBackendRegistration(input: {
         }),
         ...(streamConnectTimeoutMs !== undefined ? { streamConnectTimeoutMs } : {}),
         ...(streamIdleTimeoutMs !== undefined ? { streamIdleTimeoutMs } : {}),
-        systemPrompt: context.config.systemPrompt,
+        systemPrompt: ctx.systemPrompt ?? context.config.systemPrompt,
         ...(taskLedgerExperimentStore && taskLedgerExperimentPolicy
           ? {
               turnTailPrompt: async ({ sessionId }) =>
@@ -971,8 +1162,21 @@ export function buildAiSdkCellBackendRegistration(input: {
           : {}),
         recordActiveFullCompactBlock: ctx.recordActiveFullCompactBlock,
         recordSemanticCompactBlock: ctx.recordSemanticCompactBlock,
+        loadTurnRuntimeEvents: ctx.loadTurnRuntimeEvents,
+        allowMidTurnHistoryCompaction: ctx.allowMidTurnHistoryCompaction,
         ...(input.recordUsageCheckpoint
-          ? { recordUsageCheckpoint: input.recordUsageCheckpoint }
+          ? {
+              recordUsageCheckpoint: (usage: HarborCellUsageCheckpoint) => {
+                const update = usageCheckpointQueue.then(async () => {
+                  backendUsageCheckpoints.set(backendUsageKey, usage);
+                  await input.recordUsageCheckpoint!(
+                    aggregateHarborCellUsageCheckpoints(backendUsageCheckpoints.values()),
+                  );
+                });
+                usageCheckpointQueue = update.catch(() => {});
+                return update;
+              },
+            }
           : {}),
       });
     });
@@ -980,6 +1184,37 @@ export function buildAiSdkCellBackendRegistration(input: {
 }
 
 export const buildHarborAiSdkBackendRegistration = buildAiSdkCellBackendRegistration;
+
+function aggregateHarborCellUsageCheckpoints(
+  checkpoints: Iterable<HarborCellUsageCheckpoint>,
+): HarborCellUsageCheckpoint {
+  let aggregate: HarborCellUsageCheckpoint | undefined;
+  for (const checkpoint of checkpoints) {
+    if (!aggregate) {
+      aggregate = { ...checkpoint };
+      continue;
+    }
+    aggregate = {
+      inputTokens: aggregate.inputTokens + checkpoint.inputTokens,
+      outputTokens: aggregate.outputTokens + checkpoint.outputTokens,
+      cacheHitInputTokens: aggregate.cacheHitInputTokens + checkpoint.cacheHitInputTokens,
+      cacheMissInputTokens: aggregate.cacheMissInputTokens + checkpoint.cacheMissInputTokens,
+      cacheMissInputSource:
+        aggregate.cacheMissInputSource === 'explicit' ||
+        checkpoint.cacheMissInputSource === 'explicit'
+          ? 'explicit'
+          : 'derived',
+      cacheWriteInputTokens: aggregate.cacheWriteInputTokens + checkpoint.cacheWriteInputTokens,
+      reasoningTokens: aggregate.reasoningTokens + checkpoint.reasoningTokens,
+      totalTokens: aggregate.totalTokens + checkpoint.totalTokens,
+      ...(aggregate.costUsd !== undefined && checkpoint.costUsd !== undefined
+        ? { costUsd: aggregate.costUsd + checkpoint.costUsd }
+        : {}),
+    };
+  }
+  if (!aggregate) throw new Error('cannot aggregate an empty Harbor usage checkpoint set');
+  return aggregate;
+}
 
 export async function writeHarborCellUsageCheckpoint(
   outputDir: string,

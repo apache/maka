@@ -360,6 +360,7 @@ describe('maka-headless CLI', () => {
       assert.equal(cell.executionIdentity?.model, 'fake-model');
       assert.equal(cell.executionIdentity?.reasoningEffort, 'xhigh');
       assert.equal(cell.executionIdentity?.pricingProfile, 'test-account-plan');
+      assert.equal(cell.executionIdentity?.agentTools, false);
       assert.equal(cell.toolSummary.actualToolCalls, 0);
       assert.equal(cell.steps, 1);
       assert.equal(cell.runtimeEventsPath, join(cellArtifactDir, 'runtime-events.jsonl'));

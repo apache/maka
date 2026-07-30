@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { mkdir } from 'node:fs/promises';
+import { createServer as createHttpServer } from 'node:http';
 import { createServer, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,9 +14,12 @@ import {
   type TaskRunInput,
   type TaskRunOutput,
 } from '../fixed-prompt-controller.js';
+import { CODEX_TOOLCHAIN_FINGERPRINT, CODEX_TOOLCHAIN_SPEC } from '../codex-toolchain.js';
 import { findTrialDir } from '../harbor-task-runner.js';
+import { MAKA_NODE_TOOLCHAIN_FINGERPRINT } from '../maka-node-toolchain.js';
 import {
   buildPierRunArgs,
+  createPierProviderProxyHub,
   createPierTaskRunner,
   defaultPierProcessRunner,
   PierInfraError,
@@ -99,6 +103,7 @@ function cellOutput(overrides: Partial<HarborCellOutput> = {}): HarborCellOutput
       systemPromptMode: 'default',
       systemPromptHash: 'sha256:abc',
       pricingProfile: 'fake-structural',
+      agentTools: false,
     },
     toolSummary: {
       providerVisibleToolCount: 0,
@@ -262,6 +267,7 @@ test('buildPierRunArgs emits the pier CLI contract for the Maka arm', () => {
     jobName: 'trial',
     environment: 'docker',
     timeoutMultiplier: 1,
+    agentTimeoutMultiplier: 1.0055555555555555,
     mounts: [{ type: 'bind', source: '/repo', target: '/opt/maka-agent', read_only: true }],
     agentEnv: { MAKA_MODEL: 'k3', MAKA_PROVIDER: 'kimi-coding-plan' },
   });
@@ -273,12 +279,149 @@ test('buildPierRunArgs emits the pier CLI contract for the Maka arm', () => {
   assert.match(joined, /--job-name trial/);
   assert.match(joined, /-k 1/);
   assert.match(joined, /-n 1/);
+  assert.match(joined, /--agent-timeout-multiplier 1\.0055555555555555/);
   assert.match(joined, /--yes/);
   assert.ok(args.includes('--mounts-json'));
   assert.ok(args.includes('--ae'));
   assert.ok(args.includes('MAKA_MODEL=k3'));
   // No provider secret and no env-file were requested.
   assert.ok(!args.includes('--env-file'));
+});
+
+test('createPierTaskRunner gives Maka a controller-owned settlement tail', async () => {
+  await withDirs(async ({ jobsDir, repo }) => {
+    const captured: FakeOptions['captured'] = {};
+    const runner = createPierTaskRunner(
+      baseOptions({
+        jobsDir,
+        makaRepoPath: repo,
+        agent: 'maka',
+        makaNodeToolchainPath: '/toolchains/maka-node',
+        agentEnv: {
+          MAKA_HARBOR_MODE: 'task-run',
+          MAKA_CELL_TIMEOUT_SEC: '1',
+          MAKA_CELL_SETTLEMENT_GRACE_SEC: '1',
+          MAKA_AGENT_PHASE_TIMEOUT_SEC: '1',
+        },
+        runPier: fakePier({ reward: 0, captured }),
+      }),
+    );
+
+    await runner(
+      runInput({
+        task: {
+          id: 'dasel',
+          path: '/tasks/dasel-html-document-format',
+          metadata: {
+            agentTimeoutSec: 5_400,
+            buildTimeoutSec: 1_800,
+            verifierTimeoutSec: 1_800,
+          },
+        },
+      }),
+    );
+
+    const request = captured.request;
+    assert.ok(request);
+    const agentTimeoutFlag = request.args.indexOf('--agent-timeout-multiplier');
+    assert.equal(request.args[agentTimeoutFlag + 1], '1.0055555555555555');
+    assert.ok(request.args.includes('MAKA_CELL_TIMEOUT_SEC=5400'));
+    assert.ok(request.args.includes('MAKA_CELL_SETTLEMENT_GRACE_SEC=30'));
+    assert.ok(request.args.includes('MAKA_AGENT_PHASE_TIMEOUT_SEC=5430'));
+    assert.equal(request.timeoutMs, 13_890_000);
+  });
+});
+
+test('createPierTaskRunner preserves caller timeouts for Maka cell mode', async () => {
+  await withDirs(async ({ jobsDir, repo }) => {
+    const captured: FakeOptions['captured'] = {};
+    const runner = createPierTaskRunner(
+      baseOptions({
+        jobsDir,
+        makaRepoPath: repo,
+        agent: 'maka',
+        agentEnv: {
+          MAKA_CELL_TIMEOUT_SEC: '600',
+          MAKA_CELL_SETTLEMENT_GRACE_SEC: '30',
+        },
+        runPier: fakePier({ reward: 0, captured }),
+      }),
+    );
+
+    await runner(
+      runInput({
+        task: {
+          id: 'dasel',
+          path: '/tasks/dasel-html-document-format',
+          metadata: {
+            agentTimeoutSec: 5_400,
+            buildTimeoutSec: 1_800,
+            verifierTimeoutSec: 1_800,
+          },
+        },
+      }),
+    );
+
+    const args = captured.request?.args ?? [];
+    assert.ok(!args.includes('--agent-timeout-multiplier'));
+    assert.ok(args.includes('MAKA_CELL_TIMEOUT_SEC=600'));
+    assert.ok(args.includes('MAKA_CELL_SETTLEMENT_GRACE_SEC=30'));
+    assert.ok(!args.some((arg) => arg.startsWith('MAKA_AGENT_PHASE_TIMEOUT_SEC=')));
+  });
+});
+
+test('createPierTaskRunner mounts the pinned Maka Node runtime for container task-run mode', async () => {
+  await withDirs(async ({ jobsDir, repo }) => {
+    const captured: FakeOptions['captured'] = {};
+    const runner = createPierTaskRunner(
+      baseOptions({
+        jobsDir,
+        makaRepoPath: repo,
+        agent: 'maka',
+        agentEnv: { MAKA_HARBOR_MODE: 'task-run' },
+        makaNodeToolchainPath: '/toolchains/maka-node',
+        runPier: fakePier({ reward: 0, captured }),
+      }),
+    );
+
+    await runner(runInput());
+
+    const args = captured.request?.args ?? [];
+    const mountsFlag = args.indexOf('--mounts-json');
+    const mounts = JSON.parse(args[mountsFlag + 1]!) as Array<{
+      source: string;
+      target: string;
+      read_only: boolean;
+    }>;
+    assert.ok(
+      mounts.some(
+        (mount) =>
+          mount.source === '/toolchains/maka-node' &&
+          mount.target === '/opt/maka-node-toolchain' &&
+          mount.read_only,
+      ),
+    );
+    assert.ok(args.includes(`MAKA_NODE_TOOLCHAIN_FINGERPRINT=${MAKA_NODE_TOOLCHAIN_FINGERPRINT}`));
+  });
+});
+
+test('createPierTaskRunner rejects an unpinned Maka container task run', async () => {
+  await withDirs(async ({ jobsDir, repo }) => {
+    const runner = createPierTaskRunner(
+      baseOptions({
+        jobsDir,
+        makaRepoPath: repo,
+        agent: 'maka',
+        agentEnv: { MAKA_HARBOR_MODE: 'task-run' },
+        runPier: fakePier({ reward: 0 }),
+      }),
+    );
+
+    await assert.rejects(
+      () => runner(runInput()),
+      /makaNodeToolchainPath is required for Maka container task-run mode/,
+    );
+  });
 });
 
 test('buildPierRunArgs targets the Kimi Code adapter and forwards an env-file', () => {
@@ -334,6 +477,33 @@ test('createPierTaskRunner maps a completed fake trial to reward and host cell p
   });
 });
 
+test('createPierTaskRunner projects the Agent tool policy from the run config', async () => {
+  await withDirs(async ({ jobsDir, repo }) => {
+    const captured: FakeOptions['captured'] = {};
+    const runner = createPierTaskRunner(
+      baseOptions({
+        jobsDir,
+        makaRepoPath: repo,
+        runPier: fakePier({ reward: 0, captured }),
+      }),
+    );
+
+    await runner(
+      runInput({
+        config: {
+          id: 'cfg',
+          backend: 'ai-sdk',
+          llmConnectionSlug: 'fake',
+          model: 'fake',
+          agentTools: true,
+        },
+      }),
+    );
+
+    assert.ok(captured.request?.args.includes('MAKA_AGENT_TOOLS=true'));
+  });
+});
+
 test('createPierTaskRunner passes the provider-local bare model id to pier -m', async () => {
   await withDirs(async ({ jobsDir, repo }) => {
     const captured: FakeOptions['captured'] = {};
@@ -360,7 +530,13 @@ test('createPierTaskRunner derives the wall-clock watchdog from the task-native 
   await withDirs(async ({ jobsDir, repo }) => {
     const captured: FakeOptions['captured'] = {};
     const runner = createPierTaskRunner(
-      baseOptions({ jobsDir, makaRepoPath: repo, runPier: fakePier({ reward: 0, captured }) }),
+      baseOptions({
+        jobsDir,
+        makaRepoPath: repo,
+        makaNodeToolchainPath: '/toolchains/maka-node',
+        agentEnv: { MAKA_HARBOR_MODE: 'task-run' },
+        runPier: fakePier({ reward: 0, captured }),
+      }),
     );
     // DeepSWE-shaped budget (113/113 tasks): build 1800s + agent 5400s +
     // verifier 1800s, plus pier's fixed agent_setup phase (360s,
@@ -371,7 +547,8 @@ test('createPierTaskRunner derives the wall-clock watchdog from the task-native 
     // pier/trial/trial.py:333). The watchdog must cover the complete
     // legitimate lifecycle 2xbuild + setup + agent + 2xverifier = 12960s, or
     // cold builds, slow setups, and verifier retries get killed as infra.
-    // Contract: derived value covers that ceiling plus grace.
+    // Maka alone also reserves its 30s settlement tail. Contract: the derived
+    // value covers that ceiling plus both settlement and outer process grace.
     const deepSweMetadata = {
       agentTimeoutSec: 5400,
       verifierTimeoutSec: 1800,
@@ -384,7 +561,7 @@ test('createPierTaskRunner derives the wall-clock watchdog from the task-native 
     );
     assert.equal(
       captured.request?.timeoutMs,
-      (2 * 1800 + 360 + 5400 + 2 * 1800) * 1_000 + 15 * 60_000,
+      (2 * 1800 + 360 + 5400 + 30 + 2 * 1800) * 1_000 + 15 * 60_000,
     );
     assert.ok((captured.request?.timeoutMs ?? 0) >= 12_960_000);
 
@@ -430,6 +607,7 @@ test('createPierTaskRunner surfaces the combined trace path in task-run mode', a
       baseOptions({
         jobsDir,
         makaRepoPath: repo,
+        makaNodeToolchainPath: repo,
         agentEnv: { MAKA_HARBOR_MODE: 'task-run' },
         runPier: fakePier({ reward: 0, combinedTrace: true }),
       }),
@@ -543,6 +721,7 @@ test('pier-graded failed cells stay scored through the fixed-prompt controller',
           systemPromptMode: 'default',
           systemPromptHash: promptHash,
           pricingProfile: 'fake-structural',
+          agentTools: false,
         },
       });
       const runner = createPierTaskRunner(
@@ -572,14 +751,9 @@ test('pier-graded failed cells stay scored through the fixed-prompt controller',
 });
 
 test('pier and harbor outputs drive identical controller events for an infra-failed graded cell', async () => {
-  // Cross-runner parity lock for the scoring semantics INHERITED from the
-  // fixed-prompt controller (predating this PR): a CLI-crash cell
-  // (errorClass=infra_failed) with pier grade reward=0 is excluded via
-  // isProviderInfraFailure (scored=false), while reward=1 scores through
-  // structuredVerifierPassed. Whether that asymmetry is desirable is a
-  // controller question out of this PR's scope; the runner invariant is that
-  // Pier and Harbor produce controller-identical events for the same trial
-  // shape, so neither side can drift unilaterally.
+  // Cross-runner parity lock: once either harness produces a valid structured
+  // pass/fail grade, the verifier is authoritative even if the agent cell
+  // exited with an infrastructure error.
   await withDirs(async ({ jobsDir, repo }) => {
     const dir = await mkdtemp(join(tmpdir(), 'maka-pier-parity-'));
     try {
@@ -588,6 +762,7 @@ test('pier and harbor outputs drive identical controller events for an infra-fai
       await writeFile(systemPromptPath, systemPrompt, 'utf8');
       const promptHash = hashSystemPrompt(systemPrompt);
       for (const reward of [0, 1]) {
+        const normalizedEvents: Array<Record<string, unknown>> = [];
         const cell = cellOutput({
           status: 'failed',
           errorClass: 'infra_failed',
@@ -598,6 +773,7 @@ test('pier and harbor outputs drive identical controller events for an infra-fai
             systemPromptMode: 'default',
             systemPromptHash: promptHash,
             pricingProfile: 'fake-structural',
+            agentTools: false,
           },
         });
         const pierRunner = createPierTaskRunner(
@@ -627,7 +803,6 @@ test('pier and harbor outputs drive identical controller events for an infra-fai
           },
           cell: pierOutput.cell,
         };
-        const normalizedEvents: Array<Record<string, unknown>> = [];
         for (const [flavor, output] of [
           ['pier', pierOutput],
           ['harbor', harborOutput],
@@ -648,6 +823,11 @@ test('pier and harbor outputs drive identical controller events for an infra-fai
           normalizedEvents.push(event);
         }
         assert.deepEqual(normalizedEvents[0], normalizedEvents[1]);
+        assert.equal(normalizedEvents[0]?.type, 'task_completed');
+        assert.equal(normalizedEvents[0]?.passed, reward > 0);
+        assert.equal(normalizedEvents[0]?.scored, true);
+        assert.equal(normalizedEvents[0]?.eligible, true);
+        assert.equal(normalizedEvents[0]?.errorClass, reward > 0 ? undefined : 'infra_failed');
       }
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -691,6 +871,7 @@ test('createPierTaskRunner recovers execution identity from a budget-exhausted t
       systemPromptMode: 'default',
       systemPromptHash: 'sha256:abc',
       pricingProfile: 'fake-structural',
+      agentTools: false,
     };
     const runner = createPierTaskRunner(
       baseOptions({
@@ -943,6 +1124,7 @@ test('createPierTaskRunner rejects experiment identity and pricing overrides in 
   await withDirs(async ({ jobsDir, repo }) => {
     const overrides: Array<Record<string, string>> = [
       { MAKA_MODEL: 'other-model' },
+      { MAKA_AGENT_TOOLS: 'true' },
       { MAKA_TRIAL_INPUT_USD_PER_1M: '9' },
     ];
     for (const env of overrides) {
@@ -1000,7 +1182,7 @@ test('createPierTaskRunner wires the Kimi arm through the host proxy on a Squid-
     // never argv.
     assert.match(
       captured.envFile?.MAKA_PROVIDER_PROXY_URL ?? '',
-      /^http:\/\/host\.docker\.internal:\d+$/,
+      /^http:\/\/host\.docker\.internal:\d+\/coding\/v1$/,
     );
     assert.ok((captured.envFile?.MAKA_PROVIDER_PROXY_TOKEN ?? '').length >= 32);
     assert.notEqual(captured.envFile?.MAKA_PROVIDER_PROXY_TOKEN, 'upstream-key');
@@ -1035,14 +1217,17 @@ test('createPierTaskRunner overrides the Kimi proxy advertised host for native L
       }),
     );
     await runner(runInput());
-    assert.match(captured.envFile?.MAKA_PROVIDER_PROXY_URL ?? '', /^http:\/\/172\.17\.0\.1:\d+$/);
+    assert.match(
+      captured.envFile?.MAKA_PROVIDER_PROXY_URL ?? '',
+      /^http:\/\/172\.17\.0\.1:\d+\/coding\/v1$/,
+    );
   });
 });
 
-/** One SEPARATE runner instance per port entry, one concurrent attempt each —
- * the lock's owner must be the shared host port, not a runner closure, or an
- * A/B with two Kimi arms in one process EADDRINUSEs. */
-async function runConcurrentKimiAttempts(ports: readonly number[]): Promise<number> {
+async function runConcurrentKimiAttempts(
+  ports: readonly number[],
+  providerProxyHub?: Awaited<ReturnType<typeof createPierProviderProxyHub>>,
+): Promise<number> {
   return await withDirs(async ({ jobsDir, repo }) => {
     let inFlight = 0;
     let maxInFlight = 0;
@@ -1060,6 +1245,7 @@ async function runConcurrentKimiAttempts(ports: readonly number[]): Promise<numb
           kimiCodeToolchainPath: repo,
           resolveProviderCredential: () => Promise.resolve({ value: 'upstream-key' }),
           providerProxyPort,
+          ...(providerProxyHub ? { providerProxyHub } : {}),
           runPier: async (request) => {
             inFlight += 1;
             maxInFlight = Math.max(maxInFlight, inFlight);
@@ -1099,11 +1285,22 @@ async function grabFreePorts(count: number): Promise<number[]> {
   return ports;
 }
 
-test('createPierTaskRunner serializes concurrent Kimi attempts across runners on one fixed port', async () => {
-  // A fixed port (like the default 443) admits exactly one bind: a second
-  // concurrent attempt — even from a DIFFERENT runner instance in the same
-  // process — would be a guaranteed EADDRINUSE, so the port is held one
-  // attempt at a time while both attempts still complete.
+test('createPierTaskRunner runs concurrent attempts through one fixed-port proxy hub', async () => {
+  const [fixedPort] = await grabFreePorts(1);
+  const hub = await createPierProviderProxyHub({
+    providerProxyPort: fixedPort,
+    providerProxyAdvertisedHost: '127.0.0.1',
+  });
+  try {
+    assert.equal(await runConcurrentKimiAttempts(Array(8).fill(fixedPort!), hub), 8);
+  } finally {
+    await hub.close();
+  }
+});
+
+test('createPierTaskRunner serializes fixed-port attempts when no proxy hub is provided', async () => {
+  // Backward compatibility for direct runner callers: without a run-scoped hub,
+  // each attempt owns a listener and therefore must still serialize the bind.
   const [fixedPort] = await grabFreePorts(1);
   assert.equal(await runConcurrentKimiAttempts([fixedPort!, fixedPort!]), 1);
 });
@@ -1119,6 +1316,251 @@ test('createPierTaskRunner lets Kimi attempts on distinct fixed ports run concur
   const [portA, portB] = await grabFreePorts(2);
   assert.notEqual(portA, portB);
   assert.equal(await runConcurrentKimiAttempts([portA!, portB!]), 2);
+});
+
+test('buildPierRunArgs targets the Codex adapter and forwards constructor kwargs via --ak', () => {
+  const args = buildPierRunArgs({
+    agent: 'codex',
+    model: 'gpt-5.6-sol',
+    taskPath: '/tasks/dasel',
+    jobsDir: '/jobs',
+    jobName: 'trial',
+    environment: 'docker',
+    timeoutMultiplier: 1,
+    mounts: [],
+    agentEnv: {},
+    agentKwargs: { version: '0.144.6', reasoning_effort: 'xhigh' },
+  });
+  assert.match(args.join(' '), /--agent-import-path codex_agent:MakaCodexAgent/);
+  assert.ok(!args.includes('--agent-timeout-multiplier'));
+  assert.ok(args.includes('--ak'));
+  assert.ok(args.includes('version=0.144.6'));
+  assert.ok(args.includes('reasoning_effort=xhigh'));
+});
+
+test('createPierTaskRunner rejects a Codex arm whose version does not match the pinned toolchain', () => {
+  assert.throws(
+    () =>
+      createPierTaskRunner({
+        makaRepoPath: '/repo',
+        jobsDir: '/jobs',
+        model: 'gpt-5.6-sol',
+        agent: 'codex',
+        agentVersion: '0.0.1',
+      }),
+    /Codex adapter version must match toolchain version/,
+  );
+});
+
+test('createPierTaskRunner requires the Codex toolchain mount for the Codex arm', async () => {
+  await withDirs(async ({ jobsDir, repo }) => {
+    const runner = createPierTaskRunner(
+      baseOptions({
+        jobsDir,
+        makaRepoPath: repo,
+        agent: 'codex',
+        agentVersion: CODEX_TOOLCHAIN_SPEC.codex.version,
+        provider: 'openai-codex',
+        resolveProviderCredential: () => Promise.resolve({ value: 'upstream-key' }),
+        runPier: fakePier({ reward: 0 }),
+      }),
+    );
+    await assert.rejects(runner(runInput()), /codexToolchainPath is required/);
+  });
+});
+
+test('createPierTaskRunner wires the Codex arm through the host proxy with the pinned toolchain', async () => {
+  await withDirs(async ({ jobsDir, repo }) => {
+    const captured: FakeOptions['captured'] = {};
+    const runner = createPierTaskRunner(
+      baseOptions({
+        jobsDir,
+        makaRepoPath: repo,
+        agent: 'codex',
+        agentVersion: CODEX_TOOLCHAIN_SPEC.codex.version,
+        backend: 'ai-sdk',
+        provider: 'openai-codex',
+        model: 'gpt-5.6-sol',
+        reasoningEffort: 'xhigh',
+        baseUrl: 'https://chatgpt.com/backend-api/codex',
+        codexToolchainPath: repo,
+        resolveProviderCredential: () => Promise.resolve({ value: 'upstream-key' }),
+        providerProxyPort: 0,
+        runPier: fakePier({ reward: 0, captured }),
+      }),
+    );
+    const output = await runner(
+      runInput({
+        task: {
+          id: 'dasel',
+          path: '/tasks/dasel-html-document-format',
+          metadata: {
+            agentTimeoutSec: 5_400,
+            buildTimeoutSec: 1_800,
+            verifierTimeoutSec: 1_800,
+          },
+        },
+      }),
+    );
+    assert.equal(output.harbor.reward, 0);
+    // The proxy URL and a minted (non-real) token reach the container via
+    // env-file, never argv.
+    assert.match(
+      captured.envFile?.MAKA_PROVIDER_PROXY_URL ?? '',
+      /^http:\/\/host\.docker\.internal:\d+\/backend-api\/codex$/,
+    );
+    assert.ok((captured.envFile?.MAKA_PROVIDER_PROXY_TOKEN ?? '').length >= 32);
+    assert.notEqual(captured.envFile?.MAKA_PROVIDER_PROXY_TOKEN, 'upstream-key');
+    const args = captured.request?.args ?? [];
+    // Constructor kwargs ride --ak; the pinned-toolchain fingerprint rides --ae.
+    assert.ok(!args.includes('--agent-timeout-multiplier'));
+    assert.equal(captured.request?.timeoutMs, 13_860_000);
+    assert.ok(args.includes(`version=${CODEX_TOOLCHAIN_SPEC.codex.version}`));
+    assert.ok(args.includes('reasoning_effort=xhigh'));
+    assert.ok(args.includes(`MAKA_CODEX_TOOLCHAIN_FINGERPRINT=${CODEX_TOOLCHAIN_FINGERPRINT}`));
+    const mountsFlag = args.indexOf('--mounts-json');
+    const mounts = JSON.parse(args[mountsFlag + 1]!) as Array<{ target: string }>;
+    assert.ok(mounts.some((mount) => mount.target === '/opt/maka-codex-toolchain'));
+  });
+});
+
+test('createPierTaskRunner routes a resolver-backed Maka arm through the host proxy', async () => {
+  // A resolver credential (e.g. Codex OAuth) is only usable through the proxy,
+  // so the Maka arm must take the proxy path even without useProviderProxy.
+  await withDirs(async ({ jobsDir, repo }) => {
+    const captured: FakeOptions['captured'] = {};
+    const runner = createPierTaskRunner(
+      baseOptions({
+        jobsDir,
+        makaRepoPath: repo,
+        agent: 'maka',
+        backend: 'ai-sdk',
+        provider: 'openai-codex',
+        model: 'gpt-5.6-sol',
+        baseUrl: 'https://chatgpt.com/backend-api/codex',
+        resolveProviderCredential: () => Promise.resolve({ value: 'upstream-key' }),
+        runPier: fakePier({ reward: 0, captured }),
+      }),
+    );
+    await runner(runInput());
+    // The host cell dials the loopback proxy with a minted token, never the
+    // upstream credential.
+    assert.match(
+      captured.envFile?.MAKA_HOST_BASE_URL ?? '',
+      /^http:\/\/127\.0\.0\.1:\d+\/backend-api\/codex$/,
+    );
+    assert.ok((captured.envFile?.MAKA_HOST_API_KEY ?? '').length >= 32);
+    assert.notEqual(captured.envFile?.MAKA_HOST_API_KEY, 'upstream-key');
+  });
+});
+
+test('createPierTaskRunner gives a Maka container task run a container-reachable proxy', async () => {
+  await withDirs(async ({ jobsDir, repo }) => {
+    const captured: FakeOptions['captured'] = {};
+    const runner = createPierTaskRunner(
+      baseOptions({
+        jobsDir,
+        makaRepoPath: repo,
+        makaNodeToolchainPath: repo,
+        agent: 'maka',
+        agentEnv: { MAKA_HARBOR_MODE: 'task-run' },
+        backend: 'ai-sdk',
+        provider: 'openai-codex',
+        model: 'gpt-5.6-sol',
+        baseUrl: 'https://chatgpt.com/backend-api/codex',
+        resolveProviderCredential: () => Promise.resolve({ value: 'upstream-key' }),
+        providerProxyPort: 0,
+        runPier: fakePier({ reward: 0, captured }),
+      }),
+    );
+
+    await runner(runInput());
+
+    assert.match(
+      captured.envFile?.MAKA_PROVIDER_PROXY_URL ?? '',
+      /^http:\/\/host\.docker\.internal:\d+\/backend-api\/codex$/,
+    );
+    assert.ok((captured.envFile?.MAKA_PROVIDER_PROXY_TOKEN ?? '').length >= 32);
+    assert.notEqual(captured.envFile?.MAKA_PROVIDER_PROXY_TOKEN, 'upstream-key');
+    assert.equal(captured.envFile?.MAKA_HOST_BASE_URL, undefined);
+    assert.equal(captured.envFile?.MAKA_HOST_API_KEY, undefined);
+  });
+});
+
+test('createPierTaskRunner gives the host-selected Kimi protocol proxy authority', async () => {
+  await withDirs(async ({ jobsDir, repo }) => {
+    let upstreamAuthorization = '';
+    let upstreamPath = '';
+    const upstream = createHttpServer((request, response) => {
+      upstreamAuthorization = request.headers.authorization ?? '';
+      upstreamPath = request.url ?? '';
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end(
+        [
+          'data: {"id":"chatcmpl-1","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":25}}',
+          '',
+          'data: [DONE]',
+          '',
+        ].join('\n'),
+      );
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const address = upstream.address();
+    assert.ok(address && typeof address !== 'string');
+    const inner = fakePier({ reward: 0 });
+    try {
+      const runner = createPierTaskRunner(
+        baseOptions({
+          jobsDir,
+          makaRepoPath: repo,
+          agent: 'maka',
+          backend: 'ai-sdk',
+          provider: 'kimi-coding-plan',
+          model: 'k3',
+          baseUrl: `http://127.0.0.1:${address.port}/coding/v1`,
+          resolveProviderCredential: () => Promise.resolve({ value: 'upstream-key' }),
+          pricing: { inputUsdPer1M: 0, outputUsdPer1M: 0 },
+          runPier: async (request) => {
+            const envFileFlag = request.args.indexOf('--env-file');
+            assert.ok(envFileFlag >= 0);
+            const env = Object.fromEntries(
+              (await readFile(request.args[envFileFlag + 1]!, 'utf8'))
+                .split('\n')
+                .filter((line) => line.includes('='))
+                .map((line) => {
+                  const index = line.indexOf('=');
+                  return [line.slice(0, index), line.slice(index + 1)];
+                }),
+            );
+            const response = await fetch(`${env.MAKA_HOST_BASE_URL}/v1/chat/completions`, {
+              method: 'POST',
+              headers: { authorization: `Bearer ${env.MAKA_HOST_API_KEY}` },
+              body: '{}',
+            });
+            assert.equal(response.status, 200);
+            await response.text();
+            return inner(request);
+          },
+        }),
+      );
+
+      const output = await runner(
+        runInput({
+          agentEnv: {
+            MAKA_HOST_MODEL_API_PROTOCOL: 'openai-chat',
+            MAKA_MODEL_API_PROTOCOL: 'anthropic-messages',
+          },
+        }),
+      );
+      assert.equal(upstreamAuthorization, 'Bearer upstream-key');
+      assert.equal(upstreamPath, '/coding/v1/chat/completions');
+      assert.equal(output.cell.tokenSummary?.total, 125);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        upstream.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
 });
 
 test('createPierTaskRunner keeps the real key host-side via a file path for the Maka arm', async () => {

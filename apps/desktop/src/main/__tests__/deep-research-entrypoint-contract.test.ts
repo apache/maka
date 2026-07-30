@@ -19,13 +19,28 @@ describe('deep research command entrypoint contract', () => {
     assert.match(src, /run:\s*\(\)\s*=>\s*args\.onStartDeepResearch!\(\)/);
   });
 
-  it('main wires the command to the existing deep_research Quick Chat path', async () => {
+  it('main wires the command through the one session-creation path', async () => {
     const src = await readRendererShellCombinedSource();
 
     assert.match(
       src,
-      /onStartDeepResearch:\s*async \(\)\s*=>\s*\{[\s\S]*await handleQuickChatSubmit\('',\s*'deep_research'\);[\s\S]*\}/,
-      'deep research palette action must create the same explore-mode session as first-run Quick Chat and return the pending promise to the palette',
+      /onStartDeepResearch:\s*async \(\)\s*=>\s*\{[\s\S]*await startModeSession\('deep_research'\);[\s\S]*\}/,
+      'deep research palette action must await the mode-session start so the palette sees the pending promise',
+    );
+    // #1433: the renderer names the intent and may attach the selected
+    // project; main still derives the permission boundary. A renderer that
+    // spelled out `permissionMode: 'explore'` here would be asserting a
+    // security boundary it does not own.
+    assert.match(
+      src,
+      /window\.maka\.sessions\.create\(\{[\s\S]*mode,[\s\S]*projectId: newChatProjectId[\s\S]*\}\)/,
+      'the mode-session start must go through sessions:create with the mode and optional selected project',
+    );
+    assert.doesNotMatch(src, /window\.maka\.sessions\.create\(\{[\s\S]*permissionMode:\s*'explore'/);
+    assert.doesNotMatch(
+      src,
+      /window\.maka\.quickChat/,
+      'quickChat:start was merged into sessions:create',
     );
   });
 });

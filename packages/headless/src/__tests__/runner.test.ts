@@ -7,14 +7,15 @@ import { describe, test } from 'node:test';
 import {
   BackendRegistry,
   FakeBackend,
-  PermissionEngine,
   PiAgentBackend,
   type AgentBackend,
   type PiAgentTransport,
   type SessionStore,
 } from '@maka/runtime';
 import type { BackendKind, SessionEvent, SessionHeader } from '@maka/core';
-import type { BackendSendInput, PermissionDecision } from '@maka/core/backend-types';
+import type { BackendSendInput } from '@maka/core/backend-types';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import { createSessionStore } from '@maka/storage';
 import type { Config, Task } from '../contracts.js';
 import type { HeadlessBackendContext } from '../isolation.js';
 import { runExperiment } from '../runner.js';
@@ -38,7 +39,6 @@ function registerTestPiAgentBackend(
         header: ctx.header,
         appendMessage:
           ctx.appendMessage ?? ((message) => ctx.store.appendMessage(ctx.sessionId, message)),
-        permissionEngine: new PermissionEngine({ newId: () => 'perm-id', now: () => 123 }),
         transport: transportFactory({ header: ctx.header, store: ctx.store }),
       }),
   );
@@ -76,7 +76,7 @@ class TamperBackend implements AgentBackend {
     yield { type: 'complete', id: 'tamper-c', turnId, ts, stopReason: 'end_turn' };
   }
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -116,7 +116,7 @@ class FailingBackend implements AgentBackend {
     yield { type: 'complete', id: 'fail-c', turnId, ts, stopReason: 'error' };
   }
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -159,7 +159,7 @@ class IsolatedRealBackend implements AgentBackend {
     yield { type: 'complete', id: 'isolated-real-c', turnId, ts, stopReason: 'end_turn' };
   }
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -418,10 +418,20 @@ describe('fail-closed (a model-backed backend does not run without isolation)', 
       assert.equal(contexts[0]?.config.id, 'real-cfg');
       assert.equal(contexts[0]?.task.id, 'real-task');
       assert.equal(typeof contexts[0]?.spawnChildAgent, 'function');
+      assert.equal(typeof contexts[0]?.spawnChildSession, 'function');
       assert.equal(typeof contexts[0]?.retryChildAgent, 'function');
       assert.equal(typeof contexts[0]?.listChildAgents, 'function');
       assert.equal(typeof contexts[0]?.readChildAgentOutput, 'function');
       assert.ok(Array.isArray((await contexts[0]!.listChildAgents!(result.sessionId)).definitions));
+      const sessions = createSessionStore(storageRoot);
+      try {
+        assert.deepEqual(await sessions.readExecutionBoundary(result.sessionId), {
+          kind: 'external',
+          revision: 0,
+        });
+      } finally {
+        await sessions.close?.();
+      }
     });
   });
 
@@ -436,9 +446,17 @@ describe('fail-closed (a model-backed backend does not run without isolation)', 
         verification: { command: 'test -f solved.txt', protectedPaths: [] },
       };
 
-      const result = await runExperiment(piConfig, task, {
+      const result = await runExperiment({ ...piConfig, agentTools: true }, task, {
         storageRoot,
-        realBackendIsolation: { kind: 'external', label: 'unit-test isolated pi transport' },
+        realBackendIsolation: {
+          kind: 'external',
+          label: 'unit-test isolated pi transport',
+          toolExecutor: {
+            async exec() {
+              return { exitCode: 0, stdout: '', stderr: '' };
+            },
+          },
+        },
         registerBackends: (registry, context) => {
           seen.push(context);
           registerTestPiAgentBackend(registry, ({ header }) => ({
@@ -468,6 +486,7 @@ describe('fail-closed (a model-backed backend does not run without isolation)', 
       assert.equal(result.passed, true);
       assert.equal(seen[0]?.config.backend, 'pi-agent');
       assert.equal(seen[0]?.realBackendIsolation?.label, 'unit-test isolated pi transport');
+      assert.equal(seen[0]?.productToolSurface, undefined);
     });
   });
 });
@@ -521,7 +540,7 @@ describe('failed runs surface as an error (not a silent ⚠️ + exit 0)', () =>
         yield { type: 'complete', id: 'bare-err-c', turnId, ts, stopReason: 'error' };
       }
       async stop(): Promise<void> {}
-      async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+      async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
       async dispose(): Promise<void> {}
     }
     await withDirs(async (fixtureDir, storageRoot) => {
@@ -783,7 +802,7 @@ describe('Config.systemPrompt (benchmark config variable, not session state)', (
       yield { type: 'complete', id: 'capture-c', turnId, ts, stopReason: 'end_turn' };
     }
     async stop(): Promise<void> {}
-    async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+    async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
     async dispose(): Promise<void> {}
   }
 

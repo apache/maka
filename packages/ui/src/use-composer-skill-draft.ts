@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 
 export interface ComposerSkillSelection {
+  /** Stable scope-aware ref. Optional only for old restored/e2e drafts. */
+  ref?: string;
   id: string;
   name: string;
 }
@@ -9,7 +11,8 @@ export function addUniqueComposerSkillSelection(
   skills: readonly ComposerSkillSelection[],
   skill: ComposerSkillSelection,
 ): ComposerSkillSelection[] {
-  return skills.some((item) => item.id.toLowerCase() === skill.id.toLowerCase())
+  const key = (skill.ref ?? skill.id).toLowerCase();
+  return skills.some((item) => (item.ref ?? item.id).toLowerCase() === key)
     ? [...skills]
     : [...skills, skill];
 }
@@ -34,8 +37,8 @@ export function useComposerSkillDraft(draftKey: string | undefined) {
     commit(next);
   }
 
-  function remove(id: string) {
-    commit(currentRef.current.filter((item) => item.id !== id));
+  function remove(refOrId: string) {
+    commit(currentRef.current.filter((item) => (item.ref ?? item.id) !== refOrId));
   }
 
   function removeLast() {
@@ -46,7 +49,35 @@ export function useComposerSkillDraft(draftKey: string | undefined) {
 
   function clear(key: string | undefined) {
     if (key) storeRef.current.delete(key);
-    if (key === activeKeyRef.current) commit([]);
+    if (key === activeKeyRef.current) {
+      // Keep clear terminal: commit([]) would immediately recreate
+      // the active store entry.
+      currentRef.current = [];
+      setSkillsState([]);
+    }
+  }
+
+  function get(key: string | undefined) {
+    return key === activeKeyRef.current
+      ? [...currentRef.current]
+      : key
+        ? [...(storeRef.current.get(key) ?? [])]
+        : [];
+  }
+
+  function replace(
+    key: string | undefined,
+    skills: readonly ComposerSkillSelection[],
+  ) {
+    const next = [...skills];
+    if (key) {
+      if (next.length > 0) storeRef.current.set(key, next);
+      else storeRef.current.delete(key);
+    }
+    if (key === activeKeyRef.current) {
+      currentRef.current = next;
+      setSkillsState(next);
+    }
   }
 
   useEffect(() => {
@@ -65,6 +96,8 @@ export function useComposerSkillDraft(draftKey: string | undefined) {
     remove,
     removeLast,
     clear,
+    get,
+    replace,
     activeDraftKey: () => activeKeyRef.current,
   };
 }

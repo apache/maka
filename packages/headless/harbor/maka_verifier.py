@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import shlex
 import time
 from pathlib import Path
@@ -25,6 +26,10 @@ _INFRA_LINE_PREFIXES = (
     "e: failed to fetch http://",
     "e: failed to fetch https://",
     "curl: (35) openssl ssl_connect: ssl_error_syscall in connection to astral.sh:443",
+)
+_APT_REPOSITORY_502_RE = re.compile(
+    r"\berr:\d+\s+https?://[^\s'\"\\]+(?:(?!\\n)[^\r\n])*(?:\\n|\r?\n)[ \t]*502[ \t]+bad gateway\b",
+    re.IGNORECASE,
 )
 
 
@@ -205,7 +210,7 @@ def _read_optional_text(path: Path) -> str:
 
 
 def _is_infra_failure(text: str) -> bool:
-    return any(
+    return _APT_REPOSITORY_502_RE.search(text) is not None or any(
         line.strip().lower().startswith(prefix)
         for line in text.splitlines()
         for prefix in _INFRA_LINE_PREFIXES

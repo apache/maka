@@ -12,6 +12,8 @@ test('conversation catalogs are complete and independently selectable', () => {
   assert.equal(en.composer.sendLabel, 'Send');
   assert.equal(zh.sessions.status.running, '进行中');
   assert.equal(en.sessions.status.running, 'Running');
+  assert.equal(zh.sessions.groupByTime, '按时间');
+  assert.equal(en.sessions.groupByTime, 'By time');
   assert.notEqual(en.composer.placeholder, zh.composer.placeholder);
   assert.equal(zh.messages.editMessage, '编辑并重发');
   assert.equal(en.messages.editMessage, 'Edit & resend');

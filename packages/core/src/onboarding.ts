@@ -1,7 +1,7 @@
 /**
  * Onboarding state machine (PR110a).
  *
- * Derives the first-run / quick-chat readiness state of a workspace
+ * Derives the first-run readiness state of a workspace
  * from connections + defaultSlug + sessions + per-connection secret
  * availability. Pure & sync — never reads credential store, fs, or
  * IPC. Caller is responsible for resolving async inputs (per-slug
@@ -56,8 +56,9 @@ import type { SessionSummary } from './session.js';
  *    persisted defaultModel is no longer enabled, or the model is not
  *    chat-capable). Fix:
  *    open the model picker for the named slug.
- *  - `ready_empty` — fully configured, no sessions yet. Show Quick
- *    Chat entry point.
+ *  - `ready_empty` — fully configured, no sessions yet. #1433: this is
+ *    no longer an onboarding surface — the ordinary empty chat state
+ *    with its Composer takes over, and the hero renders nothing.
  *  - `ready_with_history` — fully configured, ≥1 session in the
  *    workspace (including archived / aborted — they are still user
  *    history and onboarding must not regress to blank slate).
@@ -206,7 +207,12 @@ function hasHistory(sessions: ReadonlyArray<SessionSummary>): boolean {
 /**
  * Closed enum of milestones the onboarding flow can track. Adding a
  * new milestone requires extending this list AND the matching UI
- * surface that drives it.
+ * surface that drives it. The rule runs both ways: #1433 deleted the
+ * first-run task-suggestion cards, so the four
+ * `first_run_suggestion_*` ids went with them rather than lingering
+ * as a list nothing reads. Removal is safe for already-persisted
+ * settings — `sanitizeOnboardingMilestones()` drops ids outside this
+ * enum instead of rejecting the file.
  *
  * Persisted in `settings.json` (new `onboarding` section, PR110b).
  * Renderer must NEVER persist anything else under a milestone — see
@@ -219,10 +225,6 @@ export const ONBOARDING_MILESTONE_IDS = [
   'first_personalization',
   'first_model_swap',
   'first_artifact_open',
-  'first_run_suggestion_workspace_map',
-  'first_run_suggestion_deep_research',
-  'first_run_suggestion_file_organize',
-  'first_run_suggestion_web_research',
 ] as const;
 
 export type OnboardingMilestoneId = (typeof ONBOARDING_MILESTONE_IDS)[number];

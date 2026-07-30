@@ -106,6 +106,19 @@ const BOT_PLATFORM_PROMPT_HINTS: Record<BotProvider, BotPlatformPromptHint> = {
       'Do not assume rich cards or unavailable platform-specific actions.',
     ],
   },
+  slack: {
+    platform: 'slack',
+    displayName: 'Slack',
+    formattingProfile: 'enterprise_chat',
+    deliveryFormat: 'Slack message over Socket Mode',
+    mediaSupport: ['text', 'image/file metadata only unless tools provide extracted content'],
+    capabilityCaveat:
+      'Slack replies are plain messages; do not assume Block Kit actions or workspace administration.',
+    systemPromptBullets: [
+      'Use concise workplace-chat formatting with clear outcomes and next actions.',
+      'Do not assume reactions, canvases, workflows, or administrative actions unless tools expose them.',
+    ],
+  },
 };
 
 export function getBotPlatformPromptHint(platform: BotProvider): BotPlatformPromptHint {

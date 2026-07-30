@@ -11,6 +11,9 @@ import { ProvidersPanel, type ConnectionsBridge } from '../../src/renderer/setti
 
 const NOW = Date.parse('2026-07-01T08:00:00Z');
 
+// Fidelity convention (#1433): every story below names the real app path
+// that reaches it. See apps/desktop/stories/FIDELITY.md.
+
 const meta = {
   title: 'Product/Settings/Providers',
   parameters: {
@@ -21,7 +24,7 @@ const meta = {
 export default meta;
 
 type Story = StoryObj<typeof meta>;
-type AutoOpenTarget = 'detail' | 'add' | 'oauth';
+type AutoOpenTarget = 'detail' | 'add' | 'oauth' | 'xai-device';
 
 function makeConnection(input: {
   slug: string;
@@ -218,6 +221,10 @@ function installSubscriptionFixtures() {
       email: 'codex@example.com',
       plan: 'Plus',
     }),
+    githubCopilotSubscription: browserSubscriptionFixture({
+      runtimeState: 'not_logged_in',
+    }),
+    xaiOAuth: xaiDeviceSubscriptionFixture(),
     cursorSubscription: browserSubscriptionFixture({
       runtimeState: 'not_logged_in',
     }),
@@ -225,6 +232,17 @@ function installSubscriptionFixtures() {
       runtimeState: 'storage_failed',
       errorMessage: '需要 Google client_id 后才能完成登录。',
     }),
+  };
+}
+
+function xaiDeviceSubscriptionFixture() {
+  return {
+    getAccountState: async () => ({ provider: 'xai-oauth', runtimeState: 'authorizing' }),
+    getAuthUrl: async () => ({ authRequestId: 'storybook-xai', stateHint: 'ABCD-EFGH' }),
+    openAuthUrl: async () => ({ ok: true }),
+    completeAuthorization: async () => new Promise<never>(() => undefined),
+    cancelAuthorization: async () => ({ ok: true }),
+    logout: async () => ({ ok: true }),
   };
 }
 
@@ -311,6 +329,26 @@ function clickAutoOpenTarget(root: HTMLElement, target: AutoOpenTarget): boolean
     oauthTab?.click();
     return Boolean(oauthTab);
   }
+  if (target === 'xai-device') {
+    const dialog = document.querySelector<HTMLElement>(
+      '[aria-labelledby="provider-connection-dialog-xai-oauth"]',
+    );
+    if (dialog) {
+      const code = dialog.querySelector('code');
+      if (code?.textContent?.trim() === 'ABCD-EFGH') return true;
+      const loginButton = Array.from(dialog.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent?.includes('SuperGrok / X Premium'));
+      if (loginButton && !loginButton.disabled) loginButton.click();
+      return false;
+    }
+    const xaiCard = root.querySelector<HTMLButtonElement>('button[data-card-id="xai"]');
+    if (xaiCard) {
+      xaiCard.click();
+      return false;
+    }
+    root.querySelector<HTMLButtonElement>('button[data-catalog-tab="oauth"]')?.click();
+    return false;
+  }
 
   const addButton = Array.from(root.querySelectorAll<HTMLButtonElement>('button'))
     .find((button) => button.textContent?.trim() === '自定义');
@@ -325,26 +363,33 @@ function ProviderStory(props: {
   return <ProviderStoryFrame bridge={props.bridge} autoOpen={props.autoOpen} />;
 }
 
+// Real path: 设置 → 模型, while the connection list is still loading.
 export const Loading: Story = {
   render: () => <ProviderStory bridge={createBridge({ loading: true })} />,
 };
 
+// Real path: same page when the connection list fails to load.
 export const LoadError: Story = {
   render: () => <ProviderStory bridge={createBridge({ failLoad: true })} />,
 };
 
+// Real path: same page on a fresh install, with no connection configured yet.
 export const Empty: Story = {
   render: () => <ProviderStory bridge={createBridge({ connections: [], defaultSlug: null })} />,
 };
 
+// Real path: same page with several healthy connections and one of them set as default.
 export const ConfiguredProviders: Story = {
   render: () => <ProviderStory bridge={createBridge({ connections: configuredConnections, defaultSlug: 'zai-live' })} />,
 };
 
+// Real path: same page when connections need attention — missing credentials, a failed
+// probe, or an expired OAuth session.
 export const ProblemConnections: Story = {
   render: () => <ProviderStory bridge={createBridge({ connections: problemConnections, defaultSlug: 'zai-live' })} />,
 };
 
+// Real path: 设置 → 模型 → click a connection → its detail panel.
 export const SelectedDetail: Story = {
   render: () => (
     <ProviderStory
@@ -354,6 +399,7 @@ export const SelectedDetail: Story = {
   ),
 };
 
+// Real path: 设置 → 模型 → 添加 → the provider catalog and the add form.
 export const AddProvider: Story = {
   render: () => (
     <ProviderStory
@@ -363,11 +409,24 @@ export const AddProvider: Story = {
   ),
 };
 
+// Real path: 设置 → 模型 → the OAuth subscription cards, shown here in their needs-attention
+// state.
 export const OAuthCards: Story = {
   render: () => (
     <ProviderStory
       bridge={createBridge({ connections: problemConnections, defaultSlug: 'zai-live' })}
       autoOpen="oauth"
+    />
+  ),
+};
+
+// Real path: 设置 → 模型 → 账号 → xAI Grok → 登录, while the RFC 8628
+// device flow waits for the user to enter the displayed code in the browser.
+export const XaiDeviceAuthorization: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: configuredConnections, defaultSlug: 'zai-live' })}
+      autoOpen="xai-device"
     />
   ),
 };

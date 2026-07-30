@@ -1,8 +1,5 @@
-import {
-  runFixedPromptController,
-  type FixedPromptTask,
-  type FixedPromptTaskWalEvent,
-} from './fixed-prompt-controller.js';
+import { runFixedPromptController, type FixedPromptTask } from './fixed-prompt-controller.js';
+import type { FixedPromptTaskWalEvent } from './fixed-prompt-wal-types.js';
 import { renderAbComparisonMarkdown } from './ab-render.js';
 import { runAbComparison } from './ab-run.js';
 import { summarizeAbComparison } from './ab-summary.js';

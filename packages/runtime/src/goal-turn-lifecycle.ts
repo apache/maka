@@ -57,13 +57,45 @@ export class SessionActivityRegistry {
   }
 
   /** Waits until the session is idle, then atomically owns the next activity slot. */
-  async acquire(sessionId: string): Promise<SessionActivityLease> {
+  async acquire(sessionId: string, abortSignal?: AbortSignal): Promise<SessionActivityLease> {
     for (;;) {
+      throwIfAborted(abortSignal);
       const lease = this.reserveIfIdle(sessionId);
       if (lease) return lease;
-      await this.whenIdle(sessionId)!;
+      await waitForIdleOrAbort(this.whenIdle(sessionId)!, abortSignal);
     }
   }
+}
+
+function throwIfAborted(abortSignal?: AbortSignal): void {
+  if (!abortSignal?.aborted) return;
+  throw new DOMException('Session activity acquisition was aborted', 'AbortError');
+}
+
+async function waitForIdleOrAbort(
+  whenIdle: Promise<void>,
+  abortSignal?: AbortSignal,
+): Promise<void> {
+  if (!abortSignal) return whenIdle;
+  throwIfAborted(abortSignal);
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      cleanup();
+      reject(new DOMException('Session activity acquisition was aborted', 'AbortError'));
+    };
+    const cleanup = () => abortSignal.removeEventListener('abort', onAbort);
+    abortSignal.addEventListener('abort', onAbort, { once: true });
+    void whenIdle.then(
+      () => {
+        cleanup();
+        resolve();
+      },
+      (error) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
 }
 
 export interface DrainGoalTurnInput {
@@ -131,7 +163,7 @@ function observeGoalTurnOutcome(
   current: GoalTurnOutcome | undefined,
   event: SessionEvent,
 ): GoalTurnOutcome | undefined {
-  if (current) return current;
+  if (current && current.kind !== 'suspended') return current;
   const failureClass =
     event.type === 'complete' ? failureClassFromCompleteStopReason(event.stopReason) : undefined;
   if (event.type === 'error' || failureClass !== undefined) {
@@ -144,14 +176,7 @@ function observeGoalTurnOutcome(
   if (event.type === 'abort' || (event.type === 'complete' && event.stopReason === 'user_stop')) {
     return { kind: 'aborted', turnId: event.turnId };
   }
-  if (event.type !== 'complete') return undefined;
-  if (event.stopReason === 'permission_handoff') {
-    return {
-      kind: 'suspended',
-      turnId: event.turnId,
-      reason: 'Turn is waiting for user permission.',
-    };
-  }
+  if (event.type !== 'complete') return current;
   return { kind: 'completed', turnId: event.turnId };
 }
 

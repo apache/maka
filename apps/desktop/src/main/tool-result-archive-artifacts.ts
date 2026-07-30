@@ -4,12 +4,13 @@ import {
   type ToolResultArchiveReaderInput,
   type ToolResultArchiveReadResult,
   type ToolResultArchiveRecorderInput,
+  type ToolResultArchiveResourceReadInput,
 } from '@maka/runtime';
 
 export async function persistArchivedToolResultToArtifacts(
   artifactStore: Pick<ArtifactStore, 'create' | 'get' | 'readText'>,
   event: ToolResultArchiveRecorderInput,
-): Promise<{ artifactId: string }> {
+): Promise<{ artifactId: string; created: boolean }> {
   const id = stableToolResultArchiveArtifactId(event);
   const existing = await artifactStore.get(id);
   if (existing?.status === 'live') {
@@ -21,26 +22,33 @@ export async function persistArchivedToolResultToArtifacts(
       maxBytes: event.originalBytes,
     });
     if (!read.ok) throw new Error(`tool result archive artifact id conflict: ${read.reason}`);
-    return { artifactId: id };
+    return { artifactId: id, created: false };
   }
 
   const artifact = await artifactStore.create({
     id,
     sessionId: event.sessionId,
     turnId: event.turnId,
-    name: `tool-result-${event.runtimeEventId}.json`,
+    name: `archived-${event.toolName}-${event.runtimeEventId}.json`,
     kind: 'file',
     content: event.serializedResult,
     mimeType: 'application/json',
     source: 'tool_result_archive',
     summary: `Archived ${event.toolName} tool result for context budget replay`,
   });
-  return { artifactId: artifact.id };
+  return { artifactId: artifact.id, created: true };
 }
 
 export async function readArchivedToolResultFromArtifacts(
   artifactStore: Pick<ArtifactStore, 'get' | 'readText'>,
   event: ToolResultArchiveReaderInput,
+): Promise<ToolResultArchiveReadResult> {
+  return readArchivedToolResultArtifact(artifactStore, event);
+}
+
+export async function readArchivedToolResultResourceFromArtifacts(
+  artifactStore: Pick<ArtifactStore, 'get' | 'readText'>,
+  event: ToolResultArchiveResourceReadInput,
 ): Promise<ToolResultArchiveReadResult> {
   return readArchivedToolResultArtifact(artifactStore, event);
 }

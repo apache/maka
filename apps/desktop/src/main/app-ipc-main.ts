@@ -1,12 +1,14 @@
 import { join } from 'node:path';
 import { arch as osArch, release as osRelease } from 'node:os';
 import { app, ipcMain, shell } from 'electron';
-import { resolveProjectGitInfo, resolveProjectRoot } from '@maka/runtime';
+import { resolveProjectGitInfo } from '@maka/runtime';
 import type { createMainWindowController } from './main-window.js';
 import type { ProjectRootController } from './project-root-controller.js';
 import { resolveOpenPath, type OpenPathResult } from './open-path-guard.js';
 import { getE2eFixtureState, type resolveE2eFixture } from './e2e-fixture.js';
 import type { resolveBuildInfo } from './build-info.js';
+import { createAppUpdateService, type AppUpdateService, type AppUpdateStatus } from './app-update-service.js';
+import type { ProjectManagementService } from './project-management-service.js';
 
 type MainWindowController = ReturnType<typeof createMainWindowController>;
 type E2eFixture = ReturnType<typeof resolveE2eFixture>;
@@ -20,10 +22,26 @@ export interface AppIpcDeps {
   workspaceRoot: string;
   buildInfo: BuildInfo;
   e2eFixture: E2eFixture;
+  projectManagement: ProjectManagementService;
+  updateService?: AppUpdateService;
 }
 
 export function registerAppIpc(deps: AppIpcDeps): void {
   const { mainWindowController, projectRoot, workspaceRoot, buildInfo, e2eFixture } = deps;
+  const updateService = deps.updateService ?? createAppUpdateService({
+    currentVersion: app.getVersion(),
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+    arch: process.arch,
+    openExternal: (url) => shell.openExternal(url),
+    mockLatestVersion: process.env.MAKA_UPDATE_MOCK_VERSION,
+    mockState: process.env.MAKA_UPDATE_MOCK_STATE === 'available' ||
+      process.env.MAKA_UPDATE_MOCK_STATE === 'downloading' ||
+      process.env.MAKA_UPDATE_MOCK_STATE === 'downloaded'
+      ? process.env.MAKA_UPDATE_MOCK_STATE
+      : undefined,
+    onStatusChange: (status) => mainWindowController.send('app:updateStatusChanged', status),
+  });
   // Call-time read of the shared project-root authority: every handler must
   // observe the latest selection, not a snapshot taken at registration.
   const currentProjectRoot = (): Promise<string> => projectRoot.current();
@@ -46,7 +64,8 @@ export function registerAppIpc(deps: AppIpcDeps): void {
     mainWindowController.setTitleBarOverlayTheme(event.sender, theme);
   });
   ipcMain.handle('app:info', async () => {
-    const projectPath = await currentProjectRoot();
+    const selection = await deps.projectManagement.current();
+    const projectPath = selection.path;
     return {
       appVersion: app.getVersion(),
       electronVersion: process.versions.electron ?? '',
@@ -59,12 +78,30 @@ export function registerAppIpc(deps: AppIpcDeps): void {
       arch: osArch(),
       osRelease: osRelease(),
       workspacePath: workspaceRoot,
+      projectId: selection.projectId,
       projectPath,
       projectGit: await resolveProjectGitInfo(projectPath),
       buildMode: buildInfo.mode,
       buildCommit: buildInfo.commit,
     };
   });
+  ipcMain.handle('app:updateStatus', (): AppUpdateStatus => updateService.getStatus());
+  ipcMain.handle('app:checkForUpdates', (): Promise<AppUpdateStatus> => updateService.checkForUpdates());
+  ipcMain.handle('app:downloadUpdate', (): Promise<AppUpdateStatus> => updateService.downloadUpdate());
+  ipcMain.handle('app:installUpdate', () => updateService.installUpdate());
+  ipcMain.handle('app:openUpdateDownload', () => updateService.openUpdateDownload());
+  ipcMain.handle('projects:list', () => deps.projectManagement.list());
+  ipcMain.handle('projects:add', () => deps.projectManagement.add());
+  ipcMain.handle('projects:select', (_event, projectId: unknown) =>
+    deps.projectManagement.select(projectId));
+  ipcMain.handle('projects:relink', (_event, projectId: unknown) =>
+    deps.projectManagement.relink(projectId));
+  ipcMain.handle('projects:rename', (_event, projectId: unknown, name: unknown) =>
+    deps.projectManagement.rename(projectId, name));
+  ipcMain.handle('projects:archive', (_event, projectId: unknown) =>
+    deps.projectManagement.archive(projectId));
+  ipcMain.handle('projects:restore', (_event, projectId: unknown) =>
+    deps.projectManagement.restore(projectId));
   ipcMain.handle('app:sessionProjectInfo', async (_event, sessionId: unknown) => {
     if (typeof sessionId !== 'string' || !sessionId) {
       throw new Error('Invalid project-context session id.');
@@ -85,45 +122,6 @@ export function registerAppIpc(deps: AppIpcDeps): void {
     if (error) return { ok: false, reason: 'open-failed' };
     return { ok: true, opened: resolved.key };
   });
-  ipcMain.handle(
-    'app:selectProjectDirectory',
-    async (): Promise<
-      | { ok: true; projectPath: string; projectGit: Awaited<ReturnType<typeof resolveProjectGitInfo>> }
-      | { ok: false; reason: 'cancelled' | 'missing-selection' }
-    > => {
-      const result = await mainWindowController.showOpenDialog({
-        title: '选择工作目录',
-        properties: ['openDirectory'],
-      });
-      const selectedPath = result.filePaths[0];
-      if (result.canceled) return { ok: false, reason: 'cancelled' };
-      if (!selectedPath) return { ok: false, reason: 'missing-selection' };
-      const projectPath = await resolveProjectRoot([selectedPath]);
-      projectRoot.setSelected(projectPath);
-      return {
-        ok: true,
-        projectPath,
-        projectGit: await resolveProjectGitInfo(projectPath),
-      };
-    },
-  );
-  ipcMain.handle(
-    'app:selectProjectRoot',
-    async (_event, projectPath: unknown): Promise<
-      | { ok: true; projectPath: string; projectGit: Awaited<ReturnType<typeof resolveProjectGitInfo>> }
-      | { ok: false; reason: 'invalid-path' | 'not-found' }
-    > => {
-      const explicitRoot = await projectRoot.resolveExplicit(projectPath);
-      if (!explicitRoot.ok) return explicitRoot;
-      const resolved = explicitRoot.projectPath;
-      projectRoot.setSelected(resolved);
-      return {
-        ok: true,
-        projectPath: resolved,
-        projectGit: await resolveProjectGitInfo(resolved),
-      };
-    },
-  );
   ipcMain.handle(
     'app:resolveProjectGitInfo',
     async (

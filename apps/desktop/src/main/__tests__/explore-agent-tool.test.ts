@@ -8,10 +8,9 @@ import { buildExploreAgentTool, runReadOnlyExplore } from '../explore-agent-tool
 const repoRoot = join(process.cwd(), '..', '..');
 
 describe('ExploreAgent read-only worker', () => {
-  it('exposes a permission-gated subagent tool', () => {
+  it('exposes a categorized read-only subagent tool', () => {
     const tool = buildExploreAgentTool();
     assert.equal(tool.name, 'ExploreAgent');
-    assert.equal(tool.permissionRequired, true);
     assert.equal(tool.categoryHint, 'subagent');
     assert.match(tool.description, /read-only/);
     assert.match(tool.description, /never writes/);

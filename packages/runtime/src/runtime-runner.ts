@@ -42,6 +42,7 @@ import type {
 import { createDefaultInvocationProviders } from './invocation-context.js';
 import type { FlowInput, RunnableAgentFlow } from './agent-flow.js';
 import type { RuntimeContinuation } from './runtime-resume.js';
+import type { TurnOrigin } from '@maka/core/runtime-inputs';
 
 // ============================================================================
 // RuntimeGate — narrow preflight seam
@@ -120,6 +121,7 @@ export interface InitialUserRuntimeEventInput {
   text: string;
   /** Human-facing view when it differs from `text`; see RuntimeEventTextContent. */
   displayText?: string;
+  origin?: TurnOrigin;
   attachments?: InvocationRequest['attachments'];
   quotes?: InvocationRequest['quotes'];
   toolBoundaryProtocol?: ToolBoundaryProtocol;
@@ -484,11 +486,12 @@ export function buildInitialUserRuntimeEvent(input: InitialUserRuntimeEventInput
     ...(input.branch ? { branch: input.branch } : {}),
     partial: false,
     role: 'user',
-    author: 'user',
+    author: input.origin ? 'host' : 'user',
     content: {
       kind: 'text',
       text: input.text,
       ...(input.displayText !== undefined ? { displayText: input.displayText } : {}),
+      ...(input.origin !== undefined ? { origin: input.origin } : {}),
       ...(input.attachments !== undefined && input.attachments.length > 0
         ? { attachments: input.attachments }
         : {}),
@@ -507,13 +510,15 @@ function assertInitialRuntimeEventMatchesRequest(
     runId: string;
   },
 ): void {
+  const expectedAuthor =
+    event.content?.kind === 'text' && event.content.origin !== undefined ? 'host' : 'user';
   if (
     event.sessionId !== request.sessionId ||
     event.invocationId !== request.invocationId ||
     event.runId !== request.runId ||
     event.turnId !== request.turnId ||
     event.role !== 'user' ||
-    event.author !== 'user' ||
+    event.author !== expectedAuthor ||
     event.content?.kind !== 'text'
   ) {
     throw new Error('initial RuntimeEvent does not match the invocation request');
@@ -563,14 +568,6 @@ function failureFromRuntimeEvent(event: RuntimeEvent): InvocationFailure | undef
     return {
       class: content.reason ?? content.code ?? 'runtime_error',
       message: content.message,
-    };
-  }
-
-  const permissionDecision = event.actions?.permissionDecision;
-  if (permissionDecision?.decision === 'deny') {
-    return {
-      class: 'permission_denied',
-      message: `permission request ${permissionDecision.requestId} was denied`,
     };
   }
 

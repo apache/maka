@@ -1,21 +1,21 @@
-import { app, ipcMain, powerSaveBlocker, shell } from 'electron';
+import { app, dialog, ipcMain, powerSaveBlocker, shell } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { wireAppLifecycle } from './app-lifecycle.js';
 import {
   collapseSessionRevisions,
-  DEFAULT_SESSION_NAME,
   filterModelVisibleTaskLedgerTasks,
-  DEEP_RESEARCH_SESSION_LABEL,
+  isActiveShellRunStatus,
+  resolveSystemUiLocale,
+  resolveUiLocale,
 } from '@maka/core';
 import type {
   BotProvider,
   ConnectionEvent,
-  CreateSessionInput,
-  PermissionMode,
   SessionChangedEvent,
   SessionChangedReason,
   SessionEvent,
+  SessionHeader,
 } from '@maka/core';
 import { deriveBotStatusPersistenceUpdate } from './bot-status-persistence.js';
 import { runThreadSearch } from './search/thread-search.js';
@@ -23,15 +23,18 @@ import { assembleDesktopTools } from './tool-assembly.js';
 import { createToolArtifactPersistence } from './tool-artifact-persistence.js';
 import { ClaudeSubscriptionService } from './oauth/claude-subscription-service.js';
 import { OpenAiCodexService } from './oauth/openai-codex-service.js';
+import { createOpenAiCodexE2eFixtureService } from './openai-codex-e2e-fixture.js';
 import { GitHubCopilotSubscriptionService } from './oauth/github-copilot-subscription-service.js';
+import { XaiOAuthService } from './oauth/xai-oauth-service.js';
 import { CursorSubscriptionService } from './oauth/cursor-subscription-service.js';
 import { AntigravitySubscriptionService } from './oauth/antigravity-subscription-service.js';
 import type { WorkspacePrivacyContext } from '@maka/core/incognito';
-import { ok } from '@maka/core/settings/result';
+import { ok } from '@maka/core/result';
 import {
+  AgentGraphCoordinator,
+  AgentGraphSupervisorWakeCoordinator,
   BackendRegistry,
   FakeBackend,
-  PermissionEngine,
   SessionManager,
   createLocalContinuationSafetyInspector,
   buildDeepResearchTools,
@@ -61,8 +64,10 @@ import {
   createDeepResearchStore,
   createReadImageSnapshotter,
   createConnectionStore,
+  createGitWorktreeChildExecutor,
   createPlanReminderStore,
   createPlanStore,
+  createProjectCatalog,
   openRuntimeEventPersistence,
   createSessionStore,
   createSettingsStore,
@@ -70,7 +75,7 @@ import {
   createShellRunStore,
   createTelemetryRepo,
 } from '@maka/storage';
-import { resolveStorageRoot } from '@maka/storage/root-authority';
+import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
 import { McpClientManager } from '@maka/mcp';
 import { registerMcpIpcMain } from './mcp-ipc-main.js';
@@ -79,13 +84,13 @@ import {
   errorMessage,
   requireReadyConnection,
 } from './chat-readiness.js';
+import { assertDesktopExecutionBoundary } from './desktop-execution-admission.js';
 import { createFileCredentialStore } from './credential-store.js';
 import { bindOnboardingDeps, createOnboardingService } from './onboarding-service.js';
-import { handleQuickChatStart as runQuickChatStart, type QuickChatResult } from './quick-chat.js';
 import { createDailyReviewArchiveStore } from './daily-review-archive-store.js';
-import { resolveDefaultPermissionMode } from './permission-mode-default.js';
 import { resolveE2eFixture, seedE2eFixture } from './e2e-fixture.js';
 import { resolveBuildInfo } from './build-info.js';
+import { resolveShellEnv } from './shell-env.js';
 import { OpenGatewayService } from './open-gateway.js';
 import { LocalMemoryService } from './local-memory-service.js';
 import { createAttachmentApprovalRegistry } from './attachment-approval.js';
@@ -108,6 +113,7 @@ import { registerConnectionsIpc } from './connections-ipc-main.js';
 import { registerConfigIpc } from './config-ipc-main.js';
 import { registerPlanReminderIpc } from './plan-reminders-ipc-main.js';
 import { registerWorkspaceResourcesIpc } from './workspace-resources-ipc-main.js';
+import type { NewSessionSkillContext } from './workspace-resources-ipc-main.js';
 import { registerDailyReviewIpc } from './daily-review-ipc-main.js';
 import { registerUsageIpc } from './usage-ipc-main.js';
 import { registerWebSearchIpc } from './web-search-ipc-main.js';
@@ -119,25 +125,42 @@ import { registerWorkspaceInstructionsIpc } from './workspace-instructions-ipc-m
 import { registerOnboardingIpc } from './onboarding-ipc-main.js';
 import { registerSessionEntryIpc } from './session-entry-ipc-main.js';
 import { registerPermissionsIpc } from './permissions-ipc-main.js';
+import {
+  createPermissionOverlayMain,
+  registerPermissionOverlayIpc,
+} from './permission-overlay/permission-overlay-main.js';
 import { registerSettingsIpc } from './settings-ipc-main.js';
 import type { SettingsIpcHandle } from './settings-ipc-main.js';
 import { createE2eFixtureBotOnboardingAdapters } from './bot-onboarding-e2e-fixture.js';
 import { createKeepSystemAwakeController } from './keep-system-awake.js';
 import { createSettingsRuntimeEffects } from './settings-runtime-effects.js';
 import { createAiSdkBackendFactory, createSessionStreamer } from './session-stream.js';
+import {
+  resolveDesktopBackendToolSurface,
+  resolveDesktopNewSessionSkillHost,
+  resolveDesktopSessionSkillHost,
+} from './desktop-backend-tool-surface.js';
 import { registerGatewayIpc } from './gateway-ipc-main.js';
 import { registerSessionsIpc } from './sessions-ipc-main.js';
+import { registerAgentGraphIpc } from './agent-graph-ipc-main.js';
 import {
   assertSessionCanSendFromHeader,
   isSessionLifecycleError,
   sessionLifecycleErrorFromReadFailure,
 } from './session-lifecycle.js';
 import { createProjectRootController } from './project-root-controller.js';
+import { createProjectManagementService } from './project-management-service.js';
+import {
+  type DesktopCreateSessionInput,
+  resolveDesktopSessionSelection,
+  resolveNewSessionProjectInput,
+} from './new-session-project.js';
 import {
   assertSessionWorkspaceAvailable,
   isSessionWorkspaceUnavailableError,
   resolveProjectContextRoot,
 } from './project-context-root.js';
+import { resolveDesktopStorageRoot } from './storage-root-startup.js';
 
 // E2E switches must never fire in a packaged build, and must never run against
 // the real user data: a stray MAKA_E2E on a build/dev machine would otherwise
@@ -172,6 +195,14 @@ if (!app.requestSingleInstanceLock()) {
 
 const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
 
+// Resolve the user's login-shell PATH before any stores, tools, or child
+// processes are created. On macOS, apps launched from Finder/Dock inherit a
+// minimal PATH that lacks /opt/homebrew/bin, ~/.local/bin, etc. Only PATH is
+// imported; application-control variables remain owned by this process.
+// Skipped on Windows, when MAKA_SKIP_SHELL_ENV=1, and when launched from a
+// terminal (TERM/COLORTERM set).
+await resolveShellEnv();
+
 // PR-VISUAL-SMOKE-HEADLESS: resolve the fixture defensively. An unknown
 // scenario (e.g. a stale build, or a typo'd MAKA_E2E_FIXTURE) throws
 // here during top-level module evaluation. Left uncaught it surfaces a
@@ -202,7 +233,31 @@ if (e2eFixture) {
   console.log(`[e2e-fixture] scenario=${e2eFixture.scenario} workspace=${workspaceRoot}`);
   await seedE2eFixture({ workspaceRoot, fixture: e2eFixture, credentialStore });
 } else {
-  await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
+  const storageRoot = await resolveDesktopStorageRoot(workspaceRoot, {
+    confirmRepair: confirmDesktopStorageRootRepair,
+  });
+  if (!storageRoot) {
+    app.exit(0);
+    await new Promise<never>(() => {});
+  }
+}
+
+async function confirmDesktopStorageRootRepair(): Promise<boolean> {
+  await app.whenReady();
+  const isChinese = resolveSystemUiLocale(app.getPreferredSystemLanguages()) === 'zh';
+  const { response } = await dialog.showMessageBox({
+    type: 'warning',
+    title: isChinese ? 'Maka 工作区需要修复' : 'Maka workspace needs repair',
+    message: isChinese ? 'Maka 无法验证这个工作区。' : 'Maka cannot verify this workspace.',
+    detail: isChinese
+      ? `系统中的磁盘标识可能发生了变化。仅当这是本机原来的 Maka 工作区、而不是复制出的工作区时，才选择修复。\n\n${workspaceRoot}`
+      : `The disk identity may have changed. Repair only if this is the original Maka workspace on this computer, not a copied workspace.\n\n${workspaceRoot}`,
+    buttons: isChinese ? ['修复工作区', '退出'] : ['Repair Workspace', 'Exit'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+  });
+  return response === 0;
 }
 // 保持系统唤醒 (settings.system.keepSystemAwake): holds an Electron
 // `powerSaveBlocker` so in-process scheduled tasks keep firing while the
@@ -211,6 +266,9 @@ if (e2eFixture) {
 // process, so quit needs no special teardown.
 const keepSystemAwake = createKeepSystemAwakeController(powerSaveBlocker);
 const store = createSessionStore(workspaceRoot);
+const agentGraphControlStore = createAgentGraphControlStore(workspaceRoot);
+const projectCatalog = createProjectCatalog(workspaceRoot);
+const worktreeChildExecutor = createGitWorktreeChildExecutor({ storageRoot: workspaceRoot });
 const planStore = createPlanStore(workspaceRoot);
 const runStore = createAgentRunStore(workspaceRoot);
 const runtimePersistence = await openRuntimeEventPersistence({
@@ -255,12 +313,18 @@ const claudeSubscription = new ClaudeSubscriptionService({
 // IPC payloads never carry tokens, each gated behind its own
 // MAKA_*_EXPERIMENTAL env var. Antigravity is a `preview` placeholder
 // until the Google client_id question is resolved.
-const openAiCodex = new OpenAiCodexService({
-  userDataDir: app.getPath('userData'),
-  openExternal: (url) => shell.openExternal(url),
-  credentialStore,
-});
+const openAiCodex = e2eFixture?.scenario === 'oauth-relogin'
+  ? createOpenAiCodexE2eFixtureService()
+  : new OpenAiCodexService({
+      userDataDir: app.getPath('userData'),
+      openExternal: (url) => shell.openExternal(url),
+      credentialStore,
+    });
 const githubCopilotSubscription = new GitHubCopilotSubscriptionService({ credentialStore });
+const xaiOAuth = new XaiOAuthService({
+  credentialStore,
+  openExternal: (url) => shell.openExternal(url),
+});
 const buildSubscriptionModelFetch = createSubscriptionModelFetch({
   claudeSubscription,
 });
@@ -270,16 +334,29 @@ const oauthModelConnections = createOAuthModelConnectionsMainService({
   claudeSubscription,
   openAiCodex,
   githubCopilotSubscription,
+  xaiOAuth,
+  ...(e2eFixture?.scenario === 'oauth-relogin'
+    ? { fetchModels: async () => [{ id: 'gpt-5.6-sol' }] }
+    : {}),
 });
 const isClaudeSubscriptionAuthenticatedState = oauthModelConnections.isClaudeSubscriptionAuthenticatedState;
-const isOpenAiCodexAuthenticatedState = oauthModelConnections.isOpenAiCodexAuthenticatedState;
 
 function syncClaudeSubscriptionConnection(): Promise<LlmConnection | null> {
   return oauthModelConnections.syncClaudeSubscriptionConnection();
 }
+function activateXaiOAuthConnection(): Promise<LlmConnection | null> {
+  return oauthModelConnections.activateXaiOAuthConnection();
+}
+function syncXaiOAuthConnection(): Promise<LlmConnection | null> {
+  return oauthModelConnections.syncXaiOAuthConnection();
+}
 
 function syncOpenAiCodexConnection(): Promise<LlmConnection | null> {
   return oauthModelConnections.syncOpenAiCodexConnection();
+}
+
+function activateOpenAiCodexConnection(): Promise<LlmConnection | null> {
+  return oauthModelConnections.activateOpenAiCodexConnection();
 }
 
 function syncGitHubCopilotConnection(): Promise<LlmConnection | null> {
@@ -358,9 +435,7 @@ const automationWiring = createMainAutomationWiring({
   async createFreshRun(prompt: string, automationId: string) {
     const slug = await connectionStore.getDefault();
     const { connection, model } = await getReadyConnection(slug, undefined);
-    const cwd = await resolveCurrentProjectRoot();
     const session = await createDesktopSession({
-      cwd,
       backend: 'ai-sdk',
       llmConnectionSlug: connection.slug,
       model,
@@ -382,6 +457,7 @@ const automationWiring = createMainAutomationWiring({
     // do not accumulate an unbounded pile of active sessions. The session (with
     // its run/trace) is preserved under the archive, labelled automation/cron.
     try {
+      await agentGraphCoordinator.stop(session.id);
       await goalWiring.archiveSession(session.id, () => runtime.archive(session.id));
       desktopSessionSkillHosts.delete(session.id);
       emitSessionsChanged('archived', session.id);
@@ -495,12 +571,13 @@ const localMemory = new LocalMemoryService({
   updateSettings: (patch) => settingsStore.update(patch),
   getPrivacyContext: getWorkspacePrivacyContext,
 });
-// Resolve a session's backend host at Skill invocation time. The fallback is
-// the binding-derived Desktop surface created after the product tool catalog
-// is assembled below.
+// The synchronous Runtime Skill tools execute inside an already-built backend.
+// Their resolver uses the exact host cached by that backend. Pre-send
+// invocation and slash discovery derive a fresh surface from the persisted
+// session header instead; see resolveDesktopSkillHostForSession below.
 const desktopSessionSkillHosts = new Map<string, HostCapabilities>();
 const resolveDesktopSkillHost: HostCapabilitiesResolver = ({ sessionId }) =>
-  desktopSessionSkillHosts.get(sessionId) ?? desktopHostCapabilities;
+  desktopSessionSkillHosts.get(sessionId) ?? desktopProductToolSurface.hostCapabilities;
 // Window is created hidden for E2E and e2e-fixture runs so it never steals
 // focus. Derived from the same isE2e gate as userData/fake-backend so the
 // hidden-window switch stays in lockstep with the rest of the E2E isolation.
@@ -509,6 +586,9 @@ const resolveDesktopSkillHost: HostCapabilitiesResolver = ({ sessionId }) =>
 // BeginFrames on Linux, which stalls content-visibility inflation and any
 // frame-paced E2E protocol (measured in the scroll-geometry climb: 38 frames
 // over 31s). The E2E harness sets it, not the workflow — see fixtures.ts.
+// This value is also what hides the macOS dock icon (see app-lifecycle.ts):
+// staying out of sight and staying out of the Dock are one decision, so a run
+// that opts into a visible window also opts back into Dock and Cmd+Tab.
 const startHidden = (Boolean(e2eFixture) || isIsolatedE2e)
   && process.env.MAKA_E2E_SHOW_WINDOW !== '1';
 let onMainWindowClose = (): void => {};
@@ -522,11 +602,13 @@ const mainWindowController = createMainWindowController({
 // Shared by 'second-instance' and 'activate': focus the existing window, or
 // create one if all windows were closed while the app (macOS: still in the
 // dock) stayed running -- a second launch attempt must not be a silent no-op.
-function focusOrCreateMainWindow(): void {
+function focusOrCreateMainWindow(signal: AbortSignal): void {
   if (mainWindowController.hasOpenWindows()) {
     mainWindowController.focus();
   } else {
-    void mainWindowController.createWindow();
+    void mainWindowController
+      .createWindow(signal)
+      .catch((error) => console.error('[window] failed to create:', error));
   }
 }
 const safeSendToRenderer = mainWindowController.send;
@@ -565,7 +647,6 @@ const openGateway = new OpenGatewayService({
   },
 });
 const backends = new BackendRegistry();
-const permissionEngine = new PermissionEngine({ newId: randomUUID, now: Date.now });
 const shellRuns = new ShellRunProcessManager({
   store: shellRunStore,
   newId: randomUUID,
@@ -579,19 +660,18 @@ const {
   snapshotReadImage,
   persistArchivedToolResult,
   readArchivedToolResult,
+  readArchivedToolResultResource,
 } = createToolArtifactPersistence({ artifactStore, storeReadImage, safeSendToRenderer });
 
 const {
   riveTools,
-  officeTools,
   browserTools,
   computerUse,
   computerUseOverlay,
   computerUseTools,
   agentTeamLeadTools,
-  desktopHostCapabilities,
+  desktopProductToolSurface,
   builtinTools,
-  toolAvailability,
   childAgentTools,
   sandboxDiagnosticsProvider,
 } = assembleDesktopTools({
@@ -605,9 +685,27 @@ const {
   settingsStore,
   shellRuns,
   snapshotReadImage,
+  readArchivedToolResultResource,
   getWorkspacePrivacyContext,
   resolveDesktopSkillHost,
 });
+let agentGraphCoordinator: AgentGraphCoordinator;
+let agentGraphSupervisorWakeCoordinator: AgentGraphSupervisorWakeCoordinator;
+const desktopBackendToolSurfaceDeps = {
+  isComputerUseRealModelE2e,
+  ensureMcpReady,
+  getReadyConnection,
+  mcpManager,
+  taskLedgerStore,
+  deepResearchTools,
+  computerUseTools,
+  agentTeamLeadTools,
+  builtinTools,
+  toolEconomy: desktopProductToolSurface.identity.policy.economy,
+  planStore,
+  getAgentGraphSupervisorTools: (sessionId: string) =>
+    agentGraphCoordinator.toolsForSession(sessionId),
+};
 // Cursor-overlay teardown assigns a module-scoped `let`, so it stays in main.ts.
 onMainWindowClose = () => computerUseOverlay.destroyAll();
 const systemPromptService = createSystemPromptMainService({
@@ -616,9 +714,22 @@ const systemPromptService = createSystemPromptMainService({
   localMemory,
   taskLedger: taskLedgerStore,
   goalManager: goalWiring.manager,
-  hostCapabilities: desktopHostCapabilities,
+  hostCapabilities: desktopProductToolSurface.hostCapabilities,
 });
 let lookupPricing = buildPricingLookup();
+let usageReadiness: Promise<void> | undefined;
+function ensureUsageReady(): Promise<void> {
+  if (!usageReadiness) {
+    const readiness = telemetryRepo.load().then(() => {
+      lookupPricing = buildPricingLookup(telemetryRepo.listPricingOverrides());
+    });
+    usageReadiness = readiness;
+    void readiness.catch(() => {
+      if (usageReadiness === readiness) usageReadiness = undefined;
+    });
+  }
+  return usageReadiness;
+}
 // Track the last status fields that affect persisted diagnostics. The reason
 // is part of the key because a running bridge can remain degraded while a
 // newer, more useful failure replaces the previous one.
@@ -626,11 +737,23 @@ const previousBotStatus = new Map<BotProvider, Pick<BotStatus, 'readiness' | 're
 let botIncoming: ReturnType<typeof createBotIncomingMainService>;
 // Single authority for the "current project root" selection, shared across the
 // app/window, git, workspace-search, workspace-instructions, and session-entry
-// IPC surfaces. botIncoming, automation cron runs, and quick-chat read the
-// current selection through the thin `resolveCurrentProjectRoot` adapter below.
+// IPC surfaces. botIncoming and automation cron runs read the current
+// selection through the thin `resolveCurrentProjectRoot` adapter below.
 const projectRootController = createProjectRootController({
   lastProjectPathFile: join(workspaceRoot, 'last-project-path.json'),
   fallbackRoots: () => [process.cwd(), app.getAppPath()],
+});
+const projectManagement = createProjectManagementService({
+  catalog: projectCatalog,
+  sessions: store,
+  chooseDirectory: async () => {
+    const result = await mainWindowController.showOpenDialog({
+      title: '添加项目',
+      properties: ['openDirectory'],
+    });
+    return result.canceled ? undefined : result.filePaths[0];
+  },
+  selection: projectRootController,
 });
 const resolveCurrentProjectRoot: () => Promise<string> = () => projectRootController.current();
 const resolveProjectRootForContext = (sessionId: unknown): Promise<string> =>
@@ -696,29 +819,21 @@ const planReminders = createPlanReminderMainService({
 app.setName('Maka');
 
 backends.register('ai-sdk', createAiSdkBackendFactory({
-  isComputerUseRealModelE2e,
-  ensureMcpReady,
-  getReadyConnection,
+  ...desktopBackendToolSurfaceDeps,
   buildSubscriptionModelFetch,
   systemPromptService,
-  mcpManager,
-  permissionEngine,
-  taskLedgerStore,
   telemetryRepo,
+  ensureUsageReady,
   artifactStore,
-  deepResearchTools,
   desktopSessionSkillHosts,
-  computerUseTools,
-  agentTeamLeadTools,
-  builtinTools,
-  toolAvailability,
   sandboxDiagnosticsProvider,
   persistToolArtifacts,
   persistArchivedToolResult,
   readArchivedToolResult,
   runtimeCommitStore: runtimePersistence.runtimeCommitStore,
-  planStore,
   safeSendToRenderer,
+  openGateway,
+  emitSessionsChanged,
   getRuntime: () => runtime,
   getLookupPricing: () => lookupPricing,
 }));
@@ -727,10 +842,11 @@ backends.register('fake', (ctx) =>
   new FakeBackend({ sessionId: ctx.sessionId, header: ctx.header, store: ctx.store, appendMessage: ctx.appendMessage }),
 );
 
-// E2E: also route 'ai-sdk' (requested by sessions:create and quickChat:start)
-// through the deterministic fake backend, so no session-creation path can
-// escape the E2E seam and hit a real provider. Registered after the real
-// ai-sdk factory to override it (BackendRegistry uses last-write-wins).
+// E2E: also route 'ai-sdk' (requested by sessions:create, the single
+// session-creation IPC) through the deterministic fake backend, so no
+// session-creation path can escape the E2E seam and hit a real provider.
+// Registered after the real ai-sdk factory to override it (BackendRegistry
+// uses last-write-wins).
 // Production builds never set MAKA_E2E.
 if (isE2e) {
   backends.register('ai-sdk', (ctx) =>
@@ -749,6 +865,7 @@ const runtime = new SessionManager({
   shellRuns,
   backends,
   childTools: childAgentTools,
+  worktreeChildExecutor,
   safeBoundaryResumeEnabled: process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME === '1',
   onContinuationLifecycleEvent: (event) => {
     console.info('[runtime-resume]', JSON.stringify(event));
@@ -766,11 +883,11 @@ const runtime = new SessionManager({
         runStore.listSessionRuns(sessionId),
       ]);
       return (
-        shellUpdates.some((update) => update.result.status === 'running') ||
+        shellUpdates.some((update) => isActiveShellRunStatus(update.result.status)) ||
         runs.some(
           (run) =>
             run.parentRunId !== undefined &&
-            ['created', 'running', 'waiting_permission'].includes(run.status),
+            ['created', 'running', 'waiting_for_user'].includes(run.status),
         )
       );
     },
@@ -803,6 +920,62 @@ const runtime = new SessionManager({
   newId: randomUUID,
   now: Date.now,
 });
+agentGraphSupervisorWakeCoordinator = new AgentGraphSupervisorWakeCoordinator({
+  activityRegistry: sessionActivities,
+  wakeStore: agentGraphControlStore,
+  readSnapshot: (rootSessionId) => agentGraphCoordinator.getSnapshot(rootSessionId),
+  startTurn: async (sessionId, input, activity, abortSignal) => {
+    let stopPromise: Promise<void> | undefined;
+    const stop = () => {
+      stopPromise ??= runtime.stopSession(sessionId, { source: 'graph_supervisor' });
+    };
+    abortSignal.addEventListener('abort', stop, { once: true });
+    if (abortSignal.aborted) stop();
+    try {
+      await ensureSessionCanSend(sessionId);
+      if (abortSignal.aborted) {
+        return { kind: 'aborted', turnId: input.turnId };
+      }
+      const iterator = runtime.sendMessage(sessionId, input);
+      return (
+        await streamEvents(sessionId, iterator, {
+          turnId: input.turnId,
+          goalBoundary: 'none',
+          activity,
+        })
+      ).outcome;
+    } finally {
+      abortSignal.removeEventListener('abort', stop);
+      await stopPromise;
+    }
+  },
+  inspectAttempt: async (rootSessionId, attemptId, turnId) => {
+    const runs = (await runStore.listSessionRuns(rootSessionId)).filter(
+      (run) => run.agentGraphWakeAttemptId === attemptId && run.turnId === turnId,
+    );
+    if (runs.length > 1) {
+      throw new Error(
+        `Agent graph supervisor wake attempt ${attemptId} has multiple AgentRuns`,
+      );
+    }
+    return runs[0]?.status ?? 'missing';
+  },
+  newId: randomUUID,
+  onError: (rootSessionId) => {
+    emitSessionsChanged('status-change', rootSessionId);
+  },
+});
+agentGraphCoordinator = new AgentGraphCoordinator({
+  sessionStore: store,
+  runStore,
+  runtimeEventStore,
+  controlStore: agentGraphControlStore,
+  runtime,
+  newId: randomUUID,
+  onReconciliation: (rootSessionId, result) => {
+    agentGraphSupervisorWakeCoordinator.notify(rootSessionId, result);
+  },
+});
 let settingsIpc: SettingsIpcHandle | undefined;
 let mcpToolSnapshot = JSON.stringify(mcpManager.tools());
 mcpManager.onChange(() => {
@@ -818,6 +991,7 @@ const dailyReview = createDailyReviewMainService({
   archiveStore: dailyReviewArchiveStore,
   connectionStore,
   telemetryRepo,
+  ensureUsageReady,
   listSessions: async () => collapseSessionRevisions(await runtime.listSessions()),
   resolveConnectionSecret,
   buildSubscriptionModelFetch,
@@ -826,7 +1000,6 @@ botIncoming = createBotIncomingMainService({
   runtime,
   createSession: createDesktopSession,
   botRegistry,
-  getCurrentProjectRoot: () => resolveCurrentProjectRoot(),
   getDefaultConnectionSlug: () => connectionStore.getDefault(),
   getReadyConnection,
   readSessionHeader: async (sessionId) => {
@@ -883,6 +1056,7 @@ function registerIpc(): void {
     workspaceRoot,
     buildInfo,
     e2eFixture,
+    projectManagement,
   });
   registerMemoryIpc({ localMemory });
   registerConfigIpc({ connectionStore, settingsStore, credentialStore, workspaceRoot });
@@ -894,7 +1068,7 @@ function registerIpc(): void {
     mainWindowController,
     sendToRenderer: safeSendToRenderer,
     listInvocableSkills: listDesktopInvocableSkills,
-    skillHost: desktopHostCapabilities,
+    skillHost: desktopProductToolSurface.hostCapabilities,
     getCurrentProjectRoot: currentProjectRoot,
     getSkillSelectionReport: systemPromptService.getLastSkillSelectionReport,
     invalidateSkillSelectionReport: systemPromptService.invalidateSkillSelectionReport,
@@ -902,7 +1076,12 @@ function registerIpc(): void {
   registerWorkspaceSearchIpc({ getProjectRoot: resolveProjectRootForContext });
   registerGitIpc({ getProjectRoot: resolveProjectRootForContext });
   registerPlanReminderIpc({ planReminders, getWorkspacePrivacyContext });
+  registerAgentGraphIpc({
+    coordinator: agentGraphCoordinator,
+    sendToRenderer: safeSendToRenderer,
+  });
   registerSessionsIpc({
+    workspaceRoot,
     runtime,
     store,
     taskLedgerStore,
@@ -921,11 +1100,17 @@ function registerIpc(): void {
     prepareSkillInvocation: prepareDesktopSkillInvocation,
     invalidateSessionBindings: (sessionId) => botIncoming.invalidateSessionBindings(sessionId),
     clearSkillHost: (sessionId) => desktopSessionSkillHosts.delete(sessionId),
+    stopAgentGraph: async (sessionId) => {
+      const header = await store.readHeader(sessionId);
+      if (!header.subagentParent) await agentGraphCoordinator.stop(sessionId);
+    },
+    notifyAgentGraphPermissionResponse: (sessionId) => {
+      agentGraphSupervisorWakeCoordinator.notifyPermissionResponse(sessionId);
+    },
     ensureSessionWorkspaceAvailable,
     createSession: createDesktopSession,
     getReadyConnection,
     streamEvents,
-    getCurrentProjectRoot: currentProjectRoot,
     getWorkspacePrivacyContext,
     canCreateFakeSession: canCreateFakeSessionFromRenderer,
   });
@@ -934,13 +1119,16 @@ function registerIpc(): void {
     claudeSubscription,
     openAiCodex,
     githubCopilotSubscription,
+    xaiOAuth,
     cursorSubscription,
     antigravitySubscription,
     isClaudeSubscriptionAuthenticatedState,
-    isOpenAiCodexAuthenticatedState,
     syncClaudeSubscriptionConnection,
+    activateOpenAiCodexConnection,
     syncOpenAiCodexConnection,
     syncGitHubCopilotConnection,
+    activateXaiOAuthConnection,
+    syncXaiOAuthConnection,
     emitConnectionListChanged,
   });
   registerWebSearchIpc({ settingsStore, getWorkspacePrivacyContext });
@@ -952,26 +1140,57 @@ function registerIpc(): void {
     resolveConnectionSecret,
     hasConnectionSecret,
     emitConnectionListChanged,
+    // Same seam as the fake-backend override above, for the other IPC that can
+    // leave the machine: adding a catalog provider runs remote model discovery
+    // against the provider's real endpoint. In E2E the key is a placeholder, so
+    // discovery can only fail — but it fails at whatever speed the network
+    // answers, and the add dialog stays open for the whole round trip. The
+    // provider-side budget (10s) is exactly the suite's expect timeout (10s),
+    // so a slow answer flips `await expect(dialog).toBeHidden()` from pass to
+    // fail with no code change. Fail deterministically and offline instead,
+    // which is the outcome a placeholder key produces anyway.
+    ...(isE2e
+      ? {
+          fetchModels: async () => {
+            throw new Error('E2E: remote model discovery is disabled');
+          },
+        }
+      : {}),
   });
   registerOnboardingIpc({ onboardingService });
   registerSessionEntryIpc({
     runtime,
     getReadyConnection,
-    getCurrentProjectRoot: currentProjectRoot,
     getOnboardingState: async () => (await onboardingService.getSnapshot()).state,
     emitSessionsChanged,
     ensureSessionCanSend,
     createSession: createDesktopSession,
     streamEvents,
-    quickChatStart: (input) => handleQuickChatStart(input, currentProjectRoot),
   });
   registerPermissionsIpc({
     settingsStore,
     connectionStore,
     telemetryRepo,
+    ensureUsageReady,
     botRegistry,
     getComputerUseCapabilityInput: computerUseCapabilityInput,
   });
+  // Drag-to-grant onboarding for the two TCC permissions macOS offers no
+  // programmatic consent dialog for. See docs/permission-onboarding-plan.md.
+  const permissionOverlay = createPermissionOverlayMain({
+    resolveLocale: async () => {
+      const settings = await settingsStore.get();
+      return resolveUiLocale(
+        settings.personalization.uiLocale,
+        resolveSystemUiLocale(app.getPreferredSystemLanguages()),
+      );
+    },
+  });
+  registerPermissionOverlayIpc({ controller: permissionOverlay });
+  // A screen-saver-level panel pinned to every Space is visible to the
+  // user if it outlives a slow quit; close it explicitly rather than
+  // relying on process teardown to race it away.
+  app.on('before-quit', () => permissionOverlay.dismiss());
   settingsIpc = registerSettingsIpc({
     settingsStore,
     botRegistry,
@@ -992,8 +1211,10 @@ function registerIpc(): void {
   registerGatewayIpc({ openGateway });
   registerDailyReviewIpc({ dailyReview, dailyReviewArchiveStore, mainWindowController });
   registerUsageIpc({
+    ipcMain,
     settingsStore,
     telemetryRepo,
+    ensureUsageReady,
     refreshPricingLookup: () => {
       lookupPricing = buildPricingLookup(telemetryRepo.listPricingOverrides());
     },
@@ -1015,9 +1236,7 @@ const { normalizeSettingsPatch, applySettingsRuntimeEffects, handleExternalSetti
     botRegistry,
     openGateway,
     keepSystemAwake,
-    runtime,
     safeSendToRenderer,
-    emitSessionsChanged,
   });
 
 const streamEvents = createSessionStreamer({
@@ -1033,6 +1252,8 @@ const streamEvents = createSessionStreamer({
 });
 
 async function ensureSessionCanSend(sessionId: string): Promise<void> {
+  const boundary = await runtime.readExecutionBoundary(sessionId);
+  assertDesktopExecutionBoundary(sessionId, boundary);
   const header = await readAvailableSessionHeader(sessionId);
   let result: Awaited<ReturnType<typeof ensureSessionCanSendOrRebind>>;
   try {
@@ -1079,9 +1300,10 @@ async function ensureSessionWorkspaceAvailable(sessionId: string): Promise<void>
   await readAvailableSessionHeader(sessionId);
 }
 
-async function createDesktopSession(input: CreateSessionInput) {
-  await assertSessionWorkspaceAvailable(input.cwd);
-  return runtime.createSession(input);
+async function createDesktopSession(input: DesktopCreateSessionInput) {
+  const selected = await resolveDesktopSessionSelection(input, projectManagement);
+  await assertSessionWorkspaceAvailable(selected.cwd);
+  return runtime.createSession(await resolveNewSessionProjectInput(selected, projectCatalog));
 }
 
 const readyConnectionDeps = {
@@ -1093,32 +1315,62 @@ function getReadyConnection(slug: string | null | undefined, model?: string) {
   return requireReadyConnection(slug, readyConnectionDeps, model);
 }
 
+async function resolveDesktopSkillHostForSession(
+  sessionId: string,
+): Promise<HostCapabilities> {
+  const header = await store.readHeader(sessionId);
+  return resolveDesktopSessionSkillHost(desktopBackendToolSurfaceDeps, {
+    sessionId,
+    header,
+    childTools: childAgentTools,
+  });
+}
+
+async function resolveDesktopSkillHostForNewSession(
+  projectRoot: string,
+  context?: NewSessionSkillContext,
+): Promise<HostCapabilities> {
+  const ready = await getReadyConnection(
+    context?.llmConnectionSlug ?? (await connectionStore.getDefault()),
+    context?.model,
+  );
+  return resolveDesktopNewSessionSkillHost(desktopBackendToolSurfaceDeps, {
+    projectRoot,
+    workspaceRoot,
+    readyConnection: ready,
+    context,
+  });
+}
+
 async function prepareDesktopSkillInvocation(
   sessionId: string,
   text: string,
   skillIds?: readonly string[],
 ) {
+  const [projectRoot, host] = await Promise.all([
+    resolveProjectRootForContext(sessionId),
+    resolveDesktopSkillHostForSession(sessionId),
+  ]);
   return prepareSkillInvocationMessage({
     text,
     ...(skillIds ? { skillIds } : {}),
-    source: resolveSkillDiscoveryPaths(
-      await resolveProjectRootForContext(sessionId),
-      workspaceRoot,
-    ),
-    host: desktopSessionSkillHosts.get(sessionId) ?? desktopHostCapabilities,
+    source: resolveSkillDiscoveryPaths(projectRoot, workspaceRoot),
+    host,
   });
 }
 
-async function listDesktopInvocableSkills(sessionId?: string) {
+async function listDesktopInvocableSkills(
+  sessionId?: string,
+  newSessionContext?: NewSessionSkillContext,
+) {
   try {
+    const projectRoot = await resolveProjectRootForContext(sessionId);
+    const host = sessionId
+      ? await resolveDesktopSkillHostForSession(sessionId)
+      : await resolveDesktopSkillHostForNewSession(projectRoot, newSessionContext);
     return await listInvocableSkills(
-      resolveSkillDiscoveryPaths(
-        await resolveProjectRootForContext(sessionId),
-        workspaceRoot,
-      ),
-      sessionId
-        ? (desktopSessionSkillHosts.get(sessionId) ?? desktopHostCapabilities)
-        : desktopHostCapabilities,
+      resolveSkillDiscoveryPaths(projectRoot, workspaceRoot),
+      host,
     );
   } catch (error) {
     // Stale sessions with a removed working directory remain browseable, but
@@ -1127,67 +1379,6 @@ async function listDesktopInvocableSkills(sessionId?: string) {
     if (sessionId && isSessionWorkspaceUnavailableError(error)) return [];
     throw error;
   }
-}
-
-/**
- * PR110b: Quick Chat entry — thin adapter over the extracted helper.
- * The discriminated-union logic + readiness gating lives in
- * `./quick-chat.ts` so it can be unit-tested without spinning up an
- * Electron app.
- */
-async function handleQuickChatStart(
-  rawInput: unknown,
-  getCurrentProjectRoot: () => Promise<string>,
-): Promise<QuickChatResult> {
-  return runQuickChatStart(rawInput, {
-    getOnboardingState: async () => (await onboardingService.getSnapshot()).state,
-    createSession: async (input) => {
-      // Re-run requireReadyConnection inside the create path to close
-      // the race window between `getSnapshot()` and `createSession()`
-      // (e.g. user revoked credential in another window).
-      // Deep Research always forces 'explore' (read-only exploration
-      // boundary) regardless of the user's default; any other Quick Chat
-      // session seeds from the same default as the regular sessions:create
-      // path. The settings read is independent of the connection check, and
-      // this sits on the first-message latency path — run them in parallel.
-      const [ready, permissionMode] = await Promise.all([
-        getReadyConnection(input.defaultConnectionSlug, input.defaultModel),
-        input.mode === 'deep_research'
-          ? Promise.resolve<PermissionMode>('explore')
-          : resolveDefaultPermissionMode(() => settingsStore.get()),
-      ]);
-      return createDesktopSession({
-        cwd: await getCurrentProjectRoot(),
-        backend: 'ai-sdk',
-        llmConnectionSlug: ready.connection.slug,
-        model: ready.model,
-        permissionMode,
-        name: input.mode === 'deep_research' ? 'Deep Research' : DEFAULT_SESSION_NAME,
-        labels: input.mode === 'deep_research' ? [DEEP_RESEARCH_SESSION_LABEL] : [],
-      });
-    },
-    emitCreated: (sessionId) => emitSessionsChanged('created', sessionId),
-    ensureCanSend: (sessionId) => ensureSessionCanSend(sessionId),
-    prepareSkillInvocation: (sessionId, text, skillIds) =>
-      prepareDesktopSkillInvocation(sessionId, text, skillIds),
-    removeSession: (sessionId) => runtime.remove(sessionId),
-    sendFirstMessage: async (sessionId, text, displayText) => {
-      // @xuan PR110b: do NOT return the turnId — its lifetime / id
-      // ownership belongs to SessionManager + the eventual
-      // sessions:event stream, not to Quick Chat. The user message
-      // id is generated inside `runtime.sendMessage()`.
-      const turnId = randomUUID();
-      const iterator = runtime.sendMessage(sessionId, {
-        turnId,
-        text,
-        ...(displayText ? { displayText } : {}),
-      });
-      void streamEvents(sessionId, iterator, {
-        turnId,
-        goalBoundary: 'external',
-      });
-    },
-  });
 }
 
 function emitConnectionListChanged(): void {
@@ -1218,14 +1409,16 @@ function emitSessionsChanged(
 registerIpc();
 
 wireAppLifecycle({
-  isIsolatedE2e,
+  startHidden,
   e2eFixture,
   workspaceRoot,
   sessionStore: store,
+  projectCatalog,
   credentialStore,
   connectionStore,
   settingsStore,
   telemetryRepo,
+  ensureUsageReady,
   keepSystemAwake,
   botRegistry,
   openGateway,
@@ -1240,14 +1433,15 @@ wireAppLifecycle({
   runtimePersistence,
   mainWindowController,
   runtime,
+  agentGraphCoordinator,
+  agentGraphSupervisorWakeCoordinator,
+  agentGraphControlStore,
   streamEvents,
   focusOrCreateMainWindow,
   emitConnectionListChanged,
+  emitSessionsChanged,
   handleExternalSettingsChange,
   getSettingsIpc: () => settingsIpc,
-  setLookupPricing: (value) => {
-    lookupPricing = value;
-  },
 });
 
 function computerUseCapabilityInput() {

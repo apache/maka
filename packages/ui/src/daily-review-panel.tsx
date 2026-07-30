@@ -29,6 +29,7 @@ import { StatTile } from './primitives/stat-tile.js';
 import { SectionHeader } from './primitives/section-header.js';
 import { PageHeader } from './primitives/page-header.js';
 import type { DailyReviewBridge, DailyReviewMarkdownActionInput } from './module-panel-types.js';
+import type { ModuleHubHeader } from './module-hub-selector.js';
 import { RelativeTime } from './relative-time.js';
 import { Markdown } from './markdown.js';
 import { useUiLocale } from './locale-context.js';
@@ -51,6 +52,7 @@ function dailyReviewArchiveChipTone(status: DailyReviewArchive['status']): ChipP
 
 export function DailyReviewPanel(props: {
   bridge: DailyReviewBridge;
+  hubHeader?: ModuleHubHeader;
   onSelectSession?: (sessionId: string) => void;
   onCopyMarkdown?: (input: DailyReviewMarkdownActionInput) => Promise<void> | void;
   onAppendMarkdown?: (input: DailyReviewMarkdownActionInput) => Promise<void> | void;
@@ -347,8 +349,10 @@ export function DailyReviewPanel(props: {
       <PageHeader
         className="maka-module-main-header"
         as="h2"
-        title={copy.page.title}
-        subtitle={copy.page.subtitle}
+        title={props.hubHeader?.title ?? copy.page.title}
+        subtitle={props.hubHeader?.subtitle ?? copy.page.subtitle}
+        badge={props.hubHeader?.badge}
+        headingRowClassName={props.hubHeader ? 'maka-module-hub-heading' : undefined}
         actions={canManualRun ? (
           <div className="maka-daily-review-generate" role="group" aria-label={copy.page.generateAriaLabel}>
             {modelOptions.length > 0 && (

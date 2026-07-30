@@ -80,6 +80,36 @@ describe('tool trow summary aggregation', () => {
     assert.equal(summarizeTrowTools(items), '读取 1 个文件，搜索 1 次，1 个失败');
   });
 
+  it('counts sandbox denials separately from ordinary failures', () => {
+    const items: ToolActivityItem[] = [
+      {
+        toolUseId: 'g1',
+        toolName: 'Grep',
+        activityKind: 'search',
+        status: 'errored',
+        args: {},
+        result: {
+          kind: 'text',
+          text: 'Filesystem access was denied.',
+          sandboxDenial: { likely: true, backend: 'macos-seatbelt' },
+        },
+      },
+      {
+        toolUseId: 'b1',
+        toolName: 'Bash',
+        activityKind: 'command',
+        status: 'errored',
+        args: {},
+        result: { kind: 'text', text: 'Command failed.' },
+      },
+    ];
+
+    assert.equal(
+      summarizeTrowTools(items),
+      '搜索 1 次，运行 1 条命令，1 个可能被沙箱阻止，1 个失败',
+    );
+  });
+
   it('marks an errored row with a visible 失败 word inside an expanded group', () => {
     const markup = renderToStaticMarkup(createElement(ToolTrow, {
       items: [
@@ -92,6 +122,30 @@ describe('tool trow summary aggregation', () => {
     // A collapsed errored row must not rely on the destructive tint alone —
     // the failure is a word, not just a color.
     assert.match(markup, /运行测试 · 失败/);
+  });
+
+  it('marks a sandbox-denied row without labeling it as failed', () => {
+    const markup = renderToStaticMarkup(createElement(ToolTrow, {
+      items: [
+        { toolUseId: 'w1', toolName: 'Write', activityKind: 'edit', status: 'waiting_permission', args: {}, intent: '写入配置' },
+        {
+          toolUseId: 'g1',
+          toolName: 'Grep',
+          activityKind: 'search',
+          status: 'errored',
+          args: {},
+          intent: '搜索源码',
+          result: {
+            kind: 'text',
+            text: 'Filesystem access was denied.',
+            sandboxDenial: { likely: true, backend: 'macos-seatbelt' },
+          },
+        },
+      ] satisfies ToolActivityItem[],
+    }));
+
+    assert.match(markup, /搜索源码 · 可能被沙箱阻止/);
+    assert.doesNotMatch(markup, /搜索源码 · 失败/);
   });
 
   it('ToolTrowRow never reintroduces the per-row settle fade or the motion abstraction', () => {

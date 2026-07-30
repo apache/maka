@@ -17,6 +17,7 @@ const STREAM_PARTS: LanguageModelV4StreamPart[] = [
 ];
 
 import { ModelAdapter } from '../model-adapter.js';
+import type { ModelStreamEvent, ModelToolSet } from '../model-protocol.js';
 import { canonicalizeToolSet } from '../request-shape.js';
 import type { MakaTool } from '../tool-runtime.js';
 
@@ -37,7 +38,6 @@ function newAdapter(): ModelAdapter {
     modelId: 'mock',
     modelFactory: () => ({}),
     providerOptions: {},
-    maxSteps: 2,
     newId: () => 'id',
     now: () => 0,
   });
@@ -53,9 +53,9 @@ async function toolNamesSeenByProvider(activeNames: ReadonlySet<string>): Promis
   const invalid = tool('invalid');
   const canonical = canonicalizeToolSet(tools, invalid, activeNames);
 
-  const aiSdkTools: Record<string, unknown> = {};
+  const modelTools: ModelToolSet = {};
   for (const t of canonical.providerTools) {
-    aiSdkTools[t.name] = { description: t.description, inputSchema: t.parameters };
+    modelTools[t.name] = { description: t.description, inputSchema: t.parameters };
   }
 
   let seen: string[] = [];
@@ -69,14 +69,14 @@ async function toolNamesSeenByProvider(activeNames: ReadonlySet<string>): Promis
   const result = await newAdapter().startStream({
     model,
     messages: [{ role: 'user', content: 'hi' }],
-    tools: aiSdkTools,
+    tools: modelTools,
     activeTools: canonical.activeTools,
     system: 'sys',
     abortSignal: new AbortController().signal,
     repairToolCall: async () => null,
   });
   // Drain the stream so streamText materializes the provider call.
-  for await (const _chunk of result.stream) {
+  for await (const _chunk of result.events) {
     void _chunk;
   }
   return seen;
@@ -95,5 +95,116 @@ describe('hidden tools are trimmed from the provider request (wire-level)', () =
     const seen = await toolNamesSeenByProvider(new Set(['Read', 'load_tools', 'Rive']));
     assert.ok(seen.includes('Rive'), 'activated Rive should reach the provider');
     assert.ok(seen.includes('Read'), 'active tools stay present after a load');
+  });
+});
+
+describe('ModelAdapter provider-step boundary', () => {
+  test('one startStream call ends after the provider returns tool calls', async () => {
+    let providerCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        providerCalls += 1;
+        return {
+          stream: convertArrayToReadableStream<LanguageModelV4StreamPart>(
+            providerCalls === 1
+              ? [
+                  { type: 'stream-start', warnings: [] },
+                  {
+                    type: 'tool-call',
+                    toolCallId: 'tool-1',
+                    toolName: 'Read',
+                    input: JSON.stringify({ q: 'README.md' }),
+                  },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                    usage: ZERO_USAGE,
+                  },
+                ]
+              : [
+                  { type: 'stream-start', warnings: [] },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'stop', raw: 'stop' },
+                    usage: ZERO_USAGE,
+                  },
+                ],
+          ),
+        };
+      },
+    });
+    const result = await newAdapter().startStream({
+      model,
+      messages: [{ role: 'user', content: 'read it' }],
+      tools: {
+        Read: {
+          inputSchema: z.object({ q: z.string() }),
+        },
+      },
+      activeTools: ['Read'],
+      abortSignal: new AbortController().signal,
+      repairToolCall: async () => null,
+    });
+
+    for await (const _event of result.events) {
+      void _event;
+    }
+
+    assert.equal(providerCalls, 1);
+  });
+
+  test('returns provider tool calls without executing tool behavior inside the SDK', async () => {
+    let executeCalls = 0;
+    const toolsWithExecutableBehavior = {
+      Read: {
+        inputSchema: z.object({ q: z.string() }),
+        execute: async () => {
+          executeCalls += 1;
+          return { leaked: true };
+        },
+      },
+    };
+    const model = new MockLanguageModelV4({
+      doStream: {
+        stream: convertArrayToReadableStream<LanguageModelV4StreamPart>([
+          { type: 'stream-start', warnings: [] },
+          {
+            type: 'tool-call',
+            toolCallId: 'tool-1',
+            toolName: 'Read',
+            input: JSON.stringify({ q: 'README.md' }),
+          },
+          {
+            type: 'finish',
+            finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+            usage: ZERO_USAGE,
+          },
+        ]),
+      },
+    });
+    const result = await newAdapter().startStream({
+      model,
+      messages: [{ role: 'user', content: 'read it' }],
+      tools: toolsWithExecutableBehavior,
+      activeTools: ['Read'],
+      abortSignal: new AbortController().signal,
+      repairToolCall: async () => null,
+    });
+
+    const events: ModelStreamEvent[] = [];
+    for await (const event of result.events) events.push(event);
+
+    assert.deepEqual(
+      events.filter((event) => event.kind === 'tool-call').map((event) => event.toolCall),
+      [
+        {
+          type: 'tool-call',
+          toolCallId: 'tool-1',
+          toolName: 'Read',
+          input: { q: 'README.md' },
+        },
+      ],
+    );
+    assert.equal(executeCalls, 0, 'ModelAdapter must strip executable behavior before streamText');
   });
 });

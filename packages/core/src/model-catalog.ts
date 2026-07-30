@@ -4,7 +4,7 @@ import type {
   ModelInfo,
   ProviderType,
 } from './llm-connections.js';
-import { PROVIDER_DEFAULTS } from './llm-connections.js';
+import { PROVIDER_DEFAULTS, providerSupportsModelDiscovery } from './llm-connections.js';
 import type { PricingConfig } from './usage-stats/types.js';
 import { curatedCatalogFallbackModelsForProvider, lookupModelMetadata } from './model-metadata.js';
 
@@ -195,15 +195,19 @@ export function buildConnectionModelCatalogEntries(
   // that registers a provider this build doesn't know) → no catalog entries.
   // Mirrors `isFakeBackend` in connection-readiness.ts.
   if (!defaults) return [];
+  const supportsModelDiscovery = providerSupportsModelDiscovery(connection.providerType);
   const catalogFallbackModels = curatedCatalogFallbackModelsForProvider(connection.providerType);
+  const fallbackModels = [...(catalogFallbackModels ?? defaults.fallbackModels)];
   return buildModelCatalogEntries({
     providerType: connection.providerType,
     connectionSlug: connection.slug,
     defaultModel: connection.defaultModel,
-    models: connection.models,
-    modelSource: connection.modelSource,
-    modelsFetchedAt: connection.modelsFetchedAt,
-    fallbackModels: input.fallbackModels ?? [...(catalogFallbackModels ?? defaults.fallbackModels)],
+    models: supportsModelDiscovery ? connection.models : undefined,
+    modelSource: supportsModelDiscovery ? connection.modelSource : 'fallback',
+    modelsFetchedAt: supportsModelDiscovery ? connection.modelsFetchedAt : undefined,
+    fallbackModels: supportsModelDiscovery
+      ? (input.fallbackModels ?? fallbackModels)
+      : fallbackModels,
     now: input.now,
     staleAfterMs: input.staleAfterMs,
     providerAvailable: input.providerAvailable,

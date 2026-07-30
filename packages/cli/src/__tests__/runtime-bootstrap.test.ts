@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
@@ -22,6 +22,7 @@ import {
   GOAL_RESUME_TOOL_NAME,
   GOAL_SET_TOOL_NAME,
   GOAL_STATUS_TOOL_NAME,
+  IMPLEMENTATION_AGENT_ID,
   type AiSdkBackendInput,
   type MakaTool,
   type SessionStore,
@@ -31,9 +32,26 @@ import {
   createMakaCliRuntimeContext,
   getOrCreateCliClaudeDeviceId,
   isMakaClaudeSubscriptionCloakEnabled,
+  resolveCliStreamConnectTimeoutMs,
 } from '../runtime-bootstrap.js';
 
 describe('Maka CLI runtime bootstrap', () => {
+  test('parses the CLI stream connect timeout override', () => {
+    assert.equal(resolveCliStreamConnectTimeoutMs({}), undefined);
+    assert.equal(
+      resolveCliStreamConnectTimeoutMs({ MAKA_STREAM_CONNECT_TIMEOUT_MS: '120000' }),
+      120_000,
+    );
+    assert.throws(
+      () => resolveCliStreamConnectTimeoutMs({ MAKA_STREAM_CONNECT_TIMEOUT_MS: '0' }),
+      /positive integer/,
+    );
+    assert.throws(
+      () => resolveCliStreamConnectTimeoutMs({ MAKA_STREAM_CONNECT_TIMEOUT_MS: 'later' }),
+      /positive integer/,
+    );
+  });
+
   test('forwards generated title notifications to the TUI host', async () => {
     await withWorkspace(async (workspaceRoot) => {
       const connectionStore = createConnectionStore(workspaceRoot);
@@ -92,6 +110,64 @@ describe('Maka CLI runtime bootstrap', () => {
     });
   });
 
+  test('treats child tools and prompt from BackendFactoryContext as hard boundaries', async () => {
+    await withWorkspace(async (workspaceRoot) => {
+      const connectionStore = createConnectionStore(workspaceRoot);
+      await connectionStore.create({
+        slug: 'local',
+        name: 'Local Ollama',
+        providerType: 'ollama',
+        defaultModel: 'llama3.2',
+      });
+      const context = await createMakaCliRuntimeContext({
+        surface: 'tui',
+        workspaceRoot,
+        cwd: '/repo',
+      });
+      try {
+        const session = await context.runtime.createSession({
+          cwd: context.cwd,
+          backend: 'ai-sdk',
+          llmConnectionSlug: context.target.connection.slug,
+          model: context.target.model,
+          permissionMode: 'explore',
+          name: 'scoped-child',
+        });
+        const runtimeDeps = (context.runtime as unknown as RuntimeWithPrivateDeps).deps;
+        const header = await runtimeDeps.store.readHeader(session.id);
+        const scopedTool: MakaTool = {
+          name: 'ReadOnlyProbe',
+          description: 'Read-only test probe',
+          parameters: {},
+          impl: () => 'ok',
+        };
+        const backend = await runtimeDeps.backends.build('ai-sdk', {
+          sessionId: session.id,
+          workspaceRoot,
+          header,
+          store: runtimeDeps.store,
+          tools: [scopedTool],
+          systemPrompt: 'Durable child prompt.',
+        });
+        const backendInput = (backend as unknown as { input: AiSdkBackendInput }).input;
+
+        assert.deepEqual(
+          backendInput.tools.map((tool) => tool.name),
+          ['ReadOnlyProbe'],
+        );
+        assert.equal(backendInput.systemPrompt, 'Durable child prompt.');
+        assert.deepEqual(backendInput.toolAvailability, {
+          economy: !process.env.MAKA_DISABLE_DEFERRED_TOOLS,
+          groups: [],
+        });
+        assert.equal(backendInput.spawnChildAgent, undefined);
+        assert.equal(backendInput.spawnChildSession, undefined);
+      } finally {
+        await context.close();
+      }
+    });
+  });
+
   test('uses an explicit connection and forwards one-shot limits and invocation results', async () => {
     await withWorkspace(async (workspaceRoot) => {
       const connectionStore = createConnectionStore(workspaceRoot);
@@ -114,8 +190,6 @@ describe('Maka CLI runtime bootstrap', () => {
       const observer = (result: unknown): void => {
         observed.push(result);
       };
-      const permissionRules = [{ effect: 'deny', kind: 'category', category: 'read' }] as const;
-
       const context = await createMakaCliRuntimeContext({
         surface: 'tui',
         workspaceRoot,
@@ -123,7 +197,6 @@ describe('Maka CLI runtime bootstrap', () => {
         requestedConnectionSlug: 'selected-local',
         requestedModel: 'requested-model',
         maxSteps: 3,
-        permissionRules,
         runtimeInvocationObserver: observer,
       });
       try {
@@ -148,7 +221,6 @@ describe('Maka CLI runtime bootstrap', () => {
         const backendInput = (backend as unknown as { input: AiSdkBackendInput }).input;
 
         assert.equal(backendInput.maxSteps, 3);
-        assert.equal(backendInput.permissionRules, permissionRules);
         assert.equal(backendInput.supportsVision, true);
         assert.equal(typeof backendInput.readAttachmentBytes, 'function');
         assert.equal(runtimeDeps.runtimeInvocationObserver, observer);
@@ -203,7 +275,7 @@ describe('Maka CLI runtime bootstrap', () => {
     });
   });
 
-  test('registers Edit in the TUI runtime toolset and still requires permission', async () => {
+  test('registers Edit in the TUI runtime toolset', async () => {
     await withWorkspace(async (workspaceRoot) => {
       const connectionStore = createConnectionStore(workspaceRoot);
       await connectionStore.create({
@@ -224,7 +296,6 @@ describe('Maka CLI runtime bootstrap', () => {
         edit,
         'Edit must be registered (regression: it was once filtered out of the TUI runtime)',
       );
-      assert.equal(edit?.permissionRequired, true);
     });
   });
 
@@ -251,7 +322,6 @@ describe('Maka CLI runtime bootstrap', () => {
       try {
         const tool = tui.tools.find((candidate) => candidate.name === 'AskUserQuestion');
         assert.ok(tool);
-        assert.equal(tool.permissionRequired, false);
         assert.equal(
           run.tools.some((candidate) => candidate.name === 'AskUserQuestion'),
           false,
@@ -291,7 +361,57 @@ describe('Maka CLI runtime bootstrap', () => {
     });
   });
 
-  test('wires TUI subagent capabilities and a child-safe tool surface', async () => {
+  test('composes Graph controls and worktree execution for non-interactive Graph runs', async () => {
+    await withWorkspace(async (workspaceRoot) => {
+      const connectionStore = createConnectionStore(workspaceRoot);
+      await connectionStore.create({
+        slug: 'local',
+        name: 'Local Ollama',
+        providerType: 'ollama',
+        defaultModel: 'llama3.2',
+      });
+
+      const context = await createMakaCliRuntimeContext({
+        workspaceRoot,
+        cwd: '/repo',
+        surface: 'run',
+        enableAgentGraph: true,
+      });
+      try {
+        assert.ok(context.agentGraph);
+        const runtimeDeps = (context.runtime as unknown as RuntimeWithPrivateDeps).deps;
+        assert.ok(runtimeDeps.worktreeChildExecutor);
+        assert.ok(runtimeDeps.childTools?.length);
+
+        const session = await context.runtime.createSession({
+          cwd: context.cwd,
+          backend: 'ai-sdk',
+          llmConnectionSlug: context.target.connection.slug,
+          model: context.target.model,
+          permissionMode: 'execute',
+          name: 'cli-graph',
+        });
+        const header = await runtimeDeps.store.readHeader(session.id);
+        const backend = await runtimeDeps.backends.build('ai-sdk', {
+          sessionId: session.id,
+          workspaceRoot,
+          header,
+          store: runtimeDeps.store,
+        });
+        const backendInput = (backend as unknown as { input: AiSdkBackendInput }).input;
+        const names = backendInput.tools.map((tool) => tool.name);
+
+        assert.ok(names.includes('view_agent_graph'));
+        assert.ok(names.includes('update_agent_graph'));
+        assert.ok(names.includes(AGENT_OUTPUT_TOOL_NAME));
+        assert.ok(backendInput.runtimeCommitSink);
+      } finally {
+        await context.close();
+      }
+    });
+  });
+
+  test('wires TUI subagent capabilities and a profile-filtered child tool surface', async () => {
     await withWorkspace(async (workspaceRoot) => {
       const connectionStore = createConnectionStore(workspaceRoot);
       await connectionStore.create({
@@ -325,6 +445,7 @@ describe('Maka CLI runtime bootstrap', () => {
         const backendInput = (backend as unknown as { input: AiSdkBackendInput }).input;
 
         assert.equal(typeof backendInput.spawnChildAgent, 'function');
+        assert.equal(typeof backendInput.spawnChildSession, 'function');
         assert.equal(typeof backendInput.retryChildAgent, 'function');
         assert.equal(typeof backendInput.listChildAgents, 'function');
         assert.equal(typeof backendInput.readChildAgentOutput, 'function');
@@ -346,15 +467,24 @@ describe('Maka CLI runtime bootstrap', () => {
         });
         assert.deepEqual(
           runtimeDeps.childTools?.map((tool) => tool.name),
-          ['Read', 'Glob', 'Grep'],
+          ['Read', 'Glob', 'Grep', 'Write', 'Edit', 'Bash'],
         );
         assert.equal(
           runtimeDeps.childTools?.some((tool) =>
-            ['Bash', 'Write', 'Edit', AGENT_SPAWN_TOOL_NAME, AGENT_SWARM_TOOL_NAME].includes(
-              tool.name,
-            ),
+            [AGENT_SPAWN_TOOL_NAME, AGENT_SWARM_TOOL_NAME].includes(tool.name),
           ),
           false,
+        );
+        const childAgents = (await backendInput.listChildAgents?.()) as {
+          definitions: Array<{
+            id: string;
+            availability: { status: string; reason?: string };
+          }>;
+        };
+        assert.deepEqual(
+          childAgents.definitions.find((definition) => definition.id === IMPLEMENTATION_AGENT_ID)
+            ?.availability,
+          { status: 'available' },
         );
         assert.equal(context.skills.host.toolNames.has(AGENT_SPAWN_TOOL_NAME), true);
         assert.equal(context.skills.host.toolNames.has(AGENT_SWARM_TOOL_NAME), true);
@@ -793,6 +923,175 @@ describe('Maka CLI runtime bootstrap', () => {
       assert.notEqual(first, pathHash);
     });
   });
+
+  test('isolates portable state from injected config roots', async () => {
+    await withWorkspace(async (workspaceRoot) => {
+      const stateRoot = join(workspaceRoot, 'state');
+      const configRoot = join(workspaceRoot, 'config');
+      await Promise.all([mkdir(stateRoot), mkdir(configRoot)]);
+
+      const connectionStore = createConnectionStore(configRoot);
+      await connectionStore.create({
+        slug: 'local',
+        name: 'Local Ollama',
+        providerType: 'ollama',
+        defaultModel: 'llama3.2',
+      });
+      const credentialStore = createFileCredentialStore(configRoot);
+      await credentialStore.setSecret('local', 'api_key', 'config-secret-canary');
+
+      const context = await createMakaCliRuntimeContext({
+        surface: 'run',
+        workspaceRoot,
+        stateRoot,
+        configRoot,
+        cwd: '/repo',
+      });
+      try {
+        assert.equal(context.workspaceRoot, workspaceRoot);
+        assert.equal(context.stateRoot, stateRoot);
+        assert.equal(context.configRoot, configRoot);
+
+        const session = await context.runtime.createSession({
+          cwd: context.cwd,
+          backend: 'ai-sdk',
+          llmConnectionSlug: context.target.connection.slug,
+          model: context.target.model,
+          permissionMode: 'bypass',
+          name: 'isolated',
+        });
+
+        await access(join(stateRoot, 'sessions', session.id, 'session.jsonl'));
+        await assert.rejects(access(join(configRoot, 'sessions', session.id, 'session.jsonl')));
+        await access(join(configRoot, 'llm-connections.json'));
+        await access(join(configRoot, 'credentials.json'));
+        await assert.rejects(access(join(stateRoot, 'credentials.json')));
+
+        await getOrCreateCliClaudeDeviceId(configRoot, { newId: () => '3'.repeat(64) });
+        await access(join(configRoot, '.maka_cli_claude_device_id'));
+        await assert.rejects(access(join(stateRoot, '.maka_cli_claude_device_id')));
+      } finally {
+        await context.close();
+      }
+    });
+  });
+
+  test('routes skill tools, search, and the model catalog through the config root', async () => {
+    await withWorkspace(async (workspaceRoot) => {
+      const stateRoot = join(workspaceRoot, 'state');
+      const configRoot = join(workspaceRoot, 'config');
+      const skillRoot = join(configRoot, 'skills', 'config-only');
+      await Promise.all([mkdir(stateRoot), mkdir(skillRoot, { recursive: true })]);
+      await writeFile(
+        join(skillRoot, 'SKILL.md'),
+        [
+          '---',
+          'name: Config Only',
+          'description: Skill injected only through the host config root.',
+          '---',
+          '# Config Only',
+          'Follow the config-root instructions.',
+        ].join('\n'),
+      );
+      const connectionStore = createConnectionStore(configRoot);
+      await connectionStore.create({
+        slug: 'local',
+        name: 'Local Ollama',
+        providerType: 'ollama',
+        defaultModel: 'llama3.2',
+      });
+
+      const context = await createMakaCliRuntimeContext({
+        surface: 'tui',
+        workspaceRoot,
+        stateRoot,
+        configRoot,
+        cwd: '/repo',
+      });
+      try {
+        const toolContext = {
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          cwd: '/repo',
+          toolCallId: 'tool-1',
+          abortSignal: new AbortController().signal,
+          emitOutput: () => {},
+        };
+        const skill = context.tools.find((tool) => tool.name === 'Skill');
+        assert.ok(skill);
+        const loaded = (await skill.impl({ name: 'Config Only' }, toolContext)) as {
+          ok: boolean;
+        };
+        assert.equal(loaded.ok, true);
+
+        const skillSearch = context.tools.find((tool) => tool.name === 'SkillSearch');
+        assert.ok(skillSearch);
+        const searched = (await skillSearch.impl(
+          { query: 'host config root', limit: 3 },
+          toolContext,
+        )) as { matches: Array<{ name: string }> };
+        assert.equal(
+          searched.matches.some((match) => match.name === 'Config Only'),
+          true,
+        );
+
+        const session = await context.runtime.createSession({
+          cwd: context.cwd,
+          backend: 'ai-sdk',
+          llmConnectionSlug: context.target.connection.slug,
+          model: context.target.model,
+          permissionMode: 'bypass',
+          name: 'config-root-skill',
+        });
+        const runtimeDeps = (context.runtime as unknown as RuntimeWithPrivateDeps).deps;
+        const header = await runtimeDeps.store.readHeader(session.id);
+        const backend = await runtimeDeps.backends.build('ai-sdk', {
+          sessionId: session.id,
+          workspaceRoot: stateRoot,
+          header,
+          store: runtimeDeps.store,
+        });
+        const systemPrompt = (backend as unknown as { input: AiSdkBackendInput }).input
+          .systemPrompt;
+        assert.equal(typeof systemPrompt, 'function');
+        const rendered =
+          typeof systemPrompt === 'function'
+            ? await systemPrompt({
+                sessionId: session.id,
+                turnId: 'bootstrap-test-turn',
+                cwd: context.cwd,
+                workspaceRoot: stateRoot,
+              })
+            : systemPrompt;
+        assert.match(rendered ?? '', /Config Only/);
+      } finally {
+        await context.close();
+      }
+    });
+  });
+
+  test('defaults both new roots to the legacy workspaceRoot', async () => {
+    await withWorkspace(async (workspaceRoot) => {
+      const connectionStore = createConnectionStore(workspaceRoot);
+      await connectionStore.create({
+        slug: 'local',
+        name: 'Local Ollama',
+        providerType: 'ollama',
+        defaultModel: 'llama3.2',
+      });
+      const context = await createMakaCliRuntimeContext({
+        surface: 'run',
+        workspaceRoot,
+        cwd: '/repo',
+      });
+      try {
+        assert.equal(context.stateRoot, workspaceRoot);
+        assert.equal(context.configRoot, workspaceRoot);
+      } finally {
+        await context.close();
+      }
+    });
+  });
 });
 
 interface RuntimeWithPrivateDeps {
@@ -802,6 +1101,7 @@ interface RuntimeWithPrivateDeps {
     runtimeInvocationObserver?: (result: unknown) => void | Promise<void>;
     onSessionTitleChanged?: (sessionId: string) => void;
     childTools?: readonly MakaTool[];
+    worktreeChildExecutor?: unknown;
   };
 }
 

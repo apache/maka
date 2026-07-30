@@ -16,8 +16,8 @@ import { useMountedRef } from '@maka/ui';
 export interface KeepSystemAwakeController {
   /** Whether the settings bridge exposing this toggle exists. */
   supported: boolean;
-  /** Last-known persisted value. Defaults to false until the first read. */
-  keepSystemAwake: boolean;
+  /** Last-known persisted value. Undefined until the initial read settles. */
+  keepSystemAwake: boolean | undefined;
   /**
    * Persist a new value. Resolves once the store confirms the write (and
    * updates the local snapshot); rejects on failure so the caller can revert
@@ -34,7 +34,7 @@ export function useKeepSystemAwake(): KeepSystemAwakeController {
   const supported =
     typeof window.maka?.settings?.get === 'function' &&
     typeof window.maka?.settings?.update === 'function';
-  const [keepSystemAwake, setSnapshot] = useState(false);
+  const [keepSystemAwake, setSnapshot] = useState<boolean>();
   const mountedRef = useMountedRef();
 
   const refresh = useCallback(async () => {
@@ -43,8 +43,10 @@ export function useKeepSystemAwake(): KeepSystemAwakeController {
       const settings = await window.maka.settings.get();
       if (mountedRef.current) setSnapshot(settings.system.keepSystemAwake);
     } catch {
-      // Best-effort read: leave the last-known snapshot in place. A failed
-      // read must not throw into render or wedge the toggle.
+      // The persisted default is false. Falling back to that known-safe value
+      // after an initial failure keeps the control recoverable; later failures
+      // must not overwrite a value that was already confirmed.
+      if (mountedRef.current) setSnapshot((previous) => previous ?? false);
     }
   }, [supported, mountedRef]);
 

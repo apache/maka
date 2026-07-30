@@ -17,6 +17,7 @@ import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
 import { applyTheme, applyThemePalette } from './theme';
 import { safeLocalStorageSet } from './browser-storage';
+import type { NavigationState } from './nav-selection.js';
 import {
   createSessionEventStreamSubscription,
   evaluateSessionEventStreamSnapshot,
@@ -103,7 +104,7 @@ export function useAppShellHostEffects(options: {
 }
 
 export function useAppShellPersistenceEffects(options: {
-  navSelection: NavSelection;
+  navigationState: NavigationState;
   sessionListCollapsed: boolean;
   sessionListWidth: number;
   workbarCollapsed: boolean;
@@ -162,13 +163,12 @@ export function useAppShellPersistenceEffects(options: {
     safeLocalStorageSet('maka-session-workbar-tab-v1', options.workbarTab);
   }, [options.workbarTab]);
 
-  // Persist sidebar nav selection so the app remembers what bucket the user
-  // had open (Chats / Pinned / Archived / Skills) across restarts. Strict
-  // localStorage availability check — Vite dev sometimes runs through a
-  // worker where it isn't defined.
+  // Persist the active destination and each hub's last selected module.
+  // Strict localStorage availability check — Vite dev sometimes runs through
+  // a worker where it isn't defined.
   useEffect(() => {
-    safeLocalStorageSet('maka-nav-selection-v1', JSON.stringify(options.navSelection));
-  }, [options.navSelection]);
+    safeLocalStorageSet('maka-nav-selection-v1', JSON.stringify(options.navigationState));
+  }, [options.navigationState]);
 }
 
 export function useAppShellBootstrapSubscriptions(options: {
@@ -192,6 +192,7 @@ export function useAppShellBootstrapSubscriptions(options: {
   refreshMemoryActive: (failureContext?: 'load') => Promise<void>;
   refreshMessages: (sessionId: string) => Promise<boolean>;
   refreshPlanReminders: (options?: { shouldShowError?: () => boolean }) => Promise<void>;
+  refreshProjects: () => Promise<unknown>;
   refreshShellSettings: () => Promise<void>;
   refreshSkills: (options?: { shouldShowError?: () => boolean }) => Promise<void>;
   refreshManagedSkillSources: (options?: { shouldShowError?: () => boolean }) => Promise<void>;
@@ -218,7 +219,10 @@ export function useAppShellBootstrapSubscriptions(options: {
   });
   const handleSessionChange = useEffectEvent(
     (event: { reason: string; sessionId?: string; ts: number; modelId?: string }) => {
-    void options.refreshSessions();
+      void options.refreshSessions();
+      if (event.reason === 'created' || event.reason === 'migrated') {
+        void options.refreshProjects();
+      }
     if (event.sessionId) {
       options.setSessionEventHealthBySession((current) => {
         const previous = current[event.sessionId!];
@@ -267,7 +271,7 @@ export function useAppShellBootstrapSubscriptions(options: {
       duration: 8000,
       action: {
         label: copy.viewScheduledTasks,
-        onClick: () => options.setNavSelection({ section: 'automations' }),
+        onClick: () => options.setNavSelection({ section: 'automations', module: 'plan-reminders' }),
       },
     });
   });

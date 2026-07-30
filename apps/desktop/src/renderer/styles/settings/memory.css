@@ -7,6 +7,10 @@
    ──────────────────────────────────────────────────────────────── */
 .settingsMemoryPreview {
     display: grid;
+    /* #1363 review follow-up: explicit column — the implicit auto track
+       sized to the reused .settingsConnectionMeta row's intrinsic width
+       (~247px) and pushed the card past the 480px floor's content column. */
+    grid-template-columns: minmax(0, 1fr);
     gap: var(--space-1);
     padding: var(--space-2-5) var(--space-3);
     border: var(--border-width-hairline) solid var(--foreground-10);
@@ -45,6 +49,10 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    /* #1364: the trailing cluster (injection Chip + copy button) is an
+       inline-flex that cannot shrink; at the 480px window floor it overflowed
+       the card by ~13px. Let it wrap under the title instead. */
+    flex-wrap: wrap;
     gap: var(--space-3);
   }
 .settingsMemoryPromptPreviewHeader strong {
@@ -139,6 +147,8 @@
   }
 .settingsMemoryBackupList {
     display: grid;
+    /* #1363 review follow-up: same explicit column as the preview card. */
+    grid-template-columns: minmax(0, 1fr);
     gap: var(--space-1-5);
     padding: var(--space-2) var(--space-2-5);
     border: var(--border-width-hairline) solid var(--foreground-10);
@@ -174,6 +184,10 @@
 .settingsMemoryBackupCandidate {
     display: inline-flex;
     align-items: center;
+    /* #1363 review follow-up: text + three action buttons are ~218px
+       intrinsically — on the floor column the buttons flow to a second
+       line inside the pill instead of bleeding out of it. */
+    flex-wrap: wrap;
     gap: var(--space-1-5);
     padding: var(--space-0-5) var(--space-1-5);
     border: var(--border-width-hairline) solid var(--foreground-10);
@@ -232,6 +246,10 @@
     margin: 0;
     padding: 0;
     display: grid;
+    /* #1363 review follow-up: explicit column — the widest entry card's
+       intrinsic width (its nowrap actions row) sized the implicit track
+       past the 480px floor's content column. */
+    grid-template-columns: minmax(0, 1fr);
     gap: 0;
     border: var(--border-width-hairline) solid var(--foreground-10);
     border-radius: var(--radius-surface);
@@ -246,6 +264,10 @@
 
 .settingsMemoryEntryCard {
     display: grid;
+    /* #1363 review follow-up: third layer of the same implicit-track leak —
+       the card is a grid too, and its auto column sized to the widest
+       child instead of the list's column. */
+    grid-template-columns: minmax(0, 1fr);
     gap: var(--space-0-5);
     padding: var(--space-2) var(--space-3);
     border-bottom: var(--border-width-hairline) solid var(--foreground-8);
@@ -318,6 +340,9 @@
 .settingsMemoryEntryActions {
   display: flex;
   justify-content: flex-end;
+  /* #1363 review follow-up: four text buttons are ~190px on one line —
+     wider than the floor column, so they flow to a second line. */
+  flex-wrap: wrap;
 }
 
 .settingsMemoryFilter {
@@ -492,3 +517,14 @@
     white-space: nowrap;
     text-overflow: ellipsis;
   }
+
+/* #1363 review follow-up: scoped to the preview card — the shared
+   .settingsConnectionMeta stays nowrap on the wide connection cards, but
+   inside this card its two file-state clusters wrap on a narrow column. */
+.settingsMemoryPreview .settingsConnectionMeta {
+  flex-wrap: wrap;
+}
+
+.settingsMemoryBackupCandidate > span {
+  min-width: 0;
+}

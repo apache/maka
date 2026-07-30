@@ -28,6 +28,7 @@ export interface MentionFileItem {
 
 export interface MentionSkillItem {
   type: 'skill';
+  ref?: string;
   id: string;
   name: string;
   description?: string;
@@ -72,7 +73,7 @@ export function ComposerMentionPopup(props: {
         <ul className="maka-composer-mention-list">
           {items.map((item, index) => {
             const active = index === activeIndex;
-            const key = item.type === 'file' ? `f:${item.relativePath}` : `s:${item.id}`;
+            const key = item.type === 'file' ? `f:${item.relativePath}` : `s:${item.ref ?? item.id}`;
             return (
               <li key={key}>
                 {/* Row is a plain div (not a button) so a click never submits

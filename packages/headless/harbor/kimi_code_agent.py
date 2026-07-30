@@ -8,11 +8,9 @@ import os
 import re
 import secrets
 import shlex
-import sys
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 # harness_compat picks the harbor.* tree under plain Harbor 0.13.2 and the
 # pier.* tree under Pier, whose parallel classes are type-incompatible with
@@ -25,6 +23,7 @@ from harness_compat import (
     with_prompt_template,
 )
 from process_scope import cleanup_process_scope, scoped_command
+from provider_proxy import provider_proxy_endpoint, warn_if_pier_unreachable_proxy_port
 
 _TOOLCHAIN_ROOT = Path("/opt/maka-kimi-code-toolchain")
 _TOOLCHAIN_NODE = _TOOLCHAIN_ROOT / "bin" / "node"
@@ -69,50 +68,9 @@ class MakaKimiCodeAgent(BaseInstalledAgent):
         # endpoint. A missing or malformed proxy URL fails here, at environment
         # creation — no fallback domain, so a misconfigured trial never gets a
         # spurious egress grant.
-        hostname, port = self._provider_proxy_endpoint()
-        if port not in (None, 80, 443):
-            # Pier's egress proxy for allow_internet=false tasks is Squid with
-            # `acl Safe_ports port 80 443` + `http_access deny !Safe_ports`
-            # (pier/environments/agent_setup.py), so any other destination port
-            # is denied even when the domain is allowlisted. Warn instead of
-            # raising: the adapter cannot see the task's allow_internet, and on
-            # internet-enabled tasks the allowlist is ignored and this port is
-            # legal.
-            print(
-                f"WARNING: Kimi Code provider proxy port {port} is unreachable "
-                "under Pier non-internet tasks: the Squid egress proxy only "
-                "allows destination ports 80 and 443. Bind the provider proxy "
-                "to 80/443 or use an internet-enabled task.",
-                file=sys.stderr,
-            )
+        hostname, port = provider_proxy_endpoint(self._get_env, "Kimi Code")
+        warn_if_pier_unreachable_proxy_port(port, "Kimi Code")
         return _NetworkAllowlist(domains=[hostname])
-
-    def _provider_proxy_endpoint(self) -> tuple[str, int | None]:
-        """Hostname and port of MAKA_PROVIDER_PROXY_URL for the Pier allowlist.
-
-        Pier-only validation, called from network_allowlist() after its plain-
-        Harbor early return: Pier's NetworkAllowlist domain validator rejects
-        ':' entries, so an IPv6 literal endpoint can never be allowlisted.
-        Plain Harbor forwards the URL opaquely in _runtime_env() and must not
-        have its input domain narrowed by this Pier constraint.
-        """
-        proxy_url = self._get_env("MAKA_PROVIDER_PROXY_URL")
-        if not proxy_url:
-            raise ValueError("Kimi Code requires the host provider proxy")
-        try:
-            parsed = urlparse(proxy_url if "://" in proxy_url else f"https://{proxy_url}")
-            hostname = parsed.hostname
-            port = parsed.port
-        except ValueError as error:
-            raise ValueError("Kimi Code requires the host provider proxy") from error
-        if not hostname:
-            raise ValueError("Kimi Code requires the host provider proxy")
-        if ":" in hostname:
-            raise ValueError(
-                "Kimi Code provider proxy must use a DNS hostname or IPv4 "
-                "address; IPv6 literal endpoints are not supported"
-            )
-        return hostname, port
 
     def get_version_command(self) -> str | None:
         return (
@@ -332,7 +290,7 @@ class MakaKimiCodeAgent(BaseInstalledAgent):
             json.dumps(output, indent=2) + "\n", encoding="utf-8"
         )
 
-    def _execution_identity(self) -> dict[str, str]:
+    def _execution_identity(self) -> dict[str, Any]:
         system_prompt = self._get_env("MAKA_SYSTEM_PROMPT") or ""
         prompt_hash = "sha256:" + hashlib.sha256(
             json.dumps(system_prompt, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -344,6 +302,7 @@ class MakaKimiCodeAgent(BaseInstalledAgent):
             **({"reasoningEffort": effort} if effort else {}),
             "systemPromptHash": prompt_hash,
             "pricingProfile": self._get_env("MAKA_TRIAL_PRICING_SOURCE") or "unconfigured",
+            "agentTools": False,
         }
 
     def _write_execution_identity(self) -> None:

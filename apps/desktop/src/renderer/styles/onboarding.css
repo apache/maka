@@ -21,17 +21,6 @@
   text-align: left;
 }
 
-.maka-onboarding-ready header {
-  gap: var(--space-1);
-  justify-items: center;
-  text-align: center;
-}
-
-.maka-onboarding-ready .maka-onboarding-eyebrow {
-  justify-content: flex-start;
-  display: none;
-}
-
 .maka-onboarding-eyebrow {
   display: none;
 }
@@ -75,29 +64,9 @@
   align-content: start;
 }
 
-.maka-onboarding-stack:has(.maka-firstrun) {
+.maka-onboarding-surface:has(.maka-firstrun) {
   min-height: 0;
   padding-top: clamp(var(--space-3), 2vh, var(--space-6));
-}
-
-/* PR-READY-EMPTY-FOLD-0: mirror PR-FIRSTRUN-FOLD-0 for the ready_empty
-   hero ("今天想让 Maka 帮你做什么？"). The base home-surface rule stacks
-   chatContent clamp(72px,10vh,116px) + onboarding-stack clamp(40px,7vh,76px)
-   and centers vertically, which leaves a 100~190px top void on a tall
-   window. PR #436 flattened only .maka-firstrun and intentionally kept the
-   other states' centered rhythm; ready_empty is the actual landing page
-   once a model is configured, so we give it the same fold-flattening so
-   the hero + quickChat + first-run checklist all sit near the top instead
-   of floating mid-window. min-height:0 lets the stack size to content so
-   align-content:start on chatContent actually pins it to the top. */
-.mainColumn[data-home-surface="true"] .maka-chatContent:has(.maka-onboarding-ready) {
-  padding-top: clamp(24px, 3.5vh, 44px);
-  align-content: start;
-}
-
-.maka-onboarding-stack:has(.maka-onboarding-ready) {
-  min-height: 0;
-  padding-top: clamp(12px, 2vh, 24px);
 }
 
 /* PR-FRONTEND-AUDIT-CLEANUP-0 F1 (WAWQAQ msg `dde696a1`): the earlier
@@ -212,7 +181,6 @@
 
 /* --- provider list panel (scrolls vertically as the list grows) --- */
 .maka-firstrun-list {
-  position: relative;
   border: var(--border-width-hairline) solid var(--border);
   border-radius: var(--radius-surface);
   overflow: hidden;
@@ -221,21 +189,12 @@
 
 /* Designer audit P2-15: the height clamp cut the last visible provider row
    in half with no cue that the list scrolls — it read as broken clipping.
-   A bottom fade signals "more below" (the provider count always exceeds the
-   clamp, so the cue never lies); pointer-events none keeps rows clickable. */
-.maka-firstrun-list::after {
-  content: "";
-  position: absolute;
-  left: var(--border-width-hairline);
-  right: var(--border-width-hairline);
-  bottom: var(--border-width-hairline);
-  /* 56px: tall enough to fully veil a half-clipped row's text — at 28px the
-     cut row stayed half-legible under the fade and still read as broken. */
-  height: 56px;
-  border-radius: 0 0 var(--radius-surface) var(--radius-surface);
-  background: linear-gradient(to bottom, oklch(from var(--background-elevated) l c h / 0), var(--background-elevated));
-  pointer-events: none;
-}
+   A bottom fade signals "more below". The cue must retire at scroll end:
+   an always-on fade veils the last row and reads as broken dimming. The
+   fade therefore lives on the scroller itself as a sticky ::after, and a
+   scroll-state container query (Chromium 133+, Electron 43) drops it once
+   the list can no longer scroll down — including when the list fits and
+   never overflows. */
 .maka-firstrun-list ul {
   margin: 0;
   padding: 0;
@@ -245,6 +204,32 @@
      windows while still bounding growth as more providers are added. */
   max-height: clamp(240px, 42vh, 420px);
   overflow-y: auto;
+  container-type: scroll-state;
+}
+.maka-firstrun-list ul::after {
+  content: "";
+  display: block;
+  /* Sticky pins the fade to the scrollport's bottom edge while more
+     content follows; margin-top pulls the last row back up under it so the
+     pseudo adds no scrollable height. pointer-events none keeps rows
+     clickable. */
+  position: sticky;
+  bottom: 0;
+  /* 56px: tall enough to fully veil a half-clipped row's text — at 28px the
+     cut row stayed half-legible under the fade and still read as broken.
+     margin-top derives from the same local var so the two never drift. */
+  --firstrun-fade-height: 56px;
+  height: var(--firstrun-fade-height);
+  margin-top: calc(-1 * var(--firstrun-fade-height));
+  border-radius: 0 0 var(--radius-surface) var(--radius-surface);
+  background: linear-gradient(to bottom, oklch(from var(--background-elevated) l c h / 0), var(--background-elevated));
+  pointer-events: none;
+  transition: opacity var(--duration-quick) var(--ease-out-strong);
+}
+@container not scroll-state(scrollable: bottom) {
+  .maka-firstrun-list ul::after {
+    opacity: 0;
+  }
 }
 .maka-firstrun-list li + li {
   border-top: var(--border-width-hairline) solid var(--border);
@@ -259,12 +244,6 @@
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
-}
-
-.maka-onboarding-ready .maka-onboarding-footer {
-  /* In-chat ready_empty branch keeps the composer-led left-anchored
-     rhythm — same exception as `.maka-onboarding-ready header`. */
-  justify-content: flex-start;
 }
 
 .maka-onboarding-setup-steps {
@@ -417,153 +396,6 @@
   color: var(--foreground-secondary);
 }
 
-/* Quick Chat composer (ready_empty branch). Looks similar to the
-   main composer but lives inside the hero card so the first-run
-   surface stays self-contained. */
-.maka-onboarding-ready header h1 {
-  font-family: var(--font-serif);
-  font-size: 1.9333em;
-  font-weight: var(--font-weight-bold);
-  letter-spacing: var(--tracking-normal);
-  line-height: var(--leading-tight);
-}
-.maka-onboarding-ready header p {
-  /* Slightly larger subtitle so it carries the meaning without
-     reading like fine print under the now-heavier h1. */
-  margin-top: var(--space-1-5);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
-  max-width: 56ch;
-}
-.maka-onboarding-quickchat {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  margin-top: var(--space-6);
-  width: min(100%, 620px);
-  margin-inline: auto;
-  position: relative;
-  border-radius: var(--radius-modal);
-  border: var(--border-width-hairline) solid oklch(from var(--foreground) l c h / 0.08);
-  background: var(--background-elevated, var(--background));
-  box-shadow:
-    0 18px 42px oklch(from var(--foreground) l c h / 0.07),
-    0 1px 0 oklch(from var(--foreground) 1 0 h / 0.72) inset;
-  transition:
-    border-color var(--duration-base) var(--ease-out-strong),
-    box-shadow var(--duration-base) var(--ease-out-strong),
-    transform var(--duration-base) var(--ease-out-strong);
-}
-
-.maka-onboarding-quickchat-field {
-  display: grid;
-  gap: var(--space-2);
-  padding: var(--space-5) clamp(var(--space-6), 12vw, 150px) var(--space-5) var(--space-6);
-}
-
-.maka-onboarding-quickchat:focus-within {
-  border-color: oklch(from var(--focus-ring) l c h / 0.34);
-  box-shadow:
-    0 20px 52px oklch(from var(--foreground) l c h / 0.10),
-    0 0 0 var(--focus-glow-width) oklch(from var(--focus-ring) l c h / 0.08),
-    0 1px 0 oklch(from var(--foreground) 1 0 h / 0.75) inset;
-}
-/* The visible quick-chat chrome belongs to `.maka-onboarding-quickchat`;
-   the textarea owns bare field reset through the shared UI component. */
-.maka-onboarding-quickchat .maka-onboarding-quickchat-input {
-  box-sizing: border-box;
-  width: 100%;
-  resize: none;
-  min-height: 90px;
-  color: var(--foreground);
-  font-size: var(--font-size-base);
-  line-height: var(--leading-normal);
-}
-/* Drag-active feedback lives on the wrapper, not the inner textarea, because
-   the wrapper owns the visible field chrome for this bare textarea. */
-.maka-onboarding-quickchat[data-drag-active="true"] {
-  border-color: oklch(from var(--focus-ring) l c h / 0.46);
-  background: oklch(from var(--focus-ring) 0.98 calc(c * 0.20) h / 0.35);
-  box-shadow:
-    0 0 0 1px oklch(from var(--focus-ring) l c h / 0.22),
-    0 0 0 4px oklch(from var(--focus-ring) l c h / 0.08);
-}
-/* PR-UI-15 (@yuejing 2026-05-22): small example hint shown below the
- * quickChat textarea so first-run users still see an example of what
- * to type after we shortened the placeholder to "Message Maka…". */
-.maka-onboarding-quickchat-example {
-  margin-top: 0;
-  margin-bottom: 0;
-  padding-inline: 0;
-  color: var(--muted-foreground);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-snug);
-  font-style: italic;
-}
-.maka-onboarding-quickchat-example[data-pending="true"] {
-  color: var(--status-running);
-  font-style: normal;
-  font-weight: var(--font-weight-semibold);
-}
-.maka-onboarding-quickchat-mode {
-  width: fit-content;
-  max-width: calc(100% - 190px);
-  margin: calc(var(--space-2-5) * -1) clamp(var(--space-6), 12vw, 150px) var(--space-4) var(--space-6);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-pill);
-  padding: var(--space-1) var(--space-2);
-  color: var(--nav-active);
-  background: color-mix(in srgb, var(--nav-active) 10%, transparent);
-  font-size: var(--font-size-caption);
-  line-height: var(--leading-none);
-}
-.maka-onboarding-quickchat-submit {
-  position: absolute;
-  right: 18px;
-  bottom: 18px;
-}
-
-.maka-first-run-task-suggestions {
-  display: grid;
-  justify-items: center;
-  gap: 0;
-  margin-top: var(--space-6);
-  width: min(760px, 100%);
-}
-
-.maka-first-run-task-suggestions-inner {
-  width: min(100%, 760px);
-  display: grid;
-  gap: var(--space-2-5);
-}
-
-.maka-first-run-task-suggestions-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-}
-
-.maka-first-run-task-suggestions-header > strong {
-  font-size: var(--font-size-ui);
-  color: var(--muted-foreground);
-  font-weight: var(--font-weight-semibold);
-}
-
-.maka-first-run-task-suggestion-list {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: var(--space-2-5);
-}
-
-.maka-first-run-task-suggestion-chip {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  flex: 0 0 auto;
-}
-
 /* @kenji PR110c review: loading slot rendered while the first
    onboarding snapshot resolves. Empty visual — just blocks the
    default EmptyChatHero so the user doesn't see prompt suggestions
@@ -610,200 +442,20 @@
   opacity: var(--opacity-muted);
 }
 
-
-/* First-run checklist + onboarding ready/quickchat. Relocated from tool-stream.css — issue #546 PR1. */
-/* ────────────────────────────────────────────────────────────────
-   PR-FIRST-RUN-CHECKLIST-0: "接下来可以探索" card.
-   Rendered below OnboardingHero ready_empty hero. Each row is a
-   real jumpable affordance; done rows mute.
-   ──────────────────────────────────────────────────────────────── */
-.maka-onboarding-stack {
-    display: grid;
-    gap: var(--space-6);
-    align-content: start;
-    justify-items: center;
-    width: 100%;
-    min-height: calc(100dvh - 84px);
-    padding: clamp(var(--space-10), 7vh, 76px) var(--space-6) var(--space-12);
-  }
-.maka-onboarding-stack > .maka-onboarding-ready {
-    margin: 0;
-  }
-.maka-onboarding-ready {
-    width: min(760px, 100%);
-    padding: 0;
-    gap: 0;
-  }
-.maka-first-run-checklist {
-    width: min(760px, 100%);
-    border: var(--border-width-hairline) solid oklch(from var(--foreground) l c h / 0.07);
-    border-radius: var(--radius-surface);
-    padding: var(--space-3);
-    background: oklch(from var(--background-elevated, var(--background)) l c h / 0.58);
-    display: grid;
-    gap: var(--space-3);
-    box-shadow: 0 10px 30px oklch(from var(--foreground) l c h / 0.04);
-  }
-.maka-first-run-checklist-header {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    color: var(--foreground-secondary);
-    padding: 0 var(--space-1) var(--space-0-5);
-  }
-.maka-first-run-checklist-header strong {
-    color: var(--foreground);
-    font-size: var(--font-size-ui);
-  }
-.maka-first-run-checklist-count {
-    margin-left: auto;
-    font-size: var(--font-size-caption);
-    letter-spacing: var(--tracking-wider);
-    color: var(--muted-foreground);
-    font-variant-numeric: tabular-nums;
-  }
-
-.maka-first-run-checklist-error {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  border: var(--border-width-hairline) solid oklch(from var(--warning, var(--info)) l c h / 0.28);
-  border-radius: var(--radius-surface);
-  background: oklch(from var(--warning, var(--info)) l c h / 0.08);
-  color: var(--warning-text, var(--info-text));
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
-  padding: var(--space-2) var(--space-2-5);
-}
-
-.maka-first-run-checklist-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: var(--space-2);
-  }
-
-.maka-first-run-checklist-row > button {
-  height: auto;
-  min-height: var(--h-control-xl);
-  background: var(--background);
-  border: var(--border-width-hairline) solid oklch(from var(--foreground) l c h / 0.07);
-  border-radius: var(--radius-control);
-  padding: var(--space-1-5) var(--space-2-5) var(--space-1-5) var(--space-2);
-  display: inline-grid;
-  grid-template-columns: 20px max-content 0;
-  align-items: center;
-  gap: var(--space-1-5);
-  width: auto;
-  text-align: left;
-  color: var(--foreground-secondary);
-  box-shadow: 0 1px 2px oklch(from var(--foreground) l c h / 0.03);
-}
-
-.maka-first-run-checklist-row > button:hover {
-  background: var(--background-elevated, var(--background));
-  border-color: oklch(from var(--foreground) l c h / 0.14);
-  color: var(--foreground);
-}
-
-.maka-first-run-checklist-row[data-done="true"] > button {
-  color: var(--muted-foreground);
-  cursor: default;
-}
-
-.maka-first-run-checklist-row[data-done="true"] > button:hover {
-  background: var(--background);
-  border-color: transparent;
-}
-
-.maka-first-run-checklist-status {
-  display: inline-grid;
-  place-items: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: var(--foreground-5);
-  color: var(--foreground-secondary);
-}
-
-.maka-first-run-checklist-row[data-done="true"] .maka-first-run-checklist-status {
-  background: oklch(from var(--success, var(--info)) l c h / 0.12);
-  color: var(--success-text, var(--info-text));
-}
-
-.maka-first-run-checklist-copy {
-  display: block;
-  min-width: 0;
-}
-
-.maka-first-run-checklist-copy strong {
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
-  white-space: nowrap;
-}
-
-.maka-first-run-checklist-copy small {
-  display: none;
-  font-size: var(--font-size-ui);
-  color: var(--muted-foreground);
-  line-height: var(--leading-normal);
-}
-
-.maka-first-run-checklist-arrow {
-  display: none;
-  color: var(--muted-foreground);
-}
-
-.maka-first-run-checklist-row[data-done="true"] .maka-first-run-checklist-arrow {
-  display: none;
+/* Page-level frame for the setup hero. The hero card itself sizes to its
+   content; this owns the viewport rhythm around it. Relocated from
+   tool-stream.css — issue #546 PR1. */
+.maka-onboarding-surface {
+  display: grid;
+  align-content: start;
+  justify-items: center;
+  width: 100%;
+  min-height: calc(100dvh - 84px);
+  padding: clamp(var(--space-10), 7vh, 76px) var(--space-6) var(--space-12);
 }
 
 @media (max-width: 760px) {
-    .maka-onboarding-stack {
-      gap: var(--space-6);
-      padding: var(--space-6) var(--space-4) var(--space-8);
-    }
-
-  .maka-onboarding-ready header h1 {
-    font-size: 1.6em;
-    line-height: var(--leading-tight);
+  .maka-onboarding-surface {
+    padding: var(--space-6) var(--space-4) var(--space-8);
   }
-
-  .maka-onboarding-ready header p {
-    margin-top: var(--space-2);
-  }
-
-  .maka-onboarding-quickchat-input {
-    min-height: 88px;
-    padding: 0;
-  }
-
-  .maka-onboarding-quickchat-field {
-    padding: var(--space-4) var(--space-4) var(--space-16);
-  }
-
-  .maka-onboarding-quickchat-example {
-    padding-inline: 0;
-    margin-bottom: 0;
-  }
-
-  .maka-onboarding-quickchat-submit {
-    right: 16px;
-    bottom: 16px;
-  }
-
-  .maka-first-run-task-suggestions-header {
-    justify-content: center;
-  }
-    .maka-first-run-checklist-list {
-      justify-content: center;
-    }
-
-    .maka-first-run-checklist {
-      padding: var(--space-3);
-    }
 }

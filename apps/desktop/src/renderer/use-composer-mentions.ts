@@ -14,31 +14,77 @@ export function useComposerMentions(options: {
   skills: readonly SkillEntry[];
   sessionId?: string;
   projectPath?: string;
+  newSessionModel?: { llmConnectionSlug: string; model: string };
+  newSessionCollaborationMode?: 'agent' | 'plan';
 }): {
-  mentionSkills: ReadonlyArray<{ id: string; name: string; description?: string }>;
+  mentionSkills: ReadonlyArray<{ ref?: string; id: string; name: string; description?: string }>;
   searchMentionFiles(query: string): Promise<ReadonlyArray<{ relativePath: string }>>;
 } {
-  const { projectPath, sessionId, skills } = options;
+  const {
+    projectPath,
+    sessionId,
+    skills,
+    newSessionModel,
+    newSessionCollaborationMode,
+  } = options;
   const [mentionSkills, setMentionSkills] = useState<InvocableSkillEntry[]>([]);
 
   useEffect(() => {
     let cancelled = false;
+    let requestVersion = 0;
     // Do not briefly advertise the previous session/project's Skills while the
-    // authoritative projection is being refreshed.
-    setMentionSkills([]);
-    void window.maka.skills.listInvocable(sessionId).then(
-      (next) => {
-        if (!cancelled) setMentionSkills(next);
-      },
-      () => {
-        // Fail soft: an unavailable projection leaves `/` with no suggestions.
-        // Direct `/skill:<id>` input still reaches the same Runtime resolver.
-      },
-    );
+    // authoritative projection is being refreshed. The same fail-closed reset
+    // applies when a model/mode/plan or MCP event changes the backend surface:
+    // a visible popup must never retain a now-unavailable Skill.
+    const refresh = () => {
+      const version = ++requestVersion;
+      setMentionSkills([]);
+      void window.maka.skills.listInvocable(
+        sessionId,
+        sessionId
+          ? undefined
+          : {
+              ...(newSessionModel ?? {}),
+              collaborationMode: newSessionCollaborationMode ?? 'agent',
+            },
+      ).then(
+        (next) => {
+          if (!cancelled && version === requestVersion) setMentionSkills(next);
+        },
+        () => {
+          // Fail soft: an unavailable projection leaves `/` with no suggestions.
+          // Direct `/skill:<id>` input still reaches the same Runtime resolver.
+        },
+      );
+    };
+    refresh();
+    const unsubscribeSessions = window.maka.sessions.subscribeChanges((event) => {
+      if (
+        sessionId &&
+        event.sessionId === sessionId &&
+        (event.reason === 'updated' ||
+          event.reason === 'mode-change' ||
+          event.reason === 'turn-status-change' ||
+          event.reason === 'rebound')
+      ) {
+        refresh();
+      }
+    });
+    const unsubscribeMcp = window.maka.mcp.subscribeChanges(() => refresh());
     return () => {
       cancelled = true;
+      requestVersion += 1;
+      unsubscribeSessions();
+      unsubscribeMcp();
     };
-  }, [projectPath, sessionId, skills]);
+  }, [
+    projectPath,
+    sessionId,
+    skills,
+    newSessionModel?.llmConnectionSlug,
+    newSessionModel?.model,
+    newSessionCollaborationMode,
+  ]);
 
   const searchMentionFiles = useCallback(
     async (query: string): Promise<ReadonlyArray<{ relativePath: string }>> => {

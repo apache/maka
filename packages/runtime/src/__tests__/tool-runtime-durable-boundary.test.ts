@@ -1,7 +1,7 @@
+import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { LlmConnection, SessionEvent, SessionHeader, StoredMessage } from '@maka/core';
-import { PermissionEngine } from '../permission-engine.js';
 import type {
   RuntimeCommitSink,
   ToolOutcomeCommit,
@@ -70,6 +70,68 @@ describe('ToolRuntime durable boundary', () => {
       harness.messages.map((message) => message.type),
       ['tool_call'],
     );
+  });
+
+  it('does not cross T1 after the captured Run loses ownership', async () => {
+    let runReads = 0;
+    let preparedCalls = 0;
+    let implementationCalls = 0;
+    const harness = makeHarness(
+      {
+        commitToolPrepared: async () => {
+          preparedCalls += 1;
+          return { created: true, runtimeEventSeq: 1 };
+        },
+        commitToolOutcome: async () => {
+          throw new Error('must not reach T2');
+        },
+      },
+      undefined,
+      () => (++runReads === 1 ? 'run-1' : undefined),
+    );
+
+    await assert.rejects(
+      harness.execute(
+        tool(() => {
+          implementationCalls += 1;
+          return { ok: true };
+        }),
+      ),
+      /lost Run ownership/,
+    );
+
+    assert.equal(preparedCalls, 0);
+    assert.equal(implementationCalls, 0);
+  });
+
+  it('does not cross T1 when durable dispatch is already aborted', async () => {
+    let preparedCalls = 0;
+    let implementationCalls = 0;
+    const controller = new AbortController();
+    controller.abort(new Error('stop before start'));
+    const harness = makeHarness({
+      commitToolPrepared: async () => {
+        preparedCalls += 1;
+        return { created: true, runtimeEventSeq: 1 };
+      },
+      commitToolOutcome: async () => {
+        throw new Error('must not reach T2');
+      },
+    });
+
+    await assert.rejects(
+      harness.execute(
+        tool(() => {
+          implementationCalls += 1;
+          return { ok: true };
+        }),
+        controller.signal,
+      ),
+      /stop before start/,
+    );
+
+    assert.equal(preparedCalls, 0);
+    assert.equal(implementationCalls, 0);
   });
 
   it('commits T1 before implementation and T2 before publishing the result', async () => {
@@ -143,43 +205,6 @@ describe('ToolRuntime durable boundary', () => {
     });
   });
 
-  it('does not create a prepared journal operation when permission is denied', async () => {
-    let preparedCalls = 0;
-    let implementationCalls = 0;
-    const harness = makeHarness({
-      commitToolPrepared: async () => {
-        preparedCalls += 1;
-        return { created: true, runtimeEventSeq: 1 };
-      },
-      commitToolOutcome: async () => {
-        throw new Error('must not reach T2');
-      },
-    });
-    const execution = harness.execute({
-      ...tool(() => {
-        implementationCalls += 1;
-        return { ok: true };
-      }),
-      name: 'Bash',
-      permissionRequired: true,
-    });
-    while (!harness.events.some((event) => event.type === 'permission_request')) {
-      await Promise.resolve();
-    }
-    const request = harness.events.find((event) => event.type === 'permission_request');
-    if (!request || request.type !== 'permission_request')
-      throw new Error('expected permission request');
-    harness.permissionEngine.recordResponse('turn-1', {
-      requestId: request.requestId,
-      decision: 'deny',
-    });
-
-    await execution;
-
-    assert.equal(preparedCalls, 0);
-    assert.equal(implementationCalls, 0);
-  });
-
   it('does not publish an implementation result when T2 fails', async () => {
     let implementationCalls = 0;
     const harness = makeHarness({
@@ -236,12 +261,14 @@ describe('ToolRuntime durable boundary', () => {
   });
 });
 
-function makeHarness(sink: RuntimeCommitSink, order?: string[]) {
+function makeHarness(
+  sink: RuntimeCommitSink,
+  order?: string[],
+  getCurrentRunId: () => string | undefined = () => 'run-1',
+) {
   const messages: StoredMessage[] = [];
   const events: SessionEvent[] = [];
-  const permissionEngine = new PermissionEngine({ newId: nextId(), now: () => 1 });
-  permissionEngine.beginTurn('turn-1');
-  const runtime = new ToolRuntime({
+  const runtime = createTestToolRuntime({
     sessionId: 'session-1',
     header: header(),
     connection: connection(),
@@ -249,30 +276,35 @@ function makeHarness(sink: RuntimeCommitSink, order?: string[]) {
     appendMessage: async (message) => {
       messages.push(message);
     },
-    permissionEngine,
     newId: nextId(),
     now: nextNow(),
     getPermissionPauseTarget: () => null,
-    getCurrentRunId: () => 'run-1',
+    getCurrentRunId,
     runtimeCommitSink: sink,
   });
   return {
     messages,
     events,
-    permissionEngine,
-    execute: async (target: MakaTool) =>
-      runtime.wrapToolExecute(target, 'turn-1', {
-        push: (event) => {
-          events.push(event);
-          if (event.type === 'tool_result') order?.push('published-result');
-        },
-      })(
-        {},
-        {
+    execute: async (target: MakaTool, abortSignal: AbortSignal = new AbortController().signal) =>
+      (
+        await runtime.settleToolCall({
+          tool: target,
+          turnId: 'turn-1',
           toolCallId: 'provider-call-1',
-          abortSignal: new AbortController().signal,
-        },
-      ),
+          input: {},
+          abortSignal,
+          eventSink: {
+            push: (event) => {
+              events.push(event);
+              if (event.type === 'tool_result') order?.push('published-result');
+            },
+            pushAndWaitUntilConsumed: async (event) => {
+              events.push(event);
+              if (event.type === 'tool_result') order?.push('published-result');
+            },
+          },
+        })
+      ).result,
   };
 }
 
@@ -281,7 +313,6 @@ function tool(impl: MakaTool['impl']): MakaTool {
     name: 'Read',
     description: 'read',
     parameters: {},
-    permissionRequired: false,
     recoveryMode: 'replay_safe',
     impl,
   };

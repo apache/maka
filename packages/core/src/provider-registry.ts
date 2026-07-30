@@ -22,6 +22,7 @@ export type ProviderRuntimeAdapter =
       includeUsage?: boolean;
       passFetch?: boolean;
       requireBaseUrl?: boolean;
+      supportsOpenAiResponses?: true;
       replayAssistantReasoningAs?: 'reasoning';
       replayAssistantReasoningDetails?: true;
     }
@@ -30,7 +31,7 @@ export type ProviderRuntimeAdapter =
 export type ProviderModelDiscovery =
   | {
       kind: 'protocol';
-      auth?: 'claude-subscription' | 'github-copilot' | 'openai-codex' | 'none';
+      auth?: 'claude-subscription' | 'github-copilot' | 'oauth-bearer' | 'openai-codex' | 'none';
       path?: string;
       query?: Readonly<Record<string, string>>;
       responseShape?: 'array-or-data';
@@ -42,7 +43,8 @@ export type ProviderModelDiscovery =
       publicAccount: string;
       query: Readonly<Record<string, string>>;
     }
-  | { kind: 'fallback' }
+  | { kind: 'cloudflare' }
+  | { kind: 'fallback'; reason: string }
   | { kind: 'ollama' }
   | { kind: 'cohere' };
 
@@ -89,10 +91,8 @@ if (xiaomi.id !== 'xiaomi' || !xiaomi.api) {
 const xiaomiModelIds = toolCallingModelIds('Xiaomi', GENERATED_MODELS_DEV_METADATA.xiaomi, [
   'mimo-v2.5',
 ]);
-// Xiaomi MiMo Token Plan is a coding-only subscription whose /v1 endpoint publishes no
-// /models discovery contract, so this checked-in allowlist is authoritative. models.dev's
-// snapshot still carries the deprecated mimo-v2-pro and the speech-only mimo-v2-tts, which
-// must never enter the chat/tool-calling fallback set — pin the two documented MiMo chat models.
+// Keep the bootstrap snapshot limited to the two documented MiMo chat models. The remote
+// /models response becomes authoritative as soon as the user saves a working plan credential.
 const xiaomiTokenPlanModelIds = ['mimo-v2.5-pro', 'mimo-v2.5'] as const;
 const xiaomiTokenPlanCn = GENERATED_MODELS_DEV_PROVIDER_FACTS['xiaomi-token-plan-cn'];
 if (xiaomiTokenPlanCn.id !== 'xiaomi-token-plan-cn' || !xiaomiTokenPlanCn.api) {
@@ -261,6 +261,24 @@ const volcengineCodingPlanModelIds = [
   'deepseek-v4-pro',
   'kimi-k2.6',
   'kimi-k2.7-code',
+] as const;
+const volcengineAgentPlanModelIds = [
+  'ark-code-latest',
+  'doubao-seed-2.0-mini',
+  'doubao-seed-2.0-lite',
+  'deepseek-v4-flash',
+  'doubao-seed-2.1-turbo',
+  'doubao-seed-evolving',
+  'doubao-seed-2.0-code',
+  'doubao-seed-2.0-pro',
+  'minimax-m2.7',
+  'minimax-m3',
+  'glm-5.2',
+  'glm-latest',
+  'kimi-k2.6',
+  'kimi-k2.7-code',
+  'deepseek-v4-pro',
+  'kimi-k3',
 ] as const;
 const tencentTokenPlan = GENERATED_MODELS_DEV_PROVIDER_FACTS['tencent-token-plan'];
 if (tencentTokenPlan.id !== 'tencent-token-plan') {
@@ -593,7 +611,7 @@ const providerRegistry = {
   },
   'kimi-coding-plan': {
     label: 'Kimi Coding Plan',
-    description: 'Kimi for Coding over Anthropic-compatible protocol.',
+    description: 'Kimi for Coding over selectable Anthropic- or OpenAI-compatible protocol.',
     baseUrl: 'https://api.kimi.com/coding/v1',
     authKind: 'api_key',
     backendKind: 'ai-sdk',
@@ -639,7 +657,7 @@ const providerRegistry = {
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'fallback' },
+    modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
     catalogBadge: 'Coding',
@@ -658,13 +676,35 @@ const providerRegistry = {
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'fallback' },
+    modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
     catalogBadge: 'Coding',
     signupUrl: 'https://www.volcengine.com/activity/codingplan',
     readyOrder: 26,
     catalogOrder: 26,
+  },
+  'volcengine-agent-plan': {
+    label: 'Volcengine Ark Agent Plan (China)',
+    description: 'Volcengine Ark subscription for interactive personal agents and coding tools.',
+    baseUrl: 'https://ark.cn-beijing.volces.com/api/plan/v3',
+    authKind: 'api_key',
+    backendKind: 'ai-sdk',
+    fallbackModels: [...volcengineAgentPlanModelIds],
+    status: 'ready',
+    protocol: 'openai',
+    runtimeAdapter: { kind: 'openai', apiProtocol: 'openai-responses' },
+    modelDiscovery: {
+      kind: 'fallback',
+      reason:
+        'Agent Plan inference data plane does not expose a model-list endpoint for its dedicated API key',
+    },
+    category: 'domestic',
+    catalogGroup: 'plans',
+    catalogBadge: 'Agent',
+    signupUrl: 'https://console.volcengine.com/ark/agent-plan',
+    readyOrder: 26.5,
+    catalogOrder: 26.5,
   },
   'tencent-token-plan': {
     label: tencentTokenPlan.name,
@@ -676,7 +716,7 @@ const providerRegistry = {
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'fallback' },
+    modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
     catalogBadge: 'Token',
@@ -863,7 +903,11 @@ const providerRegistry = {
     fallbackModels: xaiModelIds,
     status: 'ready',
     protocol: 'openai',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: {
+      kind: 'openai-compatible',
+      name: 'provider',
+      supportsOpenAiResponses: true,
+    },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'api',
@@ -872,6 +916,30 @@ const providerRegistry = {
     modelsDevId: xai.id,
     readyOrder: 10,
     catalogOrder: 12,
+  },
+  'xai-oauth': {
+    label: 'xAI OAuth (SuperGrok / X Premium)',
+    description: 'Use an eligible Grok account through xAI device authorization.',
+    baseUrl: 'https://api.x.ai/v1',
+    authKind: 'oauth_token',
+    backendKind: 'ai-sdk',
+    fallbackModels: xaiModelIds,
+    status: 'ready',
+    protocol: 'openai',
+    runtimeAdapter: {
+      kind: 'openai-compatible',
+      name: 'provider',
+      supportsOpenAiResponses: true,
+    },
+    modelDiscovery: {
+      kind: 'protocol',
+      auth: 'oauth-bearer',
+      filter: 'fallback-models',
+    },
+    category: 'oauth',
+    catalogBadge: 'Account',
+    signupUrl: 'https://x.ai/grok',
+    modelsDevId: xai.id,
   },
   zai: {
     label: zai.name,
@@ -922,7 +990,7 @@ const providerRegistry = {
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'fallback' },
+    modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
     catalogBadge: 'Token',
@@ -942,7 +1010,7 @@ const providerRegistry = {
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'fallback' },
+    modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'plans',
     catalogBadge: 'Token',
@@ -962,7 +1030,7 @@ const providerRegistry = {
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'fallback' },
+    modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'plans',
     catalogBadge: 'Token',
@@ -1220,7 +1288,7 @@ const providerRegistry = {
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'fallback' },
+    modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
     catalogBadge: 'Plan',
@@ -1239,7 +1307,7 @@ const providerRegistry = {
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'fallback' },
+    modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'plans',
     catalogBadge: 'Plan',
@@ -1277,7 +1345,11 @@ const providerRegistry = {
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'fallback' },
+    modelDiscovery: {
+      kind: 'fallback',
+      reason:
+        'Ark model discovery is a control-plane API that requires AK/SK signing; inference API keys cannot call it',
+    },
     category: 'domestic',
     catalogGroup: 'api',
     catalogBadge: 'API',
@@ -1371,7 +1443,7 @@ const providerRegistry = {
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'fallback' },
+    modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
     catalogBadge: 'Plan',
@@ -1390,7 +1462,7 @@ const providerRegistry = {
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'fallback' },
+    modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'plans',
     catalogBadge: 'Plan',
@@ -1410,7 +1482,7 @@ const providerRegistry = {
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'fallback' },
+    modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
     catalogBadge: 'Token',
@@ -1430,7 +1502,7 @@ const providerRegistry = {
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
-    modelDiscovery: { kind: 'fallback' },
+    modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'plans',
     catalogBadge: 'Token',
@@ -1455,7 +1527,7 @@ const providerRegistry = {
       requireBaseUrl: true,
       replayAssistantReasoningAs: 'reasoning',
     },
-    modelDiscovery: { kind: 'fallback' },
+    modelDiscovery: { kind: 'cloudflare' },
     category: 'overseas',
     catalogGroup: 'api',
     catalogBadge: 'API',
@@ -1490,8 +1562,8 @@ const providerRegistry = {
   },
   ollama: {
     label: 'Ollama',
-    description: 'Local models from Ollama on localhost.',
-    baseUrl: 'http://localhost:11434/v1',
+    description: 'Local models from Ollama on this machine.',
+    baseUrl: 'http://127.0.0.1:11434/v1',
     authKind: 'none',
     backendKind: 'ai-sdk',
     fallbackModels: ['llama3.2', 'qwen2.5-coder', 'gemma3'],
@@ -1508,8 +1580,8 @@ const providerRegistry = {
   },
   'lm-studio': {
     label: 'LM Studio',
-    description: 'Local models served by LM Studio on localhost.',
-    baseUrl: 'http://localhost:1234/v1',
+    description: 'Local models served by LM Studio on this machine.',
+    baseUrl: 'http://127.0.0.1:1234/v1',
     authKind: 'none',
     backendKind: 'ai-sdk',
     fallbackModels: [],
@@ -1526,7 +1598,7 @@ const providerRegistry = {
   localai: {
     label: 'LocalAI',
     description: 'Local models served by LocalAI with optional API-key protection.',
-    baseUrl: 'http://localhost:8080/v1',
+    baseUrl: 'http://127.0.0.1:8080/v1',
     authKind: 'optional_api_key',
     backendKind: 'ai-sdk',
     fallbackModels: ['qwen3-8b'],
@@ -1673,6 +1745,16 @@ function providerTypesByOrder(
 export const READY_PROVIDER_TYPES = providerTypesByOrder('readyOrder');
 export const CATALOG_PROVIDER_TYPES = providerTypesByOrder('catalogOrder');
 export const RECOMMENDED_PROVIDER_TYPES = providerTypesByOrder('recommendedOrder');
+
+/**
+ * An OAuth provider is product-wired when its registry entry has both the
+ * OAuth credential contract and a runnable model adapter. OAuth entries whose
+ * adapter is unavailable remain preview-only.
+ */
+export function isWiredOAuthProvider(providerType: ProviderType): boolean {
+  const provider = PROVIDER_REGISTRY[providerType];
+  return provider.authKind === 'oauth_token' && provider.runtimeAdapter.kind !== 'unavailable';
+}
 
 /**
  * Persisted providerType aliases renamed away in the current registry. Each

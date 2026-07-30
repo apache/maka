@@ -120,6 +120,65 @@ export const TERMINAL_BENCH_2_1_TASK_IDS = [
   'write-compressor',
 ] as const;
 
+// Authoritative snapshot: https://github.com/datacurve-ai/deep-swe (113 scored
+// leaderboard tasks; the repo tree at this commit carries 117 task dirs).
+export const DEEP_SWE_REVISION = '6db64a40f3318d8659238ff34a8cc4b491c49205';
+
+/** 30-task discriminative subset for DeepSWE harness A/Bs (issue #1343).
+ * Selected from the public v1.1 leaderboard artifacts
+ * (https://deepswe.datacurve.ai/artifacts/v1.1/{trials,tasks}.json) against the
+ * `mini_swe_agent_kimi_k3_max` reference config (4 seeds/task): 11 tasks at
+ * seed pass rate 0.25 and 17 at 0.50 maximize per-task discrimination, plus
+ * one all-fail and one all-pass anchor to catch harness-level regressions. */
+export const DEEP_SWE_SUBSET_30_TASK_IDS = [
+  // K3 mini-swe-agent seed pass rate 0.25:
+  'clack-async-autocomplete-options',
+  'httpx-streaming-json-iteration',
+  'kea-atomic-signal-selectors',
+  'kombu-single-active-consumer-priority',
+  'koota-query-predicates',
+  'langchain-request-coalescing',
+  'onedump-dump-encryption-pipeline',
+  'pwntools-tube-multiplexing',
+  'quill-shared-toolbar-focus',
+  'sqlfmt-create-table-ddl-formatting',
+  'termenv-preserve-ansi-resets',
+  // K3 mini-swe-agent seed pass rate 0.50:
+  'arktype-json-schema-refs-dependencies',
+  'csstree-shorthand-expansion-compression',
+  'dateutil-rfc5545-timezone-interop',
+  'dynamodb-toolbox-lazy-recursive-schemas',
+  'go-critic-doc-link-checker',
+  'ink-grid-box-layout',
+  'koota-pair-relation-tracking',
+  'mashumaro-flattened-dataclass-fields',
+  'mobly-grouped-test-barriers',
+  'ofetch-per-origin-circuit-breaker',
+  'optique-conditional-option-dependencies',
+  'oxvg-structural-selector-preservation',
+  'participle-grammar-conflict-analysis',
+  'psd-tools-blend-range-api',
+  'scc-bounded-memory-spilling',
+  'testem-bail-on-test-failure',
+  'yaegi-go-embed-directives',
+  // Anchors: K3 all-fail / all-pass.
+  'claude-code-by-agents-recursive-delegation',
+  'dasel-html-document-format',
+] as const;
+
+/** fingerprintFixedPromptTaskTree over the 30 subset task dirs at
+ * DEEP_SWE_REVISION — freezes the exact task bytes under comparison. */
+export const DEEP_SWE_SUBSET_30_TASK_TREE_FINGERPRINT =
+  'sha256:508aedcbe69ebdf6e9253c2eef9ba2575e9db9a25f899eaf0760d29459e843ba';
+
+export function assertDeepSweSubset30TaskTreeFingerprint(actual: string): void {
+  if (actual !== DEEP_SWE_SUBSET_30_TASK_TREE_FINGERPRINT) {
+    throw new Error(
+      `DeepSWE subset-30 task tree fingerprint mismatch; expected ${DEEP_SWE_SUBSET_30_TASK_TREE_FINGERPRINT}, found ${actual}`,
+    );
+  }
+}
+
 export function assertTerminalBench21TaskSet(taskIds: readonly string[]): void {
   const actual = new Set(taskIds);
   const expected = new Set<string>(TERMINAL_BENCH_2_1_TASK_IDS);
@@ -154,11 +213,17 @@ export interface HarnessAbArmInput {
 
 export interface HarnessAbRunManifestInput {
   benchmark: {
-    dataset: 'terminal-bench';
-    version: '2.1';
+    dataset: 'terminal-bench' | 'deep-swe';
+    version: '2.1' | '1.1';
     revision: string;
+    /** Present only for Pier benchmarks: the frozen executor identity whose
+     * version the toolchain fingerprint also hashes. Absent for Harbor
+     * benchmarks so existing Terminal-Bench manifests stay byte-identical. */
+    executor?: { id: 'pier'; version: string };
     timeoutPolicy: 'task-native';
     timeoutMultiplier: 1;
+    /** Maka-only Pier agent-phase tail reserved for artifact settlement. */
+    agentSettlementGraceSec?: number;
     outerTimeoutGraceSec: number;
   };
   taskIds: readonly string[];

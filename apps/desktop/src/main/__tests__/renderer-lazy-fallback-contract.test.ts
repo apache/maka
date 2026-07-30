@@ -38,8 +38,8 @@ describe('renderer lazy fallback contract', () => {
 
     assert.match(modulePages, /function ModulePageFallback/, 'whole-page modules must reserve a module loading shell');
     assert.match(modulePages, /function ModulePanelFallback/, 'daily review content must reserve a panel loading shell');
-    assert.match(modulePages, /<Suspense fallback=\{<ModulePageFallback label=\{copy\.skills\} message=\{copy\.loadingSkills\} \/>\}>/);
-    assert.match(modulePages, /<Suspense fallback=\{<ModulePageFallback label=\{copy\.automations\} message=\{copy\.loadingAutomations\} \/>\}>/);
+    assert.match(modulePages, /<Suspense fallback=\{<ModulePageFallback label=\{props\.hubHeader\?\.title \?\? copy\.skills\} message=\{copy\.loadingSkills\} \/>\}>/);
+    assert.match(modulePages, /<Suspense fallback=\{<ModulePageFallback label=\{props\.hubHeader\?\.title \?\? copy\.automations\} message=\{copy\.loadingAutomations\} \/>\}>/);
     assert.match(modulePages, /<Suspense fallback=\{<ModulePanelFallback message=\{copy\.loadingDailyReview\} \/>\}>/);
     assert.doesNotMatch(modulePages, /<Suspense fallback=\{null\}>/);
   });

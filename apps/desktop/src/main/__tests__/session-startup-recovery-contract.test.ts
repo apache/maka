@@ -33,19 +33,45 @@ describe('session startup recovery contract', () => {
     // combined main-process source so the ordering + recovery pins follow it.
     const src = await readMainProcessCombinedSource();
     const sessionManager = await readFile(join(REPO_ROOT, 'packages/runtime/src/session-manager.ts'), 'utf8');
-    const backgroundBlock = src.match(/async function runBackgroundStartup\(\): Promise<void> \{[\s\S]*?\n  \}/)?.[0] ?? '';
+    const backgroundBlock =
+      src.match(/async function runBackgroundStartup\(\): Promise<void> \{[\s\S]*?\n  \}/)?.[0] ??
+      '';
+    const cleanupBlock =
+      src.match(/async function runBeforeQuitCleanup\(\): Promise<void> \{[\s\S]*?\n  \}/)?.[0] ??
+      '';
 
     assert.match(src, /async function recoverInterruptedSessionsOnStartup\(\): Promise<void>/);
     assert.match(backgroundBlock, /await recoverInterruptedSessionsOnStartup\(\);/, 'recovery must run inside background startup');
     assert.match(
       src,
-      /const backgroundStartup = runBackgroundStartup\(\);[\s\S]*?await mainWindowController\.createWindow\(\);[\s\S]*?await backgroundStartup;/,
+      /backgroundStartup = runBackgroundStartup\(\);[\s\S]*?await mainWindowController\.createWindow\(initialWindowSignal\);[\s\S]*?await backgroundStartup;/,
       'window creation must not wait on background startup, but the process must await it before settling',
+    );
+    assert.match(
+      cleanupBlock,
+      /await backgroundStartup;[\s\S]*?automationWiring\.scheduler\.dispose\(\)/,
+      'quit cleanup must let background startup settle before disposing resources it may start',
     );
     assert.match(
       sessionManager,
       /if \(this\.runtimeKernel\.hasActiveRuns\(session\.id\)\) continue;/,
       'recovery must skip sessions with live runs — this guard is what makes background recovery safe',
     );
+  });
+
+  it('runs legacy project migration after first paint and keeps startup fail-soft', async () => {
+    const src = await readMainProcessCombinedSource();
+    const main = await readFile(join(REPO_ROOT, 'apps/desktop/src/main/main.ts'), 'utf8');
+    const backgroundBlock =
+      src.match(/async function runBackgroundStartup\(\): Promise<void> \{[\s\S]*?\n  \}/)?.[0] ??
+      '';
+    const migration =
+      src.match(
+        /async function migrateSessionProjectsOnStartup\(\): Promise<void> \{[\s\S]*?\n  \}/,
+      )?.[0] ?? '';
+
+    assert.doesNotMatch(main, /^await migrateSessionProjects\(/m);
+    assert.match(backgroundBlock, /await migrateSessionProjectsOnStartup\(\);/);
+    assert.match(migration, /await runProjectStartupMigration\(/);
   });
 });

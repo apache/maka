@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import type { UserQuestionRequestEvent, UserQuestionResponse } from '@maka/core';
 import { ChoiceCard, ChoiceCardGroup } from './primitives/choice-card.js';
 import { Input } from './primitives/input.js';
+import { Pencil } from './icons.js';
 import { Button } from './ui.js';
 import { useMountedRef } from './use-mounted-ref.js';
 import {
@@ -12,8 +13,6 @@ import {
 } from './user-question-prompt-state.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
-
-const OTHER_VALUE = '__other__';
 
 export function UserQuestionPrompt(props: {
   request: UserQuestionRequestEvent;
@@ -47,9 +46,7 @@ export function UserQuestionPrompt(props: {
   const question = props.request.questions[questionIndex];
   if (!question) return null;
   const draft = drafts[questionIndex] ?? null;
-  const selectedValue = draft?.kind === 'option'
-    ? `option:${draft.optionIndex}`
-    : draft?.kind === 'other' ? OTHER_VALUE : '';
+  const selectedValue = draft?.kind === 'option' ? `option:${draft.optionIndex}` : '';
   const interactionDisabled = Boolean(props.stopPending) || responsePending;
   const canContinue = canLeaveQuestion(draft) && !interactionDisabled;
   const isLast = questionIndex === props.request.questions.length - 1;
@@ -59,10 +56,6 @@ export function UserQuestionPrompt(props: {
   }
 
   function select(value: string) {
-    if (value === OTHER_VALUE) {
-      updateDraft(draft?.kind === 'other' ? draft : { kind: 'other', value: '' });
-      return;
-    }
     const optionIndex = Number(value.slice('option:'.length));
     updateDraft({ kind: 'option', optionIndex });
   }
@@ -89,60 +82,54 @@ export function UserQuestionPrompt(props: {
       aria-labelledby={titleId}
     >
       <div className="maka-composer-interaction-inner agents-parchment-paper-surface">
-        <header className="maka-permission-header">
-          <div className="maka-permission-title-row">
-            <h2 className="maka-permission-title" id={titleId}>{question.question}</h2>
+        <header className="maka-interaction-header">
+          <div className="maka-interaction-title-row">
+            <h2 className="maka-interaction-title" id={titleId}>{question.question}</h2>
             <span className="maka-question-progress">{questionIndex + 1} / {props.request.questions.length}</span>
           </div>
         </header>
 
-        <ChoiceCardGroup
-          aria-label={question.question}
-          className="maka-question-options"
-          value={selectedValue}
-          onValueChange={select}
-        >
-          {question.options.map((option, optionIndex) => (
-            <ChoiceCard
-              ref={optionIndex === 0 ? firstOptionRef : undefined}
-              className="maka-question-option"
-              value={`option:${optionIndex}`}
-              key={`${optionIndex}:${option.label}`}
-              disabled={interactionDisabled}
-            >
-              <span className="maka-question-radio" aria-hidden="true" />
-              <span className="maka-question-option-copy">
-                <strong>{option.label}</strong>
-                {option.description && <small>{option.description}</small>}
-              </span>
-            </ChoiceCard>
-          ))}
-          <ChoiceCard
-            className="maka-question-option"
-            value={OTHER_VALUE}
-            disabled={interactionDisabled}
+        <div className="maka-question-options">
+          <ChoiceCardGroup
+            aria-label={question.question}
+            className="maka-question-choice-group"
+            value={selectedValue}
+            onValueChange={select}
           >
-            <span className="maka-question-radio" aria-hidden="true" />
-            <span className="maka-question-option-copy">
-              <strong>{copy.other}</strong>
-              <small>{copy.otherDescription}</small>
-            </span>
-          </ChoiceCard>
-        </ChoiceCardGroup>
+            {question.options.map((option, optionIndex) => (
+              <ChoiceCard
+                ref={optionIndex === 0 ? firstOptionRef : undefined}
+                className="maka-question-option"
+                value={`option:${optionIndex}`}
+                key={`${optionIndex}:${option.label}`}
+                disabled={interactionDisabled}
+              >
+                <span className="maka-question-radio" aria-hidden="true" />
+                <span className="maka-question-option-copy">
+                  <strong>{option.label}</strong>
+                  {option.description && <small>{option.description}</small>}
+                </span>
+              </ChoiceCard>
+            ))}
+          </ChoiceCardGroup>
+          <label
+            className="maka-question-other-field"
+            data-selected={draft?.kind === 'other' ? '' : undefined}
+          >
+            <Pencil className="maka-question-other-icon" aria-hidden="true" />
+            <Input
+              unstyled
+              aria-label={copy.otherAriaLabel}
+              className="maka-question-other-input"
+              placeholder={copy.otherPlaceholder}
+              value={draft?.kind === 'other' ? draft.value : ''}
+              disabled={interactionDisabled}
+              onChange={(event) => updateDraft({ kind: 'other', value: event.currentTarget.value })}
+            />
+          </label>
+        </div>
 
-        {draft?.kind === 'other' && (
-          <Input
-            autoFocus
-            aria-label={copy.otherAriaLabel}
-            className="maka-question-other-input"
-            placeholder={copy.otherPlaceholder}
-            value={draft.value}
-            disabled={interactionDisabled}
-            onChange={(event) => updateDraft({ kind: 'other', value: event.currentTarget.value })}
-          />
-        )}
-
-        <footer className="permissionActions maka-question-actions">
+        <footer className="maka-interaction-actions maka-question-actions">
           <Button
             type="button"
             variant="ghost"

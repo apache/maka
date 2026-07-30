@@ -61,15 +61,30 @@ export function DataTable({ ariaLabel, columns, rows, className }: DataTableProp
     `${CELL_BASE} text-foreground-secondary ${shape(column)}`;
   const headClass = (column: DataTableColumn) =>
     `${CELL_BASE} font-medium text-muted-foreground ${shape(column)}`;
+  // #1364 → routed through #1360: the recipe deliberately keeps every
+  // non-grow column on one line (`whitespace-nowrap`), so the table's
+  // min-content width is the sum of its widest cells — a dated preview model
+  // id plus a namespaced MCP tool name already exceeded the settings column at
+  // full window width, and a bare <table> propagates that to every ancestor.
+  // Wide content scrolls inside its own container (#1303 acceptance rule), so
+  // the primitive owns that container: the hairline box + radius move onto the
+  // scroller (a border on the <table> itself would scroll along with it), and
+  // the caller's pin class stays on the outermost element it always addressed.
   return (
-    <table
-      aria-label={ariaLabel}
-      data-slot="data-table"
+    <div
+      data-slot="data-table-scroller"
       className={cn(
-        'w-full border-collapse overflow-hidden rounded-[var(--radius-surface)] border border-border text-[length:var(--font-size-caption)]',
+        'overflow-x-auto rounded-[var(--radius-surface)] border border-border',
         className,
       )}
     >
+      <table
+        aria-label={ariaLabel}
+        data-slot="data-table"
+        // Last row drops its hairline: the box border lives on the scroller
+        // now, so border-collapse no longer merges the two into one line.
+        className="w-full border-collapse text-[length:var(--font-size-caption)] [&>tbody>tr:last-child>*]:border-b-0"
+      >
       <thead>
         <tr>
           {columns.map((column, columnIndex) => (
@@ -100,6 +115,7 @@ export function DataTable({ ariaLabel, columns, rows, className }: DataTableProp
           </tr>
         ))}
       </tbody>
-    </table>
+      </table>
+    </div>
   );
 }

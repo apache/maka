@@ -581,6 +581,40 @@ describe('OpenGatewayService', () => {
     assert.ok(statusChanges.includes(0), 'closing an SSE stream should publish activeEventStreams=0');
   });
 
+  test('delivers one child-session event sequence to two observing clients', async () => {
+    const service = makeService();
+    activeServices.push(service);
+    const status = await service.sync(
+      createGatewaySettings({ enabled: true, port: 0, token: 'dev-token' }).openGateway,
+    );
+    assert.ok(status.baseUrl);
+
+    const first = await openEventStream(status.baseUrl, 'child-session');
+    const second = await openEventStream(status.baseUrl, 'child-session');
+    const firstReader = first.response.body!.getReader();
+    const secondReader = second.response.body!.getReader();
+    service.publishSessionEvent(
+      'child-session',
+      textDeltaEvent({ id: 'child-event-1', turnId: 'child-turn', text: 'first' }),
+    );
+    service.publishSessionEvent(
+      'child-session',
+      textDeltaEvent({ id: 'child-event-2', turnId: 'child-turn', text: 'second' }),
+    );
+
+    const [firstStream, secondStream] = await Promise.all([
+      readUntil(firstReader, 'id: child-event-2'),
+      readUntil(secondReader, 'id: child-event-2'),
+    ]);
+    for (const stream of [firstStream, secondStream]) {
+      assert.ok(stream.indexOf('id: child-event-1') < stream.indexOf('id: child-event-2'));
+    }
+
+    first.controller.abort();
+    second.controller.abort();
+    await waitFor(() => service.getStatus().activeEventStreams === 0);
+  });
+
   test('rejects excess SSE streams before establishing event-stream headers', async () => {
     const service = makeService();
     activeServices.push(service);

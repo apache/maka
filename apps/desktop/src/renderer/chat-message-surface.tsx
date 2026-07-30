@@ -3,19 +3,19 @@ import {
   isDeepResearchSession,
   type LlmConnection,
   type OnboardingState,
-  type QuickChatMode,
+  type ProviderType,
   type SettingsSection,
 } from '@maka/core';
 import { Alert, AlertAction, AlertDescription, AlertTitle, ChatView, useUiLocale } from '@maka/ui';
-import { OnboardingEmptyState } from './onboarding-empty-state';
+import { OnboardingHero } from './OnboardingHero';
 import type { SessionHealthNoticeView } from './use-shell-chat-model';
 import { getShellCopy } from './locales/shell-copy';
 import { useDeepResearchRun } from './use-deep-research-run';
 
 /**
  * The sessions-section message surface (issue #1043): ChatView plus the
- * session-health notice that sits above the composer. The empty-state stack
- * (OnboardingEmptyState) is constructed here from the onboarding snapshot so
+ * session-health notice that sits above the composer. The setup hero
+ * (OnboardingHero) is constructed here from the onboarding snapshot so
  * AppShell only forwards the orchestration callbacks.
  *
  * AppShell renders this as the `sessions` branch of the section switch, so it
@@ -31,20 +31,11 @@ interface ChatMessageSurfaceProps extends Omit<
   onboardingState: OnboardingState | undefined;
   isOnboardingLoading: boolean;
   onOpenSettings: (section?: SettingsSection) => void;
+  onAddProvider: (providerType: ProviderType) => void;
   onBrowseProviders: () => void;
-  onQuickChatSubmit: (
-    prompt: string,
-    mode?: QuickChatMode,
-    skillIds?: readonly string[],
-  ) => boolean | Promise<boolean>;
-  mentionSkills?: ReadonlyArray<{ id: string; name: string; description?: string }>;
-  quickChatPending?: boolean;
   connections: LlmConnection[];
   onRefreshConnections: () => Promise<void> | void;
   onSkip: () => Promise<void> | void;
-  onOpenSettingsSection: (section: SettingsSection) => void;
-  onOpenSidebarModule: (target: 'daily-review' | 'automations') => void;
-  onStartPlanReminder: () => void;
 }
 
 export function ChatMessageSurface({
@@ -53,16 +44,11 @@ export function ChatMessageSurface({
   onboardingState,
   isOnboardingLoading,
   onOpenSettings,
+  onAddProvider,
   onBrowseProviders,
-  onQuickChatSubmit,
-  mentionSkills,
-  quickChatPending,
   connections,
   onRefreshConnections,
   onSkip,
-  onOpenSettingsSection,
-  onOpenSidebarModule,
-  onStartPlanReminder,
   ...chatViewRest
 }: ChatMessageSurfaceProps) {
   const copy = getShellCopy(useUiLocale()).app;
@@ -76,20 +62,17 @@ export function ChatMessageSurface({
   );
   const emptyOverride: ReactNode =
     showOnboardingHero && onboardingState ? (
-      <OnboardingEmptyState
-        state={onboardingState}
-        onOpenSettings={onOpenSettings}
-        onBrowseProviders={onBrowseProviders}
-        onQuickChatSubmit={onQuickChatSubmit}
-        mentionSkills={mentionSkills}
-        quickChatPending={quickChatPending}
-        connections={connections}
-        onRefreshConnections={onRefreshConnections}
-        onSkip={onSkip}
-        onOpenSettingsSection={onOpenSettingsSection}
-        onOpenSidebarModule={onOpenSidebarModule}
-        onStartPlanReminder={onStartPlanReminder}
-      />
+      <div className="maka-onboarding-surface" data-maka-contract="onboarding-surface">
+        <OnboardingHero
+          state={onboardingState}
+          onOpenSettings={onOpenSettings}
+          onAddProvider={onAddProvider}
+          onBrowseProviders={onBrowseProviders}
+          connections={connections}
+          onRefreshConnections={onRefreshConnections}
+          onSkip={onSkip}
+        />
+      </div>
     ) : isOnboardingLoading ? (
       // @kenji review: render a no-op skeleton while the
       // first snapshot resolves so EmptyChatHero doesn't

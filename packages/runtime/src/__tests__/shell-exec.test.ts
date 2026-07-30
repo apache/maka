@@ -4,7 +4,7 @@ import { existsSync, promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { killWindowsTree } from '../process-tree-terminator.js';
-import { runShellWithBoundedTail } from '../shell-exec.js';
+import { runProcessWithBoundedTail, runShellWithBoundedTail } from '../shell-exec.js';
 
 const base = (over: Record<string, unknown> = {}) => ({
   cwd: process.cwd(),
@@ -89,6 +89,61 @@ describe('runShellWithBoundedTail', () => {
     const r = await runShellWithBoundedTail('sleep 5', base({ timeoutMs: 150 }));
     assert.equal(r.timedOut, true);
     assert.equal(r.exitCode, 124);
+  });
+
+  test('does not spawn a process for an already-aborted invocation', async () => {
+    const dir = await fs.mkdtemp(join(tmpdir(), 'shell-exec-pre-abort-'));
+    const marker = join(dir, 'spawned');
+    const abort = new AbortController();
+    abort.abort();
+    try {
+      const result = await runProcessWithBoundedTail(
+        process.execPath,
+        ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'spawned')`],
+        base({ abortSignal: abort.signal }),
+      );
+      assert.equal(result.aborted, true);
+      assert.equal(result.exitCode, 130);
+      await assert.rejects(() => fs.readFile(marker, 'utf8'), { code: 'ENOENT' });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('bounds output drain after the root exits while a detached descendant retains stdout', {
+    skip: process.platform === 'win32' ? 'POSIX detached process-group semantics required' : false,
+  }, async () => {
+    const dir = await fs.mkdtemp(join(tmpdir(), 'shell-exec-drain-'));
+    const pidFile = join(dir, 'child.pid');
+    let childPid: number | undefined;
+    try {
+      const script = `const {spawn}=require('node:child_process');const {writeFileSync}=require('node:fs');const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:['ignore',process.stdout,'ignore']});child.unref();writeFileSync(${JSON.stringify(pidFile)},String(child.pid));process.stdout.write('ROOT\\n')`;
+      const startedAt = Date.now();
+      const result = await runProcessWithBoundedTail(
+        process.execPath,
+        ['-e', script],
+        base({ ioDrainTimeoutMs: 100 }),
+      );
+      childPid = Number.parseInt(await fs.readFile(pidFile, 'utf8'), 10);
+      assert.ok(Date.now() - startedAt < 2_000);
+      assert.equal(result.exitCode, 0);
+      assert.equal(result.stdout, 'ROOT\n');
+      assert.equal(result.stdoutTruncated, true);
+      assert.equal(result.stderrTruncated, false);
+    } finally {
+      if (childPid) {
+        try {
+          process.kill(-childPid, 'SIGKILL');
+        } catch {
+          try {
+            process.kill(childPid, 'SIGKILL');
+          } catch {
+            /* descendant already exited */
+          }
+        }
+      }
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 
   test('on timeout, escalates SIGTERM->SIGKILL and resolves only after the child is actually dead', async () => {

@@ -30,6 +30,7 @@ export type {
 export {
   createBuiltinSandboxManager,
   createDefaultSandboxManager,
+  isBuiltinFilesystemWorkerSandboxAvailable,
 } from './default-sandbox-manager.js';
 export {
   LinuxBubblewrapBackend,

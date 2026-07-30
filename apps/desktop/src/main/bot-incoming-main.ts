@@ -21,6 +21,7 @@ import type {
   GoalTurnOutcome,
   SessionManager,
 } from '@maka/runtime';
+import type { DesktopCreateSessionInput } from './new-session-project.js';
 import { isSessionWorkspaceUnavailableError } from './project-context-root.js';
 import {
   assertSessionCanSendFromHeader,
@@ -48,10 +49,9 @@ export interface BotIncomingMainService {
 interface BotIncomingMainServiceDeps {
   runtime: SessionManager;
   createSession: (
-    input: Parameters<SessionManager['createSession']>[0],
+    input: DesktopCreateSessionInput,
   ) => ReturnType<SessionManager['createSession']>;
   botRegistry: BotRegistry;
-  getCurrentProjectRoot(): Promise<string>;
   getDefaultConnectionSlug(): Promise<string | null>;
   getReadyConnection(
     slug: string | null | undefined,
@@ -204,7 +204,6 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     }
     const ready = await deps.getReadyConnection(await deps.getDefaultConnectionSlug(), undefined);
     const summary = await deps.createSession({
-      cwd: await deps.getCurrentProjectRoot(),
       backend: 'ai-sdk',
       llmConnectionSlug: ready.connection.slug,
       model: ready.model,
@@ -284,7 +283,6 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
         }
         const ready = await deps.getReadyConnection(await deps.getDefaultConnectionSlug(), undefined);
         const summary = await deps.createSession({
-          cwd: await deps.getCurrentProjectRoot(),
           backend: 'ai-sdk',
           llmConnectionSlug: ready.connection.slug,
           model: ready.model,
@@ -406,9 +404,8 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
   ): Promise<boolean> {
     const header = await deps.readSessionHeader(sessionId);
     assertSessionCanSendFromHeader(header);
-    if (header.permissionMode === 'explore') return true;
     try {
-      await deps.runtime.updateSession(sessionId, { permissionMode: 'explore' });
+      await deps.runtime.setPermissionMode(sessionId, 'explore');
       deps.emitSessionsChanged('updated', sessionId);
       return true;
     } catch {

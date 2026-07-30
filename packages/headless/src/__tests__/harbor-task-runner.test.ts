@@ -608,7 +608,7 @@ describe('createHarborTaskRunner', () => {
       assert.equal(harborEnv?.ZAI_API_KEY_FILE, undefined);
       assert.match(
         harborEnv?.MAKA_PROVIDER_PROXY_URL ?? '',
-        /^http:\/\/host\.docker\.internal:\d+$/,
+        /^http:\/\/host\.docker\.internal:\d+\/api\/coding\/paas\/v4$/,
       );
       assert.match(harborEnv?.MAKA_PROVIDER_PROXY_TOKEN ?? '', /^[a-f0-9]{64}$/);
       assert.notEqual(harborEnv?.MAKA_PROVIDER_PROXY_TOKEN, keyFile);
@@ -648,7 +648,7 @@ describe('createHarborTaskRunner', () => {
 
       assert.match(
         harborEnv?.MAKA_PROVIDER_PROXY_URL ?? '',
-        /^http:\/\/host\.docker\.internal:\d+$/,
+        /^http:\/\/host\.docker\.internal:\d+\/v1$/,
       );
       assert.match(harborEnv?.MAKA_PROVIDER_PROXY_TOKEN ?? '', /^[a-f0-9]{64}$/);
       assert.equal(harborEnv?.OPENAI_API_KEY, undefined);
@@ -773,9 +773,21 @@ describe('createHarborTaskRunner', () => {
   test('selects Anthropic x-api-key auth for the OpenCode Kimi Coding Plan proxy', async () => {
     await withRun(async ({ jobsDir, repo, keyFile }) => {
       let upstreamApiKey = '';
+      let upstreamPath = '';
       const upstream = createServer((request, response) => {
         upstreamApiKey = String(request.headers['x-api-key'] ?? '');
-        response.writeHead(200).end('ok');
+        upstreamPath = request.url ?? '';
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(
+          [
+            'event: message_start',
+            'data: {"type":"message_start","message":{"usage":{"input_tokens":70,"cache_creation_input_tokens":10,"cache_read_input_tokens":20,"output_tokens":1}}}',
+            '',
+            'event: message_delta',
+            'data: {"type":"message_delta","usage":{"output_tokens":25}}',
+            '',
+          ].join('\n'),
+        );
       });
       await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
       const address = upstream.address();
@@ -791,7 +803,16 @@ describe('createHarborTaskRunner', () => {
           provider: 'kimi-coding-plan',
           reasoningEffort: 'max',
           apiKeyFile: keyFile,
-          agentEnv: { MAKA_BASE_URL: `http://127.0.0.1:${address.port}/coding/v1` },
+          pricing: {
+            inputUsdPer1M: 0,
+            cacheReadUsdPer1M: 0,
+            cacheWriteUsdPer1M: 0,
+            outputUsdPer1M: 0,
+          },
+          agentEnv: {
+            MAKA_BASE_URL: `http://127.0.0.1:${address.port}/coding/v1`,
+            MAKA_MODEL_API_PROTOCOL: 'anthropic-messages',
+          },
           runHarbor: async (request) => {
             const proxyUrl = request.env?.MAKA_PROVIDER_PROXY_URL?.replace(
               'host.docker.internal',
@@ -805,12 +826,99 @@ describe('createHarborTaskRunner', () => {
               body: '{}',
             });
             assert.equal(response.status, 200);
-            return fakeRunner({ reward: '1\n' })(request);
+            await response.text();
+            return fakeRunner({
+              reward: '1\n',
+              cell: cellOutput({ tokenSummary: undefined }),
+            })(request);
           },
         });
 
-        await runner(runInput());
+        const output = await runner(runInput());
         assert.equal(upstreamApiKey, 'sk-secret');
+        assert.equal(upstreamPath, '/coding/v1/messages');
+        assert.deepEqual(output.cell.tokenSummary, {
+          input: 100,
+          output: 25,
+          cachedInput: 20,
+          cacheHitInput: 20,
+          cacheMissInput: 70,
+          cacheWriteInput: 10,
+          cacheMissInputSource: 'explicit',
+          reasoning: 0,
+          total: 125,
+          costUsd: 0,
+          pricingSource: 'runtime',
+        });
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          upstream.close((error) => (error ? reject(error) : resolve())),
+        );
+      }
+    });
+  });
+
+  test('uses the host-selected OpenAI protocol for the default Maka Kimi Coding Plan proxy', async () => {
+    await withRun(async ({ jobsDir, repo }) => {
+      let upstreamAuthorization = '';
+      let upstreamPath = '';
+      const upstream = createServer((request, response) => {
+        upstreamAuthorization = request.headers.authorization ?? '';
+        upstreamPath = request.url ?? '';
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(
+          [
+            'data: {"id":"chatcmpl-1","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":25,"prompt_tokens_details":{"cached_tokens":20},"completion_tokens_details":{"reasoning_tokens":15}}}',
+            '',
+            'data: [DONE]',
+            '',
+          ].join('\n'),
+        );
+      });
+      await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+      const address = upstream.address();
+      assert.ok(address && typeof address !== 'string');
+      try {
+        const runner = createHarborTaskRunner({
+          makaRepoPath: repo,
+          jobsDir,
+          model: 'kimi-coding-plan/k3',
+          provider: 'kimi-coding-plan',
+          reasoningEffort: 'max',
+          resolveProviderCredential: async () => ({ value: 'sk-secret' }),
+          pricing: {
+            inputUsdPer1M: 0,
+            cacheReadUsdPer1M: 0,
+            cacheWriteUsdPer1M: 0,
+            outputUsdPer1M: 0,
+          },
+          agentEnv: {
+            MAKA_BASE_URL: `http://127.0.0.1:${address.port}/coding/v1`,
+            MAKA_HOST_MODEL_API_PROTOCOL: 'openai-chat',
+          },
+          runHarbor: async (request) => {
+            const proxyUrl = request.env?.MAKA_HOST_BASE_URL;
+            const proxyToken = request.env?.MAKA_HOST_API_KEY;
+            assert.ok(proxyUrl && proxyToken);
+            const response = await fetch(`${proxyUrl}/v1/chat/completions`, {
+              method: 'POST',
+              headers: { authorization: `Bearer ${proxyToken}` },
+              body: '{}',
+            });
+            assert.equal(response.status, 200);
+            await response.text();
+            return fakeRunner({
+              reward: '1\n',
+              cell: cellOutput({ tokenSummary: undefined }),
+            })(request);
+          },
+        });
+
+        const output = await runner(runInput());
+        assert.equal(upstreamAuthorization, 'Bearer sk-secret');
+        assert.equal(upstreamPath, '/coding/v1/chat/completions');
+        assert.equal(output.cell.tokenSummary?.total, 125);
+        assert.equal(output.cell.tokenSummary?.reasoning, 15);
       } finally {
         await new Promise<void>((resolve, reject) =>
           upstream.close((error) => (error ? reject(error) : resolve())),
@@ -822,8 +930,10 @@ describe('createHarborTaskRunner', () => {
   test('gives Kimi Code bearer auth and fills missing cell usage from the provider stream', async () => {
     await withRun(async ({ jobsDir, repo, keyFile }) => {
       let upstreamAuthorization = '';
+      let upstreamPath = '';
       const upstream = createServer((request, response) => {
         upstreamAuthorization = request.headers.authorization ?? '';
+        upstreamPath = request.url ?? '';
         response.writeHead(200, { 'content-type': 'text/event-stream' });
         response.end(
           [
@@ -878,6 +988,7 @@ describe('createHarborTaskRunner', () => {
 
         const output = await runner(runInput());
         assert.equal(upstreamAuthorization, 'Bearer sk-secret');
+        assert.equal(upstreamPath, '/coding/v1/chat/completions');
         assert.deepEqual(output.cell.tokenSummary, {
           input: 100,
           output: 25,
@@ -1326,6 +1437,100 @@ describe('createHarborTaskRunner', () => {
     });
   });
 
+  test('hydrates missing deadline usage from the trial checkpoint', async () => {
+    await withRun(async ({ jobsDir, repo }) => {
+      const usageCheckpoint = tokenSummary({
+        input: 12_000,
+        output: 800,
+        reasoning: 400,
+        total: 12_800,
+        costUsd: 0.01,
+      });
+      const runner = createHarborTaskRunner({
+        makaRepoPath: repo,
+        jobsDir,
+        model: 'deepseek/deepseek-v4-flash',
+        runHarbor: fakeRunner({
+          reward: '0\n',
+          cell: cellOutput({
+            status: 'failed',
+            errorClass: 'aborted',
+            deadlineSettlement: { source: 'benchmark.deadline', mode: 'immediate' },
+            tokenSummary: undefined,
+          }),
+          usageCheckpoint,
+        }),
+      });
+
+      const output = await runner(runInput());
+      assert.deepEqual(output.cell.tokenSummary, usageCheckpoint);
+    });
+  });
+
+  test('replaces a parent-only summary with a child-inclusive checkpoint', async () => {
+    await withRun(async ({ jobsDir, repo }) => {
+      const parentOnly = tokenSummary({
+        input: 100,
+        output: 10,
+        reasoning: 2,
+        total: 110,
+        costUsd: 0.004,
+      });
+      const childInclusive = tokenSummary({
+        input: 160,
+        output: 25,
+        reasoning: 7,
+        total: 185,
+        costUsd: 0.011,
+      });
+      const runner = createHarborTaskRunner({
+        makaRepoPath: repo,
+        jobsDir,
+        model: 'deepseek/deepseek-v4-flash',
+        runHarbor: fakeRunner({
+          reward: '1\n',
+          cell: cellOutput({ tokenSummary: parentOnly }),
+          usageCheckpoint: childInclusive,
+        }),
+      });
+
+      const output = await runner(runInput());
+      assert.deepEqual(output.cell.tokenSummary, childInclusive);
+    });
+  });
+
+  test('retains the final summary when a higher-total checkpoint is not cumulative', async () => {
+    await withRun(async ({ jobsDir, repo }) => {
+      const finalSummary = tokenSummary({
+        input: 100,
+        output: 20,
+        reasoning: 4,
+        total: 120,
+        costUsd: 0.008,
+      });
+      const conflictingCheckpoint = tokenSummary({
+        input: 90,
+        output: 40,
+        reasoning: 8,
+        total: 130,
+        costUsd: 0.01,
+      });
+      const runner = createHarborTaskRunner({
+        makaRepoPath: repo,
+        jobsDir,
+        model: 'deepseek/deepseek-v4-flash',
+        runHarbor: fakeRunner({
+          reward: '1\n',
+          cell: cellOutput({ tokenSummary: finalSummary }),
+          usageCheckpoint: conflictingCheckpoint,
+        }),
+      });
+
+      const output = await runner(runInput());
+      assert.deepEqual(output.cell.tokenSummary, finalSummary);
+    });
+  });
+
   test('treats a non-zero Harbor exit with an incomplete agent-timeout trial as budget exhausted', async () => {
     await withRun(async ({ jobsDir, repo }) => {
       const executionIdentity = {
@@ -1439,6 +1644,86 @@ describe('createHarborTaskRunner', () => {
           executionIdentity,
         );
         assert.deepEqual(error.artifactRefs?.tokenSummary, usageCheckpoint);
+        return true;
+      });
+    });
+  });
+
+  test('recovers checkpoint usage when a timed-out deadline cell has no summary', async () => {
+    await withRun(async ({ jobsDir, repo }) => {
+      const usageCheckpoint = tokenSummary({
+        input: 120,
+        output: 15,
+        reasoning: 3,
+        total: 135,
+        costUsd: 0.009,
+      });
+      const runner = createHarborTaskRunner({
+        makaRepoPath: repo,
+        jobsDir,
+        model: 'deepseek/deepseek-v4-flash',
+        runHarbor: fakeRunner({
+          cell: cellOutput({
+            status: 'failed',
+            errorClass: 'aborted',
+            deadlineSettlement: { source: 'benchmark.deadline', mode: 'immediate' },
+            tokenSummary: undefined,
+          }),
+          usageCheckpoint,
+          trialResult: {
+            exception_info: {
+              exception_type: 'AgentTimeoutError',
+              exception_message: 'Agent execution timed out after 60.0 seconds',
+            },
+          },
+        }),
+      });
+
+      await assert.rejects(runner(runInput()), (error: unknown) => {
+        assert.ok(error instanceof FixedPromptBudgetExhaustedError);
+        assert.deepEqual(error.artifactRefs?.tokenSummary, usageCheckpoint);
+        assert.deepEqual(error.artifactRefs?.cellOutput?.tokenSummary, usageCheckpoint);
+        return true;
+      });
+    });
+  });
+
+  test('recovers child-inclusive usage when a timed-out cell has a parent summary', async () => {
+    await withRun(async ({ jobsDir, repo }) => {
+      const parentOnly = tokenSummary({
+        input: 100,
+        output: 10,
+        reasoning: 2,
+        total: 110,
+        costUsd: 0.006,
+      });
+      const childInclusive = tokenSummary({
+        input: 140,
+        output: 20,
+        reasoning: 5,
+        total: 160,
+        costUsd: 0.012,
+      });
+      const runner = createHarborTaskRunner({
+        makaRepoPath: repo,
+        jobsDir,
+        model: 'deepseek/deepseek-v4-flash',
+        runHarbor: fakeRunner({
+          cell: cellOutput({ tokenSummary: parentOnly }),
+          usageCheckpoint: childInclusive,
+          trialResult: {
+            exception_info: {
+              exception_type: 'AgentTimeoutError',
+              exception_message: 'Agent execution timed out after 60.0 seconds',
+            },
+          },
+        }),
+      });
+
+      await assert.rejects(runner(runInput()), (error: unknown) => {
+        assert.ok(error instanceof FixedPromptBudgetExhaustedError);
+        assert.deepEqual(error.artifactRefs?.tokenSummary, childInclusive);
+        assert.deepEqual(error.artifactRefs?.cellOutput?.tokenSummary, childInclusive);
         return true;
       });
     });
@@ -1752,6 +2037,30 @@ describe('createHarborOracleQualifier', () => {
 });
 
 describe('buildHarborJobConfig', () => {
+  test('projects the Agent tool policy from the run config', () => {
+    const config = buildHarborJobConfig(
+      runInput({
+        config: {
+          id: 'cfg',
+          backend: 'ai-sdk',
+          llmConnectionSlug: 'deepseek',
+          model: 'deepseek-v4-flash',
+          agentTools: true,
+        },
+      }),
+      {
+        makaRepoPath: '/repo',
+        jobsDir: '/jobs/x',
+        jobName: 'trial',
+        model: 'deepseek/deepseek-v4-flash',
+      },
+    );
+    const agent = (config.agents as Array<Record<string, unknown>>)[0]!;
+    const env = agent.env as Record<string, string>;
+
+    assert.equal(env.MAKA_AGENT_TOOLS, 'true');
+  });
+
   test('pins the OpenCode adapter and max model variant without serializing credentials', () => {
     const toolchain = {
       opencodeToolchainPath: '/cache/opencode-1.17.18-linux-x64',
@@ -1975,12 +2284,13 @@ describe('buildHarborJobConfig', () => {
           model: 'deepseek/deepseek-v4-flash',
           pricing: { inputUsdPer1M: 0.145, outputUsdPer1M: 0.29 },
           agentEnv: {
+            MAKA_AGENT_TOOLS: 'false',
             MAKA_MODEL: 'deepseek-v4-pro',
             MAKA_SYSTEM_PROMPT: 'wrong prompt',
             MAKA_TRIAL_INPUT_USD_PER_1M: '9',
           },
         }),
-      /agentEnv must not override experiment identity: MAKA_MODEL, MAKA_SYSTEM_PROMPT, MAKA_TRIAL_INPUT_USD_PER_1M/,
+      /agentEnv must not override experiment identity: MAKA_AGENT_TOOLS, MAKA_MODEL, MAKA_SYSTEM_PROMPT, MAKA_TRIAL_INPUT_USD_PER_1M/,
     );
   });
 
@@ -2243,6 +2553,33 @@ describe('createHarborTaskRunner timeout', () => {
             id: 'task-1',
             path: '/tasks/task-1',
             metadata: { agentTimeoutSec: 7_200, verifierTimeoutSec: 600 },
+          },
+        }),
+      );
+      assert.equal(seenTimeout, (7_200 + 1_320 + 15 * 60) * 1_000);
+    });
+  });
+
+  test('derives the outer Harbor timeout from a configured cell budget above the task limit', async () => {
+    await withRun(async ({ jobsDir, repo }) => {
+      let seenTimeout: number | undefined;
+      const runner = createHarborTaskRunner({
+        makaRepoPath: repo,
+        jobsDir,
+        model: 'kimi-coding-plan/k3',
+        provider: 'kimi-coding-plan',
+        agentEnv: { MAKA_CELL_TIMEOUT_SEC: '7200' },
+        runHarbor: async (request) => {
+          seenTimeout = request.timeoutMs;
+          return fakeRunner({ reward: '1\n' })(request);
+        },
+      });
+      await runner(
+        runInput({
+          task: {
+            id: 'task-1',
+            path: '/tasks/task-1',
+            metadata: { agentTimeoutSec: 600, verifierTimeoutSec: 600 },
           },
         }),
       );

@@ -19,7 +19,6 @@ import {
   submitCompactToTranscript,
   toggleAllThinkingExpansion,
   toggleAllToolExpansion,
-  togglePendingPermissionDetails,
 } from '../pi-transcript.js';
 
 // Pin the color level so ANSI-escape assertions are hermetic. Detection reads
@@ -157,6 +156,39 @@ describe('Maka Pi TUI transcript', () => {
       state.entries[3]?.kind === 'assistant' ? state.entries[3].text : '',
       'The package is named maka-agent.',
     );
+  });
+
+  test('renders steering messages with human-facing text and falls back to model-facing text', () => {
+    const state = createMakaPiTranscriptState();
+
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'steering_message',
+        messageId: 'steering-display',
+        content: {
+          text: '<system-reminder>internal context</system-reminder>\nShow the result',
+          displayText: 'Show the result',
+        },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'steering_message',
+        messageId: 'steering-plain',
+        content: { text: 'Also include the tests' },
+      }),
+    );
+
+    assert.deepEqual(state.entries, [
+      { kind: 'user', text: 'Show the result' },
+      { kind: 'user', text: 'Also include the tests' },
+    ]);
+    const rendered = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
+    assert.match(rendered, /Show the result/);
+    assert.match(rendered, /Also include the tests/);
+    assert.doesNotMatch(rendered, /internal context/);
   });
 
   test('shows a fixed system notice when the configured step limit is reached', () => {
@@ -1207,7 +1239,7 @@ describe('Maka Pi TUI transcript', () => {
     assert.ok(visibleLines.some((line) => line.includes('saved ~24000 tokens')));
   });
 
-  test('surfaces pending permission requests with terminal decision hints', () => {
+  test('ignores legacy generic permission requests', () => {
     const state = createMakaPiTranscriptState();
 
     applyMakaSessionEventToTranscript(
@@ -1224,182 +1256,64 @@ describe('Maka Pi TUI transcript', () => {
       }),
     );
 
+    assert.equal(state.pendingInteraction, undefined);
+    assert.deepEqual(state.queuedInteractions, []);
+  });
+
+  test('renders an unboxed session sandbox boundary request with exact scopes', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'sandbox_boundary_request',
+        requestId: 'boundary-1',
+        toolUseId: 'tool-boundary',
+        justification: 'Read the user-selected file.',
+        expansion: {
+          filesystem: {
+            entries: [{ path: '/outside/file.txt', access: 'read', scope: 'exact' }],
+          },
+          network: { enabled: true },
+        },
+      }),
+    );
+
     const visibleLines = renderMakaPiTranscript(
       state,
       {
         title: 'Maka',
         cwd: '/tmp/project',
-        model: 'deepseek-v4-flash',
-        connectionSlug: 'deepseek',
-        permissionMode: 'ask',
+        model: 'test',
+        connectionSlug: 'test',
+        permissionMode: 'auto',
       },
       100,
     ).map(stripAnsi);
 
-    assert.equal(state.pendingInteraction?.requestId, 'permission-1');
-    assert.ok(visibleLines.some((line) => line.includes('Permission required')));
-    assert.ok(visibleLines.some((line) => line.includes('Bash')));
-    assert.ok(visibleLines.some((line) => line.includes('npm test')));
-    assert.ok(visibleLines.some((line) => line.includes('y/Enter allow')));
+    assert.equal(state.pendingInteraction?.requestId, 'boundary-1');
+    assert.ok(visibleLines.some((line) => line.includes('Allow access outside the workspace?')));
+    assert.ok(visibleLines.some((line) => line.includes('Read the user-selected file.')));
+    assert.ok(visibleLines.some((line) => line.includes('read exact /outside/file.txt')));
+    assert.ok(visibleLines.some((line) => line.includes('network enabled')));
+    assert.ok(visibleLines.some((line) => line.includes('y/Enter allow for session')));
     assert.ok(visibleLines.some((line) => line.includes('n/Esc deny')));
+    assert.ok(visibleLines.every((line) => !line.includes(' a ')));
   });
 
-  test('renders one-call additional permission paths and risks without turn-wide approval', () => {
+  test('queues sandbox boundary and user-question requests in arrival order', () => {
     const state = createMakaPiTranscriptState();
     applyMakaSessionEventToTranscript(
       state,
       event({
-        type: 'permission_request',
-        kind: 'additional_permissions',
-        requestId: 'permission-additional',
-        toolUseId: 'tool-write',
-        toolName: 'Write',
-        category: 'file_write',
-        reason: 'additional_permissions',
-        args: undefined,
-        cwd: '/workspace',
-        justification: 'Write requires access to the requested path.',
-        intentHash: `sha256:${'1'.repeat(64)}`,
-        permissionsHash: `sha256:${'2'.repeat(64)}`,
-        additionalPermissions: {
-          fileSystem: { entries: [{ path: '/outside/file.txt', access: 'write', scope: 'exact' }] },
-        },
-        risk: { outsideWorkspace: true, protectedMetadata: false, networkEnabled: false },
-        alsoApprovesToolExecution: true,
-        availableDecisions: ['allow_once', 'deny'],
-        rememberForTurnAllowed: false,
-      }),
-    );
-
-    const visible = renderMakaPiTranscript(
-      state,
-      {
-        title: 'Maka',
-        cwd: '/workspace',
-        model: 'model',
-        connectionSlug: 'connection',
-        permissionMode: 'ask',
-      },
-      120,
-    )
-      .map(stripAnsi)
-      .join('\n');
-    assert.match(visible, /Additional permission required/);
-    assert.match(visible, /write exact \/outside\/file\.txt/);
-    assert.match(visible, /risk: outside workspace/);
-    assert.doesNotMatch(visible, /allow for turn/);
-  });
-
-  test('renders one-call unsandboxed execution details without turn-wide approval', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'permission_request',
-        kind: 'sandbox_escalation',
-        requestId: 'permission-escalation',
-        toolUseId: 'tool-bash',
-        toolName: 'Bash',
-        category: 'shell_unsafe',
-        reason: 'sandbox_escalation',
-        args: undefined,
-        command: 'printf retry-ok > /tmp/retry.txt',
-        cwd: '/workspace',
-        justification: 'The exact command must write outside the workspace.',
-        intentHash: `sha256:${'3'.repeat(64)}`,
-        commandHash: `sha256:${'4'.repeat(64)}`,
-        trigger: 'sandbox_denial',
-        risk: {
-          unsandboxedExecution: true,
-          unrestrictedFileSystem: true,
-          unrestrictedNetwork: true,
-          protectedMetadataExposed: true,
-        },
-        alsoApprovesToolExecution: true,
-        availableDecisions: ['allow_once', 'deny'],
-        rememberForTurnAllowed: false,
-      }),
-    );
-
-    const visible = renderMakaPiTranscript(
-      state,
-      {
-        title: 'Maka',
-        cwd: '/workspace',
-        model: 'model',
-        connectionSlug: 'connection',
-        permissionMode: 'ask',
-      },
-      120,
-    )
-      .map(stripAnsi)
-      .join('\n');
-    assert.match(visible, /Unsandboxed execution approval required/);
-    assert.match(visible, /cwd: \/workspace/);
-    assert.match(visible, /printf retry-ok > \/tmp\/retry\.txt/);
-    assert.match(visible, /unrestricted filesystem, network, and protected metadata/);
-    assert.doesNotMatch(visible, /allow for turn/);
-  });
-
-  test('keeps WriteStdin permission details bounded until explicitly expanded', () => {
-    const state = createMakaPiTranscriptState();
-    const hiddenSuffix = '\u001b[31mrm -rf /tmp/hidden-suffix\r';
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'permission_request',
-        requestId: 'permission-stdin',
-        toolUseId: 'tool-stdin',
-        toolName: 'WriteStdin',
-        category: 'shell_unsafe',
-        reason: 'shell_dangerous',
-        args: {
-          ref: 'maka://runtime/background-tasks/pty-1',
-          input: `password=super-secret ${'x'.repeat(200)}${hiddenSuffix}`,
-          size: { cols: 120, rows: 40 },
-        },
-        rememberForTurnAllowed: false,
-      }),
-    );
-
-    const collapsed = renderMakaPiTranscript(state, meta(), 120).map(stripAnsi).join('\n');
-    assert.match(collapsed, /maka:\/\/runtime\/background-tasks\/pty-1/);
-    assert.match(collapsed, /size: 120x40/);
-    assert.doesNotMatch(collapsed, /super-secret/);
-    assert.doesNotMatch(collapsed, /hidden-suffix/);
-
-    assert.equal(togglePendingPermissionDetails(state), true);
-    const rawExpanded = renderMakaPiTranscript(state, meta(), 120).join('\n');
-    const expanded = stripAnsi(rawExpanded);
-    assert.match(expanded, /super-secret/);
-    assert.match(expanded, /\\u\{001B\}\[31mrm -rf/);
-    assert.match(expanded, /\/tmp\/hidden-suffix\\r/);
-    assert.doesNotMatch(rawExpanded, /\u001b\[31mrm -rf/);
-
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'permission_decision_ack',
-        requestId: 'permission-stdin',
-        toolUseId: 'tool-stdin',
-        decision: 'allow',
-      }),
-    );
-    assert.equal(state.expandedPermissionRequestId, undefined);
-  });
-
-  test('queues permission and user-question requests in arrival order', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'permission_request',
-        requestId: 'permission-1',
+        type: 'sandbox_boundary_request',
+        requestId: 'boundary-1',
         toolUseId: 'tool-1',
-        toolName: 'Bash',
-        category: 'shell_unsafe',
-        reason: 'shell_dangerous',
-        args: {},
+        justification: 'Read a selected file.',
+        expansion: {
+          filesystem: {
+            entries: [{ path: '/outside/file.txt', access: 'read', scope: 'exact' }],
+          },
+        },
       }),
     );
     applyMakaSessionEventToTranscript(
@@ -1412,7 +1326,7 @@ describe('Maka Pi TUI transcript', () => {
       }),
     );
 
-    assert.equal(state.pendingInteraction?.requestId, 'permission-1');
+    assert.equal(state.pendingInteraction?.requestId, 'boundary-1');
     assert.deepEqual(
       state.queuedInteractions.map((item) => item.requestId),
       ['question-1'],
@@ -1421,26 +1335,28 @@ describe('Maka Pi TUI transcript', () => {
     applyMakaSessionEventToTranscript(
       state,
       event({
-        type: 'permission_decision_ack',
-        requestId: 'permission-1',
+        type: 'sandbox_boundary_decision_ack',
+        requestId: 'boundary-1',
         toolUseId: 'tool-1',
         decision: 'allow',
+        status: 'applied',
+        revision: 1,
       }),
     );
     assert.equal(state.pendingInteraction?.requestId, 'question-1');
     assert.deepEqual(state.queuedInteractions, []);
   });
 
-  test('deduplicates interactions and expires permissions by their lifecycle ids', () => {
+  test('deduplicates sandbox boundary interactions by request id', () => {
     const state = createMakaPiTranscriptState();
     const first = event({
-      type: 'permission_request',
-      requestId: 'permission-1',
+      type: 'sandbox_boundary_request',
+      requestId: 'boundary-1',
       toolUseId: 'tool-1',
-      toolName: 'Bash',
-      category: 'shell_unsafe',
-      reason: 'shell_dangerous',
-      args: { command: 'printf first' },
+      justification: 'Read first.',
+      expansion: {
+        filesystem: { entries: [{ path: '/first', access: 'read', scope: 'exact' }] },
+      },
     });
     const question = event({
       type: 'user_question_request',
@@ -1449,22 +1365,22 @@ describe('Maka Pi TUI transcript', () => {
       questions: [{ question: 'Choose', options: [{ label: 'A' }, { label: 'B' }] }],
     });
     const second = event({
-      type: 'permission_request',
-      requestId: 'permission-2',
+      type: 'sandbox_boundary_request',
+      requestId: 'boundary-2',
       toolUseId: 'tool-2',
-      toolName: 'Bash',
-      category: 'shell_unsafe',
-      reason: 'shell_dangerous',
-      args: { command: 'printf second' },
+      justification: 'Read second.',
+      expansion: {
+        filesystem: { entries: [{ path: '/second', access: 'read', scope: 'exact' }] },
+      },
     });
     const third = event({
-      type: 'permission_request',
-      requestId: 'permission-3',
+      type: 'sandbox_boundary_request',
+      requestId: 'boundary-3',
       toolUseId: 'tool-3',
-      toolName: 'Bash',
-      category: 'shell_unsafe',
-      reason: 'shell_dangerous',
-      args: { command: 'printf third' },
+      justification: 'Read third.',
+      expansion: {
+        filesystem: { entries: [{ path: '/third', access: 'read', scope: 'exact' }] },
+      },
     });
 
     applyMakaSessionEventToTranscript(state, first);
@@ -1475,53 +1391,48 @@ describe('Maka Pi TUI transcript', () => {
       state,
       event({
         ...first,
-        id: 'permission-request-replay',
-        args: { command: 'printf replayed-first' },
+        id: 'boundary-request-replay',
+        justification: 'Replayed first.',
       }),
     );
 
-    assert.equal(state.pendingInteraction?.requestId, 'permission-1');
-    assert.deepEqual(
-      state.pendingInteraction?.type === 'permission_request'
-        ? state.pendingInteraction.args
+    assert.equal(state.pendingInteraction?.requestId, 'boundary-1');
+    assert.equal(
+      state.pendingInteraction?.type === 'sandbox_boundary_request'
+        ? state.pendingInteraction.justification
         : undefined,
-      { command: 'printf first' },
+      'Read first.',
     );
     assert.deepEqual(
       state.queuedInteractions.map((item) => item.requestId),
-      ['question-1', 'permission-2', 'permission-3'],
+      ['question-1', 'boundary-2', 'boundary-3'],
     );
 
     applyMakaSessionEventToTranscript(
       state,
       event({
-        type: 'permission_decision_ack',
-        requestId: 'permission-3',
+        type: 'sandbox_boundary_decision_ack',
+        requestId: 'boundary-3',
         toolUseId: 'tool-3',
         decision: 'deny',
+        status: 'denied',
+        revision: 0,
       }),
     );
     assert.deepEqual(
       state.queuedInteractions.map((item) => item.requestId),
-      ['question-1', 'permission-2'],
+      ['question-1', 'boundary-2'],
     );
 
     applyMakaSessionEventToTranscript(
       state,
       event({
-        type: 'tool_result',
+        type: 'sandbox_boundary_decision_ack',
+        requestId: 'boundary-2',
         toolUseId: 'tool-2',
-        isError: true,
-        content: { kind: 'text', text: 'permission expired' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'unrelated-tool',
-        isError: false,
-        content: { kind: 'text', text: 'ok' },
+        decision: 'deny',
+        status: 'denied',
+        revision: 0,
       }),
     );
     assert.deepEqual(
@@ -1532,10 +1443,12 @@ describe('Maka Pi TUI transcript', () => {
     applyMakaSessionEventToTranscript(
       state,
       event({
-        type: 'tool_result',
+        type: 'sandbox_boundary_decision_ack',
+        requestId: 'boundary-1',
         toolUseId: 'tool-1',
-        isError: true,
-        content: { kind: 'text', text: 'permission expired' },
+        decision: 'deny',
+        status: 'denied',
+        revision: 0,
       }),
     );
     assert.equal(state.pendingInteraction?.requestId, 'question-1');
@@ -5507,6 +5420,25 @@ describe('transcript entry render memoization', () => {
 });
 
 describe('Maka Pi TUI status line', () => {
+  test('names the boundary the session is in: Read only, Auto, or Full access', () => {
+    // Legacy `execute` has no boundary of its own, so it really does read as
+    // Auto. `explore` is a boundary a resumed session can be in and must be
+    // named — showing it as Auto is the #1611 defect.
+    for (const permissionMode of ['ask', 'execute']) {
+      const line = stripAnsi(renderMakaPiStatusLine({ ...meta(), permissionMode }, 100));
+      assert.match(line, /Maka · Auto ·/);
+      assert.doesNotMatch(line, new RegExp(`· ${permissionMode} ·`));
+    }
+    assert.match(
+      stripAnsi(renderMakaPiStatusLine({ ...meta(), permissionMode: 'explore' }, 100)),
+      /Maka · Read only ·/,
+    );
+    assert.match(
+      stripAnsi(renderMakaPiStatusLine({ ...meta(), permissionMode: 'bypass' }, 100)),
+      /Maka · Full access ·/,
+    );
+  });
+
   test('shows thinking:high when thinkingLevel is set', () => {
     const line = stripAnsi(
       renderMakaPiStatusLine(
@@ -5675,6 +5607,41 @@ describe('Maka Pi TUI status line', () => {
 });
 
 describe('Maka Pi TUI activity strip', () => {
+  test('shows transient provider retry progress and clears it on model output', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(state, {
+      type: 'provider_retry',
+      id: 'retry-1',
+      turnId: 'turn-1',
+      ts: 1,
+      phase: 'scheduled',
+      attempt: 3,
+      maxAttempts: 10,
+      delayMs: 4_000,
+      reason: 'rate_limit',
+    });
+
+    assert.equal(
+      stripAnsi(
+        renderMakaPiActivityStrip(
+          { ...meta(), turnElapsedMs: 5_500, providerRetry: state.providerRetry },
+          100,
+        ),
+      ),
+      'Retrying in 4s (3/10)',
+    );
+
+    applyMakaSessionEventToTranscript(state, {
+      type: 'text_delta',
+      id: 'text-1',
+      turnId: 'turn-1',
+      ts: 2,
+      messageId: 'message-1',
+      text: 'recovered',
+    });
+    assert.equal(state.providerRetry, undefined);
+  });
+
   test('shows Working… Ns when turnElapsedMs is set', () => {
     const line = stripAnsi(
       renderMakaPiActivityStrip(

@@ -109,7 +109,7 @@ export type ProviderContractReverseAssertion = 'must-not-request-models-endpoint
 export interface ProviderContractNotApplicableCell {
   state: 'not-applicable';
   dimension: ProviderContractDimension;
-  /** Machine-readable justification derived from the declaration. */
+  /** Human-readable justification derived from the provider declaration. */
   reason: string;
   /** An assertion the executor must still hold even though the dimension is N/A. */
   reverseAssertion?: ProviderContractReverseAssertion;
@@ -184,11 +184,24 @@ function wireForProtocol(protocol: ProviderDefaults['protocol']): ProviderContra
 function sampleModelIdFor(providerType: ProviderType, def: ProviderDefaults): string {
   const usesDefaultWire = (id: string): boolean => {
     if (lookupModelProviderOverride(providerType, id)) return false;
-    if (def.runtimeAdapter.kind === 'openai' && openAiAdapterApiProtocol(id) === 'openai-responses')
-      return false;
+    if (usesOpenAiResponsesWire(providerType, def, id)) return false;
     return true;
   };
   return def.fallbackModels.find(usesDefaultWire) ?? SYNTHETIC_SAMPLE_MODEL_ID;
+}
+
+function usesOpenAiResponsesWire(
+  providerType: ProviderType,
+  def: ProviderDefaults,
+  modelId: string,
+): boolean {
+  const adapter = def.runtimeAdapter;
+  const supportsResponses =
+    adapter.kind === 'openai' ||
+    (adapter.kind === 'openai-compatible' && adapter.supportsOpenAiResponses === true);
+  return (
+    supportsResponses && openAiAdapterApiProtocol(modelId, providerType) === 'openai-responses'
+  );
 }
 
 /**
@@ -236,10 +249,7 @@ function edgeWireSamplesFor(
           );
       }
     }
-    if (
-      def.runtimeAdapter.kind === 'openai' &&
-      openAiAdapterApiProtocol(modelId) === 'openai-responses'
-    ) {
+    if (usesOpenAiResponsesWire(providerType, def, modelId)) {
       throw new Error(
         `edge wire sample ${providerType}/${modelId} routes to the OpenAI Responses wire, which has no ` +
           'generated executor; own it with a named override binding instead of an edge declaration',
@@ -256,8 +266,15 @@ function discoveryCell(providerType: ProviderType, def: ProviderDefaults): Provi
       return {
         state: 'not-applicable',
         dimension: 'discovery',
-        reason: 'declares-static-fallback-model-snapshot',
+        reason: discovery.reason,
         reverseAssertion: 'must-not-request-models-endpoint',
+      };
+    case 'cloudflare':
+      return {
+        state: 'override',
+        dimension: 'discovery',
+        overrideKey: overrideKeyFor(providerType, 'discovery'),
+        contract: 'Cloudflare Workers AI native paginated /ai/models/search discovery',
       };
     case 'fireworks':
       return {
@@ -372,8 +389,22 @@ function reasoningReplayCell(
       },
     };
   }
+  if (
+    providerType === 'volcengine-agent-plan' &&
+    adapter.kind === 'openai' &&
+    adapter.apiProtocol === 'openai-responses'
+  ) {
+    return {
+      state: 'override',
+      dimension: 'reasoning-replay',
+      overrideKey: overrideKeyFor(providerType, 'reasoning-replay'),
+      contract:
+        'Stateless OpenAI Responses reasoning items retain their encrypted content across Maka-owned durable replay',
+    };
+  }
   // Native Anthropic / OpenAI / Google / Cohere SDKs own signed reasoning replay
-  // opaquely; the maka provider layer adds no wire transform to derive from.
+  // opaquely; except for the stateless Agent Plan contract above, the Maka
+  // provider layer adds no wire transform to derive from.
   return {
     state: 'not-applicable',
     dimension: 'reasoning-replay',

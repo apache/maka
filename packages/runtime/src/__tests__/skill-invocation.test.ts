@@ -32,14 +32,14 @@ Do plain things.`,
       );
       await writeSkill(
         workspaceRoot,
-        'office-helper',
+        'gated-helper',
         `---
-name: Office Helper
-description: Needs the Office tools.
-required-tools: [OfficeDocument]
+name: Gated Helper
+description: Needs a host-specific tool.
+required-tools: [ImaginaryTool]
 ---
-# Office Helper
-Do office things.`,
+# Gated Helper
+Do gated things.`,
       );
       await writeSkill(
         workspaceRoot,
@@ -56,12 +56,12 @@ description: Disabled by workspace state.
       const all = await listInvocableSkills(source);
       assert.deepEqual(
         all.map((skill) => skill.id).sort(),
-        ['office-helper', 'plain-helper'],
+        ['gated-helper', 'plain-helper'],
         'disabled skills are not invocable',
       );
       assert.deepEqual(
         Object.keys(all[0] ?? {}).sort(),
-        ['description', 'id', 'name'],
+        ['description', 'id', 'name', 'ref'],
         'slim entries only',
       );
 
@@ -73,12 +73,9 @@ description: Disabled by workspace state.
         'required-tools mismatch is hidden',
       );
 
-      const officeHost: HostCapabilities = { toolNames: new Set(['Read', 'OfficeDocument']) };
-      const officeGated = await listInvocableSkills(source, officeHost);
-      assert.deepEqual(officeGated.map((skill) => skill.id).sort(), [
-        'office-helper',
-        'plain-helper',
-      ]);
+      const gatedHost: HostCapabilities = { toolNames: new Set(['Read', 'ImaginaryTool']) };
+      const eligible = await listInvocableSkills(source, gatedHost);
+      assert.deepEqual(eligible.map((skill) => skill.id).sort(), ['gated-helper', 'plain-helper']);
     });
   });
 
@@ -122,6 +119,7 @@ description: Workspace copy loses.
       const shadowed = listed.find((skill) => skill.id === 'shadowed');
       assert.deepEqual(listed.map((skill) => skill.id).sort(), ['project-skill', 'shadowed']);
       assert.equal(shadowed?.name, 'Project Shadow');
+      assert.equal(shadowed?.ref, 'project:agents:shadowed');
     });
   });
 
@@ -295,6 +293,25 @@ Alpha body.`,
       assert.deepEqual(prepared.skillInvocation.failed, [
         { request: 'missing', reason: 'not_found' },
       ]);
+      assert.deepEqual(prepared.skillInvocation.receipts, [
+        {
+          invocation: 'explicit',
+          request: 'alpha',
+          success: true,
+          ref: 'workspace:legacy:alpha',
+          id: 'alpha',
+          name: 'Alpha',
+          scope: 'workspace',
+          source: 'legacy',
+          truncated: false,
+        },
+        {
+          invocation: 'explicit',
+          request: 'missing',
+          success: false,
+          reason: 'not_found',
+        },
+      ]);
       assert.ok('sendText' in prepared);
       assert.match(prepared.sendText, /<invoked-skill id="alpha" name="Alpha">/);
       assert.ok(!prepared.sendText.includes('/skill:alpha'));
@@ -324,6 +341,14 @@ description: First.
       assert.equal(prepared.disposition, 'blocked');
       assert.deepEqual(prepared.skillInvocation.loaded, []);
       assert.deepEqual(prepared.skillInvocation.failed, [{ request: 'alpha', reason: 'disabled' }]);
+      assert.deepEqual(prepared.skillInvocation.receipts, [
+        {
+          invocation: 'explicit',
+          request: 'alpha',
+          success: false,
+          reason: 'disabled',
+        },
+      ]);
     });
   });
 
@@ -337,7 +362,7 @@ description: First.
       await writeSkill(workspaceRoot, 'beta', `---\nname: Beta\ndescription: Second.\n---\n# Beta`);
       const prepared = await prepareSkillInvocationMessage({
         text: '/skill:alpha /skill:beta finish',
-        skillIds: ['beta', 'ALPHA'],
+        skillIds: ['workspace:legacy:beta', 'ALPHA'],
         source: resolveSkillDiscoveryPaths(workspaceRoot, workspaceRoot, homeDir),
       });
 
@@ -346,6 +371,10 @@ description: First.
         prepared.skillInvocation.loaded.map((entry) => entry.id),
         ['beta', 'alpha'],
       );
+      const firstReceipt = prepared.skillInvocation.receipts[0];
+      assert.ok(firstReceipt && 'request' in firstReceipt);
+      assert.equal(firstReceipt.request, 'workspace:legacy:beta');
+      assert.equal(firstReceipt.success ? firstReceipt.ref : undefined, 'workspace:legacy:beta');
       assert.ok('sendText' in prepared);
       assert.ok(!prepared.sendText.includes('/skill:'));
     });
@@ -364,7 +393,95 @@ description: First.
       skillInvocation: {
         loaded: [],
         failed: [{ request: 'alpha', reason: 'resolution_failed' }],
+        receipts: [
+          {
+            invocation: 'explicit',
+            request: 'alpha',
+            success: false,
+            reason: 'resolution_failed',
+          },
+        ],
       },
+    });
+  });
+
+  it('bounds explicit invocation request diagnostics', async () => {
+    await withWorkspace(async (workspaceRoot, homeDir) => {
+      const prepared = await prepareSkillInvocationMessage({
+        text: 'run',
+        skillIds: [`bad\u0000${'x'.repeat(600)}`],
+        source: resolveSkillDiscoveryPaths(workspaceRoot, workspaceRoot, homeDir),
+      });
+      assert.equal(prepared.disposition, 'blocked');
+      assert.equal(prepared.skillInvocation.failed.length, 1);
+      assert.equal(prepared.skillInvocation.receipts.length, 1);
+      const failure = prepared.skillInvocation.failed[0];
+      assert.ok(failure && failure.reason !== 'too_many_requests');
+      assert.equal(failure.request.length, 512);
+      assert.doesNotMatch(failure.request, /[\u0000-\u001F\u007F]/);
+    });
+  });
+
+  it('fails closed instead of resolving a partial request set after distinct-request overflow', async () => {
+    await withWorkspace(async (workspaceRoot, homeDir) => {
+      await writeSkill(
+        workspaceRoot,
+        'alpha',
+        `---\nname: Alpha\ndescription: First.\n---\n# Alpha`,
+      );
+      const text = [
+        '/skill:alpha',
+        ...Array.from({ length: 50 }, (_, index) => `/skill:missing-${index}`),
+        'finish',
+      ].join(' ');
+      const prepared = await prepareSkillInvocationMessage({
+        text,
+        source: resolveSkillDiscoveryPaths(workspaceRoot, workspaceRoot, homeDir),
+      });
+
+      assert.deepEqual(prepared, {
+        disposition: 'blocked',
+        skillInvocation: {
+          loaded: [],
+          failed: [{ reason: 'too_many_requests', requestLimit: 50 }],
+          receipts: [
+            {
+              invocation: 'explicit',
+              success: false,
+              reason: 'too_many_requests',
+              requestLimit: 50,
+            },
+          ],
+        },
+      });
+      assert.ok(!('sendText' in prepared));
+    });
+  });
+
+  it('applies the distinct-request limit across structured and text inputs', async () => {
+    await withWorkspace(async (workspaceRoot, homeDir) => {
+      const structured = Array.from({ length: 50 }, (_, index) => `missing-${index}`);
+      const source = resolveSkillDiscoveryPaths(workspaceRoot, workspaceRoot, homeDir);
+      const atLimit = await prepareSkillInvocationMessage({
+        text: '/skill:MISSING-0 run',
+        skillIds: structured,
+        source,
+      });
+      assert.equal(atLimit.disposition, 'blocked');
+      assert.equal(atLimit.skillInvocation.failed.length, 50);
+      assert.equal(
+        atLimit.skillInvocation.failed.some((failure) => failure.reason === 'too_many_requests'),
+        false,
+      );
+
+      const overflow = await prepareSkillInvocationMessage({
+        text: '/skill:extra run',
+        skillIds: structured,
+        source,
+      });
+      assert.deepEqual(overflow.skillInvocation.failed, [
+        { reason: 'too_many_requests', requestLimit: 50 },
+      ]);
     });
   });
 });

@@ -1,3 +1,4 @@
+import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,8 +12,8 @@ import type {
   TaskOwner,
 } from '@maka/core';
 import type { SessionEvent } from '@maka/core/events';
+import { zodSchema } from 'ai';
 import { buildBuiltinTools } from '../builtin-tools.js';
-import { PermissionEngine } from '../permission-engine.js';
 import {
   AGENT_CONTEXT_ISOLATED,
   AGENT_INVOCATION_FOREGROUND,
@@ -33,6 +34,7 @@ import {
   evaluateAgentDefinitionAvailability,
   evaluateAgentDefinitionToolAccess,
   listBuiltinAgentDefinitions,
+  requireBuiltinAgentDefinitionByProfile,
 } from '../agent-catalog.js';
 import { AGENT_SWARM_TOOL_NAME } from '../agent-swarm-tools.js';
 import {
@@ -52,16 +54,50 @@ import { expect } from '../test-helpers.js';
 describe('subagent tools', () => {
   test('parent-facing agent tools declare permission hints and names', () => {
     const spawnTool = buildSubagentSpawnTool();
-    expect(spawnTool.permissionRequired).toBe(true);
     expect(spawnTool.categoryHint).toBe('subagent');
-    expect(buildSubagentListTool().permissionRequired).toBe(false);
-    expect(buildSubagentOutputTool().permissionRequired).toBe(false);
     expect(buildParentAgentTools().map((tool) => tool.name)).toEqual([
       AGENT_SPAWN_TOOL_NAME,
       AGENT_SWARM_TOOL_NAME,
       AGENT_LIST_TOOL_NAME,
       AGENT_OUTPUT_TOOL_NAME,
     ]);
+  });
+
+  test('agent_spawn advertises task_id only when task binding is available', async () => {
+    const advertisedProperties = async (tool: MakaTool) => {
+      const schema = (await zodSchema(tool.parameters as never).jsonSchema) as {
+        properties?: Record<string, unknown>;
+      };
+      return schema.properties ?? {};
+    };
+
+    expect(Object.keys(await advertisedProperties(buildSubagentSpawnTool()))).toEqual([
+      'profile',
+      'task',
+      'write_back',
+      'isolation',
+    ]);
+    expect(
+      Object.keys(
+        await advertisedProperties(
+          buildSubagentSpawnTool({ taskLedger: taskLedgerStub(undefined, []) }),
+        ),
+      ),
+    ).toEqual(['profile', 'task', 'write_back', 'isolation', 'task_id']);
+  });
+
+  test('agent_spawn rejects task_id when task binding is unavailable', () => {
+    const schema = buildSubagentSpawnTool().parameters as {
+      safeParse(input: unknown): { success: boolean };
+    };
+
+    expect(
+      schema.safeParse({
+        profile: LOCAL_READ_AGENT_PROFILE,
+        task: 'Inspect the repo.',
+        task_id: 'T1',
+      }).success,
+    ).toBe(false);
   });
 
   test('built-in catalog exposes local-read without shell, web, nested, or write tools', () => {
@@ -83,7 +119,6 @@ describe('subagent tools', () => {
     expect(LOCAL_READ_AGENT_DEFINITION.tools.includes('ExploreAgent')).toBe(false);
 
     const definitions = listBuiltinAgentDefinitions({
-      parentPermissionMode: 'ask',
       tools: [
         testCatalogTool('Read', 'read'),
         testCatalogTool('Glob', 'read'),
@@ -122,7 +157,6 @@ describe('subagent tools', () => {
     expect(WEB_RESEARCH_AGENT_DEFINITION.tools.includes('ExploreAgent')).toBe(false);
 
     const withWebSearch = listBuiltinAgentDefinitions({
-      parentPermissionMode: 'execute',
       tools: [
         testCatalogTool('Read', 'read'),
         testCatalogTool('Glob', 'read'),
@@ -148,7 +182,6 @@ describe('subagent tools', () => {
 
     expect(
       listBuiltinAgentDefinitions({
-        parentPermissionMode: 'execute',
         tools: [
           testCatalogTool('Read', 'read'),
           testCatalogTool('Glob', 'read'),
@@ -162,7 +195,6 @@ describe('subagent tools', () => {
     });
     expect(
       listBuiltinAgentDefinitions({
-        parentPermissionMode: 'ask',
         tools: [
           testCatalogTool('Read', 'read'),
           testCatalogTool('Glob', 'read'),
@@ -170,15 +202,10 @@ describe('subagent tools', () => {
           testCatalogTool('WebSearch', 'web_read'),
         ],
       }).find((definition) => definition.id === WEB_RESEARCH_AGENT_ID)?.availability,
-    ).toEqual({
-      status: 'unavailable',
-      reason: 'parent_permission_mode',
-      parentPermissionMode: 'ask',
-      requiredPermissionMode: 'execute',
-    });
+    ).toEqual({ status: 'available' });
   });
 
-  test('built-in catalog exposes implementation as a worktree-only fail-closed contract', async () => {
+  test('built-in catalog exposes implementation only when a worktree executor is available', async () => {
     expect(IMPLEMENTATION_AGENT_DEFINITION.id).toBe(IMPLEMENTATION_AGENT_ID);
     expect(IMPLEMENTATION_AGENT_DEFINITION.profile).toBe(IMPLEMENTATION_AGENT_PROFILE);
     expect(IMPLEMENTATION_AGENT_DEFINITION.contract).toEqual({
@@ -202,7 +229,6 @@ describe('subagent tools', () => {
     expect(IMPLEMENTATION_AGENT_DEFINITION.tools.includes('ExploreAgent')).toBe(false);
 
     const availability = listBuiltinAgentDefinitions({
-      parentPermissionMode: 'execute',
       tools: [
         testCatalogTool('Read', 'read'),
         testCatalogTool('Glob', 'read'),
@@ -222,7 +248,6 @@ describe('subagent tools', () => {
     await expectRejects(
       Promise.resolve().then(() =>
         assertAgentDefinitionRunnable({
-          parentPermissionMode: 'execute',
           definition: IMPLEMENTATION_AGENT_DEFINITION,
           tools: [
             testCatalogTool('Read', 'read'),
@@ -236,12 +261,36 @@ describe('subagent tools', () => {
       ),
       /worktree child executor/,
     );
+
+    const runnableAvailability = listBuiltinAgentDefinitions({
+      worktreeChildExecutorAvailable: true,
+      tools: [
+        testCatalogTool('Read', 'read'),
+        testCatalogTool('Glob', 'read'),
+        testCatalogTool('Grep', 'read'),
+        testCatalogTool('Write', 'file_write'),
+        testCatalogTool('Edit', 'file_write'),
+        testCatalogTool('Bash', 'shell_unsafe'),
+      ],
+    }).find((definition) => definition.id === IMPLEMENTATION_AGENT_ID)?.availability;
+    expect(runnableAvailability).toEqual({ status: 'available' });
+    assertAgentDefinitionRunnable({
+      worktreeChildExecutorAvailable: true,
+      definition: IMPLEMENTATION_AGENT_DEFINITION,
+      tools: [
+        testCatalogTool('Read', 'read'),
+        testCatalogTool('Glob', 'read'),
+        testCatalogTool('Grep', 'read'),
+        testCatalogTool('Write', 'file_write'),
+        testCatalogTool('Edit', 'file_write'),
+        testCatalogTool('Bash', 'shell_unsafe'),
+      ],
+    });
   });
 
-  test('agent definition availability reports missing tools and parent permission mismatches without running', () => {
+  test('agent definition availability depends on exposed tools, not legacy parent modes', () => {
     expect(
       evaluateAgentDefinitionAvailability({
-        parentPermissionMode: 'ask',
         definition: LOCAL_READ_AGENT_DEFINITION,
         tools: [testCatalogTool('Read', 'read')],
       }),
@@ -253,7 +302,6 @@ describe('subagent tools', () => {
 
     expect(
       evaluateAgentDefinitionAvailability({
-        parentPermissionMode: 'explore',
         definition: {
           ...LOCAL_READ_AGENT_DEFINITION,
           id: 'writer',
@@ -265,15 +313,10 @@ describe('subagent tools', () => {
           testCatalogTool('Grep', 'read'),
         ],
       }),
-    ).toEqual({
-      status: 'unavailable',
-      reason: 'parent_permission_mode',
-      parentPermissionMode: 'explore',
-      requiredPermissionMode: 'execute',
-    });
+    ).toEqual({ status: 'available' });
   });
 
-  test('agent definition policy evaluates each tool through allowlist and category policy', () => {
+  test('agent definition policy uses the explicit tool allowlist', () => {
     expect(
       evaluateAgentDefinitionToolAccess(
         LOCAL_READ_AGENT_DEFINITION,
@@ -298,35 +341,28 @@ describe('subagent tools', () => {
           ...LOCAL_READ_AGENT_DEFINITION,
           id: 'web-review',
           tools: ['WebSearch'],
-          categoryPolicy: { web_read: 'prompt' },
         },
         testCatalogTool('WebSearch', 'web_read'),
       ),
     ).toEqual({
       category: 'web_read',
-      decision: 'prompt',
+      decision: 'allow',
     });
   });
 
-  test('agent definition cannot require broader permissions than the parent turn', async () => {
-    await expectRejects(
-      Promise.resolve().then(() =>
-        assertAgentDefinitionRunnable({
-          parentPermissionMode: 'explore',
-          definition: {
-            ...LOCAL_READ_AGENT_DEFINITION,
-            id: 'writer',
-            permissionMode: 'execute',
-          },
-          tools: [
-            testCatalogTool('Read', 'read'),
-            testCatalogTool('Glob', 'read'),
-            testCatalogTool('Grep', 'read'),
-          ],
-        }),
-      ),
-      /cannot run in parent permission mode "explore" because it requires "execute"/,
-    );
+  test('legacy parent mode does not override the authoritative child boundary and tool surface', () => {
+    assertAgentDefinitionRunnable({
+      definition: {
+        ...LOCAL_READ_AGENT_DEFINITION,
+        id: 'writer',
+        permissionMode: 'execute',
+      },
+      tools: [
+        testCatalogTool('Read', 'read'),
+        testCatalogTool('Glob', 'read'),
+        testCatalogTool('Grep', 'read'),
+      ],
+    });
   });
 
   test('child agent toolset keeps only built-in profile allowlisted tools', () => {
@@ -355,11 +391,37 @@ describe('subagent tools', () => {
       },
     ]);
 
-    expect(tools.map((tool) => tool.name)).toEqual(['Read', 'Glob', 'Grep', 'WebSearch']);
-    expect([...CHILD_AGENT_TOOL_NAMES]).toEqual(['Read', 'Glob', 'Grep', 'WebSearch']);
-    expect(tools.some((tool) => tool.name === 'Bash')).toBe(false);
-    expect(tools.some((tool) => tool.name === 'Write')).toBe(false);
-    expect(tools.some((tool) => tool.name === 'Edit')).toBe(false);
+    expect(tools.map((tool) => tool.name)).toEqual([
+      'Read',
+      'Glob',
+      'Grep',
+      'WebSearch',
+      'Write',
+      'Edit',
+      'Bash',
+    ]);
+    expect([...CHILD_AGENT_TOOL_NAMES]).toEqual([
+      'Read',
+      'Glob',
+      'Grep',
+      'WebSearch',
+      'Write',
+      'Edit',
+      'Bash',
+    ]);
+  });
+
+  test('keeps host-provided ArchiveRead available for child recovery', () => {
+    const archiveRead = testCatalogTool('ArchiveRead', 'read');
+    const tools = buildChildAgentTools([
+      testCatalogTool('Read', 'read'),
+      testCatalogTool('Glob', 'read'),
+      testCatalogTool('Grep', 'read'),
+      testCatalogTool('WebSearch', 'web_read'),
+      archiveRead,
+    ]);
+
+    expect(tools.find((tool) => tool.name === 'ArchiveRead')).toBe(archiveRead);
   });
 
   test('child agent toolset enforces explore-mode read-only behavior without prompting', async () => {
@@ -377,7 +439,7 @@ describe('subagent tools', () => {
       await runTool(runtime, tools, 'Grep', { pattern: 'SUBAGENT_CHILD_TOOL_MARKER' }, events);
 
       expect(events.some((event) => event.type === 'permission_request')).toBe(false);
-      expect(tools.has('Bash')).toBe(false);
+      expect(tools.has('Bash')).toBe(true);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -401,7 +463,7 @@ describe('subagent tools', () => {
         toolCallId: 'tool-1',
         abortSignal: abortController.signal,
         emitOutput: (stream, chunk) => output.push({ stream, chunk }),
-        spawnChildAgent: async (input) => {
+        spawnChildSession: async (input) => {
           calls.push(input);
           input.onEvent?.({
             type: 'tool_start',
@@ -423,9 +485,11 @@ describe('subagent tools', () => {
             content: { kind: 'text', text: 'secret body' },
           });
           return {
-            agentId: input.spec.id,
-            agentName: input.spec.name,
+            childSessionId: 'child-session',
+            agentId: requireBuiltinAgentDefinitionByProfile(input.agentProfile).id,
+            agentName: requireBuiltinAgentDefinitionByProfile(input.agentProfile).name,
             turnId: 'child-turn',
+            runId: 'child-run',
             status: 'completed',
             permissionMode: 'explore',
             summary: 'done',
@@ -437,18 +501,13 @@ describe('subagent tools', () => {
 
     expect(tool.name).toBe(AGENT_SPAWN_TOOL_NAME);
     expect(tool.categoryHint).toBe('subagent');
-    expect(tool.permissionRequired).toBe(true);
     expect(calls).toHaveLength(1);
     const call = calls[0] as {
-      spec: unknown;
+      agentProfile: string;
       prompt: string;
       onEvent?: (event: SessionEvent) => void;
     };
-    expect(call.spec).toEqual({
-      id: LOCAL_READ_AGENT_ID,
-      name: 'Local Read',
-      systemPrompt: LOCAL_READ_AGENT_DEFINITION.systemPrompt,
-    });
+    expect(call.agentProfile).toBe(LOCAL_READ_AGENT_PROFILE);
     expect(call.prompt).toBe('Inspect the runtime tests.');
     expect(typeof call.onEvent).toBe('function');
     expect(output).toEqual([
@@ -461,9 +520,11 @@ describe('subagent tools', () => {
     expect(JSON.stringify(output)).not.toContain('secret body');
     expect(result).toEqual({
       kind: 'subagent',
+      childSessionId: 'child-session',
       agentId: LOCAL_READ_AGENT_ID,
       agentName: 'Local Read',
       turnId: 'child-turn',
+      runId: 'child-run',
       status: 'completed',
       permissionMode: 'explore',
       summary: 'done',
@@ -487,7 +548,7 @@ describe('subagent tools', () => {
         toolCallId: 'tool-1',
         abortSignal: new AbortController().signal,
         emitOutput: (_stream, chunk) => output.push(chunk),
-        spawnChildAgent: async (input) => {
+        spawnChildSession: async (input) => {
           for (let index = 0; index < 100; index += 1) {
             input.onEvent?.({
               type: 'tool_start',
@@ -500,8 +561,8 @@ describe('subagent tools', () => {
             });
           }
           return {
-            agentId: input.spec.id,
-            agentName: input.spec.name,
+            agentId: requireBuiltinAgentDefinitionByProfile(input.agentProfile).id,
+            agentName: requireBuiltinAgentDefinitionByProfile(input.agentProfile).name,
             turnId: 'child-turn',
             status: 'completed',
             permissionMode: 'explore',
@@ -535,7 +596,7 @@ describe('subagent tools', () => {
             toolCallId: 'tool-1',
             abortSignal: new AbortController().signal,
             emitOutput: (_stream, chunk) => output.push(chunk),
-            spawnChildAgent: async () => {
+            spawnChildSession: async () => {
               throw new Error('x'.repeat(10_000));
             },
           },
@@ -566,11 +627,11 @@ describe('subagent tools', () => {
         toolCallId: 'tool-1',
         abortSignal: new AbortController().signal,
         emitOutput: () => {},
-        spawnChildAgent: async (input) => {
+        spawnChildSession: async (input) => {
           calls.push(input);
           return {
-            agentId: input.spec.id,
-            agentName: input.spec.name,
+            agentId: requireBuiltinAgentDefinitionByProfile(input.agentProfile).id,
+            agentName: requireBuiltinAgentDefinitionByProfile(input.agentProfile).name,
             turnId: 'child-turn',
             status: 'completed',
             permissionMode: 'execute',
@@ -583,15 +644,11 @@ describe('subagent tools', () => {
 
     expect(calls).toHaveLength(1);
     const call = calls[0] as {
-      spec: unknown;
+      agentProfile: string;
       prompt: string;
       onEvent?: (event: SessionEvent) => void;
     };
-    expect(call.spec).toEqual({
-      id: WEB_RESEARCH_AGENT_ID,
-      name: 'Web Research',
-      systemPrompt: WEB_RESEARCH_AGENT_DEFINITION.systemPrompt,
-    });
+    expect(call.agentProfile).toBe(WEB_RESEARCH_AGENT_PROFILE);
     expect(call.prompt).toBe('Find current sources.');
     expect(typeof call.onEvent).toBe('function');
     expect(result).toMatchObject({
@@ -627,15 +684,17 @@ describe('subagent tools', () => {
         toolCallId: 'tool-1',
         abortSignal: new AbortController().signal,
         emitOutput: () => {},
-        spawnChildAgent: async (input) => {
+        spawnChildSession: async (input) => {
           await input.onReady?.({
+            childSessionId: 'child-session',
+            runId: 'child-run',
             turnId: 'child-turn',
-            agentId: input.spec.id,
-            agentName: input.spec.name,
+            agentId: requireBuiltinAgentDefinitionByProfile(input.agentProfile).id,
+            agentName: requireBuiltinAgentDefinitionByProfile(input.agentProfile).name,
           });
           return {
-            agentId: input.spec.id,
-            agentName: input.spec.name,
+            agentId: requireBuiltinAgentDefinitionByProfile(input.agentProfile).id,
+            agentName: requireBuiltinAgentDefinitionByProfile(input.agentProfile).name,
             runId: 'child-run',
             turnId: 'child-turn',
             status: 'completed',
@@ -650,81 +709,12 @@ describe('subagent tools', () => {
     expect(task.status).toBe('in_progress');
     expect(task.owner).toEqual({
       actor: 'child_agent',
+      sessionId: 'child-session',
       agentId: LOCAL_READ_AGENT_ID,
       runId: 'child-run',
       turnId: 'child-turn',
     });
     expect(result).toMatchObject({ kind: 'subagent', runId: 'child-run', status: 'completed' });
-  });
-
-  test('agent_spawn permission denial leaves a bound task untouched and never starts a child', async () => {
-    const task: Task = {
-      id: 'task-permission-denied',
-      key: 'T1',
-      subject: 'inspect runtime',
-      status: 'pending',
-      createdAt: 1,
-      updatedAt: 1,
-    };
-    const calls: string[] = [];
-    const events: SessionEvent[] = [];
-    const permissionEngine = new PermissionEngine({ newId: nextId(), now: () => 1 });
-    permissionEngine.beginTurn('parent-turn');
-    const header = childHeader('/tmp/cwd');
-    header.permissionMode = 'ask';
-    let spawned = false;
-    const runtime = new ToolRuntime({
-      sessionId: 'session-1',
-      header,
-      connection: testConnection(),
-      modelId: 'mock-model',
-      appendMessage: async () => {},
-      permissionEngine,
-      newId: nextId(),
-      now: () => 1,
-      getPermissionPauseTarget: () => null,
-      getCurrentRunId: () => 'parent-run',
-      spawnChildAgent: async () => {
-        spawned = true;
-        return {};
-      },
-    });
-    const tool = buildSubagentSpawnTool({ taskLedger: taskLedgerStub(task, calls) });
-    const execute = runtime.wrapToolExecute(tool, 'parent-turn', {
-      push: (event) => events.push(event),
-    });
-
-    const pending = execute(
-      {
-        profile: LOCAL_READ_AGENT_PROFILE,
-        task: 'Inspect the runtime tests.',
-        task_id: task.key,
-      },
-      {
-        toolCallId: 'tool-agent-spawn-denied',
-        abortSignal: new AbortController().signal,
-      },
-    );
-    await waitFor(() => events.some((event) => event.type === 'permission_request'));
-    const request = events.find(
-      (event): event is Extract<SessionEvent, { type: 'permission_request' }> =>
-        event.type === 'permission_request',
-    );
-    expect(request).toBeDefined();
-    expect(calls).toEqual([]);
-    expect(spawned).toBe(false);
-
-    permissionEngine.recordResponse('parent-turn', {
-      requestId: request?.requestId ?? 'missing',
-      decision: 'deny',
-    });
-    const result = await pending;
-
-    expect(result).toMatchObject({ error: '用户已拒绝权限请求' });
-    expect(calls).toEqual([]);
-    expect(spawned).toBe(false);
-    expect(task.status).toBe('pending');
-    expect(task.owner).toBeUndefined();
   });
 
   test('agent_spawn rejects a forged task reference before starting a child', async () => {
@@ -746,7 +736,7 @@ describe('subagent tools', () => {
             toolCallId: 'tool-1',
             abortSignal: new AbortController().signal,
             emitOutput: () => {},
-            spawnChildAgent: async () => {
+            spawnChildSession: async () => {
               spawned = true;
               return {};
             },
@@ -783,15 +773,17 @@ describe('subagent tools', () => {
           toolCallId: 'tool-1',
           abortSignal: new AbortController().signal,
           emitOutput: () => {},
-          spawnChildAgent: async (input) => {
+          spawnChildSession: async (input) => {
             await input.onReady?.({
+              childSessionId: 'child-session',
+              runId: 'child-run',
               turnId: `child-${status}`,
-              agentId: input.spec.id,
-              agentName: input.spec.name,
+              agentId: requireBuiltinAgentDefinitionByProfile(input.agentProfile).id,
+              agentName: requireBuiltinAgentDefinitionByProfile(input.agentProfile).name,
             });
             return {
-              agentId: input.spec.id,
-              agentName: input.spec.name,
+              agentId: requireBuiltinAgentDefinitionByProfile(input.agentProfile).id,
+              agentName: requireBuiltinAgentDefinitionByProfile(input.agentProfile).name,
               runId: `run-${status}`,
               turnId: `child-${status}`,
               status,
@@ -810,6 +802,7 @@ describe('subagent tools', () => {
       expect(task.status).toBe(status);
       expect(task.owner).toEqual({
         actor: 'child_agent',
+        sessionId: 'child-session',
         agentId: LOCAL_READ_AGENT_ID,
         runId: `run-${status}`,
         turnId: `child-${status}`,
@@ -844,11 +837,13 @@ describe('subagent tools', () => {
             toolCallId: 'tool-1',
             abortSignal: new AbortController().signal,
             emitOutput: () => {},
-            spawnChildAgent: async (input) => {
+            spawnChildSession: async (input) => {
               await input.onReady?.({
+                childSessionId: 'child-session',
+                runId: 'child-run',
                 turnId: 'child-turn',
-                agentId: input.spec.id,
-                agentName: input.spec.name,
+                agentId: requireBuiltinAgentDefinitionByProfile(input.agentProfile).id,
+                agentName: requireBuiltinAgentDefinitionByProfile(input.agentProfile).name,
               });
               throw new Error('child startup failed');
             },
@@ -889,7 +884,7 @@ describe('subagent tools', () => {
             toolCallId: 'tool-1',
             abortSignal: new AbortController().signal,
             emitOutput: () => {},
-            spawnChildAgent: async () => {
+            spawnChildSession: async () => {
               spawned = true;
               return {};
             },
@@ -901,7 +896,7 @@ describe('subagent tools', () => {
     expect(spawned).toBe(false);
   });
 
-  test('agent_spawn validates profile contracts and rejects unavailable worktree agents before spawning', async () => {
+  test('agent_spawn validates profile contracts and delegates worktree availability to runtime', async () => {
     const tool = buildSubagentSpawnTool();
     const schema = tool.parameters as {
       safeParse(input: unknown): { success: boolean; data?: unknown };
@@ -990,30 +985,42 @@ describe('subagent tools', () => {
         .success,
     ).toBe(false);
 
-    await expectRejects(
-      Promise.resolve(
-        tool.impl(
-          {
-            profile: IMPLEMENTATION_AGENT_PROFILE,
-            task: 'Edit files.',
-            write_back: AGENT_WRITE_BACK_PATCH,
-            isolation: AGENT_WORKSPACE_WORKTREE,
-          },
-          {
-            sessionId: 'session-1',
-            turnId: 'parent-turn',
-            cwd: '/tmp/cwd',
-            toolCallId: 'tool-1',
-            abortSignal: new AbortController().signal,
-            emitOutput: () => {},
-            spawnChildAgent: async () => {
-              throw new Error('spawn should not be called');
-            },
-          },
-        ),
-      ),
-      /worktree child executor/,
+    const calls: unknown[] = [];
+    await tool.impl(
+      {
+        profile: IMPLEMENTATION_AGENT_PROFILE,
+        task: 'Edit files.',
+        write_back: AGENT_WRITE_BACK_PATCH,
+        isolation: AGENT_WORKSPACE_WORKTREE,
+      },
+      {
+        sessionId: 'session-1',
+        turnId: 'parent-turn',
+        cwd: '/tmp/cwd',
+        toolCallId: 'tool-1',
+        abortSignal: new AbortController().signal,
+        emitOutput: () => {},
+        spawnChildSession: async (input) => {
+          calls.push(input);
+          return {
+            childSessionId: 'child-session',
+            agentId: IMPLEMENTATION_AGENT_ID,
+            agentName: 'Implementation',
+            turnId: 'child-turn',
+            runId: 'child-run',
+            status: 'completed',
+            permissionMode: 'execute',
+            summary: 'done',
+            artifactIds: [],
+          };
+        },
+      },
     );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      agentProfile: IMPLEMENTATION_AGENT_PROFILE,
+      prompt: 'Edit files.',
+    });
   });
 
   test('agent projection tools delegate through read-only context capabilities', async () => {
@@ -1047,39 +1054,116 @@ describe('subagent tools', () => {
         readChildAgentOutput: async (input) => ({ requested: input }),
       },
     );
+    const childSessionOutput = await outputTool.impl(
+      { child_session_id: 'child-session', run_id: 'child-session-run' },
+      {
+        sessionId: 'session-1',
+        turnId: 'parent-turn',
+        cwd: '/tmp/cwd',
+        toolCallId: 'tool-output-child-session',
+        abortSignal: new AbortController().signal,
+        emitOutput: () => {},
+        readChildAgentOutput: async (input) => ({ requested: input }),
+      },
+    );
 
     expect(listTool.name).toBe(AGENT_LIST_TOOL_NAME);
     expect(outputTool.name).toBe(AGENT_OUTPUT_TOOL_NAME);
-    expect(listTool.permissionRequired).toBe(false);
-    expect(outputTool.permissionRequired).toBe(false);
     expect(list).toEqual({
       definitions: [{ id: LOCAL_READ_AGENT_ID }],
       runs: [{ runId: 'child-run', turnId: 'child-turn' }],
     });
-    expect(output).toEqual({ requested: { runId: 'child-run' } });
+    expect(output).toEqual({
+      requested: {
+        execution: {
+          kind: 'legacy_child_run',
+          sessionId: 'session-1',
+          runId: 'child-run',
+        },
+      },
+    });
+    expect(childSessionOutput).toEqual({
+      requested: {
+        execution: {
+          kind: 'child_session',
+          sessionId: 'child-session',
+          currentRunId: 'child-session-run',
+        },
+      },
+    });
   });
 
-  test('agent_output requires exactly one run locator', () => {
+  test('agent_output accepts linked child-session and legacy run locators', () => {
     const outputTool = buildSubagentOutputTool();
     const schema = outputTool.parameters as { safeParse(input: unknown): { success: boolean } };
 
     expect(schema.safeParse({ run_id: 'child-run' }).success).toBe(true);
+    expect(schema.safeParse({ run_id: 'child-run', view: 'result' }).success).toBe(true);
     expect(schema.safeParse({ turn_id: 'child-turn' }).success).toBe(true);
+    expect(schema.safeParse({ child_session_id: 'child-session' }).success).toBe(true);
+    expect(
+      schema.safeParse({
+        child_session_id: 'child-session',
+        run_id: 'child-run',
+      }).success,
+    ).toBe(true);
     expect(schema.safeParse({}).success).toBe(false);
     expect(schema.safeParse({ run_id: 'child-run', turn_id: 'child-turn' }).success).toBe(false);
+    expect(
+      schema.safeParse({
+        child_session_id: 'child-session',
+        turn_id: 'child-turn',
+      }).success,
+    ).toBe(false);
+    expect(schema.safeParse({ child_session_id: '' }).success).toBe(false);
+    expect(schema.safeParse({ run_id: '' }).success).toBe(false);
+  });
+
+  test('agent_output uses an explicit locator when a provider fills unrelated fields', async () => {
+    const outputTool = buildSubagentOutputTool();
+    const output = await outputTool.impl(
+      {
+        locator: 'child_session_run',
+        child_session_id: 'child-session',
+        run_id: 'child-run',
+        turn_id: 'provider-placeholder',
+        max_events: 100,
+        max_bytes: 32_768,
+        view: 'runtime_events',
+      },
+      {
+        sessionId: 'session-1',
+        turnId: 'parent-turn',
+        cwd: '/tmp/cwd',
+        toolCallId: 'tool-output-provider-filled',
+        abortSignal: new AbortController().signal,
+        emitOutput: () => {},
+        readChildAgentOutput: async (input) => ({ requested: input }),
+      },
+    );
+
+    expect(output).toEqual({
+      requested: {
+        execution: {
+          kind: 'child_session',
+          sessionId: 'child-session',
+          currentRunId: 'child-run',
+        },
+        maxEvents: 100,
+        maxBytes: 32_768,
+        view: 'runtime_events',
+      },
+    });
   });
 });
 
 function makeChildToolRuntime(cwd: string): ToolRuntime {
-  const permissionEngine = new PermissionEngine({ newId: nextId(), now: () => 1 });
-  permissionEngine.beginTurn('child-turn');
-  return new ToolRuntime({
+  return createTestToolRuntime({
     sessionId: 'session-1',
     header: childHeader(cwd),
     connection: testConnection(),
     modelId: 'mock-model',
     appendMessage: async () => {},
-    permissionEngine,
     newId: nextId(),
     now: () => 1,
     getPermissionPauseTarget: () => null,
@@ -1095,12 +1179,21 @@ async function runTool(
 ): Promise<unknown> {
   const tool = tools.get(name);
   if (!tool) throw new Error(`Missing child tool ${name}`);
-  return await runtime.wrapToolExecute(tool, 'child-turn', {
-    push: (event) => events.push(event),
-  })(args, {
-    toolCallId: `tool-${name}-${typeof args === 'object' && args && 'command' in args ? (args as { command: string }).command : 'read'}`,
-    abortSignal: new AbortController().signal,
-  });
+  return (
+    await runtime.settleToolCall({
+      tool,
+      turnId: 'child-turn',
+      toolCallId: `tool-${name}-${typeof args === 'object' && args && 'command' in args ? (args as { command: string }).command : 'read'}`,
+      input: args,
+      abortSignal: new AbortController().signal,
+      eventSink: {
+        push: (event) => events.push(event),
+        pushAndWaitUntilConsumed: async (event) => {
+          events.push(event);
+        },
+      },
+    })
+  ).result;
 }
 
 function testCatalogTool(name: string, categoryHint: MakaTool['categoryHint']): MakaTool {

@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { after, describe, test } from 'node:test';
-import type { LlmConnection, SessionEvent, SessionHeader } from '@maka/core';
+import type {
+  AgentRunHeader,
+  LlmConnection,
+  SessionEvent,
+  SessionHeader,
+  StoredMessage,
+} from '@maka/core';
 
 import { AiSdkBackend } from '../ai-sdk-backend.js';
 import {
@@ -10,7 +16,13 @@ import {
   type CuObservation,
 } from '../computer-use-tools.js';
 import { buildProviderOptions, getAIModel } from '../model-factory.js';
-import { PermissionEngine } from '../permission-engine.js';
+import type {
+  ProviderRequestAttemptRecord,
+  ProviderRequestCaptureRecord,
+} from '../provider-request-telemetry.js';
+import { backfillRuntimeEventsFromStoredMessages } from '../runtime-event-backfill.js';
+import { createDurableTurnHarness } from './durable-turn-harness.js';
+import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 
 const servers: Array<{ close(): Promise<void> }> = [];
 
@@ -66,7 +78,15 @@ describe('Anthropic-compatible Computer Use product loops', () => {
     },
   ] as const) {
     test(`${provider.providerType}/${provider.modelId} completes a multi-step semantic model loop`, async () => {
+      const sessionId = `session-${provider.providerType}`;
+      const durable = createDurableTurnHarness({
+        sessionId,
+        turnId: 'turn-1',
+        text: 'Set the fixture field to provider-loop.',
+      });
       const requestBodies: Array<Record<string, unknown>> = [];
+      const captures: ProviderRequestCaptureRecord[] = [];
+      const attempts: ProviderRequestAttemptRecord[] = [];
       const server = await startJsonServer(async (request, response) => {
         assert.equal(request.method, 'POST');
         assert.equal(request.url, provider.expectedPath);
@@ -88,7 +108,13 @@ describe('Anthropic-compatible Computer Use product loops', () => {
               : step === 3
                 ? semanticInputFromMessages(body.messages)
                 : undefined;
-        respondAnthropicStream(response, provider.modelId, step, toolInput);
+        respondAnthropicStream(
+          response,
+          provider.modelId,
+          step,
+          toolInput,
+          provider.expectedThinking !== undefined,
+        );
       });
       const value = { current: '' };
       const [computerTool] = buildComputerUseTools({
@@ -103,30 +129,31 @@ describe('Anthropic-compatible Computer Use product loops', () => {
         provider.apiProtocol,
         provider.expectedWireOutputLimit,
       );
-      const runtime = new AiSdkBackend({
-        sessionId: `session-${provider.providerType}`,
+      const runtime = createTestAiSdkBackend({
+        sessionId,
         header: header(provider.providerType, provider.modelId),
         appendMessage: async () => {},
         connection: providerConnection,
         apiKey: 'test-key',
         modelId: provider.modelId,
-        permissionEngine: new PermissionEngine({
-          newId: () => 'permission-id',
-          now: () => 1,
-        }),
         modelFactory: (input) => getAIModel(input),
         providerOptions: buildProviderOptions(providerConnection, provider.modelId),
         tools: [computerTool],
         maxSteps: 6,
+        loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
         newId: idGenerator(),
         now: monotonicClock(),
+        recordProviderRequestCapture: async (capture) => {
+          captures.push(capture);
+          return { artifactId: `capture-artifact-${captures.length}` };
+        },
+        recordProviderRequestAttempt: (attempt) => {
+          attempts.push(attempt);
+        },
       });
 
-      for await (const event of runtime.send({
-        turnId: 'turn-1',
-        text: 'Set the fixture field to provider-loop.',
-        context: [],
-      })) {
+      for await (const event of runtime.send(durable.sendInput())) {
+        durable.record(event);
         events.push(event);
         if (event.type === 'tool_result') {
           toolResults.push({ isError: event.isError });
@@ -144,6 +171,8 @@ describe('Anthropic-compatible Computer Use product loops', () => {
       );
       assert.equal(events.at(-1)?.type, 'complete');
       assert.equal(requestBodies.length, 4);
+      assert.equal(captures.length, 4);
+      assert.equal(attempts.length, 4);
       assert.deepEqual(toolResults, [{ isError: false }, { isError: false }, { isError: false }]);
       assert.deepEqual(
         (requestBodies[0].tools as Array<{ name: string }>).map((tool) => tool.name),
@@ -158,6 +187,20 @@ describe('Anthropic-compatible Computer Use product loops', () => {
           );
           assert.deepEqual(body.output_config, { effort: 'max' });
         }
+        assertAnthropicThinkingReplay(requestBodies[1]?.messages, 1);
+        assertAnthropicThinkingReplay(requestBodies[2]?.messages, 2);
+        assertAnthropicThinkingReplay(requestBodies[3]?.messages, 3);
+      }
+      for (const attempt of attempts) {
+        assert.equal(attempt.status, 'completed');
+        assert.equal(attempt.inputTokens, 15);
+        assert.equal(attempt.cacheReadInputTokens, 4);
+        assert.equal(attempt.cacheReadInputSource, 'provider');
+        assert.equal(attempt.cacheWriteInputTokens, 1);
+        assert.equal(attempt.cacheWriteInputSource, 'provider');
+        assert.equal(attempt.cacheMissInputTokens, 10);
+        assert.equal(attempt.cacheMissInputSource, 'provider');
+        assert.equal(attempt.outputTokens, 5);
       }
       for (const body of requestBodies) {
         assert.equal(
@@ -184,6 +227,12 @@ describe('Anthropic-compatible Computer Use product loops', () => {
     });
 
     test(`${provider.providerType}/${provider.modelId} reinjects a failed semantic action as an error tool result`, async () => {
+      const sessionId = `session-${provider.providerType}-failure`;
+      const durable = createDurableTurnHarness({
+        sessionId,
+        turnId: 'turn-failure',
+        text: 'Attempt to update the fixture field.',
+      });
       const requestBodies: Array<Record<string, unknown>> = [];
       const server = await startJsonServer(async (request, response) => {
         assert.equal(request.method, 'POST');
@@ -211,8 +260,8 @@ describe('Anthropic-compatible Computer Use product loops', () => {
         backend: failingSemanticBackend(value),
       });
       const events: SessionEvent[] = [];
-      const runtime = new AiSdkBackend({
-        sessionId: `session-${provider.providerType}-failure`,
+      const runtime = createTestAiSdkBackend({
+        sessionId,
         header: header(provider.providerType, provider.modelId),
         appendMessage: async () => {},
         connection: connection(
@@ -224,22 +273,16 @@ describe('Anthropic-compatible Computer Use product loops', () => {
         ),
         apiKey: 'test-key',
         modelId: provider.modelId,
-        permissionEngine: new PermissionEngine({
-          newId: () => 'permission-id',
-          now: () => 1,
-        }),
         modelFactory: (input) => getAIModel(input),
         tools: [computerTool],
         maxSteps: 4,
+        loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
         newId: idGenerator(),
         now: monotonicClock(),
       });
 
-      for await (const event of runtime.send({
-        turnId: 'turn-failure',
-        text: 'Attempt to update the fixture field.',
-        context: [],
-      })) {
+      for await (const event of runtime.send(durable.sendInput())) {
+        durable.record(event);
         events.push(event);
       }
 
@@ -272,6 +315,406 @@ describe('Anthropic-compatible Computer Use product loops', () => {
       assert.match(JSON.stringify(reinjectedFailure), /computer\.set_value failed/);
     });
   }
+});
+
+describe('Kimi OpenAI-compatible product loop', () => {
+  test('reconstructs a recovered reasoning and tool-call step as one assistant message', async () => {
+    const sessionId = 'session-kimi-openai-recovered-tool-step';
+    const previousTurnId = 'turn-kimi-openai-recovered-tool-step-1';
+    const currentTurn = createDurableTurnHarness({
+      sessionId,
+      turnId: 'turn-kimi-openai-recovered-tool-step-2',
+      text: 'Continue after the recovered tool step.',
+    });
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const server = await startJsonServer(async (request, response) => {
+      assert.equal(request.method, 'POST');
+      assert.equal(request.url, '/coding/v1/chat/completions');
+      requestBodies.push(JSON.parse(await readBody(request)) as Record<string, unknown>);
+      respondOpenAiTextStream(response, 'k3', 1, 'reasoning_content', 'next step');
+    });
+    const providerConnection = connection(
+      'kimi-coding-plan',
+      `${server.url}/coding`,
+      'k3',
+      'openai-chat',
+      131_072,
+    );
+    const recovered = backfillRuntimeEventsFromStoredMessages({
+      run: {
+        runId: 'run-kimi-openai-recovered-tool-step',
+        invocationId: 'invocation-kimi-openai-recovered-tool-step',
+        sessionId,
+        turnId: previousTurnId,
+        status: 'completed',
+        backendKind: 'ai-sdk',
+        llmConnectionSlug: providerConnection.slug,
+        modelId: 'k3',
+        cwd: '/tmp/maka',
+        permissionMode: 'ask',
+        createdAt: 1,
+        updatedAt: 5,
+        completedAt: 5,
+      } satisfies AgentRunHeader,
+      messages: [
+        {
+          type: 'user',
+          id: 'stored-user-recovered',
+          turnId: previousTurnId,
+          ts: 1,
+          text: 'Inspect the application.',
+        },
+        {
+          type: 'assistant',
+          id: 'stored-step-recovered',
+          turnId: previousTurnId,
+          ts: 2,
+          text: 'I will inspect it.',
+          modelId: 'k3',
+          thinking: {
+            text: '',
+            providerOptions: { maka: { kimiReasoningField: 'reasoning_content' } },
+          },
+        },
+        {
+          type: 'tool_call',
+          id: 'call-recovered',
+          turnId: previousTurnId,
+          ts: 3,
+          toolName: 'maka_computer',
+          args: { action: 'list_apps' },
+          stepId: 'stored-step-recovered',
+        },
+        {
+          type: 'tool_result',
+          id: 'result-recovered',
+          turnId: previousTurnId,
+          ts: 4,
+          toolUseId: 'call-recovered',
+          isError: false,
+          content: { kind: 'text', text: 'Application list' },
+        },
+      ] satisfies StoredMessage[],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const runtime = createTestAiSdkBackend({
+      sessionId,
+      header: header('kimi-coding-plan', 'k3'),
+      appendMessage: async () => {},
+      connection: providerConnection,
+      apiKey: 'test-key',
+      modelId: 'k3',
+      modelFactory: (input) => getAIModel(input),
+      providerOptions: buildProviderOptions(providerConnection, 'k3'),
+      tools: [],
+      maxSteps: 1,
+      loadTurnRuntimeEvents: currentTurn.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    for await (const event of runtime.send(
+      currentTurn.sendInput({ runtimeContext: recovered.events }),
+    )) {
+      currentTurn.record(event);
+    }
+
+    assert.equal(requestBodies.length, 1);
+    const messages = requestBodies[0]!.messages;
+    assert.ok(Array.isArray(messages));
+    const replayedStep = messages.find(
+      (message) =>
+        isRecord(message) &&
+        message.role === 'assistant' &&
+        Array.isArray(message.tool_calls) &&
+        message.tool_calls.some(
+          (toolCall) => isRecord(toolCall) && toolCall.id === 'call-recovered',
+        ),
+    );
+    assert.ok(replayedStep && isRecord(replayedStep));
+    assert.equal(replayedStep.content, 'I will inspect it.');
+    assert.equal(replayedStep.reasoning_content, '');
+    const replayedResult = messages.find(
+      (message) =>
+        isRecord(message) && message.role === 'tool' && message.tool_call_id === 'call-recovered',
+    );
+    assert.ok(replayedResult, 'the recovered result must follow its reconstructed tool call');
+  });
+
+  test('replays explicit empty reasoning after missing-ledger recovery and backend recreation', async () => {
+    const sessionId = 'session-kimi-openai-cross-turn';
+    const firstTurn = createDurableTurnHarness({
+      sessionId,
+      turnId: 'turn-kimi-openai-1',
+      text: 'First turn.',
+    });
+    const secondTurn = createDurableTurnHarness({
+      sessionId,
+      turnId: 'turn-kimi-openai-2',
+      text: 'Second turn.',
+    });
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const storedMessages: StoredMessage[] = [
+      {
+        type: 'user',
+        id: 'stored-user-1',
+        turnId: firstTurn.anchor.turnId,
+        ts: firstTurn.anchor.ts,
+        text: 'First turn.',
+      },
+    ];
+    const server = await startJsonServer(async (request, response) => {
+      assert.equal(request.method, 'POST');
+      assert.equal(request.url, '/coding/v1/chat/completions');
+      const body = JSON.parse(await readBody(request)) as Record<string, unknown>;
+      requestBodies.push(body);
+      const step = requestBodies.length;
+      respondOpenAiTextStream(response, 'k3', step, 'reasoning', step === 1 ? '' : 'second');
+    });
+    const providerConnection = connection(
+      'kimi-coding-plan',
+      `${server.url}/coding`,
+      'k3',
+      'openai-chat',
+      131_072,
+    );
+    const createRuntime = () =>
+      createTestAiSdkBackend({
+        sessionId,
+        header: header('kimi-coding-plan', 'k3'),
+        appendMessage: async (message) => {
+          storedMessages.push(structuredClone(message));
+        },
+        connection: providerConnection,
+        apiKey: 'test-key',
+        modelId: 'k3',
+        modelFactory: (input) => getAIModel(input),
+        providerOptions: buildProviderOptions(providerConnection, 'k3'),
+        tools: [],
+        maxSteps: 1,
+        loadTurnRuntimeEvents: async (turnId) =>
+          [...firstTurn.ledger, ...secondTurn.ledger].filter((event) => event.turnId === turnId),
+        newId: idGenerator(),
+        now: monotonicClock(),
+      });
+
+    for await (const event of createRuntime().send(firstTurn.sendInput())) firstTurn.record(event);
+    assert.ok(
+      firstTurn.ledger.some(
+        (event) => event.content?.kind === 'thinking' && event.content.text === '',
+      ),
+      'the first turn must durably preserve the provider-authored empty reasoning field',
+    );
+
+    const recovered = backfillRuntimeEventsFromStoredMessages({
+      run: {
+        runId: firstTurn.anchor.runId,
+        invocationId: firstTurn.anchor.invocationId,
+        sessionId,
+        turnId: firstTurn.anchor.turnId,
+        status: 'completed',
+        backendKind: 'ai-sdk',
+        llmConnectionSlug: providerConnection.slug,
+        modelId: 'k3',
+        cwd: '/tmp/maka',
+        permissionMode: 'ask',
+        createdAt: firstTurn.anchor.ts,
+        updatedAt: firstTurn.anchor.ts + 1,
+        completedAt: firstTurn.anchor.ts + 1,
+      } satisfies AgentRunHeader,
+      messages: storedMessages,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    assert.ok(
+      recovered.events.some(
+        (event) =>
+          event.content?.kind === 'thinking' &&
+          event.content.text === '' &&
+          isRecord(event.content.providerOptions),
+      ),
+      'missing-ledger recovery must preserve explicit empty reasoning and its provider dialect',
+    );
+
+    for await (const event of createRuntime().send(
+      secondTurn.sendInput({ runtimeContext: recovered.events }),
+    )) {
+      secondTurn.record(event);
+    }
+
+    assert.equal(requestBodies.length, 2);
+    const replayedAssistant = (requestBodies[1]!.messages as unknown[]).find(
+      (message) =>
+        isRecord(message) &&
+        message.role === 'assistant' &&
+        (typeof message.reasoning === 'string' || typeof message.reasoning_content === 'string'),
+    );
+    assert.ok(replayedAssistant && isRecord(replayedAssistant));
+    assert.equal(replayedAssistant.reasoning, '', JSON.stringify(requestBodies[1]!.messages));
+    assert.equal(replayedAssistant.reasoning_content, undefined);
+  });
+
+  test('preserves reasoning, tool pairing, and normalized request telemetry across steps', async () => {
+    const sessionId = 'session-kimi-openai';
+    const durable = createDurableTurnHarness({
+      sessionId,
+      turnId: 'turn-kimi-openai',
+      text: 'Set the fixture field to provider-loop.',
+    });
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const captures: ProviderRequestCaptureRecord[] = [];
+    const attempts: ProviderRequestAttemptRecord[] = [];
+    const server = await startJsonServer(async (request, response) => {
+      assert.equal(request.method, 'POST');
+      assert.equal(request.url, '/coding/v1/chat/completions');
+      assert.equal(request.headers.authorization, 'Bearer test-key');
+      const body = JSON.parse(await readBody(request)) as Record<string, unknown>;
+      requestBodies.push(body);
+      const step = requestBodies.length;
+      const toolInput =
+        step === 1
+          ? { action: 'list_apps' }
+          : step === 2
+            ? {
+                action: 'observe',
+                app: 'pid:42',
+                window_id: 7,
+                include_screenshot: false,
+              }
+            : step === 3
+              ? semanticInputFromMessages(body.messages)
+              : undefined;
+      respondOpenAiStream(response, 'k3', step, toolInput);
+    });
+    const value = { current: '' };
+    const [computerTool] = buildComputerUseTools({
+      backend: fakeSemanticBackend(value),
+    });
+    const providerConnection = connection(
+      'kimi-coding-plan',
+      `${server.url}/coding`,
+      'k3',
+      'openai-chat',
+      131_072,
+    );
+    const events: SessionEvent[] = [];
+    const runtime = createTestAiSdkBackend({
+      sessionId,
+      header: header('kimi-coding-plan', 'k3'),
+      appendMessage: async () => {},
+      connection: providerConnection,
+      apiKey: 'test-key',
+      modelId: 'k3',
+      modelFactory: (input) => getAIModel(input),
+      providerOptions: buildProviderOptions(providerConnection, 'k3'),
+      tools: [computerTool],
+      maxSteps: 4,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+      recordProviderRequestCapture: async (capture) => {
+        captures.push(capture);
+        return { artifactId: `capture-artifact-${captures.length}` };
+      },
+      recordProviderRequestAttempt: (attempt) => {
+        attempts.push(attempt);
+      },
+    });
+
+    for await (const event of runtime.send(durable.sendInput())) {
+      durable.record(event);
+      events.push(event);
+    }
+
+    assert.equal(
+      value.current,
+      'provider-loop',
+      JSON.stringify({
+        requestBodies,
+        eventTypes: events.map((event) => event.type),
+        attempts: attempts.map((attempt) => ({
+          step: attempt.step,
+          status: attempt.status,
+          finishReason: attempt.finishReason,
+        })),
+      }),
+    );
+    assert.equal(events.at(-1)?.type, 'complete');
+    assert.equal(requestBodies.length, 4);
+    assert.equal(captures.length, 4);
+    assert.equal(attempts.length, 4);
+    for (const capture of captures) {
+      assert.doesNotMatch(
+        capture.serializedRequest,
+        /MAKA_KIMI_EMPTY_REASONING/,
+        'provider request evidence must not persist the SDK-only empty-reasoning marker',
+      );
+    }
+    for (const body of requestBodies) {
+      assert.equal(body.reasoning_effort, 'max');
+      assert.equal(body.max_tokens, 131_072);
+      assert.deepEqual(body.stream_options, { include_usage: true });
+    }
+    assert.deepEqual(
+      (requestBodies[0]!.tools as Array<{ function?: { name?: string } }>).map(
+        (tool) => tool.function?.name,
+      ),
+      ['maka_computer'],
+    );
+    assertOpenAiReasoningAndToolPair(requestBodies[1]?.messages, 1);
+    assertOpenAiReasoningAndToolPair(requestBodies[2]?.messages, 2);
+    assertOpenAiReasoningAndToolPair(requestBodies[3]?.messages, 3);
+    assert.deepEqual(
+      attempts.map((attempt) => ({
+        step: attempt.step,
+        status: attempt.status,
+        input: attempt.inputTokens,
+        cacheRead: attempt.cacheReadInputTokens,
+        cacheMiss: attempt.cacheMissInputTokens,
+        output: attempt.outputTokens,
+        reasoning: attempt.reasoningTokens,
+      })),
+      [
+        {
+          step: 0,
+          status: 'completed',
+          input: 20,
+          cacheRead: 4,
+          cacheMiss: 16,
+          output: 7,
+          reasoning: 3,
+        },
+        {
+          step: 1,
+          status: 'completed',
+          input: 21,
+          cacheRead: 5,
+          cacheMiss: 16,
+          output: 8,
+          reasoning: 4,
+        },
+        {
+          step: 2,
+          status: 'completed',
+          input: 22,
+          cacheRead: 6,
+          cacheMiss: 16,
+          output: 9,
+          reasoning: 5,
+        },
+        {
+          step: 3,
+          status: 'completed',
+          input: 23,
+          cacheRead: 7,
+          cacheMiss: 16,
+          output: 10,
+          reasoning: 6,
+        },
+      ],
+    );
+  });
 });
 
 function fakeSemanticBackend(value: { current: string }): CuDispatchBackend {
@@ -381,8 +824,12 @@ function collectJsonObjects(value: unknown): Array<Record<string, unknown>> {
     return candidates.flatMap((candidate) => {
       try {
         const parsed = JSON.parse(candidate);
-        return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-          ? [parsed as Record<string, unknown>]
+        if (Array.isArray(parsed)) return parsed.flatMap(collectJsonObjects);
+        return parsed && typeof parsed === 'object'
+          ? [
+              parsed as Record<string, unknown>,
+              ...Object.values(parsed as Record<string, unknown>).flatMap(collectJsonObjects),
+            ]
           : [];
       } catch {
         return [];
@@ -421,11 +868,60 @@ function findToolResult(value: unknown, toolUseId: string): Record<string, unkno
   return undefined;
 }
 
+function assertOpenAiReasoningAndToolPair(messages: unknown, step: number): void {
+  assert.ok(Array.isArray(messages));
+  const assistantIndex = messages.findIndex(
+    (message) =>
+      isRecord(message) &&
+      message.role === 'assistant' &&
+      Array.isArray(message.tool_calls) &&
+      message.tool_calls.some((toolCall) => isRecord(toolCall) && toolCall.id === `call-${step}`),
+  );
+  const assistant = messages[assistantIndex];
+  assert.ok(assistant && isRecord(assistant));
+  assert.equal(assistant.reasoning, step === 1 ? '' : `reasoning-step-${step}`);
+  assert.equal(assistant.reasoning_content, undefined);
+  const toolResultIndex = messages.findIndex(
+    (message) =>
+      isRecord(message) && message.role === 'tool' && message.tool_call_id === `call-${step}`,
+  );
+  const toolResult = messages[toolResultIndex];
+  assert.ok(toolResult, `tool result for call-${step} must pair with its assistant tool call`);
+  assert.ok(
+    assistantIndex < toolResultIndex,
+    `assistant call-${step} must precede its paired tool result`,
+  );
+}
+
+function assertAnthropicThinkingReplay(messages: unknown, step: number): void {
+  const blocks = collectRecords(messages);
+  assert.ok(
+    blocks.some(
+      (block) =>
+        block.type === 'thinking' &&
+        block.thinking === `reasoning-step-${step}` &&
+        block.signature === `signature-step-${step}`,
+    ),
+    `Anthropic request must replay signed reasoning from step ${step}`,
+  );
+}
+
+function collectRecords(value: unknown): Array<Record<string, unknown>> {
+  if (Array.isArray(value)) return value.flatMap(collectRecords);
+  if (!isRecord(value)) return [];
+  return [value, ...Object.values(value).flatMap(collectRecords)];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function respondAnthropicStream(
   response: ServerResponse,
   model: string,
   step: number,
   toolInput: Record<string, unknown> | undefined,
+  withThinking = false,
 ) {
   response.writeHead(200, {
     'content-type': 'text/event-stream',
@@ -444,13 +940,38 @@ function respondAnthropicStream(
       content: [],
       stop_reason: null,
       stop_sequence: null,
-      usage: { input_tokens: 10, output_tokens: 0 },
+      usage: {
+        input_tokens: 10,
+        cache_read_input_tokens: 4,
+        cache_creation_input_tokens: 1,
+        output_tokens: 0,
+      },
     },
   });
+  let contentIndex = 0;
+  if (withThinking) {
+    send('content_block_start', {
+      type: 'content_block_start',
+      index: contentIndex,
+      content_block: { type: 'thinking', thinking: '' },
+    });
+    send('content_block_delta', {
+      type: 'content_block_delta',
+      index: contentIndex,
+      delta: { type: 'thinking_delta', thinking: `reasoning-step-${step}` },
+    });
+    send('content_block_delta', {
+      type: 'content_block_delta',
+      index: contentIndex,
+      delta: { type: 'signature_delta', signature: `signature-step-${step}` },
+    });
+    send('content_block_stop', { type: 'content_block_stop', index: contentIndex });
+    contentIndex += 1;
+  }
   if (toolInput) {
     send('content_block_start', {
       type: 'content_block_start',
-      index: 0,
+      index: contentIndex,
       content_block: {
         type: 'tool_use',
         id: `toolu-${step}`,
@@ -458,7 +979,7 @@ function respondAnthropicStream(
         input: toolInput,
       },
     });
-    send('content_block_stop', { type: 'content_block_stop', index: 0 });
+    send('content_block_stop', { type: 'content_block_stop', index: contentIndex });
     send('message_delta', {
       type: 'message_delta',
       delta: { stop_reason: 'tool_use', stop_sequence: null },
@@ -467,10 +988,10 @@ function respondAnthropicStream(
   } else {
     send('content_block_start', {
       type: 'content_block_start',
-      index: 0,
+      index: contentIndex,
       content_block: { type: 'text', text: 'done' },
     });
-    send('content_block_stop', { type: 'content_block_stop', index: 0 });
+    send('content_block_stop', { type: 'content_block_stop', index: contentIndex });
     send('message_delta', {
       type: 'message_delta',
       delta: { stop_reason: 'end_turn', stop_sequence: null },
@@ -478,6 +999,112 @@ function respondAnthropicStream(
     });
   }
   send('message_stop', { type: 'message_stop' });
+  response.end();
+}
+
+function respondOpenAiStream(
+  response: ServerResponse,
+  model: string,
+  step: number,
+  toolInput: Record<string, unknown> | undefined,
+) {
+  response.writeHead(200, {
+    'content-type': 'text/event-stream',
+    'cache-control': 'no-cache',
+  });
+  const send = (data: unknown) => {
+    response.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+  const choice = (delta: Record<string, unknown>, finishReason: string | null = null) => ({
+    id: `chatcmpl-${step}`,
+    object: 'chat.completion.chunk',
+    created: step,
+    model,
+    choices: [{ index: 0, delta, finish_reason: finishReason }],
+  });
+  send(choice({ role: 'assistant', reasoning: step === 1 ? '' : `reasoning-step-${step}` }));
+  if (toolInput) {
+    send(
+      choice({
+        tool_calls: [
+          {
+            index: 0,
+            id: `call-${step}`,
+            type: 'function',
+            function: {
+              name: 'maka_computer',
+              arguments: JSON.stringify(toolInput),
+            },
+          },
+        ],
+      }),
+    );
+    send(choice({}, 'tool_calls'));
+  } else {
+    send(choice({ content: 'done' }));
+    send(choice({}, 'stop'));
+  }
+  send({
+    id: `chatcmpl-${step}`,
+    object: 'chat.completion.chunk',
+    created: step,
+    model,
+    choices: [
+      {
+        index: 0,
+        delta: {},
+        finish_reason: null,
+        usage: {
+          prompt_tokens: 19 + step,
+          completion_tokens: 6 + step,
+          total_tokens: 25 + step * 2,
+          cached_tokens: 3 + step,
+          completion_tokens_details: { reasoning_tokens: 2 + step },
+        },
+      },
+    ],
+  });
+  response.write('data: [DONE]\n\n');
+  response.end();
+}
+
+function respondOpenAiTextStream(
+  response: ServerResponse,
+  model: string,
+  step: number,
+  reasoningField: 'reasoning' | 'reasoning_content',
+  reasoning: string,
+) {
+  response.writeHead(200, {
+    'content-type': 'text/event-stream',
+    'cache-control': 'no-cache',
+  });
+  const send = (data: unknown) => {
+    response.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+  const choice = (delta: Record<string, unknown>, finishReason: string | null = null) => ({
+    id: `chatcmpl-text-${step}`,
+    object: 'chat.completion.chunk',
+    created: step,
+    model,
+    choices: [{ index: 0, delta, finish_reason: finishReason }],
+  });
+  send(choice({ role: 'assistant', [reasoningField]: reasoning }));
+  send(choice({ content: `turn-${step}-done` }));
+  send(choice({}, 'stop'));
+  send({
+    id: `chatcmpl-text-${step}`,
+    object: 'chat.completion.chunk',
+    created: step,
+    model,
+    choices: [],
+    usage: {
+      prompt_tokens: 10 + step,
+      completion_tokens: 2,
+      total_tokens: 12 + step,
+    },
+  });
+  response.write('data: [DONE]\n\n');
   response.end();
 }
 
@@ -509,7 +1136,7 @@ function connection(
   providerType: LlmConnection['providerType'],
   baseUrl: string,
   model: string,
-  apiProtocol?: 'anthropic-messages',
+  apiProtocol?: 'anthropic-messages' | 'openai-chat',
   maxOutputTokens?: number,
 ): LlmConnection {
   return {

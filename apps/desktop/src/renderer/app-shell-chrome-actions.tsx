@@ -3,6 +3,7 @@ import {
   Grid3X3,
   HelpCircle,
   MessageCircleQuestion,
+  MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
@@ -10,7 +11,17 @@ import {
   Search,
   SquarePen,
 } from '@maka/ui/icons';
-import { Button as UiButton, Tooltip, TooltipContent, TooltipTrigger, useUiLocale } from '@maka/ui';
+import {
+  Button as UiButton,
+  Menu,
+  MenuItem,
+  MenuPopup,
+  MenuTrigger,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+  useUiLocale,
+} from '@maka/ui';
 import { getShellCopy } from './locales/shell-copy';
 
 export function AppShellTopbarActions(props: {
@@ -23,10 +34,7 @@ export function AppShellTopbarActions(props: {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).chrome;
   return (
-    <div
-      className={`maka-shell-topbar-rail ${props.sidebarCollapsed ? 'is-collapsed' : 'is-expanded'}`}
-      aria-label={copy.windowActions}
-    >
+    <div className="maka-shell-topbar-rail" data-maka-contract="shell-topbar-rail" aria-label={copy.windowActions}>
       <Tooltip>
         <TooltipTrigger
           render={<UiButton variant="quiet" size="icon-sm" />}
@@ -86,54 +94,34 @@ export function AppShellWorkspaceTopActions(props: {
 
   return (
     <div className="maka-workspace-top-actions" role="toolbar" aria-label={copy.workspaceActions}>
-      <Tooltip>
-        <TooltipTrigger
+      <Menu>
+        <MenuTrigger
           render={<UiButton variant="quiet" size="icon-sm" />}
           type="button"
           className="maka-titlebar-action"
-          onClick={props.onOpenFeedback}
-          aria-label={copy.feedback}
+          aria-label={copy.moreActions}
         >
-          <MessageCircleQuestion aria-hidden="true" />
-        </TooltipTrigger>
-        <TooltipContent>{copy.feedbackTooltip}</TooltipContent>
-      </Tooltip>
-      <Tooltip>
-        <TooltipTrigger
-          render={<UiButton variant="quiet" size="icon-sm" />}
-          type="button"
-          className="maka-titlebar-action"
-          onClick={props.onOpenPalette}
-          aria-label={copy.openCommandPalette}
-        >
-          <Grid3X3 aria-hidden="true" />
-        </TooltipTrigger>
-        <TooltipContent>{copy.openCommandPalette}</TooltipContent>
-      </Tooltip>
-      <Tooltip>
-        <TooltipTrigger
-          render={<UiButton variant="quiet" size="icon-sm" />}
-          type="button"
-          className="maka-titlebar-action"
-          onClick={props.onOpenHelp}
-          aria-label={copy.openHelp}
-        >
-          <HelpCircle aria-hidden="true" />
-        </TooltipTrigger>
-        <TooltipContent>{copy.openHelp}</TooltipContent>
-      </Tooltip>
-      <Tooltip>
-        <TooltipTrigger
-          render={<UiButton variant="quiet" size="icon-sm" />}
-          type="button"
-          className="maka-titlebar-action"
-          onClick={props.onOpenHealth}
-          aria-label={copy.openHealth}
-        >
-          <CircleGauge aria-hidden="true" />
-        </TooltipTrigger>
-        <TooltipContent>{copy.openHealth}</TooltipContent>
-      </Tooltip>
+          <MoreHorizontal aria-hidden="true" />
+        </MenuTrigger>
+        <MenuPopup align="end" sideOffset={4}>
+          <MenuItem onClick={props.onOpenFeedback}>
+            <MessageCircleQuestion aria-hidden="true" />
+            <span>{copy.feedback}</span>
+          </MenuItem>
+          <MenuItem onClick={props.onOpenPalette}>
+            <Grid3X3 aria-hidden="true" />
+            <span>{copy.openCommandPalette}</span>
+          </MenuItem>
+          <MenuItem onClick={props.onOpenHelp}>
+            <HelpCircle aria-hidden="true" />
+            <span>{copy.openHelp}</span>
+          </MenuItem>
+          <MenuItem onClick={props.onOpenHealth}>
+            <CircleGauge aria-hidden="true" />
+            <span>{copy.openHealth}</span>
+          </MenuItem>
+        </MenuPopup>
+      </Menu>
       {props.workbarAvailable && (
         <Tooltip>
           <TooltipTrigger

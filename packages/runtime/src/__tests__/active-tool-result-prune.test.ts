@@ -1,23 +1,15 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { z } from 'zod';
-import { MockLanguageModelV4, convertArrayToReadableStream } from 'ai/test';
-import type { LanguageModelV4StreamPart, LanguageModelV4Usage } from '@ai-sdk/provider';
-import type { ModelMessage } from 'ai';
+import type { ModelMessage } from '../model-protocol.js';
 
 import {
   activeToolResultLineageIdentity,
   rewriteActiveToolResultsInMessages,
 } from '../active-tool-result-prune.js';
-import { composePrepareStep } from '../ai-sdk-backend.js';
-import { ModelAdapter } from '../model-adapter.js';
+import { composeRequestProjection } from '../request-projection.js';
 import { ToolAvailabilityRuntime, LOAD_TOOLS_NAME } from '../tool-availability.js';
 import type { MakaTool } from '../tool-runtime.js';
-
-const ZERO_USAGE: LanguageModelV4Usage = {
-  inputTokens: { total: 0, noCache: 0, cacheRead: 0, cacheWrite: 0 },
-  outputTokens: { total: 0, text: 0, reasoning: 0 },
-};
 
 describe('active current-turn tool-result pruning', () => {
   test('defaults to pruning current-turn tool results above 2048 estimated tokens', async () => {
@@ -41,7 +33,7 @@ describe('active current-turn tool-result pruning', () => {
     assert.equal(aboveDefault.diagnosticPatch.activePrunedToolResults, 1);
   });
 
-  test('prepareStep composition returns both activeTools and rewritten messages', async () => {
+  test('request projection composes active tools with rewritten messages', async () => {
     const originalMessages = [largeToolMessage('Read', 'tool-1', 'SECRET'.repeat(20))];
     const activePrune = async () => {
       const rewritten = await rewriteActiveToolResultsInMessages({
@@ -54,7 +46,7 @@ describe('active current-turn tool-result pruning', () => {
       });
       return rewritten.rewritten > 0 ? { messages: rewritten.messages } : undefined;
     };
-    const composed = composePrepareStep(
+    const composed = composeRequestProjection(
       () => ({ activeTools: ['Read', LOAD_TOOLS_NAME] }),
       undefined,
       activePrune,
@@ -62,11 +54,10 @@ describe('active current-turn tool-result pruning', () => {
 
     assert.ok(composed);
     const result = await composed({
-      steps: [],
+      completedSteps: [],
       stepNumber: 1,
       model: {},
       messages: originalMessages,
-      runtimeContext: undefined,
     });
 
     assert.deepEqual(result?.activeTools, ['Read', LOAD_TOOLS_NAME]);
@@ -81,83 +72,33 @@ describe('active current-turn tool-result pruning', () => {
       bodySha256: string;
       toolCallId: string;
     }> = [];
-    const prompts: unknown[] = [];
-    let step = 0;
-    const model = new MockLanguageModelV4({
-      doStream: async ({ prompt }) => {
-        step += 1;
-        prompts.push(prompt);
-        const parts: LanguageModelV4StreamPart[] =
-          step === 1
-            ? [
-                { type: 'stream-start', warnings: [] },
-                {
-                  type: 'tool-call',
-                  toolCallId: 'tool-1',
-                  toolName: 'Read',
-                  input: JSON.stringify({}),
-                },
-                {
-                  type: 'finish',
-                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-                  usage: ZERO_USAGE,
-                },
-              ]
-            : [
-                { type: 'stream-start', warnings: [] },
-                {
-                  type: 'finish',
-                  finishReason: { unified: 'stop', raw: 'stop' },
-                  usage: ZERO_USAGE,
-                },
-              ];
-        return { stream: convertArrayToReadableStream(parts) };
-      },
-    });
-
     const archivedPlaceholders = new Map();
-    const result = await newAdapter().startStream({
-      model,
-      messages: [{ role: 'user', content: 'read it' }],
-      tools: {
-        Read: {
-          description: 'Read',
-          inputSchema: z.object({}),
-          execute: () => ({ body: largeBody }),
-        },
-      },
-      activeTools: ['Read'],
-      prepareStep: async (options) => {
-        const rewritten = await rewriteActiveToolResultsInMessages({
-          messages: options.messages,
-          policy: { enabled: true, maxCurrentResultEstimatedTokens: 1 },
-          stepNumber: options.stepNumber,
-          turnId: 'turn-1',
-          charsPerToken: 1,
-          archivedPlaceholders,
-          archiveToolResult: (candidate) => {
-            archiveRequests.push({
-              serializedResult: candidate.serializedResult,
-              bodySha256: candidate.bodySha256,
-              toolCallId: candidate.toolCallId,
-            });
-            return { artifactId: 'artifact-tool-1' };
-          },
+    const rewritten = await rewriteActiveToolResultsInMessages({
+      messages: [largeToolMessage('Read', 'tool-1', largeBody)],
+      policy: { enabled: true, maxCurrentResultEstimatedTokens: 1 },
+      stepNumber: 1,
+      turnId: 'turn-1',
+      charsPerToken: 1,
+      archivedPlaceholders,
+      archiveToolResult: (candidate) => {
+        archiveRequests.push({
+          serializedResult: candidate.serializedResult,
+          bodySha256: candidate.bodySha256,
+          toolCallId: candidate.toolCallId,
         });
-        return rewritten.rewritten > 0 ? { messages: rewritten.messages } : undefined;
+        return { artifactId: 'artifact-tool-1' };
       },
-      abortSignal: new AbortController().signal,
-      repairToolCall: async () => null,
     });
-    await drain(result.stream);
 
-    assert.equal(prompts.length, 2, 'expected a tool step and a follow-up step');
     assert.equal(archiveRequests.length, 1);
     assert.match(archiveRequests[0]?.bodySha256 ?? '', /^[a-f0-9]{64}$/);
     assert.equal(archiveRequests[0]?.toolCallId, 'tool-1');
-    const secondPrompt = JSON.stringify(prompts[1]);
+    const secondPrompt = JSON.stringify(rewritten.messages);
     assert.match(secondPrompt, /maka\.active_archived_tool_result/);
     assert.match(secondPrompt, /artifact-tool-1/);
+    assert.equal(secondPrompt.includes('maka://archive/'), true);
+    assert.match(secondPrompt, /ArchiveRead/);
+    assert.match(secondPrompt, /Do not use Glob/);
     assert.equal(secondPrompt.includes(largeBody), false);
   });
 
@@ -395,63 +336,14 @@ describe('active current-turn tool-result pruning', () => {
     assert.match(nextPrompt, /artifact-current-tool-call/);
   });
 
-  test('tool availability same-turn activation still works when active prune hook is composed', async () => {
+  test('tool activation still works when active pruning shares the projection pipeline', async () => {
     const runtime = new ToolAvailabilityRuntime(
       [makaTool('Read'), makaTool('RiveWorkflow')],
       { economy: true, groups: [{ id: 'rive', toolNames: ['RiveWorkflow'] }] },
       makaTool('invalid'),
     );
     const plan = runtime.prepare([]);
-    const toolsPerStep: string[][] = [];
-    const model = new MockLanguageModelV4({
-      doStream: async ({ tools }) => {
-        toolsPerStep.push((tools ?? []).map((tool) => tool.name));
-        const parts: LanguageModelV4StreamPart[] =
-          toolsPerStep.length === 1
-            ? [
-                { type: 'stream-start', warnings: [] },
-                {
-                  type: 'tool-call',
-                  toolCallId: 'load-1',
-                  toolName: LOAD_TOOLS_NAME,
-                  input: JSON.stringify({ group: 'rive' }),
-                },
-                {
-                  type: 'finish',
-                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-                  usage: ZERO_USAGE,
-                },
-              ]
-            : [
-                { type: 'stream-start', warnings: [] },
-                {
-                  type: 'finish',
-                  finishReason: { unified: 'stop', raw: 'stop' },
-                  usage: ZERO_USAGE,
-                },
-              ];
-        return { stream: convertArrayToReadableStream(parts) };
-      },
-    });
-
-    const aiSdkTools: Record<string, unknown> = {};
-    for (const tool of plan.providerTools) {
-      aiSdkTools[tool.name] = {
-        description: tool.description,
-        inputSchema: tool.parameters,
-        execute:
-          tool.name === LOAD_TOOLS_NAME
-            ? () => ({ loaded: ['RiveWorkflow'] })
-            : () => ({ ok: true }),
-      };
-    }
-
-    const activePrune = async (
-      options: Parameters<NonNullable<typeof plan.prepareStep>>[0] & {
-        messages: ModelMessage[];
-        stepNumber: number;
-      },
-    ) => {
+    const activePrune = async (options: { messages: ModelMessage[]; stepNumber: number }) => {
       const rewritten = await rewriteActiveToolResultsInMessages({
         messages: options.messages,
         policy: { enabled: true, maxCurrentResultEstimatedTokens: 1024 },
@@ -462,19 +354,35 @@ describe('active current-turn tool-result pruning', () => {
       return rewritten.rewritten > 0 ? { messages: rewritten.messages } : undefined;
     };
 
-    const result = await newAdapter().startStream({
-      model,
+    const projection = composeRequestProjection(
+      ({ completedSteps }) => plan.projectActiveTools!({ completedSteps }),
+      undefined,
+      activePrune,
+    );
+    const result = await projection!({
+      completedSteps: [
+        {
+          toolCalls: [
+            {
+              type: 'tool-call',
+              toolCallId: 'load-1',
+              toolName: LOAD_TOOLS_NAME,
+              input: { group: 'rive' },
+            },
+          ],
+        },
+      ],
+      stepNumber: 1,
+      model: {},
       messages: [{ role: 'user', content: 'load rive' }],
-      tools: aiSdkTools,
       activeTools: plan.activeTools,
-      prepareStep: composePrepareStep(plan.prepareStep, undefined, activePrune),
-      abortSignal: new AbortController().signal,
-      repairToolCall: async () => null,
     });
-    await drain(result.stream);
 
-    assert.ok(!toolsPerStep[0]?.includes('RiveWorkflow'), 'step 0 hides the group tool');
-    assert.ok(toolsPerStep[1]?.includes('RiveWorkflow'), 'step 1 advertises the loaded group tool');
+    assert.ok(!plan.activeTools.includes('RiveWorkflow'), 'step 0 hides the group tool');
+    assert.ok(
+      result?.activeTools?.includes('RiveWorkflow'),
+      'step 1 advertises the loaded group tool',
+    );
   });
 });
 
@@ -528,23 +436,4 @@ function makaTool(name: string): MakaTool {
     parameters: z.object({}),
     impl: () => ({ ok: true }),
   };
-}
-
-function newAdapter(): ModelAdapter {
-  return new ModelAdapter({
-    connection: { providerType: 'openai' } as never,
-    apiKey: 'test',
-    modelId: 'mock',
-    modelFactory: () => ({}),
-    providerOptions: {},
-    maxSteps: 4,
-    newId: () => 'id',
-    now: () => 0,
-  });
-}
-
-async function drain(iterable: AsyncIterable<unknown>): Promise<void> {
-  for await (const _ of iterable) {
-    void _;
-  }
 }

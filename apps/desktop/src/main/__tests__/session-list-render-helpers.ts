@@ -25,7 +25,12 @@ export function renderSessionListPanel(options: {
   session?: Partial<SessionSummary>;
   sessions?: SessionSummary[];
   rowActions?: Parameters<typeof SessionListPanel>[0]['rowActions'];
-  statusGroups?: Parameters<typeof SessionListPanel>[0]['statusGroups'];
+  groups?: Parameters<typeof SessionListPanel>[0]['groups'];
+  projectActions?: Parameters<typeof SessionListPanel>[0]['projectActions'];
+  worktreeSessionIds?: Parameters<typeof SessionListPanel>[0]['worktreeSessionIds'];
+  childSessionsByParentId?: Parameters<
+    typeof SessionListPanel
+  >[0]['childSessionsByParentId'];
   viewMode?: Parameters<typeof SessionListPanel>[0]['viewMode'];
 } = {}): string {
   const rowActions = options.rowActions ?? {
@@ -41,7 +46,10 @@ export function renderSessionListPanel(options: {
     children: createElement(SessionListPanel, {
       selection: { section: 'sessions', filter: 'chats' },
       sessions: options.sessions ?? [makeSessionSummary(options.session)],
-      statusGroups: options.statusGroups,
+      groups: options.groups,
+      projectActions: options.projectActions,
+      worktreeSessionIds: options.worktreeSessionIds,
+      childSessionsByParentId: options.childSessionsByParentId,
       viewMode: options.viewMode,
       onViewModeChange: options.viewMode ? () => {} : undefined,
       onSelectSession() {},

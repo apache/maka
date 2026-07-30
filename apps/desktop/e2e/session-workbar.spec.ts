@@ -25,13 +25,17 @@ test('session tools share one user-controlled workbar', async ({ sessionWorkbarW
   expect(narrowLayout.height).toBeLessThanOrEqual(narrowLayout.viewportHeight * 0.42 + 1);
 
   await page.locator('button[aria-label="展开侧边栏"]').dispatchEvent('click');
-  await page.locator('button[aria-label="技能"]').dispatchEvent('click');
+  await page.locator('button[aria-label="扩展"]').dispatchEvent('click');
   await expect(workbar).toBeHidden();
-  await expect(page.getByRole('main', { name: '技能' })).toBeVisible();
+  await expect(page.getByRole('main', { name: '扩展' })).toBeVisible();
 });
 
 test('workbar toggle stays unmounted without an active session', async ({ window: page }) => {
-  const toggle = page.locator('.maka-workspace-top-actions button[aria-expanded]');
+  // The overflow trigger also carries aria-expanded (its menu opens/closes),
+  // so pin the workbar toggle by its label instead of the shared attribute.
+  const toggle = page
+    .getByRole('toolbar', { name: '工作区辅助操作' })
+    .getByRole('button', { name: /会话工作栏/ });
 
   await expect(toggle).toHaveCount(0);
 });

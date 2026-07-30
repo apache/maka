@@ -9,24 +9,87 @@ import type {
   TurnStatus,
 } from '@maka/core';
 import {
+  SANDBOX_BOUNDARY_REQUEST_STATUSES,
   TOOL_ACTIVITY_KINDS,
   isPartialRuntimeEvent,
   isTerminalRuntimeEvent,
   isTerminalRuntimeEventStatus,
-  normalizeShellToolResultContent,
+  normalizeToolResultContentForRead,
+  validateSandboxBoundaryExpansion,
 } from '@maka/core';
+
+/** The statuses a settled boundary decision can carry — every status but `pending`. */
+type SettledSandboxBoundaryStatus = Exclude<
+  (typeof SANDBOX_BOUNDARY_REQUEST_STATUSES)[number],
+  'pending'
+>;
+const SETTLED_SANDBOX_BOUNDARY_STATUSES: readonly SettledSandboxBoundaryStatus[] =
+  SANDBOX_BOUNDARY_REQUEST_STATUSES.filter(
+    (status): status is SettledSandboxBoundaryStatus => status !== 'pending',
+  );
+import type { CanonicalPermissionOutcomeRecord } from './interaction-authority.js';
 import { isArchivedToolResultPlaceholder } from './tool-result-archive.js';
 
 export type RuntimeEventReadModelDiagnosticCode =
   | 'partial_skipped'
   | 'unsupported_event'
+  | 'unclaimed_control_fact'
   | 'incomplete_event'
   | 'archived_tool_result_placeholder'
   | 'generated_id'
-  | 'context_remaining_unsupported'
   | 'tool_use_id_mismatch'
   | 'missing_legacy_message'
   | 'unexpected_projected_message';
+
+/**
+ * Whether a diagnostic means the projection may have lost user-visible content.
+ *
+ * `hard` — a row a reader would have seen may be missing, so the projection is
+ * not a faithful view of the session and must not be served in place of one.
+ * `soft` — the fact is reported without withholding the view; it does not by
+ * itself mean a row is missing.
+ *
+ * The table is keyed by code so a new diagnostic cannot exist without deciding
+ * which side of that line it falls on.
+ */
+const RUNTIME_EVENT_READ_MODEL_DIAGNOSTIC_SEVERITY: Record<
+  RuntimeEventReadModelDiagnosticCode,
+  'hard' | 'soft'
+> = {
+  partial_skipped: 'soft',
+  unsupported_event: 'hard',
+  unclaimed_control_fact: 'soft',
+  incomplete_event: 'hard',
+  archived_tool_result_placeholder: 'soft',
+  generated_id: 'soft',
+  tool_use_id_mismatch: 'hard',
+  missing_legacy_message: 'soft',
+  unexpected_projected_message: 'soft',
+};
+
+export function isHardRuntimeEventReadModelDiagnostic(diagnostic: {
+  code: RuntimeEventReadModelDiagnosticCode;
+}): boolean {
+  return RUNTIME_EVENT_READ_MODEL_DIAGNOSTIC_SEVERITY[diagnostic.code] === 'hard';
+}
+
+/**
+ * Codes that mean the projection did not claim an event, at either severity.
+ *
+ * Severity decides whether a session still opens; this decides whether the
+ * projection has a coverage gap. The projection-coverage contract asserts on
+ * this set, so softening an event's severity never softens the contract.
+ */
+const UNCLAIMED_RUNTIME_EVENT_DIAGNOSTIC_CODES: readonly RuntimeEventReadModelDiagnosticCode[] = [
+  'unsupported_event',
+  'unclaimed_control_fact',
+];
+
+export function isUnclaimedRuntimeEventDiagnostic(diagnostic: {
+  code: RuntimeEventReadModelDiagnosticCode;
+}): boolean {
+  return UNCLAIMED_RUNTIME_EVENT_DIAGNOSTIC_CODES.includes(diagnostic.code);
+}
 
 export interface RuntimeEventReadModelDiagnostic {
   code: RuntimeEventReadModelDiagnosticCode;
@@ -44,6 +107,7 @@ export interface RuntimeEventReadModelProjection {
 
 export interface ProjectRuntimeEventsToStoredMessagesOptions {
   runHeaders: readonly AgentRunHeader[] | Readonly<Record<string, AgentRunHeader>>;
+  canonicalPermissionOutcomes?: ReadonlyMap<string, CanonicalPermissionOutcomeRecord>;
 }
 
 export interface ArchivedToolResultReadModelStatus {
@@ -82,6 +146,9 @@ interface ProjectionState {
       requestId: string;
       toolUseId: string;
       toolName: string;
+      sessionId: string;
+      runId: string;
+      turnId: string;
       hint?: string;
     }
   >;
@@ -91,7 +158,7 @@ interface ProjectionState {
    * step's assistant row gets). Per-step turns have several entries per turn, so
    * keying by message id (not turn) attaches each step's reasoning to its own row.
    */
-  thinkingByMessageId: Map<string, PendingThinking>;
+  thinkingByMessageId: Map<string, PendingThinking[]>;
   contentOrderByMessageId: Map<string, AssistantStepContentKind[]>;
 }
 
@@ -100,6 +167,7 @@ interface PendingThinking {
   messageId: string;
   text: string;
   signature?: string;
+  providerOptions?: Record<string, unknown>;
 }
 
 export function projectRuntimeEventsToStoredMessages(
@@ -158,6 +226,9 @@ export function projectRuntimeEventsToStoredMessages(
         requestId: request.requestId,
         toolUseId: request.toolUseId,
         toolName: request.toolName,
+        sessionId: event.sessionId,
+        runId: event.runId,
+        turnId: event.turnId,
         ...(request.hint !== undefined ? { hint: request.hint } : {}),
       });
       state.toolNameByUseId.set(request.toolUseId, request.toolName);
@@ -170,15 +241,68 @@ export function projectRuntimeEventsToStoredMessages(
       projected = true;
     }
 
+    if (event.actions?.userQuestionAnswerAccepted) {
+      // InteractionStore owns the canonical answer. This Run-local audit fact
+      // intentionally has no legacy chat row.
+      projected = true;
+    }
+
+    if (event.actions?.permissionAnswerAccepted) {
+      projectCanonicalPermissionOutcome(
+        event,
+        state,
+        messages,
+        options.canonicalPermissionOutcomes,
+      );
+      projected = true;
+    }
+
+    if (event.actions?.permissionClosureAccepted) {
+      // The canonical closure is already represented by this identity-only
+      // RuntimeEvent; unlike an answer it has no legacy permission-decision row.
+      projected = true;
+    }
+
     if (event.actions?.toolDispatch) {
       // Dispatch is a canonical recovery fact with no legacy chat row. It is
       // consumed by RecoveryResolver, but must remain invisible to messages.
       projected = true;
     }
 
+    if (event.actions?.toolRecovery) {
+      // Recovery observations and decisions are canonical audit facts. The
+      // matching function_call/function_response own any provider-visible row.
+      projected = true;
+    }
+
+    if (event.actions?.artifactDelta) {
+      // Artifact counters are storage bookkeeping. The tool result that owns the
+      // artifact owns its row; this delta has none of its own.
+      projected = true;
+    }
+
+    if (event.actions?.transferToAgent !== undefined) {
+      // A hand-off is control routing. The receiving agent's own events own
+      // every provider-visible row the transfer leads to.
+      projected = true;
+    }
+
+    if (event.actions?.runtimeProtocol) {
+      // The protocol marker records which runtime contracts were live from a
+      // run's first event. RecoveryResolver reads it; it has no chat row.
+      projected = true;
+    }
+
     if (event.actions?.stateDelta?.continuationStart === true) {
       // Continuation start is a canonical lineage/recovery fact with no
       // legacy chat row. Its following model events own the visible output.
+      projected = true;
+    }
+
+    if (isSandboxBoundaryStateDelta(event)) {
+      // The session sandbox boundary owns enforcement and its own durable
+      // revisions. These are canonical control/audit facts, and the tool call
+      // and response around them own every provider-visible row.
       projected = true;
     }
 
@@ -200,32 +324,40 @@ export function projectRuntimeEventsToStoredMessages(
       projected = projectTerminalTurnState(event, state, messages) || projected;
     }
 
-    if (event.actions?.tokenUsage?.contextRemaining !== undefined) {
-      diagnostic(
-        state,
-        event,
-        'context_remaining_unsupported',
-        'token usage contextRemaining is diagnostic-only in StoredMessage',
-      );
-    }
-
     if (!projected) {
-      diagnostic(
-        state,
-        event,
-        'unsupported_event',
-        'RuntimeEvent shape is not supported by the legacy read-model projection',
-      );
+      // Content is the only payload an unclaimed shape could still have owed a
+      // row, so its absence is what makes degrading safe here — not a promise
+      // that actions never produce rows (permissionDecision, tokenUsage and the
+      // terminal fact all do). What holds that up is claim coverage: every
+      // action field a reader can meet is claimed above, proven by the
+      // projection-coverage contract, so nothing with a row reaches this branch.
+      if (event.content === undefined) {
+        diagnostic(
+          state,
+          event,
+          'unclaimed_control_fact',
+          'control-only RuntimeEvent is not claimed by the legacy read-model projection',
+        );
+      } else {
+        diagnostic(
+          state,
+          event,
+          'unsupported_event',
+          'RuntimeEvent shape is not supported by the legacy read-model projection',
+        );
+      }
     }
   }
 
-  for (const pending of state.thinkingByMessageId.values()) {
-    diagnostic(
-      state,
-      pending.event,
-      'unsupported_event',
-      'thinking content has no assistant text row with a matching message id',
-    );
+  for (const pendingItems of state.thinkingByMessageId.values()) {
+    for (const pending of pendingItems) {
+      diagnostic(
+        state,
+        pending.event,
+        'unsupported_event',
+        'thinking content has no assistant text row with a matching message id',
+      );
+    }
   }
 
   return { messages, diagnostics: state.diagnostics };
@@ -449,6 +581,7 @@ function projectText(
       ...(event.content.displayText !== undefined
         ? { displayText: event.content.displayText }
         : {}),
+      ...(event.content.origin !== undefined ? { origin: event.content.origin } : {}),
       ...(event.content.attachments !== undefined && event.content.attachments.length > 0
         ? { attachments: event.content.attachments }
         : {}),
@@ -552,12 +685,17 @@ function projectThinking(
     messageId,
     text: event.content.text,
     ...(event.content.signature !== undefined ? { signature: event.content.signature } : {}),
+    ...(event.content.providerOptions !== undefined
+      ? { providerOptions: structuredClone(event.content.providerOptions) }
+      : {}),
   };
   // The step's assistant text row lands after its thinking in ledger order, so
   // attach eagerly if it already exists (older ordering), else park by message id
   // for projectText's attachPendingThinking to claim.
   if (attachThinkingToAssistant(event, pending, messages)) return true;
-  state.thinkingByMessageId.set(messageId, pending);
+  const pendingItems = state.thinkingByMessageId.get(messageId) ?? [];
+  pendingItems.push(pending);
+  state.thinkingByMessageId.set(messageId, pendingItems);
   return true;
 }
 
@@ -649,30 +787,21 @@ function projectFunctionResponse(
   const archivedPlaceholder = isArchivedToolResultPlaceholder(compatibleResult)
     ? compatibleResult
     : undefined;
-  const normalizedShellResult = archivedPlaceholder
-    ? { state: 'not_shell' as const }
-    : normalizeShellToolResultContent(compatibleResult);
-  if (normalizedShellResult.state === 'invalid') {
-    diagnostic(
-      state,
-      event,
-      'incomplete_event',
-      'function_response contains an invalid shell tool result',
-    );
-    return false;
-  }
-  if (
-    !archivedPlaceholder &&
-    normalizedShellResult.state === 'not_shell' &&
-    !isToolResultContent(compatibleResult)
-  ) {
-    diagnostic(
-      state,
-      event,
-      'incomplete_event',
-      'function_response result is not a supported ToolResultContent',
-    );
-    return false;
+  let normalizedResult: ToolResultContent | undefined;
+  if (!archivedPlaceholder) {
+    try {
+      normalizedResult = normalizeToolResultContentForRead(compatibleResult);
+    } catch (error) {
+      diagnostic(
+        state,
+        event,
+        'incomplete_event',
+        error instanceof Error && error.message === 'Invalid shell tool result content'
+          ? 'function_response contains an invalid shell tool result'
+          : 'function_response result is not a supported ToolResultContent',
+      );
+      return false;
+    }
   }
   if (archivedPlaceholder) {
     diagnostic(
@@ -705,9 +834,7 @@ function projectFunctionResponse(
         rewriteVersion: archivedPlaceholder.rewriteVersion,
         reason: archivedPlaceholder.reason,
       }
-    : normalizedShellResult.state === 'valid'
-      ? normalizedShellResult.content
-      : (compatibleResult as ToolResultContent);
+    : normalizedResult!;
   messages.push({
     type: 'tool_result',
     id: stableMessageId(event, state, 'tool_result'),
@@ -741,13 +868,35 @@ function projectPermissionDecision(
     );
     return false;
   }
-  const toolName = request?.toolName ?? state.toolNameByUseId.get(toolUseId);
+  if (request && request.toolUseId !== toolUseId) {
+    diagnostic(
+      state,
+      event,
+      'tool_use_id_mismatch',
+      'permission decision toolUseId does not match its paired permission request',
+    );
+    return false;
+  }
+  const toolStateName = state.toolNameByUseId.get(toolUseId);
+  const toolName = decision.toolName ?? request?.toolName ?? toolStateName;
   if (!toolName) {
     diagnostic(
       state,
       event,
       'incomplete_event',
-      'permission decision requires a paired permission request or tool call for toolName',
+      'permission decision requires durable toolName or a paired permission request or tool call',
+    );
+    return false;
+  }
+  if (
+    (request?.toolName !== undefined && request.toolName !== toolName) ||
+    (toolStateName !== undefined && toolStateName !== toolName)
+  ) {
+    diagnostic(
+      state,
+      event,
+      'incomplete_event',
+      'permission decision toolName does not match its paired request or tool call',
     );
     return false;
   }
@@ -762,9 +911,72 @@ function projectPermissionDecision(
     ...(decision.rememberForTurn !== undefined
       ? { rememberForTurn: decision.rememberForTurn }
       : {}),
+    ...(decision.reviewer !== undefined ? { reviewer: decision.reviewer } : {}),
+    ...(decision.rationale !== undefined ? { rationale: decision.rationale } : {}),
+    ...(decision.riskLevel !== undefined ? { riskLevel: decision.riskLevel } : {}),
     ...(request?.hint !== undefined ? { hint: request.hint } : {}),
   });
   return true;
+}
+
+function projectCanonicalPermissionOutcome(
+  event: RuntimeEvent,
+  state: ProjectionState,
+  messages: StoredMessage[],
+  outcomes: ReadonlyMap<string, CanonicalPermissionOutcomeRecord> | undefined,
+): void {
+  const accepted = event.actions?.permissionAnswerAccepted;
+  if (!accepted) return;
+  const ledgerRequest = state.permissionRequestById.get(accepted.requestId);
+  const canonical = outcomes?.get(accepted.requestId);
+  const toolUseId = event.refs?.toolCallId;
+  if (!canonical || !toolUseId) {
+    diagnostic(
+      state,
+      event,
+      'incomplete_event',
+      'permission answer acceptance requires a canonical Interaction outcome',
+      { requestId: accepted.requestId },
+    );
+    return;
+  }
+  const outcome = canonical.outcome;
+  if (
+    canonical.sessionId !== event.sessionId ||
+    canonical.runId !== event.runId ||
+    canonical.turnId !== event.turnId ||
+    canonical.requestId !== accepted.requestId ||
+    canonical.request.toolUseId !== toolUseId ||
+    (ledgerRequest !== undefined &&
+      (ledgerRequest.sessionId !== event.sessionId ||
+        ledgerRequest.runId !== event.runId ||
+        ledgerRequest.turnId !== event.turnId ||
+        ledgerRequest.toolUseId !== toolUseId ||
+        ledgerRequest.toolName !== canonical.request.prompt.toolName))
+  ) {
+    diagnostic(
+      state,
+      event,
+      'incomplete_event',
+      'permission answer canonical outcome identity does not match its acceptance',
+      { requestId: accepted.requestId },
+    );
+    return;
+  }
+  messages.push({
+    type: 'permission_decision',
+    id: accepted.requestId,
+    turnId: event.turnId,
+    ts: outcome.committedAt,
+    toolUseId,
+    toolName: canonical.request.prompt.toolName,
+    decision: outcome.decision,
+    rememberForTurn: outcome.rememberForTurn,
+    reviewer: outcome.reviewer,
+    ...(outcome.rationale !== undefined ? { rationale: outcome.rationale } : {}),
+    ...(outcome.riskLevel !== undefined ? { riskLevel: outcome.riskLevel } : {}),
+    ...(ledgerRequest?.hint !== undefined ? { hint: ledgerRequest.hint } : {}),
+  });
 }
 
 function projectTokenUsage(
@@ -795,6 +1007,7 @@ function projectTokenUsage(
     ...(usage.cacheCreation !== undefined ? { cacheCreation: usage.cacheCreation } : {}),
     ...(usage.costUsd !== undefined ? { costUsd: usage.costUsd } : {}),
     ...(usage.systemPromptHash !== undefined ? { systemPromptHash: usage.systemPromptHash } : {}),
+    ...(usage.contextRemaining !== undefined ? { contextRemaining: usage.contextRemaining } : {}),
     ...(usage.prefixHash !== undefined ? { prefixHash: usage.prefixHash } : {}),
     ...(usage.prefixChangeReason !== undefined
       ? { prefixChangeReason: usage.prefixChangeReason }
@@ -805,6 +1018,9 @@ function projectTokenUsage(
       : {}),
     ...(usage.promptSegments !== undefined ? { promptSegments: usage.promptSegments } : {}),
     ...(usage.contextBudget !== undefined ? { contextBudget: usage.contextBudget } : {}),
+    ...(event.refs?.providerRequestTraceId !== undefined
+      ? { providerRequestTraceId: event.refs.providerRequestTraceId }
+      : {}),
   });
   return true;
 }
@@ -895,9 +1111,9 @@ function attachPendingThinking(
   messages: StoredMessage[],
   assistantMessageId: string,
 ): void {
-  const pending = state.thinkingByMessageId.get(assistantMessageId);
-  if (!pending) return;
-  if (attachThinkingToAssistant(event, pending, messages)) {
+  const pendingItems = state.thinkingByMessageId.get(assistantMessageId);
+  if (!pendingItems) return;
+  if (pendingItems.every((pending) => attachThinkingToAssistant(event, pending, messages))) {
     state.thinkingByMessageId.delete(assistantMessageId);
   }
 }
@@ -913,9 +1129,31 @@ function attachThinkingToAssistant(
     const message = messages[index]!;
     if (message.type !== 'assistant' || message.turnId !== event.turnId) continue;
     if (message.id !== pending.messageId) continue;
-    message.thinking = {
+    const incoming = {
       text: pending.text,
       ...(pending.signature !== undefined ? { signature: pending.signature } : {}),
+      ...(pending.providerOptions !== undefined
+        ? { providerOptions: structuredClone(pending.providerOptions) }
+        : {}),
+    };
+    if (!message.thinking) {
+      message.thinking = incoming;
+      return true;
+    }
+    const parts = message.thinking.parts ?? [
+      {
+        text: message.thinking.text,
+        ...(message.thinking.signature !== undefined
+          ? { signature: message.thinking.signature }
+          : {}),
+        ...(message.thinking.providerOptions !== undefined
+          ? { providerOptions: structuredClone(message.thinking.providerOptions) }
+          : {}),
+      },
+    ];
+    message.thinking = {
+      text: message.thinking.text + pending.text,
+      parts: [...parts, incoming],
     };
     return true;
   }
@@ -1021,29 +1259,6 @@ function numberStateDelta(event: RuntimeEvent, key: string): number | undefined 
   return typeof value === 'number' ? value : undefined;
 }
 
-function isToolResultContent(value: unknown): value is ToolResultContent {
-  if (!value || typeof value !== 'object') return false;
-  const kind = (value as { kind?: unknown }).kind;
-  return (
-    kind === 'text' ||
-    kind === 'json' ||
-    kind === 'file_diff' ||
-    kind === 'file_write' ||
-    kind === 'terminal' ||
-    kind === 'shell_run' ||
-    kind === 'image' ||
-    kind === 'archived_tool_result' ||
-    kind === 'summary' ||
-    kind === 'web_search' ||
-    kind === 'web_search_error' ||
-    kind === 'office_document' ||
-    kind === 'explore_agent' ||
-    kind === 'subagent' ||
-    kind === 'agent_swarm' ||
-    kind === 'rive_workflow'
-  );
-}
-
 function isLegacyPlanToolResult(value: unknown): boolean {
   if (!value || typeof value !== 'object') return false;
   const kind = (value as { kind?: unknown }).kind;
@@ -1063,6 +1278,44 @@ function isPlanProposalStateDelta(event: RuntimeEvent): boolean {
     typeof stateDelta?.planId === 'string' &&
     typeof stateDelta.title === 'string'
   );
+}
+
+/**
+ * A boundary fact is canonical only in the exact shape AiSdkFlow emits: every
+ * field of the source SessionEvent, the identity it maps to, and the tool call
+ * it settles. A partial match is worse than none — it would claim a corrupt
+ * ledger as sound while still paying the cost of rejecting a malformed one.
+ */
+function isSandboxBoundaryStateDelta(event: RuntimeEvent): boolean {
+  const stateDelta = event.actions?.stateDelta;
+  if (!stateDelta) return false;
+  const request = stateDelta.sandboxBoundaryRequest;
+  const decision = stateDelta.sandboxBoundaryDecision;
+  if (request === undefined && decision === undefined) return false;
+  if (event.role !== 'system' || typeof event.refs?.toolCallId !== 'string') return false;
+  if (request !== undefined) {
+    return (
+      event.author === 'system' &&
+      isRecord(request) &&
+      typeof request.requestId === 'string' &&
+      typeof request.toolUseId === 'string' &&
+      typeof request.justification === 'string' &&
+      validateSandboxBoundaryExpansion(request.expansion).ok
+    );
+  }
+  return (
+    event.author === 'user' &&
+    isRecord(decision) &&
+    typeof decision.requestId === 'string' &&
+    (decision.decision === 'allow' || decision.decision === 'deny') &&
+    SETTLED_SANDBOX_BOUNDARY_STATUSES.includes(decision.status as SettledSandboxBoundaryStatus) &&
+    typeof decision.revision === 'number' &&
+    Number.isFinite(decision.revision)
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function diagnostic(
@@ -1151,6 +1404,7 @@ function semanticMessage(message: StoredMessage): unknown {
         turnId: message.turnId,
         text: message.text,
         displayText: message.displayText,
+        origin: message.origin,
         attachments: message.attachments ?? [],
         quotes: message.quotes ?? [],
       };
@@ -1205,16 +1459,19 @@ function semanticMessage(message: StoredMessage): unknown {
         reasoning: message.reasoning,
         total: message.total,
         rawFinishReason: message.rawFinishReason,
+        runtimeSteps: message.runtimeSteps,
         cacheRead: message.cacheRead,
         cacheCreation: message.cacheCreation,
         costUsd: message.costUsd,
         systemPromptHash: message.systemPromptHash,
+        contextRemaining: message.contextRemaining,
         prefixHash: message.prefixHash,
         prefixChangeReason: message.prefixChangeReason,
         requestShapeHash: message.requestShapeHash,
         requestShapeChangeReason: message.requestShapeChangeReason,
         promptSegments: message.promptSegments,
         contextBudget: message.contextBudget,
+        providerRequestTraceId: message.providerRequestTraceId,
       };
     case 'turn_state':
       return {

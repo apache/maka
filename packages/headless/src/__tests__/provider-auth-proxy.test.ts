@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
+import { createSecureServer as http2CreateSecureServer } from 'node:http2';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
+  createProviderUpstreamDispatcher,
   listenProviderAuthProxyServer,
   startProviderAuthProxy,
+  startProviderAuthProxyHub,
   summarizeProviderTelemetry,
 } from '../provider-auth-proxy.js';
 
@@ -27,13 +30,14 @@ test('provider auth proxy keeps the provider key host-side', async () => {
   const keyFile = join(dir, 'provider-key');
   await writeFile(keyFile, `${providerKey}\n`, 'utf8');
   const proxy = await startProviderAuthProxy({
-    upstreamBaseUrl: `http://127.0.0.1:${address.port}/api/v4`,
+    upstreamBaseUrl: `http://127.0.0.1:${address.port}/api/v4/`,
     apiKeyFile: keyFile,
     advertisedHost: '127.0.0.1',
   });
 
   try {
     assert.notEqual(proxy.token, providerKey);
+    assert.equal(new URL(proxy.baseUrl).pathname, '/api/v4');
     const unauthorized = await fetch(`${proxy.baseUrl}/chat/completions`, {
       method: 'POST',
       body: '{}',
@@ -56,6 +60,73 @@ test('provider auth proxy keeps the provider key host-side', async () => {
       upstream.close((error) => (error ? reject(error) : resolve())),
     );
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('provider auth proxy rejects requests outside the upstream base path before resolving credentials', async () => {
+  let credentialResolutions = 0;
+  const proxy = await startProviderAuthProxy({
+    upstreamBaseUrl: 'http://127.0.0.1:1/coding/v1',
+    advertisedHost: '127.0.0.1',
+    resolveUpstreamCredential: async () => {
+      credentialResolutions += 1;
+      return { value: 'upstream-key' };
+    },
+  });
+
+  try {
+    for (const path of ['/other', '/coding/v10']) {
+      const response = await fetch(`${new URL(proxy.baseUrl).origin}${path}`, {
+        headers: { authorization: `Bearer ${proxy.token}` },
+      });
+      assert.equal(response.status, 404);
+    }
+    assert.equal(credentialResolutions, 0);
+  } finally {
+    await proxy.close();
+  }
+});
+
+test('provider auth proxy ignores an absolute-form origin while preserving its path and query', async () => {
+  let upstreamPath = '';
+  const upstream = createServer((request, response) => {
+    upstreamPath = request.url ?? '';
+    response.writeHead(200).end('ok');
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  const address = upstream.address();
+  assert.ok(address && typeof address !== 'string');
+  const proxy = await startProviderAuthProxy({
+    upstreamBaseUrl: `http://127.0.0.1:${address.port}/coding/v1`,
+    advertisedHost: '127.0.0.1',
+    resolveUpstreamCredential: async () => ({ value: 'upstream-key' }),
+  });
+
+  try {
+    const proxyUrl = new URL(proxy.baseUrl);
+    const status = await new Promise<number>((resolve, reject) => {
+      const request = httpRequest(
+        {
+          hostname: proxyUrl.hostname,
+          port: proxyUrl.port,
+          path: 'http://attacker.invalid/coding/v1/models/a%2Fb?view=full',
+          headers: { authorization: `Bearer ${proxy.token}` },
+        },
+        (response) => {
+          response.resume();
+          response.once('end', () => resolve(response.statusCode ?? 0));
+        },
+      );
+      request.once('error', reject);
+      request.end();
+    });
+    assert.equal(status, 200);
+    assert.equal(upstreamPath, '/coding/v1/models/a%2Fb?view=full');
+  } finally {
+    await proxy.close();
+    await new Promise<void>((resolve, reject) =>
+      upstream.close((error) => (error ? reject(error) : resolve())),
+    );
   }
 });
 
@@ -102,16 +173,249 @@ test('provider auth proxy resolves rotating upstream credentials for every reque
   }
 });
 
+test('provider auth proxy hub routes concurrent leases independently on one listener', async () => {
+  const upstreamRequests = new Map<string, Array<{ authorization: string; path: string }>>();
+  const startUpstream = async (name: string) => {
+    const requests: Array<{ authorization: string; path: string }> = [];
+    upstreamRequests.set(name, requests);
+    const upstream = createServer((request, response) => {
+      requests.push({
+        authorization: request.headers.authorization ?? '',
+        path: request.url ?? '',
+      });
+      response.writeHead(200).end(name);
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const address = upstream.address();
+    assert.ok(address && typeof address !== 'string');
+    return { upstream, url: `http://127.0.0.1:${address.port}` };
+  };
+  const [alphaUpstream, betaUpstream] = await Promise.all([
+    startUpstream('alpha'),
+    startUpstream('beta'),
+  ]);
+  const hub = await startProviderAuthProxyHub({ advertisedHost: '127.0.0.1' });
+  const alpha = hub.issue({
+    upstreamBaseUrl: `${alphaUpstream.url}/alpha/v1`,
+    resolveUpstreamCredential: async () => ({ value: 'alpha-upstream-key' }),
+  });
+  const beta = hub.issue({
+    upstreamBaseUrl: `${betaUpstream.url}/beta/v1`,
+    resolveUpstreamCredential: async () => ({ value: 'beta-upstream-key' }),
+  });
+
+  try {
+    assert.equal(new URL(alpha.baseUrl).origin, new URL(beta.baseUrl).origin);
+    assert.equal(new URL(alpha.baseUrl).pathname, '/alpha/v1');
+    assert.equal(new URL(beta.baseUrl).pathname, '/beta/v1');
+    assert.notEqual(alpha.token, beta.token);
+    const [alphaResponse, betaResponse] = await Promise.all([
+      fetch(`${alpha.baseUrl}/responses`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${alpha.token}` },
+        body: '{}',
+      }),
+      fetch(`${beta.baseUrl}/responses`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${beta.token}` },
+        body: '{}',
+      }),
+    ]);
+    assert.equal(await alphaResponse.text(), 'alpha');
+    assert.equal(await betaResponse.text(), 'beta');
+    assert.deepEqual(upstreamRequests.get('alpha'), [
+      { authorization: 'Bearer alpha-upstream-key', path: '/alpha/v1/responses' },
+    ]);
+    assert.deepEqual(upstreamRequests.get('beta'), [
+      { authorization: 'Bearer beta-upstream-key', path: '/beta/v1/responses' },
+    ]);
+
+    await alpha.close();
+    const revoked = await fetch(`${alpha.baseUrl}/responses`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${alpha.token}` },
+      body: '{}',
+    });
+    assert.equal(revoked.status, 401);
+    const stillActive = await fetch(`${beta.baseUrl}/responses`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${beta.token}` },
+      body: '{}',
+    });
+    assert.equal(await stillActive.text(), 'beta');
+  } finally {
+    await Promise.allSettled([alpha.close(), beta.close()]);
+    await hub.close();
+    await Promise.all(
+      [alphaUpstream.upstream, betaUpstream.upstream].map(
+        (upstream) =>
+          new Promise<void>((resolve, reject) =>
+            upstream.close((error) => (error ? reject(error) : resolve())),
+          ),
+      ),
+    );
+  }
+});
+
+test('provider auth proxy hub attributes usage and telemetry to each lease', async () => {
+  const startUpstream = async (input: number, output: number) => {
+    const upstream = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end(
+        `data: ${JSON.stringify({
+          choices: [],
+          usage: {
+            prompt_tokens: input,
+            prompt_tokens_details: { cached_tokens: input - 1 },
+            completion_tokens: output,
+          },
+        })}\n\ndata: [DONE]\n\n`,
+      );
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const address = upstream.address();
+    assert.ok(address && typeof address !== 'string');
+    return { upstream, url: `http://127.0.0.1:${address.port}` };
+  };
+  const [alphaUpstream, betaUpstream] = await Promise.all([
+    startUpstream(11, 3),
+    startUpstream(29, 7),
+  ]);
+  const hub = await startProviderAuthProxyHub({ advertisedHost: '127.0.0.1' });
+  const alpha = hub.issue({
+    upstreamBaseUrl: alphaUpstream.url,
+    resolveUpstreamCredential: async () => ({ value: 'alpha-key' }),
+    usageProtocol: 'openai-chat-sse',
+  });
+  const beta = hub.issue({
+    upstreamBaseUrl: betaUpstream.url,
+    resolveUpstreamCredential: async () => ({ value: 'beta-key' }),
+    usageProtocol: 'openai-chat-sse',
+  });
+
+  try {
+    await Promise.all(
+      [alpha, beta].map(async (lease) => {
+        const response = await fetch(`${lease.baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${lease.token}` },
+          body: '{}',
+        });
+        assert.equal(response.status, 200);
+        await response.text();
+      }),
+    );
+    assert.deepEqual(alpha.usage(), {
+      input: 11,
+      cacheRead: 10,
+      cacheWrite: 0,
+      output: 3,
+    });
+    assert.deepEqual(beta.usage(), {
+      input: 29,
+      cacheRead: 28,
+      cacheWrite: 0,
+      output: 7,
+    });
+    assert.deepEqual(
+      alpha.telemetry().map((request) => request.usage),
+      [alpha.usage()],
+    );
+    assert.deepEqual(
+      beta.telemetry().map((request) => request.usage),
+      [beta.usage()],
+    );
+  } finally {
+    await Promise.allSettled([alpha.close(), beta.close()]);
+    await hub.close();
+    await Promise.all(
+      [alphaUpstream.upstream, betaUpstream.upstream].map(
+        (upstream) =>
+          new Promise<void>((resolve, reject) =>
+            upstream.close((error) => (error ? reject(error) : resolve())),
+          ),
+      ),
+    );
+  }
+});
+
+test('provider auth proxy hub aborts only the closed lease requests', async () => {
+  let alphaStarted!: () => void;
+  const alphaReachedUpstream = new Promise<void>((resolve) => {
+    alphaStarted = resolve;
+  });
+  const alphaUpstream = createServer((request, response) => {
+    response.writeHead(200, { 'content-type': 'text/plain' });
+    response.write('partial');
+    alphaStarted();
+    request.once('close', () => response.end());
+  });
+  const betaUpstream = createServer((_request, response) => {
+    response.writeHead(200).end('beta');
+  });
+  await Promise.all(
+    [alphaUpstream, betaUpstream].map(
+      (upstream) => new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve)),
+    ),
+  );
+  const alphaAddress = alphaUpstream.address();
+  const betaAddress = betaUpstream.address();
+  assert.ok(alphaAddress && typeof alphaAddress !== 'string');
+  assert.ok(betaAddress && typeof betaAddress !== 'string');
+  const hub = await startProviderAuthProxyHub({ advertisedHost: '127.0.0.1' });
+  const alpha = hub.issue({
+    upstreamBaseUrl: `http://127.0.0.1:${alphaAddress.port}`,
+    resolveUpstreamCredential: async () => ({ value: 'alpha-key' }),
+  });
+  const beta = hub.issue({
+    upstreamBaseUrl: `http://127.0.0.1:${betaAddress.port}`,
+    resolveUpstreamCredential: async () => ({ value: 'beta-key' }),
+  });
+
+  try {
+    const alphaBody = fetch(`${alpha.baseUrl}/responses`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${alpha.token}` },
+      body: '{}',
+    }).then((response) => response.text());
+    await alphaReachedUpstream;
+    await alpha.close();
+    await alphaBody.catch(() => undefined);
+
+    const betaResponse = await fetch(`${beta.baseUrl}/responses`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${beta.token}` },
+      body: '{}',
+    });
+    assert.equal(await betaResponse.text(), 'beta');
+    assert.equal(alpha.telemetry().at(-1)?.outcome, 'aborted');
+    assert.equal(beta.telemetry().at(-1)?.outcome, 'completed');
+  } finally {
+    await Promise.allSettled([alpha.close(), beta.close()]);
+    await hub.close();
+    await Promise.all(
+      [alphaUpstream, betaUpstream].map(
+        (upstream) =>
+          new Promise<void>((resolve, reject) =>
+            upstream.close((error) => (error ? reject(error) : resolve())),
+          ),
+      ),
+    );
+  }
+});
+
 test('provider auth proxy supports Anthropic x-api-key without replacing the client user agent', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'maka-provider-proxy-anthropic-'));
   const providerKey = 'anthropic-provider-secret';
   let upstreamApiKey = '';
   let upstreamAuthorization = '';
   let upstreamUserAgent = '';
+  let upstreamPath = '';
   const upstream = createServer((request, response) => {
     upstreamApiKey = String(request.headers['x-api-key'] ?? '');
     upstreamAuthorization = request.headers.authorization ?? '';
     upstreamUserAgent = request.headers['user-agent'] ?? '';
+    upstreamPath = request.url ?? '';
     response.writeHead(200).end('ok');
   });
   await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
@@ -139,6 +443,8 @@ test('provider auth proxy supports Anthropic x-api-key without replacing the cli
     assert.equal(upstreamApiKey, providerKey);
     assert.equal(upstreamAuthorization, '');
     assert.equal(upstreamUserAgent, 'opencode/1.17.18 ai-sdk/6');
+    assert.equal(upstreamPath, '/coding/v1/messages');
+    assert.equal(proxy.telemetry()[0]?.path, '/coding/v1/messages');
   } finally {
     await proxy.close();
     await new Promise<void>((resolve, reject) =>
@@ -554,6 +860,98 @@ test('provider auth proxy aborts an in-flight upstream request on close', async 
   }
 });
 
+test('provider auth proxy cancels credential resolution on close', { timeout: 5_000 }, async () => {
+  let markCredentialRequestStarted!: () => void;
+  let markCredentialSocketClosed!: () => void;
+  let releaseCredentialRequest = () => {};
+  const credentialRequestStarted = new Promise<void>((resolve) => {
+    markCredentialRequestStarted = resolve;
+  });
+  const credentialSocketClosed = new Promise<void>((resolve) => {
+    markCredentialSocketClosed = resolve;
+  });
+  const credentialServer = createServer((request, response) => {
+    markCredentialRequestStarted();
+    request.socket.once('close', markCredentialSocketClosed);
+    releaseCredentialRequest = () => {
+      if (!response.writableEnded) response.end('upstream-key');
+    };
+  });
+  await new Promise<void>((resolve) => credentialServer.listen(0, '127.0.0.1', resolve));
+  const address = credentialServer.address();
+  assert.ok(address && typeof address !== 'string');
+  const proxy = await startProviderAuthProxy({
+    upstreamBaseUrl: 'http://127.0.0.1:1',
+    advertisedHost: '127.0.0.1',
+    resolveUpstreamCredential: async (signal?: AbortSignal) => {
+      const response = await fetch(`http://127.0.0.1:${address.port}/credential`, {
+        ...(signal ? { signal } : {}),
+      });
+      return { value: await response.text() };
+    },
+  });
+  const providerResponse = fetch(`${proxy.baseUrl}/responses`, {
+    headers: { authorization: `Bearer ${proxy.token}` },
+  }).catch(() => undefined);
+
+  try {
+    await credentialRequestStarted;
+    const closeAttempt = proxy.close();
+    const closed = await Promise.race([
+      closeAttempt.then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 250)),
+    ]);
+    assert.equal(closed, true);
+    const credentialSocketWasClosed = await Promise.race([
+      credentialSocketClosed.then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 250)),
+    ]);
+    assert.equal(credentialSocketWasClosed, true);
+    await providerResponse;
+  } finally {
+    releaseCredentialRequest();
+    await proxy.close();
+    credentialServer.closeAllConnections();
+    await new Promise<void>((resolve) => credentialServer.close(() => resolve()));
+  }
+});
+
+test('provider auth proxy closes when credential resolution ignores cancellation', {
+  timeout: 5_000,
+}, async () => {
+  let markCredentialResolutionStarted!: () => void;
+  let releaseCredentialResolution = () => {};
+  const credentialResolutionStarted = new Promise<void>((resolve) => {
+    markCredentialResolutionStarted = resolve;
+  });
+  const proxy = await startProviderAuthProxy({
+    upstreamBaseUrl: 'http://127.0.0.1:1',
+    advertisedHost: '127.0.0.1',
+    resolveUpstreamCredential: async () => {
+      markCredentialResolutionStarted();
+      return await new Promise((resolve) => {
+        releaseCredentialResolution = () => resolve({ value: 'upstream-key' });
+      });
+    },
+  });
+  const providerResponse = fetch(`${proxy.baseUrl}/responses`, {
+    headers: { authorization: `Bearer ${proxy.token}` },
+  }).catch(() => undefined);
+
+  try {
+    await credentialResolutionStarted;
+    const closed = await Promise.race([
+      proxy.close().then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 250)),
+    ]);
+    assert.equal(closed, true);
+    await providerResponse;
+  } finally {
+    releaseCredentialResolution();
+    await proxy.close();
+  }
+});
+
 test('provider auth proxy aborts the upstream stream when its client disconnects', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'maka-provider-proxy-client-disconnect-'));
   let upstreamClosed!: () => void;
@@ -626,7 +1024,7 @@ test('provider auth proxy binds a caller-specified port', async () => {
     port,
   });
   try {
-    assert.equal(proxy.baseUrl, `http://host.docker.internal:${port}`);
+    assert.equal(proxy.baseUrl, `http://host.docker.internal:${port}/api`);
   } finally {
     await proxy.close();
     await rm(dir, { recursive: true, force: true });
@@ -672,5 +1070,183 @@ test('proxy listen removes its bind-error listener so later socket errors stay l
     assert.equal(server.listenerCount('error'), 0);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+// Throwaway self-signed localhost keypair for the ALPN test upstream below.
+// Generated for this test only; it protects nothing and is not a secret.
+const TEST_TLS_KEY = `-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgY/Gn4UXA4CkakyTU
+KH7HnQuoCm+oijhMxnJbUn3HfPOhRANCAARcPHil4Wicklox28LLlCyOwgbCnPMT
+0MCUE+IIO1FQ0R2Kf9jNkrLDap94ZVfX+rqL/IS9YwlK3D71yoRuc5Dt
+-----END PRIVATE KEY-----
+`;
+const TEST_TLS_CERT = `-----BEGIN CERTIFICATE-----
+MIIBmzCCAUGgAwIBAgIURwBeV0GMeaqMHreWbCO4eKNJyHkwCgYIKoZIzj0EAwIw
+FDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI2MDczMDExNDAwNFoYDzIxMjYwNzA2
+MTE0MDA0WjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwWTATBgcqhkjOPQIBBggqhkjO
+PQMBBwNCAARcPHil4Wicklox28LLlCyOwgbCnPMT0MCUE+IIO1FQ0R2Kf9jNkrLD
+ap94ZVfX+rqL/IS9YwlK3D71yoRuc5Dto28wbTAdBgNVHQ4EFgQUtk79/6lCuMrN
+XPtVzMqcpPRz34QwHwYDVR0jBBgwFoAUtk79/6lCuMrNXPtVzMqcpPRz34QwDwYD
+VR0TAQH/BAUwAwEB/zAaBgNVHREEEzARgglsb2NhbGhvc3SHBH8AAAEwCgYIKoZI
+zj0EAwIDSAAwRQIhALT3Bbd5MAAF9FiqGe01guMcQeYKTnTuT3PSGxHUyoz8AiBp
+5VIucZiXGvcT4yv/bEddde8Ql2N7bI+YerEXJR3dsg==
+-----END CERTIFICATE-----
+`;
+
+test('proxy keeps upstream on HTTP/1.1 and forwards concurrent streams in parallel', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-provider-proxy-'));
+  const keyFile = join(dir, 'provider-key');
+  await writeFile(keyFile, 'provider-secret-key\n', 'utf8');
+  // An upstream that offers h2 via ALPN, like real provider gateways. The
+  // httpVersion assertion is the regression lock: an h2-negotiating
+  // dispatcher reports 2.0 regardless of timing. The held-open streams
+  // additionally deadlock the staggered-dispatch path of undici <= 8.7,
+  // which refuses to multiplex non-empty fetch bodies on a busy h2 session.
+  const seenHttpVersions: string[] = [];
+  let releaseBoth: () => void = () => {};
+  const bothArrived = new Promise<void>((resolve) => {
+    releaseBoth = resolve;
+  });
+  const upstream = http2CreateSecureServer(
+    { key: TEST_TLS_KEY, cert: TEST_TLS_CERT, allowHTTP1: true },
+    (request, response) => {
+      seenHttpVersions.push(request.httpVersion);
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.write('data: {"choices":[{"delta":{"content":"x"}}]}\n\n');
+      if (seenHttpVersions.length >= 2) releaseBoth();
+      // Hold every stream open until both requests have arrived, so a
+      // serialized upstream path deadlocks instead of passing by luck.
+      void bothArrived.then(() => response.end('data: [DONE]\n\n'));
+    },
+  );
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  const upstreamAddress = upstream.address();
+  assert.ok(upstreamAddress && typeof upstreamAddress !== 'string');
+  const proxy = await startProviderAuthProxy({
+    upstreamBaseUrl: `https://127.0.0.1:${upstreamAddress.port}/api/v4/`,
+    apiKeyFile: keyFile,
+    advertisedHost: '127.0.0.1',
+    upstreamDispatcher: createProviderUpstreamDispatcher({
+      connect: { ca: TEST_TLS_CERT },
+    }),
+  });
+  try {
+    const one = async () => {
+      const response = await fetch(`${proxy.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${proxy.token}`, 'content-type': 'application/json' },
+        body: '{}',
+        signal: AbortSignal.timeout(10_000),
+      });
+      assert.equal(response.status, 200);
+      return response.text();
+    };
+    const [first, second] = await Promise.all([one(), one()]);
+    assert.match(first, /\[DONE\]/);
+    assert.match(second, /\[DONE\]/);
+    assert.deepEqual(seenHttpVersions, ['1.1', '1.1']);
+    const telemetry = proxy.telemetry();
+    assert.equal(telemetry.length, 2);
+    for (const request of telemetry) {
+      assert.ok(request.upstreamStartMs !== undefined);
+      assert.ok(request.responseHeadersMs !== undefined);
+      assert.ok(request.upstreamStartMs <= request.responseHeadersMs);
+    }
+  } finally {
+    await proxy.close();
+    upstream.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('proxy telemetry separates dispatcher queue time from upstream wait', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-provider-proxy-'));
+  const keyFile = join(dir, 'provider-key');
+  await writeFile(keyFile, 'provider-secret-key\n', 'utf8');
+  // The injected clock makes every recorded timestamp exact, so the
+  // assertions below are equalities, not wall-clock thresholds.
+  let clock = 0;
+  let releaseFirst: () => void = () => {};
+  let firstArrived: () => void = () => {};
+  const firstUpstream = new Promise<void>((resolve) => {
+    firstArrived = resolve;
+  });
+  const upstream = http2CreateSecureServer(
+    { key: TEST_TLS_KEY, cert: TEST_TLS_CERT, allowHTTP1: true },
+    (request, response) => {
+      if (request.url === '/api/v4/first') {
+        response.writeHead(200, { 'content-type': 'text/plain' });
+        response.write('held');
+        releaseFirst = () => response.end('done');
+        firstArrived();
+        return;
+      }
+      // The queued request reaches the wire only after the held one ends;
+      // advance the clock before answering so pure upstream wait shows up as
+      // responseHeadersMs minus upstreamStartMs.
+      clock = 7000;
+      response.writeHead(200, { 'content-type': 'text/plain' });
+      response.end('ok');
+    },
+  );
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  const upstreamAddress = upstream.address();
+  assert.ok(upstreamAddress && typeof upstreamAddress !== 'string');
+  // A single upstream connection forces the second request to sit in the
+  // dispatcher queue until the first stream ends. The compose counter is the
+  // deterministic gate that it entered the pool before the clock advances.
+  let dispatches = 0;
+  let secondQueued: () => void = () => {};
+  const secondInPool = new Promise<void>((resolve) => {
+    secondQueued = resolve;
+  });
+  const upstreamDispatcher = createProviderUpstreamDispatcher({
+    connections: 1,
+    connect: { ca: TEST_TLS_CERT },
+  }).compose((dispatch) => (options, handler) => {
+    const dispatched = dispatch(options, handler);
+    dispatches += 1;
+    if (dispatches === 2) secondQueued();
+    return dispatched;
+  });
+  const proxy = await startProviderAuthProxy({
+    upstreamBaseUrl: `https://127.0.0.1:${upstreamAddress.port}/api/v4/`,
+    apiKeyFile: keyFile,
+    advertisedHost: '127.0.0.1',
+    now: () => clock,
+    upstreamDispatcher,
+  });
+  try {
+    const request = (path: string) =>
+      fetch(`${proxy.baseUrl}/${path}`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${proxy.token}`, 'content-type': 'application/json' },
+        body: '{}',
+        signal: AbortSignal.timeout(10_000),
+      });
+    const first = request('first');
+    await firstUpstream;
+    clock = 1000;
+    const second = request('second');
+    await secondInPool;
+    clock = 6000;
+    releaseFirst();
+    const [firstResponse, secondResponse] = await Promise.all([first, second]);
+    assert.equal(firstResponse.status, 200);
+    assert.equal(secondResponse.status, 200);
+    await Promise.all([firstResponse.text(), secondResponse.text()]);
+    const byPath = new Map(proxy.telemetry().map((entry) => [entry.path, entry]));
+    assert.equal(byPath.get('/api/v4/first')?.upstreamStartMs, 0);
+    // Started at 1000, left the dispatcher queue at 6000 when the held
+    // connection freed, got upstream headers at 7000. A stamp taken before
+    // dispatch reads 0; one taken at response headers reads 6000; a dropped
+    // stamp reads undefined. Only queue-exit semantics yield 5000.
+    assert.equal(byPath.get('/api/v4/second')?.upstreamStartMs, 5000);
+    assert.equal(byPath.get('/api/v4/second')?.responseHeadersMs, 6000);
+  } finally {
+    await proxy.close();
+    upstream.close();
+    await rm(dir, { recursive: true, force: true });
   }
 });

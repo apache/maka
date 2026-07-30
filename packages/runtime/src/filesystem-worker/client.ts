@@ -1,21 +1,19 @@
 import { randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { dirname } from 'node:path';
 import {
-  applyAdditionalPermissionProfile,
   canReadPath,
   canWritePath,
   compilePermissionProfile,
+  type ExecutionBoundary,
   type PermissionMode,
   type PermissionProfile,
+  type SandboxBoundaryExpansion,
 } from '@maka/core';
 
-import { hashAdditionalPermissionProfile } from '../additional-permission-hash.js';
-import {
-  normalizeAdditionalPermissionPath,
-  revalidateAdditionalPermissionGrant,
-  type AdditionalPermissionGrant,
-} from '../additional-permissions.js';
+import { normalizeSandboxBoundaryPath } from '../sandbox-boundary-path.js';
+import { pinExistingLinuxProfilePath } from '../sandbox/linux-profile-path.js';
 import type { SandboxManager } from '../sandbox/sandbox-manager.js';
 import type { SandboxPlatform } from '../sandbox/types.js';
 import type { FilesystemWorkerLaunchSpecProvider } from './launch-spec.js';
@@ -31,6 +29,7 @@ import {
   type FilesystemWorkerErrorCode,
   type FilesystemWorkerOperation,
   type FilesystemWorkerResult,
+  type FilesystemWorkerTarget,
 } from './protocol.js';
 
 export const FILESYSTEM_WORKER_MAX_REQUEST_BYTES = 16 * 1024 * 1024;
@@ -53,11 +52,11 @@ export interface FilesystemWorkerClientInput {
 export interface FilesystemWorkerExecuteInput {
   operation: FilesystemWorkerClientOperation;
   cwd: string;
-  mode: PermissionMode;
+  executionBoundary?: ExecutionBoundary;
+  mode?: PermissionMode;
   /** Explicit embedding policy. Mode-based defaults are compiled only when omitted. */
   permissionProfile?: PermissionProfile;
   abortSignal?: AbortSignal;
-  additionalGrant?: AdditionalPermissionGrant;
 }
 
 export type FilesystemWorkerClientErrorReason =
@@ -78,7 +77,8 @@ export type FilesystemWorkerClientErrorReason =
   | 'unsupported_platform'
   | 'backend_not_available'
   | 'backend_not_implemented'
-  | 'sandbox_required';
+  | 'sandbox_required'
+  | 'sandbox_boundary_required';
 
 export class FilesystemWorkerClientError extends Error {
   readonly code = 'SANDBOX_FILESYSTEM_OPERATION_FAILED';
@@ -89,6 +89,7 @@ export class FilesystemWorkerClientError extends Error {
   readonly requestId?: string;
   readonly backend?: 'none' | 'macos-seatbelt' | 'linux';
   readonly profileName?: string;
+  readonly requiredExpansion?: SandboxBoundaryExpansion;
 
   constructor(input: {
     reason: FilesystemWorkerClientErrorReason;
@@ -98,6 +99,7 @@ export class FilesystemWorkerClientError extends Error {
     requestId?: string;
     backend?: 'none' | 'macos-seatbelt' | 'linux';
     profileName?: string;
+    requiredExpansion?: SandboxBoundaryExpansion;
   }) {
     super(input.message ?? `Filesystem worker failed: ${input.reason}.`);
     this.name = 'FilesystemWorkerClientError';
@@ -107,6 +109,7 @@ export class FilesystemWorkerClientError extends Error {
     this.requestId = input.requestId;
     this.backend = input.backend;
     this.profileName = input.profileName;
+    this.requiredExpansion = input.requiredExpansion;
   }
 }
 
@@ -124,6 +127,14 @@ export class FilesystemWorkerClient {
   async execute(input: FilesystemWorkerExecuteInput): Promise<FilesystemWorkerResult> {
     const requestId = this.newId();
     if (input.abortSignal?.aborted) throw clientError('aborted', 'launch', requestId);
+    if (input.executionBoundary && input.executionBoundary.kind !== 'managed') {
+      throw clientError(
+        'invalid_request',
+        'validation',
+        requestId,
+        'Filesystem worker execution requires a managed boundary.',
+      );
+    }
     const canonicalCwd = await realpath(input.cwd).catch(() => {
       throw clientError(
         'invalid_operation',
@@ -132,19 +143,6 @@ export class FilesystemWorkerClient {
         'Session cwd is unavailable.',
       );
     });
-    if (input.additionalGrant) {
-      if (
-        input.additionalGrant.permissionsHash !==
-        hashAdditionalPermissionProfile(input.additionalGrant.profile)
-      ) {
-        throw clientError('invalid_request', 'validation', requestId);
-      }
-      await revalidateAdditionalPermissionGrant({
-        grant: input.additionalGrant,
-        cwd: canonicalCwd,
-      });
-    }
-
     const parsedOperation = FilesystemWorkerOperationSchema.safeParse({
       ...input.operation,
       cwd: canonicalCwd,
@@ -152,7 +150,7 @@ export class FilesystemWorkerClient {
     if (!parsedOperation.success) throw clientError('invalid_operation', 'validation', requestId);
 
     const access = operationAccess(parsedOperation.data.kind);
-    const target = await normalizeAdditionalPermissionPath({
+    const target = await normalizeSandboxBoundaryPath({
       path: parsedOperation.data.path,
       access,
       scope: operationScope(parsedOperation.data.kind),
@@ -160,28 +158,63 @@ export class FilesystemWorkerClient {
     }).catch(() => {
       throw clientError('invalid_operation', 'validation', requestId);
     });
-    const compiled = input.permissionProfile
-      ? {
-          profile: input.permissionProfile,
-          workspaceRoots: [canonicalCwd],
-        }
-      : compilePermissionProfile({ mode: input.mode, cwd: canonicalCwd });
-    const effectiveProfile = input.additionalGrant
-      ? applyAdditionalPermissionProfile(compiled.profile, input.additionalGrant.profile)
-      : compiled.profile;
+    const compiled =
+      input.executionBoundary?.kind === 'managed'
+        ? {
+            profile: input.executionBoundary.profile,
+            workspaceRoots: [canonicalCwd],
+          }
+        : input.permissionProfile
+          ? {
+              profile: input.permissionProfile,
+              workspaceRoots: [canonicalCwd],
+            }
+          : compilePermissionProfile({ mode: input.mode ?? 'ask', cwd: canonicalCwd });
+    const effectiveProfile = compiled.profile;
+    const platform = this.input.platform ?? process.platform;
+    const runtimeWritableRoots = filesystemWorkerRuntimeWritableRoots({
+      platform,
+      access,
+      enforcementPath: target.enforcementPath,
+      targetType: target.targetType,
+    });
     const pathContext = {
       workspaceRoots: compiled.workspaceRoots,
       tmpdir: await canonicalPath(tmpdir()),
       slashTmp: await canonicalPath('/tmp'),
+      ...(runtimeWritableRoots ? { runtimeWritableRoots } : {}),
     };
     const allowed =
       access === 'write'
         ? canWritePath(effectiveProfile, target.enforcementPath, pathContext)
         : canReadPath(effectiveProfile, target.enforcementPath, pathContext);
-    if (!allowed) throw clientError('path_denied', 'validation', requestId);
+    if (!allowed) {
+      throw clientError(
+        input.executionBoundary?.kind === 'managed' ? 'sandbox_boundary_required' : 'path_denied',
+        'validation',
+        requestId,
+        undefined,
+        true,
+        input.executionBoundary?.kind === 'managed'
+          ? {
+              requiredExpansion: {
+                filesystem: {
+                  entries: [
+                    {
+                      path: target.enforcementPath,
+                      access,
+                      scope: target.scope,
+                    },
+                  ],
+                },
+              },
+            }
+          : {},
+      );
+    }
 
-    const operationPermission = {
-      fileSystem: {
+    const operationBoundary = {
+      filesystem: {
         entries: [{ path: target.enforcementPath, access, scope: target.scope }],
       },
     } as const;
@@ -193,8 +226,7 @@ export class FilesystemWorkerClient {
       version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
       requestId,
       operation,
-      operationPermission,
-      permissionsHash: hashAdditionalPermissionProfile(operationPermission),
+      operationBoundary,
       expectedTarget: {
         enforcementPath: target.enforcementPath,
         access,
@@ -209,23 +241,118 @@ export class FilesystemWorkerClient {
 
     const launch = await this.input.getLaunchSpec();
     if (!launch.ok) throw clientError(launch.reason, 'launch', requestId, launch.message);
-    const workerProfile = deriveWorkerProfile(effectiveProfile, operationPermission);
-    const transformed = this.input.sandboxManager.transform({
-      platform: this.input.platform ?? process.platform,
-      command: {
-        program: launch.spec.program,
-        args: launch.spec.args,
-        cwd: canonicalCwd,
-        env: launch.spec.env,
-        profile: workerProfile,
-        pathContext: {
-          ...pathContext,
-          runtimeReadableRoots: launch.spec.runtimeReadableRoots,
-          executableRoots: launch.spec.executableRoots,
+    const workerProfile = deriveWorkerProfile(effectiveProfile, operationBoundary);
+    const pinnedTarget =
+      platform === 'linux' && target.targetType !== 'missing'
+        ? (() => {
+            try {
+              return pinExistingLinuxProfilePath({
+                path: target.enforcementPath,
+                access,
+                targetType: target.targetType,
+                childFd: 4,
+              });
+            } catch {
+              throw clientError(
+                'path_changed',
+                'validation',
+                requestId,
+                'The approved filesystem target changed before sandbox launch.',
+              );
+            }
+          })()
+        : undefined;
+    if (platform === 'linux' && target.targetType !== 'missing' && !pinnedTarget) {
+      throw clientError(
+        'path_changed',
+        'validation',
+        requestId,
+        'The approved filesystem target changed before sandbox launch.',
+      );
+    }
+    const pinnedRuntimeWritableRoot =
+      platform === 'linux' && target.targetType === 'missing' && runtimeWritableRoots?.[0]
+        ? (() => {
+            try {
+              return pinExistingLinuxProfilePath({
+                path: runtimeWritableRoots[0],
+                access: 'write',
+                targetType: 'directory',
+                childFd: 4,
+              });
+            } catch {
+              throw clientError(
+                'path_changed',
+                'validation',
+                requestId,
+                'The approved filesystem target parent changed before sandbox launch.',
+              );
+            }
+          })()
+        : undefined;
+    if (
+      platform === 'linux' &&
+      target.targetType === 'missing' &&
+      runtimeWritableRoots &&
+      !pinnedRuntimeWritableRoot
+    ) {
+      throw clientError(
+        'path_changed',
+        'validation',
+        requestId,
+        'The approved filesystem target parent changed before sandbox launch.',
+      );
+    }
+    let transformed: ReturnType<SandboxManager['transform']>;
+    try {
+      transformed = this.input.sandboxManager.transform({
+        platform,
+        command: {
+          program: launch.spec.program,
+          args: launch.spec.args,
+          cwd: canonicalCwd,
+          env: launch.spec.env,
+          profile: workerProfile,
+          pathContext: {
+            ...pathContext,
+            runtimeReadableRoots: launch.spec.runtimeReadableRoots,
+            executableRoots: launch.spec.executableRoots,
+            ...(pinnedTarget
+              ? {
+                  pinnedProfilePaths: [
+                    {
+                      path: pinnedTarget.path,
+                      access: pinnedTarget.access,
+                      fd: pinnedTarget.childFd,
+                      sourceFd: pinnedTarget.sourceFd,
+                      releaseSource: pinnedTarget.releaseSource,
+                    },
+                  ],
+                }
+              : {}),
+            ...(pinnedRuntimeWritableRoot
+              ? {
+                  pinnedRuntimeWritableRoots: [
+                    {
+                      path: pinnedRuntimeWritableRoot.path,
+                      fd: pinnedRuntimeWritableRoot.childFd,
+                      sourceFd: pinnedRuntimeWritableRoot.sourceFd,
+                      releaseSource: pinnedRuntimeWritableRoot.releaseSource,
+                    },
+                  ],
+                }
+              : {}),
+          },
         },
-      },
-    });
+      });
+    } catch (error) {
+      pinnedTarget?.releaseSource();
+      pinnedRuntimeWritableRoot?.releaseSource();
+      throw error;
+    }
     if (!transformed.ok) {
+      pinnedTarget?.releaseSource();
+      pinnedRuntimeWritableRoot?.releaseSource();
       throw clientError(transformed.reason, 'transform', requestId, transformed.message, false, {
         backend: transformed.sandboxType,
         profileName: effectiveProfile.name ?? effectiveProfile.type,
@@ -239,11 +366,15 @@ export class FilesystemWorkerClient {
         cwd: transformed.exec.cwd,
         env: transformed.exec.env ?? {},
         stdin: requestJson,
+        ...(transformed.exec.fdInputs ? { fdInputs: transformed.exec.fdInputs } : {}),
         timeoutMs: this.timeoutMs,
         ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       });
     } catch {
       throw clientError('spawn_failed', 'launch', requestId);
+    } finally {
+      pinnedTarget?.releaseSource();
+      pinnedRuntimeWritableRoot?.releaseSource();
     }
     if (processResult.timedOut) throw clientError('timeout', 'launch', requestId);
     if (processResult.aborted) throw clientError('aborted', 'launch', requestId);
@@ -272,6 +403,10 @@ export class FilesystemWorkerClient {
         requestId,
         response.error.message,
         response.error.code === 'not_found' || response.error.code === 'edit_conflict',
+        {
+          backend: transformed.exec.sandboxType,
+          profileName: effectiveProfile.name ?? effectiveProfile.type,
+        },
       );
     }
     if (
@@ -284,10 +419,23 @@ export class FilesystemWorkerClient {
   }
 }
 
+/** @internal Runtime-only widening for a trusted, single-operation worker. */
+export function filesystemWorkerRuntimeWritableRoots(input: {
+  platform: SandboxPlatform;
+  access: 'read' | 'write';
+  enforcementPath: string;
+  targetType: FilesystemWorkerTarget['targetType'];
+}): readonly string[] | undefined {
+  if (input.platform !== 'linux' || input.access !== 'write' || input.targetType !== 'missing') {
+    return undefined;
+  }
+  return [dirname(input.enforcementPath)];
+}
+
 function deriveWorkerProfile(
   profile: PermissionProfile,
-  operationPermission: {
-    readonly fileSystem: {
+  operationBoundary: {
+    readonly filesystem: {
       readonly entries: readonly [
         {
           readonly path: string;
@@ -299,7 +447,7 @@ function deriveWorkerProfile(
   },
 ): PermissionProfile {
   if (profile.type !== 'managed' || profile.fileSystem.kind !== 'restricted') return profile;
-  const target = operationPermission.fileSystem.entries[0];
+  const target = operationBoundary.filesystem.entries[0];
   return {
     ...profile,
     fileSystem: {
@@ -340,6 +488,7 @@ function clientError(
   metadata: {
     backend?: 'none' | 'macos-seatbelt' | 'linux';
     profileName?: string;
+    requiredExpansion?: SandboxBoundaryExpansion;
   } = {},
 ): FilesystemWorkerClientError {
   return new FilesystemWorkerClientError({

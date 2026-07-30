@@ -3,7 +3,6 @@ import type { SearchErrorReason, SearchResult } from '@maka/core';
 import { SearchModal } from '@maka/ui';
 import {
   Download,
-  EyeOff,
   FolderOpen,
   MessageSquare,
   Plus,
@@ -14,6 +13,9 @@ import {
 import { CommandPalette } from '../src/renderer/command-palette';
 import type { Command } from '../src/renderer/command-palette-types';
 import type { UseThreadSearchDeps } from '../src/renderer/use-thread-search';
+
+// Fidelity convention (#1433): every story below names the real app path
+// that reaches it. See apps/desktop/stories/FIDELITY.md.
 
 const meta = {
   title: 'Product/Command Search',
@@ -119,21 +121,6 @@ const paletteCommands: Command[] = [
   },
 ];
 
-const disabledPaletteCommands: Command[] = [
-  {
-    id: 'thread-search:blocked',
-    kind: 'action',
-    label: '搜索已在隐私模式下停用',
-    hint: '隐私模式打开时不会读取本地历史内容。',
-    group: '内容搜索',
-    Icon: EyeOff,
-    keywords: ['incognito', 'privacy', '隐私'],
-    disabled: true,
-    run: noop,
-  },
-  ...paletteCommands.slice(0, 2),
-];
-
 const idlePaletteSearchDeps = {
   runSearch: async () => [],
 } satisfies UseThreadSearchDeps;
@@ -225,6 +212,7 @@ async function pressPaletteKey(canvasElement: HTMLElement, key: string) {
   await wait(0);
 }
 
+// Real path: ⌘K (or 更多操作 → 打开命令面板) → the palette with commands grouped by kind.
 export const CommandPaletteGroupedResults: Story = {
   render: () => (
     <CommandPaletteFrame
@@ -233,22 +221,32 @@ export const CommandPaletteGroupedResults: Story = {
   ),
 };
 
-export const CommandPaletteEmpty: Story = {
+// Real path: ⌘K → type a query that matches nothing. There is no
+// no-commands-at-all state to render: `buildCommandList` always emits
+// 新建对话 first (command-palette-commands.ts), so the palette's empty branch
+// is only ever reached through a query — and its copy says so
+// ("没有匹配的命令 / 换个关键词").
+export const CommandPaletteNoMatch: Story = {
   render: () => (
     <CommandPaletteFrame
-      commands={[]}
+      commands={paletteCommands}
     />
   ),
+  play: async ({ canvasElement }) => {
+    await enterQuery(canvasElement, '.maka-palette-input', 'zzzzz-no-such-command');
+  },
 };
 
-export const CommandPaletteDisabledCommand: Story = {
-  render: () => (
-    <CommandPaletteFrame
-      commands={disabledPaletteCommands}
-    />
-  ),
-};
+// A `CommandPaletteDisabledCommand` story used to sit here, hand-building a
+// `thread-search:blocked` row into the base command list and rendering it with
+// no query. `buildCommandList` never emits a disabled command; the only
+// disabled row in the product comes from `buildContentSearchCommands`, which
+// runs only after a query of at least two code points. The reachable version
+// of this state is `CommandPaletteContentSearchBlocked` below, driven through
+// the real builder.
 
+// Real path: ⌘K then ↓↓ — the keyboard-driven selection ring, which the mouse path never
+// shows.
 export const CommandPaletteKeyboardFocusedSelection: Story = {
   render: () => (
     <CommandPaletteFrame
@@ -261,6 +259,8 @@ export const CommandPaletteKeyboardFocusedSelection: Story = {
   },
 };
 
+// Real path: ⌘K → type a query → the palette also searches conversation content; this is
+// the in-flight state.
 export const CommandPaletteContentSearchLoading: Story = {
   render: () => (
     <CommandPaletteFrame
@@ -273,6 +273,7 @@ export const CommandPaletteContentSearchLoading: Story = {
   },
 };
 
+// Real path: same, once content matches come back and merge below the command groups.
 export const CommandPaletteContentSearchResults: Story = {
   render: () => (
     <CommandPaletteFrame
@@ -285,6 +286,7 @@ export const CommandPaletteContentSearchResults: Story = {
   },
 };
 
+// Real path: same, when the content-search provider fails.
 export const CommandPaletteContentSearchError: Story = {
   render: () => (
     <CommandPaletteFrame
@@ -301,6 +303,8 @@ export const CommandPaletteContentSearchError: Story = {
   },
 };
 
+// Real path: same, with incognito on — Maka refuses to read local history rather than
+// returning nothing.
 export const CommandPaletteContentSearchBlocked: Story = {
   render: () => (
     <CommandPaletteFrame
@@ -317,6 +321,8 @@ export const CommandPaletteContentSearchBlocked: Story = {
   },
 };
 
+// Real path: titlebar 搜索 icon (app-shell-chrome-actions.tsx) → the modal before anything
+// is typed.
 export const SearchModalEmpty: Story = {
   render: () => (
     <SearchModalFrame
@@ -325,6 +331,7 @@ export const SearchModalEmpty: Story = {
   ),
 };
 
+// Real path: same modal → type a query → the in-flight state.
 export const SearchModalLoading: Story = {
   render: () => (
     <SearchModalFrame
@@ -336,6 +343,7 @@ export const SearchModalLoading: Story = {
   },
 };
 
+// Real path: same modal with matches, grouped by session with the matched excerpt.
 export const SearchModalResults: Story = {
   render: () => (
     <SearchModalFrame
@@ -347,6 +355,7 @@ export const SearchModalResults: Story = {
   },
 };
 
+// Real path: same modal with a query that matches nothing.
 export const SearchModalNoResults: Story = {
   render: () => (
     <SearchModalFrame
@@ -358,6 +367,7 @@ export const SearchModalNoResults: Story = {
   },
 };
 
+// Real path: same modal when the search index is unavailable.
 export const SearchModalError: Story = {
   render: () => (
     <SearchModalFrame
@@ -373,6 +383,8 @@ export const SearchModalError: Story = {
   },
 };
 
+// Real path: same modal with incognito on — search is disabled rather than silently
+// empty.
 export const SearchModalBlocked: Story = {
   render: () => (
     <SearchModalFrame

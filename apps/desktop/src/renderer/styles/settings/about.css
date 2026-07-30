@@ -2,6 +2,9 @@
 .settingsAboutPage {
   display: grid;
   align-content: start;
+  /* #1363: same explicit column as .settingsStructuredPage (#1362) — stop
+     intrinsic max-content propagation through the implicit `auto` track. */
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-4);
 }
 
@@ -21,7 +24,8 @@
   height: 48px;
   display: grid;
   place-items: center;
-  border-radius: var(--radius-surface);
+  /* Square icon plate — ratio-governed, see --radius-plate. */
+  border-radius: var(--radius-plate);
   background: oklch(from var(--brand-deep) l c h / 0.10);
   color: var(--brand-deep);
 }
@@ -102,6 +106,12 @@
   align-items: flex-start;
 }
 
+/* #1363: the label stack is a flex item — without min-width:0 its widest
+   unbreakable run sets the row minimum instead of wrapping. */
+.settingsConfigCategoryItem > span {
+  min-width: 0;
+}
+
 .settingsConfigCategoryItem small {
   display: block;
   color: var(--muted-foreground);
@@ -115,11 +125,16 @@
 .settingsConfigStrategy {
   display: flex;
   align-items: center;
+  /* #1363: the nowrap label + select trigger have a one-line minimum wider
+     than the 480px window floor's content column — the select drops to its
+     own line instead of dragging the section into overflow. */
+  flex-wrap: wrap;
   gap: var(--space-2);
   margin-top: var(--space-2-5);
 }
 
-.settingsConfigStrategy > .settingsHelpText {
-  white-space: nowrap;
-}
+/* #1363 review: no nowrap on the strategy label — the English copy
+   ("Connections with the same name:") is wider than the 480px floor's
+   content column and dragged the section into clipped overflow. On wide
+   layouts the label fits one line either way. */
 

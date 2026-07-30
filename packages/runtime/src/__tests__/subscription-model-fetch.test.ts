@@ -47,7 +47,9 @@ describe('subscription model fetch', () => {
     );
     assert.equal(body.system[0].text.startsWith('x-anthropic-billing-header:'), true);
     assert.equal(body.system[1].text, "You are Claude Code, Anthropic's official CLI for Claude.");
+    assert.deepEqual(body.system[1].cache_control, { type: 'ephemeral' });
     assert.equal(body.system[2].text, 'Use the Maka system prompt.');
+    assert.equal(body.cache_control, undefined);
   });
 
   test('leaves Claude subscription requests untouched when the cloak opt-out is disabled', async () => {
@@ -124,6 +126,342 @@ describe('subscription model fetch', () => {
     assert.equal(body.text.verbosity, 'medium');
   });
 
+  test('retries a transient HTML 403 from the Codex edge', async () => {
+    let attempts = 0;
+    const modelFetch = buildSubscriptionModelFetch({
+      connection: openAiCodexConnection(),
+      sessionId: 'session-123',
+      modelId: 'gpt-5.6-sol',
+      fetchFn: async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          return new Response('<!doctype html><title>Request rejected</title>', {
+            status: 403,
+            headers: { 'retry-after': '0' },
+          });
+        }
+        return Response.json({ ok: true });
+      },
+    });
+
+    assert.ok(modelFetch);
+    const response = await modelFetch('https://chatgpt.com/backend-api/codex/responses', {
+      method: 'POST',
+      body: JSON.stringify({ input: [{ role: 'user', content: 'hello' }] }),
+    });
+
+    assert.equal(response.ok, true);
+    assert.equal(attempts, 2);
+  });
+
+  test('does not retry a JSON 403 from the Codex API', async () => {
+    let attempts = 0;
+    const modelFetch = buildSubscriptionModelFetch({
+      connection: openAiCodexConnection(),
+      sessionId: 'session-123',
+      modelId: 'gpt-5.6-sol',
+      fetchFn: async () => {
+        attempts += 1;
+        return Response.json({ error: { message: 'account is not authorized' } }, { status: 403 });
+      },
+    });
+
+    assert.ok(modelFetch);
+    await assert.rejects(
+      modelFetch('https://chatgpt.com/backend-api/codex/responses', {
+        method: 'POST',
+        body: JSON.stringify({ input: [{ role: 'user', content: 'hello' }] }),
+      }),
+      /Codex OAuth request failed: HTTP 403/,
+    );
+    assert.equal(attempts, 1);
+  });
+
+  test('does not retry an HTML 403 when the body belongs to a Request object', async () => {
+    let attempts = 0;
+    const modelFetch = buildSubscriptionModelFetch({
+      connection: openAiCodexConnection(),
+      sessionId: 'session-123',
+      modelId: 'gpt-5.6-sol',
+      fetchFn: async (request) => {
+        attempts += 1;
+        if (request instanceof Request) await request.text();
+        return new Response('<html><title>Request rejected</title>', {
+          status: 403,
+          headers: { 'content-type': 'text/html', 'retry-after': '0' },
+        });
+      },
+    });
+
+    assert.ok(modelFetch);
+    const request = new Request('https://chatgpt.com/backend-api/codex/responses', {
+      method: 'POST',
+      body: JSON.stringify({ input: [{ role: 'user', content: 'hello' }] }),
+    });
+    await assert.rejects(modelFetch(request), /Codex OAuth request failed: HTTP 403/);
+    assert.equal(request.bodyUsed, true);
+    assert.equal(attempts, 1);
+  });
+
+  test('does not treat a null body override as clearing a Request body', async () => {
+    let attempts = 0;
+    const modelFetch = buildSubscriptionModelFetch({
+      connection: openAiCodexConnection(),
+      sessionId: 'session-123',
+      modelId: 'gpt-5.6-sol',
+      fetchFn: async (request) => {
+        attempts += 1;
+        if (request instanceof Request) await request.text();
+        return new Response('<html><title>Request rejected</title>', {
+          status: 403,
+          headers: { 'content-type': 'text/html', 'retry-after': '0' },
+        });
+      },
+    });
+
+    assert.ok(modelFetch);
+    const request = new Request('https://chatgpt.com/backend-api/codex/responses', {
+      method: 'POST',
+      body: JSON.stringify({ input: [{ role: 'user', content: 'hello' }] }),
+    });
+    await assert.rejects(
+      modelFetch(request, { body: null }),
+      /Codex OAuth request failed: HTTP 403/,
+    );
+    assert.equal(attempts, 1);
+  });
+
+  test('does not retry an HTML 403 with a non-string request body', async () => {
+    let attempts = 0;
+    const modelFetch = buildSubscriptionModelFetch({
+      connection: openAiCodexConnection(),
+      sessionId: 'session-123',
+      modelId: 'gpt-5.6-sol',
+      fetchFn: async () => {
+        attempts += 1;
+        return new Response('<html><title>Request rejected</title>', {
+          status: 403,
+          headers: { 'content-type': 'text/html', 'retry-after': '0' },
+        });
+      },
+    });
+
+    assert.ok(modelFetch);
+    await assert.rejects(
+      modelFetch('https://chatgpt.com/backend-api/codex/responses', {
+        method: 'POST',
+        body: new Uint8Array([123, 125]),
+      }),
+      /Codex OAuth request failed: HTTP 403/,
+    );
+    assert.equal(attempts, 1);
+  });
+
+  test('aborts while waiting to retry an HTML 403', async () => {
+    let attempts = 0;
+    const controller = new AbortController();
+    const modelFetch = buildSubscriptionModelFetch({
+      connection: openAiCodexConnection(),
+      sessionId: 'session-123',
+      modelId: 'gpt-5.6-sol',
+      fetchFn: async () => {
+        attempts += 1;
+        controller.abort();
+        return new Response('<html><title>Request rejected</title>', {
+          status: 403,
+          headers: { 'content-type': 'text/html' },
+        });
+      },
+    });
+
+    assert.ok(modelFetch);
+    await assert.rejects(
+      modelFetch('https://chatgpt.com/backend-api/codex/responses', {
+        method: 'POST',
+        body: JSON.stringify({ input: [{ role: 'user', content: 'hello' }] }),
+        signal: controller.signal,
+      }),
+      /abort/i,
+    );
+    assert.equal(attempts, 1);
+  });
+
+  test('aborts a retry delay through a Request signal', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let attempts = 0;
+    const controller = new AbortController();
+    const modelFetch = buildSubscriptionModelFetch({
+      connection: openAiCodexConnection(),
+      sessionId: 'session-123',
+      modelId: 'gpt-5.6-sol',
+      fetchFn: async () => {
+        attempts += 1;
+        return new Response('<html><title>Request rejected</title>', {
+          status: 403,
+          headers: { 'content-type': 'text/html' },
+        });
+      },
+    });
+
+    assert.ok(modelFetch);
+    const request = new Request('https://chatgpt.com/backend-api/codex/responses', {
+      signal: controller.signal,
+    });
+    const outcome = modelFetch(request).then(
+      () => 'resolved',
+      (error: unknown) => String(error),
+    );
+    await eventLoopTurn();
+    controller.abort();
+
+    const result = await Promise.race([outcome, eventLoopTurn().then(() => 'pending')]);
+    assert.match(result, /abort/i);
+    assert.equal(attempts, 1);
+  });
+
+  test('prefers an init signal over a Request signal', async () => {
+    let attempts = 0;
+    const requestController = new AbortController();
+    const initController = new AbortController();
+    const modelFetch = buildSubscriptionModelFetch({
+      connection: openAiCodexConnection(),
+      sessionId: 'session-123',
+      modelId: 'gpt-5.6-sol',
+      fetchFn: async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          requestController.abort();
+          return new Response('<html><title>Request rejected</title>', {
+            status: 403,
+            headers: { 'content-type': 'text/html', 'retry-after': '0' },
+          });
+        }
+        return Response.json({ ok: true });
+      },
+    });
+
+    assert.ok(modelFetch);
+    const request = new Request('https://chatgpt.com/backend-api/codex/responses', {
+      signal: requestController.signal,
+    });
+    const response = await modelFetch(request, { signal: initController.signal });
+
+    assert.equal(response.ok, true);
+    assert.equal(attempts, 2);
+  });
+
+  test('does not inherit a Request signal when init explicitly sets signal to null', async () => {
+    let attempts = 0;
+    const controller = new AbortController();
+    controller.abort();
+    const modelFetch = buildSubscriptionModelFetch({
+      connection: openAiCodexConnection(),
+      sessionId: 'session-123',
+      modelId: 'gpt-5.6-sol',
+      fetchFn: async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          return new Response('<html><title>Request rejected</title>', {
+            status: 403,
+            headers: { 'content-type': 'text/html', 'retry-after': '0' },
+          });
+        }
+        return Response.json({ ok: true });
+      },
+    });
+
+    assert.ok(modelFetch);
+    const request = new Request('https://chatgpt.com/backend-api/codex/responses', {
+      signal: controller.signal,
+    });
+    const response = await modelFetch(request, { signal: null });
+
+    assert.equal(response.ok, true);
+    assert.equal(attempts, 2);
+  });
+
+  test('caps HTML 403 retries after fallback delays of 2, 10, and 30 seconds', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let attempts = 0;
+    const modelFetch = buildSubscriptionModelFetch({
+      connection: openAiCodexConnection(),
+      sessionId: 'session-123',
+      modelId: 'gpt-5.6-sol',
+      fetchFn: async () => {
+        attempts += 1;
+        return new Response('<html><title>Request rejected</title>', {
+          status: 403,
+          headers: { 'content-type': 'text/html' },
+        });
+      },
+    });
+
+    assert.ok(modelFetch);
+    const rejection = assert.rejects(
+      modelFetch('https://chatgpt.com/backend-api/codex/responses', {
+        method: 'POST',
+        body: JSON.stringify({ input: [{ role: 'user', content: 'hello' }] }),
+      }),
+      /Codex OAuth request failed: HTTP 403/,
+    );
+
+    await eventLoopTurn();
+    assert.equal(attempts, 1);
+    t.mock.timers.tick(1_999);
+    await eventLoopTurn();
+    assert.equal(attempts, 1);
+    t.mock.timers.tick(1);
+    await eventLoopTurn();
+    assert.equal(attempts, 2);
+    t.mock.timers.tick(9_999);
+    await eventLoopTurn();
+    assert.equal(attempts, 2);
+    t.mock.timers.tick(1);
+    await eventLoopTurn();
+    assert.equal(attempts, 3);
+    t.mock.timers.tick(29_999);
+    await eventLoopTurn();
+    assert.equal(attempts, 3);
+    t.mock.timers.tick(1);
+    await rejection;
+    assert.equal(attempts, 4);
+  });
+
+  test('caps a numeric Retry-After delay at 30 seconds', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let attempts = 0;
+    const modelFetch = buildSubscriptionModelFetch({
+      connection: openAiCodexConnection(),
+      sessionId: 'session-123',
+      modelId: 'gpt-5.6-sol',
+      fetchFn: async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          return new Response('<html><title>Request rejected</title>', {
+            status: 403,
+            headers: { 'content-type': 'text/html', 'retry-after': '60' },
+          });
+        }
+        return Response.json({ ok: true });
+      },
+    });
+
+    assert.ok(modelFetch);
+    const response = modelFetch('https://chatgpt.com/backend-api/codex/responses', {
+      method: 'POST',
+      body: JSON.stringify({ input: [{ role: 'user', content: 'hello' }] }),
+    });
+
+    await eventLoopTurn();
+    t.mock.timers.tick(29_999);
+    await eventLoopTurn();
+    assert.equal(attempts, 1);
+    t.mock.timers.tick(1);
+    await eventLoopTurn();
+    assert.equal(attempts, 2);
+    assert.equal((await response).ok, true);
+  });
+
   test('adds the Copilot compatibility headers and derives the turn initiator without rewriting the body', async () => {
     const observed: Array<{ headers: Headers; body: string }> = [];
     const modelFetch = buildSubscriptionModelFetch({
@@ -177,6 +515,10 @@ describe('subscription model fetch', () => {
     assert.equal(observed[2]?.body, responsesBody);
   });
 });
+
+function eventLoopTurn(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
 
 function claudeSubscriptionConnection(): LlmConnection {
   return {

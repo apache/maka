@@ -54,7 +54,7 @@ export interface ComposerMentionApi {
 export function useMentionPopup(input: {
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   /** ENABLED skills offered by the `/` popup; undefined disables that popup. */
-  mentionSkills?: ReadonlyArray<{ id: string; name: string; description?: string }>;
+  mentionSkills?: ReadonlyArray<{ ref?: string; id: string; name: string; description?: string }>;
   /** Workspace-file search backing the `@` popup; undefined disables it. */
   onSearchMentionFiles?(query: string): Promise<ReadonlyArray<{ relativePath: string }>>;
   /** Persist the post-insertion value under the active draft key. */
@@ -64,7 +64,7 @@ export function useMentionPopup(input: {
   /** Inserting a mention is an edit: history navigation restarts. */
   resetPromptHistoryNavigation(): void;
   /** Structured Skill selection; unlike file mentions it is not serialized into text. */
-  onSelectSkill?(skill: { id: string; name: string }): void;
+  onSelectSkill?(skill: { ref?: string; id: string; name: string }): void;
 }): ComposerMentionApi {
   // Mention popup state (@ file / skill). `mention` holds the active trigger +
   // query + trigger-char index; items/loading/activeIndex drive the popup. The
@@ -137,7 +137,11 @@ export function useMentionPopup(input: {
       el.value = nextValue;
       el.setSelectionRange(current.start, current.start);
       closeMention();
-      input.onSelectSkill?.({ id: item.id, name: item.name });
+      input.onSelectSkill?.({
+        ...(item.ref ? { ref: item.ref } : {}),
+        id: item.id,
+        name: item.name,
+      });
       input.saveCurrentDraft(nextValue);
       input.autoResize();
       el.focus();
@@ -174,7 +178,13 @@ export function useMentionPopup(input: {
           mentionQueryMatches(query, `${skill.id} ${skill.name} ${skill.description ?? ''}`),
         )
         .slice(0, 50)
-        .map((skill) => ({ type: 'skill', id: skill.id, name: skill.name, description: skill.description }));
+        .map((skill) => ({
+          type: 'skill',
+          ...(skill.ref ? { ref: skill.ref } : {}),
+          id: skill.id,
+          name: skill.name,
+          description: skill.description,
+        }));
       setMentionItems(items);
       setMentionActiveIndex(0);
       setMentionLoading(false);

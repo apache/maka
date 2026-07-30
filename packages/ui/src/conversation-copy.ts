@@ -20,7 +20,6 @@ export type DayPeriod = 'morning' | 'noon' | 'afternoon' | 'evening';
 type ResearchItem = Readonly<{ title: string; body: string }>;
 type ResearchOption = Readonly<{ label: string; body: string }>;
 type ResearchStarter = Readonly<{ label: string; prompt: string }>;
-type PermissionReasonKind = 'shell_dangerous' | 'file_write' | 'fs_destructive' | 'git_destructive' | 'network' | 'privileged' | 'browser' | 'computer_use' | 'additional_permissions' | 'sandbox_escalation' | 'custom';
 
 export interface ConversationCopy {
   empty: {
@@ -29,9 +28,6 @@ export interface ConversationCopy {
     greetingTail: Record<DayPeriod, string>;
     headlineWithLabel: (greeting: string, label: string) => string;
     headlineFallback: (greeting: string, tail: string) => string;
-    primaryBubble: string;
-    secondaryBubble: string;
-    intro: string;
   };
   deepResearchEmpty: {
     ariaLabel: string;
@@ -87,9 +83,15 @@ export interface ConversationCopy {
     planModeLabel: string;
     enablePlanMode: string;
     disablePlanMode: string;
+    planModeOnTitle: string;
     swarmModeLabel: string;
     enableSwarmMode: string;
     disableSwarmMode: string;
+    swarmModeOnTitle: string;
+    graphModeLabel: string;
+    enableGraphMode: string;
+    disableGraphMode: string;
+    graphModeOnTitle: string;
     /** Inline hint shown above the composer when no model connection exists yet. */
     noModelHint: string;
     /** Link-button on that hint that opens Settings · 模型. */
@@ -119,46 +121,14 @@ export interface ConversationCopy {
     mode: Record<PermissionMode, { label: string; hint: string }>;
     modeAriaLabel: (label: string) => string;
   };
-  permissionPrompt: {
-    reason: Record<PermissionReasonKind, string>;
-    destructiveContext: string;
-    waited: (label: string) => string;
-    rememberBrowser: string;
-    rememberScoped: string;
-    rememberTurn: string;
-    actionsAriaLabel: string;
-    stop: string;
-    stopping: string;
-    deny: string;
-    submitting: string;
-    allowOnce: string;
-    allow: string;
-    additionalPermission: string;
-    sandboxEscalation: string;
-    editFile: string;
-    editOffice: string;
-    disclosure: { changes: string; content: string; input: string; fullArguments: string; details: string };
-    unsupportedValue: string;
-    browser: { navigate: (url: string) => string; click: (ref: string) => string; type: (ref: string) => string; snapshot: string; extract: (selector: string) => string; wait: string; generic: string; urlFallback: string };
-    workingDirectory: string;
-    readWrite: string;
-    readOnly: string;
-    exactPath: string;
-    directoryTree: string;
-    temporaryNetwork: string;
-    outsideWorkspace: string;
-    protectedMetadata: string;
-    outsideSandbox: string;
-    target: string;
-    currentApp: string;
-    inDirectory: (cwd: string) => string;
-    terminalInteraction: string;
-    fullInputBytes: (bytes: number) => string;
-    targetSize: (cols: number, rows: number) => string;
-    byteLineCount: (bytes: number, lines: number) => string;
-    editLineCount: (removed: number, added: number) => string;
-    officeField: { operation: string; target: string; element: string; position: string };
-    hiddenProperties: (count: number) => string;
+  sandboxBoundary: {
+    title: string;
+    access: Record<'read' | 'write', string>;
+    scope: Record<'exact' | 'subtree', string>;
+    network: string;
+    enabled: string;
+    reject: string;
+    allowSession: string;
   };
   questions: {
     other: string;
@@ -182,7 +152,9 @@ export interface ConversationCopy {
   workspace: {
     choose: string;
     current: string;
-    chooseOther: string;
+    addProject: string;
+    noProject: string;
+    relink: string;
     branch: string;
     noBranches: string;
     currentProject: string;
@@ -196,6 +168,8 @@ export interface ConversationCopy {
     assistant: string;
     processing: string;
     continuing: string;
+    providerRetryScheduled: (seconds: number, attempt: number, maxAttempts: number) => string;
+    providerRetryStarted: (attempt: number, maxAttempts: number) => string;
     safeResumePending: string;
     safeResume: string;
     thinking: string;
@@ -219,6 +193,8 @@ export interface ConversationCopy {
     derivativesAriaLabel: string;
     automationTriggered: string;
     automationTitle: (id: string) => string;
+    agentGraphTriggered: string;
+    agentGraphTitle: (graphId: string) => string;
     thinkingTruncatedTitle: string;
     outputTruncatedTitle: string;
     removeAttachmentAriaLabel: (name: string) => string;
@@ -261,6 +237,7 @@ export interface ConversationCopy {
     retryLoad: string;
     jumpLatest: string;
     quoteSelection: string;
+    askInSidePanel: string;
     noMessages: string;
     branchTitle: (name: string, beforeAbort: boolean) => string;
     branchLabel: (name: string, beforeAbort: boolean) => string;
@@ -278,7 +255,6 @@ export interface ConversationCopy {
     emptyBody: string;
     showMore: string;
     showMoreAriaLabel: (count: number) => string;
-    groupCount: (count: number) => string;
     renameAriaLabel: string;
     respondingAriaLabel: string;
     respondingTitle: string;
@@ -294,15 +270,19 @@ export interface ConversationCopy {
     unarchive: string;
     delete: string;
     pinned: string;
-    today: string;
-    yesterday: string;
-    past7Days: string;
-    past30Days: string;
-    earlier: string;
-    pending: string;
-    groupByStatus: string;
+    groupByTime: string;
     groupByProject: string;
     groupingAriaLabel: string;
+    projectActionsAriaLabel: (name: string) => string;
+    projectNewTask: string;
+    projectRename: string;
+    projectArchive: string;
+    projectRestore: string;
+    projectRelink: string;
+    projectUnavailable: string;
+    archivedProjects: string;
+    archivedProjectsAriaLabel: string;
+    worktreeAriaLabel: string;
     promptRailAriaLabel: string;
     emptyPrompt: string;
     jumpToPrompt: (preview: string) => string;
@@ -316,7 +296,6 @@ const CONVERSATION_COPY = {
       greeting: { morning: '早上好', noon: '中午好', afternoon: '下午好', evening: '晚上好' },
       greetingTail: { morning: '清醒的早晨适合理清思路', noon: '专注的午间适合一鼓作气', afternoon: '舒缓的下午适合慢慢推进', evening: '安静的夜晚适合深度思考' },
       headlineWithLabel: (greeting, label) => `${greeting} ${label}，今天想做点什么？`, headlineFallback: (greeting, tail) => `${greeting}，${tail}。`,
-      primaryBubble: '好，我来帮你理清楚。', secondaryBubble: '为这个任务起草计划', intro: '自主规划，陪你把事做完的智能个人助手。',
     },
     deepResearchEmpty: {
       ariaLabel: '深度研究空会话', eyebrow: '深度研究 · 只读探索', title: '先把项目读透，再决定怎么改。', intro: '这个会话固定在只读权限：优先阅读、搜索和分析代码；需要动手实现时，先输出文件、风险和验证命令。',
@@ -335,7 +314,11 @@ const CONVERSATION_COPY = {
       selectModel: '选择模型', dropToImport: '松开以导入文件内容', addingAttachment: '正在添加附件', add: '添加', addTitle: '添加文件、专家团…', addFileOrDirectory: '添加文件或目录',
       switchDisabledStreaming: '当前对话正在流式输出，等结束后再切换模型。', switchDisabledRunning: '当前对话正在运行，等结束后再切换模型。', switchDisabledPermission: '当前有工具调用正在等待确认，处理后再切换模型。',
       planModeLabel: 'Plan', enablePlanMode: '开启 Plan Mode', disablePlanMode: '退出 Plan Mode',
+      planModeOnTitle: 'Plan 模式已启用，点击关闭',
       swarmModeLabel: 'Swarm', enableSwarmMode: '开启 Swarm Mode', disableSwarmMode: '退出 Swarm Mode',
+      swarmModeOnTitle: 'Swarm 模式已启用，点击关闭',
+      graphModeLabel: 'Graph', enableGraphMode: '开启 Graph Mode', disableGraphMode: '退出 Graph Mode',
+      graphModeOnTitle: 'Graph 模式已启用，点击关闭',
       noModelHint: '还没有可用的模型连接，无法发送。', noModelAction: '前往模型设置', noModelSendTitle: '先添加一个模型连接才能发送。',
     },
     model: {
@@ -349,35 +332,33 @@ const CONVERSATION_COPY = {
     },
     permissions: {
       mode: {
-        explore: { label: '只读模式', hint: '读取、列表和搜索直接执行；写入或网络操作仍需明确确认。Deep Research 默认使用此模式。' },
-        ask: { label: '询问权限', hint: '每次工具调用前都让你确认，适合需要逐步监督的任务。' },
+        explore: { label: '只读', hint: '只读取和搜索，不写入文件、不访问网络；需要这些权限时会先来问你。' },
+        ask: { label: '自动', hint: '在 Maka 的保护层内自动执行；需要超出当前权限范围时会先来问你。' },
         execute: { label: '自动执行', hint: '常见工具直接执行；破坏性、特权和浏览器操作仍会请求确认。' },
-        bypass: { label: '跳过确认', hint: '跳过全部工具确认，包括高风险操作。仅在完全信任本轮任务时使用。' },
+        bypass: { label: '完全权限', hint: '本地工具直接访问你的文件和网络，不经 Maka 的保护层。仅用于你完全信任的任务。' },
       },
       modeAriaLabel: (label) => `权限模式：${label}`,
     },
-    permissionPrompt: {
-      reason: { shell_dangerous: '允许执行高风险 shell 命令？', file_write: '允许写入或创建文件？', fs_destructive: '允许执行不可恢复的文件操作？', git_destructive: '允许执行不可恢复的 Git 操作？', network: '允许发起网络请求？', privileged: '允许执行特权操作？', browser: '允许操作已登录的浏览器？', computer_use: '允许读取或操作本机应用？', additional_permissions: '允许本次额外权限？', sandbox_escalation: '允许本次在 sandbox 外执行？', custom: '允许执行此操作？' },
-      destructiveContext: '此操作无法恢复，请确认上面的内容。', waited: (label) => `已等待 ${label}`,
-      rememberBrowser: '勾选后，本轮接下来的浏览、读取页面、导航、点击和输入都不再逐次询问。你会全程看到操作页面并可随时停止；本轮结束后授权失效。',
-      rememberScoped: '只会记住上方显示的目标、动作和授权类别。读取授权不会扩展为截图或输入授权；目标或动作类别变化时仍会再次询问。',
-      rememberTurn: '本轮记住', actionsAriaLabel: '权限操作', stop: '停止', stopping: '停止中…', deny: '拒绝操作', submitting: '正在提交…', allowOnce: '允许这一次', allow: '允许操作',
-      additionalPermission: '允许本次额外权限？', sandboxEscalation: '允许本次在 sandbox 外执行？', editFile: '允许修改文件？', editOffice: '允许编辑 Office 文档？',
-      disclosure: { changes: '查看变更', content: '查看内容', input: '查看输入', fullArguments: '完整参数', details: '查看详情' }, unsupportedValue: '不支持的属性值',
-      browser: { navigate: (url) => `即将在浏览器中打开 ${url}`, click: (ref) => `即将在当前页面点击元素 ${ref}`.trim(), type: (ref) => `即将在当前页面输入文本${ref ? ` 到元素 ${ref}` : ''}`, snapshot: '即将读取当前页面的可交互元素列表', extract: (selector) => `即将读取当前页面内容${selector ? `（${selector}）` : ''}`, wait: '即将等待当前页面满足某个条件', generic: '即将操作当前浏览器页面', urlFallback: '一个网址' },
-      workingDirectory: '工作目录', readWrite: '读写', readOnly: '只读', exactPath: '仅此路径', directoryTree: '目录及子目录', temporaryNetwork: '本次调用将临时允许网络访问。', outsideWorkspace: '包含工作区外路径。', protectedMetadata: '包含受保护的 Git/Agent 元数据。', outsideSandbox: '本次命令将不经过平台 sandbox，可访问工作区外文件、网络和受保护元数据。', target: '目标', currentApp: '当前应用', inDirectory: (cwd) => `在 ${cwd}`, terminalInteraction: '即将与后台终端交互', fullInputBytes: (bytes) => `完整输入共 ${bytes} 字节`, targetSize: (cols, rows) => `目标尺寸 ${cols}x${rows}`, byteLineCount: (bytes, lines) => `${bytes} 字节 · ${lines} 行`, editLineCount: (removed, added) => `删除 ${removed} 行 · 写入 ${added} 行`, officeField: { operation: '操作', target: '目标', element: '元素', position: '位置' }, hiddenProperties: (count) => `另有 ${count} 个属性`,
+    sandboxBoundary: {
+      title: '允许访问工作区以外的内容？',
+      access: { read: '读取', write: '写入' },
+      scope: { exact: '仅此路径', subtree: '目录及子目录' },
+      network: '网络访问',
+      enabled: '已启用',
+      reject: '拒绝',
+      allowSession: '本会话允许',
     },
     questions: { other: '其他', otherDescription: '输入一个不同的答案。', otherAriaLabel: '其他答案', otherPlaceholder: '输入你的答案', stop: '停止', stopping: '停止中…', previous: '上一题', submitting: '正在提交…', submit: '提交答案', next: '下一题' },
     mentions: { noFiles: '未找到文件', noSkills: '暂无技能', filesAriaLabel: '工作区文件', skillsAriaLabel: '技能', loading: '加载中…' },
     workspace: {
-      choose: '选择工作目录', current: '当前工作目录', chooseOther: '选择其他目录…', branch: '选择分支', noBranches: '无本地分支', currentProject: '当前项目',
-      chooseTitle: (branch) => branch ? `选择工作目录 · ${branch}` : '选择工作目录',
-      chooseAriaLabel: (label, branch) => branch ? `选择工作目录：${label}，当前分支 ${branch}` : `选择工作目录：${label}`,
+      choose: '选择项目', current: '当前项目', addProject: '添加项目', noProject: '无项目', relink: '重新定位', branch: '选择分支', noBranches: '无本地分支', currentProject: '当前项目',
+      chooseTitle: (branch) => branch ? `选择项目 · ${branch}` : '选择项目',
+      chooseAriaLabel: (label, branch) => branch ? `选择项目：${label}，当前分支 ${branch}` : `选择项目：${label}`,
       branchTitle: (branch) => branch ? `分支：${branch}` : '选择分支', branchAriaLabel: (branch) => branch ? `切换分支：${branch}` : '选择分支',
     },
     messages: {
-      you: '你', assistant: 'Maka', processing: '正在处理…', continuing: '继续中…', safeResumePending: '正在验证…', safeResume: '安全恢复', thinking: '深度思考', truncated: '已截断', copied: '已复制', copying: '复制中', copyFailed: '复制失败', copy: '复制', copyMessage: '复制消息', editMessage: '编辑并重发', editMessageDisabledRunning: '当前回答仍在进行中，结束后再编辑', editMessageDisabledAttachments: '包含附件的历史消息暂不支持编辑并重发', editMessageDisabledQuotes: '包含引用的历史消息暂不支持编辑并重发', editMessageDisabledTransformedText: '通过显式技能发送的历史消息暂不支持编辑并重发', copyThinking: '复制思考过程',
-      imageAriaLabel: (name) => `查看图片 ${name}`, userAriaLabel: '你发送的消息', assistantAriaLabel: 'Maka 的回答', answerActionsAriaLabel: '本轮回答操作', sourceAriaLabel: '本轮回答的来源', derivativesAriaLabel: '本轮回答的衍生', automationTriggered: '定时任务触发', automationTitle: (id) => `由定时任务触发 · ${id}`,
+      you: '你', assistant: 'Maka', processing: '正在处理…', continuing: '继续中…', providerRetryScheduled: (seconds, attempt, maxAttempts) => `${seconds} 秒后重试（${attempt}/${maxAttempts}）`, providerRetryStarted: (attempt, maxAttempts) => `正在重试（${attempt}/${maxAttempts}）`, safeResumePending: '正在验证…', safeResume: '安全恢复', thinking: '深度思考', truncated: '已截断', copied: '已复制', copying: '复制中', copyFailed: '复制失败', copy: '复制', copyMessage: '复制消息', editMessage: '编辑并重发', editMessageDisabledRunning: '当前回答仍在进行中，结束后再编辑', editMessageDisabledAttachments: '包含附件的历史消息暂不支持编辑并重发', editMessageDisabledQuotes: '包含引用的历史消息暂不支持编辑并重发', editMessageDisabledTransformedText: '通过显式技能发送的历史消息暂不支持编辑并重发', copyThinking: '复制思考过程',
+      imageAriaLabel: (name) => `查看图片 ${name}`, userAriaLabel: '你发送的消息', assistantAriaLabel: 'Maka 的回答', answerActionsAriaLabel: '本轮回答操作', sourceAriaLabel: '本轮回答的来源', derivativesAriaLabel: '本轮回答的衍生', automationTriggered: '定时任务触发', automationTitle: (id) => `由定时任务触发 · ${id}`, agentGraphTriggered: 'Agent Graph 自动继续', agentGraphTitle: (graphId) => `由 Agent Graph 调度器触发 · ${graphId}`,
       thinkingTruncatedTitle: '部分 reasoning 已截断；显示的是最近的内容', outputTruncatedTitle: '助手输出已超过单次回合上限，超出部分未渲染。如需完整内容请重新生成或查看持久化的会话日志。', removeAttachmentAriaLabel: (name) => `移除 ${name}`, quoteLabel: '引用', quoteExpandAriaLabel: '展开引用全文', quoteCollapseAriaLabel: '收起引用', removeQuoteAriaLabel: '移除引用', aborted: '(已中断)', abortedByStop: '(已中断 · 由停止按钮触发)',
     },
     chat: {
@@ -406,14 +387,14 @@ const CONVERSATION_COPY = {
         },
       },
       clearGoal: (condition, iteration, max, status) => `自主执行目标进行中：「${condition}」（第 ${iteration}/${max} 轮，${status}）。系统每轮后自动续行；点击可清除目标、停止续行。`, clearGoalAriaLabel: (iteration, max) => `清除自主执行目标（已进行 ${iteration}/${max} 轮）`, goalLabel: (iteration, max) => `目标 ${iteration}/${max} · 清除`,
-      loadFailed: '对话载入失败', loading: '载入中…', retryLoad: '重试载入', jumpLatest: '跳到最新消息', quoteSelection: '引用', noMessages: '暂无消息',
+      loadFailed: '对话载入失败', loading: '载入中…', retryLoad: '重试载入', jumpLatest: '跳到最新消息', quoteSelection: '引用', askInSidePanel: '在侧栏追问', noMessages: '暂无消息',
       branchTitle: (name, beforeAbort) => beforeAbort ? `从中断前分支自 ${name} · 点击跳回原会话` : `分自 ${name} · 点击跳回原会话`, branchLabel: (name, beforeAbort) => beforeAbort ? `从中断前分支自 ${name}` : `分自 ${name}`,
       revisionVersionsAriaLabel: '对话版本', revisionVersion: (current, total) => `版本 ${current} / ${total}`, previousRevision: '查看上一版本', nextRevision: '查看下一版本',
     },
     sessions: {
       status: { active: '可继续', running: '进行中', waiting_for_user: '等你确认', blocked: '需要处理', review: '待审核', done: '已完成', archived: '已归档', aborted: '已中止' },
       blockedReason: { NO_REAL_CONNECTION: '等待配置可用模型连接', auth: '需要重新登录', permission_required: '等待权限确认', tool_failed: '工具调用失败', unknown: '运行中断，可重试' },
-      listAriaLabel: '对话列表', title: '会话', emptyTitle: '等待开始对话', emptyBody: '和 Maka 的对话会出现在这里。', showMore: '显示更多', showMoreAriaLabel: (count) => `显示 ${count} 条更多对话`, groupCount: (count) => `（${count}）`, renameAriaLabel: '重命名对话', respondingAriaLabel: '正在响应', respondingTitle: '对话正在流式响应中', staleTitle: '此会话使用的模型连接已不可用，发送时会切换到默认连接', staleAriaLabel: '会话已过期', stale: '已过期', unreadAriaLabel: '未读消息', actionsAriaLabel: '对话操作', pin: '置顶', unpin: '取消置顶', rename: '重命名', archive: '归档', unarchive: '取消归档', delete: '删除', pinned: '已置顶', today: '今天', yesterday: '昨天', past7Days: '过去 7 天', past30Days: '过去 30 天', earlier: '更早', pending: '待发送', groupByStatus: '按状态', groupByProject: '按项目', groupingAriaLabel: '会话分组方式', promptRailAriaLabel: '按提问跳转', emptyPrompt: '（空提问）', jumpToPrompt: (preview) => `跳到提问：${preview}`,
+      listAriaLabel: '对话列表', title: '会话', emptyTitle: '等待开始对话', emptyBody: '和 Maka 的对话会出现在这里。', showMore: '显示更多', showMoreAriaLabel: (count) => `显示 ${count} 条更多对话`, renameAriaLabel: '重命名对话', respondingAriaLabel: '正在响应', respondingTitle: '对话正在流式响应中', staleTitle: '此会话使用的模型连接已不可用，发送时会切换到默认连接', staleAriaLabel: '会话已过期', stale: '已过期', unreadAriaLabel: '未读消息', actionsAriaLabel: '对话操作', pin: '置顶', unpin: '取消置顶', rename: '重命名', archive: '归档', unarchive: '取消归档', delete: '删除', pinned: '置顶', groupByTime: '按时间', groupByProject: '按项目', groupingAriaLabel: '会话分组方式', projectActionsAriaLabel: (name) => `${name} 项目操作`, projectNewTask: '新建任务', projectRename: '重命名', projectArchive: '归档', projectRestore: '恢复', projectRelink: '重新定位', projectUnavailable: '项目目录不可用', archivedProjects: '已归档项目', archivedProjectsAriaLabel: '展开已归档项目', worktreeAriaLabel: 'Git 工作树', promptRailAriaLabel: '按提问跳转', emptyPrompt: '（空提问）', jumpToPrompt: (preview) => `跳到提问：${preview}`,
     },
   },
   en: {
@@ -422,7 +403,6 @@ const CONVERSATION_COPY = {
       greeting: { morning: 'Good morning', noon: 'Good afternoon', afternoon: 'Good afternoon', evening: 'Good evening' },
       greetingTail: { morning: 'A clear morning is good for untangling ideas', noon: 'A focused midday is good for a single big push', afternoon: 'A calm afternoon is good for steady progress', evening: 'A quiet evening is good for deep thinking' },
       headlineWithLabel: (greeting, label) => `${greeting} ${label} — what shall we tackle today?`, headlineFallback: (greeting, tail) => `${greeting} — ${tail}.`,
-      primaryBubble: 'Sure. I can organize that.', secondaryBubble: 'Draft a plan for this task', intro: 'Describe what you want to change, ask, or look up. Maka will start from the composer below.',
     },
     deepResearchEmpty: {
       ariaLabel: 'Empty Deep Research conversation', eyebrow: 'Deep Research · Read-only exploration', title: 'Understand the project before deciding what to change.', intro: 'This conversation stays read only: inspect, search, and analyze first. When implementation is needed, report the files, risks, and verification commands.',
@@ -470,7 +450,11 @@ const CONVERSATION_COPY = {
       selectModel: 'Choose model', dropToImport: 'Drop to import file contents', addingAttachment: 'Adding attachment', add: 'Add', addTitle: 'Add files or an expert team…', addFileOrDirectory: 'Add file or directory',
       switchDisabledStreaming: 'Wait for the current response to finish before switching models.', switchDisabledRunning: 'Wait for the current run to finish before switching models.', switchDisabledPermission: 'Resolve the pending tool permission before switching models.',
       planModeLabel: 'Plan', enablePlanMode: 'Enable Plan Mode', disablePlanMode: 'Disable Plan Mode',
+      planModeOnTitle: 'Plan mode is on — click to turn off',
       swarmModeLabel: 'Swarm', enableSwarmMode: 'Enable Swarm Mode', disableSwarmMode: 'Disable Swarm Mode',
+      swarmModeOnTitle: 'Swarm mode is on — click to turn off',
+      graphModeLabel: 'Graph', enableGraphMode: 'Enable Graph Mode', disableGraphMode: 'Disable Graph Mode',
+      graphModeOnTitle: 'Graph mode is on — click to turn off',
       noModelHint: 'No model connection yet, so sending is unavailable.', noModelAction: 'Go to model settings', noModelSendTitle: 'Add a model connection before sending.',
     },
     model: {
@@ -484,35 +468,33 @@ const CONVERSATION_COPY = {
     },
     permissions: {
       mode: {
-        explore: { label: 'Read only', hint: 'Read, list, and search run directly; writes and network access still require confirmation. Deep Research uses this mode by default.' },
-        ask: { label: 'Ask permission', hint: 'Confirm every tool call. Best when you want to supervise each step.' },
+        explore: { label: 'Read only', hint: 'Reads and searches only — no writing files, no network. Asks you first when it needs either.' },
+        ask: { label: 'Auto', hint: "Runs automatically inside Maka's protection layer; asks you first when something needs to go beyond the current permissions." },
         execute: { label: 'Auto execute', hint: 'Common tools run directly; destructive, privileged, and browser actions still require confirmation.' },
-        bypass: { label: 'Skip confirmations', hint: 'Skip every tool confirmation, including high-risk actions. Use only when you fully trust this task.' },
+        bypass: { label: 'Full access', hint: "Local tools reach your files and your network directly, outside Maka's protection layer. Use only for tasks you fully trust." },
       },
       modeAriaLabel: (label) => `Permission mode: ${label}`,
     },
-    permissionPrompt: {
-      reason: { shell_dangerous: 'Allow a high-risk shell command?', file_write: 'Allow writing or creating files?', fs_destructive: 'Allow an irreversible file operation?', git_destructive: 'Allow an irreversible Git operation?', network: 'Allow network access?', privileged: 'Allow a privileged operation?', browser: 'Allow control of your signed-in browser?', computer_use: 'Allow reading or controlling local apps?', additional_permissions: 'Allow these additional permissions?', sandbox_escalation: 'Allow this command to run outside the sandbox?', custom: 'Allow this operation?' },
-      destructiveContext: 'This operation cannot be undone. Review the details above.', waited: (label) => `Waiting for ${label}`,
-      rememberBrowser: 'For the rest of this turn, do not ask again for browsing, page reading, navigation, clicking, or typing. You can watch the page and stop at any time; access expires when the turn ends.',
-      rememberScoped: 'Remember only the target, action, and permission category shown above. Read access does not expand to screenshots or typing; a different target or action category still requires confirmation.',
-      rememberTurn: 'Remember for this turn', actionsAriaLabel: 'Permission actions', stop: 'Stop', stopping: 'Stopping…', deny: 'Deny', submitting: 'Submitting…', allowOnce: 'Allow once', allow: 'Allow',
-      additionalPermission: 'Allow these additional permissions?', sandboxEscalation: 'Allow this command to run outside the sandbox?', editFile: 'Allow file changes?', editOffice: 'Allow editing an Office document?',
-      disclosure: { changes: 'View changes', content: 'View content', input: 'View input', fullArguments: 'Full arguments', details: 'View details' }, unsupportedValue: 'Unsupported property value',
-      browser: { navigate: (url) => `About to open ${url} in the browser`, click: (ref) => `About to click element ${ref} on the current page`.trim(), type: (ref) => `About to type text${ref ? ` into element ${ref}` : ''} on the current page`, snapshot: 'About to read the interactive elements on the current page', extract: (selector) => `About to read the current page${selector ? ` (${selector})` : ''}`, wait: 'About to wait for a condition on the current page', generic: 'About to control the current browser page', urlFallback: 'a URL' },
-      workingDirectory: 'Working directory', readWrite: 'Read and write', readOnly: 'Read only', exactPath: 'This path only', directoryTree: 'Directory and descendants', temporaryNetwork: 'This call will temporarily allow network access.', outsideWorkspace: 'Includes paths outside the workspace.', protectedMetadata: 'Includes protected Git/agent metadata.', outsideSandbox: 'This command will run outside the platform sandbox and can access files outside the workspace, the network, and protected metadata.', target: 'Target', currentApp: 'Current app', inDirectory: (cwd) => `In ${cwd}`, terminalInteraction: 'About to interact with a background terminal', fullInputBytes: (bytes) => `Full input is ${bytes} bytes`, targetSize: (cols, rows) => `Target size ${cols}x${rows}`, byteLineCount: (bytes, lines) => `${bytes} bytes · ${lines} ${lines === 1 ? 'line' : 'lines'}`, editLineCount: (removed, added) => `Remove ${removed} ${removed === 1 ? 'line' : 'lines'} · Write ${added} ${added === 1 ? 'line' : 'lines'}`, officeField: { operation: 'Operation', target: 'Target', element: 'Element', position: 'Position' }, hiddenProperties: (count) => `${count} more ${count === 1 ? 'property' : 'properties'}`,
+    sandboxBoundary: {
+      title: 'Allow access outside the workspace?',
+      access: { read: 'Read', write: 'Write' },
+      scope: { exact: 'Exact path', subtree: 'Directory subtree' },
+      network: 'Network access',
+      enabled: 'Enabled',
+      reject: 'Reject',
+      allowSession: 'Allow for this session',
     },
     questions: { other: 'Other', otherDescription: 'Enter a different answer.', otherAriaLabel: 'Other answer', otherPlaceholder: 'Enter your answer', stop: 'Stop', stopping: 'Stopping…', previous: 'Previous', submitting: 'Submitting…', submit: 'Submit answers', next: 'Next' },
     mentions: { noFiles: 'No files found', noSkills: 'No skills available', filesAriaLabel: 'Workspace files', skillsAriaLabel: 'Skills', loading: 'Loading…' },
     workspace: {
-      choose: 'Choose working directory', current: 'Current working directory', chooseOther: 'Choose another directory…', branch: 'Choose branch', noBranches: 'No local branches', currentProject: 'Current project',
-      chooseTitle: (branch) => branch ? `Choose working directory · ${branch}` : 'Choose working directory',
-      chooseAriaLabel: (label, branch) => branch ? `Choose working directory: ${label}, current branch ${branch}` : `Choose working directory: ${label}`,
+      choose: 'Choose project', current: 'Current project', addProject: 'Add project', noProject: 'No project', relink: 'Relink', branch: 'Choose branch', noBranches: 'No local branches', currentProject: 'Current project',
+      chooseTitle: (branch) => branch ? `Choose project · ${branch}` : 'Choose project',
+      chooseAriaLabel: (label, branch) => branch ? `Choose project: ${label}, current branch ${branch}` : `Choose project: ${label}`,
       branchTitle: (branch) => branch ? `Branch: ${branch}` : 'Choose branch', branchAriaLabel: (branch) => branch ? `Switch branch: ${branch}` : 'Choose branch',
     },
     messages: {
-      you: 'You', assistant: 'Maka', processing: 'Working…', continuing: 'Continuing…', safeResumePending: 'Checking…', safeResume: 'Safe recovery', thinking: 'Thinking', truncated: 'Truncated', copied: 'Copied', copying: 'Copying', copyFailed: 'Copy failed', copy: 'Copy', copyMessage: 'Copy message', editMessage: 'Edit & resend', editMessageDisabledRunning: 'Wait for this answer to finish before editing', editMessageDisabledAttachments: 'Edit & resend does not yet support messages with attachments', editMessageDisabledQuotes: 'Edit & resend does not yet support messages with quotes', editMessageDisabledTransformedText: 'Edit & resend does not yet support messages sent with an explicit skill', copyThinking: 'Copy reasoning',
-      imageAriaLabel: (name) => `View image ${name}`, userAriaLabel: 'Your message', assistantAriaLabel: "Maka's response", answerActionsAriaLabel: 'Response actions', sourceAriaLabel: 'Source of this response', derivativesAriaLabel: 'Responses derived from this one', automationTriggered: 'Triggered by automation', automationTitle: (id) => `Triggered by automation · ${id}`,
+      you: 'You', assistant: 'Maka', processing: 'Working…', continuing: 'Continuing…', providerRetryScheduled: (seconds, attempt, maxAttempts) => `Retrying in ${seconds}s (${attempt}/${maxAttempts})`, providerRetryStarted: (attempt, maxAttempts) => `Retrying (${attempt}/${maxAttempts})`, safeResumePending: 'Checking…', safeResume: 'Safe recovery', thinking: 'Thinking', truncated: 'Truncated', copied: 'Copied', copying: 'Copying', copyFailed: 'Copy failed', copy: 'Copy', copyMessage: 'Copy message', editMessage: 'Edit & resend', editMessageDisabledRunning: 'Wait for this answer to finish before editing', editMessageDisabledAttachments: 'Edit & resend does not yet support messages with attachments', editMessageDisabledQuotes: 'Edit & resend does not yet support messages with quotes', editMessageDisabledTransformedText: 'Edit & resend does not yet support messages sent with an explicit skill', copyThinking: 'Copy reasoning',
+      imageAriaLabel: (name) => `View image ${name}`, userAriaLabel: 'Your message', assistantAriaLabel: "Maka's response", answerActionsAriaLabel: 'Response actions', sourceAriaLabel: 'Source of this response', derivativesAriaLabel: 'Responses derived from this one', automationTriggered: 'Triggered by automation', automationTitle: (id) => `Triggered by automation · ${id}`, agentGraphTriggered: 'Continued by Agent Graph', agentGraphTitle: (graphId) => `Triggered by the Agent Graph scheduler · ${graphId}`,
       thinkingTruncatedTitle: 'Some reasoning was truncated; showing the most recent content', outputTruncatedTitle: 'The assistant output exceeded the per-turn limit. Regenerate it or inspect the persisted session log for the complete content.', removeAttachmentAriaLabel: (name) => `Remove ${name}`, quoteLabel: 'Quote', quoteExpandAriaLabel: 'Show the full quoted excerpt', quoteCollapseAriaLabel: 'Collapse the quoted excerpt', removeQuoteAriaLabel: 'Remove quote', aborted: '(Interrupted)', abortedByStop: '(Interrupted · Stop button)',
     },
     chat: {
@@ -541,14 +523,14 @@ const CONVERSATION_COPY = {
         },
       },
       clearGoal: (condition, iteration, max, status) => `Autonomous goal in progress: “${condition}” (iteration ${iteration}/${max}, ${status}). Maka continues after each iteration; click to clear the goal and stop continuing.`, clearGoalAriaLabel: (iteration, max) => `Clear autonomous goal after ${iteration}/${max} iterations`, goalLabel: (iteration, max) => `Goal ${iteration}/${max} · Clear`,
-      loadFailed: 'Conversation failed to load', loading: 'Loading…', retryLoad: 'Retry', jumpLatest: 'Jump to latest message', quoteSelection: 'Quote', noMessages: 'No messages yet',
+      loadFailed: 'Conversation failed to load', loading: 'Loading…', retryLoad: 'Retry', jumpLatest: 'Jump to latest message', quoteSelection: 'Quote', askInSidePanel: 'Ask in side panel', noMessages: 'No messages yet',
       branchTitle: (name, beforeAbort) => beforeAbort ? `Branched before interruption from ${name} · Click to return` : `Branched from ${name} · Click to return`, branchLabel: (name, beforeAbort) => beforeAbort ? `Branched before interruption from ${name}` : `Branched from ${name}`,
       revisionVersionsAriaLabel: 'Conversation versions', revisionVersion: (current, total) => `Version ${current} of ${total}`, previousRevision: 'View previous version', nextRevision: 'View next version',
     },
     sessions: {
       status: { active: 'Ready', running: 'Running', waiting_for_user: 'Waiting for you', blocked: 'Needs attention', review: 'Review', done: 'Done', archived: 'Archived', aborted: 'Stopped' },
       blockedReason: { NO_REAL_CONNECTION: 'Waiting for an available model connection', auth: 'Sign in again', permission_required: 'Waiting for permission', tool_failed: 'Tool call failed', unknown: 'Run interrupted; retry available' },
-      listAriaLabel: 'Conversation list', title: 'Conversations', emptyTitle: 'Start a conversation', emptyBody: 'Your conversations with Maka will appear here.', showMore: 'Show more', showMoreAriaLabel: (count) => `Show ${count} more conversations`, groupCount: (count) => `(${count})`, renameAriaLabel: 'Rename conversation', respondingAriaLabel: 'Responding', respondingTitle: 'This conversation is streaming a response', staleTitle: 'This conversation\'s model connection is unavailable; sending will switch to the default connection', staleAriaLabel: 'Stale conversation', stale: 'Stale', unreadAriaLabel: 'Unread messages', actionsAriaLabel: 'Conversation actions', pin: 'Pin', unpin: 'Unpin', rename: 'Rename', archive: 'Archive', unarchive: 'Unarchive', delete: 'Delete', pinned: 'Pinned', today: 'Today', yesterday: 'Yesterday', past7Days: 'Past 7 days', past30Days: 'Past 30 days', earlier: 'Earlier', pending: 'Pending', groupByStatus: 'By status', groupByProject: 'By project', groupingAriaLabel: 'Conversation grouping', promptRailAriaLabel: 'Jump by prompt', emptyPrompt: '(empty prompt)', jumpToPrompt: (preview) => `Jump to prompt: ${preview}`,
+      listAriaLabel: 'Conversation list', title: 'Conversations', emptyTitle: 'Start a conversation', emptyBody: 'Your conversations with Maka will appear here.', showMore: 'Show more', showMoreAriaLabel: (count) => `Show ${count} more conversations`, renameAriaLabel: 'Rename conversation', respondingAriaLabel: 'Responding', respondingTitle: 'This conversation is streaming a response', staleTitle: 'This conversation\'s model connection is unavailable; sending will switch to the default connection', staleAriaLabel: 'Stale conversation', stale: 'Stale', unreadAriaLabel: 'Unread messages', actionsAriaLabel: 'Conversation actions', pin: 'Pin', unpin: 'Unpin', rename: 'Rename', archive: 'Archive', unarchive: 'Unarchive', delete: 'Delete', pinned: 'Pinned', groupByTime: 'By time', groupByProject: 'By project', groupingAriaLabel: 'Conversation grouping', projectActionsAriaLabel: (name) => `${name} project actions`, projectNewTask: 'New task', projectRename: 'Rename', projectArchive: 'Archive', projectRestore: 'Restore', projectRelink: 'Relocate', projectUnavailable: 'Project directory unavailable', archivedProjects: 'Archived projects', archivedProjectsAriaLabel: 'Expand archived projects', worktreeAriaLabel: 'Git worktree', promptRailAriaLabel: 'Jump by prompt', emptyPrompt: '(empty prompt)', jumpToPrompt: (preview) => `Jump to prompt: ${preview}`,
     },
   },
 } satisfies UiCatalog<ConversationCopy>;

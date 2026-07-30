@@ -10,6 +10,7 @@ import {
   AGENT_SWARM_TOOL_NAME,
   buildChildAgentTools,
   LOAD_TOOLS_NAME,
+  projectEffectiveProductToolSurface,
   ToolAvailabilityRuntime,
 } from '@maka/runtime';
 import { createHeavyTaskEvidenceRecorder } from '../heavy-task-evidence.js';
@@ -20,7 +21,7 @@ import {
 import { createInMemoryTaskRunStore } from '../task-run-store.js';
 import {
   buildIsolatedBashTool,
-  buildIsolatedHeadlessToolAvailability,
+  buildIsolatedHeadlessProductToolSurface,
   buildIsolatedHeadlessTools,
 } from '../tools.js';
 import type { IsolatedToolExecutor } from '../isolation.js';
@@ -239,7 +240,7 @@ describe('isolated headless tools', () => {
     assert.deepEqual(seenSignals, [ctx.abortSignal, ctx.abortSignal, ctx.abortSignal]);
   });
 
-  test('standard isolated tool surface exposes externalized file tools to local-read children', () => {
+  test('standard isolated tool surface excludes parent-facing agent tools by default', () => {
     const tools = buildIsolatedHeadlessTools({
       async exec() {
         return { exitCode: 0, stdout: '', stderr: '' };
@@ -249,10 +250,10 @@ describe('isolated headless tools', () => {
     assert.equal(names[0], 'Bash');
     assert.ok(names.includes('Read'));
     assert.ok(names.includes('Write'));
-    assert.ok(names.includes('agent_spawn'));
-    assert.ok(names.includes(AGENT_SWARM_TOOL_NAME));
-    assert.ok(names.includes('agent_list'));
-    assert.ok(names.includes('agent_output'));
+    assert.ok(!names.includes('agent_spawn'));
+    assert.ok(!names.includes(AGENT_SWARM_TOOL_NAME));
+    assert.ok(!names.includes('agent_list'));
+    assert.ok(!names.includes('agent_output'));
     assert.ok(!names.includes('inventory_submit'));
     assert.ok(!names.includes('todo_update'));
     assert.ok(!names.includes('self_check_plan_submit'));
@@ -261,10 +262,7 @@ describe('isolated headless tools', () => {
     assert.equal(names.filter((name) => name === 'Bash').length, 1);
     assert.deepEqual(
       buildChildAgentTools(tools).map((tool) => tool.name),
-      ['Read', 'Glob', 'Grep'],
-    );
-    assert.ok(
-      !buildChildAgentTools(tools).some((tool) => ['Bash', 'Write', 'Edit'].includes(tool.name)),
+      ['Read', 'Glob', 'Grep', 'Write', 'Edit', 'Bash'],
     );
   });
 
@@ -1701,33 +1699,62 @@ describe('isolated headless tools', () => {
     assert.equal(calls, 0);
   });
 
-  test('standard isolated tool availability defers parent-facing agent tools', () => {
-    const tools = buildIsolatedHeadlessTools({
+  test('standard isolated tool availability does not advertise agent tools or a loader', () => {
+    const surface = buildIsolatedHeadlessProductToolSurface({
       async exec() {
         return { exitCode: 0, stdout: '', stderr: '' };
       },
     });
-    const plan = new ToolAvailabilityRuntime(
-      tools,
-      buildIsolatedHeadlessToolAvailability(tools.map((tool) => tool.name)),
+    const plan = new ToolAvailabilityRuntime(surface.tools, surface.toolAvailability, {
+      name: 'invalid',
+      description: 'invalid',
+      parameters: {},
+      impl: () => ({}),
+    }).prepare([
       {
-        name: 'invalid',
-        description: 'invalid',
-        parameters: {},
-        impl: () => ({}),
+        content: {
+          kind: 'function_call',
+          name: LOAD_TOOLS_NAME,
+          args: { group: 'agent' },
+        },
       },
-    ).prepare([]);
+    ]);
 
     assert.ok(plan.activeTools.includes('Bash'));
     assert.ok(plan.activeTools.includes('Read'));
+    assert.ok(!plan.activeTools.includes(LOAD_TOOLS_NAME));
+    assert.ok(!plan.activeTools.includes('agent_spawn'));
+    assert.ok(!plan.activeTools.includes(AGENT_SWARM_TOOL_NAME));
+    assert.ok(!plan.activeTools.includes('agent_list'));
+    assert.ok(!plan.activeTools.includes('agent_output'));
+    assert.ok(!plan.providerTools.some((tool) => tool.name === LOAD_TOOLS_NAME));
+    assert.ok(!plan.providerTools.some((tool) => tool.name.startsWith('agent_')));
+    assert.equal(plan.projectActiveTools, undefined);
+  });
+
+  test('explicitly enabled agent tools remain deferred behind the catalog loader', () => {
+    const surface = buildIsolatedHeadlessProductToolSurface(
+      {
+        async exec() {
+          return { exitCode: 0, stdout: '', stderr: '' };
+        },
+      },
+      { agentTools: true },
+    );
+    const plan = new ToolAvailabilityRuntime(surface.tools, surface.toolAvailability, {
+      name: 'invalid',
+      description: 'invalid',
+      parameters: {},
+      impl: () => ({}),
+    }).prepare([]);
+
     assert.ok(plan.activeTools.includes(LOAD_TOOLS_NAME));
     assert.ok(!plan.activeTools.includes('agent_spawn'));
     assert.ok(!plan.activeTools.includes(AGENT_SWARM_TOOL_NAME));
     assert.ok(!plan.activeTools.includes('agent_list'));
     assert.ok(!plan.activeTools.includes('agent_output'));
-
-    const loaded = plan.prepareStep!({
-      steps: [{ toolCalls: [{ toolName: LOAD_TOOLS_NAME, input: { group: 'agent' } }] }],
+    const loaded = plan.projectActiveTools!({
+      completedSteps: [{ toolCalls: [{ toolName: LOAD_TOOLS_NAME, input: { group: 'agent' } }] }],
     }).activeTools;
     assert.ok(loaded.includes('agent_spawn'));
     assert.ok(loaded.includes(AGENT_SWARM_TOOL_NAME));
@@ -1735,26 +1762,36 @@ describe('isolated headless tools', () => {
     assert.ok(loaded.includes('agent_output'));
   });
 
-  test('standard isolated tool availability does not reintroduce agent tools into local-read children', () => {
-    const parentTools = buildIsolatedHeadlessTools({
-      async exec() {
-        return { exitCode: 0, stdout: '', stderr: '' };
-      },
-    });
-    const childTools = buildChildAgentTools(parentTools);
-    const plan = new ToolAvailabilityRuntime(
-      childTools,
-      buildIsolatedHeadlessToolAvailability(parentTools.map((tool) => tool.name)),
+  test('standard isolated child tool availability omits parent-facing agent tools', () => {
+    const parentSurface = buildIsolatedHeadlessProductToolSurface(
       {
-        name: 'invalid',
-        description: 'invalid',
-        parameters: {},
-        impl: () => ({}),
+        async exec() {
+          return { exitCode: 0, stdout: '', stderr: '' };
+        },
       },
-    ).prepare([]);
+      { agentTools: true },
+    );
+    const childSurface = projectEffectiveProductToolSurface({
+      host: 'headless',
+      tools: buildChildAgentTools(parentSurface.tools),
+      policy: parentSurface.identity.policy,
+    });
+    const plan = new ToolAvailabilityRuntime(childSurface.tools, childSurface.toolAvailability, {
+      name: 'invalid',
+      description: 'invalid',
+      parameters: {},
+      impl: () => ({}),
+    }).prepare([]);
 
-    assert.deepEqual([...plan.activeTools].sort(), ['Glob', 'Grep', 'Read']);
-    assert.equal(plan.prepareStep, undefined);
+    assert.deepEqual([...plan.activeTools].sort(), [
+      'Bash',
+      'Edit',
+      'Glob',
+      'Grep',
+      'Read',
+      'Write',
+    ]);
+    assert.equal(plan.projectActiveTools, undefined);
     assert.ok(!plan.activeTools.includes(LOAD_TOOLS_NAME));
     assert.ok(!plan.activeTools.includes('agent_spawn'));
     assert.ok(!plan.activeTools.includes(AGENT_SWARM_TOOL_NAME));
@@ -1763,11 +1800,9 @@ describe('isolated headless tools', () => {
   test('README real-backend sketch preserves child tool overrides', async () => {
     const readme = await readFile(new URL('../../README.md', import.meta.url), 'utf8');
 
-    assert.ok(
-      readme.includes(
-        'const tools = [...(ctx.tools ?? buildIsolatedHeadlessTools(context.toolExecutor!))];',
-      ),
-    );
+    assert.ok(readme.includes('ctx.tools'));
+    assert.ok(readme.includes('tools: ctx.tools'));
+    assert.ok(readme.includes('policy: rootProductToolSurface.identity.policy'));
   });
 });
 

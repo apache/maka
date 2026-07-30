@@ -27,5 +27,9 @@ describe('TurnScopedAwaitRegistry', () => {
     await assert.rejects(first, /aborted request-1/);
     await assert.rejects(second, /aborted request-2/);
     assert.equal(registry.pendingCount('turn-1'), 0);
+    assert.throws(
+      () => registry.park('turn-1', 'request-late', undefined),
+      /not accepting requests/,
+    );
   });
 });

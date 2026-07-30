@@ -1,4 +1,8 @@
-import type { SessionSummary } from './session.js';
+import {
+  projectLinkedSessionTree,
+  type LinkedSessionTree,
+  type SessionSummary,
+} from './session.js';
 
 export function sessionRevisionFamilyId(session: SessionSummary): string {
   return session.revisionRootSessionId ?? session.id;
@@ -60,6 +64,30 @@ export function collapseSessionRevisions(
   return sessions.filter(
     (session) => selected.get(sessionRevisionFamilyId(session)) === session.id,
   );
+}
+
+/**
+ * Build the host-facing child-session tree over logical revision rows.
+ *
+ * Child relations remain durably anchored to the exact physical parent that
+ * spawned them. This read model aliases every physical revision id to the
+ * currently selected representative so edit-and-resend cannot orphan a child
+ * in Desktop/TUI projection.
+ */
+export function projectRevisionLinkedSessionTree(
+  sessions: readonly SessionSummary[],
+  activeId?: string,
+): LinkedSessionTree {
+  const logicalSessions = collapseSessionRevisions(sessions, activeId);
+  const representativeByFamilyId = new Map(
+    logicalSessions.map((session) => [sessionRevisionFamilyId(session), session.id]),
+  );
+  const parentSessionIdAliases = new Map<string, string>();
+  for (const session of sessions) {
+    const representativeId = representativeByFamilyId.get(sessionRevisionFamilyId(session));
+    if (representativeId) parentSessionIdAliases.set(session.id, representativeId);
+  }
+  return projectLinkedSessionTree(logicalSessions, { parentSessionIdAliases });
 }
 
 /** Every durable physical version represented by a logical conversation row. */

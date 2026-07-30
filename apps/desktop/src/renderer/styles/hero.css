@@ -18,8 +18,17 @@
  * Legacy `.emptyChat` and `.eyebrow` are kept as aliases so any
  * external CSS / smoke fixture references still match.
  */
+/* #1433: the width was a hardcoded `min(750px, 80vw)` — the one content
+   surface that did not use `--maka-chat-measure`. Everything else the user
+   reads or types into (message rows, composer, plan mode, permission
+   dialog, `.maka-onboarding`) is capped by that token.
+   This is a consistency fix, not a bug fix: the hero and the composer are
+   both centred in the same column, so the old 750px did not visibly
+   misalign them. What it did do is size the empty state off a magic number
+   and a viewport unit that ignores the sidebar, so the hero's column drifted
+   from the composer's as the window resized. */
 .maka-hero {
-  width: min(750px, 80vw);
+  width: min(var(--maka-chat-measure), 100%);
   margin: auto;
   padding: 0;
   display: grid;
@@ -35,61 +44,14 @@
     gap: var(--space-2-5);
     justify-items: center;
   }
+/* Holds the wordmark on the empty chat surface. It used to be a 130px
+   absolute-positioning stage for two fake chat bubbles and a Maka/user
+   avatar pair (#1433: a staged conversation on the one surface that has
+   none); with the mark it just needs to centre one inline SVG. */
 .maka-hero-visual {
-    position: relative;
-    width: min(520px, 62vw);
-    height: 130px;
-    margin-bottom: var(--space-1);
-  }
-.maka-hero-bubble {
-    position: absolute;
-    display: inline-flex;
-    align-items: center;
-    min-height: 32px;
-    border-radius: var(--radius-modal);
-    background: var(--foreground-3);
-    color: var(--muted-foreground);
-    font-size: var(--font-size-ui);
-    font-weight: var(--font-weight-semibold);
-    line-height: var(--leading-none);
-    white-space: nowrap;
-    padding: 0 var(--space-3);
-  }
-.maka-hero-bubble-primary {
-    left: 38px;
-    top: 16px;
-    background: oklch(from var(--brand-deep) l c h / 0.10);
-    color: var(--brand-deep);
-  }
-.maka-hero-bubble-secondary {
-    right: 22px;
-    top: 42px;
-  }
-.maka-hero-avatar {
-    position: absolute;
-    display: inline-grid;
-    place-items: center;
-    border-radius: var(--radius-pill);
-    box-shadow: 0 6px 18px -14px oklch(from var(--foreground) l c h / 0.32);
-  }
-.maka-hero-avatar-maka {
-    left: calc(50% - 48px);
-    top: 42px;
-    width: 66px;
-    height: 66px;
-    background: oklch(from var(--brand-deep) l c h / 0.18);
-    color: var(--brand-deep);
-  }
-.maka-hero-avatar-user {
-    left: calc(50% + 4px);
-    top: 52px;
-    width: 62px;
-    height: 62px;
-    border: var(--border-width-accent) solid oklch(from var(--brand-deep) l c h / 0.12);
-    background: var(--chat-user-bg);
-    color: var(--foreground);
-    font-size: 1.4667em;
-    font-weight: var(--font-weight-bold);
+    display: grid;
+    justify-items: center;
+    color: var(--maka-brand);
   }
 .maka-hero-eyebrow {
     display: inline-flex;
@@ -127,22 +89,10 @@
     line-height: var(--leading-normal);
     text-wrap: pretty;
   }
-@media (max-width: 820px) {
-    .maka-hero-visual {
-      width: min(420px, 84vw);
-      height: 112px;
-    }
-
-    .maka-hero-bubble {
-      font-size: var(--font-size-caption);
-      padding-inline: var(--space-2-5);
-    }
-
-    .maka-hero-bubble-primary {
-      left: 0;
-    }
-
-    .maka-hero-bubble-secondary {
-      right: 0;
-    }
+/* #1433: the daily empty chat is a returning user's landing surface, not a
+   launch screen, so its greeting steps down from the 2.1333em first-run
+   hero scale to ~20px. The OnboardingHero variants keep the large scale —
+   they are seen once, and there the headline is the whole message. */
+.maka-hero-empty-chat:not(.maka-hero-deep-research) h1 {
+    font-size: 1.5385em;
   }

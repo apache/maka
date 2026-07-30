@@ -129,7 +129,7 @@ describe('renderer style pruning contract', () => {
     ];
 
     for (const hook of retiredHooks) {
-      assert.doesNotMatch(styles, new RegExp(`\\\\.${hook}\\\\b`), `${hook} is retired and must not remain in styles.css`);
+      assert.doesNotMatch(styles, new RegExp(`\\.${hook}\\b`), `${hook} is retired and must not remain in styles.css`);
     }
   });
 

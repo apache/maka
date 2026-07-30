@@ -11,7 +11,11 @@ import { strict as assert } from 'node:assert';
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
-import { SESSION_BLOCKED_REASONS, SESSION_STATUSES } from '@maka/core';
+import {
+  SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS,
+  SESSION_BLOCKED_REASONS,
+  SESSION_STATUSES,
+} from '@maka/core';
 import { readRendererShellCombinedSource } from './renderer-shell-source-helpers.js';
 import { renderSessionListPanel } from './session-list-render-helpers.js';
 import {
@@ -214,7 +218,7 @@ describe('permission mode transition guard copy', () => {
     assert.match(menuModule, /PERMISSION_MODE_ORDER\.map\(\(mode\) =>/);
   });
 
-  it('persists permission-mode picks as the global default and scrubs failures before toast', async () => {
+  it('updates the active session boundary or the new-session default and scrubs failures before toast', async () => {
     const renderer = await readRendererShellCombinedSource();
     const setPermissionModeBlock = renderer.match(/async function setPermissionMode[\s\S]*?async function setSessionModel/)?.[0] ?? '';
 
@@ -228,19 +232,31 @@ describe('permission mode transition guard copy', () => {
     assert.match(renderer, /const \{[\s\S]*pendingPermissionModeBySession,[\s\S]*\} = sessionUiState;/);
     assert.match(
       setPermissionModeBlock,
-      /if \(mode === 'explore'\) return;[\s\S]*const sessionId = activeIdRef\.current;[\s\S]*const pendingKey = sessionId \?\? '__global_permission_mode__';[\s\S]*pendingPermissionModeChangesRef\.current\.has\(pendingKey\)/,
-      'Permission mode changes must reject explore, capture the active session id, and gate duplicate active/global saves',
+      /if \(mode !== 'ask' && mode !== 'bypass'\) return;[\s\S]*const sessionId = activeIdRef\.current;[\s\S]*const pendingKey = sessionId \?\? '__global_permission_mode__';[\s\S]*pendingPermissionModeChangesRef\.current\.has\(pendingKey\)/,
+      'Boundary changes must accept only Auto or Bypass, capture the active session id, and gate duplicate active/global saves',
+    );
+    assert.match(
+      setPermissionModeBlock,
+      /mode === 'bypass'[\s\S]*toastApi\.confirm\(\{[\s\S]*destructive: true/,
+      'Bypass must require a destructive confirmation before changing the session boundary',
     );
     assert.match(setPermissionModeBlock, /pendingPermissionModeChangesRef\.current\.add\(pendingKey\);[\s\S]*if \(sessionId\)\s*setPendingPermissionModeBySession\(\(current\) => \(\{\s*\.\.\.current,\s*\[sessionId\]: true,?\s*\}\)\);/);
     assert.match(
       setPermissionModeBlock,
-      /window\.maka\.settings\.update\(\{\s*chatDefaults: \{ permissionMode: mode \},?\s*\}\)/,
-      'Permission mode changes must persist the Settings -> General chat default instead of mutating one session',
+      /if \(sessionId\) \{[\s\S]*window\.maka\.sessions\.setPermissionMode\(sessionId, mode\)[\s\S]*\} else \{[\s\S]*window\.maka\.settings\.update\(\{\s*chatDefaults: \{ permissionMode: mode \},?\s*\}\)/,
+      'Boundary changes must update the active session without changing the default, or update the default when no session is active',
     );
-    assert.match(setPermissionModeBlock, /const nextMode = result\.settings\.chatDefaults\.permissionMode;/);
+    assert.match(setPermissionModeBlock, /nextMode = next\.permissionMode === 'bypass' \? 'bypass' : 'ask';/);
+    assert.match(setPermissionModeBlock, /nextMode = result\.settings\.chatDefaults\.permissionMode;/);
     assert.match(setPermissionModeBlock, /setDefaultPermissionMode\(nextMode\);/);
-    assert.match(setPermissionModeBlock, /setSessions\(\(prev\) => prev\.map\(\(session\) => \(\{ \.\.\.session, permissionMode: nextMode \}\)\)\);/);
-    assert.match(setPermissionModeBlock, /toastApi\.success\(copy\.permissionSwitched\(copy\.permissionLabels\[nextMode\]\), copy\.permissionDescriptions\[nextMode\]\);/);
+    assert.match(
+      setPermissionModeBlock,
+      /setSessions\(\(prev\) =>\s*prev\.map\(\(session\) => \(session\.id === sessionId \? next : session\)\),?\s*\);/,
+    );
+    assert.match(
+      setPermissionModeBlock,
+      /toastApi\.success\(\s*copy\.permissionSwitched\(copy\.permissionLabels\[nextMode\]\),\s*copy\.permissionDescriptions\[nextMode\],?\s*\);/,
+    );
     assert.match(setPermissionModeBlock, /await refreshSessions\(\)/, 'Permission mode changes must still refresh the sidebar/session list');
     assert.match(
       setPermissionModeBlock,
@@ -250,7 +266,14 @@ describe('permission mode transition guard copy', () => {
     assert.match(setPermissionModeBlock, /finally \{[\s\S]*pendingPermissionModeChangesRef\.current\.delete\(pendingKey\);[\s\S]*\}/);
     assert.match(setPermissionModeBlock, /if \(sessionId\) setPendingPermissionModeBySession\(\(current\) => omitSessionKey\(current, sessionId\)\);/);
     assert.match(renderer, /permissionModePending=\{activeId \? pendingPermissionModeBySession\[activeId\] === true : false\}/);
-    assert.match(renderer, /onPermissionModeChange=\{\(mode\) => setPermissionMode\(mode\)\}/);
+    assert.match(
+      renderer,
+      /onPermissionModeChange=\{\s*activeBoundarySurface\.localInteractionAvailable\s*\? \(mode\) => setPermissionMode\(mode\)\s*: undefined\s*\}/,
+    );
+    assert.match(
+      renderer,
+      /onboardingComposerHidden=\{\s*onboardingComposerHidden \|\| !activeBoundarySurface\.localInteractionAvailable\s*\}/,
+    );
     assert.doesNotMatch(renderer, /onPermissionModeChange=\{\(mode\) => void setPermissionMode\(mode\)\}/);
     assert.doesNotMatch(
       setPermissionModeBlock,
@@ -258,13 +281,12 @@ describe('permission mode transition guard copy', () => {
       'Permission mode failures must not render raw thrown Error.message',
     );
     assert.doesNotMatch(setPermissionModeBlock, /setPendingNewChatPermissionMode\(mode\)/);
-    assert.doesNotMatch(setPermissionModeBlock, /window\.maka\.sessions\.setPermissionMode\(sessionId, mode\)/);
     assert.doesNotMatch(setPermissionModeBlock, /window\.maka\.sessions\.setPermissionMode\(activeId, mode\)/);
   });
 
   it('uses the configured default permission mode without one-shot new-chat state', async () => {
     const renderer = await readRendererShellCombinedSource();
-    const sendBlock = renderer.match(/async function send\([\s\S]*?\n  async function respondToPermission/)?.[0] ?? '';
+    const sendBlock = renderer.match(/async function send\([\s\S]*?\n  async function respondToSandboxBoundary/)?.[0] ?? '';
 
     assert.doesNotMatch(
       renderer,
@@ -283,8 +305,8 @@ describe('permission mode transition guard copy', () => {
     );
     assert.match(
       renderer,
-      /permissionMode=\{defaultPermissionMode\}/,
-      'The Composer mode chip must show the configured global default',
+      /permissionMode=\{activePermissionMode\}/,
+      'The Composer mode chip must show the active session boundary and use the configured default only before a session exists',
     );
     assert.match(renderer, /setDefaultPermissionMode\(next\.chatDefaults\?\.permissionMode \?\? 'ask'\)/);
     assert.match(
@@ -352,6 +374,20 @@ describe('describeTurnErrorClass (PR109e-d @kenji gate #3)', () => {
     assert.equal(describeTurnErrorClass('app_restarted'), '本地应用重启，上一轮没有完成');
   });
 
+  it('explains a sandbox boundary request the host restart closed (#1612)', () => {
+    // The prompt the user never answered must read as a named closure, not as
+    // a bare restart and not as the generic "等待权限确认" catch-all.
+    const text = describeTurnErrorClass(SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS);
+    assert.equal(text, '本地应用重启，等待确认的「允许访问工作区以外的内容」请求已按拒绝关闭');
+    assert.notEqual(text, describeTurnErrorClass('app_restarted'));
+    assert.notEqual(text, describeTurnErrorClass('permission_required'));
+    assert.doesNotMatch(text, new RegExp(SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS));
+    assert.equal(
+      describeTurnErrorClass(SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS.toUpperCase()),
+      text,
+    );
+  });
+
   it('falls back to "未知错误" for unrecognized classes', () => {
     for (const cls of [undefined, 'xyz', 'something_new', '']) {
       assert.match(describeTurnErrorClass(cls), /未知/, `${JSON.stringify(cls)} should fall back to 未知错误`);
@@ -384,6 +420,18 @@ describe('deriveFailedTurnRecovery (PawWork run-incident lite)', () => {
 
     assert.equal(result.action, 'continue');
     assert.match(result.label, /安全恢复/);
+  });
+
+  it('offers retry, not resume, for a boundary request closed by the restart (#1612)', () => {
+    const result = deriveFailedTurnRecovery({
+      errorClass: SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS,
+      partialOutputRetained: false,
+      toolActivityCount: 0,
+      erroredToolCount: 0,
+    });
+
+    assert.equal(result.action, 'retry');
+    assert.match(result.label, /重试本轮/);
   });
 
   it('asks the user to inspect tool output when a tool failed', () => {

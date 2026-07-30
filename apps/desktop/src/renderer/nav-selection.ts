@@ -1,43 +1,113 @@
-import type { SessionSummary } from '@maka/core';
-import type { NavSelection } from '@maka/ui';
-import { safeLocalStorageGet } from './browser-storage';
+import type {
+  AutomationModule,
+  ExtensionModule,
+  NavModuleMemory,
+  NavSelection,
+  SessionFilter,
+} from '@maka/ui';
+import { safeLocalStorageGet } from './browser-storage.js';
 
-export function readNavSelection(): NavSelection {
-  try {
-    const raw = safeLocalStorageGet('maka-nav-selection-v1');
-    if (!raw) return { section: 'sessions', filter: 'chats' };
-    const parsed = JSON.parse(raw) as { section?: string; filter?: string };
-    // PR-SIDEBAR-IA-0 Phase 2 fixup (xuan `94c7bf0f`): fail-closed.
-    // `'search'` was briefly a `NavSelection.section` during the
-    // Phase 2 initial commit; the fixup removes it because `搜索`
-    // is now a modal trigger, not a section. An older localStorage
-    // entry with `{section:'search'}` would otherwise leave the
-    // app stuck on an invalid section. Reject anything that is not
-    // in the current closed-enum.
-    if (parsed.section === 'skills') return { section: 'skills' };
-    if (parsed.section === 'mcp') return { section: 'mcp' };
-    if (parsed.section === 'automations') return { section: 'automations' };
-    if (parsed.section === 'daily-review') return { section: 'daily-review' };
-    if (
-      parsed.section === 'sessions' &&
-      (parsed.filter === 'chats' || parsed.filter === 'flagged' || parsed.filter === 'archived')
-    ) {
-      return parsed as NavSelection;
-    }
-  } catch {
-    /* fall through */
-  }
-  return { section: 'sessions', filter: 'chats' };
+export type NavigationState = {
+  selection: NavSelection;
+  moduleMemory: NavModuleMemory;
+};
+
+const DEFAULT_MODULE_MEMORY: NavModuleMemory = {
+  extensions: 'skills',
+  automations: 'plan-reminders',
+};
+
+function defaultNavigationState(): NavigationState {
+  return {
+    selection: { section: 'sessions', filter: 'chats' },
+    moduleMemory: { ...DEFAULT_MODULE_MEMORY },
+  };
 }
 
-export function filterSessions(sessions: SessionSummary[], selection: NavSelection): SessionSummary[] {
-  const filter = selection.section === 'sessions' ? selection.filter : 'chats';
-  switch (filter) {
-    case 'flagged':
-      return sessions.filter((session) => session.isFlagged && !session.isArchived && session.lastMessageAt);
-    case 'archived':
-      return sessions.filter((session) => session.isArchived);
-    case 'chats':
-      return sessions.filter((session) => !session.isArchived && session.lastMessageAt);
+function isSessionFilter(value: unknown): value is SessionFilter {
+  return value === 'chats' || value === 'flagged' || value === 'archived';
+}
+
+function isExtensionModule(value: unknown): value is ExtensionModule {
+  return value === 'skills' || value === 'mcp';
+}
+
+function isAutomationModule(value: unknown): value is AutomationModule {
+  return value === 'plan-reminders' || value === 'daily-review';
+}
+
+function parseSelection(value: unknown): NavSelection | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as { section?: unknown; filter?: unknown; module?: unknown };
+  if (candidate.section === 'sessions' && isSessionFilter(candidate.filter)) {
+    return { section: 'sessions', filter: candidate.filter };
   }
+  if (candidate.section === 'extensions' && isExtensionModule(candidate.module)) {
+    return { section: 'extensions', module: candidate.module };
+  }
+  if (candidate.section === 'automations' && isAutomationModule(candidate.module)) {
+    return { section: 'automations', module: candidate.module };
+  }
+
+  // Migrate the pre-hub destinations written by maka-nav-selection-v1.
+  if (candidate.section === 'skills' || candidate.section === 'mcp') {
+    return { section: 'extensions', module: candidate.section };
+  }
+  if (candidate.section === 'daily-review') {
+    return { section: 'automations', module: 'daily-review' };
+  }
+  if (candidate.section === 'automations') {
+    return { section: 'automations', module: 'plan-reminders' };
+  }
+  return null;
+}
+
+function parseModuleMemory(value: unknown): NavModuleMemory {
+  if (!value || typeof value !== 'object') return { ...DEFAULT_MODULE_MEMORY };
+  const candidate = value as { extensions?: unknown; automations?: unknown };
+  return {
+    extensions: isExtensionModule(candidate.extensions) ? candidate.extensions : DEFAULT_MODULE_MEMORY.extensions,
+    automations: isAutomationModule(candidate.automations) ? candidate.automations : DEFAULT_MODULE_MEMORY.automations,
+  };
+}
+
+export function selectNavigation(state: NavigationState, selection: NavSelection): NavigationState {
+  if (selection.section === 'extensions') {
+    return {
+      selection,
+      moduleMemory: { ...state.moduleMemory, extensions: selection.module },
+    };
+  }
+  if (selection.section === 'automations') {
+    return {
+      selection,
+      moduleMemory: { ...state.moduleMemory, automations: selection.module },
+    };
+  }
+  return { selection, moduleMemory: state.moduleMemory };
+}
+
+export function parseNavigationState(raw: string | null): NavigationState {
+  if (!raw) return defaultNavigationState();
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    const candidate = parsed && typeof parsed === 'object'
+      ? parsed as { selection?: unknown; moduleMemory?: unknown }
+      : null;
+    const selection = parseSelection(candidate?.selection ?? parsed);
+    if (!selection) return defaultNavigationState();
+    return selectNavigation(
+      {
+        selection,
+        moduleMemory: parseModuleMemory(candidate?.moduleMemory),
+      },
+      selection,
+    );
+  } catch {
+    return defaultNavigationState();
+  }
+}
+
+export function readNavigationState(): NavigationState {
+  return parseNavigationState(safeLocalStorageGet('maka-nav-selection-v1'));
 }

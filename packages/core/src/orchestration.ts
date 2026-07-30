@@ -1,4 +1,4 @@
-export const ORCHESTRATION_MODES = ['default', 'swarm'] as const;
+export const ORCHESTRATION_MODES = ['default', 'swarm', 'graph'] as const;
 
 export type OrchestrationMode = (typeof ORCHESTRATION_MODES)[number];
 

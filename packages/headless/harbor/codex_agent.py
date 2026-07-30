@@ -13,11 +13,17 @@ import time
 from pathlib import Path
 from typing import Any
 
-from harbor.agents.installed.codex import Codex
-from harbor.environments.base import BaseEnvironment
-from harbor.models.agent.context import AgentContext
-
+# harness_compat picks the harbor.* tree under plain Harbor 0.13.2 and the
+# pier.* tree under Pier, whose parallel classes are type-incompatible with
+# harbor's (Pier's TrialResult only accepts Pier's AgentInfo).
+from harness_compat import (
+    AgentContext,
+    BaseEnvironment,
+    Codex,
+    NetworkAllowlist as _NetworkAllowlist,
+)
 from process_scope import cleanup_process_scope, scoped_command
+from provider_proxy import provider_proxy_endpoint, warn_if_pier_unreachable_proxy_port
 from trial_pricing import estimate_cost, pricing_from_env
 
 _TOOLCHAIN_ROOT = Path("/opt/maka-codex-toolchain")
@@ -28,6 +34,8 @@ _TOOLCHAIN_MANIFEST = _TOOLCHAIN_ROOT / "manifest.json"
 _TOOLCHAIN_CHECKSUMS = _TOOLCHAIN_ROOT / "checksums.sha256"
 _DEFAULT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 _OUTPUT_FILENAME = "codex.txt"
+_REMOTE_OUTPUT_PATH = Path("/logs/agent") / _OUTPUT_FILENAME
+_REMOTE_SESSIONS_DIR = Path("/logs/agent/sessions")
 
 
 class MakaCodexAgent(Codex):
@@ -35,6 +43,33 @@ class MakaCodexAgent(Codex):
 
     def get_version_command(self) -> str | None:
         return f"{shlex.quote(str(_TOOLCHAIN_CODEX))} --version"
+
+    def install_spec(self) -> None:
+        # The pinned Codex toolchain is bind-mounted read-only and only
+        # verified (sha256 checksums + manifest fingerprint) in install().
+        # Pier's inherited spec would instead install Codex from the network
+        # (npm/nvm), which offline tasks (allow_internet=false) cannot reach
+        # and which would break the fixed-build comparison. None keeps the
+        # runtime verify path unchanged (Pier runs install() when no spec is
+        # preinstalled).
+        return None
+
+    def network_allowlist(self) -> _NetworkAllowlist | None:
+        # Called only under Pier; plain Harbor never calls it and
+        # harness_compat exports NetworkAllowlist = None there.
+        if _NetworkAllowlist is None:
+            return None
+        # The inherited allowlist collects OPENAI_BASE_URL (masked to None by
+        # this adapter's _get_env) and falls back to api.openai.com — neither
+        # is what this adapter dials. The container runs the pinned Codex CLI
+        # against the maka-http provider config, which points at
+        # MAKA_PROVIDER_PROXY_URL; that proxy host is the only egress the
+        # container needs. A missing or malformed proxy URL fails here, at
+        # environment creation — no fallback domain, so a misconfigured trial
+        # never gets a spurious egress grant.
+        hostname, port = provider_proxy_endpoint(self._get_env, "Codex")
+        warn_if_pier_unreachable_proxy_port(port, "Codex")
+        return _NetworkAllowlist(domains=[hostname])
 
     async def install(self, environment: BaseEnvironment) -> None:
         expected_fingerprint = self._get_env("MAKA_CODEX_TOOLCHAIN_FINGERPRINT")
@@ -117,6 +152,38 @@ class MakaCodexAgent(Codex):
                     await cleanup_process_scope(self, environment, command_scope)
             finally:
                 self._finished_at_ms = int(time.time() * 1000)
+                await self._download_agent_logs(environment)
+
+    async def _download_agent_logs(self, environment: BaseEnvironment) -> None:
+        # populate_context_post_run and _write_cell_output read codex.txt and
+        # sessions/**/rollout-*.jsonl from the host log dir. Under Harbor the
+        # agent log dir is bind-mounted, so both are already host-side and are
+        # skipped; under Pier a --mounts-json run replaces the default log
+        # mounts while capabilities.mounted stays true (pier docker.py), so
+        # pier's own log download never runs — without this hydration
+        # _events() sees nothing and a real token-burning run is misclassified
+        # as failed. Runs in run()'s finally so failure paths are hydrated too.
+        local_output = self.logs_dir / _OUTPUT_FILENAME
+        if not local_output.exists():
+            try:
+                await environment.download_file(_REMOTE_OUTPUT_PATH.as_posix(), local_output)
+            except Exception as exc:  # noqa: BLE001 - best-effort log hydration.
+                self.logger.debug(
+                    "Could not download Codex output %s: %s", _REMOTE_OUTPUT_PATH, exc
+                )
+        local_sessions = self.logs_dir / "sessions"
+        if not local_sessions.exists():
+            try:
+                # docker cp of `dir/.` requires an existing target directory.
+                local_sessions.mkdir(parents=True, exist_ok=True)
+                await environment.download_dir(
+                    source_dir=_REMOTE_SESSIONS_DIR.as_posix(),
+                    target_dir=local_sessions,
+                )
+            except Exception as exc:  # noqa: BLE001 - best-effort log hydration.
+                self.logger.debug(
+                    "Could not download Codex sessions %s: %s", _REMOTE_SESSIONS_DIR, exc
+                )
 
     async def _write_http_provider_config(
         self, environment: BaseEnvironment, proxy_url: str
@@ -374,7 +441,7 @@ class MakaCodexAgent(Codex):
             json.dumps(output, indent=2) + "\n", encoding="utf-8"
         )
 
-    def _execution_identity(self) -> dict[str, str]:
+    def _execution_identity(self) -> dict[str, Any]:
         system_prompt = self._get_env("MAKA_SYSTEM_PROMPT") or ""
         prompt_hash = "sha256:" + hashlib.sha256(
             json.dumps(
@@ -390,6 +457,7 @@ class MakaCodexAgent(Codex):
             "systemPromptHash": prompt_hash,
             "pricingProfile": self._get_env("MAKA_TRIAL_PRICING_SOURCE")
             or "unconfigured",
+            "agentTools": False,
         }
 
     def _write_execution_identity(self) -> None:

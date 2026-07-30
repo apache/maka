@@ -262,9 +262,10 @@ export function BotChatSettingsPage(props: {
     }
   }
 
-  async function disconnectWechatLogin() {
+  async function disconnectLinkedSession() {
     const provider = selected;
     const providerChannel = props.settings.botChat.channels[provider];
+    if (provider !== 'wechat') return;
     if (!beginBotAction(provider, 'disconnect')) return;
     try {
       const ok = await toast.confirm({
@@ -276,16 +277,19 @@ export function BotChatSettingsPage(props: {
       });
       if (!ok) return;
       const isIlink = providerChannel.webhookUrl?.trim().startsWith('https://ilinkai.weixin.qq.com') ?? false;
-      const saved = await updateChannelFor(provider, {
-        token: '',
-        ...(isIlink ? { webhookUrl: '' } : {}),
-        botUserId: undefined,
-        connected: false,
-        readiness: 'scaffolded',
-        readinessReason: undefined,
-        readinessUpdatedAt: Date.now(),
-        lastError: undefined,
-      });
+      const saved = await updateChannelFor(
+        provider,
+        {
+          token: '',
+          ...(isIlink ? { webhookUrl: '' } : {}),
+          botUserId: undefined,
+          connected: false,
+          readiness: 'scaffolded',
+          readinessReason: undefined,
+          readinessUpdatedAt: Date.now(),
+          lastError: undefined,
+        },
+      );
       if (!saved) return;
       if (!botPageMountedRef.current) return;
       await refreshBotStatuses();
@@ -329,7 +333,7 @@ export function BotChatSettingsPage(props: {
       onTest={testChannel}
       onTestAndConnect={testAndConnect}
       onRestart={restartChannel}
-      onDisconnectWechat={disconnectWechatLogin}
+      onDisconnectSession={disconnectLinkedSession}
       onReload={props.onReload}
       onRefreshStatuses={refreshBotStatuses}
     />

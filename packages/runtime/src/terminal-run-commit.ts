@@ -71,6 +71,7 @@ export interface CommitTerminalRunWithRuntimeFactInput {
   terminalEvent: RuntimeEvent;
   failureClass?: string;
   failureMessage?: string;
+  traceWriteError?: string;
   abortSource?: string;
   runEventData?: Record<string, unknown>;
   runEventMessage?: string;
@@ -122,6 +123,7 @@ async function commitTerminalRunProjection(
       completedAt: input.ts,
       ...(failureClass ? { failureClass } : {}),
       ...(input.failureMessage ? { failureMessage: input.failureMessage } : {}),
+      ...(input.traceWriteError ? { traceWriteError: input.traceWriteError } : {}),
       ...(abortSource ? { abortSource } : {}),
     },
     { durable: true },

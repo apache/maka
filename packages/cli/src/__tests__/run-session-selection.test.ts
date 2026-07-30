@@ -90,7 +90,7 @@ describe('maka run session selection', () => {
     );
   });
 
-  test('resume rejects missing cwd, ask mode, unsupported backend, and explicit config conflicts', async () => {
+  test('resume accepts Auto sessions and rejects missing cwd, unsupported backend, and explicit config conflicts', async () => {
     const deps = canonicalizer({ '/repo': '/repo' });
     const base = session({ id: 'resume-me', cwd: '/repo', thinkingLevel: 'high' });
 
@@ -107,19 +107,18 @@ describe('maka run session selection', () => {
       ),
       /has no stored cwd/,
     );
-    await assert.rejects(
-      selectMakaRunSession(
-        {
-          sessions: [session({ id: 'resume-me', permissionMode: 'ask' })],
-          resumeId: 'resume-me',
-          continueLatest: false,
-          processCwd: '/ignored',
-          thinkingSpecified: false,
-        },
-        deps,
-      ),
-      /interactive permission mode ask/,
+    const auto = session({ id: 'resume-me', permissionMode: 'ask' });
+    const resumedAuto = await selectMakaRunSession(
+      {
+        sessions: [auto],
+        resumeId: 'resume-me',
+        continueLatest: false,
+        processCwd: '/ignored',
+        thinkingSpecified: false,
+      },
+      deps,
     );
+    assert.equal(resumedAuto.kind === 'existing' ? resumedAuto.session : undefined, auto);
     await assert.rejects(
       selectMakaRunSession(
         {
@@ -182,8 +181,50 @@ describe('maka run session selection', () => {
     );
 
     assert.equal(selected.kind, 'existing');
-    assert.equal(selected.kind === 'existing' ? selected.session.id : undefined, 'a');
+    assert.equal(selected.kind === 'existing' ? selected.session.id : undefined, 'ask');
     assert.equal(selected.cwd, '/repo');
+  });
+
+  test('continue skips linked child sessions while explicit resume still accepts them', async () => {
+    const child = session({
+      id: 'child',
+      lastMessageAt: 500,
+      subagentParent: {
+        kind: 'subagent',
+        parentSessionId: 'parent',
+        spawnedBy: {
+          parentRunId: 'parent-run',
+          parentTurnId: 'parent-turn',
+          toolCallId: 'tool-call',
+        },
+        lifecycle: 'foreground',
+      },
+    });
+    const parent = session({ id: 'parent', lastMessageAt: 100 });
+    const deps = canonicalizer({ '/repo': '/repo' });
+
+    const continued = await selectMakaRunSession(
+      {
+        sessions: [child, parent],
+        continueLatest: true,
+        processCwd: '/repo',
+        thinkingSpecified: false,
+      },
+      deps,
+    );
+    assert.equal(continued.kind === 'existing' ? continued.session.id : undefined, parent.id);
+
+    const resumed = await selectMakaRunSession(
+      {
+        sessions: [child, parent],
+        resumeId: child.id,
+        continueLatest: false,
+        processCwd: '/repo',
+        thinkingSpecified: false,
+      },
+      deps,
+    );
+    assert.equal(resumed.kind === 'existing' ? resumed.session.id : undefined, child.id);
   });
 
   test('continue returns a preflight failure when no cwd-compatible session exists', async () => {

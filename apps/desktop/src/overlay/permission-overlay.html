@@ -1,0 +1,125 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  /* The window is transparent and frameless; the card below is the only
+     thing that paints. Pointer events stay ON here (unlike the cursor
+     overlay) because the whole point is that the user grabs the row. */
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: transparent;
+    overflow: hidden;
+    font: 13px -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+    -webkit-user-select: none;
+    user-select: none;
+    cursor: default;
+  }
+
+  /* A wide, short bar (530x109): the draggable row on the left at roughly
+     the width of a real Settings list row, the explanation beside it.
+     Stacking these vertically would make the card as tall as a dialog and
+     stop it reading as something that belongs to the list. */
+  #card {
+    box-sizing: border-box;
+    height: 100%;
+    display: grid;
+    grid-template-columns: 220px minmax(0, 1fr);
+    align-items: center;
+    gap: 14px;
+    padding: 14px 16px;
+    border-radius: 12px;
+    /* Matches the app's surface treatment; the vibrancy read comes from
+       the blur over whatever is behind the transparent window. */
+    background: rgba(245, 245, 247, 0.92);
+    backdrop-filter: blur(28px) saturate(150%);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18), 0 0 0 0.5px rgba(0, 0, 0, 0.12);
+    color: #1d1d1f;
+  }
+
+  /* The draggable row is a deliberate replica of a System Settings list
+     row: what you drag looks like what it becomes, which is what makes
+     the gesture read as obvious rather than as a trick. */
+  #row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: 7px;
+    background: #e3e3e5;
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.08);
+    cursor: grab;
+  }
+  #row:active { cursor: grabbing; }
+  #row[data-draggable="false"] { cursor: default; opacity: 0.6; }
+
+  #icon { width: 28px; height: 28px; flex: 0 0 auto; border-radius: 6px; }
+  #name { font-weight: 600; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  #hint {
+    flex: 0 0 auto;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: #0071e3;
+    color: #fff;
+    font-size: 11px;
+    font-weight: 600;
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+  /* Respect the system setting rather than pulsing at someone who asked
+     for stillness. */
+  @media (prefers-reduced-motion: reduce) { #hint { animation: none; } }
+
+  #text { display: grid; gap: 2px; min-width: 0; }
+  #headline { font-weight: 600; line-height: 1.3; }
+  #sub { font-size: 11px; color: #6e6e73; line-height: 1.35; }
+
+  #close {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    border: 0;
+    background: transparent;
+    color: #6e6e73;
+    font-size: 15px;
+    line-height: 1;
+    padding: 4px;
+    cursor: default;
+  }
+  #close:hover { color: #1d1d1f; }
+
+  /* On grant the card has nothing left to be dragged out of, so the row
+     goes and the confirmation takes the full width for the moment before
+     the card closes itself. */
+  body[data-granted="true"] #card { grid-template-columns: minmax(0, 1fr); }
+  body[data-granted="true"] #row,
+  body[data-granted="true"] #sub { display: none; }
+  body[data-granted="true"] #headline { color: #1d7f34; }
+
+  @media (prefers-color-scheme: dark) {
+    #card { background: rgba(40, 40, 42, 0.92); color: #f5f5f7; }
+    #row { background: #4a4a4d; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1); }
+    #sub, #close { color: #98989d; }
+    #close:hover { color: #f5f5f7; }
+    body[data-granted="true"] #headline { color: #5ed77f; }
+  }
+</style>
+</head>
+<body>
+  <div id="card">
+    <button id="close" type="button" aria-label="Close">&times;</button>
+    <div id="row" data-draggable="false">
+      <img id="icon" alt="" />
+      <span id="name"></span>
+      <span id="hint"></span>
+    </div>
+    <div id="text">
+      <div id="headline"></div>
+      <div id="sub"></div>
+    </div>
+  </div>
+  <script src="./permission-overlay.js"></script>
+</body>
+</html>

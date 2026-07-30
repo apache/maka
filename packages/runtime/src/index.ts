@@ -11,6 +11,7 @@ export {
   headerToSummary,
   changesBackendConfig,
 } from './session-manager.js';
+export type { ModelMessage, JSONValue } from './model-protocol.js';
 export type {
   CompactSessionInput,
   PlanSafeBoundaryContinuationInput,
@@ -22,79 +23,249 @@ export type {
   StrictRecoveryStores,
   BackendFactory,
   BackendFactoryContext,
+  ClaimedAgentGraphIntentResult,
   PrepareChildAgentResumeResult,
   ResumeChildAgentInput,
+  RunClaimedAgentGraphIntentInput,
   SpawnChildAgentInput,
   SpawnChildAgentResult,
+  SpawnChildSessionInput,
+  SpawnChildSessionResult,
   RetryChildAgentInput,
   AgentListItem,
   AgentListResult,
+  SubagentExecutionListItem,
+  AgentOutputCommittedResult,
   AgentOutputInput,
   AgentOutputResult,
   StopSessionInput,
 } from './session-manager.js';
+export type { SubagentExecutionRef } from './subagent-execution.js';
+export {
+  AGENT_GRAPH_RECORD_FACETS,
+  AGENT_GRAPH_RECORD_SCHEMA_VERSION,
+  projectAgentGraphRecords,
+  readCommittedAgentGraphProjection,
+  replayAgentGraphRecords,
+} from './stream-graph-projection.js';
+export type {
+  AgentGraphActivationState,
+  AgentGraphActivationStatus,
+  AgentGraphOperatorBinding,
+  AgentGraphOperatorState,
+  AgentGraphProjection,
+  AgentGraphRecord,
+  AgentGraphRecordFacet,
+  AgentGraphRecordOrderKey,
+  AgentGraphReplayState,
+  AgentGraphRunStream,
+  AgentGraphRuntimeEventSource,
+  AgentGraphSupervisorAttentionReason,
+  AgentGraphSupervisorMetaRecord,
+  AgentGraphSupervisorSignal,
+  ProjectAgentGraphRecordsInput,
+  ReadCommittedAgentGraphProjectionInput,
+} from './stream-graph-projection.js';
+export {
+  AGENT_GRAPH_TIMELINE_DEFAULT_PAGE_SIZE,
+  AGENT_GRAPH_TIMELINE_MAX_PAGE_SIZE,
+  AGENT_GRAPH_TIMELINE_SCHEMA_VERSION,
+  buildAgentGraphTimeline,
+  buildAgentGraphTimelineCurrentState,
+  decodeAgentGraphTimelineCursor,
+  encodeAgentGraphTimelineCursor,
+  paginateAgentGraphTimeline,
+  readAgentGraphTimelinePage,
+} from './agent-graph-timeline.js';
+export type {
+  AgentGraphTimelineCoverageLimitation,
+  AgentGraphTimelineCurrentAdmission,
+  AgentGraphTimelineCurrentState,
+  AgentGraphTimelineCurrentSupervisorWake,
+  AgentGraphTimelineEvent,
+  AgentGraphTimelinePage,
+  AgentGraphTimelinePageOptions,
+  AgentGraphTimelineRunRef,
+  BuildAgentGraphTimelineInput,
+  ReadAgentGraphTimelinePageInput,
+} from './agent-graph-timeline.js';
+export {
+  AGENT_GRAPH_TRACE_SCHEMA_VERSION,
+  buildAgentGraphTraceSnapshot,
+} from './stream-graph-trace.js';
+export type {
+  AgentGraphTraceEdge,
+  AgentGraphTraceEdgeState,
+  AgentGraphTraceOperatorState,
+  AgentGraphTraceRoute,
+  AgentGraphTraceSnapshot,
+  AgentGraphTraceTopology,
+  BuildAgentGraphTraceSnapshotInput,
+} from './stream-graph-trace.js';
+export {
+  AGENT_GRAPH_READINESS_SCHEMA_VERSION,
+  buildAgentGraphReadinessSnapshot,
+} from './stream-graph-readiness.js';
+export { claimAgentGraphRunnableIntent } from './stream-graph-admission.js';
+export type { ClaimAgentGraphRunnableIntentInput } from './stream-graph-admission.js';
+export { runAgentGraphToQuiescence } from './stream-graph-dispatch.js';
+export type {
+  AgentGraphDispatchFailure,
+  AgentGraphDispatchedActivation,
+  AgentGraphIntentExecutor,
+  AgentGraphQuiescenceResult,
+  AgentGraphSupervisorActivationReady,
+  AgentGraphSupervisorObservation,
+  AgentGraphSupervisorObserver,
+  AgentGraphSupervisorRuntimeEvent,
+  RenderAgentGraphIntentPromptInput,
+  ResolveAgentGraphPoliciesInput,
+  RunAgentGraphToQuiescenceInput,
+} from './stream-graph-dispatch.js';
+export { reconcileAgentGraphSchedule } from './stream-graph-schedule-reconcile.js';
+export type {
+  AgentGraphScheduleDeferredWork,
+  AgentGraphScheduleReconciliationFailure,
+  AgentGraphScheduleReconciliationResult,
+  AgentGraphScheduleStopController,
+  AgentGraphScheduleStopResult,
+  ReconcileAgentGraphScheduleInput,
+  RenderAgentGraphScheduledWorkPromptInput,
+} from './stream-graph-schedule-reconcile.js';
+export {
+  AgentGraphSupervisorContextOverflowError,
+  AgentGraphSupervisorWakeCoordinator,
+} from './agent-graph-supervisor-wake.js';
+export type {
+  AgentGraphSupervisorContextRecoveryDiagnostic,
+  AgentGraphSupervisorPartialResult,
+  AgentGraphSupervisorWakeDiagnostic,
+  AgentGraphSupervisorWakeInput,
+} from './agent-graph-supervisor-wake.js';
+export {
+  AGENT_GRAPH_SUPERVISOR_TOOL_NAMES,
+  UPDATE_AGENT_GRAPH_TOOL_NAME,
+  VIEW_AGENT_GRAPH_TOOL_NAME,
+  buildAgentGraphSupervisorTools,
+  compileAgentGraphScheduleUpdate,
+  projectAgentGraphSchedule,
+} from './stream-graph-supervisor-tools.js';
+export type {
+  AgentGraphScheduleFinishView,
+  AgentGraphScheduleProjection,
+  AgentGraphScheduleWorkView,
+  AgentGraphStoppedTargetView,
+  AgentGraphToolActivityView,
+  AgentGraphToolReadinessView,
+  AgentGraphToolRuntimeOperatorView,
+  AgentGraphToolRuntimeView,
+  AgentGraphToolScheduleView,
+  BuildAgentGraphSupervisorToolsInput,
+  UpdateAgentGraphToolInput,
+  UpdateAgentGraphToolResult,
+  ViewAgentGraphToolInput,
+  ViewAgentGraphToolResult,
+} from './stream-graph-supervisor-tools.js';
+export {
+  AGENT_GRAPH_CLIENT_TERMINAL_PAGE_SIZE,
+  AGENT_GRAPH_CLIENT_SNAPSHOT_SCHEMA_VERSION,
+  advanceMaterializedAgentGraphClientProjection,
+  buildAgentGraphClientSnapshot,
+  decodeAgentGraphTerminalCursor,
+  decodeMaterializedAgentGraphClientActivity,
+  decodeMaterializedAgentGraphClientSnapshot,
+  decodeMaterializedAgentGraphOperatorInspection,
+  encodeAgentGraphTerminalCursor,
+  inspectAgentGraphOperator,
+  materializeAgentGraphClientProjection,
+  materializedAgentGraphTerminalHistoryPage,
+} from './stream-graph-read-model.js';
+export type {
+  AgentGraphClientActivity,
+  AdvancedAgentGraphClientProjection,
+  AgentGraphClientClaimRef,
+  AgentGraphClientControlDecision,
+  AgentGraphClientEdge,
+  AgentGraphClientFinish,
+  AgentGraphClientMaterialization,
+  AgentGraphClientOperator,
+  AgentGraphClientOperatorStatus,
+  AgentGraphClientRunRef,
+  AgentGraphClientScheduledWork,
+  AgentGraphClientSnapshot,
+  AgentGraphClientSnapshotOptions,
+  AgentGraphClientStatus,
+  AgentGraphClientStoppedTarget,
+  AgentGraphClientTerminalHistoryPage,
+  AgentGraphOperatorInspection,
+  BuildAgentGraphClientReadModelInput,
+} from './stream-graph-read-model.js';
+export {
+  AgentGraphCoordinator,
+  agentGraphIdForRootSession,
+  topologyFromProvisions,
+} from './stream-graph-coordinator.js';
+export type {
+  AgentGraphClientChangedEvent,
+  AgentGraphClientChangedListener,
+  AgentGraphClientChangedReason,
+  AgentGraphCoordinatorInput,
+  AgentGraphCoordinatorRuntime,
+  AgentGraphCoordinatorSessionStore,
+} from './stream-graph-coordinator.js';
+export type {
+  AgentGraphAllSettledReadinessPolicy,
+  AgentGraphMapReadinessPolicy,
+  AgentGraphOperatorReadinessState,
+  AgentGraphReadinessPolicy,
+  AgentGraphReadinessSnapshot,
+  AgentGraphReadinessWait,
+  AgentGraphRunnableIntent,
+  AgentGraphRunnableIntentPolicyKind,
+  AgentGraphSealedActivationInput,
+  AgentGraphSupervisorReadinessObservation,
+  BuildAgentGraphReadinessSnapshotInput,
+} from './stream-graph-readiness.js';
 
-export { PermissionEngine, createDefaultPermissionEngineDeps } from './permission-engine.js';
-export type { EvaluateResult, EvaluateInput, PermissionEngineDeps } from './permission-engine.js';
 export { renderSwarmModePrompt } from './swarm-mode.js';
+export { renderGraphModePrompt } from './graph-mode.js';
+export {
+  RuntimeHostedRootConflictError,
+  RuntimeMessageAuthorityInvariantError,
+} from './message-authority.js';
+export type {
+  RuntimeHostedRootAuthority,
+  RuntimeHostedRootExecutionInput,
+  RuntimeMessageAuthority,
+  RuntimeMessageRunIdentity,
+  RuntimeMessageRunOwner,
+} from './message-authority.js';
+export { isRuntimeHostedRootAuthority } from './message-authority.js';
+export {
+  RuntimeInteractionAdmissionRejectedError,
+  RuntimeInteractionClosedError,
+  RuntimeInteractionFailStopError,
+  RuntimeInteractionInvariantError,
+} from './interaction-authority.js';
+export type {
+  CanonicalPermissionOutcomeReader,
+  CanonicalPermissionOutcomeRecord,
+  RuntimeInteractionAdmissionRejectionReason,
+  RuntimeInteractionAuthority,
+  RuntimeInteractionClosureReason,
+  RuntimeInteractionContinuationAuthority,
+  RuntimeInteractionContinuationIdentity,
+  RuntimeInteractionFatalError,
+  RuntimeInteractionRunClosureReason,
+  RuntimeInteractionRunFacet,
+  RuntimeInteractionRunIdentity,
+  RuntimeInteractionRunOwner,
+  RuntimeUserQuestionAnswer,
+  RuntimeUserQuestionClosureReason,
+  RuntimeUserQuestionContinuation,
+  RuntimeUserQuestionOutcome,
+} from './interaction-authority.js';
 
-export {
-  MAX_ADDITIONAL_PERMISSION_JUSTIFICATION_CHARS,
-  DEFAULT_ADDITIONAL_PERMISSION_GRANT_TTL_MS,
-  AdditionalPermissionError,
-  assertAdditionalPermissionProposal,
-  buildAdditionalPermissionProposal,
-  freezeAdditionalPermissionProposal,
-  freezeAdditionalPermissionGrant,
-  normalizeAdditionalPermissionPath,
-  normalizeAdditionalPermissionProfile,
-  planDeclaredBashAdditionalPermission,
-  planFileToolAdditionalPermission,
-  revalidateAdditionalPermissionGrant,
-  revalidateAdditionalPermissionProposal,
-} from './additional-permissions.js';
-export type {
-  AdditionalPermissionErrorReason,
-  AdditionalPermissionGrant,
-  AdditionalPermissionPlanResult,
-  AdditionalPermissionPlannerContext,
-  AdditionalPermissionPlanningContext,
-  AdditionalPermissionProposal,
-  NormalizedAdditionalPermissionPath,
-  ToolExecutionPermissionContext,
-} from './additional-permissions.js';
-export { hashAdditionalPermissionProfile } from './additional-permission-hash.js';
-export {
-  DEFAULT_SANDBOX_ESCALATION_GRANT_TTL_MS,
-  MAX_SANDBOX_ESCALATION_JUSTIFICATION_CHARS,
-  SandboxEscalationError,
-  assertSandboxEscalationGrantForExecution,
-  assertSandboxEscalationProposal,
-  freezeSandboxEscalationGrant,
-  freezeSandboxEscalationProposal,
-  planDeclaredBashSandboxEscalation,
-  sandboxEscalationCommandHash,
-} from './sandbox-escalation.js';
-export type {
-  SandboxEscalationErrorReason,
-  SandboxEscalationGrant,
-  SandboxEscalationPlanResult,
-  SandboxEscalationPlannerContext,
-  SandboxEscalationProposal,
-} from './sandbox-escalation.js';
-export {
-  AiSdkAutoApprovalReviewer,
-  ApprovalCoordinator,
-  DEFAULT_AUTO_APPROVAL_REVIEW_TIMEOUT_MS,
-  MAX_AUTO_APPROVAL_RATIONALE_CHARS,
-} from './approval-reviewer.js';
-export type {
-  AiSdkAutoApprovalReviewerInput,
-  ApprovalCoordinatorObserver,
-  AutoApprovalReviewContext,
-  AutoApprovalReviewDecision,
-  AutoApprovalReviewer,
-} from './approval-reviewer.js';
 export {
   FilesystemWorkerClient,
   FilesystemWorkerClientError,
@@ -116,6 +287,13 @@ export { AiSdkBackend } from './ai-sdk-backend.js';
 export { isSupportedImagePath, validateImageBytes } from './image-file.js';
 export { findFirstChangedCacheableSegment } from './request-shape.js';
 export { createProviderRequestCaptureRecorder } from './provider-request-telemetry.js';
+export { readLatestContextDiagnostics } from './context-diagnostics.js';
+export type {
+  ContextDiagnostics,
+  ContextDiagnosticsCompaction,
+  ContextDiagnosticsSegment,
+  ContextDiagnosticsUnavailableReason,
+} from './context-diagnostics.js';
 export type {
   PreparedProviderRequestCapture,
   PreparedRequestSegment,
@@ -132,11 +310,8 @@ export type { MakaTool, MakaToolContext } from './tool-runtime.js';
 export { buildMcpTools, mcpProxyToolName } from './mcp-tools.js';
 export type { McpToolProvider, BuildMcpToolsOptions } from './mcp-tools.js';
 export { buildAskUserQuestionTool } from './ask-user-question-tool.js';
-export {
-  buildSubmitPlanTool,
-  buildUpdatePlanTool,
-  buildCancelPlanTool,
-} from './plan-tools.js';
+export { buildRequestSandboxBoundaryTool } from './sandbox-boundary-tool.js';
+export { buildSubmitPlanTool, buildUpdatePlanTool, buildCancelPlanTool } from './plan-tools.js';
 export type { PlanToolResult } from './plan-tools.js';
 export {
   selectCollaborationTools,
@@ -156,6 +331,8 @@ export type {
   ModelFactoryInput,
   RunTraceEvent,
   RunTraceRecorder,
+} from './ai-sdk-backend.js';
+export type {
   HistoryCompactLoader,
   HistoryCompactLoadInput,
   HistoryCompactLoadResult,
@@ -175,7 +352,7 @@ export type {
   ToolResultArchiveRecorder,
   ToolResultArchiveRecorderInput,
   SemanticCompactBlockRecorder,
-} from './ai-sdk-backend.js';
+} from './ai-sdk-compaction-contract.js';
 export { PiAgentBackend, normalizePiAgentFrame } from './pi-agent-backend.js';
 export type {
   PiAgentBackendInput,
@@ -190,6 +367,23 @@ export type {
   MakaTool as BuiltinMakaTool,
   MakaToolContext as BuiltinMakaToolContext,
 } from './builtin-tools.js';
+export {
+  buildToolResultArchiveResourceRef,
+  parseToolResultArchiveResourceRef,
+  readToolResultArchiveResource,
+  TOOL_RESULT_ARCHIVE_DEFAULT_LIMIT,
+  TOOL_RESULT_ARCHIVE_MAX_BYTES,
+  TOOL_RESULT_ARCHIVE_MAX_LIMIT,
+  TOOL_RESULT_ARCHIVE_MAX_RESPONSE_CHARS,
+  TOOL_RESULT_ARCHIVE_READ_INSTRUCTIONS,
+} from './tool-result-archive-resource.js';
+export type {
+  ToolResultArchiveResourceIdentity,
+  ToolResultArchiveResourceOperation,
+  ToolResultArchiveResourceReader,
+  ToolResultArchiveResourceReadInput,
+  ToolResultArchiveResourceRequest,
+} from './tool-result-archive-resource.js';
 export { buildComputerUseTools, adaptToCuAction } from './computer-use-tools.js';
 export {
   convertOpenAIComputerAction,
@@ -231,8 +425,8 @@ export {
   createOpenAIResponsesTransport,
 } from './openai-responses-transport.js';
 export type { OpenAIResponsesTransportOptions } from './openai-responses-transport.js';
+export type { ComputerUseToolSet } from './computer-use-tools.js';
 export type {
-  ComputerUseToolSet,
   CuAppSummary,
   CuDispatchBackend,
   CuDispatchEvidence,
@@ -246,7 +440,7 @@ export type {
   CuRunResult,
   CuScreenshot,
   CuSemanticAction,
-} from './computer-use-tools.js';
+} from './computer-use-types.js';
 export {
   bindCuaAction,
   bindCuaActionToObservation,
@@ -279,14 +473,11 @@ export {
   buildStopBackgroundTaskTool,
   buildWriteStdinTool,
   shapeTerminalResult,
-  bashSandboxPermissionsSchema,
 } from './shell-tools.js';
 export type {
-  BashSandboxPermissionsDeclaration,
   BuildForegroundBashToolOptions,
   ForegroundBashExecuteInput,
   ForegroundBashResult,
-  ManagedBashPermissionArgs,
   ShellRunLauncher,
 } from './shell-tools.js';
 export {
@@ -393,6 +584,7 @@ export {
   buildSeatbeltPolicy,
   createDefaultSandboxManager,
   createBuiltinSandboxManager,
+  isBuiltinFilesystemWorkerSandboxAvailable,
   createSandboxDiagnosticsProvider,
   createSeatbeltExecArgs,
   escapeSeatbeltRegex,
@@ -529,11 +721,7 @@ export {
   requireResolvedAgentDefinition,
   resolveAgentDefinition,
 } from './expert-catalog.js';
-export type {
-  ExpertDefinition,
-  ExpertTeamDefinition,
-  ExpertTeamLead,
-} from './expert-catalog.js';
+export type { ExpertDefinition, ExpertTeamDefinition, ExpertTeamLead } from './expert-catalog.js';
 export {
   EXPERT_DISPATCH_TOOL_NAME,
   buildExpertDispatchTool,
@@ -844,19 +1032,39 @@ export type {
   SemanticCompactSummarizer,
   SemanticCompactSummaryRequest,
 } from './semantic-compact.js';
-export { testConnection } from './test-connection.js';
+export { runConnectionTestEffect, testConnection } from './test-connection.js';
 export {
   fetchGitHubCopilotModels,
   fetchOpenAiCodexModels,
   fetchProviderModels,
   OpenAiCodexDiscoveryError,
+  ProviderModelDiscoveryHttpError,
+  runConnectionModelDiscoveryEffect,
 } from './model-fetcher.js';
-
+export type {
+  ConnectionEffectFetch,
+  ConnectionEffectFetchDependency,
+  ConnectionEffectFetchOptions,
+} from './connection-effect-fetch.js';
+export type {
+  ConnectionEffectConnection,
+  ConnectionEffectError,
+  ConnectionEffectErrorKind,
+  ConnectionModelDiscoveryEffectOutcome,
+  ConnectionTestEffectOutcome,
+} from './connection-effect-outcome.js';
 export {
-  materializeSession,
-  applyAppendedMessage,
-  setToolStatus,
-} from './materializer.js';
+  createConnectionEffectFetchTransport,
+  createProxiedFetchTransport,
+} from './network/scoped-fetch-transport.js';
+export type {
+  ConnectionEffectFetchTransport,
+  ConnectionEffectProxySnapshot,
+  ProxiedFetchProxy,
+  ProxiedFetchTransport,
+} from './network/scoped-fetch-transport.js';
+
+export { materializeSession, applyAppendedMessage, setToolStatus } from './materializer.js';
 export type { ToolActivityItem, ChatItem, SessionViewModel } from './materializer.js';
 
 export { AsyncEventQueue } from './async-queue.js';
@@ -969,35 +1177,30 @@ export type {
   RuntimeEventTerminalFact,
   RuntimeEventTerminalFactResult,
 } from './runtime-event-read-model.js';
-export { classifyTerminalRuntimeLedger } from './terminal-run-commit.js';
-export type { TerminalRuntimeLedgerClassification } from './terminal-run-commit.js';
 export {
-  RuntimeReadModel,
-  RuntimeReadModelError,
-} from './runtime-read-model.js';
+  buildRecoveredTerminalRuntimeEvent,
+  classifyTerminalRuntimeLedger,
+  commitTerminalRunWithRuntimeFact,
+} from './terminal-run-commit.js';
+export type { TerminalRuntimeLedgerClassification } from './terminal-run-commit.js';
+export { RuntimeReadModel, RuntimeReadModelError } from './runtime-read-model.js';
 export type {
   RuntimeReadModelDeps,
   RuntimeReadModelProjectionCache,
   RuntimeReadModelSessionView,
 } from './runtime-read-model.js';
-export { RuntimeKernel } from './runtime-kernel.js';
+export { RuntimeKernel, RuntimeOwnerCleanupError } from './runtime-kernel.js';
 export type {
+  RuntimeExecutionClaim,
   RuntimeKernelDeps,
   RuntimeKernelLike,
   TurnStartOptions,
 } from './runtime-kernel.js';
 export { AgentRun } from './agent-run.js';
-export type {
-  AgentRunActiveSession,
-  AgentRunDurability,
-  AgentRunLineage,
-} from './agent-run.js';
+export type { AgentRunActiveSession, AgentRunDurability, AgentRunLineage } from './agent-run.js';
 
 // agent-run-inspect.ts — internal AgentRun/RuntimeEvent source-health view.
-export {
-  inspectAgentRunReadModel,
-  inspectSessionRunReadModels,
-} from './agent-run-inspect.js';
+export { inspectAgentRunReadModel, inspectSessionRunReadModels } from './agent-run-inspect.js';
 export type {
   AgentRunInspectDiagnostic,
   AgentRunInspectDiagnosticCode,
@@ -1097,10 +1300,7 @@ export type {
 // instead of re-deriving a lossy projection of its own).
 export { replayPlanItemsToModelMessages } from './history-compact-summarizer.js';
 
-export {
-  buildToolOperationId,
-  canonicalToolArgsHash,
-} from './runtime-commit-sink.js';
+export { buildToolOperationId, canonicalToolArgsHash } from './runtime-commit-sink.js';
 export type {
   RuntimeCommitResult,
   RuntimeCommitSink,
@@ -1111,12 +1311,7 @@ export type {
 } from './runtime-commit-sink.js';
 
 // agent-flow.ts — formal Flow seam.
-export type {
-  AgentFlow,
-  AgentFlowControl,
-  FlowInput,
-  RunnableAgentFlow,
-} from './agent-flow.js';
+export type { AgentFlow, AgentFlowControl, FlowInput, RunnableAgentFlow } from './agent-flow.js';
 export { flowSupportsControl } from './agent-flow.js';
 
 // ai-sdk-flow.ts — default AgentFlow implementation over AiSdkBackend.
@@ -1126,11 +1321,7 @@ export {
   mapCompleteStopReason,
   createSessionEventMapMemory,
 } from './ai-sdk-flow.js';
-export type {
-  AiSdkFlowInput,
-  CompleteStopReason,
-  SessionEventMapMemory,
-} from './ai-sdk-flow.js';
+export type { AiSdkFlowInput, CompleteStopReason, SessionEventMapMemory } from './ai-sdk-flow.js';
 
 // tool-availability.ts — unified tool-availability runtime (catalog, the
 // `load_tools` connector, same-turn activation, gating, diagnostics).
@@ -1148,6 +1339,13 @@ export {
   assertProductBindingCatalogClean,
   buildDeferredToolGroupsFromCatalog,
   buildHostCapabilitiesFromBinding,
+  projectEffectiveProductToolSurface,
+} from './tool-catalog-derive.js';
+export type {
+  EffectiveProductToolSurface,
+  NormalizedProductToolSurfacePolicy,
+  ProductToolSurfaceIdentity,
+  ProductToolSurfacePolicy,
 } from './tool-catalog-derive.js';
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -1175,10 +1373,7 @@ export {
   collectPersonalizationWarnings,
 } from './system-prompt/personalization-prompt.js';
 export type { PersonalizationPromptFragment } from './system-prompt/personalization-prompt.js';
-export {
-  resolveProjectGitInfo,
-  resolveProjectRoot,
-} from './system-prompt/project-context.js';
+export { resolveProjectGitInfo, resolveProjectRoot } from './system-prompt/project-context.js';
 export type { ProjectGitInfo } from './system-prompt/project-context.js';
 export { buildSessionEnvironmentPromptFragment } from './system-prompt/session-environment-prompt.js';
 export type { SessionEnvironmentPromptInput } from './system-prompt/session-environment-prompt.js';
@@ -1259,50 +1454,82 @@ export type {
   GoalTurnAdmission,
   GoalTurnOutcome,
 } from './goal-continuation.js';
-export {
-  SessionActivityRegistry,
-  drainGoalTurn,
-} from './goal-turn-lifecycle.js';
-export type {
-  DrainGoalTurnInput,
-  SessionActivityLease,
-} from './goal-turn-lifecycle.js';
+export { SessionActivityRegistry, drainGoalTurn } from './goal-turn-lifecycle.js';
+export type { DrainGoalTurnInput, SessionActivityLease } from './goal-turn-lifecycle.js';
 
 export {
+  // skills-metadata
   MAX_SKILL_BODY_CHARS,
   MAX_SKILL_TOOL_BODY_CHARS,
+  parseSkillFrontMatter,
+  validateSkillMetadata,
+  // skills-state
+  clearResolvedSkillPreferenceReviews,
+  encodeSkillRuntimePreferences,
+  getSkillRuntimePreference,
+  isSkillPreferenceReviewPending,
+  migrateSkillRuntimePreferences,
+  patchSkillRuntimePreference,
+  readSkillRuntimeState,
+  resolveSkillPreferenceTarget,
+  writeSkillRuntimeState,
+  writeSkillRuntimePreferences,
+  // managed skill sources
+  listManagedSkillSources,
+  MANAGED_SKILL_CATEGORIES,
+  normalizeManagedSkillCategory,
+  readManagedSkillSources,
+  readManagedSkillSource,
+  resolveManagedSkillSourcesRoot,
+  toManagedSkillSourceEntry,
+  // skill governance
+  createBundledSkillLock,
+  createManagedSkillLock,
+  getBundledSkillSource,
+  invalidSkillLockStatus,
+  isCurrentBundledSkillLock,
+  MANAGED_SKILL_BASELINE_RELATIVE_PATH,
+  missingSkillLockStatus,
+  validateSkillLock,
+  BUNDLED_SKILL_CATALOG,
+  // skills-discovery
+  resolveSkillDiscoveryPaths,
+  scanSkills,
+  scanSkillsWithDiagnostics,
+  scanWorkspaceSkills,
+  scanWorkspaceSkillsWithDiagnostics,
+  // skills-context
   MAX_SKILLS_PROMPT_CHARS,
   MIN_SKILLS_PROMPT_TOKENS,
   MAX_SKILLS_PROMPT_TOKENS,
   SKILLS_PROMPT_CONTEXT_RATIO,
   resolveSkillsPromptCharBudget,
-  scanWorkspaceSkills,
-  scanWorkspaceSkillsWithDiagnostics,
-  scanSkills,
-  scanSkillsWithDiagnostics,
-  resolveSkillDiscoveryPaths,
   buildSkillsPromptFragment,
+  buildSkillsPromptFragmentFromInventoryWithReport,
   buildSkillsPromptFragmentWithReport,
   selectSkillsForContext,
   selectSkillScanForContext,
   searchSkills,
   loadSkillInstructions,
+  gateSkillsByHostCapabilities,
+  // skills-agent-tools
   buildSkillAgentTool,
+  buildSkillAgentToolFromInventory,
   buildSkillSearchAgentTool,
+  buildSkillSearchAgentToolFromInventory,
   SkillShadowSelectionTracker,
   SKILL_TOOL_NAME,
   SKILL_SEARCH_TOOL_NAME,
-  gateSkillsByHostCapabilities,
-  parseSkillFrontMatter,
-  validateSkillMetadata,
-  readSkillRuntimeState,
-  writeSkillRuntimeState,
-  writeSkillRuntimePreferences,
+  // skills-starter
+  buildStarterSkillTemplate,
+} from './skills.js';
+export {
+  // path-containment (contained I/O moved in #1408)
   readContainedRegularFile,
   readContainedRegularTextFile,
   writeContainedRegularTextFile,
   isRecord,
-} from './skills.js';
+} from './path-containment.js';
 export {
   listInvocableSkills,
   resolveSkillInvocations,
@@ -1316,32 +1543,59 @@ export type {
   InvocableSkillEntry,
   PreparedSkillInvocationMessage,
   SkillInvocationFailure,
-  SkillInvocationFailureReason,
   SkillInvocationResolution,
   SkillInvocationResult,
   SkillInvocationToken,
 } from './skill-invocation.js';
-export {
-  isPathInside,
-  isSafeSkillId,
-  toRelative,
-} from './path-containment.js';
+export type {
+  SkillInvocationFailureReason,
+  SkillInvocationMode,
+  SkillInvocationReceipt,
+} from './skill-invocation-receipt.js';
+export { isPathInside, isSafeSkillId, toRelative } from './path-containment.js';
 export type { PathInsideApi } from './path-containment.js';
 export type {
+  // skills-state
+  ResolveSkillPreferenceTargetResult,
+  SkillPreferenceMigration,
+  SkillPreferenceTarget,
   SkillRuntimeStatus,
+  SkillRuntimePreference,
+  SkillRuntimeStateReadResult,
+  // managed skill sources
+  ManagedSkillCategory,
+  ManagedSkillSourceEntry,
+  ManagedSkillSourceRecord,
+  ReadManagedSkillSourcesResult,
+  ReadManagedSkillSourceResult,
+  // skill governance
+  BundledSkillSource,
+  ManagedSkillUpdateStatus,
+  ManagedSourceSnapshot,
+  SkillGovernanceStatus,
+  SkillLockFile,
+  SkillLockValidationCode,
+  SkillSourceType,
+  SkillValidationStatus,
+  // skills-discovery
   SkillScope,
   SkillDiscoverySource,
-  SkillRuntimePreference,
+  SkillDiscoveryEntry,
+  SkillSource,
+  SkillSourceResolver,
+  RuntimeSkillDefinition,
+  ScannedSkill,
+  SkillScanDiagnostic,
+  SkillScanResult,
+  SkillDiscoveryDiagnostic,
+  RejectedSkillDefinition,
+  // skills-metadata
   SkillManifest,
   SkillValidationSeverity,
   SkillValidationCode,
   SkillValidationIssue,
   SkillMetadataValidationResult,
-  SkillScanDiagnostic,
-  SkillScanResult,
-  RejectedSkillDefinition,
-  RuntimeSkillDefinition,
-  ScannedSkill,
+  // skills-context
   HostCapabilities,
   HostCapabilitiesResolver,
   SkillCatalogBudgetOptions,
@@ -1352,13 +1606,11 @@ export type {
   SkillsPromptFragmentResult,
   SkillSearchMatch,
   SkillSearchResult,
-  SkillToolOptions,
   SkillHostCompatibility,
   GatedSkill,
   LoadedSkillInstructions,
   LoadSkillInstructionsResult,
-  SkillRuntimeStateReadResult,
-  SkillSource,
-  SkillSourceResolver,
-  SkillDiscoveryEntry,
+  // skills-agent-tools
+  SkillInventoryResolver,
+  SkillToolOptions,
 } from './skills.js';

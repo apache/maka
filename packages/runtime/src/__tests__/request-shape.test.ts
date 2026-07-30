@@ -170,6 +170,378 @@ describe('prepared provider request capture', () => {
     assert.ok(result.segments.every((segment) => /^sha256:[a-f0-9]{64}$/.test(segment.hash)));
   });
 
+  test('versions and hashes non-provider-options request parameters for comparison', () => {
+    const capture = (providerOptions: Record<string, unknown>, maxOutputTokens?: number) =>
+      requestShape.capturePreparedProviderRequest({
+        providerId: 'provider',
+        modelId: 'k3',
+        instructions: 'system',
+        messages: [{ role: 'user', content: 'hello' }],
+        tools: [{ name: 'Read', inputSchema: { type: 'object' } }],
+        providerOptions,
+        requestPayload: {
+          prompt: [{ role: 'user', content: 'hello' }],
+          tools: [{ name: 'Read', inputSchema: { type: 'object' } }],
+          providerOptions,
+          ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+        },
+      });
+
+    const anthropic = capture({ anthropic: { effort: 'max' } }, 131_072);
+    const openai = capture({ kimiCodingPlan: { reasoningEffort: 'max' } }, 131_072);
+    const changedSharedParameter = capture({ kimiCodingPlan: { reasoningEffort: 'max' } }, 32_768);
+
+    assert.equal(anthropic.schemaVersion, 2);
+    assert.equal(
+      anthropic.requestPayloadWithoutProviderOptionsHash,
+      openai.requestPayloadWithoutProviderOptionsHash,
+    );
+    assert.notEqual(
+      anthropic.requestPayloadWithoutProviderOptionsHash,
+      changedSharedParameter.requestPayloadWithoutProviderOptionsHash,
+    );
+  });
+
+  test('keeps reasoning effort across provider namespaces in the protocol-independent hash', () => {
+    const hash = (providerOptions: Record<string, unknown>, maxOutputTokens: number) =>
+      requestShape.capturePreparedProviderRequest({
+        providerId: 'kimi-coding-plan',
+        modelId: 'kimi-for-coding',
+        messages: [{ role: 'user', content: 'hello' }],
+        tools: [],
+        providerOptions,
+        requestPayload: {
+          prompt: [{ role: 'user', content: 'hello' }],
+          maxOutputTokens,
+          providerOptions,
+        },
+      }).requestPayloadWithoutProviderOptionsHash;
+
+    const anthropicMax = hash(
+      {
+        anthropic: {
+          effort: 'max',
+          thinking: { type: 'enabled', budgetTokens: 1_024 },
+        },
+      },
+      31_744,
+    );
+    const openaiMax = hash({ kimiCodingPlan: { reasoningEffort: 'max' } }, 32_768);
+    const nativeOpenaiMax = hash({ openai: { reasoningEffort: 'max' } }, 32_768);
+    const nativeOpenaiHigh = hash({ openai: { reasoningEffort: 'high' } }, 32_768);
+    const zaiHigh = hash({ 'zai-coding-plan': { reasoningEffort: 'high' } }, 32_768);
+    const zaiLow = hash({ 'zai-coding-plan': { reasoningEffort: 'low' } }, 32_768);
+
+    assert.equal(anthropicMax, openaiMax);
+    assert.equal(anthropicMax, nativeOpenaiMax);
+    assert.equal(nativeOpenaiHigh, zaiHigh);
+    assert.notEqual(zaiHigh, zaiLow);
+    assert.notEqual(anthropicMax, hash({ kimiCodingPlan: { reasoningEffort: 'low' } }, 32_768));
+    assert.notEqual(anthropicMax, hash({ kimiCodingPlan: { reasoningEffort: 'none' } }, 32_768));
+  });
+
+  test('normalizes disabled Anthropic reasoning to OpenAI none', () => {
+    const hash = (providerOptions: Record<string, unknown>) =>
+      requestShape.capturePreparedProviderRequest({
+        providerId: 'provider',
+        modelId: 'model',
+        messages: [{ role: 'user', content: 'hello' }],
+        tools: [],
+        providerOptions,
+        requestPayload: {
+          prompt: [{ role: 'user', content: 'hello' }],
+          maxOutputTokens: 32_768,
+          providerOptions,
+        },
+      }).requestPayloadWithoutProviderOptionsHash;
+
+    assert.equal(
+      hash({ anthropic: { thinking: { type: 'disabled' } } }),
+      hash({ openai: { reasoningEffort: 'none' } }),
+    );
+  });
+
+  test('normalizes Google thinking level to OpenAI reasoning effort', () => {
+    const hash = (providerOptions: Record<string, unknown>) =>
+      requestShape.capturePreparedProviderRequest({
+        providerId: 'provider',
+        modelId: 'model',
+        messages: [{ role: 'user', content: 'hello' }],
+        tools: [],
+        providerOptions,
+        requestPayload: {
+          prompt: [{ role: 'user', content: 'hello' }],
+          maxOutputTokens: 32_768,
+          providerOptions,
+        },
+      }).requestPayloadWithoutProviderOptionsHash;
+
+    assert.equal(
+      hash({ google: { thinkingConfig: { includeThoughts: true, thinkingLevel: 'high' } } }),
+      hash({ openai: { reasoningEffort: 'high' } }),
+    );
+  });
+
+  test('normalizes zero Google thinking budget to OpenAI none', () => {
+    const hash = (providerOptions: Record<string, unknown>) =>
+      requestShape.capturePreparedProviderRequest({
+        providerId: 'provider',
+        modelId: 'model',
+        messages: [{ role: 'user', content: 'hello' }],
+        tools: [],
+        providerOptions,
+        requestPayload: {
+          prompt: [{ role: 'user', content: 'hello' }],
+          maxOutputTokens: 32_768,
+          providerOptions,
+        },
+      }).requestPayloadWithoutProviderOptionsHash;
+
+    assert.equal(
+      hash({ google: { thinkingConfig: { thinkingBudget: 0 } } }),
+      hash({ openai: { reasoningEffort: 'none' } }),
+    );
+  });
+
+  test('normalizes disabled Cloudflare thinking to OpenAI none', () => {
+    const hash = (providerOptions: Record<string, unknown>) =>
+      requestShape.capturePreparedProviderRequest({
+        providerId: 'provider',
+        modelId: 'model',
+        messages: [{ role: 'user', content: 'hello' }],
+        tools: [],
+        providerOptions,
+        requestPayload: {
+          prompt: [{ role: 'user', content: 'hello' }],
+          maxOutputTokens: 32_768,
+          providerOptions,
+        },
+      }).requestPayloadWithoutProviderOptionsHash;
+
+    assert.equal(
+      hash({
+        'cloudflare-workers-ai': { chat_template_kwargs: { thinking: false } },
+      }),
+      hash({ openai: { reasoningEffort: 'none' } }),
+    );
+  });
+
+  test('normalizes Anthropic thinking budget into the protocol-independent output limit', () => {
+    const capture = (providerOptions: Record<string, unknown>, maxOutputTokens: number) =>
+      requestShape.capturePreparedProviderRequest({
+        providerId: 'kimi-coding-plan',
+        modelId: 'kimi-for-coding',
+        instructions: 'system',
+        messages: [{ role: 'user', content: 'hello' }],
+        tools: [],
+        providerOptions,
+        requestPayload: {
+          prompt: [{ role: 'user', content: 'hello' }],
+          maxOutputTokens,
+          providerOptions,
+        },
+      });
+
+    const anthropic = capture(
+      { anthropic: { thinking: { type: 'enabled', budgetTokens: 1_024 } } },
+      31_744,
+    );
+    const openai = capture({ maka: { kimiReasoningField: 'reasoning_content' } }, 32_768);
+
+    assert.equal(
+      anthropic.requestPayloadWithoutProviderOptionsHash,
+      openai.requestPayloadWithoutProviderOptionsHash,
+    );
+    assert.notEqual(anthropic.requestHash, openai.requestHash);
+  });
+
+  test('excludes provider metadata nested in prompt messages and parts', () => {
+    const capture = (prompt: unknown[], tools: unknown[] = []) =>
+      requestShape.capturePreparedProviderRequest({
+        providerId: 'provider',
+        modelId: 'model',
+        messages: prompt,
+        tools,
+        requestPayload: { prompt, tools },
+      });
+    const sharedPrompt = [
+      {
+        role: 'assistant',
+        content: [{ type: 'reasoning', text: 'analysis' }],
+      },
+    ];
+    const anthropicPrompt = [
+      {
+        role: 'assistant',
+        providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } },
+        content: [
+          {
+            type: 'reasoning',
+            text: 'analysis',
+            providerOptions: { anthropic: { signature: 'signed-reasoning' } },
+          },
+        ],
+      },
+    ];
+
+    assert.equal(
+      capture(anthropicPrompt).requestPayloadWithoutProviderOptionsHash,
+      capture(sharedPrompt).requestPayloadWithoutProviderOptionsHash,
+    );
+
+    const sharedToolPrompt = [
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'call-1',
+            toolName: 'Inspect',
+            output: { type: 'content', value: [{ type: 'text', text: 'done' }] },
+          },
+        ],
+      },
+    ];
+    const providerToolPrompt = [
+      {
+        ...sharedToolPrompt[0],
+        providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } },
+        content: [
+          {
+            ...sharedToolPrompt[0]!.content[0],
+            providerOptions: { anthropic: { toolUseId: 'provider-call-1' } },
+            output: {
+              type: 'content',
+              providerOptions: { anthropic: { resultId: 'provider-result-1' } },
+              value: [
+                {
+                  type: 'text',
+                  text: 'done',
+                  providerOptions: { anthropic: { blockId: 'provider-block-1' } },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ];
+    const sharedTools = [{ type: 'function', name: 'Inspect', inputSchema: { type: 'object' } }];
+    const providerTools = [
+      {
+        ...sharedTools[0],
+        providerOptions: { anthropic: { deferLoading: true } },
+      },
+    ];
+
+    assert.equal(
+      capture(providerToolPrompt, providerTools).requestPayloadWithoutProviderOptionsHash,
+      capture(sharedToolPrompt, sharedTools).requestPayloadWithoutProviderOptionsHash,
+    );
+  });
+
+  test('normalizes provider-local tool and approval bookkeeping', () => {
+    const hash = (prompt: unknown[]) =>
+      requestShape.capturePreparedProviderRequest({
+        providerId: 'provider',
+        modelId: 'model',
+        messages: prompt,
+        tools: [],
+        requestPayload: { prompt, tools: [] },
+      }).requestPayloadWithoutProviderOptionsHash;
+    const prompt = (suffix: string, approved: boolean) => [
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: `call-${suffix}`,
+            toolName: 'Inspect',
+            input: { path: 'README.md' },
+            providerExecuted: suffix === 'anthropic',
+          },
+          {
+            type: 'tool-approval-request',
+            approvalId: `approval-${suffix}`,
+            toolCallId: `call-${suffix}`,
+            isAutomatic: suffix === 'anthropic',
+            signature: `signature-${suffix}`,
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: `call-${suffix}`,
+            toolName: 'Inspect',
+            output: { type: 'text', value: 'done' },
+          },
+          {
+            type: 'tool-approval-response',
+            approvalId: `approval-${suffix}`,
+            approved,
+            providerExecuted: suffix === 'anthropic',
+          },
+        ],
+      },
+    ];
+
+    assert.equal(hash(prompt('anthropic', true)), hash(prompt('openai', true)));
+    assert.notEqual(hash(prompt('anthropic', true)), hash(prompt('openai', false)));
+  });
+
+  test('preserves same-named fields inside user data and tool schemas', () => {
+    const hash = (prompt: unknown[], tools: unknown[] = []) =>
+      requestShape.capturePreparedProviderRequest({
+        providerId: 'provider',
+        modelId: 'model',
+        messages: prompt,
+        tools,
+        requestPayload: { prompt, tools },
+      }).requestPayloadWithoutProviderOptionsHash;
+    const toolCall = (value: string) => [
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call-1',
+            toolName: 'Inspect',
+            input: { providerOptions: value },
+          },
+        ],
+      },
+    ];
+    const toolResult = (value: string) => [
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'call-1',
+            toolName: 'Inspect',
+            output: { type: 'json', value: { providerOptions: value } },
+          },
+        ],
+      },
+    ];
+    const tool = (description: string) => [
+      {
+        type: 'function',
+        name: 'Inspect',
+        inputSchema: {
+          type: 'object',
+          properties: { providerOptions: { type: 'string', description } },
+        },
+      },
+    ];
+
+    assert.notEqual(hash(toolCall('alpha')), hash(toolCall('bravo')));
+    assert.notEqual(hash(toolResult('alpha')), hash(toolResult('bravo')));
+    assert.notEqual(hash([], tool('alpha')), hash([], tool('bravo')));
+  });
+
   test('finds the first changed cacheable segment by exact content hash', () => {
     const capture = requestShape.capturePreparedProviderRequest;
     const findFirstChanged = Reflect.get(requestShape, 'findFirstChangedCacheableSegment') as

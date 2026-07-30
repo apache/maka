@@ -21,8 +21,11 @@ describe('AgentSwarm host registration contract', () => {
       desktop,
       /buildParentAgentTools\(\{\s*taskLedger: taskLedgerStore,\s*\}\)/,
     );
-    assert.match(cli, /const subagentTools = input\.surface === 'tui'\s*\?\s*buildParentAgentTools\(\)/);
-    assert.match(headless, /\.\.\.buildParentAgentTools\(\)/);
+    assert.match(cli, /const subagentTools = agentGraphEnabled\s*\?\s*buildParentAgentTools\(\)/);
+    assert.match(
+      headless,
+      /\.\.\.buildParentAgentTools\(\)/,
+    );
 
     for (const source of [desktop, cli, headless]) {
       assert.doesNotMatch(
@@ -47,15 +50,15 @@ describe('AgentSwarm host registration contract', () => {
 
     assert.match(
       desktop,
-      /groups:\s*buildDeferredToolGroupsFromCatalog\(\s*'desktop'/,
+      /projectEffectiveProductToolSurface\(\{[\s\S]*host:\s*'desktop'/,
     );
     assert.match(
       cli,
-      /groups:\s*buildDeferredToolGroupsFromCatalog\(\s*'cli'/,
+      /projectEffectiveProductToolSurface\(\{[\s\S]*host:\s*'cli'/,
     );
     assert.match(
       headless,
-      /groups:\s*buildDeferredToolGroupsFromCatalog\(\s*'headless'/,
+      /projectEffectiveProductToolSurface\(\{[\s\S]*host:\s*'headless'/,
     );
 
     for (const source of [desktop, cli, headless]) {

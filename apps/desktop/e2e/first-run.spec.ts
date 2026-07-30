@@ -39,3 +39,42 @@ test('boots to registry recommendations and browses the shared provider catalog'
   await expect(page.getByRole('heading', { name: '添加新连接' })).toBeVisible();
   await expect(page.getByPlaceholder('搜索服务商')).toBeVisible();
 });
+
+// The provider list's bottom fade is a "more below" cue: it must be opaque
+// while the list can scroll further down and gone at scroll end (otherwise
+// it veils the last row, reading as broken dimming).
+test('provider list bottom fade tracks scroll position', async ({ emptyWindow: page }) => {
+  const scroller = page.locator('.maka-firstrun-list ul');
+  const fadeOpacity = () => scroller.evaluate((el) => getComputedStyle(el, '::after').opacity);
+
+  await expect.poll(fadeOpacity).toBe('1');
+  await scroller.evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+  });
+  await expect.poll(fadeOpacity).toBe('0');
+});
+
+test('clicking a recommended provider row opens that provider connection form', async ({ emptyWindow: page }) => {
+  const name = providerDisplayName('deepseek');
+  await page.locator('.maka-firstrun-row', { hasText: name }).click();
+
+  await expect(page.getByLabel('设置内容')).toBeVisible();
+  await expect(page.getByRole('dialog', { name: `连接 ${name}` })).toBeVisible();
+});
+
+test('closing the auto-opened provider form does not resurrect it on section re-entry', async ({ emptyWindow: page }) => {
+  const name = providerDisplayName('deepseek');
+  await page.locator('.maka-firstrun-row', { hasText: name }).click();
+
+  const dialog = page.getByRole('dialog', { name: `连接 ${name}` });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: '关闭' }).click();
+  await expect(dialog).not.toBeVisible();
+
+  const settingsNav = page.locator('[aria-label="设置分组"]');
+  await settingsNav.getByText('外观', { exact: true }).click();
+  await settingsNav.getByText('模型', { exact: true }).click();
+
+  await expect(page.getByRole('heading', { name: '添加新连接' })).toBeVisible();
+  await expect(dialog).not.toBeVisible();
+});

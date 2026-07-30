@@ -26,15 +26,27 @@ import {
   isOrchestrationMode,
   isPermissionMode,
   isSessionBlockedReason,
+  isSubagentSessionParent,
+  isSubagentSessionRuntime,
+  isSubagentSessionSpawn,
+  isSubagentWorkspaceBinding,
   isSessionStatus,
   normalizeUserSessionName,
+  subagentSessionRuntimeSummary,
 } from '@maka/core';
 import type {
+  AgentGraphOperatorProvisionRequest,
+  AgentGraphOperatorProvisionResult,
+  CreateSandboxBoundaryRequest,
   CreateSessionInput,
+  ExecutionBoundary,
+  SandboxBoundaryRequest,
+  SandboxBoundarySettlement,
   SessionHeader,
   SessionListFilter,
   SessionSummary,
   StoredMessage,
+  SettleSandboxBoundaryRequest,
   TurnRecord,
   UserMessage,
 } from '@maka/core';
@@ -42,9 +54,52 @@ import type {
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 export const SQLITE_SESSION_METADATA_DATABASE_NAME = 'sessions.sqlite';
 
+export class SessionNotFoundError extends Error {
+  readonly name = 'SessionNotFoundError';
+  readonly code = 'session_not_found';
+
+  constructor(readonly sessionId: string) {
+    super(`Session metadata not found: ${sessionId}`);
+  }
+}
+
+export function isSessionNotFoundError(error: unknown): error is SessionNotFoundError {
+  return error instanceof SessionNotFoundError;
+}
+
 export interface SessionStore {
-  create(input: CreateSessionInput): Promise<SessionHeader>;
+  create(input: CreateSessionInput, initialBoundary?: ExecutionBoundary): Promise<SessionHeader>;
+  createSubagent(
+    input: CreateSessionInput,
+    initialBoundary?: ExecutionBoundary,
+  ): Promise<{ header: SessionHeader; created: boolean }>;
+  createAgentGraphOperator(
+    input: CreateSessionInput,
+    request: AgentGraphOperatorProvisionRequest,
+    expectedRevision: number,
+    initialBoundary?: ExecutionBoundary,
+  ): Promise<{ header: SessionHeader } & AgentGraphOperatorProvisionResult>;
+  readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary>;
+  createSandboxBoundaryRequest(
+    input: CreateSandboxBoundaryRequest,
+  ): Promise<SandboxBoundaryRequest>;
+  listPendingSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]>;
+  /** Requests already closed against the user because the host restarted. */
+  listSandboxBoundaryRestartClosures(sessionId: string): Promise<SandboxBoundaryRequest[]>;
+  settleSandboxBoundaryRequest(
+    input: SettleSandboxBoundaryRequest,
+  ): Promise<SandboxBoundarySettlement>;
+  setExecutionBoundaryKind(
+    sessionId: string,
+    kind: 'managed' | 'bypass',
+    projection?: {
+      permissionMode: SessionHeader['permissionMode'];
+      labels?: readonly string[];
+    },
+  ): Promise<ExecutionBoundary>;
   list(filter?: SessionListFilter): Promise<SessionSummary[]>;
+  /** Enumerate durable metadata without reading transcript bodies. */
+  listHeaders(): Promise<SessionHeader[]>;
   listForRecovery(): Promise<SessionHeader[]>;
   /** Read only the durable header without triggering connection-lock self-healing. */
   readHeaderSnapshot(sessionId: string): Promise<SessionHeader>;
@@ -67,7 +122,7 @@ export interface SessionStore {
   rename(sessionId: string, name: string): Promise<void>;
   setGeneratedTitleIfAbsent(sessionId: string, title: string): Promise<SessionHeader | null>;
   remove(sessionId: string): Promise<void>;
-  close?(): void;
+  close?(): Promise<void>;
 }
 
 export function createSessionStore(workspaceRoot: string): SessionStore {
@@ -83,6 +138,7 @@ class SqliteSessionStore implements SessionStore {
   private readonly files: FileSessionStore;
   private readonly metadata: SqliteSessionMetadataStore;
   private readonly ready: Promise<void>;
+  private closePromise: Promise<void> | null = null;
 
   constructor(workspaceRoot: string) {
     this.files = new FileSessionStore(workspaceRoot);
@@ -93,17 +149,108 @@ class SqliteSessionStore implements SessionStore {
       workspaceRoot,
       destination: this.metadata,
     }).then(() => {});
+    void this.ready.catch(() => {});
   }
 
-  async create(input: CreateSessionInput): Promise<SessionHeader> {
+  async create(
+    input: CreateSessionInput,
+    initialBoundary?: ExecutionBoundary,
+  ): Promise<SessionHeader> {
     await this.ensureReady();
+    if (input.subagentSpawn) {
+      throw new Error('Subagent spawn metadata requires createSubagent()');
+    }
     const staged = await this.files.createTranscript(input);
     try {
-      return (await this.metadata.create(staged)).header;
+      return (await this.metadata.create(staged, initialBoundary)).header;
     } catch (error) {
       await this.files.remove(staged.id).catch(() => {});
       throw error;
     }
+  }
+
+  async createSubagent(
+    input: CreateSessionInput,
+    initialBoundary?: ExecutionBoundary,
+  ): Promise<{ header: SessionHeader; created: boolean }> {
+    await this.ensureReady();
+    const staged = await this.files.createTranscript(input);
+    try {
+      const result = await this.metadata.createSubagent(staged, initialBoundary);
+      if (!result.created) await this.files.remove(staged.id);
+      return { header: result.record.header, created: result.created };
+    } catch (error) {
+      await this.files.remove(staged.id).catch(() => {});
+      throw error;
+    }
+  }
+
+  async createAgentGraphOperator(
+    input: CreateSessionInput,
+    request: AgentGraphOperatorProvisionRequest,
+    expectedRevision: number,
+    initialBoundary?: ExecutionBoundary,
+  ): Promise<{ header: SessionHeader } & AgentGraphOperatorProvisionResult> {
+    await this.ensureReady();
+    const staged = await this.files.createTranscript(input);
+    try {
+      const result = await this.metadata.createAgentGraphOperator(
+        staged,
+        request,
+        expectedRevision,
+        initialBoundary,
+      );
+      if (!result.created) await this.files.remove(staged.id);
+      return {
+        header: result.record.header,
+        provision: result.provision,
+        created: result.created,
+      };
+    } catch (error) {
+      await this.files.remove(staged.id).catch(() => {});
+      throw error;
+    }
+  }
+
+  async readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary> {
+    await this.ensureReady();
+    return this.metadata.readExecutionBoundary(sessionId);
+  }
+
+  async createSandboxBoundaryRequest(
+    input: CreateSandboxBoundaryRequest,
+  ): Promise<SandboxBoundaryRequest> {
+    await this.ensureReady();
+    return this.metadata.createSandboxBoundaryRequest(input);
+  }
+
+  async listPendingSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]> {
+    await this.ensureReady();
+    return this.metadata.listPendingSandboxBoundaryRequests(sessionId);
+  }
+
+  async listSandboxBoundaryRestartClosures(sessionId: string): Promise<SandboxBoundaryRequest[]> {
+    await this.ensureReady();
+    return this.metadata.listSandboxBoundaryRestartClosures(sessionId);
+  }
+
+  async settleSandboxBoundaryRequest(
+    input: SettleSandboxBoundaryRequest,
+  ): Promise<SandboxBoundarySettlement> {
+    await this.ensureReady();
+    return this.metadata.settleSandboxBoundaryRequest(input);
+  }
+
+  async setExecutionBoundaryKind(
+    sessionId: string,
+    kind: 'managed' | 'bypass',
+    projection?: {
+      permissionMode: SessionHeader['permissionMode'];
+      labels?: readonly string[];
+    },
+  ): Promise<ExecutionBoundary> {
+    await this.ensureReady();
+    return this.metadata.setExecutionBoundaryKind(sessionId, kind, projection);
   }
 
   async list(filter?: SessionListFilter): Promise<SessionSummary[]> {
@@ -147,14 +294,18 @@ class SqliteSessionStore implements SessionStore {
   }
 
   async listForRecovery(): Promise<SessionHeader[]> {
-    await this.ensureReady();
-    const headers = (await this.metadata.list())
-      .map((record) => record.header)
-      .sort((a, b) => a.id.localeCompare(b.id));
+    const headers = await this.listHeaders();
     for (const header of headers) {
       await this.files.readTranscriptMessagesForRecovery(header.id, header);
     }
     return headers;
+  }
+
+  async listHeaders(): Promise<SessionHeader[]> {
+    await this.ensureReady();
+    return (await this.metadata.list())
+      .map((record) => record.header)
+      .sort((a, b) => a.id.localeCompare(b.id));
   }
 
   async readHeaderSnapshot(sessionId: string): Promise<SessionHeader> {
@@ -278,7 +429,13 @@ class SqliteSessionStore implements SessionStore {
     await this.files.remove(sessionId);
   }
 
-  close(): void {
+  close(): Promise<void> {
+    this.closePromise ??= this.closeAfterReady();
+    return this.closePromise;
+  }
+
+  private async closeAfterReady(): Promise<void> {
+    await this.ready.catch(() => {});
     this.metadata.close();
   }
 
@@ -310,7 +467,59 @@ class FileSessionStore implements SessionStore {
   }
 
   async create(input: CreateSessionInput): Promise<SessionHeader> {
+    if (input.subagentSpawn) {
+      throw new Error('Child-session idempotency requires the SQLite metadata control plane');
+    }
     return this.createWithInitialRecord(input, 'legacy-header');
+  }
+
+  async createSubagent(
+    _input: CreateSessionInput,
+  ): Promise<{ header: SessionHeader; created: boolean }> {
+    throw new Error('Child-session idempotency requires the SQLite metadata control plane');
+  }
+
+  async createAgentGraphOperator(
+    _input: CreateSessionInput,
+    _request: AgentGraphOperatorProvisionRequest,
+    _expectedRevision: number,
+  ): Promise<{ header: SessionHeader } & AgentGraphOperatorProvisionResult> {
+    throw new Error('Graph operator provisioning requires the SQLite metadata control plane');
+  }
+
+  async readExecutionBoundary(_sessionId: string): Promise<ExecutionBoundary> {
+    throw new Error('Execution boundaries require the SQLite metadata control plane');
+  }
+
+  async createSandboxBoundaryRequest(
+    _input: CreateSandboxBoundaryRequest,
+  ): Promise<SandboxBoundaryRequest> {
+    throw new Error('Sandbox boundary requests require the SQLite metadata control plane');
+  }
+
+  async listPendingSandboxBoundaryRequests(_sessionId: string): Promise<SandboxBoundaryRequest[]> {
+    throw new Error('Sandbox boundary requests require the SQLite metadata control plane');
+  }
+
+  async listSandboxBoundaryRestartClosures(_sessionId: string): Promise<SandboxBoundaryRequest[]> {
+    throw new Error('Sandbox boundary requests require the SQLite metadata control plane');
+  }
+
+  async settleSandboxBoundaryRequest(
+    _input: SettleSandboxBoundaryRequest,
+  ): Promise<SandboxBoundarySettlement> {
+    throw new Error('Sandbox boundary requests require the SQLite metadata control plane');
+  }
+
+  async setExecutionBoundaryKind(
+    _sessionId: string,
+    _kind: 'managed' | 'bypass',
+    _projection?: {
+      permissionMode: SessionHeader['permissionMode'];
+      labels?: readonly string[];
+    },
+  ): Promise<ExecutionBoundary> {
+    throw new Error('Execution boundaries require the SQLite metadata control plane');
   }
 
   async createTranscript(input: CreateSessionInput): Promise<SessionHeader> {
@@ -321,6 +530,13 @@ class FileSessionStore implements SessionStore {
     input: CreateSessionInput,
     initialRecord: 'legacy-header' | 'transcript-marker',
   ): Promise<SessionHeader> {
+    if (
+      input.projectId !== undefined &&
+      input.projectId !== null &&
+      (typeof input.projectId !== 'string' || input.projectId.length === 0)
+    ) {
+      throw new Error('Invalid project id');
+    }
     const now = Date.now();
     const id = randomUUID();
     // PR-UI-IPC-2 (@kenji msg 0474c3fe + @xuan msg 88d96a87):
@@ -345,6 +561,7 @@ class FileSessionStore implements SessionStore {
       id,
       workspaceRoot: this.workspaceRoot,
       cwd: input.cwd,
+      ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
       createdAt: now,
       lastUsedAt: now,
       name: resolvedName,
@@ -357,6 +574,10 @@ class FileSessionStore implements SessionStore {
       statusUpdatedAt: now,
       ...(input.parentSessionId ? { parentSessionId: input.parentSessionId } : {}),
       ...(input.branchOfTurnId ? { branchOfTurnId: input.branchOfTurnId } : {}),
+      ...(input.subagentParent ? { subagentParent: input.subagentParent } : {}),
+      ...(input.subagentRuntime ? { subagentRuntime: input.subagentRuntime } : {}),
+      ...(input.subagentSpawn ? { subagentSpawn: input.subagentSpawn } : {}),
+      ...(input.subagentWorkspace ? { subagentWorkspace: input.subagentWorkspace } : {}),
       ...(input.revisionRootSessionId
         ? { revisionRootSessionId: input.revisionRootSessionId }
         : {}),
@@ -378,9 +599,7 @@ class FileSessionStore implements SessionStore {
       schemaVersion: 1,
     };
 
-    if (!isValidRevisionLineage(header)) {
-      throw new Error('Invalid session revision lineage');
-    }
+    assertValidSessionLineage(header);
 
     await this.withQueue(id, async () => {
       await mkdir(this.sessionDir(id), { recursive: true });
@@ -393,6 +612,9 @@ class FileSessionStore implements SessionStore {
   }
 
   async list(filter?: SessionListFilter): Promise<SessionSummary[]> {
+    if (filter?.subagentParentSessionId !== undefined) {
+      throw new Error('Subagent session relation queries require SQLite session metadata');
+    }
     let entries;
     try {
       entries = await readdir(this.sessionsRoot, { withFileTypes: true });
@@ -467,6 +689,10 @@ class FileSessionStore implements SessionStore {
   }
 
   async listForRecovery(): Promise<SessionHeader[]> {
+    return this.listHeaders();
+  }
+
+  async listHeaders(): Promise<SessionHeader[]> {
     let entries;
     try {
       entries = await readdir(this.sessionsRoot, { withFileTypes: true });
@@ -493,7 +719,14 @@ class FileSessionStore implements SessionStore {
   }
 
   async readHeaderSnapshot(sessionId: string): Promise<SessionHeader> {
-    return this.readHeaderOnly(sessionId);
+    try {
+      return await this.readHeaderOnly(sessionId);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') {
+        throw new SessionNotFoundError(sessionId);
+      }
+      throw error;
+    }
   }
 
   async readMessages(sessionId: string): Promise<StoredMessage[]> {
@@ -553,13 +786,23 @@ class FileSessionStore implements SessionStore {
   }
 
   async updateHeader(sessionId: string, patch: Partial<SessionHeader>): Promise<SessionHeader> {
+    if (Object.prototype.hasOwnProperty.call(patch, 'subagentParent')) {
+      throw new Error('Subagent session parent relation is immutable');
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'subagentRuntime')) {
+      throw new Error('Subagent session runtime snapshot is immutable');
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'subagentSpawn')) {
+      throw new Error('Subagent session spawn identity is immutable');
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'subagentWorkspace')) {
+      throw new Error('Subagent session workspace binding is immutable');
+    }
     let nextHeader: SessionHeader | undefined;
     await this.withQueue(sessionId, async () => {
       const { header, messages } = await this.readFilePartsUnlocked(sessionId);
       nextHeader = { ...header, ...patch };
-      if (!isValidRevisionLineage(nextHeader)) {
-        throw new Error('Invalid session revision lineage');
-      }
+      assertValidSessionLineage(nextHeader);
       const lines = [
         JSON.stringify(nextHeader),
         ...messages.map((message) => JSON.stringify(message)),
@@ -1055,6 +1298,9 @@ export function normalizeSessionHeader(
     header.id === sessionId &&
     typeof header.workspaceRoot === 'string' &&
     typeof header.cwd === 'string' &&
+    (header.projectId === undefined ||
+      header.projectId === null ||
+      (typeof header.projectId === 'string' && header.projectId.length > 0)) &&
     isFiniteNumber(header.createdAt) &&
     isFiniteNumber(header.lastUsedAt) &&
     (header.lastMessageAt === undefined || isFiniteNumber(header.lastMessageAt)) &&
@@ -1071,6 +1317,7 @@ export function normalizeSessionHeader(
     (header.parentSessionId === undefined || typeof header.parentSessionId === 'string') &&
     (header.branchOfTurnId === undefined || typeof header.branchOfTurnId === 'string') &&
     isValidRevisionLineage(header) &&
+    isValidSubagentSessionLineage(header) &&
     (header.lastReadMessageId === undefined || typeof header.lastReadMessageId === 'string') &&
     typeof header.hasUnread === 'boolean' &&
     isBackendKind(header.backend) &&
@@ -1115,6 +1362,47 @@ function isValidRevisionLineage(header: SessionHeader): boolean {
   );
 }
 
+function assertValidSessionLineage(header: SessionHeader): void {
+  if (!isValidRevisionLineage(header)) {
+    throw new Error('Invalid session revision lineage');
+  }
+  if (!isValidSubagentSessionLineage(header)) {
+    throw new Error('Invalid subagent session lineage');
+  }
+}
+
+function isValidSubagentSessionLineage(header: SessionHeader): boolean {
+  if (header.subagentParent === undefined) {
+    return (
+      header.subagentRuntime === undefined &&
+      header.subagentSpawn === undefined &&
+      header.subagentWorkspace === undefined
+    );
+  }
+  if (
+    !isSubagentSessionParent(header.subagentParent) ||
+    !isSafeSessionId(header.subagentParent.parentSessionId) ||
+    header.parentSessionId !== undefined ||
+    header.branchOfTurnId !== undefined ||
+    header.revisionRootSessionId !== undefined ||
+    header.revisionParentSessionId !== undefined ||
+    header.revisionOfTurnId !== undefined ||
+    header.revisionIndex !== undefined ||
+    header.revisionState !== undefined
+  ) {
+    return false;
+  }
+  return (
+    (header.subagentRuntime === undefined &&
+      header.subagentSpawn === undefined &&
+      header.subagentWorkspace === undefined) ||
+    (isSubagentSessionRuntime(header.subagentRuntime) &&
+      isSubagentSessionSpawn(header.subagentSpawn) &&
+      (header.subagentWorkspace === undefined ||
+        isSubagentWorkspaceBinding(header.subagentWorkspace)))
+  );
+}
+
 function isBackendKind(value: unknown): value is SessionHeader['backend'] {
   return value === 'ai-sdk' || value === 'fake' || value === 'pi-agent';
 }
@@ -1130,6 +1418,7 @@ function toSummary(header: SessionHeader, messages: StoredMessage[] = []): Sessi
   return {
     id: header.id,
     cwd: header.cwd,
+    ...(header.projectId !== undefined ? { projectId: header.projectId } : {}),
     name: normalizeSessionName(header.name),
     isFlagged: header.isFlagged,
     isArchived: header.isArchived,
@@ -1142,6 +1431,11 @@ function toSummary(header: SessionHeader, messages: StoredMessage[] = []): Sessi
     ...(header.statusUpdatedAt !== undefined ? { statusUpdatedAt: header.statusUpdatedAt } : {}),
     ...(header.parentSessionId ? { parentSessionId: header.parentSessionId } : {}),
     ...(header.branchOfTurnId ? { branchOfTurnId: header.branchOfTurnId } : {}),
+    ...(header.subagentParent ? { subagentParent: header.subagentParent } : {}),
+    ...(header.subagentRuntime
+      ? { subagentRuntime: subagentSessionRuntimeSummary(header.subagentRuntime) }
+      : {}),
+    ...(header.subagentWorkspace ? { subagentWorkspace: header.subagentWorkspace } : {}),
     ...(header.revisionRootSessionId
       ? { revisionRootSessionId: header.revisionRootSessionId }
       : {}),

@@ -1,10 +1,40 @@
-const SECRET_KEY_VALUE_PATTERNS: RegExp[] = [
-  /((?:"(?:x-api-key|api-key|api_key|apiKey|access_token|accessToken|auth|authorization|token|password|secret)"\s*:\s*"))(?:\\.|[^"\\])*/gi,
-  /\b((?:x-api-key|api-key|api_key|apiKey|access_token|accessToken|token|password|secret)\s*[:=]\s*['"]?)[^\s"'&<>]+/gi,
-];
+const SENSITIVE_KEY_SUFFIXES = new Set([
+  'auth',
+  'authorization',
+  'credential',
+  'credentials',
+  'passwd',
+  'password',
+  'secret',
+  'token',
+]);
+const SENSITIVE_KEY_QUALIFIERS = new Set(['api', 'private', 'secret', 'ssh']);
+
+const POSIX_LINE_CONTINUATION_SOURCE = String.raw`\\\r?\n`;
+const OPTIONAL_POSIX_LINE_CONTINUATION_SOURCE = `(?:${POSIX_LINE_CONTINUATION_SOURCE})*`;
+const SHELL_SEPARATOR_SOURCE = `(?:[ \\t]|${POSIX_LINE_CONTINUATION_SOURCE})+`;
+const OPTIONAL_SHELL_SEPARATOR_SOURCE = `(?:[ \\t]|${POSIX_LINE_CONTINUATION_SOURCE})*`;
+const SHELL_SECRET_TOKEN_SOURCE = `("(?:\\\\[\\s\\S]|[^"\\\\])*"|'(?:\\\\[\\s\\S]|[^'\\\\])*'|(?:${POSIX_LINE_CONTINUATION_SOURCE}|[^\\s;&|()<>])+)`;
+
+const AWS_CONFIG_SECRET_KEY_SOURCE = posixContinuedTokenSource('aws_secret_access_key');
+const AWS_SECRET_ACCESS_KEY_FLAG_SOURCE = posixContinuedTokenSource('--secret-access-key');
+const AWS_SECRET_ACCESS_KEY_ENV_SOURCE = posixContinuedTokenSource('AWS_SECRET_ACCESS_KEY');
+
+const QUOTED_SECRET_KEY_VALUE_PATTERN = /((?:"([^"\\]+)"\s*:\s*"))(?:\\.|[^"\\])*/g;
+const ASSIGNED_SECRET_KEY_VALUE_PATTERN =
+  /\b(([A-Za-z][A-Za-z0-9_-]*)(?:[ \t]|\\\r?\n)*[:=](?:[ \t]|\\\r?\n)*['"]?)(?:\\\r?\n|[^\s"'&<>])+/g;
+const AUTHORIZATION_HEADER_PATTERN =
+  /\b((?:proxy-)?authorization:\s*(?:bearer|basic|token)\s+)[^\s"'<>]+/gi;
+const AWS_CLI_SPACE_SECRET_PATTERN = new RegExp(
+  `(^|[\\s;&|()])((?:aws${SHELL_SEPARATOR_SOURCE}configure${SHELL_SEPARATOR_SOURCE}set${SHELL_SEPARATOR_SOURCE}${AWS_CONFIG_SECRET_KEY_SOURCE}|${AWS_SECRET_ACCESS_KEY_FLAG_SOURCE})${SHELL_SEPARATOR_SOURCE})${SHELL_SECRET_TOKEN_SOURCE}`,
+  'gm',
+);
+const AWS_SECRET_ASSIGNMENT_PATTERN = new RegExp(
+  `\\b(${AWS_SECRET_ACCESS_KEY_ENV_SOURCE}${OPTIONAL_SHELL_SEPARATOR_SOURCE}[:=]${OPTIONAL_SHELL_SEPARATOR_SOURCE}['"]?)(?:${POSIX_LINE_CONTINUATION_SOURCE}|[^\\s"'&<>])+`,
+  'gi',
+);
 
 const SECRET_PATTERNS: RegExp[] = [
-  /\b(authorization:\s*(?:bearer|basic|token)\s+)[^\s"'<>]+/gi,
   /\b(sk-(?:ant-)?[a-z0-9_-]{8,})\b/gi,
   /\b(AIza[0-9A-Za-z_-]{20,})\b/g,
   /\b(gh[pousr]_[0-9A-Za-z_]{20,})\b/g,
@@ -13,11 +43,32 @@ const SECRET_PATTERNS: RegExp[] = [
 ];
 
 export function redactSecrets(value: string): string {
-  let next = redactSerializedJsonSecrets(value);
+  const json = redactSerializedJsonSecrets(value);
+  return json ?? redactTextSecrets(value);
+}
+
+function redactTextSecrets(value: string): string {
+  let next = value;
   next = redactUrlQuerySecrets(next);
-  for (const pattern of SECRET_KEY_VALUE_PATTERNS) {
-    next = next.replace(pattern, (_match, prefix: string) => `${prefix}[redacted]`);
-  }
+  next = next.replace(QUOTED_SECRET_KEY_VALUE_PATTERN, (match, prefix: string, key: string) =>
+    isSensitiveKey(key) ? `${prefix}[redacted]` : match,
+  );
+  next = next.replace(
+    AUTHORIZATION_HEADER_PATTERN,
+    (_match, prefix: string) => `${prefix}[redacted]`,
+  );
+  next = next.replace(
+    AWS_CLI_SPACE_SECRET_PATTERN,
+    (_match, boundary: string, prefix: string, token: string) =>
+      `${boundary}${prefix}${redactShellToken(token)}`,
+  );
+  next = next.replace(
+    AWS_SECRET_ASSIGNMENT_PATTERN,
+    (_match, prefix: string) => `${prefix}[redacted]`,
+  );
+  next = next.replace(ASSIGNED_SECRET_KEY_VALUE_PATTERN, (match, prefix: string, key: string) =>
+    isAssignmentSensitiveKey(key) ? `${prefix}[redacted]` : match,
+  );
   for (const pattern of SECRET_PATTERNS) {
     next = next.replace(pattern, (_match, prefixOrSecret: string) => {
       if (prefixOrSecret.includes(':') || prefixOrSecret.includes('='))
@@ -28,21 +79,32 @@ export function redactSecrets(value: string): string {
   return next;
 }
 
-function redactSerializedJsonSecrets(value: string): string {
-  const trimmed = value.trim();
-  if (
-    !(
-      (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
-      (trimmed.startsWith('[') && trimmed.endsWith(']'))
-    )
-  ) {
-    return value;
-  }
+function posixContinuedTokenSource(token: string): string {
+  return [...token]
+    .map((character) => escapeRegExpLiteral(character))
+    .join(OPTIONAL_POSIX_LINE_CONTINUATION_SOURCE);
+}
+
+function escapeRegExpLiteral(value: string): string {
+  return value.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
+}
+
+function redactShellToken(token: string): string {
+  const quote = token.at(0);
+  return (quote === '"' || quote === "'") && token.at(-1) === quote
+    ? `${quote}[redacted]${quote}`
+    : '[redacted]';
+}
+
+function redactSerializedJsonSecrets(value: string): string | undefined {
   try {
-    const redacted = redactJsonValue(JSON.parse(value));
+    const parsed: unknown = JSON.parse(value);
+    if (typeof parsed !== 'string' && (parsed === null || typeof parsed !== 'object'))
+      return undefined;
+    const redacted = redactJsonValue(parsed);
     return redacted.changed ? JSON.stringify(redacted.value) : value;
   } catch {
-    return value;
+    return undefined;
   }
 }
 
@@ -56,18 +118,32 @@ function redactJsonValue(value: unknown): { value: unknown; changed: boolean } {
     });
     return { value: next, changed };
   }
+  if (typeof value === 'string') {
+    const next = redactTextSecrets(value);
+    return { value: next, changed: next !== value };
+  }
   if (!value || typeof value !== 'object') return { value, changed: false };
 
   let changed = false;
   const next: Record<string, unknown> = {};
   for (const [key, raw] of Object.entries(value)) {
     if (isSensitiveKey(key)) {
-      next[key] = '[redacted]';
+      Object.defineProperty(next, key, {
+        value: '[redacted]',
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
       changed = true;
       continue;
     }
     const redacted = redactJsonValue(raw);
-    next[key] = redacted.value;
+    Object.defineProperty(next, key, {
+      value: redacted.value,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
     changed = changed || redacted.changed;
   }
   return { value: next, changed };
@@ -81,9 +157,29 @@ function redactUrlQuerySecrets(value: string): string {
 }
 
 function isSensitiveKey(key: string): boolean {
-  return /^(x-api-key|api[_-]?key|key|token|access[_-]?token|auth|authorization|password|secret)$/i.test(
-    key,
-  );
+  const segments = sensitiveKeySegments(key);
+  const suffix = segments.at(-1);
+  if (!suffix) return false;
+  if (suffix !== 'key') return SENSITIVE_KEY_SUFFIXES.has(suffix);
+  if (segments.length === 1) return true;
+  if (SENSITIVE_KEY_QUALIFIERS.has(segments.at(-2) ?? '')) return true;
+  const qualifiedKey = segments.slice(-3).join('_');
+  return qualifiedKey === 'service_account_key' || qualifiedKey === 'secret_access_key';
+}
+
+function sensitiveKeySegments(key: string): string[] {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+}
+
+function isAssignmentSensitiveKey(key: string): boolean {
+  if (!isSensitiveKey(key)) return false;
+  const suffix = sensitiveKeySegments(key).at(-1);
+  return suffix !== 'auth' && suffix !== 'authorization';
 }
 
 export function generalizedErrorMessage(error: unknown, fallback = 'Operation failed'): string {
@@ -109,7 +205,7 @@ export function generalizedErrorMessage(error: unknown, fallback = 'Operation fa
  * Chinese-locale companion to `generalizedErrorMessage()` (PR110b
  * follow-up). Same classification rules; returns Chinese phrasing
  * instead of English. Used by surfaces that must enforce a
- * Chinese-only error copy contract (Quick Chat, onboarding setup
+ * Chinese-only error copy contract (session start, onboarding setup
  * banners, etc.) — the English version would have leaked through any
  * matched category, breaking the gate.
  *

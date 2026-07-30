@@ -7,12 +7,34 @@ import {
   type ServerResponse,
 } from 'node:http';
 import type { Socket } from 'node:net';
+import { Agent, type Dispatcher, Headers, fetch as upstreamFetch } from 'undici';
+
+/** Upstream connections must stay on HTTP/1.1. Providers negotiate h2 via
+ * ALPN, and undici <= 8.7 (bundled in Node 26) refuses to multiplex
+ * stream/async-iterable request bodies on an h2 session with requests in
+ * flight, while its fetch wraps every non-empty body into an async iterable —
+ * so concurrent streaming completions from parallel cells serialized behind
+ * each other's full generation streams, recorded as provider first-token
+ * latency. undici 8.8 removed that gate, but forcing h1 keeps the proxy
+ * independent of which undici build serves the fetch: h1 pools sidestep the
+ * whole class by dialing parallel connections. */
+export function createProviderUpstreamDispatcher(options: Agent.Options = {}): Dispatcher {
+  return new Agent({ ...options, allowH2: false });
+}
+
+const defaultUpstreamDispatcher = createProviderUpstreamDispatcher();
 
 export interface ProviderAuthProxy {
   baseUrl: string;
   token: string;
   usage(): ProviderTokenUsage | null;
   telemetry(): ProviderRequestTelemetry[];
+  close(): Promise<void>;
+}
+
+export interface ProviderAuthProxyHub {
+  baseUrl: string;
+  issue(input: ProviderAuthProxyRouteInput): ProviderAuthProxy;
   close(): Promise<void>;
 }
 
@@ -32,6 +54,12 @@ export interface ProviderRequestTelemetry {
   protocol?: ProviderUsageProtocol;
   status?: number;
   outcome: 'completed' | 'interrupted' | 'failed' | 'aborted';
+  /** When the dispatcher started writing the request to an upstream
+   * connection. Time before this is credential resolution, request-body read,
+   * and the dispatcher's connection queue; `responseHeadersMs` minus this is
+   * pure upstream wait. The h2 serialization defect hid inside this interval
+   * while `responseHeadersMs` alone read as provider latency. */
+  upstreamStartMs?: number;
   responseHeadersMs?: number;
   firstBodyChunkMs?: number;
   firstOutputTokenMs?: number;
@@ -137,50 +165,94 @@ export interface ProviderUpstreamCredential {
   headers?: Readonly<Record<string, string>>;
 }
 
-export type ProviderUpstreamCredentialResolver = () => Promise<ProviderUpstreamCredential>;
+export type ProviderUpstreamCredentialResolver = (
+  signal?: AbortSignal,
+) => Promise<ProviderUpstreamCredential>;
 
-type ProviderAuthProxyInput = {
+type ProviderAuthProxyRouteConfig = {
   upstreamBaseUrl: string;
-  advertisedHost?: string;
   authMode?: ProviderAuthProxyMode;
   usageProtocol?: ProviderUsageProtocol;
-  /** Fixed listen port. Defaults to an ephemeral port (0). Pier's Squid egress
-   * for offline tasks only permits destination ports 80/443, so a container
-   * reaching this proxy through Squid needs it bound to 80 or 443. Binding a
-   * privileged port can fail on Linux; callers get a clear error. */
-  port?: number;
   /** Injectable monotonic clock for deterministic tests. */
   now?: () => number;
+  /** Injectable upstream dispatcher for tests (e.g. to trust a test CA).
+   * Build it with createProviderUpstreamDispatcher to keep h2 disabled. */
+  upstreamDispatcher?: Dispatcher;
 } & (
   | { apiKeyFile: string; resolveUpstreamCredential?: never }
   | { apiKeyFile?: never; resolveUpstreamCredential: ProviderUpstreamCredentialResolver }
 );
 
+export type ProviderAuthProxyRouteInput = ProviderAuthProxyRouteConfig;
+
+type ProviderAuthProxyInput = ProviderAuthProxyRouteConfig & {
+  advertisedHost?: string;
+  /** Fixed listen port. Defaults to an ephemeral port (0). Pier's Squid egress
+   * for offline tasks only permits destination ports 80/443, so a container
+   * reaching this proxy through Squid needs it bound to 80 or 443. Binding a
+   * privileged port can fail on Linux; callers get a clear error. */
+  port?: number;
+};
+
+export interface ProviderAuthProxyHubInput {
+  advertisedHost?: string;
+  port?: number;
+}
+
 export async function startProviderAuthProxy(
   input: ProviderAuthProxyInput,
 ): Promise<ProviderAuthProxy> {
-  const upstreamBaseUrl = new URL(input.upstreamBaseUrl);
-  if (upstreamBaseUrl.protocol !== 'https:' && upstreamBaseUrl.protocol !== 'http:') {
-    throw new Error(
-      `provider auth proxy requires an HTTP(S) upstream: ${upstreamBaseUrl.protocol}`,
-    );
+  const hub = await startProviderAuthProxyHub({
+    ...(input.advertisedHost ? { advertisedHost: input.advertisedHost } : {}),
+    ...(input.port !== undefined ? { port: input.port } : {}),
+  });
+  let lease: ProviderAuthProxy;
+  try {
+    lease = hub.issue(input);
+  } catch (error) {
+    await hub.close();
+    throw error;
   }
-  const resolveUpstreamCredential =
-    input.resolveUpstreamCredential ??
-    (async () => {
-      const value = (await readFile(input.apiKeyFile, 'utf8')).trim();
-      if (value.length === 0) throw new Error('provider API key file is empty');
-      return { value };
-    });
-  const authMode = input.authMode ?? 'bearer';
-  const token = randomBytes(32).toString('hex');
-  const usage = new ProviderUsageAccumulator();
-  const telemetry = new ProviderTelemetryAccumulator();
-  const now = input.now ?? performance.now.bind(performance);
-  const activeRequests = new Set<AbortController>();
-  const activeForwards = new Set<Promise<void>>();
+  let closePromise: Promise<void> | undefined;
+  return {
+    ...lease,
+    close: () => {
+      closePromise ??= lease.close().then(() => hub.close());
+      return closePromise;
+    },
+  };
+}
+
+interface ProviderAuthProxyRoute {
+  readonly upstreamBaseUrl: URL;
+  readonly upstreamBasePath: string;
+  readonly resolveUpstreamCredential: ProviderUpstreamCredentialResolver;
+  readonly token: string;
+  readonly authMode: ProviderAuthProxyMode;
+  readonly usageProtocol?: ProviderUsageProtocol;
+  readonly usage: ProviderUsageAccumulator;
+  readonly telemetry: ProviderTelemetryAccumulator;
+  readonly now: () => number;
+  readonly upstreamDispatcher: Dispatcher;
+  readonly activeRequests: Set<AbortController>;
+  readonly activeResponses: Set<ServerResponse>;
+  readonly activeForwards: Set<Promise<void>>;
+  closePromise?: Promise<void>;
+}
+
+export async function startProviderAuthProxyHub(
+  input: ProviderAuthProxyHubInput = {},
+): Promise<ProviderAuthProxyHub> {
+  const routes = new Set<ProviderAuthProxyRoute>();
   const sockets = new Set<Socket>();
+  let closed = false;
+  let closePromise: Promise<void> | undefined;
   const server = createServer((request, response) => {
+    const route = [...routes].find((candidate) => routeAuthorized(request, candidate));
+    if (!route) {
+      response.writeHead(401).end('unauthorized');
+      return;
+    }
     const controller = new AbortController();
     const abortOnRequest = () => controller.abort();
     const abortOnResponseClose = () => {
@@ -188,26 +260,30 @@ export async function startProviderAuthProxy(
     };
     request.once('aborted', abortOnRequest);
     response.once('close', abortOnResponseClose);
-    activeRequests.add(controller);
+    route.activeRequests.add(controller);
+    route.activeResponses.add(response);
     const forward = forwardProviderRequest({
       request,
       response,
-      upstreamBaseUrl,
-      resolveUpstreamCredential,
-      token,
-      authMode,
-      usageProtocol: input.usageProtocol,
-      usage,
-      telemetry,
-      now,
+      upstreamBaseUrl: route.upstreamBaseUrl,
+      upstreamBasePath: route.upstreamBasePath,
+      resolveUpstreamCredential: route.resolveUpstreamCredential,
+      token: route.token,
+      authMode: route.authMode,
+      usageProtocol: route.usageProtocol,
+      usage: route.usage,
+      telemetry: route.telemetry,
+      now: route.now,
+      upstreamDispatcher: route.upstreamDispatcher,
       signal: controller.signal,
     }).finally(() => {
       request.off('aborted', abortOnRequest);
       response.off('close', abortOnResponseClose);
-      activeRequests.delete(controller);
-      activeForwards.delete(forward);
+      route.activeRequests.delete(controller);
+      route.activeResponses.delete(response);
+      route.activeForwards.delete(forward);
     });
-    activeForwards.add(forward);
+    route.activeForwards.add(forward);
   });
   server.on('connection', (socket) => {
     sockets.add(socket);
@@ -220,28 +296,104 @@ export async function startProviderAuthProxy(
     throw new Error('provider auth proxy did not bind a TCP port');
   }
   const advertisedHost = input.advertisedHost ?? 'host.docker.internal';
+  const baseUrl = `http://${advertisedHost}:${address.port}`;
+
   return {
-    baseUrl: `http://${advertisedHost}:${address.port}`,
-    token,
-    usage: () => usage.snapshot(),
-    telemetry: () => telemetry.snapshot(),
-    close: async () => {
-      const closed = new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-      });
-      const forwards = [...activeForwards];
-      for (const controller of activeRequests) controller.abort();
-      for (const socket of sockets) socket.destroy();
-      await closed;
-      await Promise.allSettled(forwards);
+    baseUrl,
+    issue: (routeInput) => {
+      if (closed) throw new Error('provider auth proxy hub is closed');
+      const route = providerAuthProxyRoute(routeInput);
+      routes.add(route);
+      return {
+        // Preserve the route's provider mount path while every lease shares the
+        // listener authority. The client remains the sole owner of path joins.
+        baseUrl: `${baseUrl}${route.upstreamBasePath}`,
+        token: route.token,
+        usage: () => route.usage.snapshot(),
+        telemetry: () => route.telemetry.snapshot(),
+        close: () => closeProviderAuthProxyRoute(routes, route),
+      };
+    },
+    close: () => {
+      closePromise ??= (async () => {
+        closed = true;
+        const serverClosed = new Promise<void>((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
+        });
+        const routeClosures = [...routes].map((route) =>
+          closeProviderAuthProxyRoute(routes, route),
+        );
+        for (const socket of sockets) socket.destroy();
+        await serverClosed;
+        await Promise.allSettled(routeClosures);
+      })();
+      return closePromise;
     },
   };
+}
+
+function providerAuthProxyRoute(input: ProviderAuthProxyRouteInput): ProviderAuthProxyRoute {
+  const upstreamBaseUrl = new URL(input.upstreamBaseUrl);
+  if (upstreamBaseUrl.protocol !== 'https:' && upstreamBaseUrl.protocol !== 'http:') {
+    throw new Error(
+      `provider auth proxy requires an HTTP(S) upstream: ${upstreamBaseUrl.protocol}`,
+    );
+  }
+  const upstreamBasePath = normalizeProxyBasePath(upstreamBaseUrl.pathname);
+  const resolveUpstreamCredential =
+    input.resolveUpstreamCredential ??
+    (async (signal) => {
+      const value = (
+        await readFile(input.apiKeyFile, {
+          encoding: 'utf8',
+          ...(signal ? { signal } : {}),
+        })
+      ).trim();
+      if (value.length === 0) throw new Error('provider API key file is empty');
+      return { value };
+    });
+  return {
+    upstreamBaseUrl,
+    upstreamBasePath,
+    resolveUpstreamCredential,
+    token: randomBytes(32).toString('hex'),
+    authMode: input.authMode ?? 'bearer',
+    ...(input.usageProtocol ? { usageProtocol: input.usageProtocol } : {}),
+    usage: new ProviderUsageAccumulator(),
+    telemetry: new ProviderTelemetryAccumulator(),
+    now: input.now ?? performance.now.bind(performance),
+    upstreamDispatcher: input.upstreamDispatcher ?? defaultUpstreamDispatcher,
+    activeRequests: new Set<AbortController>(),
+    activeResponses: new Set<ServerResponse>(),
+    activeForwards: new Set<Promise<void>>(),
+  };
+}
+
+function routeAuthorized(request: IncomingMessage, route: ProviderAuthProxyRoute): boolean {
+  const presentedCredential =
+    route.authMode === 'x-api-key' ? request.headers['x-api-key'] : request.headers.authorization;
+  return authorized(presentedCredential, route.token, route.authMode);
+}
+
+function closeProviderAuthProxyRoute(
+  routes: Set<ProviderAuthProxyRoute>,
+  route: ProviderAuthProxyRoute,
+): Promise<void> {
+  route.closePromise ??= (async () => {
+    routes.delete(route);
+    const forwards = [...route.activeForwards];
+    for (const controller of route.activeRequests) controller.abort();
+    for (const response of route.activeResponses) response.destroy();
+    await Promise.allSettled(forwards);
+  })();
+  return route.closePromise;
 }
 
 async function forwardProviderRequest(input: {
   request: IncomingMessage;
   response: ServerResponse;
   upstreamBaseUrl: URL;
+  upstreamBasePath: string;
   resolveUpstreamCredential: ProviderUpstreamCredentialResolver;
   token: string;
   authMode: ProviderAuthProxyMode;
@@ -249,6 +401,7 @@ async function forwardProviderRequest(input: {
   usage: ProviderUsageAccumulator;
   telemetry: ProviderTelemetryAccumulator;
   now: () => number;
+  upstreamDispatcher: Dispatcher;
   signal: AbortSignal;
 }): Promise<void> {
   let requestTelemetry: MutableProviderRequestTelemetry | null = null;
@@ -263,18 +416,26 @@ async function forwardProviderRequest(input: {
     }
     const startedAt = input.now();
     const incomingUrl = new URL(input.request.url ?? '/', 'http://provider-proxy');
+    // A proxy token is scoped to this provider mount, not its entire origin.
+    if (!pathIsWithinBasePath(incomingUrl.pathname, input.upstreamBasePath)) {
+      input.response.writeHead(404).end('not found');
+      return;
+    }
     requestTelemetry = input.telemetry.start({
       method: input.request.method ?? 'GET',
       path: incomingUrl.pathname,
       protocol: input.usageProtocol,
       startedAt,
     });
-    const upstreamCredential = await input.resolveUpstreamCredential();
+    const upstreamCredential = await resolveUpstreamCredentialUntilAborted(
+      input.resolveUpstreamCredential,
+      input.signal,
+    );
     if (upstreamCredential.value.length === 0) {
       throw new Error('provider credential resolver returned an empty value');
     }
     const upstreamUrl = new URL(input.upstreamBaseUrl);
-    upstreamUrl.pathname = `${upstreamUrl.pathname.replace(/\/$/, '')}/${incomingUrl.pathname.replace(/^\//, '')}`;
+    upstreamUrl.pathname = incomingUrl.pathname;
     upstreamUrl.search = incomingUrl.search;
     const headers = new Headers();
     for (const [name, value] of Object.entries(input.request.headers)) {
@@ -291,10 +452,16 @@ async function forwardProviderRequest(input: {
       input.request.method === 'GET' || input.request.method === 'HEAD'
         ? undefined
         : await readRequestBody(input.request);
-    const upstreamResponse = await fetch(upstreamUrl, {
+    const upstreamResponse = await upstreamFetch(upstreamUrl, {
       method: input.request.method,
       headers,
       signal: input.signal,
+      dispatcher: upstreamStartTimedDispatcher(
+        input.upstreamDispatcher,
+        requestTelemetry,
+        startedAt,
+        input.now,
+      ),
       ...(body ? { body: new Uint8Array(body) } : {}),
     });
     requestTelemetry.status = upstreamResponse.status;
@@ -367,6 +534,53 @@ async function forwardProviderRequest(input: {
     if (!input.response.headersSent) input.response.writeHead(502);
     input.response.end('provider proxy request failed');
   }
+}
+
+/** Stamp `upstreamStartMs` when the dispatcher begins writing the request to
+ * an upstream connection, so connection-queue time is separable from upstream
+ * wait in the recorded telemetry. */
+function upstreamStartTimedDispatcher(
+  dispatcher: Dispatcher,
+  requestTelemetry: MutableProviderRequestTelemetry,
+  startedAt: number,
+  now: () => number,
+): Dispatcher {
+  return dispatcher.compose((dispatch) => (options, handler) => {
+    const timed: Dispatcher.DispatchHandler = Object.create(handler);
+    timed.onRequestStart = function (controller, context) {
+      requestTelemetry.upstreamStartMs ??= elapsedMs(startedAt, now());
+      // Keep `this` = the wrapper for the delegated call too, so handler state
+      // written across callbacks always lands on one object.
+      return handler.onRequestStart?.call(this, controller, context);
+    };
+    return dispatch(options, timed);
+  });
+}
+
+async function resolveUpstreamCredentialUntilAborted(
+  resolveUpstreamCredential: ProviderUpstreamCredentialResolver,
+  signal: AbortSignal,
+): Promise<ProviderUpstreamCredential> {
+  if (signal.aborted) throw signal.reason ?? new Error('provider proxy request aborted');
+  let rejectOnAbort!: (reason?: unknown) => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    rejectOnAbort = reject;
+  });
+  const onAbort = () => rejectOnAbort(signal.reason ?? new Error('provider proxy request aborted'));
+  signal.addEventListener('abort', onAbort, { once: true });
+  try {
+    return await Promise.race([resolveUpstreamCredential(signal), aborted]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+}
+
+function normalizeProxyBasePath(pathname: string): string {
+  return pathname === '/' ? '' : pathname.replace(/\/+$/, '');
+}
+
+function pathIsWithinBasePath(pathname: string, basePath: string): boolean {
+  return basePath === '' || pathname === basePath || pathname.startsWith(`${basePath}/`);
 }
 
 class ProviderUsageAccumulator {

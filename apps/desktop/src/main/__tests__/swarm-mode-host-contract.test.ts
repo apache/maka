@@ -39,7 +39,7 @@ describe('Desktop Swarm Mode host contract', () => {
     const renderer = await readRendererShellSources(['app-shell.tsx', 'app-shell-chat-actions.ts']);
 
     assert.match(renderer, /activeSessionForView\?\.orchestrationMode \?\? 'default'/);
-    assert.match(renderer, /newChatOrchestrationMode: newChatSwarmModeActive \? 'swarm' : 'default'/);
+    assert.match(renderer, /newChatSwarmModeActive[\s\S]*\? 'swarm'[\s\S]*: 'default'/);
     assert.match(renderer, /orchestrationMode: newChatOrchestrationMode/);
   });
 });

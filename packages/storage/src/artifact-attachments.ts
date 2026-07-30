@@ -5,10 +5,10 @@ import {
   type AttachmentByteReader,
   type StorageRef,
 } from '@maka/core';
-import type { ArtifactStore } from './artifact-store.js';
+import type { ArtifactStore, DurableArtifactAttachmentReader } from './artifact-store.js';
 
 export function createAttachmentByteReader(input: {
-  artifactStore: Pick<ArtifactStore, 'get' | 'readBinary'>;
+  artifactStore: DurableArtifactAttachmentReader;
   sessionId: string;
   maxBytes?: number;
 }): AttachmentByteReader {
@@ -16,10 +16,11 @@ export function createAttachmentByteReader(input: {
   return async (ref) => {
     if (ref.kind !== 'session_file') return { ok: false, reason: 'unsupported_ref_kind' };
     if (ref.sessionId !== input.sessionId) return { ok: false, reason: 'session_mismatch' };
-    const artifact = await input.artifactStore.get(ref.relativePath);
-    if (!artifact) return { ok: false, reason: 'not_found' };
-    if (artifact.sessionId !== input.sessionId) return { ok: false, reason: 'session_mismatch' };
-    const result = await input.artifactStore.readBinary(ref.relativePath, { maxBytes });
+    const result = await input.artifactStore.readDurableAttachmentBinary({
+      artifactId: ref.relativePath,
+      sessionId: input.sessionId,
+      maxBytes,
+    });
     return result.ok
       ? { ok: true, bytes: Buffer.from(result.base64, 'base64') }
       : { ok: false, reason: result.reason };

@@ -1,11 +1,11 @@
-import type { SessionEvent, StoredMessage, UiLocale } from '@maka/core';
+import type { ProviderRetryEvent, SessionEvent, StoredMessage, UiLocale } from '@maka/core';
 import { applyAssistantComplete, applyAssistantDelta } from './assistant-stream.js';
 import { projectToolActivityArgs, toolResultActivityStatus } from '@maka/core';
 import type { ToolActivityItem } from './materialize.js';
 import { applyThinkingComplete, applyThinkingDelta } from './thinking-stream.js';
 import { applyToolOutputChunk } from './tool-output-stream.js';
 
-type LiveTurnContentEvent = Extract<SessionEvent, { type: 'thinking_delta' | 'thinking_complete' | 'text_delta' | 'text_complete' | 'tool_start' | 'tool_output_delta' | 'tool_result' | 'permission_request' | 'permission_decision_ack' }>;
+type LiveTurnContentEvent = Extract<SessionEvent, { type: 'thinking_delta' | 'thinking_complete' | 'text_delta' | 'text_complete' | 'tool_start' | 'tool_output_delta' | 'tool_result' }>;
 
 export interface LiveThinkingProjection {
   text: string;
@@ -33,6 +33,7 @@ export interface LiveTurnProjection {
   turnId: string;
   phase: 'waiting' | 'streamed';
   terminal?: true;
+  providerRetry?: ProviderRetryEvent;
   steps: LiveTurnStepProjection[];
 }
 
@@ -84,16 +85,28 @@ export function applyLiveTurnEvent(
   event: SessionEvent,
   locale: UiLocale = 'zh',
 ): LiveTurnProjection | undefined {
+  if (event.type === 'provider_retry') {
+    const prior = current?.turnId === event.turnId
+      ? current
+      : { turnId: event.turnId, phase: 'waiting' as const, steps: [] };
+    return { ...prior, providerRetry: event };
+  }
   if (event.type === 'error' || event.type === 'abort') {
     if (!current || current.turnId !== event.turnId) return current;
     const steps = terminalizeLiveSteps(current.steps);
-    return steps.length > 0 ? { ...current, terminal: true, steps } : undefined;
+    if (steps.length === 0) return undefined;
+    const { providerRetry: _providerRetry, ...withoutRetry } = current;
+    return { ...withoutRetry, terminal: true, steps };
   }
   if (event.type === 'complete') {
-    if (event.stopReason === 'permission_handoff' || !current || current.turnId !== event.turnId) return current;
-    return current.steps.length > 0
-      ? { ...current, terminal: true, steps: terminalizeLiveSteps(current.steps) }
-      : undefined;
+    if (!current || current.turnId !== event.turnId) return current;
+    if (current.steps.length === 0) return undefined;
+    const { providerRetry: _providerRetry, ...withoutRetry } = current;
+    return {
+      ...withoutRetry,
+      terminal: true,
+      steps: terminalizeLiveSteps(current.steps),
+    };
   }
   if (
     event.type !== 'thinking_delta'
@@ -103,14 +116,13 @@ export function applyLiveTurnEvent(
     && event.type !== 'tool_start'
     && event.type !== 'tool_output_delta'
     && event.type !== 'tool_result'
-    && event.type !== 'permission_request'
-    && event.type !== 'permission_decision_ack'
   ) {
     return current;
   }
   const prior = current?.turnId === event.turnId
     ? current
     : { turnId: event.turnId, phase: 'streamed' as const, steps: [] };
+  const { providerRetry: _providerRetry, ...priorWithoutRetry } = prior;
   const messageEvent = event.type === 'thinking_delta'
     || event.type === 'thinking_complete'
     || event.type === 'text_delta'
@@ -118,8 +130,6 @@ export function applyLiveTurnEvent(
   const existingToolStep = event.type === 'tool_start'
     || event.type === 'tool_output_delta'
     || event.type === 'tool_result'
-    || event.type === 'permission_request'
-    || event.type === 'permission_decision_ack'
     ? prior.steps.find((candidate) => candidate.tools.some((tool) => tool.toolUseId === event.toolUseId))
     : undefined;
   const stepId = messageEvent
@@ -216,7 +226,7 @@ export function applyLiveTurnEvent(
         ? step.tools.map((candidate, index) => index === toolIndex ? tool : candidate)
         : [...step.tools, tool],
     };
-  } else if (event.type === 'tool_result') {
+  } else {
     const toolIndex = step.tools.findIndex((candidate) => candidate.toolUseId === event.toolUseId);
     const base: ToolActivityItem = toolIndex >= 0
       ? step.tools[toolIndex]!
@@ -226,30 +236,6 @@ export function applyLiveTurnEvent(
       status: toolResultActivityStatus(event.isError, event.content),
       result: event.content,
       ...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
-    };
-    nextStep = {
-      ...step,
-      tools: toolIndex >= 0
-        ? step.tools.map((candidate, index) => index === toolIndex ? tool : candidate)
-        : [...step.tools, tool],
-    };
-  } else {
-    const toolIndex = step.tools.findIndex((candidate) => candidate.toolUseId === event.toolUseId);
-    const base: ToolActivityItem = toolIndex >= 0
-      ? step.tools[toolIndex]!
-      : {
-          toolUseId: event.toolUseId,
-          toolName: event.type === 'permission_request' ? event.toolName : 'Tool',
-          status: 'pending',
-          args: event.type === 'permission_request'
-            ? projectToolActivityArgs(event.toolName, event.args)
-            : undefined,
-        };
-    const tool: ToolActivityItem = {
-      ...base,
-      status: event.type === 'permission_request'
-        ? 'waiting_permission'
-        : event.decision === 'allow' ? 'running' : 'errored',
     };
     nextStep = {
       ...step,
@@ -294,7 +280,7 @@ export function applyLiveTurnEvent(
       ? prior.steps.map((candidate, index) => index === stepIndex ? nextStep : candidate)
       : [...prior.steps, nextStep];
   }
-  return { ...prior, phase: 'streamed', steps };
+  return { ...priorWithoutRetry, phase: 'streamed', steps };
 }
 
 /**

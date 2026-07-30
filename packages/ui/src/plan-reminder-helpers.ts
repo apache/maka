@@ -29,13 +29,10 @@ import {
   botDisplayLabel,
   uiLocaleToIntlLocale,
 } from '@maka/core';
-import { getPlanReminderCopy, type PlanReminderExampleTemplate } from './plan-reminder-copy.js';
-
-export type { PlanReminderExampleTemplate } from './plan-reminder-copy.js';
-
-export function getPlanReminderExampleTemplates(locale: UiLocale): readonly PlanReminderExampleTemplate[] {
-  return getPlanReminderCopy(locale).templates;
-}
+import {
+  getPlanReminderCopy,
+  type PlanReminderExampleTemplate,
+} from './plan-reminder-copy.js';
 
 export type PlanReminderDisplayRow =
   | { kind: 'group'; key: string; label: string; count: number }
@@ -281,12 +278,12 @@ export interface PlanReminderFormSeed {
 }
 
 /** Blank create-mode seed (one hour from now, no recurrence, local delivery). */
-export function createPlanReminderFormSeed(): PlanReminderFormSeed {
+export function createPlanReminderFormSeed(now: number = Date.now()): PlanReminderFormSeed {
   return {
     editingId: null,
     title: '',
     note: '',
-    runAtLocal: toPlanReminderDateTimeInputValue(Date.now() + 60 * 60 * 1000),
+    runAtLocal: toPlanReminderDateTimeInputValue(now + 60 * 60 * 1000),
     recurrence: 'none',
     cronExpression: '0 9 * * 1-5',
     deliveryChannel: 'local',
@@ -296,14 +293,14 @@ export function createPlanReminderFormSeed(): PlanReminderFormSeed {
 }
 
 /** Create-mode seed prefilled from an example template. */
-export function planReminderTemplateSeed(template: PlanReminderExampleTemplate): PlanReminderFormSeed {
+export function planReminderTemplateSeed(template: PlanReminderExampleTemplate, now: number = Date.now()): PlanReminderFormSeed {
   return {
-    ...createPlanReminderFormSeed(),
+    ...createPlanReminderFormSeed(now),
     title: template.title,
     note: template.note,
     recurrence: template.recurrence,
     cronExpression: template.cronExpression,
-    runAtLocal: toPlanReminderDateTimeInputValue(planReminderTemplateNextRunAt(template)),
+    runAtLocal: toPlanReminderDateTimeInputValue(planReminderTemplateNextRunAt(template, now)),
   };
 }
 

@@ -41,6 +41,15 @@ import {
  *  breakpoint must be added here (and the value used in the CSS). */
 const ALLOWED_BREAKPOINT_PX = new Set([620, 720, 760, 820, 900, 980, 990, 1100]);
 
+/** #1362: same governance for @container width queries. Container queries
+ *  respond to an element's own width instead of the viewport (the settings
+ *  content column is narrower than the window by the nav sidebar, so
+ *  viewport breakpoints systematically misfire there — the #1361/#1364
+ *  lesson). The app keeps ONE container width: 460px, shared by the
+ *  permission dialog and the settings rows card. A second value must be a
+ *  conscious decision here, exactly like the @media whitelist above. */
+const ALLOWED_CONTAINER_PX = new Set([460]);
+
 // --- @media breakpoint whitelist ------------------------------------------
 
 /** Match `@media (max-width: Npx)` / `@media (min-width: Npx)` and capture N.
@@ -54,6 +63,25 @@ function findBreakpointOffenders(css: string, label: string): string[] {
     const px = Number(m[2]);
     if (!ALLOWED_BREAKPOINT_PX.has(px)) {
       offenders.push(`${label}: ${m[0]} [${px}px not in the breakpoint whitelist ${[...ALLOWED_BREAKPOINT_PX].join('/')}px]`);
+    }
+  }
+  return offenders;
+}
+
+// --- @container width whitelist --------------------------------------------
+
+/** Match `@container [name] (max-width: Npx)` / `(min-width: Npx)` and
+ *  capture N. Non-width container features (e.g. scroll-state) are out of
+ *  scope. */
+const CONTAINER_WIDTH_RE = /@container\s+[^{(]*\(\s*(max|min)-width\s*:\s*(\d+(?:\.\d+)?)px\s*\)/g;
+
+function findContainerWidthOffenders(css: string, label: string): string[] {
+  const stripped = stripCssComments(css);
+  const offenders: string[] = [];
+  for (const m of stripped.matchAll(CONTAINER_WIDTH_RE)) {
+    const px = Number(m[2]);
+    if (!ALLOWED_CONTAINER_PX.has(px)) {
+      offenders.push(`${label}: ${m[0]} [${px}px not in the container-width whitelist ${[...ALLOWED_CONTAINER_PX].join('/')}px]`);
     }
   }
   return offenders;
@@ -89,6 +117,12 @@ describe('PR-RESPONSIVE-BREAKPOINT-CONVERGE-0 contract', () => {
     assert.deepEqual(offenders, [], `Offenders:\n  ${offenders.join('\n  ')}`);
   });
 
+  it('@container (max/min-width: Npx) uses only the whitelisted container widths (no ad-hoc Npx)', async () => {
+    const css = await readAllRendererCss();
+    const offenders = findContainerWidthOffenders(css, 'renderer CSS');
+    assert.deepEqual(offenders, [], `Offenders:\n  ${offenders.join('\n  ')}`);
+  });
+
   it('--maka-chat-measure is pinned to 680px exactly-once in maka-tokens.css', async () => {
     const tokens = await readFile(TOKENS_FILE, 'utf8');
     assertCustomPropPinnedOnce(tokens, '--maka-chat-measure', '680px', 'maka-tokens.css');
@@ -121,6 +155,15 @@ describe('responsive breakpoint whitelist negative cases', () => {
   it('does not flag prefers-reduced-motion / prefers-color-scheme (not width breakpoints)', () => {
     const css = '@media (prefers-reduced-motion: reduce) { … } @media (prefers-color-scheme: dark) { … }';
     assert.deepEqual(findBreakpointOffenders(css, 't'), [], 'prefers-* queries are out of scope');
+  });
+
+  it('findContainerWidthOffenders flags a value outside the whitelist and spares 460 + non-width features', () => {
+    const ok = '@container (max-width: 460px) { … } @container settings-rows (max-width: 460px) { … }';
+    assert.deepEqual(findContainerWidthOffenders(ok, 't'), [], '460px (unnamed and named) must pass');
+    const bad = '@container (max-width: 540px) { … } @container card (min-width: 400px) { … }';
+    assert.ok(findContainerWidthOffenders(bad, 't').length === 2, '540px and 400px must fail (not whitelisted)');
+    const scrollState = '@container not scroll-state(scrollable: bottom) { … }';
+    assert.deepEqual(findContainerWidthOffenders(scrollState, 't'), [], 'scroll-state containers are not width breakpoints');
   });
 
   it('findChatMeasureOffenders flags a bare 680px width but spares var(--maka-chat-measure) and a 680px height', () => {

@@ -52,12 +52,24 @@ const ALLOW = new Map([
     'real-window smoke diagnostics are dev/test gated and stdout-parsed by capture tooling.',
   ],
   [
+    'apps/desktop/src/main/permission-overlay/permission-overlay-main.ts',
+    '#1515 drag-grant diagnostics (locale fallback, missing .app bundle, controller log sink); main-process only, paths not secrets.',
+  ],
+  [
     'apps/desktop/src/main/oauth-model-connections-main.ts',
     'OAuth model sync logs provider-level failure reason only; no tokens or raw provider bodies.',
   ],
   [
+    'apps/desktop/src/main/subscription-ipc-main.ts',
+    'best-effort post-OAuth model discovery diagnostic; main-process only and never logs credentials.',
+  ],
+  [
     'apps/desktop/src/main/onboarding-service.ts',
     'PR110b: credential lookup failure logs error class only (no message / secret bytes); never reaches renderer.',
+  ],
+  [
+    'apps/desktop/src/main/permission-overlay/permission-overlay-main.ts',
+    'macOS permission onboarding lifecycle diagnostics stay in the main process and contain no credential or file contents.',
   ],
   [
     'packages/runtime/src/bots/bot-registry.ts',
@@ -82,6 +94,10 @@ const ALLOW = new Map([
   [
     'apps/desktop/src/main/config-file-watcher.ts',
     'Watcher startup failure and runtime error diagnostics; non-fatal, no secrets.',
+  ],
+  [
+    'apps/desktop/src/main/shell-env.ts',
+    'login-shell PATH resolution diagnostics at startup (PATH-entry count and sanitized failure reason); non-fatal, no shell-controlled output.',
   ],
   ['scripts/check-console.mjs', 'this script — explicit allow.'],
   [

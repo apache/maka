@@ -187,12 +187,12 @@ describe('SettingsStore.clearOnboardingMilestone', () => {
     try {
       const store = createSettingsStore(workspaceRoot);
       await store.upsertOnboardingMilestone('first_chat_sent', 'completed');
-      await store.upsertOnboardingMilestone('first_run_suggestion_workspace_map', 'skipped');
+      await store.upsertOnboardingMilestone('first_model_swap', 'skipped');
 
-      const after = await store.clearOnboardingMilestone('first_run_suggestion_workspace_map');
+      const after = await store.clearOnboardingMilestone('first_model_swap');
 
       assert.equal(
-        after.some((entry) => entry.id === 'first_run_suggestion_workspace_map'),
+        after.some((entry) => entry.id === 'first_model_swap'),
         false,
       );
       assert.equal(

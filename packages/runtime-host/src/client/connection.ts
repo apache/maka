@@ -14,12 +14,15 @@ import {
   type HostIncompatible,
   type HostRegistration,
   type HostStatusResult,
+  HOST_OPERATION_SPECS,
   type OperationInput,
   type OperationKey,
   type OperationOutput,
   type ProtocolRange,
   type RequestFrame,
   type ResponseFrame,
+  type SubscriptionFrame,
+  type SubscriptionOpenInput,
   type TurnQueryInput,
   type TurnSnapshot,
   type TurnStartInput,
@@ -28,9 +31,16 @@ import {
   validateProtocolRange,
 } from '../protocol/index.js';
 import { FramedTransport, RuntimeHostTransportError } from '../transport/framed-transport.js';
+import type { OperationSpec } from '../protocol/operation-spec.js';
+import {
+  ClientSessionSubscription,
+  RuntimeHostSubscriptionError,
+  type RuntimeHostSessionSubscription,
+} from './session-subscription.js';
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 500;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 2_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 2_000;
 
 export interface ConnectRuntimeHostInput {
   rootPath: string;
@@ -50,10 +60,22 @@ export type RuntimeHostUnavailableReason =
   | 'epoch_mismatch';
 
 export type ConnectRuntimeHostResult =
-  | { kind: 'connected'; connection: RuntimeHostConnection; registration: HostRegistration }
-  | { kind: 'incompatible'; handshake: HostIncompatible; registration: HostRegistration }
+  | {
+      kind: 'connected';
+      connection: RuntimeHostConnection;
+      registration: HostRegistration;
+    }
+  | {
+      kind: 'incompatible';
+      handshake: HostIncompatible;
+      registration: HostRegistration;
+    }
   | { kind: 'draining'; registration: HostRegistration }
-  | { kind: 'unavailable'; reason: RuntimeHostUnavailableReason; registration?: HostRegistration };
+  | {
+      kind: 'unavailable';
+      reason: RuntimeHostUnavailableReason;
+      registration?: HostRegistration;
+    };
 
 type ConnectResolvedRuntimeHostResult =
   | ConnectRuntimeHostResult
@@ -82,7 +104,7 @@ export interface RuntimeHostConnection {
   readonly connectionId: string;
   readonly selectedProtocol: number;
   readonly closed: Promise<void>;
-  request<K extends OperationKey>(
+  request<K extends DirectRequestOperationKey>(
     operation: K,
     input: OperationInput<K>,
     timeoutMs?: number,
@@ -91,8 +113,17 @@ export interface RuntimeHostConnection {
   startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnSnapshot>;
   queryTurn(input: TurnQueryInput, timeoutMs?: number): Promise<TurnSnapshot>;
   stopTurn(input: TurnStopInput, timeoutMs?: number): Promise<TurnSnapshot>;
+  openSessionSubscription(
+    input: SubscriptionOpenInput,
+    timeoutMs?: number,
+  ): Promise<RuntimeHostSessionSubscription>;
   close(): Promise<void>;
 }
+
+export type DirectRequestOperationKey = Exclude<
+  OperationKey,
+  'subscription.open' | 'subscription.close'
+>;
 
 export class RuntimeHostOperationError extends Error {
   constructor(
@@ -107,9 +138,10 @@ export class RuntimeHostOperationError extends Error {
 
 interface PendingRequest {
   operation: OperationKey;
+  accept(value: unknown): unknown;
   resolve(value: unknown): void;
   reject(error: Error): void;
-  timer: NodeJS.Timeout;
+  timer?: NodeJS.Timeout;
 }
 
 class RuntimeHostConnectionImpl implements RuntimeHostConnection {
@@ -119,6 +151,8 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   readonly closed: Promise<void>;
   readonly #transport: FramedTransport;
   readonly #pendingRequests = new Map<string, PendingRequest>();
+  readonly #subscriptions = new Map<string, ClientSessionSubscription>();
+  readonly #retiredSubscriptionIds = new Set<string>();
   #terminalError: Error | undefined;
 
   constructor(
@@ -137,31 +171,64 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     void this.#readResponses();
   }
 
-  request<K extends OperationKey>(
+  request<K extends DirectRequestOperationKey>(
     operation: K,
     input: OperationInput<K>,
-    timeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_MS,
+    timeoutMs?: number,
   ): Promise<OperationOutput<K>> {
-    const boundedTimeoutMs = requireTimeout(timeoutMs, 'timeoutMs');
+    return this.#requestOperation(
+      operation,
+      input,
+      timeoutMs ?? defaultRequestTimeoutMs(operation),
+      (result) => result,
+    );
+  }
+
+  #requestOperation<K extends OperationKey, Result>(
+    operation: K,
+    input: OperationInput<K>,
+    timeoutMs: number | undefined,
+    accept: (result: OperationOutput<K>) => Result,
+  ): Promise<Result> {
+    const boundedTimeoutMs =
+      timeoutMs === undefined ? undefined : requireTimeout(timeoutMs, 'timeoutMs');
     if (this.#terminalError) return Promise.reject(this.#terminalError);
+    const spec = HOST_OPERATION_SPECS[operation] as OperationSpec<
+      OperationInput<K>,
+      OperationOutput<K>,
+      HostOperationErrorCode
+    >;
+    let canonicalInput: OperationInput<K>;
+    try {
+      canonicalInput = spec.decodeInput(input);
+    } catch (error) {
+      return Promise.reject(asError(error));
+    }
     const requestId = randomUUID();
-    const result = new Promise<OperationOutput<K>>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.#fail(
-          new RuntimeHostTransportError(
-            'read_timeout',
-            `Timed out waiting for Runtime Host ${operation} response`,
-          ),
-        );
-      }, boundedTimeoutMs);
+    const result = new Promise<Result>((resolve, reject) => {
+      const timer =
+        boundedTimeoutMs === undefined
+          ? undefined
+          : setTimeout(() => {
+              const error = new RuntimeHostTransportError(
+                'read_timeout',
+                `Timed out waiting for Runtime Host ${operation} response`,
+              );
+              this.#fail(error);
+            }, boundedTimeoutMs);
       this.#pendingRequests.set(requestId, {
         operation,
-        resolve: (value) => resolve(value as OperationOutput<K>),
+        accept: (value) => {
+          const output = value as OperationOutput<K>;
+          spec.assertOutputForInput?.(canonicalInput, output);
+          return accept(output);
+        },
+        resolve: (value) => resolve(value as Result),
         reject,
         timer,
       });
     });
-    const frame = { requestId, operation, input } as RequestFrame;
+    const frame = { requestId, operation, input: canonicalInput } as RequestFrame;
     void this.#transport.write(frame).catch((error: unknown) => this.#fail(asError(error)));
     return result;
   }
@@ -188,6 +255,38 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     return this.request('turn.stop', input, timeoutMs);
   }
 
+  openSessionSubscription(
+    input: SubscriptionOpenInput,
+    timeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_MS,
+  ): Promise<RuntimeHostSessionSubscription> {
+    const expectedSessionId = input.sessionId;
+    return this.#requestOperation('subscription.open', input, timeoutMs, (result) => {
+      if (result.hostEpoch !== this.hostEpoch) {
+        throw new RuntimeHostSubscriptionError(
+          'host_epoch_changed',
+          'Session subscription opened for a different Host Epoch',
+        );
+      }
+      if (result.snapshot.session.sessionId !== expectedSessionId) {
+        throw new RuntimeHostSubscriptionError(
+          'correlation_changed',
+          'Runtime Host opened a subscription for a different Session',
+        );
+      }
+      if (this.#subscriptions.has(result.subscriptionId)) {
+        throw new RuntimeHostSubscriptionError(
+          'correlation_changed',
+          'Runtime Host returned a duplicate subscription identity',
+        );
+      }
+      const subscription = new ClientSessionSubscription(result, () =>
+        this.#closeSessionSubscription(result.subscriptionId),
+      );
+      this.#subscriptions.set(result.subscriptionId, subscription);
+      return subscription;
+    });
+  }
+
   async close(): Promise<void> {
     this.#transport.destroy();
     await this.#transport.closed;
@@ -197,8 +296,18 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     try {
       while (true) {
         const frame = decodeHostFrame(await this.#transport.read(0));
-        if ('kind' in frame)
-          throw new Error('Runtime Host returned a handshake frame after acceptance');
+        if ('kind' in frame) {
+          switch (frame.kind) {
+            case 'subscription.session_projection':
+            case 'subscription.session_delta':
+            case 'subscription.session_event':
+            case 'subscription.closed':
+              this.#acceptSubscriptionFrame(frame);
+              continue;
+            default:
+              throw new Error('Runtime Host returned a handshake frame after acceptance');
+          }
+        }
         this.#acceptResponse(frame);
       }
     } catch (error) {
@@ -213,9 +322,15 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       return;
     }
     this.#pendingRequests.delete(frame.requestId);
-    clearTimeout(pending.timer);
+    if (pending.timer) clearTimeout(pending.timer);
     if (frame.ok) {
-      pending.resolve(frame.result);
+      try {
+        pending.resolve(pending.accept(frame.result));
+      } catch (error) {
+        const failure = asError(error);
+        pending.reject(failure);
+        this.#fail(failure);
+      }
       return;
     }
     pending.reject(
@@ -223,14 +338,80 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     );
   }
 
+  #acceptSubscriptionFrame(frame: SubscriptionFrame): void {
+    const subscription = this.#subscriptions.get(frame.subscriptionId);
+    if (!subscription) {
+      if (this.#retiredSubscriptionIds.has(frame.subscriptionId)) return;
+      this.#fail(new Error('Runtime Host returned an unmatched subscription frame'));
+      return;
+    }
+    try {
+      subscription.accept(frame);
+      if (frame.kind === 'subscription.closed') {
+        this.#subscriptions.delete(frame.subscriptionId);
+      }
+    } catch (error) {
+      const failure = asError(error);
+      if (failure instanceof RuntimeHostSubscriptionError) {
+        this.#invalidateSubscription(subscription, failure);
+        return;
+      }
+      this.#fail(failure);
+    }
+  }
+
+  async #closeSessionSubscription(subscriptionId: string): Promise<void> {
+    const subscription = this.#subscriptions.get(subscriptionId);
+    if (!subscription) return;
+    await this.#requestOperation(
+      'subscription.close',
+      { subscriptionId },
+      DEFAULT_HANDSHAKE_TIMEOUT_MS,
+      (result) => {
+        if (result.subscriptionId !== subscriptionId) {
+          throw new Error('Runtime Host closed a different subscription');
+        }
+      },
+    );
+    this.#subscriptions.delete(subscriptionId);
+    subscription.finish();
+  }
+
+  #invalidateSubscription(
+    subscription: ClientSessionSubscription,
+    error: RuntimeHostSubscriptionError,
+  ): void {
+    const { subscriptionId } = subscription;
+    if (this.#subscriptions.get(subscriptionId) !== subscription) return;
+    this.#subscriptions.delete(subscriptionId);
+    this.#retiredSubscriptionIds.add(subscriptionId);
+    subscription.fail(error);
+    if (this.#terminalError) return;
+    void this.#requestOperation(
+      'subscription.close',
+      { subscriptionId },
+      DEFAULT_HANDSHAKE_TIMEOUT_MS,
+      () => this.#retiredSubscriptionIds.delete(subscriptionId),
+    ).catch((failure: unknown) => this.#fail(asError(failure)));
+  }
+
   #fail(error: Error): void {
     if (this.#terminalError) return;
     this.#terminalError = error;
     for (const pending of this.#pendingRequests.values()) {
-      clearTimeout(pending.timer);
+      if (pending.timer) clearTimeout(pending.timer);
       pending.reject(error);
     }
     this.#pendingRequests.clear();
+    const subscriptionError = new RuntimeHostSubscriptionError(
+      'connection_closed',
+      `Runtime Host connection closed: ${error.message}`,
+    );
+    for (const subscription of this.#subscriptions.values()) {
+      subscription.fail(subscriptionError);
+    }
+    this.#subscriptions.clear();
+    this.#retiredSubscriptionIds.clear();
     this.#transport.destroy();
   }
 }
@@ -248,7 +429,10 @@ export async function connectRuntimeHost(
     'handshakeTimeoutMs',
   );
   const clientInstanceId = requireClientInstanceId(input.clientInstanceId ?? randomUUID());
-  const capability = await resolveStorageRoot({ path: input.rootPath, kind: 'interactive' });
+  const capability = await resolveStorageRoot({
+    path: input.rootPath,
+    kind: 'interactive',
+  });
   const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
   const result = await connectResolvedRuntimeHost({
     ...input,
@@ -429,6 +613,17 @@ function requireTimeout(value: number, label: string): number {
     throw new RangeError(`${label} must be an integer between 1 and 120000`);
   }
   return value;
+}
+
+function defaultRequestTimeoutMs(operation: DirectRequestOperationKey): number | undefined {
+  switch (operation) {
+    case 'connection.models.fetch':
+    case 'connection.test.run':
+      // Completion effects own provider deadlines and may wait behind same-connection FIFO work.
+      return undefined;
+    default:
+      return DEFAULT_REQUEST_TIMEOUT_MS;
+  }
 }
 
 interface PhaseDeadline {

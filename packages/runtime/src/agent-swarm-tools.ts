@@ -20,7 +20,14 @@ import {
   type AdaptiveSwarmPolicy,
   type AdaptiveSwarmItemResult,
 } from './adaptive-swarm.js';
+import {
+  CHILD_AGENT_PROGRESS_BATCH_MAX_CHARS,
+  CHILD_AGENT_PROGRESS_BATCH_MAX_EVENTS,
+  ChildAgentProgressProjector,
+  createChildAgentProgressBudget,
+} from './child-agent-progress.js';
 import type { SpawnChildAgentResult } from './session-manager.js';
+import type { SubagentExecutionRef } from './subagent-execution.js';
 import type { MakaTool, MakaToolContext } from './tool-runtime.js';
 
 export const AGENT_SWARM_TOOL_NAME = 'agent_swarm';
@@ -80,6 +87,7 @@ interface PreparedAgentSwarmItem {
   readonly definition: AgentDefinition;
   readonly mode: 'spawn' | 'resume';
   readonly resumedFromRunId?: string;
+  readonly execution?: SubagentExecutionRef;
 }
 
 interface PendingAgentSwarmResume {
@@ -90,10 +98,16 @@ interface PendingAgentSwarmResume {
 }
 
 interface StartedChildRef {
+  readonly childSessionId?: string;
   readonly turnId: string;
+  readonly runId?: string;
   readonly agentId: string;
   readonly agentName: string;
 }
+
+type ChildExecutionResult = SpawnChildAgentResult & {
+  readonly childSessionId?: string;
+};
 
 export function buildAgentSwarmTool(
   deps: {
@@ -116,13 +130,12 @@ export function buildAgentSwarmTool(
       'Use this only when every item can run independently. Results return in input order; you remain responsible for semantic synthesis.',
     ].join(' '),
     parameters: agentSwarmInputSchema(),
-    permissionRequired: true,
     executionSemantics: 'exclusive_step',
     categoryHint: 'subagent',
     impl: async (input, ctx) => {
       const prepared = await prepareAgentSwarmInput(input, ctx);
-      if (prepared.items.some((item) => item.mode === 'spawn') && !ctx.spawnChildAgent) {
-        throw new Error('spawnChildAgent capability is unavailable in this runtime context');
+      if (prepared.items.some((item) => item.mode === 'spawn') && !ctx.spawnChildSession) {
+        throw new Error('spawnChildSession capability is unavailable in this runtime context');
       }
       if (
         prepared.items.some((item) => item.mode === 'resume') &&
@@ -155,14 +168,25 @@ export function buildAgentSwarmTool(
       const readyRefs: Array<StartedChildRef | undefined> = Array.from({
         length: prepared.items.length,
       });
-      const childResults: Array<SpawnChildAgentResult | undefined> = Array.from({
+      const childResults: Array<ChildExecutionResult | undefined> = Array.from({
         length: prepared.items.length,
       });
       const artifactIds = prepared.items.map(() => new Set<string>());
+      const progressBudget = createChildAgentProgressBudget(
+        CHILD_AGENT_PROGRESS_BATCH_MAX_EVENTS,
+        CHILD_AGENT_PROGRESS_BATCH_MAX_CHARS,
+      );
+      const progressProjectors = prepared.items.map(
+        (item) =>
+          new ChildAgentProgressProjector(ctx, {
+            prefix: `Agent swarm item ${item.itemId} · child`,
+            sharedBudget: progressBudget,
+          }),
+      );
       const rows = await runAdaptiveSwarm<
         PreparedAgentSwarmItem,
-        SpawnChildAgentResult,
-        { sourceRunId: string }
+        ChildExecutionResult,
+        { sourceRunId: string; execution?: SubagentExecutionRef }
       >(
         prepared.items,
         async (item, { index, attempt, retry, markReady }) => {
@@ -182,16 +206,30 @@ export function buildAgentSwarmTool(
             `Agent swarm item ${item.itemId} ${retry ? 'retry' : 'started'}: ${item.definition.name}\n`,
           );
           try {
-            const onReady = ({ turnId, agentId, agentName }: StartedChildRef) => {
-              readyRefs[index] = { turnId, agentId, agentName };
+            const onReady = ({
+              childSessionId,
+              turnId,
+              runId,
+              agentId,
+              agentName,
+            }: StartedChildRef) => {
+              readyRefs[index] = {
+                ...(childSessionId ? { childSessionId } : {}),
+                turnId,
+                ...(runId ? { runId } : {}),
+                agentId,
+                agentName,
+              };
               markReady();
             };
-            const result = retry
+            const result: ChildExecutionResult = retry
               ? ctx.retryChildAgent
                 ? ((await ctx.retryChildAgent({
                     sourceRunId: retry.sourceRunId,
+                    ...(retry.execution ? { execution: retry.execution } : {}),
                     abortSignal: deadline.signal,
                     onReady,
+                    onEvent: (event) => progressProjectors[index]!.observe(event),
                   })) as SpawnChildAgentResult)
                 : (() => {
                     throw new Error('retryChildAgent capability is unavailable');
@@ -202,18 +240,20 @@ export function buildAgentSwarmTool(
                     prompt: item.task,
                     abortSignal: deadline.signal,
                     onReady,
+                    onEvent: (event) => progressProjectors[index]!.observe(event),
                   })) as SpawnChildAgentResult)
-                : ((await ctx.spawnChildAgent!({
-                    spec: {
-                      id: item.definition.id,
-                      name: item.definition.name,
-                      systemPrompt: item.definition.systemPrompt,
-                    },
+                : ((await ctx.spawnChildSession!({
+                    agentProfile: item.definition.profile,
                     prompt: item.task,
+                    swarm: {
+                      swarmId: ctx.toolCallId,
+                      itemId: item.itemId,
+                    },
                     abortSignal: deadline.signal,
                     onReady,
-                  })) as SpawnChildAgentResult);
-            const effectiveResult = deadline.timedOut()
+                    onEvent: (event) => progressProjectors[index]!.observe(event),
+                  })) as ChildExecutionResult);
+            const effectiveResult: ChildExecutionResult = deadline.timedOut()
               ? timedOutChildResult(result, itemTimeoutMs)
               : result;
             for (const artifactId of effectiveResult.artifactIds)
@@ -231,7 +271,18 @@ export function buildAgentSwarmTool(
             ) {
               return {
                 status: 'rate_limited' as const,
-                retry: { sourceRunId: effectiveResult.runId },
+                retry: {
+                  sourceRunId: effectiveResult.runId,
+                  ...(effectiveResult.childSessionId
+                    ? {
+                        execution: {
+                          kind: 'child_session' as const,
+                          sessionId: effectiveResult.childSessionId,
+                          currentRunId: effectiveResult.runId,
+                        },
+                      }
+                    : {}),
+                },
                 reason: new ProviderRateLimitRetry(effectiveResult),
               };
             }
@@ -246,6 +297,9 @@ export function buildAgentSwarmTool(
                 mode: item.mode,
                 ...(item.resumedFromRunId ? { resumedFromRunId: item.resumedFromRunId } : {}),
                 status: effectiveResult.status,
+                ...(effectiveResult.childSessionId
+                  ? { childSessionId: effectiveResult.childSessionId }
+                  : {}),
                 turnId: effectiveResult.turnId,
                 ...(effectiveResult.runId ? { runId: effectiveResult.runId } : {}),
                 durationMs: effectiveResult.durationMs,
@@ -558,8 +612,8 @@ async function prepareAgentSwarmInput(
   readonly maxConcurrency: number;
 }> {
   const preflight = preflightAgentSwarmInput(input);
-  if (preflight.items.length > 0 && !ctx.spawnChildAgent) {
-    throw new Error('spawnChildAgent capability is unavailable in this runtime context');
+  if (preflight.items.length > 0 && !ctx.spawnChildSession) {
+    throw new Error('spawnChildSession capability is unavailable in this runtime context');
   }
   if (preflight.resumes.length > 0 && (!ctx.prepareChildAgentResume || !ctx.resumeChildAgent)) {
     throw new Error('Child AgentRun resume capability is unavailable in this runtime context');
@@ -582,9 +636,20 @@ async function prepareAgentSwarmInput(
         definition,
         mode: 'resume',
         resumedFromRunId: item.sourceRunId,
+        execution: prepared.execution,
       };
     }),
   );
+  const linkedChildSessions = new Set<string>();
+  for (const resume of resumes) {
+    if (resume.execution?.kind !== 'child_session') continue;
+    if (linkedChildSessions.has(resume.execution.sessionId)) {
+      throw new Error(
+        `Agent swarm cannot resume child Session ${resume.execution.sessionId} more than once`,
+      );
+    }
+    linkedChildSessions.add(resume.execution.sessionId);
+  }
   return {
     items: [...resumes, ...preflight.items],
     maxConcurrency: preflight.maxConcurrency,
@@ -664,12 +729,6 @@ function preflightAgentSwarmInput(input: AgentSwarmToolInput): {
         `Agent profile "${definition.profile}" requires isolation "${definition.contract.workspace}", not "${isolation}".`,
       );
     }
-    if (isolation !== AGENT_WORKSPACE_SAME_WORKSPACE) {
-      throw new Error(
-        `Agent profile "${definition.profile}" requires "${isolation}" workspace isolation, but this runtime does not provide a worktree child executor yet.`,
-      );
-    }
-
     return {
       index: resumes.length + index,
       itemId: item.item_id,
@@ -740,9 +799,9 @@ function expandAgentSwarmPromptTemplate(promptTemplate: string, item: string): s
 
 function mapAgentSwarmItem(
   item: PreparedAgentSwarmItem,
-  row: AdaptiveSwarmItemResult<SpawnChildAgentResult>,
+  row: AdaptiveSwarmItemResult<ChildExecutionResult>,
   ready: StartedChildRef | undefined,
-  observed: SpawnChildAgentResult | undefined,
+  observed: ChildExecutionResult | undefined,
 ): AgentSwarmToolResult['items'][number] {
   if (row.status === 'fulfilled') {
     return mapChildResult(
@@ -846,9 +905,9 @@ function createItemDeadline(
 }
 
 function timedOutChildResult(
-  result: SpawnChildAgentResult,
+  result: ChildExecutionResult,
   timeoutMs: number,
-): SpawnChildAgentResult {
+): ChildExecutionResult {
   return {
     ...result,
     status: 'failed',
@@ -875,7 +934,7 @@ function formatDuration(ms: number): string {
 
 function mapChildResult(
   item: PreparedAgentSwarmItem,
-  result: SpawnChildAgentResult,
+  result: ChildExecutionResult,
   status: AgentSwarmToolResult['items'][number]['status'],
 ): AgentSwarmToolResult['items'][number] {
   return {
@@ -885,6 +944,7 @@ function mapChildResult(
     started: true,
     agentId: result.agentId,
     agentName: result.agentName,
+    ...(result.childSessionId ? { childSessionId: result.childSessionId } : {}),
     turnId: result.turnId,
     ...(result.runId ? { runId: result.runId } : {}),
     ...(item.resumedFromRunId ? { resumedFromRunId: item.resumedFromRunId } : {}),

@@ -1,3 +1,4 @@
+import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import { describe, test } from 'node:test';
 import type { LlmConnection, SessionHeader } from '@maka/core';
 import type { SessionEvent } from '@maka/core/events';
@@ -6,7 +7,6 @@ import {
   extractStdoutRedirectPath,
   recordToolArtifactsSafely,
 } from '../tool-artifacts.js';
-import { PermissionEngine } from '../permission-engine.js';
 import { ToolRuntime, type MakaTool, type ToolRuntimeInput } from '../tool-runtime.js';
 import { expect } from '../test-helpers.js';
 
@@ -111,18 +111,22 @@ describe('ToolRuntime artifact recorder scheduling', () => {
         return new Promise(() => {});
       },
     });
-    const execute = runtime.wrapToolExecute(writeArtifactTool(), 'turn-1', {
-      push: (event) => events.push(event),
-    });
-
     const outcome = await Promise.race([
-      execute(
-        { path: 'notes.md', content: 'hello' },
-        {
+      runtime
+        .settleToolCall({
+          tool: writeArtifactTool(),
+          turnId: 'turn-1',
           toolCallId: 'tool-1',
+          input: { path: 'notes.md', content: 'hello' },
           abortSignal: new AbortController().signal,
-        },
-      ).then(() => 'done' as const),
+          eventSink: {
+            push: (event) => events.push(event),
+            pushAndWaitUntilConsumed: async (event) => {
+              events.push(event);
+            },
+          },
+        })
+        .then(() => 'done' as const),
       delay(20).then(() => 'timeout' as const),
     ]);
 
@@ -138,16 +142,13 @@ function makeToolRuntime(overrides: Partial<ToolRuntimeInput> = {}): {
   runtime: ToolRuntime;
   events: SessionEvent[];
 } {
-  const permissionEngine = new PermissionEngine({ newId: nextId(), now: () => 1 });
-  permissionEngine.beginTurn('turn-1');
   const events: SessionEvent[] = [];
-  const runtime = new ToolRuntime({
+  const runtime = createTestToolRuntime({
     sessionId: 'session-1',
     header: testHeader(),
     connection: testConnection(),
     modelId: 'mock-model',
     appendMessage: async () => {},
-    permissionEngine,
     newId: nextId(),
     now: () => 1,
     getPermissionPauseTarget: () => null,
@@ -161,7 +162,6 @@ function writeArtifactTool(): MakaTool {
     name: 'Write',
     description: 'write file',
     parameters: {},
-    permissionRequired: false,
     impl: async (args) => {
       const path =
         typeof (args as { path?: unknown }).path === 'string'

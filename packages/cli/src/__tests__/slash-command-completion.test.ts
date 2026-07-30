@@ -29,8 +29,18 @@ describe('MakaAutocompleteProvider mid-message skill completion', () => {
     { name: 'model', description: 'switch model' },
   ];
   const skills: InvocableSkillEntry[] = [
-    { id: 'weekly-report', name: 'Weekly Report', description: 'summarize the week' },
-    { id: 'web-search', name: 'Web Search', description: 'search the web' },
+    {
+      ref: 'workspace:legacy:weekly-report',
+      id: 'weekly-report',
+      name: 'Weekly Report',
+      description: 'summarize the week',
+    },
+    {
+      ref: 'workspace:legacy:web-search',
+      id: 'web-search',
+      name: 'Web Search',
+      description: 'search the web',
+    },
   ];
   const listSkills = async (): Promise<readonly InvocableSkillEntry[]> => skills;
   const signal = new AbortController().signal;
@@ -177,7 +187,7 @@ describe('MakaAutocompleteProvider mid-message skill completion', () => {
     // Using the lowercased query as the replacement prefix makes applyCompletion
     // slice by the wrong length, over-deleting the original text.
     const provider = new MakaAutocompleteProvider(baseDir, commands, async () => [
-      { id: 'info', name: 'İnfo', description: '' },
+      { ref: 'workspace:legacy:info', id: 'info', name: 'İnfo', description: '' },
     ]);
     const result = await provider.getSuggestions(['see /İ'], 0, 6, { signal });
     assert.equal(result?.prefix, 'İ', 'prefix must be the original text, not its lowercased form');
@@ -229,8 +239,18 @@ describe('MakaSkillHighlightEditor mid-message skill trigger', () => {
     { name: 'config', description: 'open config' },
   ];
   const skills: InvocableSkillEntry[] = [
-    { id: 'weekly-report', name: 'Weekly Report', description: 'summarize the week' },
-    { id: 'web-search', name: 'Web Search', description: 'search the web' },
+    {
+      ref: 'workspace:legacy:weekly-report',
+      id: 'weekly-report',
+      name: 'Weekly Report',
+      description: 'summarize the week',
+    },
+    {
+      ref: 'workspace:legacy:web-search',
+      id: 'web-search',
+      name: 'Web Search',
+      description: 'search the web',
+    },
   ];
   const listSkills = async (): Promise<readonly InvocableSkillEntry[]> => skills;
 

@@ -15,7 +15,7 @@ import type { MakaTool, ToolGating } from './tool-runtime.js';
  *   turn; no connector, no gating, no diagnostics (the full-surface case).
  * - `economy: true` → only ungrouped tools are visible; each group's
  *   tools are withheld until the model activates the group via `load_tools`,
- *   which takes effect same-turn through `prepareStep`. Activations persist
+ *   which takes effect in the next Runtime request projection. Activations persist
  *   across turns by re-seeding from the RuntimeEvent ledger.
  */
 
@@ -35,7 +35,7 @@ const SEED_CONNECTOR_NAMES: ReadonlySet<string> = new Set([
   'connect_tool_source',
 ]);
 
-/** A natural cluster of tools that load together (browser, office, …). */
+/** A natural cluster of tools that load together (browser, computer use, …). */
 export interface ToolGroup {
   id: string;
   toolNames: readonly string[];
@@ -69,8 +69,10 @@ export interface ToolAvailabilityPlan {
   providerTools: MakaTool[];
   /** Step-0 model-visible active subset. */
   activeTools: string[];
-  /** `prepareStep` for the AI SDK; undefined in full mode (nothing to activate). */
-  prepareStep?: (options: { steps?: ReadonlyArray<StepLike> }) => { activeTools: string[] };
+  /** Recomputes the active subset from completed provider steps. */
+  projectActiveTools?: (options: { completedSteps?: ReadonlyArray<StepLike> }) => {
+    activeTools: string[];
+  };
   /** Tool names the repair path matches against; tracks the current step's snapshot. */
   currentRepairToolNames: () => string[];
   /** Execute-boundary gating; undefined in full mode. */
@@ -164,10 +166,10 @@ export class ToolAvailabilityRuntime {
     const knownNames = new Set(canonical.providerTools.map((tool) => tool.name));
     const requiredNames = [...requiredToolNames].filter((name) => knownNames.has(name));
     // Turn-local snapshot the guard / repair / diagnostics read; recomputed
-    // before every step by `prepareStep`. No cross-turn mutable state — a load
+    // before every provider request. No cross-turn mutable state — a load
     // survives turns only via the ledger seed above (durable by construction),
     // and within one send the backend's translation point hands every hook a
-    // send-global `steps` view spanning overflow-retry attempts, so activation
+    // send-global completed-step view spanning overflow-retry attempts, so activation
     // stays monotonic per send without a bespoke set here.
     const turn = { active: new Set<string>() };
     const computeActive = (steps: ReadonlyArray<StepLike> | undefined): string[] => {
@@ -182,7 +184,9 @@ export class ToolAvailabilityRuntime {
     return {
       providerTools: canonical.providerTools,
       activeTools: computeActive(undefined),
-      prepareStep: ({ steps }) => ({ activeTools: computeActive(steps) }),
+      projectActiveTools: ({ completedSteps }) => ({
+        activeTools: computeActive(completedSteps),
+      }),
       currentRepairToolNames: () => [...turn.active],
       gating: { gatedNames: this.gatedNames, activeNames: () => turn.active },
       diagnostics: (active, chars) => this.buildDiagnostic(active, chars),
@@ -241,7 +245,6 @@ export class ToolAvailabilityRuntime {
     return {
       name: LOAD_TOOLS_NAME,
       description: renderCatalog(this.groups),
-      permissionRequired: false,
       parameters: z.object({
         group: groupSchema.describe('The capability group to load.'),
       }),

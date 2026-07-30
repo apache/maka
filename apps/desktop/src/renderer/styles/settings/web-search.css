@@ -34,6 +34,9 @@
 .settingsWebSearchKeyRow > .settingsPasswordField,
 .settingsWebSearchQueryInputRow > input {
   width: min(100%, 360px);
+  /* #1364: a text input never shrinks below its intrinsic `size` width on its
+     own (~180px) — at the 480px window floor that overflowed the row. */
+  min-width: 0;
   justify-self: end;
 }
 
@@ -50,6 +53,9 @@
   font-size: var(--font-size-ui);
   line-height: var(--leading-normal);
   text-align: right;
+  /* #1364: the hint names an env var (TAVILY_API_KEY) — an unbreakable token
+     wider than the whole content column at the 480px window floor. */
+  overflow-wrap: anywhere;
 }
 .settingsWebSearchResults {
     list-style: none;
@@ -70,6 +76,10 @@
     font-weight: var(--font-weight-semibold);
     color: var(--foreground);
     text-decoration: none;
+    /* #1364: Tavily titles are sometimes a bare URL — one unbreakable token
+       that widened the whole page (~585px of overflow at the 480px window
+       floor) because a grid item's min-content floor propagates upward. */
+    overflow-wrap: anywhere;
   }
 .settingsWebSearchResult a:hover {
     text-decoration: underline;
@@ -79,6 +89,9 @@
     font-size: var(--font-size-caption);
     text-transform: uppercase;
     letter-spacing: var(--tracking-wider);
+    /* #1364: the source is a hostname — one unbreakable token, and long ones
+       (raw.githubusercontent.com) widened the page at the 480px floor. */
+    overflow-wrap: anywhere;
   }
 .settingsWebSearchResult p {
     margin: 0;
@@ -107,6 +120,15 @@
   .settingsWebSearchStatusCluster {
     justify-content: flex-start;
     margin-left: 0;
+  }
+
+  /* #1364: the mono timestamp ("最近一次测试：…") keeps `nowrap` on wide
+     layouts, but at the 480px window floor its ~169px intrinsic width was the
+     single widest thing on the page and dragged the whole card into overflow.
+     The cluster already wraps between items; in the narrow layout the items
+     themselves may wrap too. */
+  .settingsWebSearchStatusCluster small {
+    white-space: normal;
   }
 
   .settingsWebSearchKeyRow > .settingsPasswordField,

@@ -18,6 +18,7 @@ export {
 } from './wechat-bridge.js';
 export type { WechatBridgeQrCodeResult } from './wechat-bridge.js';
 export { WeComBotBridge, wecomTextFrameToEvent } from './wecom-bridge.js';
+export { SlackBotBridge, slackMessageToEvent } from './slack-bridge.js';
 export type {
   BotBridge,
   BotIncomingMessage,

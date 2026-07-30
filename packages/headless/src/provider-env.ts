@@ -209,11 +209,17 @@ function connectionFromEnv(
   authority: ResolvedHostProviderAuthority,
 ): LlmConnection {
   const defaults = PROVIDER_DEFAULTS[provider];
-  const githubApiProtocol =
+  if (provider === 'kimi-coding-plan') {
+    assertKimiProtocolOverride('MAKA_HOST_MODEL_API_PROTOCOL', values.MAKA_HOST_MODEL_API_PROTOCOL);
+    assertKimiProtocolOverride('MAKA_MODEL_API_PROTOCOL', values.MAKA_MODEL_API_PROTOCOL);
+  }
+  const modelApiProtocol =
     authority.apiProtocol ?? modelApiProtocolFromEnv(values.MAKA_MODEL_API_PROTOCOL);
-  if (provider === 'github-copilot' && !githubApiProtocol) {
+  if (provider === 'github-copilot' && !modelApiProtocol) {
     throw new Error('GitHub Copilot requires an account-discovered model protocol');
   }
+  const selectedApiProtocol =
+    provider === 'github-copilot' || provider === 'kimi-coding-plan' ? modelApiProtocol : undefined;
   return {
     slug: values.MAKA_LLM_CONNECTION_SLUG ?? provider,
     name: defaults.label,
@@ -224,9 +230,7 @@ function connectionFromEnv(
       providerBaseUrlFromEnv(provider, values) ??
       defaults.baseUrl,
     defaultModel: model,
-    ...(provider === 'github-copilot'
-      ? { models: [{ id: model, apiProtocol: githubApiProtocol }] }
-      : {}),
+    ...(selectedApiProtocol ? { models: [{ id: model, apiProtocol: selectedApiProtocol }] } : {}),
     enabled: true,
     createdAt: ts,
     updatedAt: ts,
@@ -237,6 +241,14 @@ function modelApiProtocolFromEnv(value: string | undefined): ModelInfo['apiProto
   if (value === 'openai-chat' || value === 'openai-responses' || value === 'anthropic-messages')
     return value;
   return undefined;
+}
+
+function assertKimiProtocolOverride(name: string, value: string | undefined): void {
+  if (value === undefined || value === '') return;
+  if (value === 'anthropic-messages' || value === 'openai-chat') return;
+  throw new Error(
+    `Kimi Coding Plan protocol must be anthropic-messages or openai-chat; ${name} was ${JSON.stringify(value)}`,
+  );
 }
 
 function apiKeyFromEnv(

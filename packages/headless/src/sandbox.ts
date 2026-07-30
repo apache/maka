@@ -48,14 +48,24 @@ export async function prepareWorkspace(fixtureDir: string): Promise<PreparedWork
 
 export async function freezeSubmittedWorkspace(input: {
   workspaceDir: string;
+  snapshotRoot?: string;
   artifactRefs?: Array<Record<string, unknown>>;
   now?: () => number;
   newId?: () => string;
 }): Promise<ArtifactFreezeResult> {
   const id = input.newId?.() ?? randomUUID();
-  const snapshotPath = await mkdtemp(join(tmpdir(), 'maka-headless-submitted-'));
+  const snapshotRoot = input.snapshotRoot ?? tmpdir();
+  await mkdir(snapshotRoot, { recursive: true });
+  const snapshotPath = await mkdtemp(join(snapshotRoot, 'maka-headless-submitted-'));
   try {
-    await cp(await realpath(input.workspaceDir), snapshotPath, { recursive: true });
+    await cp(await realpath(input.workspaceDir), snapshotPath, {
+      recursive: true,
+      verbatimSymlinks: true,
+      filter: async (source) => {
+        const entry = await lstat(source);
+        return entry.isFile() || entry.isDirectory() || entry.isSymbolicLink();
+      },
+    });
   } catch (error) {
     await rm(snapshotPath, { recursive: true, force: true });
     throw error;
@@ -76,7 +86,10 @@ export async function prepareScoringWorkspace(
 ): Promise<PreparedWorkspace> {
   const dir = await mkdtemp(join(tmpdir(), 'maka-headless-score-'));
   try {
-    await cp(await realpath(snapshot.snapshotPath), dir, { recursive: true });
+    await cp(await realpath(snapshot.snapshotPath), dir, {
+      recursive: true,
+      verbatimSymlinks: true,
+    });
   } catch (error) {
     await rm(dir, { recursive: true, force: true });
     throw error;

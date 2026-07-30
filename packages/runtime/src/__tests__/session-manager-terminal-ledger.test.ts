@@ -1,6 +1,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { deriveTurnRecords, DurableStoreWriteError, isTerminalRuntimeEvent } from '@maka/core';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type {
   AgentRunEvent,
   AgentRunHeader,
@@ -14,7 +15,7 @@ import type {
   StoredMessage,
   TurnRecord,
 } from '@maka/core';
-import type { BackendSendInput, PermissionDecision } from '@maka/core/backend-types';
+import type { BackendSendInput } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
 import { expect } from '../test-helpers.js';
 import { AgentRun } from '../agent-run.js';
@@ -523,10 +524,9 @@ describe('SessionManager terminal ledger invariants', () => {
           newId: nextId(),
           now: nextNow(25_200),
           hooks: {
-            ensureActive: async () => {
-              throw new Error('ensureActive should not be called');
+            reserveRun: async () => {
+              throw new Error('reserveRun should not be called');
             },
-            registerRun: () => {},
             unregisterRun: () => {},
             updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
             updateStatus: async () => {},
@@ -551,10 +551,9 @@ describe('SessionManager terminal ledger invariants', () => {
       newId: nextId(),
       now: nextNow(30_000),
       hooks: {
-        ensureActive: async () => {
-          throw new Error('ensureActive should not be called');
+        reserveRun: async () => {
+          throw new Error('reserveRun should not be called');
         },
-        registerRun: () => {},
         unregisterRun: () => {},
         updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
         updateStatus: async () => {},
@@ -616,16 +615,16 @@ describe('SessionManager terminal ledger invariants', () => {
       newId: nextId(),
       now: nextNow(40_000),
       hooks: {
-        ensureActive: async () => ({
-          sessionId: session.id,
-          backend,
-          cachedHeader: session,
-          activeRuns,
-          turnToRunId,
-        }),
-        registerRun: (_active, activeRun) => {
+        reserveRun: async (_sessionId, _header, activeRun) => {
           activeRuns.set(activeRun.runId, activeRun);
           turnToRunId.set(activeRun.turnId, activeRun.runId);
+          return {
+            sessionId: session.id,
+            backend,
+            cachedHeader: session,
+            activeRuns,
+            turnToRunId,
+          };
         },
         unregisterRun: (_active, activeRun) => {
           activeRuns.delete(activeRun.runId);
@@ -668,16 +667,16 @@ describe('SessionManager terminal ledger invariants', () => {
       newId: nextId(),
       now: nextNow(40_500),
       hooks: {
-        ensureActive: async () => ({
-          sessionId: session.id,
-          backend,
-          cachedHeader: session,
-          activeRuns,
-          turnToRunId,
-        }),
-        registerRun: (_active, activeRun) => {
+        reserveRun: async (_sessionId, _header, activeRun) => {
           activeRuns.set(activeRun.runId, activeRun);
           turnToRunId.set(activeRun.turnId, activeRun.runId);
+          return {
+            sessionId: session.id,
+            backend,
+            cachedHeader: session,
+            activeRuns,
+            turnToRunId,
+          };
         },
         unregisterRun: (_active, activeRun) => {
           activeRuns.delete(activeRun.runId);
@@ -717,10 +716,9 @@ describe('SessionManager terminal ledger invariants', () => {
       newId: nextId(),
       now: nextNow(41_000),
       hooks: {
-        ensureActive: async () => {
-          throw new Error('ensureActive should not be called');
+        reserveRun: async () => {
+          throw new Error('reserveRun should not be called');
         },
-        registerRun: () => {},
         unregisterRun: () => {},
         updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
         updateStatus: async () => {},
@@ -771,16 +769,16 @@ describe('SessionManager terminal ledger invariants', () => {
       newId: nextId(),
       now: nextNow(41_250),
       hooks: {
-        ensureActive: async () => ({
-          sessionId: session.id,
-          backend,
-          cachedHeader: session,
-          activeRuns,
-          turnToRunId,
-        }),
-        registerRun: (_active, activeRun) => {
+        reserveRun: async (_sessionId, _header, activeRun) => {
           activeRuns.set(activeRun.runId, activeRun);
           turnToRunId.set(activeRun.turnId, activeRun.runId);
+          return {
+            sessionId: session.id,
+            backend,
+            cachedHeader: session,
+            activeRuns,
+            turnToRunId,
+          };
         },
         unregisterRun: (_active, activeRun) => {
           activeRuns.delete(activeRun.runId);
@@ -833,16 +831,16 @@ describe('SessionManager terminal ledger invariants', () => {
       newId: nextId(),
       now: nextNow(41_500),
       hooks: {
-        ensureActive: async () => ({
-          sessionId: session.id,
-          backend,
-          cachedHeader: session,
-          activeRuns,
-          turnToRunId,
-        }),
-        registerRun: (_active, activeRun) => {
+        reserveRun: async (_sessionId, _header, activeRun) => {
           activeRuns.set(activeRun.runId, activeRun);
           turnToRunId.set(activeRun.turnId, activeRun.runId);
+          return {
+            sessionId: session.id,
+            backend,
+            cachedHeader: session,
+            activeRuns,
+            turnToRunId,
+          };
         },
         unregisterRun: (_active, activeRun) => {
           activeRuns.delete(activeRun.runId);
@@ -1395,7 +1393,7 @@ class ScriptBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -1437,13 +1435,19 @@ class StopDuringSendBackend implements AgentBackend {
     this.stopReturned.resolve();
   }
 
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
 class TinySessionStore implements SessionStore {
   private headers = new Map<string, SessionHeader>();
   private messages = new Map<string, StoredMessage[]>();
+
+  async createSubagent(
+    _input: CreateSessionInput,
+  ): Promise<{ header: SessionHeader; created: boolean }> {
+    throw new Error('not implemented');
+  }
 
   async create(input: CreateSessionInput): Promise<SessionHeader> {
     const header: SessionHeader = {
@@ -1473,6 +1477,14 @@ class TinySessionStore implements SessionStore {
     this.headers.set(header.id, header);
     this.messages.set(header.id, []);
     return clone(header);
+  }
+
+  async setExecutionBoundaryKind(): Promise<never> {
+    throw new Error('not implemented');
+  }
+
+  async readExecutionBoundary(): Promise<never> {
+    throw new Error('not implemented');
   }
 
   async list(_filter?: SessionListFilter): Promise<SessionSummary[]> {
@@ -1714,10 +1726,9 @@ function nextNow(start: number): () => number {
 
 function inertAgentRunHooks(store: TinySessionStore) {
   return {
-    ensureActive: async () => {
-      throw new Error('ensureActive should not be called');
+    reserveRun: async () => {
+      throw new Error('reserveRun should not be called');
     },
-    registerRun: () => {},
     unregisterRun: () => {},
     updateHeader: (sessionId: string, patch: Partial<SessionHeader>) =>
       store.updateHeader(sessionId, patch),

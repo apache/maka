@@ -3,6 +3,7 @@ import type {
   AgentRunHeader,
   CreateSessionInput,
   RuntimeEvent,
+  RuntimeEventActions,
   SessionHeader,
   SessionListFilter,
   SessionSummary,
@@ -13,9 +14,12 @@ import { deriveTurnRecords } from '@maka/core';
 import { expect } from '../test-helpers.js';
 import {
   compareRuntimeReadModelMessages,
+  isHardRuntimeEventReadModelDiagnostic,
+  isUnclaimedRuntimeEventDiagnostic,
   projectRuntimeEventsToStoredMessages,
   projectRuntimeEventsToStoredMessagesWithArchiveStatuses,
 } from '../runtime-event-read-model.js';
+import { buildRuntimeEventModelReplayPlan } from '../model-history.js';
 import { materializeSession } from '../materializer.js';
 import { BackendRegistry, SessionManager, type SessionStore } from '../session-manager.js';
 
@@ -150,9 +154,11 @@ function baseEvents(): RuntimeEvent[] {
           cacheRead: 10,
           costUsd: 0.002,
           systemPromptHash: 'sys-hash',
+          runtimeSteps: 3,
           contextRemaining: 9000,
         },
       },
+      refs: { providerRequestTraceId: 'provider-trace-1' },
     }),
     ev({
       id: 'evt-complete',
@@ -223,6 +229,9 @@ function equivalentLegacyMessages(): StoredMessage[] {
       cacheRead: 10,
       costUsd: 0.002,
       systemPromptHash: 'sys-hash',
+      runtimeSteps: 3,
+      contextRemaining: 9000,
+      providerRequestTraceId: 'provider-trace-1',
     },
     {
       type: 'turn_state',
@@ -320,7 +329,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       parentTurnId: 'parent-turn',
       partialOutputRetained: true,
     });
-    expect(out.diagnostics.map((diag) => diag.code)).toEqual(['context_remaining_unsupported']);
+    expect(out.diagnostics).toEqual([]);
   });
 
   test('projects an AskUserQuestion round trip without a legacy row for the live request', () => {
@@ -506,6 +515,104 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     });
   });
 
+  test('replays generic provider tool results without Maka result decoding', () => {
+    const events = [
+      ev({
+        id: 'evt-generic-primitive-call',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'generic-primitive-1',
+          name: 'ProviderPrimitive',
+          args: {},
+        },
+      }),
+      ev({
+        id: 'evt-generic-primitive-result',
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'generic-primitive-1',
+          name: 'ProviderPrimitive',
+          result: 42 as never,
+        },
+      }),
+      ev({
+        id: 'evt-generic-json-call',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'generic-json-1',
+          name: 'ProviderJson',
+          args: {},
+        },
+      }),
+      ev({
+        id: 'evt-generic-json-result',
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'generic-json-1',
+          name: 'ProviderJson',
+          result: { providerPayload: true, values: [1, 2, 3] } as never,
+        },
+      }),
+      ev({
+        id: 'evt-generic-subagent-collision-call',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'generic-subagent-collision-1',
+          name: 'ProviderJson',
+          args: {},
+        },
+      }),
+      ev({
+        id: 'evt-generic-subagent-collision-result',
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'generic-subagent-collision-1',
+          name: 'ProviderJson',
+          result: {
+            kind: 'subagent',
+            status: 'waiting_permission',
+            providerPayload: true,
+          } as never,
+        },
+      }),
+    ];
+
+    const replay = buildRuntimeEventModelReplayPlan(events);
+
+    expect(replay.items.map((item) => item.kind)).toEqual([
+      'tool_call',
+      'tool_result',
+      'tool_call',
+      'tool_result',
+      'tool_call',
+      'tool_result',
+    ]);
+    expect(
+      replay.items.filter((item) => item.kind === 'tool_result').map((item) => item.output),
+    ).toEqual([
+      42,
+      { providerPayload: true, values: [1, 2, 3] },
+      {
+        kind: 'subagent',
+        status: 'waiting_permission',
+        providerPayload: true,
+      },
+    ]);
+    expect(replay.diagnostics).toEqual([]);
+  });
+
   test('restores a settled Agent Swarm function response', () => {
     const result = {
       kind: 'agent_swarm' as const,
@@ -668,10 +775,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
         reason: 'stale_tool_result_pruned_before_compact',
       },
     });
-    expect(out.diagnostics.map((diag) => diag.code)).toEqual([
-      'archived_tool_result_placeholder',
-      'context_remaining_unsupported',
-    ]);
+    expect(out.diagnostics.map((diag) => diag.code)).toEqual(['archived_tool_result_placeholder']);
   });
 
   test('archive status wrapper can project missing and corrupt rows without changing sync defaults', () => {
@@ -774,6 +878,74 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     expect(out.diagnostics).toEqual([]);
   });
 
+  test('question answer acknowledgements remain non-visible audit facts', () => {
+    const out = projectRuntimeEventsToStoredMessages(
+      [
+        ev({
+          id: 'question-1-answered',
+          role: 'system',
+          author: 'user',
+          actions: { userQuestionAnswerAccepted: { requestId: 'question-1' } },
+          refs: { toolCallId: 'tool-1' },
+        }),
+      ],
+      { runHeaders: [header] },
+    );
+
+    expect(out.messages).toEqual([]);
+    expect(out.diagnostics).toEqual([]);
+  });
+
+  test('terminal recovery bundle facts are accepted without creating legacy message rows', () => {
+    const out = projectRuntimeEventsToStoredMessages(
+      [
+        ev({
+          id: 'toolop-1-reconcile',
+          role: 'system',
+          author: 'system',
+          actions: {
+            toolRecovery: {
+              kind: 'maka.tool.reconcile_result',
+              version: 1,
+              payload: {
+                protocol: 'tool_reconcile_v1',
+                operationId: 'toolop-1',
+                observation: 'unreadable',
+                observationSchema: 'state_identity_v1',
+                observationDigest:
+                  'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+              },
+            },
+          },
+          refs: { toolCallId: 'tool-1', operationId: 'toolop-1' },
+        }),
+        ev({
+          id: 'toolop-1-decision',
+          role: 'system',
+          author: 'system',
+          actions: {
+            toolRecovery: {
+              kind: 'maka.tool.recovery_decision',
+              version: 1,
+              payload: {
+                protocol: 'tool_recovery_v1',
+                operationId: 'toolop-1',
+                disposition: 'parked',
+                reasonCode: 'reconcile_unreadable',
+                evidenceEventIds: ['call-1', 'dispatch-1', 'toolop-1-reconcile'],
+              },
+            },
+          },
+          refs: { toolCallId: 'tool-1', operationId: 'toolop-1' },
+        }),
+      ],
+      { runHeaders: [header] },
+    );
+
+    expect(out.messages).toEqual([]);
+    expect(out.diagnostics).toEqual([]);
+  });
+
   test('continuation-start recovery facts are accepted without creating legacy message rows', () => {
     const out = projectRuntimeEventsToStoredMessages(
       [
@@ -800,6 +972,202 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     expect(out.diagnostics).toEqual([]);
   });
 
+  test('sandbox boundary request and decision facts are accepted without creating legacy message rows', () => {
+    const out = projectRuntimeEventsToStoredMessages(
+      [
+        ev({
+          id: 'sandbox-boundary-request',
+          ts: ts + 1,
+          role: 'system',
+          author: 'system',
+          actions: {
+            stateDelta: {
+              sandboxBoundaryRequest: {
+                requestId: 'boundary-1',
+                toolUseId: 'tool-1',
+                justification: 'read a file outside the workspace',
+                expansion: {
+                  filesystem: {
+                    entries: [{ path: '/tmp/outside.txt', access: 'read', scope: 'exact' }],
+                  },
+                },
+              },
+            },
+          },
+          refs: { toolCallId: 'tool-1' },
+        }),
+        ev({
+          id: 'sandbox-boundary-decision',
+          ts: ts + 2,
+          role: 'system',
+          author: 'user',
+          actions: {
+            stateDelta: {
+              sandboxBoundaryDecision: {
+                requestId: 'boundary-1',
+                decision: 'allow',
+                status: 'approved',
+                revision: 2,
+              },
+            },
+          },
+          refs: { toolCallId: 'tool-1' },
+        }),
+      ],
+      { runHeaders: [header] },
+    );
+
+    expect(out.messages).toEqual([]);
+    expect(out.diagnostics).toEqual([]);
+  });
+
+  // Claiming the key alone would let any shape ride in under a control-fact
+  // name. Only what AiSdkFlow actually emits is a canonical fact: every field,
+  // the system/user identity, and the tool-call reference.
+  const wellFormedBoundaryRequest = () =>
+    ev({
+      id: 'sandbox-boundary-request-case',
+      ts: ts + 1,
+      role: 'system',
+      author: 'system',
+      actions: {
+        stateDelta: {
+          sandboxBoundaryRequest: {
+            requestId: 'boundary-1',
+            toolUseId: 'tool-1',
+            justification: 'read a file outside the workspace',
+            expansion: {
+              filesystem: {
+                entries: [{ path: '/tmp/outside.txt', access: 'read', scope: 'exact' }],
+              },
+            },
+          },
+        },
+      },
+      refs: { toolCallId: 'tool-1' },
+    });
+
+  const wellFormedBoundaryDecision = () =>
+    ev({
+      id: 'sandbox-boundary-decision-case',
+      ts: ts + 2,
+      role: 'system',
+      author: 'user',
+      actions: {
+        stateDelta: {
+          sandboxBoundaryDecision: {
+            requestId: 'boundary-1',
+            decision: 'allow',
+            status: 'approved',
+            revision: 2,
+          },
+        },
+      },
+      refs: { toolCallId: 'tool-1' },
+    });
+
+  function corruptedBoundaryEvent(
+    base: RuntimeEvent,
+    key: 'sandboxBoundaryRequest' | 'sandboxBoundaryDecision',
+    mutate: (payload: Record<string, unknown>, event: RuntimeEvent) => RuntimeEvent | void,
+  ): RuntimeEvent {
+    const clone = structuredClone(base) as RuntimeEvent;
+    const payload = clone.actions?.stateDelta?.[key] as Record<string, unknown>;
+    return mutate(payload, clone) ?? clone;
+  }
+
+  const malformedBoundaryCases: Array<[string, () => RuntimeEvent]> = [
+    [
+      'request without a justification',
+      () =>
+        corruptedBoundaryEvent(wellFormedBoundaryRequest(), 'sandboxBoundaryRequest', (payload) => {
+          delete payload.justification;
+        }),
+    ],
+    [
+      'request with an unusable expansion',
+      () =>
+        corruptedBoundaryEvent(wellFormedBoundaryRequest(), 'sandboxBoundaryRequest', (payload) => {
+          payload.expansion = {};
+        }),
+    ],
+    [
+      'request that lost its tool-call reference',
+      () =>
+        corruptedBoundaryEvent(
+          wellFormedBoundaryRequest(),
+          'sandboxBoundaryRequest',
+          (_payload, event) => ({ ...event, refs: undefined }),
+        ),
+    ],
+    [
+      'request attributed to someone other than the system',
+      () =>
+        corruptedBoundaryEvent(
+          wellFormedBoundaryRequest(),
+          'sandboxBoundaryRequest',
+          (_payload, event) => ({ ...event, role: 'user', author: 'tool' }),
+        ),
+    ],
+    [
+      'decision without a status',
+      () =>
+        corruptedBoundaryEvent(
+          wellFormedBoundaryDecision(),
+          'sandboxBoundaryDecision',
+          (payload) => {
+            delete payload.status;
+          },
+        ),
+    ],
+    [
+      'decision with a status the boundary never settles to',
+      () =>
+        corruptedBoundaryEvent(
+          wellFormedBoundaryDecision(),
+          'sandboxBoundaryDecision',
+          (payload) => {
+            payload.status = 'pending';
+          },
+        ),
+    ],
+    [
+      'decision without a revision',
+      () =>
+        corruptedBoundaryEvent(
+          wellFormedBoundaryDecision(),
+          'sandboxBoundaryDecision',
+          (payload) => {
+            delete payload.revision;
+          },
+        ),
+    ],
+    [
+      'decision attributed to the agent instead of the user',
+      () =>
+        corruptedBoundaryEvent(
+          wellFormedBoundaryDecision(),
+          'sandboxBoundaryDecision',
+          (_payload, event) => ({ ...event, author: 'agent' }),
+        ),
+    ],
+  ];
+
+  for (const [name, makeEvent] of malformedBoundaryCases) {
+    // The claim stays exact: a malformed shape is never admitted as a canonical
+    // boundary fact. Its severity is a separate question, and a control fact
+    // owns no chat row, so a broken one costs a reader nothing the session view
+    // would otherwise show.
+    test(`a sandbox boundary ${name} stays unclaimed`, () => {
+      const out = projectRuntimeEventsToStoredMessages([makeEvent()], { runHeaders: [header] });
+
+      expect(out.messages).toEqual([]);
+      expect(out.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+        'unclaimed_control_fact',
+      ]);
+    });
+  }
+
   test('model thinking attaches to the assistant text row that shares its step message id', () => {
     // Real emission and backfill give a step's thinking and text the same message
     // id (providerEventId / storedMessageId), so the projection pairs by id.
@@ -810,7 +1178,12 @@ describe('projectRuntimeEventsToStoredMessages', () => {
           ts: ts + 5,
           role: 'model',
           author: 'agent',
-          content: { kind: 'thinking', text: 'private reasoning', signature: 'sig-1' },
+          content: {
+            kind: 'thinking',
+            text: 'private reasoning',
+            signature: 'sig-1',
+            providerOptions: { maka: { kimiReasoningField: 'reasoning' } },
+          },
           refs: { storedMessageId: 'legacy-assistant' },
         }),
         ev({
@@ -832,7 +1205,11 @@ describe('projectRuntimeEventsToStoredMessages', () => {
         ts: ts + 6,
         text: 'visible answer',
         modelId: 'claude-sonnet-4-5',
-        thinking: { text: 'private reasoning', signature: 'sig-1' },
+        thinking: {
+          text: 'private reasoning',
+          signature: 'sig-1',
+          providerOptions: { maka: { kimiReasoningField: 'reasoning' } },
+        },
       },
     ];
 
@@ -942,13 +1319,64 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     );
 
     expect(out.messages).toEqual([]);
+    // The orphaned permission decision carries no content, so its catch-all is
+    // the soft code — but the projector that tried to build its row and failed
+    // still reports `incomplete_event`, which stays hard. Downgrading the
+    // catch-all never downgrades a projector that attempted a message.
     expect(out.diagnostics.map((diag) => diag.code)).toEqual([
       'incomplete_event',
-      'unsupported_event',
+      'unclaimed_control_fact',
       'incomplete_event',
       'unsupported_event',
       'unsupported_event',
     ]);
+  });
+
+  // Where the projection draws the line between a view it can still serve and
+  // one it must refuse: an unclaimed event that carries no content owns no chat
+  // row, so nothing a reader would have seen is missing.
+  test('an unclaimed control-only event is soft and leaves every message intact', () => {
+    const out = projectRuntimeEventsToStoredMessages(
+      [
+        ev({ id: 'evt-user', role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } }),
+        ev({
+          id: 'evt-control',
+          actions: { stateDelta: { somethingTheProjectionWasNeverTaught: true } },
+        }),
+        ev({
+          id: 'evt-assistant',
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'text', text: 'hello' },
+        }),
+      ],
+      { runHeaders: [header] },
+    );
+
+    expect(out.messages.map((message) => message.id)).toEqual(['evt-user', 'evt-assistant']);
+    expect(out.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+      'unclaimed_control_fact',
+    ]);
+    expect(out.diagnostics.map((diagnostic) => diagnostic.eventId)).toEqual(['evt-control']);
+    expect(out.diagnostics.some(isHardRuntimeEventReadModelDiagnostic)).toBe(false);
+  });
+
+  test('an unclaimed event that carries content stays hard', () => {
+    const out = projectRuntimeEventsToStoredMessages(
+      [
+        ev({
+          id: 'evt-future-content',
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'not_yet_projected', text: 'a reader would have seen this' } as never,
+        }),
+      ],
+      { runHeaders: [header] },
+    );
+
+    expect(out.messages).toEqual([]);
+    expect(out.diagnostics.map((diagnostic) => diagnostic.code)).toEqual(['unsupported_event']);
+    expect(out.diagnostics.every(isHardRuntimeEventReadModelDiagnostic)).toBe(true);
   });
 
   test('failed terminal RuntimeEvent maps to failed turn state when run header carries failure class', () => {
@@ -1124,6 +1552,122 @@ describe('projectRuntimeEventsToStoredMessages', () => {
   });
 });
 
+/**
+ * One reachable event per `RuntimeEventActions` field, each entry typed to its
+ * own key so it cannot drift onto another field or be filled with a placeholder.
+ *
+ * This is the premise the read model's soft path rests on. An unclaimed
+ * content-free event degrades the view instead of withholding it, which is only
+ * safe while every action a reader can meet is claimed — several of them
+ * (`permissionDecision`, `tokenUsage`, the terminal fact) do produce rows, and
+ * `runtime-event-backfill.ts` already writes a content-free event that becomes a
+ * visible `permission_decision`. The SessionEvent contract in ai-sdk-flow.test.ts
+ * only covers events built by `mapSessionEventToRuntimeEvent`; tool-runtime,
+ * terminal-run-commit and the backfill write RuntimeEvents directly. Keying this
+ * table on the action surface itself covers those paths too.
+ */
+type ActionCoverageSamples = {
+  [K in keyof Required<RuntimeEventActions>]: {
+    /** The action value under test, typed to its own key. */
+    action: Required<RuntimeEventActions>[K];
+    /** The rest of the event, as the field's real emitter writes it. */
+    event?: Partial<RuntimeEvent>;
+  };
+};
+
+const ACTION_COVERAGE_SAMPLES: ActionCoverageSamples = {
+  // `stateDelta` is an open record, so only named shapes are claimed and this
+  // entry covers the field, not its contents. A new key inside a state delta is
+  // out of reach of any contract keyed on the action surface.
+  stateDelta: { action: { continuationStart: true } },
+  artifactDelta: { action: { 'artifact-1': 42 } },
+  permissionRequest: {
+    action: {
+      kind: 'tool_permission',
+      requestId: 'coverage-request',
+      toolUseId: 'coverage-tool',
+      toolName: 'Read',
+      category: 'read',
+      reason: 'custom',
+      args: { path: '/tmp/a.txt' },
+      rememberForTurnAllowed: true,
+    },
+    event: { refs: { toolCallId: 'coverage-tool' } },
+  },
+  permissionDecision: {
+    action: { requestId: 'coverage-request', decision: 'allow', toolName: 'Read' },
+    event: { refs: { toolCallId: 'coverage-tool' } },
+  },
+  // The canonical outcome lives in InteractionStore, so a standalone acceptance
+  // reports an `incomplete_event`. That is a completeness diagnostic, not a
+  // coverage gap: the projection still claims the field.
+  permissionAnswerAccepted: {
+    action: { requestId: 'coverage-request' },
+    event: { author: 'user', refs: { toolCallId: 'coverage-tool' } },
+  },
+  permissionClosureAccepted: {
+    action: { requestId: 'coverage-request', reason: 'timed_out' },
+  },
+  userQuestionRequest: {
+    action: {
+      requestId: 'coverage-question',
+      toolUseId: 'coverage-question-tool',
+      questions: [{ question: 'Choose', options: [{ label: 'Extend' }] }],
+    },
+    event: { refs: { toolCallId: 'coverage-question-tool' } },
+  },
+  userQuestionAnswerAccepted: {
+    action: { requestId: 'coverage-question' },
+    event: { author: 'user', refs: { toolCallId: 'coverage-question-tool' } },
+  },
+  transferToAgent: { action: 'agent-b' },
+  // The terminal fact is one of the actions that does own a row.
+  endInvocation: { action: true },
+  tokenUsage: { action: { input: 10, output: 5 } },
+  toolDispatch: {
+    action: {
+      protocol: 't1_after_preflight_v1',
+      operationId: 'coverage-op',
+      providerToolCallId: 'coverage-tool',
+      toolName: 'Bash',
+      canonicalArgsHash: 'sha256:args',
+      recoveryMode: 'reconcile',
+    },
+    event: { refs: { toolCallId: 'coverage-tool', operationId: 'coverage-op' } },
+  },
+  toolRecovery: {
+    action: {
+      kind: 'maka.tool.reconcile_result',
+      version: 1,
+      payload: {
+        protocol: 'tool_reconcile_v1',
+        operationId: 'coverage-op',
+        observation: 'unreadable',
+        observationSchema: 'state_identity_v1',
+        observationDigest:
+          'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      },
+    },
+    event: { refs: { toolCallId: 'coverage-tool', operationId: 'coverage-op' } },
+  },
+  runtimeProtocol: { action: { toolBoundary: 't1_after_preflight_v1' } },
+};
+
+describe('RuntimeEventActions projection coverage', () => {
+  for (const [field, sample] of Object.entries(ACTION_COVERAGE_SAMPLES)) {
+    test(`actions.${field} projects without an unclaimed-event diagnostic`, () => {
+      const actions = { [field]: sample.action } as RuntimeEventActions;
+      // Guards an entry that names a field but leaves it absent at runtime.
+      expect(field in actions).toBe(true);
+      const out = projectRuntimeEventsToStoredMessages([ev({ ...sample.event, actions })], {
+        runHeaders: [header],
+      });
+
+      expect(out.diagnostics.filter(isUnclaimedRuntimeEventDiagnostic)).toEqual([]);
+    });
+  }
+});
+
 describe('compareRuntimeReadModelMessages', () => {
   test('accepts semantically equivalent projected and legacy messages despite id differences', () => {
     const projected = projectRuntimeEventsToStoredMessages(baseEvents(), { runHeaders: [header] });
@@ -1213,6 +1757,33 @@ describe('compareRuntimeReadModelMessages', () => {
     expect(compareRuntimeReadModelMessages(projected, legacy).compatible).toBe(false);
   });
 
+  test('rejects mismatched replay-critical token usage fields', () => {
+    const usage: Extract<StoredMessage, { type: 'token_usage' }> = {
+      type: 'token_usage',
+      id: 'usage-1',
+      turnId,
+      ts,
+      input: 100,
+      output: 25,
+      runtimeSteps: 3,
+      contextRemaining: 9000,
+      providerRequestTraceId: 'provider-trace-1',
+    };
+
+    expect(
+      compareRuntimeReadModelMessages([usage], [{ ...usage, runtimeSteps: 4 }]).compatible,
+    ).toBe(false);
+    expect(
+      compareRuntimeReadModelMessages([usage], [{ ...usage, contextRemaining: 8000 }]).compatible,
+    ).toBe(false);
+    expect(
+      compareRuntimeReadModelMessages(
+        [usage],
+        [{ ...usage, providerRequestTraceId: 'provider-trace-2' }],
+      ).compatible,
+    ).toBe(false);
+  });
+
   test('rejects missing tool result and assistant text cases', () => {
     const projected = projectRuntimeEventsToStoredMessages(baseEvents(), { runHeaders: [header] });
     const missing = projected.messages.filter(
@@ -1252,7 +1823,21 @@ class ReadOnlyStore implements SessionStore {
 
   constructor(private readonly messages: StoredMessage[]) {}
 
+  async createSubagent(
+    _input: CreateSessionInput,
+  ): Promise<{ header: SessionHeader; created: boolean }> {
+    throw new Error('not implemented');
+  }
+
   async create(_input: CreateSessionInput): Promise<SessionHeader> {
+    throw new Error('not implemented');
+  }
+
+  async setExecutionBoundaryKind(): Promise<never> {
+    throw new Error('not implemented');
+  }
+
+  async readExecutionBoundary(): Promise<never> {
     throw new Error('not implemented');
   }
 

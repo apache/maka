@@ -4,64 +4,15 @@
   min-height: 0;
   height: 100%;
   display: grid;
-  /* 5 rows: header / nav / view-mode toggle / list (scroll) / footer.
-     The toggle row was missing after the grouping control was inserted —
-     with only 4 tracks the 1fr row collapsed to 0 and the toggle
-     overflowed on top of the list's 会话 group label. */
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  /* 4 rows: hub nav / session-list heading / list / footer. The panel used to
+     carry a fifth leading row holding an empty `<header>` whose only job was to
+     host a blank drag strip, and after that a `padding-top` clearing the drag
+     band. Both are gone: the titlebar is its own grid row in the shell, so this
+     panel starts below it and has nothing to clear. */
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   overflow: hidden;
   background: transparent;
   contain: layout paint style;
-}
-
-.maka-session-panel[data-collapsed="true"] {
-  /* Collapsed rail hides the view-mode toggle (display: none above). A
-     display:none item does NOT participate in grid layout, so reserving a
-     5th row for it drops the footer into the minmax(0, 1fr) track. Keep the
-     4-row layout matching the four participating children
-     (header / nav / list / footer). */
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
-}
-
-.maka-session-panel[data-content="module"] {
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
-}
-
-.maka-session-panel-header {
-  display: grid;
-  gap: var(--space-1);
-  padding: var(--space-1-5) var(--space-1-5) var(--space-1-5);
-  border-bottom: 0;
-}
-
-.maka-sidebar-drag-strip {
-  min-height: 34px;
-  margin-left: calc(
-    var(--maka-sidebar-topbar-offset-x) + var(--maka-sidebar-topbar-button-size) +
-      var(--maka-sidebar-topbar-button-size) + var(--maka-sidebar-topbar-gap) +
-      var(--maka-sidebar-topbar-gap)
-  );
-  box-sizing: border-box;
-  -webkit-app-region: drag;
-}
-
-.maka-session-panel[data-collapsed="true"] .maka-session-panel-footer {
-  justify-items: center;
-  padding-inline: var(--space-2);
-}
-
-.maka-session-panel[data-collapsed="true"] .maka-sidebar-settings-button > span {
-  display: none;
-}
-
-.maka-session-panel[data-collapsed="true"] .maka-session-list {
-  border-top: 0;
-}
-.maka-session-panel[data-collapsed="true"] .maka-list-stack,
-.maka-session-panel[data-collapsed="true"] .maka-empty-state {
-  /* Justified: collapsed mode must suppress the shared list / empty-state
-     layout regardless of the primitive's own display utilities. */
-  display: none !important;
 }
 
 .maka-session-list {
@@ -89,7 +40,9 @@
 }
 
 .maka-session-panel-footer {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-1-5);
   align-items: center;
   padding: var(--space-2) var(--space-2) var(--space-2);
   border-top: 0;
@@ -104,6 +57,66 @@
      icon axis and 16px chrome size (icon-system contract). */
   grid-template-columns: var(--icon-size) minmax(0, 1fr);
   align-items: center;
+}
+
+.maka-sidebar-update-button {
+  position: relative;
+  min-width: 0;
+  height: 34px;
+  display: inline-grid;
+  grid-template-columns: auto;
+  align-items: center;
+  gap: var(--space-1);
+  border: 0;
+  border-radius: var(--radius-pill);
+  padding: 0 var(--space-3);
+  background: var(--control);
+  color: var(--control-foreground);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--leading-none);
+  box-shadow: none;
+  overflow: hidden;
+  -webkit-app-region: no-drag;
+  transition:
+    background-color var(--duration-base) var(--ease-out-strong),
+    transform var(--duration-quick) var(--ease-out-strong);
+}
+
+.maka-sidebar-update-button > span:not(.maka-sidebar-update-progress) {
+  position: relative;
+}
+
+.maka-sidebar-update-button[data-update-state="downloading"] {
+  cursor: default;
+  background: oklch(from var(--control) calc(l + 0.04) calc(c * 0.68) h);
+  opacity: 1;
+}
+
+.maka-sidebar-update-button[data-update-state="downloaded"] {
+  background: var(--control);
+}
+
+.maka-sidebar-update-progress {
+  position: absolute;
+  inset: 0;
+  transform: scaleX(var(--maka-update-progress, 0));
+  transform-origin: left center;
+  background: oklch(from var(--control) calc(l - 0.08) c h);
+  transition: transform var(--duration-base) var(--ease-out-strong);
+}
+
+.maka-sidebar-update-button:hover {
+  background: oklch(from var(--control) calc(l - 0.04) c h);
+}
+
+.maka-sidebar-update-button:disabled:hover {
+  background: oklch(from var(--control) calc(l + 0.04) calc(c * 0.68) h);
+}
+
+.maka-sidebar-update-button:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
 }
 
 /* Color intentionally not declared: nav glyphs are tinted by the
@@ -149,62 +162,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-.maka-sidebar-nav-group {
-  display: grid;
-  gap: 1px;
-}
-
-.maka-nav-extension-toggle[data-expanded="true"] {
-  background: var(--state-selected-bg);
-  color: var(--foreground);
-}
-
-.maka-nav-extension-glyph {
-  position: relative;
-  width: var(--icon-size);
-  height: var(--icon-size);
-}
-
-.maka-nav-extension-glyph > .maka-nav-icon {
-  position: absolute;
-  inset: 0;
-  transition: opacity var(--duration-quick) var(--ease-out-strong);
-}
-
-.maka-nav-extension-hover-icon,
-.maka-nav-extension-open-icon,
-.maka-nav-extension-toggle[data-expanded="true"] .maka-nav-extension-default-icon {
-  opacity: 0;
-}
-
-.maka-nav-extension-toggle:not([data-expanded="true"]):is(:hover, :focus-visible) .maka-nav-extension-default-icon {
-  opacity: 0;
-}
-
-.maka-nav-extension-toggle:not([data-expanded="true"]):is(:hover, :focus-visible) .maka-nav-extension-hover-icon,
-.maka-nav-extension-toggle[data-expanded="true"] .maka-nav-extension-open-icon {
-  opacity: 1;
-}
-
-.maka-sidebar-nav-tree {
-  display: grid;
-  gap: 1px;
-  margin: var(--space-0-5) 0 var(--space-1) calc(var(--icon-size) / 2);
-  padding-left: calc(var(--space-3) + var(--icon-size) / 2);
-  border-left: var(--border-width-hairline) solid var(--border);
-}
-
-.maka-nav-tree-row {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.maka-nav-tree-row > span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .maka-nav-count {
   min-width: 16px;
   height: 16px;
@@ -215,29 +172,6 @@
   padding: 0 var(--space-1);
   font-size: var(--font-size-caption);
   font-variant-numeric: tabular-nums;
-}
-
-.maka-session-panel[data-collapsed="true"] .maka-sidebar-modules {
-  padding: var(--space-1) var(--space-1);
-}
-
-.maka-session-panel[data-collapsed="true"] .maka-nav-row {
-  grid-template-columns: 1fr;
-  padding: var(--space-1-5) 0;
-  place-items: center;
-}
-
-.maka-session-panel[data-collapsed="true"] .maka-nav-row span:nth-child(2),
-.maka-session-panel[data-collapsed="true"] .maka-nav-row small {
-  display: none;
-}
-
-.maka-session-panel[data-collapsed="true"] .maka-sidebar-nav-tree {
-  display: none;
-}
-
-.maka-session-panel[data-collapsed="true"] .maka-view-mode-toggle {
-  display: none;
 }
 
 .maka-list-stack {
@@ -272,15 +206,17 @@
 }
 
 .maka-list-group[data-variant="project"] + .maka-list-group[data-variant="project"] {
-  margin-top: var(--space-3);
+  margin-top: 0;
   padding-top: 0;
   border-top: 0;
 }
 
-/* Group label — section header for session groups. #546 PR7: unified with
-   project-heading on font-size-ui + muted-foreground + medium so all three
-   group-header variants (plain label / collapsible toggle / project heading)
-   share one visual rhythm, distinguished from session rows by color not size. */
+.maka-list-group[data-variant="project"][data-expanded="true"] + .maka-list-group[data-variant="project"] {
+  margin-top: var(--space-3);
+}
+
+/* Group label — a quiet, non-interactive divider for flat conversations.
+   Project disclosures use their own heading control below. */
 .maka-list-group-label {
   display: flex;
   align-items: baseline;
@@ -307,6 +243,96 @@
   font-size: var(--font-size-ui);
   font-weight: var(--font-weight-medium);
   text-align: left;
+}
+
+.maka-list-project-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--h-control-lg);
+  align-items: center;
+  min-width: 0;
+}
+
+.maka-list-project-heading:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.maka-list-project-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maka-list-project-count {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+.maka-list-project-menu-trigger {
+  justify-self: end;
+}
+
+.maka-list-group[data-unavailable="true"] .maka-list-project-heading {
+  color: var(--muted-foreground);
+}
+
+.maka-list-group[data-unavailable="true"] .maka-list-project-heading [aria-label] {
+  color: var(--warning-foreground, var(--muted-foreground));
+}
+
+.maka-list-project-rename input {
+  min-width: 0;
+  width: 100%;
+  height: var(--h-control-sm);
+  border: var(--border-width-hairline) solid var(--border-strong);
+  border-radius: var(--radius-control);
+  outline: none;
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+  padding: 0 var(--space-1);
+}
+
+.maka-list-project-rename input:focus-visible {
+  border-color: var(--focus-ring);
+  box-shadow: 0 0 0 var(--focus-ring-width) color-mix(in srgb, var(--focus-ring) 24%, transparent);
+}
+
+.maka-list-archived-projects {
+  margin-top: var(--space-3);
+  padding-top: var(--space-2);
+  border-top: var(--border-width-hairline) solid var(--border);
+}
+
+.maka-list-archived-projects-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  width: 100%;
+  min-height: var(--h-control-lg);
+  padding: 0 var(--space-1-5);
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: var(--font-size-ui);
+  text-align: left;
+}
+
+.maka-list-archived-projects-heading .maka-list-project-count {
+  margin-left: auto;
+}
+
+.maka-list-archived-projects-heading[aria-expanded="true"] > svg {
+  transform: rotate(90deg);
+}
+
+.maka-list-row-worktree-icon {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
 }
 
 /* The semantic project heading owns its composite row states. Only the
@@ -362,6 +388,21 @@
   color: var(--foreground);
   overflow: hidden;
   transition: background-color var(--duration-base) var(--ease-out-strong);
+}
+
+.maka-list-session-children {
+  margin-inline-start: var(--space-2);
+  padding-inline-start: var(--space-1);
+  border-inline-start: var(--border-width-hairline) solid var(--border);
+}
+
+.maka-list-row[data-subagent="true"] {
+  background: var(--selection);
+}
+
+.maka-list-row-subagent-icon {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
 }
 
 .maka-list-row:hover {
@@ -491,25 +532,22 @@
 }
 
 
-/* View-mode toggle row (按状态 / 按项目) — chrome comes from the shared
-   `.maka-segmented` recipe in styles/segmented.css (same control family
-   as the daily-review range tabs); this wrapper only owns sidebar
-   spacing. The retired `.maka-view-mode-btn` family referenced tokens
-   that never existed in maka-tokens (--surface-secondary/-primary/
-   -tertiary, --foreground-primary, --shadow-sm), so its chrome rendered
-   invisible. */
-.maka-view-mode-toggle {
+/* The session-list heading carries grouping as a quiet menu action. The
+   selected mode is already visible in the groups below, so the previous
+   full-width segmented control added permanent chrome without information. */
+.maka-session-list-toolbar {
   display: flex;
-  padding: 0 var(--space-2) var(--space-1);
+  min-height: var(--h-control-lg);
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-2) var(--space-0-5);
 }
 
-.maka-view-mode-toggle .maka-view-mode-segmented {
-  flex: 1 1 auto;
-  display: flex;
-}
-
-.maka-view-mode-toggle .maka-view-mode-segmented > button {
-  flex: 1 1 0;
+.maka-session-list-heading {
+  padding-left: var(--space-1-5);
+  color: var(--muted-foreground);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-semibold);
 }
 
 /* List-row status family — merged back from onboarding.css — issue #546 PR3. */
@@ -694,55 +732,32 @@
   animation: none;
 }
 
-/* Group label as a toggle button (archived group). Matches existing
- * maka-list-group-label tone so the toggle doesn't visually fight
- * non-collapsible groups. */
-.maka-list-group-toggle {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: var(--space-1-5);
-  width: 100%;
-  background: transparent;
-  border: 0;
-  text-align: left;
-}
-.maka-list-group-chevron {
-  transition: transform var(--duration-base) var(--ease-out-strong);
-}
-:is(.maka-list-group-toggle, .maka-list-project-heading, .maka-list-project-more) {
+:is(.maka-list-project-heading, .maka-list-project-more) {
   transition:
     background-color var(--duration-base) var(--ease-out-strong),
     color var(--duration-base) var(--ease-out-strong),
     opacity var(--duration-base) var(--ease-out-strong);
 }
-:is(.maka-list-group-toggle, .maka-list-project-heading, .maka-list-project-more):hover {
+:is(.maka-list-project-heading, .maka-list-project-more):hover {
   background: var(--state-hover-bg);
   color: var(--foreground);
 }
-:is(.maka-list-group-toggle, .maka-list-project-heading, .maka-list-project-more):active {
+:is(.maka-list-project-heading, .maka-list-project-more):active {
   background: var(--state-selected-bg);
 }
-:is(.maka-list-group-toggle, .maka-list-project-heading, .maka-list-project-more):focus-visible {
+:is(.maka-list-project-heading, .maka-list-project-more):focus-visible {
   outline: var(--focus-ring-width) solid var(--focus-ring);
   outline-offset: var(--focus-ring-offset);
   border-radius: var(--radius-control);
 }
-:is(.maka-list-group-toggle, .maka-list-project-heading, .maka-list-project-more):disabled {
+:is(.maka-list-project-heading, .maka-list-project-more):disabled {
   cursor: not-allowed;
   opacity: var(--opacity-disabled);
 }
-:is(.maka-list-group-toggle, .maka-list-project-heading, .maka-list-project-more):disabled:hover {
+:is(.maka-list-project-heading, .maka-list-project-more):disabled:hover {
   background: transparent;
   color: var(--muted-foreground);
 }
-.maka-list-group-count {
-  font-variant-numeric: tabular-nums;
-  color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
-}
-
 .maka-list-row-stale-pill {
   flex-shrink: 0;
   /* PR-UI-3: drop margin-left, let parent's gap (6px) handle spacing

@@ -1,10 +1,10 @@
 import type { PlanReminder } from '@maka/core';
-import { Blocks, CalendarCheck, ChevronDown, ChevronRight, Settings, SquarePen, Timer } from './icons.js';
-import type { NavSelection } from './nav-selection.js';
+import type { CSSProperties } from 'react';
+import { Blocks, Settings, SquarePen, Timer } from './icons.js';
+import type { NavModuleMemory, NavSelection } from './nav-selection.js';
 import { cn } from './ui.js';
 import { cva } from 'class-variance-authority';
 import { Button as BaseButton } from '@base-ui/react/button';
-import { useId, useState } from 'react';
 import { useUiLocale } from './locale-context.js';
 import { getShellControlsCopy } from './shell-controls-copy.js';
 
@@ -38,8 +38,6 @@ const navRowVariants = cva(
   },
 );
 
-type ModuleNavId = 'daily-review' | 'skills' | 'mcp' | 'automations';
-
 const settingsButtonClass =
   'w-full min-w-0 gap-2 rounded-sm border-0 bg-transparent px-1.5 py-1.5 ' +
   'text-left text-sm font-medium text-[var(--foreground-secondary)] ' +
@@ -49,27 +47,18 @@ const settingsButtonClass =
 export function SessionSidebarNav(props: {
   selection: NavSelection;
   planReminders?: PlanReminder[];
+  moduleMemory?: NavModuleMemory;
   onSelect(selection: NavSelection): void;
   onNew(): void;
 }) {
   const locale = useUiLocale();
   const copy = getShellControlsCopy(locale).navigation;
-  const extensionsTreeId = useId();
-  const [extensionsOpen, setExtensionsOpen] = useState(true);
-  const moduleNavLabel: Record<ModuleNavId, string> = {
-    automations: copy.automations,
-    skills: copy.skills,
-    mcp: copy.mcp,
-    'daily-review': copy.dailyReview,
-  };
-  const isModuleActive = (id: ModuleNavId) => props.selection.section === id;
+  const extensionsActive = props.selection.section === 'extensions';
+  const automationsActive = props.selection.section === 'automations';
+  const moduleMemory = props.moduleMemory ?? { extensions: 'skills', automations: 'plan-reminders' };
   const activePlanReminderCount = (props.planReminders ?? []).filter(
     (reminder) => reminder.status !== 'completed',
   ).length;
-
-  function selectModule(id: ModuleNavId) {
-    props.onSelect({ section: id });
-  }
 
   return (
     <nav className="maka-sidebar-modules" aria-label={copy.mainLabel}>
@@ -85,74 +74,27 @@ export function SessionSidebarNav(props: {
           ⌘ N
         </kbd>
       </BaseButton>
-      <div className="maka-sidebar-nav-group" data-open={extensionsOpen ? 'true' : 'false'}>
-        <BaseButton
-          className={cn('maka-nav-row maka-nav-extension-toggle', navRowVariants())}
-          data-expanded={extensionsOpen ? 'true' : 'false'}
-          aria-expanded={extensionsOpen}
-          aria-controls={extensionsTreeId}
-          type="button"
-          onClick={() => setExtensionsOpen((open) => !open)}
-        >
-          <span className="maka-nav-extension-glyph" aria-hidden="true">
-            <Blocks className="maka-nav-icon maka-nav-extension-default-icon" />
-            <ChevronRight className="maka-nav-icon maka-nav-extension-hover-icon" />
-            <ChevronDown className="maka-nav-icon maka-nav-extension-open-icon" />
-          </span>
-          <span>{copy.extensions}</span>
-        </BaseButton>
-        <div
-          id={extensionsTreeId}
-          className="maka-sidebar-nav-tree"
-          role="group"
-          aria-label={copy.extensions}
-          hidden={!extensionsOpen}
-        >
-          <BaseButton
-            className={cn('maka-nav-row maka-nav-tree-row', navRowVariants())}
-            data-active={isModuleActive('skills')}
-            aria-current={isModuleActive('skills') ? 'page' : undefined}
-            aria-label={moduleNavLabel.skills}
-            type="button"
-            onClick={() => selectModule('skills')}
-          >
-            <span>{moduleNavLabel.skills}</span>
-          </BaseButton>
-          <BaseButton
-            className={cn('maka-nav-row maka-nav-tree-row', navRowVariants())}
-            data-active={isModuleActive('mcp')}
-            aria-current={isModuleActive('mcp') ? 'page' : undefined}
-            aria-label={moduleNavLabel.mcp}
-            type="button"
-            onClick={() => selectModule('mcp')}
-          >
-            <span>{moduleNavLabel.mcp}</span>
-          </BaseButton>
-        </div>
-      </div>
       <BaseButton
         className={cn('maka-nav-row', navRowVariants())}
-        data-active={isModuleActive('daily-review')}
-        aria-current={isModuleActive('daily-review') ? 'page' : undefined}
-        aria-label={moduleNavLabel['daily-review']}
+        data-active={extensionsActive}
+        aria-current={extensionsActive ? 'page' : undefined}
+        aria-label={copy.extensions}
         type="button"
-        onClick={() => selectModule('daily-review')}
+        onClick={() => props.onSelect({ section: 'extensions', module: moduleMemory.extensions })}
       >
-        <CalendarCheck className="maka-nav-icon" aria-hidden="true" />
-        <span>{moduleNavLabel['daily-review']}</span>
+        <Blocks className="maka-nav-icon" aria-hidden="true" />
+        <span>{copy.extensions}</span>
       </BaseButton>
       <BaseButton
         className={cn('maka-nav-row', navRowVariants())}
-        data-active={isModuleActive('automations')}
-        aria-current={isModuleActive('automations') ? 'page' : undefined}
+        data-active={automationsActive}
+        aria-current={automationsActive ? 'page' : undefined}
         type="button"
-        onClick={() => selectModule('automations')}
-        aria-label={
-          activePlanReminderCount > 0 ? copy.pendingReminders(activePlanReminderCount) : moduleNavLabel.automations
-        }
+        onClick={() => props.onSelect({ section: 'automations', module: moduleMemory.automations })}
+        aria-label={activePlanReminderCount > 0 ? copy.pendingReminders(activePlanReminderCount) : copy.automations}
       >
         <Timer className="maka-nav-icon" aria-hidden="true" />
-        <span>{moduleNavLabel.automations}</span>
+        <span>{copy.automations}</span>
         {activePlanReminderCount > 0 && (
           <small className="maka-nav-count" aria-hidden="true">
             {activePlanReminderCount}
@@ -163,9 +105,32 @@ export function SessionSidebarNav(props: {
   );
 }
 
-export function SessionSidebarFooter(props: { onOpenSettings(): void }) {
+export type SidebarUpdateReminder = {
+  state: 'available' | 'downloading' | 'downloaded' | 'error';
+  latestVersion: string;
+  progressPercent?: number;
+};
+
+export function SessionSidebarFooter(props: {
+  updateReminder?: SidebarUpdateReminder;
+  onOpenSettings(): void;
+  onOpenUpdate?(): void;
+}) {
   const locale = useUiLocale();
   const copy = getShellControlsCopy(locale).navigation;
+  const updatePercent = Math.round(props.updateReminder?.progressPercent ?? 0);
+  const updateLabel = props.updateReminder?.state === 'downloaded'
+    ? copy.restartUpdate
+    : props.updateReminder?.state === 'downloading'
+      ? `${updatePercent}%`
+      : copy.update;
+  const updateTitle = props.updateReminder?.state === 'downloaded'
+    ? copy.updateDownloaded(props.updateReminder.latestVersion)
+    : props.updateReminder?.state === 'downloading'
+      ? copy.downloadingUpdate(updatePercent)
+      : props.updateReminder
+        ? copy.updateAvailable(props.updateReminder.latestVersion)
+        : copy.update;
   return (
     <footer className="maka-session-panel-footer">
       <BaseButton
@@ -178,6 +143,21 @@ export function SessionSidebarFooter(props: { onOpenSettings(): void }) {
         <Settings className="maka-nav-icon" aria-hidden="true" />
         <span>{copy.settings}</span>
       </BaseButton>
+      {props.updateReminder && props.onOpenUpdate && (
+        <BaseButton
+          className="maka-sidebar-update-button"
+          data-update-state={props.updateReminder.state}
+          style={{ '--maka-update-progress': String(Math.max(0, Math.min(100, props.updateReminder.progressPercent ?? 0)) / 100) } as CSSProperties}
+          type="button"
+          onClick={props.onOpenUpdate}
+          disabled={props.updateReminder.state === 'downloading'}
+          aria-label={updateTitle}
+          title={updateTitle}
+        >
+          {props.updateReminder.state === 'downloading' && <span className="maka-sidebar-update-progress" aria-hidden="true" />}
+          <span>{updateLabel}</span>
+        </BaseButton>
+      )}
     </footer>
   );
 }

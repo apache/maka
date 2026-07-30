@@ -1,5 +1,5 @@
-/* Settings surface/modal container layout. Was settings/form.css; the runtime
-   permission-dialog block moved to permission-dialog.css — issue #546 PR1. */
+/* Settings surface/modal container layout. Runtime interaction prompts live in
+   interaction-prompts.css. */
 .settingsSurface {
   min-height: 0;
   height: 100%;
@@ -108,6 +108,10 @@
 
 .settingsPasswordField input {
   width: 100%;
+  /* #1364: `width: 100%` alone cannot shrink an input below its intrinsic
+     `size` width (~180px), so at the 480px window floor the key field
+     overflowed its row by ~90px. */
+  min-width: 0;
   padding-right: var(--space-16);
 }
 

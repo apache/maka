@@ -19,10 +19,17 @@
  */
 
 import { strict as assert } from 'node:assert';
+import { readFile } from 'node:fs/promises';
+import { join, relative } from 'node:path';
 import { describe, it } from 'node:test';
 import { readRendererShellSources } from './renderer-shell-source-helpers.js';
 import { readSettingsCombinedSource } from './settings-contract-source-helpers.js';
-import { readMainProcessCombinedSource, readMainTsSource } from './main-process-contract-source-helpers.js';
+import {
+  REPO_ROOT,
+  mainProcessSourceFiles,
+  readMainTsSource,
+  readSessionsIpcSource,
+} from './main-process-contract-source-helpers.js';
 
 describe('default permission mode contract', () => {
   it('renderer always omits permissionMode when creating sessions', async () => {
@@ -40,53 +47,76 @@ describe('default permission mode contract', () => {
     );
   });
 
-  it('main.ts routes every session-creation fallback through the extracted resolver (single authority)', async () => {
-    // The resolver lives in ./permission-mode-default.ts as an injected pure
-    // function so its never-rejects fallback is unit-testable in isolation
-    // (see permission-mode-default.test.ts). main.ts must import it and route
-    // EVERY permission-mode fallback through it by injecting settingsStore.get
-    // — no inline definition and no unguarded inline settings read may remain.
-    // Read main.ts only (not the combined source): the resolver now lives in
-    // ./permission-mode-default.ts, which is part of the combined list, and
-    // its `export async function resolveDefaultPermissionMode` would falsely
-    // trip the no-inline assertion below.
-    const src = await readMainTsSource();
+  /**
+   * What the resolution DOES is covered behaviorally in
+   * create-session-input.test.ts — the mode's boundary outranking both the
+   * request and the configured default, the refusal of a directly-requested
+   * `explore`, the never-rejects settings fallback. The only thing left for a
+   * source contract is the one thing behavior cannot show: that no SECOND
+   * place resolves a permission-mode default.
+   */
+  it('exactly one place in the main process resolves a permission-mode default', async () => {
+    // Read EVERY main-process module, not the curated combined source. This
+    // assertion is now the only guard on the single-authority invariant — the
+    // two regexes that used to sit beside it became behavioral tests in
+    // create-session-input.test.ts — and the curated list covered 47 of ~100
+    // files, so a second resolver in an unlisted module would leave it green.
+    // A count over a hand-maintained subset is a count of the subset.
+    //
+    // RECURSIVE, and that word is load-bearing: the first version of this fix
+    // read the top level only, which is 100 of the 133 production modules.
+    // `browser/`, `oauth/`, `search/`, `e2e-fixture/` and three more sit below
+    // it and do write `permissionMode`, so a second resolver there was exactly
+    // the unlisted module the rewrite was supposed to stop being possible.
+    const modules = (await mainProcessSourceFiles()).map((path) => relative(REPO_ROOT, path));
+    const sources = await Promise.all(
+      modules.map(async (name) => ({ name, source: await readFile(join(REPO_ROOT, name), 'utf8') })),
+    );
 
-    assert.match(
-      src,
-      /import \{ resolveDefaultPermissionMode \} from '\.\/permission-mode-default\.js';/,
-      'main.ts must import the extracted resolver',
+    // Call sites only — the definition in permission-mode-default.ts is
+    // `export async function resolveDefaultPermissionMode(`, excluded by the
+    // absence of a preceding `function `.
+    const callSites = sources.flatMap(({ name, source }) =>
+      (source.match(/(?<!function )resolveDefaultPermissionMode\(/g) ?? []).map(() => name),
+    );
+    assert.deepEqual(
+      callSites,
+      ['apps/desktop/src/main/create-session-input.ts'], // applied by sessions:create
+      `every permission-mode fallback must route through the one resolver call in create-session-input.ts (found: ${callSites.join(', ') || 'none'})`,
+    );
+
+    const inlineReads = sources
+      .filter(({ source }) => /\?\? \(await settingsStore\.get\(\)\)\.chatDefaults\.permissionMode/.test(source))
+      .map(({ name }) => name);
+    assert.deepEqual(
+      inlineReads,
+      [],
+      `no unguarded inline settings read may remain as a permission-mode fallback (found in: ${inlineReads.join(', ')})`,
     );
     assert.doesNotMatch(
-      src,
+      await readMainTsSource(),
       /async function resolveDefaultPermissionMode/,
       'the resolver must live in ./permission-mode-default.ts, not inline in main.ts (so its never-rejects fallback is unit-testable)',
     );
+  });
 
-    // Both sessions:create branches (fake + ai-sdk) live in sessions-ipc-main.ts
-    // and quick chat stays in main.ts — but all must inject settingsStore.get
-    // into the resolver, proving they route through the single authority
-    // instead of reading settings inline. Count across the combined main-process
-    // source so the split does not weaken the invariant.
-    const combined = await readMainProcessCombinedSource();
-    const routedCalls = combined.match(/resolveDefaultPermissionMode\(\(\) => settingsStore\.get\(\)\)/g) ?? [];
-    assert.ok(
-      routedCalls.length >= 3, // fake branch + ai-sdk branch + quick chat
-      `all session-creation fallbacks must route through resolveDefaultPermissionMode(() => settingsStore.get()) (found ${routedCalls.length}, expected >= 3)`,
+  /**
+   * #1433: the derivation is what `quickChat:start` existed for. It has to
+   * stay a pure function the handler applies, not drift back into the
+   * `ipcMain.handle` closure where no test can call it — which is how the
+   * invariants above ended up asserted by regex in the first place.
+   */
+  it('sessions:create applies the resolution rather than re-deriving it inline', async () => {
+    const src = await readSessionsIpcSource();
+    assert.match(
+      src,
+      /await resolveCreateSessionInput\(input, \{ readSettings: \(\) => settingsStore\.get\(\) \}\)/,
+      'sessions:create must apply the extracted resolution, injecting the settings read',
     );
     assert.doesNotMatch(
       src,
-      /\?\? \(await settingsStore\.get\(\)\)\.chatDefaults\.permissionMode/,
-      'no unguarded inline settings read may remain as a permission-mode fallback',
-    );
-  });
-
-  it('quick chat resolves the default in parallel with the connection check', async () => {
-    const src = await readMainTsSource();
-    assert.match(
-      src,
-      /await Promise\.all\(\[\s*getReadyConnection\(input\.defaultConnectionSlug, input\.defaultModel\),\s*input\.mode === 'deep_research'/,
-      'quick chat must not serialize the settings read behind getReadyConnection -- it sits on the first-message latency path',
+      /isChatDefaultPermissionMode|DEEP_RESEARCH_SESSION_LABEL/,
+      'the handler must not re-derive a permission boundary or a mode label of its own',
     );
   });
 
@@ -114,6 +144,22 @@ describe('default permission mode contract', () => {
       /setDefaultPermissionMode\(next\.chatDefaults\?\.permissionMode \?\? 'ask'\);/,
       'closing Settings must re-read chatDefaults.permissionMode so the composer chip reflects the change',
     );
+  });
+
+  it('requires explicit confirmation before making Bypass the new-session default', async () => {
+    const src = await readFile(
+      join(REPO_ROOT, 'apps/desktop/src/renderer/settings/general-settings-page.tsx'),
+      'utf8',
+    );
+    const persist =
+      src.match(/async function persistPermissionMode\([\s\S]*?\n  \}/)?.[0] ?? '';
+
+    assert.match(
+      persist,
+      /nextMode === 'bypass'[\s\S]*props\.permissionMode !== 'bypass'[\s\S]*toast\.confirm\(/,
+    );
+    assert.match(persist, /destructive: true/);
+    assert.match(persist, /releaseSave\(\);[\s\S]*return;/);
   });
 });
 

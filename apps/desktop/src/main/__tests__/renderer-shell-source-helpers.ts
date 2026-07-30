@@ -7,7 +7,7 @@ const RENDERER_ROOT = resolve(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer');
 const sourcePaths = [
   'main.tsx',
   'app.tsx',
-  'app-shell-quick-chat-actions.ts',
+  'app-shell-session-start-actions.ts',
   'app-shell-layout-actions.ts',
   'app-shell-daily-review-bridge.ts',
   'app-shell-daily-review-actions.ts',
@@ -43,7 +43,6 @@ const sourcePaths = [
   'use-shell-memory-pill.ts',
   'use-shell-layout.ts',
   'use-settings-modal.ts',
-  'onboarding-empty-state.tsx',
   'chat-message-surface.tsx',
   'chat-composer-region.tsx',
   'chat-workbar.tsx',

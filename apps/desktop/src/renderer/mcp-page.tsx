@@ -13,6 +13,7 @@ import {
   InputGroupAddon,
   InputGroupInput,
   PageHeader,
+  type ModuleHubHeader,
   SettingsSwitch as Switch,
   TabsList,
   TabsPanel,
@@ -65,7 +66,7 @@ const MIN_INSTALL_INDICATOR_MS = 500;
 
 type InstallPhase = 'installing' | 'cancelling';
 
-export function McpPage() {
+export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   const locale = useUiLocale();
   const copy = getMcpCopy(locale);
   const catalog = getMcpCatalog(locale);
@@ -263,12 +264,14 @@ export function McpPage() {
   }
 
   return (
-    <main className="maka-main detailPane maka-module-main maka-mcp-page agents-chat-panel" data-module="mcp" aria-label="MCP">
+    <main className="maka-main detailPane maka-module-main maka-mcp-page agents-chat-panel" data-maka-contract="module-main" data-module="mcp" aria-label={props.hubHeader?.title ?? 'MCP'}>
       <PageHeader
         className="maka-module-main-header"
         as="h2"
-        title="MCP"
-        subtitle={copy.page.subtitle}
+        title={props.hubHeader?.title ?? 'MCP'}
+        subtitle={props.hubHeader?.subtitle ?? copy.page.subtitle}
+        badge={props.hubHeader?.badge}
+        headingRowClassName={props.hubHeader ? 'maka-module-hub-heading' : undefined}
         actions={
           <div className="maka-module-main-actions" role="group" aria-label={copy.page.actionsAria}>
             <Button variant="secondary" onClick={() => void reload()} disabled={busy === 'load'}>

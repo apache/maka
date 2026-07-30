@@ -1,12 +1,12 @@
 import { redactSecrets } from '@maka/core';
-import type { LlmConnection } from '@maka/core/llm-connections';
+import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import {
   GITHUB_COPILOT_API_VERSION,
   GITHUB_COPILOT_COMPAT_HEADERS,
 } from './subscription-credentials.js';
 
 export interface SubscriptionModelFetchInput {
-  connection: LlmConnection;
+  connection: RuntimeExecutionConnection;
   sessionId: string;
   modelId: string;
   fetchFn?: typeof fetch;
@@ -161,15 +161,73 @@ async function checkedOpenAiCodexFetch(
   url: Parameters<typeof fetch>[0],
   init?: Parameters<typeof fetch>[1],
 ): Promise<Response> {
-  const response = await fetchFn(url, init);
-  if (!response.ok) {
+  const edgeRetryDelaysMs = [2_000, 10_000, 30_000] as const;
+  for (let retry = 0; ; retry += 1) {
+    const response = await fetchFn(url, init);
+    if (response.ok) return response;
     const detail = await response
       .clone()
       .text()
       .catch(() => '');
+    if (
+      edgeRetryDelaysMs[retry] !== undefined &&
+      isReplayableOpenAiCodexRequest(url, init) &&
+      isTransientOpenAiCodexEdgeRejection(response, detail)
+    ) {
+      await abortableDelay(
+        openAiCodexRetryAfterMs(response, edgeRetryDelaysMs[retry] ?? 30_000),
+        effectiveOpenAiCodexRequestSignal(url, init),
+      );
+      continue;
+    }
     throw new Error(formatOpenAiCodexHttpError(response.status, detail));
   }
-  return response;
+}
+
+function isReplayableOpenAiCodexRequest(
+  url: Parameters<typeof fetch>[0],
+  init?: Parameters<typeof fetch>[1],
+): boolean {
+  if (typeof init?.body === 'string') return true;
+  if (init?.body != null) return false;
+  return !(url instanceof Request) || url.body === null;
+}
+
+function effectiveOpenAiCodexRequestSignal(
+  url: Parameters<typeof fetch>[0],
+  init?: Parameters<typeof fetch>[1],
+): AbortSignal | null | undefined {
+  if (init?.signal !== undefined) return init.signal;
+  return url instanceof Request ? url.signal : undefined;
+}
+
+function isTransientOpenAiCodexEdgeRejection(response: Response, detail: string): boolean {
+  if (response.status !== 403) return false;
+  const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
+  return contentType.includes('text/html') || /^\s*(?:<!doctype html|<html\b)/i.test(detail);
+}
+
+function openAiCodexRetryAfterMs(response: Response, fallbackMs: number): number {
+  const rawRetryAfter = response.headers.get('retry-after');
+  if (rawRetryAfter === null || rawRetryAfter.trim() === '') return fallbackMs;
+  const retryAfterSeconds = Number(rawRetryAfter);
+  if (!Number.isFinite(retryAfterSeconds) || retryAfterSeconds < 0) return fallbackMs;
+  return Math.min(retryAfterSeconds * 1_000, 30_000);
+}
+
+function abortableDelay(ms: number, signal?: AbortSignal | null): Promise<void> {
+  signal?.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 function codexInstructionsFromBody(body: Record<string, unknown>): string {

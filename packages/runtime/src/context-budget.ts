@@ -98,7 +98,7 @@ import {
   type HistoryRewriteGatePolicy,
 } from './history-compact.js';
 
-import type { ModelMessage } from 'ai';
+import type { ModelMessage } from './model-protocol.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type {
   CompactionDecisionDiagnostic,
@@ -140,7 +140,7 @@ export interface ContextBudgetPolicy {
    */
   activeToolResultPrune?: ActiveToolResultPrunePolicy;
   /**
-   * Optional active-loop full compact replacement. When enabled, prepareStep can
+   * Optional active-loop full compact replacement. When enabled, request projection can
    * replace a validated older provider-message span with a source-bearing block.
    */
   activeFullCompact?: ActiveFullCompactPolicy;
@@ -518,43 +518,53 @@ export function mergeContextBudgetDiagnostic(
   return {
     ...base,
     ...patch,
-    archiveRetrievalFailureReasonCounts: mergeCountRecords(
+    ...mergeCountRecordField(
+      'archiveRetrievalFailureReasonCounts',
       base.archiveRetrievalFailureReasonCounts,
       patch.archiveRetrievalFailureReasonCounts,
     ),
-    archiveRetrievalSkippedReasonCounts: mergeCountRecords(
+    ...mergeCountRecordField(
+      'archiveRetrievalSkippedReasonCounts',
       base.archiveRetrievalSkippedReasonCounts,
       patch.archiveRetrievalSkippedReasonCounts,
     ),
-    synthesisCacheSkippedReasonCounts: mergeCountRecords(
+    ...mergeCountRecordField(
+      'synthesisCacheSkippedReasonCounts',
       base.synthesisCacheSkippedReasonCounts,
       patch.synthesisCacheSkippedReasonCounts,
     ),
-    synthesisCacheInvalidationReasonCounts: mergeCountRecords(
+    ...mergeCountRecordField(
+      'synthesisCacheInvalidationReasonCounts',
       base.synthesisCacheInvalidationReasonCounts,
       patch.synthesisCacheInvalidationReasonCounts,
     ),
-    synthesisCacheLoadSkippedReasonCounts: mergeCountRecords(
+    ...mergeCountRecordField(
+      'synthesisCacheLoadSkippedReasonCounts',
       base.synthesisCacheLoadSkippedReasonCounts,
       patch.synthesisCacheLoadSkippedReasonCounts,
     ),
-    synthesisCacheWriteSkippedReasonCounts: mergeCountRecords(
+    ...mergeCountRecordField(
+      'synthesisCacheWriteSkippedReasonCounts',
       base.synthesisCacheWriteSkippedReasonCounts,
       patch.synthesisCacheWriteSkippedReasonCounts,
     ),
-    synthesisCacheEvictionReasonCounts: mergeCountRecords(
+    ...mergeCountRecordField(
+      'synthesisCacheEvictionReasonCounts',
       base.synthesisCacheEvictionReasonCounts,
       patch.synthesisCacheEvictionReasonCounts,
     ),
-    historyCompactSkippedReasonCounts: mergeCountRecords(
+    ...mergeCountRecordField(
+      'historyCompactSkippedReasonCounts',
       base.historyCompactSkippedReasonCounts,
       patch.historyCompactSkippedReasonCounts,
     ),
-    historyCompactLoadSkippedReasonCounts: mergeCountRecords(
+    ...mergeCountRecordField(
+      'historyCompactLoadSkippedReasonCounts',
       base.historyCompactLoadSkippedReasonCounts,
       patch.historyCompactLoadSkippedReasonCounts,
     ),
-    historyCompactWriteSkippedReasonCounts: mergeCountRecords(
+    ...mergeCountRecordField(
+      'historyCompactWriteSkippedReasonCounts',
       base.historyCompactWriteSkippedReasonCounts,
       patch.historyCompactWriteSkippedReasonCounts,
     ),
@@ -622,6 +632,15 @@ function mergeCountRecords(
     out[key] = (out[key] ?? 0) + value;
   }
   return out;
+}
+
+function mergeCountRecordField<K extends keyof ContextBudgetDiagnostic>(
+  key: K,
+  left: Record<string, number> | undefined,
+  right: Record<string, number> | undefined,
+): Pick<ContextBudgetDiagnostic, K> | Record<string, never> {
+  const merged = mergeCountRecords(left, right);
+  return merged === undefined ? {} : ({ [key]: merged } as Pick<ContextBudgetDiagnostic, K>);
 }
 
 function mergeCompactionDecisionDiagnostics(

@@ -7,7 +7,7 @@ import { REPO_ROOT, RENDERER_STYLES_DIR, TOKENS_FILE, readAllRendererCss, stripC
 /**
  * Zero-visual governance contract for issue #332 PR4 — the tool-result preview
  * surfaces (the shared `.maka-overlay-preview` base + `.maka-overlay-close`, the
- * file-diff / terminal / office-document / explore-agent + subagent / web-search
+ * file-diff / terminal / explore-agent + subagent / web-search
  * cards, and the separate `.maka-load-tool-*` card) moved onto the `@maka/ui`
  * `previewVariants` literalize table.
  *
@@ -34,7 +34,6 @@ describe('chat preview-surface migration contract (#332 PR4)', () => {
       '.maka-overlay-close',
       '.maka-tool-diff',
       '.maka-tool-terminal',
-      '.maka-office-document',
       '.maka-explore-agent',
       '.maka-subagent-preview',
       '.maka-web-search',

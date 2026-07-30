@@ -208,3 +208,40 @@ test('sidebar list scrolls independently and keeps the footer in view with 60 se
   // invariant #1311 locks.
   expectFooterContained(after, 'after-scroll-to-bottom');
 });
+
+test('keyboard sidebar resize bypasses drawer motion without disabling collapse motion', async ({
+  sidebarLongSessionsWindow: page,
+}) => {
+  const shell = page.locator('.maka-shell-2col');
+  const handle = page.locator('.maka-resize-handle');
+
+  await expect(shell).toHaveAttribute('data-sidebar-state', 'expanded');
+  await page.locator('html').evaluate((element) => {
+    element.removeAttribute('data-maka-e2e-fixture');
+  });
+
+  await handle.focus();
+  await expect(handle).toBeFocused();
+  expect(await shell.evaluate((element) => getComputedStyle(element).transitionDuration)).toBe('0s');
+
+  const beforeWidth = Number(await handle.getAttribute('aria-valuenow'));
+  await handle.press('ArrowRight');
+  const after = await shell.evaluate((element) => {
+    const handle = element.querySelector('.maka-resize-handle');
+    const firstTrack = getComputedStyle(element).gridTemplateColumns.split(' ')[0];
+    return {
+      ariaWidth: Number(handle?.getAttribute('aria-valuenow')),
+      trackWidth: Number.parseFloat(firstTrack ?? ''),
+    };
+  });
+
+  expect(after.ariaWidth).toBe(beforeWidth + 10);
+  expect(after.trackWidth).toBe(after.ariaWidth);
+
+  await handle.blur();
+  await expect
+    .poll(() => shell.evaluate((element) => getComputedStyle(element).transitionDuration))
+    .toBe('0.28s');
+  expect(await shell.evaluate((element) => getComputedStyle(element).transitionProperty))
+    .toContain('grid-template-columns');
+});

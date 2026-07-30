@@ -238,6 +238,10 @@
 .settingsFeatureStatusPage {
   display: grid;
   align-content: start;
+  /* #1363: same explicit column as .settingsStructuredPage (#1362) — the
+     implicit `auto` track sizes to the widest child's max-content and lets
+     one wide child widen every card past the content column. */
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-2-5);
 }
 
@@ -285,7 +289,8 @@
   height: 36px;
   display: grid;
   place-items: center;
-  border-radius: var(--radius-surface);
+  /* Square icon plate — ratio-governed, see --radius-plate. */
+  border-radius: var(--radius-plate);
   background: oklch(from var(--link) l c h / 0.08);
   color: var(--link);
 }
@@ -506,6 +511,13 @@
 .settingsStructuredPage {
   display: grid;
   align-content: start;
+  /* #1362: explicit column. The implicit `auto` track sizes to the widest
+     child's max-content, so one wide child (a scrollable <pre>, a long mono
+     path) silently widened EVERY card on the page past the content column —
+     the same propagation #1364 fixed locally on .settingsUsagePage. With
+     minmax(0, 1fr) the track is the content column, and the .settingsRows
+     query containers below actually see narrow widths. */
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-4);
   background: transparent;
 }

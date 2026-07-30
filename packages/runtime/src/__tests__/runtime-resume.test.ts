@@ -113,7 +113,7 @@ describe('runtime resume phase 0 projection', () => {
     assert.deepEqual(plan.rejectionReasons, ['dangling_tool_state']);
     assert.deepEqual(
       plan.diagnostics.map((diagnostic) => diagnostic.code),
-      ['unmatched_tool_result'],
+      ['tool_ledger_corruption', 'unmatched_tool_result'],
     );
     assert.deepEqual(
       buildResumeReplayRuntimeEvents(plan.runtimeEvents).map((event) => event.id),
@@ -297,6 +297,56 @@ describe('runtime resume phase 1 safe-boundary continuation', () => {
     assert.equal(plan.continuation, undefined);
   });
 
+  test('clears a pending permission with an identity-only accepted answer', () => {
+    const request = permissionRequestEvent('permission-1', 'tool-1');
+    const plan = buildSafeBoundaryContinuationPlan(
+      [
+        textEvent('user-1', 'user', 'edit the file'),
+        request,
+        base({
+          id: 'permission-answer-1',
+          role: 'system',
+          author: 'user',
+          actions: {
+            permissionAnswerAccepted: {
+              requestId: request.actions!.permissionRequest!.requestId,
+            },
+          },
+          refs: { toolCallId: 'tool-1' },
+        }),
+      ],
+      safeBoundaryFacts(),
+    );
+
+    assert.equal(
+      plan.diagnostics.some((diagnostic) => diagnostic.code === 'pending_permission'),
+      false,
+    );
+  });
+
+  test('continues after a hosted timeout durably closes the pending permission', () => {
+    const request = permissionRequestEvent('permission-1', 'tool-1');
+    const closure = base({
+      id: 'permission-closure-1',
+      role: 'system',
+      author: 'system',
+      actions: {
+        permissionClosureAccepted: {
+          requestId: request.actions!.permissionRequest!.requestId,
+          reason: 'timed_out',
+        },
+      },
+      refs: { toolCallId: 'tool-1' },
+    });
+    const events = [textEvent('user-1', 'user', 'edit the file'), request, closure];
+
+    const plan = buildSafeBoundaryContinuationPlan(events, safeBoundaryFacts());
+
+    assert.equal(plan.disposition, 'continue');
+    assert.deepEqual(plan.rejectionReasons, []);
+    assert.deepEqual(plan.continuation?.runtimeContext, events);
+  });
+
   test('parks when the current workspace identity differs from the source boundary', () => {
     const plan = buildSafeBoundaryContinuationPlan(
       [textEvent('user-1', 'user', 'inspect the repository')],
@@ -331,23 +381,6 @@ describe('runtime resume phase 1 safe-boundary continuation', () => {
         },
       },
     ]);
-  });
-
-  test('migrates a legacy filesystem anchor through a marker alias', () => {
-    const workspaceIdentity = 'workspace:v1:123e4567-e89b-42d3-a456-426614174000';
-    const legacyIdentity = 'fs:7:42:/workspace/repo';
-    const plan = buildSafeBoundaryContinuationPlan(
-      [textEvent('user-1', 'user', 'inspect the repository')],
-      {
-        ...safeBoundaryFacts(),
-        sourceWorkspaceIdentity: legacyIdentity,
-        currentWorkspaceIdentity: workspaceIdentity,
-        currentWorkspaceIdentityAliases: [legacyIdentity],
-      },
-    );
-
-    assert.equal(plan.disposition, 'continue');
-    assert.equal(plan.continuation?.safetySnapshot.workspaceIdentity, workspaceIdentity);
   });
 
   test('parks while a background operation is still unsettled', () => {
@@ -423,7 +456,7 @@ describe('runtime resume phase 1 safe-boundary continuation', () => {
       ],
       safeBoundaryFacts(),
     );
-    assert.deepEqual(mixed.rejectionReasons, ['runtime_identity_mismatch']);
+    assert.deepEqual(mixed.rejectionReasons, ['dangling_tool_state', 'runtime_identity_mismatch']);
 
     const reused = buildSafeBoundaryContinuationPlan([textEvent('user-1', 'user', 'continue')], {
       ...safeBoundaryFacts(),

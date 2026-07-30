@@ -69,9 +69,19 @@ function FilePreview(props: { record: ArtifactRecord; copy: ArtifactCopy }) {
   const result = useTextRead(props.record.id);
   if (result.state === 'loading') return <PreviewLoading label={props.copy.preview.loadingFile} />;
   if (!result.value.ok) return <TextFailureCard record={props.record} reason={result.value.reason} copy={props.copy} />;
-  return (
-    <pre className="maka-artifact-preview-file maka-code">{result.value.text}</pre>
-  );
+  const text =
+    props.record.source === 'tool_result_archive'
+      ? prettyArchiveJson(result.value.text)
+      : result.value.text;
+  return <pre className="maka-artifact-preview-file maka-code">{text}</pre>;
+}
+
+function prettyArchiveJson(text: string): string {
+  try {
+    return JSON.stringify(JSON.parse(text), null, 2);
+  } catch {
+    return text;
+  }
 }
 
 function DiffPreview(props: { record: ArtifactRecord; copy: ArtifactCopy }) {

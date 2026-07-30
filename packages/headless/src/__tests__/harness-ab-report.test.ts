@@ -8,9 +8,58 @@ import {
   renderHarnessAbReportCsv,
   renderHarnessAbReportMarkdown,
 } from '../harness-ab-report.js';
+import type { HarnessAbRunManifest } from '../harness-ab-manifest.js';
 import { budgetExhausted, completed, withUsage } from './helpers/ab-summary-fixtures.js';
 
 describe('harness A/B report', () => {
+  test('derives both arm placements from the run manifest', () => {
+    const summary = summarizeAbComparison({
+      runId: 'deep-swe-container-placement',
+      roundId: 'ab-summary',
+      baselineArmId: 'maka',
+      candidateArmId: 'codex',
+      evaluationTaskIds: ['a'],
+      baselineRuns: [[usage('a', true, 100, 20, 25, 0)]],
+      candidateRuns: [[usage('a', true, 120, 30, 30, 0)]],
+    });
+    const manifest = {
+      arms: [
+        {
+          id: 'maka',
+          kind: 'harness',
+          fingerprint: 'maka-fingerprint',
+          metadata: { config: { execution: { placement: 'task-container' } } },
+        },
+        {
+          id: 'codex',
+          kind: 'harness',
+          fingerprint: 'codex-fingerprint',
+          metadata: { config: { execution: { placement: 'task-container' } } },
+        },
+      ],
+    } as Pick<HarnessAbRunManifest, 'arms'>;
+
+    const report = buildHarnessAbReport(summary, undefined, 'metered', manifest);
+
+    assert.deepEqual(report.execution, {
+      arms: [
+        { armId: 'maka', placement: 'task-container' },
+        { armId: 'codex', placement: 'task-container' },
+      ],
+    });
+    assert.match(
+      renderHarnessAbReportMarkdown(report),
+      /Execution placement: maka=task-container; codex=task-container\./,
+    );
+    const partialManifest = {
+      arms: [manifest.arms[0], { ...manifest.arms[1], metadata: { config: {} } }],
+    } as Pick<HarnessAbRunManifest, 'arms'>;
+    assert.throws(
+      () => buildHarnessAbReport(summary, undefined, 'metered', partialManifest),
+      /execution placement must be declared for both arms/,
+    );
+  });
+
   test('keeps effectiveness and economy as separate reproducible axes', () => {
     const summary = summarizeAbComparison({
       runId: 'glm-harness-ab',

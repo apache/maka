@@ -23,7 +23,7 @@
  * failed credential lookup is treated as "no credential" with a
  * generalized dev-safe log line.
  *
- * Quick Chat input validation lives here too: setMilestone arguments
+ * Milestone input validation lives here too: setMilestone arguments
  * are checked against the closed enum + status union before reaching
  * the SettingsStore.
  */

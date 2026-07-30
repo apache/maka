@@ -1,9 +1,18 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdtemp, readFile, readlink, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import { prepareWorkspace, restoreProtectedPaths } from '../sandbox.js';
+import { promisify } from 'node:util';
+import {
+  freezeSubmittedWorkspace,
+  prepareScoringWorkspace,
+  prepareWorkspace,
+  restoreProtectedPaths,
+} from '../sandbox.js';
+
+const execFileAsync = promisify(execFile);
 
 async function withFixture<T>(fn: (fixtureDir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), 'maka-headless-fixture-'));
@@ -49,6 +58,45 @@ describe('prepareWorkspace', () => {
       await writeFile(join(fixtureDir, 'real.txt'), 'x', 'utf8');
       await symlink('/etc/hosts', join(fixtureDir, 'escape'));
       await assert.rejects(prepareWorkspace(fixtureDir), /symlink/);
+    });
+  });
+});
+
+describe('freezeSubmittedWorkspace', () => {
+  test('copies portable workspace evidence while skipping process-local special files', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    await withFixture(async (fixtureDir) => {
+      const snapshotRoot = await mkdtemp(join(tmpdir(), 'maka-headless-snapshot-'));
+      try {
+        await writeFile(join(fixtureDir, 'result.txt'), 'submitted', 'utf8');
+        await symlink('result.txt', join(fixtureDir, 'result-link'));
+        await execFileAsync('mkfifo', [join(fixtureDir, 'agent.pipe')]);
+
+        const frozen = await freezeSubmittedWorkspace({
+          workspaceDir: fixtureDir,
+          snapshotRoot,
+        });
+
+        assert.equal(
+          await readFile(join(frozen.submittedSnapshot.snapshotPath, 'result.txt'), 'utf8'),
+          'submitted',
+        );
+        assert.equal(
+          await readlink(join(frozen.submittedSnapshot.snapshotPath, 'result-link')),
+          'result.txt',
+        );
+        await assert.rejects(stat(join(frozen.submittedSnapshot.snapshotPath, 'agent.pipe')));
+
+        const scoring = await prepareScoringWorkspace(frozen.submittedSnapshot);
+        try {
+          assert.equal(await readlink(join(scoring.dir, 'result-link')), 'result.txt');
+        } finally {
+          await scoring.cleanup();
+        }
+      } finally {
+        await rm(snapshotRoot, { recursive: true, force: true });
+      }
     });
   });
 });

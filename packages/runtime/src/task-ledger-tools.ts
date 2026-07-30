@@ -85,7 +85,6 @@ function buildTaskCreateTool(
         .max(TASK_LEDGER_MAX_TASKS)
         .describe('One or more tasks to add. Each starts in the pending state.'),
     }),
-    permissionRequired: false,
     impl: async (input, ctx) => {
       const { created, total } = await store.create(
         ctx.sessionId,
@@ -217,7 +216,6 @@ function buildTaskUpdateTool(
           });
         }
       }),
-    permissionRequired: false,
     impl: async (input, ctx) => {
       const { updated, total } = await store.update(
         ctx.sessionId,
@@ -284,7 +282,6 @@ function buildTaskListTool(store: TaskLedgerStore): MakaTool<
           });
         }
       }),
-    permissionRequired: false,
     impl: async (input, ctx) => {
       const tasks = filterModelVisibleTaskLedgerTasks(
         await store.list(ctx.sessionId, {
@@ -319,7 +316,6 @@ function buildTaskGetTool(store: TaskLedgerStore): MakaTool<{ id: string }, stri
           'Task reference must be a UUID or short key from the current ledger.',
         ),
     }),
-    permissionRequired: false,
     impl: async (input, ctx) => {
       const task = await store.get(ctx.sessionId, input.id);
       if (task?.resumeTrust === 'untrusted') return `No such task: ${input.id}`;

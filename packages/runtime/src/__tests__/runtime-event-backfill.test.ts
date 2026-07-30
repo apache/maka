@@ -57,6 +57,41 @@ describe('runtime event backfill', () => {
     expect(result.events.map((event) => event.invocationId)).toEqual(['persisted-invocation']);
   });
 
+  test('backfills a host-authored graph wake without attributing it to the user', () => {
+    const result = backfillRuntimeEventsFromStoredMessages({
+      run,
+      messages: [
+        {
+          type: 'user',
+          id: 'legacy-graph-wake',
+          turnId: 'turn-1',
+          ts: 101,
+          text: 'graph checkpoint',
+          origin: {
+            kind: 'agent_graph',
+            graphId: 'graph-1',
+            wakeId: 'wake-1',
+            attemptId: 'attempt-1',
+          },
+        },
+      ],
+      newId: nextIds(),
+      now: () => 999,
+    });
+
+    expect(result.events[0]?.role).toBe('user');
+    expect(result.events[0]?.author).toBe('host');
+    expect(result.events[0]?.content).toMatchObject({
+      kind: 'text',
+      origin: {
+        kind: 'agent_graph',
+        graphId: 'graph-1',
+        wakeId: 'wake-1',
+        attemptId: 'attempt-1',
+      },
+    });
+  });
+
   test('backfills only low-risk RuntimeEvents from legacy StoredMessage rows', () => {
     const messages: StoredMessage[] = [
       {

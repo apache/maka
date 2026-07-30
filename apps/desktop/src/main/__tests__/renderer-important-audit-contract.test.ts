@@ -75,21 +75,12 @@ const ALLOWLIST: ImportantAllowance[] = [
     anchor: '@media (prefers-reduced-motion: reduce)',
     reason: 'reduced-motion override',
   },
-  {
-    fileSuffix: 'apps/desktop/src/renderer/styles/sidebar.css',
-    anchor: '.maka-session-panel[data-collapsed="true"] .maka-list-stack',
-    reason: 'shared list/empty-state collapse override',
-  },
 ];
 
 const RETIRED_RING_RESET_BLOCKS = [
   {
     fileSuffix: 'apps/desktop/src/renderer/styles/module-pages/skills.css',
     anchor: '.maka-skill-search input',
-  },
-  {
-    fileSuffix: 'apps/desktop/src/renderer/styles/onboarding.css',
-    anchor: '.maka-onboarding-quickchat .maka-onboarding-quickchat-input',
   },
   {
     fileSuffix: 'apps/desktop/src/renderer/styles/composer.css',

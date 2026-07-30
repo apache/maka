@@ -90,9 +90,19 @@ describe('skill invocation tokens', () => {
 
 describe('skill autocomplete', () => {
   const skills: InvocableSkillEntry[] = [
-    { id: 'weekly-report', name: '写周报', description: '把进展整理成周报。' },
-    { id: 'alpha', name: 'Alpha', description: 'First.' },
-    { id: 'data-crunch', name: 'Alpha Stats', description: 'Crunches.' },
+    {
+      ref: 'workspace:legacy:weekly-report',
+      id: 'weekly-report',
+      name: '写周报',
+      description: '把进展整理成周报。',
+    },
+    { ref: 'workspace:legacy:alpha', id: 'alpha', name: 'Alpha', description: 'First.' },
+    {
+      ref: 'workspace:legacy:data-crunch',
+      id: 'data-crunch',
+      name: 'Alpha Stats',
+      description: 'Crunches.',
+    },
   ];
   const listSkills = async () => skills;
 

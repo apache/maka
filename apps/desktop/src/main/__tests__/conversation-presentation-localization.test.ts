@@ -1,5 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
+import { SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS } from '@maka/core';
 import { preflightAttachmentItems } from '../../renderer/attachment-preflight.js';
 import { deriveTurnLineageBadges } from '../../renderer/derive-turn-lineage-badges.js';
 import { getDesktopConversationCopy } from '../../renderer/locales/conversation-copy.js';
@@ -87,6 +88,10 @@ describe('desktop conversation presentation localization', () => {
     assert.equal(sessionStatusAriaLabel('running', undefined, 'en'), 'Running');
     assert.equal(sessionStatusAriaLabel('blocked', 'auth', 'en'), 'Needs attention · Sign in again');
     assert.equal(describeTurnErrorClass('timeout', 'en'), 'Request timed out');
+    assert.equal(
+      describeTurnErrorClass(SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS, 'en'),
+      'The app restarted, so the pending request to reach outside the workspace was closed as denied',
+    );
     assert.equal(deriveFailedTurnRecovery({
       errorClass: 'tool_failed',
       partialOutputRetained: false,

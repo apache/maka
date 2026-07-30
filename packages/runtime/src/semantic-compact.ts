@@ -1,5 +1,4 @@
-import { createHash } from 'node:crypto';
-import type { ModelMessage } from 'ai';
+import type { ModelMessage } from './model-protocol.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import {
@@ -25,6 +24,7 @@ import {
 } from './compaction-boundary.js';
 import { estimateTokens } from './context-budget-helpers.js';
 import type { CompactSummaryResult, NormalizedAiSdkUsage } from './model-adapter.js';
+import { stableHash, stableStringify } from './request-shape.js';
 
 const DEFAULT_CHARS_PER_TOKEN = 4;
 const DEFAULT_MAX_SUMMARY_TOKENS = 768;
@@ -770,18 +770,17 @@ function buildSemanticCompactBlock(input: {
   const coverage = input.predecessorBlock
     ? mergeSemanticCoverage(input.predecessorBlock.coverage, newCoverage)
     : newCoverage;
-  const cumulativeCoverageDigest = sha256(
-    stableStringify({
-      predecessor:
-        input.predecessorBlock?.cumulativeCoverageDigest ?? input.predecessorBlock?.blockId,
-      newCoverage,
-    }),
-  );
+  const predecessor =
+    input.predecessorBlock?.cumulativeCoverageDigest ?? input.predecessorBlock?.blockId;
+  const cumulativeCoverageDigest = stableHashHex({
+    ...(predecessor !== undefined ? { predecessor } : {}),
+    newCoverage,
+  });
   const draft = {
     sessionId: input.input.sessionId,
     turnId: input.input.turnId,
     coverage,
-    predecessorBlockId: input.predecessorBlock?.blockId,
+    ...(input.predecessorBlock ? { predecessorBlockId: input.predecessorBlock.blockId } : {}),
     summaryText: input.summaryText,
     actionInProgress: input.structuredSummary.actionInProgress,
     highWaterSeq: input.input.stepNumber,
@@ -789,7 +788,7 @@ function buildSemanticCompactBlock(input: {
   const block: SemanticCompactBlock = {
     kind: 'maka.semantic_compact_block',
     version: 2,
-    blockId: `semcompact-${sha256(stableStringify(draft)).slice(0, 32)}`,
+    blockId: `semcompact-${stableHashHex(draft).slice(0, 32)}`,
     sessionId: input.input.sessionId,
     turnId: input.input.turnId,
     ...(input.input.runId ? { runId: input.input.runId } : {}),
@@ -1522,22 +1521,8 @@ function finiteNonNegativeNumber(value: number | undefined, fallback: number): n
   return value;
 }
 
-function stableStringify(value: unknown): string {
-  return JSON.stringify(sortJson(value));
-}
-
-function sortJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortJson);
-  if (!isRecord(value)) return value;
-  return Object.fromEntries(
-    Object.keys(value)
-      .sort()
-      .map((key) => [key, sortJson(value[key])]),
-  );
-}
-
-function sha256(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
+function stableHashHex(value: unknown): string {
+  return stableHash(value).slice('sha256:'.length);
 }
 
 function uniqueSorted(values: readonly string[]): string[] {

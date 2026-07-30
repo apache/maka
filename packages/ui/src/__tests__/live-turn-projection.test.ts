@@ -25,6 +25,53 @@ describe('applyLiveTurnEvent', () => {
     assert.equal(streamed.phase, 'streamed');
   });
 
+  it('projects transient provider retry progress until the next model output', () => {
+    const scheduled = applyLiveTurnEvent(armLiveTurn('turn-1'), {
+      type: 'provider_retry',
+      id: 'retry-1',
+      turnId: 'turn-1',
+      ts: 100,
+      phase: 'scheduled',
+      attempt: 2,
+      maxAttempts: 10,
+      delayMs: 4_000,
+      reason: 'rate_limit',
+    });
+    assert.deepEqual(scheduled?.providerRetry, {
+      type: 'provider_retry',
+      id: 'retry-1',
+      turnId: 'turn-1',
+      ts: 100,
+      phase: 'scheduled',
+      attempt: 2,
+      maxAttempts: 10,
+      delayMs: 4_000,
+      reason: 'rate_limit',
+    });
+
+    const started = applyLiveTurnEvent(scheduled, {
+      type: 'provider_retry',
+      id: 'retry-2',
+      turnId: 'turn-1',
+      ts: 101,
+      phase: 'started',
+      attempt: 2,
+      maxAttempts: 10,
+      reason: 'rate_limit',
+    });
+    assert.equal(started?.providerRetry?.phase, 'started');
+
+    const streamed = applyLiveTurnEvent(started, {
+      type: 'text_delta',
+      id: 'event-1',
+      turnId: 'turn-1',
+      messageId: 'step-1',
+      ts: 102,
+      text: '恢复',
+    });
+    assert.equal(streamed?.providerRetry, undefined);
+  });
+
   it('keeps the thinking message id as the live step identity', () => {
     const projection = applyLiveTurnEvent(undefined, {
       type: 'thinking_delta',
@@ -311,7 +358,7 @@ describe('applyLiveTurnEvent', () => {
     }]);
   });
 
-  it('keeps permission status on the same live tool', () => {
+  it('ignores legacy generic permission events in the live projection', () => {
     const started = applyLiveTurnEvent(undefined, {
       type: 'tool_start',
       id: 'event-1',
@@ -346,8 +393,9 @@ describe('applyLiveTurnEvent', () => {
       ts: 102,
     });
 
-    assert.equal(waiting?.steps[0]?.tools[0]?.status, 'waiting_permission');
-    assert.equal(allowed?.steps[0]?.tools[0]?.status, 'running');
+    assert.equal(waiting, started);
+    assert.equal(allowed, started);
+    assert.equal(allowed?.steps[0]?.tools[0]?.status, 'pending');
     assert.equal(allowed?.steps[0]?.stepId, 'step-1');
   });
 

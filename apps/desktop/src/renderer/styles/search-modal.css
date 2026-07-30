@@ -28,8 +28,17 @@
   width: auto;
   min-height: 32px;
   margin: var(--space-2) var(--space-3);
-  /* P-RADIUS concentric formula: dialog shell 12px − 8px inset = 4px. */
-  border-radius: calc(var(--radius-modal)-8px);
+  /* Control tier, like every other input — NOT a concentric derivation.
+     This used to be `calc(var(--radius-modal) - 8px)` = 4px, justified
+     as concentric nesting inside the 12px shell. It is not: this row is
+     the middle of a 3-row grid (header band above, results below), 57px
+     from the shell's top edge, and its actual side inset is 12px, not
+     the 8px the formula used — that 8px was the vertical margin to the
+     header. No shell corner is adjacent, so nothing was ever concentric.
+     Its structural twin, .maka-palette-input-wrap, is an InputGroup in
+     the same position inside the same 12px shell and uses the control
+     tier; the two searches differed by 50% in roundness for no reason. */
+  border-radius: var(--radius-control);
   border-color: var(--border);
   /* P-INSET: inset step-down on the elevated modal surface. */
   background: oklch(from var(--foreground) l c h / 0.03);

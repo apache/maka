@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { jsonSchema } from 'ai';
 import type { McpCallResult, McpToolDescriptor } from '@maka/core/mcp';
-import type { MakaTool, ToolModelOutput } from './tool-runtime.js';
+import type { ToolResultContentPart, ToolResultOutput } from './model-protocol.js';
+import type { MakaTool } from './tool-runtime.js';
 
 const MAX_PROVIDER_TOOL_NAME = 64;
 const HASH_CHARS = 10;
@@ -91,10 +92,10 @@ function asArguments(value: unknown): Record<string, unknown> {
   throw new Error('MCP tool arguments must be an object');
 }
 
-function mcpResultToModelOutput(output: unknown): ToolModelOutput {
+function mcpResultToModelOutput(output: unknown): Extract<ToolResultOutput, { type: 'content' }> {
   const result = output as Partial<McpCallResult>;
   const blocks = Array.isArray(result.content) ? result.content : [];
-  const value: ToolModelOutput['value'] = [];
+  const value: ToolResultContentPart[] = [];
   const nonVisual: unknown[] = [];
   let remainingTextChars = MAX_MODEL_TEXT_CHARS;
   let imageChars = 0;

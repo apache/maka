@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { describe, test } from 'node:test';
+import { encodeCanonicalRuntimeEvent } from '@maka/core';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
   ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND,
@@ -10,6 +11,7 @@ import {
   buildHistoryCompactBlockFromSummary,
   buildSynthesisCacheBlocksFromHydratedArchives,
   deserializeToolResultArchive,
+  mergeContextBudgetDiagnostic,
   renderHistoryCompactBlock,
   retrieveArchivedToolResultsForReplay,
   retrieveRuntimeEventHistoryAround,
@@ -1293,6 +1295,40 @@ describe('context-budget history compact', () => {
     assert.equal(result.diagnostic.historyCompactedTurns, 4);
   });
 
+  test('overflow recovery may fold the latest complete turn with no raw tail', () => {
+    const events = [
+      toolCall('latest-call', 'turn-latest', 'tool-1'),
+      toolResult('latest-result', 'turn-latest', 'tool-1', {
+        text: 'oversized latest result '.repeat(40),
+      }),
+    ];
+
+    const result = applyRuntimeEventContextBudget(
+      events,
+      {
+        maxHistoryEstimatedTokens: 2000,
+        minRecentTurns: 0,
+        charsPerToken: 1,
+        historyCompact: {
+          enabled: true,
+          highWaterRatio: 0.1,
+          minRecentTurns: 0,
+          maxSummaryEstimatedTokens: 120,
+        },
+      },
+      { historyCompactProtocol: 'checkpoint_v2' },
+    );
+
+    assert.ok(result);
+    assert.deepEqual(
+      result.events
+        .filter((event) => !event.id.startsWith('history-compact:'))
+        .map((event) => event.id),
+      [],
+    );
+    assert.equal(result.diagnostic.historyCompactedTurns, 1);
+  });
+
   test('keeps the complete latest turn as the continuation seam', () => {
     const events = [
       textEvent('old-1', 'turn-1', 'old context '.repeat(30)),
@@ -1728,6 +1764,69 @@ describe('context-budget search and rewrite diagnostics', () => {
     assert.equal(budgeted.diagnostic.historyRewriteGate, 'phase6-high-water');
     assert.equal(budgeted.diagnostic.historyRewriteVersion, 'phase6-v1');
     assert.equal(budgeted.diagnostic.historyRewriteResetReason, 'explicit_test_reset');
+  });
+});
+
+describe('context-budget diagnostic merges', () => {
+  test('omits count-record fields that are absent from both inputs', () => {
+    const merged = mergeContextBudgetDiagnostic(
+      {
+        enabled: true,
+        estimatedTokensBefore: 287,
+        estimatedTokensAfter: 287,
+        keptTurns: 1,
+        droppedTurns: 0,
+        keptEvents: 6,
+        droppedEvents: 0,
+        historyCompactSkippedReasonCounts: { below_high_water: 1 },
+      },
+      {
+        historyCompactBlocksLoaded: 0,
+        historyCompactBlocksAvailable: 0,
+        historyCompactSkippedReasonCounts: {
+          below_high_water: 2,
+          already_compacted: 1,
+        },
+      },
+    );
+
+    assert.equal(Object.hasOwn(merged, 'archiveRetrievalFailureReasonCounts'), false);
+    assert.equal(Object.hasOwn(merged, 'synthesisCacheSkippedReasonCounts'), false);
+    assert.equal(Object.hasOwn(merged, 'historyCompactLoadSkippedReasonCounts'), false);
+    assert.deepEqual(merged.historyCompactSkippedReasonCounts, {
+      below_high_water: 3,
+      already_compacted: 1,
+    });
+  });
+
+  test('produces a losslessly serializable token usage diagnostic', () => {
+    const contextBudget = mergeContextBudgetDiagnostic(
+      {
+        enabled: true,
+        estimatedTokensBefore: 287,
+        estimatedTokensAfter: 287,
+        keptTurns: 1,
+        droppedTurns: 0,
+        keptEvents: 6,
+        droppedEvents: 0,
+        historyCompactSkippedReasonCounts: { below_high_water: 1 },
+      },
+      {
+        historyCompactBlocksLoaded: 0,
+        historyCompactBlocksAvailable: 0,
+      },
+    );
+    const event = baseEvent({
+      actions: {
+        tokenUsage: {
+          input: 9_131,
+          output: 44,
+          contextBudget,
+        },
+      },
+    });
+
+    assert.doesNotThrow(() => encodeCanonicalRuntimeEvent(event));
   });
 });
 

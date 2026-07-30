@@ -1,6 +1,11 @@
 import { describe, test } from 'node:test';
 import { expect } from '../test-helpers.js';
-import { RuntimeRunner, runtimeGateFromCallback, type RuntimeGate } from '../runtime-runner.js';
+import {
+  RuntimeRunner,
+  buildInitialUserRuntimeEvent,
+  runtimeGateFromCallback,
+  type RuntimeGate,
+} from '../runtime-runner.js';
 import type { AttachmentRef } from '@maka/core/events';
 import type {
   InvocationContext,
@@ -143,28 +148,6 @@ function flowTokenUsageEvent(ctx: InvocationContext, rawFinishReason: string): R
   };
 }
 
-function flowPermissionDeniedEvent(ctx: InvocationContext): RuntimeEvent {
-  return {
-    id: ctx.newId(),
-    invocationId: ctx.invocationId,
-    runId: ctx.runId,
-    sessionId: ctx.sessionId,
-    turnId: ctx.turnId,
-    ts: ctx.now(),
-    ...(ctx.branch ? { branch: ctx.branch } : {}),
-    partial: false,
-    role: 'system',
-    author: 'user',
-    actions: {
-      permissionDecision: {
-        requestId: 'perm-1',
-        decision: 'deny',
-        rememberForTurn: true,
-      },
-    },
-  };
-}
-
 // ============================================================================
 // Tests
 // ============================================================================
@@ -213,6 +196,36 @@ describe('RuntimeRunner', () => {
     // The flow event follows the user event and is on a different lane.
     expect(result.events[1]!.role).toBe('model');
     expect(result.events[1]!.author).toBe('agent');
+  });
+
+  test('preserves a host-authored initial user-role RuntimeEvent', async () => {
+    const providers = makeProviders();
+    const flow = new ScriptFlow((ctx) => [flowTerminalEvent(ctx, 'completed')]);
+    const runner = new RuntimeRunner({ flow, providers });
+    const request = makeRequest({
+      text: 'graph checkpoint',
+      initialRuntimeEvent: buildInitialUserRuntimeEvent({
+        id: 'evt-host',
+        invocationId: 'inv-host',
+        runId: 'run-host',
+        sessionId: 'sess-1',
+        turnId: 'turn-1',
+        ts: 1,
+        text: 'graph checkpoint',
+        origin: {
+          kind: 'agent_graph',
+          graphId: 'graph-1',
+          wakeId: 'wake-1',
+          attemptId: 'attempt-1',
+        },
+      }),
+    });
+
+    const result = await runner.run(request);
+
+    expect(result.events[0]?.role).toBe('user');
+    expect(result.events[0]?.author).toBe('host');
+    expect(result.events[0]?.content?.kind).toBe('text');
   });
 
   test('initial event declares the tool boundary protocol only when the durable boundary is active', async () => {
@@ -393,21 +406,6 @@ describe('RuntimeRunner', () => {
     expect(result.status).toBe('failed');
     expect(result.failure?.class).toBe('tool_step_cap_reached');
     expect(result.failure?.message).toMatch(/tool-call step cap/);
-  });
-
-  test('denied permission decision marks a later completed terminal event failed', async () => {
-    const providers = makeProviders();
-    const flow = new ScriptFlow((ctx) => [
-      flowPermissionDeniedEvent(ctx),
-      flowTerminalEvent(ctx, 'completed'),
-    ]);
-    const runner = new RuntimeRunner({ flow, providers });
-
-    const result = await runner.run(makeRequest());
-
-    expect(result.status).toBe('failed');
-    expect(result.failure?.class).toBe('permission_denied');
-    expect(result.failure?.message).toBe('permission request perm-1 was denied');
   });
 
   test('a flow that throws maps to a failed result (user event retained)', async () => {

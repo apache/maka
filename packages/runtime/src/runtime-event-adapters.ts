@@ -100,11 +100,12 @@ export function storedMessageToRuntimeEvent(
         ts: d.ts,
         partial: false,
         role: 'user',
-        author: 'user',
+        author: message.origin ? 'host' : 'user',
         content: {
           kind: 'text',
           text: message.text,
           ...(message.displayText !== undefined ? { displayText: message.displayText } : {}),
+          ...(message.origin !== undefined ? { origin: message.origin } : {}),
           ...(message.attachments !== undefined && message.attachments.length > 0
             ? { attachments: message.attachments }
             : {}),
@@ -167,27 +168,31 @@ export function storedMessageToRuntimeEvents(
   const out: RuntimeEvent[] = [];
   if (primary) out.push(primary);
 
-  if (message.type === 'assistant' && message.thinking && message.thinking.text.length > 0) {
+  if (message.type === 'assistant' && message.thinking) {
     const d = resolveCtx(ctx, message);
-    out.push({
-      id: d.newId(),
-      invocationId: d.invocationId,
-      runId: d.runId,
-      sessionId: d.sessionId,
-      turnId: d.turnId,
-      ts: d.ts,
-      partial: false,
-      role: 'model',
-      author: 'agent',
-      content: {
-        kind: 'thinking',
-        text: message.thinking.text,
-        ...(message.thinking.signature !== undefined
-          ? { signature: message.thinking.signature }
-          : {}),
-      },
-      refs: { storedMessageId: message.id },
-    });
+    const parts = message.thinking.parts ?? [message.thinking];
+    for (const part of parts) {
+      out.push({
+        id: d.newId(),
+        invocationId: d.invocationId,
+        runId: d.runId,
+        sessionId: d.sessionId,
+        turnId: d.turnId,
+        ts: d.ts,
+        partial: false,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'thinking',
+          text: part.text,
+          ...(part.signature !== undefined ? { signature: part.signature } : {}),
+          ...(part.providerOptions !== undefined
+            ? { providerOptions: structuredClone(part.providerOptions) }
+            : {}),
+        },
+        refs: { storedMessageId: message.id },
+      });
+    }
   }
 
   return out;
@@ -251,6 +256,7 @@ export function runtimeEventToStoredMessageDraft(
       ts: event.ts,
       text: content.text,
       ...(content.displayText !== undefined ? { displayText: content.displayText } : {}),
+      ...(content.origin !== undefined ? { origin: content.origin } : {}),
       ...(content.attachments !== undefined && content.attachments.length > 0
         ? { attachments: content.attachments }
         : {}),

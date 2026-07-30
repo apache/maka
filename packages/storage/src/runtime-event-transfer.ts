@@ -1,6 +1,6 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { RuntimeEvent, RuntimeEventStore } from '@maka/core';
+import { decodePersistedRuntimeEvent, type RuntimeEvent, type RuntimeEventStore } from '@maka/core';
 import { createRuntimeEventStore } from './agent-run-store.js';
 import type { SqliteRuntimeStore } from './sqlite-runtime-store.js';
 import { createSqliteRuntimeStore } from './sqlite-runtime-store.js';
@@ -110,11 +110,7 @@ export async function importLegacyRuntimeEventJsonlTree(input: {
       if (!sourceStat) continue;
       const fingerprint = `${sourceStat.size}:${sourceStat.mtimeMs}`;
       if (await input.destination.isRuntimeImportSourceCurrent(sourcePath, fingerprint)) continue;
-      const events = parseLegacyRuntimeEventJsonl(
-        await readFile(sourcePath, 'utf8'),
-        session,
-        run,
-      ).filter((event) => !isLegacyStreamPartialSnapshot(event));
+      const events = parseLegacyRuntimeEventJsonl(await readFile(sourcePath, 'utf8'), session, run);
       report.filesScanned += 1;
       const imported = await importRuntimeEvents(events, session, run, input.destination, {
         path: sourcePath,
@@ -191,7 +187,9 @@ function parseLegacyRuntimeEventJsonl(
     if (!line?.trim()) continue;
     let event: RuntimeEvent;
     try {
-      event = JSON.parse(line) as RuntimeEvent;
+      const parsed: unknown = JSON.parse(line);
+      if (isLegacyStreamPartialSnapshot(parsed)) continue;
+      event = decodePersistedRuntimeEvent(parsed);
     } catch (error) {
       throw new Error(`Invalid legacy RuntimeEvent JSONL line ${index + 1} for run ${runId}`, {
         cause: error,
@@ -223,7 +221,9 @@ function assertRuntimeEventImportIdentity(
 // completed stream leaves a separate durable final event, and a dangling
 // partial is already handled by the replay boundary gates. Legacy tree import
 // skips them; the strict importRuntimeEventsFromJsonl API still rejects them.
-function isLegacyStreamPartialSnapshot(event: RuntimeEvent): boolean {
+function isLegacyStreamPartialSnapshot(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const event = value as Record<string, unknown>;
   return event.partial === true && event.status === undefined && event.actions === undefined;
 }
 

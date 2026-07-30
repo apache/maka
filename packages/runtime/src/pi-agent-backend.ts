@@ -2,7 +2,6 @@ import { isDeepStrictEqual } from 'node:util';
 
 import type {
   BackendKind,
-  PermissionDecisionMessage,
   SessionEvent,
   SessionHeader,
   ToolCallMessage,
@@ -11,20 +10,22 @@ import type {
   ToolResultMessage,
   TokenUsageMessage,
 } from '@maka/core';
-import { computerUseApprovalSummary, decodeCanonicalToolResultContent } from '@maka/core';
-import type { BackendSendInput, PermissionDecision } from '@maka/core/backend-types';
+import {
+  computerUseApprovalSummary,
+  decodeCanonicalToolResultContent,
+  TOOL_OUTPUT_DELTA_MAX_CHARS,
+} from '@maka/core';
+import type { BackendSendInput } from '@maka/core/backend-types';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import { redactSecrets } from '@maka/core/redaction';
-import { isToolCategory, type ToolCategory } from '@maka/core/permission';
 
 import type { AgentBackend } from '@maka/core/backend-types';
 import type { AppendMessageFn } from './ai-sdk-backend.js';
-import { PermissionEngine } from './permission-engine.js';
 
 export interface PiAgentBackendInput {
   sessionId: string;
   header: SessionHeader;
   appendMessage: AppendMessageFn;
-  permissionEngine: PermissionEngine;
   transport: PiAgentTransport;
   newId?: () => string;
   now?: () => number;
@@ -72,14 +73,6 @@ export type PiAgentFrame =
       total?: number;
       costUsd?: number;
     }
-  | {
-      type: 'permission_request';
-      toolUseId: string;
-      toolName: string;
-      args?: unknown;
-      categoryHint?: ToolCategory;
-      hint?: string;
-    }
   | { type: 'error'; message: string; code?: string; details?: unknown }
   | { type: 'complete'; stopReason?: 'end_turn' | 'error' | 'max_tokens' };
 
@@ -94,7 +87,6 @@ export class PiAgentBackend implements AgentBackend {
   private currentTurnId: string | null = null;
   private outputSeqByTool = new Map<string, number>();
   private toolCallsByUseId = new Map<string, { toolName: string; args: unknown }>();
-  private suppressedToolUseIds = new Set<string>();
 
   constructor(input: PiAgentBackendInput) {
     this.input = input;
@@ -117,8 +109,6 @@ export class PiAgentBackend implements AgentBackend {
     this.currentTurnId = turnId;
     this.outputSeqByTool = new Map();
     this.toolCallsByUseId = new Map();
-    this.suppressedToolUseIds = new Set();
-    this.input.permissionEngine.beginTurn(turnId);
 
     const beginStep = (preferredMessageId?: string, nextProviderMessageId?: string): void => {
       let nextMessageId = preferredMessageId;
@@ -205,8 +195,7 @@ export class PiAgentBackend implements AgentBackend {
           }
           case 'tool_start': {
             const frameArgs = structuredClone(frame.args);
-            const suppressed = this.suppressedToolUseIds.has(frame.toolUseId);
-            if (!suppressed) await persistAssistant();
+            await persistAssistant();
             const canonicalArgs = await this.ensureToolCall(
               turnId,
               frame.toolUseId,
@@ -218,7 +207,6 @@ export class PiAgentBackend implements AgentBackend {
                 stepId: messageId,
               },
             );
-            if (suppressed) break;
             stepHasTools = true;
             activeToolUseIds.add(frame.toolUseId);
             const projectedArgs = projectPiToolArgs(frame.toolName, canonicalArgs);
@@ -237,7 +225,6 @@ export class PiAgentBackend implements AgentBackend {
             break;
           }
           case 'tool_output_delta': {
-            if (this.suppressedToolUseIds.has(frame.toolUseId)) break;
             const seq = (this.outputSeqByTool.get(frame.toolUseId) ?? 0) + 1;
             this.outputSeqByTool.set(frame.toolUseId, seq);
             const redacted = redactBoundedText(frame.chunk);
@@ -258,7 +245,6 @@ export class PiAgentBackend implements AgentBackend {
             break;
           }
           case 'tool_result': {
-            if (this.suppressedToolUseIds.has(frame.toolUseId)) break;
             const content = normalizeToolResultContent(frame.content);
             await this.appendToolResult(turnId, frame.toolUseId, Boolean(frame.isError), content);
             yield {
@@ -281,10 +267,6 @@ export class PiAgentBackend implements AgentBackend {
             const event = this.tokenUsageEvent(turnId, frame);
             await this.input.appendMessage(event);
             yield event;
-            break;
-          }
-          case 'permission_request': {
-            yield* this.handlePermissionRequest(turnId, frame);
             break;
           }
           case 'error': {
@@ -336,114 +318,24 @@ export class PiAgentBackend implements AgentBackend {
       };
       yield this.completeEvent(turnId, 'error');
     } finally {
-      this.input.permissionEngine.endTurn(turnId, this.stopped ? 'aborted' : 'completed');
       this.currentTurnId = null;
       this.outputSeqByTool.clear();
       this.toolCallsByUseId.clear();
-      this.suppressedToolUseIds.clear();
       this.stopped = false;
     }
   }
 
   async stop(reason: 'user_stop' | 'redirect'): Promise<void> {
     this.stopped = true;
-    if (this.currentTurnId !== null) {
-      this.input.permissionEngine.endTurn(this.currentTurnId, 'aborted');
-    }
     await this.input.transport.stop?.(reason);
   }
 
-  async respondToPermission(decision: PermissionDecision): Promise<void> {
-    if (this.currentTurnId === null) return;
-    this.input.permissionEngine.recordResponse(this.currentTurnId, decision);
+  async respondToSandboxBoundary(decision: SandboxBoundaryResponse): Promise<void> {
+    throw new Error(`No pending sandbox boundary request ${decision.requestId}`);
   }
 
   async dispose(): Promise<void> {
-    if (this.currentTurnId !== null) {
-      this.input.permissionEngine.endTurn(this.currentTurnId, 'aborted');
-    }
     await this.input.transport.dispose?.();
-  }
-
-  private async *handlePermissionRequest(
-    turnId: string,
-    frame: Extract<PiAgentFrame, { type: 'permission_request' }>,
-  ): AsyncIterable<SessionEvent> {
-    const frameArgs = structuredClone(frame.args);
-    const canonicalArgs = await this.ensureToolCall(
-      turnId,
-      frame.toolUseId,
-      frame.toolName,
-      frameArgs,
-      frame.categoryHint ? { categoryHint: frame.categoryHint } : {},
-    );
-    const verdict = this.input.permissionEngine.evaluate({
-      sessionId: this.sessionId,
-      turnId,
-      toolUseId: frame.toolUseId,
-      toolName: frame.toolName,
-      args: structuredClone(canonicalArgs),
-      ...(frame.categoryHint ? { categoryHint: frame.categoryHint } : {}),
-      mode: this.input.header.permissionMode,
-      ...(frame.hint ? { hint: redactBoundedText(frame.hint, 240) } : {}),
-    });
-
-    if (verdict.kind === 'block') {
-      this.suppressedToolUseIds.add(frame.toolUseId);
-      const content: ToolResultContent = { kind: 'text', text: redactBoundedText(verdict.reason) };
-      await this.appendToolResult(turnId, frame.toolUseId, true, content);
-      yield this.toolResultEvent(turnId, frame.toolUseId, true, content);
-      return;
-    }
-
-    if (verdict.kind === 'allow') return;
-
-    yield verdict.event;
-    let response: PermissionDecision;
-    try {
-      response = await verdict.parked;
-    } catch (error) {
-      const content: ToolResultContent = {
-        kind: 'text',
-        text: redactBoundedText(error instanceof Error ? error.message : String(error)),
-      };
-      await this.appendToolResult(turnId, frame.toolUseId, true, content);
-      yield this.toolResultEvent(turnId, frame.toolUseId, true, content);
-      return;
-    }
-
-    const decisionMsg: PermissionDecisionMessage = {
-      type: 'permission_decision',
-      id: response.requestId,
-      turnId,
-      ts: this.now(),
-      toolUseId: frame.toolUseId,
-      toolName: frame.toolName,
-      decision: response.decision,
-      ...(response.rememberForTurn !== undefined
-        ? { rememberForTurn: response.rememberForTurn }
-        : {}),
-    };
-    await this.input.appendMessage(decisionMsg);
-    yield {
-      type: 'permission_decision_ack',
-      id: this.newId(),
-      turnId,
-      ts: this.now(),
-      requestId: response.requestId,
-      toolUseId: frame.toolUseId,
-      decision: response.decision,
-      ...(response.rememberForTurn !== undefined
-        ? { rememberForTurn: response.rememberForTurn }
-        : {}),
-    };
-
-    if (response.decision === 'deny') {
-      this.suppressedToolUseIds.add(frame.toolUseId);
-      const content: ToolResultContent = { kind: 'text', text: '用户已拒绝权限请求' };
-      await this.appendToolResult(turnId, frame.toolUseId, true, content);
-      yield this.toolResultEvent(turnId, frame.toolUseId, true, content);
-    }
   }
 
   private async ensureToolCall(
@@ -452,7 +344,6 @@ export class PiAgentBackend implements AgentBackend {
     toolName: string,
     args: unknown,
     metadata: {
-      categoryHint?: ToolCategory;
       displayName?: string;
       intent?: string;
       stepId?: string;
@@ -475,7 +366,7 @@ export class PiAgentBackend implements AgentBackend {
       toolName,
       ...(metadata.displayName ? { displayName: metadata.displayName } : {}),
       ...(metadata.intent ? { intent: redactBoundedText(metadata.intent, 240) } : {}),
-      args: projectPiToolArgs(toolName, snapshot, metadata.categoryHint),
+      args: projectPiToolArgs(toolName, snapshot),
       ...(metadata.stepId ? { stepId: metadata.stepId } : {}),
     } satisfies ToolCallMessage);
     return structuredClone(snapshot);
@@ -562,11 +453,9 @@ export class PiAgentBackend implements AgentBackend {
   }
 }
 
-function projectPiToolArgs(toolName: string, args: unknown, categoryHint?: ToolCategory): unknown {
+function projectPiToolArgs(toolName: string, args: unknown): unknown {
   const projected =
-    categoryHint === 'computer_use' || toolName === 'maka_computer'
-      ? computerUseApprovalSummary(args)
-      : redactUnknown(args);
+    toolName === 'maka_computer' ? computerUseApprovalSummary(args) : redactUnknown(args);
   return structuredClone(projected);
 }
 
@@ -634,20 +523,6 @@ export function normalizePiAgentFrame(frame: unknown): PiAgentFrame | null {
       ...numberField('costUsd', value.costUsd),
     };
   }
-  if (
-    type === 'permission_request' &&
-    typeof value.toolUseId === 'string' &&
-    typeof value.toolName === 'string'
-  ) {
-    return {
-      type,
-      toolUseId: value.toolUseId,
-      toolName: value.toolName,
-      args: value.args ?? null,
-      ...(isToolCategory(value.categoryHint) ? { categoryHint: value.categoryHint } : {}),
-      ...(typeof value.hint === 'string' ? { hint: value.hint } : {}),
-    };
-  }
   if (type === 'error' && typeof value.message === 'string') {
     return {
       type,
@@ -685,9 +560,13 @@ function normalizeToolResultContent(content: unknown): ToolResultContent {
   }
 }
 
-function redactBoundedText(text: string, maxChars = 8192): string {
+const TRUNCATED_TEXT_MARKER = '\n[内容已截断]';
+
+function redactBoundedText(text: string, maxChars = TOOL_OUTPUT_DELTA_MAX_CHARS): string {
   const redacted = redactSecrets(text);
-  return redacted.length > maxChars ? `${redacted.slice(0, maxChars)}\n[内容已截断]` : redacted;
+  if (redacted.length <= maxChars) return redacted;
+  const marker = TRUNCATED_TEXT_MARKER.slice(0, maxChars);
+  return `${redacted.slice(0, maxChars - marker.length)}${marker}`;
 }
 
 function redactUnknown(value: unknown): unknown {

@@ -24,7 +24,6 @@ const APP_IPC = 'apps/desktop/src/main/app-ipc-main.ts';
 const CONTROLLER = 'apps/desktop/src/main/project-root-controller.ts';
 const SESSIONS_IPC = 'apps/desktop/src/main/sessions-ipc-main.ts';
 const WORKSPACE_INSTRUCTIONS_IPC = 'apps/desktop/src/main/workspace-instructions-ipc-main.ts';
-const MAIN_WINDOW = 'apps/desktop/src/main/main-window.ts';
 
 describe('project context workspace picker', () => {
   it('resolves git branch from normal and worktree-style .git metadata', async () => {
@@ -82,64 +81,39 @@ describe('project context workspace picker', () => {
     assert.match(globalTypes, /projectGit:\s*\{ isGitRepo: boolean; branch\?: string \};/);
   });
 
-  it('lets the composer picker choose a new project directory instead of only opening Finder', async () => {
+  it('uses the persistent project catalog as the composer picker authority', async () => {
     const appIpc = await readRepo(APP_IPC);
     const controller = await readRepo(CONTROLLER);
-    const mainWindow = await readRepo(MAIN_WINDOW);
     const preload = await readRepo('apps/desktop/src/preload/preload.ts');
     const globalTypes = await readRepo('apps/desktop/src/preload/bridge-contract.d.ts');
     const renderer = await readRendererShellCombinedSource();
+    const projectActionsSource = await readRepo(
+      'apps/desktop/src/renderer/app-shell-project-actions.ts',
+    );
     const workspacePickerBlock = renderer.match(/workspacePicker=\{\{[\s\S]*?\n\s*\}\}/)?.[0] ?? '';
 
-    assert.match(controller, /let selectedProjectRoot: string \| null = null;/);
-    assert.match(controller, /if \(selectedProjectRoot\) return selectedProjectRoot;/);
-    assert.match(controller, /async function resolveExplicit\(projectPath: unknown\): Promise</);
-    assert.match(appIpc, /ipcMain\.handle\(\s*'app:selectProjectDirectory'/);
-    assert.match(appIpc, /mainWindowController\.showOpenDialog\(\{[\s\S]*?title:\s*'选择工作目录'[\s\S]*?properties:\s*\['openDirectory'\]/);
-    assert.match(mainWindow, /dialog\.showOpenDialog\(mainWindow,\s*options\)/);
-    assert.match(appIpc, /const projectPath = await resolveProjectRoot\(\[selectedPath\]\)/);
-    // Both picker handlers must adopt the chosen root through the shared
-    // controller — the only writer of the selection state. Extract each
-    // handler so a dropped setSelected call cannot pass on the other
-    // handler's (or the controller's internal) matching text.
-    const selectDirectoryHandler = appIpc.match(/'app:selectProjectDirectory'[\s\S]*?\n  \);/)?.[0] ?? '';
-    const selectRootHandler = appIpc.match(/'app:selectProjectRoot'[\s\S]*?\n  \);/)?.[0] ?? '';
-    assert.match(
-      selectDirectoryHandler,
-      /projectRoot\.setSelected\(projectPath\);/,
-      'the directory picker must adopt the chosen root through the shared project-root controller',
-    );
-    assert.match(
-      selectRootHandler,
-      /projectRoot\.setSelected\(resolved\);/,
-      'the explicit project-root selection must adopt the validated root through the shared project-root controller',
-    );
+    assert.match(controller, /let selectedProject: CurrentProjectSelection \| null = null;/);
+    assert.match(controller, /if \(selectedProject\) return selectedProject;/);
+    assert.match(appIpc, /ipcMain\.handle\('projects:list'/);
+    assert.match(appIpc, /ipcMain\.handle\('projects:add'/);
+    assert.match(appIpc, /ipcMain\.handle\('projects:select'/);
+    assert.match(appIpc, /ipcMain\.handle\('projects:relink'/);
+    assert.match(appIpc, /ipcMain\.handle\('projects:rename'/);
+    assert.match(appIpc, /ipcMain\.handle\('projects:archive'/);
+    assert.match(appIpc, /ipcMain\.handle\('projects:restore'/);
     assert.match(
       controller,
-      /function setSelected\(projectPath: string\): void \{\s*selectedProjectRoot = projectPath;\s*void saveLastProjectPath\(projectPath\);/,
-      'the controller must both select and persist an adopted project root',
+      /function setSelection\(projectId: string \| null, projectPath: string\): void \{\s*selectedProject = \{ projectId, path: projectPath \};\s*void saveLastProjectPath\(projectPath, projectId\);/,
+      'the controller must persist the project association and path together',
     );
-    assert.match(appIpc, /projectGit:\s*await resolveProjectGitInfo\(projectPath\)/);
-    assert.match(
-      appIpc,
-      /'app:resolveProjectGitInfo'[\s\S]*?const explicitRoot = await projectRoot\.resolveExplicit\(projectPath\);[\s\S]*?if \(!explicitRoot\.ok\) return explicitRoot;/,
-      'explicit project git lookups must validate the supplied path instead of falling back to process.cwd()',
-    );
-    assert.match(
-      controller,
-      /async function loadPersistedProjectRoot\(\): Promise<string \| null> \{[\s\S]*?await stat\(parsed\.projectPath\)[\s\S]*?return await resolveProjectRoot\(\[parsed\.projectPath\]\)/,
-      'restored last-project-path must be validated before it becomes the current project root',
-    );
-    assert.match(
-      controller,
-      /if \(selectedProjectRoot\) return selectedProjectRoot;[\s\S]*?const persistedProjectRoot = await persistedProjectRootPromise;[\s\S]*?if \(persistedProjectRoot\) \{[\s\S]*?selectedProjectRoot = persistedProjectRoot;[\s\S]*?return persistedProjectRoot;/,
-      'the current project root must await the validated persisted project before falling back',
-    );
-    assert.match(preload, /selectProjectDirectory\(\): Promise</);
-    assert.match(preload, /ipcRenderer\.invoke\('app:selectProjectDirectory'\)/);
-    assert.match(globalTypes, /selectProjectDirectory\(\): Promise</);
-    assert.match(renderer, /async function selectProjectDirectory\(\)/);
-    assert.match(renderer, /window\.maka\.app\.selectProjectDirectory\(\)/);
+    assert.match(preload, /projects:\s*\{/);
+    assert.match(preload, /ipcRenderer\.invoke\('projects:list'\)/);
+    assert.match(preload, /ipcRenderer\.invoke\('projects:add'\)/);
+    assert.match(globalTypes, /projects:\s*\{/);
+    assert.match(globalTypes, /list\(\): Promise<ProjectRecord\[\]>/);
+    assert.match(renderer, /window\.maka\.projects\.list\(\)/);
+    assert.match(renderer, /window\.maka\.projects\.add\(\)/);
+    assert.doesNotMatch(renderer, /recentProjectPaths/);
     assert.match(renderer, /const \[projectPickerPending, setProjectPickerPending\] = useState\(false\)/);
     assert.match(renderer, /const rendererMountedRef = useRef\(true\)/);
     assert.match(renderer, /const projectPickerPendingRef = useRef\(false\)/);
@@ -151,7 +125,7 @@ describe('project context workspace picker', () => {
     );
     assert.match(
       renderer,
-      /async function selectProjectDirectory\(\) \{[\s\S]*if \(projectPickerPendingRef\.current\) return;[\s\S]*const requestId = projectPickerRequestRef\.current \+ 1;[\s\S]*projectPickerRequestRef\.current = requestId;[\s\S]*projectPickerPendingRef\.current = true;[\s\S]*setProjectPickerPending\(true\);[\s\S]*const isCurrentProjectPickerRequest = \(\) =>\s*rendererMountedRef\.current && projectPickerRequestRef\.current === requestId;[\s\S]*window\.maka\.app\.selectProjectDirectory\(\)[\s\S]*if \(!isCurrentProjectPickerRequest\(\)\) return;/,
+      /async function addProject\(\)[\s\S]*if \(projectPickerPendingRef\.current\) return null;[\s\S]*const requestId = projectPickerRequestRef\.current \+ 1;[\s\S]*window\.maka\.projects\.add\(\)[\s\S]*if \(!isCurrentProjectPickerRequest\(\)\) return null;/,
       'project picker must synchronously reject duplicate native dialog requests before React commits disabled state',
     );
     assert.match(
@@ -165,23 +139,43 @@ describe('project context workspace picker', () => {
       'project picker must release only the matching pending owner after the native dialog resolves or fails',
     );
     assert.match(
-      renderer,
-      /setAppInfo\(\{\s*projectPath: result\.projectPath,\s*projectGit: result\.projectGit,?\s*\}\)/,
+      projectActionsSource,
+      /await applySelectedProject\(result\.project, result\.path, true\)/,
     );
-    assert.match(renderer, /toastApi\.success\(copy\.directorySwitchedTitle, basenameFromPath\(result\.projectPath, uiLocale\)\)/);
+    assert.doesNotMatch(
+      projectActionsSource.match(
+        /async function addProject\(\): Promise<ProjectRecord \| null> \{[\s\S]*?\n  \}/,
+      )?.[0] ?? '',
+      /async function addProject\(\)[\s\S]*await selectProjectRecord\(result\.project/,
+      'adding a project must not select it a second time after main already adopted the path',
+    );
     assert.match(workspacePickerBlock, /pending:\s*projectPickerPending/);
-    assert.match(workspacePickerBlock, /void selectProjectDirectory\(\)/);
+    assert.match(workspacePickerBlock, /projects:\s*projects\.filter/);
+    assert.match(workspacePickerBlock, /void addProject\(\)/);
+    assert.match(workspacePickerBlock, /onSelectNoProject:\s*selectNoProject/);
     assert.doesNotMatch(workspacePickerBlock, /openProjectFolder\(\)|openWorkspaceFolder\(\)|openPath\(/);
   });
 
   it('defaults new sessions to the main-owned current project root', async () => {
     const main = await readRepo(MAIN);
     const sessionsIpc = await readRepo(SESSIONS_IPC);
+    const sessionEntryIpc = await readRepo('apps/desktop/src/main/session-entry-ipc-main.ts');
+    const botIncoming = await readRepo('apps/desktop/src/main/bot-incoming-main.ts');
     const chatActions = await readRepo('apps/desktop/src/renderer/app-shell-chat-actions.ts');
 
-    assert.match(sessionsIpc, /const cwd = input\?\.cwd \?\? \(await currentProjectRoot\(\)\)/);
-    assert.match(main, /handleQuickChatStart\(input, currentProjectRoot\)/);
-    assert.match(main, /cwd:\s*await getCurrentProjectRoot\(\)/);
+    assert.match(
+      main,
+      /resolveDesktopSessionSelection\(input, projectManagement\)/,
+      'all desktop session entry points must resolve the main-owned selection once',
+    );
+    assert.match(
+      sessionEntryIpc,
+      /\.\.\.\(typeof projectId === 'string' \|\| projectId === null \? \{ projectId \} : \{\}\)/,
+    );
+    assert.doesNotMatch(sessionsIpc, /getCurrentProjectRoot/);
+    assert.doesNotMatch(sessionEntryIpc, /getCurrentProjectRoot/);
+    assert.doesNotMatch(botIncoming, /getCurrentProjectRoot/);
+    assert.doesNotMatch(main, /quickChat/, '#1433 merged quickChat:start into sessions:create');
     assert.doesNotMatch(sessionsIpc, /const cwd = input\?\.cwd \?\? process\.cwd\(\)/);
     assert.doesNotMatch(sessionsIpc, /cwd:\s*process\.cwd\(\)/);
     assert.doesNotMatch(main, /cwd:\s*process\.cwd\(\)/);
@@ -225,6 +219,11 @@ describe('project context workspace picker', () => {
     assert.match(workspaceRow, /className="maka-composer-workspace-picker"/);
     assert.match(workspaceRow, /branch\?: string \| null;/);
     assert.match(workspaceRow, /pending\?: boolean;/);
+    assert.match(workspaceRow, /projects:\s*readonly ProjectRecord\[\]/);
+    assert.match(workspaceRow, /className="maka-composer-project-scroll"/);
+    assert.match(workspaceRow, /className="maka-composer-no-project"/);
+    assert.match(workspaceRow, /wp\.onRelink\(project\.id\)/);
+    assert.match(workspaceRow, /wp\.onSelectNoProject\(\)/);
     assert.match(workspaceRow, /disabled=\{wp\.pending === true\}/);
     assert.match(workspaceRow, /aria-busy=\{wp\.pending === true \? 'true' : undefined\}/);
     // WAWQAQ msg `28128c9e` (2026-06-20): the "选择工作目录" placeholder
@@ -238,9 +237,11 @@ describe('project context workspace picker', () => {
     // row aligned with the composer card automatically.
     assert.match(styles, /\.maka-composer-workspace-row\s*\{[\s\S]*?width:\s*min\(var\(--maka-chat-measure\),\s*100%\)/);
     assert.match(styles, /\.maka-composer-workspace-picker\s*\{/);
+    assert.match(styles, /\.maka-composer-project-scroll\s*\{[\s\S]*?overflow-y:\s*auto/);
+    assert.match(styles, /\.maka-composer-no-project\s*\{/);
     assert.match(styles, /-webkit-app-region:\s*no-drag/);
-    assert.match(renderer, /basenameFromPath\(projectInfo\.projectPath, uiLocale\)/);
-    assert.match(renderer, /branch:\s*projectInfo\?\.projectGit\.branch/);
+    assert.match(renderer, /currentProject\?\.name/);
+    assert.match(renderer, /branch:\s*currentProjectId === null \? null : projectInfo\?\.projectGit\.branch/);
     assert.match(renderer, /workspacePicker=\{\{/);
     assert.doesNotMatch(ui, /className="maka-project-badge"/);
   });

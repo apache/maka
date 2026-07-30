@@ -81,6 +81,16 @@
   line-height: var(--leading-snug);
 }
 
+/* #1362: inside the TRIGGER only (popup options keep their full label), a
+   selected label longer than the squeezed trigger ellipsizes instead of
+   bleeding past the button box. */
+.settingsSelectTrigger .settingsSelectMenuOption {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Heading: same 13px as the rows; hierarchy comes from weight 500 + muted ink
    + the brand mark, not a different size or an uppercase eyebrow. The mark sits
    in the 1rem leading column so it lines up under each row's selected check. */

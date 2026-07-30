@@ -1,9 +1,11 @@
+import { randomUUID } from 'node:crypto';
+
 import type { ProviderType } from '@maka/core/llm-connections';
 import { TOKEN_REFRESH_SKEW_MS } from '@maka/core';
 
 export type OAuthSubscriptionProvider = Extract<
   ProviderType,
-  'claude-subscription' | 'openai-codex' | 'github-copilot'
+  'claude-subscription' | 'openai-codex' | 'github-copilot' | 'xai-oauth'
 >;
 
 export interface OAuthSubscriptionTokens {
@@ -24,7 +26,8 @@ export function isOAuthSubscriptionProvider(
   return (
     providerType === 'claude-subscription' ||
     providerType === 'openai-codex' ||
-    providerType === 'github-copilot'
+    providerType === 'github-copilot' ||
+    providerType === 'xai-oauth'
   );
 }
 
@@ -99,7 +102,10 @@ export type RefreshAndPersistOAuthSubscriptionTokensInput = {
   | { providerType: OAuthSubscriptionProvider; refreshTokens?: never }
   | {
       providerType?: never;
-      refreshTokens: (tokens: OAuthSubscriptionTokens) => Promise<OAuthSubscriptionTokens>;
+      refreshTokens: (
+        tokens: OAuthSubscriptionTokens,
+        signal: AbortSignal,
+      ) => Promise<OAuthSubscriptionTokens>;
     }
 );
 
@@ -113,6 +119,21 @@ const CLAUDE_TOKEN_USER_AGENT = 'claude-cli/2.1.153 (external, cli)';
 const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const CODEX_TOKEN_ENDPOINT = 'https://auth.openai.com/oauth/token';
 const CODEX_TOKEN_USER_AGENT = 'maka-desktop/0.1.0 (oauth-subscription)';
+
+const XAI_CLIENT_ID = 'b1a00492-073a-47ea-816f-4c329264a828';
+const XAI_TOKEN_ENDPOINT = 'https://auth.x.ai/oauth2/token';
+const XAI_DEFAULT_TOKEN_LIFETIME_SECONDS = 3_600;
+
+const OAUTH_REFRESH_LEASE_MS = 30_000;
+const OAUTH_REFRESH_REQUEST_TIMEOUT_MS = 20_000;
+const OAUTH_REFRESH_FINALIZE_BUDGET_MS = 10_000;
+const OAUTH_REFRESH_LEASE_POLL_MS = 25;
+const OAUTH_REFRESH_LEASE_FIELD = '_refresh_lock';
+
+interface OAuthRefreshLease {
+  id: string;
+  expires_at: number;
+}
 
 export async function resolveOAuthSubscriptionAccessToken(
   input: ResolveOAuthSubscriptionAccessTokenInput,
@@ -181,28 +202,130 @@ async function refreshAndPersistOAuthSubscriptionTokensFromRaw(
     return { outcome: 'storage-failed', error: new Error('Credential store is read-only.') };
   }
 
+  if (input.credentialStore.compareAndSetSecret) {
+    return refreshAndPersistWithLease(input, raw);
+  }
+
   let refreshed: OAuthSubscriptionTokens;
   try {
-    refreshed = input.refreshTokens
-      ? await input.refreshTokens(tokens)
-      : await refreshOAuthSubscriptionTokens({
-          providerType: input.providerType,
-          tokens,
-          now: input.now,
-          fetchFn: input.fetchFn,
-        });
+    refreshed = await refreshTokensForInput(input, tokens);
   } catch (error) {
     return { outcome: 'refresh-failed', error };
   }
 
   const serialized = serializeOAuthSubscriptionTokens(refreshed);
   try {
-    if (input.credentialStore.compareAndSetSecret) {
-      const committed = await input.credentialStore.compareAndSetSecret(
+    await input.credentialStore.setSecret!(input.slug, 'oauth_token', serialized);
+  } catch (error) {
+    return { outcome: 'storage-failed', error };
+  }
+
+  return { outcome: 'refreshed', tokens: refreshed };
+}
+
+async function refreshAndPersistWithLease(
+  input: RefreshAndPersistOAuthSubscriptionTokensInput,
+  initialRaw: string,
+): Promise<OAuthSubscriptionRefreshAndPersistOutcome> {
+  const compareAndSet = input.credentialStore.compareAndSetSecret!.bind(input.credentialStore);
+  let raw = initialRaw;
+
+  for (;;) {
+    const tokens = parseOAuthSubscriptionTokens(raw);
+    if (!tokens) {
+      return { outcome: 'storage-failed', error: new Error('Stored OAuth token is invalid.') };
+    }
+
+    const lease = parseOAuthRefreshLease(raw);
+    if (lease && lease.expires_at > Date.now()) {
+      let current: string | null;
+      try {
+        current = await waitForOAuthCredentialChange(
+          input.credentialStore,
+          input.slug,
+          raw,
+          lease.expires_at,
+        );
+      } catch (error) {
+        return { outcome: 'storage-failed', error };
+      }
+      if (current === null) return { outcome: 'logged-out' };
+      if (current === raw) continue;
+
+      const currentTokens = parseOAuthSubscriptionTokens(current);
+      if (!currentTokens) {
+        return { outcome: 'storage-failed', error: new Error('Stored OAuth token is invalid.') };
+      }
+      if (parseOAuthRefreshLease(current)) {
+        raw = current;
+        continue;
+      }
+      if (
+        serializeOAuthSubscriptionTokens(currentTokens) === serializeOAuthSubscriptionTokens(tokens)
+      ) {
+        raw = current;
+        continue;
+      }
+      return { outcome: 'superseded', tokens: currentTokens };
+    }
+
+    const refreshLease = {
+      id: randomUUID(),
+      expires_at: Date.now() + OAUTH_REFRESH_LEASE_MS,
+    };
+    const claimedRaw = serializeOAuthSubscriptionTokensWithLease(tokens, refreshLease);
+    let claim: { committed: true } | { committed: false; current: string | null };
+    try {
+      claim = await compareAndSet(input.slug, 'oauth_token', raw, claimedRaw);
+    } catch (error) {
+      return { outcome: 'storage-failed', error };
+    }
+    if (!claim.committed) {
+      if (claim.current === null) return { outcome: 'logged-out' };
+      const currentTokens = parseOAuthSubscriptionTokens(claim.current);
+      if (!currentTokens) {
+        return { outcome: 'storage-failed', error: new Error('Stored OAuth token is invalid.') };
+      }
+      if (parseOAuthRefreshLease(claim.current)) {
+        raw = claim.current;
+        continue;
+      }
+      return { outcome: 'superseded', tokens: currentTokens };
+    }
+
+    let refreshed: OAuthSubscriptionTokens;
+    try {
+      refreshed = await refreshTokensForInput(input, tokens, refreshLease.expires_at);
+    } catch (error) {
+      try {
+        const released = await compareAndSet(input.slug, 'oauth_token', claimedRaw, raw);
+        if (!released.committed) {
+          if (released.current === null) return { outcome: 'logged-out' };
+          const current = parseOAuthSubscriptionTokens(released.current);
+          if (!current) {
+            return {
+              outcome: 'storage-failed',
+              error: new Error('Stored OAuth token is invalid.'),
+            };
+          }
+          if (parseOAuthRefreshLease(released.current)) {
+            raw = released.current;
+            continue;
+          }
+          return { outcome: 'superseded', tokens: current };
+        }
+      } catch (storageError) {
+        return { outcome: 'storage-failed', error: storageError };
+      }
+      return { outcome: 'refresh-failed', error };
+    }
+
+    try {
+      const committed = await compareAndSet(
         input.slug,
         'oauth_token',
-        raw,
-        serialized,
+        claimedRaw,
+        serializeOAuthSubscriptionTokens(refreshed),
       );
       if (!committed.committed) {
         if (committed.current === null) return { outcome: 'logged-out' };
@@ -210,16 +333,98 @@ async function refreshAndPersistOAuthSubscriptionTokensFromRaw(
         if (!current) {
           return { outcome: 'storage-failed', error: new Error('Stored OAuth token is invalid.') };
         }
+        if (parseOAuthRefreshLease(committed.current)) {
+          raw = committed.current;
+          continue;
+        }
         return { outcome: 'superseded', tokens: current };
       }
-    } else {
-      await input.credentialStore.setSecret!(input.slug, 'oauth_token', serialized);
+    } catch (error) {
+      return { outcome: 'storage-failed', error };
     }
-  } catch (error) {
-    return { outcome: 'storage-failed', error };
-  }
 
-  return { outcome: 'refreshed', tokens: refreshed };
+    return { outcome: 'refreshed', tokens: refreshed };
+  }
+}
+
+async function refreshTokensForInput(
+  input: RefreshAndPersistOAuthSubscriptionTokensInput,
+  tokens: OAuthSubscriptionTokens,
+  leaseExpiresAt?: number,
+): Promise<OAuthSubscriptionTokens> {
+  const controller = new AbortController();
+  const timeoutError = new Error('OAuth token refresh timed out.');
+  const timeoutMs =
+    leaseExpiresAt === undefined
+      ? OAUTH_REFRESH_REQUEST_TIMEOUT_MS
+      : Math.min(
+          OAUTH_REFRESH_REQUEST_TIMEOUT_MS,
+          Math.max(0, leaseExpiresAt - Date.now() - OAUTH_REFRESH_FINALIZE_BUDGET_MS),
+        );
+  if (timeoutMs === 0) throw timeoutError;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      controller.abort(timeoutError);
+      reject(timeoutError);
+    }, timeoutMs);
+  });
+  try {
+    const refresh = input.refreshTokens
+      ? input.refreshTokens(tokens, controller.signal)
+      : refreshOAuthSubscriptionTokens({
+          providerType: input.providerType,
+          tokens,
+          now: input.now,
+          fetchFn: input.fetchFn,
+          signal: controller.signal,
+        });
+    return await Promise.race([refresh, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function parseOAuthRefreshLease(raw: string): OAuthRefreshLease | null {
+  try {
+    const record = JSON.parse(raw) as Record<string, unknown>;
+    const candidate = record[OAUTH_REFRESH_LEASE_FIELD];
+    if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate))
+      return null;
+    const lease = candidate as Record<string, unknown>;
+    return typeof lease.id === 'string' &&
+      lease.id.length > 0 &&
+      typeof lease.expires_at === 'number' &&
+      Number.isFinite(lease.expires_at)
+      ? { id: lease.id, expires_at: lease.expires_at }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function serializeOAuthSubscriptionTokensWithLease(
+  tokens: OAuthSubscriptionTokens,
+  lease: OAuthRefreshLease,
+): string {
+  return JSON.stringify({ ...tokens, [OAUTH_REFRESH_LEASE_FIELD]: lease });
+}
+
+async function waitForOAuthCredentialChange(
+  store: OAuthSubscriptionCredentialStore,
+  slug: string,
+  expected: string,
+  leaseExpiresAt: number,
+): Promise<string | null> {
+  for (;;) {
+    const remaining = leaseExpiresAt - Date.now();
+    if (remaining <= 0) return store.getSecret(slug, 'oauth_token');
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(OAUTH_REFRESH_LEASE_POLL_MS, remaining)),
+    );
+    const current = await store.getSecret(slug, 'oauth_token');
+    if (current !== expected) return current;
+  }
 }
 
 /**
@@ -233,16 +438,19 @@ export async function refreshOAuthSubscriptionTokens(input: {
   tokens: OAuthSubscriptionTokens;
   now?: () => number;
   fetchFn?: typeof fetch;
+  signal?: AbortSignal;
 }): Promise<OAuthSubscriptionTokens> {
   const now = input.now ?? (() => Date.now());
   const fetchFn = input.fetchFn ?? fetch;
   switch (input.providerType) {
     case 'claude-subscription':
-      return refreshClaudeSubscriptionTokens(input.tokens, now, fetchFn);
+      return refreshClaudeSubscriptionTokens(input.tokens, now, fetchFn, input.signal);
     case 'openai-codex':
-      return refreshOpenAiCodexTokens(input.tokens, now, fetchFn);
+      return refreshOpenAiCodexTokens(input.tokens, now, fetchFn, input.signal);
     case 'github-copilot':
       return input.tokens;
+    case 'xai-oauth':
+      return refreshXaiOAuthTokens(input.tokens, now, fetchFn, input.signal);
   }
 }
 
@@ -302,6 +510,7 @@ async function refreshClaudeSubscriptionTokens(
   tokens: OAuthSubscriptionTokens,
   now: () => number,
   fetchFn: typeof fetch,
+  signal?: AbortSignal,
 ): Promise<OAuthSubscriptionTokens> {
   const response = await fetchFn(CLAUDE_TOKEN_ENDPOINT, {
     method: 'POST',
@@ -314,6 +523,7 @@ async function refreshClaudeSubscriptionTokens(
       refresh_token: tokens.refresh_token,
       client_id: CLAUDE_CLIENT_ID,
     }),
+    signal,
   });
   if (!response.ok) throw new Error(`Claude OAuth token refresh failed (${response.status}).`);
   const payload = (await response.json()) as {
@@ -339,6 +549,7 @@ async function refreshOpenAiCodexTokens(
   tokens: OAuthSubscriptionTokens,
   now: () => number,
   fetchFn: typeof fetch,
+  signal?: AbortSignal,
 ): Promise<OAuthSubscriptionTokens> {
   const body = new URLSearchParams({
     grant_type: 'refresh_token',
@@ -352,6 +563,7 @@ async function refreshOpenAiCodexTokens(
       'User-Agent': CODEX_TOKEN_USER_AGENT,
     },
     body: body.toString(),
+    signal,
   });
   if (!response.ok) throw new Error(`Codex OAuth token refresh failed (${response.status}).`);
   const payload = (await response.json()) as {
@@ -367,5 +579,43 @@ async function refreshOpenAiCodexTokens(
     id_token: payload.id_token ?? tokens.id_token,
     expires_at: now() + expiresInMs,
     account_id: tokens.account_id,
+  };
+}
+
+async function refreshXaiOAuthTokens(
+  tokens: OAuthSubscriptionTokens,
+  now: () => number,
+  fetchFn: typeof fetch,
+  signal?: AbortSignal,
+): Promise<OAuthSubscriptionTokens> {
+  const response = await fetchFn(XAI_TOKEN_ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      client_id: XAI_CLIENT_ID,
+      refresh_token: tokens.refresh_token,
+    }).toString(),
+    signal,
+  });
+  if (!response.ok) throw new Error(`xAI OAuth token refresh failed (${response.status}).`);
+  const payload = (await response.json()) as {
+    access_token?: string;
+    refresh_token?: string;
+    expires_in?: number;
+    token_type?: string;
+    scope?: string;
+  };
+  const { accessToken, expiresInMs } = requireRefreshedTokenFields('xAI', {
+    ...payload,
+    expires_in:
+      payload.expires_in === undefined ? XAI_DEFAULT_TOKEN_LIFETIME_SECONDS : payload.expires_in,
+  });
+  return {
+    access_token: accessToken,
+    refresh_token: nextRefreshToken(payload.refresh_token, tokens.refresh_token),
+    expires_at: now() + expiresInMs,
+    token_type: payload.token_type ?? tokens.token_type,
+    scope: payload.scope ?? tokens.scope,
   };
 }

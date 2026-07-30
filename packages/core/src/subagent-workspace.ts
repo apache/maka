@@ -1,0 +1,75 @@
+export const SUBAGENT_WORKSPACE_BINDING_SCHEMA_VERSION = 1 as const;
+
+const SUBAGENT_WORKTREE_LEASE_PATTERN = /^subagent_worktree_[a-f0-9]{32}$/;
+const GIT_COMMIT_PATTERN = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/;
+const MAX_PATH_CHARS = 16_384;
+const MAX_BRANCH_CHARS = 1_024;
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
+
+/**
+ * Immutable workspace ownership attached to a linked child Session.
+ *
+ * The Session remains the runtime identity. This binding records the
+ * host-managed filesystem lease that gives the child an isolated Git worktree
+ * without teaching the graph scheduler about Git.
+ */
+export interface SubagentWorkspaceBinding {
+  schemaVersion: typeof SUBAGENT_WORKSPACE_BINDING_SCHEMA_VERSION;
+  kind: 'git_worktree';
+  leaseId: string;
+  gitCommonDir: string;
+  worktreePath: string;
+  /** Host-owned lease branch; the child may check out another branch inside the leased worktree. */
+  branch: string;
+  baseCommit: string;
+}
+
+export interface ProvisionSubagentWorktreeInput {
+  leaseId: string;
+  sourceSessionId: string;
+  sourceCwd: string;
+  sourceProjectId?: string | null;
+}
+
+export interface SubagentWorktreeExecutor {
+  provision(input: ProvisionSubagentWorktreeInput): Promise<SubagentWorkspaceBinding>;
+  ensure(binding: SubagentWorkspaceBinding): Promise<void>;
+}
+
+export function isSubagentWorkspaceBinding(value: unknown): value is SubagentWorkspaceBinding {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const binding = value as Record<string, unknown>;
+  const keys = Object.keys(binding).sort();
+  const expected = [
+    'baseCommit',
+    'branch',
+    'gitCommonDir',
+    'kind',
+    'leaseId',
+    'schemaVersion',
+    'worktreePath',
+  ].sort();
+  return (
+    keys.length === expected.length &&
+    keys.every((key, index) => key === expected[index]) &&
+    binding.schemaVersion === SUBAGENT_WORKSPACE_BINDING_SCHEMA_VERSION &&
+    binding.kind === 'git_worktree' &&
+    typeof binding.leaseId === 'string' &&
+    SUBAGENT_WORKTREE_LEASE_PATTERN.test(binding.leaseId) &&
+    isBoundedText(binding.gitCommonDir, MAX_PATH_CHARS) &&
+    isBoundedText(binding.worktreePath, MAX_PATH_CHARS) &&
+    isBoundedText(binding.branch, MAX_BRANCH_CHARS) &&
+    !binding.branch.startsWith('-') &&
+    typeof binding.baseCommit === 'string' &&
+    GIT_COMMIT_PATTERN.test(binding.baseCommit)
+  );
+}
+
+function isBoundedText(value: unknown, maxChars: number): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= maxChars &&
+    !CONTROL_CHARACTERS.test(value)
+  );
+}

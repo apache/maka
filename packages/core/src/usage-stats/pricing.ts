@@ -9,7 +9,7 @@
  *   - negative rate → "credit / refund" misread in cost display
  *   - `NaN` rate    → math propagates `NaN`, dashboard shows garbage
  *   - `Infinity`    → math propagates `Infinity`, dashboard breaks
- *   - non-string `modelKey` → `localeCompare` crashes the sort
+ *   - non-string `modelKey` → key ordering crashes
  *   - empty `modelKey`     → orphan entry; match-by-key fails
  *   - non-object pricing   → TypeError accessing fields
  *
@@ -41,12 +41,35 @@ export type NormalizePricingModelKeyResult =
   | { ok: true; value: string }
   | { ok: false; error: string };
 
+const CANONICAL_PRICING_CONFIG_SHAPE = {
+  modelKey: 'required',
+  inputUsdPer1M: 'required',
+  outputUsdPer1M: 'required',
+  cacheReadUsdPer1M: 'optional',
+  cacheWriteUsdPer1M: 'optional',
+} as const satisfies {
+  readonly [Key in keyof PricingConfig]-?: 'required' | 'optional';
+};
+const CANONICAL_PRICING_CONFIG_KEYS = Object.freeze(
+  Object.keys(CANONICAL_PRICING_CONFIG_SHAPE) as Array<keyof PricingConfig>,
+);
+const CANONICAL_PRICING_CONFIG_KEY_SET = new Set<string>(CANONICAL_PRICING_CONFIG_KEYS);
+
 /**
  * Max code-point length for `modelKey`. 128 chars is well past
  * any provider key Maka ships (`anthropic:claude-sonnet-4-5` =
  * ~30 chars) but bounds adversarial input.
  */
 export const PRICING_MODEL_KEY_MAX_CHARS = 128;
+
+/**
+ * Locale-independent strict total order for exact JavaScript strings.
+ * Canonically equivalent Unicode spellings remain distinct keys.
+ */
+export function comparePricingModelKeys(left: string, right: string): -1 | 0 | 1 {
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
+}
 
 /**
  * Validate + canonicalize a pricing `modelKey`.
@@ -143,6 +166,44 @@ export function normalizePricingConfig(input: unknown): NormalizePricingResult {
     ...(cacheWrite !== undefined ? { cacheWriteUsdPer1M: cacheWrite } : {}),
   };
   return { ok: true, value: canonical };
+}
+
+/**
+ * Validate that a runtime value is already in canonical PricingConfig form.
+ * Unlike normalization, this rejects unknown fields, omitted required fields,
+ * explicit undefined optionals, and values that normalization would alter.
+ */
+export function validateCanonicalPricingConfig(input: unknown): NormalizePricingResult {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    return { ok: false, error: 'pricing must be an object' };
+  }
+  const record = input as Record<string, unknown>;
+  const keys = Object.keys(record);
+  if (
+    keys.some((key) => !CANONICAL_PRICING_CONFIG_KEY_SET.has(key)) ||
+    Object.entries(CANONICAL_PRICING_CONFIG_SHAPE).some(
+      ([key, presence]) => presence === 'required' && !Object.hasOwn(record, key),
+    )
+  ) {
+    return { ok: false, error: 'pricing has missing or unknown fields' };
+  }
+
+  const normalized = normalizePricingConfig(record);
+  if (!normalized.ok) return normalized;
+  if (!canonicalPricingConfigsEqual(normalized.value, record as unknown as PricingConfig)) {
+    return { ok: false, error: 'pricing is not canonical' };
+  }
+  return normalized;
+}
+
+/** Exact equality for two already-canonical pricing configurations. */
+export function canonicalPricingConfigsEqual(
+  left: Readonly<PricingConfig>,
+  right: Readonly<PricingConfig>,
+): boolean {
+  return CANONICAL_PRICING_CONFIG_KEYS.every(
+    (key) => left[key] === right[key] && Object.hasOwn(left, key) === Object.hasOwn(right, key),
+  );
 }
 
 /**

@@ -2,6 +2,7 @@
  * Tests for AsyncEventQueue — single-producer / single-consumer FIFO.
  */
 
+import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { expect } from '../test-helpers.js';
 import { AsyncEventQueue } from '../async-queue.js';
@@ -109,97 +110,93 @@ describe('AsyncEventQueue', () => {
   });
 });
 
-describe('AsyncEventQueue seq-ack counters', () => {
-  test('pushedCount stamps enqueues; ackConsumed counts processed events', () => {
+describe('AsyncEventQueue consumption boundary', () => {
+  test('pushAndWaitUntilConsumed resolves only when its exact sequence is processed', async () => {
     const q = new AsyncEventQueue<number>();
-    expect(q.pushedCount).toBe(0);
-    q.push(1);
+    let releaseAck!: () => void;
+    const ackGate = new Promise<void>((resolve) => {
+      releaseAck = resolve;
+    });
+    let settled = false;
+    const consumed = q.pushAndWaitUntilConsumed(1).then(() => {
+      settled = true;
+    });
     q.push(2);
-    expect(q.pushedCount).toBe(2);
-    expect(q.consumedCount).toBe(0);
-    q.ackConsumed();
-    expect(q.consumedCount).toBe(1);
-    // A dropped push (after close) is not stamped: the counter tracks events
-    // a consumer can ever receive, or the boundary would be unreachable.
-    q.close();
-    q.push(3);
-    expect(q.pushedCount).toBe(2);
-  });
 
-  test('waitForProgress resolves on push, ack, close, and detach — condition-variable, not a poll', async () => {
-    const q = new AsyncEventQueue<number>();
-    let wakes = 0;
-    const arm = (): void => {
-      void q.waitForProgress().then(() => {
-        wakes += 1;
-      });
-    };
-
-    arm();
-    q.push(1);
-    await Promise.resolve();
-    expect(wakes).toBe(1);
-
-    arm();
-    q.ackConsumed();
-    await Promise.resolve();
-    expect(wakes).toBe(2);
-
-    arm();
-    q.noteConsumerDetached();
-    await Promise.resolve();
-    expect(wakes).toBe(3);
-    expect(q.consumerDetached).toBe(true);
-
-    arm();
-    q.close();
-    await Promise.resolve();
-    expect(wakes).toBe(4);
-  });
-
-  test('a seq-ack boundary wait observes consumed >= pushed exactly when the consumer has processed everything', async () => {
-    const q = new AsyncEventQueue<number>();
-    const processed: number[] = [];
-
-    // Producer-side boundary waiter: everything pushed so far must be processed.
-    const boundary = q.pushedCount; // 0 — then push 3 events
-    q.push(1);
-    q.push(2);
-    q.push(3);
-    q.close();
-    expect(boundary).toBe(0);
-
-    const waiter = (async () => {
-      while (q.consumedCount < q.pushedCount) {
-        await q.waitForProgress();
-      }
-      return [q.pushedCount, q.consumedCount];
-    })();
-
-    // Consumer acks after fully processing each event (the drain() pattern).
-    for await (const v of q) {
-      processed.push(v);
+    const consumer = (async () => {
+      const iter = q[Symbol.asyncIterator]();
+      expect(await iter.next()).toEqual({ value: 1, done: false });
+      await ackGate;
       q.ackConsumed();
-    }
-    expect(await waiter).toEqual([3, 3]);
-    expect(processed).toEqual([1, 2, 3]);
+      expect(await iter.next()).toEqual({ value: 2, done: false });
+      q.ackConsumed();
+    })();
+
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    releaseAck();
+    await consumed;
+    expect(settled).toBe(true);
+    await consumer;
+    q.close();
   });
 
-  test('a detached consumer wakes boundary waiters instead of deadlocking them', async () => {
+  test('waitUntilConsumedThroughCurrent captures a fixed boundary', async () => {
     const q = new AsyncEventQueue<number>();
     q.push(1);
+    const throughFirst = q.waitUntilConsumedThroughCurrent();
+    let settled = false;
+    void throughFirst.then(() => {
+      settled = true;
+    });
     q.push(2);
-    const waiter = (async () => {
-      while (q.consumedCount < q.pushedCount) {
-        if (q.consumerDetached) return 'detached';
-        await q.waitForProgress();
-      }
-      return 'acked';
-    })();
-    // The consumer abandons the stream after one event without acking the rest.
+
     const iter = q[Symbol.asyncIterator]();
     await iter.next();
+    q.ackConsumed();
+    await throughFirst;
+    expect(settled).toBe(true);
+    expect(await iter.next()).toEqual({ value: 2, done: false });
+    q.ackConsumed();
+    q.close();
+  });
+
+  test('pushAndWaitUntilConsumed rejects instead of dropping on closed or errored queues', async () => {
+    const q = new AsyncEventQueue<number>();
+    q.close();
+    await assert.rejects(q.pushAndWaitUntilConsumed(1), /queue is closed/);
+
+    const failed = new AsyncEventQueue<number>();
+    const failure = new Error('queue failed');
+    failed.error(failure);
+    await assert.rejects(failed.pushAndWaitUntilConsumed(1), (error) => error === failure);
+  });
+
+  test('detach or queue error before consumption rejects the pending boundary', async () => {
+    const q = new AsyncEventQueue<number>();
+    const detached = q.pushAndWaitUntilConsumed(1);
     q.noteConsumerDetached();
-    expect(await waiter).toBe('detached');
+    await assert.rejects(detached, /consumer detached/);
+
+    const failed = new AsyncEventQueue<number>();
+    const pending = failed.pushAndWaitUntilConsumed(1);
+    const failure = new Error('consumer persistence failed');
+    failed.error(failure);
+    await assert.rejects(pending, (error) => error === failure);
+  });
+
+  test('detach after consumption does not reverse a fulfilled boundary', async () => {
+    const q = new AsyncEventQueue<number>();
+    const consumed = q.pushAndWaitUntilConsumed(1);
+    const iter = q[Symbol.asyncIterator]();
+    await iter.next();
+    q.ackConsumed();
+    q.noteConsumerDetached();
+    await consumed;
+
+    // The already-consumed current boundary remains successful after detach.
+    await q.waitUntilConsumedThroughCurrent();
+    q.close();
   });
 });

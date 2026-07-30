@@ -21,7 +21,6 @@ function artifact(source?: ArtifactSource): ArtifactRecord {
 describe('generated artifact visibility', () => {
   it('excludes runtime context state and user-upload snapshots', () => {
     const hiddenSources: ArtifactSource[] = [
-      'tool_result_archive',
       'synthesis_cache_block',
       'history_compact_block',
       'history_compact_source',
@@ -35,6 +34,7 @@ describe('generated artifact visibility', () => {
   it('preserves user-facing generated files and legacy records without a source', () => {
     const visibleSources: Array<ArtifactSource | undefined> = [
       'tool_result',
+      'tool_result_archive',
       'deep_research',
       'export',
       'snapshot',

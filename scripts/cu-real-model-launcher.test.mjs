@@ -14,12 +14,16 @@ import {
 
 const launcher = await readFile(new URL('./cu-real-model-launcher.mjs', import.meta.url), 'utf8');
 // The ai-sdk backend wiring (the isComputerUseRealModelE2e tool / economy
-// branches) moved into session-stream.ts (arch R5); scan main.ts + the
-// extracted module together so the isolation-gate pins follow the split.
+// branches) moved into the shared backend tool-surface resolver; scan main.ts
+// plus both extracted modules so the isolation-gate pins follow the split.
 const main = (
   await Promise.all([
     readFile(new URL('../apps/desktop/src/main/main.ts', import.meta.url), 'utf8'),
     readFile(new URL('../apps/desktop/src/main/session-stream.ts', import.meta.url), 'utf8'),
+    readFile(
+      new URL('../apps/desktop/src/main/desktop-backend-tool-surface.ts', import.meta.url),
+      'utf8',
+    ),
   ])
 ).join('\n');
 
@@ -93,8 +97,15 @@ test('Desktop isolation gate does not enable FakeBackend', () => {
   assert.match(main, /const isComputerUseRealModelE2e =[\s\S]*MAKA_CU_REAL_MODEL_E2E/);
   assert.match(main, /const isE2e = hasIsolatedE2eProfile && process\.env\.MAKA_E2E === '1'/);
   assert.match(main, /const isIsolatedE2e = isE2e \|\| isComputerUseRealModelE2e/);
-  assert.match(main, /isComputerUseRealModelE2e[\s\S]*\? computerUseTools/);
-  assert.match(main, /isComputerUseRealModelE2e[\s\S]*\? \{ economy: false, groups: \[\] \}/);
+  assert.match(main, /deps\.isComputerUseRealModelE2e[\s\S]*\? \[\.\.\.deps\.computerUseTools\]/);
+  assert.match(
+    main,
+    /const toolEconomy = deps\.isComputerUseRealModelE2e \? false : deps\.toolEconomy/,
+  );
+  assert.match(
+    main,
+    /projectEffectiveProductToolSurface\(\{[\s\S]*policy: \{ economy: toolEconomy \}/,
+  );
   assert.doesNotMatch(main, /if \(isComputerUseRealModelE2e\) \{[\s\S]*backends\.register\('fake'/);
 });
 

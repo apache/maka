@@ -13,6 +13,10 @@ import {
   turnKey,
   utf8ByteLength,
 } from './context-budget-helpers.js';
+import {
+  buildToolResultArchiveResourceRef,
+  TOOL_RESULT_ARCHIVE_READ_INSTRUCTIONS,
+} from './tool-result-archive-resource.js';
 
 export interface StaleToolResultPrunePolicy {
   enabled: boolean;
@@ -52,6 +56,10 @@ export interface ArchivedToolResultPlaceholder {
   kind: typeof ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND;
   rewriteVersion: typeof ARCHIVED_TOOL_RESULT_REWRITE_VERSION;
   artifactId: string;
+  /** First-class, model-readable resource URI. Optional for persisted v1 compatibility. */
+  resourceRef?: string;
+  /** Explicit recovery action for the provider-visible placeholder. */
+  readInstructions?: string;
   runtimeEventId: string;
   toolCallId: string;
   toolName: string;
@@ -323,6 +331,12 @@ export function pruneStaleToolResultsBeforeCompact(
       kind: ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND,
       rewriteVersion: ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
       artifactId: archiveRef.artifactId,
+      resourceRef: buildToolResultArchiveResourceRef({
+        artifactId: archiveRef.artifactId,
+        bodySha256: archiveRef.bodySha256,
+        originalBytes: resultBytes,
+      }),
+      readInstructions: TOOL_RESULT_ARCHIVE_READ_INSTRUCTIONS,
       runtimeEventId: event.id,
       toolCallId: content.id,
       toolName: content.name,

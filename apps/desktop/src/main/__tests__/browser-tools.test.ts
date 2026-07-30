@@ -118,15 +118,12 @@ describe('browser tool helpers', () => {
     assert.match(takeoverNote({ takeoverReloaded: true }), /reloaded once/);
   });
 
-  it('buildBrowserTools returns the six tools, all in the browser permission category', () => {
+  it('buildBrowserTools returns the six tools, all in the browser category', () => {
     const tools = buildBrowserTools();
     assert.deepEqual(
       tools.map((t) => t.name),
       ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_wait', 'browser_extract'],
     );
-    // No explicit permissionRequired flag: the runtime defaults to "required"
-    // (it only skips the engine on an explicit `false`), so the browser category
-    // alone gates every tool.
     assert.ok(tools.every((t) => t.categoryHint === 'browser'));
   });
 });

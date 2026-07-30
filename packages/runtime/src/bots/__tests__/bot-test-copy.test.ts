@@ -17,6 +17,7 @@ describe('testBotChannel copy', () => {
       'wechat',
       'dingtalk',
       'qq',
+      'slack',
     ];
 
     for (const provider of providers) {

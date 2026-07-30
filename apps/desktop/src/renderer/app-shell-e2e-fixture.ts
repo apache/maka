@@ -62,9 +62,9 @@ export function createAppShellE2eFixtureActions(options: {
     if (state.liveTurnBySession) {
       setLiveTurnBySession((current) => ({ ...current, ...state.liveTurnBySession }));
     }
-    if (state.permissionBySession) {
+    if (state.sandboxBoundaryBySession) {
       const seeded: InteractionQueues = {};
-      for (const [seedSessionId, request] of Object.entries(state.permissionBySession)) {
+      for (const [seedSessionId, request] of Object.entries(state.sandboxBoundaryBySession)) {
         if (request) seeded[seedSessionId] = [request];
       }
       setInteractionBySession((current) => ({ ...current, ...seeded }));
@@ -89,7 +89,7 @@ export function createAppShellE2eFixtureActions(options: {
     }
     // PR-UI-VISUAL-SMOKE-LOCALE: lock the UI locale BEFORE
     // `refreshSessions()` resolves and BEFORE any locale-dependent
-    // content (EmptyChatHero / Composer / OnboardingHero quickChat)
+    // content (EmptyChatHero / Composer / OnboardingHero)
     // enters the React tree — all of those gate on sessions /
     // connection state which load inside this same effect. The reactive
     // override reaches every consumer before the fixture's
@@ -149,13 +149,13 @@ export function createAppShellE2eFixtureActions(options: {
       openPalette();
     }
     if (state.sidebarSection === 'automations') {
-      setNavSelection({ section: 'automations' });
+      setNavSelection({ section: 'automations', module: 'plan-reminders' });
     } else if (state.sidebarSection === 'skills') {
-      setNavSelection({ section: 'skills' });
+      setNavSelection({ section: 'extensions', module: 'skills' });
     } else if (state.sidebarSection === 'mcp') {
-      setNavSelection({ section: 'mcp' });
+      setNavSelection({ section: 'extensions', module: 'mcp' });
     } else if (state.sidebarSection === 'daily-review') {
-      setNavSelection({ section: 'daily-review' });
+      setNavSelection({ section: 'automations', module: 'daily-review' });
     } else if (state.sidebarSection === 'sessions') {
       setNavSelection({ section: 'sessions', filter: 'chats' });
     }

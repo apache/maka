@@ -6,8 +6,9 @@ import type {
   MakaBridge,
   OnboardingSnapshot,
   PermissionActionResult,
-  QuickChatResult,
+  PermissionOverlayStartResult,
   RendererIngestInput,
+  AppUpdateStatus,
   WorkspaceInstructionsState,
 } from './bridge-contract.js';
 import type {
@@ -19,10 +20,12 @@ import type {
   BotOnboardingSnapshot,
   BotOnboardingStartInput,
   HealthSnapshot,
+  ExecutionBoundary,
   LlmConnection,
   ModelDiscoveryResult,
   ModelInfo,
-  PermissionResponse,
+  SandboxBoundaryRequestEvent,
+  SandboxBoundaryResponse,
   UserQuestionResponse,
   PermissionMode,
   CollaborationMode,
@@ -65,6 +68,7 @@ import type {
   SubscriptionAccountState,
   SubscriptionActionResult,
   PlanReminder,
+  ProjectRecord,
   PlanReminderDeliveryTarget,
   PlanReminderRecurrence,
   DailyReviewArchive,
@@ -90,13 +94,20 @@ import type {
   UsageQuery,
   UsageSummaryV2,
 } from '@maka/core/usage-stats/types';
-import type { BotStatus, WechatBridgeQrCodeResult } from '@maka/runtime';
+import type {
+  AgentGraphClientChangedEvent,
+  AgentGraphClientSnapshot,
+  AgentGraphClientSnapshotOptions,
+  AgentGraphOperatorInspection,
+  BotStatus,
+  WechatBridgeQrCodeResult,
+} from '@maka/runtime';
 import type { GoalState } from '@maka/runtime';
 import type { BundledSkillCatalogEntry, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry, SkillGovernanceDetails } from '@maka/ui';
 import type { ConfigCategory } from '@maka/storage';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
-import type { Result } from '@maka/core/settings/result';
-import type { CreateSessionInput } from '@maka/core';
+import type { Result } from '@maka/core/result';
+import type { CreateSessionRequestInput } from '@maka/core';
 import type {
   McpConfigFile,
   McpServerConfig,
@@ -106,7 +117,6 @@ import type {
 import type {
   AttachmentRef,
   OnboardingMilestoneId,
-  QuickChatMode,
   QuoteRef,
 } from '@maka/core';
 
@@ -136,11 +146,47 @@ const makaBridge = {
       return () => ipcRenderer.off('deepResearch:changed', listener);
     },
   },
+  graphs: {
+    getSnapshot(
+      rootSessionId: string,
+      options?: AgentGraphClientSnapshotOptions,
+    ): Promise<AgentGraphClientSnapshot> {
+      return ipcRenderer.invoke('graphs:getSnapshot', rootSessionId, options);
+    },
+    inspectOperator(
+      rootSessionId: string,
+      operatorId: string,
+    ): Promise<AgentGraphOperatorInspection> {
+      return ipcRenderer.invoke('graphs:inspectOperator', rootSessionId, operatorId);
+    },
+    stop(rootSessionId: string): Promise<void> {
+      return ipcRenderer.invoke('graphs:stop', rootSessionId);
+    },
+    subscribe(
+      rootSessionId: string,
+      handler: (event: AgentGraphClientChangedEvent) => void,
+    ): () => void {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: AgentGraphClientChangedEvent,
+      ) => {
+        if (payload.rootSessionId === rootSessionId) handler(payload);
+      };
+      ipcRenderer.on('graphs:changed', listener);
+      return () => ipcRenderer.off('graphs:changed', listener);
+    },
+  },
   sessions: {
     list(filter?: SessionListFilter): Promise<SessionSummary[]> {
       return ipcRenderer.invoke('sessions:list', filter);
     },
-    create(input?: Partial<CreateSessionInput>): Promise<SessionSummary> {
+    /**
+     * The single session-creation channel (#1433). `mode` names a
+     * product intent — main derives the permission boundary, name and
+     * labels it implies (`create-session-input.ts`); the renderer cannot
+     * reach a boundary like `explore` by asking for it directly.
+     */
+    create(input?: CreateSessionRequestInput): Promise<SessionSummary> {
       return ipcRenderer.invoke('sessions:create', input);
     },
     async send(
@@ -190,6 +236,14 @@ const makaBridge = {
     readMessages(sessionId: string): Promise<StoredMessage[]> {
       return ipcRenderer.invoke('sessions:readMessages', sessionId);
     },
+    readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary> {
+      return ipcRenderer.invoke('sessions:readExecutionBoundary', sessionId);
+    },
+    listActiveSandboxBoundaryRequests(
+      sessionId: string,
+    ): Promise<SandboxBoundaryRequestEvent[]> {
+      return ipcRenderer.invoke('sessions:listActiveSandboxBoundaryRequests', sessionId);
+    },
     listTurns(sessionId: string): Promise<TurnRecord[]> {
       return ipcRenderer.invoke('sessions:listTurns', sessionId);
     },
@@ -202,8 +256,8 @@ const makaBridge = {
     reviseBeforeTurn(sessionId: string, input: ReviseBeforeTurnInput): Promise<SessionSummary> {
       return ipcRenderer.invoke('sessions:reviseBeforeTurn', sessionId, input);
     },
-    respondToPermission(sessionId: string, response: PermissionResponse): Promise<void> {
-      return ipcRenderer.invoke('sessions:respondToPermission', sessionId, response);
+    respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void> {
+      return ipcRenderer.invoke('sessions:respondToSandboxBoundary', sessionId, response);
     },
     respondToUserQuestion(sessionId: string, response: UserQuestionResponse): Promise<void> {
       return ipcRenderer.invoke('sessions:respondToUserQuestion', sessionId, response);
@@ -291,6 +345,38 @@ const makaBridge = {
     },
     remove(sessionId: string, options?: { revisionFamily?: boolean }): Promise<void> {
       return ipcRenderer.invoke('sessions:remove', sessionId, options);
+    },
+    cleanupQuoteCompanion(sessionId: string): Promise<void> {
+      return ipcRenderer.invoke('sessions:cleanupQuoteCompanion', sessionId);
+    },
+  },
+  projects: {
+    list(): Promise<ProjectRecord[]> {
+      return ipcRenderer.invoke('projects:list');
+    },
+    add(): Promise<
+      { ok: true; project: ProjectRecord; path: string } | { ok: false; reason: 'cancelled' }
+    > {
+      return ipcRenderer.invoke('projects:add');
+    },
+    select(
+      projectId: string | null,
+    ): Promise<{ project: ProjectRecord | null; path: string }> {
+      return ipcRenderer.invoke('projects:select', projectId);
+    },
+    relink(projectId: string): Promise<
+      { ok: true; project: ProjectRecord } | { ok: false; reason: 'cancelled' }
+    > {
+      return ipcRenderer.invoke('projects:relink', projectId);
+    },
+    rename(projectId: string, name: string): Promise<ProjectRecord> {
+      return ipcRenderer.invoke('projects:rename', projectId, name);
+    },
+    archive(projectId: string): Promise<ProjectRecord> {
+      return ipcRenderer.invoke('projects:archive', projectId);
+    },
+    restore(projectId: string): Promise<ProjectRecord> {
+      return ipcRenderer.invoke('projects:restore', projectId);
     },
   },
   shellRuns: {
@@ -401,23 +487,11 @@ const makaBridge = {
       return ipcRenderer.invoke('onboarding:clearMilestone', id);
     },
   },
-  quickChat: {
-    /**
-     * PR110b: Quick Chat entry. Input is intentionally minimal —
-     * `{ prompt?: string }`. The main process always uses the
-     * derived ready default and never accepts user-supplied
-     * connection/model overrides at this stage (PR110c/d will add
-     * model picker UI).
-     */
-    start(input?: { prompt?: string; mode?: QuickChatMode; skillIds?: string[] }): Promise<QuickChatResult> {
-      return ipcRenderer.invoke('quickChat:start', input);
-    },
-  },
   expertTeam: {
     list(): Promise<{ teams: ExpertTeamSummary[] }> {
       return ipcRenderer.invoke('expertTeam:list');
     },
-    start(input: { teamId: string; prompt?: string }): Promise<ExpertTeamStartResult> {
+    start(input: { teamId: string; prompt?: string; projectId?: string | null }): Promise<ExpertTeamStartResult> {
       return ipcRenderer.invoke('expertTeam:start', input);
     },
   },
@@ -430,6 +504,9 @@ const makaBridge = {
     },
     requestAccess(permId: string): Promise<PermissionActionResult> {
       return ipcRenderer.invoke('permissions:requestAccess', permId);
+    },
+    startDragOnboarding(permId: string): Promise<PermissionOverlayStartResult> {
+      return ipcRenderer.invoke('permissions:startDragOnboarding', permId);
     },
   },
   capabilities: {
@@ -449,10 +526,10 @@ const makaBridge = {
     listProposals(): Promise<ReadonlyArray<LocalMemoryEntryPreview>> {
       return ipcRenderer.invoke('memory:listProposals');
     },
-    propose(input: { title: string; content: string; scope?: 'workspace' | 'session' }): Promise<LocalMemoryMutationResult> {
+    propose(input: { title: string; content: string; scope?: 'workspace' | 'session'; sessionId?: string }): Promise<LocalMemoryMutationResult> {
       return ipcRenderer.invoke('memory:propose', input);
     },
-    remember(input: { title: string; content: string; scope?: 'workspace' | 'session' }): Promise<LocalMemoryMutationResult> {
+    remember(input: { title: string; content: string; scope?: 'workspace' | 'session'; sessionId?: string }): Promise<LocalMemoryMutationResult> {
       return ipcRenderer.invoke('memory:remember', input);
     },
     approveProposal(proposalId: string): Promise<LocalMemoryMutationResult> {
@@ -622,6 +699,39 @@ const makaBridge = {
     },
     logout(): Promise<SubscriptionActionResult> {
       return ipcRenderer.invoke('openai-codex:logout');
+    },
+  },
+  xaiOAuth: {
+    getAuthUrl(): Promise<AuthorizationUrlPayload | SubscriptionActionResult> {
+      return ipcRenderer.invoke('xai-oauth:get-auth-url');
+    },
+    openAuthUrl(authRequestId: string): Promise<SubscriptionActionResult> {
+      return ipcRenderer.invoke('xai-oauth:open-auth-url', authRequestId);
+    },
+    completeAuthorization(authRequestId: string): Promise<SubscriptionActionResult> {
+      return ipcRenderer.invoke('xai-oauth:complete-authorization', authRequestId);
+    },
+    cancelAuthorization(authRequestId?: string): Promise<{ ok: true }> {
+      return ipcRenderer.invoke('xai-oauth:cancel-authorization', authRequestId);
+    },
+    getAccountState(): Promise<{
+      provider: 'xai-oauth';
+      runtimeState:
+        | 'not_logged_in'
+        | 'authorizing'
+        | 'authenticated'
+        | 'refreshing'
+        | 'refresh_failed'
+        | 'storage_failed';
+      errorMessage?: string;
+    }> {
+      return ipcRenderer.invoke('xai-oauth:get-account-state');
+    },
+    refreshTokens(): Promise<SubscriptionActionResult> {
+      return ipcRenderer.invoke('xai-oauth:refresh-tokens');
+    },
+    logout(): Promise<SubscriptionActionResult> {
+      return ipcRenderer.invoke('xai-oauth:logout');
     },
   },
   githubCopilotSubscription: {
@@ -940,12 +1050,33 @@ const makaBridge = {
       arch: string;
       osRelease: string;
       workspacePath: string;
+      projectId?: string | null;
       projectPath: string;
       projectGit: { isGitRepo: boolean; branch?: string };
       buildMode: 'dev' | 'packaged';
       buildCommit: string | null;
     }> {
       return ipcRenderer.invoke('app:info');
+    },
+    subscribeUpdateStatus(handler: (status: AppUpdateStatus) => void): () => void {
+      const listener = (_event: Electron.IpcRendererEvent, status: AppUpdateStatus) => handler(status);
+      ipcRenderer.on('app:updateStatusChanged', listener);
+      return () => ipcRenderer.off('app:updateStatusChanged', listener);
+    },
+    updateStatus(): Promise<AppUpdateStatus> {
+      return ipcRenderer.invoke('app:updateStatus');
+    },
+    checkForUpdates(): Promise<AppUpdateStatus> {
+      return ipcRenderer.invoke('app:checkForUpdates');
+    },
+    downloadUpdate(): Promise<AppUpdateStatus> {
+      return ipcRenderer.invoke('app:downloadUpdate');
+    },
+    installUpdate(): Promise<{ ok: true } | { ok: false; reason: 'not_downloaded' | 'install_failed' }> {
+      return ipcRenderer.invoke('app:installUpdate');
+    },
+    openUpdateDownload(): Promise<{ ok: true } | { ok: false; reason: 'not_available' | 'open_failed' }> {
+      return ipcRenderer.invoke('app:openUpdateDownload');
     },
     sessionProjectInfo(sessionId: string): Promise<{
       projectPath: string;
@@ -964,18 +1095,6 @@ const makaBridge = {
         }
     > {
       return ipcRenderer.invoke('app:openPath', key, sessionId);
-    },
-    selectProjectDirectory(): Promise<
-      | { ok: true; projectPath: string; projectGit: { isGitRepo: boolean; branch?: string } }
-      | { ok: false; reason: 'cancelled' | 'missing-selection' }
-    > {
-      return ipcRenderer.invoke('app:selectProjectDirectory');
-    },
-    selectProjectRoot(projectPath: string): Promise<
-      | { ok: true; projectPath: string; projectGit: { isGitRepo: boolean; branch?: string } }
-      | { ok: false; reason: 'invalid-path' | 'not-found' }
-    > {
-      return ipcRenderer.invoke('app:selectProjectRoot', projectPath);
     },
     resolveProjectGitInfo(projectPath: string): Promise<
       | { ok: true; projectPath: string; projectGit: { isGitRepo: boolean; branch?: string } }
@@ -1058,8 +1177,15 @@ const makaBridge = {
     list(): Promise<SkillEntry[]> {
       return ipcRenderer.invoke('skills:list');
     },
-    listInvocable(sessionId?: string): Promise<import('@maka/runtime').InvocableSkillEntry[]> {
-      return ipcRenderer.invoke('skills:listInvocable', sessionId);
+    listInvocable(
+      sessionId?: string,
+      newSessionContext?: {
+        llmConnectionSlug?: string;
+        model?: string;
+        collaborationMode?: 'agent' | 'plan';
+      },
+    ): Promise<import('@maka/runtime').InvocableSkillEntry[]> {
+      return ipcRenderer.invoke('skills:listInvocable', sessionId, newSessionContext);
     },
     catalog: {
       list(): Promise<BundledSkillCatalogEntry[]> {
@@ -1125,11 +1251,11 @@ const makaBridge = {
     > {
       return ipcRenderer.invoke('skills:createStarter');
     },
-    delete(id: string): Promise<
+    delete(idOrRef: string): Promise<
       | { ok: true }
-      | { ok: false; reason: 'not_found' | 'blocked_path' | 'delete_failed' }
+      | { ok: false; reason: 'not_found' | 'blocked_path' | 'blocked_scope' | 'delete_failed' }
     > {
-      return ipcRenderer.invoke('skills:delete', id);
+      return ipcRenderer.invoke('skills:delete', idOrRef);
     },
     open(id: string, target: 'file' | 'directory' = 'file'): Promise<
       | { ok: true; target: 'file' | 'directory' }

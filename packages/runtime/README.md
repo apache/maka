@@ -1,6 +1,6 @@
 # `@maka/runtime`
 
-`@maka/runtime` is Maka's pure-Node agent runtime. It owns model/backend execution, tool and permission control flow, event projection, context handling, recovery, and sandbox-aware workspace execution. Product shells compose it; they do not reimplement its loop.
+`@maka/runtime` is Maka's pure-Node agent runtime. It owns model/backend execution, session sandbox-boundary control flow, event projection, context handling, recovery, and sandbox-aware workspace execution. Product shells compose it; they do not reimplement its loop.
 
 ## Public seam
 
@@ -9,7 +9,7 @@ The package root barrel and the subpaths declared in `package.json` are supporte
 - `SessionManager` for session and turn orchestration.
 - `BackendRegistry` and `AgentBackend` for backend selection.
 - `AiSdkBackend`, `PiAgentBackend`, and `FakeBackend` for the existing backend implementations.
-- `PermissionEngine` for policy evaluation and parked permission decisions.
+- Session execution-boundary APIs for managed sandbox expansion and explicit bypass.
 - `buildBuiltinTools()` and the workspace executor interfaces for tool composition.
 - `RuntimeRunner`, runtime events, projections, and recovery helpers for invocation lifecycle.
 

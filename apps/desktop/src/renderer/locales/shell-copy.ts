@@ -142,14 +142,19 @@ type ShellCopy = {
     skillInvocationFailedTitle: string;
     skillInvocationFailedDescription(items: readonly string[]): string;
     skillInvocationFailureReason: Record<
-      'invalid_name' | 'not_found' | 'disabled' | 'host_incompatible' | 'resolution_failed',
+      | 'invalid_name'
+      | 'not_found'
+      | 'disabled'
+      | 'host_incompatible'
+      | 'resolution_failed'
+      | 'too_many_requests',
       string
     >;
     responseFailedTitle: string;
     responseFailedFallback: string;
     refreshFailedTitle: string;
-    quickChatFailedTitle: string;
-    quickChatFailedFallback: string;
+    sessionStartFailedTitle: string;
+    sessionStartFailedFallback: string;
     expertTeamFailedTitle: string;
     expertTeamFailedFallback: string;
     expertTeamNotFound: string;
@@ -159,10 +164,10 @@ type ShellCopy = {
     readPathFailedTitle: string;
     readPathFailedFallback: string;
     selectDirectoryFailedTitle: string;
-    missingSelection: string;
-    directorySwitchFallback: string;
     selectedPathUnreadable: string;
     directorySwitchedTitle: string;
+    projectUpdateFailedTitle: string;
+    projectUpdateFailedFallback: string;
     openFailedTitle(path: string): string;
     openPathLabels: Record<'workspace' | 'skills' | 'memory' | 'project', string>;
     openPathFailures: Record<
@@ -295,12 +300,16 @@ type ShellCopy = {
       'not_managed' | 'source_missing' | 'metadata_error' | 'blocked_path' | 'read_failed',
       string
     >;
-    deleteFailures: Record<'not_found' | 'blocked_path' | 'delete_failed', string>;
+    deleteFailures: Record<'not_found' | 'blocked_path' | 'blocked_scope' | 'delete_failed', string>;
     runtimeFailures: Record<'not_found' | 'blocked_path' | 'state_error' | 'write_failed', string>;
   };
   sessionSettingsActions: {
     permissionLabels: Record<ChatDefaultPermissionMode, string>;
     permissionDescriptions: Record<PermissionMode, string>;
+    bypassConfirmTitle: string;
+    bypassConfirmDescription: string;
+    bypassConfirmLabel: string;
+    bypassCancelLabel: string;
     permissionSwitched(label: string): string;
     permissionFailedTitle: string;
     permissionFallback: string;
@@ -375,10 +384,10 @@ type ShellCopy = {
     collapseWorkbar: string;
     workspaceActions: string;
     feedback: string;
-    feedbackTooltip: string;
     openCommandPalette: string;
     openHelp: string;
     openHealth: string;
+    moreActions: string;
   };
   app: {
     loadingWorkbarLabel: string;
@@ -401,8 +410,18 @@ type ShellCopy = {
     resizeConversationList: string;
     skipErrorTitle: string;
     tryAgainLater: string;
+    updateInstallFailedTitle: string;
+    updateInstallFailedFallback: string;
+    updateInstallManualFallback: string;
+    updateDownloadFailedTitle: string;
+    updateOpenFailedTitle: string;
+    updateOpenManualFallback: string;
     loading: string;
     goToModels: string;
+    boundaryUnreadableTitle: string;
+    boundaryUnreadableDetail: string;
+    boundaryUnreadableRetry: string;
+    boundaryUnreadableRetrying: string;
     permissionModeChanging: string;
     permissionModeStreaming: string;
     permissionModeRunning: string;
@@ -428,6 +447,15 @@ type ShellCopy = {
     swarmModeEnabledTitle: string;
     swarmModeDisabledTitle: string;
     swarmModeStatusDescription: string;
+    graphModeChanging: string;
+    graphModeStreaming: string;
+    graphModeRunning: string;
+    graphModeWaiting: string;
+    graphModeFailedTitle: string;
+    graphModeFallback: string;
+    graphModeEnabledTitle: string;
+    graphModeDisabledTitle: string;
+    graphModeStatusDescription: string;
     resizeWorkbar: string;
   };
 };
@@ -676,12 +704,13 @@ const SHELL_COPY_BY_LOCALE = {
         disabled: '已停用',
         host_incompatible: '当前环境缺少依赖',
         resolution_failed: '解析失败',
+        too_many_requests: 'Skill 调用请求超过 50 个上限',
       },
       responseFailedTitle: '响应失败',
       responseFailedFallback: '会话操作失败，请稍后重试。',
       refreshFailedTitle: '刷新对话失败',
-      quickChatFailedTitle: '开始对话失败',
-      quickChatFailedFallback: '对话暂时无法开始，请稍后重试。',
+      sessionStartFailedTitle: '开始对话失败',
+      sessionStartFailedFallback: '对话暂时无法开始，请稍后重试。',
       expertTeamFailedTitle: '开始专家团失败',
       expertTeamFailedFallback: '专家团暂时无法开始，请稍后重试。',
       expertTeamNotFound: '找不到该专家团。',
@@ -691,10 +720,10 @@ const SHELL_COPY_BY_LOCALE = {
       readPathFailedTitle: '读取项目路径失败',
       readPathFailedFallback: '项目路径暂时无法读取，请稍后重试。',
       selectDirectoryFailedTitle: '选择工作目录失败',
-      missingSelection: '没有读取到选中的目录，请重新选择。',
-      directorySwitchFallback: '工作目录暂时无法切换，请稍后重试。',
       selectedPathUnreadable: '所选路径不存在或不可读。',
       directorySwitchedTitle: '已切换工作目录',
+      projectUpdateFailedTitle: '项目操作失败',
+      projectUpdateFailedFallback: '暂时无法更新项目，请稍后重试。',
       openFailedTitle: (path: string) => `无法打开${path}`,
       openPathLabels: {
         workspace: '工作区目录',
@@ -826,7 +855,7 @@ const SHELL_COPY_BY_LOCALE = {
       deleteFailedTitle: '无法删除 Skill',
       deleteFallback: '无法删除 Skill，请稍后重试。',
       deletedTitle: '已删除 Skill',
-      deletedDescription: (id: string) => `${id} 已从当前工作区移除。`,
+      deletedDescription: (id: string) => `${id} 已移除。`,
       openFailedTitle: '无法打开 Skill',
       openFallback: '无法打开 Skill，请稍后重试。',
       createFailures: {
@@ -873,6 +902,7 @@ const SHELL_COPY_BY_LOCALE = {
       deleteFailures: {
         not_found: '当前工作区找不到这个 Skill。',
         blocked_path: 'Skill 路径不允许删除。',
+        blocked_scope: '项目内的 Skill 由仓库管理，请直接在项目里删除。',
         delete_failed: '删除 Skill 失败，请检查文件权限。',
       },
       runtimeFailures: {
@@ -884,16 +914,20 @@ const SHELL_COPY_BY_LOCALE = {
     },
     sessionSettingsActions: {
       permissionLabels: {
-        ask: '询问权限',
-        execute: '自动执行',
-        bypass: '跳过确认',
+        ask: '自动',
+        bypass: '完全权限',
       },
       permissionDescriptions: {
-        explore: '只读工具直通，写入或网络仍需确认。',
-        ask: '所有敏感工具调用前都会停下来征求允许或拒绝。',
-        execute: '常见工具直通；破坏性操作、特权操作和浏览器操作仍然确认。',
-        bypass: '跳过全部工具确认，包括破坏性操作、特权操作和浏览器操作。',
+        explore: '只读：只读取和搜索，写入文件和访问网络会先来问你。',
+        ask: '自动：在 Maka 的保护层内执行；需要超出当前权限范围时会先来问你。',
+        execute: '兼容模式：等同于自动。',
+        bypass: '本地工具直接访问你的文件和网络，不经 Maka 的保护层。',
       },
+      bypassConfirmTitle: '切换到完全权限？',
+      bypassConfirmDescription:
+        '本地工具将直接读写你的文件并访问网络，不经 Maka 的保护层。仅用于你完全信任、或已在外部隔离环境中运行的任务。',
+      bypassConfirmLabel: '开启完全权限',
+      bypassCancelLabel: '保持自动',
       permissionSwitched: (label: string) => `已切到 ${label}`,
       permissionFailedTitle: '切换权限模式失败',
       permissionFallback: '权限模式暂时无法切换，请稍后重试。',
@@ -951,15 +985,15 @@ const SHELL_COPY_BY_LOCALE = {
       commands: ZH_STATIC_COMMANDS,
       settingsSections: ZH_SETTINGS_SECTIONS,
       permissionModes: {
-        explore: { label: '权限 · 只读', hint: '读取和搜索直通，写入仍确认' },
-        ask: { label: '权限 · 询问权限', hint: '每条敏感工具都先确认（默认）' },
+        explore: { label: '权限 · 只读', hint: '读取和搜索直通，写入和网络仍需确认' },
+        ask: { label: '权限 · 自动', hint: '在 Maka 的保护层内运行；需要超出当前权限范围时再询问' },
         execute: {
           label: '权限 · 自动执行',
           hint: '常见工具直通，破坏性操作仍确认',
         },
         bypass: {
-          label: '权限 · 跳过确认',
-          hint: '全部工具直通，不再弹权限确认',
+          label: '权限 · 完全权限',
+          hint: '不经 Maka 的保护层，直接访问你的文件和网络',
         },
       },
       settingsCommand: (section: string) => `设置 · ${section}`,
@@ -1045,10 +1079,10 @@ const SHELL_COPY_BY_LOCALE = {
       collapseWorkbar: '收起会话工作栏',
       workspaceActions: '工作区辅助操作',
       feedback: '问题反馈',
-      feedbackTooltip: '问题反馈 · 打开关于与环境信息',
       openCommandPalette: '打开命令面板',
       openHelp: '打开帮助',
       openHealth: '打开健康中心',
+      moreActions: '更多操作',
     },
     app: {
       loadingWorkbarLabel: '正在加载会话工作栏',
@@ -1071,8 +1105,18 @@ const SHELL_COPY_BY_LOCALE = {
       resizeConversationList: '调整对话列表宽度',
       skipErrorTitle: '跳过失败',
       tryAgainLater: '请稍后重试。',
+      updateInstallFailedTitle: '无法安装更新',
+      updateInstallFailedFallback: '请稍后重试。',
+      updateInstallManualFallback: '请稍后重试，或手动下载最新版本。',
+      updateDownloadFailedTitle: '无法下载更新',
+      updateOpenFailedTitle: '无法打开更新',
+      updateOpenManualFallback: '请稍后重试，或前往 GitHub Releases 下载最新版本。',
       loading: '加载中',
       goToModels: '去模型',
+      boundaryUnreadableTitle: '暂时读不到这个对话的权限',
+      boundaryUnreadableDetail: '在读到之前，这里暂时不能输入。可以重试，或先切换到别的对话。',
+      boundaryUnreadableRetry: '重试',
+      boundaryUnreadableRetrying: '重试中…',
       permissionModeChanging: '权限模式正在切换，完成后再继续操作。',
       permissionModeStreaming: '当前对话正在流式输出，等结束后再切换权限模式。',
       permissionModeRunning: '当前对话正在运行，等结束后再切换权限模式。',
@@ -1099,6 +1143,15 @@ const SHELL_COPY_BY_LOCALE = {
       swarmModeEnabledTitle: 'Swarm Mode 已开启',
       swarmModeDisabledTitle: 'Swarm Mode 未开启',
       swarmModeStatusDescription: '使用 /swarm on、/swarm off，或 /swarm <任务> 单次运行。',
+      graphModeChanging: 'Graph Mode 正在切换，完成后再继续操作。',
+      graphModeStreaming: '当前对话正在流式输出，等结束后再切换 Graph Mode。',
+      graphModeRunning: '当前对话正在运行，等结束后再切换 Graph Mode。',
+      graphModeWaiting: '当前有工具调用正在等待确认，处理后再切换 Graph Mode。',
+      graphModeFailedTitle: '切换 Graph Mode 失败',
+      graphModeFallback: 'Graph Mode 暂时无法切换，请稍后重试。',
+      graphModeEnabledTitle: 'Graph Mode 已开启',
+      graphModeDisabledTitle: 'Graph Mode 未开启',
+      graphModeStatusDescription: '使用 /graph on、/graph off，或 /graph <任务> 单次运行。',
       resizeWorkbar: '调整会话工作栏宽度',
     },
   },
@@ -1133,12 +1186,13 @@ const SHELL_COPY_BY_LOCALE = {
         disabled: 'disabled',
         host_incompatible: 'required tools unavailable',
         resolution_failed: 'resolution failed',
+        too_many_requests: 'more than 50 distinct Skill invocation requests',
       },
       responseFailedTitle: 'Response failed',
       responseFailedFallback: 'The conversation action failed. Try again later.',
       refreshFailedTitle: 'Could not refresh conversation',
-      quickChatFailedTitle: 'Could not start conversation',
-      quickChatFailedFallback: 'The conversation could not be started. Try again later.',
+      sessionStartFailedTitle: 'Could not start conversation',
+      sessionStartFailedFallback: 'The conversation could not be started. Try again later.',
       expertTeamFailedTitle: 'Could not start expert team',
       expertTeamFailedFallback: 'The expert team could not be started. Try again later.',
       expertTeamNotFound: 'That expert team could not be found.',
@@ -1148,10 +1202,10 @@ const SHELL_COPY_BY_LOCALE = {
       readPathFailedTitle: 'Could not read project path',
       readPathFailedFallback: 'The project path is temporarily unavailable. Try again later.',
       selectDirectoryFailedTitle: 'Could not select working directory',
-      missingSelection: 'The selected directory could not be read. Select it again.',
-      directorySwitchFallback: 'The working directory could not be changed. Try again later.',
       selectedPathUnreadable: 'The selected path does not exist or cannot be read.',
       directorySwitchedTitle: 'Working directory changed',
+      projectUpdateFailedTitle: 'Could not update project',
+      projectUpdateFailedFallback: 'The project could not be updated. Try again later.',
       openFailedTitle: (path: string) => `Could not open ${path}`,
       openPathLabels: {
         workspace: 'workspace folder',
@@ -1285,7 +1339,7 @@ const SHELL_COPY_BY_LOCALE = {
       deleteFailedTitle: 'Could not delete Skill',
       deleteFallback: 'The Skill could not be deleted. Try again later.',
       deletedTitle: 'Skill deleted',
-      deletedDescription: (id: string) => `${id} was removed from the current workspace.`,
+      deletedDescription: (id: string) => `${id} was removed.`,
       openFailedTitle: 'Could not open Skill',
       openFallback: 'The Skill could not be opened. Try again later.',
       createFailures: {
@@ -1333,6 +1387,7 @@ const SHELL_COPY_BY_LOCALE = {
       deleteFailures: {
         not_found: 'This Skill was not found in the current workspace.',
         blocked_path: 'The Skill path cannot be deleted.',
+        blocked_scope: 'Project Skills are managed by the repository. Delete it from the project instead.',
         delete_failed: 'The Skill could not be deleted. Check file permissions.',
       },
       runtimeFailures: {
@@ -1344,16 +1399,20 @@ const SHELL_COPY_BY_LOCALE = {
     },
     sessionSettingsActions: {
       permissionLabels: {
-        ask: 'Ask first',
-        execute: 'Auto execute',
-        bypass: 'Bypass confirmations',
+        ask: 'Auto',
+        bypass: 'Full access',
       },
       permissionDescriptions: {
-        explore: 'Run read-only tools directly; confirm writes and network access.',
-        ask: 'Ask before every sensitive tool call.',
-        execute: 'Run common tools directly; confirm destructive, privileged, and browser actions.',
-        bypass: 'Skip all tool confirmations, including destructive, privileged, and browser actions.',
+        explore: 'Read only: reads and searches only; writing files and network access ask you first.',
+        ask: "Auto: runs inside Maka's protection layer and asks before anything goes beyond the current permissions.",
+        execute: 'Compatibility mode: same as Auto.',
+        bypass: "Local tools reach your files and your network directly, outside Maka's protection layer.",
       },
+      bypassConfirmTitle: 'Switch to full access?',
+      bypassConfirmDescription:
+        "Local tools will read and write your files and reach the network directly, outside Maka's protection layer. Use only for tasks you fully trust, or ones already isolated by their environment.",
+      bypassConfirmLabel: 'Turn on full access',
+      bypassCancelLabel: 'Keep Auto',
       permissionSwitched: (label: string) => `Switched to ${label}`,
       permissionFailedTitle: 'Could not change permission mode',
       permissionFallback: 'The permission mode could not be changed. Try again later.',
@@ -1413,19 +1472,19 @@ const SHELL_COPY_BY_LOCALE = {
       permissionModes: {
         explore: {
           label: 'Permissions · Read only',
-          hint: 'Read and search directly; confirm writes',
+          hint: 'Read and search directly; confirm writes and network access',
         },
         ask: {
-          label: 'Permissions · Ask first',
-          hint: 'Confirm every sensitive tool call (default)',
+          label: 'Permissions · Auto',
+          hint: "Run inside Maka's protection layer; ask before going beyond the current permissions",
         },
         execute: {
           label: 'Permissions · Auto execute',
           hint: 'Run common tools; confirm destructive actions',
         },
         bypass: {
-          label: 'Permissions · Bypass confirmations',
-          hint: 'Run all tools without permission prompts',
+          label: 'Permissions · Full access',
+          hint: "Reach your files and your network directly, outside Maka's protection layer",
         },
       },
       settingsCommand: (section: string) => `Settings · ${section}`,
@@ -1544,10 +1603,10 @@ const SHELL_COPY_BY_LOCALE = {
       collapseWorkbar: 'Collapse conversation workbar',
       workspaceActions: 'Workspace actions',
       feedback: 'Send feedback',
-      feedbackTooltip: 'Send feedback · Open About and environment information',
       openCommandPalette: 'Open command palette',
       openHelp: 'Open help',
       openHealth: 'Open Health Center',
+      moreActions: 'More actions',
     },
     app: {
       loadingWorkbarLabel: 'Loading conversation workbar',
@@ -1570,8 +1629,19 @@ const SHELL_COPY_BY_LOCALE = {
       resizeConversationList: 'Resize conversation list',
       skipErrorTitle: 'Could not skip onboarding',
       tryAgainLater: 'Try again later.',
+      updateInstallFailedTitle: 'Could not install update',
+      updateInstallFailedFallback: 'Try again later.',
+      updateInstallManualFallback: 'Try again later, or download the latest version manually.',
+      updateDownloadFailedTitle: 'Could not download update',
+      updateOpenFailedTitle: 'Could not open update',
+      updateOpenManualFallback: 'Try again later, or download the latest version from GitHub Releases.',
       loading: 'Loading',
       goToModels: 'Go to Models',
+      boundaryUnreadableTitle: 'Could not read this conversation’s permissions',
+      boundaryUnreadableDetail:
+        'Until they can be read, you cannot type here. Try again, or switch to another conversation.',
+      boundaryUnreadableRetry: 'Try again',
+      boundaryUnreadableRetrying: 'Trying again…',
       permissionModeChanging: 'The permission mode is changing. Wait for it to finish before continuing.',
       permissionModeStreaming:
         'This conversation is streaming. Wait for it to finish before changing the permission mode.',
@@ -1599,6 +1669,15 @@ const SHELL_COPY_BY_LOCALE = {
       swarmModeEnabledTitle: 'Swarm Mode is on',
       swarmModeDisabledTitle: 'Swarm Mode is off',
       swarmModeStatusDescription: 'Use /swarm on, /swarm off, or /swarm <task> for one turn.',
+      graphModeChanging: 'Graph Mode is changing. Wait for it to finish before continuing.',
+      graphModeStreaming: 'This conversation is streaming. Wait for it to finish before changing Graph Mode.',
+      graphModeRunning: 'This conversation is running. Wait for it to finish before changing Graph Mode.',
+      graphModeWaiting: 'A tool call is waiting for confirmation. Respond before changing Graph Mode.',
+      graphModeFailedTitle: 'Could not change Graph Mode',
+      graphModeFallback: 'Graph Mode could not be changed. Try again later.',
+      graphModeEnabledTitle: 'Graph Mode is on',
+      graphModeDisabledTitle: 'Graph Mode is off',
+      graphModeStatusDescription: 'Use /graph on, /graph off, or /graph <task> for one turn.',
       resizeWorkbar: 'Resize conversation workbar',
     },
   },

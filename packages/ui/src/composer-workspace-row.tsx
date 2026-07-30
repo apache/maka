@@ -6,7 +6,8 @@
  * states; local classes only constrain layout and label truncation.
  */
 
-import { Check, ChevronDown, FolderOpen, GitBranch, History } from './icons.js';
+import type { ProjectRecord } from '@maka/core';
+import { AlertTriangle, Check, ChevronDown, FolderOpen, GitBranch, Plus } from './icons.js';
 import { Button as UiButton } from './ui.js';
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from './primitives/menu.js';
 import { useUiLocale } from './locale-context.js';
@@ -16,9 +17,13 @@ export interface ComposerWorkspacePicker {
   label?: string;
   branch?: string | null;
   pending?: boolean;
-  recentWorkspaces?: string[];
-  onOpen(): void;
-  onSelect(path: string): void;
+  defaultOpen?: boolean;
+  projects: readonly ProjectRecord[];
+  selectedProjectId?: string | null;
+  onAdd(): void;
+  onSelectProject(projectId: string): void;
+  onRelink(projectId: string): void;
+  onSelectNoProject(): void;
 }
 
 /**
@@ -46,7 +51,7 @@ export function ComposerWorkspaceRow(props: {
       {/* The workspace and branch pickers are standard compact menu
           triggers. Shared Button owns their visual and interaction states;
           local classes only constrain layout and label truncation. */}
-      <Menu>
+      <Menu defaultOpen={wp.defaultOpen}>
         <MenuTrigger
           render={({ onClick: menuToggleClick, ...triggerRest }) => (
             <UiButton
@@ -72,28 +77,39 @@ export function ComposerWorkspaceRow(props: {
           )}
         />
         <MenuPopup className="maka-composer-workspace-menu" align="start" side="top" sideOffset={6}>
-          {wp.recentWorkspaces && wp.recentWorkspaces.length > 0
-            ? (
-              <>
-                {wp.recentWorkspaces.map((wsp) => (
-                  <MenuItem key={wsp} onClick={() => { wp.onSelect(wsp); }}>
-                    <History size={13} aria-hidden="true" />
-                    <span>{basenameFromPath(wsp)}</span>
-                  </MenuItem>
-                ))}
-                <MenuSeparator />
-                <MenuItem onClick={() => { wp.onOpen(); }}>
-                  <FolderOpen size={13} aria-hidden="true" />
-                  <span>{copy.chooseOther}</span>
-                </MenuItem>
-              </>
-            )
-            : (
-              <MenuItem onClick={() => { wp.onOpen(); }}>
-                <FolderOpen size={13} aria-hidden="true" />
-                <span>{copy.choose}</span>
+          <div className="maka-composer-project-scroll">
+            {wp.projects.map((project) => (
+              <MenuItem
+                key={project.id}
+                data-active={project.id === wp.selectedProjectId}
+                onClick={() => {
+                  if (project.available) wp.onSelectProject(project.id);
+                  else wp.onRelink(project.id);
+                }}
+              >
+                {project.available
+                  ? <FolderOpen size={13} aria-hidden="true" />
+                  : <AlertTriangle size={13} aria-hidden="true" />}
+                <span>{project.name}</span>
+                {!project.available && <span className="maka-composer-project-status">{copy.relink}</span>}
+                {project.id === wp.selectedProjectId && project.available && (
+                  <Check size={12} aria-hidden="true" className="maka-composer-project-check" />
+                )}
               </MenuItem>
+            ))}
+          </div>
+          <MenuSeparator />
+          <MenuItem onClick={() => { wp.onAdd(); }}>
+            <Plus size={13} aria-hidden="true" />
+            <span>{copy.addProject}</span>
+          </MenuItem>
+          <MenuSeparator />
+          <MenuItem className="maka-composer-no-project" onClick={() => { wp.onSelectNoProject(); }}>
+            <span>{copy.noProject}</span>
+            {wp.selectedProjectId === null && (
+              <Check size={12} aria-hidden="true" className="maka-composer-project-check" />
             )}
+          </MenuItem>
         </MenuPopup>
       </Menu>
       {props.branchPicker && (() => {
@@ -151,11 +167,4 @@ export function ComposerWorkspaceRow(props: {
       })()}
     </div>
   );
-}
-
-/** Extract the last path segment from a file system path (win32 / posix). */
-function basenameFromPath(value: string): string {
-  const trimmed = value.replace(/[\\/]+$/, '');
-  const name = trimmed.split(/[\\/]/).filter(Boolean).pop();
-  return name || trimmed;
 }

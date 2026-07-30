@@ -22,6 +22,9 @@ const mockReadBytes = async (_sessionId: string, relativePath: string) => ({
   mimeType: 'image/png',
 });
 
+// Fidelity convention (#1433): every story below names the real app path
+// that reaches it. See apps/desktop/stories/FIDELITY.md.
+
 const meta = {
   title: 'Product/Attachments',
   parameters: { layout: 'fullscreen' },
@@ -84,7 +87,15 @@ const baseComposer: ComposerProps = {
   modelChoices,
   permissionMode: 'ask',
   onPermissionModeChange: noop,
-  workspacePicker: { label: 'maka-agent', branch: 'main', onOpen: noop, onSelect: noop },
+  workspacePicker: {
+    label: 'maka-agent',
+    branch: 'main',
+    projects: [],
+    onAdd: noop,
+    onSelectProject: noop,
+    onRelink: noop,
+    onSelectNoProject: noop,
+  },
   onPickAttachments: noop,
   onAttachFilePaths: noop,
 };
@@ -123,6 +134,7 @@ function Frame({ children }: { children: React.ReactNode }) {
   );
 }
 
+// Real path: composer → ＋ → attach files → the pending chips before the message is sent.
 export const ComposerPendingChips: Story = {
   render: () => (
     <Frame>
@@ -143,6 +155,8 @@ export const ComposerPendingChips: Story = {
   ),
 };
 
+// Real path: send a message with attachments → the chips as they render inside the sent
+// turn.
 export const ChatAttachmentChips: Story = {
   render: () => (
     <Frame>
@@ -154,6 +168,7 @@ export const ChatAttachmentChips: Story = {
   ),
 };
 
+// Real path: attach images → their thumbnails in the sent turn.
 export const ImageThumbnails: Story = {
   render: () => (
     <Frame>
@@ -165,6 +180,8 @@ export const ImageThumbnails: Story = {
   ),
 };
 
+// Real path: attach a file → the skeleton shown while its bytes are still being
+// ingested.
 export const PendingSkeleton: Story = {
   render: () => (
     <Frame>
@@ -178,6 +195,7 @@ export const PendingSkeleton: Story = {
   ),
 };
 
+// Real path: click an image attachment in a turn → the lightbox.
 export const Lightbox: Story = {
   render: () => (
     <Frame>

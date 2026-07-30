@@ -1,7 +1,11 @@
 import { ipcMain, shell } from 'electron';
 import { copyFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { ArtifactSaveResult } from '@maka/core';
+import {
+  isCollaborationMode,
+  type ArtifactSaveResult,
+  type CollaborationMode,
+} from '@maka/core';
 import type {
   HostCapabilities,
   InvocableSkillEntry,
@@ -33,12 +37,21 @@ import {
 type ArtifactStore = ReturnType<typeof createArtifactStore>;
 type MainWindowController = ReturnType<typeof createMainWindowController>;
 
+export interface NewSessionSkillContext {
+  llmConnectionSlug?: string;
+  model?: string;
+  collaborationMode?: CollaborationMode;
+}
+
 interface WorkspaceResourcesIpcDeps {
   workspaceRoot: string;
   artifactStore: ArtifactStore;
   mainWindowController: MainWindowController;
   sendToRenderer: MainWindowController['send'];
-  listInvocableSkills(sessionId?: string): Promise<InvocableSkillEntry[]>;
+  listInvocableSkills(
+    sessionId?: string,
+    newSessionContext?: NewSessionSkillContext,
+  ): Promise<InvocableSkillEntry[]>;
   skillHost?: HostCapabilities;
   getCurrentProjectRoot?: () => Promise<string>;
   getSkillSelectionReport?: (cwd: string) => SkillSelectionReport | undefined;
@@ -111,6 +124,9 @@ export function registerWorkspaceResourcesIpc(deps: WorkspaceResourcesIpcDeps): 
     if (artifact?.source === 'deep_research') {
       throw new Error('Deep Research artifacts are protected by the durable research ledger');
     }
+    if (artifact?.source === 'tool_result_archive') {
+      throw new Error('Tool result archives are read-only runtime evidence');
+    }
     await deps.artifactStore.delete(artifactId);
     if (artifact) {
       deps.sendToRenderer('artifacts:changed', {
@@ -135,9 +151,15 @@ export function registerWorkspaceResourcesIpc(deps: WorkspaceResourcesIpcDeps): 
       },
     );
   });
-  ipcMain.handle('skills:listInvocable', async (_event, sessionId?: unknown) => {
-    return deps.listInvocableSkills(typeof sessionId === 'string' ? sessionId : undefined);
-  });
+  ipcMain.handle(
+    'skills:listInvocable',
+    async (_event, sessionId?: unknown, newSessionContext?: unknown) => {
+      return deps.listInvocableSkills(
+        typeof sessionId === 'string' ? sessionId : undefined,
+        normalizeNewSessionSkillContext(newSessionContext),
+      );
+    },
+  );
   ipcMain.handle('skills:catalog:list', async () => {
     return listBundledSkillCatalog(deps.workspaceRoot);
   });
@@ -211,8 +233,13 @@ export function registerWorkspaceResourcesIpc(deps: WorkspaceResourcesIpcDeps): 
     if (!result.ok) return result;
     return { ok: true as const, created: result.created, skill: toSkillEntry(result.skill), filePath: result.filePath };
   });
-  ipcMain.handle('skills:delete', async (_event, id: string) => {
-    return deleteSkill(deps.workspaceRoot, id);
+  ipcMain.handle('skills:delete', async (_event, idOrRef: string) => {
+    // Same cwd plumbing as skills:open — a scope-aware ref only resolves if the
+    // delete scans the same project-level discovery dirs the list did.
+    const cwd = await deps.getCurrentProjectRoot?.();
+    const result = await deleteSkill(deps.workspaceRoot, idOrRef, cwd ? { cwd } : {});
+    if (result.ok && cwd) deps.invalidateSkillSelectionReport?.(cwd);
+    return result;
   });
   ipcMain.handle('skills:open', async (_event, id: string, target: 'file' | 'directory' = 'file') => {
     const cwd = await deps.getCurrentProjectRoot?.();
@@ -227,4 +254,26 @@ export function registerWorkspaceResourcesIpc(deps: WorkspaceResourcesIpcDeps): 
     if (error) return { ok: false, reason: 'open_failed' as const };
     return { ok: true as const, target: resolved.target };
   });
+}
+
+function normalizeNewSessionSkillContext(input: unknown): NewSessionSkillContext | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const record = input as Record<string, unknown>;
+  const llmConnectionSlug = boundedText(record.llmConnectionSlug, 128);
+  const model = boundedText(record.model, 512);
+  const collaborationMode = isCollaborationMode(record.collaborationMode)
+    ? record.collaborationMode
+    : undefined;
+  if (!llmConnectionSlug && !model && !collaborationMode) return undefined;
+  return {
+    ...(llmConnectionSlug ? { llmConnectionSlug } : {}),
+    ...(model ? { model } : {}),
+    ...(collaborationMode ? { collaborationMode } : {}),
+  };
+}
+
+function boundedText(input: unknown, maxLength: number): string | undefined {
+  if (typeof input !== 'string') return undefined;
+  const value = input.trim();
+  return value.length > 0 && value.length <= maxLength ? value : undefined;
 }

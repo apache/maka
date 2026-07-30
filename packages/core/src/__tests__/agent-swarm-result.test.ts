@@ -98,6 +98,7 @@ function agentSwarmResult(): Extract<ToolResultContent, { kind: 'agent_swarm' }>
         index: 0,
         profile: 'local_read',
         started: true,
+        childSessionId: 'child-session-auth',
         agentId: 'local-read',
         agentName: 'Local Read',
         turnId: 'turn-auth',

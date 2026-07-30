@@ -27,7 +27,7 @@ import {
   type SubscriptionSnapshot,
 } from './use-oauth-login-flow';
 
-type OAuthCardId = 'claude' | 'codex' | 'github-copilot';
+type OAuthCardId = 'claude' | 'codex' | 'github-copilot' | 'xai';
 type OAuthServiceId = OAuthCardId;
 
 interface ModelOAuthCard {
@@ -60,6 +60,7 @@ export function ModelOAuthSection(props: { query?: string; onConnectionsChanged(
     claude: null,
     codex: null,
     'github-copilot': null,
+    xai: null,
   });
   const [cardRefreshError, setCardRefreshError] = useState<string | null>(null);
   const normalizedQuery = props.query?.trim().toLocaleLowerCase() ?? '';
@@ -120,7 +121,7 @@ export function ModelOAuthSection(props: { query?: string; onConnectionsChanged(
     return true;
   }
 
-  async function refreshAfterModalClose() {
+  async function refreshAfterOAuthChange() {
     const refreshed = await refreshAllCards();
     if (!modelOAuthMountedRef.current || !refreshed) return;
     try {
@@ -189,7 +190,7 @@ export function ModelOAuthSection(props: { query?: string; onConnectionsChanged(
         <ClaudeSubscriptionModal
           onClose={() => {
             setOpenModal(null);
-            void refreshAfterModalClose();
+            void refreshAfterOAuthChange();
           }}
         />
       )}
@@ -197,17 +198,29 @@ export function ModelOAuthSection(props: { query?: string; onConnectionsChanged(
         <GitHubCopilotSubscriptionModal
           onClose={() => {
             setOpenModal(null);
-            void refreshAfterModalClose();
+            void refreshAfterOAuthChange();
           }}
         />
       )}
       {openModal === 'codex' && (
         <SubscriptionLoginModal
+          service="codex"
+          onLoginSuccess={refreshAfterOAuthChange}
           onClose={() => {
             setOpenModal(null);
             // Always re-fetch after the modal closes — the user may
             // have logged in, logged out, or cancelled.
-            void refreshAfterModalClose();
+            void refreshAfterOAuthChange();
+          }}
+        />
+      )}
+      {openModal === 'xai' && (
+        <SubscriptionLoginModal
+          service="xai"
+          onLoginSuccess={refreshAfterOAuthChange}
+          onClose={() => {
+            setOpenModal(null);
+            void refreshAfterOAuthChange();
           }}
         />
       )}
@@ -220,6 +233,7 @@ function modelOAuthCards(copy: ProviderSettingsCopy['oauthSection']): ReadonlyAr
     { id: 'claude', providerType: 'claude-subscription', name: 'Claude Code', description: copy.claudeDescription, status: 'available', statusLabel: copy.available },
     { id: 'codex', providerType: 'openai-codex', name: 'OpenAI Codex', description: copy.codexDescription, status: 'available', statusLabel: copy.available },
     { id: 'github-copilot', providerType: 'github-copilot', name: 'GitHub Copilot', description: copy.copilotDescription, status: 'available', statusLabel: copy.available },
+    { id: 'xai', providerType: 'xai-oauth', name: 'xAI Grok', description: copy.xaiDescription, status: 'available', statusLabel: copy.available },
   ];
 }
 
@@ -237,29 +251,41 @@ function ClaudeSubscriptionModal(props: { onClose(): void }) {
   );
 }
 
-function SubscriptionLoginModal(props: { onClose(): void }) {
+function SubscriptionLoginModal(props: {
+  service: 'codex' | 'xai';
+  onClose(): void;
+  onLoginSuccess(): void | Promise<void>;
+}) {
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).oauthSection;
-  const display: SubscriptionDisplay = {
-    name: 'OpenAI Codex',
-    shortName: 'Codex',
-    detail: copy.codexDetail,
-  };
+  const isXai = props.service === 'xai';
+  const display: SubscriptionDisplay = isXai
+    ? {
+        name: 'xAI Grok',
+        shortName: 'SuperGrok / X Premium',
+        detail: copy.xaiDetail,
+      }
+    : {
+        name: 'OpenAI Codex',
+        shortName: 'Codex',
+        detail: copy.codexDetail,
+      };
   // The whole browser-loopback login/logout controller (getAuthUrl ->
   // openAuthUrl -> refresh -> completeAuthorization, one authRequestId
   // lifecycle, synchronous pending-action guard, cancellation on unmount,
   // localized toast copy) lives in useOAuthLoginFlow so the model connection
   // connection dialog can drive the exact same flow behind its relogin button.
   const flow = useOAuthLoginFlow({
-    bridge: window.maka.openAiCodex as unknown as OAuthLoginFlowBridge,
+    bridge: (isXai ? window.maka.xaiOAuth : window.maka.openAiCodex) as unknown as OAuthLoginFlowBridge,
     display: { name: display.name, shortName: display.shortName },
+    onLoginSuccess: props.onLoginSuccess,
   });
 
   return (
     <ProviderConnectionDialog
       title={copy.connectTitle(display.name)}
       subtitle={display.detail}
-      providerType="openai-codex"
+      providerType={isXai ? 'xai-oauth' : 'openai-codex'}
       onClose={props.onClose}
     >
         <div className="settingsConnectionRow" data-status={flow.runtimeState}>
@@ -267,7 +293,11 @@ function SubscriptionLoginModal(props: { onClose(): void }) {
             {presentSnapshotDetail(flow.state, display, locale)}
           </p>
           {flow.stateHint && (
-            <small>{copy.stateHint} <code>{flow.stateHint}</code> {copy.startsWith}</small>
+            <small>
+              {isXai ? copy.deviceCode : copy.stateHint}{' '}
+              <code>{flow.stateHint}</code>{' '}
+              {isXai ? null : copy.startsWith}
+            </small>
           )}
           {flow.errorMessage && (
             <small className="settingsErrorText">{flow.errorMessage}</small>
@@ -308,6 +338,9 @@ async function getSubscriptionSnapshot(serviceId: OAuthServiceId): Promise<Subsc
   }
   if (serviceId === 'github-copilot') {
     return window.maka.githubCopilotSubscription.getAccountState();
+  }
+  if (serviceId === 'xai') {
+    return window.maka.xaiOAuth.getAccountState();
   }
   return (await window.maka.openAiCodex.getAccountState()) as SubscriptionSnapshot;
 }
@@ -397,4 +430,3 @@ function presentSnapshotDetail(state: SubscriptionSnapshot | null, display: Subs
   const _exhaustive: never = state.runtimeState;
   return _exhaustive;
 }
-

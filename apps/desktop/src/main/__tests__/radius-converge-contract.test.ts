@@ -2,10 +2,18 @@
  * Radius governance contract (#406 gap 4).
  *
  * Radius vocabulary contract:
- *   - control  6px  — button / input / chip / kbd / inline code / tab trigger / nav row
+ *   - control  6px  — button / input / chip / kbd / inline code / tab trigger /
+ *                     nav row / checkbox (square by design; only radio is round)
  *   - surface  8px  — card / popover / menu popup / alert / toolbar / tab list / select popup
  *   - modal   12px — Settings / Confirm / Permission modal / floating card
- *   - pill    999px — pill / badge / round dot / switch / checkbox / radio / progress
+ *   - pill    999px — pill / badge / round dot / switch / radio / progress
+ *   - plate    27% — square icon plates (provider logo, about logo, feature
+ *                     status). Ratio, not tier: see --radius-plate.
+ *
+ * The checkbox line used to read `pill 999px — ... checkbox ...` while every
+ * checkbox in the codebase renders `rounded-[var(--radius-control)]`. The code
+ * was right (a fully round checkbox is a radio), the vocabulary was wrong, and
+ * because Checkbox is absent from COMPONENT_RADIUS nothing ever caught it.
  *
  * Tailwind alias map (styles.css):
  *   rounded-sm → --radius-control (6px)
@@ -45,6 +53,7 @@ const RADIUS_TOKEN_WHITELIST = new Set([
   '--radius-surface',
   '--radius-modal',
   '--radius-pill',
+  '--radius-plate', // 27% — square icon plates, ratio-governed (see maka-tokens.css)
   '--radius-sm', // tailwind alias → control
   '--radius-md', // tailwind alias → surface
   '--radius-lg', // tailwind alias → surface
@@ -65,12 +74,44 @@ function isWhitelistedVar(expr: string): boolean {
  * calc() must be exactly `calc(var(--radius-whitelisted) - <positive>px)`.
  * Positive allowlist — any other calc form (addition, multiplication,
  * division, double-negative, no token, non-whitelisted token) fails.
- * Tolerates whitespace inside var() and around operators.
+ * Tolerates whitespace inside var().
+ *
+ * The whitespace around `-` is REQUIRED, not optional: CSS mandates it
+ * (`calc(8px-2px)` is a parse error, and the whole declaration is dropped
+ * — the box silently renders square). This rule used to read `\s*-\s*`,
+ * which accepted the invalid spelling; combined with a corner splitter
+ * that broke on whitespace, the contract accepted *only* the invalid form
+ * and rejected the correct one. `search-modal.css` shipped square corners
+ * that way.
  */
-const CALC_ALLOW_RE = /^calc\(\s*var\(\s*(--radius-[\w-]+)\s*\)\s*-\s*([1-9]\d*(?:\.\d+)?|0?\.\d*[1-9])px\s*\)$/;
+const CALC_ALLOW_RE = /^calc\(\s*var\(\s*(--radius-[\w-]+)\s*\)\s+-\s+([1-9]\d*(?:\.\d+)?|0?\.\d*[1-9])px\s*\)$/;
 
 function isWhitelistedCalc(expr: string): boolean {
   const m = expr.match(CALC_ALLOW_RE);
+  if (!m) return false;
+  return RADIUS_TOKEN_WHITELIST.has(m[1]);
+}
+
+/**
+ * The Tailwind-arbitrary-value form of the same rule.
+ *
+ * In `rounded-[...]` a literal space would have to be written `_`, so the
+ * unspaced `calc(var(--radius-md)-1px)` is the NORMAL spelling there —
+ * and Tailwind emits it as valid CSS. Verified against the built bundle:
+ *
+ *   source `rounded-[calc(var(--radius-md)-1px)]`
+ *     → built `border-radius:calc(var(--radius-md) - 1px)`   ✅ normalized
+ *   source `border-radius: calc(var(--radius-modal)-8px)` (hand-written)
+ *     → built `border-radius:calc(var(--radius-modal)-8px)`  ❌ verbatim
+ *
+ * So spacing is optional here and mandatory in plain CSS. Same rule, two
+ * languages: judge the source you are actually reading.
+ */
+const CALC_ALLOW_TW_RE = /^calc\(\s*var\(\s*(--radius-[\w-]+)\s*\)\s*-\s*([1-9]\d*(?:\.\d+)?|0?\.\d*[1-9])px\s*\)$/;
+
+function isWhitelistedTailwindCalc(expr: string): boolean {
+  // `_` is Tailwind's escape for a literal space.
+  const m = expr.replace(/_/g, ' ').match(CALC_ALLOW_TW_RE);
   if (!m) return false;
   return RADIUS_TOKEN_WHITELIST.has(m[1]);
 }
@@ -84,17 +125,88 @@ function isAllowedCorner(corner: string): boolean {
 
 // --- CSS scanning (single entry: readAllRendererCss unfolds all imports) -----
 
-const RADIUS_DECL_RE = /border-radius\s*:\s*([^;}\n]+)\s*[;}]/gi;
-const RADIUS_LONGHAND_RE = /border-(?:top-left|top-right|bottom-left|bottom-right|start-start|start-end|end-start|end-end)-radius\s*:\s*([^;}\n]+)\s*[;}]/gi;
+/**
+ * The value class is `[^;}]` — it must NOT exclude `\n`.
+ *
+ * A `border-radius` value may legally wrap onto a second line (a long
+ * four-corner shorthand, or a calc() that pushes past the print width),
+ * and neither prettier nor biome reflows it back onto one line. While the
+ * class read `[^;}\n]+` such a declaration matched *nothing at all*, so the
+ * scanner skipped it silently instead of reporting it — any radius could
+ * escape governance just by being formatted across two lines.
+ *
+ * (Note the newline right after the colon was always fine: the `\s*` there
+ * already spans it. Only a newline *inside the value* was affected.)
+ *
+ * Dropping `\n` from the class cannot make the match run past its own
+ * declaration: `;` and `}` are still excluded, so it stops at the first
+ * declaration terminator or the end of the rule body either way.
+ */
+/**
+ * Custom properties are IN SCOPE, on purpose.
+ *
+ * `--os-track-border-radius: var(--radius-surface)` in base.css is
+ * OverlayScrollbars' theming API — the library's own CSS consumes it and
+ * renders a real scrollbar corner. A radius that reaches the screen is
+ * governed no matter which declaration spells it, so the optional
+ * `--<name>-` prefix below is deliberate rather than tolerated.
+ *
+ * It also used to be accidental: the property name was matched as a bare
+ * substring, so these declarations were scanned but reported under the
+ * name `border-radius`, which does not exist in the stylesheet. Capturing
+ * the whole property name keeps the coverage and makes the offender
+ * message name something the reader can actually search for.
+ *
+ * The lookbehind is what stops `--os-track-border-radius` from ALSO
+ * matching at the inner `border-radius` and being reported twice. A `\b`
+ * would not work here: `-` is a non-word character, so a word boundary
+ * already exists between `-` and `border`.
+ */
+const RADIUS_PROP = String.raw`(?<![-\w])((?:--[\w-]+-)?border-radius)`;
+const RADIUS_LONGHAND_PROP = String.raw`(?<![-\w])((?:--[\w-]+-)?border-(?:top-left|top-right|bottom-left|bottom-right|start-start|start-end|end-start|end-end)-radius)`;
+
+const RADIUS_DECL_RE = new RegExp(String.raw`${RADIUS_PROP}\s*:\s*([^;}]+)\s*[;}]`, 'gi');
+const RADIUS_LONGHAND_RE = new RegExp(String.raw`${RADIUS_LONGHAND_PROP}\s*:\s*([^;}]+)\s*[;}]`, 'gi');
+
+/**
+ * Split a `border-radius` value into its corner tokens.
+ *
+ * Whitespace separates corners ONLY at paren depth 0. A naive
+ * `split(/\s+/)` tore the valid `calc(var(--radius-modal) - 8px)` into
+ * three nonsense "corners" (`calc(var(--radius-modal)`, `-`, `8px)`),
+ * none of which is an allowed corner — so the contract rejected correct
+ * CSS and accepted only the unspaced form, which CSS treats as a parse
+ * error. Depth tracking keeps a calc() intact as one corner.
+ */
+function splitCorners(value: string): string[] {
+  const corners: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const ch of value) {
+    if (ch === '(') depth += 1;
+    else if (ch === ')') depth -= 1;
+    if (depth === 0 && /\s/.test(ch)) {
+      if (current !== '') corners.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  if (current !== '') corners.push(current);
+  return corners;
+}
 
 function findCssOffenders(css: string, label: string): string[] {
   const stripped = stripCssComments(css);
   const offenders: string[] = [];
   for (const re of [RADIUS_DECL_RE, RADIUS_LONGHAND_RE]) {
     for (const m of stripped.matchAll(re)) {
-      const raw = m[1].trim();
+      // m[1] is the full property name (with any custom-property prefix),
+      // m[2] is the value.
+      const raw = m[2].trim();
       const cleaned = raw.replace(/!\s*important$/, '').trim();
-      if (cleaned.split(/\s+/).every(isAllowedCorner)) continue;
+      const corners = splitCorners(cleaned);
+      if (corners.length > 0 && corners.every(isAllowedCorner)) continue;
       offenders.push(`${label}: ${m[0].replace(/\s+/g, ' ').trim()}`);
     }
   }
@@ -128,7 +240,8 @@ async function collectTsxOffenders(): Promise<string[]> {
         }
         const val = (groups?.arb ?? groups?.dir ?? groups?.paren ?? groups?.dirpar ?? '').trim();
         if (LITERAL_OK.test(val)) continue;
-        if (isWhitelistedVar(val) || isWhitelistedCalc(val)) continue;
+        // Tailwind arbitrary value, not raw CSS — see CALC_ALLOW_TW_RE.
+        if (isWhitelistedVar(val) || isWhitelistedTailwindCalc(val)) continue;
         offenders.push(`${label}: rounded-[${val}]`);
       }
     }
@@ -183,11 +296,16 @@ const COMPONENT_RADIUS: ComponentRadiusCheck[] = [
   // review P3.1); the modal popup class now lives in MODAL_POPUP_CLASS.
   { file: 'packages/ui/src/ui.tsx', name: 'MODAL_POPUP_CLASS', tier: 'modal' },
   { file: 'packages/ui/src/ui.tsx', name: 'SelectPopup', tier: 'surface' },
-  // TabsTrigger/TabsList used to be declared in ui.tsx with --radius-* tokens;
-  // #499 P0-3 re-exports them from primitives/tabs.tsx, which uses Tailwind
-  // rounded-md/rounded-sm (governed by primitives-design-contract escape
-  // hatches, not the radius-token convergence contract).
   { file: 'packages/ui/src/ui.tsx', name: 'ToggleGroup', tier: 'surface' },
+  // TabsTrigger/TabsList were dropped from this table when #499 P0-3 moved
+  // them to primitives/tabs.tsx, on the stated grounds that they became
+  // "governed by primitives-design-contract escape hatches". That file
+  // contains no radius or rounded assertion at all, so the move left the
+  // vocabulary's own "tab trigger" (control) and "tab list" (surface) as the
+  // only two named roles with no governance anywhere. The components merely
+  // changed file; re-pointing the entry is the whole fix.
+  { file: 'packages/ui/src/primitives/tabs.tsx', name: 'TabsList', tier: 'surface' },
+  { file: 'packages/ui/src/primitives/tabs.tsx', name: 'TabsTab', tier: 'control' },
   { file: 'packages/ui/src/primitives/input-group.tsx', name: 'InputGroup', tier: 'control' },
   { file: 'packages/ui/src/primitives/badge.tsx', name: 'badgeVariants', tier: 'pill' },
   { file: 'packages/ui/src/primitives/item.tsx', name: 'itemVariants', tier: 'surface' },
@@ -376,10 +494,14 @@ describe('radius token governance (#406 gap 4)', () => {
       '.maka-code': '--radius-surface',
       '.maka-skeleton-card': '--radius-surface',
       '.composer .maka-composer-inner': '--radius-modal',
-      '.settingsCapabilityGuidanceActions code': '--radius-surface',
       '.settingsModal': '--radius-modal',
       '.maka-palette-modal': '--radius-modal',
       '.maka-palette-input-wrap': '--radius-control',
+      // The search modal's input is the structural twin of the palette's:
+      // same InputGroup, same position inside the same 12px shell. It spent
+      // its life at 4px on a concentric derivation that never applied (see
+      // radius-nesting-contract). Pinned here so the two stay together.
+      '.maka-search-modal-input-row': '--radius-control',
       // .settingsPermissionIntro / .settingsHealthIntro retired (polish wave
       // Item 5): the second gray-banner PageHeader on each page was converged
       // onto the SectionHeader primitive, which carries no page-level radius.
@@ -396,23 +518,32 @@ describe('radius token governance (#406 gap 4)', () => {
       '.settingsBotRuntime': '--radius-surface',
       // .settingsNotice retired: last consumer (account page) removed in the
       // UI-quality campaign; notices now ride the Alert primitive.
-      '.settingsAboutLogo': '--radius-surface',
+      // Square icon plates are ratio-governed, not tier-governed — a fixed px
+      // cannot read the same at 32px and 48px. See --radius-plate.
+      '.settingsAboutLogo': '--radius-plate',
       // .settingsAboutPrivacy retired (polish wave): the brand-blue section
       // dialect used by 关于's privacy card + 数据's 配置导入导出 header was
       // converged onto SectionHeader + Alert; its neutral replacements
       // (.settingsPrivacyBlock / .settingsConfigSection) carry no radius.
       '.settingsWechatQrFrame': '--radius-surface',
       '.settingsWechatQrState': '--radius-surface',
-      '.enabledEmptyChip': '--radius-control',
+      // Named "chip" but rendered as a full-width two-line card (16px padding,
+      // <strong> + <small>) — surface, matching its twin .settingsWechatQrState.
+      '.enabledEmptyChip': '--radius-surface',
       '.maka-firstrun-list': '--radius-surface',
-      '.maka-first-run-checklist': '--radius-surface',
-      '.providerLogo': '--radius-surface',
+      // This entry used to pin --radius-surface, which is how the tier
+      // convergence quietly reverted PR-UI-13: that PR had pinned a single
+      // ~27-28% ratio across plate sizes, and 8px is 18.2% at 44px but 25%
+      // at 32px. The contract then made the regression unfixable — restoring
+      // the ratio failed the test. Ratio-governed now; see --radius-plate.
+      '.providerLogo': '--radius-plate',
       '.maka-browser-address': '--radius-control',
       // .maka-plan-shell dropped: unboxed to a plain layout container
       // (the MCP page set the no-outer-frame precedent) — no card chrome,
       // no radius.
-      '.maka-plan-card': '--radius-surface',
-      '.maka-plan-template-strip[data-layout="cards"] .maka-plan-template-card': '--radius-surface',
+      // .maka-plan-card dropped its per-item card chrome when Plan reminders
+      // converged on one divided management list; rows carry no radius.
+      // .maka-plan-template-card retired with the redundant template strip.
       // .maka-skill-library dropped: unboxed to a plain layout container
       // (the MCP page set the no-outer-frame precedent) — no card chrome,
       // no radius.
@@ -468,6 +599,9 @@ describe('radius token governance (#406 gap 4)', () => {
       '--radius-surface': '8px',
       '--radius-modal': '12px',
       '--radius-pill': '999px',
+      // Percentage on purpose: scale-invariant, so one value is correct at
+      // every plate size. 27% restores the PR-UI-13 anchor (12px at 44px).
+      '--radius-plate': '27%',
     };
     for (const [tok, val] of Object.entries(expected)) {
       assert.equal(tokens.get(tok), val, `${tok} must be ${val}. Update the token source and this contract together.`);
@@ -558,11 +692,172 @@ describe('radius whitelist negative cases', () => {
     }
   });
 
+  /**
+   * A value that wraps onto a second line must still be scanned. The value
+   * class used to exclude `\n`, so such a declaration matched nothing and
+   * was skipped in silence — governance was opt-out by formatting.
+   */
+  it('CSS scanner reads values that wrap onto a second line', () => {
+    const badSnippets = [
+      'border-radius:\n  10px;',
+      'border-radius: 10px\n  12px;',
+      'border-radius: 10px 12px\n  14px 16px;',
+      // shrink-only rule, still enforced across the line break
+      'border-radius: calc(var(--radius-modal)\n  + 8px);',
+      'border-top-left-radius: 10px\n  12px;',
+    ];
+    for (const css of badSnippets) {
+      RADIUS_DECL_RE.lastIndex = 0;
+      RADIUS_LONGHAND_RE.lastIndex = 0;
+      assert.ok(
+        findCssOffenders(css, 'test').length > 0,
+        `${JSON.stringify(css)} must be flagged, not silently skipped`,
+      );
+    }
+
+    // ...and a valid multi-line value must still pass: splitCorners() breaks
+    // on any whitespace at paren depth 0, newlines included.
+    const okSnippets = [
+      'border-radius: var(--radius-control)\n  var(--radius-surface);',
+      'border-radius: calc(var(--radius-modal)\n  - 8px);',
+      'border-bottom-right-radius:\n  var(--radius-surface);',
+    ];
+    for (const css of okSnippets) {
+      RADIUS_DECL_RE.lastIndex = 0;
+      RADIUS_LONGHAND_RE.lastIndex = 0;
+      assert.deepEqual(findCssOffenders(css, 'test'), [], `${JSON.stringify(css)} must pass`);
+    }
+  });
+
+  /**
+   * A radius-bearing custom property renders a real corner (base.css themes
+   * OverlayScrollbars this way), so it is governed — and must be reported
+   * under a property name that exists in the stylesheet.
+   */
+  it('scans radius custom properties and names them truthfully', () => {
+    RADIUS_DECL_RE.lastIndex = 0;
+    RADIUS_LONGHAND_RE.lastIndex = 0;
+    const offenders = findCssOffenders('.os-theme-maka { --os-track-border-radius: 4px; }', 'test');
+    assert.equal(offenders.length, 1, 'a bare px in a radius custom property must be reported');
+    assert.match(
+      offenders[0],
+      /--os-track-border-radius/,
+      'the offender must name the real property; reporting it as plain "border-radius" sends the reader looking for a declaration that does not exist',
+    );
+
+    // The real base.css spelling passes — it defers to a whitelisted token.
+    RADIUS_DECL_RE.lastIndex = 0;
+    RADIUS_LONGHAND_RE.lastIndex = 0;
+    assert.deepEqual(
+      findCssOffenders('.os-theme-maka { --os-handle-border-radius: var(--radius-control); }', 'test'),
+      [],
+    );
+
+    // Longhand custom properties are covered by the same rule.
+    RADIUS_DECL_RE.lastIndex = 0;
+    RADIUS_LONGHAND_RE.lastIndex = 0;
+    assert.match(
+      findCssOffenders('--x-border-top-left-radius: 10px;', 'test')[0] ?? '',
+      /--x-border-top-left-radius/,
+    );
+
+    // And the prefixed property must not ALSO match at its inner
+    // `border-radius`, which would report the same declaration twice.
+    RADIUS_DECL_RE.lastIndex = 0;
+    assert.equal(
+      [...'--os-track-border-radius: 4px;'.matchAll(RADIUS_DECL_RE)].length,
+      1,
+      'one declaration must produce exactly one match',
+    );
+  });
+
+  /**
+   * Widening the value class must not let one match swallow the declaration
+   * after it, or run past the end of its own rule body — that would turn the
+   * fix into a false-positive machine.
+   */
+  it('CSS scanner stops each match at its own declaration boundary', () => {
+    const css = [
+      '.a {',
+      '  border-radius: var(--radius-control);',
+      '  color: red;',
+      '}',
+      '.b {',
+      '  border-radius: var(--radius-surface)',
+      '}',
+      '.c { border-radius: var(--radius-modal); }',
+    ].join('\n');
+    RADIUS_DECL_RE.lastIndex = 0;
+    RADIUS_LONGHAND_RE.lastIndex = 0;
+    assert.deepEqual(findCssOffenders(css, 'test'), [], 'valid declarations must not bleed into each other');
+
+    RADIUS_DECL_RE.lastIndex = 0;
+    const matched = [...css.matchAll(RADIUS_DECL_RE)].map((m) => m[2].trim());
+    assert.deepEqual(
+      matched,
+      ['var(--radius-control)', 'var(--radius-surface)', 'var(--radius-modal)'],
+      'each declaration must be captured separately',
+    );
+  });
+
   it('calc() with internal whitespace still passes for valid tokens', () => {
     assert.equal(isWhitelistedCalc('calc(var(--radius-modal) - 1px)'), true, 'standard calc must pass');
     assert.equal(isWhitelistedCalc('calc( var(--radius-modal) - 1px )'), true, 'calc with spaces inside parens must pass');
     assert.equal(isWhitelistedCalc('calc(var(--radius-modal)  -  1px)'), true, 'calc with multiple spaces around minus must pass');
     assert.equal(isWhitelistedCalc('calc(var( --radius-modal ) - 1px)'), true, 'calc with spaces inside var() must pass');
+  });
+
+  /**
+   * CSS requires whitespace around `+`/`-` inside calc(). Without it the
+   * declaration is a parse error and is dropped, so the element renders
+   * at radius 0 — square corners that look deliberate. Measured in the
+   * renderer: `calc(var(--radius-modal)-8px)` computes to `0px`, the
+   * spaced form to `4px`.
+   */
+  it('rejects unspaced calc() in CSS, which the browser drops as a parse error', () => {
+    assert.equal(isWhitelistedCalc('calc(var(--radius-modal)-8px)'), false, 'no space either side must fail');
+    assert.equal(isWhitelistedCalc('calc(var(--radius-modal) -8px)'), false, 'no space before the minus must fail');
+    assert.equal(isWhitelistedCalc('calc(var(--radius-modal)- 8px)'), false, 'no space after the minus must fail');
+  });
+
+  it('accepts unspaced calc() in Tailwind arbitrary values, which Tailwind normalizes', () => {
+    // A literal space would need `_` here, so unspaced is the normal
+    // spelling — and the built bundle shows Tailwind emits `--radius-md - 1px`.
+    assert.equal(isWhitelistedTailwindCalc('calc(var(--radius-md)-1px)'), true, 'unspaced arbitrary value must pass');
+    assert.equal(isWhitelistedTailwindCalc('calc(var(--radius-sm)-1px)'), true, 'unspaced arbitrary value must pass');
+    assert.equal(isWhitelistedTailwindCalc('calc(var(--radius-md)_-_1px)'), true, 'underscore-escaped spaces must pass');
+    assert.equal(isWhitelistedTailwindCalc('calc(var(--radius-md) - 1px)'), true, 'already-spaced must still pass');
+    // The token allowlist and the shrink-only rule still apply here.
+    assert.equal(isWhitelistedTailwindCalc('calc(var(--radius-private)-1px)'), false, 'private token must fail');
+    assert.equal(isWhitelistedTailwindCalc('calc(var(--radius-md)+1px)'), false, 'addition must fail');
+  });
+
+  /**
+   * The splitter must not break a calc() apart on the whitespace CSS
+   * requires inside it — the bug that made the contract demand invalid
+   * CSS in the first place.
+   */
+  it('treats a spaced calc() as one corner, and still splits real multi-corner values', () => {
+    assert.deepEqual(splitCorners('calc(var(--radius-modal) - 8px)'), ['calc(var(--radius-modal) - 8px)']);
+    assert.deepEqual(
+      splitCorners('var(--radius-control) var(--radius-modal)'),
+      ['var(--radius-control)', 'var(--radius-modal)'],
+    );
+    assert.deepEqual(
+      splitCorners('calc(var(--radius-modal) - 8px) var(--radius-control)'),
+      ['calc(var(--radius-modal) - 8px)', 'var(--radius-control)'],
+    );
+
+    // End to end through the scanner: the valid spelling must pass and the
+    // invalid one must be flagged.
+    RADIUS_DECL_RE.lastIndex = 0;
+    assert.deepEqual(findCssOffenders('border-radius: calc(var(--radius-modal) - 8px);', 'test'), []);
+    RADIUS_DECL_RE.lastIndex = 0;
+    assert.equal(
+      findCssOffenders('border-radius: calc(var(--radius-modal)-8px);', 'test').length,
+      1,
+      'the unspaced form must be reported, not silently accepted',
+    );
   });
 
   it('var() with internal whitespace still passes for valid tokens', () => {

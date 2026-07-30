@@ -19,8 +19,8 @@ export { shouldRebindSessionToDefault } from '@maka/core';
 export const NO_REAL_CONNECTION_CODE = 'NO_REAL_CONNECTION';
 
 // `ChatConfigurationReason` moved to `@maka/core/connection-readiness`
-// (PR110a) so the same taxonomy is shared between send-path,
-// onboarding, and quick-chat. Re-exported here for back-compat — any
+// (PR110a) so the same taxonomy is shared between the send path and
+// onboarding. Re-exported here for back-compat — any
 // future addition belongs in core, not here.
 export type { ChatConfigurationReason };
 
@@ -74,10 +74,9 @@ export async function requireReadyConnection(
   }
 
   // PR110a: delegate the actual ready judgment to the pure core helper
-  // so onboarding / quick chat / send-path share a single source of
-  // truth. The desktop side only owns: (1) async secret lookup, (2)
-  // Chinese error copy, (3) the throw-error API the rest of main.ts
-  // expects.
+  // so onboarding and the send path share a single source of truth. The
+  // desktop side only owns: (1) async secret lookup, (2) Chinese error
+  // copy, (3) the throw-error API the rest of main.ts expects.
   const normalizedConnection = normalizeOpenAiCodexConnection(connection);
   const apiKey = await deps.getApiKey(normalizedConnection.slug);
   const normalizedRequestedModel = normalizeRequestedModelForReadiness(connection, requestedModel);

@@ -1,25 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import {
-  activePlanExecution,
-  expertTeamIdFromLabels,
-  isDeepResearchSession,
-  resolveModelVisionSupport,
-} from '@maka/core';
 import type { SessionChangedReason, SessionEvent } from '@maka/core';
-import type { PlanStore } from '@maka/core/plan';
-import type { LlmConnection } from '@maka/core/llm-connections';
 import type { LlmCallRecord, ToolInvocationRecord } from '@maka/core/usage-stats/types';
 import {
   AiSdkBackend,
   buildDefaultContextBudgetPolicy,
-  buildExpertDispatchToolForTeamId,
-  buildHostCapabilitiesFromBinding,
   buildLlmHistorySummarizer,
-  buildMcpTools,
   buildProviderOptions,
-  buildCancelPlanTool,
-  buildSubmitPlanTool,
-  buildUpdatePlanTool,
   createProviderRequestCaptureRecorder,
   getAIModel,
   loadHistoryCompactBlocksFromArtifacts,
@@ -31,14 +17,11 @@ import {
   renderInterruptedPlanContext,
   renderPlanModePrompt,
   resolveSelectedModelContextWindow,
-  selectCollaborationTools,
 } from '@maka/runtime';
 import type {
   BackendFactory,
   GoalTurnOutcome,
   HostCapabilities,
-  MakaTool,
-  PermissionEngine,
   SessionActivityLease,
   SessionActivityRegistry,
   SessionManager,
@@ -47,7 +30,6 @@ import type {
   ToolResultArchiveRecorderInput,
   buildPricingLookup,
 } from '@maka/runtime';
-import type { McpClientManager } from '@maka/mcp';
 import {
   createArtifactStore,
   createAttachmentByteReader,
@@ -56,25 +38,22 @@ import {
   persistProviderRequestCaptureArtifact,
 } from '@maka/storage';
 import { WEB_SEARCH_TOOL_NAME } from './web-search/agent-tool.js';
-import {
-  computerUseAvailabilityForModel,
-  computerUseToolsForModel,
-} from './computer-use-model-tools.js';
 import { errorCode, errorMessage, errorReason } from './chat-readiness.js';
-import type { ReadyConnection } from './chat-readiness.js';
 import type { assembleDesktopTools } from './tool-assembly.js';
 import type { ToolArtifactPersistence } from './tool-artifact-persistence.js';
-import type { createMainTaskLedgerWiring } from './task-ledger-wiring.js';
 import type { createMainGoalWiring } from './goal-wiring.js';
 import type { createSubscriptionModelFetch } from './subscription-model-fetch.js';
 import type { createSystemPromptMainService } from './system-prompt-main.js';
 import type { OpenGatewayService } from './open-gateway.js';
 import { startDesktopSessionTurn, type SessionGoalBoundary } from './session-turn-stream.js';
+import {
+  resolveDesktopBackendToolSurface,
+  type DesktopBackendToolSurfaceDeps,
+} from './desktop-backend-tool-surface.js';
 
 type AssembledTools = ReturnType<typeof assembleDesktopTools>;
 type SystemPromptMainService = ReturnType<typeof createSystemPromptMainService>;
 type SubscriptionModelFetchBuilder = ReturnType<typeof createSubscriptionModelFetch>;
-type TaskLedgerStore = ReturnType<typeof createMainTaskLedgerWiring>['store'];
 type GoalWiring = ReturnType<typeof createMainGoalWiring>;
 type ArtifactStore = ReturnType<typeof createArtifactStore>;
 type TelemetryRepo = ReturnType<typeof createTelemetryRepo>;
@@ -82,39 +61,21 @@ type PricingLookup = ReturnType<typeof buildPricingLookup>;
 type RuntimeCommitStore = Awaited<ReturnType<typeof openRuntimeEventPersistence>>['runtimeCommitStore'];
 const SKILL_CATALOG_TRACE_DECISION_LIMIT = 100;
 
-/**
- * Selected-model image-input capability, consulted before wiring AiSdkBackend.
- * Stored provider capabilities win; a bare model id falls back to in-repo
- * metadata (provider `/models` responses do not report image support).
- */
-function modelSupportsVision(connection: LlmConnection, model: string): boolean {
-  return resolveModelVisionSupport(connection.providerType, connection.models, model);
-}
-
-export interface AiSdkBackendFactoryDeps {
-  isComputerUseRealModelE2e: boolean;
-  ensureMcpReady: () => Promise<void>;
-  getReadyConnection: (slug: string | null | undefined, model?: string) => Promise<ReadyConnection>;
+export interface AiSdkBackendFactoryDeps extends DesktopBackendToolSurfaceDeps {
   buildSubscriptionModelFetch: SubscriptionModelFetchBuilder;
   systemPromptService: SystemPromptMainService;
-  mcpManager: McpClientManager;
-  permissionEngine: PermissionEngine;
-  taskLedgerStore: TaskLedgerStore;
   telemetryRepo: TelemetryRepo;
+  ensureUsageReady: () => Promise<void>;
   artifactStore: ArtifactStore;
-  deepResearchTools: MakaTool[];
   desktopSessionSkillHosts: Map<string, HostCapabilities>;
-  computerUseTools: AssembledTools['computerUseTools'];
-  agentTeamLeadTools: AssembledTools['agentTeamLeadTools'];
-  builtinTools: AssembledTools['builtinTools'];
-  toolAvailability: AssembledTools['toolAvailability'];
   sandboxDiagnosticsProvider: AssembledTools['sandboxDiagnosticsProvider'];
   persistToolArtifacts: ToolArtifactPersistence['persistToolArtifacts'];
   persistArchivedToolResult: ToolArtifactPersistence['persistArchivedToolResult'];
   readArchivedToolResult: ToolArtifactPersistence['readArchivedToolResult'];
   runtimeCommitStore: RuntimeCommitStore;
-  planStore: PlanStore;
   safeSendToRenderer: (channel: string, ...args: unknown[]) => void;
+  openGateway: OpenGatewayService;
+  emitSessionsChanged: (reason: SessionChangedReason, sessionId?: string) => void;
   getRuntime: () => SessionManager;
   getLookupPricing: () => PricingLookup;
 }
@@ -130,99 +91,47 @@ export interface AiSdkBackendFactoryDeps {
  */
 export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): BackendFactory {
   const {
-    isComputerUseRealModelE2e,
-    ensureMcpReady,
-    getReadyConnection,
     buildSubscriptionModelFetch,
     systemPromptService,
-    mcpManager,
-    permissionEngine,
-    taskLedgerStore,
     telemetryRepo,
+    ensureUsageReady,
     artifactStore,
-    deepResearchTools,
     desktopSessionSkillHosts,
-    computerUseTools,
-    agentTeamLeadTools,
-    builtinTools,
-    toolAvailability,
     sandboxDiagnosticsProvider,
     persistToolArtifacts,
     persistArchivedToolResult,
     readArchivedToolResult,
     runtimeCommitStore,
-    planStore,
     safeSendToRenderer,
+    openGateway,
+    emitSessionsChanged,
     getRuntime,
     getLookupPricing,
   } = deps;
 
   return async (ctx) => {
-    // MCP is optional. A corrupt mcp.json remains visible in the MCP module,
-    // but must not prevent builtin-only conversations from creating a backend.
-    await ensureMcpReady().catch(() => {});
-    const { connection, apiKey, model } = await getReadyConnection(ctx.header.llmConnectionSlug, ctx.header.model);
+    await ensureUsageReady();
+    const toolSurface = await resolveDesktopBackendToolSurface(deps, ctx);
+    const {
+      connection,
+      apiKey,
+      model,
+      supportsVision,
+      collaborationMode,
+      planState,
+      activeExecution,
+      interruptedExecution,
+      agentTeam,
+      selectedTools,
+      toolAvailability: backendToolAvailability,
+      skillHost: backendSkillHost,
+      admitsAgentChildren,
+    } = toolSurface;
     const modelFetch = buildSubscriptionModelFetch(connection, ctx.sessionId, model);
-    const memoryPromptSnapshot = await systemPromptService.buildLocalMemoryPromptFragment();
-    const supportsVision = modelSupportsVision(connection, model);
-    const collaborationMode = ctx.header.collaborationMode ?? 'agent';
-    const planState = await planStore.readState(ctx.sessionId);
-    const activeExecution = activePlanExecution(planState);
-    const interruptedExecution = [...planState.executions]
-      .reverse()
-      .find((execution) => execution.status === 'interrupted');
-    const buildDesktopBaseTools = () => [...builtinTools, ...buildMcpTools(mcpManager)];
-    const candidateTools = isComputerUseRealModelE2e
-      ? computerUseTools
-      : ctx.tools
-        ? [...ctx.tools]
-        : [
-            ...buildDesktopBaseTools(),
-            ...(isDeepResearchSession(ctx.header.labels) ? deepResearchTools : []),
-          ];
-    const candidateToolAvailability = isComputerUseRealModelE2e
-      ? { economy: false, groups: [] }
-      : toolAvailability;
-    // Expert-team lead: a main session (ctx.tools undefined) labeled
-    // `mode:expert-team:<teamId>` gets the team-bound expert_dispatch tool.
-    // Child turns receive scoped `ctx.tools` and inherit the label, but must NOT
-    // get expert_dispatch — members cannot spawn nested teams.
-    const expertTeamId = ctx.tools ? undefined : expertTeamIdFromLabels(ctx.header.labels);
-    const expertDispatchTool = expertTeamId
-      ? buildExpertDispatchToolForTeamId(expertTeamId, { taskLedger: taskLedgerStore })
-      : undefined;
-    const agentTeam = ctx.agentTeam ?? (expertTeamId
-      ? { role: 'lead' as const, teamId: expertTeamId, agentId: 'lead' }
-      : undefined);
-    const planControlTools = collaborationMode === 'plan'
-      ? [buildSubmitPlanTool(planStore, interruptedExecution?.executionId)]
-      : activeExecution
-        ? [
-            buildUpdatePlanTool(planStore, activeExecution.executionId),
-            buildCancelPlanTool(planStore, activeExecution.executionId),
-          ]
-        : [];
-    const backendTools = computerUseToolsForModel(
-      [...candidateTools, ...planControlTools],
-      computerUseTools,
-      supportsVision,
-    );
-    const backendToolAvailability = computerUseAvailabilityForModel(
-      candidateToolAvailability,
-      supportsVision,
-    );
-    const selectedTools = selectCollaborationTools({
-      mode: collaborationMode,
-      tools: expertDispatchTool
-        ? [...backendTools, expertDispatchTool, ...agentTeamLeadTools]
-        : backendTools,
-      hasActiveExecution: activeExecution !== undefined,
-    });
-    const backendToolNames = new Set(selectedTools.map((tool) => tool.name));
-    const backendSkillHost = buildHostCapabilitiesFromBinding(backendToolNames);
-    // Child backends share the parent sessionId but intentionally have a
-    // narrower tool surface. They do not receive the Desktop Skill tool, so
-    // they must not overwrite the parent session's resolver entry.
+    const memoryPromptSnapshot = await systemPromptService.buildLocalMemoryPromptFragment(ctx.sessionId);
+    // Legacy child-run backends share the parent sessionId; linked child
+    // sessions have their own id. Both receive a narrower tool surface without
+    // the Desktop Skill tool, so only a session's full backend owns this entry.
     if (!ctx.tools) desktopSessionSkillHosts.set(ctx.sessionId, backendSkillHost);
     const effectivePermissionMode = collaborationMode === 'plan' ? 'explore' : ctx.header.permissionMode;
     const sandboxDiagnosticsSnapshot = await sandboxDiagnosticsProvider.resolve({
@@ -234,10 +143,14 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
       sessionId: ctx.sessionId,
       header: { ...ctx.header, model, permissionMode: effectivePermissionMode },
       appendMessage: ctx.appendMessage ?? ((message) => ctx.store.appendMessage(ctx.sessionId, message)),
+      readExecutionBoundary: () => ctx.store.readExecutionBoundary!(ctx.sessionId),
+      createSandboxBoundaryRequest: (request) =>
+        ctx.store.createSandboxBoundaryRequest!(request),
+      settleSandboxBoundaryRequest: (request) =>
+        ctx.store.settleSandboxBoundaryRequest!(request),
       connection,
       apiKey: apiKey ?? '',
       modelId: model,
-      permissionEngine,
       modelFactory: (input) => getAIModel({ ...input, fetch: modelFetch }),
       tools: selectedTools,
       sandboxDiagnosticsSnapshot,
@@ -254,13 +167,69 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
       },
       agentTeam,
       toolAvailability: backendToolAvailability,
-      spawnChildAgent: (input) => getRuntime().spawnChildAgent(ctx.sessionId, input),
-      prepareChildAgentResume: (sourceRunId) =>
-        getRuntime().prepareChildAgentResume(ctx.sessionId, sourceRunId),
-      resumeChildAgent: (input) => getRuntime().resumeChildAgent(ctx.sessionId, input),
-      retryChildAgent: (input) => getRuntime().retryChildAgent(ctx.sessionId, input),
-      listChildAgents: () => getRuntime().listChildAgents(ctx.sessionId),
-      readChildAgentOutput: (input) => getRuntime().readChildAgentOutput(ctx.sessionId, input),
+      ...(admitsAgentChildren
+        ? {
+            spawnChildAgent: (input) => getRuntime().spawnChildAgent(ctx.sessionId, input),
+            spawnChildSession: (input) => {
+              const observation = createLinkedChildEventProjection({
+                lifecycle: 'created',
+                safeSendToRenderer,
+                openGateway,
+                emitSessionsChanged,
+                onReady: input.onReady,
+                onEvent: input.onEvent,
+              });
+              return getRuntime().spawnChildSession(ctx.sessionId, {
+                spawnedBy: {
+                  parentRunId: input.parentRunId,
+                  parentTurnId: input.parentTurnId,
+                  toolCallId: input.toolCallId,
+                },
+                agentProfile: input.agentProfile,
+                prompt: input.prompt,
+                ...(input.swarm ? { swarm: input.swarm } : {}),
+                abortSignal: input.abortSignal,
+                onReady: observation.onReady,
+                onEvent: observation.onEvent,
+              });
+            },
+            prepareChildAgentResume: (sourceRunId) =>
+              getRuntime().prepareChildAgentResume(ctx.sessionId, sourceRunId),
+            resumeChildAgent: (input) => {
+              const observation = createLinkedChildEventProjection({
+                lifecycle: 'continued',
+                safeSendToRenderer,
+                openGateway,
+                emitSessionsChanged,
+                onReady: input.onReady,
+                onEvent: input.onEvent,
+              });
+              return getRuntime().resumeChildAgent(ctx.sessionId, {
+                ...input,
+                onReady: observation.onReady,
+                onEvent: observation.onEvent,
+              });
+            },
+            retryChildAgent: (input) => {
+              const observation = createLinkedChildEventProjection({
+                lifecycle: 'continued',
+                safeSendToRenderer,
+                openGateway,
+                emitSessionsChanged,
+                onReady: input.onReady,
+                onEvent: input.onEvent,
+              });
+              return getRuntime().retryChildAgent(ctx.sessionId, {
+                ...input,
+                onReady: observation.onReady,
+                onEvent: observation.onEvent,
+              });
+            },
+            listChildAgents: () => getRuntime().listChildAgents(ctx.sessionId),
+            readChildAgentOutput: (input) =>
+              getRuntime().readChildAgentOutput(ctx.sessionId, input),
+          }
+        : {}),
       providerOptions: buildProviderOptions(connection, model, ctx.header.thinkingLevel),
       contextBudget: buildDefaultContextBudgetPolicy(connection, {
         name: 'desktop-default-history-budget',
@@ -380,11 +349,74 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
         : {}),
       recordHistoryCompactCheckpoint: ctx.recordHistoryCompactCheckpoint,
       loadTurnRuntimeEvents: ctx.loadTurnRuntimeEvents,
+      allowMidTurnHistoryCompaction: ctx.allowMidTurnHistoryCompaction,
       recordActiveFullCompactBlock: ctx.recordActiveFullCompactBlock,
       recordSemanticCompactBlock: ctx.recordSemanticCompactBlock,
       newId: randomUUID,
       now: Date.now,
     });
+  };
+}
+
+interface LinkedChildReady {
+  childSessionId?: string;
+  turnId: string;
+  runId?: string;
+  agentId: string;
+  agentName: string;
+}
+
+/**
+ * Bridge linked-child events onto the child Session's normal Desktop and Open
+ * Gateway channels while the parent tool call remains the stream consumer.
+ * Direct user follow-ups already use createSessionStreamer; this closes the
+ * nested spawn/resume/retry observation gap without inventing a subagent-only
+ * event protocol.
+ */
+export function createLinkedChildEventProjection<
+  Ready extends LinkedChildReady = LinkedChildReady,
+>(input: {
+  lifecycle: 'created' | 'continued';
+  safeSendToRenderer: (channel: string, ...args: unknown[]) => void;
+  openGateway: Pick<OpenGatewayService, 'publishSessionEvent'>;
+  emitSessionsChanged: (reason: SessionChangedReason, sessionId?: string) => void;
+  onReady?: (ready: Ready) => void | Promise<void>;
+  onEvent?: (event: SessionEvent) => void;
+}): {
+  onReady(ready: Ready): Promise<void>;
+  onEvent(event: SessionEvent): void;
+} {
+  let childSessionId: string | undefined;
+  let messageAppendBroadcasted = false;
+  return {
+    async onReady(ready) {
+      childSessionId = ready.childSessionId;
+      if (childSessionId) {
+        input.emitSessionsChanged(
+          input.lifecycle === 'created' ? 'created' : 'status-change',
+          childSessionId,
+        );
+        input.emitSessionsChanged('turn-status-change', childSessionId);
+      }
+      await input.onReady?.(ready);
+    },
+    onEvent(event) {
+      if (childSessionId) {
+        input.safeSendToRenderer(`sessions:event:${childSessionId}`, event);
+        input.openGateway.publishSessionEvent(childSessionId, event);
+        if (!messageAppendBroadcasted) {
+          input.emitSessionsChanged('message-appended', childSessionId);
+          messageAppendBroadcasted = true;
+        }
+        if (isStatusChangingSessionEvent(event)) {
+          input.emitSessionsChanged('status-change', childSessionId);
+        }
+        if (isTurnStatusChangingSessionEvent(event)) {
+          input.emitSessionsChanged('turn-status-change', childSessionId);
+        }
+      }
+      input.onEvent?.(event);
+    },
   };
 }
 
@@ -420,8 +452,8 @@ export interface SessionStreamerDeps {
 }
 
 function isStatusChangingSessionEvent(event: SessionEvent): boolean {
-  return event.type === 'permission_request' ||
-    event.type === 'permission_decision_ack' ||
+  return event.type === 'sandbox_boundary_request' ||
+    event.type === 'sandbox_boundary_decision_ack' ||
     event.type === 'complete' ||
     event.type === 'abort' ||
     event.type === 'error';

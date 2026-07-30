@@ -6,6 +6,7 @@ import {
   lstat,
   mkdir,
   mkdtemp,
+  open,
   readdir,
   readFile,
   rename,
@@ -17,13 +18,17 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
+import { unlock, waitForLock } from 'fs-native-extensions';
 import {
   adoptStorageRootOnImport,
   assertStorageRootCapability,
   assertStorageRootLease,
   createHeadlessRootLease,
   discoverMarkedStorageRoot,
+  prepareArtifactWriterBootstrapAuthority,
   prepareStorageRootControlDirectory,
+  prepareStorageRootIdentityRepair,
+  repairStorageRootIdentity,
   resolveExistingStorageRoot,
   resolveRootControlNamespace,
   resolveStorageRoot,
@@ -107,6 +112,158 @@ describe('storage root authority', () => {
 
       assert.equal(throughAlias.canonicalPath, direct.canonicalPath);
       assert.equal(throughAlias.rootId, direct.rootId);
+    });
+  });
+
+  test('derives Artifact writer bootstrap authority from stable filesystem identity', async () => {
+    await withRoots(async ({ base, root }) => {
+      const alias = join(base, 'alias');
+      const movedRoot = join(base, 'moved-root');
+      await symlink(root, alias, process.platform === 'win32' ? 'junction' : 'dir');
+
+      const direct = await prepareArtifactWriterBootstrapAuthority(root);
+      const throughAlias = await prepareArtifactWriterBootstrapAuthority(alias);
+      assert.equal(throughAlias.lockPath, direct.lockPath);
+      assert.equal(throughAlias.canonicalPath, direct.canonicalPath);
+      assert.deepEqual(await readdir(root), []);
+
+      await rename(root, movedRoot);
+      await assert.rejects(() => direct.assertCurrentRoot());
+      const moved = await prepareArtifactWriterBootstrapAuthority(movedRoot);
+      assert.equal(moved.lockPath, direct.lockPath);
+
+      await mkdir(root);
+      const replacement = await prepareArtifactWriterBootstrapAuthority(root);
+      assert.notEqual(replacement.lockPath, direct.lockPath);
+      assert.deepEqual(await readdir(root), []);
+
+      await Promise.all([
+        rm(direct.lockPath, { force: true }),
+        rm(replacement.lockPath, { force: true }),
+      ]);
+    });
+  });
+
+  test('rejects a marker from another device even when its inode matches', async () => {
+    await withRoots(async ({ root }) => {
+      await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const markerPath = join(root, STORAGE_ROOT_MARKER_FILE);
+      const marker = JSON.parse(await readFile(markerPath, 'utf8')) as {
+        rootIdentity: { dev: string; ino: string };
+      };
+      marker.rootIdentity.dev = (BigInt(marker.rootIdentity.dev) + 1n).toString();
+      await writeFile(markerPath, `${JSON.stringify(marker)}\n`);
+
+      await assert.rejects(
+        () => resolveStorageRoot({ path: root, kind: 'interactive' }),
+        (error: unknown) =>
+          error instanceof StorageRootAuthorityError && error.code === 'root_identity_collision',
+      );
+    });
+  });
+
+  test('explicitly repairs a stale root identity without changing its root id', async () => {
+    await withRoots(async ({ root }) => {
+      const initialized = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const markerPath = join(root, STORAGE_ROOT_MARKER_FILE);
+      const marker = JSON.parse(await readFile(markerPath, 'utf8')) as {
+        rootIdentity: { dev: string; ino: string };
+      };
+      marker.rootIdentity.dev = (BigInt(marker.rootIdentity.dev) + 1n).toString();
+      await writeFile(markerPath, `${JSON.stringify(marker)}\n`);
+
+      const candidate = await prepareStorageRootIdentityRepair({
+        path: root,
+        kind: 'interactive',
+      });
+      assert.ok(candidate);
+      const repaired = await repairStorageRootIdentity(candidate);
+      const rootStat = await lstat(root, { bigint: true });
+      const repairedMarker = JSON.parse(await readFile(markerPath, 'utf8')) as {
+        rootId: string;
+        rootIdentity: { dev: string; ino: string };
+      };
+
+      assert.equal(repaired.rootId, initialized.rootId);
+      assert.equal(repairedMarker.rootId, initialized.rootId);
+      assert.deepEqual(repairedMarker.rootIdentity, {
+        dev: rootStat.dev.toString(),
+        ino: rootStat.ino.toString(),
+      });
+      assert.equal(
+        (await resolveStorageRoot({ path: root, kind: 'interactive' })).rootId,
+        initialized.rootId,
+      );
+    });
+  });
+
+  test('rejects a prepared repair when its marker changes before commit', async () => {
+    await withRoots(async ({ root }) => {
+      await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const markerPath = join(root, STORAGE_ROOT_MARKER_FILE);
+      const marker = JSON.parse(await readFile(markerPath, 'utf8')) as {
+        rootId: string;
+        rootIdentity: { dev: string };
+      };
+      marker.rootIdentity.dev = (BigInt(marker.rootIdentity.dev) + 1n).toString();
+      await writeFile(markerPath, `${JSON.stringify(marker)}\n`);
+      const candidate = await prepareStorageRootIdentityRepair({
+        path: root,
+        kind: 'interactive',
+      });
+      assert.ok(candidate);
+
+      marker.rootId = '0'.repeat(64);
+      const replacedMarker = `${JSON.stringify(marker)}\n`;
+      await writeFile(markerPath, replacedMarker);
+
+      await assert.rejects(
+        () => repairStorageRootIdentity(candidate),
+        (error: unknown) =>
+          error instanceof StorageRootAuthorityError && error.code === 'root_identity_changed',
+      );
+      assert.equal(await readFile(markerPath, 'utf8'), replacedMarker);
+    });
+  });
+
+  test('reopens the current marker when a concurrent repair replaces the locked inode', async () => {
+    await withRoots(async ({ root }) => {
+      await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const markerPath = join(root, STORAGE_ROOT_MARKER_FILE);
+      const marker = JSON.parse(await readFile(markerPath, 'utf8')) as {
+        rootIdentity: { dev: string };
+      };
+      marker.rootIdentity.dev = (BigInt(marker.rootIdentity.dev) + 1n).toString();
+      await writeFile(markerPath, `${JSON.stringify(marker)}\n`);
+
+      const [first, second] = await Promise.all([
+        prepareStorageRootIdentityRepair({ path: root, kind: 'interactive' }),
+        prepareStorageRootIdentityRepair({ path: root, kind: 'interactive' }),
+      ]);
+      assert.ok(first);
+      assert.ok(second);
+
+      const gate = await open(markerPath, 'r+');
+      await waitForLock(gate.fd);
+      const repairs = Promise.allSettled([
+        repairStorageRootIdentity(first),
+        repairStorageRootIdentity(second),
+      ]);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      unlock(gate.fd);
+      await gate.close();
+
+      const results = await repairs;
+      assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+      const rejected = results.find((result) => result.status === 'rejected');
+      assert.ok(rejected);
+      assert.ok(rejected.reason instanceof StorageRootAuthorityError);
+      assert.notEqual(rejected.reason.code, 'invalid_marker');
+      assert.ok(
+        rejected.reason.code === 'root_identity_changed' ||
+          rejected.reason.code === 'root_identity_collision',
+      );
+      await resolveStorageRoot({ path: root, kind: 'interactive' });
     });
   });
 

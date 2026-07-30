@@ -4,12 +4,6 @@ import { getShellCopy } from './locales/shell-copy.js';
 
 const SESSION_READ_MESSAGES_ERROR_MARKER = 'MAKA_SESSION_READ_MESSAGES_ERROR:';
 
-export function basenameFromPath(value: string, locale: UiLocale): string {
-  const trimmed = value.replace(/[\\/]+$/, '');
-  const name = trimmed.split(/[\\/]/).filter(Boolean).pop();
-  return name || trimmed || getShellCopy(locale).projectActions.currentProject;
-}
-
 export function messageReadErrorMessage(error: unknown, locale: UiLocale): string {
   return sessionMessageErrorMessage(error, getShellCopy(locale).errors.messageRead, locale);
 }
@@ -41,12 +35,6 @@ export function openPathActionErrorMessage(
 ): string {
   const copy = getShellCopy(locale);
   return localizedErrorMessage(error, copy.errors.openPath(copy.paths[key]), locale);
-}
-
-export function selectProjectDirectoryFailureCopy(reason: 'missing-selection', locale: UiLocale): string {
-  const copy = getShellCopy(locale).projectActions;
-  if (reason === 'missing-selection') return copy.missingSelection;
-  return copy.directorySwitchFallback;
 }
 
 export function commandPaletteConnectionTestFailureMessage(result: ConnectionTestResult, locale: UiLocale): string {

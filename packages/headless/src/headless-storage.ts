@@ -1,4 +1,7 @@
-import { createArtifactStore, type ArtifactStore } from '@maka/storage';
+import {
+  openHeadlessArtifactStoreForWrite,
+  type HeadlessArtifactStoreWriter,
+} from '@maka/storage/artifact-stores';
 import {
   authenticateExecutionStoresReader,
   authenticateExecutionStoresWriter,
@@ -11,11 +14,9 @@ import {
   createHeadlessRootLease,
   discoverMarkedStorageRoot,
   resolveStorageRoot,
-  runWithStorageRootLease,
   StorageRootAuthorityError,
   type DiscoveredStorageRootCapability,
   type StorageRootCapability,
-  type StorageRootLease,
 } from '@maka/storage/root-authority';
 import {
   openHeadlessTaskRunReader,
@@ -29,9 +30,7 @@ const headlessStorageReaderBrand: unique symbol = Symbol('HeadlessStorageReader'
 const headlessStorageWriters = new WeakSet<object>();
 const headlessStorageReaders = new WeakSet<object>();
 
-export type HeadlessArtifactStore = Readonly<
-  Pick<ArtifactStore, 'create' | 'list' | 'readText' | 'get' | 'readBinary'>
->;
+export type HeadlessArtifactStore = HeadlessArtifactStoreWriter;
 
 export interface HeadlessStorageWriter {
   readonly [headlessStorageWriterBrand]: true;
@@ -51,16 +50,17 @@ export async function openHeadlessStorageForWrite(
 ): Promise<HeadlessStorageWriter> {
   const capability = await resolveStorageRoot({ path: storageRoot, kind: 'headless' });
   const lease = createHeadlessRootLease(capability, 'write');
-  const [taskRunStore, executionStores] = await Promise.all([
+  const [taskRunStore, executionStores, artifactStore] = await Promise.all([
     openHeadlessTaskRunWriter(lease),
     openHeadlessExecutionStoresForWrite(lease),
+    openHeadlessArtifactStoreForWrite(lease),
   ]);
 
   const storage: HeadlessStorageWriter = {
     [headlessStorageWriterBrand]: true,
     taskRunStore,
     executionStores,
-    artifactStore: leaseBoundArtifactStore(lease),
+    artifactStore,
   };
   Object.freeze(storage);
   headlessStorageWriters.add(storage);
@@ -130,20 +130,4 @@ function requireHeadlessCapability(
     );
   }
   return capability;
-}
-
-function leaseBoundArtifactStore(
-  lease: StorageRootLease<'headless', 'write'>,
-): HeadlessArtifactStore {
-  const store = createArtifactStore(lease.canonicalPath);
-  const run = <T>(operation: () => Promise<T>) =>
-    runWithStorageRootLease(lease, 'headless', 'write', operation);
-  const facade: HeadlessArtifactStore = {
-    create: (input) => run(() => store.create(input)),
-    list: (sessionId, options) => run(() => store.list(sessionId, options)),
-    get: (artifactId) => run(() => store.get(artifactId)),
-    readText: (artifactId, options) => run(() => store.readText(artifactId, options)),
-    readBinary: (artifactId, options) => run(() => store.readBinary(artifactId, options)),
-  };
-  return Object.freeze(facade);
 }

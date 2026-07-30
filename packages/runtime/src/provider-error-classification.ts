@@ -33,6 +33,73 @@ interface ProviderErrorEvidence {
   structuredCodes: string[];
 }
 
+export interface ProviderRetryMetadata {
+  retryable: boolean;
+  retryAfterMs?: number;
+}
+
+const MAX_SAFE_TIMER_DELAY_MS = 2_147_483_647;
+
+function providerErrorTarget(error: unknown): unknown {
+  return RetryError.isInstance(error) && error.lastError !== undefined && error.lastError !== error
+    ? error.lastError
+    : error;
+}
+
+function responseHeadersFromError(error: unknown): Record<string, string> | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const value = (error as { responseHeaders?: unknown }).responseHeaders;
+  if (typeof value !== 'object' || value === null) return undefined;
+  const headers: Record<string, string> = {};
+  for (const [key, header] of Object.entries(value)) {
+    if (typeof header === 'string') headers[key.toLowerCase()] = header;
+  }
+  return headers;
+}
+
+function parseRetryAfterMs(headers: Record<string, string>): number | null | undefined {
+  const rawMilliseconds = headers['retry-after-ms'];
+  const rawRetryAfter = headers['retry-after'];
+  if (rawMilliseconds === undefined && rawRetryAfter === undefined) return undefined;
+
+  let delayMs: number;
+  if (rawMilliseconds !== undefined) {
+    delayMs = Number(rawMilliseconds);
+  } else {
+    const seconds = Number(rawRetryAfter);
+    delayMs = Number.isFinite(seconds) ? seconds * 1_000 : Date.parse(rawRetryAfter!) - Date.now();
+  }
+  if (!Number.isFinite(delayMs) || delayMs <= 0 || delayMs > MAX_SAFE_TIMER_DELAY_MS) return null;
+  return Math.ceil(delayMs);
+}
+
+/**
+ * Normalizes provider retry facts without leaking SDK error objects or raw
+ * response headers across the ModelAdapter boundary.
+ */
+export function providerRetryMetadata(error: unknown): ProviderRetryMetadata {
+  const target = providerErrorTarget(error);
+  const evidence = normalizeErrorEvidence(target);
+  if (!evidence) return { retryable: false };
+
+  const status = Number(evidence.statusCode || evidence.code);
+  const errorClass = classifyError(target);
+  const retryable =
+    errorClass === 'Network' ||
+    status === 408 ||
+    status === 409 ||
+    status === 429 ||
+    (status >= 500 && status <= 599);
+  if (!retryable) return { retryable: false };
+
+  const retryAfterMs = parseRetryAfterMs(responseHeadersFromError(target) ?? {});
+  if (retryAfterMs === null) return { retryable: false };
+  return {
+    retryable: true,
+    ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+  };
+}
+
 /** Collects `code`/`type` strings from a payload and from its `error` wrapper. */
 function collectStructuredCodes(payload: unknown, out: string[]): void {
   const fromRecord = (record: unknown) => {
@@ -221,10 +288,7 @@ export function isContextOverflowErrorText(text: string): boolean {
  */
 export function classifyError(error: unknown): string {
   if (RetryError.isInstance(error) && error.reason === 'abort') return 'Abort';
-  const classificationTarget =
-    RetryError.isInstance(error) && error.lastError !== undefined && error.lastError !== error
-      ? error.lastError
-      : error;
+  const classificationTarget = providerErrorTarget(error);
   const evidence = normalizeErrorEvidence(classificationTarget);
   if (!evidence) return 'Other';
   const { text, statusCode, code, structuredCodes } = evidence;

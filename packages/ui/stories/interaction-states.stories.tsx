@@ -94,7 +94,7 @@ export const ListRowStates: Story = {
     >
       <div style={{ height: 440, overflow: 'hidden', width: 260 }}>
         <SessionListPanel
-          selection={{ section: 'skills' }}
+          selection={{ section: 'extensions', module: 'skills' }}
           sessions={COMPOSITE_ROW_SESSIONS}
           activeId="interaction-active"
           onSelectSession={noop}

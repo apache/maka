@@ -40,7 +40,7 @@ describe('session health notice layout contract (#1032)', () => {
     );
     assert.match(
       shell,
-      /navSelection\.section === 'daily-review' \?[\s\S]*<ChatMessageSurface/,
+      /navSelection\.section === 'automations' && navSelection\.module === 'daily-review' \?[\s\S]*<ChatMessageSurface/,
       'the message surface must stay on the conversation surface, not Skills/Automations/Daily Review',
     );
     assert.match(

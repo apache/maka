@@ -15,6 +15,13 @@ type BooleanRecordUpdater = (updater: (current: Record<string, boolean>) => Reco
 type ToastApi = {
   success(title: string, description?: string): void;
   error(title: string, description?: string): void;
+  confirm(input: {
+    title: string;
+    description?: string;
+    confirmLabel?: string;
+    cancelLabel?: string;
+    destructive?: boolean;
+  }): Promise<boolean>;
 };
 
 export interface AppShellSessionSettingsActions {
@@ -61,10 +68,22 @@ export function createAppShellSessionSettingsActions(deps: {
   }
 
   async function setPermissionMode(mode: PermissionMode) {
-    if (mode === 'explore') return;
+    if (mode !== 'ask' && mode !== 'bypass') return;
     const sessionId = activeIdRef.current;
     const pendingKey = sessionId ?? '__global_permission_mode__';
     if (pendingPermissionModeChangesRef.current.has(pendingKey)) return;
+    if (
+      mode === 'bypass' &&
+      !(await toastApi.confirm({
+        title: copy.bypassConfirmTitle,
+        description: copy.bypassConfirmDescription,
+        confirmLabel: copy.bypassConfirmLabel,
+        cancelLabel: copy.bypassCancelLabel,
+        destructive: true,
+      }))
+    ) {
+      return;
+    }
 
     pendingPermissionModeChangesRef.current.add(pendingKey);
     if (sessionId)
@@ -73,13 +92,24 @@ export function createAppShellSessionSettingsActions(deps: {
         [sessionId]: true,
       }));
     try {
-      const result = await window.maka.settings.update({
-        chatDefaults: { permissionMode: mode },
-      });
-      const nextMode = result.settings.chatDefaults.permissionMode;
-      setDefaultPermissionMode(nextMode);
-      setSessions((prev) => prev.map((session) => ({ ...session, permissionMode: nextMode })));
-      toastApi.success(copy.permissionSwitched(copy.permissionLabels[nextMode]), copy.permissionDescriptions[nextMode]);
+      let nextMode = mode;
+      if (sessionId) {
+        const next = await window.maka.sessions.setPermissionMode(sessionId, mode);
+        nextMode = next.permissionMode === 'bypass' ? 'bypass' : 'ask';
+        setSessions((prev) =>
+          prev.map((session) => (session.id === sessionId ? next : session)),
+        );
+      } else {
+        const result = await window.maka.settings.update({
+          chatDefaults: { permissionMode: mode },
+        });
+        nextMode = result.settings.chatDefaults.permissionMode;
+        setDefaultPermissionMode(nextMode);
+      }
+      toastApi.success(
+        copy.permissionSwitched(copy.permissionLabels[nextMode]),
+        copy.permissionDescriptions[nextMode],
+      );
       await refreshSessions();
     } catch (error) {
       toastApi.error(copy.permissionFailedTitle, localizedShellErrorMessage(error, copy.permissionFallback, uiLocale));

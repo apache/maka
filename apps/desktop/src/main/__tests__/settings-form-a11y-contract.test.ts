@@ -72,9 +72,15 @@ describe('Settings form accessibility labels', () => {
     const providerCatalogBadge = styles.match(/\.providerCatalogBadge\s*\{[\s\S]*?\}/)?.[0] ?? '';
     const modelChoiceList = styles.match(/\.providerModelChoiceList\s*\{[\s\S]*?\}/)?.[0] ?? '';
     const modelChoiceScroll = styles.match(/\.providerModelChoiceScroll\s*\{[\s\S]*?\}/)?.[0] ?? '';
-    const settingsRow = styles.match(/\.settingsRow\s*\{[\s\S]*?\}/g)?.at(-1) ?? '';
+    // #1362: TWO .settingsRow rules exist now — the base label/value grid
+    // and the narrow-card stacking override inside the @container block.
+    // The base rule is the one that declares its own display.
+    const settingsRowRules = styles.match(/\.settingsRow\s*\{[\s\S]*?\}/g) ?? [];
+    const settingsRow = settingsRowRules.find((rule) => /display:\s*grid;/.test(rule)) ?? '';
+    const settingsRowStacked = settingsRowRules.find((rule) => !/display:/.test(rule)) ?? '';
     const settingsRowValue = styles.match(/\.settingsRow > span\s*\{[\s\S]*?\}/)?.[0] ?? '';
-    const settingsRowTitle = styles.match(/\.settingsRow strong\s*\{[\s\S]*?\}/)?.[0] ?? '';
+    // #1362: the title tier is one comma-grouped rule for both row kinds.
+    const settingsRowTitle = styles.match(/\.settingsRow strong,\s*\.settingsFormRow strong\s*\{[\s\S]*?\}/)?.[0] ?? '';
 
     assert.match(connectionRow, /border-radius:\s*var\(--radius-surface\);/, 'Settings connection cards should use reference implementation rounded-lg geometry');
     assert.match(connectionRow, /box-shadow:\s*0 1px 3px oklch\(from var\(--foreground\) l c h \/ 0\.03\);/, 'Settings connection cards should use the near-flat card shadow (P-SHADOW: foreground-derived, not pure-black)');
@@ -98,10 +104,23 @@ describe('Settings form accessibility labels', () => {
     assert.doesNotMatch(connectionBadge, /rounded-\[var\(--radius-pill\)\]/, 'Settings connection badges (Chip primitive) must not regress to pill-shaped chrome');
     assert.doesNotMatch(settingsBadge, /rounded-\[var\(--radius-pill\)\]/, 'Generic Settings badges (Chip primitive) must not regress to pill-shaped chrome');
     assert.match(settingsRow, /display:\s*grid;/, 'Settings rows should use a stable label/value grid instead of flex auto sizing');
-    assert.match(settingsRow, /grid-template-columns:\s*minmax\(150px,\s*0\.36fr\)\s+minmax\(0,\s*1fr\);/, 'Settings rows need a protected label column and shrinkable value column');
+    // The track split itself is pinned by settings-row-track-contract, which
+    // is the one home for that rule. This file used to restate it as
+    // `minmax(150px, 0.36fr) minmax(0, 1fr)` under the banner "protected
+    // label column" — the split that starved the label, so the duplicate was
+    // both redundant and wrong, and the second copy is what a fix has to
+    // hunt down. Assert the shape here, not the numbers.
     assert.match(settingsRowValue, /overflow-wrap:\s*anywhere;/, 'Long Settings values such as workspace paths should wrap in the value column');
     assert.match(settingsRowValue, /text-align:\s*right;/, 'Short Settings values should keep the existing right-aligned summary rhythm');
-    assert.match(settingsRowTitle, /white-space:\s*nowrap;/, 'Settings row labels must not collapse to one Chinese character per line');
+    // #1362: the old `white-space: nowrap` title pin protected labels from
+    // collapsing to one Chinese character per line, but it did so by letting
+    // long titles BLEED over the value column instead. The protection is now
+    // structural — the 150px label floor above, plus the narrow-card override
+    // that stacks the row so the label gets the full card width. Titles wrap
+    // as a last resort instead of overflowing the card.
+    assert.match(settingsRowStacked, /grid-template-columns:\s*minmax\(0,\s*1fr\);/, 'Narrow cards must stack Settings rows so labels keep a full-width line, not char-per-line slivers');
+    assert.match(settingsRowTitle, /overflow-wrap:\s*anywhere;/, 'Settings row titles need a last-resort break for unbreakable runs on a squeezed label column');
+    assert.doesNotMatch(settingsRowTitle, /white-space:\s*nowrap;/, 'Settings row titles must wrap inside their column instead of bleeding over the value column');
   });
 
   it('keeps migrated Settings text fields and action buttons on shared UI primitives', async () => {

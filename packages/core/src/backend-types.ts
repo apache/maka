@@ -8,10 +8,17 @@
  * implementation file.
  */
 
-import type { AttachmentRef, QuoteRef, SessionEvent } from './events.js';
+import type {
+  AttachmentRef,
+  MessageContent,
+  QuoteRef,
+  SessionEvent,
+  UserQuestionRequestEvent,
+} from './events.js';
+import type { InteractionClosureReason } from './interaction.js';
 import type { RuntimeEvent } from './runtime-event.js';
+import type { SandboxBoundaryResponse } from './sandbox-boundary.js';
 import type { StoredMessage, BackendKind } from './session.js';
-import type { PermissionResponse } from './permission.js';
 import type { UserQuestionResponse } from './user-question.js';
 import type { ContextBudgetDiagnostic } from './usage-stats/types.js';
 import type { EffectiveOrchestration } from './orchestration.js';
@@ -75,20 +82,49 @@ export interface BackendSendInput {
   ackSteering?: (leaseIds: readonly string[]) => void;
   /** Return undelivered leased steering messages to the queue (see pullSteering). */
   nackSteering?: (leaseIds: readonly string[]) => void;
+  /** Exact hosted-Run Interaction authority. Omitted for embedded execution. */
+  hostedInteraction?: HostedInteractionBridge;
 }
 
-/** One leased steering message: queue identity + user text. */
+export interface HostedUserQuestionAnswer {
+  readonly requestId?: never;
+  readonly answers: UserQuestionResponse['answers'];
+}
+
+export interface HostedUserQuestionSettlement {
+  applyAnswer(answer: HostedUserQuestionAnswer): Promise<void>;
+  applyClosure(reason: Exclude<InteractionClosureReason, 'timed_out'>): Promise<void>;
+}
+
+/**
+ * Optional producer capability scoped to one exact hosted Run. Admission must
+ * complete before a backend publishes the request or starts any local winner.
+ */
+export interface HostedInteractionBridge {
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly runId: string;
+
+  admitUserQuestionRequest(input: {
+    request: UserQuestionRequestEvent;
+    settlement: HostedUserQuestionSettlement;
+  }): Promise<void>;
+}
+
+/** One leased steering message: queue identity + canonical user content. */
 export interface SteeringLease {
+  /** Stable user-message identity shared with the durable steering event. */
+  messageId: string;
+  /** Ephemeral delivery lease identity used only for ack/nack settlement. */
   id: string;
-  text: string;
+  content: MessageContent;
 }
-
-/** Alias for clarity at the backend boundary. */
-export type PermissionDecision = PermissionResponse;
 
 export interface BackendCompactHistoryInput {
   turnId: string;
   runtimeContext: readonly RuntimeEvent[];
+  /** Override the configured recent-turn tail for an explicit recovery compaction. */
+  minRecentTurns?: number;
 }
 
 export interface BackendCompactHistoryResult {
@@ -98,16 +134,26 @@ export interface BackendCompactHistoryResult {
 export type BackendStopMode = 'immediate' | 'after_step';
 
 /**
- * The session-event vocabulary a backend may produce. `queue_update` has
- * exactly one legal producer — the runtime kernel, which pushes it directly
- * into the turn stream, never through a backend — so a backend-yielded one is
- * forged queue state and the flow drops it at the ingress (not mapped, not
- * forwarded, not persisted). `send` stays typed as `SessionEvent` for
- * implementation ergonomics; the ingress drop enforces the vocabulary.
+ * The live session-event vocabulary accepted from a backend. `queue_update`
+ * belongs to the runtime kernel, while legacy permission requests and
+ * acknowledgements were replaced by sandbox-boundary events. `send` stays
+ * typed as `SessionEvent` for implementation ergonomics; the flow drops these
+ * retired variants at ingress so they are never mapped, observed, or persisted
+ * by a new run.
  */
 export type BackendSessionEvent = Exclude<
   SessionEvent,
-  Extract<SessionEvent, { type: 'queue_update' }>
+  Extract<
+    SessionEvent,
+    {
+      type:
+        | 'queue_update'
+        | 'permission_request'
+        | 'permission_answer_ack'
+        | 'permission_closure_ack'
+        | 'permission_decision_ack';
+    }
+  >
 >;
 
 export interface AgentBackend {
@@ -116,7 +162,7 @@ export interface AgentBackend {
   send(input: BackendSendInput): AsyncIterable<SessionEvent>;
   compactHistory?(input: BackendCompactHistoryInput): Promise<BackendCompactHistoryResult>;
   stop(reason: 'user_stop' | 'redirect', mode?: BackendStopMode): Promise<void>;
-  respondToPermission(decision: PermissionDecision): Promise<void>;
+  respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion?(response: UserQuestionResponse): Promise<void>;
   dispose(): Promise<void>;
 }

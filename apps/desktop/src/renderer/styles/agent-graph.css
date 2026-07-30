@@ -1,0 +1,169 @@
+.maka-agent-graph-panel {
+  width: min(var(--maka-chat-measure), calc(100% - var(--space-8)));
+  max-height: min(300px, 36vh);
+  margin: var(--space-2) auto;
+  padding: var(--space-3);
+  overflow: auto;
+  border: var(--border-width-hairline) solid var(--border);
+  border-radius: var(--radius-surface);
+  background: var(--background-elevated);
+  box-shadow: 0 8px 24px oklch(from var(--foreground) l c h / 0.05);
+  color: var(--foreground);
+}
+
+.maka-agent-graph-heading,
+.maka-agent-graph-heading > div,
+.maka-agent-graph-results {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.maka-agent-graph-heading {
+  justify-content: space-between;
+}
+
+.maka-agent-graph-heading strong {
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-semibold);
+}
+
+.maka-agent-graph-progress,
+.maka-agent-graph-section-label,
+.maka-agent-graph-empty,
+.maka-agent-graph-error,
+.maka-agent-graph-omitted,
+.maka-agent-graph-results {
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
+  line-height: var(--leading-snug);
+}
+
+.maka-agent-graph-error {
+  margin: var(--space-2) 0 0;
+  color: var(--destructive-text);
+}
+
+.maka-agent-graph-section-label {
+  margin-top: var(--space-3);
+  margin-bottom: var(--space-1);
+  font-weight: var(--font-weight-medium);
+}
+
+.maka-agent-graph-operators {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.maka-agent-graph-operators li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--h-control-md);
+  padding: var(--space-1-5) var(--space-2);
+  border-radius: var(--radius-control);
+  background: var(--foreground-2);
+}
+
+.maka-agent-graph-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-pill);
+  background: var(--muted-foreground);
+}
+
+.maka-agent-graph-operators li[data-status="running"] .maka-agent-graph-status-dot,
+.maka-agent-graph-operators li[data-status="runnable"] .maka-agent-graph-status-dot {
+  background: var(--status-running);
+}
+
+.maka-agent-graph-operators li[data-status="completed"] .maka-agent-graph-status-dot {
+  background: var(--success);
+}
+
+.maka-agent-graph-operators li[data-status="failed"] .maka-agent-graph-status-dot,
+.maka-agent-graph-operators li[data-status="aborted"] .maka-agent-graph-status-dot {
+  background: var(--destructive);
+}
+
+.maka-agent-graph-operator-copy {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-0-5);
+}
+
+.maka-agent-graph-operator-copy strong,
+.maka-agent-graph-operator-copy span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maka-agent-graph-operator-copy strong {
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-medium);
+}
+
+.maka-agent-graph-operator-copy span,
+.maka-agent-graph-operator-status,
+.maka-agent-graph-open,
+.maka-agent-graph-stop,
+.maka-agent-graph-retry {
+  font-size: var(--font-size-caption);
+  line-height: var(--leading-snug);
+}
+
+.maka-agent-graph-wait {
+  color: var(--warning-text);
+}
+
+.maka-agent-graph-operator-status {
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+.maka-agent-graph-open,
+.maka-agent-graph-stop,
+.maka-agent-graph-retry {
+  min-height: var(--h-control-sm);
+  padding: 0 var(--space-2);
+  border: var(--border-width-hairline) solid var(--border);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--foreground);
+}
+
+.maka-agent-graph-open:hover,
+.maka-agent-graph-stop:hover,
+.maka-agent-graph-retry:hover {
+  background: var(--state-hover-bg);
+}
+
+.maka-agent-graph-results {
+  align-items: baseline;
+  margin-top: var(--space-2);
+}
+
+.maka-agent-graph-results code {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--foreground-secondary);
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .maka-agent-graph-operators li {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .maka-agent-graph-operator-status {
+    display: none;
+  }
+}

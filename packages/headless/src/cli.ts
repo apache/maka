@@ -29,7 +29,7 @@ import {
 import { writeTaskRunExport } from './result-export.js';
 import { backendNeedsIsolation, validateTaskVerification } from './runner.js';
 import { runTaskOnce, runTaskOnceWithStorage } from './task-agent-controller.js';
-import { isTerminalTaskRunStatus, type TaskPermissionGrant } from './task-contracts.js';
+import { isTerminalTaskRunStatus } from './task-contracts.js';
 import { taskRunLocator } from './task-run-identity.js';
 import type { TaskRunProjection } from './task-run-projection.js';
 import { inspectTaskRun, renderTaskRunInspectTree } from './task-run-inspect.js';
@@ -459,18 +459,16 @@ function rethrowStorageAuthorityError(error: unknown): void {
 async function taskResumeCommand(args: string[]): Promise<number> {
   let parsed: ParsedArgs;
   try {
-    parsed = parseArgs(args, ['spec', 'out', 'grant-file']);
+    parsed = parseArgs(args, ['spec', 'out']);
   } catch (error) {
     console.error(
-      `${(error as Error).message}\nusage: maka eval task-run resume <taskRunId> --spec <spec.json> --out <dir> [--grant-file <json>]`,
+      `${(error as Error).message}\nusage: maka eval task-run resume <taskRunId> --spec <spec.json> --out <dir>`,
     );
     return 1;
   }
   const taskRunId = parsed.positional[0];
   if (!taskRunId || !parsed.flags.spec || !parsed.flags.out) {
-    console.error(
-      'usage: maka eval task-run resume <taskRunId> --spec <spec.json> --out <dir> [--grant-file <json>]',
-    );
+    console.error('usage: maka eval task-run resume <taskRunId> --spec <spec.json> --out <dir>');
     return 1;
   }
   try {
@@ -494,11 +492,6 @@ async function taskResumeCommand(args: string[]): Promise<number> {
     const task = requireTask(spec.tasks, projection.taskId);
     const config = requireConfig(spec.configs, projection.configId);
     validateRunnableCell(config, task);
-    const grants = parsed.flags['grant-file']
-      ? (JSON.parse(
-          await readFile(resolve(parsed.flags['grant-file']), 'utf8'),
-        ) as TaskPermissionGrant[])
-      : [];
     if (projection.parked) {
       const resolvedAt = Date.now();
       await store.appendEvent(taskRunId, {
@@ -509,7 +502,7 @@ async function taskResumeCommand(args: string[]): Promise<number> {
         inboxItemId: projection.parked.inboxItemId,
         status: 'resolved',
         resolution: {
-          decision: grants.length > 0 ? 'granted' : 'resume_requested',
+          decision: 'resume_requested',
           actorId: 'maka-eval-cli',
           resolvedAt,
           reason: 'resumed by maka eval task-run resume',
@@ -525,7 +518,6 @@ async function taskResumeCommand(args: string[]): Promise<number> {
         taskRunId,
         attemptId,
         createTaskRun: false,
-        permissionGrants: grants,
       },
       storage,
     );
@@ -700,9 +692,7 @@ function printTaskUsage(): void {
     '  maka eval task-run run <spec.json> --task <id> --config <id> [--out <dir>] [--task-run-id <id>] [--autonomous] [--max-attempts N]',
   );
   console.error('  maka eval task-run inspect <taskRunId> --store <out>/runs [--json]');
-  console.error(
-    '  maka eval task-run resume <taskRunId> --spec <spec.json> --out <dir> [--grant-file <json>]',
-  );
+  console.error('  maka eval task-run resume <taskRunId> --spec <spec.json> --out <dir>');
   console.error(
     '  maka eval task-run retry-failed <results.jsonl|out-dir> --spec <spec.json> --out <dir> [--only-taxonomy name[,name]]',
   );

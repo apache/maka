@@ -55,6 +55,8 @@ export type ResumeTrust = (typeof TASK_RESUME_TRUST_LEVELS)[number];
 
 export interface TaskOwner {
   actor: 'main_agent' | 'child_agent';
+  /** Owning child Session for durable subagent work; absent on legacy child AgentRuns. */
+  sessionId?: string;
   agentId?: string;
   runId?: string;
   turnId?: string;
@@ -92,7 +94,7 @@ export interface TaskLedgerChangedEvent {
 }
 
 export interface TaskAgentOutcome {
-  status: 'completed' | 'failed' | 'cancelled' | 'running' | 'waiting_permission';
+  status: 'completed' | 'failed' | 'cancelled' | 'running' | 'waiting_for_user';
   owner: TaskOwner;
   reason?: string;
 }
@@ -940,6 +942,7 @@ export function isTaskOwner(value: unknown): value is TaskOwner {
   const owner = value as Partial<TaskOwner>;
   return (
     (owner.actor === 'main_agent' || owner.actor === 'child_agent') &&
+    (owner.sessionId === undefined || isSafeTaskId(owner.sessionId)) &&
     (owner.agentId === undefined || isSafeTaskId(owner.agentId)) &&
     (owner.runId === undefined || isSafeTaskId(owner.runId)) &&
     (owner.turnId === undefined || isSafeTaskId(owner.turnId))

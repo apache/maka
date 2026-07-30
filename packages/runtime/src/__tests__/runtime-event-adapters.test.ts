@@ -66,7 +66,7 @@ const user = (id: string, text: string): UserMessage => ({
 const assistant = (
   id: string,
   text: string,
-  thinking?: { text: string; signature?: string },
+  thinking?: AssistantMessage['thinking'],
 ): AssistantMessage => ({
   type: 'assistant',
   id,
@@ -191,6 +191,32 @@ describe('storedMessageToRuntimeEvent', () => {
     });
   });
 
+  test('host-authored user-role messages preserve their canonical provenance', () => {
+    const e = storedMessageToRuntimeEvent(
+      {
+        ...user('u-graph', 'graph checkpoint'),
+        origin: {
+          kind: 'agent_graph',
+          graphId: 'graph-1',
+          wakeId: 'wake-1',
+          attemptId: 'attempt-1',
+        },
+      },
+      ctx,
+    );
+    expect(e?.role).toBe('user');
+    expect(e?.author).toBe('host');
+    expect(e?.content).toMatchObject({
+      kind: 'text',
+      origin: {
+        kind: 'agent_graph',
+        graphId: 'graph-1',
+        wakeId: 'wake-1',
+        attemptId: 'attempt-1',
+      },
+    });
+  });
+
   test('user message displayText round-trips through RuntimeEvent draft projection', () => {
     const typed = '/skill:alpha 帮我整理';
     const envelope = 'The user explicitly invoked…\n\n<user-message>\n帮我整理\n</user-message>';
@@ -299,6 +325,47 @@ describe('storedMessageToRuntimeEvents', () => {
     expect(out[1]?.refs?.storedMessageId).toBe('a2');
   });
 
+  test('assistant with multiple reasoning parts → one replay event per part', () => {
+    const out = storedMessageToRuntimeEvents(
+      assistant('a-parts', 'answer', {
+        text: 'firstsecond',
+        parts: [
+          {
+            text: 'first',
+            providerOptions: {
+              openai: { itemId: 'rs_first', reasoningEncryptedContent: 'encrypted-first' },
+            },
+          },
+          {
+            text: 'second',
+            providerOptions: {
+              openai: { itemId: 'rs_second', reasoningEncryptedContent: 'encrypted-second' },
+            },
+          },
+        ],
+      }),
+      ctx,
+    );
+
+    expect(out.map((event) => event.content)).toEqual([
+      { kind: 'text', text: 'answer' },
+      {
+        kind: 'thinking',
+        text: 'first',
+        providerOptions: {
+          openai: { itemId: 'rs_first', reasoningEncryptedContent: 'encrypted-first' },
+        },
+      },
+      {
+        kind: 'thinking',
+        text: 'second',
+        providerOptions: {
+          openai: { itemId: 'rs_second', reasoningEncryptedContent: 'encrypted-second' },
+        },
+      },
+    ]);
+  });
+
   test('user message → single event (same as singular)', () => {
     const out = storedMessageToRuntimeEvents(user('u', 'hello'), ctx);
     expect(out).toHaveLength(1);
@@ -322,10 +389,20 @@ describe('storedMessageToRuntimeEvents', () => {
     expect(storedMessageToRuntimeEvents(toolCall('tc', 'Read'), ctx)).toEqual([]);
   });
 
-  test('assistant with empty thinking text → single text event only', () => {
-    const out = storedMessageToRuntimeEvents(assistant('a3', 'hi', { text: '' }), ctx);
-    expect(out).toHaveLength(1);
-    expect(out[0]?.content?.kind).toBe('text');
+  test('assistant with explicit empty thinking preserves provider replay metadata', () => {
+    const out = storedMessageToRuntimeEvents(
+      assistant('a3', 'hi', {
+        text: '',
+        providerOptions: { maka: { kimiReasoningField: 'reasoning' } },
+      }),
+      ctx,
+    );
+    expect(out).toHaveLength(2);
+    expect(out[1]?.content).toEqual({
+      kind: 'thinking',
+      text: '',
+      providerOptions: { maka: { kimiReasoningField: 'reasoning' } },
+    });
   });
 });
 
@@ -877,7 +954,7 @@ describe('buildModelHistoryFromRuntimeEvents', () => {
     });
 
     // Id-based dedupe holds when this projection is the request base.
-    const injected = steeringModelMessage(steered.id, 'steer it');
+    const injected = steeringModelMessage(steered.id, buildSteeringEnvelope('steer it'));
     expect(steeringMessagesMissingFromBase([injected], textMessages)).toEqual([]);
     expect(steeringMessagesMissingFromBase([injected], plan.textMessages)).toEqual([]);
   });
@@ -940,7 +1017,7 @@ describe('buildModelHistoryFromRuntimeEvents', () => {
     ]);
   });
 
-  test('runtime replay plan normalizes an exact legacy terminal result', () => {
+  test('runtime replay plan normalizes a legacy Bash result without changing durable input', () => {
     const events: RuntimeEvent[] = [
       ev({
         role: 'model',
@@ -981,7 +1058,6 @@ describe('buildModelHistoryFromRuntimeEvents', () => {
     expect(result?.kind === 'tool_result' ? result.output : undefined).toEqual({
       kind: 'terminal',
       cwd: '/tmp/work',
-      cmd: 'printf ok',
       status: 'completed',
       exitCode: 0,
       output: {
@@ -993,6 +1069,11 @@ describe('buildModelHistoryFromRuntimeEvents', () => {
         redacted: false,
       },
     });
+    expect(
+      events[1]?.content?.kind === 'function_response'
+        ? (events[1].content.result as { cmd?: unknown }).cmd
+        : undefined,
+    ).toBe('printf ok');
   });
 
   test('runtime replay plan rejects a mixed legacy/current shell result', () => {
@@ -1064,7 +1145,7 @@ describe('buildModelHistoryFromRuntimeEvents', () => {
     ]);
   });
 
-  test('runtime replay plan skips unsigned thinking instead of flattening or blocking it', () => {
+  test('runtime replay plan preserves unsigned thinking without flattening it into text', () => {
     const events: RuntimeEvent[] = [
       ev({
         role: 'model',
@@ -1076,13 +1157,13 @@ describe('buildModelHistoryFromRuntimeEvents', () => {
 
     const plan = buildRuntimeEventModelReplayPlan(events);
 
-    // Unsigned thinking is skipped from native items and never claims the
-    // 'thinking' semantic kind, but is recorded non-blockingly for observability.
-    expect(plan.diagnostics.map((diagnostic) => diagnostic.code)).toContain(
-      'unsigned_thinking_skipped',
+    expect(plan.diagnostics).toEqual([]);
+    expect(plan.items.map((item) => item.kind)).toEqual(['thinking', 'text']);
+    const thinking = plan.items.find((item) => item.kind === 'thinking');
+    expect(thinking && thinking.kind === 'thinking' ? thinking.signature : undefined).toBe(
+      undefined,
     );
-    expect(plan.items.map((item) => item.kind)).toEqual(['text']);
-    expect(plan.semanticKinds).not.toContain('thinking');
+    expect(plan.semanticKinds).toContain('thinking');
     expect(plan.textMessages).toEqual([{ role: 'assistant', content: 'answer' }]);
   });
 
@@ -1120,13 +1201,17 @@ describe('buildModelHistoryFromRuntimeEvents', () => {
 
     const plan = buildRuntimeEventModelReplayPlan(events);
 
-    // The tool call/result remain native; the unsigned thinking is simply omitted.
+    // The provider-agnostic plan keeps every native semantic item. The target
+    // model adapter decides whether unsigned thinking can be materialized.
     expect(plan.hasProviderNativeSemantics).toBe(true);
-    expect(plan.items.map((item) => item.kind)).toEqual(['text', 'tool_call', 'tool_result']);
-    expect(plan.semanticKinds).not.toContain('thinking');
-    // No blocking diagnostic classes present (only the non-blocking skip note).
+    expect(plan.items.map((item) => item.kind)).toEqual([
+      'text',
+      'thinking',
+      'tool_call',
+      'tool_result',
+    ]);
+    expect(plan.semanticKinds).toContain('thinking');
     const codes = plan.diagnostics.map((diagnostic) => diagnostic.code);
-    expect(codes).toContain('unsigned_thinking_skipped');
     expect(codes).not.toContain('unsupported_role');
     expect(codes).not.toContain('unsupported_content');
     expect(codes).not.toContain('unmatched_tool_result');
@@ -1150,7 +1235,6 @@ describe('buildModelHistoryFromRuntimeEvents', () => {
     expect(thinking && thinking.kind === 'thinking' ? thinking.signature : undefined).toBe('sig-9');
     expect(plan.semanticKinds).toContain('thinking');
     const pureCodes = plan.diagnostics.map((diagnostic) => diagnostic.code);
-    expect(pureCodes).not.toContain('unsigned_thinking_skipped');
     // Boundary: the tool-turn skip must NOT swallow a pure-reasoning turn.
     expect(pureCodes).not.toContain('signed_thinking_in_tool_turn_skipped');
   });

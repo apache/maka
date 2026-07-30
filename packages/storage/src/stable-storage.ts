@@ -2,7 +2,10 @@ import { open } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 
 export async function syncFile(path: string): Promise<void> {
-  const handle = await open(path, 'r');
+  // Windows rejects fsync on a read-only handle (EPERM). Durable store files
+  // are writer-owned, so reopen the existing file read/write without creating
+  // or truncating it before re-establishing the stable-storage barrier.
+  const handle = await open(path, 'r+');
   try {
     await handle.sync();
   } finally {

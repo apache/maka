@@ -1,3 +1,4 @@
+import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -7,7 +8,6 @@ import type { LlmConnection, SessionEvent, SessionHeader } from '@maka/core';
 import { createSqliteRuntimeStore } from '@maka/storage';
 import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
 import type { InvocationContext } from '../invocation-context.js';
-import { PermissionEngine } from '../permission-engine.js';
 import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
 
 describe('ToolRuntime with real SQLite boundary', () => {
@@ -15,16 +15,13 @@ describe('ToolRuntime with real SQLite boundary', () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-tool-sqlite-'));
     const store = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
     try {
-      const permissionEngine = new PermissionEngine({ newId: nextId(), now: () => 1 });
-      permissionEngine.beginTurn('turn-1');
       let implementationCalls = 0;
-      const runtime = new ToolRuntime({
+      const runtime = createTestToolRuntime({
         sessionId: 'session-1',
         header: header(),
         connection: connection(),
         modelId: 'model-1',
         appendMessage: async () => {},
-        permissionEngine,
         newId: nextId(),
         now: nextNow(),
         getPermissionPauseTarget: () => null,
@@ -36,7 +33,6 @@ describe('ToolRuntime with real SQLite boundary', () => {
         name: 'Read',
         description: 'read',
         parameters: {},
-        permissionRequired: false,
         recoveryMode: 'replay_safe',
         impl: async () => {
           implementationCalls += 1;
@@ -46,13 +42,19 @@ describe('ToolRuntime with real SQLite boundary', () => {
 
       const published: SessionEvent[] = [];
 
-      await runtime.wrapToolExecute(tool, 'turn-1', { push: (event) => published.push(event) })(
-        {},
-        {
-          toolCallId: 'provider-call-1',
-          abortSignal: new AbortController().signal,
+      await runtime.settleToolCall({
+        tool,
+        turnId: 'turn-1',
+        toolCallId: 'provider-call-1',
+        input: {},
+        abortSignal: new AbortController().signal,
+        eventSink: {
+          push: (event) => published.push(event),
+          pushAndWaitUntilConsumed: async (event) => {
+            published.push(event);
+          },
         },
-      );
+      });
 
       assert.equal(implementationCalls, 1);
       const events = await store.readRuntimeEvents('session-1', 'run-1');
@@ -79,10 +81,16 @@ describe('ToolRuntime with real SQLite boundary', () => {
         (event) => event.type === 'tool_start' || event.type === 'tool_result',
       );
       assert.equal(durableEvents.length, 2);
-      for (const event of durableEvents) {
-        const mapped = mapSessionEventToRuntimeEvent(event, context, memory);
-        await store.appendRuntimeEvent('session-1', 'run-1', mapped);
-      }
+      const mappedEvents = durableEvents.map((event) =>
+        mapSessionEventToRuntimeEvent(event, context, memory),
+      );
+      assert.deepEqual(
+        mappedEvents,
+        events.filter(
+          (event) =>
+            event.content?.kind === 'function_call' || event.content?.kind === 'function_response',
+        ),
+      );
 
       assert.equal((await store.readRuntimeEvents('session-1', 'run-1')).length, 3);
       assert.equal((await store.readImmutableRuntimeEvents('session-1', 'run-1')).length, 3);
@@ -96,15 +104,12 @@ describe('ToolRuntime with real SQLite boundary', () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-tool-sqlite-error-'));
     const store = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
     try {
-      const permissionEngine = new PermissionEngine({ newId: nextId(), now: () => 1 });
-      permissionEngine.beginTurn('turn-1');
-      const runtime = new ToolRuntime({
+      const runtime = createTestToolRuntime({
         sessionId: 'session-1',
         header: header(),
         connection: connection(),
         modelId: 'model-1',
         appendMessage: async () => {},
-        permissionEngine,
         newId: nextId(),
         now: nextNow(),
         getPermissionPauseTarget: () => null,
@@ -117,32 +122,38 @@ describe('ToolRuntime with real SQLite boundary', () => {
         name: 'Read',
         description: 'read',
         parameters: {},
-        permissionRequired: false,
         recoveryMode: 'replay_safe',
         impl: async () => {
           throw new Error('disk read failed');
         },
       };
 
-      await runtime.wrapToolExecute(tool, 'turn-1', { push: (event) => published.push(event) })(
-        {},
-        {
-          toolCallId: 'provider-call-1',
-          abortSignal: new AbortController().signal,
+      await runtime.settleToolCall({
+        tool,
+        turnId: 'turn-1',
+        toolCallId: 'provider-call-1',
+        input: {},
+        abortSignal: new AbortController().signal,
+        eventSink: {
+          push: (event) => published.push(event),
+          pushAndWaitUntilConsumed: async (event) => {
+            published.push(event);
+          },
         },
-      );
+      });
 
       const memory = createSessionEventMapMemory();
-      for (const event of published.filter(
-        (item) => item.type === 'tool_start' || item.type === 'tool_result',
-      )) {
-        await store.appendRuntimeEvent(
-          'session-1',
-          'run-1',
-          mapSessionEventToRuntimeEvent(event, invocationContext(), memory),
-        );
-      }
+      const mappedEvents = published
+        .filter((item) => item.type === 'tool_start' || item.type === 'tool_result')
+        .map((event) => mapSessionEventToRuntimeEvent(event, invocationContext(), memory));
       const events = await store.readRuntimeEvents('session-1', 'run-1');
+      assert.deepEqual(
+        mappedEvents,
+        events.filter(
+          (event) =>
+            event.content?.kind === 'function_call' || event.content?.kind === 'function_response',
+        ),
+      );
       assert.equal(events.length, 3);
       assert.equal(events[2]?.content?.kind, 'function_response');
       assert.equal(

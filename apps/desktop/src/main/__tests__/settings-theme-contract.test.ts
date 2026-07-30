@@ -196,10 +196,20 @@ describe('Settings theme page contract', () => {
       /settingsThemePreviewPane[\s\S]{0,260}oklch\([^)]*75\)/,
       'Theme preview tiles must not keep the old warm parchment hue after the gray-shell baseline',
     );
+    // #1362: palette names WRAP inside their cards instead of truncating —
+    // at the 480px window floor the old nowrap+ellipsis cut "Catppuccin
+    // Mocha" to "Catppucc…" with no way to recover the name. Scoped to the
+    // rule body ([^}]*, not [\s\S]*): the previous pattern crossed the
+    // closing brace and matched declarations in later, unrelated rules.
     assert.match(
       css,
-      /\.settingsThemeLabel strong \{[\s\S]*overflow:\s*hidden;[\s\S]*text-overflow:\s*ellipsis;[\s\S]*white-space:\s*nowrap;/,
-      'Long palette names must stay inside their option cards',
+      /\.settingsThemeLabel strong \{[^}]*overflow-wrap:\s*anywhere;/,
+      'Long palette names must wrap inside their option cards',
+    );
+    assert.doesNotMatch(
+      css,
+      /\.settingsThemeLabel strong \{[^}]*text-overflow:\s*ellipsis;/,
+      'Palette names must not regress to nowrap+ellipsis truncation (#1362)',
     );
   });
 });

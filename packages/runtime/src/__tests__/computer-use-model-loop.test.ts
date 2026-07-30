@@ -17,7 +17,8 @@ import {
   type CuObservation,
   type CuSemanticAction,
 } from '../computer-use-tools.js';
-import { PermissionEngine } from '../permission-engine.js';
+import { createDurableTurnHarness, drainWithDurableTurn } from './durable-turn-harness.js';
+import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 
 const ZERO_USAGE: LanguageModelV4Usage = {
   inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
@@ -77,6 +78,10 @@ describe('AiSdkBackend Computer Use model loop', () => {
   });
 
   test('a model discovers, observes, mutates semantically, reads the fresh frame, and completes', async () => {
+    const durable = createDurableTurnHarness({
+      turnId: 'turn-1',
+      text: 'Set the fixture field to model-written.',
+    });
     const value = { current: '' };
     const backendCalls: string[] = [];
     const computerBackend = fakeComputerBackend(value, backendCalls);
@@ -137,17 +142,20 @@ describe('AiSdkBackend Computer Use model loop', () => {
       computerTool,
       messages,
       telemetry,
+      durable,
     });
 
-    const events = await collect(
-      runtime.send({
-        turnId: 'turn-1',
-        text: 'Set the fixture field to model-written.',
-        context: [],
+    const events = await drainWithDurableTurn(runtime.send(durable.sendInput()), durable);
+
+    assert.equal(
+      modelStep,
+      4,
+      JSON.stringify({
+        eventTypes: events.map((event) => event.type),
+        error: events.find((event) => event.type === 'error'),
+        ledger: durable.ledger,
       }),
     );
-
-    assert.equal(modelStep, 4);
     assert.deepEqual(backendCalls, ['list_apps', 'observe', 'set_value']);
     assert.equal(value.current, 'model-written');
     assert.equal(events.at(-1)?.type, 'complete');
@@ -176,6 +184,10 @@ describe('AiSdkBackend Computer Use model loop', () => {
   });
 
   test('a coordinate attempt fails closed and the model can recover through a fresh semantic plan', async () => {
+    const durable = createDurableTurnHarness({
+      turnId: 'turn-1',
+      text: 'Update the fixture safely.',
+    });
     const value = { current: '' };
     const backendCalls: string[] = [];
     const computerBackend = fakeComputerBackend(value, backendCalls);
@@ -240,17 +252,20 @@ describe('AiSdkBackend Computer Use model loop', () => {
       computerTool,
       messages: [],
       telemetry: [],
+      durable,
     });
 
-    const events = await collect(
-      runtime.send({
-        turnId: 'turn-1',
-        text: 'Update the fixture safely.',
-        context: [],
+    const events = await drainWithDurableTurn(runtime.send(durable.sendInput()), durable);
+
+    assert.equal(
+      modelStep,
+      5,
+      JSON.stringify({
+        eventTypes: events.map((event) => event.type),
+        error: events.find((event) => event.type === 'error'),
+        ledger: durable.ledger,
       }),
     );
-
-    assert.equal(modelStep, 5);
     assert.equal(value.current, 'recovered');
     assert.deepEqual(backendCalls, ['observe', 'left_click', 'observe', 'set_value']);
     assert.equal(events.at(-1)?.type, 'complete');
@@ -342,9 +357,10 @@ function createRuntime(input: {
   messages: StoredMessage[];
   telemetry: ToolInvocationRecord[];
   connection?: LlmConnection;
+  durable?: ReturnType<typeof createDurableTurnHarness>;
 }): AiSdkBackend {
   const selectedConnection = input.connection ?? connection('openai');
-  return new AiSdkBackend({
+  return createTestAiSdkBackend({
     sessionId: 'session-1',
     header: header(),
     appendMessage: async (message) => {
@@ -353,12 +369,9 @@ function createRuntime(input: {
     connection: selectedConnection,
     apiKey: 'test-key',
     modelId: 'mock-computer-model',
-    permissionEngine: new PermissionEngine({
-      newId: () => 'permission-id',
-      now: () => 1,
-    }),
     modelFactory: () => input.model,
     tools: [input.computerTool],
+    ...(input.durable ? { loadTurnRuntimeEvents: input.durable.loadTurnRuntimeEvents } : {}),
     newId: idGenerator(),
     now: monotonicClock(),
     recordToolInvocation: (record) => {

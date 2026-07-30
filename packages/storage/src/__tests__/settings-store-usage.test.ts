@@ -81,7 +81,7 @@ describe('SettingsStore.usageStats request logs', () => {
       assert.equal(stats.logs[0]?.provider, 'sqlite-provider');
       assert.equal(stats.logs[0]?.model, 'sqlite-runtime-model');
     } finally {
-      sessions.close?.();
+      await sessions.close?.();
       await rm(workspaceRoot, { recursive: true, force: true });
     }
   });

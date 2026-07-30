@@ -1,6 +1,7 @@
 import {
   HOST_OPERATION_SPECS,
   type ClientSurface,
+  decodeOperationOutcome,
   type HostOperationErrorCode,
   type OperationInput,
   type OperationKey,
@@ -33,7 +34,94 @@ export type OperationHandlerMap = {
 };
 
 export type DomainOperationKey = Exclude<OperationKey, 'host.status'>;
+export type TurnOperationKey = Extract<OperationKey, 'turn.start' | 'turn.query' | 'turn.stop'>;
+export type RuntimePolicyOperationKey = Extract<
+  OperationKey,
+  `runtime.policy.${string}` | `connection.catalog.${string}` | `credential.vault.${string}`
+>;
+export type ConnectionEffectOperationKey = Extract<
+  OperationKey,
+  'connection.models.fetch' | 'connection.test.run'
+>;
+export type MessageOperationKey = Extract<
+  OperationKey,
+  'turn.message.submit' | 'queue.retract' | 'turn.interrupt'
+>;
+export type InteractionOperationKey = Extract<OperationKey, `interaction.${string}`>;
+export type SessionContinuityOperationKey = Extract<
+  OperationKey,
+  'subscription.open' | 'subscription.close'
+>;
+export type TaskLedgerOperationKey = Extract<OperationKey, 'task.ledger.query'>;
+export type ArtifactOperationKey = Extract<OperationKey, `artifact.${string}`>;
+export type SkillCatalogOperationKey = Extract<OperationKey, `skill.catalog.${string}`>;
+export type UsagePricingOperationKey = Extract<OperationKey, 'usage.query' | `pricing.${string}`>;
+export type MemoryOperationKey = Extract<OperationKey, `memory.${string}`>;
 export type DomainOperationHandlerMap = Pick<OperationHandlerMap, DomainOperationKey>;
+export type TurnOperationHandlerMap = Pick<OperationHandlerMap, TurnOperationKey>;
+export type RuntimePolicyOperationHandlerMap = Pick<OperationHandlerMap, RuntimePolicyOperationKey>;
+export type ConnectionEffectOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  ConnectionEffectOperationKey
+>;
+export type MessageOperationHandlerMap = Pick<OperationHandlerMap, MessageOperationKey>;
+export type InteractionOperationHandlerMap = Pick<OperationHandlerMap, InteractionOperationKey>;
+export type SessionContinuityOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  SessionContinuityOperationKey
+>;
+export type TaskLedgerOperationHandlerMap = Pick<OperationHandlerMap, TaskLedgerOperationKey>;
+export type ArtifactOperationHandlerMap = Pick<OperationHandlerMap, ArtifactOperationKey>;
+export type SkillCatalogOperationHandlerMap = Pick<OperationHandlerMap, SkillCatalogOperationKey>;
+export type UsagePricingOperationHandlerMap = Pick<OperationHandlerMap, UsagePricingOperationKey>;
+export type MemoryOperationHandlerMap = Pick<OperationHandlerMap, MemoryOperationKey>;
+
+export function composeOperationHandlers(
+  ...handlerMaps: readonly Partial<OperationHandlerMap>[]
+): OperationHandlerMap {
+  const combined: Partial<OperationHandlerMap> = {};
+  for (const handlers of handlerMaps) {
+    for (const key of Object.keys(handlers)) {
+      if (!Object.hasOwn(HOST_OPERATION_SPECS, key)) {
+        throw new Error(`Unknown Runtime Host operation handler: ${key}`);
+      }
+      if (Object.hasOwn(combined, key)) {
+        throw new Error(`Duplicate Runtime Host operation handler: ${key}`);
+      }
+      const handler = handlers[key as OperationKey];
+      if (typeof handler !== 'function') {
+        throw new Error(`Invalid Runtime Host operation handler: ${key}`);
+      }
+      Object.assign(combined, { [key]: handler });
+    }
+  }
+  const missing = Object.keys(HOST_OPERATION_SPECS).filter((key) => !Object.hasOwn(combined, key));
+  if (missing.length > 0) {
+    throw new Error(`Missing Runtime Host operation handlers: ${missing.join(', ')}`);
+  }
+  return combined as OperationHandlerMap;
+}
+
+export function createUnavailableDomainOperationHandlers(): DomainOperationHandlerMap {
+  const handlers: Partial<DomainOperationHandlerMap> = {};
+  for (const operation of Object.keys(HOST_OPERATION_SPECS) as OperationKey[]) {
+    if (operation === 'host.status') continue;
+    const errors = HOST_OPERATION_SPECS[operation].errors as readonly HostOperationErrorCode[];
+    if (!errors.includes('operation_unavailable')) {
+      throw new Error(`${operation} does not declare operation_unavailable`);
+    }
+    Object.assign(handlers, {
+      [operation]: async () => ({
+        ok: false,
+        error: {
+          code: 'operation_unavailable',
+          message: 'Runtime Host operation is unavailable in this composition',
+        },
+      }),
+    });
+  }
+  return handlers as DomainOperationHandlerMap;
+}
 
 export async function dispatchOperation(
   request: RequestFrame,
@@ -73,7 +161,7 @@ async function dispatchTypedOperation<K extends OperationKey>(
   const handler = handlers[request.operation] as OperationHandler<K>;
   let outcome: OperationOutcome<K>;
   try {
-    outcome = await handler(request.input, context);
+    outcome = decodeOperationOutcome(request.operation, await handler(request.input, context));
   } catch {
     return operationFailureResponse(
       request as RequestFrame,

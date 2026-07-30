@@ -4,10 +4,18 @@
 // package-local entrypoints, not the root API. Minimal usage is
 // `runExperiment(config, task, { storageRoot })`.
 export { runPromptOptimizationRun } from './prompt-optimization-run.js';
-export { readProviderRequestTrace } from './provider-request-trace.js';
+export {
+  assertProviderRequestTraceComplete,
+  readProviderRequestTrace,
+} from './provider-request-trace.js';
 export type {
+  AssertProviderRequestTraceCompleteOptions,
   ProviderRequestTraceAnalysis,
+  ProviderRequestTraceAttemptAnalysis,
   ProviderRequestTraceCaptureAnalysis,
+  ProviderRequestTraceDiagnostic,
+  ProviderRequestTraceDiagnosticCode,
+  ProviderRequestTraceIdentity,
 } from './provider-request-trace.js';
 export type { MakaChangeAuditRecord } from './change-audit.js';
 export type {
@@ -127,6 +135,7 @@ export type {
   TaskRunError,
   TaskRunResult,
   TaskRunStatus,
+  SupplementalToolSetIdentity,
   ToolExecutorIdentity,
   ToolExecutorIdentityRecordedEvent,
   VerifierResult,
@@ -139,15 +148,6 @@ export {
   isTerminalTaskRunStatus,
   taxonomyFromResultRecord,
 } from './task-contracts.js';
-export {
-  commandResourceScope,
-  hashNormalizedArgs,
-  matchPermissionGrant,
-  normalizePermissionArgs,
-  permissionPreview,
-  resourceScopeEquals,
-  type NormalizedPermissionArgs,
-} from './permission-grants.js';
 export type { TaskRunProjection } from './task-run-projection.js';
 export { projectTaskRun } from './task-run-projection.js';
 export type {
@@ -246,11 +246,15 @@ export {
 } from './harbor-failure-policy.js';
 export {
   buildPierRunArgs,
+  createPierProviderProxyHub,
   createPierTaskRunner,
   PierInfraError,
   PIER_PROVIDER_PROXY_DEFAULT_PORT,
   type BuildPierRunArgsInput,
+  type PierAgent,
   type PierProcessRunner,
+  type PierProviderProxyHub,
+  type PierProviderProxyHubOptions,
   type PierRunRequest,
   type PierRunResult,
   type PierTaskPricing,
@@ -445,7 +449,8 @@ export {
   buildIsolatedEditTool,
   buildIsolatedGlobTool,
   buildIsolatedGrepTool,
-  buildIsolatedHeadlessToolAvailability,
+  buildIsolatedHeadlessProductToolSurface,
+  buildIsolatedHeadlessSupplementalTools,
   buildIsolatedHeadlessTools,
   buildIsolatedReadTool,
   buildIsolatedWriteTool,

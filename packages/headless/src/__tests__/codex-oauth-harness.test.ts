@@ -138,6 +138,88 @@ test('Codex OAuth broker refreshes and persists authority across a long run', as
   }
 });
 
+test('Codex OAuth broker cancels an in-flight refresh with the request signal', {
+  timeout: 5_000,
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-codex-oauth-cancel-test-'));
+  let releaseRefresh = () => {};
+  let resolution: Promise<unknown> | undefined;
+  let rejectionTimeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const store = createFileCredentialStore(root);
+    const accountId = 'acct-shared';
+    let now = 1_000_000;
+    await store.setSecret(
+      'codex-subscription',
+      'oauth_token',
+      JSON.stringify({
+        access_token: jwt(accountId, 'current'),
+        refresh_token: 'refresh-current',
+        expires_at: now + 3_600_000,
+        account_id: accountId,
+      }),
+    );
+    let markRefreshStarted!: () => void;
+    const refreshStarted = new Promise<void>((resolve) => {
+      markRefreshStarted = resolve;
+    });
+    let observedSignal: AbortSignal | undefined;
+    const { resolveProviderCredential } = await createCodexOAuthHarnessCredentialBinding({
+      credentialsRoot: root,
+      connectionSlug: 'codex-subscription',
+      now: () => now,
+      fetchFn: async (_input, init) => {
+        observedSignal = init?.signal ?? undefined;
+        markRefreshStarted();
+        return await new Promise<Response>((resolve, reject) => {
+          releaseRefresh = () =>
+            resolve(
+              new Response(
+                JSON.stringify({
+                  access_token: jwt(accountId, 'refreshed'),
+                  refresh_token: 'refresh-next',
+                  expires_in: 3_600,
+                }),
+                { status: 200, headers: { 'content-type': 'application/json' } },
+              ),
+            );
+          observedSignal?.addEventListener(
+            'abort',
+            () => {
+              reject(observedSignal?.reason);
+            },
+            { once: true },
+          );
+        });
+      },
+    });
+    now += 3_600_001;
+    const controller = new AbortController();
+    resolution = resolveProviderCredential(controller.signal);
+
+    await refreshStarted;
+    assert.equal(observedSignal, controller.signal);
+    controller.abort();
+    await assert.rejects(
+      Promise.race([
+        resolution,
+        new Promise((_, reject) => {
+          rejectionTimeout = setTimeout(
+            () => reject(new Error('credential resolution did not observe cancellation')),
+            250,
+          );
+        }),
+      ]),
+      /credentials are unavailable/,
+    );
+  } finally {
+    if (rejectionTimeout) clearTimeout(rejectionTimeout);
+    releaseRefresh();
+    await resolution?.catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 function jwt(accountId: string, suffix: string): string {
   const encoded = Buffer.from(
     JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: accountId }, suffix }),

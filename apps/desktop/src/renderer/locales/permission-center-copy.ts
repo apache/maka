@@ -19,7 +19,16 @@ export type PermissionCenterCopy = {
   noData: string;
   readAgain: string;
   actionFailed: string;
-  actionFailures: Record<'invalid_id' | 'unsupported_platform' | 'unsupported_permission' | 'failed', string>;
+  actionFailures: Record<
+    | 'invalid_id'
+    | 'unsupported_platform'
+    | 'unsupported_permission'
+    | 'denied'
+    | 'already_open'
+    | 'open_settings_failed'
+    | 'failed',
+    string
+  >;
   title: string;
   subtitle: string;
   lastRead: string;
@@ -55,14 +64,6 @@ export type PermissionCenterCopy = {
   requiredPermissionsAria(label: string): string;
   guidance: string;
   guidanceAria(label: string): string;
-  officeAria: string;
-  installCopied: string;
-  installCopiedDetail: string;
-  copyFailed: string;
-  copyFailedDetail: string;
-  copying: string;
-  copyInstall: string;
-  openDownload: string;
   noAudit: string;
   auditAria(label: string): string;
   impact: string;
@@ -70,7 +71,9 @@ export type PermissionCenterCopy = {
   openSettings: string;
   requesting: string;
   request: string;
-  officeGuidance: readonly [string, string];
+  /** macOS drag-to-grant onboarding (accessibility / screen recording). */
+  dragGrant: string;
+  dragGranting: string;
 };
 
 const PERMISSION_CENTER_COPY = {
@@ -95,7 +98,15 @@ const PERMISSION_CENTER_COPY = {
     },
     loading: '正在加载权限快照', readFailed: '无法读取权限快照', noData: '权限服务未返回数据。', readAgain: '重新读取',
     actionFailed: '权限操作失败',
-    actionFailures: { invalid_id: '内部错误：权限 id 无法识别。', unsupported_platform: '当前操作系统不支持这个权限操作。', unsupported_permission: '当前平台没有提供这个权限的直接入口。', failed: '权限操作未成功，请稍后重试。' },
+    actionFailures: {
+      invalid_id: '内部错误：权限 id 无法识别。',
+      unsupported_platform: '当前操作系统不支持这个权限操作。',
+      unsupported_permission: '当前平台没有提供这个权限的直接入口。',
+      denied: '你没有授予这项权限；可以前往系统设置重新开启。',
+      already_open: '另一个权限引导仍在进行，请先完成或关闭它。',
+      open_settings_failed: '无法打开系统设置，请手动前往「隐私与安全性」。',
+      failed: '权限操作未成功，请稍后重试。',
+    },
     title: '权限与能力', subtitle: '查看 Maka 需要的系统权限和当前授权状态，直接从这里前往「系统设置 → 隐私与安全性」完成授权或撤销，不必自己翻菜单。',
     lastRead: '最近读取：', detectAgain: '重新检测', summaryAria: '权限概览', granted: '已授权', pending: '等待授权', denied: '已拒绝', other: '未知 / 不支持',
     osSection: '系统权限', osSectionHelp: 'Maka 读到的 OS 级权限状态。点击右侧按钮可以直接前往「系统设置 → 隐私与安全性」对应分区。', osListAria: '系统权限列表',
@@ -111,10 +122,8 @@ const PERMISSION_CENTER_COPY = {
       runtimeStates: { not_available: '尚无运行态探测', not_run: '探测未运行', healthy: '探测通过', degraded: '探测降级' },
     },
     requiredPermissions: '所需系统权限', requiredPermissionsAria: (label) => `${label}所需系统权限列表`, guidance: '处理建议', guidanceAria: (label) => `${label}处理建议列表`,
-    officeAria: 'Office 文档安装辅助', installCopied: '已复制安装命令', installCopiedDetail: '在终端执行后点击刷新重新探测。', copyFailed: '复制失败', copyFailedDetail: '剪贴板不可用或被系统拒绝。',
-    copying: '复制中…', copyInstall: '复制 macOS/Linux 安装命令', openDownload: '打开二进制下载页', noAudit: '暂无审计记录', auditAria: (label) => `${label}审计记录列表`,
-    impact: '影响功能', opening: '打开中…', openSettings: '前往系统设置', requesting: '请求中…', request: '请求授权',
-    officeGuidance: ['安装 officecli 后重启 Maka 或刷新能力快照。', '安装后在终端确认 `officecli --version` 可以输出版本号。'],
+    noAudit: '暂无审计记录', auditAria: (label) => `${label}审计记录列表`,
+    impact: '影响功能', opening: '打开中…', openSettings: '前往系统设置', requesting: '请求中…', request: '请求授权', dragGrant: '引导授权', dragGranting: '引导中…',
   },
   en: {
     readiness: {
@@ -137,7 +146,15 @@ const PERMISSION_CENTER_COPY = {
     },
     loading: 'Loading permission snapshot', readFailed: 'Could not read permission snapshot', noData: 'The permission service returned no data.', readAgain: 'Read again',
     actionFailed: 'Permission action failed',
-    actionFailures: { invalid_id: 'Internal error: the permission ID was not recognized.', unsupported_platform: 'This operating system does not support the permission action.', unsupported_permission: 'This platform does not provide a direct entry point for the permission.', failed: 'The permission action did not succeed. Try again later.' },
+    actionFailures: {
+      invalid_id: 'Internal error: the permission ID was not recognized.',
+      unsupported_platform: 'This operating system does not support the permission action.',
+      unsupported_permission: 'This platform does not provide a direct entry point for the permission.',
+      denied: 'Permission was not granted. You can enable it in System Settings.',
+      already_open: 'Another permission guide is still open. Finish or close it first.',
+      open_settings_failed: 'Could not open System Settings. Open Privacy & Security manually.',
+      failed: 'The permission action did not succeed. Try again later.',
+    },
     title: 'Permissions and capabilities', subtitle: 'Review the system permissions Maka needs and their current state. Open the matching Privacy & Security section directly to grant or revoke access.',
     lastRead: 'Last read: ', detectAgain: 'Check again', summaryAria: 'Permission overview', granted: 'Granted', pending: 'Waiting', denied: 'Denied', other: 'Unknown / unsupported',
     osSection: 'System permissions', osSectionHelp: 'OS-level permission states reported to Maka. Use the action on the right to open the matching Privacy & Security section in System Settings.', osListAria: 'System permission list',
@@ -153,10 +170,8 @@ const PERMISSION_CENTER_COPY = {
       runtimeStates: { not_available: 'No runtime probe available', not_run: 'Probe not run', healthy: 'Probe passed', degraded: 'Probe degraded' },
     },
     requiredPermissions: 'Required system permissions', requiredPermissionsAria: (label) => `${label} required system permissions`, guidance: 'Suggested actions', guidanceAria: (label) => `${label} suggested actions`,
-    officeAria: 'Office document installation help', installCopied: 'Install command copied', installCopiedDetail: 'Run it in a terminal, then refresh to probe again.', copyFailed: 'Copy failed', copyFailedDetail: 'The clipboard is unavailable or access was denied by the system.',
-    copying: 'Copying…', copyInstall: 'Copy macOS/Linux install command', openDownload: 'Open binary downloads', noAudit: 'No audit records', auditAria: (label) => `${label} audit records`,
-    impact: 'Affects', opening: 'Opening…', openSettings: 'Open System Settings', requesting: 'Requesting…', request: 'Request permission',
-    officeGuidance: ['Restart Maka or refresh the capability snapshot after installing officecli.', 'Confirm that `officecli --version` prints a version in your terminal.'],
+    noAudit: 'No audit records', auditAria: (label) => `${label} audit records`,
+    impact: 'Affects', opening: 'Opening…', openSettings: 'Open System Settings', requesting: 'Requesting…', request: 'Request permission', dragGrant: 'Guide me', dragGranting: 'Opening…',
   },
 } satisfies UiCatalog<PermissionCenterCopy>;
 

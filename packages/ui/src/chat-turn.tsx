@@ -1,14 +1,14 @@
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Button as BaseButton } from '@base-ui/react/button';
 import { useMountedRef } from './use-mounted-ref.js';
-import { AlertOctagon, Ban, Brain, Check, ChevronRight, Copy, Cpu, GitBranch, Info, Loader2, Pencil, RefreshCcw, Timer } from './icons.js';
+import { AlertOctagon, Ban, Brain, Check, ChevronRight, Copy, GitBranch, Info, Loader2, Pencil, RefreshCcw, Timer } from './icons.js';
 import { type ClipboardCopyPhase, useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
 import { formatAbsoluteTimestamp, formatClockTime, turnAbortMarkerLabel } from './chat-display-helpers.js';
 import { prepareSmoothStreamText, useSmoothStreamContent } from './smooth-stream.js';
 import { tokenizeFade, useStreamFade, type StreamFade } from './stream-fade.js';
 import { Button as UiButton, cn, DialogContent, DialogRoot } from './ui.js';
-import type { AttachmentRef, QuoteRef } from '@maka/core';
+import type { AttachmentRef, ProviderRetryEvent, QuoteRef } from '@maka/core';
 import type { TurnTimelineItem, TurnViewModel } from './materialize.js';
 import { foldTimeline, type FoldedTimelineChild } from './timeline-fold.js';
 import { AttachmentFileCard } from './attachment-file-card.js';
@@ -16,8 +16,14 @@ import { QuoteRefChip } from './quote-ref-chip.js';
 import { Collapsible, CollapsibleTrigger, CollapsiblePanel } from './primitives/collapsible.js';
 import { Bubble, Marker, markerVariants, Message, TextShimmer } from './primitives/chat.js';
 import { Tooltip, TooltipTrigger, TooltipContent } from './primitives/tooltip.js';
-import { SETTLE_FADE, ToolTrow, useToolDisclosure } from './tool-activity.js';
-import { isProcessingRunning, processingNeedsAttention, summarizeProcessing } from './tool-activity/trow-summary.js';
+import { SETTLE_FADE, ToolKindIcon, ToolTrow, useToolDisclosure } from './tool-activity.js';
+import {
+  isProcessingRunning,
+  processingActivityKind,
+  processingNeedsAttention,
+  summarizeProcessing,
+} from './tool-activity/trow-summary.js';
+import { isSandboxDeniedTool } from './tool-activity/sandbox-denial.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 
@@ -354,6 +360,7 @@ export const TurnView = memo(function TurnView(props: {
     onStreamingSettled?: (messageId?: string) => void;
     processingIndicator?: boolean;
     continuingIndicator?: boolean;
+    providerRetry?: ProviderRetryEvent;
   };
   /**
    * Injected host reader for image attachment bytes. Threaded down to the user
@@ -423,6 +430,16 @@ export const TurnView = memo(function TurnView(props: {
           <span>{copy.automationTriggered}</span>
         </Marker>
       )}
+      {turn.user?.agentGraphOrigin && (
+        <Marker
+          variant="automation-origin"
+          role="note"
+          title={copy.agentGraphTitle(turn.user.agentGraphOrigin.graphId)}
+        >
+          <GitBranch size={12} aria-hidden="true" />
+          <span>{copy.agentGraphTriggered}</span>
+        </Marker>
+      )}
       {turn.user && (
         <Message
           variant="user"
@@ -438,7 +455,9 @@ export const TurnView = memo(function TurnView(props: {
             quotes={turn.user.quotes}
             onReadAttachmentBytes={props.onReadAttachmentBytes}
             onEditUserMessage={
-              props.onEditUserMessage && !turn.user.automationOrigin
+              props.onEditUserMessage &&
+              !turn.user.automationOrigin &&
+              !turn.user.agentGraphOrigin
                 ? () => props.onEditUserMessage?.(turn.turnId)
                 : undefined
             }
@@ -542,8 +561,14 @@ export const TurnView = memo(function TurnView(props: {
             )}
             {props.liveStreaming && (
               <>
-                {props.liveStreaming.processingIndicator && !hasLiveTimelineContent && <ModelProcessingIndicator />}
-                {props.liveStreaming.continuingIndicator && !props.liveStreaming.processingIndicator && !hasLiveTimelineContent && <ModelContinuingIndicator />}
+                {props.liveStreaming.providerRetry ? (
+                  <ModelProviderRetryIndicator retry={props.liveStreaming.providerRetry} />
+                ) : (
+                  <>
+                    {props.liveStreaming.processingIndicator && !hasLiveTimelineContent && <ModelProcessingIndicator />}
+                    {props.liveStreaming.continuingIndicator && !props.liveStreaming.processingIndicator && !hasLiveTimelineContent && <ModelContinuingIndicator />}
+                  </>
+                )}
               </>
             )}
           </div>
@@ -823,6 +848,28 @@ export function ModelContinuingIndicator() {
   );
 }
 
+export function ModelProviderRetryIndicator(props: { retry: ProviderRetryEvent }) {
+  const copy = getConversationCopy(useUiLocale()).messages;
+  const text =
+    props.retry.phase === 'scheduled'
+      ? copy.providerRetryScheduled(
+          Math.max(1, Math.ceil(props.retry.delayMs / 1_000)),
+          props.retry.attempt,
+          props.retry.maxAttempts,
+        )
+      : copy.providerRetryStarted(props.retry.attempt, props.retry.maxAttempts);
+  return (
+    <div
+      className="flex items-center gap-2 py-0.5 text-[length:var(--font-size-base)] text-[color:var(--muted-foreground)]"
+      role="status"
+      aria-live="polite"
+    >
+      <RefreshCcw size={16} aria-hidden="true" className="shrink-0" />
+      <span className="min-w-0 truncate">{text}</span>
+    </div>
+  );
+}
+
 function StreamingAssistantBubble(props: { text: string; live: boolean; truncated?: boolean; onSettled?: () => void }) {
   const copy = getConversationCopy(useUiLocale()).messages;
   // PR-UI-C1 review fixup (@kenji msg fbb8f119): the smoother
@@ -924,8 +971,9 @@ function TurnTimelineEntry(props: {
  * destructive; folded reasoning is not counted) once the turn ends. A
  * `waiting_permission` prompt inside forces the block open (trowNeedsAttention);
  * an errored tool stays collapsed with its failure count on the summary line.
- * The expanded panel replays the full timeline — the SAME 深度思考 disclosures
- * and tool trows, just nested one indent in — so nothing is lost, only folded.
+ * The expanded panel preserves the full timeline with the SAME 深度思考
+ * disclosures and direct tool rows. Processing already owns the group summary,
+ * so nesting another tool-group disclosure would duplicate that layer.
  */
 function ProcessingBlock(props: { entries: FoldedTimelineChild[] }) {
   const locale = useUiLocale();
@@ -941,7 +989,22 @@ function ProcessingBlock(props: { entries: FoldedTimelineChild[] }) {
   if (running) everRunningRef.current = true;
   const settled = !running;
   const settling = settled && everRunningRef.current;
-  const hasError = entries.some((entry) => entry.kind === 'tools' && entry.items.some((item) => item.status === 'errored'));
+  const hasSandboxBlocked = entries.some(
+    (entry) => entry.kind === 'tools' && entry.items.some(isSandboxDeniedTool),
+  );
+  const hasError = entries.some(
+    (entry) =>
+      entry.kind === 'tools' &&
+      entry.items.some(
+        (item) => item.status === 'errored' && !isSandboxDeniedTool(item),
+      ),
+  );
+  const settledTone = hasError
+    ? 'text-[color:var(--destructive)]'
+    : hasSandboxBlocked
+      ? 'text-[color:var(--warning-text,var(--info-text))]'
+      : 'text-[color:var(--muted-foreground)]';
+  const activityKind = processingActivityKind(entries);
   const summary = summarizeProcessing(entries, { live: running, locale });
   return (
     <Collapsible
@@ -954,15 +1017,16 @@ function ProcessingBlock(props: { entries: FoldedTimelineChild[] }) {
       {/* Same row language as the tool trow / 深度思考: [16px icon] + [label] +
           hover/open chevron, one tier — hierarchy carried by color, not size. */}
       <CollapsibleTrigger className="group flex w-full items-center gap-2 py-0.5 text-left">
-        <Cpu
+        <ToolKindIcon
+          kind={activityKind}
           size={16}
           aria-hidden="true"
-          className={cn('shrink-0', hasError ? 'text-[color:var(--destructive)]' : 'text-[color:var(--muted-foreground)]')}
+          className={cn('shrink-0', settledTone)}
         />
         {running ? (
           <TextShimmer active delayed className="min-w-0 truncate text-[length:var(--font-size-base)]">{summary}</TextShimmer>
         ) : (
-          <span className={cn('min-w-0 truncate text-[length:var(--font-size-base)]', hasError ? 'text-[color:var(--destructive)]' : 'text-[color:var(--muted-foreground)]', settling && SETTLE_FADE)}>{summary}</span>
+          <span className={cn('min-w-0 truncate text-[length:var(--font-size-base)]', settledTone, settling && SETTLE_FADE)}>{summary}</span>
         )}
         <ChevronRight
           size={14}
@@ -972,9 +1036,13 @@ function ProcessingBlock(props: { entries: FoldedTimelineChild[] }) {
       </CollapsibleTrigger>
       <CollapsiblePanel>
         <div className="mt-0.5 ml-2 flex flex-col gap-0.5 border-l border-[var(--border)] pl-2.5">
-          {entries.map((entry, index) => (
-            <TurnTimelineEntry key={timelineEntryKey(entry, index)} item={entry} />
-          ))}
+          {entries.map((entry, index) =>
+            entry.kind === 'tools' ? (
+              <ToolTrow key={timelineEntryKey(entry, index)} items={entry.items} variant="rows" />
+            ) : (
+              <TurnTimelineEntry key={timelineEntryKey(entry, index)} item={entry} />
+            ),
+          )}
         </div>
       </CollapsiblePanel>
     </Collapsible>

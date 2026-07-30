@@ -58,3 +58,18 @@ it('preserves GFM task-list HAST classes so prose.css task-list rules match (#73
   assert.match(markup, /class="contains-task-list"/, 'bareElement must preserve the HAST className remark-gfm sets on the task-list <ul>; dropping it (round-2 regression) makes prose.css .maka-prose ul.contains-task-list rules stop matching');
   assert.match(markup, /class="task-list-item"/, 'bareElement must preserve the HAST className remark-gfm sets on task-list <li> items');
 });
+
+it('renders a hard break as a native <br> plus the spacing span (MARKDOWN-PROSE-CJK-MIXED-SPACING-0)', () => {
+  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+    text: '**小节标题**\n正文内容',
+  }));
+
+  // The source is a SINGLE newline on purpose: `remarkBreaks` is what makes it
+  // a break at all, and without the plugin .maka-hardbreak becomes unreachable
+  // dead CSS — a regression no CSS contract can see.
+  assert.match(
+    markup,
+    /<br\s*\/?>\s*<span class="maka-hardbreak" aria-hidden="true">/,
+    'a hard break must render as a native <br> followed by the .maka-hardbreak span — the <br> carries the line-break semantics (AX LineBreak node) and the span carries the 6px gap that CSS cannot put on a <br>',
+  );
+});

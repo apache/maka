@@ -26,7 +26,6 @@ describe('attachment frontend contract', () => {
   it('global file-drop navigation guard lets explicit renderer import targets handle drag/drop', async () => {
     const mainWindow = await readRepo('apps/desktop/src/main/main-window.ts');
     const composer = await readRepo('packages/ui/src/composer.tsx');
-    const onboarding = await readRepo('apps/desktop/src/renderer/OnboardingHero.tsx');
 
     assert.match(
       mainWindow,
@@ -37,11 +36,6 @@ describe('attachment frontend contract', () => {
       composer,
       /data-maka-file-drop-target=\{canAcceptDroppedFiles\(\) \? 'true' : undefined\}/,
       'Composer must declare itself as a file-drop target only while attachment import is available',
-    );
-    assert.match(
-      onboarding,
-      /data-maka-file-drop-target=\{canAcceptDroppedTextFiles\(\) \? 'true' : undefined\}/,
-      'Onboarding quick chat must keep its text-file drop target compatible with the same guard',
     );
   });
 

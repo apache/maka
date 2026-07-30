@@ -2,12 +2,12 @@
 // Acquire + verify + extract the pinned cua-driver compatibility release for
 // bundling into Maka.app. The source patch remains published in hqhq1025/cua
 // and proposed upstream; Maka only consumes an immutable, provenance-carrying
-// release artifact. Mirrors scripts/prepare-officecli.mjs: single-source version pin in
+// release artifact with a single-source version pin in
 // apps/desktop/bundled-tools.json, checksum verified fail-closed, extracted to a
 // pinned repo path (resources/bin/cua-driver), idempotent via a marker file.
 //
 // cua-driver ships ONE darwin-universal tarball (arm64 + x64), so unlike
-// OfficeCLI there is no per-arch asset. This tool is macOS-only (the Tier-2
+// There is no per-arch asset. This tool is macOS-only (the Tier-2
 // coordinate-injection backend); on other platforms this is a no-op.
 //
 // Dev usage: `npm run prepare:cua-driver`. The extracted binary is spawned as a

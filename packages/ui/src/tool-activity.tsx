@@ -11,6 +11,7 @@ import {
   Repeat,
   Search,
   Settings,
+  ShieldAlert,
   SquarePen,
   Terminal,
   X,
@@ -44,6 +45,7 @@ import {
   toolStatusLabel,
   withLiveStreamFallback,
 } from './tool-activity/result-projection.js';
+import { isSandboxDeniedTool } from './tool-activity/sandbox-denial.js';
 import { Alert, AlertAction, AlertDescription, AlertTitle } from './primitives/alert.js';
 import { Collapsible, CollapsibleTrigger, CollapsiblePanel } from './primitives/collapsible.js';
 import { previewVariants, TextShimmer, toolVariants } from './primitives/chat.js';
@@ -210,16 +212,17 @@ function ToolActivityCard({ item, open: openProp }: { item: ToolActivityItem; op
   const disclosure = useToolDisclosure(presentation);
   const open = openProp ?? disclosure.open;
   const duration = formatDuration(item.durationMs);
+  const visualStatus = isSandboxDeniedTool(item) ? 'blocked' : item.status;
   return (
     <Collapsible
       data-slot="tool"
       className={toolVariants({ part: 'item' })}
-      data-status={item.status}
+      data-status={visualStatus}
       open={open}
       onOpenChange={disclosure.setOpen}
     >
       <CollapsibleTrigger className={toolVariants({ part: 'header' })}>
-        <span className={toolVariants({ part: 'dot' })} data-status={item.status} aria-hidden="true" />
+        <span className={toolVariants({ part: 'dot' })} data-status={visualStatus} aria-hidden="true" />
         <span className={toolVariants({ part: 'name' })}>{resolveToolDisplayName(item, locale)}</span>
         <span className={toolVariants({ part: 'meta' })}>
           {duration && <span className={toolVariants({ part: 'duration' })}>{duration}</span>}
@@ -242,15 +245,17 @@ function ToolActivityCard({ item, open: openProp }: { item: ToolActivityItem; op
 function ToolCardBody({ item }: { item: ToolActivityItem }) {
   const locale = useUiLocale();
   const cancelled = isCancelledToolResult(item.result);
+  const sandboxBlocked = isSandboxDeniedTool(item);
   // Cancel maps to interrupted at materialize/live-projection; keep defensive
   // checks so a stale errored+cancelled item still does not look like failure.
-  const errored = item.status === 'errored' && !cancelled;
+  const failedOutcome = item.status === 'errored' && !cancelled;
+  const errored = failedOutcome && !sandboxBlocked;
   const permissionDenied = isPermissionDeniedToolResult(item.result);
   const running = item.status === 'running' || item.status === 'pending';
   const ptyControlResult = item.toolName === 'WriteStdin' && item.result?.kind === 'shell_run';
   // Rich kinds + tool-specific cards own their chrome — never nest in the shared well.
   const ownsPanel = resultOwnsOwnPanel(item);
-  const showErrorBanner = errored && !ptyControlResult;
+  const showErrorBanner = failedOutcome && !ptyControlResult;
   // Every tool: human invocation line from args — never pretty-printed JSON.
   // Skip when the result panel already prints the command (terminal/shell_run).
   const invocationLine = !permissionDenied && !ownsPanel
@@ -289,13 +294,18 @@ function ToolCardBody({ item }: { item: ToolActivityItem }) {
       showInvocation
       || !!resultHeadline
       || showLiveStream
-      || (showResult && !errored)
+      || (showResult && !failedOutcome)
       || (!!item.args && !permissionDenied && !invocationLine && !showResult && !showLiveStream)
     );
 
   return (
     <div className="mt-1 flex flex-col gap-1.5">
-      {showErrorBanner && <ToolErrorBanner result={displayResult ?? item.result} />}
+      {showErrorBanner && (
+        <ToolErrorBanner
+          result={displayResult ?? item.result}
+          sandboxBlocked={sandboxBlocked}
+        />
+      )}
       {showResult && ownsPanel && displayResult && (
         isConnectorTool(item.toolName) && displayResult.kind === 'json' ? (
           <LoadToolResultPreview args={item.args} value={displayResult.value} />
@@ -313,7 +323,11 @@ function ToolCardBody({ item }: { item: ToolActivityItem }) {
       {hasSharedPanelContent && (
         <div
           data-slot="tool-output"
-          className={cn(TOOL_OUTPUT_PANEL_CLASS, errored && 'border-[oklch(from_var(--destructive)_l_c_h_/_0.28)]')}
+          className={cn(
+            TOOL_OUTPUT_PANEL_CLASS,
+            errored && 'border-[oklch(from_var(--destructive)_l_c_h_/_0.28)]',
+            sandboxBlocked && 'border-[oklch(from_var(--warning)_l_c_h_/_0.32)]',
+          )}
         >
           {showInvocation && (
             <code className={TOOL_OUTPUT_COMMAND_CLASS}>{invocationLine}</code>
@@ -370,6 +384,11 @@ const TROW_KIND_ICON: Record<TrowActivityKind, ComponentType<LucideProps>> = {
   tool: Settings,
 };
 
+export function ToolKindIcon({ kind, ...props }: LucideProps & { kind: TrowActivityKind }) {
+  const Icon = TROW_KIND_ICON[kind];
+  return <Icon {...props} />;
+}
+
 // #646 run→done seam: the one-shot settle "landing" for the group summary line.
 // Reuses the whitelisted `maka-stream-fade-in` keyframe (opacity 0→1, one-shot
 // `both`) — no new keyframe (design-406 governance) — and rides
@@ -387,9 +406,20 @@ export const SETTLE_FADE = '[animation:maka-stream-fade-in_var(--duration-emphas
  * boxed "工具调用 N" card stack inside a turn. The summary disclosure is the
  * stable root for both one and many tools, so a second call appends inside the
  * same component instead of replacing an expanded row with a collapsed group.
+ * A parent Processing disclosure can request direct rows because it already
+ * owns the group summary; this avoids rendering the same summary twice.
  */
-export function ToolTrow({ items }: { items: ToolActivityItem[] }) {
+export function ToolTrow({
+  items,
+  variant = 'group',
+}: {
+  items: ToolActivityItem[];
+  variant?: 'group' | 'rows';
+}) {
   if (items.length === 0) return null;
+  if (variant === 'rows') {
+    return items.map((item) => <ToolTrowRow key={item.toolUseId} item={item} />);
+  }
   return <ToolTrowGroup items={items} />;
 }
 
@@ -415,11 +445,18 @@ function ToolTrowGroup({ items }: { items: ToolActivityItem[] }) {
   if (running) everRunningRef.current = true;
   const settled = !running;
   const settling = settled && everRunningRef.current;
-  const hasError = items.some((item) => item.status === 'errored');
+  const hasSandboxBlocked = items.some(isSandboxDeniedTool);
+  const hasError = items.some(
+    (item) => item.status === 'errored' && !isSandboxDeniedTool(item),
+  );
+  const settledTone = hasError
+    ? 'text-[color:var(--destructive)]'
+    : hasSandboxBlocked
+      ? 'text-[color:var(--warning-text,var(--info-text))]'
+      : 'text-[color:var(--muted-foreground)]';
   // #tool-jitter: the group icon stays on the first bucket's kind (the same
   // first-seen order the summary clauses use), not the active tool's kind — so
   // a mixed-kind group's icon doesn't flip as the active tool changes mid-run.
-  const SummaryIcon = TROW_KIND_ICON[firstPresentation.kind];
   // Multi-tool running group shows the whole-group bucket aggregation with a
   // "正在" prefix instead of the active tool's description, so the summary line
   // stops cycling through each tool's intent as tools start/finish in
@@ -432,11 +469,11 @@ function ToolTrowGroup({ items }: { items: ToolActivityItem[] }) {
   return (
     <Collapsible className="flex flex-col" data-trow="group" data-settled={settled ? 'true' : undefined} open={disclosure.open} onOpenChange={disclosure.setOpen}>
       <CollapsibleTrigger className="group flex w-full items-center gap-2 py-0.5 text-left">
-        <SummaryIcon size={16} aria-hidden="true" className={cn('shrink-0', hasError ? 'text-[color:var(--destructive)]' : 'text-[color:var(--muted-foreground)]')} />
+        <ToolKindIcon kind={firstPresentation.kind} size={16} aria-hidden="true" className={cn('shrink-0', settledTone)} />
         {running ? (
           <TextShimmer active delayed className="min-w-0 truncate text-[length:var(--font-size-base)]">{summary}</TextShimmer>
         ) : (
-          <span className={cn('min-w-0 truncate text-[length:var(--font-size-base)]', hasError ? 'text-[color:var(--destructive)]' : 'text-[color:var(--muted-foreground)]', settling && SETTLE_FADE)}>{summary}</span>
+          <span className={cn('min-w-0 truncate text-[length:var(--font-size-base)]', settledTone, settling && SETTLE_FADE)}>{summary}</span>
         )}
         <ChevronRight
           size={14}
@@ -477,28 +514,39 @@ function ToolTrowRow({ item }: { item: ToolActivityItem }) {
   // instead of stacking N opacity-0→1 fades, so a batch settle no longer 1234567.
   const running = isToolRowRunning(item.status);
   const settled = isToolRowSettled(item.status);
-  const errored = item.status === 'errored';
-  const RowIcon = TROW_KIND_ICON[presentation.kind];
+  const sandboxBlocked = isSandboxDeniedTool(item);
+  const errored = item.status === 'errored' && !sandboxBlocked;
   // One row language with the multi-tool summary row: a kind icon + a
   // user-language phrase, never the old status-dot + mono tool-name + status
   // word. Running shimmers the model's intent (or the friendly tool name);
   // settled prefers the intent, falls back to the display name.
-  const summaryTone = errored ? 'text-[color:var(--destructive)]' : 'text-[color:var(--muted-foreground)]';
-  // An errored row stays collapsed, so the destructive tint is not enough —
-  // the failure is spelled out as a word on the row label.
+  const summaryTone = errored
+    ? 'text-[color:var(--destructive)]'
+    : sandboxBlocked
+      ? 'text-[color:var(--warning-text,var(--info-text))]'
+      : 'text-[color:var(--muted-foreground)]';
+  // Settled attention states stay collapsed, so tint alone is not enough:
+  // spell out whether the operation failed or the sandbox blocked it.
   const rowLabel = item.intent ? formatToolIntent(item.intent) : resolveToolDisplayName(item, locale);
   return (
-    <Collapsible className="flex flex-col" data-trow="row" data-status={item.status} data-settled={settled ? 'true' : undefined} open={disclosure.open} onOpenChange={disclosure.setOpen}>
+    <Collapsible className="flex flex-col" data-trow="row" data-status={sandboxBlocked ? 'blocked' : item.status} data-settled={settled ? 'true' : undefined} open={disclosure.open} onOpenChange={disclosure.setOpen}>
       <CollapsibleTrigger className="group flex w-full items-center gap-2 py-0.5 text-left">
-        <RowIcon
+        <ToolKindIcon
+          kind={presentation.kind}
           size={16}
           aria-hidden="true"
-          className={cn('shrink-0', errored ? 'text-[color:var(--destructive)]' : 'text-[color:var(--muted-foreground)]')}
+          className={cn('shrink-0', summaryTone)}
         />
         {running ? (
           <TextShimmer active delayed className="min-w-0 truncate text-[length:var(--font-size-base)]">{presentation.summary}</TextShimmer>
         ) : (
-          <span className={cn('min-w-0 truncate text-[length:var(--font-size-base)]', summaryTone)}>{errored ? `${rowLabel} · ${getToolActivityCopy(locale).group.failedSuffix}` : rowLabel}</span>
+          <span className={cn('min-w-0 truncate text-[length:var(--font-size-base)]', summaryTone)}>
+            {errored
+              ? `${rowLabel} · ${getToolActivityCopy(locale).group.failedSuffix}`
+              : sandboxBlocked
+                ? `${rowLabel} · ${getToolActivityCopy(locale).group.sandboxBlockedSuffix}`
+                : rowLabel}
+          </span>
         )}
         {/* Quiet meta sits right after the label (near the text, not pinned to
             the far edge): duration + chevron ride in on hover / open, matching
@@ -578,9 +626,13 @@ function ToolOutputStream(props: {
 // Preserve the retired `.maka-tool-error*` leaf utilities onto Alert (#332 PR3c) —
 // Alert owns the shell; these are the few declarations it doesn't set, kept arbitrary
 // so they map 1:1 to the old CSS (`[align-self:start]`, not Tailwind's `flex-start`).
-function ToolErrorBanner(props: { result: ToolActivityItem['result'] }) {
+function ToolErrorBanner(props: {
+  result: ToolActivityItem['result'];
+  sandboxBlocked?: boolean;
+}) {
   const locale = useUiLocale();
   const copyText = getToolActivityCopy(locale);
+  const bannerCopy = props.sandboxBlocked ? copyText.sandboxBlocked : copyText.error;
   // Tool stderr / raw provider errors occasionally slip credential paths,
   // bearer tokens, or API keys through main-side redaction. Apply a
   // defensive UI-level mask before display *and* before clipboard copy so
@@ -603,14 +655,25 @@ function ToolErrorBanner(props: { result: ToolActivityItem['result'] }) {
   }
 
   return (
-    <Alert variant="error" className="mb-2.5">
-      <AlertOctagon size={16} aria-hidden="true" />
-      <AlertTitle>{copyText.error.title}</AlertTitle>
-      {errorText && (
+    <Alert variant={props.sandboxBlocked ? 'warning' : 'error'} className="mb-2.5">
+      {props.sandboxBlocked
+        ? <ShieldAlert size={16} aria-hidden="true" />
+        : <AlertOctagon size={16} aria-hidden="true" />}
+      <AlertTitle>{bannerCopy.title}</AlertTitle>
+      {props.sandboxBlocked ? (
+        <AlertDescription className="flex flex-col gap-1 text-xs leading-normal whitespace-pre-wrap [word-break:break-word]">
+          <span>{copyText.sandboxBlocked.description}</span>
+          {errorText && (
+            <span className="[font-family:var(--font-mono)]">
+              {summarizeErrorText(errorText)}
+            </span>
+          )}
+        </AlertDescription>
+      ) : errorText ? (
         <AlertDescription className="[font-family:var(--font-mono)] text-xs leading-normal whitespace-pre-wrap [word-break:break-word]">
           {summarizeErrorText(errorText)}
         </AlertDescription>
-      )}
+      ) : null}
       {errorText && (
         <AlertAction>
           <UiButton
@@ -620,7 +683,7 @@ function ToolErrorBanner(props: { result: ToolActivityItem['result'] }) {
             className="[align-self:start] data-[pending=true]:cursor-progress data-[copy-feedback=copied]:text-[color:var(--link)] data-[copy-feedback=copied]:border-[oklch(from_var(--link)_l_c_h_/_0.35)] data-[copy-feedback=failed]:text-[color:var(--destructive)] data-[copy-feedback=failed]:border-[oklch(from_var(--destructive)_l_c_h_/_0.35)]"
             data-pending={copyPending ? 'true' : undefined}
             data-copy-feedback={copyPhase ?? undefined}
-            aria-label={copyText.error.copyAriaLabel(copyLabel)}
+            aria-label={bannerCopy.copyAriaLabel(copyLabel)}
             aria-busy={copyPending ? 'true' : undefined}
             disabled={copyPending}
             onClick={() => void copy()}

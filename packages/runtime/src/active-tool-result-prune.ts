@@ -1,9 +1,13 @@
-import type { JSONValue, ModelMessage } from 'ai';
+import type { JSONValue, ModelMessage } from './model-protocol.js';
 
 import {
   ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
   serializeToolResultForArchive,
 } from './tool-result-archive.js';
+import {
+  buildToolResultArchiveResourceRef,
+  TOOL_RESULT_ARCHIVE_READ_INSTRUCTIONS,
+} from './tool-result-archive-resource.js';
 import {
   estimateTokens,
   finitePositive,
@@ -41,6 +45,10 @@ export interface ActiveArchivedToolResultPlaceholder {
   kind: typeof ACTIVE_ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND;
   rewriteVersion: typeof ARCHIVED_TOOL_RESULT_REWRITE_VERSION;
   artifactId: string;
+  /** First-class, model-readable resource URI. Optional for persisted v1 compatibility. */
+  resourceRef?: string;
+  /** Explicit recovery action for the provider-visible placeholder. */
+  readInstructions?: string;
   turnId: string;
   toolCallId: string;
   toolName: string;
@@ -245,6 +253,12 @@ async function rewriteToolResultPart(input: {
       kind: ACTIVE_ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND,
       rewriteVersion: ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
       artifactId: archived.artifactId,
+      resourceRef: buildToolResultArchiveResourceRef({
+        artifactId: archived.artifactId,
+        bodySha256,
+        originalBytes,
+      }),
+      readInstructions: TOOL_RESULT_ARCHIVE_READ_INSTRUCTIONS,
       turnId: input.turnId,
       toolCallId: input.part.toolCallId,
       toolName: input.part.toolName,

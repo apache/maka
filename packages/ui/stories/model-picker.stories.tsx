@@ -4,6 +4,9 @@ import type { ProviderType, ThinkingLevel } from '@maka/core';
 import { NewChatModelPicker } from '../src/chat-model-switcher.js';
 import { modelChoiceValue, type ChatModelChoice } from '../src/chat-model-helpers.js';
 
+// Fidelity convention (#1433): every story below names the real app path
+// that reaches it. See apps/desktop/stories/FIDELITY.md.
+
 const meta = {
   title: 'Product/Model Picker',
   parameters: {
@@ -71,6 +74,9 @@ function ModelPickerFrame() {
   );
 }
 
+// Real path: chat → the model button in the composer footer (chat-model-switcher.tsx),
+// also reachable from 设置 → 通用 as the default-model field. Search and the 思考级别 submenu
+// are driven from inside the story.
 export const Default: Story = {
   render: () => <ModelPickerFrame />,
 };

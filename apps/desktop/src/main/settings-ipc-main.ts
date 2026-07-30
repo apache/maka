@@ -18,7 +18,7 @@ import {
   type TestProxyInput,
   type TestProxyResult,
 } from '@maka/core/settings/network-settings';
-import { tryResult } from '@maka/core/settings/result';
+import { tryResult } from '@maka/core/result';
 import {
   getWechatBridgeQrCode,
   testBotChannel as testRuntimeBotChannel,

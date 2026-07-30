@@ -9,23 +9,24 @@ export interface ToolRecorderDeps {
   repo: TelemetryRepoLite;
 }
 
-export function recordToolInvocation(deps: ToolRecorderDeps, record: ToolInvocationRecord): void {
-  queueMicrotask(() => {
-    try {
-      const ts = record.startedAt + record.durationMs;
-      deps.repo.insertToolInvocation({
-        ...record,
-        id: `tool_${record.toolCallId ?? randomUUID()}`,
-        argsSummary: truncate(record.argsSummary ?? ''),
-        bytesIn: record.bytesIn ?? 0,
-        bytesOut: record.bytesOut ?? 0,
-        date: new Date(ts).toISOString().slice(0, 10),
-        ts,
-      });
-    } catch (error) {
-      console.error(`[telemetry] recordToolInvocation failed: ${generalizedErrorMessage(error)}`);
-    }
-  });
+export async function recordToolInvocation(
+  deps: ToolRecorderDeps,
+  record: ToolInvocationRecord,
+): Promise<void> {
+  try {
+    const ts = record.startedAt + record.durationMs;
+    await deps.repo.insertToolInvocation({
+      ...record,
+      id: `tool_${record.toolCallId ?? randomUUID()}`,
+      argsSummary: truncate(record.argsSummary ?? ''),
+      bytesIn: record.bytesIn ?? 0,
+      bytesOut: record.bytesOut ?? 0,
+      date: new Date(ts).toISOString().slice(0, 10),
+      ts,
+    });
+  } catch (error) {
+    console.error(`[telemetry] recordToolInvocation failed: ${generalizedErrorMessage(error)}`);
+  }
 }
 
 function truncate(value: string): string {

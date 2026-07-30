@@ -206,9 +206,12 @@
   color: var(--foreground);
   font-size: var(--font-size-ui);
   font-weight: var(--font-weight-semibold);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* #1362: palette names wrap instead of truncating — at the 480px window
+     floor the single-column tiles are ~74px of label and the old nowrap +
+     ellipsis cut "Catppuccin Mocha" to "Catppucc…" with no way to recover
+     the name. Every label fits one line on the wide 3-column grid, so this
+     only changes the squeezed state. */
+  overflow-wrap: anywhere;
 }
 
 .settingsThemeLabel small {

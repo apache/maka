@@ -1,10 +1,9 @@
 /**
- * CHAT-TURN-SPACING-0 (issue #546 PR5): the chat surface uses one uniform
- * turn gap — `.maka-chat` (between turns) and `.maka-turn` (within a turn)
- * both at `--space-3` (12px) — instead of the earlier loose-between /
- * tight-within split (24px / 8px). Uniform density reads as a continuous
- * coding-agent stream rather than stacked Q+A blocks; the single token
- * keeps both on the spacing scale so neither drifts to a magic number.
+ * CHAT-TURN-SPACING-0 (issue #546 PR5): the chat content uses one uniform
+ * turn gap — `.maka-chatContent` (between turns) and `.maka-turn` (within a
+ * turn) both at `--space-3` (12px) — instead of the earlier loose-between /
+ * tight-within split (24px / 8px). The content node owns sibling layout;
+ * putting gap on the OverlayScrollbars host would offset its viewport.
  *
  * CHAT-MESSAGE-TIME-0 (issue #546 PR5): the inline message timestamp
  * (`.maka-message-time-inline`) aligns to the caption tier
@@ -22,6 +21,7 @@ import { describe, it } from 'node:test';
 import { REPO_ROOT, TOKENS_FILE, stripCssComments } from './css-test-helpers.js';
 
 const CHAT_MESSAGE_CSS = resolve(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer', 'styles', 'chat-message.css');
+const CHAT_HEADER_CSS = resolve(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer', 'styles', 'chat-header.css');
 
 /** Extract the declaration body of a top-level `selector { … }` rule (no
  *  nested blocks — the rules asserted here are flat declaration lists). */
@@ -30,17 +30,25 @@ function ruleBody(css: string, selector: string): string | null {
   return css.match(new RegExp(pattern, 'm'))?.[1] ?? null;
 }
 
-describe('CHAT-TURN-SPACING-0 contract (#546 PR5)', () => {
-  it('.maka-chat and .maka-turn both use gap: var(--space-3) (uniform 12/12)', async () => {
+describe('CHAT-TURN-SPACING-0 contract (#546 PR5, #1469)', () => {
+  it('.maka-chatContent and .maka-turn both use gap: var(--space-3) (uniform 12/12)', async () => {
     const css = stripCssComments(await readFile(TOKENS_FILE, 'utf8'));
-    const chat = ruleBody(css, '.maka-chat');
+    const chatHeaderCss = stripCssComments(await readFile(CHAT_HEADER_CSS, 'utf8'));
+    const chatHost = ruleBody(css, '.maka-chat');
+    const chatContent = ruleBody(chatHeaderCss, '.maka-chatContent');
     const turn = ruleBody(css, '.maka-turn');
-    assert.ok(chat, '.maka-chat rule must exist in maka-tokens.css');
+    assert.ok(chatHost, '.maka-chat rule must exist in maka-tokens.css');
+    assert.ok(chatContent, '.maka-chatContent rule must exist in chat-header.css');
     assert.ok(turn, '.maka-turn rule must exist in maka-tokens.css');
+    assert.doesNotMatch(
+      chatHost,
+      /\bgap\s*:/,
+      '.maka-chat is the OverlayScrollbars host and must not offset its viewport with a layout gap',
+    );
     assert.match(
-      chat,
+      chatContent,
       /gap:\s*var\(--space-3\)/,
-      '.maka-chat gap must be var(--space-3) (12px), uniform with .maka-turn — the between-turn gap',
+      '.maka-chatContent gap must be var(--space-3) (12px), uniform with .maka-turn — the between-turn gap',
     );
     assert.match(
       turn,

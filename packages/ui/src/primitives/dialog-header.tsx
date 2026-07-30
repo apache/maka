@@ -12,8 +12,7 @@
 // Palette-style modals whose input row IS the header (command-palette) do
 // NOT use this — they are intentionally headerless. `subtitle` covers
 // modals with one line of instructional copy under the title (wechat QR
-// login); permission-dialog keeps its richer bespoke header (status pill +
-// wait-time meta exceed a subtitle line).
+// login); high-density in-flow prompts keep their own compact headers.
 //
 // Self-contained styling: the header is styled with Tailwind utility classes
 // so the primitive is portable across packages and needs no consumer CSS.

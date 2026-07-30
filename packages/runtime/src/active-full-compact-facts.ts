@@ -1,4 +1,4 @@
-import type { ModelMessage } from 'ai';
+import type { ModelMessage } from './model-protocol.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { estimateTokens } from './context-budget-helpers.js';
 import { serializeToolResultForArchive } from './tool-result-archive.js';

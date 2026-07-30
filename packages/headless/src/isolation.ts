@@ -1,5 +1,11 @@
 import type { StorageRef } from '@maka/core';
-import type { ShellPlan } from '@maka/runtime';
+import {
+  isPathInside,
+  type EffectiveProductToolSurface,
+  type ProductToolSurfaceIdentity,
+  type ShellPlan,
+} from '@maka/runtime';
+import { isAbsolute } from 'node:path';
 import type { Config, Task } from './contracts.js';
 import type { HeavyTaskEvidenceRecorder } from './heavy-task-evidence.js';
 import type { HeavyTaskModeSelection } from './heavy-task-policy.js';
@@ -9,6 +15,7 @@ import type {
   EnvNetworkSecretPolicy,
   TaskIsolationFacts,
   ToolExecutorIdentity,
+  SupplementalToolSetIdentity,
 } from './task-contracts.js';
 import type { HeadlessSessionCapabilities } from './session-capabilities.js';
 import type { HeadlessArtifactStore } from './headless-storage.js';
@@ -180,6 +187,12 @@ export interface ExternalRealBackendIsolation {
    */
   workspaceDir?: string;
   /**
+   * Persistent directory for freezing the agent-visible workspace after the
+   * run. Set only when the controller can read workspaceDir directly; remote
+   * executors such as Harbor HTTP must leave it unset.
+   */
+  submittedSnapshotRoot?: string;
+  /**
    * Optional command executor for callers that want to reuse the built-in
    * headless Bash tool. A caller may omit this when its registered backend is
    * already isolated internally.
@@ -205,6 +218,8 @@ export interface HeadlessBackendContext extends Partial<HeadlessSessionCapabilit
   realBackendIsolation?: RealBackendIsolation;
   /** Convenience alias for realBackendIsolation.toolExecutor. */
   toolExecutor?: IsolatedToolExecutor;
+  /** One policy-filtered product-tool surface for this root Session / TaskRun. */
+  productToolSurface?: EffectiveProductToolSurface;
   /** Heavy-task selection resolved for this task run. */
   heavyTaskMode?: HeavyTaskModeSelection;
   /** Present only when heavy-task mode is enabled for task-run backed tooling. */
@@ -228,6 +243,19 @@ export function validateRealBackendIsolation(isolation: RealBackendIsolation | u
   }
   if (typeof isolation.label !== 'string' || isolation.label.trim().length === 0) {
     throw new Error('realBackendIsolation.label is required');
+  }
+  if (isolation.submittedSnapshotRoot !== undefined) {
+    if (!isolation.workspaceDir || !isAbsolute(isolation.workspaceDir)) {
+      throw new Error(
+        'realBackendIsolation.submittedSnapshotRoot requires an absolute workspaceDir',
+      );
+    }
+    if (!isAbsolute(isolation.submittedSnapshotRoot)) {
+      throw new Error('realBackendIsolation.submittedSnapshotRoot must be absolute');
+    }
+    if (isPathInside(isolation.workspaceDir, isolation.submittedSnapshotRoot)) {
+      throw new Error('realBackendIsolation.submittedSnapshotRoot must stay outside workspaceDir');
+    }
   }
 }
 
@@ -274,14 +302,28 @@ export function toolExecutorIdentity(input: {
   attemptId?: string;
   isolation?: RealBackendIsolation;
   toolNames?: string[];
+  productToolSurface?: ProductToolSurfaceIdentity;
+  supplementalToolSets?: SupplementalToolSetIdentity[];
 }): ToolExecutorIdentity {
   const isolationMode = input.isolation ? 'external' : 'inert_fake_backend';
+  const supplementalToolSets = input.supplementalToolSets?.map((entry) => ({
+    label: entry.label,
+    toolNames: [...entry.toolNames],
+  }));
+  const toolNames = input.productToolSurface
+    ? [
+        ...input.productToolSurface.productToolNames,
+        ...(supplementalToolSets?.flatMap((entry) => entry.toolNames) ?? []),
+      ]
+    : (input.toolNames ?? ['headless_runtime']);
   return {
     schemaVersion: 1,
     executorId: input.executorId,
     taskRunId: input.taskRunId,
     ...(input.attemptId ? { attemptId: input.attemptId } : {}),
-    toolNames: input.toolNames ?? ['headless_runtime'],
+    toolNames,
+    ...(input.productToolSurface ? { productToolSurface: input.productToolSurface } : {}),
+    ...(supplementalToolSets && supplementalToolSets.length > 0 ? { supplementalToolSets } : {}),
     isolationMode,
     label: input.isolation?.label ?? 'fake backend inert tool boundary',
     commandPolicy: defaultEnvNetworkSecretPolicy(input.isolation),

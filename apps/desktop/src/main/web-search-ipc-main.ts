@@ -8,6 +8,7 @@ import type { WorkspacePrivacyContext } from '@maka/core/incognito';
 import type { createSettingsStore } from '@maka/storage';
 import { resolveTavilyApiKey } from './web-search/credentials.js';
 import { queryTavily, TAVILY_TEST_LIMIT, TAVILY_TEST_QUERY } from './web-search/tavily.js';
+import { webSearchResultsE2eFixture } from './web-search-e2e-fixture.js';
 
 type SettingsStore = ReturnType<typeof createSettingsStore>;
 
@@ -49,6 +50,11 @@ export function registerWebSearchIpc(deps: WebSearchIpcDeps): void {
           message: '请先在 设置 · 联网搜索 中启用 Tavily。',
         };
       }
+      // #1364: e2e runs offline — the `settings-search` fixture answers with
+      // deterministic hostile-width results AFTER the real validation and
+      // enablement gates above, so only the Tavily round-trip is replaced.
+      const fixtureResults = webSearchResultsE2eFixture();
+      if (fixtureResults) return { ok: true as const, results: fixtureResults };
       const effectiveKey = resolveTavilyApiKey({ settings, draftKey: request?.apiKey });
       const limit = normalizeWebSearchLimit(request?.limit);
       return queryTavily({ apiKey: effectiveKey, query, limit });

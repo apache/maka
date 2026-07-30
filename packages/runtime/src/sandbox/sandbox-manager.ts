@@ -1,5 +1,4 @@
 import type { PermissionProfile } from '@maka/core/permission-profile';
-import { applyAdditionalPermissionProfile } from '@maka/core/additional-permissions';
 
 import type {
   SandboxBackend,
@@ -114,18 +113,8 @@ export class SandboxManager {
   }
 
   transform(request: SandboxTransformRequest): SandboxTransformResult {
-    const effectiveProfile = request.additionalPermissions
-      ? applyAdditionalPermissionProfile(request.command.profile, request.additionalPermissions)
-      : request.command.profile;
-    const effectiveRequest: SandboxTransformRequest = {
-      ...request,
-      command: {
-        ...request.command,
-        profile: effectiveProfile,
-      },
-    };
     const selected = this.selectInitial({
-      profile: effectiveProfile,
+      profile: request.command.profile,
       preference: request.preference,
       platform: request.platform,
     });
@@ -133,7 +122,7 @@ export class SandboxManager {
     if (!selected.ok) return selected;
 
     if (selected.sandboxType === 'none') {
-      const { command } = effectiveRequest;
+      const { command } = request;
       return {
         ok: true,
         exec: {
@@ -163,14 +152,14 @@ export class SandboxManager {
     }
 
     return backend.transform({
-      ...effectiveRequest,
+      ...request,
       preference: selected.preference,
       platform: selected.platform,
     });
   }
 }
 
-function profileRequiresSandbox(profile: PermissionProfile): boolean {
+export function profileRequiresSandbox(profile: PermissionProfile): boolean {
   if (profile.type !== 'managed') return false;
-  return profile.fileSystem.kind === 'restricted';
+  return profile.fileSystem.kind === 'restricted' || profile.network.kind === 'restricted';
 }

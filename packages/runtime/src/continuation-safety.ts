@@ -3,7 +3,6 @@ import type { RuntimeContinuationSafetyObservation } from './runtime-resume.js';
 export interface ResolvedWorkspaceIdentity {
   workspaceIdentity: string;
   canonicalPath: string;
-  legacyWorkspaceIdentities?: readonly string[];
 }
 
 export interface LocalContinuationSafetyInspectorDeps {
@@ -31,9 +30,6 @@ export function createLocalContinuationSafetyInspector(
     return {
       workspaceIdentity: workspace.workspaceIdentity,
       workspacePath: workspace.canonicalPath,
-      ...(workspace.legacyWorkspaceIdentities?.length
-        ? { legacyWorkspaceIdentities: [...workspace.legacyWorkspaceIdentities] }
-        : {}),
       backgroundOperationsSettled: !hasPendingBackgroundOperations,
       availableToolNames: [...new Set(availableToolNames)].sort(),
       ...(workspaceCheckpoint ? { workspaceCheckpoint } : {}),

@@ -1,5 +1,12 @@
 import { TextDecoder } from 'node:util';
+import { requireCount, requireId, requireRecord, requireString } from './codec.js';
 import { invalidProtocolFrame, RuntimeHostProtocolError } from './errors.js';
+import { requireHostLifecycleState } from './host-status.js';
+import {
+  decodeSubscriptionFrame,
+  isSubscriptionFrameKind,
+  type SubscriptionFrame,
+} from './session-continuity.js';
 import {
   decodeRequestFrame,
   decodeResponseFrame,
@@ -9,10 +16,14 @@ import {
 } from './operations.js';
 
 export { RuntimeHostProtocolError } from './errors.js';
+export * from './interaction.js';
+export * from './message.js';
 export * from './operations.js';
+export * from './session-continuity.js';
+export * from './task-ledger.js';
 
 export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
-export const RUNTIME_HOST_PROTOCOL_VERSION = 2 as const;
+export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 export const RUNTIME_HOST_MAX_FRAME_BYTES = 64 * 1024;
 
 export type ClientSurface = 'desktop' | 'tui' | 'run' | 'bot' | 'open_gateway' | 'inspect';
@@ -55,7 +66,7 @@ export interface HostDraining {
 export type HostHandshakeResult = HostAccepted | HostIncompatible | HostDraining;
 
 export type ClientFrame = ClientHello | RequestFrame;
-export type HostFrame = HostHandshakeResult | ResponseFrame;
+export type HostFrame = HostHandshakeResult | ResponseFrame | SubscriptionFrame;
 
 export interface HostRegistration {
   kind: 'maka-runtime-host';
@@ -81,10 +92,10 @@ export function validateProtocolRange(range: ProtocolRange): void {
   if (
     !Number.isSafeInteger(range.min) ||
     !Number.isSafeInteger(range.max) ||
-    range.min < 1 ||
+    range.min < 0 ||
     range.max < range.min
   ) {
-    throw invalidFrame('Invalid protocol range');
+    throw invalidProtocolFrame('Invalid protocol range');
   }
 }
 
@@ -129,29 +140,35 @@ export function decodeHostFrame(value: unknown): HostFrame {
       hostEpoch: requireId(frame.hostEpoch, 'hostEpoch'),
       protocolMin,
       protocolMax,
-      state: requireHostState(frame.state),
+      state: requireHostLifecycleState(frame.state),
       replacement: requireReplacement(frame.replacement),
     } satisfies HostIncompatible;
   }
   if (frame.kind === 'draining') {
-    return { kind: 'draining', hostEpoch: requireId(frame.hostEpoch, 'hostEpoch') };
+    return {
+      kind: 'draining',
+      hostEpoch: requireId(frame.hostEpoch, 'hostEpoch'),
+    };
   }
+  if (isSubscriptionFrameKind(frame.kind)) return decodeSubscriptionFrame(frame);
   return decodeResponseFrame(frame);
 }
 
 export function decodeHostRegistration(value: unknown): HostRegistration {
   const registration = requireRecord(value, 'host registration');
-  if (registration.kind !== 'maka-runtime-host') throw invalidFrame('Invalid registration kind');
+  if (registration.kind !== 'maka-runtime-host') {
+    throw invalidProtocolFrame('Invalid registration kind');
+  }
   if (registration.schemaVersion !== RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION) {
-    throw invalidFrame('Unsupported registration schema');
+    throw invalidProtocolFrame('Unsupported registration schema');
   }
   const protocolMin = requireProtocolVersion(registration.protocolMin, 'protocolMin');
   const protocolMax = requireProtocolVersion(registration.protocolMax, 'protocolMax');
   validateProtocolRange({ min: protocolMin, max: protocolMax });
   const rootId = requireString(registration.rootId, 'rootId', 128);
-  if (!/^[a-f0-9]{64}$/.test(rootId)) throw invalidFrame('Invalid rootId');
+  if (!/^[a-f0-9]{64}$/.test(rootId)) throw invalidProtocolFrame('Invalid rootId');
   const pid = requireCount(registration.pid, 'pid');
-  if (pid === 0) throw invalidFrame('Invalid pid');
+  if (pid === 0) throw invalidProtocolFrame('Invalid pid');
   return {
     kind: 'maka-runtime-host',
     schemaVersion: RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
@@ -160,7 +177,7 @@ export function decodeHostRegistration(value: unknown): HostRegistration {
     endpoint: requireString(registration.endpoint, 'endpoint', 512),
     protocolMin,
     protocolMax,
-    state: requireHostState(registration.state),
+    state: requireHostLifecycleState(registration.state),
     pid,
     createdAt: requireString(registration.createdAt, 'createdAt', 64),
   };
@@ -217,7 +234,9 @@ export class ProtocolFrameDecoder {
   }
 
   #decodePending(): unknown {
-    if (this.#pending.byteLength === 0) throw invalidFrame('Runtime Host frame is empty');
+    if (this.#pending.byteLength === 0) {
+      throw invalidProtocolFrame('Runtime Host frame is empty');
+    }
     let text: string;
     try {
       const bytes = this.#pending.at(-1) === 0x0d ? this.#pending.subarray(0, -1) : this.#pending;
@@ -233,30 +252,10 @@ export class ProtocolFrameDecoder {
   }
 }
 
-function requireRecord(value: unknown, label: string): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value))
-    throw invalidFrame(`Invalid ${label}`);
-  return value as Record<string, unknown>;
-}
-
-function requireString(value: unknown, label: string, maxLength: number): string {
-  if (typeof value !== 'string' || value.length === 0 || value.length > maxLength) {
-    throw invalidFrame(`Invalid ${label}`);
-  }
-  return value;
-}
-
-function requireId(value: unknown, label: string): string {
-  return requireString(value, label, 128);
-}
-
 function requireProtocolVersion(value: unknown, label: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 1) throw invalidFrame(`Invalid ${label}`);
-  return value as number;
-}
-
-function requireCount(value: unknown, label: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) throw invalidFrame(`Invalid ${label}`);
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw invalidProtocolFrame(`Invalid ${label}`);
+  }
   return value as number;
 }
 
@@ -270,32 +269,16 @@ function requireSurface(value: unknown): ClientSurface {
     value === 'inspect'
   )
     return value;
-  throw invalidFrame('Invalid surface');
-}
-
-function requireHostState(value: unknown): HostLifecycleState {
-  if (
-    value === 'starting' ||
-    value === 'containing' ||
-    value === 'recovering' ||
-    value === 'ready' ||
-    value === 'draining'
-  )
-    return value;
-  throw invalidFrame('Invalid Host state');
+  throw invalidProtocolFrame('Invalid surface');
 }
 
 function requireAcceptedState(value: unknown): Exclude<HostLifecycleState, 'draining'> {
-  const state = requireHostState(value);
-  if (state === 'draining') throw invalidFrame('Accepted Host cannot be draining');
+  const state = requireHostLifecycleState(value);
+  if (state === 'draining') throw invalidProtocolFrame('Accepted Host cannot be draining');
   return state;
 }
 
 function requireReplacement(value: unknown): HostIncompatible['replacement'] {
   if (value === 'blocked_by_residency' || value === 'wait_for_idle_exit') return value;
-  throw invalidFrame('Invalid replacement disposition');
-}
-
-function invalidFrame(message: string): RuntimeHostProtocolError {
-  return invalidProtocolFrame(message);
+  throw invalidProtocolFrame('Invalid replacement disposition');
 }

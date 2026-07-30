@@ -107,6 +107,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     usesGitHubCopilotLogin,
     oauthLoginService,
     hasFixedOAuthBaseUrl,
+    supportsRemoteDiscovery,
     credentialProbePending,
     hasUsableCredential,
     apiKeyStatusHint,
@@ -245,9 +246,11 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             <Button variant="secondary" type="button" disabled={detailActionBusy || !hasUsableCredential} onClick={runTest}>
               {testing ? copy.testing : copy.testConnection}
             </Button>
-            <Button variant="quiet" type="button" disabled={detailActionBusy || !hasUsableCredential} onClick={() => void refreshModels()}>
-              {fetchingModels ? copy.updating : copy.updateModels}
-            </Button>
+            {supportsRemoteDiscovery && (
+              <Button variant="quiet" type="button" disabled={detailActionBusy || !hasUsableCredential} onClick={() => void refreshModels()}>
+                {fetchingModels ? copy.updating : copy.updateModels}
+              </Button>
+            )}
             {!props.isDefault && connection.enabled && (
               <Button variant="quiet" type="button" disabled={detailActionBusy} onClick={setAsDefault}>
                 {settingDefault ? copy.setting : copy.setDefault}

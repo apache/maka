@@ -17,32 +17,72 @@ function conn(providerType: LlmConnection['providerType'], slug = 'test'): LlmCo
 }
 
 describe('buildProviderOptions: thinking level', () => {
+  test('only native Anthropic enables automatic prompt caching', () => {
+    assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-opus-4-8'), {
+      anthropic: { cacheControl: { type: 'ephemeral' } },
+    });
+    for (const providerType of [
+      'claude-subscription',
+      'MiniMax',
+      'MiniMax-cn',
+      'kimi-coding-plan',
+    ] as const) {
+      const anthropic = buildProviderOptions(conn(providerType), 'claude-opus-4-8').anthropic;
+      assert.equal(
+        (anthropic as { cacheControl?: unknown } | undefined)?.cacheControl,
+        undefined,
+        `${providerType} must not inherit Anthropic automatic prompt caching`,
+      );
+    }
+  });
+
+  test('Volcengine Agent Plan keeps Responses stateless while preserving reasoning replay', () => {
+    const expectedOptions = {
+      openai: {
+        store: false,
+        forceReasoning: true,
+      },
+    };
+    assert.deepEqual(
+      buildProviderOptions(conn('volcengine-agent-plan'), 'ark-code-latest'),
+      expectedOptions,
+    );
+    assert.deepEqual(thinkingVariantsForModel('volcengine-agent-plan', 'ark-code-latest'), []);
+    assert.deepEqual(thinkingVariantsForModel('volcengine-agent-plan', 'kimi-k3'), []);
+    assert.deepEqual(
+      buildProviderOptions(conn('volcengine-agent-plan'), 'kimi-k3', 'high'),
+      expectedOptions,
+    );
+  });
+
   test('anthropic effort model (opus-4-8) sends effort field directly; no budgetTokens mapping', () => {
-    assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-opus-4-8'), { anthropic: {} });
     assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-opus-4-8', 'high'), {
-      anthropic: { effort: 'high' },
+      anthropic: { cacheControl: { type: 'ephemeral' }, effort: 'high' },
     });
     assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-opus-4-8', 'max'), {
-      anthropic: { effort: 'max' },
+      anthropic: { cacheControl: { type: 'ephemeral' }, effort: 'max' },
     });
     assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-opus-4-8', 'xhigh'), {
-      anthropic: { effort: 'xhigh' },
+      anthropic: { cacheControl: { type: 'ephemeral' }, effort: 'xhigh' },
     });
   });
 
   test('anthropic budget/toggle model (haiku-4-5) sends thinking.disabled for off; drops unsupported effort', () => {
     assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-haiku-4-5', 'off'), {
-      anthropic: { thinking: { type: 'disabled' } },
+      anthropic: {
+        cacheControl: { type: 'ephemeral' },
+        thinking: { type: 'disabled' },
+      },
     });
     // haiku-4-5 has no effort variants, only off → high is dropped
     assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-haiku-4-5', 'high'), {
-      anthropic: {},
+      anthropic: { cacheControl: { type: 'ephemeral' } },
     });
   });
 
   test('anthropic effort model without toggle (opus-4-8) drops off (cannot disable)', () => {
     assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-opus-4-8', 'off'), {
-      anthropic: {},
+      anthropic: { cacheControl: { type: 'ephemeral' } },
     });
   });
 
@@ -51,6 +91,16 @@ describe('buildProviderOptions: thinking level', () => {
     const expected = { anthropic: { thinking: { type: 'adaptive' }, effort: 'max' } };
     assert.deepEqual(buildProviderOptions(conn('kimi-coding-plan'), 'k3'), expected);
     assert.deepEqual(buildProviderOptions(conn('kimi-coding-plan'), 'k3', 'max'), expected);
+  });
+
+  test('Kimi K3 sends max reasoning effort through the selected OpenAI-compatible namespace', () => {
+    const connection = {
+      ...conn('kimi-coding-plan'),
+      models: [{ id: 'k3', apiProtocol: 'openai-chat' as const }],
+    };
+    const expected = { kimiCodingPlan: { reasoningEffort: 'max' } };
+    assert.deepEqual(buildProviderOptions(connection, 'k3'), expected);
+    assert.deepEqual(buildProviderOptions(connection, 'k3', 'max'), expected);
   });
 
   test('openai gpt-5.5 sends reasoningEffort (none for off, max for max); gpt-4o drops level', () => {
@@ -161,12 +211,38 @@ describe('buildProviderOptions: thinking level', () => {
     assert.deepEqual(buildProviderOptions(conn('deepseek'), 'deepseek-chat', 'high'), {});
   });
 
-  test('xAI Grok 4.5 sends its declared reasoning effort under the xai namespace', () => {
-    assert.deepEqual([...thinkingVariantsForModel('xai', 'grok-4.5')], ['low', 'medium', 'high']);
-    assert.deepEqual(buildProviderOptions(conn('xai'), 'grok-4.5', 'high'), {
-      xai: { reasoningEffort: 'high' },
-    });
-    assert.deepEqual(buildProviderOptions(conn('xai'), 'grok-4.5', 'off'), {});
+  test('xAI Grok 4.5 requests encrypted Responses reasoning under the native OpenAI namespace', () => {
+    for (const providerType of ['xai', 'xai-oauth'] as const) {
+      assert.deepEqual(
+        [...thinkingVariantsForModel(providerType, 'grok-4.5')],
+        ['low', 'medium', 'high'],
+      );
+      assert.deepEqual(buildProviderOptions(conn(providerType), 'grok-4.5'), {
+        openai: {
+          store: false,
+          forceReasoning: true,
+          reasoningSummary: null,
+          include: ['reasoning.encrypted_content'],
+        },
+      });
+      assert.deepEqual(buildProviderOptions(conn(providerType), 'grok-4.5', 'high'), {
+        openai: {
+          store: false,
+          forceReasoning: true,
+          reasoningSummary: null,
+          include: ['reasoning.encrypted_content'],
+          reasoningEffort: 'high',
+        },
+      });
+      assert.deepEqual(buildProviderOptions(conn(providerType), 'grok-4.5', 'off'), {
+        openai: {
+          store: false,
+          forceReasoning: true,
+          reasoningSummary: null,
+          include: ['reasoning.encrypted_content'],
+        },
+      });
+    }
   });
 
   test('Cloudflare Workers AI sends Kimi K2.6 reasoning effort and its real thinking-off wire', () => {
@@ -292,12 +368,43 @@ describe('buildProviderOptions: thinking level', () => {
       openai: { store: false },
     });
     assert.deepEqual(buildProviderOptions(conn('anthropic'), 'claude-haiku-4-5', 'max'), {
-      anthropic: {},
+      anthropic: { cacheControl: { type: 'ephemeral' } },
     });
   });
 });
 
 describe('getAIModel: models.dev registry providers', () => {
+  test('routes the existing Kimi provider through its explicitly selected protocol', () => {
+    const anthropic = getAIModel({
+      connection: conn('kimi-coding-plan'),
+      apiKey: 'test-key',
+      modelId: 'k3',
+    });
+    const openai = getAIModel({
+      connection: {
+        ...conn('kimi-coding-plan'),
+        models: [{ id: 'k3', apiProtocol: 'openai-chat' }],
+      },
+      apiKey: 'test-key',
+      modelId: 'k3',
+    });
+
+    assert.equal(anthropic.provider, 'anthropic.messages');
+    assert.equal(openai.provider, 'kimi-coding-plan.chat');
+    assert.throws(
+      () =>
+        getAIModel({
+          connection: {
+            ...conn('kimi-coding-plan'),
+            models: [{ id: 'k3', apiProtocol: 'openai-responses' }],
+          },
+          apiKey: 'test-key',
+          modelId: 'k3',
+        }),
+      /Kimi Coding Plan.*openai-chat.*anthropic-messages/,
+    );
+  });
+
   test('routes SiliconFlow through the shared OpenAI-compatible adapter without rewriting model ids', () => {
     const model = getAIModel({
       connection: conn('siliconflow'),
@@ -322,6 +429,24 @@ describe('getAIModel: models.dev registry providers', () => {
       const model = getAIModel({ connection: conn(providerType), apiKey: 'test-key', modelId });
       assert.equal(model.provider, expectedProvider, `${providerType}/${modelId}`);
       assert.equal(model.modelId, modelId);
+    }
+  });
+
+  test('routes only xAI Grok 4.5 through Responses', () => {
+    for (const providerType of ['xai', 'xai-oauth'] as const) {
+      const responses = getAIModel({
+        connection: conn(providerType),
+        apiKey: 'xai-test-key',
+        modelId: 'grok-4.5',
+      });
+      const chat = getAIModel({
+        connection: conn(providerType),
+        apiKey: 'xai-test-key',
+        modelId: 'grok-4.3',
+      });
+
+      assert.equal(responses.provider, 'openai.responses');
+      assert.equal(chat.provider, `${providerType}.chat`);
     }
   });
 
@@ -448,5 +573,14 @@ describe('changesBackendConfig', () => {
     assert.equal(changesBackendConfig({ backend: 'ai-sdk' }), true);
     assert.equal(changesBackendConfig({ llmConnectionSlug: 'a' }), true);
     assert.equal(changesBackendConfig({ model: 'm' }), true);
+  });
+
+  test('permissionMode triggers, so a mode change is enforced and not merely stored', () => {
+    // The backend snapshots the header at construction and decides every
+    // tool call against that snapshot. Persisting a lower mode without
+    // rebuilding leaves the live session enforcing the OLD one — which is
+    // how the bot guard's re-pin to `explore` became advisory.
+    assert.equal(changesBackendConfig({ permissionMode: 'explore' }), true);
+    assert.equal(changesBackendConfig({ permissionMode: 'bypass' }), true);
   });
 });

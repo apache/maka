@@ -51,8 +51,16 @@ export function EmptyState(props: EmptyStateProps) {
       </p>
     );
   }
+  // `border` before `border-border`: on its own, `border-border` sets only a
+  // colour, so the card shipped at border-width 0 and the edge the author
+  // meant to draw never rendered. What was actually outlining the card was
+  // the `0 0 0 1px var(--border)` ring inside `shadow-maka-panel` — and that
+  // shadow is the OVERLAY family (mention popup, model picker, select popup,
+  // dialog). This is an in-page card, so it carried a floating panel's
+  // drop shadow for no reason and leaned on its ring for the missing border.
+  // One real hairline instead, same token as .settingsRows / the skill cards.
   const className = cn(
-    'maka-empty-state rounded-md border-border bg-card/70 p-8 text-card-foreground shadow-maka-panel',
+    'maka-empty-state rounded-md border border-border bg-card/70 p-8 text-card-foreground',
     props.extraClassName,
   );
   return (

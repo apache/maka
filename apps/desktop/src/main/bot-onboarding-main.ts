@@ -19,6 +19,7 @@ import {
 import type { BotRegistry } from '@maka/runtime';
 import { proxiedFetch } from '@maka/runtime';
 import type { SettingsStore } from '@maka/storage';
+import { createQQBindTask, pollQQBindTask } from './qq-bot-scan-login.js';
 import { fetchWeChatQrcode, pollWeChatQrcodeStatus } from './wechat-scan-login.js';
 
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -48,7 +49,8 @@ type OnboardingCredential =
   | { provider: 'dingtalk'; clientId: string; clientSecret: string }
   | { provider: 'feishu'; appId: string; appSecret: string; brand: BotOnboardingBrand; botName?: string }
   | { provider: 'wecom'; botId: string; secret: string }
-  | { provider: 'wechat'; botToken: string; baseUrl: string; botId: string; userId: string };
+  | { provider: 'wechat'; botToken: string; baseUrl: string; botId: string; userId: string }
+  | { provider: 'qq'; appId: string; appSecret: string };
 
 type ProviderStartResult = {
   opaqueToken: string;
@@ -121,7 +123,7 @@ export class BotOnboardingService {
 
   constructor(private readonly deps: BotOnboardingServiceDeps) {
     this.adapters = createProductionBotOnboardingAdapters(deps.productVersion ?? '0.1.0');
-    for (const provider of ['dingtalk', 'feishu', 'wecom', 'wechat'] as const) {
+    for (const provider of BOT_ONBOARDING_PROVIDER_KEYS) {
       const override = deps.adapters?.[provider];
       if (override) this.adapters[provider] = override;
     }
@@ -518,6 +520,8 @@ function channelPatchFromCredential(credential: OnboardingCredential): Partial<B
         webhookUrl: credential.baseUrl,
         botUserId: credential.botId,
       };
+    case 'qq':
+      return { ...common, appId: credential.appId, appSecret: credential.appSecret };
   }
 }
 
@@ -568,6 +572,7 @@ function identityFromCredential(credential: OnboardingCredential): { id?: string
     case 'feishu': return { id: credential.appId, displayName: credential.botName };
     case 'wecom': return { id: credential.botId };
     case 'wechat': return { id: credential.botId };
+    case 'qq': return { id: credential.appId };
   }
 }
 
@@ -622,7 +627,17 @@ function platformCode(): number {
   }
 }
 
-function createProductionBotOnboardingAdapters(productVersion: string): Record<BotOnboardingProvider, BotOnboardingProviderAdapter> {
+const BOT_ONBOARDING_PROVIDER_KEYS = [
+  'dingtalk',
+  'feishu',
+  'wecom',
+  'wechat',
+  'qq',
+] as const satisfies ReadonlyArray<BotOnboardingProvider>;
+
+function createProductionBotOnboardingAdapters(
+  productVersion: string,
+): Record<BotOnboardingProvider, BotOnboardingProviderAdapter> {
   return {
     dingtalk: {
       async start(_input, signal) {
@@ -794,7 +809,49 @@ function createProductionBotOnboardingAdapters(productVersion: string): Record<B
         };
       },
     },
+    qq: {
+      async start(_input, signal) {
+        const task = await createQQBindTask(signal);
+        return {
+          opaqueToken: JSON.stringify({
+            taskId: task.taskId,
+            decryptionKey: task.decryptionKey,
+          }),
+          qrValue: task.verificationUrl,
+          verificationUrl: task.verificationUrl,
+          pollIntervalMs: 2_000,
+          expiresInSeconds: DEFAULT_EXPIRES_IN_SECONDS,
+        };
+      },
+      async poll(session, signal) {
+        const token = parseQQOpaqueToken(session.opaqueToken);
+        const result = await pollQQBindTask(token.taskId, token.decryptionKey, signal);
+        if (result.status === 'pending') return { status: 'pending' };
+        if (result.status === 'expired') return { status: 'expired' };
+        return {
+          status: 'confirmed',
+          credential: {
+            provider: 'qq',
+            appId: result.appId,
+            appSecret: result.appSecret,
+          },
+          identity: { id: result.appId },
+        };
+      },
+    },
   };
+}
+
+function parseQQOpaqueToken(value: string | undefined): {
+  taskId: string;
+  decryptionKey: string;
+} {
+  if (!value) throw new Error('QQ bind session is missing');
+  const parsed = JSON.parse(value) as { taskId?: unknown; decryptionKey?: unknown };
+  if (typeof parsed.taskId !== 'string' || typeof parsed.decryptionKey !== 'string') {
+    throw new Error('QQ bind session is invalid');
+  }
+  return { taskId: parsed.taskId, decryptionKey: parsed.decryptionKey };
 }
 
 async function fetchFeishuBotName(

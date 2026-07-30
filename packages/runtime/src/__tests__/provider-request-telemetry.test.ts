@@ -199,7 +199,7 @@ describe('provider request capture commit', () => {
     });
 
     const result = await recordCapture({
-      schemaVersion: 1,
+      schemaVersion: 2,
       traceId: 'trace-1',
       captureId: 'capture-1',
       turnId: 'turn-1',
@@ -207,6 +207,7 @@ describe('provider request capture commit', () => {
       providerId: 'openai',
       modelId: 'gpt-test',
       requestHash: 'sha256:request',
+      requestPayloadWithoutProviderOptionsHash: 'sha256:shared-request',
       requestBytes: 2,
       segments: [],
       serializedRequest: '{}',
@@ -242,7 +243,7 @@ describe('provider request capture commit', () => {
 
     await assert.rejects(
       recordCapture({
-        schemaVersion: 1,
+        schemaVersion: 2,
         traceId: 'trace-1',
         captureId: 'capture-1',
         turnId: 'turn-1',
@@ -250,6 +251,7 @@ describe('provider request capture commit', () => {
         providerId: 'openai',
         modelId: 'gpt-test',
         requestHash: 'sha256:request',
+        requestPayloadWithoutProviderOptionsHash: 'sha256:shared-request',
         requestBytes: 2,
         segments: [],
         serializedRequest: '{}',
@@ -262,6 +264,56 @@ describe('provider request capture commit', () => {
 });
 
 describe('provider request tracker', () => {
+  test('records the request model context window on completed attempts', async () => {
+    const attempts: telemetry.ProviderRequestAttemptRecord[] = [];
+    const tracker = new telemetry.ProviderRequestTracker({
+      traceId: 'trace-context',
+      turnId: 'turn-context',
+      contextWindow: 200_000,
+      now: () => Date.now(),
+      newId: () => 'id',
+      persistCapture: async () => ({ artifactId: 'artifact' }),
+      recordAttempt: async (attempt) => {
+        attempts.push(attempt);
+      },
+    });
+
+    const result = await tracker.trackStream({
+      providerId: 'anthropic',
+      modelId: 'claude-test',
+      params: preparedParams('hello'),
+      doStream: async () => ({ stream: streamOf([finishPart()]) }),
+    });
+    await drain(result.stream);
+
+    assert.equal(attempts[0]?.contextWindow, 200_000);
+  });
+
+  test('omits a non-positive request model context window', async () => {
+    const attempts: telemetry.ProviderRequestAttemptRecord[] = [];
+    const tracker = new telemetry.ProviderRequestTracker({
+      traceId: 'trace-context',
+      turnId: 'turn-context',
+      contextWindow: 0,
+      now: () => Date.now(),
+      newId: () => 'id',
+      persistCapture: async () => ({ artifactId: 'artifact' }),
+      recordAttempt: async (attempt) => {
+        attempts.push(attempt);
+      },
+    });
+
+    const result = await tracker.trackStream({
+      providerId: 'openai',
+      modelId: 'unknown-model',
+      params: preparedParams('hello'),
+      doStream: async () => ({ stream: streamOf([finishPart()]) }),
+    });
+    await drain(result.stream);
+
+    assert.equal(attempts[0]?.contextWindow, undefined);
+  });
+
   test('persists a logical capture before each physical attempt and reuses it for retries', async () => {
     const captures: Array<{
       captureId: string;
@@ -357,6 +409,68 @@ describe('provider request tracker', () => {
     );
     assert.equal((attempts[1] as Record<string, unknown>).cacheReadInputSource, 'provider');
     assert.equal((attempts[1] as Record<string, unknown>).cacheMissInputSource, 'derived');
+  });
+
+  test('captures and attributes a non-streaming physical provider call', async () => {
+    const captures: Array<{ captureId: string; serializedRequest: string }> = [];
+    const attempts: Array<Record<string, unknown>> = [];
+    let providerCalls = 0;
+    let id = 0;
+    const tracker = new telemetry.ProviderRequestTracker({
+      traceId: 'history-trace',
+      turnId: 'turn-history',
+      now: () => 1_000 + id,
+      newId: () => `history-${++id}`,
+      persistCapture: async (capture) => {
+        captures.push(capture);
+        return { artifactId: 'history-artifact' };
+      },
+      recordAttempt: (attempt) => {
+        attempts.push(attempt as unknown as Record<string, unknown>);
+      },
+    });
+    const params = preparedParams('history summary');
+    const result = await tracker.trackGenerate({
+      providerId: 'openai',
+      modelId: 'gpt-history',
+      params,
+      abortSignal: new AbortController().signal,
+      doGenerate: async () => {
+        providerCalls += 1;
+        return {
+          text: 'summary',
+          finishReason: { unified: 'stop', raw: 'stop' },
+          usage: {
+            inputTokens: { total: 7, noCache: 7 },
+            outputTokens: { total: 3, text: 3 },
+            raw: { prompt_tokens: 7, completion_tokens: 3 },
+          },
+        };
+      },
+    });
+
+    assert.equal(result.text, 'summary');
+    assert.equal(providerCalls, 1);
+    assert.equal(captures.length, 1);
+    assert.deepEqual(JSON.parse(captures[0]!.serializedRequest), params);
+    assert.deepEqual(
+      attempts.map(({ status, finishReason, inputTokens, outputTokens, captureId }) => ({
+        status,
+        finishReason,
+        inputTokens,
+        outputTokens,
+        captureId,
+      })),
+      [
+        {
+          status: 'completed',
+          finishReason: 'stop',
+          inputTokens: 7,
+          outputTokens: 3,
+          captureId: captures[0]!.captureId,
+        },
+      ],
+    );
   });
 
   test('captures a changed logical body separately and blocks provider calls on capture failure', async () => {

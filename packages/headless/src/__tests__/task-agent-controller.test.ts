@@ -19,18 +19,19 @@ import {
   type SessionEvent,
   type SessionHeader,
 } from '@maka/core';
-import type { BackendSendInput, PermissionDecision } from '@maka/core/backend-types';
+import type { BackendSendInput } from '@maka/core/backend-types';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import { createSessionStore } from '@maka/storage';
 import { StorageRootAuthorityError } from '@maka/storage/root-authority';
 import type { Config, Task } from '../contracts.js';
 import { openHeadlessStorageForWrite } from '../headless-storage.js';
 import type { HeadlessBackendContext } from '../isolation.js';
-import { commandResourceScope, hashNormalizedArgs } from '../permission-grants.js';
 import {
   runTaskOnce,
   runTaskOnceWithStorage,
+  TaskAgentController,
   type RunTaskOnceResult,
 } from '../task-agent-controller.js';
-import type { TaskPermissionGrant } from '../task-contracts.js';
 import { buildIsolatedHeadlessTools } from '../tools.js';
 
 const fakeConfig: Config = {
@@ -38,6 +39,11 @@ const fakeConfig: Config = {
   backend: 'fake',
   llmConnectionSlug: 'fake',
   model: 'fake-model',
+};
+const agentToolsConfig: Config = {
+  ...fakeConfig,
+  backend: 'ai-sdk',
+  agentTools: true,
 };
 
 const registerFakeBackend = (registry: BackendRegistry): void => {
@@ -76,6 +82,15 @@ class ReportingBackend implements AgentBackend {
       modelId: this.ctx.header.model,
     });
     yield { type: 'text_complete', id: 'report-text', turnId, ts, messageId, text: 'done' };
+    yield {
+      type: 'tool_start',
+      id: 'report-tool-start',
+      turnId,
+      ts,
+      toolUseId: 'tool-1',
+      toolName: 'bash',
+      args: { command: 'printf artifact' },
+    };
     yield {
       type: 'tool_result',
       id: 'report-artifact',
@@ -121,7 +136,7 @@ class ReportingBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -152,7 +167,269 @@ class DeadlineBackend implements AgentBackend {
     this.release();
   }
 
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
+  async dispose(): Promise<void> {}
+}
+
+class ChildCapabilityBackend implements AgentBackend {
+  readonly kind: BackendKind = 'ai-sdk';
+  readonly sessionId: string;
+
+  constructor(
+    sessionId: string,
+    private readonly context: HeadlessBackendContext,
+    private readonly observed: {
+      childSessionId?: string;
+      childStatus?: string;
+      listedSessionIds?: string[];
+      outputSessionId?: string;
+    },
+  ) {
+    this.sessionId = sessionId;
+  }
+
+  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    assert.ok(this.context.spawnChildSession);
+    assert.ok(this.context.listChildAgents);
+    assert.ok(this.context.readChildAgentOutput);
+    assert.ok(input.runId);
+    const child = await this.context.spawnChildSession(this.sessionId, {
+      spawnedBy: {
+        parentRunId: input.runId,
+        parentTurnId: input.turnId,
+        toolCallId: 'child-capability-call',
+      },
+      agentProfile: 'local_read',
+      prompt: 'inspect the task workspace',
+    });
+    const listed = await this.context.listChildAgents(this.sessionId);
+    const output = await this.context.readChildAgentOutput(this.sessionId, {
+      execution: {
+        kind: 'child_session',
+        sessionId: child.childSessionId,
+        currentRunId: child.runId,
+      },
+    });
+    this.observed.childSessionId = child.childSessionId;
+    this.observed.childStatus = child.status;
+    this.observed.listedSessionIds = listed.executions.flatMap((execution) =>
+      execution.execution.kind === 'child_session' ? [execution.execution.sessionId] : [],
+    );
+    this.observed.outputSessionId =
+      output.execution.kind === 'child_session' ? output.execution.sessionId : undefined;
+    yield {
+      type: 'text_complete',
+      id: 'capability-parent-text',
+      turnId: input.turnId,
+      ts: Date.now(),
+      messageId: 'capability-parent-message',
+      text: 'done',
+    };
+    yield {
+      type: 'complete',
+      id: 'capability-parent-complete',
+      turnId: input.turnId,
+      ts: Date.now(),
+      stopReason: 'end_turn',
+    };
+  }
+
+  async stop(): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
+  async dispose(): Promise<void> {}
+}
+
+class ChildAdmissionProbeBackend implements AgentBackend {
+  readonly kind: BackendKind = 'ai-sdk';
+  readonly sessionId: string;
+
+  constructor(
+    sessionId: string,
+    private readonly context: HeadlessBackendContext,
+    private readonly observed: { spawned?: boolean; error?: string },
+  ) {
+    this.sessionId = sessionId;
+  }
+
+  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    assert.ok(this.context.spawnChildSession);
+    assert.ok(input.runId);
+    try {
+      await this.context.spawnChildSession(this.sessionId, {
+        spawnedBy: {
+          parentRunId: input.runId,
+          parentTurnId: input.turnId,
+          toolCallId: 'child-admission-probe',
+        },
+        agentProfile: 'local_read',
+        prompt: 'inspect the task workspace',
+      });
+      this.observed.spawned = true;
+    } catch (error) {
+      this.observed.spawned = false;
+      this.observed.error = error instanceof Error ? error.message : String(error);
+    }
+    yield {
+      type: 'text_complete',
+      id: 'child-admission-probe-text',
+      turnId: input.turnId,
+      ts: Date.now(),
+      messageId: 'child-admission-probe-message',
+      text: 'child admission checked',
+    };
+    yield {
+      type: 'complete',
+      id: 'child-admission-probe-complete',
+      turnId: input.turnId,
+      ts: Date.now(),
+      stopReason: 'end_turn',
+    };
+  }
+
+  async stop(): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
+  async dispose(): Promise<void> {}
+}
+
+class BackgroundChildBackend implements AgentBackend {
+  readonly kind: BackendKind = 'ai-sdk';
+  readonly sessionId: string;
+  stopCalls = 0;
+  runId?: string;
+  private release!: () => void;
+  private readonly stopped = new Promise<void>((resolve) => {
+    this.release = resolve;
+  });
+
+  constructor(
+    sessionId: string,
+    private readonly onStarted: () => void,
+  ) {
+    this.sessionId = sessionId;
+  }
+
+  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    this.runId = input.runId;
+    this.onStarted();
+    await this.stopped;
+    yield {
+      type: 'complete',
+      id: 'background-child-complete',
+      turnId: input.turnId,
+      ts: Date.now(),
+      stopReason: 'user_stop',
+    };
+  }
+
+  async stop(): Promise<void> {
+    this.stopCalls += 1;
+    this.release();
+  }
+
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
+  async dispose(): Promise<void> {}
+}
+
+class ParentWithBackgroundChildBackend implements AgentBackend {
+  readonly kind: BackendKind = 'ai-sdk';
+  readonly sessionId: string;
+  private release!: () => void;
+  private readonly stopped = new Promise<void>((resolve) => {
+    this.release = resolve;
+  });
+
+  constructor(
+    sessionId: string,
+    private readonly context: HeadlessBackendContext,
+    private readonly childStarted: Promise<void>,
+    private readonly observeChild: (promise: Promise<unknown>) => void,
+    private readonly waitForStop: boolean,
+    private readonly stopError?: Error,
+  ) {
+    this.sessionId = sessionId;
+  }
+
+  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    assert.ok(input.runId);
+    assert.ok(this.context.spawnChildSession);
+    this.observeChild(
+      this.context.spawnChildSession(this.sessionId, {
+        spawnedBy: {
+          parentRunId: input.runId,
+          parentTurnId: input.turnId,
+          toolCallId: 'background-child-call',
+        },
+        agentProfile: 'local_read',
+        prompt: 'wait for parent cleanup',
+      }),
+    );
+    await this.childStarted;
+    if (this.waitForStop) await this.stopped;
+    yield {
+      type: 'text_complete',
+      id: 'background-parent-text',
+      turnId: input.turnId,
+      ts: Date.now(),
+      messageId: 'background-parent-message',
+      text: 'done',
+    };
+    yield {
+      type: 'complete',
+      id: 'background-parent-complete',
+      turnId: input.turnId,
+      ts: Date.now(),
+      stopReason: this.waitForStop ? 'user_stop' : 'end_turn',
+    };
+  }
+
+  async stop(): Promise<void> {
+    this.release();
+    if (this.stopError) throw this.stopError;
+  }
+
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
+  async dispose(): Promise<void> {}
+}
+
+class FailingStopBackgroundChildBackend implements AgentBackend {
+  readonly kind: BackendKind = 'ai-sdk';
+  readonly sessionId: string;
+  stopCalls = 0;
+  private finish!: () => void;
+  private readonly finished = new Promise<void>((resolve) => {
+    this.finish = resolve;
+  });
+
+  constructor(
+    sessionId: string,
+    private readonly onStarted: () => void,
+    private readonly stopError: Error,
+  ) {
+    this.sessionId = sessionId;
+  }
+
+  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    this.onStarted();
+    await this.finished;
+    yield {
+      type: 'complete',
+      id: 'failing-stop-child-complete',
+      turnId: input.turnId,
+      ts: Date.now(),
+      stopReason: 'user_stop',
+    };
+  }
+
+  async stop(): Promise<void> {
+    this.stopCalls += 1;
+    throw this.stopError;
+  }
+
+  finishForTest(): void {
+    this.finish();
+  }
+
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -176,7 +453,7 @@ class ResettingDeadlineBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -201,7 +478,7 @@ class DeadlineRepairBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -252,7 +529,7 @@ class ProtectedTamperBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -291,7 +568,7 @@ class FailingBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -328,67 +605,13 @@ class IncompleteBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
 const registerIncompleteBackend = (registry: BackendRegistry): void => {
   registry.register('fake', (ctx) => new IncompleteBackend(ctx.sessionId));
 };
-
-class PermissionRequestBackend implements AgentBackend {
-  readonly kind: BackendKind = 'fake';
-  readonly sessionId: string;
-
-  constructor(
-    sessionId: string,
-    private readonly onRespond: () => void,
-    private readonly command: string,
-  ) {
-    this.sessionId = sessionId;
-  }
-
-  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
-    const ts = Date.now();
-    yield {
-      type: 'permission_request',
-      kind: 'tool_permission',
-      id: 'permission-request-event',
-      turnId: input.turnId,
-      ts,
-      requestId: 'permission-request-1',
-      toolUseId: 'tool-1',
-      toolName: 'Bash',
-      category: 'shell_unsafe',
-      reason: 'shell_dangerous',
-      args: { command: this.command },
-      rememberForTurnAllowed: true,
-    };
-    yield {
-      type: 'complete',
-      id: 'permission-complete',
-      turnId: input.turnId,
-      ts,
-      stopReason: 'permission_handoff',
-    };
-  }
-
-  async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {
-    this.onRespond();
-    throw new Error('headless task facade must not answer interactive permission requests');
-  }
-  async dispose(): Promise<void> {}
-}
-
-const registerPermissionRequestBackend =
-  (onRespond: () => void, command = 'rm -rf /tmp/example') =>
-  (registry: BackendRegistry): void => {
-    registry.register(
-      'fake',
-      (ctx) => new PermissionRequestBackend(ctx.sessionId, onRespond, command),
-    );
-  };
 
 class ProgressToolBackend implements AgentBackend {
   readonly kind: BackendKind = 'ai-sdk';
@@ -536,7 +759,7 @@ class ProgressToolBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -730,7 +953,7 @@ class GateRepairBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -875,7 +1098,7 @@ class GateLaunderBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -945,6 +1168,624 @@ async function readAgentRunHeader(
 }
 
 describe('runTaskOnce', () => {
+  test('keeps Pi CLI tools outside the Maka product-tool projection', async () => {
+    await withDirs(async (fixtureDir, storageRoot) => {
+      const contexts: HeadlessBackendContext[] = [];
+      const task: Task = {
+        id: 'pi-product-surface-task',
+        instruction: 'do the thing',
+        workspaceDir: fixtureDir,
+        verification: { command: 'true', protectedPaths: [] },
+      };
+
+      const result = await runTaskOnce(
+        { ...fakeConfig, backend: 'pi-agent', agentTools: true },
+        task,
+        {
+          storageRoot,
+          registerBackends: (registry, context) => {
+            contexts.push(context);
+            registry.register(
+              'pi-agent',
+              (ctx) =>
+                new ReportingBackend({
+                  sessionId: ctx.sessionId,
+                  header: ctx.header,
+                  store: ctx.store,
+                }),
+            );
+          },
+          realBackendIsolation: {
+            kind: 'external',
+            label: 'unit isolated Pi transport',
+            toolExecutor: {
+              async exec() {
+                return { exitCode: 0, stdout: '', stderr: '' };
+              },
+            },
+          },
+        },
+      );
+
+      assert.equal(contexts[0]?.productToolSurface, undefined);
+      assert.equal(result.projection.toolExecutors[0]?.productToolSurface, undefined);
+      assert.deepEqual(result.projection.toolExecutors[0]?.toolNames, ['registered_backend']);
+    });
+  });
+
+  test('gives task-run backends the authoritative current-run event reader', async () => {
+    await withDirs(async (fixtureDir, storageRoot) => {
+      let loadTurnRuntimeEvents: ((turnId: string) => Promise<RuntimeEvent[]>) | undefined;
+      const task: Task = {
+        id: 'runtime-event-reader-task',
+        instruction: 'do the thing',
+        workspaceDir: fixtureDir,
+        verification: { command: 'true', protectedPaths: [] },
+      };
+
+      const result = await runTaskOnce({ ...fakeConfig, backend: 'ai-sdk' }, task, {
+        storageRoot,
+        registerBackends: (registry) => {
+          registry.register('ai-sdk', (ctx) => {
+            loadTurnRuntimeEvents = ctx.loadTurnRuntimeEvents;
+            return new ReportingBackend({
+              sessionId: ctx.sessionId,
+              header: ctx.header,
+              store: ctx.store,
+            });
+          });
+        },
+        realBackendIsolation: { kind: 'external', label: 'unit isolation' },
+      });
+
+      assert.ok(loadTurnRuntimeEvents);
+      const events = await loadTurnRuntimeEvents(latestInvocation(result).turnId);
+      assert.ok(
+        events.some(
+          (event) =>
+            event.role === 'user' &&
+            event.content?.kind === 'text' &&
+            event.content.text === task.instruction,
+        ),
+      );
+      assert.ok(events.some((event) => event.status === 'completed'));
+      const sessions = createSessionStore(storageRoot);
+      try {
+        assert.deepEqual(await sessions.readExecutionBoundary(result.resultRecord.sessionId), {
+          kind: 'external',
+          revision: 0,
+        });
+      } finally {
+        await sessions.close?.();
+      }
+    });
+  });
+
+  test('does not provision child tools when Agent tools are disabled by default', async () => {
+    await withDirs(async (fixtureDir, storageRoot) => {
+      const observed: { spawned?: boolean; error?: string } = {};
+      let buildCount = 0;
+      const task: Task = {
+        id: 'disabled-child-capability-task',
+        instruction: 'do the thing',
+        workspaceDir: fixtureDir,
+        verification: { command: 'true', protectedPaths: [] },
+      };
+
+      const result = await runTaskOnce({ ...fakeConfig, backend: 'ai-sdk' }, task, {
+        storageRoot,
+        registerBackends: (registry, context) => {
+          registry.register('ai-sdk', (ctx) => {
+            buildCount += 1;
+            if (buildCount === 1) {
+              return new ChildAdmissionProbeBackend(ctx.sessionId, context, observed);
+            }
+            return new FakeBackend({
+              sessionId: ctx.sessionId,
+              header: ctx.header,
+              store: ctx.store,
+            });
+          });
+        },
+        realBackendIsolation: {
+          kind: 'external',
+          label: 'unit isolated executor',
+          toolExecutor: {
+            async exec() {
+              return { exitCode: 0, stdout: '', stderr: '' };
+            },
+          },
+        },
+      });
+
+      assert.equal(observed.spawned, false);
+      assert.match(observed.error ?? '', /missing tools/i);
+      assert.equal(buildCount, 1);
+      assert.ok(
+        !result.projection.toolExecutors[0]?.toolNames.some((name) => name.startsWith('agent_')),
+      );
+      assert.deepEqual(result.projection.toolExecutors[0]?.productToolSurface, {
+        policy: { economy: true, disabledSurfaceIds: ['agent'] },
+        productToolNames: ['Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write'],
+      });
+      assert.equal(
+        result.resultRecord.status,
+        'completed',
+        JSON.stringify(result.resultRecord, null, 2),
+      );
+    });
+  });
+
+  test('lets a task-run backend spawn, list, and read a linked child session', async () => {
+    await withDirs(async (fixtureDir, storageRoot) => {
+      const observed: {
+        childSessionId?: string;
+        childStatus?: string;
+        childToolNames?: string[];
+        listedSessionIds?: string[];
+        outputSessionId?: string;
+      } = {};
+      let buildCount = 0;
+      const task: Task = {
+        id: 'child-capability-task',
+        instruction: 'do the thing',
+        workspaceDir: fixtureDir,
+        verification: { command: 'true', protectedPaths: [] },
+      };
+
+      const result = await runTaskOnce(agentToolsConfig, task, {
+        storageRoot,
+        registerBackends: (registry, context) => {
+          registry.register('ai-sdk', (ctx) => {
+            buildCount += 1;
+            if (buildCount === 1) {
+              return new ChildCapabilityBackend(ctx.sessionId, context, observed);
+            }
+            observed.childToolNames = ctx.tools?.map((tool) => tool.name);
+            return new FakeBackend({
+              sessionId: ctx.sessionId,
+              header: ctx.header,
+              store: ctx.store,
+            });
+          });
+        },
+        realBackendIsolation: {
+          kind: 'external',
+          label: 'unit isolated executor',
+          toolExecutor: {
+            async exec() {
+              return { exitCode: 0, stdout: '', stderr: '' };
+            },
+          },
+        },
+      });
+
+      assert.equal(
+        result.resultRecord.status,
+        'completed',
+        JSON.stringify(result.resultRecord, null, 2),
+      );
+      assert.equal(observed.childStatus, 'completed');
+      assert.deepEqual(observed.childToolNames, ['Read', 'Glob', 'Grep']);
+      assert.ok(observed.childSessionId);
+      assert.deepEqual(observed.listedSessionIds, [observed.childSessionId]);
+      assert.equal(observed.outputSessionId, observed.childSessionId);
+      for (const toolName of ['agent_spawn', 'agent_swarm', 'agent_list', 'agent_output']) {
+        assert.ok(result.projection.toolExecutors[0]?.toolNames.includes(toolName));
+      }
+      assert.deepEqual(result.projection.toolExecutors[0]?.productToolSurface, {
+        policy: { economy: true, disabledSurfaceIds: [] },
+        productToolNames: [
+          'Bash',
+          'Edit',
+          'Glob',
+          'Grep',
+          'Read',
+          'Write',
+          'agent_list',
+          'agent_output',
+          'agent_spawn',
+          'agent_swarm',
+        ],
+      });
+    });
+  });
+
+  test('settles background child sessions after a normal task-run completion', async () => {
+    await withDirs(async (fixtureDir, storageRoot) => {
+      let resolveChildStarted!: () => void;
+      const childStarted = new Promise<void>((resolve) => {
+        resolveChildStarted = resolve;
+      });
+      let childBackend: BackgroundChildBackend | undefined;
+      let childPromise: Promise<unknown> | undefined;
+      let childSettled = false;
+      let buildCount = 0;
+      const task: Task = {
+        id: 'normal-background-child',
+        instruction: 'coordinate child work',
+        workspaceDir: fixtureDir,
+        verification: { command: 'true', protectedPaths: [] },
+      };
+
+      const result = await runTaskOnce(agentToolsConfig, task, {
+        storageRoot,
+        registerBackends: (registry, context) => {
+          registry.register('ai-sdk', (ctx) => {
+            buildCount += 1;
+            if (buildCount === 1) {
+              return new ParentWithBackgroundChildBackend(
+                ctx.sessionId,
+                context,
+                childStarted,
+                (promise) => {
+                  childPromise = promise.finally(() => {
+                    childSettled = true;
+                  });
+                },
+                false,
+              );
+            }
+            childBackend = new BackgroundChildBackend(ctx.sessionId, resolveChildStarted);
+            return childBackend;
+          });
+        },
+        realBackendIsolation: {
+          kind: 'external',
+          label: 'unit isolated executor',
+          toolExecutor: {
+            async exec() {
+              return { exitCode: 0, stdout: '', stderr: '' };
+            },
+          },
+        },
+      });
+
+      assert.equal(
+        result.resultRecord.status,
+        'completed',
+        JSON.stringify(result.resultRecord, null, 2),
+      );
+      assert.equal(result.settledByDeadline, false);
+      assert.equal(childBackend?.stopCalls, 1);
+      assert.equal(childSettled, true);
+      await childPromise;
+      assert.ok(childBackend?.runId);
+      const childRunHeader = await readAgentRunHeader(
+        storageRoot,
+        childBackend.sessionId,
+        childBackend.runId,
+      );
+      assert.equal(childRunHeader.abortSource, 'user_stop');
+    });
+  });
+
+  test('surfaces a cleanup error when the task runtime succeeds', async () => {
+    await withDirs(async (fixtureDir, storageRoot) => {
+      const cleanupError = new Error('child cleanup stop failed');
+      let resolveChildStarted!: () => void;
+      const childStarted = new Promise<void>((resolve) => {
+        resolveChildStarted = resolve;
+      });
+      let childBackend: FailingStopBackgroundChildBackend | undefined;
+      let childPromise: Promise<unknown> | undefined;
+      let buildCount = 0;
+      const task: Task = {
+        id: 'successful-runtime-cleanup-failure',
+        instruction: 'surface cleanup failure',
+        workspaceDir: fixtureDir,
+        verification: { command: 'true', protectedPaths: [] },
+      };
+
+      const run = runTaskOnce(agentToolsConfig, task, {
+        storageRoot,
+        registerBackends: (registry, context) => {
+          registry.register('ai-sdk', (ctx) => {
+            buildCount += 1;
+            if (buildCount === 1) {
+              return new ParentWithBackgroundChildBackend(
+                ctx.sessionId,
+                context,
+                childStarted,
+                (promise) => {
+                  childPromise = promise;
+                },
+                false,
+              );
+            }
+            childBackend = new FailingStopBackgroundChildBackend(
+              ctx.sessionId,
+              resolveChildStarted,
+              cleanupError,
+            );
+            return childBackend;
+          });
+        },
+        realBackendIsolation: {
+          kind: 'external',
+          label: 'unit isolated executor',
+          toolExecutor: {
+            async exec() {
+              return { exitCode: 0, stdout: '', stderr: '' };
+            },
+          },
+        },
+      });
+      try {
+        await assert.rejects(run, (error: unknown) => {
+          assert.equal(error, cleanupError);
+          return true;
+        });
+        assert.equal(childBackend?.stopCalls, 1);
+      } finally {
+        childBackend?.finishForTest();
+        await childPromise;
+      }
+    });
+  });
+
+  test('settles background child sessions at the task-run deadline', async (t) => {
+    await withDirs(async (fixtureDir, storageRoot) => {
+      const realSetTimeout = setTimeout;
+      const realClearTimeout = clearTimeout;
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      let resolveChildStarted!: () => void;
+      const childStarted = new Promise<void>((resolve) => {
+        resolveChildStarted = resolve;
+      });
+      let childBackend: BackgroundChildBackend | undefined;
+      let childPromise: Promise<unknown> | undefined;
+      let childSettled = false;
+      let buildCount = 0;
+      const task: Task = {
+        id: 'deadline-background-child',
+        instruction: 'coordinate child work',
+        workspaceDir: fixtureDir,
+        verification: { command: 'true', protectedPaths: [] },
+      };
+
+      const run = runTaskOnce(agentToolsConfig, task, {
+        storageRoot,
+        registerBackends: (registry, context) => {
+          registry.register('ai-sdk', (ctx) => {
+            buildCount += 1;
+            if (buildCount === 1) {
+              return new ParentWithBackgroundChildBackend(
+                ctx.sessionId,
+                context,
+                childStarted,
+                (promise) => {
+                  childPromise = promise.finally(() => {
+                    childSettled = true;
+                  });
+                },
+                true,
+              );
+            }
+            childBackend = new BackgroundChildBackend(ctx.sessionId, resolveChildStarted);
+            return childBackend;
+          });
+        },
+        realBackendIsolation: {
+          kind: 'external',
+          label: 'unit isolated executor',
+          toolExecutor: {
+            async exec() {
+              return { exitCode: 0, stdout: '', stderr: '' };
+            },
+          },
+        },
+        now: () => 0,
+        deadlineAtMs: 100,
+      });
+      let watchdog: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await childStarted;
+        t.mock.timers.tick(100);
+        const result = await Promise.race([
+          run,
+          new Promise<never>((_resolve, reject) => {
+            watchdog = realSetTimeout(
+              () => reject(new Error('deadline child lifecycle watchdog expired')),
+              1_000,
+            );
+          }),
+        ]);
+
+        assert.ok(childBackend);
+        assert.equal(result.settledByDeadline, true);
+        assert.equal(childBackend.stopCalls, 1);
+        assert.equal(childSettled, true);
+        await childPromise;
+      } finally {
+        if (watchdog) realClearTimeout(watchdog);
+        t.mock.timers.reset();
+      }
+    });
+  });
+
+  test('settles child sessions with deadline provenance when parent settlement fails', async (t) => {
+    await withDirs(async (fixtureDir, storageRoot) => {
+      const realSetTimeout = setTimeout;
+      const realClearTimeout = clearTimeout;
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const runtimeError = new Error('parent deadline stop failed');
+      let resolveChildStarted!: () => void;
+      const childStarted = new Promise<void>((resolve) => {
+        resolveChildStarted = resolve;
+      });
+      let childBackend: BackgroundChildBackend | undefined;
+      let childPromise: Promise<unknown> | undefined;
+      let childSettled = false;
+      let buildCount = 0;
+      const task: Task = {
+        id: 'deadline-parent-settlement-failure',
+        instruction: 'preserve deadline provenance',
+        workspaceDir: fixtureDir,
+        verification: { command: 'true', protectedPaths: [] },
+      };
+
+      const run = runTaskOnce(agentToolsConfig, task, {
+        storageRoot,
+        registerBackends: (registry, context) => {
+          registry.register('ai-sdk', (ctx) => {
+            buildCount += 1;
+            if (buildCount === 1) {
+              return new ParentWithBackgroundChildBackend(
+                ctx.sessionId,
+                context,
+                childStarted,
+                (promise) => {
+                  childPromise = promise.finally(() => {
+                    childSettled = true;
+                  });
+                },
+                true,
+                runtimeError,
+              );
+            }
+            childBackend = new BackgroundChildBackend(ctx.sessionId, resolveChildStarted);
+            return childBackend;
+          });
+        },
+        realBackendIsolation: {
+          kind: 'external',
+          label: 'unit isolated executor',
+          toolExecutor: {
+            async exec() {
+              return { exitCode: 0, stdout: '', stderr: '' };
+            },
+          },
+        },
+        now: () => 0,
+        deadlineAtMs: 100,
+      });
+      let watchdog: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await childStarted;
+        t.mock.timers.tick(100);
+        await assert.rejects(
+          Promise.race([
+            run,
+            new Promise<never>((_resolve, reject) => {
+              watchdog = realSetTimeout(
+                () => reject(new Error('deadline settlement failure watchdog expired')),
+                1_000,
+              );
+            }),
+          ]),
+          (error: unknown) => {
+            assert.equal(error, runtimeError);
+            return true;
+          },
+        );
+        assert.ok(childBackend?.runId);
+        assert.equal(childBackend.stopCalls, 1);
+        assert.equal(childSettled, true);
+        await childPromise;
+        const childRunHeader = await readAgentRunHeader(
+          storageRoot,
+          childBackend.sessionId,
+          childBackend.runId,
+        );
+        assert.equal(childRunHeader.abortSource, 'benchmark.deadline');
+      } finally {
+        if (watchdog) realClearTimeout(watchdog);
+        t.mock.timers.reset();
+      }
+    });
+  });
+
+  test('preserves the runtime error when deadline cleanup also fails', async (t) => {
+    await withDirs(async (fixtureDir, storageRoot) => {
+      const realSetTimeout = setTimeout;
+      const realClearTimeout = clearTimeout;
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      class ParentSettlementError extends Error {}
+      const runtimeError = new ParentSettlementError('parent deadline stop failed');
+      const cleanupError = new Error('child cleanup stop failed');
+      let resolveChildStarted!: () => void;
+      const childStarted = new Promise<void>((resolve) => {
+        resolveChildStarted = resolve;
+      });
+      let childBackend: FailingStopBackgroundChildBackend | undefined;
+      let childPromise: Promise<unknown> | undefined;
+      let buildCount = 0;
+      const task: Task = {
+        id: 'deadline-runtime-and-cleanup-failure',
+        instruction: 'preserve the primary runtime failure',
+        workspaceDir: fixtureDir,
+        verification: { command: 'true', protectedPaths: [] },
+      };
+
+      const run = new TaskAgentController({
+        storageRoot,
+        registerBackends: (registry, context) => {
+          registry.register('ai-sdk', (ctx) => {
+            buildCount += 1;
+            if (buildCount === 1) {
+              return new ParentWithBackgroundChildBackend(
+                ctx.sessionId,
+                context,
+                childStarted,
+                (promise) => {
+                  childPromise = promise;
+                },
+                true,
+                runtimeError,
+              );
+            }
+            childBackend = new FailingStopBackgroundChildBackend(
+              ctx.sessionId,
+              resolveChildStarted,
+              cleanupError,
+            );
+            return childBackend;
+          });
+        },
+        realBackendIsolation: {
+          kind: 'external',
+          label: 'unit isolated executor',
+          toolExecutor: {
+            async exec() {
+              return { exitCode: 0, stdout: '', stderr: '' };
+            },
+          },
+        },
+        now: () => 0,
+        deadlineAtMs: 100,
+      }).runOnce(agentToolsConfig, task);
+      let watchdog: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await childStarted;
+        t.mock.timers.tick(100);
+        await assert.rejects(
+          Promise.race([
+            run,
+            new Promise<never>((_resolve, reject) => {
+              watchdog = realSetTimeout(
+                () => reject(new Error('dual failure watchdog expired')),
+                1_000,
+              );
+            }),
+          ]),
+          (error: unknown) => {
+            assert.equal(error, runtimeError);
+            assert.ok(error instanceof ParentSettlementError);
+            assert.equal(error.cause, cleanupError);
+            return true;
+          },
+        );
+        assert.equal(childBackend?.stopCalls, 1);
+      } finally {
+        if (watchdog) realClearTimeout(watchdog);
+        childBackend?.finishForTest();
+        await childPromise;
+        t.mock.timers.reset();
+      }
+    });
+  });
+
   test('does not dispatch a runtime attempt after the benchmark deadline', async () => {
     await withDirs(async (fixtureDir, storageRoot) => {
       const counters = { sendCalls: 0 };
@@ -1282,6 +2123,16 @@ describe('runTaskOnce', () => {
       assert.ok(result.projection.toolExecutors[0]?.toolNames.includes('todo_update'));
       assert.ok(result.projection.toolExecutors[0]?.toolNames.includes('self_check_plan_submit'));
       assert.ok(result.projection.toolExecutors[0]?.toolNames.includes('self_check_submit'));
+      assert.deepEqual(result.projection.toolExecutors[0]?.supplementalToolSets, [
+        {
+          label: 'heavy_task_progress',
+          toolNames: ['inventory_submit', 'todo_update'],
+        },
+        {
+          label: 'heavy_task_self_check',
+          toolNames: ['self_check_plan_submit', 'self_check_submit'],
+        },
+      ]);
       assert.equal(result.projection.latestHeavyTaskInventory?.summary, 'Inspected public files.');
       assert.equal(result.projection.latestHeavyTaskInventory?.items[0]?.path, 'README.md');
       assert.equal(result.projection.latestHeavyTaskTodos?.items[0]?.status, 'in_progress');
@@ -1721,6 +2572,43 @@ describe('runTaskOnce', () => {
     });
   });
 
+  test('persists the submitted snapshot from an explicitly owned external workspace', async () => {
+    await withDirs(async (fixtureDir, storageRoot) => {
+      const externalWorkspaceDir = await mkdtemp(join(storageRoot, 'external-workspace-'));
+      const submittedSnapshotRoot = join(storageRoot, 'submitted-snapshots');
+      await writeFile(join(fixtureDir, 'check.mjs'), 'fixture copy\n', 'utf8');
+      await writeFile(join(externalWorkspaceDir, 'check.mjs'), 'external copy\n', 'utf8');
+      const task: Task = {
+        id: 'external-workspace-snapshot',
+        instruction: 'modify the external workspace',
+        workspaceDir: fixtureDir,
+        verification: { command: 'true', protectedPaths: [] },
+      };
+
+      const result = await runTaskOnce(fakeConfig, task, {
+        storageRoot,
+        registerBackends: registerProtectedTamperBackend,
+        realBackendIsolation: {
+          kind: 'external',
+          label: 'locally accessible task container',
+          workspaceDir: externalWorkspaceDir,
+          submittedSnapshotRoot,
+        },
+      });
+
+      const snapshot = result.projection.latestScoreResult?.details?.submittedSnapshot as
+        | { snapshotPath?: string; workspaceRoot?: string }
+        | undefined;
+      assert.ok(snapshot?.snapshotPath, 'expected persisted external submitted snapshot');
+      assert.equal(snapshot.workspaceRoot, externalWorkspaceDir);
+      assert.match(snapshot.snapshotPath, new RegExp(`^${submittedSnapshotRoot}`));
+      assert.equal(
+        await readFile(join(snapshot.snapshotPath, 'check.mjs'), 'utf8'),
+        'process.exit(0);\n',
+      );
+    });
+  });
+
   test('maps backend failure and incomplete runtime to terminal failure taxonomy', async () => {
     await withDirs(async (fixtureDir, storageRoot) => {
       await writeFile(join(fixtureDir, 'marker.txt'), 'present', 'utf8');
@@ -1796,185 +2684,6 @@ describe('runTaskOnce', () => {
           error instanceof StorageRootAuthorityError && error.code === 'invalid_lease',
       );
       assert.equal(backendRegistrationCalled, false);
-    });
-  });
-
-  test('fails closed on permission requests without answering the interactive permission API', async () => {
-    await withDirs(async (_fixtureDir, storageRoot) => {
-      let respondCalls = 0;
-      const task: Task = {
-        id: 'permission-handoff',
-        instruction: 'run a dangerous command',
-        workspaceDir: _fixtureDir,
-        verification: { command: 'true', protectedPaths: [] },
-      };
-
-      const result = await runTaskOnce(fakeConfig, task, {
-        storageRoot,
-        registerBackends: registerPermissionRequestBackend(() => {
-          respondCalls += 1;
-        }),
-      });
-
-      assert.equal(respondCalls, 0);
-      assert.equal(result.resultRecord.status, 'failed');
-      assert.equal(result.resultRecord.passed, false);
-      assert.equal(result.resultRecord.errorClass, 'policy_denied');
-      assert.equal(result.projection.status, 'policy_denied');
-      assert.equal(result.projection.latestVerifierResult?.exitCode, 0);
-      assert.equal(result.projection.latestScoreResult?.passed, false);
-      assert.equal(result.projection.latestScoreResult?.taxonomy, 'policy_denied');
-      assert.ok(
-        result.projection.events.some((event) => event.type === 'task_run_policy_denied'),
-        'expected a policy-denied terminal task event',
-      );
-      assert.equal(result.projection.permissionRequests.length, 1);
-      assert.equal(result.projection.permissionRequests[0]?.toolName, 'Bash');
-      assert.equal(result.projection.permissionRequests[0]?.resourceScope.kind, 'command');
-      const runtimeEvents = await readRuntimeEventLedger(
-        storageRoot,
-        latestInvocation(result).sessionId,
-        latestInvocation(result).runId,
-      );
-      assert.equal(runtimeEvents.some(isTerminalRuntimeEvent), false);
-      assert.ok(
-        runtimeEvents.some(
-          (event) => event.actions?.permissionRequest?.requestId === 'permission-request-1',
-        ),
-        'expected the permission request fact to stay in the runtime ledger',
-      );
-      assert.equal(result.projection.inboxItems[0]?.kind, 'approval_request');
-      assert.equal(result.projection.inboxItems[0]?.status, 'resolved');
-      assert.ok(
-        result.projection.events.some(
-          (event) => event.type === 'permission_decision_recorded' && event.decision === 'deny',
-        ),
-        'expected a fail-closed permission denial event',
-      );
-    });
-  });
-
-  test('does not treat post-hoc matching permission grants as runtime authorization', async () => {
-    await withDirs(async (_fixtureDir, storageRoot) => {
-      let respondCalls = 0;
-      const taskRunId = 'grant-run';
-      const command = 'rm -rf /tmp/example';
-      const grant: TaskPermissionGrant = {
-        schemaVersion: 1,
-        grantId: 'grant-posthoc',
-        requestId: 'permission-request-1',
-        taskRunId,
-        attemptId: `${taskRunId}-attempt-1`,
-        toolCallId: 'tool-1',
-        toolName: 'Bash',
-        normalizedArgsHash: hashNormalizedArgs({ command }),
-        resourceScope: commandResourceScope(command),
-        decision: 'allow',
-        actor: { kind: 'test', id: 'unit' },
-        source: 'test_fixture',
-        decidedAt: 10,
-        expiresAt: Number.MAX_SAFE_INTEGER,
-      };
-      const task: Task = {
-        id: 'permission-grant-posthoc',
-        instruction: 'run a dangerous command',
-        workspaceDir: _fixtureDir,
-        verification: { command: 'true', protectedPaths: [] },
-      };
-
-      const result = await runTaskOnce(fakeConfig, task, {
-        storageRoot,
-        taskRunId,
-        registerBackends: registerPermissionRequestBackend(() => {
-          respondCalls += 1;
-        }, command),
-        permissionGrants: [grant],
-      });
-
-      assert.equal(respondCalls, 0);
-      assert.equal(result.resultRecord.status, 'failed');
-      assert.equal(result.resultRecord.errorClass, 'policy_denied');
-      assert.equal(result.projection.status, 'policy_denied');
-      assert.equal(result.projection.permissionGrants.length, 1);
-      assert.equal(result.projection.permissionGrants[0]?.grantId, 'grant-posthoc');
-      assert.equal(
-        result.projection.events.some(
-          (event) => event.type === 'permission_decision_recorded' && event.decision === 'allow',
-        ),
-        false,
-      );
-      const denyDecision = result.projection.events.find(
-        (event) => event.type === 'permission_decision_recorded',
-      );
-      assert.ok(denyDecision);
-      if (denyDecision.type !== 'permission_decision_recorded') {
-        throw new Error('expected permission_decision_recorded event');
-      }
-      assert.equal(denyDecision.decision, 'deny');
-      assert.match(denyDecision.reason ?? '', /post-hoc permission requests/);
-    });
-  });
-
-  test('redacts bash permission scopes and inbox previews while preserving args hash', async () => {
-    await withDirs(async (_fixtureDir, storageRoot) => {
-      const secret = 'SECRET_TOKEN_123456';
-      const command = `printf ${secret} > /tmp/secret-output`;
-      const task: Task = {
-        id: 'permission-redaction',
-        instruction: 'request permission',
-        workspaceDir: _fixtureDir,
-        verification: { command: 'true', protectedPaths: [] },
-      };
-
-      const result = await runTaskOnce(fakeConfig, task, {
-        storageRoot,
-        registerBackends: registerPermissionRequestBackend(() => {}, command),
-      });
-
-      const request = result.projection.permissionRequests[0];
-      assert.ok(request);
-      assert.equal(request.normalizedArgsHash, hashNormalizedArgs({ command }));
-      assert.deepEqual(request.resourceScope, commandResourceScope(command));
-      const serializedPermissionFacts = JSON.stringify({
-        permissionRequests: result.projection.permissionRequests,
-        inboxItems: result.projection.inboxItems,
-        permissionEvents: result.projection.events.filter(
-          (event) =>
-            event.type === 'permission_request_recorded' ||
-            event.type === 'task_inbox_item_recorded' ||
-            event.type === 'task_inbox_item_resolved',
-        ),
-      });
-      assert.equal(serializedPermissionFacts.includes(secret), false);
-      assert.equal(serializedPermissionFacts.includes(command), false);
-      assert.match(serializedPermissionFacts, new RegExp(request.normalizedArgsHash));
-    });
-  });
-
-  test('parks permission requests in desktop intervention mode without verifying', async () => {
-    await withDirs(async (_fixtureDir, storageRoot) => {
-      const task: Task = {
-        id: 'permission-park',
-        instruction: 'run a dangerous command',
-        workspaceDir: _fixtureDir,
-        verification: { command: 'false', protectedPaths: [] },
-      };
-
-      const result = await runTaskOnce(fakeConfig, task, {
-        storageRoot,
-        registerBackends: registerPermissionRequestBackend(() => {}),
-        interventionPolicy: { mode: 'park' },
-      });
-
-      assert.equal(result.resultRecord.status, 'failed');
-      assert.equal(result.resultRecord.errorClass, 'needs_approval');
-      assert.equal(result.projection.status, 'needs_approval');
-      assert.equal(result.projection.parked?.reason, 'approval');
-      assert.equal(result.projection.latestVerifierResult, undefined);
-      assert.equal(result.projection.latestScoreResult, undefined);
-      assert.equal(result.projection.attempts[0]?.status, 'needs_approval');
-      assert.equal(result.projection.inboxItems[0]?.kind, 'approval_request');
-      assert.equal(result.projection.inboxItems[0]?.status, 'open');
     });
   });
 

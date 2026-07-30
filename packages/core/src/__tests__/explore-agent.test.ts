@@ -12,19 +12,11 @@ import {
   buildDeepResearchSystemPromptFragment,
   buildDeepResearchImplementationPrompt,
   isDeepResearchSession,
-  normalizeQuickChatMode,
 } from '../explore-agent.js';
 import type { DeepResearchRun } from '../deep-research-run.js';
-import { PERMISSION_POLICY } from '../permission.js';
+import { createGenesisExecutionBoundary } from '../sandbox-boundary.js';
 
 describe('deep research session profile', () => {
-  it('normalizes quick-chat mode fail-closed to normal chat', () => {
-    assert.equal(normalizeQuickChatMode('deep_research'), 'deep_research');
-    assert.equal(normalizeQuickChatMode('chat'), 'chat');
-    assert.equal(normalizeQuickChatMode('execute'), 'chat');
-    assert.equal(normalizeQuickChatMode(null), 'chat');
-  });
-
   it('detects the stable session label', () => {
     assert.equal(isDeepResearchSession([DEEP_RESEARCH_SESSION_LABEL]), true);
     assert.equal(isDeepResearchSession(['research']), false);
@@ -75,14 +67,16 @@ describe('deep research session profile', () => {
     );
   });
 
-  it('explore policy remains read-only for writes and destructive actions', () => {
-    assert.equal(PERMISSION_POLICY.explore.read, 'allow');
-    assert.equal(PERMISSION_POLICY.explore.shell_safe, 'block');
-    assert.equal(PERMISSION_POLICY.explore.file_write, 'block');
-    assert.equal(PERMISSION_POLICY.explore.fs_destructive, 'block');
-    assert.equal(PERMISSION_POLICY.explore.shell_unsafe, 'block');
-    assert.equal(PERMISSION_POLICY.explore.network_send, 'block');
-    assert.equal(PERMISSION_POLICY.explore.subagent, 'allow');
+  it('explore sessions receive a managed read-only boundary', () => {
+    const boundary = createGenesisExecutionBoundary('explore');
+    assert.equal(boundary.kind, 'managed');
+    if (boundary.kind !== 'managed') return;
+    assert.equal(boundary.profile.name, 'read-only');
+    assert.equal(boundary.profile.fileSystem.kind, 'restricted');
+    assert.deepEqual(boundary.profile.fileSystem.entries, [
+      { kind: 'special', access: 'read', special: ':workspace_roots' },
+    ]);
+    assert.equal(boundary.profile.network.kind, 'restricted');
   });
 
   it('system prompt names source-grounded research and no-write boundaries', () => {

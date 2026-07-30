@@ -16,11 +16,12 @@ import {
   isOptionalString,
   isRecord,
 } from './record-schema.js';
+import type { AgentGraphIntentClaim } from './agent-graph-control.js';
 
 export const AGENT_RUN_STATUSES = [
   'created',
   'running',
-  'waiting_permission',
+  'waiting_for_user',
   'completed',
   'failed',
   'cancelled',
@@ -34,6 +35,32 @@ export interface AgentRunContinuationSource {
   sourceTurnId: string;
   sourceRuntimeEventHighWater: number;
 }
+
+export type RootExecutionDescriptor =
+  | { kind: 'external_message' }
+  | {
+      kind: 'linked_child_initial';
+      agentId: string;
+      agentName: string;
+    }
+  | {
+      kind: 'linked_child_resume';
+      agentId: string;
+      agentName: string;
+      sourceRunId: string;
+    }
+  | {
+      kind: 'linked_child_provider_retry';
+      agentId: string;
+      agentName: string;
+      sourceRunId: string;
+    }
+  | {
+      kind: 'claimed_agent_graph_intent';
+      claim: AgentGraphIntentClaim;
+      agentId: string;
+      agentName: string;
+    };
 
 const AGENT_RUN_CONTINUATION_SOURCE_SHAPE = defineObjectShape<AgentRunContinuationSource>()(
   ['sourceInvocationId', 'sourceRunId', 'sourceTurnId', 'sourceRuntimeEventHighWater'],
@@ -81,6 +108,10 @@ export interface AgentRunHeader {
   continuationSource?: AgentRunContinuationSource;
   /** Non-user trigger for this run (e.g. a scheduled automation fire). */
   automationId?: string;
+  /** Durable graph milestone that caused this host-authored supervisor turn. */
+  agentGraphWakeId?: string;
+  /** Durable delivery attempt for this host-authored supervisor turn. */
+  agentGraphWakeAttemptId?: string;
   failureClass?: string;
   failureMessage?: string;
   abortSource?: string;
@@ -190,6 +221,8 @@ const AGENT_RUN_HEADER_SHAPE = defineObjectShape<AgentRunHeader>()(
     'workspaceIdentity',
     'continuationSource',
     'automationId',
+    'agentGraphWakeId',
+    'agentGraphWakeAttemptId',
     'failureClass',
     'failureMessage',
     'abortSource',
@@ -210,11 +243,13 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
   if (!isRecord(value) || !hasExactShape(value, AGENT_RUN_HEADER_SHAPE)) {
     throw new Error('Invalid AgentRun header schema');
   }
+  const status =
+    value.status === 'waiting_permission' ? ('waiting_for_user' as const) : value.status;
   const valid =
     typeof value.runId === 'string' &&
     typeof value.sessionId === 'string' &&
     typeof value.turnId === 'string' &&
-    (AGENT_RUN_STATUSES as readonly unknown[]).includes(value.status) &&
+    (AGENT_RUN_STATUSES as readonly unknown[]).includes(status) &&
     isBackendKind(value.backendKind) &&
     typeof value.llmConnectionSlug === 'string' &&
     typeof value.modelId === 'string' &&
@@ -243,6 +278,8 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
       value.parentSessionId,
       value.workspaceIdentity,
       value.automationId,
+      value.agentGraphWakeId,
+      value.agentGraphWakeAttemptId,
       value.failureClass,
       value.failureMessage,
       value.abortSource,
@@ -258,6 +295,7 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
         Number.isSafeInteger(value.continuationSource.sourceRuntimeEventHighWater) &&
         value.continuationSource.sourceRuntimeEventHighWater >= 0));
   if (!valid) throw new Error('Invalid AgentRun header schema');
+  if (status !== value.status) return { ...value, status } as unknown as AgentRunHeader;
   return value as unknown as AgentRunHeader;
 }
 

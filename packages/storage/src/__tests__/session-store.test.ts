@@ -3,8 +3,18 @@ import { mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, test } from 'node:test';
-import type { CreateSessionInput, SessionHeader, StoredMessage } from '@maka/core';
-import { createLegacyFileSessionStore as createSessionStore } from '../session-store.js';
+import type {
+  CreateSessionInput,
+  SessionHeader,
+  StoredMessage,
+  SubagentSessionParent,
+  SubagentSessionRuntime,
+  SubagentSessionSpawn,
+} from '@maka/core';
+import {
+  createLegacyFileSessionStore as createSessionStore,
+  createSessionStore as createSqliteSessionStore,
+} from '../session-store.js';
 
 describe('FileSessionStore CRUD', () => {
   test('list on a missing workspace is observational and does not create session storage', async () => {
@@ -59,6 +69,16 @@ describe('FileSessionStore CRUD', () => {
       const header = await store.create(makeInput({ orchestrationMode: 'swarm' }));
       assert.equal(header.orchestrationMode, 'swarm');
       assert.equal((await store.list())[0]?.orchestrationMode, 'swarm');
+    });
+  });
+
+  test('persists the stable project association in headers and summaries', async () => {
+    await withStore(async (store) => {
+      const header = await store.create(makeInput({ projectId: 'project-1' }));
+
+      assert.equal(header.projectId, 'project-1');
+      assert.equal((await store.readHeader(header.id)).projectId, 'project-1');
+      assert.equal((await store.list())[0]?.projectId, 'project-1');
     });
   });
 
@@ -145,6 +165,130 @@ describe('FileSessionStore CRUD', () => {
       const [summary] = await store.list();
       assert.equal(summary?.parentSessionId, 'parent-session');
       assert.equal(summary?.branchOfTurnId, 'turn-parent');
+    });
+  });
+
+  test('persists typed subagent lineage but rejects relation scans without SQLite', async () => {
+    await withStore(async (store) => {
+      const parent = await store.create(makeInput({ name: 'Parent' }));
+      const child = await store.create(
+        makeInput({
+          name: 'Child',
+          subagentParent: makeSubagentParent(parent.id),
+        }),
+      );
+      await store.create(
+        makeInput({
+          name: 'Other child',
+          subagentParent: makeSubagentParent('other-parent'),
+        }),
+      );
+
+      assert.deepEqual((await store.readHeader(child.id)).subagentParent, {
+        ...makeSubagentParent(parent.id),
+      });
+      assert.equal((await store.readHeader(child.id)).subagentRuntime, undefined);
+      await assert.rejects(
+        () => store.list({ subagentParentSessionId: parent.id }),
+        /require SQLite session metadata/,
+      );
+      await assert.rejects(
+        () =>
+          store.createSubagent(
+            makeInput({
+              subagentParent: makeSubagentParent(parent.id),
+              subagentRuntime: makeSubagentRuntime(),
+              subagentSpawn: makeSubagentSpawn(),
+            }),
+          ),
+        /requires the SQLite metadata control plane/,
+      );
+    });
+  });
+
+  test('keeps subagent lineage distinct from branch and revision lineage', async () => {
+    await withStore(async (store) => {
+      await assert.rejects(
+        () =>
+          store.create(
+            makeInput({
+              parentSessionId: 'branch-parent',
+              branchOfTurnId: 'branch-turn',
+              subagentParent: makeSubagentParent(),
+            }),
+          ),
+        /Invalid subagent session lineage/,
+      );
+      await assert.rejects(
+        () =>
+          store.create(
+            makeInput({
+              revisionRootSessionId: 'root-session',
+              revisionParentSessionId: 'previous-version',
+              revisionOfTurnId: 'turn-edited',
+              revisionIndex: 2,
+              revisionState: 'preparing',
+              subagentParent: makeSubagentParent(),
+            }),
+          ),
+        /Invalid subagent session lineage/,
+      );
+    });
+  });
+
+  test('rejects malformed or mutated subagent lineage', async () => {
+    await withStore(async (store) => {
+      await assert.rejects(
+        () =>
+          store.create(
+            makeInput({
+              subagentParent: {
+                ...makeSubagentParent(),
+                spawnedBy: {
+                  parentRunId: 'parent-run',
+                  parentTurnId: 'parent-turn',
+                },
+              } as SubagentSessionParent,
+            }),
+          ),
+        /Invalid subagent session lineage/,
+      );
+
+      const child = await store.create(
+        makeInput({ subagentParent: makeSubagentParent('parent-session') }),
+      );
+      await assert.rejects(
+        () => store.updateHeader(child.id, { subagentParent: undefined }),
+        /parent relation is immutable/,
+      );
+      await assert.rejects(
+        () => store.updateHeader(child.id, { subagentRuntime: undefined }),
+        /runtime snapshot is immutable/,
+      );
+      await assert.rejects(
+        () => store.updateHeader(child.id, { subagentSpawn: undefined }),
+        /spawn identity is immutable/,
+      );
+      await assert.rejects(
+        () =>
+          store.create(
+            makeInput({
+              permissionMode: 'execute',
+              subagentParent: makeSubagentParent(),
+              subagentRuntime: makeSubagentRuntime(),
+            }),
+          ),
+        /Invalid subagent session lineage/,
+      );
+      await assert.rejects(
+        () =>
+          store.create(
+            makeInput({
+              subagentRuntime: makeSubagentRuntime(),
+            }),
+          ),
+        /Invalid subagent session lineage/,
+      );
     });
   });
 
@@ -440,10 +584,12 @@ describe('FileSessionStore CRUD', () => {
       assert.equal(header.status, 'active');
       assert.equal(header.titleIsManual, true);
       assert.equal(header.orchestrationMode, 'default');
+      assert.equal(header.subagentParent, undefined);
       const [summary] = await store.list();
       assert.equal(summary?.permissionMode, 'ask');
       assert.equal(summary?.status, 'active');
       assert.equal(summary?.orchestrationMode, 'default');
+      assert.equal(summary?.subagentParent, undefined);
     });
   });
 
@@ -687,6 +833,40 @@ describe('FileSessionStore CRUD', () => {
         /Session .* has a corrupt JSONL record at line 2/,
       );
     });
+  });
+
+  test('reads exact legacy subagent results during normal and strict recovery without rewriting', async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-legacy-subagent-result-'));
+    const store = createSqliteSessionStore(workspaceRoot);
+    try {
+      const header = await store.create(makeInput({ name: 'Legacy subagent result' }));
+      const path = join(workspaceRoot, 'sessions', header.id, 'session.jsonl');
+      const legacyRecord = await readFile(
+        new URL(
+          '../../src/__tests__/fixtures/legacy-subagent-waiting-permission.jsonl',
+          import.meta.url,
+        ),
+      );
+      const originalBytes = Buffer.concat([await readFile(path), legacyRecord]);
+      await writeFile(path, originalBytes);
+
+      const normalMessages = await store.readMessages(header.id);
+      assert.equal(subagentStatus(normalMessages), 'waiting_for_user');
+      assert.deepEqual(await readFile(path), originalBytes);
+
+      const recoveryMessages = await store.readMessagesForRecovery(header.id);
+      assert.equal(subagentStatus(recoveryMessages), 'waiting_for_user');
+      assert.deepEqual(await readFile(path), originalBytes);
+
+      assert.deepEqual(
+        (await store.listForRecovery()).map((session) => session.id),
+        [header.id],
+      );
+      assert.deepEqual(await readFile(path), originalBytes);
+    } finally {
+      await store.close?.();
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
   });
 
   test('recovers readable messages around a corrupt JSONL message line', async () => {
@@ -1395,6 +1575,42 @@ function makeInput(overrides: Partial<CreateSessionInput> = {}): CreateSessionIn
   };
 }
 
+function makeSubagentParent(parentSessionId = 'parent-session'): SubagentSessionParent {
+  return {
+    kind: 'subagent',
+    parentSessionId,
+    spawnedBy: {
+      parentRunId: 'parent-run',
+      parentTurnId: 'parent-turn',
+      toolCallId: 'tool-call',
+    },
+    lifecycle: 'foreground',
+  };
+}
+
+function makeSubagentRuntime(): SubagentSessionRuntime {
+  return {
+    schemaVersion: 1,
+    definitionVersion: 1,
+    agentId: 'local-read',
+    agentName: 'Local Read',
+    profile: 'local_read',
+    systemPrompt: 'Read the assigned workspace task.',
+    toolNames: ['Read', 'Glob', 'Grep'],
+    categoryPolicy: { read: 'allow' },
+    permissionCeiling: 'ask',
+  };
+}
+
+function makeSubagentSpawn(): SubagentSessionSpawn {
+  return {
+    schemaVersion: 1,
+    requestFingerprint: 'a'.repeat(64),
+    initialTurnId: 'child-turn',
+    initialRunId: 'child-run',
+  };
+}
+
 function makeRawHeader(overrides: Partial<SessionHeader> = {}): SessionHeader {
   return {
     id: 'raw-session',
@@ -1455,6 +1671,13 @@ function assistantMessageAt(ts: number): StoredMessage {
     text: 'ok',
     modelId: 'fake-model',
   };
+}
+
+function subagentStatus(messages: StoredMessage[]): string | undefined {
+  const result = messages.find((message) => message.id === 'legacy-subagent-result');
+  return result?.type === 'tool_result' && result.content.kind === 'subagent'
+    ? result.content.status
+    : undefined;
 }
 
 async function withStore(

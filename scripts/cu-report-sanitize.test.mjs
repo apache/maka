@@ -88,6 +88,7 @@ test('report sanitizer preserves validated attribution and drops arbitrary field
     provider: 'openai',
     model: 'gpt-5.4',
     status: 'inconclusive',
+    run: { status: 'waiting_for_user' },
     failure: 'private provider body',
     loopStatus: { private: true },
     turns: [{ text: 'private' }],
@@ -108,6 +109,7 @@ test('report sanitizer preserves validated attribution and drops arbitrary field
   assert.equal(report.provider, 'openai');
   assert.equal(report.model, 'gpt-5.4');
   assert.equal(report.qualificationEligible, true);
+  assert.equal(report.run.status, 'waiting_for_user');
   assert.deepEqual(report.traces, [
     {
       type: 'dispatch',

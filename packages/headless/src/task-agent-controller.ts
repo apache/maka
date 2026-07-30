@@ -9,14 +9,20 @@ import {
   type StoredMessage,
 } from '@maka/core';
 import {
+  AgentGraphCoordinator,
+  AGENT_TOOL_GROUP_ID,
   AgentRun,
   AiSdkFlow,
   BackendRegistry,
   RuntimeRunner,
+  SessionManager,
+  buildChildAgentTools,
   type AgentRunActiveSession,
   type InvocationResult,
   type SessionStore,
 } from '@maka/runtime';
+import { createReadImageSnapshotter } from '@maka/storage';
+import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import type { Config, ResultRecord, Task } from './contracts.js';
 import { registerFakeBackend } from './backends.js';
 import {
@@ -54,17 +60,10 @@ import {
 import { observeHeavyTaskWorkspace } from './heavy-task-workspace-observation.js';
 import type { HeadlessBackendContext } from './isolation.js';
 import {
-  ISOLATED_HEADLESS_TOOL_NAMES,
   taskIsolationFacts,
   toolExecutorIdentity,
   validateRealBackendIsolation,
 } from './isolation.js';
-import {
-  commandResourceScope,
-  hashNormalizedArgs,
-  matchPermissionGrant,
-  permissionPreview,
-} from './permission-grants.js';
 import {
   resolveHeadlessSystemPrompt,
   type ResolvedHeadlessSystemPrompt,
@@ -76,7 +75,7 @@ import {
   restoreProtectedPaths,
 } from './sandbox.js';
 import { defaultFinalScorer } from './scorer.js';
-import { approvalRequestInboxItem } from './task-inbox.js';
+import { createHeadlessSessionCapabilityBridge } from './session-capabilities.js';
 import { normalizeVerifier, runVerifier, verifierProtectedPaths } from './verifier.js';
 import {
   backendNeedsIsolation,
@@ -87,13 +86,10 @@ import {
   taxonomyFromResultRecord,
   type AutonomousResultTaxonomy,
   type FeedbackObservation,
-  type PermissionResourceScope,
   type ScoreResult,
   type TaskAttemptStatus,
   type TaskEvent,
   type TaskInterventionPolicy,
-  type TaskPermissionGrant,
-  type TaskPermissionRequest,
   type TaskRunError,
   type TaskRunResult,
   type VerifierResult,
@@ -104,6 +100,7 @@ import { taskDefinitionFromTask } from './task-run-adapter.js';
 import { taskEvidenceRuntimeProvenanceLinks } from './task-evidence-provenance.js';
 import { taskAttemptExecutionEvidence } from './task-execution-lineage.js';
 import { bindSelfCheckEvidence } from './task-self-check-evidence.js';
+import { buildHeadlessProductToolSurfaceForBackend } from './tools.js';
 
 export interface RunTaskOnceDeps extends RunExperimentDeps {
   taskRunId?: string;
@@ -112,9 +109,7 @@ export interface RunTaskOnceDeps extends RunExperimentDeps {
   closeTaskRun?: boolean;
   instructionOverride?: string;
   priorRuntimeContext?: readonly RuntimeEvent[];
-  permissionMode?: 'execute';
   interventionPolicy?: TaskInterventionPolicy;
-  permissionGrants?: readonly TaskPermissionGrant[];
   /** Absolute wall-clock deadline for settling the active runtime before its outer watchdog. */
   deadlineAtMs?: number;
 }
@@ -169,7 +164,6 @@ export async function runTaskOnceWithStorage(
   const attemptId = deps.attemptId ?? `${taskRunId}-attempt-1`;
   const createTaskRun = deps.createTaskRun ?? true;
   const closeTaskRun = deps.closeTaskRun ?? true;
-  const interventionPolicy = deps.interventionPolicy ?? DEFAULT_INTERVENTION_POLICY;
   const taskRunStore = storage.taskRunStore;
   const sessionStore = storage.executionStores.sessionStore;
   const agentRunStore = storage.executionStores.agentRunStore;
@@ -251,20 +245,20 @@ export async function runTaskOnceWithStorage(
       validatedAt: now(),
     }),
   });
-  for (const grant of deps.permissionGrants ?? []) {
-    if (grant.taskRunId !== taskRunId) continue;
-    await appendTaskEvent(taskRunStore, taskRunId, {
-      type: 'permission_grant_recorded',
-      id: newId(),
-      taskRunId,
-      ts: now(),
-      grant,
-    });
-  }
-
   const workspace = await prepareWorkspace(task.workspaceDir);
+  let graphCoordinator: AgentGraphCoordinator | undefined;
+  let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
   try {
     const agentWorkspaceDir = deps.realBackendIsolation?.workspaceDir ?? workspace.dir;
+    const productToolSurface = buildHeadlessProductToolSurfaceForBackend(
+      effectiveConfig.backend,
+      deps.realBackendIsolation?.toolExecutor,
+      {
+        agentTools: effectiveConfig.agentTools,
+        ...(heavyTaskEvidence ? { heavyTaskEvidence } : {}),
+        snapshotImage: createReadImageSnapshotter(storage.artifactStore),
+      },
+    );
     await appendTaskEvent(taskRunStore, taskRunId, {
       type: 'workspace_lease_recorded',
       id: newId(),
@@ -293,13 +287,29 @@ export async function runTaskOnceWithStorage(
         taskRunId,
         attemptId,
         isolation: deps.realBackendIsolation,
-        toolNames: toolNamesForIdentity(
-          Boolean(deps.realBackendIsolation?.toolExecutor),
-          heavyTaskMode.enabled,
-        ),
+        ...(productToolSurface
+          ? {
+              productToolSurface: productToolSurface.identity,
+              ...(heavyTaskMode.enabled
+                ? {
+                    supplementalToolSets: [
+                      {
+                        label: 'heavy_task_progress',
+                        toolNames: [...HEAVY_TASK_PROGRESS_TOOL_NAMES],
+                      },
+                      {
+                        label: 'heavy_task_self_check',
+                        toolNames: [...HEAVY_TASK_SELF_CHECK_TOOL_NAMES],
+                      },
+                    ],
+                  }
+                : {}),
+            }
+          : { toolNames: ['registered_backend'] }),
       }),
     });
     const backends = new BackendRegistry();
+    const sessionCapabilities = createHeadlessSessionCapabilityBridge();
     const registerBackends: NonNullable<RunExperimentDeps['registerBackends']> =
       deps.registerBackends ?? ((registry) => registerFakeBackend(registry));
     await registerBackends(backends, {
@@ -307,7 +317,9 @@ export async function runTaskOnceWithStorage(
       task,
       storageRoot: deps.storageRoot,
       workspaceDir: agentWorkspaceDir,
+      ...sessionCapabilities.capabilities,
       artifactStore: storage.artifactStore,
+      ...(productToolSurface ? { productToolSurface } : {}),
       heavyTaskMode,
       ...(heavyTaskProgress ? { heavyTaskProgress } : {}),
       ...(heavyTaskSelfCheck ? { heavyTaskSelfCheck } : {}),
@@ -320,20 +332,58 @@ export async function runTaskOnceWithStorage(
         : {}),
     });
 
-    const header = await sessionStore.create({
-      cwd: agentWorkspaceDir,
-      backend: config.backend,
-      llmConnectionSlug: effectiveConfig.llmConnectionSlug,
-      model: effectiveConfig.model,
-      ...(effectiveConfig.thinkingLevel !== undefined
-        ? { thinkingLevel: effectiveConfig.thinkingLevel }
+    let parentActive: ReturnType<typeof createSingleRunActiveSession> | undefined;
+    const sessionCapabilityManager = new SessionManager({
+      store: sessionStore,
+      runStore: agentRunStore,
+      runtimeEventStore,
+      backends,
+      ...(productToolSurface?.boundSurfaceIds.includes(AGENT_TOOL_GROUP_ID)
+        ? {
+            childTools: buildChildAgentTools(productToolSurface.tools),
+          }
         : {}),
-      permissionMode: deps.permissionMode ?? 'execute',
-      ...(deps.orchestrationMode ? { orchestrationMode: deps.orchestrationMode } : {}),
-      name: `task:${config.id}:${task.id}`,
+      isParentRunActive: (sessionId, runId, turnId) =>
+        parentActive?.hasActiveRun(sessionId, runId, turnId) ?? false,
+      newId,
+      now,
+      runtimeSource: 'test',
     });
+    const header = await sessionStore.create(
+      {
+        cwd: agentWorkspaceDir,
+        backend: config.backend,
+        llmConnectionSlug: effectiveConfig.llmConnectionSlug,
+        model: effectiveConfig.model,
+        ...(effectiveConfig.thinkingLevel !== undefined
+          ? { thinkingLevel: effectiveConfig.thinkingLevel }
+          : {}),
+        permissionMode: 'ask',
+        ...(deps.orchestrationMode ? { orchestrationMode: deps.orchestrationMode } : {}),
+        name: `task:${config.id}:${task.id}`,
+      },
+      { kind: 'external', revision: 0 },
+    );
+    graphControlStore = createAgentGraphControlStore(deps.storageRoot);
+    graphCoordinator = new AgentGraphCoordinator({
+      sessionStore,
+      runStore: agentRunStore,
+      runtimeEventStore,
+      controlStore: graphControlStore,
+      runtime: sessionCapabilityManager,
+      newId,
+      rootSessionId: header.id,
+    });
+    sessionCapabilities.bind(sessionCapabilityManager, graphCoordinator);
     const turnId = newId();
-    const active = createSingleRunActiveSession(backends, sessionStore, now, newId);
+    const active = createSingleRunActiveSession(
+      backends,
+      sessionStore,
+      runtimeEventStore,
+      now,
+      newId,
+    );
+    parentActive = active;
     const run = new AgentRun({
       sessionId: header.id,
       header,
@@ -373,23 +423,35 @@ export async function runTaskOnceWithStorage(
 
     let runtimeInvocation: InvocationResult;
     let settledByDeadline = false;
-    try {
-      const runtimeAttempt = await runRuntimeAttempt({
-        run,
-        header,
-        instruction,
-        ...(deps.priorRuntimeContext ? { priorRuntimeContext: deps.priorRuntimeContext } : {}),
-        requireTerminalRuntimeEventWrite: Boolean(runtimeEventStore),
-        now,
-        newId,
-        settleByDeadline: active.settleByDeadline,
-        ...(deps.deadlineAtMs !== undefined ? { deadlineAtMs: deps.deadlineAtMs } : {}),
-      });
-      runtimeInvocation = runtimeAttempt.invocation;
-      settledByDeadline = runtimeAttempt.settledByDeadline;
-    } finally {
-      await active.dispose();
-    }
+    let deadlineTriggered = false;
+    const runtimeAttempt = await runWithTaskSessionCleanup(
+      async () => {
+        const attempt = await runRuntimeAttempt({
+          run,
+          header,
+          instruction,
+          ...(deps.priorRuntimeContext ? { priorRuntimeContext: deps.priorRuntimeContext } : {}),
+          requireTerminalRuntimeEventWrite: Boolean(runtimeEventStore),
+          now,
+          newId,
+          settleByDeadline: active.settleByDeadline,
+          onDeadlineTriggered: () => {
+            deadlineTriggered = true;
+          },
+          ...(deps.deadlineAtMs !== undefined ? { deadlineAtMs: deps.deadlineAtMs } : {}),
+        });
+        settledByDeadline = attempt.settledByDeadline;
+        return attempt;
+      },
+      () =>
+        disposeTaskRunSession(
+          active,
+          sessionCapabilities,
+          header.id,
+          deadlineTriggered ? 'benchmark_deadline' : undefined,
+        ),
+    );
+    runtimeInvocation = runtimeAttempt.invocation;
     await appendTaskAttemptExecutionLink({
       store: taskRunStore,
       runtimeEventStore,
@@ -399,32 +461,7 @@ export async function runTaskOnceWithStorage(
       now,
       newId,
     });
-    const permissionHandling = await handlePermissionIntervention({
-      invocation: runtimeInvocation,
-      store: taskRunStore,
-      taskRunId,
-      attemptId,
-      now,
-      newId,
-      policy: interventionPolicy,
-      config,
-      task,
-      sessionId: header.id,
-      startedAt,
-      closeTaskRun,
-      systemPrompt: prompt,
-    });
-    if (permissionHandling.parked) {
-      return {
-        taskRunId,
-        attemptId,
-        resultRecord: permissionHandling.resultRecord,
-        projection: await taskRunStore.project(taskRunId),
-        invocations: [permissionHandling.invocation],
-        settledByDeadline,
-      };
-    }
-    let invocation = permissionHandling.invocation;
+    let invocation = runtimeInvocation;
     const invocations = [invocation];
 
     let runtimeSummary = summarizeRuntime([invocation], deps.realBackendIsolation);
@@ -471,7 +508,14 @@ export async function runTaskOnceWithStorage(
       });
 
       if (gateDecision.action === 'repair_prompt') {
-        const repairActive = createSingleRunActiveSession(backends, sessionStore, now, newId);
+        const repairActive = createSingleRunActiveSession(
+          backends,
+          sessionStore,
+          runtimeEventStore,
+          now,
+          newId,
+        );
+        parentActive = repairActive;
         const repairRun = new AgentRun({
           sessionId: header.id,
           header,
@@ -485,23 +529,37 @@ export async function runTaskOnceWithStorage(
         });
         repairActive.bindRun(repairRun);
         let repairInvocation: InvocationResult;
-        try {
-          const repairRuntimeAttempt = await runRuntimeAttempt({
-            run: repairRun,
-            header,
-            instruction: gateDecision.prompt,
-            ...(deps.priorRuntimeContext ? { priorRuntimeContext: deps.priorRuntimeContext } : {}),
-            requireTerminalRuntimeEventWrite: Boolean(runtimeEventStore),
-            now,
-            newId,
-            settleByDeadline: repairActive.settleByDeadline,
-            ...(deps.deadlineAtMs !== undefined ? { deadlineAtMs: deps.deadlineAtMs } : {}),
-          });
-          repairInvocation = repairRuntimeAttempt.invocation;
-          settledByDeadline ||= repairRuntimeAttempt.settledByDeadline;
-        } finally {
-          await repairActive.dispose();
-        }
+        let repairDeadlineTriggered = false;
+        const repairRuntimeAttempt = await runWithTaskSessionCleanup(
+          async () => {
+            const attempt = await runRuntimeAttempt({
+              run: repairRun,
+              header,
+              instruction: gateDecision.prompt,
+              ...(deps.priorRuntimeContext
+                ? { priorRuntimeContext: deps.priorRuntimeContext }
+                : {}),
+              requireTerminalRuntimeEventWrite: Boolean(runtimeEventStore),
+              now,
+              newId,
+              settleByDeadline: repairActive.settleByDeadline,
+              onDeadlineTriggered: () => {
+                repairDeadlineTriggered = true;
+              },
+              ...(deps.deadlineAtMs !== undefined ? { deadlineAtMs: deps.deadlineAtMs } : {}),
+            });
+            settledByDeadline ||= attempt.settledByDeadline;
+            return attempt;
+          },
+          () =>
+            disposeTaskRunSession(
+              repairActive,
+              sessionCapabilities,
+              header.id,
+              repairDeadlineTriggered ? 'benchmark_deadline' : undefined,
+            ),
+        );
+        repairInvocation = repairRuntimeAttempt.invocation;
         await appendTaskAttemptExecutionLink({
           store: taskRunStore,
           runtimeEventStore,
@@ -511,32 +569,7 @@ export async function runTaskOnceWithStorage(
           now,
           newId,
         });
-        const repairPermissionHandling = await handlePermissionIntervention({
-          invocation: repairInvocation,
-          store: taskRunStore,
-          taskRunId,
-          attemptId,
-          now,
-          newId,
-          policy: interventionPolicy,
-          config,
-          task,
-          sessionId: header.id,
-          startedAt,
-          closeTaskRun,
-          systemPrompt: prompt,
-        });
-        if (repairPermissionHandling.parked) {
-          return {
-            taskRunId,
-            attemptId,
-            resultRecord: repairPermissionHandling.resultRecord,
-            projection: await taskRunStore.project(taskRunId),
-            invocations: [...invocations, repairPermissionHandling.invocation],
-            settledByDeadline,
-          };
-        }
-        invocation = repairPermissionHandling.invocation;
+        invocation = repairInvocation;
         invocations.push(invocation);
         const repairSummary = summarizeRuntime([invocation], deps.realBackendIsolation);
         await appendRuntimeFeedback(taskRunStore, taskRunId, attemptId, now, newId, repairSummary);
@@ -594,8 +627,10 @@ export async function runTaskOnceWithStorage(
       startedAt: now(),
     });
     const runnerCompleted = invocation.status === 'completed';
+    const submittedSnapshotRoot = deps.realBackendIsolation?.submittedSnapshotRoot;
     const frozen = await freezeSubmittedWorkspace({
-      workspaceDir: workspace.dir,
+      workspaceDir: submittedSnapshotRoot ? agentWorkspaceDir : workspace.dir,
+      ...(submittedSnapshotRoot ? { snapshotRoot: submittedSnapshotRoot } : {}),
       artifactRefs: runtimeSummary.artifactRefs,
       now,
       newId,
@@ -759,7 +794,15 @@ export async function runTaskOnceWithStorage(
       settledByDeadline,
     };
   } finally {
-    await workspace.cleanup();
+    try {
+      await graphCoordinator?.close();
+    } finally {
+      try {
+        graphControlStore?.close();
+      } finally {
+        await workspace.cleanup();
+      }
+    }
   }
 }
 
@@ -844,9 +887,6 @@ async function appendHeavyTaskSelfCheckEvidenceLinks(input: {
   }
 }
 
-const DEFAULT_INTERVENTION_POLICY: TaskInterventionPolicy = { mode: 'fail_closed' };
-const DEFAULT_APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
-
 function withOptionalStatePrompts(
   instruction: string,
   prompts: readonly (string | undefined)[],
@@ -859,13 +899,6 @@ function withOptionalStatePrompts(
     next = `${next}\n\n${prompt}`;
   }
   return next;
-}
-
-function toolNamesForIdentity(hasIsolatedExecutor: boolean, heavyTaskEnabled: boolean): string[] {
-  const names = hasIsolatedExecutor ? [...ISOLATED_HEADLESS_TOOL_NAMES] : ['registered_backend'];
-  if (heavyTaskEnabled && hasIsolatedExecutor)
-    names.push(...HEAVY_TASK_PROGRESS_TOOL_NAMES, ...HEAVY_TASK_SELF_CHECK_TOOL_NAMES);
-  return names;
 }
 
 async function appendTaskAttemptExecutionLink(input: {
@@ -933,220 +966,6 @@ async function appendTaskAttemptExecutionLink(input: {
   }
 }
 
-interface PermissionInterventionInput {
-  invocation: InvocationResult;
-  store: TaskRunWriter;
-  taskRunId: string;
-  attemptId: string;
-  now: () => number;
-  newId: () => string;
-  policy: TaskInterventionPolicy;
-  config: Config;
-  task: Task;
-  sessionId: string;
-  startedAt: number;
-  closeTaskRun: boolean;
-  systemPrompt: Pick<ResolvedHeadlessSystemPrompt, 'mode' | 'systemPromptHash'>;
-}
-
-type PermissionInterventionResult =
-  | { parked: false; invocation: InvocationResult }
-  | { parked: true; invocation: InvocationResult; resultRecord: ResultRecord };
-
-async function handlePermissionIntervention(
-  input: PermissionInterventionInput,
-): Promise<PermissionInterventionResult> {
-  const permissionRequestEvent = input.invocation.events.find(
-    (event) => event.actions?.permissionRequest,
-  );
-  const rawRequest = permissionRequestEvent?.actions?.permissionRequest;
-  if (!rawRequest) {
-    return { parked: false, invocation: input.invocation };
-  }
-
-  const requestedAt = input.now();
-  const request = permissionRequestFromRuntime({
-    rawRequest,
-    taskRunId: input.taskRunId,
-    attemptId: input.attemptId,
-    requestedAt,
-    expiresAt: requestedAt + (input.policy.approvalTimeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS),
-  });
-  await appendTaskEvent(input.store, input.taskRunId, {
-    type: 'permission_request_recorded',
-    id: input.newId(),
-    taskRunId: input.taskRunId,
-    ts: requestedAt,
-    request,
-  });
-
-  const projection = await input.store.project(input.taskRunId);
-  const postHocGrant = matchPermissionGrant(request, projection.permissionGrants, requestedAt);
-  const failClosedDenyReason = postHocGrant
-    ? 'matching permission grant was observed only after runtime emitted a permission handoff; headless cannot safely resume post-hoc permission requests'
-    : 'headless fail-closed policy denied interactive permission request';
-
-  const inboxItem = approvalRequestInboxItem({
-    inboxItemId: input.newId(),
-    request,
-    createdAt: requestedAt,
-  });
-  await appendTaskEvent(input.store, input.taskRunId, {
-    type: 'task_inbox_item_recorded',
-    id: input.newId(),
-    taskRunId: input.taskRunId,
-    ts: requestedAt,
-    item: inboxItem,
-  });
-
-  if (input.policy.mode === 'park') {
-    await appendTaskEvent(input.store, input.taskRunId, {
-      type: 'task_attempt_completed',
-      id: input.newId(),
-      taskRunId: input.taskRunId,
-      ts: requestedAt,
-      attemptId: input.attemptId,
-      finishedAt: requestedAt,
-      status: 'needs_approval',
-      error: {
-        message: `task run needs approval for ${request.toolName}`,
-        class: 'needs_approval',
-      },
-    });
-    if (input.closeTaskRun) {
-      await appendTaskEvent(input.store, input.taskRunId, {
-        type: 'task_run_needs_approval',
-        id: input.newId(),
-        taskRunId: input.taskRunId,
-        ts: requestedAt,
-        attemptId: input.attemptId,
-        reason: 'approval',
-        inboxItemId: inboxItem.inboxItemId,
-      });
-    }
-    return {
-      parked: true,
-      invocation: input.invocation,
-      resultRecord: syntheticPermissionResultRecord({
-        config: input.config,
-        task: input.task,
-        sessionId: input.sessionId,
-        runId: input.invocation.runId,
-        startedAt: input.startedAt,
-        finishedAt: requestedAt,
-        steps: countRuntimeSteps(input.invocation.events),
-        errorClass: 'needs_approval',
-        error: `task run needs approval for ${request.toolName}`,
-        systemPrompt: input.systemPrompt,
-      }),
-    };
-  }
-
-  await appendTaskEvent(input.store, input.taskRunId, {
-    type: 'permission_decision_recorded',
-    id: input.newId(),
-    taskRunId: input.taskRunId,
-    ts: requestedAt,
-    requestId: request.requestId,
-    decision: 'deny',
-    source: 'ci_policy',
-    decidedAt: requestedAt,
-    reason: failClosedDenyReason,
-  });
-  await appendTaskEvent(input.store, input.taskRunId, {
-    type: 'task_inbox_item_resolved',
-    id: input.newId(),
-    taskRunId: input.taskRunId,
-    ts: requestedAt,
-    inboxItemId: inboxItem.inboxItemId,
-    status: 'resolved',
-    resolution: {
-      decision: 'deny',
-      actorId: 'ci_policy',
-      resolvedAt: requestedAt,
-      reason: failClosedDenyReason,
-    },
-  });
-
-  return { parked: false, invocation: normalizeHeadlessInvocation(input.invocation) };
-}
-
-function permissionRequestFromRuntime(input: {
-  rawRequest: {
-    requestId?: string;
-    toolUseId?: string;
-    toolName?: string;
-    reason?: string;
-    category?: string;
-    args?: unknown;
-  };
-  taskRunId: string;
-  attemptId: string;
-  requestedAt: number;
-  expiresAt: number;
-}): TaskPermissionRequest {
-  const args = input.rawRequest.args;
-  const toolName = input.rawRequest.toolName ?? 'unknown_tool';
-  const toolCallId =
-    input.rawRequest.toolUseId ?? input.rawRequest.requestId ?? 'unknown_tool_call';
-  return {
-    schemaVersion: 1,
-    requestId: input.rawRequest.requestId ?? `${input.taskRunId}:${input.attemptId}:${toolCallId}`,
-    taskRunId: input.taskRunId,
-    attemptId: input.attemptId,
-    toolCallId,
-    toolName,
-    normalizedArgsHash: hashNormalizedArgs(args),
-    resourceScope: permissionScope(toolName, args),
-    reason: input.rawRequest.reason ?? input.rawRequest.category ?? 'permission required',
-    preview: permissionPreview(args),
-    requestedAt: input.requestedAt,
-    expiresAt: input.expiresAt,
-  };
-}
-
-function permissionScope(toolName: string, args: unknown): PermissionResourceScope {
-  if (toolName.toLowerCase() === 'bash' && isRecord(args) && typeof args.command === 'string') {
-    return commandResourceScope(args.command);
-  }
-  return { kind: 'tool', value: toolName, mode: 'execute' };
-}
-
-function syntheticPermissionResultRecord(input: {
-  config: Config;
-  task: Task;
-  sessionId: string;
-  runId: string;
-  startedAt: number;
-  finishedAt: number;
-  steps: number;
-  errorClass: string;
-  error: string;
-  systemPrompt: Pick<ResolvedHeadlessSystemPrompt, 'mode' | 'systemPromptHash'>;
-}): ResultRecord {
-  return {
-    taskId: input.task.id,
-    configId: input.config.id,
-    sessionId: input.sessionId,
-    runId: input.runId,
-    systemPromptMode: input.systemPrompt.mode,
-    systemPromptHash: input.systemPrompt.systemPromptHash,
-    status: 'failed',
-    runnerCompleted: false,
-    passed: false,
-    scored: false,
-    eligible: false,
-    excludedReason: input.error,
-    exitCode: null,
-    steps: input.steps,
-    durationMs: input.finishedAt - input.startedAt,
-    startedAt: input.startedAt,
-    finishedAt: input.finishedAt,
-    error: input.error,
-    errorClass: input.errorClass,
-  };
-}
-
 interface RunRuntimeAttemptInput {
   run: AgentRun;
   header: SessionHeader;
@@ -1157,6 +976,7 @@ interface RunRuntimeAttemptInput {
   newId: () => string;
   deadlineAtMs?: number;
   settleByDeadline(): Promise<boolean>;
+  onDeadlineTriggered(): void;
 }
 
 async function runRuntimeAttempt(input: RunRuntimeAttemptInput): Promise<{
@@ -1201,6 +1021,7 @@ async function runRuntimeAttempt(input: RunRuntimeAttemptInput): Promise<{
   let settlementError: unknown;
   let settlementAttempt: Promise<void> | undefined;
   const settle = () => {
+    input.onDeadlineTriggered();
     settlementAttempt = input
       .settleByDeadline()
       .then((settled) => {
@@ -1254,11 +1075,13 @@ type AgentRunHooks = ConstructorParameters<typeof AgentRun>[0]['hooks'];
 function createSingleRunActiveSession(
   backends: BackendRegistry,
   store: SessionStore,
+  runtimeEventStore: RuntimeEventStore | undefined,
   now: () => number,
   newId: () => string,
 ): {
   hooks: AgentRunHooks;
   bindRun(run: AgentRun): void;
+  hasActiveRun(sessionId: string, runId: string, turnId: string): boolean;
   settleByDeadline(): Promise<boolean>;
   dispose(): Promise<void>;
 } {
@@ -1269,6 +1092,10 @@ function createSingleRunActiveSession(
   };
   return {
     bindRun,
+    hasActiveRun: (sessionId, runId, turnId) =>
+      active?.sessionId === sessionId &&
+      active.activeRuns.get(runId)?.turnId === turnId &&
+      active.turnToRunId.get(turnId) === runId,
     settleByDeadline: async () => {
       if (!active) return false;
       const stoppedRuns = [...active.activeRuns.values()].filter((run) =>
@@ -1283,40 +1110,53 @@ function createSingleRunActiveSession(
       return true;
     },
     hooks: {
-      ensureActive: async (sessionId, header) => {
-        if (active) {
-          active.cachedHeader = header;
-          return active;
+      reserveRun: async (sessionId, header, run) => {
+        let targetActive = active;
+        if (targetActive) {
+          targetActive.cachedHeader = header;
+        } else {
+          const backend = await backends.build(header.backend, {
+            sessionId,
+            workspaceRoot: header.workspaceRoot,
+            header,
+            store,
+            recordRunTrace: (event) => boundRun?.recordRunTrace(event),
+            recordProviderRequestCapture: (capture) => {
+              if (!boundRun) {
+                return Promise.reject(new Error('No active AgentRun for provider request capture'));
+              }
+              return boundRun.recordProviderRequestCapture(capture);
+            },
+            recordProviderRequestAttempt: (attempt) =>
+              boundRun?.recordProviderRequestAttempt(attempt),
+            ...(runtimeEventStore
+              ? {
+                  loadTurnRuntimeEvents: (turnId: string) => {
+                    if (!boundRun || boundRun.turnId !== turnId) {
+                      return Promise.reject(
+                        new Error('No active AgentRun for turn runtime events'),
+                      );
+                    }
+                    return boundRun.loadTurnRuntimeEvents();
+                  },
+                }
+              : {}),
+            allowMidTurnHistoryCompaction: Boolean(runtimeEventStore),
+            recordActiveFullCompactBlock: (block) => boundRun?.recordActiveFullCompactBlock(block),
+            recordSemanticCompactBlock: (block) => boundRun?.recordSemanticCompactBlock(block),
+          });
+          targetActive = {
+            sessionId,
+            backend,
+            cachedHeader: header,
+            activeRuns: new Map(),
+            turnToRunId: new Map(),
+          };
+          active = targetActive;
         }
-        const backend = await backends.build(header.backend, {
-          sessionId,
-          workspaceRoot: header.workspaceRoot,
-          header,
-          store,
-          recordRunTrace: (event) => boundRun?.recordRunTrace(event),
-          recordProviderRequestCapture: (capture) => {
-            if (!boundRun) {
-              return Promise.reject(new Error('No active AgentRun for provider request capture'));
-            }
-            return boundRun.recordProviderRequestCapture(capture);
-          },
-          recordProviderRequestAttempt: (attempt) =>
-            boundRun?.recordProviderRequestAttempt(attempt),
-          recordActiveFullCompactBlock: (block) => boundRun?.recordActiveFullCompactBlock(block),
-          recordSemanticCompactBlock: (block) => boundRun?.recordSemanticCompactBlock(block),
-        });
-        active = {
-          sessionId,
-          backend,
-          cachedHeader: header,
-          activeRuns: new Map(),
-          turnToRunId: new Map(),
-        };
-        return active;
-      },
-      registerRun: (targetActive, run) => {
         targetActive.activeRuns.set(run.runId, run);
         targetActive.turnToRunId.set(run.turnId, run.runId);
+        return targetActive;
       },
       unregisterRun: (targetActive, run) => {
         targetActive.activeRuns.delete(run.runId);
@@ -1361,6 +1201,65 @@ function createSingleRunActiveSession(
       if (backend) await backend.dispose().catch(() => {});
     },
   };
+}
+
+async function runWithTaskSessionCleanup<T>(
+  run: () => Promise<T>,
+  cleanup: () => Promise<void>,
+): Promise<T> {
+  let result: T;
+  try {
+    result = await run();
+  } catch (primaryError) {
+    try {
+      await cleanup();
+    } catch (cleanupError) {
+      attachTaskCleanupCause(primaryError, cleanupError);
+    }
+    throw primaryError;
+  }
+  await cleanup();
+  return result;
+}
+
+function attachTaskCleanupCause(primaryError: unknown, cleanupError: unknown): void {
+  if (!(primaryError instanceof Error)) return;
+  const existingCause = primaryError.cause;
+  const cause =
+    existingCause === undefined
+      ? cleanupError
+      : new AggregateError(
+          [existingCause, cleanupError],
+          'task session cleanup failed after the primary error',
+        );
+  try {
+    Object.defineProperty(primaryError, 'cause', {
+      value: cause,
+      configurable: true,
+      enumerable: false,
+      writable: true,
+    });
+  } catch {
+    // A frozen caller-owned error must remain the primary thrown value.
+  }
+}
+
+async function disposeTaskRunSession(
+  active: { dispose(): Promise<void> },
+  sessionCapabilities: {
+    settle(
+      sessionId: string,
+      input?: { source: 'benchmark_deadline' | 'stop_button' },
+    ): Promise<void>;
+  },
+  sessionId: string,
+  source: 'benchmark_deadline' | undefined,
+): Promise<void> {
+  try {
+    await sessionCapabilities.settle(sessionId, source ? { source } : undefined);
+  } finally {
+    await active.dispose();
+  }
 }
 
 function statusPatch(
@@ -1459,25 +1358,6 @@ function resultRecordFromInvocation(input: {
               'run did not complete',
           }
         : {}),
-  };
-}
-
-function normalizeHeadlessInvocation(invocation: InvocationResult): InvocationResult {
-  const permissionRequestEvent = invocation.events.find(
-    (event) => event.actions?.permissionRequest,
-  );
-  if (!permissionRequestEvent) return invocation;
-
-  const request = permissionRequestEvent.actions?.permissionRequest;
-  return {
-    ...invocation,
-    status: 'failed',
-    failure: {
-      class: 'policy_denied',
-      message: request?.requestId
-        ? `headless task run cannot satisfy permission request ${request.requestId}`
-        : 'headless task run cannot satisfy an interactive permission request',
-    },
   };
 }
 
@@ -1727,12 +1607,6 @@ function errorMessageFromTaxonomy(taxonomy: AutonomousResultTaxonomy): string {
 
 function appendTaskEvent(store: TaskRunWriter, taskRunId: string, event: TaskEvent): Promise<void> {
   return store.appendEvent(taskRunId, event);
-}
-
-function isPermissionHandoffTerminal(event: {
-  actions?: { stateDelta?: Record<string, unknown> };
-}): boolean {
-  return event.actions?.stateDelta?.stopReason === 'permission_handoff';
 }
 
 function isNonTerminalErrorRuntimeEvent(event: RuntimeEvent): boolean {

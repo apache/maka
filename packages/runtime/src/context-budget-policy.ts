@@ -1,4 +1,4 @@
-import type { LlmConnection } from '@maka/core/llm-connections';
+import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import { lookupModelMetadata } from '@maka/core/model-metadata';
 import type { ContextBudgetPolicy } from './context-budget.js';
 
@@ -9,7 +9,7 @@ export interface BuildDefaultContextBudgetPolicyOptions {
 }
 
 export function buildDefaultContextBudgetPolicy(
-  connection: LlmConnection,
+  connection: RuntimeExecutionConnection,
   options: BuildDefaultContextBudgetPolicyOptions = {},
 ): ContextBudgetPolicy | undefined {
   const env = options.env ?? process.env;
@@ -396,7 +396,7 @@ function defaultCompactReserveTokens(
 }
 
 function defaultHistoryBudgetTokens(
-  connection: LlmConnection,
+  connection: RuntimeExecutionConnection,
   contextWindow: number | undefined,
   reserveTokens: number,
 ): number | undefined {
@@ -408,7 +408,7 @@ function defaultHistoryBudgetTokens(
 }
 
 export function resolveSelectedModelContextWindow(
-  connection: LlmConnection,
+  connection: RuntimeExecutionConnection,
   modelId: string | undefined,
 ): number | undefined {
   const selectedModelId = modelId ?? connection.defaultModel;

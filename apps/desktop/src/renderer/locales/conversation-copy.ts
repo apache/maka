@@ -1,4 +1,4 @@
-import type { ChatConfigurationReason, SessionStatus, UiCatalog, UiLocale } from '@maka/core';
+import type { ChatConfigurationReason, UiCatalog, UiLocale } from '@maka/core';
 
 export interface DesktopConversationCopy {
   actions: {
@@ -60,8 +60,29 @@ export interface DesktopConversationCopy {
     regeneratedTo: string;
     regeneratedToTooltip: string;
   };
-  groups: Record<'pinned' | SessionStatus, string>;
-  workbar: { ariaLabel: string; sectionsAriaLabel: string; tasks: string; browser: string; files: string };
+  workbar: { ariaLabel: string; sectionsAriaLabel: string; tasks: string; browser: string; files: string; quoteTab: string };
+  quoteCompanion: {
+    /** Read-only exploration hint shown in the empty companion panel. */
+    hint: string;
+    /** The exit / dismiss action label. */
+    exit: string;
+    /** Prefix for the companion fork's session name (followed by the excerpt). */
+    namePrefix: string;
+    errors: {
+      /** Reading the source boundary or creating the companion fork failed. */
+      forkSetupFailed: string;
+      /** Fork could not be pinned read-only (`explore`), so the send was aborted. */
+      permissionPinFailed: string;
+      /** The companion run reported an error event. */
+      runError: string;
+      /** `sessions.send` was rejected without throwing (e.g. an unresolved skill). */
+      sendRejected: string;
+      /** `sessions.send` threw / the turn could not be started. */
+      sendFailed: string;
+      /** Responding to a permission / question prompt failed. */
+      respondFailed: string;
+    };
+  };
   health: {
     blocked: Record<ChatConfigurationReason, { label: string; tooltip: (connection: string, model: string) => string }>;
     reauth: { label: string; tooltip: string };
@@ -80,7 +101,8 @@ export interface DesktopConversationCopy {
     tool: string;
     permission: string;
     restarted: string;
-    recovery: Record<'safeResume' | 'stepCap' | 'toolError' | 'connection' | 'partial' | 'toolRecord' | 'retry', string>;
+    sandboxBoundaryClosed: string;
+    recovery: Record<'safeResume' | 'stepCap' | 'toolError' | 'connection' | 'partial' | 'toolRecord' | 'retry' | 'sandboxBoundaryClosed', string>;
   };
 }
 
@@ -108,8 +130,20 @@ const COPY = {
     },
     footer: { labels: { regenerate: '重新生成', branch: '分支', copy: '复制', info: '详情' }, pending: '正在处理…', regenerateRunning: '当前回答仍在进行中，结束后再重新生成', regenerateAgain: '已重新生成过，再次点击将创建新的并行回答', regenerate: '让模型重新生成本轮回答', branchRunning: '当前回答仍在进行中，结束后再分支', branchAborted: '从中断前的上下文分支出新对话', branch: '基于此回答的上下文分支出新对话', copy: '复制回答到剪贴板', copyEmpty: '此回答尚无可复制的内容' },
     lineage: { regeneratedFrom: '重新生成自旧回答', regeneratedFromTooltip: '这是重新生成的并行回答，点击查看被保留的旧回答', regeneratedTo: '已重新生成 → 新回答', regeneratedToTooltip: '点击跳转到重新生成的新回答' },
-    groups: { pinned: '已置顶', running: '进行中', waiting_for_user: '等待你', blocked: '需要处理', active: '会话', review: '待审核', done: '已完成', archived: '归档', aborted: '已中止' },
-    workbar: { ariaLabel: '会话工作栏', sectionsAriaLabel: '会话工作栏栏目', tasks: '任务', browser: '浏览器', files: '文件' },
+    workbar: { ariaLabel: '会话工作栏', sectionsAriaLabel: '会话工作栏栏目', tasks: '任务', browser: '浏览器', files: '文件', quoteTab: '追问引用' },
+    quoteCompanion: {
+      hint: '这里的追问会带上主对话的完整上下文：只做解释和只读探索，不会改动文件，也不写回主对话。在主对话里继续选中文本追问，会加进这个侧栏。',
+      exit: '退出',
+      namePrefix: '追问：',
+      errors: {
+        forkSetupFailed: '无法创建追问会话，请稍后重试。',
+        permissionPinFailed: '无法将追问会话设为只读探索模式，已取消（避免以主对话的高权限执行）。',
+        runError: '追问出错了，请重试。',
+        sendRejected: '追问未能开始，请稍后重试。',
+        sendFailed: '追问失败，请稍后重试。',
+        respondFailed: '响应失败，请稍后重试。',
+      },
+    },
     health: {
       blocked: {
         fake_backend: { label: '会话已过期 · 请先配置真实模型', tooltip: () => '原会话使用旧的本地模拟连接，需要先到 设置 · 模型 添加并启用一个真实模型才能发送。' },
@@ -126,7 +160,7 @@ const COPY = {
       reauth: { label: '上次连接测试鉴权失败', tooltip: '最近一次连接测试返回鉴权失败（401 / 403），密钥可能已过期或被吊销。这不会拦截发送，但若发送失败请到 设置 · 模型 重新登录。' },
       testError: { label: '上次连接测试失败', tooltip: '最近一次连接测试因网络 / 超时 / 5xx 失败。这不会拦截发送，但若问题持续请到 设置 · 模型 检查 Base URL / 代理。' },
     },
-    turnError: { unknown: '未知错误', contextOverflow: '上下文窗口已超出限制', timeout: '请求超时', auth: '鉴权失败', providerBilling: '模型服务计费受限', rateLimit: '触发模型速率限制', network: '网络错误', provider: '模型服务返回错误', stepCap: '达到工具步骤上限', tool: '工具调用失败', permission: '等待权限确认', restarted: '本地应用重启，上一轮没有完成', recovery: { safeResume: '检查当前状态后，可尝试安全恢复', stepCap: '任务可能尚未完成，可以继续', toolError: '先检查工具结果，再决定是否重试', connection: '先检查模型连接或登录状态', partial: '已保留部分输出，可从这里继续', toolRecord: '工具记录已保留，重试前先看结果', retry: '没有执行工具，可直接重试' } },
+    turnError: { unknown: '未知错误', contextOverflow: '上下文窗口已超出限制', timeout: '请求超时', auth: '鉴权失败', providerBilling: '模型服务计费受限', rateLimit: '触发模型速率限制', network: '网络错误', provider: '模型服务返回错误', stepCap: '达到工具步骤上限', tool: '工具调用失败', permission: '等待权限确认', restarted: '本地应用重启，上一轮没有完成', sandboxBoundaryClosed: '本地应用重启，等待确认的「允许访问工作区以外的内容」请求已按拒绝关闭', recovery: { safeResume: '检查当前状态后，可尝试安全恢复', stepCap: '任务可能尚未完成，可以继续', toolError: '先检查工具结果，再决定是否重试', connection: '先检查模型连接或登录状态', partial: '已保留部分输出，可从这里继续', toolRecord: '工具记录已保留，重试前先看结果', retry: '没有执行工具，可直接重试', sandboxBoundaryClosed: '访问范围没有放开，重试本轮后可重新决定' } },
   },
   en: {
     actions: { stopFailedTitle: 'Failed to stop', stopFailedFallback: 'The conversation action failed. Try again later.', refreshSessionsFailedTitle: 'Failed to refresh conversations', refreshSessionsFailedFallback: 'The conversation list could not be refreshed. Try again later.', conversationErrorTitle: 'Conversation error', conversationErrorFallback: 'The conversation run failed. Try again later.', regenerateStartedTitle: 'Regeneration started', regenerateStartedDescription: 'Generating a new response', branchCreatedTitle: 'Branch created', branchCreatedDescription: (name) => `New conversation: ${name}`, revisionStartedTitle: 'Edit draft ready', revisionStartedDescription: 'The original conversation is kept; sending creates a new version', revisionReadyTitle: 'Ready to edit and resend', revisionReadyDescription: 'Rewound to before that message; edit and send when ready', revisionUnavailableTitle: 'This message cannot be edited yet', revisionAttachmentsUnsupported: 'Edit & resend does not yet support historical attachments. Copy the text into a new message instead.', revisionTransformedTextUnsupported: 'Edit & resend does not yet support messages sent with an explicit skill. Copy the text and select the skill again instead.', revisionDraftAttachmentConflict: 'The composer already has pending attachments. Send or remove them before editing a sent message.', revisionCommandUnsupported: 'You cannot run /compact while editing a sent message. Cancel the edit first.', revisionAlreadyActive: 'Another message is already being edited. Send or cancel that edit first.', revisionCancelLabel: 'Cancel', revisionBannerTitle: 'Editing sent message', revisionBannerDetail: '· New version on send', revisionUnchanged: 'Nothing changed. Use Regenerate if you only want a new answer.', operationFailedTitle: 'Action failed', operationFailedFallback: 'The conversation action failed. Try again later.', attachmentFailedTitle: 'Failed to add attachment', tryAgain: 'Try again later.', modelReboundTitle: 'Switched to an available model', modelReboundDescription: (modelId) => `The previous connection is unavailable${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: 'Failed to load conversation' },
@@ -151,8 +185,20 @@ const COPY = {
     },
     footer: { labels: { regenerate: 'Regenerate', branch: 'Branch', copy: 'Copy', info: 'Details' }, pending: 'Working…', regenerateRunning: 'Wait for the current response to finish before regenerating', regenerateAgain: 'A regenerated response already exists; click again to create another parallel response', regenerate: 'Generate another response to this turn', branchRunning: 'Wait for the current response to finish before branching', branchAborted: 'Branch from the context before the interruption', branch: 'Branch a new conversation from this response', copy: 'Copy response to clipboard', copyEmpty: 'This response has no content to copy' },
     lineage: { regeneratedFrom: 'Regenerated from previous response', regeneratedFromTooltip: 'This is a parallel regenerated response; click to view the retained previous response', regeneratedTo: 'Regenerated → New response', regeneratedToTooltip: 'Jump to the regenerated response' },
-    groups: { pinned: 'Pinned', running: 'Running', waiting_for_user: 'Waiting for you', blocked: 'Needs attention', active: 'Conversations', review: 'Review', done: 'Done', archived: 'Archived', aborted: 'Stopped' },
-    workbar: { ariaLabel: 'Conversation workbar', sectionsAriaLabel: 'Conversation workbar sections', tasks: 'Tasks', browser: 'Browser', files: 'Files' },
+    workbar: { ariaLabel: 'Conversation workbar', sectionsAriaLabel: 'Conversation workbar sections', tasks: 'Tasks', browser: 'Browser', files: 'Files', quoteTab: 'Quoted' },
+    quoteCompanion: {
+      hint: 'Questions here carry the full context of the main conversation: read-only exploration and explanation, no file changes, and nothing is written back to the main conversation. Select more text in the main transcript to add it to this side panel.',
+      exit: 'Exit',
+      namePrefix: 'Quote: ',
+      errors: {
+        forkSetupFailed: 'Could not create the companion conversation. Please try again.',
+        permissionPinFailed: 'Could not set the companion to read-only exploration mode; canceled (to avoid running with the main conversation’s elevated permissions).',
+        runError: 'The companion run errored. Please try again.',
+        sendRejected: 'The companion could not start. Please try again.',
+        sendFailed: 'The companion request failed. Please try again.',
+        respondFailed: 'The response failed. Please try again.',
+      },
+    },
     health: {
       blocked: {
         fake_backend: { label: 'Stale conversation · Configure a real model', tooltip: () => 'This conversation used the retired local simulation. Add and enable a real model in Settings · Models before sending.' },
@@ -169,7 +215,7 @@ const COPY = {
       reauth: { label: 'Last connection test failed authentication', tooltip: 'The latest test returned 401 / 403. Sending is not blocked, but sign in again under Settings · Models if it fails.' },
       testError: { label: 'Last connection test failed', tooltip: 'The latest test failed because of a network, timeout, or 5xx error. Sending is not blocked; check Base URL or proxy settings if it persists.' },
     },
-    turnError: { unknown: 'Unknown error', contextOverflow: 'Context window exceeded', timeout: 'Request timed out', auth: 'Authentication failed', providerBilling: 'Provider billing required', rateLimit: 'Model rate limit reached', network: 'Network error', provider: 'Model service error', stepCap: 'Tool-step limit reached', tool: 'Tool call failed', permission: 'Waiting for permission', restarted: 'The app restarted before the previous turn completed', recovery: { safeResume: 'Inspect the current state, then try safe recovery', stepCap: 'The task may be incomplete; continue from here', toolError: 'Inspect the tool result before retrying', connection: 'Check the model connection or sign-in status', partial: 'Partial output was retained; continue from here', toolRecord: 'Tool history was retained; inspect it before retrying', retry: 'No tools ran; retry directly' } },
+    turnError: { unknown: 'Unknown error', contextOverflow: 'Context window exceeded', timeout: 'Request timed out', auth: 'Authentication failed', providerBilling: 'Provider billing required', rateLimit: 'Model rate limit reached', network: 'Network error', provider: 'Model service error', stepCap: 'Tool-step limit reached', tool: 'Tool call failed', permission: 'Waiting for permission', restarted: 'The app restarted before the previous turn completed', sandboxBoundaryClosed: 'The app restarted, so the pending request to reach outside the workspace was closed as denied', recovery: { safeResume: 'Inspect the current state, then try safe recovery', stepCap: 'The task may be incomplete; continue from here', toolError: 'Inspect the tool result before retrying', connection: 'Check the model connection or sign-in status', partial: 'Partial output was retained; continue from here', toolRecord: 'Tool history was retained; inspect it before retrying', retry: 'No tools ran; retry directly', sandboxBoundaryClosed: 'Access was not widened; retry the turn to decide again' } },
   },
 } satisfies UiCatalog<DesktopConversationCopy>;
 

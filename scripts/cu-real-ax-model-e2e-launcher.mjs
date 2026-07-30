@@ -9,9 +9,12 @@ const repoRoot = join(here, '..');
 const harnessPath = join(here, 'cu-real-ax-model-e2e.mjs');
 const monitorPath = join(here, 'cu-real-e2e-monitor.swift');
 const inputAgeSource = join(here, 'cu-physical-input-age.swift');
-const labRoot =
-  process.env.MAKA_CU_AX_MODEL_LAB_ROOT ??
-  '/Users/haoqing/Documents/Learning/codex-computer-use-lab';
+const labRoot = process.env.MAKA_CU_AX_MODEL_LAB_ROOT;
+if (!labRoot) {
+  throw new Error(
+    'MAKA_CU_AX_MODEL_LAB_ROOT is required: point it at a local checkout of the Codex CUA Lab fixture',
+  );
+}
 const statePath = join(labRoot, 'test-app/runtime/state.json');
 const fixtureBundleId = 'com.openai.codex.cualab';
 const expectedAppPath = join(labRoot, 'test-app/build/Codex CUA Lab.app');
@@ -115,9 +118,22 @@ async function waitForJson(path, label, timeoutMs = 15_000) {
 }
 
 function startMonitor(fixturePID) {
-  const child = spawn('swift', [monitorPath, '--concurrent-user', String(fixturePID)], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const child = spawn(
+    'swift',
+    [
+      monitorPath,
+      '--concurrent-user',
+      String(fixturePID),
+      // The fixture must stay in the background for the whole run. `--concurrent-user`
+      // only catches the OOP host PID; denying the bundle covers every process the
+      // fixture owns, so a UI process stealing focus mid-run also fails the scenario.
+      '--deny-frontmost-bundle',
+      fixtureBundleId,
+    ],
+    {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  );
   let buffer = '';
   let stderr = '';
   let readyResolve;
@@ -194,11 +210,16 @@ function validateMonitorBaseline(baseline, fixturePID, label) {
   if (!Number.isFinite(baseline.physicalInputAge) || baseline.physicalInputAge < 0) {
     throw new Error(`${label} reported invalid physical input age`);
   }
-  if (baseline.bundleIdentifier !== fixtureBundleId) {
-    throw new Error(`${label} fixture bundle identity mismatch`);
+  // The fixture is launched with `open -n -g` precisely so that it never owns the
+  // foreground. Asserting that it stays in the background is what makes this an
+  // honest test of background execution: requiring the fixture to be frontmost
+  // would both contradict the launch mode and make the run depend on whatever
+  // else happens to be on the desktop.
+  if (baseline.bundleIdentifier === fixtureBundleId) {
+    throw new Error(`${label} fixture unexpectedly owns the frontmost application`);
   }
-  if (baseline.canonicalAppPath !== expectedAppPath) {
-    throw new Error(`${label} fixture app path mismatch`);
+  if (baseline.canonicalAppPath === expectedAppPath) {
+    throw new Error(`${label} fixture app path unexpectedly owns the frontmost application`);
   }
   if (baseline.frontmostPID === fixturePID) {
     throw new Error(`${label} synthetic fixture became frontmost`);

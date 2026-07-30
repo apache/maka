@@ -1,6 +1,14 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { expect } from '../test-helpers.js';
+import {
+  decodeMessageContent,
+  messageContentsEqual,
+  normalizeMessageContent,
+  type SessionEvent,
+} from '../events.js';
+import { INTERACTION_ID_MAX_BYTES, INTERACTION_TOOL_NAME_MAX_BYTES } from '../interaction.js';
 import {
   RUNTIME_EVENT_AUTHORS,
   RUNTIME_EVENT_CONTENT_KINDS,
@@ -8,6 +16,7 @@ import {
   RUNTIME_EVENT_STATUSES,
   TERMINAL_RUNTIME_EVENT_STATUSES,
   createRuntimeEventId,
+  decodePersistedRuntimeEvent,
   decodeRuntimeEvent,
   isRuntimeEventAuthor,
   isRuntimeEventRole,
@@ -20,6 +29,7 @@ import {
   type RuntimeEventActions,
   type RuntimeEventContent,
 } from '../runtime-event.js';
+import { decodeStoredMessageForRecovery } from '../session.js';
 
 /** Minimal valid RuntimeEvent; callers spread overrides on top. */
 function baseEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
@@ -37,6 +47,63 @@ function baseEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
   };
 }
 
+interface RuntimeEventValidationCorpus {
+  baseEvent: Record<string, unknown>;
+  cases: Array<{
+    name: string;
+    accepted: boolean;
+    overrides: Record<string, unknown>;
+  }>;
+}
+
+const runtimeEventValidationCorpus = JSON.parse(
+  readFileSync(
+    new URL('../../src/__tests__/fixtures/runtime-event-validation-corpus.json', import.meta.url),
+    'utf8',
+  ),
+) as RuntimeEventValidationCorpus;
+
+test('Core decoder matches the shared RuntimeEvent validation corpus', () => {
+  for (const entry of runtimeEventValidationCorpus.cases) {
+    const event = { ...runtimeEventValidationCorpus.baseEvent, ...entry.overrides };
+    if (entry.accepted) {
+      assert.doesNotThrow(() => decodeRuntimeEvent(event), entry.name);
+    } else {
+      assert.throws(() => decodeRuntimeEvent(event), /Invalid RuntimeEvent schema/, entry.name);
+    }
+  }
+});
+
+test('Stored assistant reasoning parts survive recovery decoding', () => {
+  const parts = [
+    {
+      text: 'first summary',
+      providerOptions: {
+        openai: { itemId: 'rs_first', reasoningEncryptedContent: 'encrypted-first' },
+      },
+    },
+    {
+      text: 'second summary',
+      providerOptions: {
+        openai: { itemId: 'rs_second', reasoningEncryptedContent: 'encrypted-second' },
+      },
+    },
+  ];
+  const stored = decodeStoredMessageForRecovery({
+    type: 'assistant',
+    id: 'message-1',
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'answer',
+    thinking: { text: 'first summarysecond summary', parts },
+    modelId: 'ark-code-latest',
+  });
+
+  assert.equal(stored.type, 'assistant');
+  if (stored.type !== 'assistant') throw new Error('unreachable');
+  assert.deepEqual(stored.thinking?.parts, parts);
+});
+
 describe('RuntimeEvent role / author / status enums', () => {
   test('locks the role enum and guard', () => {
     expect(RUNTIME_EVENT_ROLES).toEqual(['user', 'model', 'tool', 'system']);
@@ -46,7 +113,8 @@ describe('RuntimeEvent role / author / status enums', () => {
   });
 
   test('locks the author enum (agent ≠ model) and guard', () => {
-    expect(RUNTIME_EVENT_AUTHORS).toEqual(['user', 'agent', 'tool', 'system']);
+    expect(RUNTIME_EVENT_AUTHORS).toEqual(['user', 'host', 'agent', 'tool', 'system']);
+    expect(isRuntimeEventAuthor('host')).toBe(true);
     expect(isRuntimeEventAuthor('agent')).toBe(true);
     expect(isRuntimeEventAuthor('model')).toBe(false);
     expect(isRuntimeEventAuthor(null)).toBe(false);
@@ -85,6 +153,153 @@ describe('RuntimeEvent role / author / status enums', () => {
 });
 
 describe('RuntimeEvent content variants', () => {
+  test('owns canonical MessageContent decoding, copying, and equality', () => {
+    const attachments = [
+      {
+        kind: 'code' as const,
+        name: 'b.ts',
+        mimeType: 'text/typescript',
+        bytes: 2,
+        ref: { kind: 'workspace_file' as const, relativePath: 'b.ts' },
+      },
+      {
+        kind: 'code' as const,
+        name: 'a.ts',
+        mimeType: 'text/typescript',
+        bytes: 1,
+        ref: { kind: 'workspace_file' as const, relativePath: 'a.ts' },
+      },
+    ];
+    const quotes = [
+      { text: 'first', label: 'Assistant', sourceTurnId: 'turn-1' },
+      { text: 'second', sourceTurnId: 'turn-2' },
+    ];
+    assert.deepEqual(normalizeMessageContent({ text: 'model', displayText: 'model' }), {
+      text: 'model',
+    });
+    assert.deepEqual(normalizeMessageContent({ text: 'model', attachments: [] }), {
+      text: 'model',
+    });
+    assert.deepEqual(normalizeMessageContent({ text: 'model', quotes: [] }), {
+      text: 'model',
+    });
+    const decoded = decodeMessageContent({ text: 'model', attachments, quotes });
+    assert.deepEqual(decoded.attachments, attachments);
+    assert.deepEqual(decoded.quotes, quotes);
+    assert.notEqual(decoded.attachments, attachments);
+    assert.notEqual(decoded.attachments?.[0], attachments[0]);
+    assert.notEqual(decoded.attachments?.[0]?.ref, attachments[0]?.ref);
+    assert.notEqual(decoded.quotes, quotes);
+    assert.notEqual(decoded.quotes?.[0], quotes[0]);
+    assert.equal(messageContentsEqual(decoded, { text: 'model', attachments, quotes }), true);
+    assert.equal(
+      messageContentsEqual(decoded, {
+        text: 'model',
+        attachments: [...attachments].reverse(),
+        quotes,
+      }),
+      false,
+    );
+    assert.equal(
+      messageContentsEqual(decoded, { text: 'model', attachments, quotes: [...quotes].reverse() }),
+      false,
+    );
+    assert.equal(
+      messageContentsEqual(decoded, {
+        text: 'model',
+        attachments,
+        quotes: [{ ...quotes[0]!, sourceTurnId: 'turn-other' }, quotes[1]!],
+      }),
+      false,
+    );
+    assert.throws(() => decodeMessageContent({ text: 'model', extra: true }), TypeError);
+    assert.throws(
+      () =>
+        decodeMessageContent({
+          text: 'model',
+          attachments: [{ ...attachments[0]!, ref: { kind: 'workspace_file', relativePath: 1 } }],
+        }),
+      TypeError,
+    );
+    assert.throws(
+      () =>
+        decodeMessageContent({
+          text: 'model',
+          attachments: [{ ...attachments[0]!, bytes: 1.5 }],
+        }),
+      TypeError,
+    );
+    for (const quote of [
+      { text: 1 },
+      { text: 'excerpt', label: 1 },
+      { text: 'excerpt', sourceTurnId: 1 },
+      { text: 'excerpt', extra: true },
+    ]) {
+      assert.throws(() => decodeMessageContent({ text: 'model', quotes: [quote] }), TypeError);
+    }
+    assert.deepEqual(
+      decodeRuntimeEvent(
+        baseEvent({
+          role: 'user',
+          author: 'user',
+          content: {
+            kind: 'text',
+            text: 'model',
+            displayText: 'model',
+            attachments: [],
+            quotes,
+          },
+        }),
+      ).content,
+      { kind: 'text', text: 'model', quotes },
+    );
+    const event = decodeRuntimeEvent(
+      baseEvent({ content: { kind: 'text', text: 'model', quotes } }),
+    );
+    assert.notEqual(
+      event.content && 'quotes' in event.content ? event.content.quotes : undefined,
+      quotes,
+    );
+    assert.notEqual(
+      event.content && 'quotes' in event.content ? event.content.quotes?.[0] : undefined,
+      quotes[0],
+    );
+    const stored = decodeStoredMessageForRecovery({
+      type: 'user',
+      id: 'message-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: 'model',
+      displayText: 'model',
+      attachments: [],
+      quotes,
+    });
+    assert.deepEqual(stored, {
+      type: 'user',
+      id: 'message-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: 'model',
+      quotes,
+    });
+    assert.equal(stored.type, 'user');
+    if (stored.type !== 'user') throw new Error('unreachable');
+    assert.notEqual(stored.quotes, quotes);
+    assert.notEqual(stored.quotes?.[0], quotes[0]);
+    assert.throws(
+      () =>
+        decodeStoredMessageForRecovery({
+          type: 'user',
+          id: 'message-1',
+          turnId: 'turn-1',
+          ts: 1,
+          text: 'model',
+          quotes: [{ text: 'excerpt', sourceTurnId: 1 }],
+        }),
+      /Invalid stored message schema/,
+    );
+  });
+
   test('text content carries a string body', () => {
     const content: RuntimeEventContent = { kind: 'text', text: 'hello' };
     if (content.kind !== 'text') throw new Error('unreachable');
@@ -129,6 +344,7 @@ describe('RuntimeEvent content variants', () => {
       id: 'tc-1',
       name: 'Read',
       args: { path: '/x' },
+      providerOptions: { google: { thoughtSignature: 'sig' } },
     };
     const response: RuntimeEventContent = {
       kind: 'function_response',
@@ -141,6 +357,7 @@ describe('RuntimeEvent content variants', () => {
       throw new Error('unreachable');
     }
     expect(call.id).toBe(response.id);
+    expect(decodeRuntimeEvent(baseEvent({ content: call })).content).toEqual(call);
     expect(response.isError).toBe(false);
   });
 
@@ -156,6 +373,35 @@ describe('RuntimeEvent content variants', () => {
 });
 
 describe('RuntimeEvent actions', () => {
+  test('normalizes legacy permission requests only for persisted reads', () => {
+    const permissionRequest = {
+      requestId: 'pr-1',
+      toolUseId: 'tc-1',
+      toolName: 'Bash',
+      category: 'shell_unsafe',
+      reason: 'shell_dangerous',
+      args: { command: 'rm foo' },
+    };
+    const legacyEvent = baseEvent({ actions: { permissionRequest } as never });
+    assert.throws(() => decodeRuntimeEvent(legacyEvent), /Invalid RuntimeEvent schema/);
+    assert.deepEqual(decodePersistedRuntimeEvent(legacyEvent).actions?.permissionRequest, {
+      ...permissionRequest,
+      kind: 'tool_permission',
+      rememberForTurnAllowed: false,
+    });
+    assert.throws(
+      () =>
+        decodePersistedRuntimeEvent(
+          baseEvent({
+            actions: {
+              permissionRequest: { ...permissionRequest, kind: 'tool_permission' },
+            } as never,
+          }),
+        ),
+      /Invalid RuntimeEvent schema/,
+    );
+  });
+
   test('a terminal action can carry endInvocation + tokenUsage', () => {
     const actions: RuntimeEventActions = {
       endInvocation: true,
@@ -165,7 +411,7 @@ describe('RuntimeEvent actions', () => {
     expect(actions.tokenUsage?.input).toBe(10);
   });
 
-  test('permission request/decision are first-class actions', () => {
+  test('permission and user-question interactions are first-class actions', () => {
     const actions: RuntimeEventActions = {
       permissionRequest: {
         kind: 'tool_permission',
@@ -178,9 +424,138 @@ describe('RuntimeEvent actions', () => {
         rememberForTurnAllowed: true,
       },
       permissionDecision: { requestId: 'pr-1', decision: 'deny' },
+      permissionAnswerAccepted: { requestId: 'hosted-pr-1' },
+      userQuestionAnswerAccepted: { requestId: 'question-1' },
     };
     expect(actions.permissionRequest?.category).toBe('shell_unsafe');
     expect(actions.permissionDecision?.decision).toBe('deny');
+    assert.deepEqual(decodeRuntimeEvent(baseEvent({ actions })).actions?.permissionDecision, {
+      requestId: 'pr-1',
+      decision: 'deny',
+    });
+    const decodedActions = decodeRuntimeEvent(baseEvent({ actions })).actions;
+    for (const [accepted, requestId] of [
+      [decodedActions?.permissionAnswerAccepted, 'hosted-pr-1'],
+      [decodedActions?.userQuestionAnswerAccepted, 'question-1'],
+    ] as const) {
+      assert.deepEqual(accepted, { requestId });
+      assert.ok(accepted);
+      assert.equal(Object.hasOwn(accepted, 'requestId'), true);
+      assert.equal(Object.hasOwn(accepted, 'decision'), false);
+    }
+
+    for (const invalidAcceptedAction of [
+      { permissionAnswerAccepted: { requestId: 'pr-1', extra: true } },
+      { userQuestionAnswerAccepted: { requestId: 'question-1', extra: true } },
+      { permissionAnswerAccepted: Object.create({ requestId: 'inherited-pr-1' }) },
+      { userQuestionAnswerAccepted: { requestId: 'x'.repeat(257) } },
+    ]) {
+      assert.throws(() =>
+        decodeRuntimeEvent({
+          ...baseEvent(),
+          actions: invalidAcceptedAction,
+        }),
+      );
+    }
+  });
+
+  test('permission closure acknowledgement has a narrow durable shape', () => {
+    const sessionEvent: SessionEvent = {
+      type: 'permission_closure_ack',
+      id: 'evt-closure-1',
+      turnId: 'turn-1',
+      ts: 100,
+      requestId: 'hosted-pr-1',
+      toolUseId: 'tool-use-1',
+      reason: 'timed_out',
+    };
+
+    const decoded = decodeRuntimeEvent(
+      baseEvent({
+        actions: {
+          permissionClosureAccepted: {
+            requestId: sessionEvent.requestId,
+            reason: sessionEvent.reason,
+          },
+        },
+      }),
+    ).actions?.permissionClosureAccepted;
+    assert.deepEqual(decoded, { requestId: 'hosted-pr-1', reason: 'timed_out' });
+    assert.ok(decoded);
+
+    for (const permissionClosureAccepted of [
+      { requestId: 'pr-1', reason: 'timed_out', extra: true },
+      { requestId: 'x'.repeat(INTERACTION_ID_MAX_BYTES + 1), reason: 'timed_out' },
+      { requestId: 'pr-1', reason: 'cancelled' },
+    ]) {
+      assert.throws(() =>
+        decodeRuntimeEvent(baseEvent({ actions: { permissionClosureAccepted } as never })),
+      );
+    }
+
+    const conflictingActions: RuntimeEventActions[] = [
+      { permissionAnswerAccepted: { requestId: 'hosted-pr-1' } },
+      {
+        permissionRequest: {
+          kind: 'tool_permission',
+          requestId: 'hosted-pr-1',
+          toolUseId: 'tool-use-1',
+          toolName: 'Bash',
+          category: 'shell_unsafe',
+          reason: 'shell_dangerous',
+          args: { command: 'rm foo' },
+          rememberForTurnAllowed: true,
+        },
+      },
+      { endInvocation: true },
+    ];
+    for (const conflictingAction of conflictingActions) {
+      assert.throws(() =>
+        decodeRuntimeEvent(
+          baseEvent({
+            actions: {
+              permissionClosureAccepted: {
+                requestId: 'hosted-pr-1',
+                reason: 'timed_out',
+              },
+              ...conflictingAction,
+            },
+          }),
+        ),
+      );
+    }
+  });
+
+  test('permission decisions optionally retain a bounded tool name', () => {
+    const permissionDecision = {
+      requestId: 'pr-1',
+      decision: 'allow' as const,
+      rememberForTurn: true,
+      toolName: 'Bash',
+    };
+
+    assert.deepEqual(
+      decodeRuntimeEvent(baseEvent({ actions: { permissionDecision } })).actions
+        ?.permissionDecision,
+      permissionDecision,
+    );
+
+    for (const invalidPermissionDecision of [
+      { requestId: 'pr-1', decision: 'allow', toolName: '' },
+      {
+        requestId: 'pr-1',
+        decision: 'allow',
+        toolName: 'x'.repeat(INTERACTION_TOOL_NAME_MAX_BYTES + 1),
+      },
+      { requestId: 'pr-1', decision: 'allow', toolName: 'Bash', extra: true },
+    ]) {
+      assert.throws(() =>
+        decodeRuntimeEvent({
+          ...baseEvent(),
+          actions: { permissionDecision: invalidPermissionDecision },
+        }),
+      );
+    }
   });
 
   test('state/artifact deltas accept primitive values', () => {

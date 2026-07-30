@@ -117,6 +117,23 @@ export function createReadOnlyPermissionProfile(): PermissionProfileManaged {
   };
 }
 
+/**
+ * True when a managed profile grants nothing beyond reading: no filesystem
+ * entry allows writing and the network stays restricted.
+ *
+ * This is the fact a permission surface needs to tell a read-only session
+ * apart from a writable one (#1611). It is derived from the policy rather
+ * than from `name`, so a profile widened by an approved boundary expansion
+ * stops reading as read-only even when its name never changed.
+ */
+export function isReadOnlyPermissionProfile(profile: PermissionProfileManaged): boolean {
+  return (
+    profile.fileSystem.kind === 'restricted' &&
+    profile.network.kind === 'restricted' &&
+    !profile.fileSystem.entries.some((entry) => entry.access === 'write')
+  );
+}
+
 export function createWorkspaceWritePermissionProfile(): PermissionProfileManaged {
   return {
     type: 'managed',
@@ -140,10 +157,6 @@ export function createWorkspaceWritePermissionProfile(): PermissionProfileManage
           special: ':slash_tmp',
         },
       ],
-      protectedMetadata: {
-        access: 'deny_write',
-        names: PROTECTED_METADATA_NAMES,
-      },
     },
     network: { kind: 'restricted' },
   };

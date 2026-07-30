@@ -1,12 +1,12 @@
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
-import type { LlmConnection } from '@maka/core/llm-connections';
+import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type {
   PrefixChangeReason,
   ToolSchemaChangeReason,
   ToolAvailabilityDiagnostic,
 } from '@maka/core/usage-stats/types';
-import type { ModelMessage } from 'ai';
+import type { ModelMessage } from './model-protocol.js';
 import { toJSONSchema } from 'zod';
 
 import type { MakaTool } from './tool-runtime.js';
@@ -17,7 +17,7 @@ export interface CanonicalToolSet {
 }
 
 export interface RequestShapeInput {
-  connection: LlmConnection;
+  connection: RuntimeExecutionConnection;
   modelId: string;
   systemPrompt?: string;
   providerOptions?: Record<string, unknown>;
@@ -76,8 +76,10 @@ export interface PreparedProviderRequestInput {
 }
 
 export interface PreparedProviderRequestCapture {
-  schemaVersion: 1;
+  schemaVersion: 2;
   requestHash: string;
+  /** Hash of protocol-independent model-call semantics for cross-protocol comparison. */
+  requestPayloadWithoutProviderOptionsHash: string;
   requestBytes: number;
   serializedRequest: string;
   segments: PreparedRequestSegment[];
@@ -217,16 +219,182 @@ export function capturePreparedProviderRequest(
   }
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     requestHash: stableHash({
       providerId: input.providerId,
       modelId: input.modelId,
       payload,
     }),
+    requestPayloadWithoutProviderOptionsHash: stableHash(
+      protocolIndependentRequestPayload(payload),
+    ),
     requestBytes: Buffer.byteLength(serializedRequest, 'utf8'),
     serializedRequest,
     segments,
   };
+}
+
+function protocolIndependentRequestPayload(payload: unknown): unknown {
+  if (!isObjectLike(payload)) return payload;
+  const { providerOptions, ...shared } = payload;
+  const identities: ProtocolIndependentRequestIdentities = {
+    approvalIds: new Map(),
+    toolCallIds: new Map(),
+  };
+  const reasoningEffort = protocolIndependentReasoningEffort(providerOptions);
+  const protocolIndependent: Record<string, unknown> = {
+    ...shared,
+    ...(Array.isArray(shared.prompt)
+      ? {
+          prompt: shared.prompt.map((message) => withoutPromptProviderOptions(message, identities)),
+        }
+      : {}),
+    ...(Array.isArray(shared.messages)
+      ? {
+          messages: shared.messages.map((message) =>
+            withoutPromptProviderOptions(message, identities),
+          ),
+        }
+      : {}),
+    ...(Array.isArray(shared.tools)
+      ? { tools: shared.tools.map(withoutObjectProviderOptions) }
+      : {}),
+    ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+  };
+  const thinkingBudget = anthropicThinkingBudget(providerOptions);
+  if (
+    thinkingBudget === undefined ||
+    !isNonNegativeSafeInteger(protocolIndependent.maxOutputTokens)
+  ) {
+    return protocolIndependent;
+  }
+  const wireOutputLimit = protocolIndependent.maxOutputTokens + thinkingBudget;
+  return Number.isSafeInteger(wireOutputLimit)
+    ? { ...protocolIndependent, maxOutputTokens: wireOutputLimit }
+    : protocolIndependent;
+}
+
+function protocolIndependentReasoningEffort(
+  providerOptions: unknown,
+): string | string[] | undefined {
+  if (!isObjectLike(providerOptions)) return undefined;
+  const efforts = new Set<string>();
+  const anthropic = providerOptions.anthropic;
+  if (isObjectLike(anthropic) && typeof anthropic.effort === 'string') {
+    efforts.add(anthropic.effort);
+  }
+  for (const namespace of Object.values(providerOptions)) {
+    if (!isObjectLike(namespace)) continue;
+    if (typeof namespace.reasoningEffort === 'string') efforts.add(namespace.reasoningEffort);
+    if (isObjectLike(namespace.thinking) && namespace.thinking.type === 'disabled') {
+      efforts.add('none');
+    }
+    const thinkingConfig = namespace.thinkingConfig;
+    if (isObjectLike(thinkingConfig) && typeof thinkingConfig.thinkingLevel === 'string') {
+      efforts.add(thinkingConfig.thinkingLevel);
+    }
+    if (isObjectLike(thinkingConfig) && thinkingConfig.thinkingBudget === 0) {
+      efforts.add('none');
+    }
+    const chatTemplateKwargs = namespace.chat_template_kwargs;
+    if (isObjectLike(chatTemplateKwargs) && chatTemplateKwargs.thinking === false) {
+      efforts.add('none');
+    }
+  }
+  const normalized = [...efforts].sort();
+  return normalized.length > 1 ? normalized : normalized[0];
+}
+
+interface ProtocolIndependentRequestIdentities {
+  approvalIds: Map<string, string>;
+  toolCallIds: Map<string, string>;
+}
+
+function withoutPromptProviderOptions(
+  value: unknown,
+  identities: ProtocolIndependentRequestIdentities,
+): unknown {
+  const message = withoutObjectProviderOptions(value);
+  if (!isObjectLike(message) || !Array.isArray(message.content)) return message;
+  return {
+    ...message,
+    content: message.content.map((part) => withoutPromptPartProviderOptions(part, identities)),
+  };
+}
+
+function withoutPromptPartProviderOptions(
+  value: unknown,
+  identities: ProtocolIndependentRequestIdentities,
+): unknown {
+  const part = withoutObjectProviderOptions(value);
+  if (!isObjectLike(part)) return part;
+  if (part.type === 'tool-call') {
+    const { providerExecuted: _providerExecuted, ...shared } = part;
+    return {
+      ...shared,
+      toolCallId: protocolIndependentId(part.toolCallId, identities.toolCallIds, 'tool-call'),
+    };
+  }
+  if (part.type === 'tool-approval-request') {
+    const { isAutomatic: _isAutomatic, signature: _signature, ...shared } = part;
+    return {
+      ...shared,
+      approvalId: protocolIndependentId(part.approvalId, identities.approvalIds, 'approval'),
+      toolCallId: protocolIndependentId(part.toolCallId, identities.toolCallIds, 'tool-call'),
+    };
+  }
+  if (part.type === 'tool-approval-response') {
+    const { providerExecuted: _providerExecuted, ...shared } = part;
+    return {
+      ...shared,
+      approvalId: protocolIndependentId(part.approvalId, identities.approvalIds, 'approval'),
+    };
+  }
+  if (part.type !== 'tool-result') return part;
+  const output = withoutObjectProviderOptions(part.output);
+  const normalizedPart = {
+    ...part,
+    toolCallId: protocolIndependentId(part.toolCallId, identities.toolCallIds, 'tool-call'),
+  };
+  if (!isObjectLike(output) || output.type !== 'content' || !Array.isArray(output.value)) {
+    return { ...normalizedPart, output };
+  }
+  return {
+    ...normalizedPart,
+    output: { ...output, value: output.value.map(withoutObjectProviderOptions) },
+  };
+}
+
+function protocolIndependentId(
+  value: unknown,
+  identities: Map<string, string>,
+  prefix: string,
+): unknown {
+  if (typeof value !== 'string') return value;
+  const existing = identities.get(value);
+  if (existing) return existing;
+  const normalized = `${prefix}-${identities.size + 1}`;
+  identities.set(value, normalized);
+  return normalized;
+}
+
+function withoutObjectProviderOptions(value: unknown): unknown {
+  if (!isObjectLike(value)) return value;
+  const { providerOptions: _providerOptions, ...shared } = value;
+  return shared;
+}
+
+function anthropicThinkingBudget(providerOptions: unknown): number | undefined {
+  if (!isObjectLike(providerOptions)) return undefined;
+  const anthropic = providerOptions.anthropic;
+  if (!isObjectLike(anthropic)) return undefined;
+  const thinking = anthropic.thinking;
+  if (!isObjectLike(thinking) || thinking.type !== 'enabled') return undefined;
+  return isNonNegativeSafeInteger(thinking.budgetTokens) ? thinking.budgetTokens : undefined;
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 export function findFirstChangedCacheableSegment(

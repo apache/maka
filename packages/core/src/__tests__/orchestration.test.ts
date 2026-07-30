@@ -24,6 +24,14 @@ describe('orchestration contract', () => {
     });
   });
 
+  test('graph mode preserves the graph identity without granting swarm authority', () => {
+    assert.deepEqual(resolveEffectiveOrchestration('graph', undefined), {
+      mode: 'graph',
+      source: 'session',
+      agentSwarmAuthorization: 'none',
+    });
+  });
+
   test('a trusted turn override wins without changing the persisted session mode', () => {
     assert.deepEqual(
       resolveEffectiveOrchestration('default', { mode: 'swarm', source: 'host_api' }),
@@ -45,6 +53,7 @@ describe('orchestration contract', () => {
 
   test('validators accept only the public contract values', () => {
     assert.equal(isOrchestrationMode('swarm'), true);
+    assert.equal(isOrchestrationMode('graph'), true);
     assert.equal(isOrchestrationMode('parallel'), false);
     assert.equal(isTurnOrchestrationSource('slash_command'), true);
     assert.equal(isTurnOrchestrationSource('model_text'), false);

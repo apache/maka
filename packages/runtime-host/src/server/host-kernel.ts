@@ -26,10 +26,13 @@ import {
   type ConnectionOperationLease,
 } from './connection-session.js';
 import {
+  composeOperationHandlers,
+  createUnavailableDomainOperationHandlers,
   type DomainOperationHandlerMap,
   type OperationResidency,
   type OperationHandlerMap,
 } from './operation-dispatcher.js';
+import type { SessionContinuityService } from './session-continuity-service.js';
 
 const DEFAULT_IDLE_GRACE_MS = 30_000;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 5_000;
@@ -54,12 +57,18 @@ export class RuntimeHostProcessTerminationRequiredError extends Error {
 
 export interface RuntimeHostCompositionContext {
   owner: InteractiveRootOwner;
+  hostEpoch: string;
   acquireResidency(): RuntimeHostResidency;
+  /** Irreversible fail-stop latch; normal residency still uses acquireResidency(). */
+  retainUntilProcessExit(): void;
   requestDrain(): void;
 }
 
 export interface RuntimeHostComposition {
   readonly handlers: DomainOperationHandlerMap;
+  readonly continuity?: SessionContinuityService;
+  releaseConnection?(connectionId: string): void;
+  beginDrain(): void;
   recover(): Promise<void>;
   close(): Promise<void>;
 }
@@ -94,7 +103,10 @@ export class RuntimeHostKernel {
   #activeOperations = 0;
   #activeCommandOperations = 0;
   #activeResidencies = 0;
+  #retainedUntilProcessExit = false;
   #composition: RuntimeHostComposition | undefined;
+  #compositionDrainBegun = false;
+  #compositionStartup: Promise<void> | undefined;
   #operationHandlers: OperationHandlerMap;
   #idleTimer: NodeJS.Timeout | undefined;
   #shutdownRequested = false;
@@ -116,7 +128,9 @@ export class RuntimeHostKernel {
     this.#handshakeTimeoutMs = options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
     this.#shutdownGraceMs = options.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
     this.#options = options;
-    this.#operationHandlers = this.#createOperationHandlers(unavailableDomainHandlers());
+    this.#operationHandlers = this.#createOperationHandlers(
+      createUnavailableDomainOperationHandlers(),
+    );
     this.closed = new Promise((resolve, reject) => {
       this.#resolveClosed = resolve;
       this.#rejectClosed = reject;
@@ -138,8 +152,20 @@ export class RuntimeHostKernel {
       await host.#start();
       return host;
     } catch (error) {
-      if (host) await host.#abortStartup();
-      else await owner.close();
+      if (host) {
+        if (host.#endpoint) {
+          host.#requestDrain();
+          try {
+            await host.closed;
+          } catch (shutdownError) {
+            throw shutdownError;
+          }
+        } else {
+          await host.#abortStartup();
+        }
+      } else {
+        await owner.close();
+      }
       throw error;
     }
   }
@@ -167,6 +193,7 @@ export class RuntimeHostKernel {
       this.#shutdownRequested = true;
       this.#cancelIdle();
       this.#armShutdownDeadline();
+      this.#beginCompositionDrain();
     }
     this.#commitRequestedShutdownIfQuiescent();
   }
@@ -180,16 +207,35 @@ export class RuntimeHostKernel {
     await listen(this.#server, this.#endpoint.path);
     await this.#endpoint.prepareAfterListen();
     await this.#publishRegistration();
-    if (this.#options.compositionFactory) {
+    const compositionFactory = this.#options.compositionFactory;
+    if (compositionFactory) {
       this.#state = 'recovering';
       await this.#publishRegistration();
-      this.#composition = await this.#options.compositionFactory({
-        owner: this.#options.owner,
-        acquireResidency: () => this.#acquireResidency(),
-        requestDrain: () => this.#requestDrain(),
+      let settleCompositionStartup!: () => void;
+      this.#compositionStartup = new Promise((resolve) => {
+        settleCompositionStartup = resolve;
       });
-      this.#operationHandlers = this.#createOperationHandlers(this.#composition.handlers);
-      await this.#composition.recover();
+      const compositionStartup = (async () => {
+        try {
+          this.#composition = await compositionFactory({
+            owner: this.#options.owner,
+            hostEpoch: this.hostEpoch,
+            acquireResidency: () => this.#acquireResidency(),
+            retainUntilProcessExit: () => this.#retainUntilProcessExit(),
+            requestDrain: () => this.#requestDrain(),
+          });
+          if (this.#shutdownRequested) this.#beginCompositionDrain();
+          this.#operationHandlers = this.#createOperationHandlers(this.#composition.handlers);
+          await this.#composition.recover();
+        } finally {
+          settleCompositionStartup();
+        }
+      })();
+      await Promise.race([compositionStartup, this.closed]);
+    }
+    if (this.#shutdownRequested) {
+      this.#commitRequestedShutdownIfQuiescent();
+      return;
     }
     this.#state = 'ready';
     await this.#publishRegistration();
@@ -205,11 +251,11 @@ export class RuntimeHostKernel {
   }
 
   async #serveConnection(transport: FramedTransport): Promise<void> {
-    let connectionAccepted = false;
-    let connectionReleased = false;
-    const releaseConnection = () => {
-      if (!connectionAccepted || connectionReleased) return;
-      connectionReleased = true;
+    let transportReleased = false;
+    let connectionId: string | undefined;
+    const releaseTransport = () => {
+      if (!connectionId || transportReleased) return;
+      transportReleased = true;
       this.#releaseConnection(transport);
     };
     try {
@@ -218,7 +264,7 @@ export class RuntimeHostKernel {
         throw new Error('First Runtime Host frame must be a hello');
       }
       const result = await this.#admitHandshake(frame, transport);
-      connectionAccepted = result.kind === 'accepted';
+      connectionId = result.kind === 'accepted' ? result.connectionId : undefined;
       await transport.write(result);
       if (result.kind !== 'accepted') {
         transport.destroyAfterFlush();
@@ -233,14 +279,19 @@ export class RuntimeHostKernel {
           principal: 'local_os_user',
         },
         resolveHandlers: () => this.#operationHandlers,
+        resolveContinuity: () => this.#composition?.continuity,
         beginOperation: (request) => this.#beginOperation(request),
-        onTeardown: releaseConnection,
+        onTeardown: releaseTransport,
       });
       await session.run();
     } catch {
       transport.destroy();
     } finally {
-      releaseConnection();
+      try {
+        if (connectionId) this.#composition?.releaseConnection?.(connectionId);
+      } finally {
+        releaseTransport();
+      }
     }
   }
 
@@ -290,7 +341,7 @@ export class RuntimeHostKernel {
   ): Promise<ConnectionOperationLease | HostOperationErrorCode> {
     if (!(await this.#readAdmissionState())) return 'host_draining';
     if (
-      HOST_OPERATION_SPECS[frame.operation].admission !== 'bootstrap' &&
+      HOST_OPERATION_SPECS[frame.operation].availability !== 'bootstrap' &&
       this.#state !== 'ready'
     ) {
       return 'host_not_ready';
@@ -378,20 +429,35 @@ export class RuntimeHostKernel {
     };
   }
 
+  #retainUntilProcessExit(): void {
+    if (this.#retainedUntilProcessExit) return;
+    this.#retainedUntilProcessExit = true;
+    this.#activeResidencies += 1;
+    this.#cancelIdle();
+  }
+
   #createOperationHandlers(domainHandlers: DomainOperationHandlerMap): OperationHandlerMap {
-    return {
-      'host.status': async () => ({
-        ok: true,
-        result: {
-          hostEpoch: this.hostEpoch,
-          state: this.#state,
-          connections: this.#acceptedTransports.size,
-          activeOperations: this.#activeOperations,
-          activeResidencies: this.#activeResidencies,
-        },
-      }),
-      ...domainHandlers,
-    };
+    return composeOperationHandlers(
+      {
+        'host.status': async () => ({
+          ok: true,
+          result: {
+            hostEpoch: this.hostEpoch,
+            state: this.#state,
+            connections: this.#acceptedTransports.size,
+            activeOperations: this.#activeOperations,
+            activeResidencies: this.#activeResidencies,
+          },
+        }),
+      },
+      domainHandlers,
+    );
+  }
+
+  #beginCompositionDrain(): void {
+    if (!this.#composition || this.#compositionDrainBegun) return;
+    this.#compositionDrainBegun = true;
+    this.#composition.beginDrain();
   }
 
   #waitForOperations(): Promise<void> {
@@ -448,6 +514,7 @@ export class RuntimeHostKernel {
       if (!this.#shutdownRequested) {
         this.#shutdownRequested = true;
         this.#armShutdownDeadline();
+        this.#beginCompositionDrain();
       }
       this.#state = 'draining';
       this.#cancelIdle();
@@ -505,6 +572,8 @@ export class RuntimeHostKernel {
     for (const transport of handshaking) transport.destroy();
     await operationDrain;
     this.#assertShutdownCanContinue();
+    await this.#compositionStartup;
+    this.#assertShutdownCanContinue();
     await this.#composition?.close().catch((error: unknown) => errors.push(error));
     this.#assertShutdownCanContinue();
     await this.#waitForResidencies();
@@ -532,7 +601,6 @@ export class RuntimeHostKernel {
     for (const transport of this.#handshakingTransports) transport.destroy();
     for (const transport of this.#acceptedTransports) transport.destroy();
     await closeServer(this.#server).catch(() => undefined);
-    await this.#composition?.close().catch(() => undefined);
     await this.#endpoint?.cleanup().catch(() => undefined);
     await removeHostRegistration(this.#options.owner.controlDirectory, this.hostEpoch).catch(
       () => undefined,
@@ -616,19 +684,4 @@ function assertDuration(value: number, label: string, minimum: 0 | 1): void {
   if (!Number.isSafeInteger(value) || value < minimum || value > 120_000) {
     throw new RangeError(`${label} must be an integer between ${minimum} and 120000`);
   }
-}
-
-function unavailableDomainHandlers(): DomainOperationHandlerMap {
-  const unavailable = {
-    ok: false,
-    error: {
-      code: 'operation_unavailable',
-      message: 'Runtime Host operation is unavailable in this composition',
-    },
-  } as const;
-  return {
-    'turn.start': async () => unavailable,
-    'turn.query': async () => unavailable,
-    'turn.stop': async () => unavailable,
-  };
 }

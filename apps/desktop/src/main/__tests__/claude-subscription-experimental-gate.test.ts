@@ -348,7 +348,11 @@ describe('Claude OAuth model connection bridge', () => {
       'resolveConnectionSecret must map claude-subscription to its stored OAuth access token',
     );
     assert.match(src, /connections:test[\s\S]*const apiKey = await resolveConnectionSecret\(slug\)/, 'connections:test must use resolveConnectionSecret');
-    assert.match(src, /connections:fetchModels[\s\S]*const apiKey = await resolveConnectionSecret\(slug\)/, 'connections:fetchModels must use resolveConnectionSecret');
+    assert.match(
+      src,
+      /discoverConnectionModels[\s\S]*const apiKey = await deps\.resolveConnectionSecret\(slug\)/,
+      'connections:fetchModels must use resolveConnectionSecret through the discovery service',
+    );
     assert.match(src, /connections:hasSecret[\s\S]*return hasConnectionSecret\(connection\)/, 'connections:hasSecret must report OAuth login presence for claude-subscription through the read-only hasConnectionSecret (hasStoredCredential), not the refreshing resolveConnectionSecret');
     assert.match(src, /getApiKey:\s*\(slug:\s*string\)\s*=>\s*resolveConnectionSecret\(slug\)/, 'chat send readiness must use OAuth tokens through resolveConnectionSecret');
   });
@@ -440,8 +444,15 @@ describe('Claude OAuth model connection bridge', () => {
     const completeRegion = src.slice(completeIdx, completeIdx + 1200);
     assert.match(
       completeRegion,
-      /if\s*\(\s*result\.ok\s*\)\s*\{[\s\S]*await (?:deps\.)?syncOpenAiCodexConnection\(\);[\s\S]*(?:deps\.)?emitConnectionListChanged\(\);/,
-      'successful Codex OAuth completion must sync the connection and notify renderer',
+      /if\s*\(\s*result\.ok\s*\)\s*\{[\s\S]*await (?:deps\.)?activateOpenAiCodexConnection\(\);[\s\S]*(?:deps\.)?emitConnectionListChanged\(\);[\s\S]*void (?:deps\.)?syncOpenAiCodexConnection\(\)/,
+      'successful Codex OAuth completion must activate immediately, notify renderer, then discover models in the background',
+    );
+    const accountStateIdx = src.indexOf("openai-codex:get-account-state");
+    const accountStateRegion = src.slice(accountStateIdx, accountStateIdx + 500);
+    assert.doesNotMatch(
+      accountStateRegion,
+      /syncOpenAiCodexConnection/,
+      'Codex account-state reads must not trigger slow or mutating model discovery',
     );
     assert.match(
       src,

@@ -9,8 +9,13 @@ import type { ClaudeSubscriptionService } from './oauth/claude-subscription-serv
 import { isSubscriptionExperimentalEnabled } from './oauth/claude-subscription-helpers.js';
 import type { OpenAiCodexService } from './oauth/openai-codex-service.js';
 import { isOpenAiCodexExperimentalEnabled } from './oauth/openai-codex-helpers.js';
-import { fetchProviderModels, OpenAiCodexDiscoveryError } from '@maka/runtime';
+import {
+  fetchProviderModels,
+  OpenAiCodexDiscoveryError,
+  ProviderModelDiscoveryHttpError,
+} from '@maka/runtime';
 import type { GitHubCopilotSubscriptionService } from './oauth/github-copilot-subscription-service.js';
+import type { XaiOAuthService } from './oauth/xai-oauth-service.js';
 
 export const CLAUDE_SUBSCRIPTION_CONNECTION_SLUG = 'claude-subscription';
 // Persisted connection slug: stable across the providerType rename from
@@ -21,6 +26,7 @@ export const CLAUDE_SUBSCRIPTION_CONNECTION_SLUG = 'claude-subscription';
 // migration.
 export const CODEX_SUBSCRIPTION_CONNECTION_SLUG = 'codex-subscription';
 export const GITHUB_COPILOT_CONNECTION_SLUG = 'github-copilot';
+export const XAI_OAUTH_CONNECTION_SLUG = 'xai-oauth';
 
 interface OAuthModelConnectionsDeps {
   connectionStore: ConnectionStore;
@@ -28,6 +34,7 @@ interface OAuthModelConnectionsDeps {
   claudeSubscription: ClaudeSubscriptionService;
   openAiCodex: OpenAiCodexService;
   githubCopilotSubscription: GitHubCopilotSubscriptionService;
+  xaiOAuth: XaiOAuthService;
   fetchModels?: typeof fetchProviderModels;
 }
 
@@ -94,6 +101,205 @@ export function createOAuthModelConnectionsMainService(deps: OAuthModelConnectio
     state: Awaited<ReturnType<GitHubCopilotSubscriptionService['getAccountState']>>,
   ): boolean {
     return state.runtimeState === 'authenticated' || state.runtimeState === 'refreshing';
+  }
+
+  function isXaiOAuthAuthenticatedState(
+    state: Awaited<ReturnType<XaiOAuthService['getAccountState']>>,
+  ): boolean {
+    return state.runtimeState === 'authenticated' || state.runtimeState === 'refreshing';
+  }
+
+  /**
+   * Make a newly authenticated Codex account visible to the product without
+   * waiting for live model discovery. OAuth completion has already persisted
+   * the credential at this point, so the connection can immediately become
+   * usable with the last fetched model list (or the curated fallback list).
+   *
+   * `syncOpenAiCodexConnection` still runs afterwards to replace this
+   * optimistic snapshot with the account's authoritative model catalog.
+   */
+  async function activateOpenAiCodexConnection(): Promise<LlmConnection | null> {
+    if (!isOpenAiCodexExperimentalEnabled()) return null;
+    const state = await deps.openAiCodex.getAccountState();
+    const existing = await deps.connectionStore.get(CODEX_SUBSCRIPTION_CONNECTION_SLUG);
+    if (!isOpenAiCodexAuthenticatedState(state)) return existing;
+
+    const defaults = PROVIDER_DEFAULTS['openai-codex'];
+    const fallbackModels = defaults.fallbackModels.map((id) => ({ id }));
+    const fetchedModels = existing?.modelSource === 'fetched'
+      ? normalizeOpenAiCodexModels(existing.models, [])
+      : [];
+    const models = fetchedModels.length > 0 ? fetchedModels : fallbackModels;
+    const now = Date.now();
+    return deps.connectionStore.save({
+      slug: CODEX_SUBSCRIPTION_CONNECTION_SLUG,
+      name: existing?.name ?? 'Codex OAuth',
+      providerType: 'openai-codex',
+      baseUrl: defaults.baseUrl,
+      defaultModel: normalizeOpenAiCodexDefaultModel(
+        existing?.defaultModel,
+        models.map((entry) => entry.id),
+        defaults.fallbackModels[0] || '',
+      ),
+      enabled: true,
+      enabledModelIds: existing?.enabledModelIds,
+      models,
+      modelSource: fetchedModels.length > 0 ? 'fetched' : 'fallback',
+      modelsFetchedAt: fetchedModels.length > 0 ? existing?.modelsFetchedAt : undefined,
+      lastTestStatus: 'verified',
+      lastTestAt: new Date(now).toISOString(),
+      lastTestMessage: 'Codex OAuth 已登录。',
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    });
+  }
+
+  async function activateXaiOAuthConnection(): Promise<LlmConnection | null> {
+    const state = await deps.xaiOAuth.getAccountState();
+    const existing = await deps.connectionStore.get(XAI_OAUTH_CONNECTION_SLUG);
+    if (!isXaiOAuthAuthenticatedState(state)) return existing;
+
+    const defaults = PROVIDER_DEFAULTS['xai-oauth'];
+    const cachedFetchedModels =
+      existing?.modelSource === 'fetched' && existing.models?.length ? existing.models : [];
+    const models = cachedFetchedModels.length
+      ? cachedFetchedModels
+      : defaults.fallbackModels.map((id) => ({ id }));
+    const enabledIds = models.map(({ id }) => id);
+    const now = Date.now();
+    return deps.connectionStore.save({
+      slug: XAI_OAUTH_CONNECTION_SLUG,
+      name: existing?.name ?? 'xAI OAuth',
+      providerType: 'xai-oauth',
+      baseUrl: defaults.baseUrl,
+      defaultModel: enabledIds.includes(existing?.defaultModel ?? '')
+        ? existing!.defaultModel
+        : (enabledIds[0] ?? ''),
+      enabled: true,
+      enabledModelIds: existing?.enabledModelIds,
+      models,
+      modelSource: cachedFetchedModels.length ? 'fetched' : 'fallback',
+      modelsFetchedAt: cachedFetchedModels.length ? existing?.modelsFetchedAt : undefined,
+      lastTestStatus: 'verified',
+      lastTestAt: new Date(now).toISOString(),
+      lastTestMessage: 'xAI OAuth 已登录。',
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    });
+  }
+
+  async function syncXaiOAuthConnection(): Promise<LlmConnection | null> {
+    const state = await deps.xaiOAuth.getAccountState();
+    const existing = await deps.connectionStore.get(XAI_OAUTH_CONNECTION_SLUG);
+    if (!isXaiOAuthAuthenticatedState(state)) {
+      if (!existing) return null;
+      return deps.connectionStore.update(existing.slug, {
+        enabled: false,
+        lastTestStatus: 'needs_reauth',
+        lastTestAt: new Date().toISOString(),
+        lastTestMessage: state.errorMessage ?? 'xAI OAuth 需要重新登录。',
+      });
+    }
+
+    const accessToken = await deps.xaiOAuth.getAccessTokenInternal();
+    if (!accessToken) {
+      if (!existing) return null;
+      return deps.connectionStore.update(existing.slug, {
+        enabled: false,
+        lastTestStatus: 'needs_reauth',
+        lastTestAt: new Date().toISOString(),
+        lastTestMessage: 'xAI OAuth 需要重新登录。',
+      });
+    }
+
+    const defaults = PROVIDER_DEFAULTS['xai-oauth'];
+    const fallbackModels = defaults.fallbackModels.map((id) => ({ id }));
+    const cachedModels =
+      existing?.modelSource === 'fetched' && existing.models?.length
+        ? existing.models
+        : fallbackModels;
+    const now = Date.now();
+    let models = cachedModels;
+    let modelSource: ModelDiscoverySource =
+      existing?.modelSource === 'fetched' && existing.models?.length ? 'fetched' : 'fallback';
+    let modelsFetchedAt = existing?.modelsFetchedAt;
+    try {
+      const discovered = await (deps.fetchModels ?? fetchProviderModels)(
+        {
+          slug: XAI_OAUTH_CONNECTION_SLUG,
+          name: existing?.name ?? 'xAI OAuth',
+          providerType: 'xai-oauth',
+          baseUrl: defaults.baseUrl,
+          defaultModel: existing?.defaultModel ?? defaults.fallbackModels[0] ?? '',
+          enabled: true,
+          createdAt: existing?.createdAt ?? now,
+          updatedAt: now,
+        },
+        accessToken,
+      );
+      if (discovered.length === 0) {
+        if (!existing) return null;
+        return deps.connectionStore.update(existing.slug, {
+          enabled: false,
+          models: [],
+          modelSource: 'fetched',
+          modelsFetchedAt: now,
+          lastTestStatus: 'error',
+          lastTestAt: new Date(now).toISOString(),
+          lastTestMessage: '当前账号无可用 Grok 模型。',
+        });
+      }
+      models = discovered;
+      modelSource = 'fetched';
+      modelsFetchedAt = now;
+    } catch (error) {
+      if (error instanceof ProviderModelDiscoveryHttpError) {
+        if (error.status === 401 || error.status === 403) {
+          if (!existing) return null;
+          return deps.connectionStore.update(existing.slug, {
+            enabled: false,
+            lastTestStatus: 'needs_reauth',
+            lastTestAt: new Date(now).toISOString(),
+            lastTestMessage: 'xAI OAuth 需要重新登录。',
+          });
+        }
+        if (error.status >= 400 && error.status < 500) {
+          if (!existing) return null;
+          return deps.connectionStore.update(existing.slug, {
+            enabled: false,
+            models: [],
+            modelSource: 'fetched',
+            modelsFetchedAt: now,
+            lastTestStatus: 'error',
+            lastTestAt: new Date(now).toISOString(),
+            lastTestMessage: 'xAI 模型列表获取失败。',
+          });
+        }
+      }
+      // A transient discovery failure must not make a valid OAuth login
+      // unusable; retain the last fetched snapshot or the shared fallback.
+    }
+
+    const enabledIds = models.map(({ id }) => id);
+    return deps.connectionStore.save({
+      slug: XAI_OAUTH_CONNECTION_SLUG,
+      name: existing?.name ?? 'xAI OAuth',
+      providerType: 'xai-oauth',
+      baseUrl: defaults.baseUrl,
+      defaultModel: enabledIds.includes(existing?.defaultModel ?? '')
+        ? existing!.defaultModel
+        : (enabledIds[0] ?? ''),
+      enabled: true,
+      enabledModelIds: existing?.enabledModelIds,
+      models,
+      modelSource,
+      modelsFetchedAt,
+      lastTestStatus: 'verified',
+      lastTestAt: new Date(now).toISOString(),
+      lastTestMessage: 'xAI OAuth 已登录。',
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    });
   }
 
   async function syncGitHubCopilotConnection(
@@ -324,6 +530,7 @@ export function createOAuthModelConnectionsMainService(deps: OAuthModelConnectio
       syncClaudeSubscriptionConnection(),
       syncOpenAiCodexConnection(),
       syncGitHubCopilotConnection(),
+      syncXaiOAuthConnection(),
     ]);
     for (const result of results) {
       if (result.status === 'rejected') {
@@ -342,6 +549,9 @@ export function createOAuthModelConnectionsMainService(deps: OAuthModelConnectio
     }
     if (connection?.providerType === 'github-copilot') {
       return deps.githubCopilotSubscription.getAccessTokenInternal();
+    }
+    if (connection?.providerType === 'xai-oauth') {
+      return deps.xaiOAuth.getAccessTokenInternal();
     }
     return deps.credentialStore.getSecret(slug, 'api_key');
   }
@@ -370,6 +580,9 @@ export function createOAuthModelConnectionsMainService(deps: OAuthModelConnectio
     if (connection.providerType === 'github-copilot') {
       return deps.githubCopilotSubscription.hasStoredCredential();
     }
+    if (connection.providerType === 'xai-oauth') {
+      return deps.xaiOAuth.hasStoredCredential();
+    }
     const key = await deps.credentialStore.getSecret(connection.slug, 'api_key');
     return typeof key === 'string' && key.length > 0;
   }
@@ -378,11 +591,15 @@ export function createOAuthModelConnectionsMainService(deps: OAuthModelConnectio
     isClaudeSubscriptionAuthenticatedState,
     isOpenAiCodexAuthenticatedState,
     isGitHubCopilotAuthenticatedState,
+    isXaiOAuthAuthenticatedState,
     resolveConnectionSecret,
     hasConnectionSecret,
     syncClaudeSubscriptionConnection,
+    activateOpenAiCodexConnection,
     syncOpenAiCodexConnection,
     syncGitHubCopilotConnection,
+    activateXaiOAuthConnection,
+    syncXaiOAuthConnection,
     syncOAuthModelConnections,
   };
 }

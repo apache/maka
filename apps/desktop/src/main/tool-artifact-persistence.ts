@@ -5,11 +5,13 @@ import type {
   ToolResultArchiveReaderInput,
   ToolResultArchiveReadResult,
   ToolResultArchiveRecorderInput,
+  ToolResultArchiveResourceReadInput,
 } from '@maka/runtime';
 import type { createArtifactStore, createReadImageSnapshotter } from '@maka/storage';
 import {
   persistArchivedToolResultToArtifacts,
   readArchivedToolResultFromArtifacts,
+  readArchivedToolResultResourceFromArtifacts,
 } from './tool-result-archive-artifacts.js';
 
 type ArtifactStore = ReturnType<typeof createArtifactStore>;
@@ -32,6 +34,9 @@ export interface ToolArtifactPersistence {
   }): Promise<Awaited<ReturnType<ReadImageSnapshotter>>>;
   persistArchivedToolResult(event: ToolResultArchiveRecorderInput): Promise<{ artifactId: string }>;
   readArchivedToolResult(event: ToolResultArchiveReaderInput): Promise<ToolResultArchiveReadResult>;
+  readArchivedToolResultResource(
+    event: ToolResultArchiveResourceReadInput,
+  ): Promise<ToolResultArchiveReadResult>;
 }
 
 function isInsideOrSamePath(root: string, target: string): boolean {
@@ -106,7 +111,16 @@ export function createToolArtifactPersistence(deps: ToolArtifactPersistenceDeps)
   async function persistArchivedToolResult(
     event: ToolResultArchiveRecorderInput,
   ): Promise<{ artifactId: string }> {
-    return persistArchivedToolResultToArtifacts(artifactStore, event);
+    const result = await persistArchivedToolResultToArtifacts(artifactStore, event);
+    if (result.created) {
+      safeSendToRenderer('artifacts:changed', {
+        reason: 'created',
+        artifactId: result.artifactId,
+        sessionId: event.sessionId,
+        ts: Date.now(),
+      });
+    }
+    return { artifactId: result.artifactId };
   }
 
   async function readArchivedToolResult(
@@ -115,10 +129,17 @@ export function createToolArtifactPersistence(deps: ToolArtifactPersistenceDeps)
     return readArchivedToolResultFromArtifacts(artifactStore, event);
   }
 
+  async function readArchivedToolResultResource(
+    event: ToolResultArchiveResourceReadInput,
+  ): Promise<ToolResultArchiveReadResult> {
+    return readArchivedToolResultResourceFromArtifacts(artifactStore, event);
+  }
+
   return {
     persistToolArtifacts,
     snapshotReadImage,
     persistArchivedToolResult,
     readArchivedToolResult,
+    readArchivedToolResultResource,
   };
 }

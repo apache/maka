@@ -1,17 +1,26 @@
 import {
   gateSkillsByHostCapabilities,
   loadSkillInstructionsFromScan,
-  scanSkills,
   type HostCapabilities,
   type LoadedSkillInstructions,
   type LoadSkillInstructionsResult,
-  type SkillSource,
-} from './skills.js';
+} from './skills-context.js';
+import { scanSkills, type SkillSource } from './skills-discovery.js';
+import {
+  boundSkillInvocationRequest,
+  failedSkillInvocationReceipt,
+  loadedSkillInvocationReceipt,
+  overflowSkillInvocationReceipt,
+  type PerRequestSkillInvocationFailureReason,
+  type SkillInvocationReceipt,
+} from './skill-invocation-receipt.js';
+
+const MAX_SKILL_INVOCATION_REQUESTS = 50;
 
 /**
  * Explicit skill invocation (issue #1148): the shared, client-agnostic
  * contract behind the TUI and Desktop `/skill:<name>` tokens. This module
- * owns the shared token syntax, lists what can be invoked, resolves those
+ * owns the shared token syntax, lists what can be invoked, resolves refs/ids/
  * names against one scan, and composes the final user message with the
  * loaded instructions injected. UI rendering stays client-local.
  *
@@ -22,6 +31,8 @@ import {
 
 /** Slim, display-ready view of one skill the current host can actually load. */
 export interface InvocableSkillEntry {
+  /** Stable scope-aware identity. New clients should submit this value. */
+  ref: string;
   id: string;
   name: string;
   description: string;
@@ -29,7 +40,7 @@ export interface InvocableSkillEntry {
 
 /** One requested invocation paired with its load outcome. */
 export interface SkillInvocationResolution {
-  /** The id or name the user asked for (already token-stripped by the client). */
+  /** The ref, id, or name the user asked for (already token-stripped by the client). */
   request: string;
   result: LoadSkillInstructionsResult;
 }
@@ -40,18 +51,21 @@ export interface SkillInvocationToken {
   end: number;
 }
 
-export type SkillInvocationFailureReason =
-  | Exclude<LoadSkillInstructionsResult, { ok: true }>['reason']
-  | 'resolution_failed';
-
-export interface SkillInvocationFailure {
-  request: string;
-  reason: SkillInvocationFailureReason;
-}
+export type SkillInvocationFailure =
+  | {
+      request: string;
+      reason: PerRequestSkillInvocationFailureReason;
+    }
+  | {
+      reason: 'too_many_requests';
+      requestLimit: number;
+    };
 
 export interface SkillInvocationResult {
   loaded: Array<{ id: string; name: string }>;
   failed: SkillInvocationFailure[];
+  /** One bounded outcome per distinct request, including all-failed sends. */
+  receipts: SkillInvocationReceipt[];
 }
 
 export type PreparedSkillInvocationMessage =
@@ -127,6 +141,7 @@ export async function listInvocableSkills(
     ? gateSkillsByHostCapabilities(skills, host).filter((gated) => gated.eligible)
     : skills;
   return eligible.map((skill) => ({
+    ref: skill.ref,
     id: skill.id,
     name: skill.name,
     description: skill.description,
@@ -189,9 +204,10 @@ export function composeSkillInvocationMessage(input: {
 }
 
 /**
- * Prepare one model-facing message from structured ids and the shared token
- * syntax. Every invocation token is removed before provider handoff, including
- * failures, so the model can never imitate a Skill that Runtime did not load.
+ * Prepare one model-facing message from structured refs/legacy ids and the
+ * shared token syntax. Every invocation token is removed before provider
+ * handoff, including failures, so the model can never imitate a Skill that
+ * Runtime did not load.
  * If every requested Skill fails, the result is blocked and callers must not
  * create a provider turn.
  */
@@ -204,13 +220,24 @@ export async function prepareSkillInvocationMessage(input: {
   const passthrough: PreparedSkillInvocationMessage = {
     disposition: 'passthrough',
     sendText: input.text,
-    skillInvocation: { loaded: [], failed: [] },
+    skillInvocation: { loaded: [], failed: [], receipts: [] },
   };
   const tokens = parseSkillInvocationTokens(input.text);
-  const requests = distinctInvocationRequests([
+  const requestSet = distinctInvocationRequests([
     ...(input.skillIds ?? []),
     ...tokens.map((token) => token.name),
   ]);
+  if (requestSet.overflow) {
+    return {
+      disposition: 'blocked',
+      skillInvocation: {
+        loaded: [],
+        failed: [{ reason: 'too_many_requests', requestLimit: MAX_SKILL_INVOCATION_REQUESTS }],
+        receipts: [overflowSkillInvocationReceipt(MAX_SKILL_INVOCATION_REQUESTS)],
+      },
+    };
+  }
+  const requests = requestSet.requests;
   if (requests.length === 0) return passthrough;
   const strippedText = stripSkillInvocationTokens(
     input.text,
@@ -221,20 +248,27 @@ export async function prepareSkillInvocationMessage(input: {
     const loaded: LoadedSkillInstructions[] = [];
     const loadedIds = new Set<string>();
     const failures: SkillInvocationFailure[] = [];
+    const receipts: SkillInvocationReceipt[] = [];
     for (const entry of resolved) {
       if (entry.result.ok) {
+        receipts.push(loadedSkillInvocationReceipt('explicit', entry.request, entry.result.skill));
         const id = entry.result.skill.id.toLowerCase();
         if (!loadedIds.has(id)) {
           loadedIds.add(id);
           loaded.push(entry.result.skill);
         }
       } else {
-        failures.push({ request: entry.request, reason: entry.result.reason });
+        failures.push({
+          request: boundSkillInvocationRequest(entry.request),
+          reason: entry.result.reason,
+        });
+        receipts.push(failedSkillInvocationReceipt('explicit', entry.request, entry.result.reason));
       }
     }
     const skillInvocation: SkillInvocationResult = {
       loaded: loaded.map((skill) => ({ id: skill.id, name: skill.name })),
       failed: failures,
+      receipts,
     };
     if (loaded.length === 0) return { disposition: 'blocked', skillInvocation };
     return {
@@ -247,22 +281,31 @@ export async function prepareSkillInvocationMessage(input: {
       disposition: 'blocked',
       skillInvocation: {
         loaded: [],
-        failed: requests.map((request) => ({ request, reason: 'resolution_failed' })),
+        failed: requests.map((request) => ({
+          request: boundSkillInvocationRequest(request),
+          reason: 'resolution_failed',
+        })),
+        receipts: requests.map((request) =>
+          failedSkillInvocationReceipt('explicit', request, 'resolution_failed'),
+        ),
       },
     };
   }
 }
 
-function distinctInvocationRequests(requests: readonly string[]): string[] {
+type DistinctInvocationRequests = { overflow: false; requests: string[] } | { overflow: true };
+
+function distinctInvocationRequests(requests: readonly string[]): DistinctInvocationRequests {
   const seen = new Set<string>();
   const distinct: string[] = [];
   for (const request of requests) {
     const key = request.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
+    if (distinct.length === MAX_SKILL_INVOCATION_REQUESTS) return { overflow: true };
     distinct.push(request);
   }
-  return distinct;
+  return { overflow: false, requests: distinct };
 }
 
 function sanitizeAttribute(value: string): string {

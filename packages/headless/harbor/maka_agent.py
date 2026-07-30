@@ -11,6 +11,7 @@ import re
 import secrets
 import shlex
 import threading
+import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -33,6 +34,11 @@ from harness_compat import (
     format_trajectory_json,
     with_prompt_template,
 )
+from maka_trajectory import (
+    load_runtime_trajectory,
+    redact_value,
+    referenced_image_artifact_paths,
+)
 from process_scope import (
     COMMAND_SCOPE_ENV as _COMMAND_SCOPE_ENV,
     COMMAND_SCOPE_ROOT as _COMMAND_SCOPE_ROOT,
@@ -40,6 +46,7 @@ from process_scope import (
     scoped_command_cleanup_command as _scoped_command_cleanup_command,
     scoped_process_cleanup_command as _scoped_process_cleanup_command,
 )
+from provider_proxy import provider_proxy_endpoint, warn_if_pier_unreachable_proxy_port
 from trial_pricing import estimate_cost, pricing_from_env
 
 # Default wall-clock budget for a single bridged tool command when the client
@@ -56,6 +63,12 @@ _BRIDGE_DEFAULT_TIMEOUT_SEC = 120
 _HARBOR_DIR = Path(__file__).resolve().parent
 _HEADLESS_DIR = _HARBOR_DIR.parent
 _REPO_ROOT_DEFAULT = _HEADLESS_DIR.parent.parent
+_CONTAINER_MAKA_REPO = Path("/opt/maka-agent")
+_CONTAINER_HEADLESS_CLI = _CONTAINER_MAKA_REPO / "packages" / "headless" / "dist" / "cli.js"
+_MAKA_NODE_TOOLCHAIN_ROOT = Path("/opt/maka-node-toolchain")
+_MAKA_NODE_TOOLCHAIN_NODE = _MAKA_NODE_TOOLCHAIN_ROOT / "bin" / "node"
+_MAKA_NODE_TOOLCHAIN_MANIFEST = _MAKA_NODE_TOOLCHAIN_ROOT / "manifest.json"
+_MAKA_NODE_TOOLCHAIN_CHECKSUMS = _MAKA_NODE_TOOLCHAIN_ROOT / "checksums.sha256"
 _DEFAULT_RUNNER_ENV = Path(
     os.environ.get(
         "MAKA_HARBOR_RUNNER_ENV_FILE",
@@ -118,6 +131,20 @@ _MAX_NODE_TIMER_MS = 2_147_483_647
 _POSITIVE_INT_RE = re.compile(r"[1-9][0-9]*")
 
 
+def _positive_int_literal(raw: str | None) -> int | None:
+    if not raw:
+        return None
+    stripped = raw.strip()
+    if _POSITIVE_INT_RE.fullmatch(stripped) is None:
+        return None
+    try:
+        value = int(stripped)
+    except ValueError:
+        # CPython caps integer-string conversion length; an over-long value is malformed.
+        return None
+    return value if value <= _MAX_SAFE_INTEGER else None
+
+
 class MakaAgent(BaseInstalledAgent):
     """Run Maka inside the Harbor task container and expose the shared cell output."""
 
@@ -126,6 +153,7 @@ class MakaAgent(BaseInstalledAgent):
     _RUN_LOG_FILENAME = "maka-run.log"
     _CELL_OUTPUT_FILENAME = "maka-cell-output.json"
     _CELL_USAGE_CHECKPOINT_FILENAME = "maka-cell-usage-checkpoint.json"
+    _CELL_EXECUTION_IDENTITY_FILENAME = "maka-cell-execution-identity.json"
     _RUNTIME_EVENTS_FILENAME = "runtime-events.jsonl"
     _TRACE_EVENTS_FILENAME = "trace-events.jsonl"
 
@@ -184,6 +212,12 @@ class MakaAgent(BaseInstalledAgent):
         # exports NetworkAllowlist = None there.
         if _NetworkAllowlist is None:
             return None
+        if self._task_run_in_container():
+            if self._harbor_backend() == "fake":
+                return _NetworkAllowlist()
+            hostname, port = provider_proxy_endpoint(self._get_env, "Maka")
+            warn_if_pier_unreachable_proxy_port(port, "Maka")
+            return _NetworkAllowlist(domains=[hostname])
         # The empty allowlist keeps a non-internet Pier task fully offline,
         # which is correct exactly when the container makes no model calls. A
         # configuration whose cell would call the provider from inside the
@@ -201,36 +235,73 @@ class MakaAgent(BaseInstalledAgent):
     def _container_makes_model_calls(self) -> bool:
         """True only when the in-container cell itself calls the model provider.
 
-        task-run mode and host-side LLM mode run the model on the host and only
-        bridge tool commands into the container via environment.exec, and
-        backend=fake makes no model calls at all; only a cell-mode ai-sdk run
-        without host-side configuration needs in-container egress.
+        Pier task-run runs the model in the container through the host proxy.
+        Cell mode does so only without host-side LLM configuration. The fake
+        backend never calls a model provider.
         """
         return (
-            self._harbor_mode() == "cell"
-            and self._harbor_backend() != "fake"
-            and not self._host_side_llm_enabled()
+            self._harbor_backend() != "fake"
+            and (
+                self._task_run_in_container()
+                or (
+                    self._harbor_mode() == "cell"
+                    and not self._host_side_llm_enabled()
+                )
+            )
         )
 
+    def _task_run_in_container(self) -> bool:
+        """Pier task runs execute in the task container; plain Harbor keeps its
+        existing host bridge for Terminal-Bench callers."""
+        return self._harbor_mode() == "task-run" and _NetworkAllowlist is not None
+
     def _harbor_mode(self) -> str:
-        """cell (default) runs a RuntimeRunner cell; task-run runs the full
-        task-run controller on the host and bridges tool execution into the
-        container via the shared _ToolExecutorServer. task-run is the
-        heavy-task / autonomous experiment path."""
+        """cell (default) runs a RuntimeRunner cell. task-run runs the full
+        controller inside Pier's task container, while plain Harbor retains
+        the host controller and shared _ToolExecutorServer bridge."""
         mode = (self._get_env("MAKA_HARBOR_MODE") or "cell").strip()
         if mode not in ("cell", "task-run"):
             raise RuntimeError(f"MAKA_HARBOR_MODE must be cell or task-run, got {mode!r}")
         return mode
 
     def get_version_command(self) -> str | None:
-        # task-run runs Maka on the host, not in the container, so there is no
-        # in-container binary to version-check.
         if self._harbor_mode() == "task-run":
-            return None
+            return (
+                f"{shlex.quote(str(_MAKA_NODE_TOOLCHAIN_NODE))} --version"
+                if self._task_run_in_container()
+                else None
+            )
         return "node --version"
 
     async def install(self, environment: BaseEnvironment) -> None:
         if self._harbor_mode() == "task-run":
+            if self._task_run_in_container():
+                expected_fingerprint = self._get_env("MAKA_NODE_TOOLCHAIN_FINGERPRINT")
+                if not expected_fingerprint:
+                    raise ValueError("MAKA_NODE_TOOLCHAIN_FINGERPRINT is required")
+                manifest_check = (
+                    "const fs = require('node:fs'); "
+                    "const manifest = JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); "
+                    "if (manifest.fingerprint !== process.env.MAKA_EXPECTED_TOOLCHAIN_FINGERPRINT) "
+                    "throw new Error('Maka Node toolchain fingerprint mismatch');"
+                )
+                command = (
+                    "set -euo pipefail; "
+                    'test "$(uname -s)" = Linux; '
+                    'test "$(uname -m)" = x86_64; '
+                    f"cd {shlex.quote(str(_MAKA_NODE_TOOLCHAIN_ROOT))}; "
+                    f"sha256sum --check {shlex.quote(_MAKA_NODE_TOOLCHAIN_CHECKSUMS.name)}; "
+                    f"{shlex.quote(str(_MAKA_NODE_TOOLCHAIN_NODE))} "
+                    f"-e {shlex.quote(manifest_check)} "
+                    f"{shlex.quote(str(_MAKA_NODE_TOOLCHAIN_MANIFEST))}; "
+                    f"test -f {shlex.quote(str(_CONTAINER_HEADLESS_CLI))}"
+                )
+                await self.exec_as_agent(
+                    environment,
+                    command=command,
+                    env={"MAKA_EXPECTED_TOOLCHAIN_FINGERPRINT": expected_fingerprint},
+                )
+                return
             # Host-bridge task-run: node and the headless CLI run on the host and
             # bridge tool execution into the task container, so nothing installs
             # inside the task. Fail fast if the built CLI is missing.
@@ -318,7 +389,25 @@ class MakaAgent(BaseInstalledAgent):
         context: AgentContext,
     ) -> None:
         if self._harbor_mode() == "task-run":
-            await self._run_task_run_host(instruction, environment, context)
+            if self._task_run_in_container():
+                phase_started_monotonic = time.monotonic()
+                phase_timeout_sec = _positive_int_literal(
+                    self._get_env("MAKA_AGENT_PHASE_TIMEOUT_SEC")
+                )
+                model_deadline_at_ms = (
+                    time.time_ns() // 1_000_000 + self._cell_timeout_sec() * 1000
+                    if phase_timeout_sec is not None
+                    else None
+                )
+                await self._run_task_run_container(
+                    instruction,
+                    environment,
+                    context,
+                    phase_started_monotonic=phase_started_monotonic,
+                    model_deadline_at_ms=model_deadline_at_ms,
+                )
+            else:
+                await self._run_task_run_host(instruction, environment, context)
             return
         agent_dir = EnvironmentPaths.agent_dir
         await self.exec_as_agent(environment, command=f"mkdir -p {agent_dir.as_posix()}")
@@ -343,6 +432,7 @@ class MakaAgent(BaseInstalledAgent):
             await self.exec_as_agent(environment, command=command, env=env, timeout_sec=self._cell_timeout_sec())
             await self._download_cell_output(environment)
         output = self._read_cell_output(required=True)
+        await self._download_runtime_artifacts(environment)
         self._apply_cell_output(context, output)
 
     def populate_context_post_run(self, context: AgentContext) -> None:
@@ -383,18 +473,7 @@ class MakaAgent(BaseInstalledAgent):
             if env is not None
             else self._get_env("MAKA_CELL_TIMEOUT_SEC")
         )
-        if not raw:
-            return self._DEFAULT_CELL_TIMEOUT_SEC
-        stripped = raw.strip()
-        if _POSITIVE_INT_RE.fullmatch(stripped) is None:
-            return self._DEFAULT_CELL_TIMEOUT_SEC
-        try:
-            value = int(stripped)
-        except ValueError:
-            # CPython caps integer-string conversion length; an over-long value
-            # is malformed, not a giant timeout.
-            return self._DEFAULT_CELL_TIMEOUT_SEC
-        return value if value <= _MAX_SAFE_INTEGER else self._DEFAULT_CELL_TIMEOUT_SEC
+        return _positive_int_literal(raw) or self._DEFAULT_CELL_TIMEOUT_SEC
 
     def _cell_settlement_grace_sec(self, env: dict[str, str] | None = None) -> int:
         raw = (
@@ -464,11 +543,10 @@ class MakaAgent(BaseInstalledAgent):
             run_log_path.write_bytes(stdout + stderr)
             if process.returncode == 124:
                 # run-host-cell uses 124 only after it has settled the runtime at
-                # the soft deadline and persisted maka-cell-output.json. Freeze the
-                # task before grading by reclaiming every process started through
-                # this cell, including background commands that already returned
-                # to the model but can still mutate packages or workspace files.
-                executor.mark_reclaim_scoped_processes()
+                # the soft deadline and persisted maka-cell-output.json. Stop only
+                # commands that are still active: completed commands may have
+                # intentionally left verifier-visible services running.
+                executor.mark_reclaim_active_commands()
                 return
             if process.returncode != 0:
                 message = (stderr or stdout).decode("utf-8", errors="replace").strip()
@@ -502,7 +580,12 @@ class MakaAgent(BaseInstalledAgent):
         economy_task_flag = self._resolved_flags.get("economy_task_mode")
         economy_task_env = self._get_env("MAKA_ECONOMY_TASK_MODE")
         economy_task_mode = True if economy_task_flag is True else economy_task_env == "true"
-        if backend == "ai-sdk" and not self._host_side_llm_enabled():
+        has_container_proxy = bool(
+            self._task_run_in_container()
+            and self._get_env("MAKA_PROVIDER_PROXY_URL")
+            and self._get_env("MAKA_PROVIDER_PROXY_TOKEN")
+        )
+        if backend == "ai-sdk" and not self._host_side_llm_enabled() and not has_container_proxy:
             raise RuntimeError("backend=ai-sdk requires host-side provider configuration")
         env = {
             "MAKA_BACKEND": backend,
@@ -526,6 +609,8 @@ class MakaAgent(BaseInstalledAgent):
             "MAKA_TRIAL_CACHE_WRITE_USD_PER_1M",
             "MAKA_TRIAL_PRICING_SOURCE",
             "MAKA_REASONING_EFFORT",
+            "MAKA_AGENT_TOOLS",
+            "MAKA_MODEL_API_PROTOCOL",
             # Default per-command timeout floor for the in-container Bash tool, so
             # long builds/tests do not hit a hard-coded 2-minute ceiling.
             "MAKA_CELL_COMMAND_TIMEOUT_MS",
@@ -646,19 +731,63 @@ class MakaAgent(BaseInstalledAgent):
         }
         self._write_trajectory(output)
 
+    def _resolve_runtime_events_path(self) -> Path | None:
+        local = self.logs_dir / self._RUNTIME_EVENTS_FILENAME
+        return local if local.is_file() else None
+
+    async def _download_runtime_artifacts(self, environment: BaseEnvironment) -> None:
+        runtime_events_path = self._resolve_runtime_events_path()
+        if runtime_events_path is None:
+            return
+        local_artifact_root = self._trajectory_artifact_store_root() / "artifacts"
+        metadata_path = local_artifact_root / "metadata.jsonl"
+        if metadata_path.is_file():
+            return
+        remote_artifact_root = EnvironmentPaths.agent_dir / "maka-storage" / "artifacts"
+        try:
+            metadata_path.parent.mkdir(parents=True, exist_ok=True)
+            await environment.download_file(
+                (remote_artifact_root / "metadata.jsonl").as_posix(), metadata_path
+            )
+            for relative_path in referenced_image_artifact_paths(
+                runtime_events_path, metadata_path
+            ):
+                local = local_artifact_root / relative_path
+                local.parent.mkdir(parents=True, exist_ok=True)
+                await environment.download_file(
+                    (remote_artifact_root / relative_path).as_posix(), local
+                )
+        except Exception as exc:  # noqa: BLE001 - trajectory builder fails closed.
+            self.logger.debug("Could not download Maka runtime artifacts: %s", exc)
+
     def _write_trajectory(self, output: dict[str, Any]) -> None:
         token_summary = output.get("tokenSummary")
         tool_summary = output.get("toolSummary")
+        output_status = output.get("status") if isinstance(output.get("status"), str) else None
+        runtime_refs = output.get("runtimeRefs")
+        if not isinstance(runtime_refs, dict):
+            runtime_refs = None
+        evidence = load_runtime_trajectory(
+            self._resolve_runtime_events_path(),
+            output_status,
+            runtime_refs,
+            self._trajectory_artifact_store_root(),
+            self.logs_dir,
+        )
+        steps = [Step(**step) for step in evidence.steps]
         final_metrics = FinalMetrics(
             total_prompt_tokens=_optional_int(token_summary, "input"),
             total_completion_tokens=_optional_int(token_summary, "output"),
+            total_cached_tokens=_optional_int(token_summary, "cachedInput"),
             total_cost_usd=_optional_float(token_summary, "costUsd"),
-            total_steps=output.get("steps") if isinstance(output.get("steps"), int) else None,
-            extra={
+            total_steps=len(steps),
+            extra=redact_value({
                 "maka_status": output.get("status"),
                 "maka_error_class": output.get("errorClass"),
                 "maka_prompt_hash": output.get("promptHash"),
                 "runtime_events_path": output.get("runtimeEventsPath"),
+                "runtime_event_count": evidence.runtime_event_count,
+                "reported_runtime_steps": output.get("steps") if isinstance(output.get("steps"), int) else None,
                 "cached_input_tokens": _optional_int(token_summary, "cachedInput"),
                 "cache_hit_input_tokens": _optional_int(token_summary, "cacheHitInput"),
                 "cache_miss_input_tokens": _optional_int(token_summary, "cacheMissInput"),
@@ -669,16 +798,29 @@ class MakaAgent(BaseInstalledAgent):
                 "actual_tool_calls": _optional_int(tool_summary, "actualToolCalls"),
                 "actual_tool_names": _optional_string_list(tool_summary, "actualToolNames"),
                 "actual_tool_call_counts": _optional_dict(tool_summary, "actualToolCallCounts"),
-            },
+            }),
+        )
+        notes = (
+            f"Complete Maka trajectory derived from {evidence.runtime_event_count} immutable RuntimeEvents."
+            if evidence.artifact_kind == "full"
+            else f"Summary artifact only; complete RuntimeEvent trajectory unavailable: {evidence.reason}."
+        )
+        session_id = (
+            runtime_refs.get("sessionId")
+            if isinstance(runtime_refs, dict) and isinstance(runtime_refs.get("sessionId"), str)
+            else None
         )
         trajectory = Trajectory(
-            session_id=(output.get("runtimeRefs") or {}).get("sessionId"),
+            session_id=session_id,
             agent=Agent(name="maka", version=self.version() or "unknown", model_name=self.model_name),
-            steps=[
-                Step(step_id=1, source="user", message="Harbor task instruction"),
-                Step(step_id=2, source="agent", message=f"Maka cell {output.get('status', 'finished')}"),
-            ],
+            steps=steps,
+            notes=notes,
             final_metrics=final_metrics,
+            extra={
+                "maka_artifact_kind": evidence.artifact_kind,
+                "maka_terminal_status": evidence.terminal_status,
+                **({"maka_summary_reason": evidence.reason} if evidence.reason else {}),
+            },
         )
         trajectory_path = self.logs_dir / "trajectory.json"
         try:
@@ -686,6 +828,149 @@ class MakaAgent(BaseInstalledAgent):
         except OSError as exc:
             self.logger.debug("Could not write Maka trajectory %s: %s", trajectory_path, exc)
 
+    async def _run_task_run_container(
+        self,
+        instruction: str,
+        environment: BaseEnvironment,
+        context: AgentContext,
+        *,
+        phase_started_monotonic: float,
+        model_deadline_at_ms: int | None,
+    ) -> None:
+        """Run the full task-run controller inside Pier's task container."""
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        agent_dir = EnvironmentPaths.agent_dir
+        await self.exec_as_agent(environment, command=f"mkdir -p {agent_dir.as_posix()}")
+        instruction_path = agent_dir / "instruction.txt"
+        local_instruction_path = self.logs_dir / "instruction.txt"
+        local_instruction_path.write_text(instruction, encoding="utf-8")
+        await environment.upload_file(local_instruction_path, instruction_path.as_posix())
+
+        task_workdir = (
+            str(getattr(getattr(environment, "task_env_config", None), "workdir", "") or ".")
+        )
+        out_dir = agent_dir / "maka-task-run"
+        env = self._container_task_run_env(
+            instruction_path,
+            out_dir,
+            model_deadline_at_ms=model_deadline_at_ms,
+        )
+        command = _headless_harbor_command(
+            cli_path=_CONTAINER_HEADLESS_CLI,
+            instruction_path=instruction_path,
+            task_workdir=task_workdir,
+            task_id=str(
+                getattr(environment, "session_id", None)
+                or self._get_env("MAKA_TASK_ID")
+                or "terminal-bench-task"
+            ),
+            out_dir=out_dir,
+            env=env,
+            node_path=_MAKA_NODE_TOOLCHAIN_NODE,
+            isolation="harbor-local",
+        )
+        stdout_path = agent_dir / "maka-harbor.stdout.json"
+        stderr_path = agent_dir / "maka-harbor.stderr.log"
+        shell_script = (
+            f"{shlex.join(str(part) for part in command)} "
+            f"> {shlex.quote(stdout_path.as_posix())} "
+            f"2> {shlex.quote(stderr_path.as_posix())}; "
+            "status=$?; "
+            'if [ "$status" -eq 124 ]; then exit 0; fi; '
+            'exit "$status"'
+        )
+        try:
+            await self.exec_as_agent(
+                environment,
+                command=f"bash -lc {shlex.quote(shell_script)}",
+                env=env,
+                timeout_sec=self._task_run_hard_timeout_sec(env, phase_started_monotonic),
+            )
+        finally:
+            await self._download_task_run_artifacts(environment)
+
+        output = self._read_cell_output(required=True)
+        self._apply_cell_output(context, output)
+
+    def _container_task_run_env(
+        self,
+        instruction_path: Path,
+        out_dir: Path,
+        *,
+        model_deadline_at_ms: int | None,
+    ) -> dict[str, str]:
+        env = {
+            key: value
+            for key, value in (getattr(self, "_extra_env", {}) or {}).items()
+            if key.startswith("MAKA_") and value is not None
+        }
+        env.update(self._cell_env(instruction_path))
+        _normalize_cli_env(env)
+        env["MAKA_REPO_DIR"] = str(_CONTAINER_MAKA_REPO)
+        env["MAKA_TASK_RUN_OUT_DIR"] = str(out_dir)
+        env["MAKA_OUTPUT_DIR"] = str(out_dir)
+        env["MAKA_STORAGE_ROOT"] = str(out_dir / "runs")
+        env["MAKA_CELL_ARTIFACT_DIR"] = EnvironmentPaths.agent_dir.as_posix()
+        if model_deadline_at_ms is None:
+            env["MAKA_CELL_SOFT_TIMEOUT_MS"] = str(self._cell_soft_timeout_ms(env))
+        else:
+            env.pop("MAKA_CELL_SOFT_TIMEOUT_MS", None)
+            env["MAKA_CELL_DEADLINE_AT_MS"] = str(model_deadline_at_ms)
+
+        proxy_url = self._get_env("MAKA_PROVIDER_PROXY_URL")
+        proxy_token = self._get_env("MAKA_PROVIDER_PROXY_TOKEN")
+        env.pop("MAKA_PROVIDER_PROXY_URL", None)
+        env.pop("MAKA_PROVIDER_PROXY_TOKEN", None)
+        if self._harbor_backend() != "fake":
+            if not proxy_url or not proxy_token:
+                raise RuntimeError("Maka container task-run requires the host provider proxy")
+            env["MAKA_HOST_BASE_URL"] = proxy_url
+            env["MAKA_HOST_API_KEY"] = proxy_token
+            env["NODE_USE_ENV_PROXY"] = "1"
+        return env
+
+    def _task_run_hard_timeout_sec(
+        self,
+        env: dict[str, str],
+        phase_started_monotonic: float,
+    ) -> float:
+        phase_timeout_sec = _positive_int_literal(env.get("MAKA_AGENT_PHASE_TIMEOUT_SEC"))
+        if phase_timeout_sec is None:
+            return float(self._cell_timeout_sec(env))
+        remaining = phase_timeout_sec - max(0.0, time.monotonic() - phase_started_monotonic)
+        if remaining <= 0:
+            raise asyncio.TimeoutError("Maka agent phase exhausted before task-run start")
+        return remaining
+
+    async def _download_task_run_artifacts(self, environment: BaseEnvironment) -> None:
+        await self._download_cell_output(environment)
+        remote_dir = EnvironmentPaths.agent_dir / "maka-task-run"
+        local_dir = self.logs_dir / "maka-task-run"
+        try:
+            await environment.download_dir(remote_dir.as_posix(), local_dir)
+        except Exception as exc:  # noqa: BLE001 - best-effort artifact hydration.
+            self.logger.debug("Could not download Maka task-run artifacts %s: %s", remote_dir, exc)
+        for filename in (
+            self._CELL_USAGE_CHECKPOINT_FILENAME,
+            self._CELL_EXECUTION_IDENTITY_FILENAME,
+            "maka-harbor.stdout.json",
+            "maka-harbor.stderr.log",
+        ):
+            remote = EnvironmentPaths.agent_dir / filename
+            local = self.logs_dir / filename
+            if local.exists():
+                continue
+            try:
+                await environment.download_file(remote.as_posix(), local)
+            except Exception as exc:  # noqa: BLE001 - best-effort artifact hydration.
+                self.logger.debug("Could not download Maka task-run artifact %s: %s", remote, exc)
+    def _trajectory_artifact_store_root(self) -> Path:
+        configured = getattr(self, "_trajectory_storage_root", None)
+        if isinstance(configured, Path):
+            return configured
+        if self._harbor_mode() == "task-run":
+            return self.logs_dir / "maka-task-run" / "runs"
+        return self.logs_dir / "maka-storage"
 
     async def _run_task_run_host(
         self,
@@ -701,18 +986,28 @@ class MakaAgent(BaseInstalledAgent):
         env.update(_load_env_file(_DEFAULT_RUNNER_ENV))
         env.update(getattr(self, "_extra_env", {}) or {})
         _normalize_cli_env(env)
-        env.setdefault("MAKA_REPO_DIR", str(self._host_repo_root()))
+        host_repo_root = self._host_repo_root()
+        if not host_repo_root.is_absolute():
+            host_repo_root = Path(os.path.abspath(host_repo_root))
+        env.setdefault("MAKA_REPO_DIR", str(host_repo_root))
         env.setdefault("MAKA_MODEL", "deepseek-chat")
         env.setdefault("MAKA_TASK_RUN_OUT_DIR", str(self.logs_dir / "maka-task-run"))
         env.setdefault("MAKA_CELL_ARTIFACT_DIR", str(self.logs_dir))
         task_run_out_dir = Path(env["MAKA_TASK_RUN_OUT_DIR"])
         if not task_run_out_dir.is_absolute():
-            task_run_out_dir = task_run_out_dir.resolve()
-            env["MAKA_TASK_RUN_OUT_DIR"] = str(task_run_out_dir)
-        # _normalize_cli_env derives MAKA_OUTPUT_DIR/MAKA_STORAGE_ROOT from
-        # MAKA_TASK_RUN_OUT_DIR; re-apply now that the out dir is finalized.
+            task_run_out_dir = host_repo_root / task_run_out_dir
+        env["MAKA_TASK_RUN_OUT_DIR"] = str(task_run_out_dir)
         env.setdefault("MAKA_OUTPUT_DIR", str(task_run_out_dir))
         env.setdefault("MAKA_STORAGE_ROOT", str(task_run_out_dir / "runs"))
+        output_dir = Path(env["MAKA_OUTPUT_DIR"])
+        storage_root = Path(env["MAKA_STORAGE_ROOT"])
+        if not output_dir.is_absolute():
+            output_dir = host_repo_root / output_dir
+        if not storage_root.is_absolute():
+            storage_root = host_repo_root / storage_root
+        env["MAKA_OUTPUT_DIR"] = str(output_dir)
+        env["MAKA_STORAGE_ROOT"] = str(storage_root)
+        self._trajectory_storage_root = storage_root
         env["MAKA_CELL_SOFT_TIMEOUT_MS"] = str(self._cell_soft_timeout_ms(env))
 
         task_workdir, workdir_probe = await self._resolve_task_workdir(environment)
@@ -756,7 +1051,7 @@ class MakaAgent(BaseInstalledAgent):
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *command,
-                    cwd=str(self._host_repo_root()),
+                    cwd=str(host_repo_root),
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
@@ -827,11 +1122,14 @@ class MakaAgent(BaseInstalledAgent):
                 )
                 raise
 
-            # A non-zero runner exit is an infrastructure failure. Flag it inside
-            # the executor scope so __aexit__ reclaims scoped background processes
-            # instead of preserving them as if the run had completed. A clean exit
-            # (return code 0) still preserves verifier-visible services.
-            if proc is not None and proc.returncode != 0:
+            if proc is not None and proc.returncode == 124:
+                # The benchmark deadline is an expected scored terminal state.
+                # Reclaim only in-flight commands while preserving services from
+                # completed commands for the post-exit verifier.
+                executor.mark_reclaim_active_commands()
+            elif proc is not None and proc.returncode != 0:
+                # Other non-zero exits are infrastructure failures, so no scoped
+                # background work should survive into grading or later attempts.
                 executor.mark_reclaim_scoped_processes()
 
         parsed = self._parse_node_result(stdout)
@@ -1053,6 +1351,7 @@ class _ToolExecutorServer:
         self._futures_lock = threading.Lock()
         self._accepting_requests = False
         self._reclaim_scoped_processes = False
+        self._reclaim_active_commands = False
         self._command_cleanup_error: BaseException | None = None
         self.token = secrets.token_urlsafe(32)
         self.command_scope = secrets.token_urlsafe(24)
@@ -1081,18 +1380,25 @@ class _ToolExecutorServer:
     def mark_reclaim_scoped_processes(self) -> None:
         """Make teardown stop active scoped commands before returning.
 
-        Callers use this after a settled deadline or a non-zero runner exit,
-        where waiting for a bridged command to finish would either overrun the
-        outer benchmark timeout or leave an orphan that can affect grading.
+        Callers use this after an exception or a non-zero infrastructure exit,
+        where scoped background processes must not survive into grading.
         """
         self._reclaim_scoped_processes = True
+
+    def mark_reclaim_active_commands(self) -> None:
+        """Stop in-flight commands while preserving completed service processes."""
+        self._reclaim_active_commands = True
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         stop_error: BaseException | None = None
         cleanup_error: BaseException | None = None
         reclaim_scope = exc_type is not None or self._reclaim_scoped_processes
+        reclaim_active = self._reclaim_active_commands and not reclaim_scope
         try:
-            cleanup_error = await self._stop_server(reclaim_scoped_processes=reclaim_scope)
+            cleanup_error = await self._stop_server(
+                reclaim_scoped_processes=reclaim_scope,
+                reclaim_active_commands=reclaim_active,
+            )
         except BaseException as error:
             stop_error = error
         if stop_error is not None and not reclaim_scope:
@@ -1106,12 +1412,26 @@ class _ToolExecutorServer:
         if command_cleanup_error is not None:
             raise command_cleanup_error
 
-    async def _stop_server(self, *, reclaim_scoped_processes: bool) -> BaseException | None:
+    async def _stop_server(
+        self,
+        *,
+        reclaim_scoped_processes: bool,
+        reclaim_active_commands: bool,
+    ) -> BaseException | None:
         with self._futures_lock:
             self._accepting_requests = False
             futures = list(self._futures)
+            active_command_ids = [
+                self._future_command_ids[future]
+                for future in futures
+                if not future.done() and future in self._future_command_ids
+            ]
         if reclaim_scoped_processes:
-            cleanup_error = await self._drain_futures_with_cleanup(futures)
+            cleanup_error = await self._drain_futures_with_cleanup(futures, None)
+        elif reclaim_active_commands:
+            cleanup_error = await self._drain_futures_with_cleanup(
+                futures, active_command_ids
+            )
         else:
             cleanup_error = await self._drain_futures(futures)
         if self._server is not None:
@@ -1133,9 +1453,10 @@ class _ToolExecutorServer:
     async def _drain_futures_with_cleanup(
         self,
         futures: list[concurrent.futures.Future[Any]],
+        command_ids: list[str] | None,
     ) -> BaseException | None:
         while any(not future.done() for future in futures):
-            cleanup_error = await self._cleanup_processes(None)
+            cleanup_error = await self._cleanup_processes(command_ids)
             if cleanup_error is not None:
                 for future in futures:
                     future.cancel()
@@ -1143,7 +1464,7 @@ class _ToolExecutorServer:
                 return cleanup_error
             await asyncio.sleep(0.2)
         await self._drain_futures(futures)
-        return await self._cleanup_processes(None)
+        return await self._cleanup_processes(command_ids)
 
     async def _cleanup_processes(
         self, command_ids: list[str] | None
@@ -1437,9 +1758,11 @@ def _headless_harbor_command(
     task_id: str,
     out_dir: Path,
     env: dict[str, str],
+    node_path: str | Path = "node",
+    isolation: str = "harbor-http",
 ) -> list[str]:
     command = [
-        "node",
+        str(node_path),
         str(cli_path),
         "harbor",
         "run",
@@ -1448,7 +1771,7 @@ def _headless_harbor_command(
         "--backend",
         env.get("MAKA_BACKEND", "ai-sdk"),
         "--isolation",
-        "harbor-http",
+        isolation,
         "--instruction-file",
         str(instruction_path),
         "--workdir",
@@ -1518,6 +1841,7 @@ def _runner_env_summary(env: dict[str, str]) -> dict[str, str]:
         "MAKA_HARBOR_REPLAY_PRIOR_ATTEMPT_RUNTIME_CONTEXT",
         "MAKA_REPLAY_PRIOR_ATTEMPT_RUNTIME_CONTEXT",
         "MAKA_HEAVY_TASK_MODE",
+        "MAKA_AGENT_TOOLS",
         "MAKA_CONTEXT_STALE_TOOL_RESULT_PRUNE",
         "MAKA_CONTEXT_STALE_TOOL_RESULT_MAX_ESTIMATED_TOKENS",
         "MAKA_CONTEXT_STALE_TOOL_RESULT_MIN_RECENT_TURNS_FULL",

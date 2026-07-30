@@ -5,6 +5,9 @@ import { SessionListPanel } from '../src/session-list-panel.js';
 
 const NOW = Date.now();
 
+// Fidelity convention (#1433): every story below names the real app path
+// that reaches it. See apps/desktop/stories/FIDELITY.md.
+
 const meta = {
   title: 'Product/Sidebar Session List',
   parameters: {
@@ -16,7 +19,6 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 type SessionListPanelProps = Parameters<typeof SessionListPanel>[0];
-type StatusGroup = NonNullable<SessionListPanelProps['statusGroups']>[number];
 
 const noop = () => undefined;
 
@@ -63,23 +65,21 @@ const rowActions: NonNullable<SessionListPanelProps['rowActions']> = {
 function panelProps(input: {
   sessions: SessionSummary[];
   activeId?: string;
-  statusGroups?: StatusGroup[];
   streamingSessionIds?: Set<string>;
   staleSessionIds?: Set<string>;
-  sidebarCollapsed?: boolean;
 }): SessionListPanelProps {
   return {
     selection: { section: 'sessions', filter: 'chats' },
     sessions: input.sessions,
     ...(input.activeId ? { activeId: input.activeId } : {}),
-    ...(input.statusGroups ? { statusGroups: input.statusGroups } : {}),
     ...(input.streamingSessionIds ? { streamingSessionIds: input.streamingSessionIds } : {}),
     ...(input.staleSessionIds ? { staleSessionIds: input.staleSessionIds } : {}),
-    ...(input.sidebarCollapsed ? { sidebarCollapsed: input.sidebarCollapsed } : {}),
     onSelectSession: noop,
     onSelect: noop,
     onOpenSettings: noop,
     onNew: noop,
+    viewMode: 'conversation',
+    onViewModeChange: noop,
     rowActions,
   };
 }
@@ -203,58 +203,6 @@ const statusSessions = [
   }),
 ];
 
-const statusGroups: StatusGroup[] = [
-  {
-    id: 'running',
-    label: '进行中',
-    sessions: statusSessions.filter((session) => session.status === 'running'),
-    collapsible: false,
-    defaultExpanded: true,
-  },
-  {
-    id: 'waiting_for_user',
-    label: '等待你',
-    sessions: statusSessions.filter((session) => session.status === 'waiting_for_user'),
-    collapsible: false,
-    defaultExpanded: true,
-  },
-  {
-    id: 'blocked',
-    label: '需要处理',
-    sessions: statusSessions.filter((session) => session.status === 'blocked'),
-    collapsible: false,
-    defaultExpanded: true,
-  },
-  {
-    id: 'review',
-    label: '待审核',
-    sessions: statusSessions.filter((session) => session.status === 'review'),
-    collapsible: false,
-    defaultExpanded: true,
-  },
-  {
-    id: 'done',
-    label: '已完成',
-    sessions: statusSessions.filter((session) => session.status === 'done'),
-    collapsible: false,
-    defaultExpanded: true,
-  },
-  {
-    id: 'archived',
-    label: '归档',
-    sessions: statusSessions.filter((session) => session.status === 'archived'),
-    collapsible: true,
-    defaultExpanded: false,
-  },
-  {
-    id: 'aborted',
-    label: '已中止',
-    sessions: statusSessions.filter((session) => session.status === 'aborted'),
-    collapsible: true,
-    defaultExpanded: false,
-  },
-];
-
 const longListSessions = Array.from({ length: 36 }, (_, index) => makeSession({
   id: `long-list-${index + 1}`,
   name: `${index % 6 === 0 ? '已置顶 ' : ''}会话 ${String(index + 1).padStart(2, '0')} · ${
@@ -293,6 +241,8 @@ const longTitleSessions = [
   }),
 ];
 
+// Real path: a fresh workspace with no conversations yet — the sidebar list before
+// anything is created.
 export const Empty: Story = {
   render: () => (
     <StoryFrame>
@@ -301,6 +251,7 @@ export const Empty: Story = {
   ),
 };
 
+// Real path: a workspace with enough history that the conversation list scrolls.
 export const LongList: Story = {
   render: () => (
     <StoryFrame>
@@ -312,13 +263,14 @@ export const LongList: Story = {
   ),
 };
 
-export const StatusGroups: Story = {
+// Real path: the same list once its rows carry lifecycle state (running / waiting /
+// failed), which the row shows as an indicator rather than a bucket (#1459).
+export const ConversationStates: Story = {
   render: () => (
     <StoryFrame>
       <SessionListPanel {...panelProps({
         sessions: statusSessions,
         activeId: 'status-waiting',
-        statusGroups,
         streamingSessionIds: new Set(['status-running']),
         staleSessionIds: new Set(['status-blocked']),
       })} />
@@ -326,6 +278,27 @@ export const StatusGroups: Story = {
   ),
 };
 
+// Real path: sidebar → 扩展 — the list keeps the conversation heading and view switch
+// while a non-conversation module is selected (#1458).
+export const ExtensionSelected: Story = {
+  render: () => (
+    <StoryFrame>
+      <SessionListPanel
+        {...panelProps({
+          sessions: coreSessions,
+          activeId: 'session-active',
+          streamingSessionIds: new Set(['session-running']),
+          staleSessionIds: new Set(['session-stale']),
+        })}
+        selection={{ section: 'extensions', module: 'skills' }}
+        viewMode="conversation"
+        onViewModeChange={noop}
+      />
+    </StoryFrame>
+  ),
+};
+
+// Real path: hover a conversation row → its inline actions appear.
 export const RowActions: Story = {
   render: () => (
     <StoryFrame focusActiveRow>
@@ -339,6 +312,7 @@ export const RowActions: Story = {
   ),
 };
 
+// Real path: hover a conversation row → ⋯ → the row menu is open.
 export const RowMenuOpen: Story = {
   render: () => (
     <StoryFrame openActiveRowMenu>
@@ -352,6 +326,8 @@ export const RowMenuOpen: Story = {
   ),
 };
 
+// Real path: a workspace with long conversation titles, with the sidebar dragged to its
+// narrow end.
 export const LongTitlesAndNarrow: Story = {
   render: () => (
     <StoryFrame width={176}>
@@ -361,20 +337,5 @@ export const LongTitlesAndNarrow: Story = {
         staleSessionIds: new Set(['long-title-stale']),
       })} />
     </StoryFrame>
-  ),
-};
-
-export const Collapsed: Story = {
-  render: () => (
-    <>
-      <style>{`.agents-sidebar[data-collapsed="true"] { width: 100% !important }`}</style>
-      <StoryFrame width={72}>
-        <SessionListPanel {...panelProps({
-          sessions: coreSessions,
-          activeId: 'session-running',
-          sidebarCollapsed: true,
-        })} />
-      </StoryFrame>
-    </>
   ),
 };

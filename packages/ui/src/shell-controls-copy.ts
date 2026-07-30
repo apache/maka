@@ -9,10 +9,12 @@ type ShellControlsCopy = {
     newTask: string;
     automations: string;
     extensions: string;
-    skills: string;
-    mcp: string;
-    dailyReview: string;
     settings: string;
+    update: string;
+    restartUpdate: string;
+    downloadingUpdate(percent: number): string;
+    updateAvailable(version: string): string;
+    updateDownloaded(version: string): string;
     pendingReminders(count: number): string;
   };
   search: {
@@ -43,10 +45,12 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
       newTask: '新任务',
       automations: '定时任务',
       extensions: '扩展',
-      skills: '技能',
-      mcp: 'MCP',
-      dailyReview: '每日回顾',
       settings: '设置',
+      update: '更新',
+      restartUpdate: '重启',
+      downloadingUpdate: (percent: number) => `正在下载更新，${percent}%`,
+      updateAvailable: (version: string) => `发现新版本 ${version}`,
+      updateDownloaded: (version: string) => `新版本 ${version} 已下载，重启后安装`,
       pendingReminders: (count: number) => `定时任务，${count} 个未完成提醒`,
     },
     search: {
@@ -73,13 +77,15 @@ const SHELL_CONTROLS_COPY_BY_LOCALE = {
     navigation: {
       mainLabel: 'Main navigation',
       newTask: 'New task',
-      automations: 'Automations',
+      automations: 'Scheduled tasks',
       extensions: 'Extensions',
-      skills: 'Skills',
-      mcp: 'MCP',
-      dailyReview: 'Daily Review',
       settings: 'Settings',
-      pendingReminders: (count: number) => `Automations, ${count} unfinished ${count === 1 ? 'reminder' : 'reminders'}`,
+      update: 'Update',
+      restartUpdate: 'Restart',
+      downloadingUpdate: (percent: number) => `Downloading update, ${percent}%`,
+      updateAvailable: (version: string) => `Update available: ${version}`,
+      updateDownloaded: (version: string) => `Update ${version} downloaded. Restart to install.`,
+      pendingReminders: (count: number) => `Scheduled tasks, ${count} unfinished ${count === 1 ? 'reminder' : 'reminders'}`,
     },
     search: {
       title: 'Search',

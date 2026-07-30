@@ -1,0 +1,128 @@
+/* Codex/Cursor-style quote side panel.
+   -------------------------------------------------------------------------
+   The floating "引用" / "在侧栏追问" pills reuse `.maka-quote-action` from
+   quote-chip.css (shipped with the composer quote-chip feature). This file
+   adds the side-panel surfaces: the shared pill wrapper, the workbar "追问引用"
+   tab, and the in-tab companion — which reuses the real ChatView + Composer so
+   the follow-up thread looks and streams exactly like the main conversation. */
+
+/* `.maka-quote-actions`: the shared positioned wrapper that holds one or both
+   floating pills above a text selection. Positioned via inline top/left
+   (viewport coords of the selection) and centered on the selection midpoint
+   with translateX(-50%); the pills inside flow horizontally. */
+.maka-quote-actions {
+  position: fixed;
+  transform: translateX(-50%);
+  z-index: var(--z-panel-action);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  -webkit-app-region: no-drag;
+}
+
+.maka-quote-actions .maka-quote-action {
+  position: static;
+  transform: none;
+}
+
+/* The quote lives as a transient tab inside the session workbar (not a second
+   right column, which was too crowded). The tab panel is a flex column so the
+   companion's ChatView transcript fills the height and the Composer pins to the
+   bottom — the same vertical rhythm as the main conversation. */
+.maka-quote-workbar-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.maka-quote-companion {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+/* ChatView is designed for the wide main column; inside the narrow workbar tab
+   it fills the free space and drops the chrome that only makes sense there (the
+   empty header spacer and the right-edge prompt anchor rail). */
+.maka-quote-companion .maka-main {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.maka-quote-companion .maka-chat-header {
+  display: none;
+}
+
+.maka-quote-companion .maka-prompt-rail {
+  display: none;
+}
+
+/* Empty-state (no follow-up yet): the excerpt + a one-line read-only hint,
+   rendered inside ChatView's scroll area via its emptyOverride slot. */
+.maka-quote-companion-intro {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+}
+
+.maka-quote-panel-quote {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-left: var(--border-width-thick) solid var(--border-strong);
+  border-radius: var(--radius-control);
+  background: var(--card-bg);
+  color: var(--foreground-secondary);
+  font-size: var(--font-size-caption);
+  white-space: pre-wrap;
+}
+
+.maka-quote-panel-hint {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
+}
+
+.maka-quote-companion-error {
+  flex: 0 0 auto;
+  padding: var(--space-1) var(--space-3);
+  color: var(--destructive-text);
+  font-size: var(--font-size-caption);
+}
+
+.maka-quote-companion-actions {
+  flex: 0 0 auto;
+  display: flex;
+  /* Horizontal inset matches the composer's inner box (24px) so the full-width
+     clear button lines up edge-to-edge with the dialog box above it. */
+  padding: var(--space-1) var(--space-6) var(--space-2);
+}
+
+.maka-quote-panel-clear {
+  /* Full-width, matching the composer above it. */
+  width: 100%;
+  appearance: none;
+  border: var(--border-width-hairline) solid var(--border);
+  background: transparent;
+  color: var(--muted-foreground);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-control);
+  font-size: var(--font-size-caption);
+  text-align: center;
+  transition:
+    color var(--duration-quick) var(--ease-out-strong),
+    background var(--duration-quick) var(--ease-out-strong);
+}
+
+.maka-quote-panel-clear:hover {
+  color: var(--foreground);
+  background: var(--state-hover-bg);
+}
+
+.maka-quote-panel-clear:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}

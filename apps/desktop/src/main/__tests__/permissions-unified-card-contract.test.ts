@@ -90,13 +90,25 @@ describe('PR-PERMISSIONS-UNIFIED-CARD-0 contract (#309)', () => {
     );
 
     // Affordance honesty (round 8, maintainer report): ghost beside the
-    // primary read as a plain text label. When both are shown, open-settings
-    // is a BORDERED secondary; when alone it returns to variant=default so
-    // the row still has a primary CTA. Never ghost in this row.
+    // primary read as a plain text label. When paired with ANY primary,
+    // open-settings is a BORDERED secondary; when alone it returns to
+    // variant=default so the row still has a primary CTA. Never ghost.
+    //
+    // The drag-to-grant flow added a second possible primary, so the
+    // condition covers both — otherwise a row showing 引导授权 would put
+    // two default-variant buttons side by side with no visual hierarchy.
     assert.match(
       actionsBlock,
-      /variant=\{showRequest \? 'secondary' : 'default'\}/,
-      'open-settings button must be bordered secondary when paired with request, default when alone',
+      /variant=\{showRequest \|\| showDragGrant \? 'secondary' : 'default'\}/,
+      'open-settings button must be bordered secondary whenever a primary action is present, default when alone',
+    );
+    // The guided flow is a primary CTA — it must not be quietly demoted.
+    const dragGrantButton = actionsBlock.match(/showDragGrant && \(\s*<Button[\s\S]*?<\/Button>\s*\)/)?.[0] ?? '';
+    assert.ok(dragGrantButton, 'showDragGrant && Button JSX must be findable');
+    assert.doesNotMatch(
+      dragGrantButton,
+      /variant=("|\{')(ghost|secondary|outline|link)/,
+      'drag-to-grant button must remain a primary CTA',
     );
     assert.doesNotMatch(
       actionsBlock,

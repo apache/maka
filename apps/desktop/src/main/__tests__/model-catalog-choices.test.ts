@@ -227,6 +227,29 @@ describe('model catalog picker helpers', () => {
     );
   });
 
+  it('exposes enabled xAI OAuth models through the shared model picker', async () => {
+    const { buildCatalogChatModelChoices } = await importModelCatalogChoices();
+    const xaiOAuth = connection({
+      slug: 'xai-oauth',
+      providerType: 'xai-oauth',
+      defaultModel: 'grok-4.5',
+      enabledModelIds: ['grok-4.5'],
+      models: [{ id: 'grok-4.5' }],
+      modelSource: 'fetched',
+    });
+
+    assert.deepEqual(
+      buildCatalogChatModelChoices([xaiOAuth]).map(
+        ({ connectionSlug, providerType, model }) => ({
+          connectionSlug,
+          providerType,
+          model,
+        }),
+      ),
+      [{ connectionSlug: 'xai-oauth', providerType: 'xai-oauth', model: 'grok-4.5' }],
+    );
+  });
+
   it('surfaces connectionName for api-key connections but never for OAuth ones', async () => {
     const { buildCatalogChatModelChoices } = await importModelCatalogChoices();
 

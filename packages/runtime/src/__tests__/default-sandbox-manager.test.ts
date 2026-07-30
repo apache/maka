@@ -6,6 +6,7 @@ import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-pro
 import {
   createBuiltinSandboxManager,
   createDefaultSandboxManager,
+  isBuiltinFilesystemWorkerSandboxAvailable,
 } from '../sandbox/default-sandbox-manager.js';
 
 describe('createDefaultSandboxManager', () => {
@@ -30,9 +31,49 @@ describe('createDefaultSandboxManager', () => {
 });
 
 describe('createBuiltinSandboxManager', () => {
-  it('enables production sandbox backends on macOS and Linux', () => {
+  it('always returns a manager so managed execution fails closed on unsupported platforms', () => {
     assert.ok(createBuiltinSandboxManager('linux'));
     assert.ok(createBuiltinSandboxManager('darwin'));
-    assert.equal(createBuiltinSandboxManager('win32'), undefined);
+    const unsupported = createBuiltinSandboxManager('win32');
+    assert.ok(unsupported);
+    const selection = unsupported.selectInitial({
+      profile: createWorkspaceWritePermissionProfile(),
+      platform: 'win32',
+    });
+    assert.equal(selection.ok, false);
+    if (!selection.ok) assert.equal(selection.reason, 'unsupported_platform');
+  });
+});
+
+describe('isBuiltinFilesystemWorkerSandboxAvailable', () => {
+  it('requires a usable Linux backend but keeps the built-in macOS worker available', () => {
+    assert.equal(isBuiltinFilesystemWorkerSandboxAvailable('darwin'), true);
+    assert.equal(isBuiltinFilesystemWorkerSandboxAvailable('win32'), false);
+    assert.equal(
+      isBuiltinFilesystemWorkerSandboxAvailable('linux', {
+        available: true,
+        bwrapPath: '/usr/bin/bwrap',
+      }),
+      true,
+    );
+    assert.equal(
+      isBuiltinFilesystemWorkerSandboxAvailable('linux', {
+        available: false,
+        reason: 'missing-bwrap',
+        bwrapPath: '/usr/bin/bwrap',
+      }),
+      false,
+    );
+    assert.equal(
+      isBuiltinFilesystemWorkerSandboxAvailable(
+        'linux',
+        {
+          available: true,
+          bwrapPath: '/usr/bin/bwrap',
+        },
+        's390x',
+      ),
+      false,
+    );
   });
 });

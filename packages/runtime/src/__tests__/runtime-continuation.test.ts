@@ -12,13 +12,12 @@ import {
 } from '../runtime-resume.js';
 import { RuntimeRunner } from '../runtime-runner.js';
 
-test('local continuation safety inspector derives portable authoritative host facts', async () => {
+test('local continuation safety inspector returns current authoritative workspace facts', async () => {
   const inspect = createLocalContinuationSafetyInspector({
     readSessionCwd: async () => '/workspace/repo-link',
     resolveWorkspaceIdentity: async () => ({
       workspaceIdentity: 'workspace:v1:123e4567-e89b-42d3-a456-426614174000',
       canonicalPath: '/workspace/repo',
-      legacyWorkspaceIdentities: ['fs:7:42:/workspace/repo'],
     }),
     listAvailableToolNames: async () => ['Write', 'Read', 'Read'],
     hasPendingBackgroundOperations: async () => false,
@@ -27,7 +26,6 @@ test('local continuation safety inspector derives portable authoritative host fa
   assert.deepEqual(await inspect('session-1'), {
     workspaceIdentity: 'workspace:v1:123e4567-e89b-42d3-a456-426614174000',
     workspacePath: '/workspace/repo',
-    legacyWorkspaceIdentities: ['fs:7:42:/workspace/repo'],
     backgroundOperationsSettled: true,
     availableToolNames: ['Read', 'Write'],
   });

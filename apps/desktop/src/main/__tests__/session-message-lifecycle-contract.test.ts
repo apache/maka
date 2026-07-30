@@ -87,10 +87,10 @@ describe('active session message lifecycle contract', () => {
     );
     assert.match(
       refreshMessages,
-      /try \{[\s\S]*readMessagesForRefresh\(sessionId, options\)[\s\S]*const next = result\.messages[\s\S]*activeIdRef\.current === sessionId[\s\S]*setMessages\(next\)[\s\S]*setMessageLoadErrorBySession[\s\S]*return result\.settled;[\s\S]*\} catch \(error\) \{[\s\S]*const message = messageRefreshErrorMessage\(error, uiLocale\);[\s\S]*setMessageLoadErrorBySession\(\(current\) => \(\{\s*\.\.\.current,\s*\[sessionId\]: message,?\s*\}\)\);[\s\S]*toastApi\.error\(copy\.refreshFailedTitle, message\)/,
+      /try \{[\s\S]*readSettledMessages\(sessionId, options\)[\s\S]*const next = result\.messages[\s\S]*activeIdRef\.current === sessionId[\s\S]*setMessages\(next\)[\s\S]*setMessageLoadErrorBySession[\s\S]*return result\.settled;[\s\S]*\} catch \(error\) \{[\s\S]*const message = messageRefreshErrorMessage\(error, uiLocale\);[\s\S]*setMessageLoadErrorBySession\(\(current\) => \(\{\s*\.\.\.current,\s*\[sessionId\]: message,?\s*\}\)\);[\s\S]*toastApi\.error\(copy\.refreshFailedTitle, message\)/,
       'shared refreshMessages path must surface stage-specific read failures through the same per-session load error state',
     );
-    assert.match(refreshMessages, /readMessagesForRefresh\(sessionId, options\)/);
+    assert.match(refreshMessages, /readSettledMessages\(sessionId, options\)/);
     assert.doesNotMatch(refreshMessages, /await window\.maka\.sessions\.readMessages\(sessionId\)/);
     assert.doesNotMatch(refreshMessages, /const message = cleanErrorMessage\(error\)/);
     assert.match(

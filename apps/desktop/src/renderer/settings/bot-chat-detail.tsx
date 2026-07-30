@@ -74,7 +74,7 @@ export function BotChatChannelDetail(props: {
   onTest(): void;
   onTestAndConnect(): void;
   onRestart(): void;
-  onDisconnectWechat(): void;
+  onDisconnectSession(): void;
   onReload(): Promise<void>;
   onRefreshStatuses(): Promise<boolean>;
 }) {
@@ -97,12 +97,13 @@ export function BotChatChannelDetail(props: {
   const readiness = viewState.readiness;
   const readinessCopy = botReadinessCopyForSupport(support, readiness, locale);
   const quickOnboarding = supportsQuickOnboarding(provider);
+  const qrOnlyOnboarding = provider === 'wechat';
   // PR1197 review (P1-8): the scan-login action row belongs to quick mode only.
   // WeChat has no manual mode, so it always uses the scan affordance. In manual
   // mode the runtime providers (e.g. DingTalk) must fall through to the shared
   // 测试并连接 CTA — otherwise the manual credential form has no way to start the
   // listener and the connect action is lost.
-  const inQuickOnboarding = quickOnboarding && (provider === 'wechat' || setupMode === 'quick');
+  const inQuickOnboarding = quickOnboarding && (qrOnlyOnboarding || setupMode === 'quick');
   const enableSwitchDisabled = support === 'planned' || (!channel.enabled && !canEnableBotChannel(readiness));
   const enableSwitchHint = support === 'planned'
     ? detailCopy.unavailableHint
@@ -155,29 +156,15 @@ export function BotChatChannelDetail(props: {
               {providerPresentation.label}
               <Chip dot size="sm" variant={readinessCopy.tone}>{readinessCopy.label}</Chip>
             </h3>
-            <p>
-              {providerPresentation.help}
-              {BOT_BRAND[provider].configDocUrl && (
-                <>
-                  {' '}
-                  <a
-                    className="settingsBotConfigDocLink"
-                    href={BOT_BRAND[provider].configDocUrl}
-                    aria-label={detailCopy.configDocs}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    {detailCopy.configDocs}
-                  </a>
-                </>
-              )}
-            </p>
+            <p>{providerPresentation.help}</p>
             {enableSwitchHint && (
               <small id={enableSwitchHintId} className="settingsBotEnableHint">
                 {enableSwitchHint}
               </small>
             )}
           </div>
+          {/* Keep the detail introduction first for heading navigation, while
+              placing the switch before the first focusable documentation link. */}
           <Switch
             ariaLabel={detailCopy.enableAria(providerPresentation.label)}
             ariaDescribedBy={enableSwitchHint ? enableSwitchHintId : undefined}
@@ -185,6 +172,17 @@ export function BotChatChannelDetail(props: {
             onChange={(enabled) => props.onUpdateChannel({ enabled })}
             disabled={enableSwitchDisabled || props.actionBusy}
           />
+          {BOT_BRAND[provider].configDocUrl && (
+            <a
+              className="settingsBotConfigDocLink"
+              href={BOT_BRAND[provider].configDocUrl}
+              aria-label={detailCopy.configDocs}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {detailCopy.configDocs}
+            </a>
+          )}
         </header>
 
         <section className="settingsBotRuntime" aria-labelledby="settings-bot-runtime-heading">
@@ -200,7 +198,7 @@ export function BotChatChannelDetail(props: {
                     {provider === 'wecom' ? detailCopy.quickBind : provider === 'wechat' ? detailCopy.scanLogin : detailCopy.scanConnect}
                   </Button>
                   {provider === 'wechat' && (channel.token || status?.identity) && (
-                    <Button type="button" variant="secondary" disabled={props.actionBusy} onClick={() => void props.onDisconnectWechat()}>
+                    <Button type="button" variant="secondary" disabled={props.actionBusy} onClick={() => void props.onDisconnectSession()}>
                       {props.pendingAction === 'disconnect' ? detailCopy.disconnecting : detailCopy.disconnectWechat}
                     </Button>
                   )}
@@ -258,11 +256,11 @@ export function BotChatChannelDetail(props: {
         )}
 
         <div className="settingsBotConfigurationHeader">
-          <h4>{quickOnboarding && provider !== 'wechat' ? detailCopy.setupMethod : detailCopy.connectionSettings}</h4>
+          <h4>{quickOnboarding && !qrOnlyOnboarding ? detailCopy.setupMethod : detailCopy.connectionSettings}</h4>
           <span>{quickOnboarding ? detailCopy.localCredentials : detailCopy.autosave}</span>
         </div>
 
-        {quickOnboarding && provider !== 'wechat' && (
+        {quickOnboarding && !qrOnlyOnboarding && (
           <Segmented<'quick' | 'manual'>
             className="settingsBotSetupModes"
             value={setupMode}
@@ -278,11 +276,19 @@ export function BotChatChannelDetail(props: {
         {quickOnboarding && provider !== 'wechat' && setupMode === 'quick' && (
           <section className="settingsBotQuickSetup" aria-label={detailCopy.quickAria(providerPresentation.label)}>
             <div>
-              <strong>{provider === 'wecom' ? detailCopy.quickWecomTitle : detailCopy.quickTitle}</strong>
+              <strong>
+                {provider === 'wecom'
+                  ? detailCopy.quickWecomTitle
+                  : provider === 'qq'
+                    ? detailCopy.quickQqTitle
+                    : detailCopy.quickTitle}
+              </strong>
               <p>
                 {provider === 'wecom'
                   ? detailCopy.quickWecomDetail
-                  : detailCopy.quickDetail}
+                  : provider === 'qq'
+                    ? detailCopy.quickQqDetail
+                    : detailCopy.quickDetail}
               </p>
             </div>
             {provider === 'feishu' ? (
@@ -404,6 +410,7 @@ function botCredentialFields(copy: BotSettingsCopy['detail']): Partial<Record<Bo
   return {
   telegram: [
     { kind: 'password', key: 'token', label: 'Bot Token', placeholder: '123456:ABC-DEF...', ariaLabel: 'Telegram Bot Token' },
+    { kind: 'notice', text: copy.telegramOfficialFlow },
     {
       kind: 'text',
       key: 'proxyUrl',
@@ -451,6 +458,10 @@ function botCredentialFields(copy: BotSettingsCopy['detail']): Partial<Record<Bo
   qq: [
     { kind: 'text', key: 'appId', label: 'AppID', placeholder: '102xxxxxx', ariaLabel: copy.qqId },
     { kind: 'password', key: 'appSecret', label: 'AppSecret', placeholder: 'xxxx', ariaLabel: 'QQ AppSecret' },
+  ],
+  slack: [
+    { kind: 'password', key: 'token', label: 'Bot Token', placeholder: 'xoxb-…', ariaLabel: 'Slack Bot Token' },
+    { kind: 'password', key: 'appSecret', label: 'App-Level Token', placeholder: 'xapp-…', ariaLabel: 'Slack App-Level Token' },
   ],
   };
 }

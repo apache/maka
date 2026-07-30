@@ -4,7 +4,7 @@ import type {
   DailyReviewMode,
   DailyReviewSummary,
 } from '@maka/core';
-import { tryResult } from '@maka/core/settings/result';
+import { tryResult } from '@maka/core/result';
 import type { createMainWindowController } from './main-window.js';
 import type { createDailyReviewArchiveStore } from './daily-review-archive-store.js';
 import type { createDailyReviewMainService } from './daily-review-main.js';

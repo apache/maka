@@ -13,6 +13,7 @@ export type ToolOperationStatus =
   | 'failed'
   | 'indeterminate'
   | 'not_dispatched'
+  | 'parked'
   | 'corruption';
 
 export interface ToolOperation {
@@ -78,7 +79,11 @@ export type ResumePlanDiagnosticCode =
   | 'resume_feature_disabled'
   | 'resume_candidate_missing'
   | 'tool_not_dispatched'
+  | 'tool_recovery_parked'
   | 'tool_recovery_corruption'
+  | 'tool_ledger_corruption'
+  | 'duplicate_event_id'
+  | 'semantic_lane_conflict'
   | 'protocol_marker_invalid';
 
 export type ResumeRejectionReason =
@@ -218,7 +223,6 @@ export interface SafeBoundaryContinuationFacts {
   currentCwd: string;
   sourceWorkspaceIdentity: string;
   currentWorkspaceIdentity: string;
-  currentWorkspaceIdentityAliases?: readonly string[];
   backgroundOperationsSettled: boolean;
   availableToolNames: readonly string[];
   continuationIdentity: ContinuationIdentity;
@@ -262,8 +266,6 @@ export interface RuntimeContinuationSafetyObservation {
   workspaceIdentity: string;
   /** Current location is diagnostic only and never participates in identity. */
   workspacePath?: string;
-  /** One-way compatibility aliases for legacy fs:{dev}:{ino}:{path} AgentRuns. */
-  legacyWorkspaceIdentities?: readonly string[];
   backgroundOperationsSettled: boolean;
   availableToolNames: readonly string[];
   workspaceCheckpoint?: {
@@ -286,7 +288,6 @@ export interface RuntimeContinuationPlannerInput {
   currentCwd: string;
   sourceWorkspaceIdentity: string;
   currentWorkspaceIdentity: string;
-  currentWorkspaceIdentityAliases?: readonly string[];
   backgroundOperationsSettled: boolean;
   availableToolNames: readonly string[];
   expectedRuntimeEventHighWater?: number;
@@ -378,9 +379,6 @@ export class RuntimeContinuationPlanner {
       currentCwd: input.currentCwd,
       sourceWorkspaceIdentity: input.sourceWorkspaceIdentity,
       currentWorkspaceIdentity: input.currentWorkspaceIdentity,
-      ...(input.currentWorkspaceIdentityAliases?.length
-        ? { currentWorkspaceIdentityAliases: input.currentWorkspaceIdentityAliases }
-        : {}),
       backgroundOperationsSettled: input.backgroundOperationsSettled,
       availableToolNames: input.availableToolNames,
       continuationIdentity: {
@@ -520,7 +518,9 @@ export function buildResumePlanFromRuntimeEvents(
   const rejectionReasons = deriveRejectionReasons(diagnostics);
   const requiresVerification = operations.some((operation) => operation.status === 'indeterminate');
   const disposition: ResumePlanDisposition =
-    rejectionReasons.length === 0 && !requiresVerification ? 'safe_replay' : 'blocked';
+    rejectionReasons.length === 0 && !requiresVerification && !recovery.hasCorruption
+      ? 'safe_replay'
+      : 'blocked';
 
   return {
     disposition,
@@ -628,10 +628,7 @@ export function buildSafeBoundaryContinuationPlan(
       detail: { sourceCwd: facts.sourceCwd, currentCwd: facts.currentCwd },
     });
   }
-  if (
-    facts.sourceWorkspaceIdentity !== facts.currentWorkspaceIdentity &&
-    !facts.currentWorkspaceIdentityAliases?.includes(facts.sourceWorkspaceIdentity)
-  ) {
+  if (facts.sourceWorkspaceIdentity !== facts.currentWorkspaceIdentity) {
     phaseOneDiagnostics.push({
       code: 'workspace_identity_mismatch',
       message: 'current workspace identity differs from the source resume boundary',
@@ -764,6 +761,10 @@ function collectPendingPermissionDiagnostics(
     if (request) pending.set(request.requestId, event);
     const decision = event.actions?.permissionDecision;
     if (decision) pending.delete(decision.requestId);
+    const accepted = event.actions?.permissionAnswerAccepted;
+    if (accepted) pending.delete(accepted.requestId);
+    const closed = event.actions?.permissionClosureAccepted;
+    if (closed) pending.delete(closed.requestId);
   }
   return [...pending.entries()].map(([requestId, event]) => ({
     code: 'pending_permission',
@@ -845,15 +846,44 @@ function collectResumeDiagnostics(
         toolCallId: operation.toolCallId,
         toolName: operation.toolName,
       });
+    } else if (operation.status === 'parked') {
+      diagnostics.push({
+        code: 'tool_recovery_parked',
+        message: 'tool recovery reached a terminal parked decision',
+        eventId: operation.callRuntimeEventId,
+        toolCallId: operation.toolCallId,
+        toolName: operation.toolName,
+      });
     }
   }
 
   for (const issue of recovery.issues) {
-    diagnostics.push({
-      code: 'protocol_marker_invalid',
-      message: 'runtime protocol marker is only valid on the first canonical event',
-      eventId: issue.eventId,
-    });
+    if (issue.code === 'protocol_marker_invalid') {
+      diagnostics.push({
+        code: issue.code,
+        message: 'runtime protocol marker is only valid on the first canonical event',
+        eventId: issue.eventId,
+      });
+    } else if (issue.code === 'duplicate_event_id') {
+      diagnostics.push({
+        code: issue.code,
+        message: 'immutable RuntimeEvent identity is duplicated',
+        eventId: issue.eventId,
+      });
+    } else if (issue.code === 'semantic_lane_conflict') {
+      diagnostics.push({
+        code: issue.code,
+        message: 'RuntimeEvent claims more than one authoritative tool semantic lane',
+        eventId: issue.eventId,
+      });
+    } else {
+      diagnostics.push({
+        code: 'tool_ledger_corruption',
+        message: `immutable tool ledger is corrupt: ${issue.code}`,
+        eventId: issue.eventId,
+        detail: { issueCode: issue.code },
+      });
+    }
   }
 
   for (const decision of recovery.decisions) {
@@ -916,7 +946,11 @@ function deriveRejectionReasons(
         break;
       case 'pending_tool_result':
       case 'tool_not_dispatched':
+      case 'tool_recovery_parked':
       case 'tool_recovery_corruption':
+      case 'tool_ledger_corruption':
+      case 'duplicate_event_id':
+      case 'semantic_lane_conflict':
       case 'protocol_marker_invalid':
       case 'unmatched_tool_result':
       case 'tool_name_mismatch':

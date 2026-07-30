@@ -5,7 +5,8 @@ export * from './chat-model-helpers.js';
 export * from './clipboard-feedback.js';
 export * from './use-mounted-ref.js';
 export * from './components.js';
-export type { SessionHistoryStatusGroup } from './session-history-list.js';
+export type { SandboxBoundaryPromptProps } from './sandbox-boundary-prompt.js';
+export type { SessionHistoryGroup } from './session-history-list.js';
 export * from './session-status-presentation.js';
 export * from './composer-helpers.js';
 export * from './conversation-copy.js';
@@ -14,6 +15,7 @@ export * from './skills-copy.js';
 export * from './daily-review-copy.js';
 export * from './plan-reminder-copy.js';
 export * from './tool-activity/copy.js';
+export * from './tool-activity/sandbox-denial.js';
 export * from './chat-input-behavior.js';
 export * from './composer-mention-popup.js';
 export * from './use-composer-skill-draft.js';
@@ -48,6 +50,7 @@ export * from './utils.js';
 // consumers can `import { Alert, Empty, ... } from '@maka/ui'`.
 export * from './bot-brand.js';
 export * from './bot-brand-logo.js';
+export * from './maka-wordmark.js';
 export * from './primitives/alert.js';
 export * from './primitives/card.js';
 // `markerVariants` / `toolVariants` are deliberately NOT re-exported here:
@@ -82,6 +85,7 @@ export * from './primitives/segmented.js';
 export * from './primitives/settings-select.js';
 export * from './primitives/settings-switch.js';
 export * from './primitives/input.js';
+export * from './primitives/time-picker.js';
 export * from './primitives/textarea.js';
 export * from './primitives/input-group.js';
 export * from './primitives/toolbar.js';
@@ -168,3 +172,6 @@ export {
   type FadeRingState,
   type FadeBatch,
 } from './stream-fade.js';
+
+// #1565 PR 2: Astryx i18n adapter — appended, never reordered (barrel freeze).
+export * from './astryx-i18n.js';

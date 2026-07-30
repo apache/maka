@@ -2,30 +2,35 @@ import {
   decodeCanonicalToolResultContent,
   projectAgentSwarmResult,
   projectToolActivityArgs,
+  type CreateSandboxBoundaryRequest,
+  type ExecutionBoundary,
+  type SandboxBoundaryDecision,
+  type SandboxBoundaryExpansion,
+  type SandboxBoundaryRequest,
+  type SandboxBoundarySettlement,
+  type SettleSandboxBoundaryRequest,
 } from '@maka/core';
 import type {
+  SandboxBoundaryDecisionAckEvent,
+  SandboxBoundaryRequestEvent,
   SessionEvent,
+  SandboxDenialSignal,
   ToolActivityKind,
   ToolOutputStream,
   ToolResultContent,
   ToolResultEvent,
   ToolStartEvent,
+  UserQuestionRequestEvent,
 } from '@maka/core/events';
+import type { ToolCallMessage, ToolResultMessage } from '@maka/core/session';
 import type {
-  PermissionDecisionMessage,
-  ToolCallMessage,
-  ToolResultMessage,
-} from '@maka/core/session';
-import type { PermissionDecision } from '@maka/core/backend-types';
+  HostedInteractionBridge,
+  HostedUserQuestionAnswer,
+  HostedUserQuestionSettlement,
+} from '@maka/core/backend-types';
 import type { AgentSpec } from '@maka/core/runtime-inputs';
-import type {
-  PermissionMode,
-  ToolCategory,
-  ToolExecutionFacts,
-  ToolPermissionRule,
-} from '@maka/core/permission';
-import { classifyToolUse } from '@maka/core/permission';
-import type { LlmConnection } from '@maka/core/llm-connections';
+import type { PermissionMode, ToolCategory, ToolExecutionFacts } from '@maka/core/permission';
+import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type {
   UserQuestion,
   UserQuestionResponse,
@@ -38,8 +43,6 @@ import type { EffectiveOrchestration } from '@maka/core/orchestration';
 import { redactSecrets } from '@maka/core/redaction';
 import { TOOL_BOUNDARY_PROTOCOL_V1, type RuntimeEvent } from '@maka/core';
 
-import type { PermissionEngine } from './permission-engine.js';
-import type { AsyncEventQueue } from './async-queue.js';
 import { recordToolArtifactsSafely, type ToolArtifactRecorder } from './tool-artifacts.js';
 import { createToolOutputDeltaEmitter } from './tool-output-delta.js';
 import { truncateToolOutput } from './tool-output.js';
@@ -47,19 +50,8 @@ import { stableHash } from './request-shape.js';
 import { classifyError } from './provider-error-classification.js';
 import type { RunTraceLike } from './run-trace.js';
 import { TurnScopedAwaitRegistry } from './turn-scoped-await-registry.js';
-import {
-  AdditionalPermissionError,
-  revalidateAdditionalPermissionProposal,
-  type AdditionalPermissionPlannerContext,
-  type AdditionalPermissionPlanResult,
-  type ToolExecutionPermissionContext,
-} from './additional-permissions.js';
-import { ApprovalCoordinator, type AutoApprovalReviewContext } from './approval-reviewer.js';
-import {
-  SandboxEscalationError,
-  type SandboxEscalationPlanResult,
-  type SandboxEscalationPlannerContext,
-} from './sandbox-escalation.js';
+import { jsonValue } from './tool-result-output.js';
+import type { ToolResultOutput } from './model-protocol.js';
 import {
   buildToolOperationId,
   canonicalToolArgsHash,
@@ -67,20 +59,38 @@ import {
   type ToolRecoveryMode,
 } from './runtime-commit-sink.js';
 import { ChildAgentRunLimiter } from './child-agent-run-limiter.js';
-import { serializeSandboxError } from './sandbox/errors.js';
+import type { AgentProfile } from './agent-catalog.js';
+import type { SubagentExecutionRef } from './subagent-execution.js';
+import { sandboxErrorMetadata, serializeSandboxError } from './sandbox/errors.js';
+import { normalizeSandboxBoundaryExpansion } from './sandbox-boundary-path.js';
+import {
+  RuntimeInteractionAdmissionRejectedError,
+  RuntimeInteractionClosedError,
+  RuntimeInteractionFailStopError,
+  RuntimeInteractionInvariantError,
+  type RuntimeInteractionClosureReason,
+  type RuntimeUserQuestionClosureReason,
+} from './interaction-authority.js';
 
-export type ToolModelOutputPart =
-  | { type: 'text'; text: string }
-  | {
-      type: 'file';
-      data: { type: 'data'; data: string | Uint8Array };
-      mediaType: string;
-      filename?: string;
-    };
+export interface ResolvedMakaToolCall {
+  tool: MakaTool;
+  turnId: string;
+  stepId?: string;
+  toolCallId: string;
+  input: unknown;
+  providerOptions?: Record<string, unknown>;
+  abortSignal: AbortSignal;
+  eventSink: DurableSessionEventSink;
+}
 
-export interface ToolModelOutput {
-  type: 'content';
-  value: ToolModelOutputPart[];
+export interface DurableSessionEventSink {
+  push(event: SessionEvent): void;
+  pushAndWaitUntilConsumed(event: SessionEvent): Promise<void>;
+}
+
+export interface ToolSettlement {
+  result: unknown;
+  modelOutput: ToolResultOutput;
 }
 
 export interface MakaTool<P = any, R = unknown> {
@@ -90,11 +100,6 @@ export interface MakaTool<P = any, R = unknown> {
   description: string;
   /** Zod schema describing the tool's argument shape. */
   parameters: unknown;
-  /**
-   * If `false`, the base mode policy is skipped unless invocation-local rules
-   * are present. Explicit deny rules still apply to every tool.
-   */
-  permissionRequired?: boolean;
   /** Optional UI display name. */
   displayName?: string;
   /** Stable semantic category used by UI presentation; never carries styling. */
@@ -112,32 +117,14 @@ export interface MakaTool<P = any, R = unknown> {
     args: P,
     context: Pick<MakaToolContext, 'sessionId' | 'turnId' | 'toolCallId'>,
   ) => unknown;
-  /** Optional trusted platform sandbox availability for this tool. */
-  sandbox?:
-    | {
-        platformSandboxAvailable: boolean;
-      }
-    | ((context: { permissionMode: PermissionMode; cwd: string; args: P }) => {
-        platformSandboxAvailable: boolean;
-      });
-  /** Trusted runtime planner for one-call permission expansion. */
-  planAdditionalPermissions?: (
-    args: P,
-    context: AdditionalPermissionPlannerContext,
-  ) => Promise<AdditionalPermissionPlanResult> | AdditionalPermissionPlanResult;
-  /** Trusted runtime planner for one-call unsandboxed Bash execution. */
-  planSandboxEscalation?: (
-    args: P,
-    context: SandboxEscalationPlannerContext,
-  ) => Promise<SandboxEscalationPlanResult> | SandboxEscalationPlanResult;
-  /** Real tool implementation. Called only after permission allows. */
+  /** Real tool implementation. */
   impl: (args: P, ctx: MakaToolContext) => Promise<R> | R;
   /** Optional provider-visible content mapping, used for screenshot image parts. */
   toModelOutput?: (options: {
     toolCallId: string;
     input: unknown;
     output: unknown;
-  }) => ToolModelOutput | Promise<ToolModelOutput>;
+  }) => ToolResultOutput | PromiseLike<ToolResultOutput>;
 }
 
 export interface MakaToolContext {
@@ -146,6 +133,8 @@ export interface MakaToolContext {
   turnId: string;
   /** Session working directory. */
   cwd: string;
+  /** Authoritative session boundary read immediately before Runtime-dispatched execution. */
+  executionBoundary?: ExecutionBoundary;
   permissionMode?: PermissionMode;
   toolCallId: string;
   abortSignal: AbortSignal;
@@ -164,8 +153,6 @@ export interface MakaToolContext {
   ) => void;
   /** Trusted expert-team identity supplied by RuntimeKernel/backend wiring. */
   agentTeam?: AgentTeamExecutionContext;
-  /** One-call grants already approved and consumed by ToolRuntime. */
-  permissionContext?: ToolExecutionPermissionContext;
   spawnChildAgent?: (input: {
     spec: AgentSpec;
     prompt: string;
@@ -178,8 +165,28 @@ export interface MakaToolContext {
     }) => void | Promise<void>;
     onEvent?: (event: SessionEvent) => void;
   }) => Promise<unknown>;
+  spawnChildSession?: (input: {
+    agentProfile: AgentProfile;
+    prompt: string;
+    /** Optional swarm identity, scoped to the owning tool call. */
+    swarm?: {
+      swarmId: string;
+      itemId: string;
+    };
+    /** Optional per-child signal, always composed with the owning tool invocation signal. */
+    abortSignal?: AbortSignal;
+    onReady?: (input: {
+      childSessionId: string;
+      turnId: string;
+      runId: string;
+      agentId: string;
+      agentName: string;
+    }) => void | Promise<void>;
+    onEvent?: (event: SessionEvent) => void;
+  }) => Promise<unknown>;
   prepareChildAgentResume?: (sourceRunId: string) => Promise<{
     sourceRunId: string;
+    execution: SubagentExecutionRef;
     agentId: string;
     agentName: string;
     profile: string;
@@ -190,7 +197,9 @@ export interface MakaToolContext {
     /** Optional per-child signal, always composed with the owning tool invocation signal. */
     abortSignal?: AbortSignal;
     onReady?: (input: {
+      childSessionId?: string;
       turnId: string;
+      runId?: string;
       agentId: string;
       agentName: string;
     }) => void | Promise<void>;
@@ -198,10 +207,13 @@ export interface MakaToolContext {
   }) => Promise<unknown>;
   retryChildAgent?: (input: {
     sourceRunId: string;
+    execution?: SubagentExecutionRef;
     /** Optional per-child signal, always composed with the owning tool invocation signal. */
     abortSignal?: AbortSignal;
     onReady?: (input: {
+      childSessionId?: string;
       turnId: string;
+      runId?: string;
       agentId: string;
       agentName: string;
     }) => void | Promise<void>;
@@ -209,11 +221,18 @@ export interface MakaToolContext {
   }) => Promise<unknown>;
   listChildAgents?: () => Promise<unknown>;
   readChildAgentOutput?: (input: {
+    execution?: SubagentExecutionRef;
     runId?: string;
     turnId?: string;
     maxEvents?: number;
+    maxBytes?: number;
+    view?: 'result' | 'events' | 'runtime_events' | 'all';
   }) => Promise<unknown>;
   askUserQuestion?: (questions: UserQuestion[]) => Promise<UserQuestionResult>;
+  requestSandboxBoundary?: (
+    expansion: SandboxBoundaryExpansion,
+    justification: string,
+  ) => Promise<SandboxBoundarySettlement>;
 }
 
 export interface AgentTeamExecutionContext {
@@ -224,9 +243,7 @@ export interface AgentTeamExecutionContext {
   parentRunId?: string;
 }
 
-export type AppendMessageFn = (
-  m: ToolCallMessage | ToolResultMessage | PermissionDecisionMessage,
-) => Promise<void>;
+export type AppendMessageFn = (m: ToolCallMessage | ToolResultMessage) => Promise<void>;
 export type ToolTelemetryRecorder = (record: ToolInvocationRecord) => void;
 
 /**
@@ -272,23 +289,26 @@ function composeChildAbortSignal(
 export interface ToolRuntimeInput {
   sessionId: string;
   header: SessionHeader;
-  connection: LlmConnection;
+  connection: RuntimeExecutionConnection;
   modelId: string;
   appendMessage: AppendMessageFn;
-  permissionEngine: PermissionEngine;
+  readExecutionBoundary: () => Promise<ExecutionBoundary>;
+  createSandboxBoundaryRequest?: (
+    input: CreateSandboxBoundaryRequest,
+  ) => Promise<SandboxBoundaryRequest>;
+  settleSandboxBoundaryRequest?: (
+    input: SettleSandboxBoundaryRequest,
+  ) => Promise<SandboxBoundarySettlement>;
   newId: () => string;
   now: () => number;
   getPermissionPauseTarget: () => { pause(): void; resume(): void } | null;
   getCurrentInvocationId?: () => string | undefined;
   getCurrentRunId?: () => string | undefined;
   agentTeam?: AgentTeamExecutionContext;
-  /**
-   * Id of the assistant step currently streaming, stamped onto each tool call's
-   * `tool_start` event so model replay can group a step's reasoning + tool calls
-   * into one provider assistant message. Undefined leaves the step unpaired
-   * (legacy per-turn behavior).
-   */
-  getCurrentStepId?: () => string | undefined;
+  materializeDefaultToolResultOutput?: (options: {
+    toolCallId: string;
+    output: unknown;
+  }) => ToolResultOutput | PromiseLike<ToolResultOutput>;
   /** Effective orchestration for the active send; undefined between turns. */
   getCurrentOrchestration?: () => EffectiveOrchestration | undefined;
   spawnChildAgent?: (input: {
@@ -303,8 +323,29 @@ export interface ToolRuntimeInput {
     }) => void | Promise<void>;
     onEvent?: (event: SessionEvent) => void;
   }) => Promise<unknown>;
+  spawnChildSession?: (input: {
+    parentRunId: string;
+    parentTurnId: string;
+    toolCallId: string;
+    agentProfile: AgentProfile;
+    prompt: string;
+    swarm?: {
+      swarmId: string;
+      itemId: string;
+    };
+    abortSignal: AbortSignal;
+    onReady?: (input: {
+      childSessionId: string;
+      turnId: string;
+      runId: string;
+      agentId: string;
+      agentName: string;
+    }) => void | Promise<void>;
+    onEvent?: (event: SessionEvent) => void;
+  }) => Promise<unknown>;
   prepareChildAgentResume?: (sourceRunId: string) => Promise<{
     sourceRunId: string;
+    execution: SubagentExecutionRef;
     agentId: string;
     agentName: string;
     profile: string;
@@ -315,7 +356,9 @@ export interface ToolRuntimeInput {
     prompt: string;
     abortSignal: AbortSignal;
     onReady?: (input: {
+      childSessionId?: string;
       turnId: string;
+      runId?: string;
       agentId: string;
       agentName: string;
     }) => void | Promise<void>;
@@ -324,9 +367,12 @@ export interface ToolRuntimeInput {
   retryChildAgent?: (input: {
     parentRunId: string;
     sourceRunId: string;
+    execution?: SubagentExecutionRef;
     abortSignal: AbortSignal;
     onReady?: (input: {
+      childSessionId?: string;
       turnId: string;
+      runId?: string;
       agentId: string;
       agentName: string;
     }) => void | Promise<void>;
@@ -334,22 +380,18 @@ export interface ToolRuntimeInput {
   }) => Promise<unknown>;
   listChildAgents?: () => Promise<unknown>;
   readChildAgentOutput?: (input: {
+    execution?: SubagentExecutionRef;
     runId?: string;
     turnId?: string;
     maxEvents?: number;
+    maxBytes?: number;
+    view?: 'result' | 'events' | 'runtime_events' | 'all';
   }) => Promise<unknown>;
   getRunTrace?: () => RunTraceLike | null;
-  permissionTimeoutMs?: number;
-  permissionRules?: readonly ToolPermissionRule[];
   recordToolInvocation?: ToolTelemetryRecorder;
   recordToolArtifacts?: ToolArtifactRecorder;
   /** Optional Phase 2 T1/T2 commit boundary. Omitted on legacy JSONL hosts. */
   runtimeCommitSink?: RuntimeCommitSink;
-  approvalCoordinator?: ApprovalCoordinator;
-  getAutoApprovalReviewContext?: () => Omit<
-    AutoApprovalReviewContext,
-    'sessionId' | 'turnId' | 'cwd' | 'permissionMode'
-  >;
 }
 
 interface DurableToolAttempt {
@@ -374,10 +416,16 @@ class RuntimeCommitBoundaryError extends Error {
 }
 
 export class ToolRuntime {
+  private readonly sandboxBoundaryRequests = new TurnScopedAwaitRegistry<
+    SandboxBoundarySettlement,
+    { toolUseId: string; creation: Promise<SandboxBoundaryRequest> }
+  >();
   private readonly userQuestions = new TurnScopedAwaitRegistry<
     UserQuestionResponse,
-    { toolUseId: string; questions: UserQuestion[] }
+    { toolUseId: string; questions: UserQuestion[]; hosted: boolean }
   >();
+  private readonly hostedInteractions = new Map<string, HostedInteractionBridge>();
+  private readonly deferredQuestionTurnClosures = new Set<string>();
   private activeSubagentToolCount = 0;
   private childAgentRunLimiter = new ChildAgentRunLimiter(MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN);
   /**
@@ -397,30 +445,92 @@ export class ToolRuntime {
   private failedToolCallStreak = 0;
   private lastAmbiguousComputerSignature: string | undefined;
   private readonly recentSandboxDenials = new Set<string>();
-  private readonly autoReviewEscalationAttempts = new Map<string, 'pending' | 'denied'>();
   private readonly durableToolAttempts = new Map<string, DurableToolAttempt>();
+  private readonly readExecutionBoundary: NonNullable<ToolRuntimeInput['readExecutionBoundary']>;
   private readonly stepAdmissions = new Map<
     string,
     { callCount: number; exclusiveToolName?: string }
   >();
-  private readonly approvalCoordinator: ApprovalCoordinator;
-
   constructor(private readonly input: ToolRuntimeInput) {
-    this.approvalCoordinator = input.approvalCoordinator ?? new ApprovalCoordinator({});
+    if (!input.readExecutionBoundary) {
+      throw new Error('ToolRuntime requires explicit execution boundary authority');
+    }
+    this.readExecutionBoundary = input.readExecutionBoundary;
   }
 
-  beginTurn(turnId: string): void {
+  beginTurn(turnId: string, hostedInteraction?: HostedInteractionBridge): void {
+    if (
+      hostedInteraction &&
+      (hostedInteraction.sessionId !== this.input.sessionId || hostedInteraction.turnId !== turnId)
+    ) {
+      throw new RuntimeInteractionInvariantError(
+        `ToolRuntime received a mismatched hosted Interaction Run for turn ${turnId}`,
+      );
+    }
+    if (hostedInteraction) this.hostedInteractions.set(turnId, hostedInteraction);
+    else this.hostedInteractions.delete(turnId);
     this.resetTurnState();
+    this.sandboxBoundaryRequests.beginTurn(turnId);
     this.userQuestions.beginTurn(turnId);
   }
 
-  endTurn(turnId: string, reason: 'completed' | 'aborted' = 'completed'): void {
-    this.userQuestions.endTurn(
+  async endTurn(turnId: string, reason: 'completed' | 'aborted' = 'completed'): Promise<void> {
+    const boundaryRequests = this.sandboxBoundaryRequests.entries(turnId);
+    const boundarySettlementErrors: unknown[] = [];
+    if (boundaryRequests.length > 0) {
+      if (!this.input.settleSandboxBoundaryRequest) {
+        boundarySettlementErrors.push(
+          new Error('Sandbox boundary settlement is unavailable on this surface'),
+        );
+      } else {
+        const results = await Promise.allSettled(
+          boundaryRequests.map(async ([requestId, metadata]) => {
+            try {
+              await metadata.creation;
+            } catch {
+              return;
+            }
+            await this.input.settleSandboxBoundaryRequest?.({
+              sessionId: this.input.sessionId,
+              requestId,
+              decision: 'deny',
+            });
+          }),
+        );
+        for (const result of results) {
+          if (result.status === 'rejected') boundarySettlementErrors.push(result.reason);
+        }
+      }
+    }
+
+    const hasHostedPending = this.userQuestions
+      .entries(turnId)
+      .some(([, question]) => question.hosted);
+    this.hostedInteractions.delete(turnId);
+    this.sandboxBoundaryRequests.endTurn(
       turnId,
       (requestId) =>
-        new Error(`Turn ${turnId} ${reason} before user question ${requestId} was answered`),
+        new Error(`Turn ${turnId} ${reason} before sandbox boundary ${requestId} was settled`),
     );
-    this.resetTurnState();
+    if (hasHostedPending) {
+      this.deferredQuestionTurnClosures.add(turnId);
+      this.finishDeferredQuestionTurnClosure(turnId);
+      this.resetTurnState();
+    } else {
+      this.userQuestions.endTurn(
+        turnId,
+        (requestId) =>
+          new Error(`Turn ${turnId} ${reason} before user question ${requestId} was answered`),
+      );
+      this.deferredQuestionTurnClosures.delete(turnId);
+      this.resetTurnState();
+    }
+    if (boundarySettlementErrors.length > 0) {
+      throw new AggregateError(
+        boundarySettlementErrors,
+        `Could not durably deny every sandbox boundary request for turn ${turnId}`,
+      );
+    }
   }
 
   respondToUserQuestion(turnId: string, response: UserQuestionResponse): boolean {
@@ -431,6 +541,54 @@ export class ToolRuntime {
       .entries(turnId)
       .find(([requestId]) => requestId === response.requestId)?.[1];
     if (!pending) return false;
+    if (pending.hosted) {
+      throw new RuntimeInteractionInvariantError(
+        `Hosted question ${response.requestId} must settle through its captured continuation`,
+      );
+    }
+    return this.settleUserQuestionAnswer(turnId, response, pending);
+  }
+
+  async respondToSandboxBoundaryRequest(
+    turnId: string,
+    response: { requestId: string; decision: SandboxBoundaryDecision },
+  ): Promise<boolean> {
+    if (
+      !response ||
+      typeof response.requestId !== 'string' ||
+      (response.decision !== 'allow' && response.decision !== 'deny')
+    ) {
+      throw new Error('Invalid sandbox boundary response');
+    }
+    const pending = this.sandboxBoundaryRequests
+      .entries(turnId)
+      .find(([requestId]) => requestId === response.requestId);
+    if (!pending) return false;
+    if (!this.input.settleSandboxBoundaryRequest) {
+      throw new Error('Sandbox boundary settlement is unavailable on this surface');
+    }
+    const settlement = await this.input.settleSandboxBoundaryRequest({
+      sessionId: this.input.sessionId,
+      requestId: response.requestId,
+      decision: response.decision,
+    });
+    return this.sandboxBoundaryRequests.resolve(turnId, response.requestId, settlement) !== null;
+  }
+
+  async respondToSandboxBoundaryResponse(response: {
+    requestId: string;
+    decision: SandboxBoundaryDecision;
+  }): Promise<boolean> {
+    const turnId = this.sandboxBoundaryRequests.findTurn(response.requestId);
+    if (!turnId) return false;
+    return this.respondToSandboxBoundaryRequest(turnId, response);
+  }
+
+  private settleUserQuestionAnswer(
+    turnId: string,
+    response: UserQuestionResponse,
+    pending: { toolUseId: string; questions: UserQuestion[]; hosted: boolean },
+  ): boolean {
     if (
       response.answers.length !== pending.questions.length ||
       response.answers.some(
@@ -439,22 +597,65 @@ export class ToolRuntime {
     ) {
       throw new Error('Invalid user question response');
     }
-    return this.userQuestions.resolve(turnId, response.requestId, response) !== null;
+    const resolved = this.userQuestions.resolve(turnId, response.requestId, response) !== null;
+    this.finishDeferredQuestionTurnClosure(turnId);
+    return resolved;
+  }
+
+  closeUserQuestion(
+    turnId: string,
+    requestId: string,
+    reason: RuntimeInteractionClosureReason,
+  ): boolean {
+    const closed =
+      this.userQuestions.reject(
+        turnId,
+        requestId,
+        new RuntimeInteractionClosedError(requestId, reason),
+      ) !== null;
+    this.finishDeferredQuestionTurnClosure(turnId);
+    return closed;
   }
 
   pendingUserQuestionCount(turnId: string): number {
     return this.userQuestions.pendingCount(turnId);
   }
 
-  wrapToolExecute(
-    tool: MakaTool,
-    turnId: string,
-    queue: AsyncEventQueue<SessionEvent> | { push(event: SessionEvent): void },
-  ) {
-    return async (
-      args: unknown,
-      ctx: { toolCallId: string; abortSignal: AbortSignal },
-    ): Promise<unknown> => this.executeTool(tool, turnId, queue, args, ctx);
+  /**
+   * Settle one resolved Maka tool call. Tool/business failures resolve with a
+   * provider-facing error output; durable runtime commit failures still reject.
+   */
+  async settleToolCall(call: ResolvedMakaToolCall): Promise<ToolSettlement> {
+    const result = await this.executeTool(
+      call.tool,
+      call.turnId,
+      call.eventSink,
+      call.input,
+      {
+        toolCallId: call.toolCallId,
+        abortSignal: call.abortSignal,
+        ...(call.providerOptions !== undefined ? { providerOptions: call.providerOptions } : {}),
+      },
+      call.stepId,
+    );
+    const providerError = providerToolErrorMessage(result);
+    const modelOutput = providerError
+      ? { type: 'error-text' as const, value: new Error(providerError).toString() }
+      : call.tool.toModelOutput
+        ? await call.tool.toModelOutput({
+            toolCallId: call.toolCallId,
+            input: call.input,
+            output: result,
+          })
+        : this.input.materializeDefaultToolResultOutput
+          ? await this.input.materializeDefaultToolResultOutput({
+              toolCallId: call.toolCallId,
+              output: result,
+            })
+          : typeof result === 'string'
+            ? { type: 'text' as const, value: result }
+            : { type: 'json' as const, value: jsonValue(result) };
+    return { result, modelOutput };
   }
 
   /**
@@ -479,7 +680,6 @@ export class ToolRuntime {
     this.failedToolCallStreak = 0;
     this.lastAmbiguousComputerSignature = undefined;
     this.recentSandboxDenials.clear();
-    this.autoReviewEscalationAttempts.clear();
     this.durableToolAttempts.clear();
     this.stepAdmissions.clear();
   }
@@ -511,9 +711,16 @@ export class ToolRuntime {
     toolUseId: string,
     turnId: string,
     text: string,
-    queue: AsyncEventQueue<SessionEvent> | { push(event: SessionEvent): void },
+    queue: DurableSessionEventSink,
+    sandboxDenial?: SandboxDenialSignal,
+    sandboxFailure?: Extract<ToolResultContent, { kind: 'text' }>['sandboxFailure'],
   ): Promise<void> {
-    const content: ToolResultContent = { kind: 'text', text: formatSyntheticToolErrorText(text) };
+    const content: ToolResultContent = {
+      kind: 'text',
+      text: formatSyntheticToolErrorText(text),
+      ...(sandboxDenial ? { sandboxDenial } : {}),
+      ...(sandboxFailure ? { sandboxFailure } : {}),
+    };
     const durableAttempt = this.durableToolAttempts.get(durableAttemptKey(turnId, toolUseId));
     const durableOutcome = await durableAttempt?.commitOutcome(content, true);
     const msg: ToolResultMessage = {
@@ -541,15 +748,19 @@ export class ToolRuntime {
   private async executeTool(
     tool: MakaTool,
     turnId: string,
-    queue: AsyncEventQueue<SessionEvent> | { push(event: SessionEvent): void },
+    queue: DurableSessionEventSink,
     args: unknown,
-    ctx: { toolCallId: string; abortSignal: AbortSignal },
+    ctx: {
+      toolCallId: string;
+      abortSignal: AbortSignal;
+      providerOptions?: Record<string, unknown>;
+    },
+    stepId?: string,
   ): Promise<unknown> {
     const executionArgs = snapshotToolArgs(args);
     const toolUseId = ctx.toolCallId;
-    const stepId = this.input.getCurrentStepId?.();
     // Registration is synchronous and happens before the first await, so
-    // parallel AI SDK execute callbacks cannot race past exclusive admission.
+    // parallel Runtime settlements cannot race past exclusive admission.
     const admissionFailure = this.admitToolForStep(tool, stepId);
     let permissionArgs = executionArgs;
     let permissionArgsError: unknown;
@@ -596,6 +807,9 @@ export class ToolRuntime {
       ...(operationId ? { operationId } : {}),
       ...(tool.activityKind ? { activityKind: tool.activityKind } : {}),
       args: structuredClone(persistedArgs),
+      ...(ctx.providerOptions !== undefined
+        ? { providerOptions: structuredClone(ctx.providerOptions) }
+        : {}),
       ...(tool.displayName ? { displayName: tool.displayName } : {}),
       ...(toolIntent ? { intent: toolIntent } : {}),
       ...(stepId !== undefined ? { stepId } : {}),
@@ -610,6 +824,9 @@ export class ToolRuntime {
       ...(tool.displayName ? { displayName: tool.displayName } : {}),
       ...(toolIntent ? { intent: toolIntent } : {}),
       args: structuredClone(persistedArgs),
+      ...(ctx.providerOptions !== undefined
+        ? { providerOptions: structuredClone(ctx.providerOptions) }
+        : {}),
       // Persist the same step id the tool_start event carries so the UI
       // timeline and post-restart backfill can pair this call with its step.
       ...(stepId !== undefined ? { stepId } : {}),
@@ -619,7 +836,6 @@ export class ToolRuntime {
     trace?.emit('tool', 'tool_started', 'Tool execution started', {
       toolUseId,
       toolName: tool.name,
-      permissionRequired: tool.permissionRequired !== false,
       ...(tool.categoryHint !== undefined ? { categoryHint: tool.categoryHint } : {}),
     });
     const callSignature = `${tool.name} ${loopGateArgsKey(executionArgs, toolUseId)}`;
@@ -722,7 +938,7 @@ export class ToolRuntime {
     // Tool-availability execute-boundary guard (Codex Δ5). Uses the step-start
     // snapshot, NOT a cumulative loaded-set: if one step emits `load_tools(g)`
     // and a tool from group `g` in parallel, that tool is not yet active (it
-    // activates only at the next step's `prepareStep`), so it is rejected here —
+    // activates only in the next request projection), so it is rejected here —
     // before permission eval and before the real impl. This also closes the AI
     // SDK `activeTools` leak (vercel/ai#8653). The rejection is recoverable: the
     // model loads via `load_tools`, then retries next step.
@@ -743,403 +959,7 @@ export class ToolRuntime {
       return this.errorReturn(reason);
     }
 
-    let additionalPlan: AdditionalPermissionPlanResult = { kind: 'not_required' };
-    if (tool.planAdditionalPermissions) {
-      try {
-        const plannerContext: AdditionalPermissionPlannerContext = Object.freeze({
-          sessionId: this.input.sessionId,
-          turnId,
-          toolUseId,
-          toolName: tool.name,
-          category: classifyToolUse({
-            toolName: tool.name,
-            args: executionArgs,
-            ...(tool.categoryHint !== undefined ? { categoryHint: tool.categoryHint } : {}),
-          }),
-          cwd: this.input.header.cwd,
-          mode: this.input.header.permissionMode,
-          args: executionArgs,
-        });
-        const planned = await tool.planAdditionalPermissions(
-          executionArgs as never,
-          plannerContext,
-        );
-        if (!isAdditionalPermissionPlanResult(planned)) {
-          throw new AdditionalPermissionError({
-            stage: 'planning',
-            reason: 'invalid_additional_permissions',
-            message: 'Additional permission planner returned an invalid result.',
-          });
-        }
-        additionalPlan = planned;
-      } catch (error) {
-        additionalPlan = {
-          kind: 'block',
-          reason: 'invalid_additional_permissions',
-          message: formatSyntheticToolErrorText(error),
-        };
-      }
-      if (additionalPlan.kind === 'block') {
-        const reason = formatSyntheticToolErrorText(additionalPlan.message);
-        trace?.emit('permission', 'permission_failed', 'Additional permission planning failed', {
-          toolUseId,
-          toolName: tool.name,
-          requestKind: 'additional_permissions',
-          reason: additionalPlan.reason,
-        });
-        await this.writeSyntheticToolResult(toolUseId, turnId, reason, queue);
-        this.recordLoopGateOutcome(callSignature, true);
-        return this.errorReturn(reason);
-      }
-    }
-
-    let escalationPlan: SandboxEscalationPlanResult = { kind: 'not_required' };
-    if (tool.planSandboxEscalation) {
-      try {
-        const plannerContext: SandboxEscalationPlannerContext = Object.freeze({
-          sessionId: this.input.sessionId,
-          turnId,
-          toolUseId,
-          toolName: tool.name,
-          category: classifyToolUse({
-            toolName: tool.name,
-            args: executionArgs,
-            ...(tool.categoryHint !== undefined ? { categoryHint: tool.categoryHint } : {}),
-          }),
-          cwd: this.input.header.cwd,
-          mode: this.input.header.permissionMode,
-          args: executionArgs,
-          ...(this.recentSandboxDenials.has(
-            sandboxDenialKey(tool.name, this.input.header.cwd, executionArgs),
-          )
-            ? { recentSandboxDenial: true }
-            : {}),
-        });
-        const planned = await tool.planSandboxEscalation(executionArgs as never, plannerContext);
-        if (!isSandboxEscalationPlanResult(planned)) {
-          throw new SandboxEscalationError({
-            stage: 'planning',
-            reason: 'invalid_sandbox_escalation',
-            message: 'Sandbox escalation planner returned an invalid result.',
-          });
-        }
-        escalationPlan = planned;
-      } catch (error) {
-        escalationPlan = {
-          kind: 'block',
-          reason: 'invalid_sandbox_escalation',
-          message: formatSyntheticToolErrorText(error),
-        };
-      }
-      if (escalationPlan.kind === 'block') {
-        const reason = formatSyntheticToolErrorText(escalationPlan.message);
-        trace?.emit(
-          'permission',
-          'sandbox_escalation_failed',
-          'Sandbox escalation planning failed',
-          {
-            toolUseId,
-            toolName: tool.name,
-            reason: escalationPlan.reason,
-          },
-        );
-        await this.writeSyntheticToolResult(toolUseId, turnId, reason, queue);
-        this.recordLoopGateOutcome(callSignature, true);
-        return this.errorReturn(reason);
-      }
-    }
-
-    if (additionalPlan.kind === 'request' && escalationPlan.kind === 'request') {
-      const reason =
-        'A tool call cannot request additional permissions and unsandboxed execution together.';
-      await this.writeSyntheticToolResult(toolUseId, turnId, reason, queue);
-      this.recordLoopGateOutcome(callSignature, true);
-      return this.errorReturn(reason);
-    }
-
-    let autoReviewEscalationKey: string | undefined;
-    if (this.input.header.permissionMode === 'execute' && escalationPlan.kind === 'request') {
-      autoReviewEscalationKey = `${turnId}\u0000${escalationPlan.proposal.commandHash}`;
-      const priorAttempt = this.autoReviewEscalationAttempts.get(autoReviewEscalationKey);
-      if (priorAttempt) {
-        const reason =
-          priorAttempt === 'pending'
-            ? '相同的 sandbox 提权请求正在自动审批；为防止重复送审，本轮不会再次执行。'
-            : '相同的 sandbox 提权请求已在当前轮次中被自动审批拒绝；需要用户发送新的消息后才能重新申请。';
-        trace?.emit(
-          'permission',
-          'sandbox_escalation_failed',
-          'Repeated automatic escalation review blocked',
-          {
-            toolUseId,
-            toolName: tool.name,
-            reason: 'sandbox_escalation_denied',
-          },
-        );
-        await this.writeSyntheticToolResult(toolUseId, turnId, reason, queue);
-        this.recordLoopGateOutcome(callSignature, true);
-        return this.errorReturn(reason);
-      }
-      this.autoReviewEscalationAttempts.set(autoReviewEscalationKey, 'pending');
-    }
-
-    const permissionRules = this.permissionRulesFor(tool.name);
-    if (
-      tool.permissionRequired !== false ||
-      permissionRules.length > 0 ||
-      additionalPlan.kind === 'request' ||
-      escalationPlan.kind === 'request'
-    ) {
-      const verdict = this.input.permissionEngine.evaluate({
-        sessionId: this.input.sessionId,
-        turnId,
-        toolUseId,
-        toolName: tool.name,
-        args: structuredClone(additionalPlan.kind === 'request' ? executionArgs : permissionArgs),
-        ...(tool.categoryHint !== undefined ? { categoryHint: tool.categoryHint } : {}),
-        ...(tool.executionFacts !== undefined ? { executionFacts: tool.executionFacts } : {}),
-        permissionRequired: tool.permissionRequired !== false,
-        ...(permissionRules.length > 0 ? { permissionRules } : {}),
-        ...(tool.sandbox !== undefined
-          ? {
-              sandbox:
-                typeof tool.sandbox === 'function'
-                  ? tool.sandbox({
-                      permissionMode: this.input.header.permissionMode,
-                      cwd: this.input.header.cwd,
-                      args: structuredClone(executionArgs),
-                    })
-                  : tool.sandbox,
-            }
-          : {}),
-        mode: this.input.header.permissionMode,
-        cwd:
-          escalationPlan.kind === 'request' ? escalationPlan.proposal.cwd : this.input.header.cwd,
-        ...(additionalPlan.kind === 'request'
-          ? { additionalPermissionProposal: additionalPlan.proposal }
-          : {}),
-        ...(escalationPlan.kind === 'request'
-          ? { sandboxEscalationProposal: escalationPlan.proposal }
-          : {}),
-      });
-
-      if (verdict.kind === 'block') {
-        if (autoReviewEscalationKey) {
-          this.autoReviewEscalationAttempts.set(autoReviewEscalationKey, 'denied');
-        }
-        if (verdict.decisionEvent) {
-          await this.input.appendMessage({
-            type: 'permission_decision',
-            id: verdict.decisionEvent.requestId,
-            turnId,
-            ts: verdict.decisionEvent.ts,
-            toolUseId,
-            toolName: tool.name,
-            decision: 'deny',
-          });
-          queue.push(verdict.decisionEvent);
-        }
-        trace?.emit('permission', 'permission_failed', 'Permission blocked tool execution', {
-          toolUseId,
-          toolName: tool.name,
-          verdict: verdict.kind,
-          reason: verdict.reason,
-        });
-        await this.writeSyntheticToolResult(toolUseId, turnId, verdict.reason, queue);
-        trace?.emit('tool', 'tool_failed', 'Tool execution failed before implementation', {
-          toolUseId,
-          toolName: tool.name,
-          status: 'error',
-          errorClass: 'Permission',
-        });
-        this.recordLoopGateOutcome(callSignature, true);
-        return this.errorReturn(verdict.reason);
-      }
-
-      if (verdict.kind === 'prompt') {
-        const reviewContext: AutoApprovalReviewContext = {
-          sessionId: this.input.sessionId,
-          turnId,
-          cwd:
-            escalationPlan.kind === 'request' ? escalationPlan.proposal.cwd : this.input.header.cwd,
-          permissionMode: this.input.header.permissionMode,
-          ...this.input.getAutoApprovalReviewContext?.(),
-        };
-        const isEscalation = verdict.event.kind === 'sandbox_escalation';
-        trace?.emit('permission', 'approval_routed', 'Permission request routed to reviewer', {
-          requestId: verdict.event.requestId,
-          toolUseId,
-          toolName: tool.name,
-          reviewer: this.input.header.permissionMode === 'execute' ? 'auto_review' : 'user',
-          requestKind: verdict.event.kind,
-        });
-        trace?.emit(
-          'permission',
-          isEscalation ? 'sandbox_escalation_requested' : 'permission_requested',
-          'Permission requested',
-          {
-            requestId: verdict.event.requestId,
-            toolUseId,
-            toolName: tool.name,
-            category: verdict.event.category,
-            requestKind: verdict.event.kind,
-          },
-        );
-        let response: PermissionDecision;
-        try {
-          response = await this.awaitPermissionDecision(verdict, turnId, () =>
-            this.approvalCoordinator.resolve({
-              mode: this.input.header.permissionMode,
-              verdict,
-              permissionEngine: this.input.permissionEngine,
-              context: reviewContext,
-              emitUserRequest: (event) => queue.push(event),
-              abortSignal: ctx.abortSignal,
-            }),
-          );
-        } catch (err) {
-          if (autoReviewEscalationKey) {
-            this.autoReviewEscalationAttempts.set(autoReviewEscalationKey, 'denied');
-          }
-          const msg = formatSyntheticToolErrorText(err);
-          const reason = formatSyntheticToolErrorText(`Permission flow aborted: ${msg}`);
-          trace?.emit('permission', 'permission_failed', 'Permission flow failed', {
-            requestId: verdict.event.requestId,
-            toolUseId,
-            toolName: tool.name,
-            requestKind: verdict.event.kind ?? 'tool_permission',
-            reason:
-              err instanceof AdditionalPermissionError
-                ? err.reason
-                : err instanceof SandboxEscalationError
-                  ? err.reason
-                  : reason,
-          });
-          if (isEscalation) {
-            trace?.emit(
-              'permission',
-              'sandbox_escalation_failed',
-              'Sandbox escalation flow failed',
-              {
-                requestId: verdict.event.requestId,
-                toolUseId,
-                toolName: tool.name,
-                reason,
-              },
-            );
-          }
-          await this.writeSyntheticToolResult(toolUseId, turnId, reason, queue);
-          trace?.emit('tool', 'tool_failed', 'Tool execution failed before implementation', {
-            toolUseId,
-            toolName: tool.name,
-            status: 'error',
-            errorClass: 'Permission',
-          });
-          this.recordLoopGateOutcome(callSignature, true);
-          return this.errorReturn(reason);
-        }
-
-        const decisionMsg: PermissionDecisionMessage = {
-          type: 'permission_decision',
-          id: response.requestId,
-          turnId,
-          ts: this.input.now(),
-          toolUseId,
-          toolName: tool.name,
-          decision: response.decision,
-          ...(response.rememberForTurn !== undefined
-            ? { rememberForTurn: response.rememberForTurn }
-            : {}),
-          ...(response.reviewer !== undefined ? { reviewer: response.reviewer } : {}),
-          ...(response.rationale !== undefined ? { rationale: response.rationale } : {}),
-          ...(response.riskLevel !== undefined ? { riskLevel: response.riskLevel } : {}),
-        };
-        await this.input.appendMessage(decisionMsg);
-        queue.push({
-          type: 'permission_decision_ack',
-          id: this.input.newId(),
-          turnId,
-          ts: this.input.now(),
-          requestId: response.requestId,
-          toolUseId,
-          decision: response.decision,
-          ...(response.rememberForTurn !== undefined
-            ? { rememberForTurn: response.rememberForTurn }
-            : {}),
-          ...(response.reviewer !== undefined ? { reviewer: response.reviewer } : {}),
-          ...(response.rationale !== undefined ? { rationale: response.rationale } : {}),
-          ...(response.riskLevel !== undefined ? { riskLevel: response.riskLevel } : {}),
-        });
-        trace?.emit('permission', 'permission_decided', 'Permission decision recorded', {
-          requestId: response.requestId,
-          toolUseId,
-          toolName: tool.name,
-          decision: response.decision,
-          requestKind: verdict.event.kind ?? 'tool_permission',
-          ...(response.rememberForTurn !== undefined
-            ? { rememberForTurn: response.rememberForTurn }
-            : {}),
-          ...(response.reviewer !== undefined ? { reviewer: response.reviewer } : {}),
-          ...(response.riskLevel !== undefined ? { riskLevel: response.riskLevel } : {}),
-        });
-
-        if (response.decision === 'deny') {
-          if (autoReviewEscalationKey && response.reviewer === 'auto_review') {
-            this.autoReviewEscalationAttempts.set(autoReviewEscalationKey, 'denied');
-          }
-          const reason =
-            response.reviewer === 'auto_review'
-              ? `自动审批已拒绝权限请求${response.rationale ? `：${response.rationale}` : ''}`
-              : '用户已拒绝权限请求';
-          if (isEscalation) {
-            trace?.emit('permission', 'sandbox_escalation_denied', 'Sandbox escalation denied', {
-              requestId: response.requestId,
-              toolUseId,
-              toolName: tool.name,
-              reviewer: response.reviewer ?? 'user',
-            });
-          }
-          await this.writeSyntheticToolResult(toolUseId, turnId, reason, queue);
-          trace?.emit('tool', 'tool_failed', 'Tool execution failed before implementation', {
-            toolUseId,
-            toolName: tool.name,
-            status: 'error',
-            errorClass: 'Permission',
-          });
-          this.recordLoopGateOutcome(callSignature, true);
-          return this.errorReturn(reason);
-        }
-        if (autoReviewEscalationKey) {
-          this.autoReviewEscalationAttempts.delete(autoReviewEscalationKey);
-        }
-        if (isEscalation) {
-          trace?.emit('permission', 'sandbox_escalation_granted', 'Sandbox escalation granted', {
-            requestId: response.requestId,
-            toolUseId,
-            toolName: tool.name,
-            reviewer: response.reviewer ?? 'user',
-            commandHash:
-              verdict.event.kind === 'sandbox_escalation' ? verdict.event.commandHash : undefined,
-          });
-        }
-      } else {
-        if (autoReviewEscalationKey) {
-          this.autoReviewEscalationAttempts.delete(autoReviewEscalationKey);
-        }
-        trace?.emit('permission', 'permission_decided', 'Permission allowed tool execution', {
-          toolUseId,
-          toolName: tool.name,
-          decision: 'allow',
-          category: verdict.category,
-          ...(tool.name === 'agent_swarm'
-            ? {
-                authorizationSource:
-                  this.input.getCurrentOrchestration?.()?.agentSwarmAuthorization ?? 'none',
-              }
-            : {}),
-        });
-      }
-    }
+    this.assertCapturedRunOwner(tool.name, runId);
 
     const reservedSubagentSlot = this.reserveSubagentSlot(tool);
     if (!reservedSubagentSlot) {
@@ -1154,103 +974,21 @@ export class ToolRuntime {
       return this.errorReturn(SUBAGENT_TOOL_LIMIT_MESSAGE);
     }
 
-    let permissionContext: ToolExecutionPermissionContext | undefined;
-    if (additionalPlan.kind === 'request') {
-      try {
-        await revalidateAdditionalPermissionProposal({
-          proposal: additionalPlan.proposal,
-          cwd: this.input.header.cwd,
-        });
-        const additionalGrant = this.input.permissionEngine.consumeAdditionalPermissionGrant({
-          sessionId: this.input.sessionId,
-          turnId,
-          toolUseId,
-          toolName: tool.name,
-          intentHash: additionalPlan.proposal.intentHash,
-        });
-        if (!additionalGrant) {
-          throw new AdditionalPermissionError({
-            stage: 'consume',
-            reason: 'grant_unavailable',
-            message: 'Approved additional permission grant was unavailable.',
-          });
-        }
-        permissionContext = Object.freeze({ additionalGrant });
-      } catch (error) {
-        const reason = formatSyntheticToolErrorText(error);
-        trace?.emit(
-          'permission',
-          'permission_failed',
-          'Additional permission could not be applied',
-          {
-            toolUseId,
-            toolName: tool.name,
-            requestKind: 'additional_permissions',
-            reason:
-              error instanceof AdditionalPermissionError
-                ? error.reason
-                : 'invalid_additional_permissions',
-          },
-        );
-        await this.writeSyntheticToolResult(toolUseId, turnId, reason, queue);
-        this.recordLoopGateOutcome(callSignature, true);
-        this.releaseSubagentSlot(tool);
-        return this.errorReturn(reason);
-      }
+    let durableAttempt: DurableToolAttempt | undefined;
+    try {
+      this.assertCapturedRunOwner(tool.name, runId);
+      durableAttempt = await this.prepareDurableToolAttempt({
+        tool,
+        startEvent: startEv,
+        persistedArgs,
+        abortSignal: ctx.abortSignal,
+        ...(invocationId ? { invocationId } : {}),
+        ...(runId ? { runId } : {}),
+      });
+    } catch (error) {
+      if (reservedSubagentSlot) this.releaseSubagentSlot(tool);
+      throw error;
     }
-    if (escalationPlan.kind === 'request') {
-      try {
-        const sandboxEscalationGrant = this.input.permissionEngine.consumeSandboxEscalationGrant({
-          sessionId: this.input.sessionId,
-          turnId,
-          toolUseId,
-          toolName: tool.name,
-          intentHash: escalationPlan.proposal.intentHash,
-          command: escalationPlan.proposal.command,
-          cwd: escalationPlan.proposal.cwd,
-        });
-        if (!sandboxEscalationGrant) {
-          throw new SandboxEscalationError({
-            stage: 'consume',
-            reason: 'sandbox_escalation_intent_mismatch',
-            message: 'Approved sandbox escalation grant was unavailable.',
-          });
-        }
-        permissionContext = Object.freeze({
-          ...(permissionContext ?? {}),
-          sandboxEscalationGrant,
-        });
-        trace?.emit('permission', 'sandbox_escalation_applied', 'Sandbox escalation applied', {
-          toolUseId,
-          toolName: tool.name,
-          commandHash: sandboxEscalationGrant.commandHash,
-        });
-      } catch (error) {
-        const reason = formatSyntheticToolErrorText(error);
-        trace?.emit(
-          'permission',
-          'sandbox_escalation_failed',
-          'Sandbox escalation could not be applied',
-          {
-            toolUseId,
-            toolName: tool.name,
-            reason:
-              error instanceof SandboxEscalationError ? error.reason : 'sandbox_escalation_failed',
-          },
-        );
-        await this.writeSyntheticToolResult(toolUseId, turnId, reason, queue);
-        this.recordLoopGateOutcome(callSignature, true);
-        this.releaseSubagentSlot(tool);
-        return this.errorReturn(reason);
-      }
-    }
-    const durableAttempt = await this.prepareDurableToolAttempt({
-      tool,
-      startEvent: startEv,
-      persistedArgs,
-      ...(invocationId ? { invocationId } : {}),
-      ...(runId ? { runId } : {}),
-    });
     if (durableAttempt) {
       this.durableToolAttempts.set(durableAttemptKey(turnId, toolUseId), durableAttempt);
     }
@@ -1281,11 +1019,13 @@ export class ToolRuntime {
       pauseTarget?.pause();
       try {
         const runId = this.input.getCurrentRunId?.();
+        const executionBoundary = await this.readExecutionBoundary();
         const result = await tool.impl(structuredClone(executionArgs) as never, {
           sessionId: this.input.sessionId,
           turnId,
           ...(runId ? { runId } : {}),
           cwd: this.input.header.cwd,
+          executionBoundary,
           permissionMode: this.input.header.permissionMode,
           toolCallId: toolUseId,
           abortSignal: ctx.abortSignal,
@@ -1311,18 +1051,20 @@ export class ToolRuntime {
               }
             : {}),
           ...(this.input.agentTeam ? { agentTeam: this.input.agentTeam } : {}),
-          ...(permissionContext ? { permissionContext } : {}),
           ...(this.input.listChildAgents ? { listChildAgents: this.input.listChildAgents } : {}),
           ...(this.input.readChildAgentOutput
             ? { readChildAgentOutput: this.input.readChildAgentOutput }
             : {}),
           ...this.buildChildAgentContext({
+            turnId,
             abortSignal: ctx.abortSignal,
             trace,
             toolUseId,
             toolName: tool.name,
           }),
           askUserQuestion: (questions) => this.askUserQuestion(turnId, toolUseId, questions, queue),
+          requestSandboxBoundary: (expansion, justification) =>
+            this.requestSandboxBoundary(turnId, toolUseId, expansion, justification, queue),
         });
         output.flush();
         const durationMs = this.input.now() - startedAt;
@@ -1337,11 +1079,13 @@ export class ToolRuntime {
         if (hasSandboxDenial(content)) {
           const denialKey = sandboxDenialKey(tool.name, this.input.header.cwd, executionArgs);
           this.recentSandboxDenials.add(denialKey);
-          this.recentSandboxDenials.add(
-            sandboxDenialKey('Bash', this.input.header.cwd, {
-              command: content.cmd,
-            }),
-          );
+          if (content.kind === 'terminal' || content.kind === 'shell_run') {
+            this.recentSandboxDenials.add(
+              sandboxDenialKey('Bash', this.input.header.cwd, {
+                command: content.cmd,
+              }),
+            );
+          }
           trace?.emit(
             'sandbox',
             'sandbox_denial_detected',
@@ -1437,6 +1181,7 @@ export class ToolRuntime {
       }
     } catch (err) {
       if (err instanceof RuntimeCommitBoundaryError) throw err;
+      if (isInteractionControlError(err)) throw err;
       output.flush();
       const sandboxError = serializeSandboxError(err);
       const terminalFailure = coerceTerminalFailure(
@@ -1521,7 +1266,14 @@ export class ToolRuntime {
         tool.categoryHint === 'computer_use'
           ? `Computer Use failed: ${classifyError(err)}`
           : formatSyntheticToolErrorText(err);
-      await this.writeSyntheticToolResult(toolUseId, turnId, msg, queue);
+      await this.writeSyntheticToolResult(
+        toolUseId,
+        turnId,
+        msg,
+        queue,
+        sandboxDenialSignalFromError(err),
+        sandboxBoundaryFailureSignal(sandboxError),
+      );
       this.input.recordToolInvocation?.({
         sessionId: this.input.sessionId,
         turnId,
@@ -1548,7 +1300,7 @@ export class ToolRuntime {
         errorClass: classifyError(err),
         ...(sandboxError ? { sandbox: sandboxError } : {}),
       });
-      return this.errorReturn(msg);
+      return sandboxError ? { error: msg, sandbox: sandboxError } : this.errorReturn(msg);
     } finally {
       this.recordLoopGateOutcome(callSignature, attemptFailed);
       if (reservedSubagentSlot) this.releaseSubagentSlot(tool);
@@ -1559,6 +1311,7 @@ export class ToolRuntime {
     tool: MakaTool;
     startEvent: ToolStartEvent;
     persistedArgs: unknown;
+    abortSignal: AbortSignal;
     invocationId?: string;
     runId?: string;
   }): Promise<DurableToolAttempt | undefined> {
@@ -1602,6 +1355,9 @@ export class ToolRuntime {
         id: input.startEvent.toolUseId,
         name: input.tool.name,
         args: structuredClone(input.persistedArgs),
+        ...(input.startEvent.providerOptions !== undefined
+          ? { providerOptions: structuredClone(input.startEvent.providerOptions) }
+          : {}),
       },
       refs: {
         operationId,
@@ -1635,6 +1391,8 @@ export class ToolRuntime {
       refs: { operationId, toolCallId: input.startEvent.toolUseId },
     };
     try {
+      this.assertCapturedRunOwner(input.tool.name, runId);
+      this.assertDurableDispatchNotAborted(input.tool.name, input.abortSignal);
       const prepared = await sink.commitToolPrepared({
         operationId,
         journalEventId: `${operationId}_prepared`,
@@ -1691,7 +1449,11 @@ export class ToolRuntime {
         } catch (error) {
           throw new RuntimeCommitBoundaryError('T2', error);
         }
-        committedOutcome = { id: responseEvent.id, operationId, ts: responseEvent.ts };
+        committedOutcome = {
+          id: responseEvent.id,
+          operationId,
+          ts: responseEvent.ts,
+        };
         this.durableToolAttempts.delete(
           durableAttemptKey(input.startEvent.turnId, input.startEvent.toolUseId),
         );
@@ -1716,41 +1478,17 @@ export class ToolRuntime {
     return undefined;
   }
 
-  private permissionRulesFor(toolName: string): ToolPermissionRule[] {
-    const rules = [...(this.input.permissionRules ?? [])];
-    const authorization = this.input.getCurrentOrchestration?.()?.agentSwarmAuthorization;
-    if (toolName === 'agent_swarm' && authorization && authorization !== 'none') {
-      rules.push({ effect: 'allow', kind: 'tool', toolName: 'agent_swarm' });
+  private assertCapturedRunOwner(toolName: string, expectedRunId: string | undefined): void {
+    if (expectedRunId && this.input.getCurrentRunId?.() !== expectedRunId) {
+      throw new Error(`Tool ${toolName} lost Run ownership before durable dispatch`);
     }
-    return rules;
   }
 
-  private async awaitPermissionDecision(
-    verdict: Extract<ReturnType<PermissionEngine['evaluate']>, { kind: 'prompt' }>,
-    turnId: string,
-    resolve: () => Promise<PermissionDecision> = () => verdict.parked,
-  ): Promise<PermissionDecision> {
-    const timeoutMs = this.input.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS;
-    const pauseTarget = this.input.getPermissionPauseTarget();
-    pauseTarget?.pause();
-    try {
-      if (timeoutMs <= 0) return await resolve();
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const timeout = new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => {
-          const reason = `Permission request ${verdict.event.requestId} timed out after ${timeoutMs}ms`;
-          this.input.permissionEngine.expireRequest(turnId, verdict.event.requestId, reason);
-          reject(new Error(reason));
-        }, timeoutMs);
-      });
-      try {
-        return await Promise.race([resolve(), timeout]);
-      } finally {
-        if (timer !== undefined) clearTimeout(timer);
-      }
-    } finally {
-      pauseTarget?.resume();
-    }
+  private assertDurableDispatchNotAborted(toolName: string, abortSignal: AbortSignal): void {
+    if (!abortSignal.aborted) return;
+    throw abortSignal.reason instanceof Error
+      ? abortSignal.reason
+      : new Error(`Tool ${toolName} was cancelled before durable dispatch`);
   }
 
   private reserveSubagentSlot(tool: MakaTool): boolean {
@@ -1770,19 +1508,24 @@ export class ToolRuntime {
   }
 
   private buildChildAgentContext(input: {
+    turnId: string;
     abortSignal: AbortSignal;
     trace: RunTraceLike | null;
     toolUseId: string;
     toolName: string;
   }): Pick<
     MakaToolContext,
-    'spawnChildAgent' | 'prepareChildAgentResume' | 'resumeChildAgent' | 'retryChildAgent'
+    | 'spawnChildAgent'
+    | 'spawnChildSession'
+    | 'prepareChildAgentResume'
+    | 'resumeChildAgent'
+    | 'retryChildAgent'
   > {
     const parentRunId = this.input.getCurrentRunId?.();
     if (!parentRunId) return {};
     const limiter = this.childAgentRunLimiter;
     const runWithPermit = async <T>(
-      mode: 'spawn' | 'resume' | 'retry',
+      mode: 'spawn' | 'spawn_session' | 'resume' | 'retry',
       abortSignal: AbortSignal,
       execute: () => Promise<T>,
     ): Promise<T> => {
@@ -1864,6 +1607,7 @@ export class ToolRuntime {
     };
 
     const spawnChildAgent = this.input.spawnChildAgent;
+    const spawnChildSession = this.input.spawnChildSession;
     const prepareChildAgentResume = this.input.prepareChildAgentResume;
     const resumeChildAgent = this.input.resumeChildAgent;
     const retryChildAgent = this.input.retryChildAgent;
@@ -1891,8 +1635,36 @@ export class ToolRuntime {
             },
           }
         : {}),
+      ...(spawnChildSession
+        ? {
+            spawnChildSession: async (spawnInput) => {
+              const abortSignal = composeChildAbortSignal(
+                input.abortSignal,
+                spawnInput.abortSignal,
+              );
+              return await runWithPermit(
+                'spawn_session',
+                abortSignal,
+                async () =>
+                  await spawnChildSession({
+                    parentRunId,
+                    parentTurnId: input.turnId,
+                    toolCallId: input.toolUseId,
+                    agentProfile: spawnInput.agentProfile,
+                    prompt: spawnInput.prompt,
+                    ...(spawnInput.swarm ? { swarm: spawnInput.swarm } : {}),
+                    abortSignal,
+                    ...(spawnInput.onReady ? { onReady: spawnInput.onReady } : {}),
+                    ...(spawnInput.onEvent ? { onEvent: spawnInput.onEvent } : {}),
+                  }),
+              );
+            },
+          }
+        : {}),
       ...(prepareChildAgentResume
-        ? { prepareChildAgentResume: (sourceRunId) => prepareChildAgentResume(sourceRunId) }
+        ? {
+            prepareChildAgentResume: (sourceRunId) => prepareChildAgentResume(sourceRunId),
+          }
         : {}),
       ...(resumeChildAgent
         ? {
@@ -1931,6 +1703,7 @@ export class ToolRuntime {
                   await retryChildAgent({
                     parentRunId,
                     sourceRunId: retryInput.sourceRunId,
+                    ...(retryInput.execution ? { execution: retryInput.execution } : {}),
                     abortSignal,
                     ...(retryInput.onReady ? { onReady: retryInput.onReady } : {}),
                     ...(retryInput.onEvent ? { onEvent: retryInput.onEvent } : {}),
@@ -1946,11 +1719,17 @@ export class ToolRuntime {
     turnId: string,
     toolUseId: string,
     questions: UserQuestion[],
-    queue: AsyncEventQueue<SessionEvent> | { push(event: SessionEvent): void },
+    queue: DurableSessionEventSink,
   ): Promise<UserQuestionResult> {
+    const hostedRun = this.interactionRun(turnId);
     const requestId = this.input.newId();
-    const parked = this.userQuestions.park(turnId, requestId, { toolUseId, questions });
-    queue.push({
+    const parked = this.userQuestions.park(turnId, requestId, {
+      toolUseId,
+      questions,
+      hosted: hostedRun !== undefined,
+    });
+    if (hostedRun) void parked.catch(() => undefined);
+    const request: UserQuestionRequestEvent = {
       type: 'user_question_request',
       id: this.input.newId(),
       turnId,
@@ -1958,8 +1737,45 @@ export class ToolRuntime {
       requestId,
       toolUseId,
       questions,
-    });
+    };
+    if (hostedRun) {
+      const settlement = this.createUserQuestionSettlement(turnId, requestId);
+      try {
+        await hostedRun.admitUserQuestionRequest({
+          request,
+          settlement,
+        });
+      } catch (error) {
+        this.userQuestions.reject(
+          turnId,
+          requestId,
+          error instanceof Error
+            ? error
+            : new RuntimeInteractionFailStopError(
+                `Could not confirm admission for question ${requestId}`,
+                error,
+              ),
+        );
+        this.finishDeferredQuestionTurnClosure(turnId);
+        await parked.catch(() => undefined);
+        throw interactionAuthorityError(
+          `Could not confirm admission for question ${requestId}`,
+          error,
+        );
+      }
+    }
+    queue.push(request);
     const response = await parked;
+    const answerAck = {
+      type: 'user_question_answer_ack',
+      id: this.input.newId(),
+      turnId,
+      ts: this.input.now(),
+      requestId,
+      toolUseId,
+    } as const;
+    if (hostedRun) await this.publishHostedSettlementAck(queue, answerAck);
+    else queue.push(answerAck);
     return {
       answers: questions.map((question, index) => ({
         question: question.question,
@@ -1967,6 +1783,168 @@ export class ToolRuntime {
       })),
     };
   }
+
+  private async requestSandboxBoundary(
+    turnId: string,
+    toolUseId: string,
+    expansion: SandboxBoundaryExpansion,
+    justification: string,
+    queue: DurableSessionEventSink,
+  ): Promise<SandboxBoundarySettlement> {
+    if (!this.input.createSandboxBoundaryRequest || !this.input.settleSandboxBoundaryRequest) {
+      throw new Error('Sandbox boundary expansion is unavailable on this surface');
+    }
+    const normalized = await normalizeSandboxBoundaryExpansion(expansion, this.input.header.cwd);
+    if (typeof justification !== 'string' || justification.trim().length === 0) {
+      throw new Error('Sandbox boundary justification must not be empty');
+    }
+    const requestId = this.input.newId();
+    // Provenance travels with the row, not with the RuntimeEvent published
+    // below: the event append is fail-open, so a crash between the two would
+    // otherwise leave the request unattributable to the work it blocked.
+    const runId = this.input.getCurrentRunId?.();
+    const creation = this.input.createSandboxBoundaryRequest({
+      sessionId: this.input.sessionId,
+      requestId,
+      turnId,
+      ...(runId ? { runId } : {}),
+      expansion: normalized,
+      justification,
+    });
+    const parked = this.sandboxBoundaryRequests.park(turnId, requestId, {
+      toolUseId,
+      creation,
+    });
+    void parked.catch(() => undefined);
+    let request: SandboxBoundaryRequest;
+    try {
+      request = await creation;
+    } catch (error) {
+      this.sandboxBoundaryRequests.reject(
+        turnId,
+        requestId,
+        error instanceof Error ? error : new Error(String(error)),
+      );
+      throw error;
+    }
+    const requestEvent: SandboxBoundaryRequestEvent = {
+      type: 'sandbox_boundary_request',
+      id: this.input.newId(),
+      turnId,
+      ts: this.input.now(),
+      requestId,
+      toolUseId,
+      justification: request.justification,
+      expansion: request.expansion,
+    };
+    queue.push(requestEvent);
+    const settlement = await parked;
+    const decisionAck: SandboxBoundaryDecisionAckEvent = {
+      type: 'sandbox_boundary_decision_ack',
+      id: this.input.newId(),
+      turnId,
+      ts: this.input.now(),
+      requestId,
+      toolUseId,
+      decision: settlement.request.status === 'denied' ? 'deny' : 'allow',
+      status:
+        settlement.request.status === 'pending'
+          ? (() => {
+              throw new Error(`Sandbox boundary request ${requestId} is still pending`);
+            })()
+          : settlement.request.status,
+      revision: settlement.boundary.revision,
+    };
+    queue.push(decisionAck);
+    return settlement;
+  }
+
+  private interactionRun(turnId: string): HostedInteractionBridge | undefined {
+    return this.hostedInteractions.get(turnId);
+  }
+
+  private async publishHostedSettlementAck(
+    queue: DurableSessionEventSink,
+    event: SessionEvent,
+  ): Promise<void> {
+    try {
+      await queue.pushAndWaitUntilConsumed(event);
+    } catch (error) {
+      throw new RuntimeInteractionFailStopError(
+        `Could not durably acknowledge hosted ${event.type}`,
+        error,
+      );
+    }
+  }
+
+  private finishDeferredQuestionTurnClosure(turnId: string): void {
+    if (
+      !this.deferredQuestionTurnClosures.has(turnId) ||
+      this.userQuestions.pendingCount(turnId) !== 0
+    ) {
+      return;
+    }
+    this.deferredQuestionTurnClosures.delete(turnId);
+    this.userQuestions.endTurn(
+      turnId,
+      (requestId) =>
+        new RuntimeInteractionInvariantError(
+          `Hosted question ${requestId} escaped exact Run closure`,
+        ),
+    );
+  }
+
+  private createUserQuestionSettlement(
+    turnId: string,
+    requestId: string,
+  ): HostedUserQuestionSettlement {
+    return Object.freeze({
+      applyAnswer: async (answer: HostedUserQuestionAnswer): Promise<void> => {
+        if (Object.hasOwn(answer, 'requestId')) {
+          throw new RuntimeInteractionInvariantError(
+            `Question settlement ${requestId} received a routed answer`,
+          );
+        }
+        const pending = this.userQuestions
+          .entries(turnId)
+          .find(([candidateId]) => candidateId === requestId)?.[1];
+        if (
+          !pending ||
+          !this.settleUserQuestionAnswer(
+            turnId,
+            { requestId, answers: [...answer.answers] },
+            pending,
+          )
+        ) {
+          throw new RuntimeInteractionInvariantError(
+            `Question settlement did not take ${requestId} from turn ${turnId}`,
+          );
+        }
+      },
+      applyClosure: async (reason: RuntimeUserQuestionClosureReason): Promise<void> => {
+        if (!this.closeUserQuestion(turnId, requestId, reason)) {
+          throw new RuntimeInteractionInvariantError(
+            `Question closure did not take ${requestId} from turn ${turnId}`,
+          );
+        }
+      },
+    });
+  }
+}
+
+function isInteractionControlError(error: unknown): boolean {
+  return (
+    error instanceof RuntimeInteractionAdmissionRejectedError ||
+    error instanceof RuntimeInteractionClosedError ||
+    error instanceof RuntimeInteractionInvariantError ||
+    error instanceof RuntimeInteractionFailStopError
+  );
+}
+
+function interactionAuthorityError(message: string, error: unknown): Error {
+  return isInteractionControlError(error)
+    ? (error as Error)
+    : new RuntimeInteractionFailStopError(message, error);
 }
 
 /**
@@ -2063,6 +2041,20 @@ export function formatSyntheticToolErrorText(error: unknown): string {
   return `${redacted.slice(0, TOOL_ERROR_RESULT_MAX_CHARS - 1)}…`;
 }
 
+function sandboxBoundaryFailureSignal(
+  metadata: ReturnType<typeof serializeSandboxError>,
+): Extract<ToolResultContent, { kind: 'text' }>['sandboxFailure'] {
+  if (metadata?.reason !== 'sandbox_boundary_required' && metadata?.reason !== 'requires_bypass') {
+    return undefined;
+  }
+  return {
+    reason: metadata.reason,
+    ...(metadata.requiredExpansion
+      ? { requiredExpansion: metadata.requiredExpansion as SandboxBoundaryExpansion }
+      : {}),
+  };
+}
+
 function coerceResultContent(raw: unknown): ToolResultContent {
   if (typeof raw === 'string') return { kind: 'text', text: raw };
   if (raw && typeof raw === 'object') {
@@ -2131,7 +2123,6 @@ function coerceTerminalFailure(
               ...(error.sandboxType === 'macos-seatbelt' || error.sandboxType === 'linux'
                 ? { backend: error.sandboxType }
                 : {}),
-              recovery: 'require_escalated',
             },
           }
         : {}),
@@ -2153,14 +2144,18 @@ function buildTerminalFailureMessage(
 ): string {
   const parts = [`命令退出码 ${code}`];
   const view = (text: string) =>
-    truncateToolOutput(text, { maxLines: 40, maxBytes: 1500, direction: 'tail' }).content.trim();
+    truncateToolOutput(text, {
+      maxLines: 40,
+      maxBytes: 1500,
+      direction: 'tail',
+    }).content.trim();
   const stderrView = view(stderr);
   if (stderrView) parts.push(`--- stderr ---\n${stderrView}`);
   const stdoutView = view(stdout);
   if (stdoutView) parts.push(`--- stdout ---\n${stdoutView}`);
   if (sandboxDenied) {
     parts.push(
-      '该失败很可能来自 Maka sandbox。若完成用户当前请求确实需要在 sandbox 外执行，请使用完全相同的命令重新调用 Bash，并显式传入 sandbox_permissions: { mode: "require_escalated", justification: "具体原因" }。不要静默绕过 sandbox，也不要在更小范围的 additional permissions 足够时请求完全提权。',
+      '该失败很可能来自 Maka sandbox。请先尝试不扩大边界的替代方案；只有工具明确返回 sandbox_boundary_required 和具体 expansion 时，才能请求会话边界扩张。不要从命令文本猜测权限，也不要静默绕过 sandbox。',
     );
   }
   return parts.join('\n\n');
@@ -2168,11 +2163,21 @@ function buildTerminalFailureMessage(
 
 function hasSandboxDenial(
   content: ToolResultContent,
-): content is Extract<ToolResultContent, { kind: 'terminal' } | { kind: 'shell_run' }> {
-  return (
-    (content.kind === 'terminal' || content.kind === 'shell_run') &&
-    content.sandboxDenial?.likely === true
-  );
+): content is Extract<ToolResultContent, { kind: 'text' | 'terminal' | 'shell_run' }> {
+  return 'sandboxDenial' in content && content.sandboxDenial?.likely === true;
+}
+
+function sandboxDenialSignalFromError(error: unknown): SandboxDenialSignal | undefined {
+  const metadata = sandboxErrorMetadata(error);
+  if (!metadata) return undefined;
+  const backend =
+    metadata.backend === 'macos-seatbelt' || metadata.backend === 'linux'
+      ? metadata.backend
+      : undefined;
+  if (metadata.reason === 'sandbox_denial' || metadata.reason === 'sandbox_denied') {
+    return { likely: true, ...(backend ? { backend } : {}) };
+  }
+  return undefined;
 }
 
 function sandboxDenialKey(toolName: string, cwd: string, args: unknown): string {
@@ -2207,9 +2212,6 @@ function deriveToolResultStatus(
   }
   if (content.kind === 'rive_workflow' && content.ok === false) return 'error';
   if (content.kind === 'web_search_error') return 'error';
-  if (content.kind === 'office_document' && content.ok === false) {
-    return content.reason === 'officecli_aborted' ? 'aborted' : 'error';
-  }
   // Bash returns terminal facts instead of throwing for ordinary shell failure.
   // The explicit status is the shared classification point for isError,
   // telemetry, and loop-gate failure streaks.
@@ -2256,7 +2258,10 @@ function summarizeToolResultForTelemetry(
     };
   }
   if (content.kind === 'rive_workflow') {
-    return { kind: content.kind, status: content.state ?? (content.ok ? 'completed' : 'failed') };
+    return {
+      kind: content.kind,
+      status: content.state ?? (content.ok ? 'completed' : 'failed'),
+    };
   }
   return { kind: content.kind };
 }
@@ -2271,7 +2276,20 @@ function isAmbiguousComputerFailure(raw: unknown): boolean {
 }
 
 function durableAttemptKey(turnId: string, toolUseId: string): string {
-  return `${turnId}\0${toolUseId}`;
+  return JSON.stringify([turnId, toolUseId]);
+}
+
+function providerToolErrorMessage(output: unknown): string | undefined {
+  if (!output || typeof output !== 'object' || Array.isArray(output)) return undefined;
+  const record = output as Record<string, unknown>;
+  if (typeof record.error !== 'string' || record.error.length === 0) return undefined;
+  if (typeof record.modelText === 'string' && record.modelText.length > 0) {
+    return record.modelText;
+  }
+  if (typeof record.text === 'string' && record.text.length > 0) {
+    return record.text;
+  }
+  return record.error;
 }
 
 function summarizeArgs(toolName: string, args: unknown): string {
@@ -2296,34 +2314,6 @@ function describeToolIntent(tool: MakaTool, args: unknown): string | undefined {
   if (normalized.length === 0) return undefined;
   const capped = normalized.length <= 180 ? normalized : `${normalized.slice(0, 179)}…`;
   return `只读探索：${capped}`;
-}
-
-function isAdditionalPermissionPlanResult(value: unknown): value is AdditionalPermissionPlanResult {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const result = value as Record<string, unknown>;
-  if (result.kind === 'not_required') return true;
-  if (result.kind === 'request') {
-    return Boolean(result.proposal && typeof result.proposal === 'object');
-  }
-  return (
-    result.kind === 'block' &&
-    typeof result.reason === 'string' &&
-    typeof result.message === 'string'
-  );
-}
-
-function isSandboxEscalationPlanResult(value: unknown): value is SandboxEscalationPlanResult {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const result = value as Record<string, unknown>;
-  if (result.kind === 'not_required') return true;
-  if (result.kind === 'request') {
-    return Boolean(result.proposal && typeof result.proposal === 'object');
-  }
-  return (
-    result.kind === 'block' &&
-    typeof result.reason === 'string' &&
-    typeof result.message === 'string'
-  );
 }
 
 function byteLength(value: unknown): number {

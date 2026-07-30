@@ -14,7 +14,6 @@ import {
 const REPO_ROOT = resolve(import.meta.dirname, '../../../../..');
 
 export const PR2_TARGET_PRESENTATION_FILES = [
-  'apps/desktop/src/renderer/FirstRunChecklist.tsx',
   'apps/desktop/src/renderer/OnboardingHero.tsx',
   'apps/desktop/src/renderer/app-shell-chrome-actions.tsx',
   'apps/desktop/src/renderer/app-shell-chat-actions.ts',
@@ -23,7 +22,7 @@ export const PR2_TARGET_PRESENTATION_FILES = [
   'apps/desktop/src/renderer/app-shell-daily-review-actions.ts',
   'apps/desktop/src/renderer/app-shell-open-skill-action.ts',
   'apps/desktop/src/renderer/app-shell-project-actions.ts',
-  'apps/desktop/src/renderer/app-shell-quick-chat-actions.ts',
+  'apps/desktop/src/renderer/app-shell-session-start-actions.ts',
   'apps/desktop/src/renderer/app-shell-session-row-actions.ts',
   'apps/desktop/src/renderer/app-shell-session-settings-actions.ts',
   'apps/desktop/src/renderer/app-shell-skill-actions.ts',
@@ -35,7 +34,6 @@ export const PR2_TARGET_PRESENTATION_FILES = [
   'apps/desktop/src/renderer/keyboard-help.tsx',
   'apps/desktop/src/renderer/onboarding-hero-copy.ts',
   'apps/desktop/src/renderer/open-path.ts',
-  'apps/desktop/src/renderer/first-run-task-suggestions.ts',
   'apps/desktop/src/renderer/session-workspace-errors.ts',
   'apps/desktop/src/renderer/settings/SettingsModal.tsx',
   'apps/desktop/src/renderer/settings/about-settings-page.tsx',
@@ -62,7 +60,7 @@ export const PR2_PRESENTATION_FILES = [
   'apps/desktop/src/renderer/app-shell-daily-review-actions.ts',
   'apps/desktop/src/renderer/app-shell-open-skill-action.ts',
   'apps/desktop/src/renderer/app-shell-project-actions.ts',
-  'apps/desktop/src/renderer/app-shell-quick-chat-actions.ts',
+  'apps/desktop/src/renderer/app-shell-session-start-actions.ts',
   'apps/desktop/src/renderer/app-shell-session-row-actions.ts',
   'apps/desktop/src/renderer/app-shell-session-settings-actions.ts',
   'apps/desktop/src/renderer/app-shell-skill-actions.ts',
@@ -72,9 +70,7 @@ export const PR2_PRESENTATION_FILES = [
   'apps/desktop/src/renderer/connection-status.ts',
   'apps/desktop/src/renderer/error-boundary.tsx',
   'apps/desktop/src/renderer/keyboard-help.tsx',
-  'apps/desktop/src/renderer/FirstRunChecklist.tsx',
   'apps/desktop/src/renderer/OnboardingHero.tsx',
-  'apps/desktop/src/renderer/first-run-task-suggestions.ts',
   'apps/desktop/src/renderer/onboarding-hero-copy.ts',
   'apps/desktop/src/renderer/open-path.ts',
   'apps/desktop/src/renderer/session-workspace-errors.ts',

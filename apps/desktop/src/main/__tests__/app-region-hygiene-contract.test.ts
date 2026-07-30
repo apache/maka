@@ -33,35 +33,41 @@ import { readFile } from 'node:fs/promises';
 import { describe, it } from 'node:test';
 import { join } from 'node:path';
 import { readRendererContractCss } from './contract-css-helpers.js';
+import { readRendererTsxFiles } from './css-test-helpers.js';
 import { readMainProcessCombinedSource } from './main-process-contract-source-helpers.js';
 
-const TOKENS_PATH = join(process.cwd(), 'src', 'renderer', 'maka-tokens.css');
-const APP_SHELL_CHROME_ACTIONS_PATH = join(
-  process.cwd(),
-  'src',
-  'renderer',
-  'app-shell-chrome-actions.tsx',
-);
+/**
+ * The single element allowed to declare `-webkit-app-region: drag`.
+ *
+ * Chromium builds the OS draggable region by walking annotated elements in
+ * DOCUMENT ORDER, adding each `drag` rect and subtracting each `no-drag` rect.
+ * A `no-drag` control therefore only escapes a `drag` region that was declared
+ * BEFORE it. When drag regions were spread across containers, each one had to
+ * reserve space for its neighbours with a hand-summed margin ruler encoding
+ * "how many titlebar buttons exist right now" — and the sidebar's strip only
+ * ever reserved room for two, so the third button the rail renders while the
+ * sidebar is collapsed (新任务) sat under a live drag region and its clicks
+ * reached the OS as window drags instead of clicks.
+ *
+ * One titlebar row, plus `no-drag` on the clusters inside it, makes that class
+ * of bug unrepresentable: a control added to the row later carves itself out
+ * automatically, and content outside the row cannot overlap it at all.
+ */
+const DRAG_AUTHORITY_SELECTOR = '.maka-window-titlebar';
 
 /**
- * Selectors that, if they ever carry `-webkit-app-region: drag`,
- * would cover the full window and defeat the OS resize handler.
- * The test asserts none of them appear in a rule body containing
- * the drag declaration.
+ * There used to be a nine-case loop here asserting that `.appFrame`, `.app`,
+ * `.maka-shell-2col`, the four modal backdrops, `html` and `body` each do NOT
+ * declare `drag` — full-window containers whose drag region would swallow the OS
+ * resize handler (WAWQAQ `5b85fdb1`, gated by xuan `eea556cd` + kenji
+ * `0b94f7e9`).
+ *
+ * The "exactly one drag selector" test below subsumes all nine: it asserts the
+ * ONLY rule declaring `drag` has the selector `.maka-window-titlebar`, so any of
+ * them acquiring it fails there, by name, with the same diagnosis. Nine test
+ * cases restating one constraint is nine places to update for every future
+ * backdrop, and it would still miss the tenth.
  */
-const FORBIDDEN_DRAG_HOSTS = [
-  '.appFrame',
-  '.app',
-  '.maka-modal-backdrop',
-  '.settingsModalBackdrop',
-  '.maka-search-modal-backdrop',
-  '.permissionBackdrop',
-  '.maka-shell-2col',
-  // Generic html/body — if someone ever adds a global rule we
-  // want it flagged immediately.
-  'html',
-  'body',
-];
 
 describe('app-region hygiene contract (PR-SIDEBAR-IA-0 Phase 3 P0 fixup v5)', () => {
   it('BrowserWindow declares `resizable: true` explicitly (defensive against future silent disable)', async () => {
@@ -96,95 +102,147 @@ describe('app-region hygiene contract (PR-SIDEBAR-IA-0 Phase 3 P0 fixup v5)', ()
     );
   });
 
-  for (const host of FORBIDDEN_DRAG_HOSTS) {
-    it(`'${host}' selector does NOT carry -webkit-app-region: drag (would steal OS resize hit area)`, async () => {
-      const stylesSources = [
-        ['renderer CSS', await readRendererContractCss()],
-        [TOKENS_PATH, await readFile(TOKENS_PATH, 'utf8')],
-      ] as const;
-      for (const [sourceLabel, src] of stylesSources) {
-        const offender = findRuleWithBoth(src, host, '-webkit-app-region: drag');
-        assert.equal(
-          offender,
-          null,
-          `selector '${host}' must NOT declare \`-webkit-app-region: drag\` in ${sourceLabel} — full-window containers steal the OS resize hit area (WAWQAQ ${'`5b85fdb1`'}, xuan ${'`eea556cd`'}). Found rule:\n${offender}`,
-        );
-      }
-    });
-  }
+  it(`declares -webkit-app-region: drag on exactly one selector (${DRAG_AUTHORITY_SELECTOR})`, async () => {
+    // One source: `readRendererContractCss()` expands `styles.css`'s @import
+    // graph, which includes `maka-tokens.css`. Reading the tokens file again on
+    // top of that counted every declaration in it twice — harmless while no token
+    // file declares an app-region, and a spurious "found 2 drag rules" the moment
+    // one legitimately did.
+    const css = await readRendererContractCss();
+    const selectors: string[] = [];
+    for (const rule of findRulesWithDeclaration(css, 'drag')) {
+      selectors.push(rule.selector);
+      assert.equal(
+        rule.selector.trim(),
+        DRAG_AUTHORITY_SELECTOR,
+        `\`-webkit-app-region: drag\` on selector '${rule.selector}' adds a second window-drag authority. Drag belongs to ${DRAG_AUTHORITY_SELECTOR} alone; a container that merely sits in the titlebar row should declare nothing, and a control inside it should declare \`no-drag\`. If '${rule.selector}' is a full-window container (\`.appFrame\`, \`.app\`, a modal backdrop, \`html\`/\`body\`), it also swallows the OS resize hit area — the P0 in WAWQAQ ${'`5b85fdb1`'}.`,
+      );
+    }
+    assert.equal(
+      selectors.length,
+      1,
+      `expected exactly one \`-webkit-app-region: drag\` rule (${DRAG_AUTHORITY_SELECTOR}), found ${selectors.length}: ${selectors.join(', ')}`,
+    );
+  });
 
-  it('every -webkit-app-region: drag rule lives inside a narrow header/tab/nav selector', async () => {
-    // Positive form: the drag declarations we DO have must each
-    // sit on a class whose name indicates it's a deliberately
-    // narrow drag strip (header / tab-bar / nav-window /
-    // drag-strip). Anything else flags as "drag declared on an
-    // unexpected scope" so reviewers see it before merge.
-    const allowedNamePatterns = [
-      /-header($|[\s,{])/,
-      /-tab-bar($|[\s,{])/,
-      /-drag-strip($|[\s,{])/,
-      /-nav-window($|[\s,{])/,
-      /-toolbar($|[\s,{])/,
-    ];
-    const stylesSources = [
-      ['renderer CSS', await readRendererContractCss()],
-      [TOKENS_PATH, await readFile(TOKENS_PATH, 'utf8')],
-    ] as const;
-    for (const [sourceLabel, src] of stylesSources) {
-      const dragRules = findRulesWithDeclaration(src, '-webkit-app-region: drag');
-      for (const rule of dragRules) {
-        const selector = rule.selector;
-        const ok = allowedNamePatterns.some((pattern) => pattern.test(selector));
-        assert.ok(
-          ok,
-          `\`-webkit-app-region: drag\` on selector '${selector}' (in ${sourceLabel}) is outside the allowlisted narrow strips. Allowed naming: *-header / *-tab-bar / *-drag-strip / *-nav-window / *-toolbar. Add the class to the allowlist only after confirming it sits in a narrow strip, NOT a full-window container.`,
-        );
+  it('keeps the drag authority out of component source, where the CSS gate cannot see it', async () => {
+    // The check above reads stylesheets. An inline `style={{ WebkitAppRegion:
+    // 'drag' }}` or a Tailwind arbitrary property would declare a second drag
+    // authority that never appears in any .css file — same P0, invisible to the
+    // gate. `no-drag` in component source is fine (it only ever subtracts).
+    const offenders: string[] = [];
+    for (const { relPath, source } of await readRendererTsxFiles()) {
+      // Declarations, not prose: `app-shell.tsx` documents the titlebar row by
+      // naming the property and its value, which is not a declaration.
+      const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+      for (const match of code.matchAll(
+        /(?:WebkitAppRegion\s*:\s*|-webkit-app-region\s*:\s*|app-region-\[)['"]?(no-drag|drag)/g,
+      )) {
+        if (match[1] === 'drag') offenders.push(`${relPath}: ${match[0]}`);
       }
+    }
+    assert.deepEqual(
+      offenders,
+      [],
+      `window-drag must be declared in CSS, on ${DRAG_AUTHORITY_SELECTOR} alone, so the single-authority gate above can see it: ${offenders.join(', ')}`,
+    );
+  });
+
+  // Two invariants are deliberately NOT gated here, because their owner is the
+  // rendered tree rather than the stylesheet text:
+  //   - the titlebar must be the shell's first child (document order), and
+  //   - the drag rect must stop at the titlebar row, covering no content below.
+  // `e2e/window-titlebar.spec.ts` measures both against the live window, along
+  // with the carve-out of every interactive element that overlaps the titlebar.
+  // A source-text approximation of the ordering rule was tried first and
+  // rejected: matching a fixed set of JSX needles by string position passes for
+  // any control it does not know about, which is exactly the failure mode (an
+  // unlisted titlebar control) it would need to catch.
+
+  it('carves the titlebar action clusters out of the drag row', async () => {
+    // Container-level, not per-button: each cluster's rect covers its children,
+    // so one declaration per cluster is what the OS needs. The buttons used to
+    // repeat it individually — plus a `.maka-titlebar-action *` rule for their
+    // icons — which added nothing and made a correct simplification look like a
+    // contract violation.
+    const css = await readRendererContractCss();
+    for (const cluster of ['.maka-shell-topbar-rail', '.maka-workspace-top-actions']) {
+      assert.ok(
+        findRuleWithBoth(css, cluster, 'no-drag'),
+        `${cluster} must declare \`-webkit-app-region: no-drag\`; it sits inside the titlebar's drag row, so without it every button in it reaches the OS as a window drag`,
+      );
     }
   });
 
-  it('topbar chrome UiButtons and their icon subtrees carve out no-drag hit regions', async () => {
-    const topbarButtonClasses = extractStaticUiButtonClassNames(
-      await readFile(APP_SHELL_CHROME_ACTIONS_PATH, 'utf8'),
-    );
-    assert.ok(
-      topbarButtonClasses.length > 0,
-      'app-shell-chrome-actions.tsx must expose topbar UiButton class names for app-region hygiene checks',
+  it('retires the per-container drag surfaces the titlebar row replaced', async () => {
+    const css = await readRendererContractCss();
+    // Selector-level, not text-level: the CSS comments explaining why these were
+    // retired are allowed to name them.
+    // Elements that existed ONLY to donate a drag region, and so should not
+    // exist at all now.
+    const retiredElements = ['.maka-sidebar-drag-strip', '.maka-titlebar-drag-layer'];
+    const revived = [...iterateRules(css)]
+      .filter((rule) => retiredElements.some((selector) => selectorMatches(rule.selector, selector)))
+      .map((rule) => rule.selector);
+    assert.deepEqual(
+      revived,
+      [],
+      'these were empty elements whose only job was to declare a drag region; the titlebar row replaced them and they must not come back',
     );
 
-    const stylesSources = [
-      ['renderer CSS', await readRendererContractCss()],
-      [TOKENS_PATH, await readFile(TOKENS_PATH, 'utf8')],
-    ] as const;
-    const selectors = new Set<string>();
-    for (const [, src] of stylesSources) {
-      for (const rule of findRulesWithDeclaration(src, '-webkit-app-region: no-drag')) {
-        for (const selector of rule.selector.split(',')) {
-          selectors.add(selector.trim());
-        }
-      }
-    }
-
-    for (const className of topbarButtonClasses) {
-      for (const selector of [`.${className}`, `.${className} *`]) {
-        assert.ok(
-          selectors.has(selector),
-          `${selector} must declare \`-webkit-app-region: no-drag\` so clicks on topbar icons are not treated as titlebar drags`,
-        );
-      }
+    // Selectors that legitimately survive but must no longer carry an
+    // app-region. `.maka-titlebar-action` still opts its buttons out of text
+    // selection, for instance — it just has no reason to repeat the carve-out
+    // its cluster already provides.
+    for (const [selector, why] of [
+      [
+        '.maka-chat-header',
+        'it is a content-row status strip now, and giving it a drag region again would reintroduce the hand-summed margin rulers that kept the titlebar buttons clickable',
+      ],
+      [
+        '.maka-titlebar-action',
+        'its cluster (`.maka-shell-topbar-rail` / `.maka-workspace-top-actions`) already carves out a rect covering it, so a per-button declaration only duplicates that',
+      ],
+      [
+        '.maka-resize-handle',
+        'it spans the content row only; it needed a carve-out when it ran the full window height and overlapped the drag band',
+      ],
+    ] as const) {
+      assert.equal(
+        findRuleWithBoth(css, selector, '(?:no-)?drag'),
+        null,
+        `${selector} must not declare an app-region: ${why}`,
+      );
     }
   });
 });
 
 /**
+ * Match `-webkit-app-region: <valuePattern>` as a DECLARATION, not as a
+ * substring.
+ *
+ * A plain `body.includes('-webkit-app-region: drag')` is bypassed by any
+ * formatting the CSS grammar allows but the string does not — `-webkit-app-region:drag`,
+ * a newline before the value, extra spaces. That is a silent hole in a gate whose
+ * entire job is "there is exactly one drag authority", so it has to match the
+ * property/value pair with the whitespace the grammar permits. `no-drag` is a
+ * distinct value, so the `drag` pattern anchors on a value boundary to avoid
+ * matching it.
+ */
+function appRegionPattern(valuePattern: string): RegExp {
+  return new RegExp(`(?:^|[;{])\\s*-webkit-app-region\\s*:\\s*${valuePattern}\\s*(?:;|$)`);
+}
+
+/**
  * Walk every top-level CSS rule and return the rule that BOTH
  * (a) has a selector containing `hostSelector` as a token, AND
- * (b) declares `declaration` in its body.
+ * (b) declares `-webkit-app-region` with a value matching `valuePattern`.
  * Returns `null` if no such rule exists.
  */
-function findRuleWithBoth(css: string, hostSelector: string, declaration: string): string | null {
+function findRuleWithBoth(css: string, hostSelector: string, valuePattern: string): string | null {
+  const declaration = appRegionPattern(valuePattern);
   for (const rule of iterateRules(css)) {
-    if (!rule.body.includes(declaration)) continue;
+    if (!declaration.test(rule.body)) continue;
     if (selectorMatches(rule.selector, hostSelector)) {
       return `${rule.selector} { ${rule.body.trim()} }`;
     }
@@ -194,40 +252,16 @@ function findRuleWithBoth(css: string, hostSelector: string, declaration: string
 
 function findRulesWithDeclaration(
   css: string,
-  declaration: string,
+  valuePattern: string,
 ): Array<{ selector: string; body: string }> {
+  const declaration = appRegionPattern(valuePattern);
   const out: Array<{ selector: string; body: string }> = [];
   for (const rule of iterateRules(css)) {
-    if (rule.body.includes(declaration)) {
+    if (declaration.test(rule.body)) {
       out.push(rule);
     }
   }
   return out;
-}
-
-function extractStaticUiButtonClassNames(src: string): string[] {
-  const classes = new Set<string>();
-  // A topbar UiButton appears either as a direct element
-  // (<UiButton>…</UiButton>) or, after the Tooltip migration, as the
-  // render target of a TooltipTrigger
-  // (<TooltipTrigger render={<UiButton …/>} className="…">…</TooltipTrigger>).
-  const uiButtonBlocks = [
-    ...(src.match(/<UiButton\b[\s\S]*?<\/UiButton>/g) ?? []),
-    ...(src.match(/<TooltipTrigger\b[\s\S]*?render=\{<UiButton\b[\s\S]*?<\/TooltipTrigger>/g) ?? []),
-  ];
-  for (const block of uiButtonBlocks) {
-    const match = block.match(/\bclassName="([^"]+)"/);
-    assert.ok(
-      match,
-      'Each app-shell chrome UiButton must use a static className so app-region hygiene can be contract-checked',
-    );
-    for (const className of match[1]!.split(/\s+/)) {
-      if (className.length > 0) {
-        classes.add(className);
-      }
-    }
-  }
-  return [...classes].sort();
 }
 
 /**

@@ -1,9 +1,9 @@
 import { test, expect } from './fixtures';
 
 test('chat input preserves an IME composition when a file paste arrives', async ({ window: page }) => {
-  const quickChat = page.locator('.maka-onboarding-quickchat-input');
-  await quickChat.fill('ime-paste-test');
-  await quickChat.press('Enter');
+  const firstSend = page.locator('.maka-composer-textarea');
+  await firstSend.fill('ime-paste-test');
+  await firstSend.press('Enter');
   await expect(page.getByText(/Fake backend received: ime-paste-test/)).toBeVisible();
 
   const composer = page.locator('.maka-composer');
@@ -38,10 +38,11 @@ test('chat input preserves an IME composition when a file paste arrives', async 
  * DataTransfer + dispatchEvent because the composer has no <input type=file>.
  */
 test('dropping a file onto the composer delivers it to the backend on send', async ({ window: page }) => {
-  // Enter chat view by sending a first message from the quick-chat entry
-  const quickChat = page.locator('.maka-onboarding-quickchat-input');
-  await quickChat.fill('attach-test');
-  await quickChat.press('Enter');
+  // Enter chat view by sending a first message from the composer, which
+  // creates the session on send.
+  const firstSend = page.locator('.maka-composer-textarea');
+  await firstSend.fill('attach-test');
+  await firstSend.press('Enter');
   await expect(page.getByText(/Fake backend received: attach-test/)).toBeVisible();
 
   // Drop a file onto the main composer

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type {
   LlmConnection,
+  ProviderType,
   SettingsSection,
   ThemePalette,
   ThemePreference,
@@ -41,6 +42,7 @@ export function SettingsModal(props: {
   requestedSection?: SettingsSection;
   openProviderCatalog?: boolean;
   initialConnectionSlug?: string;
+  initialCreateProviderType?: ProviderType;
   /**
    * PR-DAILY-REVIEW-MVP-0 follow-up: navigate to the sidebar's
    * Daily Review module. Optional so the settings page degrades
@@ -98,6 +100,7 @@ export function SettingsModal(props: {
         requestedSection={props.requestedSection}
         openProviderCatalog={props.openProviderCatalog}
         initialConnectionSlug={props.initialConnectionSlug}
+        initialCreateProviderType={props.initialCreateProviderType}
         initialFocusRef={activeNavRef}
         onOpenDailyReview={props.onOpenDailyReview}
         onOpenSession={props.onOpenSession}

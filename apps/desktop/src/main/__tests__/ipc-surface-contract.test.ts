@@ -33,6 +33,27 @@ describe('IPC surface contract', () => {
     assert.deepEqual(staleMainHandlers, [], 'main process must not expose stale invoke handlers outside the preload bridge');
   });
 
+  it('exposes the bounded graph read model without renderer execution authority', async () => {
+    const [main, preload, bridge] = await Promise.all([
+      readMainProcessCombinedSource(),
+      readRepo('apps/desktop/src/preload/preload.ts'),
+      readRepo('apps/desktop/src/preload/bridge-contract.d.ts'),
+    ]);
+    for (const channel of [
+      'graphs:getSnapshot',
+      'graphs:inspectOperator',
+      'graphs:stop',
+    ]) {
+      assert.match(main, new RegExp(`ipcMain\\.handle\\(\\s*['"]${channel}['"]`));
+      assert.match(preload, new RegExp(`ipcRenderer\\.invoke\\(\\s*['"]${channel}['"]`));
+    }
+    assert.match(main, /coordinator\.subscribeAll/);
+    assert.match(preload, /payload\.rootSessionId === rootSessionId/);
+    assert.match(bridge, /AgentGraphClientSnapshot/);
+    assert.match(bridge, /AgentGraphOperatorInspection/);
+    assert.doesNotMatch(bridge, /AgentGraphScheduleControlStore|RuntimeEventStore/);
+  });
+
   it('exposes memory lifecycle IPC without renderer-forged metadata', async () => {
     const [main, preload] = await Promise.all([
       readMainProcessCombinedSource(),
@@ -69,9 +90,8 @@ describe('IPC surface contract', () => {
     assert.match(main, /new LocalMemoryService\([\s\S]*getPrivacyContext: getWorkspacePrivacyContext/);
     assert.doesNotMatch(main, /defaultWorkspacePrivacyContext/);
 
-    // The ai-sdk backend wiring moved into session-stream.ts (arch R5); these two
-    // pins now target the combined main-process source instead of main.ts itself.
-    assert.match(combinedMainProcess, /const memoryPromptSnapshot = await systemPromptService\.buildLocalMemoryPromptFragment\(\)/);
+    // The ai-sdk backend wiring lives in session-stream.ts and its shared tool
+    // surface resolver; these pins target the combined main-process source.
     assert.match(
       combinedMainProcess,
       /systemPrompt: async \(\{ cwd, emitSkillCatalogTrace \}\) => \{/,
@@ -81,7 +101,18 @@ describe('IPC surface contract', () => {
     assert.match(combinedMainProcess, /childInstruction[\s\S]*memoryFragment: null, includePersonalization: false/);
     assert.match(combinedMainProcess, /子代理必须继承当前会话的权限、隐私、工作区和技能约束/);
     assert.match(combinedMainProcess, /子代理不会隐式继承父会话的本地记忆或个性化上下文/);
-    assert.match(combinedMainProcess, /consumePendingPromptUpdates\(\)/);
     assert.match(combinedMainProcess, /<memory-update>/);
+    assert.match(
+      combinedMainProcess,
+      /const unscopedCandidateTools = input\.tools\s+\? \[\.\.\.input\.tools\]\s+: deps\.isComputerUseRealModelE2e/,
+    );
+    assert.match(
+      combinedMainProcess,
+      /const candidateTools =\s+!input\.tools && isDeepResearchSession\(input\.header\.labels\)\s+\? unscopedCandidateTools\.filter\(isDeepResearchToolAllowed\)\s+: unscopedCandidateTools/,
+    );
+    assert.match(
+      combinedMainProcess,
+      /const planControlTools = input\.tools\s+\? \[\]\s+: collaborationMode === 'plan'/,
+    );
   });
 });

@@ -7,7 +7,12 @@ import { test, expect } from './fixtures';
  * seeded 'e2e' connection clears onboarding so the composer is usable.
  */
 test('send a message and see the fake backend stream a reply', async ({ window: page }) => {
-  const composer = page.locator('.maka-onboarding-quickchat-input');
+  const composer = page.locator('.maka-composer-textarea');
+  // #1433: the deleted first-run panel had its own input, and the spec that
+  // covered the handoff between the two asserted this accessible name. With
+  // one composer left, the name is what a screen-reader user has to find the
+  // send target by — assert it on the path that exercises it.
+  await expect(composer).toHaveAttribute('aria-label', '消息输入框');
   await composer.fill('hello e2e');
   await composer.press('Enter');
 

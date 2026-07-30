@@ -1,16 +1,10 @@
 import { strict as assert } from 'node:assert';
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { deriveCapabilityAuditReport } from '@maka/core';
 import { CapabilityAuditStrip, LocaleProvider } from '@maka/ui';
 import { readRendererContractCss } from './contract-css-helpers.js';
-
-const repoRoot = process.cwd().endsWith('apps/desktop')
-  ? join(process.cwd(), '..', '..')
-  : process.cwd();
 
 describe('capability audit visible system contract', () => {
   it('renders sources, skills, and automations status without widening skill permissions', () => {
@@ -82,26 +76,6 @@ describe('capability audit visible system contract', () => {
 
     assert.equal(report.skills[0].permissionMode, 'ask');
     assert.notEqual(report.skills[0].permissionMode, 'execute');
-  });
-
-  it('derives capability audit reports at the Skills and Automations page boundaries', async () => {
-    const components = await readFile(join(repoRoot, 'packages', 'ui', 'src', 'module-pages.tsx'), 'utf8');
-
-    assert.match(
-      components,
-      /function SkillsPage[\s\S]*deriveCapabilityAuditReport\(\{[\s\S]*skills: props\.skills \?\? \[\],[\s\S]*planReminders: props\.planReminders \?\? \[\]/,
-      'SkillsPage must derive its report from the same skills and plan-reminder snapshots',
-    );
-    assert.match(
-      components,
-      /<SkillsModuleMain \{\.\.\.props\} auditReport=\{auditReport\}/,
-      'Skills module must receive the page report',
-    );
-    assert.match(
-      components,
-      /<PlanReminderPanel \{\.\.\.props\} reminders=\{props\.reminders \?\? \[\]\} auditReport=\{auditReport\}/,
-      'Automations module must receive the page report',
-    );
   });
 
   it('keeps the exception-only strip free of the retired metrics band CSS', async () => {

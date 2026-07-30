@@ -2,6 +2,9 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { Markdown, MakaUriContext } from '../src/markdown.js';
 import { Bubble } from '../src/primitives/chat.js';
 
+// Fidelity convention (#1433): every story below names the real app path
+// that reaches it. See apps/desktop/stories/FIDELITY.md.
+
 const meta = {
   title: 'Product/Markdown',
   parameters: {
@@ -42,13 +45,12 @@ const noop = () => undefined;
 
 const tsBlock = code('ts', [
   'type SessionGroup = {',
-  '  id: SessionStatus;',
+  '  id: "pinned" | "recent";',
   '  label: string;',
   '  sessions: SessionSummary[];',
-  '  collapsible: boolean;',
   '};',
   '',
-  'export function deriveSessionStatusGroups(',
+  'export function groupConversations(',
   '  sessions: readonly SessionSummary[],',
   '): SessionGroup[] {',
   '  return [];',
@@ -67,6 +69,8 @@ const jsonBlock = code('json', [
 
 const plainBlock = code('', 'plain or unknown\nindented sample');
 
+// Real path: chat → an assistant answer that mixes headings, emphasis, a list, a quote
+// and a table — the ordinary shape of a long reply.
 export const RichAssistantAnswer: Story = {
   render: () => (
     <ProseFrame>
@@ -75,24 +79,24 @@ export const RichAssistantAnswer: Story = {
           text={[
             '## 改动思路',
             '',
-            '这次把会话列表的状态分组收敛到一处派生，侧栏只负责渲染。好处是**同一段排序逻辑**在测试里可以直接喂入数据，不用驱动整个渲染器。',
+            '这次把会话列表收敛成置顶和最近两段，状态只保留在行图标上。好处是**所有会话都遵循同一条时间排序规则**，不会因为生命周期变化突然跳到别的分组。',
             '',
             '主要做了三件事：',
             '',
-            '1. 新增 `deriveSessionStatusGroups`，输入是会话快照，输出是带分组标签的结构；',
-            '2. 侧栏改为消费这个结构，不再自己维护 `running` / `waiting` 的顺序；',
-            '3. 补了边界用例，包括已归档和已中止的会话。',
+            '1. 置顶会话固定在最上方；',
+            '2. 其余会话按最近活动时间排序；',
+            '3. 运行中、等待和阻塞等状态只显示为低干扰行图标。',
             '',
-            '> 注意：置顶会话仍单独浮顶，沿用 PR48 的行为，没有改动它。',
+            '> 注意：按项目视图仍然保留项目折叠，扁平化只作用于按时间视图。',
             '',
-            '| 状态 | 含义 | 是否默认展开 |',
+            '| 行状态 | 视觉标识 | 是否改变分组 |',
             '| --- | --- | --- |',
-            '| running | 工具链在跑 | 是 |',
-            '| waiting_for_user | 等权限 | 是 |',
-            '| blocked | 已阻塞 | 是 |',
-            '| archived | 归档 | 否 |',
+            '| running | 旋转图标 | 否 |',
+            '| waiting_for_user | 等待图标 | 否 |',
+            '| blocked | 警示图标 | 否 |',
+            '| active | 无图标 | 否 |',
             '',
-            '如果后续要加新状态，先在 `SessionStatus` 里登记，再让派生函数返回对应分组即可。',
+            '如果后续要加新状态，只需补充对应的行图标，不再扩张侧栏信息架构。',
           ].join('\n')}
         />
       </Bubble>
@@ -100,6 +104,8 @@ export const RichAssistantAnswer: Story = {
   ),
 };
 
+// Real path: chat → an assistant answer containing fenced code in several languages,
+// plus one unlabelled block.
 export const CodeBlockVariety: Story = {
   render: () => (
     <ProseFrame>
@@ -124,6 +130,7 @@ export const CodeBlockVariety: Story = {
   ),
 };
 
+// Real path: chat → an assistant answer built mostly from nested lists and block quotes.
 export const ListsAndQuote: Story = {
   render: () => (
     <ProseFrame>
@@ -132,13 +139,13 @@ export const ListsAndQuote: Story = {
           text={[
             '可以按下面顺序处理：',
             '',
-            '- 先确认 `SessionStatus` 的取值范围',
-            '  - 已归档和已中止要单独分组',
+            '- 先确认会话排序的权威时间',
             '  - 置顶的浮在最上面',
+            '  - 其余会话统一按最近活动排序',
             '- 再调整侧栏渲染',
             '- 最后补回归测试',
             '',
-            '1. 读 `session-status-grouping.ts`',
+            '1. 读 `session-history-list.tsx`',
             '2. 改 `session-list-panel.tsx`',
             '3. 跑 `npm run test`',
             '',
@@ -150,6 +157,9 @@ export const ListsAndQuote: Story = {
   ),
 };
 
+// Real path: chat → an assistant answer containing links. Only ChatView installs
+// MakaUriContext (app-shell.tsx), so this is where maka:// links navigate and unsafe
+// ones render as 链接无效.
 export const LinkRouting: Story = {
   render: () => (
     <ProseFrame>
@@ -182,6 +192,8 @@ export const LinkRouting: Story = {
 // Tables shrink-wrap to content and only scroll when wider than the prose
 // measure — this story pins the over-wide branch (frameless horizontal
 // scroller) next to the narrow tables in the stories above.
+// Real path: chat → an assistant answer whose table is wider than the prose measure, so
+// it becomes a horizontal scroller.
 export const WideTable: Story = {
   render: () => (
     <ProseFrame>
@@ -203,6 +215,8 @@ export const WideTable: Story = {
   ),
 };
 
+// Real path: chat → a long assistant answer, pinned at the 680px prose measure to check
+// vertical rhythm across many blocks.
 export const LongFormArticle: Story = {
   render: () => (
     <ProseFrame width={680}>

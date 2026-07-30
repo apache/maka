@@ -42,7 +42,7 @@ _HARBOR_DIR = Path(__file__).resolve().parent.parent
 if str(_HARBOR_DIR) not in sys.path:
     sys.path.insert(0, str(_HARBOR_DIR))
 
-_ADAPTER_MODULES = ("harness_compat", "maka_agent", "kimi_code_agent")
+_ADAPTER_MODULES = ("harness_compat", "maka_agent", "kimi_code_agent", "codex_agent")
 
 # Sentinel returned by tests that cannot run under this interpreter; the
 # __main__ runner counts these as skips, not passes. pytest treats the return
@@ -108,6 +108,7 @@ def _fresh_adapters():
     return (
         importlib.import_module("maka_agent"),
         importlib.import_module("kimi_code_agent"),
+        importlib.import_module("codex_agent"),
     )
 
 
@@ -157,14 +158,18 @@ def _restore_modules(saved_pier) -> None:
 def test_pier_tree_selected_and_agent_info_is_pier_type():
     if not _pier_gate():
         return SKIPPED
-    maka_mod, kimi_mod = _fresh_adapters()
-    for cls in (maka_mod.MakaAgent, kimi_mod.MakaKimiCodeAgent):
+    maka_mod, kimi_mod, codex_mod = _fresh_adapters()
+    for cls in (maka_mod.MakaAgent, kimi_mod.MakaKimiCodeAgent, codex_mod.MakaCodexAgent):
         assert issubclass(cls, PierBaseInstalledAgent), cls.__mro__
         agent = cls(logs_dir=Path("/tmp"), model_name="k3")
         # The DeepSWE pilot failed pydantic validation because agent_info was a
         # harbor-tree AgentInfo; Pier's TrialResult only accepts its own type.
         info = agent.to_agent_info()
         assert isinstance(info, PierAgentInfo), type(info)
+        # Every adapter pins its own toolchain (mounted or host-side); Pier's
+        # inherited install specs (e.g. Codex's npm/nvm network install) must
+        # never run, or an offline task would fail its build and the pinned
+        # build under comparison would drift.
         assert agent.install_spec() is None
 
 
@@ -172,7 +177,7 @@ def test_pier_tree_selected_and_agent_info_is_pier_type():
 def test_maka_agent_network_policy_under_pier():
     if not _pier_gate():
         return SKIPPED
-    maka_mod, _ = _fresh_adapters()
+    maka_mod, _, _ = _fresh_adapters()
 
     # Host-side LLM mode: model calls happen on the host, container is offline.
     host_side = maka_mod.MakaAgent(
@@ -188,13 +193,34 @@ def test_maka_agent_network_policy_under_pier():
     fake = maka_mod.MakaAgent(logs_dir=Path("/tmp"), backend="fake")
     assert fake.network_allowlist().domains == []
 
-    # task-run mode always runs the model on the host and only bridges tool
-    # commands into the container, so the empty allowlist is correct even
-    # without any MAKA_HOST_* configuration.
+    # Pier task-run mode runs Maka in the task container. It may reach only the
+    # host credential proxy, never the upstream provider directly. Pier loads
+    # its secret --env-file into os.environ; only --ae values reach extra_env.
+    os.environ["MAKA_PROVIDER_PROXY_URL"] = "https://host.docker.internal"
+    os.environ["MAKA_PROVIDER_PROXY_TOKEN"] = "ephemeral-token"
     task_run = maka_mod.MakaAgent(
+        logs_dir=Path("/tmp"),
+        extra_env={"MAKA_HARBOR_MODE": "task-run"},
+    )
+    assert task_run.network_allowlist().domains == ["host.docker.internal"]
+    del os.environ["MAKA_PROVIDER_PROXY_URL"]
+    del os.environ["MAKA_PROVIDER_PROXY_TOKEN"]
+
+    fake_task_run = maka_mod.MakaAgent(
+        logs_dir=Path("/tmp"),
+        backend="fake",
+        extra_env={"MAKA_HARBOR_MODE": "task-run"},
+    )
+    assert fake_task_run.network_allowlist().domains == []
+
+    missing_task_run_proxy = maka_mod.MakaAgent(
         logs_dir=Path("/tmp"), extra_env={"MAKA_HARBOR_MODE": "task-run"}
     )
-    assert task_run.network_allowlist().domains == []
+    _raises(
+        missing_task_run_proxy.network_allowlist,
+        ValueError,
+        "host provider proxy",
+    )
 
     # A cell-mode ai-sdk run without host-side provider config would need
     # in-container egress the empty allowlist forbids; fail at environment
@@ -213,7 +239,7 @@ def test_maka_agent_network_policy_under_pier():
 def test_kimi_agent_network_shape_under_pier():
     if not _pier_gate():
         return SKIPPED
-    _, kimi_mod = _fresh_adapters()
+    _, kimi_mod, _ = _fresh_adapters()
 
     # Portless HTTPS endpoint (default 443): allowlisted without any warning.
     configured = kimi_mod.MakaKimiCodeAgent(
@@ -262,12 +288,55 @@ def test_kimi_agent_network_shape_under_pier():
 
 
 @_isolated_maka_env
+def test_codex_agent_network_shape_under_pier():
+    if not _pier_gate():
+        return SKIPPED
+    _, _, codex_mod = _fresh_adapters()
+
+    # The container runs the pinned Codex CLI against the maka-http provider
+    # config pointed at the host proxy; that proxy host is the single egress
+    # grant. Pier's inherited allowlist would fall back to api.openai.com,
+    # which this adapter never dials.
+    configured = codex_mod.MakaCodexAgent(
+        logs_dir=Path("/tmp"),
+        extra_env={"MAKA_PROVIDER_PROXY_URL": "http://host.docker.internal:443"},
+    )
+    stderr = io.StringIO()
+    with contextlib.redirect_stderr(stderr):
+        allow = configured.network_allowlist()
+    assert isinstance(allow, NetworkAllowlist)
+    assert allow.domains == ["host.docker.internal"]
+    assert stderr.getvalue() == ""
+
+    # Squid-unreachable port: warn on stderr, still allowlist the host (same
+    # shared contract as the Kimi adapter).
+    proxied = codex_mod.MakaCodexAgent(
+        logs_dir=Path("/tmp"),
+        extra_env={"MAKA_PROVIDER_PROXY_URL": "https://proxy.internal:8443/v1"},
+    )
+    stderr = io.StringIO()
+    with contextlib.redirect_stderr(stderr):
+        proxied_allow = proxied.network_allowlist()
+    assert proxied_allow.domains == ["proxy.internal"]
+    assert "ports 80 and 443" in stderr.getvalue(), stderr.getvalue()
+
+    # No fallback domain: a missing proxy URL fails at allowlist time instead
+    # of granting api.openai.com egress the trial would never use.
+    unset = codex_mod.MakaCodexAgent(logs_dir=Path("/tmp"))
+    _raises(
+        unset.network_allowlist,
+        ValueError,
+        "Codex requires the host provider proxy",
+    )
+
+
+@_isolated_maka_env
 def test_kimi_runtime_env_forwards_ipv6_proxy_url():
     # Runs under BOTH trees (no pier gate): _runtime_env keeps main's plain-
     # Harbor contract and forwards the proxy URL opaquely, IPv6 included; the
     # IPv6 rejection is a Pier NetworkAllowlist constraint and lives only in
     # the network_allowlist() path.
-    _, kimi_mod = _fresh_adapters()
+    _, kimi_mod, _ = _fresh_adapters()
     agent = kimi_mod.MakaKimiCodeAgent(
         logs_dir=Path("/tmp"),
         extra_env={
@@ -277,6 +346,60 @@ def test_kimi_runtime_env_forwards_ipv6_proxy_url():
         },
     )
     assert agent._runtime_env()["KIMI_MODEL_BASE_URL"] == "http://[::1]:43210/v1"
+
+
+@_isolated_maka_env
+def test_codex_agent_hydrates_agent_logs_best_effort():
+    # Runs under BOTH trees. Pier replaces the default /logs/agent bind mount
+    # when a trial passes --mounts-json while capabilities.mounted stays true
+    # (pier docker.py), so pier's own log download never runs; the adapter must
+    # hydrate codex.txt and the sessions rollouts itself or _events() reads
+    # nothing and a real token-burning run is misclassified as failed. Under
+    # Harbor the log dir is bind-mounted, so hydration must skip host-side
+    # files, and a download failure must stay best-effort.
+    import asyncio
+    import tempfile
+
+    _, _, codex_mod = _fresh_adapters()
+
+    class _RecordingEnvironment:
+        def __init__(self) -> None:
+            self.files: list[tuple[str, Path]] = []
+            self.dirs: list[tuple[str, Path]] = []
+
+        async def download_file(self, source_path, target_path):
+            self.files.append((source_path, Path(target_path)))
+            Path(target_path).write_text("", encoding="utf-8")
+
+        async def download_dir(self, source_dir, target_dir):
+            self.dirs.append((source_dir, Path(target_dir)))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        logs_dir = Path(tmp)
+        agent = codex_mod.MakaCodexAgent(logs_dir=logs_dir)
+        environment = _RecordingEnvironment()
+        asyncio.run(agent._download_agent_logs(environment))
+        assert environment.files == [("/logs/agent/codex.txt", logs_dir / "codex.txt")]
+        assert environment.dirs == [("/logs/agent/sessions", logs_dir / "sessions")]
+        # docker cp of `dir/.` requires the target directory to exist.
+        assert (logs_dir / "sessions").is_dir()
+
+        # Both targets are now host-side (the Harbor bind-mount case): no
+        # further downloads.
+        asyncio.run(agent._download_agent_logs(environment))
+        assert len(environment.files) == 1
+        assert len(environment.dirs) == 1
+
+    class _FailingEnvironment:
+        async def download_file(self, source_path, target_path):
+            raise RuntimeError("container already torn down")
+
+        async def download_dir(self, source_dir, target_dir):
+            raise RuntimeError("container already torn down")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        agent = codex_mod.MakaCodexAgent(logs_dir=Path(tmp))
+        asyncio.run(agent._download_agent_logs(_FailingEnvironment()))
 
 
 @_isolated_maka_env
@@ -296,7 +419,8 @@ def test_harbor_tree_used_without_pier():
         assert compat.NetworkAllowlist is None
         maka = importlib.import_module("maka_agent")
         kimi = importlib.import_module("kimi_code_agent")
-        for cls in (maka.MakaAgent, kimi.MakaKimiCodeAgent):
+        codex = importlib.import_module("codex_agent")
+        for cls in (maka.MakaAgent, kimi.MakaKimiCodeAgent, codex.MakaCodexAgent):
             # The plain-Harbor path must keep subclassing the harbor tree so
             # Terminal-Bench's Harbor 0.13.2 runner keeps validating its own
             # AgentInfo type.

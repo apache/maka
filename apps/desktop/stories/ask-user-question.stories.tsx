@@ -1,8 +1,12 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { UserQuestionRequestEvent } from '@maka/core';
 import { UserQuestionPrompt } from '@maka/ui';
+import { expect, userEvent, within } from 'storybook/test';
 
 import './ask-user-question.css';
+
+// Fidelity convention (#1433): every story below names the real app path
+// that reaches it. See apps/desktop/stories/FIDELITY.md.
 
 const meta = {
   title: 'Product/Ask User Question',
@@ -39,6 +43,7 @@ const REQUEST: UserQuestionRequestEvent = {
 function PreviewColumn(props: {
   title: string;
   width: number;
+  request?: UserQuestionRequestEvent;
 }) {
   return (
     <div className="maka-question-review-column" style={{ width: props.width }}>
@@ -48,12 +53,16 @@ function PreviewColumn(props: {
           <div><strong>你</strong><p>请帮我确定官网上线方案。</p></div>
           <div><strong>Maka</strong><p>我需要先确认几个有明确选项的发布决策，然后会继续生成执行计划。</p></div>
         </div>
-        <UserQuestionPrompt request={REQUEST} onRespond={() => {}} onStop={() => {}} />
+        <UserQuestionPrompt request={props.request ?? REQUEST} onRespond={() => {}} onStop={() => {}} />
       </div>
     </div>
   );
 }
 
+// Real path: chat → the agent calls AskUserQuestion → the prompt takes over the composer
+// slot, below the turn that asked. The two columns are a review scaffold, not one
+// screen: each is the same reachable prompt at a different chat-column width (default
+// vs. a narrow window or an open artifact pane).
 export const StandardAndNarrow: Story = {
   render: () => (
     <main className="maka-question-review-board">
@@ -61,4 +70,27 @@ export const StandardAndNarrow: Story = {
       <PreviewColumn title="窄聊天列" width={390} />
     </main>
   ),
+};
+
+// Real path: same prompt, after the user picks 其他 and types a free-text answer — driven
+// here by the play function.
+export const OtherAnswerSelected: Story = {
+  render: () => (
+    <main className="maka-question-review-board">
+      <PreviewColumn
+        title="“其他”选中并直接输入"
+        width={760}
+        request={{ ...REQUEST, questions: REQUEST.questions.slice(0, 1) }}
+      />
+    </main>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByRole('textbox', { name: '其他答案' });
+    await userEvent.click(input);
+    await expect(input).toHaveFocus();
+    await userEvent.type(input, '分阶段发布');
+    await expect(input).toHaveValue('分阶段发布');
+    await expect(input.closest('.maka-question-other-field')).toHaveAttribute('data-selected');
+  },
 };

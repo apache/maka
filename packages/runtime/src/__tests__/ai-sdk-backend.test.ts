@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { describe, test } from 'node:test';
-import type { ModelMessage } from 'ai';
+import type { ModelMessage } from '../model-protocol.js';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { APICallError, type LanguageModelV4StreamPart } from '@ai-sdk/provider';
 import type {
@@ -30,11 +30,11 @@ import {
   formatSyntheticToolErrorText,
   normalizeAiSdkUsage,
   repairMakaToolCall,
+  type AiSdkBackendInput,
   type RunTraceEvent,
 } from '../ai-sdk-backend.js';
-import type { MakaTool } from '../tool-runtime.js';
+import type { DurableSessionEventSink, MakaTool, ToolRuntime } from '../tool-runtime.js';
 import { LOAD_TOOLS_NAME } from '../tool-availability.js';
-import { PermissionEngine } from '../permission-engine.js';
 import {
   canonicalizeToolSet,
   computeRequestShapeDiagnostic,
@@ -62,27 +62,31 @@ import { buildRuntimeEventModelReplayPlan, buildSteeringEnvelope } from '../mode
 import type { ActiveFullCompactBlock } from '../active-full-compact.js';
 import type { SemanticCompactBlock } from '../semantic-compact.js';
 import { HistoryCompactSummarizerError } from '../history-compact-summarizer.js';
-import type { AutoApprovalReviewContext } from '../approval-reviewer.js';
 import type { SandboxDiagnosticsSnapshot } from '../sandbox/diagnostics.js';
 import { SandboxCommandError } from '../sandbox/errors.js';
+import { FilesystemWorkerClientError } from '../filesystem-worker/client.js';
 import { RunTrace } from '../run-trace.js';
+import {
+  bindRuntimeInteractionRun,
+  type RuntimeInteractionRunOwner,
+} from '../interaction-authority.js';
 import type {
   ProviderRequestAttemptRecord,
   ProviderRequestCaptureRecord,
 } from '../provider-request-telemetry.js';
+import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 
 describe('AiSdkBackend model history', () => {
   test('exposes one active sandbox snapshot to the model and durable run trace', async () => {
     const model = completionModel();
     const traces: RunTraceEvent[] = [];
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       sandboxDiagnosticsSnapshot: sandboxSnapshot(),
@@ -103,75 +107,18 @@ describe('AiSdkBackend model history', () => {
     assert.equal(JSON.stringify(contextEvent).includes('/tmp/maka'), false);
   });
 
-  test('passes the active sandbox snapshot into automatic approval review', async () => {
-    let reviewContext: AutoApprovalReviewContext | undefined;
-    const backend = new AiSdkBackend({
-      sessionId: 'session-1',
-      header: header('execute'),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: idGenerator(), now: () => 1 }),
-      autoApprovalReviewer: {
-        review: async ({ context }) => {
-          reviewContext = context;
-          return { outcome: 'allow', riskLevel: 'high', rationale: 'test approval' };
-        },
-      },
-      modelFactory: () => ({}),
-      tools: [],
-      sandboxDiagnosticsSnapshot: sandboxSnapshot(),
-      newId: idGenerator(),
-      now: monotonicClock(),
-    });
-    const tool: MakaTool = {
-      name: 'Bash',
-      description: 'shell',
-      parameters: {},
-      permissionRequired: true,
-      impl: async () => ({ kind: 'text', text: 'ok' }),
-    };
-    const execute = (
-      backend as unknown as {
-        wrapToolExecute(
-          tool: MakaTool,
-          turnId: string,
-          queue: { push(event: SessionEvent): void },
-        ): (
-          args: unknown,
-          ctx: { toolCallId: string; abortSignal: AbortSignal },
-        ) => Promise<unknown>;
-      }
-    ).wrapToolExecute(tool, 'turn-1', { push: () => {} });
-
-    await execute(
-      { command: 'rm local-file' },
-      { toolCallId: 'tool-1', abortSignal: new AbortController().signal },
-    );
-
-    assert.deepEqual(reviewContext?.sandbox, {
-      platform: 'darwin',
-      profileName: 'workspace-write',
-      fileSystem: 'workspace-write',
-      network: 'restricted',
-      commandSandbox: 'available (macos-seatbelt)',
-      filesystemSandbox: 'available (macos-seatbelt)',
-      commandSandboxSelectionReason: 'platform_sandbox_selected',
-      filesystemSandboxSelectionReason: 'platform_sandbox_selected',
-    });
-  });
-
   test('records structured sandbox failure metadata on tool failure traces', async () => {
     const traces: RunTraceEvent[] = [];
-    const backend = new AiSdkBackend({
+    const messages: ToolResultMessage[] = [];
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header('bypass'),
-      appendMessage: async () => {},
+      appendMessage: async (message) => {
+        if (message.type === 'tool_result') messages.push(message);
+      },
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: idGenerator(), now: () => 1 }),
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
@@ -191,7 +138,6 @@ describe('AiSdkBackend model history', () => {
       name: 'Bash',
       description: 'shell',
       parameters: {},
-      permissionRequired: false,
       impl: async () => {
         throw new SandboxCommandError({
           domain: 'command',
@@ -204,18 +150,7 @@ describe('AiSdkBackend model history', () => {
         });
       },
     };
-    const execute = (
-      backend as unknown as {
-        wrapToolExecute(
-          tool: MakaTool,
-          turnId: string,
-          queue: { push(event: SessionEvent): void },
-        ): (
-          args: unknown,
-          ctx: { toolCallId: string; abortSignal: AbortSignal },
-        ) => Promise<unknown>;
-      }
-    ).wrapToolExecute(tool, 'turn-1', { push: () => {} });
+    const execute = runtimeExecute(backend, tool, 'turn-1', { push: () => {} });
 
     await execute(
       { command: 'true' },
@@ -232,18 +167,119 @@ describe('AiSdkBackend model history', () => {
       profileName: 'workspace-write',
     });
     assert.equal(JSON.stringify(failure).includes('/private/workspace/path'), false);
+    assert.equal(
+      messages[0]?.content.kind === 'text' ? messages[0].content.sandboxDenial : undefined,
+      undefined,
+    );
+  });
+
+  test('persists a sandbox denial signal for explicit filesystem worker sandbox denials', async () => {
+    const messages: ToolResultMessage[] = [];
+    const events: SessionEvent[] = [];
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header('bypass'),
+      appendMessage: async (message) => {
+        if (message.type === 'tool_result') messages.push(message);
+      },
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => ({}),
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const tool: MakaTool = {
+      name: 'Grep',
+      description: 'search',
+      parameters: {},
+      impl: async () => {
+        throw new FilesystemWorkerClientError({
+          reason: 'sandbox_denied',
+          stage: 'operation',
+          backend: 'macos-seatbelt',
+          recoverable: false,
+          message: 'Filesystem access was denied.',
+        });
+      },
+    };
+    const execute = runtimeExecute(backend, tool, 'turn-1', {
+      push: (event) => events.push(event),
+    });
+
+    await execute(
+      { pattern: 'needle', path: '/workspace' },
+      { toolCallId: 'tool-1', abortSignal: new AbortController().signal },
+    );
+
+    const expected = { likely: true, backend: 'macos-seatbelt' } as const;
+    assert.deepEqual(
+      messages[0]?.content.kind === 'text' ? messages[0].content.sandboxDenial : undefined,
+      expected,
+    );
+    const event = events.find(
+      (candidate): candidate is Extract<SessionEvent, { type: 'tool_result' }> =>
+        candidate.type === 'tool_result',
+    );
+    assert.deepEqual(
+      event?.content.kind === 'text' ? event.content.sandboxDenial : undefined,
+      expected,
+    );
+  });
+
+  test('does not label ordinary filesystem permission errors as sandbox denials', async () => {
+    const messages: ToolResultMessage[] = [];
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header('bypass'),
+      appendMessage: async (message) => {
+        if (message.type === 'tool_result') messages.push(message);
+      },
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => ({}),
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const tool: MakaTool = {
+      name: 'Read',
+      description: 'read',
+      parameters: {},
+      impl: async () => {
+        throw new FilesystemWorkerClientError({
+          reason: 'filesystem_denied',
+          stage: 'operation',
+          backend: 'macos-seatbelt',
+          recoverable: false,
+          message: 'Filesystem access was denied.',
+        });
+      },
+    };
+    const execute = runtimeExecute(backend, tool, 'turn-1', { push: () => {} });
+
+    await execute(
+      { path: '/workspace/private.txt' },
+      { toolCallId: 'tool-1', abortSignal: new AbortController().signal },
+    );
+
+    assert.equal(
+      messages[0]?.content.kind === 'text' ? messages[0].content.sandboxDenial : undefined,
+      undefined,
+    );
   });
 
   test('omits an empty system prompt from the provider request', async () => {
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       systemPrompt: '',
@@ -266,22 +302,17 @@ describe('AiSdkBackend model history', () => {
 
   test('sends the selected Kimi model output limit instead of the Anthropic unknown-model default', async () => {
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: {
         slug: 'kimi-coding-plan',
-        name: 'Kimi Coding Plan',
         providerType: 'kimi-coding-plan',
         defaultModel: 'k3',
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
       },
       apiKey: 'sk-test',
       modelId: 'k3',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -301,23 +332,18 @@ describe('AiSdkBackend model history', () => {
 
   test('prefers the connection-advertised Kimi output limit over catalog metadata', async () => {
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: {
         slug: 'kimi-coding-plan',
-        name: 'Kimi Coding Plan',
         providerType: 'kimi-coding-plan',
         defaultModel: 'k3',
         models: [{ id: 'k3', maxOutputTokens: 65_536 }],
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
       },
       apiKey: 'sk-test',
       modelId: 'k3',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -337,13 +363,12 @@ describe('AiSdkBackend model history', () => {
 
   test('honors a Copilot account output limit on its Anthropic messages wire', async () => {
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: {
         slug: 'github-copilot',
-        name: 'GitHub Copilot',
         providerType: 'github-copilot',
         defaultModel: 'future-claude-model',
         models: [
@@ -353,13 +378,9 @@ describe('AiSdkBackend model history', () => {
             maxOutputTokens: 128_000,
           },
         ],
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
       },
       apiKey: 'github-account-token',
       modelId: 'future-claude-model',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -379,18 +400,14 @@ describe('AiSdkBackend model history', () => {
 
   test('reserves Kimi fixed thinking inside the provider wire output limit', async () => {
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: {
         slug: 'kimi-coding-plan',
-        name: 'Kimi Coding Plan',
         providerType: 'kimi-coding-plan',
         defaultModel: 'kimi-for-coding',
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
       },
       apiKey: 'sk-test',
       modelId: 'kimi-for-coding',
@@ -400,7 +417,6 @@ describe('AiSdkBackend model history', () => {
           effort: 'max',
         },
       },
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -421,22 +437,17 @@ describe('AiSdkBackend model history', () => {
 
   test('leaves OpenAI-compatible output limits to their provider adapter', async () => {
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: {
         slug: 'mistral',
-        name: 'Mistral',
         providerType: 'mistral',
         defaultModel: 'mistral-large-latest',
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
       },
       apiKey: 'sk-test',
       modelId: 'mistral-large-latest',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -456,14 +467,13 @@ describe('AiSdkBackend model history', () => {
 
   test('prefers RuntimeEvent prior messages and appends current user once', async () => {
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -518,16 +528,71 @@ describe('AiSdkBackend model history', () => {
     ]);
   });
 
-  test('safe-boundary continuation does not append a duplicate current user message', async () => {
+  test('keeps backfilled text-only assistant messages in conversation order', async () => {
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const recoveredAssistant = runtimeTextEvent({
+      id: 'rt-a',
+      turnId: 'turn-a',
+      role: 'model',
+      author: 'agent',
+      text: 'assistant A',
+    });
+    recoveredAssistant.refs = { storedMessageId: 'stored-a' };
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'current user',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-u-a',
+            turnId: 'turn-a',
+            role: 'user',
+            author: 'user',
+            text: 'user A',
+          }),
+          recoveredAssistant,
+          runtimeTextEvent({
+            id: 'rt-u-b',
+            turnId: 'turn-b',
+            role: 'user',
+            author: 'user',
+            text: 'user B',
+          }),
+        ],
+      }),
+    );
+
+    assert.deepEqual(promptTextSequence(model), [
+      { role: 'user', text: 'user A' },
+      { role: 'assistant', text: 'assistant A' },
+      { role: 'user', text: 'user B' },
+      { role: 'user', text: 'current user' },
+    ]);
+  });
+
+  test('safe-boundary continuation does not append a duplicate current user message', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -564,14 +629,13 @@ describe('AiSdkBackend model history', () => {
 
   test('continuation replays the original user after diagnostic terminal errors with no StoredMessage context', async () => {
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -618,14 +682,13 @@ describe('AiSdkBackend model history', () => {
   test('continuation fails before the provider when replay materializes no messages', async () => {
     const trace: RunTraceEvent[] = [];
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -679,14 +742,13 @@ describe('AiSdkBackend model history', () => {
 
   test('continuation materializes validated RuntimeEvents when provider-native replay is unavailable', async () => {
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: { ...connection(), providerType: 'openai' },
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -730,14 +792,13 @@ describe('AiSdkBackend model history', () => {
 
   test('continuation never substitutes StoredMessages when RuntimeEvent replay has blocking diagnostics', async () => {
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -824,14 +885,13 @@ describe('AiSdkBackend model history', () => {
 
   test('continuation replay may end with an assistant message without an active user head anchor', async () => {
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -876,14 +936,13 @@ describe('AiSdkBackend model history', () => {
 
   test('continuation replay may end at a paired tool boundary without an active user head anchor', async () => {
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -944,14 +1003,13 @@ describe('AiSdkBackend model history', () => {
 
   test('uses StoredMessage projection when RuntimeEvent replay is empty', async () => {
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1004,14 +1062,13 @@ describe('AiSdkBackend model history', () => {
     // content block is a hard 400 on Anthropic-protocol providers, which
     // permanently blocks every later turn of the session.
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1053,14 +1110,13 @@ describe('AiSdkBackend model history', () => {
 
   test('stored-message fallback keeps placeholder text when no reader is wired', async () => {
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1133,14 +1189,13 @@ describe('AiSdkBackend model history', () => {
   test('stored-message fallback renders image attachments as image parts when a reader is wired', async () => {
     const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 4, 5, 6]);
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1214,14 +1269,13 @@ describe('AiSdkBackend model history', () => {
   test('current-turn image attachment becomes a provider image part', async () => {
     const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1270,14 +1324,13 @@ describe('AiSdkBackend model history', () => {
   test('current-turn image attachment falls back to text unless vision support is explicit', async () => {
     const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1326,14 +1379,13 @@ describe('AiSdkBackend model history', () => {
 
   test('reports unavailable attachment reads without consuming image budget', async () => {
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1378,14 +1430,13 @@ describe('AiSdkBackend model history', () => {
 
   test('charges attachment image budget from the bytes actually read', async () => {
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1423,14 +1474,13 @@ describe('AiSdkBackend model history', () => {
 
   test('degrades excess current-turn image attachments once the per-request budget is exceeded', async () => {
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1474,14 +1524,13 @@ describe('AiSdkBackend model history', () => {
   test('counts the same attachment ref separately in replay and the current turn', async () => {
     const bytes = new Uint8Array(10);
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1543,17 +1592,72 @@ describe('AiSdkBackend model history', () => {
     );
   });
 
-  test('degrades excess replayed image tool results once the per-request budget is exceeded', async () => {
+  test('charges a durable current-turn image once when the first request reloads the ledger', async () => {
     const bytes = new Uint8Array(10);
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const attachment = {
+      kind: 'image' as const,
+      name: 'chart.png',
+      mimeType: 'image/png',
+      bytes: bytes.length,
+      ref: { kind: 'session_file' as const, sessionId: 'session-1', relativePath: 'chart' },
+    };
+    const anchor = runtimeEvent({
+      id: 'rt-current',
+      turnId: 'turn-current',
+      role: 'user',
+      author: 'user',
+      content: {
+        kind: 'text',
+        text: 'describe this chart',
+        attachments: [attachment],
+      },
+    });
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: async () => [anchor],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      supportsVision: true,
+      maxProviderImageRequestBytes: 15,
+      readAttachmentBytes: async () => ({ ok: true, bytes }),
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'describe this chart',
+        attachments: [attachment],
+        context: [],
+        headAnchorRuntimeEvent: anchor,
+      }),
+    );
+
+    const prompt = compactPrompt(model) as Array<{ role: string; content: unknown }>;
+    const parts = prompt.at(-1)?.content as Array<{ type: string; mediaType?: string }>;
+    assert.equal(
+      parts.filter((part) => part.type !== 'text' && part.mediaType === 'image/png').length,
+      1,
+    );
+  });
+
+  test('degrades excess replayed image tool results once the per-request budget is exceeded', async () => {
+    const bytes = new Uint8Array(10);
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1637,17 +1741,118 @@ describe('AiSdkBackend model history', () => {
     );
   });
 
-  test('RuntimeEvent replay renders historical image attachments as image parts', async () => {
-    const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9, 8, 7]);
+  test('budgets replayed image tool results by durable occurrence instead of reused tool-call ids', async () => {
+    const bytes = new Uint8Array(10);
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      supportsVision: true,
+      maxProviderImageRequestBytes: 15,
+      readAttachmentBytes: async () => ({ ok: true, bytes }),
+    });
+    const call = (eventId: string, turnId: string) =>
+      runtimeEvent({
+        id: eventId,
+        turnId,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'reused-tool-id',
+          name: 'Read',
+          args: { path: `${turnId}.png` },
+        },
+      });
+    const result = (eventId: string, turnId: string) =>
+      runtimeEvent({
+        id: eventId,
+        turnId,
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'reused-tool-id',
+          name: 'Read',
+          isError: false,
+          result: {
+            kind: 'image',
+            mimeType: 'image/png',
+            ref: {
+              kind: 'session_file',
+              sessionId: 'session-1',
+              relativePath: `${turnId}.png`,
+            },
+          },
+        },
+      });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'continue',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'user-a',
+            turnId: 'turn-a',
+            role: 'user',
+            author: 'user',
+            text: 'read a',
+          }),
+          call('call-a', 'turn-a'),
+          result('result-a', 'turn-a'),
+          runtimeTextEvent({
+            id: 'user-b',
+            turnId: 'turn-b',
+            role: 'user',
+            author: 'user',
+            text: 'read b',
+          }),
+          call('call-b', 'turn-b'),
+          result('result-b', 'turn-b'),
+        ],
+      }),
+    );
+
+    const prompt = compactPrompt(model) as Array<{ role: string; content: any[] }>;
+    const outputs = prompt
+      .filter((message) => message.role === 'tool')
+      .flatMap((message) => message.content)
+      .map((entry) => entry?.output)
+      .filter((output) => output?.type === 'content');
+    assert.equal(
+      outputs.filter((output) =>
+        output.value.some((part: any) => part.type === 'file' && part.mediaType === 'image/png'),
+      ).length,
+      1,
+    );
+    assert.equal(
+      outputs.filter((output) =>
+        output.value.some((part: any) => part.type === 'text' && /image budget/.test(part.text)),
+      ).length,
+      1,
+    );
+  });
+
+  test('RuntimeEvent replay renders historical image attachments as image parts', async () => {
+    const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9, 8, 7]);
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1708,14 +1913,13 @@ describe('AiSdkBackend model history', () => {
 
   test('preserves RuntimeEvent tool calls and results as structured AI SDK parts', async () => {
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1816,14 +2020,13 @@ describe('AiSdkBackend model history', () => {
   test('replays an image tool result as provider image data', async () => {
     const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -1892,6 +2095,32 @@ describe('AiSdkBackend model history', () => {
       'base64',
     );
     let calls = 0;
+    const anchor = runtimeTextEvent({
+      id: 'runtime-user',
+      turnId: 'turn-1',
+      role: 'user',
+      author: 'user',
+      text: 'read chart.png',
+    });
+    const ledger: RuntimeEvent[] = [anchor];
+    const mappingMemory = createSessionEventMapMemory();
+    const mappingContext: InvocationContext = {
+      sessionId: 'session-1',
+      invocationId: 'invocation-1',
+      runId: 'run-1',
+      turnId: 'turn-1',
+      source: 'desktop',
+      startedAt: 1,
+      request: {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        text: 'read chart.png',
+        source: 'desktop',
+        initialRuntimeEvent: anchor,
+      },
+      newId: idGenerator(),
+      now: monotonicClock(),
+    };
     const model = new MockLanguageModelV4({
       doStream: async () => {
         calls += 1;
@@ -1926,21 +2155,19 @@ describe('AiSdkBackend model history', () => {
         };
       },
     });
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [
         {
           name: 'Read',
           description: 'read',
           parameters: z.object({ path: z.string() }),
-          permissionRequired: false,
           impl: async () => ({
             kind: 'image',
             mimeType: 'image/png',
@@ -1954,17 +2181,229 @@ describe('AiSdkBackend model history', () => {
       ],
       supportsVision: true,
       readAttachmentBytes: async () => ({ ok: true, bytes: pngBytes }),
+      loadTurnRuntimeEvents: async () => ledger,
       newId: idGenerator(),
       now: monotonicClock(),
     });
 
-    await drain(backend.send({ turnId: 'turn-1', text: 'read chart.png', context: [] }));
+    for await (const event of backend.send({
+      turnId: 'turn-1',
+      text: 'read chart.png',
+      context: [],
+      headAnchorRuntimeEvent: anchor,
+    })) {
+      const mapped = mapSessionEventToRuntimeEvent(event, mappingContext, mappingMemory);
+      if (mapped.partial !== true && mapped.content?.kind !== 'error') ledger.push(mapped);
+    }
 
     const nextPrompt = model.doStreamCalls[1]?.prompt as Array<{ role: string; content: any[] }>;
     const result = nextPrompt.find((message) => message.role === 'tool')?.content[0]?.output;
     assert.ok(
       result.value.some((part: any) => part.type === 'file' && part.mediaType === 'image/png'),
     );
+  });
+
+  test('reloads durable multi-tool settlement before terminal continuation', async () => {
+    const anchor = runtimeTextEvent({
+      id: 'runtime-user',
+      turnId: 'turn-1',
+      role: 'user',
+      author: 'user',
+      text: 'run both tools',
+    });
+    const ledger: RuntimeEvent[] = [anchor];
+    const mappingMemory = createSessionEventMapMemory();
+    const mappingContext: InvocationContext = {
+      sessionId: 'session-1',
+      invocationId: 'invocation-1',
+      runId: 'run-1',
+      turnId: 'turn-1',
+      source: 'desktop',
+      startedAt: 1,
+      request: {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        text: 'run both tools',
+        source: 'desktop',
+        initialRuntimeEvent: anchor,
+      },
+      newId: idGenerator(),
+      now: monotonicClock(),
+    };
+    const executions: string[] = [];
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        if (calls === 2) {
+          assert.equal(
+            ledger.filter((event) => event.content?.kind === 'function_response').length,
+            2,
+          );
+        }
+        const chunks: LanguageModelV4StreamPart[] =
+          calls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                { type: 'reasoning-start', id: 'reasoning-1' },
+                { type: 'reasoning-delta', id: 'reasoning-1', delta: 'inspect first' },
+                {
+                  type: 'reasoning-delta',
+                  id: 'reasoning-1',
+                  delta: '',
+                  providerMetadata: { anthropic: { signature: 'sig-step-1' } },
+                },
+                { type: 'reasoning-end', id: 'reasoning-1' },
+                { type: 'text-start', id: 'text-1' },
+                { type: 'text-delta', id: 'text-1', delta: 'Running tools.' },
+                { type: 'text-end', id: 'text-1' },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'call-success',
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'ok.md' }),
+                  providerMetadata: {
+                    google: { thoughtSignature: 'thought-signature-step-1' },
+                  },
+                },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'call-failure',
+                  toolName: 'Fail',
+                  input: JSON.stringify({ path: 'bad.md' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: emptyUsage(),
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-2' },
+                { type: 'text-delta', id: 'text-2', delta: 'Done.' },
+                { type: 'text-end', id: 'text-2' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: emptyUsage(),
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          name: 'Read',
+          description: 'read',
+          parameters: z.object({ path: z.string() }),
+          impl: async ({ path }: { path: string }) => {
+            executions.push(`Read:${path}`);
+            return { body: 'ok' };
+          },
+        },
+        {
+          name: 'Fail',
+          description: 'fail',
+          parameters: z.object({ path: z.string() }),
+          impl: async ({ path }: { path: string }) => {
+            executions.push(`Fail:${path}`);
+            throw new Error('tool failed');
+          },
+        },
+      ],
+      loadTurnRuntimeEvents: async () => ledger,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const emitted: SessionEvent[] = [];
+    for await (const event of backend.send({
+      turnId: 'turn-1',
+      text: 'run both tools',
+      context: [],
+      headAnchorRuntimeEvent: anchor,
+    })) {
+      emitted.push(event);
+      const mapped = mapSessionEventToRuntimeEvent(event, mappingContext, mappingMemory);
+      if (mapped.partial !== true && mapped.content?.kind !== 'error') ledger.push(mapped);
+    }
+
+    assert.equal(calls, 2);
+    assert.deepEqual(executions, ['Read:ok.md', 'Fail:bad.md']);
+    const nextPrompt = model.doStreamCalls[1]?.prompt as unknown as Array<{
+      role: string;
+      content: Array<Record<string, unknown>>;
+    }>;
+    const assistantStep = nextPrompt.find(
+      (message) =>
+        message.role === 'assistant' && message.content.some((part) => part.type === 'tool-call'),
+    );
+    assert.deepEqual(
+      assistantStep?.content.map((part) => part.type),
+      ['reasoning', 'text', 'tool-call', 'tool-call'],
+    );
+    assert.match(JSON.stringify(assistantStep), /sig-step-1/);
+    assert.deepEqual(assistantStep?.content[2]?.providerOptions, {
+      google: { thoughtSignature: 'thought-signature-step-1' },
+    });
+    assert.match(JSON.stringify(assistantStep), /Running tools\./);
+    assert.deepEqual(
+      nextPrompt
+        .filter((message) => message.role === 'tool')
+        .flatMap((message) => message.content.map((part) => part.toolCallId)),
+      ['call-success', 'call-failure'],
+    );
+    const toolResults = JSON.stringify(nextPrompt.filter((message) => message.role === 'tool'));
+    assert.match(toolResults, /"ok"/);
+    assert.match(toolResults, /tool failed/i);
+    assert.deepEqual(
+      ledger
+        .filter((event) => event.content?.kind === 'function_response')
+        .map((event) => {
+          assert.equal(event.content?.kind, 'function_response');
+          return {
+            id: event.content.id,
+            isError: event.content.isError === true,
+          };
+        }),
+      [
+        { id: 'call-success', isError: false },
+        { id: 'call-failure', isError: true },
+      ],
+    );
+    assert.ok(
+      emitted.some((event) => event.type === 'text_complete' && event.text === 'Done.'),
+      'the terminal provider step emits its final assistant text',
+    );
+    assert.ok(
+      ledger.some(
+        (event) =>
+          event.partial !== true &&
+          event.role === 'model' &&
+          event.content?.kind === 'text' &&
+          event.content.text === 'Done.',
+      ),
+      'the terminal assistant text becomes a durable RuntimeEvent fact',
+    );
+    const complete = emitted.find(
+      (event): event is Extract<SessionEvent, { type: 'complete' }> => event.type === 'complete',
+    );
+    assert.equal(complete?.stopReason, 'end_turn');
   });
 
   test('does not read image bytes for a non-vision model', async () => {
@@ -2019,14 +2458,13 @@ describe('AiSdkBackend model history', () => {
 
   test('replays interleaved parallel RuntimeEvent tool calls as one provider tool-call block', async () => {
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -2181,6 +2619,169 @@ describe('AiSdkBackend model history', () => {
     ]);
   });
 
+  test('replays durable Bash results without duplicating commands in provider output', async () => {
+    const model = completionModel();
+    const durableResults = [
+      {
+        kind: 'terminal' as const,
+        cwd: '/workspace',
+        cmd: 'printf completed-marker',
+        status: 'completed' as const,
+        exitCode: 0,
+        output: {
+          mode: 'pipes' as const,
+          stdout: 'completed',
+          stderr: '',
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          redacted: false,
+        },
+      },
+      {
+        kind: 'terminal' as const,
+        cwd: '/workspace',
+        cmd: 'printf failed-marker',
+        status: 'failed' as const,
+        exitCode: 2,
+        output: {
+          mode: 'pipes' as const,
+          stdout: '',
+          stderr: 'failed',
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          redacted: false,
+        },
+        sandboxDenial: {
+          likely: true as const,
+          backend: 'macos-seatbelt' as const,
+          recovery: 'require_escalated' as const,
+        },
+      },
+      {
+        kind: 'terminal' as const,
+        cwd: '/workspace',
+        cmd: 'printf timeout-marker',
+        status: 'timed_out' as const,
+        exitCode: 124,
+        output: {
+          mode: 'pipes' as const,
+          stdout: 'partial timeout',
+          stderr: '',
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          redacted: false,
+        },
+      },
+      {
+        kind: 'terminal' as const,
+        cwd: '/workspace',
+        cmd: 'printf cancelled-marker',
+        status: 'cancelled' as const,
+        exitCode: 130,
+        output: {
+          mode: 'pipes' as const,
+          stdout: '',
+          stderr: 'cancelled',
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          redacted: false,
+        },
+      },
+      {
+        kind: 'terminal' as const,
+        cwd: '/workspace',
+        cmd: 'printf truncated-marker',
+        status: 'completed' as const,
+        exitCode: 0,
+        output: {
+          mode: 'pipes' as const,
+          stdout: 'tail',
+          stderr: 'error tail',
+          stdoutTruncated: true,
+          stderrTruncated: true,
+          redacted: true,
+        },
+      },
+    ];
+    const runtimeContext: RuntimeEvent[] = [
+      runtimeTextEvent({
+        id: 'rt-u',
+        turnId: 'turn-prev',
+        role: 'user',
+        author: 'user',
+        text: 'run all commands',
+      }),
+      ...durableResults.map((result, index) =>
+        runtimeEvent({
+          id: `rt-call-${index}`,
+          turnId: 'turn-prev',
+          role: 'model',
+          author: 'agent',
+          content: {
+            kind: 'function_call',
+            id: `tool-${index}`,
+            name: 'Bash',
+            args: { command: result.cmd },
+          },
+        }),
+      ),
+      ...durableResults.map((result, index) =>
+        runtimeEvent({
+          id: `rt-result-${index}`,
+          turnId: 'turn-prev',
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: `tool-${index}`,
+            name: 'Bash',
+            result,
+            isError: result.status !== 'completed',
+          },
+        }),
+      ),
+    ];
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'continue',
+        context: [],
+        runtimeContext,
+      }),
+    );
+
+    const prompt = compactPrompt(model) as Array<{ role: string; content: any[] }>;
+    const serializedPrompt = JSON.stringify(prompt);
+    const toolResults = prompt.find((message) => message.role === 'tool')?.content ?? [];
+    assert.equal(toolResults.length, durableResults.length);
+    for (const [index, durable] of durableResults.entries()) {
+      assert.equal(
+        serializedPrompt.split(durable.cmd).length - 1,
+        1,
+        `command ${index} should remain only in its paired Bash call`,
+      );
+      const output = toolResults[index]?.output;
+      assert.equal(output?.type, durable.status === 'completed' ? 'json' : 'error-json');
+      assert.equal(Object.hasOwn(output?.value ?? {}, 'cmd'), false);
+      const { cmd: _cmd, ...expected } = durable;
+      assert.deepEqual(output?.value, expected);
+      assert.equal(durableResults[index]?.cmd, durable.cmd);
+    }
+  });
+
   test('archives stale RuntimeEvent tool results before replay placeholder rewrite', async () => {
     const model = completionModel();
     const archiveRequests: Array<{
@@ -2189,14 +2790,13 @@ describe('AiSdkBackend model history', () => {
       bodySha256: string;
     }> = [];
     const oldResult = { body: 'x'.repeat(500) };
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -2272,14 +2872,13 @@ describe('AiSdkBackend model history', () => {
     const existingResult = { body: 'EXISTING_ARCHIVE_REF_PAYLOAD'.repeat(20) };
     const newResult = { body: 'NEW_ARCHIVE_REF_PAYLOAD'.repeat(20) };
     const existingSerialized = JSON.stringify(existingResult);
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -2383,14 +2982,13 @@ describe('AiSdkBackend model history', () => {
     const model = completionModel();
     const events: SessionEvent[] = [];
     const oldResult = { body: 'SECRET_PAYLOAD_SHOULD_NOT_RETURN'.repeat(20) };
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -2472,14 +3070,13 @@ describe('AiSdkBackend model history', () => {
     const events: SessionEvent[] = [];
     let archivedBody = '';
     const oldResult = { body: 'retrieved 中文 archived payload 🙂'.repeat(3) };
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -2618,14 +3215,13 @@ describe('AiSdkBackend model history', () => {
       originalEstimatedTokens: serialized.length,
       originalBytes: utf8Bytes(serialized),
     });
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -2757,14 +3353,13 @@ describe('AiSdkBackend model history', () => {
     async function projectReplayPromptChars(useSynthesisCache: boolean): Promise<string> {
       const model = completionModel();
       const archivedBodies = new Map<string, string>();
-      const backend = new AiSdkBackend({
+      const backend = createTestAiSdkBackend({
         sessionId: 'session-1',
         header: header(),
         appendMessage: async () => {},
         connection: connection(),
         apiKey: 'sk-test',
         modelId: 'mock-model-id',
-        permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
         modelFactory: () => model,
         tools: [],
         newId: idGenerator(),
@@ -2889,14 +3484,13 @@ describe('AiSdkBackend model history', () => {
       originalBytes: utf8Bytes(serialized),
     });
     let loadCalls = 0;
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -3016,14 +3610,13 @@ describe('AiSdkBackend model history', () => {
       originalEstimatedTokens: serialized.length,
       originalBytes: utf8Bytes(serialized),
     });
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -3149,14 +3742,13 @@ describe('AiSdkBackend model history', () => {
       originalEstimatedTokens: serialized.length,
       originalBytes: utf8Bytes(serialized),
     });
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -3285,14 +3877,13 @@ describe('AiSdkBackend model history', () => {
         text: 'manual beta compact source '.repeat(12),
       }),
     ];
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -3323,18 +3914,17 @@ describe('AiSdkBackend model history', () => {
       },
     });
 
+    const recentEvent = runtimeTextEvent({
+      id: 'manual-compact-recent',
+      turnId: 'turn-recent',
+      role: 'user',
+      author: 'user',
+      text: 'manual recent retained context',
+    });
+    const runtimeContext = [...oldEvents, recentEvent];
     const result = await backend.compactHistory({
       turnId: 'turn-compact',
-      runtimeContext: [
-        ...oldEvents,
-        runtimeTextEvent({
-          id: 'manual-compact-recent',
-          turnId: 'turn-recent',
-          role: 'user',
-          author: 'user',
-          text: 'manual recent retained context',
-        }),
-      ],
+      runtimeContext,
     });
 
     assert.deepEqual(writeInputs, [
@@ -3347,18 +3937,27 @@ describe('AiSdkBackend model history', () => {
     assert.equal(result.contextBudget?.historyCompactBlocksWritten, 1);
     assert.equal(result.contextBudget?.compactionDecisions?.[0]?.decision, 'replaced');
     assert.equal(result.contextBudget?.compactionDecisions?.[0]?.boundaryKind, 'historyCompact');
+
+    await backend.compactHistory({
+      turnId: 'turn-overflow-recovery',
+      runtimeContext,
+      minRecentTurns: 0,
+    });
+    assert.deepEqual(writeInputs[1], {
+      turnId: 'turn-overflow-recovery',
+      foldedIds: ['manual-compact-old-1', 'manual-compact-old-2', 'manual-compact-recent'],
+    });
   });
 
   test('manual compactHistory still folds small histories with the default automatic compact policy', async () => {
     const writeInputs: string[][] = [];
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -3418,14 +4017,13 @@ describe('AiSdkBackend model history', () => {
 
   test('manual compactHistory writes a V2 checkpoint without the legacy artifact writer', async () => {
     const recorded: HistoryCompactCheckpoint[] = [];
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -3501,14 +4099,13 @@ describe('AiSdkBackend model history', () => {
     });
     const summaryInputs: Array<{ previous?: string; newlyFoldedIds: string[] }> = [];
     const recorded: HistoryCompactCheckpoint[] = [];
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -3581,14 +4178,13 @@ describe('AiSdkBackend model history', () => {
     });
     let summarizeCalls = 0;
     let recordCalls = 0;
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -3661,14 +4257,13 @@ describe('AiSdkBackend model history', () => {
     ]) {
       let summarizeCalls = 0;
       const recorded: HistoryCompactCheckpoint[] = [];
-      const backend = new AiSdkBackend({
+      const backend = createTestAiSdkBackend({
         sessionId: 'session-1',
         header: header(),
         appendMessage: async () => {},
         connection: connection(),
         apiKey: 'sk-test',
         modelId: 'mock-model-id',
-        permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
         modelFactory: () => completionModel(),
         tools: [],
         newId: idGenerator(),
@@ -3715,14 +4310,13 @@ describe('AiSdkBackend model history', () => {
 
   test('manual compactHistory does not record a rebuilt checkpoint whose envelope exceeds current limits', async () => {
     let recordCalls = 0;
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -3773,14 +4367,13 @@ describe('AiSdkBackend model history', () => {
 
   test('manual compactHistory rejects a complete summary that makes the full replay larger', async () => {
     let recordCalls = 0;
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -3834,14 +4427,13 @@ describe('AiSdkBackend model history', () => {
   });
 
   test('manual compactHistory reports output-length exhaustion instead of empty_summary', async () => {
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -3913,14 +4505,13 @@ describe('AiSdkBackend model history', () => {
     });
     let loadCalls = 0;
     const writeInputs: string[][] = [];
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -3981,14 +4572,13 @@ describe('AiSdkBackend model history', () => {
 
   test('manual compactHistory is a no-op when context budget is disabled', async () => {
     let writes = 0;
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -4024,14 +4614,13 @@ describe('AiSdkBackend model history', () => {
   });
 
   test('manual compactHistory is a no-op when no durable writer is configured', async () => {
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -4091,14 +4680,13 @@ describe('AiSdkBackend model history', () => {
         text: 'manual recent retained context',
       }),
     ];
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -4138,14 +4726,13 @@ describe('AiSdkBackend model history', () => {
     const writeStartedPromise = new Promise<void>((resolve) => {
       writeStarted = resolve;
     });
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => textCompletionModel('NEXT_OK'),
       tools: [],
       newId: idGenerator(),
@@ -4225,14 +4812,13 @@ describe('AiSdkBackend model history', () => {
     const writeStartedPromise = new Promise<void>((resolve) => {
       writeStarted = resolve;
     });
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => textCompletionModel('NEXT_OK'),
       tools: [],
       newId: idGenerator(),
@@ -4308,14 +4894,13 @@ describe('AiSdkBackend model history', () => {
   });
 
   test('stopping after manual compactHistory returns does not poison the next backend turn', async () => {
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => textCompletionModel('NEXT_OK'),
       tools: [],
       newId: idGenerator(),
@@ -4409,7 +4994,7 @@ describe('AiSdkBackend model history', () => {
       },
     });
     const appended: string[] = [];
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async (message: StoredMessage) => {
@@ -4418,7 +5003,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -4453,13 +5037,13 @@ describe('AiSdkBackend model history', () => {
 
   test('after-step stop preserves the current provider step usage and prevents another step', async () => {
     const loop = countingToolLoopModel();
+    const durable = durableTurnHarness('turn-1', 'hi');
     let backend!: AiSdkBackend;
     let stopRequested = false;
     const stoppingTool: MakaTool = {
       name: 'Read',
       description: 'Read description',
       parameters: z.object({ path: z.string() }),
-      permissionRequired: false,
       impl: async () => {
         stopRequested = true;
         await (
@@ -4468,22 +5052,23 @@ describe('AiSdkBackend model history', () => {
         return { ok: true };
       },
     };
-    backend = new AiSdkBackend({
+    backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => loop.model,
       tools: [stoppingTool],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
       now: monotonicClock(),
     });
     const events: SessionEvent[] = [];
 
-    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+    for await (const event of backend.send(durable.input())) {
+      durable.record(event);
       events.push(event);
     }
 
@@ -4501,7 +5086,7 @@ describe('AiSdkBackend model history', () => {
     const loop = countingToolLoopModel();
     const gate = makeGate();
     let usagePersistenceStarted = false;
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async (message) => {
@@ -4512,7 +5097,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => loop.model,
       tools: [testTool('Read', z.object({ path: z.string() }))],
       maxSteps: 1,
@@ -4562,7 +5146,7 @@ describe('AiSdkBackend model history', () => {
       },
     });
     const assistants: AssistantMessage[] = [];
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async (message) => {
@@ -4571,7 +5155,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -4621,7 +5204,7 @@ describe('AiSdkBackend model history', () => {
         text: 'beta compact source '.repeat(12),
       }),
     ];
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async (message) => {
@@ -4630,7 +5213,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -4750,14 +5332,13 @@ describe('AiSdkBackend model history', () => {
     const recorded: HistoryCompactCheckpoint[] = [];
     const summaryInputs: Array<{ previous?: string; newlyFoldedIds: string[] }> = [];
     const firstModel = completionModel();
-    const firstBackend = new AiSdkBackend({
+    const firstBackend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => firstModel,
       tools: [],
       newId: idGenerator(),
@@ -4808,14 +5389,13 @@ describe('AiSdkBackend model history', () => {
 
     let reuseSummaryCalls = 0;
     const secondModel = completionModel();
-    const secondBackend = new AiSdkBackend({
+    const secondBackend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => secondModel,
       tools: [],
       newId: idGenerator(),
@@ -4857,7 +5437,7 @@ describe('AiSdkBackend model history', () => {
     const model = completionModel();
     const storedMessages: StoredMessage[] = [];
     let recordCalls = 0;
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async (message) => {
@@ -4866,7 +5446,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -4961,14 +5540,13 @@ describe('AiSdkBackend model history', () => {
       summary: 'FALLBACK_PRIOR_SUMMARY',
       charsPerToken: 1,
     });
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -5045,14 +5623,13 @@ describe('AiSdkBackend model history', () => {
       headAnchor: { runtimeEventId: anchor.id, turnId: anchor.turnId },
       charsPerToken: 1,
     });
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -5116,14 +5693,13 @@ describe('AiSdkBackend model history', () => {
       charsPerToken: 1,
     });
     assert.ok(previous.estimatedTokens > 100);
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -5181,7 +5757,7 @@ describe('AiSdkBackend model history', () => {
         text: 'fail beta compact source '.repeat(12),
       }),
     ];
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async (message) => {
@@ -5190,7 +5766,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -5286,7 +5861,7 @@ describe('AiSdkBackend model history', () => {
     });
     let loadCalls = 0;
     let writeCalls = 0;
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async (message) => {
@@ -5295,7 +5870,6 @@ describe('AiSdkBackend model history', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -5393,14 +5967,13 @@ describe('AiSdkBackend model history', () => {
       charsPerToken: 1,
     });
     let v1LoadCalls = 0;
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -5503,14 +6076,13 @@ describe('AiSdkBackend model history', () => {
       'provenance JSON outgrows the token-derived byte cap',
     );
 
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -5570,14 +6142,13 @@ describe('AiSdkBackend model history', () => {
     // StoredMessage projection.
     const model = completionModel();
     let imageReads = 0;
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       supportsVision: true,
@@ -5643,14 +6214,13 @@ describe('AiSdkBackend model history', () => {
 
   test('keeps RuntimeEvent replay when a system error fact is diagnostic-only', async () => {
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -5704,14 +6274,13 @@ describe('AiSdkBackend model history', () => {
   test('uses StoredMessage projection instead of leaking unsupported thinking text', async () => {
     const model = completionModel();
     const openAiConnection = { ...connection(), providerType: 'openai' as const };
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: openAiConnection,
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -5767,18 +6336,229 @@ describe('AiSdkBackend model history', () => {
     ]);
     assert.equal(promptJson.includes('private chain of thought'), false);
   });
+
+  test('skips unsupported unsigned thinking without dropping native tool replay', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: { ...connection(), providerType: 'openai' },
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'current user',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-u',
+            turnId: 'turn-prev',
+            role: 'user',
+            author: 'user',
+            text: 'read the file',
+          }),
+          runtimeEvent({
+            id: 'rt-thinking',
+            turnId: 'turn-prev',
+            role: 'model',
+            author: 'agent',
+            content: { kind: 'thinking', text: 'private unsigned thought' },
+          }),
+          runtimeEvent({
+            id: 'rt-call',
+            turnId: 'turn-prev',
+            role: 'model',
+            author: 'agent',
+            content: {
+              kind: 'function_call',
+              id: 'tool-1',
+              name: 'Read',
+              args: { path: 'package.json' },
+            },
+          }),
+          runtimeEvent({
+            id: 'rt-result',
+            turnId: 'turn-prev',
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id: 'tool-1',
+              name: 'Read',
+              result: 'file contents',
+              isError: false,
+            },
+          }),
+        ],
+      }),
+    );
+
+    const promptJson = JSON.stringify(compactPrompt(model));
+    assert.match(promptJson, /"toolCallId":"tool-1"/);
+    assert.match(promptJson, /file contents/);
+    assert.equal(promptJson.includes('private unsigned thought'), false);
+  });
+
+  test('skips unmarked unsigned thinking when replaying Kimi OpenAI tool history', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: {
+        ...connection(),
+        slug: 'kimi-main',
+        providerType: 'kimi-coding-plan',
+        defaultModel: 'k3',
+        models: [{ id: 'k3', apiProtocol: 'openai-chat' }],
+      },
+      apiKey: 'sk-test',
+      modelId: 'k3',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'current user',
+        context: [],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-u',
+            turnId: 'turn-prev',
+            role: 'user',
+            author: 'user',
+            text: 'read the file',
+          }),
+          runtimeEvent({
+            id: 'rt-thinking',
+            turnId: 'turn-prev',
+            role: 'model',
+            author: 'agent',
+            content: { kind: 'thinking', text: 'private thinking from another provider' },
+          }),
+          runtimeEvent({
+            id: 'rt-call',
+            turnId: 'turn-prev',
+            role: 'model',
+            author: 'agent',
+            content: {
+              kind: 'function_call',
+              id: 'tool-1',
+              name: 'Read',
+              args: { path: 'package.json' },
+            },
+          }),
+          runtimeEvent({
+            id: 'rt-result',
+            turnId: 'turn-prev',
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id: 'tool-1',
+              name: 'Read',
+              result: 'file contents',
+              isError: false,
+            },
+          }),
+        ],
+      }),
+    );
+
+    const promptJson = JSON.stringify(compactPrompt(model));
+    assert.equal(promptJson.includes('private thinking from another provider'), false);
+    assert.match(promptJson, /"toolCallId":"tool-1"/);
+    assert.match(promptJson, /file contents/);
+  });
+
+  test('rejects signed thinking from provider-native replay when the target cannot replay it', async () => {
+    const trace: RunTraceEvent[] = [];
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        throw new Error('provider failed');
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: { ...connection(), providerType: 'openai' },
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      recordRunTrace: (event) => trace.push(event),
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'current user',
+        context: [
+          { type: 'user', id: 'projection-u', turnId: 'turn-prev', ts: 1, text: 'prior user' },
+          {
+            type: 'assistant',
+            id: 'projection-a',
+            turnId: 'turn-prev',
+            ts: 2,
+            text: 'prior answer',
+            modelId: 'm',
+          },
+        ],
+        runtimeContext: [
+          runtimeTextEvent({
+            id: 'rt-u',
+            turnId: 'turn-prev',
+            role: 'user',
+            author: 'user',
+            text: 'prior user',
+          }),
+          runtimeEvent({
+            id: 'rt-thinking',
+            turnId: 'turn-prev',
+            role: 'model',
+            author: 'agent',
+            content: { kind: 'thinking', text: 'signed thought', signature: 'sig-1' },
+          }),
+          runtimeTextEvent({
+            id: 'rt-a',
+            turnId: 'turn-prev',
+            role: 'model',
+            author: 'agent',
+            text: 'prior answer',
+          }),
+        ],
+      }),
+    );
+
+    const failure = trace.find((event) => event.type === 'model_stream_failed');
+    assert.equal(failure?.data?.priorReplayGate, 'runtime_replay_unsupported_semantics');
+  });
 });
 
 describe('AiSdkBackend error surfaces', () => {
   test('generalizes model setup errors before emitting renderer events', async () => {
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-live-secret-token-value',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => {
         throw new Error('401 Authorization: Bearer sk-live-secret-token-value');
       },
@@ -5799,6 +6579,113 @@ describe('AiSdkBackend error surfaces', () => {
     assert.equal(JSON.stringify(events).includes('sk-live-secret-token-value'), false);
   });
 
+  test('stops after a T1 rejection only after sibling tool calls settle', async () => {
+    const durable = durableTurnHarness('turn-1', 'read notes');
+    const messages: StoredMessage[] = [];
+    const events: SessionEvent[] = [];
+    const executions: string[] = [];
+    let streamCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        streamCalls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          streamCalls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'tool-1',
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'notes.md' }),
+                },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'tool-2',
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'sibling.md' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: {
+                    inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 0, reasoning: 0 },
+                  },
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-1' },
+                { type: 'text-delta', id: 'text-1', delta: 'recovered' },
+                { type: 'text-end', id: 'text-1' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: {
+                    inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 1, reasoning: 0 },
+                  },
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message) => {
+        messages.push(message);
+      },
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          ...testTool('Read', z.object({ path: z.string() })),
+          impl: async ({ path }: { path: string }) => {
+            executions.push(path);
+            return { body: path };
+          },
+        },
+      ],
+      runtimeCommitSink: {
+        commitToolPrepared: async ({ providerToolCallId }) => {
+          if (providerToolCallId === 'tool-1') throw new Error('T1 unavailable');
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          return { created: true, runtimeEventSeq: 1 };
+        },
+        commitToolOutcome: async () => ({ created: true, runtimeEventSeq: 2 }),
+      },
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    for await (const event of backend.send(
+      durable.input({
+        runId: 'run-1',
+        invocationId: 'invocation-1',
+      }),
+    )) {
+      durable.record(event);
+      events.push(event);
+    }
+
+    assert.equal(streamCalls, 1);
+    assert.deepEqual(executions, ['sibling.md']);
+    assert.equal(messages.filter((message) => message.type === 'tool_result').length, 1);
+    assert.equal(events.filter((event) => event.type === 'tool_result').length, 1);
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+    assert.equal(events.find((event) => event.type === 'error')?.message, 'Operation failed');
+  });
+
   test('redacts and caps synthetic tool error text before storage and model return', () => {
     const raw = `provider exploded: Authorization: Bearer sk-live-secret-token-value ${'x'.repeat(5000)}`;
     const text = formatSyntheticToolErrorText(new Error(raw));
@@ -5812,7 +6699,7 @@ describe('AiSdkBackend error surfaces', () => {
   test('writeSyntheticToolResult never persists raw secret-shaped errors', async () => {
     const messages: ToolResultMessage[] = [];
     const events: SessionEvent[] = [];
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async (message) => {
@@ -5821,27 +6708,24 @@ describe('AiSdkBackend error surfaces', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
       now: () => 1,
     });
 
-    await (
-      backend as unknown as {
-        writeSyntheticToolResult(
-          toolUseId: string,
-          turnId: string,
-          text: string,
-          queue: { push(event: SessionEvent): void },
-        ): Promise<void>;
-      }
-    ).writeSyntheticToolResult(
+    await (backend as unknown as { toolRuntime: ToolRuntime }).toolRuntime.writeSyntheticToolResult(
       'tool-1',
       'turn-1',
       'failed with api_key=sk-live-secret-token-value',
-      { push: (event) => events.push(event) },
+      {
+        push: (event) => {
+          events.push(event);
+        },
+        pushAndWaitUntilConsumed: async (event) => {
+          events.push(event);
+        },
+      },
     );
 
     assert.equal(JSON.stringify(messages).includes('sk-live-secret-token-value'), false);
@@ -5855,7 +6739,7 @@ describe('AiSdkBackend error surfaces', () => {
   test('failed Bash results preserve terminal stdout and stderr as an error card', async () => {
     const messages: ToolResultMessage[] = [];
     const events: SessionEvent[] = [];
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async (message) => {
@@ -5864,7 +6748,6 @@ describe('AiSdkBackend error surfaces', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
@@ -5874,7 +6757,6 @@ describe('AiSdkBackend error surfaces', () => {
       name: 'Bash',
       description: 'shell',
       parameters: {},
-      permissionRequired: false,
       impl: async () => {
         throw Object.assign(new Error('Command failed with exit code 2'), {
           code: 2,
@@ -5884,18 +6766,9 @@ describe('AiSdkBackend error surfaces', () => {
       },
     };
 
-    const execute = (
-      backend as unknown as {
-        wrapToolExecute(
-          tool: MakaTool,
-          turnId: string,
-          queue: { push(event: SessionEvent): void },
-        ): (
-          args: unknown,
-          ctx: { toolCallId: string; abortSignal: AbortSignal },
-        ) => Promise<unknown>;
-      }
-    ).wrapToolExecute(tool, 'turn-1', { push: (event) => events.push(event) });
+    const execute = runtimeExecute(backend, tool, 'turn-1', {
+      push: (event) => events.push(event),
+    });
 
     const result = await execute(
       { command: 'printf out; printf err >&2; exit 2' },
@@ -5935,14 +6808,13 @@ describe('AiSdkBackend error surfaces', () => {
   });
 
   test('model stream timeout errors carry a stable reason for turn-history UI', () => {
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
@@ -5957,52 +6829,6 @@ describe('AiSdkBackend error surfaces', () => {
 
     assert.equal(event.message, 'Request timed out');
     assert.equal(event.reason, 'timeout');
-  });
-});
-
-describe('AiSdkBackend stop', () => {
-  test('rejects parked permission requests for the active turn', async () => {
-    const permissionEngine = new PermissionEngine({ newId: () => 'permission-id', now: () => 1 });
-    permissionEngine.beginTurn('turn-1');
-    const verdict = permissionEngine.evaluate({
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      toolUseId: 'tool-1',
-      toolName: 'Write',
-      args: { path: 'notes.md', content: 'hello' },
-      mode: 'ask',
-    });
-    assert.equal(verdict.kind, 'prompt');
-    assert.equal(permissionEngine.pendingCount('turn-1'), 1);
-    const parked =
-      verdict.kind === 'prompt'
-        ? verdict.parked.then(
-            () => 'resolved',
-            (error: Error) => error.message,
-          )
-        : Promise.resolve('not-prompt');
-    const backend = new AiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine,
-      modelFactory: () => ({}),
-      tools: [],
-      newId: idGenerator(),
-      now: () => 1,
-    });
-
-    (backend as unknown as { currentTurnId: string }).currentTurnId = 'turn-1';
-    await backend.stop('user_stop');
-
-    assert.match(
-      await parked,
-      /Turn turn-1 aborted before permission request permission-id was answered/,
-    );
-    assert.equal(permissionEngine.pendingCount('turn-1'), 0);
   });
 });
 
@@ -6035,53 +6861,127 @@ describe('AiSdkBackend usage telemetry', () => {
 
   test('lets an unconfigured turn continue past the former 50-step default', async () => {
     const loop = countingToolLoopModel(51);
-    const backend = new AiSdkBackend({
+    const durable = durableTurnHarness('turn-1', 'hi');
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => loop.model,
       tools: [testTool('Read', z.object({ path: z.string() }))],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
       now: monotonicClock(),
     });
 
-    const events: SessionEvent[] = [];
-    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
-      events.push(event);
-    }
+    const events = await drainDurably(backend.send(durable.input()), durable);
 
     assert.equal(loop.callCount(), 52);
     assert.equal(events.at(-1)?.type, 'complete');
   });
 
-  test('keeps an explicitly configured step limit', async () => {
-    const loop = countingToolLoopModel();
-    const backend = new AiSdkBackend({
+  test('rejects continuation-capable tools before side effects without a durable reader', async () => {
+    const loop = countingToolLoopModel(1);
+    let executions = 0;
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => loop.model,
-      tools: [testTool('Read', z.object({ path: z.string() }))],
-      maxSteps: 3,
+      tools: [
+        {
+          ...testTool('Read', z.object({ path: z.string() })),
+          impl: async () => {
+            executions += 1;
+            return { ok: true };
+          },
+        },
+      ],
+      maxSteps: 2,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const events: SessionEvent[] = [];
+
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+      events.push(event);
+    }
+
+    assert.equal(loop.callCount(), 1);
+    assert.equal(executions, 0);
+    assert.ok(events.some((event) => event.type === 'error'));
+  });
+
+  test('checks that the durable ledger is readable before tool side effects', async () => {
+    const loop = countingToolLoopModel(1);
+    const durable = durableTurnHarness('turn-1', 'hi');
+    let reads = 0;
+    let executions = 0;
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => loop.model,
+      tools: [
+        {
+          ...testTool('Read', z.object({ path: z.string() })),
+          impl: async () => {
+            executions += 1;
+            return { ok: true };
+          },
+        },
+      ],
+      maxSteps: 2,
+      loadTurnRuntimeEvents: async (turnId) => {
+        reads += 1;
+        if (reads === 2) throw new Error('runtime ledger unavailable');
+        return await durable.loadTurnRuntimeEvents(turnId);
+      },
       newId: idGenerator(),
       now: monotonicClock(),
     });
 
-    await drain(backend.send({ turnId: 'turn-1', text: 'hi', context: [] }));
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(loop.callCount(), 1);
+    assert.equal(executions, 0);
+    assert.ok(events.some((event) => event.type === 'error'));
+  });
+
+  test('keeps an explicitly configured step limit', async () => {
+    const loop = countingToolLoopModel();
+    const durable = durableTurnHarness('turn-1', 'hi');
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => loop.model,
+      tools: [testTool('Read', z.object({ path: z.string() }))],
+      maxSteps: 3,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drainDurably(backend.send(durable.input()), durable);
 
     assert.equal(loop.callCount(), 3);
   });
 
   test('reports an explicit step limit without making an auxiliary model call', async () => {
     const appended: StoredMessage[] = [];
+    const durable = durableTurnHarness('turn-1', 'finish the task');
     let streamCalls = 0;
     const model = new MockLanguageModelV4({
       doGenerate: {
@@ -6128,7 +7028,7 @@ describe('AiSdkBackend usage telemetry', () => {
         };
       },
     });
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async (message) => {
@@ -6137,22 +7037,15 @@ describe('AiSdkBackend usage telemetry', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [testTool('Read', z.object({ path: z.string() }))],
       maxSteps: 2,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
       now: monotonicClock(),
     });
 
-    const events: SessionEvent[] = [];
-    for await (const event of backend.send({
-      turnId: 'turn-1',
-      text: 'finish the task',
-      context: [],
-    })) {
-      events.push(event);
-    }
+    const events = await drainDurably(backend.send(durable.input()), durable);
 
     assert.equal(streamCalls, 2);
     assert.equal(model.doGenerateCalls.length, 0);
@@ -6173,6 +7066,8 @@ describe('AiSdkBackend usage telemetry', () => {
     const events: SessionEvent[] = [];
     const llmRecords: LlmCallRecord[] = [];
     const usageCheckpoints: Array<{ inputTokens: number; outputTokens: number }> = [];
+    const firstTurn = durableTurnHarness('turn-1', 'hi');
+    const secondTurn = durableTurnHarness('turn-2', 'continue');
     let streamCalls = 0;
     const model = new MockLanguageModelV4({
       doStream: async () => {
@@ -6237,7 +7132,7 @@ describe('AiSdkBackend usage telemetry', () => {
         };
       },
     });
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async (message: StoredMessage) => {
@@ -6246,9 +7141,12 @@ describe('AiSdkBackend usage telemetry', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [testTool('Read', z.object({ path: z.string() }))],
+      loadTurnRuntimeEvents: async (turnId: string) =>
+        turnId === 'turn-1'
+          ? firstTurn.loadTurnRuntimeEvents(turnId)
+          : secondTurn.loadTurnRuntimeEvents(turnId),
       newId: idGenerator(),
       now: monotonicClock(),
       recordLlmCall: (record: LlmCallRecord) => {
@@ -6259,10 +7157,11 @@ describe('AiSdkBackend usage telemetry', () => {
       },
     } as never);
 
-    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+    for await (const event of backend.send(firstTurn.input())) {
+      firstTurn.record(event);
       events.push(event);
     }
-    await drain(backend.send({ turnId: 'turn-2', text: 'continue', context: [] }));
+    await drainDurably(backend.send(secondTurn.input()), secondTurn);
 
     const usageMessage = messages.find(
       (message) => (message as { type?: string }).type === 'token_usage',
@@ -6342,14 +7241,13 @@ describe('AiSdkBackend usage telemetry', () => {
         }),
       },
     });
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -6385,14 +7283,13 @@ describe('AiSdkBackend usage telemetry', () => {
         }),
       }),
     });
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'unpriced-model',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -6410,6 +7307,7 @@ describe('AiSdkBackend usage telemetry', () => {
   });
 
   test('records active tool-result prune diagnostics in usage telemetry', async () => {
+    const durable = durableTurnHarness('turn-1', 'hi');
     const messages: unknown[] = [];
     const events: SessionEvent[] = [];
     const llmRecords: LlmCallRecord[] = [];
@@ -6473,7 +7371,7 @@ describe('AiSdkBackend usage telemetry', () => {
         };
       },
     });
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async (message) => {
@@ -6482,21 +7380,18 @@ describe('AiSdkBackend usage telemetry', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [
         {
           name: 'Read',
           description: 'Read description',
           parameters: z.object({ path: z.string() }),
-          permissionRequired: false,
           impl: async () => ({ body: largeBody }),
         },
         {
           name: 'Bash',
           description: 'Bash description',
           parameters: z.object({ cmd: z.string() }),
-          permissionRequired: false,
           impl: async () => ({ body: 'NEWEST_RESULT_STAYS_VISIBLE' }),
         },
       ],
@@ -6504,6 +7399,7 @@ describe('AiSdkBackend usage telemetry', () => {
         activeToolResultPrune: { enabled: true, maxCurrentResultEstimatedTokens: 1 },
       },
       archiveToolResult: async () => ({ artifactId: 'artifact-tool-1' }),
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
       now: monotonicClock(),
       recordLlmCall: (record) => {
@@ -6511,7 +7407,8 @@ describe('AiSdkBackend usage telemetry', () => {
       },
     });
 
-    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+    for await (const event of backend.send(durable.input())) {
+      durable.record(event);
       events.push(event);
     }
 
@@ -6544,6 +7441,7 @@ describe('AiSdkBackend usage telemetry', () => {
   });
 
   test('active full compact sees the fresh tool result before active tool-result prune', async () => {
+    const durable = durableTurnHarness('turn-1', 'hi');
     const messages: unknown[] = [];
     const events: SessionEvent[] = [];
     const llmRecords: LlmCallRecord[] = [];
@@ -6592,7 +7490,7 @@ describe('AiSdkBackend usage telemetry', () => {
         };
       },
     });
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async (message) => {
@@ -6601,14 +7499,12 @@ describe('AiSdkBackend usage telemetry', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [
         {
           name: 'Read',
           description: 'Read description',
           parameters: z.object({ path: z.string() }),
-          permissionRequired: false,
           impl: async () => ({ body: largeBody }),
         },
       ],
@@ -6625,6 +7521,7 @@ describe('AiSdkBackend usage telemetry', () => {
         },
       },
       archiveToolResult: async () => ({ artifactId: 'artifact-tool-1' }),
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
       now: monotonicClock(),
       recordLlmCall: (record) => {
@@ -6635,7 +7532,8 @@ describe('AiSdkBackend usage telemetry', () => {
       },
     });
 
-    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+    for await (const event of backend.send(durable.input())) {
+      durable.record(event);
       events.push(event);
     }
     await Promise.resolve();
@@ -6713,14 +7611,13 @@ describe('AiSdkBackend usage telemetry', () => {
 
   test('active full compact durable recorder is invoked synchronously', () => {
     const recordedBlocks: ActiveFullCompactBlock[] = [];
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -6741,14 +7638,13 @@ describe('AiSdkBackend usage telemetry', () => {
 
   test('does not record semantic compact usage when provider usage is unavailable', () => {
     const llmRecords: LlmCallRecord[] = [];
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
       tools: [],
       newId: idGenerator(),
@@ -6784,6 +7680,7 @@ describe('AiSdkBackend usage telemetry', () => {
   });
 
   test('semantic compact records a separate no-tools summarizer LLM call', async () => {
+    const durable = durableTurnHarness('turn-1', 'hi');
     const messages: unknown[] = [];
     const events: SessionEvent[] = [];
     const llmRecords: LlmCallRecord[] = [];
@@ -6868,7 +7765,7 @@ describe('AiSdkBackend usage telemetry', () => {
         };
       },
     });
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async (message) => {
@@ -6877,14 +7774,12 @@ describe('AiSdkBackend usage telemetry', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [
         {
           name: 'Read',
           description: 'Read description',
           parameters: z.object({ path: z.string() }),
-          permissionRequired: false,
           impl: async ({ path }) => ({
             body: path === 'large.log' ? largeBody : 'FRESH_SEMANTIC_TAIL_RESULT',
           }),
@@ -6919,6 +7814,7 @@ describe('AiSdkBackend usage telemetry', () => {
         archiveCalls += 1;
         return { artifactId: 'archived-covered-semantic-result' };
       },
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
       now: monotonicClock(),
       recordLlmCall: (record) => {
@@ -6932,7 +7828,8 @@ describe('AiSdkBackend usage telemetry', () => {
       },
     });
 
-    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+    for await (const event of backend.send(durable.input())) {
+      durable.record(event);
       events.push(event);
     }
 
@@ -7028,6 +7925,7 @@ describe('AiSdkBackend usage telemetry', () => {
   });
 
   test('active full compact keeps the accepted boundary projection across later AI SDK steps', async () => {
+    const durable = durableTurnHarness('turn-1', 'hi');
     const messages: unknown[] = [];
     const events: SessionEvent[] = [];
     const rawOne = 'ACTIVE_FULL_COMPACT_BOUNDARY_RAW_ONE'.repeat(160);
@@ -7089,7 +7987,7 @@ describe('AiSdkBackend usage telemetry', () => {
         };
       },
     });
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async (message) => {
@@ -7098,14 +7996,12 @@ describe('AiSdkBackend usage telemetry', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [
         {
           name: 'Read',
           description: 'Read description',
           parameters: z.object({ path: z.string() }),
-          permissionRequired: false,
           impl: async ({ path }) => ({ body: path === 'one.md' ? rawOne : rawTwo }),
         },
       ],
@@ -7120,11 +8016,13 @@ describe('AiSdkBackend usage telemetry', () => {
           maxSummaryEstimatedTokens: 512,
         },
       },
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
       now: monotonicClock(),
     });
 
-    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+    for await (const event of backend.send(durable.input())) {
+      durable.record(event);
       events.push(event);
     }
 
@@ -7148,6 +8046,7 @@ describe('AiSdkBackend usage telemetry', () => {
   });
 
   test('active full compact validate_only records diagnostics without replacing the next step prompt', async () => {
+    const durable = durableTurnHarness('turn-1', 'hi');
     const messages: unknown[] = [];
     const events: SessionEvent[] = [];
     const llmRecords: LlmCallRecord[] = [];
@@ -7191,7 +8090,7 @@ describe('AiSdkBackend usage telemetry', () => {
         };
       },
     });
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async (message) => {
@@ -7200,14 +8099,12 @@ describe('AiSdkBackend usage telemetry', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [
         {
           name: 'Read',
           description: 'Read description',
           parameters: z.object({ path: z.string() }),
-          permissionRequired: false,
           impl: async () => ({ body: largeBody }),
         },
       ],
@@ -7223,6 +8120,7 @@ describe('AiSdkBackend usage telemetry', () => {
           maxSummaryEstimatedTokens: 512,
         },
       },
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
       now: monotonicClock(),
       recordLlmCall: (record) => {
@@ -7230,7 +8128,8 @@ describe('AiSdkBackend usage telemetry', () => {
       },
     });
 
-    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+    for await (const event of backend.send(durable.input())) {
+      durable.record(event);
       events.push(event);
     }
 
@@ -7315,7 +8214,7 @@ describe('AiSdkBackend usage telemetry', () => {
         }),
       },
     });
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async (message) => {
@@ -7324,7 +8223,6 @@ describe('AiSdkBackend usage telemetry', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -7724,14 +8622,13 @@ describe('AiSdkBackend request-shape diagnostics', () => {
   test('backend full mode keeps the complete tool surface and omits the connector', async () => {
     const model = completionModel();
     const llmRecords: LlmCallRecord[] = [];
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       // No toolAvailability ⇒ full surface: every tool visible, no connector.
       tools: [
@@ -7760,14 +8657,13 @@ describe('AiSdkBackend request-shape diagnostics', () => {
     const llmRecords: LlmCallRecord[] = [];
     const models: MockLanguageModelV4[] = [];
     let date = '2026-05-29';
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => {
         const model = completionModel();
         models.push(model);
@@ -8005,14 +8901,13 @@ describe('AiSdkBackend context budget and prompt attribution', () => {
   test('usage events include prompt segments and context budget diagnostics', async () => {
     const model = completionModel();
     const events: SessionEvent[] = [];
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [testTool('Read', z.object({ path: z.string() }))],
       newId: idGenerator(),
@@ -8098,6 +8993,7 @@ describe('AiSdkBackend RunTrace', () => {
     test(`records ${protocol} multi-step requests and reconciles complete attempt usage`, async () => {
       const captures: ProviderRequestCaptureRecord[] = [];
       const attempts: ProviderRequestAttemptRecord[] = [];
+      const durable = durableTurnHarness('turn-1', 'hi');
       let calls = 0;
       const usageFor = (step: number) => {
         if (protocol === 'openai-compatible') {
@@ -8183,16 +9079,16 @@ describe('AiSdkBackend RunTrace', () => {
           };
         },
       });
-      const backend = new AiSdkBackend({
+      const backend = createTestAiSdkBackend({
         sessionId: 'session-1',
         header: header(),
         appendMessage: async () => {},
         connection: connection(),
         apiKey: 'sk-test',
         modelId: 'mock-model-id',
-        permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
         modelFactory: () => model,
         tools: [testTool('Read', z.object({ path: z.string() }))],
+        loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
         newId: idGenerator(),
         now: monotonicClock(),
         recordProviderRequestCapture: async (capture) => {
@@ -8204,10 +9100,7 @@ describe('AiSdkBackend RunTrace', () => {
         },
       });
 
-      const events: SessionEvent[] = [];
-      for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
-        events.push(event);
-      }
+      const events = await drainDurably(backend.send(durable.input()), durable);
 
       assert.equal(captures.length, 2);
       assert.deepEqual(
@@ -8266,14 +9159,16 @@ describe('AiSdkBackend RunTrace', () => {
         };
       },
     });
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
-      connection: connection(),
+      connection: {
+        ...connection(),
+        models: [{ id: 'mock-model-id', contextWindow: 200_000 }],
+      },
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -8297,6 +9192,7 @@ describe('AiSdkBackend RunTrace', () => {
     assert.equal(attempts[0]?.step, 0);
     assert.equal(attempts[0]?.attempt, 1);
     assert.equal(attempts[0]?.status, 'completed');
+    assert.equal(attempts[0]?.contextWindow, 200_000);
     assert.equal(attempts[0]?.captureId, captures[0]?.captureId);
     assert.equal(attempts[0]?.cacheMissInputSource, 'derived');
     assert.equal(
@@ -8307,14 +9203,13 @@ describe('AiSdkBackend RunTrace', () => {
 
   test('does not call the provider when prepared-request persistence fails', async () => {
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -8335,7 +9230,7 @@ describe('AiSdkBackend RunTrace', () => {
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
   });
 
-  test('records each AI SDK internal retry as a physical attempt against one capture', async () => {
+  test('disables hidden AI SDK retries and traces the one explicit Runtime retry', async () => {
     const captures: ProviderRequestCaptureRecord[] = [];
     const attempts: ProviderRequestAttemptRecord[] = [];
     let calls = 0;
@@ -8348,7 +9243,7 @@ describe('AiSdkBackend RunTrace', () => {
             url: 'https://provider.invalid/v1/messages',
             requestBodyValues: {},
             statusCode: 503,
-            responseHeaders: { 'retry-after-ms': '0' },
+            responseHeaders: { 'retry-after-ms': '1' },
           });
         }
         return {
@@ -8358,7 +9253,10 @@ describe('AiSdkBackend RunTrace', () => {
               {
                 type: 'finish',
                 finishReason: { unified: 'stop', raw: 'stop' },
-                usage: emptyUsage(),
+                usage: {
+                  inputTokens: { total: 4, noCache: 4, cacheRead: 0, cacheWrite: undefined },
+                  outputTokens: { total: 2, text: 2, reasoning: 0 },
+                },
               },
             ],
             initialDelayInMs: null,
@@ -8367,14 +9265,13 @@ describe('AiSdkBackend RunTrace', () => {
         };
       },
     });
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -8386,6 +9283,7 @@ describe('AiSdkBackend RunTrace', () => {
       recordProviderRequestAttempt: (attempt) => {
         attempts.push(attempt);
       },
+      providerRetrySleep: async () => {},
     });
 
     await drain(backend.send({ turnId: 'turn-1', text: 'hi', context: [] }));
@@ -8408,14 +9306,13 @@ describe('AiSdkBackend RunTrace', () => {
         throw new Error('provider failed');
       },
     });
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -8492,14 +9389,13 @@ describe('AiSdkBackend RunTrace', () => {
         }),
       },
     });
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -8572,14 +9468,13 @@ describe('AiSdkBackend RunTrace', () => {
         }),
       },
     });
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -8601,142 +9496,15 @@ describe('AiSdkBackend RunTrace', () => {
     );
   });
 
-  test('records permission and tool trace events for denied tools', async () => {
-    const trace: RunTraceEvent[] = [];
-    const events: SessionEvent[] = [];
-    const permissionEngine = new PermissionEngine({ newId: idGenerator(), now: () => 1 });
-    const backend = new AiSdkBackend({
-      sessionId: 'session-1',
-      header: header('ask'),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine,
-      modelFactory: () => ({}),
-      tools: [],
-      newId: idGenerator(),
-      now: monotonicClock(),
-      permissionTimeoutMs: 1_000,
-    });
-    (
-      backend as unknown as {
-        currentRunTrace: {
-          emit(
-            eventPhase: string,
-            eventType: string,
-            message: string,
-            data?: Record<string, unknown>,
-          ): void;
-        };
-        currentWatchdog: { pause(): void; resume(): void };
-      }
-    ).currentRunTrace = {
-      emit: (phase, type, message, data) => {
-        trace.push({
-          id: `trace-${trace.length + 1}`,
-          sessionId: 'session-1',
-          turnId: 'turn-1',
-          ts: trace.length + 1,
-          phase: phase as RunTraceEvent['phase'],
-          type: type as RunTraceEvent['type'],
-          message,
-          ...(data ? { data } : {}),
-        });
-      },
-    };
-    (
-      backend as unknown as {
-        currentWatchdog: { pause(): void; resume(): void };
-      }
-    ).currentWatchdog = { pause() {}, resume() {} };
-    const tool: MakaTool = {
-      name: 'Write',
-      description: 'write file',
-      parameters: {},
-      permissionRequired: true,
-      impl: async () => ({ ok: true }),
-    };
-    const execute = (
-      backend as unknown as {
-        wrapToolExecute(
-          tool: MakaTool,
-          turnId: string,
-          queue: { push(event: SessionEvent): void },
-        ): (
-          args: unknown,
-          ctx: { toolCallId: string; abortSignal: AbortSignal },
-        ) => Promise<unknown>;
-      }
-    ).wrapToolExecute(tool, 'turn-1', { push: (event) => events.push(event) });
-
-    const pending = execute(
-      { path: 'notes.md', content: 'hello' },
-      { toolCallId: 'tool-1', abortSignal: new AbortController().signal },
-    );
-    await waitFor(() => events.some((event) => event.type === 'permission_request'));
-    const request = events.find((event) => event.type === 'permission_request') as
-      | Extract<SessionEvent, { type: 'permission_request' }>
-      | undefined;
-    assert.ok(request);
-    permissionEngine.recordResponse('turn-1', {
-      requestId: request.requestId,
-      decision: 'deny',
-    });
-    await pending;
-
-    assert.deepEqual(
-      trace.map((event) => event.type),
-      [
-        'tool_started',
-        'approval_routed',
-        'permission_requested',
-        'permission_decided',
-        'tool_failed',
-      ],
-    );
-    assert.deepEqual(
-      trace.map((event) => event.phase),
-      ['tool', 'permission', 'permission', 'permission', 'tool'],
-    );
-    assert.equal(
-      trace.find((event) => event.type === 'permission_decided')?.data?.decision,
-      'deny',
-    );
-    assert.equal(
-      trace.find((event) => event.type === 'tool_failed')?.data?.errorClass,
-      'Permission',
-    );
-  });
-
   test('records abort trace when stop is requested', async () => {
     const trace: RunTraceEvent[] = [];
-    const permissionEngine = new PermissionEngine({ newId: () => 'permission-id', now: () => 1 });
-    permissionEngine.beginTurn('turn-1');
-    const verdict = permissionEngine.evaluate({
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      toolUseId: 'tool-1',
-      toolName: 'Write',
-      args: { path: 'notes.md', content: 'hello' },
-      mode: 'ask',
-    });
-    assert.equal(verdict.kind, 'prompt');
-    const parked =
-      verdict.kind === 'prompt'
-        ? verdict.parked.then(
-            () => 'resolved',
-            (error: Error) => error.message,
-          )
-        : Promise.resolve('not-prompt');
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine,
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
@@ -8772,21 +9540,16 @@ describe('AiSdkBackend RunTrace', () => {
     assert.equal(trace.length, 1);
     assert.equal(trace[0]?.type, 'abort_requested');
     assert.equal(trace[0]?.data?.reason, 'redirect');
-    assert.match(
-      await parked,
-      /Turn turn-1 aborted before permission request permission-id was answered/,
-    );
-    assert.equal(permissionEngine.pendingCount('turn-1'), 0);
   });
 });
 
-describe('AiSdkBackend tool permission category hints', () => {
-  test('permissionRequired=false fast path preserves tool-call/result ordering and telemetry', async () => {
+describe('AiSdkBackend tool execution', () => {
+  test('ordinary tool execution preserves tool-call/result ordering and telemetry', async () => {
     const messages: unknown[] = [];
     const events: SessionEvent[] = [];
     const telemetry: Array<{ status: string; toolCallId?: string; argsSummary?: string }> = [];
     let implCalled = false;
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header('ask'),
       appendMessage: async (message) => {
@@ -8795,7 +9558,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
@@ -8812,24 +9574,14 @@ describe('AiSdkBackend tool permission category hints', () => {
       name: 'Read',
       description: 'read file',
       parameters: {},
-      permissionRequired: false,
       impl: async () => {
         implCalled = true;
         return { kind: 'text', text: 'hello' };
       },
     };
-    const execute = (
-      backend as unknown as {
-        wrapToolExecute(
-          tool: MakaTool,
-          turnId: string,
-          queue: { push(event: SessionEvent): void },
-        ): (
-          args: unknown,
-          ctx: { toolCallId: string; abortSignal: AbortSignal },
-        ) => Promise<unknown>;
-      }
-    ).wrapToolExecute(tool, 'turn-1', { push: (event) => events.push(event) });
+    const execute = runtimeExecute(backend, tool, 'turn-1', {
+      push: (event) => events.push(event),
+    });
 
     const result = await execute(
       {
@@ -8872,280 +9624,11 @@ describe('AiSdkBackend tool permission category hints', () => {
     assert.equal(JSON.stringify(telemetry).includes('correct-horse-battery-staple'), false);
   });
 
-  test('an invocation deny rule blocks a permission-free tool and emits an auditable denial', async () => {
-    const messages: unknown[] = [];
-    const events: SessionEvent[] = [];
-    let implCalled = false;
-    const backend = new AiSdkBackend({
-      sessionId: 'session-1',
-      header: header('bypass'),
-      appendMessage: async (message) => {
-        messages.push(message);
-      },
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: idGenerator(), now: () => 1 }),
-      permissionRules: [{ effect: 'deny', kind: 'category', category: 'read' }],
-      modelFactory: () => ({}),
-      tools: [],
-      newId: idGenerator(),
-      now: monotonicClock(),
-    });
-    const tool: MakaTool = {
-      name: 'Read',
-      description: 'read file',
-      parameters: {},
-      permissionRequired: false,
-      impl: async () => {
-        implCalled = true;
-        return { kind: 'text', text: 'should not run' };
-      },
-    };
-    const execute = (
-      backend as unknown as {
-        wrapToolExecute(
-          tool: MakaTool,
-          turnId: string,
-          queue: { push(event: SessionEvent): void },
-        ): (
-          args: unknown,
-          ctx: { toolCallId: string; abortSignal: AbortSignal },
-        ) => Promise<unknown>;
-      }
-    ).wrapToolExecute(tool, 'turn-1', { push: (event) => events.push(event) });
-
-    await execute(
-      { path: 'notes.md' },
-      { toolCallId: 'tool-1', abortSignal: new AbortController().signal },
-    );
-
-    assert.equal(implCalled, false);
-    assert.deepEqual(
-      messages.map((message) => (message as { type?: string }).type),
-      ['tool_call', 'permission_decision', 'tool_result'],
-    );
-    assert.deepEqual(
-      events.map((event) => event.type),
-      ['tool_start', 'permission_decision_ack', 'tool_result'],
-    );
-    const decision = events.find((event) => event.type === 'permission_decision_ack');
-    assert.equal(decision?.decision, 'deny');
-  });
-
-  test('permission prompt timeout expires one request, resumes watchdog, and writes an error result', async () => {
-    const messages: unknown[] = [];
-    const events: SessionEvent[] = [];
-    const permissionEngine = new PermissionEngine({ newId: idGenerator(), now: () => 1 });
-    let implCalled = false;
-    let pauseCount = 0;
-    let resumeCount = 0;
-    const backend = new AiSdkBackend({
-      sessionId: 'session-1',
-      header: header('ask'),
-      appendMessage: async (message) => {
-        messages.push(message);
-      },
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine,
-      modelFactory: () => ({}),
-      tools: [],
-      newId: idGenerator(),
-      now: () => 1,
-      permissionTimeoutMs: 1,
-    });
-    const tool: MakaTool = {
-      name: 'Write',
-      description: 'write file',
-      parameters: {},
-      permissionRequired: true,
-      impl: async () => {
-        implCalled = true;
-        return { ok: true };
-      },
-    };
-    (
-      backend as unknown as {
-        currentWatchdog: { pause(): void; resume(): void };
-      }
-    ).currentWatchdog = {
-      pause: () => {
-        pauseCount += 1;
-      },
-      resume: () => {
-        resumeCount += 1;
-      },
-    };
-
-    const execute = (
-      backend as unknown as {
-        wrapToolExecute(
-          tool: MakaTool,
-          turnId: string,
-          queue: { push(event: SessionEvent): void },
-        ): (
-          args: unknown,
-          ctx: { toolCallId: string; abortSignal: AbortSignal },
-        ) => Promise<unknown>;
-      }
-    ).wrapToolExecute(tool, 'turn-1', { push: (event) => events.push(event) });
-
-    const result = await execute(
-      { path: 'notes.md', content: 'hello' },
-      { toolCallId: 'tool-1', abortSignal: new AbortController().signal },
-    );
-    const permissionRequest = events.find((event) => event.type === 'permission_request') as
-      | Extract<SessionEvent, { type: 'permission_request' }>
-      | undefined;
-    const toolResult = events.find((event) => event.type === 'tool_result') as
-      | Extract<SessionEvent, { type: 'tool_result' }>
-      | undefined;
-
-    assert.equal(implCalled, false);
-    assert.equal(pauseCount, 1);
-    assert.equal(resumeCount, 1);
-    assert.equal(permissionEngine.pendingCount('turn-1'), 0);
-    assert.equal(
-      permissionEngine.recordResponse('turn-1', {
-        requestId: permissionRequest?.requestId ?? 'missing',
-        decision: 'allow',
-      }),
-      null,
-    );
-    assert.match((result as { error?: string }).error ?? '', /Permission flow aborted/);
-    assert.match((result as { error?: string }).error ?? '', /timed out/);
-    assert.equal(toolResult?.isError, true);
-    assert.equal(
-      messages.some(
-        (message) =>
-          (message as { type?: string; toolUseId?: string; isError?: boolean }).type ===
-            'tool_result' &&
-          (message as { toolUseId?: string }).toolUseId === 'tool-1' &&
-          (message as { isError?: boolean }).isError === true,
-      ),
-      true,
-    );
-  });
-
-  test('permission denial records decision ack, resumes watchdog, and never runs impl', async () => {
-    const messages: unknown[] = [];
-    const events: SessionEvent[] = [];
-    const permissionEngine = new PermissionEngine({ newId: idGenerator(), now: () => 1 });
-    let implCalled = false;
-    let pauseCount = 0;
-    let resumeCount = 0;
-    const backend = new AiSdkBackend({
-      sessionId: 'session-1',
-      header: header('ask'),
-      appendMessage: async (message) => {
-        messages.push(message);
-      },
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine,
-      modelFactory: () => ({}),
-      tools: [],
-      newId: idGenerator(),
-      now: () => 1,
-      permissionTimeoutMs: 1_000,
-    });
-    const tool: MakaTool = {
-      name: 'Write',
-      description: 'write file',
-      parameters: {},
-      permissionRequired: true,
-      impl: async () => {
-        implCalled = true;
-        return { ok: true };
-      },
-    };
-    (
-      backend as unknown as {
-        currentWatchdog: { pause(): void; resume(): void };
-      }
-    ).currentWatchdog = {
-      pause: () => {
-        pauseCount += 1;
-      },
-      resume: () => {
-        resumeCount += 1;
-      },
-    };
-    const execute = (
-      backend as unknown as {
-        wrapToolExecute(
-          tool: MakaTool,
-          turnId: string,
-          queue: { push(event: SessionEvent): void },
-        ): (
-          args: unknown,
-          ctx: { toolCallId: string; abortSignal: AbortSignal },
-        ) => Promise<unknown>;
-      }
-    ).wrapToolExecute(tool, 'turn-1', { push: (event) => events.push(event) });
-
-    const pending = execute(
-      { path: 'notes.md', content: 'hello' },
-      { toolCallId: 'tool-1', abortSignal: new AbortController().signal },
-    );
-    await waitFor(() => events.some((event) => event.type === 'permission_request'));
-    const request = events.find((event) => event.type === 'permission_request') as
-      | Extract<SessionEvent, { type: 'permission_request' }>
-      | undefined;
-    assert.ok(request);
-
-    const accepted = permissionEngine.recordResponse('turn-1', {
-      requestId: request.requestId,
-      decision: 'deny',
-      rememberForTurn: true,
-    });
-    assert.ok(accepted);
-    const result = await pending;
-
-    assert.equal(implCalled, false);
-    assert.equal(pauseCount, 1);
-    assert.equal(resumeCount, 1);
-    assert.deepEqual(result, { error: '用户已拒绝权限请求' });
-    assert.equal(
-      messages.some((message) => (message as { type?: string }).type === 'tool_call'),
-      true,
-    );
-    assert.equal(
-      messages.some(
-        (message) =>
-          (message as { type?: string; decision?: string; rememberForTurn?: boolean }).type ===
-            'permission_decision' &&
-          (message as { decision?: string }).decision === 'deny' &&
-          (message as { rememberForTurn?: boolean }).rememberForTurn === true,
-      ),
-      true,
-    );
-    assert.equal(
-      events.some(
-        (event) =>
-          event.type === 'permission_decision_ack' &&
-          event.decision === 'deny' &&
-          event.rememberForTurn === true,
-      ),
-      true,
-    );
-    assert.equal(
-      events.some(
-        (event) =>
-          event.type === 'tool_result' && event.toolUseId === 'tool-1' && event.isError === true,
-      ),
-      true,
-    );
-  });
-
   test('tool failure telemetry classifies and redacts generic implementation errors', async () => {
     const messages: unknown[] = [];
     const events: SessionEvent[] = [];
     const telemetry: Array<{ status: string; errorClass?: string; bytesOut: number }> = [];
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header('ask'),
       appendMessage: async (message) => {
@@ -9154,7 +9637,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
@@ -9171,25 +9653,15 @@ describe('AiSdkBackend tool permission category hints', () => {
       name: 'Write',
       description: 'write file',
       parameters: {},
-      permissionRequired: false,
       impl: async () => {
         const error = new Error('401 Authorization: Bearer sk-live-secret-token-value');
         Object.assign(error, { code: 401 });
         throw error;
       },
     };
-    const execute = (
-      backend as unknown as {
-        wrapToolExecute(
-          tool: MakaTool,
-          turnId: string,
-          queue: { push(event: SessionEvent): void },
-        ): (
-          args: unknown,
-          ctx: { toolCallId: string; abortSignal: AbortSignal },
-        ) => Promise<unknown>;
-      }
-    ).wrapToolExecute(tool, 'turn-1', { push: (event) => events.push(event) });
+    const execute = runtimeExecute(backend, tool, 'turn-1', {
+      push: (event) => events.push(event),
+    });
 
     const result = await execute(
       { path: 'notes.md', content: 'hello' },
@@ -9212,14 +9684,13 @@ describe('AiSdkBackend tool permission category hints', () => {
 
   test('flushes output deltas before successful and failed tool results', async () => {
     const events: SessionEvent[] = [];
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header('ask'),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
@@ -9229,7 +9700,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       name: 'Streamer',
       description: 'streams output',
       parameters: {},
-      permissionRequired: false,
       impl: async (_args, ctx) => {
         ctx.emitOutput('stdout', 'success chunk');
         return { ok: true };
@@ -9239,25 +9709,13 @@ describe('AiSdkBackend tool permission category hints', () => {
       name: 'Streamer',
       description: 'streams then fails',
       parameters: {},
-      permissionRequired: false,
       impl: async (_args, ctx) => {
         ctx.emitOutput('stderr', 'failure chunk');
         throw new Error('tool failed');
       },
     };
     const wrap = (tool: MakaTool) =>
-      (
-        backend as unknown as {
-          wrapToolExecute(
-            tool: MakaTool,
-            turnId: string,
-            queue: { push(event: SessionEvent): void },
-          ): (
-            args: unknown,
-            ctx: { toolCallId: string; abortSignal: AbortSignal },
-          ) => Promise<unknown>;
-        }
-      ).wrapToolExecute(tool, 'turn-1', { push: (event) => events.push(event) });
+      runtimeExecute(backend, tool, 'turn-1', { push: (event) => events.push(event) });
 
     await wrap(successTool)(
       {},
@@ -9289,87 +9747,14 @@ describe('AiSdkBackend tool permission category hints', () => {
     );
   });
 
-  test('passes categoryHint through PermissionEngine before tool execution', async () => {
-    const messages: unknown[] = [];
-    const events: SessionEvent[] = [];
-    const backend = new AiSdkBackend({
-      sessionId: 'session-1',
-      header: header('explore'),
-      appendMessage: async (message) => {
-        messages.push(message);
-      },
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
-      modelFactory: () => ({}),
-      tools: [],
-      newId: idGenerator(),
-      now: () => 1,
-    });
-    const tool: MakaTool = {
-      name: 'ExploreAgent',
-      description: 'read-only worker',
-      parameters: {},
-      permissionRequired: true,
-      categoryHint: 'subagent',
-      impl: async () => ({ ok: true }),
-    };
-
-    const execute = (
-      backend as unknown as {
-        wrapToolExecute(
-          tool: MakaTool,
-          turnId: string,
-          queue: { push(event: SessionEvent): void },
-        ): (
-          args: unknown,
-          ctx: { toolCallId: string; abortSignal: AbortSignal },
-        ) => Promise<unknown>;
-      }
-    ).wrapToolExecute(tool, 'turn-1', { push: (event) => events.push(event) });
-
-    const result = await execute(
-      { objective: 'map PawWork subagent lifecycle' },
-      {
-        toolCallId: 'tool-1',
-        abortSignal: new AbortController().signal,
-      },
-    );
-
-    assert.deepEqual(result, { ok: true });
-    assert.equal(
-      events.some((event) => event.type === 'permission_request'),
-      false,
-    );
-    assert.equal(
-      messages.some((message) => (message as { type?: string }).type === 'tool_result'),
-      true,
-    );
-    assert.equal(
-      (
-        messages.find((message) => (message as { type?: string }).type === 'tool_call') as
-          | { intent?: string }
-          | undefined
-      )?.intent,
-      '只读探索：map PawWork subagent lifecycle',
-    );
-    assert.equal(
-      (events.find((event) => event.type === 'tool_start') as { intent?: string } | undefined)
-        ?.intent,
-      '只读探索：map PawWork subagent lifecycle',
-    );
-  });
-
   test('pauses stream watchdog while a foreground subagent tool is running', async () => {
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header('explore'),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
@@ -9394,7 +9779,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       name: 'agent_spawn',
       description: 'spawn child agent',
       parameters: {},
-      permissionRequired: true,
       categoryHint: 'subagent',
       impl: async () =>
         new Promise((resolve) => {
@@ -9410,18 +9794,7 @@ describe('AiSdkBackend tool permission category hints', () => {
             });
         }),
     };
-    const execute = (
-      backend as unknown as {
-        wrapToolExecute(
-          tool: MakaTool,
-          turnId: string,
-          queue: { push(event: SessionEvent): void },
-        ): (
-          args: unknown,
-          ctx: { toolCallId: string; abortSignal: AbortSignal },
-        ) => Promise<unknown>;
-      }
-    ).wrapToolExecute(tool, 'turn-1', { push: () => {} });
+    const execute = runtimeExecute(backend, tool, 'turn-1', { push: () => {} });
 
     const pending = execute(
       {},
@@ -9442,14 +9815,13 @@ describe('AiSdkBackend tool permission category hints', () => {
   test('pauses stream watchdog while a regular (non-subagent) tool is running', async () => {
     // A long Bash command (apt-get install, a build) must not trip the model
     // stream idle timeout: the model is between steps while the tool runs.
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header('explore'),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
@@ -9474,7 +9846,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       name: 'Bash',
       description: 'run a shell command',
       parameters: {},
-      permissionRequired: false,
       impl: async () =>
         new Promise((resolve) => {
           release = () =>
@@ -9495,18 +9866,7 @@ describe('AiSdkBackend tool permission category hints', () => {
             });
         }),
     };
-    const execute = (
-      backend as unknown as {
-        wrapToolExecute(
-          tool: MakaTool,
-          turnId: string,
-          queue: { push(event: SessionEvent): void },
-        ): (
-          args: unknown,
-          ctx: { toolCallId: string; abortSignal: AbortSignal },
-        ) => Promise<unknown>;
-      }
-    ).wrapToolExecute(tool, 'turn-1', { push: () => {} });
+    const execute = runtimeExecute(backend, tool, 'turn-1', { push: () => {} });
 
     const pending = execute(
       {},
@@ -9527,7 +9887,7 @@ describe('AiSdkBackend tool permission category hints', () => {
   test('caps concurrent read-only subagent tools in one turn', async () => {
     const messages: unknown[] = [];
     const events: SessionEvent[] = [];
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header('explore'),
       appendMessage: async (message) => {
@@ -9536,7 +9896,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
@@ -9548,7 +9907,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       name: 'ExploreAgent',
       description: 'read-only worker',
       parameters: {},
-      permissionRequired: true,
       categoryHint: 'subagent',
       impl: async () => {
         implStarted += 1;
@@ -9557,18 +9915,9 @@ describe('AiSdkBackend tool permission category hints', () => {
         });
       },
     };
-    const execute = (
-      backend as unknown as {
-        wrapToolExecute(
-          tool: MakaTool,
-          turnId: string,
-          queue: { push(event: SessionEvent): void },
-        ): (
-          args: unknown,
-          ctx: { toolCallId: string; abortSignal: AbortSignal },
-        ) => Promise<unknown>;
-      }
-    ).wrapToolExecute(tool, 'turn-1', { push: (event) => events.push(event) });
+    const execute = runtimeExecute(backend, tool, 'turn-1', {
+      push: (event) => events.push(event),
+    });
 
     const pending = Array.from({ length: MAX_ACTIVE_SUBAGENT_TOOLS_PER_TURN }, (_, index) =>
       execute(
@@ -9604,7 +9953,7 @@ describe('AiSdkBackend tool permission category hints', () => {
     const messages: unknown[] = [];
     const events: SessionEvent[] = [];
     const telemetry: Array<{ status: string; toolCallId?: string }> = [];
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header('explore'),
       appendMessage: async (message) => {
@@ -9613,7 +9962,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
@@ -9626,7 +9974,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       name: 'ExploreAgent',
       description: 'read-only worker',
       parameters: {},
-      permissionRequired: true,
       categoryHint: 'subagent',
       impl: async (args: unknown) => {
         const input = args as { reason?: string };
@@ -9649,18 +9996,9 @@ describe('AiSdkBackend tool permission category hints', () => {
         };
       },
     };
-    const execute = (
-      backend as unknown as {
-        wrapToolExecute(
-          tool: MakaTool,
-          turnId: string,
-          queue: { push(event: SessionEvent): void },
-        ): (
-          args: unknown,
-          ctx: { toolCallId: string; abortSignal: AbortSignal },
-        ) => Promise<unknown>;
-      }
-    ).wrapToolExecute(tool, 'turn-1', { push: (event) => events.push(event) });
+    const execute = runtimeExecute(backend, tool, 'turn-1', {
+      push: (event) => events.push(event),
+    });
 
     await execute(
       { objective: 'bad scope' },
@@ -9705,7 +10043,7 @@ describe('AiSdkBackend tool permission category hints', () => {
     const messages: unknown[] = [];
     const events: SessionEvent[] = [];
     const telemetry: Array<{ status: string; toolCallId?: string }> = [];
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header('explore'),
       appendMessage: async (message) => {
@@ -9714,7 +10052,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => ({}),
       tools: [],
       newId: idGenerator(),
@@ -9727,7 +10064,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       name: 'agent_spawn',
       description: 'spawn read-only worker',
       parameters: {},
-      permissionRequired: true,
       categoryHint: 'subagent',
       impl: async (args: unknown) => {
         const input = args as { status: 'completed' | 'failed' | 'cancelled' };
@@ -9742,18 +10078,9 @@ describe('AiSdkBackend tool permission category hints', () => {
         };
       },
     };
-    const execute = (
-      backend as unknown as {
-        wrapToolExecute(
-          tool: MakaTool,
-          turnId: string,
-          queue: { push(event: SessionEvent): void },
-        ): (
-          args: unknown,
-          ctx: { toolCallId: string; abortSignal: AbortSignal },
-        ) => Promise<unknown>;
-      }
-    ).wrapToolExecute(tool, 'turn-1', { push: (event) => events.push(event) });
+    const execute = runtimeExecute(backend, tool, 'turn-1', {
+      push: (event) => events.push(event),
+    });
 
     await execute(
       { status: 'failed' },
@@ -9809,69 +10136,6 @@ describe('AiSdkBackend tool permission category hints', () => {
       { status: 'success', toolCallId: 'tool-completed' },
     ]);
   });
-
-  test('maps aborted OfficeDocument results to aborted tool telemetry', async () => {
-    const events: SessionEvent[] = [];
-    const telemetry: Array<{ status: string; toolCallId?: string }> = [];
-    const backend = new AiSdkBackend({
-      sessionId: 'session-1',
-      header: header('ask'),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'claude-sonnet-4-5-20250929',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
-      modelFactory: () => ({}),
-      tools: [],
-      newId: idGenerator(),
-      now: () => 1,
-      recordToolInvocation: (record) => {
-        telemetry.push({ status: record.status, toolCallId: record.toolCallId });
-      },
-    });
-    const tool: MakaTool = {
-      name: 'OfficeDocument',
-      description: 'read office',
-      parameters: {},
-      permissionRequired: false,
-      impl: async () => ({
-        kind: 'office_document',
-        ok: false,
-        operation: 'view',
-        path: 'slides.pptx',
-        args: ['view', 'slides.pptx', 'outline'],
-        reason: 'officecli_aborted',
-        message: 'officecli 操作已取消。',
-      }),
-    };
-    const execute = (
-      backend as unknown as {
-        wrapToolExecute(
-          tool: MakaTool,
-          turnId: string,
-          queue: { push(event: SessionEvent): void },
-        ): (
-          args: unknown,
-          ctx: { toolCallId: string; abortSignal: AbortSignal },
-        ) => Promise<unknown>;
-      }
-    ).wrapToolExecute(tool, 'turn-1', { push: (event) => events.push(event) });
-
-    await execute(
-      { path: 'slides.pptx', operation: 'view' },
-      {
-        toolCallId: 'tool-office-aborted',
-        abortSignal: new AbortController().signal,
-      },
-    );
-
-    assert.equal(
-      (events.find((event) => event.type === 'tool_result') as { isError?: boolean } | undefined)
-        ?.isError,
-      true,
-    );
-    assert.deepEqual(telemetry, [{ status: 'aborted', toolCallId: 'tool-office-aborted' }]);
-  });
 });
 
 describe('AiSdkBackend tool-call repair', () => {
@@ -9926,14 +10190,13 @@ describe('AiSdkBackend tool-call repair', () => {
 describe('AiSdkBackend loop-gate turn wiring', () => {
   test('send() resets ToolRuntime per turn (at turn start and at cleanup)', async () => {
     const model = completionModel();
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -9995,14 +10258,13 @@ describe('AiSdkBackend thinking persistence', () => {
         stream: simulateReadableStream({ chunks, initialDelayInMs: null, chunkDelayInMs: null }),
       },
     });
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -10093,7 +10355,7 @@ describe('AiSdkBackend thinking persistence', () => {
       },
     });
     const appended: unknown[] = [];
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async (message) => {
@@ -10102,7 +10364,6 @@ describe('AiSdkBackend thinking persistence', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
@@ -10169,7 +10430,7 @@ describe('AiSdkBackend thinking persistence', () => {
     assert.equal(assistantItem.message.thinking?.text, 'silent thought');
   });
 
-  test('OpenCode Claude signed thinking survives to the provider-native replay request on the next turn', async () => {
+  test('text-only terminal replay fixture preserves signed thinking and usage exactly', async () => {
     const openCodeClaudeConnection: LlmConnection = {
       slug: 'opencode',
       name: 'OpenCode Zen',
@@ -10212,14 +10473,13 @@ describe('AiSdkBackend thinking persistence', () => {
         }),
       },
     });
-    const firstBackend = new AiSdkBackend({
+    const firstBackend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: openCodeClaudeConnection,
       apiKey: 'sk-test',
       modelId: 'claude-opus-4-8',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => firstModel,
       tools: [],
       newId: idGenerator(),
@@ -10230,6 +10490,19 @@ describe('AiSdkBackend thinking persistence', () => {
     for await (const event of firstBackend.send({ turnId: 'turn-prev', text: 'q', context: [] })) {
       firstEvents.push(event);
     }
+    const firstUsage = firstEvents.find(
+      (event): event is Extract<SessionEvent, { type: 'token_usage' }> =>
+        event.type === 'token_usage',
+    );
+    assert.deepEqual(
+      firstUsage && {
+        input: firstUsage.input,
+        output: firstUsage.output,
+        reasoning: firstUsage.reasoning,
+        total: firstUsage.total,
+      },
+      { input: 1, output: 2, reasoning: 1, total: 3 },
+    );
 
     // Translate the emitted SessionEvents into the durable RuntimeEvent ledger.
     const ctx = {
@@ -10247,14 +10520,13 @@ describe('AiSdkBackend thinking persistence', () => {
 
     // Turn 2: replay the prior ledger and capture the outgoing provider request.
     const secondModel = completionModel();
-    const secondBackend = new AiSdkBackend({
+    const secondBackend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: openCodeClaudeConnection,
       apiKey: 'sk-test',
       modelId: 'claude-opus-4-8',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => secondModel,
       tools: [],
       newId: idGenerator(),
@@ -10271,12 +10543,24 @@ describe('AiSdkBackend thinking persistence', () => {
     );
 
     // The reasoning block + text + Anthropic signature must reach the AI SDK
-    // request. This fails if signature forwarding regresses or replay degrades
-    // to text-only.
-    const prompt = JSON.stringify(compactPrompt(secondModel));
-    assert.match(prompt, /"type":"reasoning"/);
-    assert.match(prompt, /deep thought/);
-    assert.match(prompt, /sig-replay/);
+    // request in the same order emitted by the prior turn. This fails if
+    // signature forwarding regresses, text disappears, or replay degrades to
+    // an unstructured transcript.
+    const prompt = compactPrompt(secondModel) as ModelMessage[];
+    const replayedAssistant = prompt.find(
+      (message) => message.role === 'assistant' && Array.isArray(message.content),
+    );
+    assert.ok(replayedAssistant && Array.isArray(replayedAssistant.content));
+    assert.deepEqual(
+      replayedAssistant.content.map((part) => part.type),
+      ['reasoning', 'text'],
+    );
+    const [reasoningPart, textPart] = replayedAssistant.content;
+    assert.equal(reasoningPart?.type, 'reasoning');
+    assert.equal(reasoningPart.text, 'deep thought');
+    assert.match(JSON.stringify(reasoningPart.providerOptions), /sig-replay/);
+    assert.equal(textPart?.type, 'text');
+    assert.equal(textPart.text, 'the answer');
   });
 
   test('signed thinking from a per-step tool-calling turn IS replayed, merged with its tool call', async () => {
@@ -10336,14 +10620,13 @@ describe('AiSdkBackend thinking persistence', () => {
     );
 
     const secondModel = completionModel();
-    const secondBackend = new AiSdkBackend({
+    const secondBackend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => secondModel,
       tools: [],
       newId: idGenerator(),
@@ -10367,6 +10650,335 @@ describe('AiSdkBackend thinking persistence', () => {
     assert.match(prompt, /"toolName":"Read"|"toolCallId":"tool-1"/);
     // Reasoning leads the tool call inside the assistant message (Anthropic order).
     assert.ok(prompt.indexOf('reasoning about the tool result') < prompt.indexOf('tool-1'));
+  });
+
+  test('OpenAI Responses reasoning from a tool step is replayed with its encrypted content', async () => {
+    const ctx = {
+      sessionId: 'session-1',
+      invocationId: 'inv-1',
+      runId: 'run-prev',
+      turnId: 'turn-prev',
+      now: () => 7,
+      newId: idGenerator(),
+    } as unknown as InvocationContext;
+    const memory = createSessionEventMapMemory();
+    const priorEvents: SessionEvent[] = [
+      {
+        type: 'tool_start',
+        id: 'e1',
+        turnId: 'turn-prev',
+        ts: 1,
+        toolUseId: 'tool-1',
+        toolName: 'Read',
+        args: { path: 'package.json' },
+        stepId: 'm1',
+      },
+      {
+        type: 'tool_result',
+        id: 'e2',
+        turnId: 'turn-prev',
+        ts: 2,
+        toolUseId: 'tool-1',
+        isError: false,
+        content: { kind: 'text', text: 'file contents' },
+      },
+      {
+        type: 'thinking_complete',
+        id: 'e3',
+        turnId: 'turn-prev',
+        ts: 3,
+        messageId: 'm1',
+        text: 'reasoning about the tool',
+        providerOptions: {
+          openai: {
+            itemId: 'rs_ark',
+            reasoningEncryptedContent: 'encrypted-ark-reasoning',
+          },
+        },
+      },
+      {
+        type: 'text_complete',
+        id: 'e4',
+        turnId: 'turn-prev',
+        ts: 4,
+        messageId: 'm1',
+        text: '',
+      },
+    ];
+    const runtimeContext = priorEvents.map((event) =>
+      mapSessionEventToRuntimeEvent(event, ctx, memory),
+    );
+    const secondModel = completionModel();
+    const secondBackend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: {
+        slug: 'volcengine-agent-plan',
+        providerType: 'volcengine-agent-plan',
+        defaultModel: 'ark-code-latest',
+      },
+      apiKey: 'ark-plan-token',
+      modelId: 'ark-code-latest',
+      modelFactory: () => secondModel,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      secondBackend.send({
+        turnId: 'turn-current',
+        text: 'follow up',
+        context: [],
+        runtimeContext,
+      }),
+    );
+
+    const prompt = compactPrompt(secondModel) as ModelMessage[];
+    const assistant = prompt.find(
+      (message) => message.role === 'assistant' && Array.isArray(message.content),
+    );
+    assert.ok(assistant && Array.isArray(assistant.content));
+    const reasoning = assistant.content.find((part) => part.type === 'reasoning');
+    assert.deepEqual(reasoning, {
+      type: 'reasoning',
+      text: 'reasoning about the tool',
+      providerOptions: {
+        openai: {
+          itemId: 'rs_ark',
+          reasoningEncryptedContent: 'encrypted-ark-reasoning',
+        },
+      },
+    });
+    assert.ok(
+      assistant.content.some((part) => part.type === 'tool-call' && part.toolCallId === 'tool-1'),
+    );
+  });
+
+  test('preserves every OpenAI Responses reasoning item through stream persistence and replay', async () => {
+    const chunks: LanguageModelV4StreamPart[] = [
+      { type: 'stream-start', warnings: [] },
+      { type: 'reasoning-start', id: 'r1' },
+      {
+        type: 'reasoning-delta',
+        id: 'r1',
+        delta: 'first summary',
+        providerMetadata: { openai: { itemId: 'rs_first' } },
+      },
+      {
+        type: 'reasoning-end',
+        id: 'r1',
+        providerMetadata: {
+          openai: {
+            itemId: 'rs_first',
+            reasoningEncryptedContent: 'encrypted-first',
+          },
+        },
+      },
+      { type: 'reasoning-start', id: 'r2' },
+      {
+        type: 'reasoning-delta',
+        id: 'r2',
+        delta: 'second summary',
+        providerMetadata: { openai: { itemId: 'rs_second' } },
+      },
+      {
+        type: 'reasoning-end',
+        id: 'r2',
+        providerMetadata: {
+          openai: {
+            itemId: 'rs_second',
+            reasoningEncryptedContent: 'encrypted-second',
+          },
+        },
+      },
+      { type: 'text-start', id: 't1' },
+      { type: 'text-delta', id: 't1', delta: 'Final answer.' },
+      { type: 'text-end', id: 't1' },
+      {
+        type: 'finish',
+        finishReason: { unified: 'stop', raw: 'stop' },
+        usage: {
+          inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+          outputTokens: { total: 3, text: 1, reasoning: 2 },
+        },
+      },
+    ];
+    const firstModel = new MockLanguageModelV4({
+      doStream: {
+        stream: simulateReadableStream({ chunks, initialDelayInMs: null, chunkDelayInMs: null }),
+      },
+    });
+    const planConnection: LlmConnection = {
+      slug: 'volcengine-agent-plan',
+      name: 'Volcengine Ark Agent Plan (China)',
+      providerType: 'volcengine-agent-plan',
+      defaultModel: 'ark-code-latest',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const appended: StoredMessage[] = [];
+    const firstBackend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message) => {
+        appended.push(message);
+      },
+      connection: planConnection,
+      apiKey: 'ark-plan-token',
+      modelId: 'ark-code-latest',
+      modelFactory: () => firstModel,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of firstBackend.send({
+      turnId: 'turn-prev',
+      text: 'solve it',
+      context: [],
+    })) {
+      events.push(event);
+    }
+
+    const thinkingCompletes = events.filter(
+      (event): event is Extract<SessionEvent, { type: 'thinking_complete' }> =>
+        event.type === 'thinking_complete',
+    );
+    assert.deepEqual(
+      thinkingCompletes.map((event) => [event.text, event.providerOptions]),
+      [
+        [
+          'first summary',
+          {
+            openai: {
+              itemId: 'rs_first',
+              reasoningEncryptedContent: 'encrypted-first',
+            },
+          },
+        ],
+        [
+          'second summary',
+          {
+            openai: {
+              itemId: 'rs_second',
+              reasoningEncryptedContent: 'encrypted-second',
+            },
+          },
+        ],
+      ],
+    );
+
+    const persistedAssistant = appended.find(
+      (message): message is AssistantMessage => message.type === 'assistant',
+    );
+    assert.ok(persistedAssistant);
+    assert.deepEqual(
+      (
+        persistedAssistant.thinking as
+          | {
+              parts?: Array<{
+                text: string;
+                providerOptions?: Record<string, unknown>;
+              }>;
+            }
+          | undefined
+      )?.parts,
+      thinkingCompletes.map(({ text, providerOptions }) => ({ text, providerOptions })),
+    );
+
+    const ctx = {
+      sessionId: 'session-1',
+      invocationId: 'inv-1',
+      runId: 'run-prev',
+      turnId: 'turn-prev',
+      now: () => 7,
+      newId: idGenerator(),
+    } as unknown as InvocationContext;
+    const memory = createSessionEventMapMemory();
+    const runtimeContext = events.map((event) => mapSessionEventToRuntimeEvent(event, ctx, memory));
+    const projection = projectRuntimeEventsToStoredMessages(runtimeContext, {
+      runHeaders: [
+        {
+          runId: 'run-prev',
+          sessionId: 'session-1',
+          turnId: 'turn-prev',
+          status: 'completed',
+          backendKind: 'ai-sdk',
+          llmConnectionSlug: planConnection.slug,
+          modelId: 'ark-code-latest',
+          cwd: '/tmp/maka',
+          permissionMode: 'ask',
+          createdAt: 1,
+          updatedAt: 2,
+        },
+      ],
+    });
+    const projectedAssistant = projection.messages.find(
+      (message): message is AssistantMessage => message.type === 'assistant',
+    );
+    assert.ok(projectedAssistant);
+    assert.deepEqual(
+      projectedAssistant.thinking?.parts,
+      thinkingCompletes.map(({ text, providerOptions }) => ({ text, providerOptions })),
+    );
+
+    const secondModel = completionModel();
+    const secondBackend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: planConnection,
+      apiKey: 'ark-plan-token',
+      modelId: 'ark-code-latest',
+      modelFactory: () => secondModel,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      secondBackend.send({
+        turnId: 'turn-current',
+        text: 'follow up',
+        context: [],
+        runtimeContext,
+      }),
+    );
+
+    const prompt = compactPrompt(secondModel) as ModelMessage[];
+    const assistant = prompt.find(
+      (message) => message.role === 'assistant' && Array.isArray(message.content),
+    );
+    assert.ok(assistant && Array.isArray(assistant.content));
+    assert.deepEqual(
+      assistant.content.filter((part) => part.type === 'reasoning'),
+      [
+        {
+          type: 'reasoning',
+          text: 'first summary',
+          providerOptions: {
+            openai: {
+              itemId: 'rs_first',
+              reasoningEncryptedContent: 'encrypted-first',
+            },
+          },
+        },
+        {
+          type: 'reasoning',
+          text: 'second summary',
+          providerOptions: {
+            openai: {
+              itemId: 'rs_second',
+              reasoningEncryptedContent: 'encrypted-second',
+            },
+          },
+        },
+      ],
+    );
   });
 
   test('thinking-only tool step (no text) replays reasoning + tool call in one assistant message without an empty text block', async () => {
@@ -10422,14 +11034,13 @@ describe('AiSdkBackend thinking persistence', () => {
     );
 
     const secondModel = completionModel();
-    const secondBackend = new AiSdkBackend({
+    const secondBackend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => secondModel,
       tools: [],
       newId: idGenerator(),
@@ -10533,14 +11144,13 @@ describe('AiSdkBackend thinking persistence', () => {
     );
 
     const secondModel = completionModel();
-    const secondBackend = new AiSdkBackend({
+    const secondBackend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => secondModel,
       tools: [],
       newId: idGenerator(),
@@ -10623,14 +11233,13 @@ describe('AiSdkBackend thinking persistence', () => {
     );
 
     const secondModel = completionModel();
-    const secondBackend = new AiSdkBackend({
+    const secondBackend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => secondModel,
       tools: [],
       newId: idGenerator(),
@@ -10692,7 +11301,7 @@ describe('AiSdkBackend thinking persistence', () => {
       },
     });
     const persisted: AssistantMessage[] = [];
-    const firstBackend = new AiSdkBackend({
+    const firstBackend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async (m) => {
@@ -10701,7 +11310,6 @@ describe('AiSdkBackend thinking persistence', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => firstModel,
       tools: [],
       newId: idGenerator(),
@@ -10740,14 +11348,13 @@ describe('AiSdkBackend thinking persistence', () => {
     );
 
     const secondModel = completionModel();
-    const secondBackend = new AiSdkBackend({
+    const secondBackend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => secondModel,
       tools: [],
       newId: idGenerator(),
@@ -10768,14 +11375,12 @@ describe('AiSdkBackend thinking persistence', () => {
     assert.match(prompt, /sig-omitted/);
   });
 
-  test('does not synthesize assistant text when a capped stream ends without a trailing finish-step', async () => {
-    // streamText always synthesizes trailing step boundaries, so drive the
-    // backend through a patched startStream: step 1 runs a real tool via the
-    // wrapped execute (genuine tool_start.stepId), step 2 is thinking-only and
-    // the stream ends abruptly with no finish-step / finish.
+  test('does not synthesize assistant text when a stream ends without a trailing finish-step', async () => {
+    // Drive the backend through a patched one-step adapter whose signed
+    // thinking stream ends abruptly without a finish-step / finish event.
     const appended: StoredMessage[] = [];
     const events: SessionEvent[] = [];
-    const backend = new AiSdkBackend({
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async (message) => {
@@ -10784,23 +11389,12 @@ describe('AiSdkBackend thinking persistence', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => completionModel(),
-      tools: [testTool('Read', z.object({ path: z.string() }))],
-      maxSteps: 2,
+      tools: [],
       newId: idGenerator(),
       now: monotonicClock(),
     });
     type FakeStreamInput = {
-      tools: Record<
-        string,
-        {
-          execute: (
-            args: unknown,
-            ctx: { toolCallId: string; abortSignal: AbortSignal },
-          ) => Promise<unknown>;
-        }
-      >;
       abortSignal: AbortSignal;
     };
     (
@@ -10808,25 +11402,17 @@ describe('AiSdkBackend thinking persistence', () => {
         modelAdapter: { startStream: (input: FakeStreamInput) => Promise<unknown> };
       }
     ).modelAdapter.startStream = async (input: FakeStreamInput) => ({
-      stream: (async function* () {
-        // Step 1 (pure tool): execute mid-step, then close the step.
-        await input.tools['Read']!.execute(
-          { path: 'a.md' },
-          { toolCallId: 'tool-1', abortSignal: input.abortSignal },
-        );
-        yield { type: 'finish-step', finishReason: { unified: 'tool-calls', raw: 'tool_calls' } };
-        // Step 2 (thinking-only): signed reasoning, then the stream ends with
-        // NO trailing finish-step and NO finish chunk.
-        yield { type: 'reasoning-delta', delta: 'final thoughts' };
-        yield {
-          type: 'reasoning-delta',
-          delta: '',
-          providerMetadata: { anthropic: { signature: 'sig-last' } },
-        };
+      // The adapter boundary now exposes Maka-owned `ModelStreamEvent`s, not
+      // raw SDK chunks. This fake adapter yields events directly so the test
+      // drives the backend through the new contract with no trailing
+      // `step-finish` / `finish`.
+      events: (async function* () {
+        void input.abortSignal;
+        yield { kind: 'thinking', text: 'final thoughts' };
+        yield { kind: 'thinking-signature', signature: 'sig-last' };
       })(),
       usage: Promise.resolve(undefined),
-      finalStep: Promise.resolve(undefined),
-      finishReason: Promise.resolve('tool-calls'),
+      finishReason: Promise.resolve('stop'),
     });
 
     for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
@@ -10834,8 +11420,7 @@ describe('AiSdkBackend thinking persistence', () => {
     }
 
     const assistants = appended.filter((m): m is AssistantMessage => m.type === 'assistant');
-    // Catch-all flush persists the thinking-only step, but the harness owns the
-    // visible step-limit notice instead of fabricating another assistant row.
+    // Catch-all flush persists the thinking-only step without fabricating text.
     assert.equal(assistants.length, 1);
     const thinkingOnly = assistants.find((m) => m.thinking?.signature === 'sig-last');
     assert.ok(thinkingOnly, 'thinking-only last step must persist');
@@ -10915,7 +11500,8 @@ describe('AiSdkBackend thinking persistence', () => {
 
     const assistants: AssistantMessage[] = [];
     const events: SessionEvent[] = [];
-    const backend = new AiSdkBackend({
+    const durable = durableTurnHarness('turn-1', 'hi');
+    const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async (m) => {
@@ -10924,14 +11510,15 @@ describe('AiSdkBackend thinking persistence', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [testTool('Read', z.object({ path: z.string() }))],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
       now: monotonicClock(),
     });
 
-    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+    for await (const event of backend.send(durable.input())) {
+      durable.record(event);
       events.push(event);
     }
 
@@ -10984,14 +11571,13 @@ async function runArchiveGatedReplay(input: {
   const events: SessionEvent[] = [];
   const archivedBodies = new Map<string, string>();
   const readRuntimeEventIds: string[] = [];
-  const backend = new AiSdkBackend({
+  const backend = createTestAiSdkBackend({
     sessionId: 'session-1',
     header: header(),
     appendMessage: async () => {},
     connection: connection(),
     apiKey: 'sk-test',
     modelId: 'mock-model-id',
-    permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
     modelFactory: () => model,
     tools: [],
     newId: idGenerator(),
@@ -11095,27 +11681,32 @@ function archiveGatedTurnEvents(suffix: 'a' | 'b', path: string, result: unknown
 }
 
 describe('AiSdkBackend steering durability and identity', () => {
-  const steeringBackend = (model: MockLanguageModelV4): AiSdkBackend =>
-    new AiSdkBackend({
+  const steeringBackend = (
+    model: MockLanguageModelV4,
+    options: Partial<Pick<AiSdkBackendInput, 'supportsVision' | 'readAttachmentBytes'>> = {},
+  ): AiSdkBackend =>
+    createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
       modelFactory: () => model,
       tools: [],
       newId: idGenerator(),
       now: monotonicClock(),
+      ...options,
     });
 
-  const pullOnce = (text: string): (() => Array<{ id: string; text: string }>) => {
+  const pullOnce = (
+    text: string,
+  ): (() => Array<{ id: string; messageId: string; content: { text: string } }>) => {
     let pulled = false;
     return () => {
       if (pulled) return [];
       pulled = true;
-      return [{ id: `lease-${text}`, text }];
+      return [{ id: `lease-${text}`, messageId: `message-${text}`, content: { text } }];
     };
   };
 
@@ -11164,6 +11755,82 @@ describe('AiSdkBackend steering durability and identity', () => {
       events.some((event) => event.type === 'complete' && event.stopReason === 'end_turn'),
       true,
     );
+  });
+
+  test('persists canonical steering content and materializes attachments for the model', async () => {
+    const model = textCompletionModel('done');
+    const pngBytes = new Uint8Array([137, 80, 78, 71]);
+    const image = {
+      kind: 'image' as const,
+      name: 'first.png',
+      mimeType: 'image/png',
+      bytes: pngBytes.length,
+      ref: { kind: 'session_file' as const, sessionId: 'session-1', relativePath: 'first.png' },
+    };
+    const document = {
+      kind: 'pdf' as const,
+      name: 'second.pdf',
+      mimeType: 'application/pdf',
+      bytes: 12,
+      ref: { kind: 'session_file' as const, sessionId: 'session-1', relativePath: 'second.pdf' },
+    };
+    const backend = steeringBackend(model, {
+      supportsVision: true,
+      readAttachmentBytes: async (ref) => {
+        assert.deepEqual(ref, image.ref);
+        return { ok: true, bytes: pngBytes };
+      },
+    });
+    const content = {
+      text: 'inspect the authoritative inputs',
+      displayText: 'human-only command',
+      attachments: [image, document],
+    };
+    let pulled = false;
+    const acked: string[] = [];
+    const iterator = backend
+      .send({
+        turnId: 'turn-1',
+        text: 'start',
+        context: [],
+        pullSteering: () => {
+          if (pulled) return [];
+          pulled = true;
+          return [{ id: 'lease-content', messageId: 'message-content', content }];
+        },
+        ackSteering: (leaseIds) => acked.push(...leaseIds),
+      })
+      [Symbol.asyncIterator]();
+
+    const steeringEvent = await nextSteeringEvent(iterator);
+    assert.equal(steeringEvent.type, 'steering_message');
+    if (steeringEvent.type !== 'steering_message') assert.fail('expected steering event');
+    assert.deepEqual(steeringEvent.content, content);
+    assert.equal(model.doStreamCalls.length, 0);
+    assert.deepEqual(acked, []);
+    for (let next = await iterator.next(); next.done !== true; next = await iterator.next()) {}
+    assert.deepEqual(acked, ['lease-content']);
+
+    const prompt = compactPrompt(model) as Array<{ role: string; content: unknown }>;
+    const parts = prompt.at(-1)?.content as Array<{
+      type: string;
+      text?: string;
+      mediaType?: string;
+      data?: unknown;
+    }>;
+    assert.deepEqual(
+      parts.map((part) => part.type),
+      ['text', 'file'],
+    );
+    assert.equal(
+      parts[0]?.text,
+      buildSteeringEnvelope(
+        'inspect the authoritative inputs\n\n[attachment: first.png (image/png)] [attachment: second.pdf (application/pdf)]',
+      ),
+    );
+    assert.equal(parts[1]?.mediaType, 'image/png');
+    assert.notEqual(parts[1]?.data, undefined);
+    assert.equal(JSON.stringify(prompt).includes('human-only command'), false);
   });
 
   test('a steering message never reaches the provider when the consumer detaches before the ack', async () => {
@@ -11451,8 +12118,8 @@ describe('AiSdkBackend steering durability and identity', () => {
           if (pulled) return [];
           pulled = true;
           return [
-            { id: 'lease-1', text: 'do it' },
-            { id: 'lease-2', text: 'do it' },
+            { id: 'lease-1', messageId: 'message-1', content: { text: 'do it' } },
+            { id: 'lease-2', messageId: 'message-2', content: { text: 'do it' } },
           ];
         },
       }),
@@ -11591,14 +12258,13 @@ function imageReplayBackend(
   model: MockLanguageModelV4,
   options: { supportsVision: boolean; readAttachmentBytes: AttachmentByteReader },
 ): AiSdkBackend {
-  return new AiSdkBackend({
+  return createTestAiSdkBackend({
     sessionId: 'session-1',
     header: header(),
     appendMessage: async () => {},
     connection: connection(),
     apiKey: 'sk-test',
     modelId: 'mock-model-id',
-    permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
     modelFactory: () => model,
     tools: [],
     newId: idGenerator(),
@@ -11798,6 +12464,18 @@ function compactPrompt(model: MockLanguageModelV4): unknown {
   }));
 }
 
+function promptTextSequence(model: MockLanguageModelV4): Array<{
+  role: string;
+  text: string | undefined;
+}> {
+  return (model.doStreamCalls[0]?.prompt ?? []).map((message) => ({
+    role: message.role,
+    text: Array.isArray(message.content)
+      ? message.content.find((part) => part.type === 'text')?.text
+      : undefined,
+  }));
+}
+
 function activeFullCompactBlockFixture(): ActiveFullCompactBlock {
   return {
     kind: 'maka.active_full_compact_block',
@@ -11908,15 +12586,157 @@ function testTool(name: string, parameters: unknown): MakaTool {
     name,
     description: `${name} description`,
     parameters,
-    permissionRequired: false,
     impl: async () => ({ ok: true }),
   };
+}
+
+function permissionTool(onExecute?: () => void): MakaTool {
+  return {
+    name: 'Bash',
+    description: 'shell',
+    parameters: z.object({ command: z.string() }),
+    impl: async () => {
+      onExecute?.();
+      return { ok: true };
+    },
+  };
+}
+
+function singlePermissionToolModel(): MockLanguageModelV4 {
+  let calls = 0;
+  return new MockLanguageModelV4({
+    doStream: async () => {
+      calls += 1;
+      const chunks: LanguageModelV4StreamPart[] =
+        calls === 1
+          ? [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'tool-call',
+                toolCallId: 'tool-1',
+                toolName: 'Bash',
+                input: JSON.stringify({ command: 'rm local-file' }),
+              },
+              {
+                type: 'finish',
+                finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                usage: emptyUsage(),
+              },
+            ]
+          : [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'finish',
+                finishReason: { unified: 'stop', raw: 'stop' },
+                usage: emptyUsage(),
+              },
+            ];
+      return {
+        stream: simulateReadableStream({
+          chunks,
+          initialDelayInMs: null,
+          chunkDelayInMs: null,
+        }),
+      };
+    },
+  });
+}
+
+async function hostedInteractionBinding(overrides: Partial<RuntimeInteractionRunOwner>) {
+  return await bindRuntimeInteractionRun(
+    {
+      bindRun: (identity) => ({
+        ...identity,
+        acceptUserQuestionRequest: async () => {},
+        close: async () => {},
+        release: () => {},
+        ...overrides,
+      }),
+    },
+    { sessionId: 'session-1', turnId: 'turn-1', runId: 'run-1' },
+  );
+}
+
+async function collectEvents(
+  iterable: AsyncIterable<SessionEvent>,
+  events: SessionEvent[],
+  record?: (event: SessionEvent) => void,
+): Promise<void> {
+  for await (const event of iterable) {
+    record?.(event);
+    events.push(event);
+  }
 }
 
 async function drain(iterable: AsyncIterable<unknown>): Promise<void> {
   for await (const _ of iterable) {
     // consume
   }
+}
+
+function durableTurnHarness(turnId: string, text: string) {
+  const runId = 'run-1';
+  const invocationId = 'invocation-1';
+  const anchor: RuntimeEvent = {
+    id: `runtime-user-${turnId}`,
+    invocationId,
+    runId,
+    sessionId: 'session-1',
+    turnId,
+    ts: 1,
+    partial: false,
+    role: 'user',
+    author: 'user',
+    content: { kind: 'text', text },
+  };
+  const ledger: RuntimeEvent[] = [anchor];
+  const memory = createSessionEventMapMemory();
+  const ctx: InvocationContext = {
+    sessionId: 'session-1',
+    invocationId,
+    runId,
+    turnId,
+    source: 'desktop',
+    startedAt: 1,
+    request: {
+      sessionId: 'session-1',
+      turnId,
+      text,
+      source: 'desktop',
+      initialRuntimeEvent: anchor,
+    },
+    newId: idGenerator(),
+    now: monotonicClock(),
+  };
+  return {
+    anchor,
+    ledger,
+    loadTurnRuntimeEvents: async (requestedTurnId: string) =>
+      ledger.filter((event) => event.turnId === requestedTurnId),
+    input: (overrides: Partial<BackendSendInput> = {}): BackendSendInput => ({
+      turnId,
+      text,
+      context: [],
+      headAnchorRuntimeEvent: anchor,
+      ...overrides,
+    }),
+    record: (event: SessionEvent): void => {
+      const mapped = mapSessionEventToRuntimeEvent(event, ctx, memory);
+      if (mapped.partial !== true && mapped.content?.kind !== 'error') ledger.push(mapped);
+    },
+  };
+}
+
+async function drainDurably(
+  iterable: AsyncIterable<SessionEvent>,
+  durable: ReturnType<typeof durableTurnHarness>,
+): Promise<SessionEvent[]> {
+  const events: SessionEvent[] = [];
+  for await (const event of iterable) {
+    durable.record(event);
+    events.push(event);
+  }
+  return events;
 }
 
 function makeGate(): { promise: Promise<void>; release: () => void } {
@@ -12007,4 +12827,31 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
   assert.fail('condition was not met before timeout');
+}
+
+function runtimeExecute(
+  backend: AiSdkBackend,
+  tool: MakaTool,
+  turnId: string,
+  eventSink: { push(event: SessionEvent): void },
+) {
+  const runtime = (backend as unknown as { toolRuntime: ToolRuntime }).toolRuntime;
+  const durableEventSink: DurableSessionEventSink = {
+    push: (event) => eventSink.push(event),
+    pushAndWaitUntilConsumed: async (event) => eventSink.push(event),
+  };
+  return async (
+    input: unknown,
+    context: { toolCallId: string; abortSignal: AbortSignal },
+  ): Promise<unknown> =>
+    (
+      await runtime.settleToolCall({
+        tool,
+        turnId,
+        toolCallId: context.toolCallId,
+        input,
+        abortSignal: context.abortSignal,
+        eventSink: durableEventSink,
+      })
+    ).result;
 }

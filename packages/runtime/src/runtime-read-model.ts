@@ -7,9 +7,14 @@ import type {
   TurnRecord,
 } from '@maka/core';
 import { deriveTurnRecords, isSessionInlineRun, isTerminalRuntimeEvent } from '@maka/core';
+import type {
+  CanonicalPermissionOutcomeReader,
+  CanonicalPermissionOutcomeRecord,
+} from './interaction-authority.js';
 import {
   classifyRuntimeEventTerminalFact,
   compareRuntimeReadModelMessages,
+  isHardRuntimeEventReadModelDiagnostic,
   projectRuntimeEventsToStoredMessages,
   type RuntimeEventReadModelDiagnostic,
   type RuntimeEventTerminalFact,
@@ -24,6 +29,8 @@ import {
   terminalRunHeaderMatchesFact,
 } from './terminal-run-commit.js';
 
+const CANONICAL_PERMISSION_READ_CONCURRENCY = 8;
+
 export interface RuntimeReadModelProjectionCache {
   readMessages(sessionId: string): Promise<StoredMessage[]>;
 }
@@ -32,6 +39,7 @@ export interface RuntimeReadModelDeps {
   runStore: AgentRunStore;
   runtimeEventStore: RuntimeEventStore;
   projectionCache?: RuntimeReadModelProjectionCache;
+  canonicalPermissionOutcomes?: CanonicalPermissionOutcomeReader;
 }
 
 export interface RuntimeReadModelSessionView {
@@ -91,17 +99,13 @@ export class RuntimeReadModel {
     for (let runIndex = 0; runIndex < inlineRuns.length; runIndex += 1) {
       const run = inlineRuns[runIndex]!;
       if (!isTerminalRunStatus(run.status)) {
-        const terminalFactContext = await this.readNonTerminalRunWithTerminalFact(sessionId, run);
-        if (terminalFactContext) {
-          inlineRuns[runIndex] = terminalFactContext.run;
-          terminalFacts.push(terminalFactContext.fact);
-          diagnostics.push(...terminalFactContext.fact.diagnostics);
-          for (
-            let eventIndex = 0;
-            eventIndex < terminalFactContext.events.length;
-            eventIndex += 1
-          ) {
-            ordered.push({ event: terminalFactContext.events[eventIndex]!, runIndex, eventIndex });
+        const activeRunContext = await this.readNonTerminalRunContext(sessionId, run);
+        if (activeRunContext?.fact) {
+          inlineRuns[runIndex] = effectiveRunHeaderFromTerminalFact(run, activeRunContext.fact);
+          terminalFacts.push(activeRunContext.fact);
+          diagnostics.push(...activeRunContext.fact.diagnostics);
+          for (let eventIndex = 0; eventIndex < activeRunContext.events.length; eventIndex += 1) {
+            ordered.push({ event: activeRunContext.events[eventIndex]!, runIndex, eventIndex });
           }
           continue;
         }
@@ -129,6 +133,10 @@ export class RuntimeReadModel {
               },
             ),
           ]);
+        }
+        const overlayEvents = activeRunContext?.events.flatMap(activeInteractionOverlayEvent) ?? [];
+        for (let eventIndex = 0; eventIndex < overlayEvents.length; eventIndex += 1) {
+          ordered.push({ event: overlayEvents[eventIndex]!, runIndex, eventIndex });
         }
         continue;
       }
@@ -234,12 +242,10 @@ export class RuntimeReadModel {
     });
   }
 
-  private async readNonTerminalRunWithTerminalFact(
+  private async readNonTerminalRunContext(
     sessionId: string,
     run: AgentRunHeader,
-  ): Promise<
-    { events: RuntimeEvent[]; fact: RuntimeEventTerminalFact; run: AgentRunHeader } | undefined
-  > {
+  ): Promise<{ events: RuntimeEvent[]; fact?: RuntimeEventTerminalFact } | undefined> {
     let runEvents: RuntimeEvent[];
     try {
       runEvents = await this.deps.runtimeEventStore.readRuntimeEvents(sessionId, run.runId);
@@ -247,11 +253,9 @@ export class RuntimeReadModel {
       return undefined;
     }
     const fact = classifyRuntimeEventTerminalFact(run, runEvents).fact;
-    if (!fact) return undefined;
     return {
       events: runEvents,
-      fact,
-      run: effectiveRunHeaderFromTerminalFact(run, fact),
+      ...(fact ? { fact } : {}),
     };
   }
 
@@ -276,11 +280,20 @@ export class RuntimeReadModel {
     terminalFacts?: RuntimeEventTerminalFact[];
     inFlightTurnIds?: ReadonlySet<string>;
   }): Promise<RuntimeReadModelSessionView> {
+    const canonicalPermissionRead = await this.readCanonicalPermissionOutcomes(input.events);
     const projected = projectRuntimeEventsToStoredMessages(input.events, {
       runHeaders: input.runs,
+      canonicalPermissionOutcomes: canonicalPermissionRead.outcomes,
     });
-    const diagnostics = [...input.diagnostics, ...projected.diagnostics];
-    if (hasHardProjectionDiagnostic(projected.diagnostics)) {
+    const diagnostics = [
+      ...input.diagnostics,
+      ...canonicalPermissionRead.diagnostics,
+      ...projected.diagnostics,
+    ];
+    if (canonicalPermissionRead.diagnostics.length > 0) {
+      throw new RuntimeReadModelError('Canonical permission outcome read failed', diagnostics);
+    }
+    if (projected.diagnostics.some(isHardRuntimeEventReadModelDiagnostic)) {
       throw new RuntimeReadModelError('RuntimeEvent read projection is incomplete', diagnostics);
     }
 
@@ -316,7 +329,9 @@ export class RuntimeReadModel {
           )
         : projected.messages;
 
-    diagnostics.push(...this.compareProjectionCache(messages, cachedMessages));
+    diagnostics.push(
+      ...this.compareProjectionCache(messages, cachedMessages, canonicalPermissionRead.outcomes),
+    );
 
     return {
       source: 'runtime_events',
@@ -330,13 +345,105 @@ export class RuntimeReadModel {
     };
   }
 
+  private async readCanonicalPermissionOutcomes(events: readonly RuntimeEvent[]): Promise<{
+    outcomes: Map<string, CanonicalPermissionOutcomeRecord>;
+    diagnostics: RuntimeEventReadModelDiagnostic[];
+  }> {
+    const requestIds = [
+      ...new Set(
+        events.flatMap((event) =>
+          event.actions?.permissionAnswerAccepted
+            ? [event.actions.permissionAnswerAccepted.requestId]
+            : [],
+        ),
+      ),
+    ];
+    const outcomes = new Map<string, CanonicalPermissionOutcomeRecord>();
+    const diagnostics: RuntimeEventReadModelDiagnostic[] = [];
+    const reader = this.deps.canonicalPermissionOutcomes;
+    if (!reader) return { outcomes, diagnostics };
+
+    let nextIndex = 0;
+    const worker = async (): Promise<void> => {
+      while (nextIndex < requestIds.length) {
+        const requestId = requestIds[nextIndex]!;
+        nextIndex += 1;
+        try {
+          const outcome = await reader.readPermissionOutcome(requestId);
+          if (outcome) outcomes.set(requestId, outcome);
+        } catch (error) {
+          diagnostics.push(
+            readModelDiagnostic(
+              'incomplete_event',
+              'CanonicalPermissionOutcomeReader.readPermissionOutcome failed',
+              { requestId, error: errorMessage(error) },
+            ),
+          );
+        }
+      }
+    };
+    await Promise.all(
+      Array.from(
+        { length: Math.min(CANONICAL_PERMISSION_READ_CONCURRENCY, requestIds.length) },
+        worker,
+      ),
+    );
+    return { outcomes, diagnostics };
+  }
+
   private compareProjectionCache(
     messages: readonly StoredMessage[],
     cached: readonly StoredMessage[] | undefined,
+    canonicalPermissionOutcomes: ReadonlyMap<string, CanonicalPermissionOutcomeRecord>,
   ): RuntimeEventReadModelDiagnostic[] {
     if (!cached) return [];
-    return compareRuntimeReadModelMessages(messages, cached).diagnostics;
+    const canonicalRequestIds = new Set(canonicalPermissionOutcomes.keys());
+    const excludesCanonicalPermission = (message: StoredMessage): boolean =>
+      message.type === 'permission_decision' && canonicalRequestIds.has(message.id);
+    return compareRuntimeReadModelMessages(
+      messages.filter((message) => !excludesCanonicalPermission(message)),
+      cached.filter((message) => !excludesCanonicalPermission(message)),
+    ).diagnostics;
   }
+}
+
+/**
+ * The interaction facts an active run must keep even while its messages come
+ * from the in-flight projection cache. Permission prompts were always carried
+ * here; sandbox boundary requests and decisions belong for the same reason
+ * (#1612): they are the only durable record that a prompt was raised and how
+ * it settled, so dropping them makes a pending request invisible to anything
+ * reading the view instead of the live backend.
+ */
+function activeInteractionOverlayEvent(event: RuntimeEvent): RuntimeEvent[] {
+  const permissionRequest = event.actions?.permissionRequest;
+  const permissionAnswerAccepted = event.actions?.permissionAnswerAccepted;
+  const permissionClosureAccepted = event.actions?.permissionClosureAccepted;
+  const sandboxBoundaryRequest = event.actions?.stateDelta?.sandboxBoundaryRequest;
+  const sandboxBoundaryDecision = event.actions?.stateDelta?.sandboxBoundaryDecision;
+  if (
+    !permissionRequest &&
+    !permissionAnswerAccepted &&
+    !permissionClosureAccepted &&
+    sandboxBoundaryRequest === undefined &&
+    sandboxBoundaryDecision === undefined
+  ) {
+    return [];
+  }
+  const overlay = { ...event };
+  delete overlay.content;
+  delete overlay.status;
+  const stateDelta = {
+    ...(sandboxBoundaryRequest !== undefined ? { sandboxBoundaryRequest } : {}),
+    ...(sandboxBoundaryDecision !== undefined ? { sandboxBoundaryDecision } : {}),
+  };
+  overlay.actions = {
+    ...(permissionRequest ? { permissionRequest } : {}),
+    ...(permissionAnswerAccepted ? { permissionAnswerAccepted } : {}),
+    ...(permissionClosureAccepted ? { permissionClosureAccepted } : {}),
+    ...(Object.keys(stateDelta).length > 0 ? { stateDelta } : {}),
+  };
+  return [overlay];
 }
 
 function mergeInFlightProjectionCache(
@@ -359,17 +466,6 @@ function mergeInFlightProjectionCache(
 
 function messageTurnId(message: StoredMessage): string | undefined {
   return 'turnId' in message && typeof message.turnId === 'string' ? message.turnId : undefined;
-}
-
-function hasHardProjectionDiagnostic(
-  diagnostics: readonly RuntimeEventReadModelDiagnostic[],
-): boolean {
-  return diagnostics.some(
-    (diagnostic) =>
-      diagnostic.code === 'incomplete_event' ||
-      diagnostic.code === 'unsupported_event' ||
-      diagnostic.code === 'tool_use_id_mismatch',
-  );
 }
 
 function readModelDiagnostic(

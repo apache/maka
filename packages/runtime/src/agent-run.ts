@@ -22,24 +22,28 @@ import {
   resolveEffectiveOrchestration,
   type EffectiveOrchestration,
 } from '@maka/core/orchestration';
-import { failureClassFromCompleteStopReason, type SessionEvent } from '@maka/core/events';
+import type { SessionEvent } from '@maka/core/events';
 import type { AgentBackend, BackendSendInput } from '@maka/core/backend-types';
 import type { RunTraceEvent } from './run-trace.js';
 import type { SessionStore, StopSessionInput } from './session-manager.js';
 import type { ActiveFullCompactBlock } from './active-full-compact.js';
 import type { SemanticCompactBlock } from './semantic-compact.js';
 import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
-import { buildRuntimeEventModelReplayPlan } from './model-history.js';
+import { projectRuntimeEventsToStoredMessages } from './runtime-event-read-model.js';
 import {
-  classifyRuntimeEventTerminalFact,
-  projectRuntimeEventsToStoredMessages,
-} from './runtime-event-read-model.js';
-import { backfillRuntimeEventsFromStoredMessages } from './runtime-event-backfill.js';
-import { buildStatusPatch, normalizeStopSessionSource } from './session-projection-helpers.js';
+  buildPriorRuntimeContext as buildPriorRuntimeContextProjection,
+  type PriorRuntimeContext,
+} from './prior-run-context.js';
+import {
+  buildStatusPatch,
+  isTerminalRunStatus,
+  normalizeStopSessionSource,
+  statusFromEvent,
+  turnStatusFromEvent,
+} from './session-projection-helpers.js';
 import {
   buildSyntheticTerminalRuntimeEvent,
   commitOrCreateTerminalRunFact,
-  effectiveRunHeaderFromTerminalFact,
 } from './terminal-run-commit.js';
 import { AiSdkFlow } from './ai-sdk-flow.js';
 import type { InvocationContext } from './invocation-context.js';
@@ -59,8 +63,11 @@ export interface AgentRunActiveSession {
 }
 
 export interface AgentRunHooks {
-  ensureActive(sessionId: string, header: SessionHeader): Promise<AgentRunActiveSession>;
-  registerRun(active: AgentRunActiveSession, run: AgentRun): void;
+  reserveRun(
+    sessionId: string,
+    header: SessionHeader,
+    run: AgentRun,
+  ): Promise<AgentRunActiveSession>;
   unregisterRun(active: AgentRunActiveSession, run: AgentRun): void | Promise<void>;
   updateHeader(sessionId: string, patch: Partial<SessionHeader>): Promise<SessionHeader>;
   updateStatus(
@@ -141,16 +148,6 @@ export interface AgentRunContinuationBeginResult {
   startedAt: number;
 }
 
-interface PriorRuntimeContext {
-  events: RuntimeEvent[];
-  runs: AgentRunHeader[];
-}
-
-interface PriorRunTerminalFactContext {
-  events: RuntimeEvent[];
-  run: AgentRunHeader;
-}
-
 export class AgentRun {
   readonly runId: string;
   readonly invocationId: string;
@@ -169,6 +166,7 @@ export class AgentRun {
   private runStoreAvailable = true;
   private runtimeEventStoreAvailable = true;
   private runtimeEventStoreFailure: unknown;
+  private traceWriteError: string | undefined;
   private failureClass: string | undefined;
   private failureMessage: string | undefined;
   private lastTs = 0;
@@ -268,7 +266,7 @@ export class AgentRun {
 
   recordProviderRequestCapture(capture: ProviderRequestCaptureLedgerRecord): Promise<void> {
     if (!this.input.runStore) return Promise.reject(new Error('AgentRun store is not configured'));
-    return this.enqueueRequiredProviderCapture('append provider request capture', async () => {
+    return this.enqueueRequiredRunStoreWrite('append provider request capture', async () => {
       const {
         schemaVersion,
         serializedRequest: _serializedRequest,
@@ -463,19 +461,29 @@ export class AgentRun {
   async acceptMappedEvent(
     sessionEvent: SessionEvent,
     runtimeEvent: RuntimeEvent,
-    options: { requireTerminalWrite?: boolean } = {},
+    options: { requireTerminalWrite?: boolean; allowInteractionResume?: boolean } = {},
   ): Promise<void> {
     if (isTerminalRuntimeEvent(runtimeEvent)) {
-      if (!isPermissionHandoffTerminal(runtimeEvent)) {
-        await this.recordRuntimeEvents([runtimeEvent], {
-          requireTerminalWrite:
-            options.requireTerminalWrite ?? Boolean(this.input.runtimeEventStore),
-        });
-      }
-      await this.recordSessionEvent(sessionEvent);
+      await this.recordRuntimeEvents([runtimeEvent], {
+        requireTerminalWrite: options.requireTerminalWrite ?? Boolean(this.input.runtimeEventStore),
+      });
+      await this.recordSessionEvent(sessionEvent, options);
       return;
     }
-    await this.recordSessionEvent(sessionEvent);
+    if (this.requiresDurablePersistence() && isInteractionResumeAck(sessionEvent)) {
+      // A hosted continuation may resume execution only after its identity-only
+      // settlement fact is durable. Run status advances next, then Session
+      // status; the queue consumer acknowledges the event only after all three.
+      await this.recordRuntimeEvents([runtimeEvent], { requireDurableWrite: true });
+      await this.recordSessionEvent(sessionEvent, options);
+      return;
+    }
+    await this.recordSessionEvent(sessionEvent, options);
+    if (sessionEvent.type === 'provider_retry') return;
+    // ToolRuntime already persisted protocol-tagged tool calls/results through
+    // the atomic RuntimeCommitSink. Re-appending the mapped UI event through
+    // the generic lane would duplicate the fact and violate that boundary.
+    if (isAtomicToolBoundaryProjection(runtimeEvent, this.toolBoundaryProtocol)) return;
     if (!isNonTerminalErrorRuntimeEvent(runtimeEvent)) {
       // A steered user message is fail-CLOSED: the backend's delivery ack
       // waits on this consume, and the provider must never execute a
@@ -527,8 +535,7 @@ export class AgentRun {
       this.header = await this.input.hooks.updateHeader(this.sessionId, { connectionLocked: true });
     }
 
-    this.active = await this.input.hooks.ensureActive(this.sessionId, this.header);
-    this.input.hooks.registerRun(this.active, this);
+    this.active = await this.input.hooks.reserveRun(this.sessionId, this.header, this);
     await this.markRunStarted(this.lastTs);
 
     await this.input.hooks.updateStatus(this.sessionId, 'running', undefined, this.lastTs);
@@ -572,8 +579,7 @@ export class AgentRun {
       this.header = await this.input.hooks.updateHeader(this.sessionId, { connectionLocked: true });
     }
 
-    this.active = await this.input.hooks.ensureActive(this.sessionId, this.header);
-    this.input.hooks.registerRun(this.active, this);
+    this.active = await this.input.hooks.reserveRun(this.sessionId, this.header, this);
     await this.markRunStarted(startedAt);
 
     await this.input.hooks.updateStatus(this.sessionId, 'running', undefined, startedAt);
@@ -612,8 +618,7 @@ export class AgentRun {
       this.header = await this.input.hooks.updateHeader(this.sessionId, { connectionLocked: true });
     }
 
-    this.active = await this.input.hooks.ensureActive(this.sessionId, this.header);
-    this.input.hooks.registerRun(this.active, this);
+    this.active = await this.input.hooks.reserveRun(this.sessionId, this.header, this);
     await this.markRunStarted(startedAt);
     await this.input.hooks.updateStatus(this.sessionId, 'running', undefined, startedAt);
 
@@ -632,6 +637,7 @@ export class AgentRun {
       ...(this.input.userInput.displayText !== undefined
         ? { displayText: this.input.userInput.displayText }
         : {}),
+      ...(this.input.userInput.origin !== undefined ? { origin: this.input.userInput.origin } : {}),
       ...(this.input.userInput.attachments !== undefined
         ? { attachments: this.input.userInput.attachments }
         : {}),
@@ -647,9 +653,12 @@ export class AgentRun {
     }
   }
 
-  async recordSessionEvent(ev: SessionEvent): Promise<void> {
+  async recordSessionEvent(
+    ev: SessionEvent,
+    options: { allowInteractionResume?: boolean } = {},
+  ): Promise<void> {
     this.lastTs = ev.ts;
-    const transition = statusFromEvent(ev);
+    const transition = statusFromEvent(ev, options);
     const terminalSessionEvent =
       (ev.type === 'complete' || ev.type === 'abort') && !this.turnFailed;
     const turnStatus = terminalSessionEvent ? turnStatusFromEvent(ev) : undefined;
@@ -677,19 +686,29 @@ export class AgentRun {
       }
     }
     if (transition && !this.stopped) {
-      if (terminalSessionEvent || ev.type === 'error') {
-        await this.input.hooks
-          .updateStatus(this.sessionId, transition.status, transition.blockedReason, ev.ts)
-          .catch((error) => this.enqueueTraceWriteFailure(error, 'terminal session projection'));
-      } else {
+      const updateSessionStatus = async (): Promise<void> => {
+        if (terminalSessionEvent || ev.type === 'error') {
+          await this.input.hooks
+            .updateStatus(this.sessionId, transition.status, transition.blockedReason, ev.ts)
+            .catch((error) => this.enqueueTraceWriteFailure(error, 'terminal session projection'));
+          return;
+        }
         await this.input.hooks.updateStatus(
           this.sessionId,
           transition.status,
           transition.blockedReason,
           ev.ts,
         );
+      };
+      // On resume, advance the Run before the Session so an interrupted pair
+      // remains conservatively waiting rather than advertising false readiness.
+      if (this.requiresDurablePersistence() && isInteractionResumeAck(ev)) {
+        await this.recordStatusFromTransition(ev, transition, ev.ts);
+        await updateSessionStatus();
+      } else {
+        await updateSessionStatus();
+        await this.recordStatusFromTransition(ev, transition, ev.ts);
       }
-      this.recordStatusFromTransition(ev, transition, ev.ts);
     }
     if (turnStatus && !this.stopped && this.recordsSessionMessages()) {
       const appendTurnState = this.input.hooks.appendTurnState(
@@ -938,6 +957,12 @@ export class AgentRun {
       ...(this.input.userInput.origin?.kind === 'automation'
         ? { automationId: this.input.userInput.origin.automationId }
         : {}),
+      ...(this.input.userInput.origin?.kind === 'agent_graph'
+        ? {
+            agentGraphWakeId: this.input.userInput.origin.wakeId,
+            agentGraphWakeAttemptId: this.input.userInput.origin.attemptId,
+          }
+        : {}),
     };
     try {
       const durable = this.requiresDurablePersistence();
@@ -975,192 +1000,21 @@ export class AgentRun {
   }
 
   private async buildPriorRuntimeContext(): Promise<PriorRuntimeContext | undefined> {
-    if (this.lineage.resumedFromRunId) {
-      return await this.buildResumedChildRuntimeContext(this.lineage.resumedFromRunId);
-    }
-    if (this.lineage.parentRunId) return undefined;
-    if (
-      !this.input.runStore ||
-      !this.input.runtimeEventStore ||
-      !this.runStoreAvailable ||
-      !this.runtimeEventStoreAvailable
-    )
-      return undefined;
-    const runs = await this.input.runStore.listSessionRuns(this.sessionId);
-    const priorRuns = runs.filter(
-      (run) => run.runId !== this.runId && run.turnId !== this.turnId && isSessionInlineRun(run),
-    );
-    if (priorRuns.length === 0) return undefined;
-
-    const ordered: Array<{ event: RuntimeEvent; runIndex: number; eventIndex: number }> = [];
-    for (let runIndex = 0; runIndex < priorRuns.length; runIndex += 1) {
-      const run = priorRuns[runIndex]!;
-      if (!isTerminalRunStatus(run.status)) {
-        const terminalFactContext = await this.readNonTerminalPriorRunWithTerminalFact(run);
-        if (!terminalFactContext) continue;
-        priorRuns[runIndex] = terminalFactContext.run;
-        for (let eventIndex = 0; eventIndex < terminalFactContext.events.length; eventIndex += 1) {
-          const event = terminalFactContext.events[eventIndex]!;
-          if (event.runId === this.runId || event.turnId === this.turnId) continue;
-          ordered.push({ event, runIndex, eventIndex });
-        }
-        continue;
-      }
-      let events = await this.input.runtimeEventStore.readRuntimeEvents(this.sessionId, run.runId);
-      if (events.length === 0) {
-        if (await this.input.repairRunRuntimeLedger?.(this.sessionId, run.runId)) {
-          events = await this.input.runtimeEventStore.readRuntimeEvents(this.sessionId, run.runId);
-        }
-      }
-      if (events.length === 0) {
-        const recovered = await this.backfillMissingPriorRuntimeEvents(run);
-        if (recovered.length === 0 || !recovered.some(isTerminalRuntimeEvent)) {
-          throw new Error(
-            `Cannot build model context: RuntimeEvent ledger is missing for prior run ${run.runId}`,
-          );
-        }
-        events = recovered;
-      }
-      if (!events.some(isTerminalRuntimeEvent)) {
-        if (await this.input.repairRunRuntimeLedger?.(this.sessionId, run.runId)) {
-          events = await this.input.runtimeEventStore.readRuntimeEvents(this.sessionId, run.runId);
-        }
-      }
-      if (!events.some(isTerminalRuntimeEvent)) {
-        throw new Error(
-          `Cannot build model context: RuntimeEvent ledger has no terminal fact for prior run ${run.runId}`,
-        );
-      }
-      let terminalFact = classifyRuntimeEventTerminalFact(run, events).fact;
-      if (!terminalFact && (await this.input.repairRunRuntimeLedger?.(this.sessionId, run.runId))) {
-        events = await this.input.runtimeEventStore.readRuntimeEvents(this.sessionId, run.runId);
-        terminalFact = classifyRuntimeEventTerminalFact(run, events).fact;
-      }
-      if (!terminalFact) {
-        throw new Error(
-          `Cannot build model context: RuntimeEvent ledger has no valid terminal fact for prior run ${run.runId}`,
-        );
-      }
-      priorRuns[runIndex] = effectiveRunHeaderFromTerminalFact(run, terminalFact);
-      for (let eventIndex = 0; eventIndex < events.length; eventIndex += 1) {
-        const event = events[eventIndex]!;
-        if (event.runId === this.runId || event.turnId === this.turnId) continue;
-        ordered.push({ event, runIndex, eventIndex });
-      }
-    }
-
-    ordered.sort((a, b) => a.runIndex - b.runIndex || a.eventIndex - b.eventIndex);
-    const events = ordered.map((item) => item.event);
-    if (events.length === 0) return undefined;
-
-    const runtimeReplayPlan = buildRuntimeEventModelReplayPlan(events);
-    if (runtimeReplayPlan.items.length === 0) return undefined;
-    return { events, runs: priorRuns };
-  }
-
-  private async buildResumedChildRuntimeContext(sourceRunId: string): Promise<PriorRuntimeContext> {
-    if (
-      !this.input.runStore ||
-      !this.input.runtimeEventStore ||
-      !this.runStoreAvailable ||
-      !this.runtimeEventStoreAvailable
-    ) {
-      throw new Error('Child AgentRun resume requires durable run and RuntimeEvent stores');
-    }
-
-    const sessionRuns = await this.input.runStore.listSessionRuns(this.sessionId);
-    const runsById = new Map(sessionRuns.map((run) => [run.runId, run]));
-    const reverseChain: AgentRunHeader[] = [];
-    const visited = new Set<string>();
-    let cursor: string | undefined = sourceRunId;
-    while (cursor) {
-      if (visited.has(cursor)) {
-        throw new Error(`Child AgentRun resume lineage contains a cycle at ${cursor}`);
-      }
-      visited.add(cursor);
-      const run = runsById.get(cursor);
-      if (!run) throw new Error(`Child AgentRun resume source ${cursor} was not found`);
-      if (!run.parentRunId || isSessionInlineRun(run)) {
-        throw new Error(`AgentRun ${cursor} is not a resumable child run`);
-      }
-      if (!run.agentId || run.agentId !== this.input.userInput.agentId) {
-        throw new Error(`Child AgentRun resume profile changed at ${cursor}`);
-      }
-      reverseChain.push(run);
-      cursor = run.resumedFromRunId;
-    }
-
-    const chain = reverseChain.reverse();
-    const effectiveRuns: AgentRunHeader[] = [];
-    const events: RuntimeEvent[] = [];
-    for (const run of chain) {
-      const loaded = await this.loadRequiredChildResumeContext(run);
-      effectiveRuns.push(loaded.run);
-      events.push(...loaded.events);
-    }
-
-    const replay = buildRuntimeEventModelReplayPlan(events);
-    const unsafe = replay.diagnostics.find(
-      (diagnostic) =>
-        diagnostic.code === 'unmatched_tool_call' ||
-        diagnostic.code === 'unmatched_tool_result' ||
-        diagnostic.code === 'tool_id_mismatch' ||
-        diagnostic.code === 'unsupported_role' ||
-        diagnostic.code === 'unsupported_content',
-    );
-    if (unsafe) {
-      throw new Error(`Child AgentRun resume history is unsafe: ${unsafe.code}`);
-    }
-    const first = replay.items[0];
-    if (!first || first.kind !== 'text' || first.role !== 'user') {
-      throw new Error('Child AgentRun resume history has no user-anchored replay boundary');
-    }
-    return { events, runs: effectiveRuns };
-  }
-
-  private async loadRequiredChildResumeContext(
-    run: AgentRunHeader,
-  ): Promise<{ events: RuntimeEvent[]; run: AgentRunHeader }> {
-    let events = await this.input.runtimeEventStore!.readRuntimeEvents(this.sessionId, run.runId);
-    if (events.length === 0 || !events.some(isTerminalRuntimeEvent)) {
-      if (await this.input.repairRunRuntimeLedger?.(this.sessionId, run.runId)) {
-        events = await this.input.runtimeEventStore!.readRuntimeEvents(this.sessionId, run.runId);
-      }
-    }
-    if (events.length === 0 || !events.some(isTerminalRuntimeEvent)) {
-      throw new Error(
-        `Child AgentRun resume source ${run.runId} has no terminal RuntimeEvent fact`,
-      );
-    }
-    const terminalFact = classifyRuntimeEventTerminalFact(run, events).fact;
-    if (!terminalFact) {
-      throw new Error(
-        `Child AgentRun resume source ${run.runId} has an invalid terminal RuntimeEvent fact`,
-      );
-    }
-    return { events, run: effectiveRunHeaderFromTerminalFact(run, terminalFact) };
-  }
-
-  private async readNonTerminalPriorRunWithTerminalFact(
-    run: AgentRunHeader,
-  ): Promise<PriorRunTerminalFactContext | undefined> {
-    if (!this.input.runtimeEventStore) return undefined;
-    const events = await this.input.runtimeEventStore
-      .readRuntimeEvents(this.sessionId, run.runId)
-      .catch(() => []);
-    const terminalFact = classifyRuntimeEventTerminalFact(run, events).fact;
-    if (!terminalFact) return undefined;
-    return { events, run: effectiveRunHeaderFromTerminalFact(run, terminalFact) };
-  }
-
-  private async backfillMissingPriorRuntimeEvents(run: AgentRunHeader): Promise<RuntimeEvent[]> {
-    let messages: StoredMessage[];
-    try {
-      messages = await this.input.store.readMessages(this.sessionId);
-    } catch {
-      return [];
-    }
-    return backfillRuntimeEventsFromStoredMessages({ run, messages }).events;
+    return await buildPriorRuntimeContextProjection({
+      sessionId: this.sessionId,
+      currentRunId: this.runId,
+      currentTurnId: this.turnId,
+      parentRunId: this.lineage.parentRunId,
+      resumedFromRunId: this.lineage.resumedFromRunId,
+      agentId: this.input.userInput.agentId,
+      linkedChildSession: this.input.header.subagentParent?.kind === 'subagent',
+      runStore: this.input.runStore,
+      runtimeEventStore: this.input.runtimeEventStore,
+      runStoreAvailable: this.runStoreAvailable,
+      runtimeEventStoreAvailable: this.runtimeEventStoreAvailable,
+      repairRunRuntimeLedger: this.input.repairRunRuntimeLedger,
+      readMessages: () => this.input.store.readMessages(this.sessionId),
+    });
   }
 
   private async markRunStarted(ts: number): Promise<void> {
@@ -1194,15 +1048,22 @@ export class AgentRun {
     if (durable) await write;
   }
 
-  private recordStatusFromTransition(
+  private async recordStatusFromTransition(
     ev: SessionEvent,
     transition: { status: SessionStatus; blockedReason?: SessionBlockedReason },
     ts: number,
-  ): void {
-    if (!this.input.runStore || !this.runStoreAvailable) return;
+  ): Promise<void> {
+    const durable = this.requiresDurablePersistence();
+    const runStore = this.input.runStore;
+    if (!runStore) {
+      if (durable) {
+        throw new Error('AgentRun store is unavailable for a required status transition');
+      }
+      return;
+    }
     const status =
       transition.status === 'waiting_for_user'
-        ? 'waiting_permission'
+        ? 'waiting_for_user'
         : transition.status === 'aborted'
           ? 'cancelled'
           : transition.status === 'blocked'
@@ -1211,21 +1072,41 @@ export class AgentRun {
               ? 'completed'
               : 'running';
     if (isTerminalRunStatus(status)) return;
-    this.enqueueRunStore('record run status', async () => {
-      await this.input.runStore?.updateRun(this.sessionId, this.runId, { status, updatedAt: ts });
-      await this.input.runStore?.appendEvent(this.sessionId, this.runId, {
-        type: 'run_status_changed',
-        id: this.input.newId(),
-        runId: this.runId,
-        sessionId: this.sessionId,
-        turnId: this.turnId,
-        ts,
-        data: {
-          sessionStatus: transition.status,
-          ...(transition.blockedReason ? { blockedReason: transition.blockedReason } : {}),
+    const appendAudit = async (): Promise<void> => {
+      await runStore.appendEvent(
+        this.sessionId,
+        this.runId,
+        {
+          type: 'run_status_changed',
+          id: this.input.newId(),
+          runId: this.runId,
+          sessionId: this.sessionId,
+          turnId: this.turnId,
+          ts,
+          data: {
+            sessionStatus: transition.status,
+            ...(transition.blockedReason ? { blockedReason: transition.blockedReason } : {}),
+          },
         },
+        { durable },
+      );
+    };
+    if (durable) {
+      await this.enqueueRequiredRunStoreWrite('record required run status', async () => {
+        await runStore.updateRun(
+          this.sessionId,
+          this.runId,
+          { status, updatedAt: ts },
+          { durable: true },
+        );
       });
-    });
+      this.enqueueRunStore('append run status audit', appendAudit);
+    } else {
+      this.enqueueRunStore('record run status', async () => {
+        await runStore.updateRun(this.sessionId, this.runId, { status, updatedAt: ts });
+        await appendAudit();
+      });
+    }
     if (ev.type === 'abort') {
       this.markRunCancelled(ev.reason, ts);
     }
@@ -1318,7 +1199,7 @@ export class AgentRun {
         ts,
         ...(status === 'failed'
           ? { data: { failureClass: this.failureClass ?? finalStatus?.blockedReason ?? 'unknown' } }
-          : status === 'waiting_permission'
+          : status === 'waiting_for_user'
             ? {
                 data: {
                   sessionStatus: 'waiting_for_user',
@@ -1336,7 +1217,7 @@ export class AgentRun {
   ): AgentRunHeader['status'] {
     if (this.stopped || finalStatus?.status === 'aborted') return 'cancelled';
     if (this.failureClass || finalStatus?.status === 'blocked') return 'failed';
-    if (finalStatus?.status === 'waiting_for_user') return 'waiting_permission';
+    if (finalStatus?.status === 'waiting_for_user') return 'waiting_for_user';
     return 'completed';
   }
 
@@ -1380,6 +1261,7 @@ export class AgentRun {
           ? { failureClass: this.failureClass ?? finalStatus?.blockedReason }
           : {}),
         ...(this.failureMessage ? { failureMessage: this.failureMessage } : {}),
+        ...(this.traceWriteError ? { traceWriteError: this.traceWriteError } : {}),
         ...(this.abortSource || fallbackStatus === 'cancelled'
           ? { abortSource: this.abortSource ?? 'user_stop' }
           : {}),
@@ -1388,7 +1270,10 @@ export class AgentRun {
         ...(fallbackStatus === 'failed' ? { fallbackFailureClass, fallbackFailureMessage } : {}),
         allowHeaderCommitFailure: true,
       });
-      if (!terminalClaim.write) terminalClaim.write = commit.then(() => undefined);
+      if (!terminalClaim.write) {
+        terminalClaim.write = commit.then(() => undefined);
+        void terminalClaim.write.catch(() => {});
+      }
       const result = await commit;
       this.terminalRunHeaderCommitted = result.headerCommitted;
       if (result.headerCommitted && this.continuationActive) {
@@ -1464,16 +1349,19 @@ export class AgentRun {
   }
 
   /**
-   * A prepared-request capture is a dispatch gate, not diagnostic telemetry.
-   * Always attempt its durable append even when an earlier best-effort run
-   * trace write marked the general run ledger unavailable; only this append's
-   * own outcome may decide whether the provider request can be dispatched.
+   * Serialize a required Run-store write without consulting the best-effort
+   * latch. A successful required write proves the store is available again;
+   * a failed operation rejects its caller without changing the general latch.
    */
-  private enqueueRequiredProviderCapture(
+  private enqueueRequiredRunStoreWrite(
     label: string,
     operation: () => Promise<void>,
   ): Promise<void> {
-    const next = this.traceQueue.then(operation, operation).catch(async (error) => {
+    const probe = async (): Promise<void> => {
+      await operation();
+      this.runStoreAvailable = true;
+    };
+    const next = this.traceQueue.then(probe, probe).catch(async (error) => {
       await this.enqueueTraceWriteFailure(error, label);
       throw error;
     });
@@ -1519,11 +1407,16 @@ export class AgentRun {
     label = 'agent run store write',
   ): Promise<void> {
     const message = errorMessage(error);
+    this.traceWriteError ??= `${label}: ${message}`;
     try {
       await this.input.runStore?.updateRun(this.sessionId, this.runId, {
-        traceWriteError: `${label}: ${message}`,
+        traceWriteError: this.traceWriteError,
         updatedAt: this.input.now(),
       });
+    } catch {
+      // The terminal header commit retries the in-memory latch.
+    }
+    try {
       await this.input.runStore?.appendEvent(this.sessionId, this.runId, {
         type: 'trace_write_failed',
         id: this.input.newId(),
@@ -1534,7 +1427,7 @@ export class AgentRun {
         message,
       });
     } catch {
-      // Diagnostic persistence failed too; never perturb model/tool execution.
+      // Diagnostic persistence is best effort; never perturb model/tool execution.
     }
   }
 }
@@ -1584,66 +1477,25 @@ function redactTraceString(value: string): string {
 function errorMessage(error: unknown): string {
   return redactTraceString(error instanceof Error ? error.message : String(error));
 }
-
-function isTerminalRunStatus(status: AgentRunHeader['status']): boolean {
-  return status === 'completed' || status === 'failed' || status === 'cancelled';
+function isInteractionResumeAck(event: SessionEvent): boolean {
+  return (
+    event.type === 'sandbox_boundary_decision_ack' || event.type === 'user_question_answer_ack'
+  );
 }
 
-function isPermissionHandoffTerminal(event: RuntimeEvent): boolean {
-  return event.actions?.stateDelta?.stopReason === 'permission_handoff';
-}
-
-function isNonTerminalErrorRuntimeEvent(event: RuntimeEvent): boolean {
+/**
+ * Non-terminal error content never reaches the ledger: the trailing terminal
+ * event carries the failure. Exported so readers can reason about which mapped
+ * RuntimeEvents a projection will ever be asked to read.
+ */
+export function isNonTerminalErrorRuntimeEvent(event: RuntimeEvent): boolean {
   return event.content?.kind === 'error' && !isTerminalRuntimeEvent(event);
 }
 
-function statusFromEvent(
-  event: SessionEvent,
-): { status: SessionStatus; blockedReason?: SessionBlockedReason } | undefined {
-  switch (event.type) {
-    case 'permission_request':
-      return { status: 'waiting_for_user', blockedReason: 'permission_required' };
-    case 'permission_decision_ack':
-      return event.decision === 'allow' ? { status: 'running' } : { status: 'aborted' };
-    case 'error':
-      return { status: 'blocked', blockedReason: blockedReasonFromErrorReason(event.reason) };
-    case 'abort':
-      return { status: 'aborted' };
-    case 'complete':
-      if (event.stopReason === 'permission_handoff')
-        return { status: 'waiting_for_user', blockedReason: 'permission_required' };
-      if (event.stopReason === 'user_stop') return { status: 'aborted' };
-      if (event.stopReason === 'error') return { status: 'blocked', blockedReason: 'unknown' };
-      return { status: 'active' };
-    default:
-      return undefined;
-  }
-}
-
-function turnStatusFromEvent(
-  event: SessionEvent,
-): { status: TurnRecord['status']; errorClass?: string } | undefined {
-  switch (event.type) {
-    case 'abort':
-      return { status: 'aborted' };
-    case 'error':
-      return { status: 'failed', errorClass: event.reason ?? event.code ?? 'unknown' };
-    case 'complete':
-      if (event.stopReason === 'user_stop') return { status: 'aborted' };
-      const errorClass = failureClassFromCompleteStopReason(event.stopReason);
-      if (errorClass) return { status: 'failed', errorClass };
-      if (event.stopReason === 'permission_handoff') return { status: 'running' };
-      return { status: 'completed' };
-    default:
-      return undefined;
-  }
-}
-
-function blockedReasonFromErrorReason(reason: string | undefined): SessionBlockedReason {
-  if (!reason) return 'unknown';
-  if (reason === 'permission_required') return 'permission_required';
-  if (reason === 'tool_failed') return 'tool_failed';
-  if (reason === 'auth' || reason.includes('api_key') || reason.includes('connection'))
-    return 'NO_REAL_CONNECTION';
-  return 'unknown';
+function isAtomicToolBoundaryProjection(
+  event: RuntimeEvent,
+  protocol: ToolBoundaryProtocol | undefined,
+): boolean {
+  if (!protocol || event.refs?.operationId === undefined) return false;
+  return event.content?.kind === 'function_call' || event.content?.kind === 'function_response';
 }

@@ -3,8 +3,10 @@ import type { PlanReminder } from '@maka/core';
 import { deriveCapabilityAuditReport } from '@maka/core';
 import { CalendarDays } from './icons.js';
 import { EmptyState } from './empty-state.js';
+import { PageHeader } from './primitives/page-header.js';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
+import type { ModuleHubHeader } from './module-hub-selector.js';
 import type {
   BundledSkillCatalogEntry,
   DailyReviewBridge,
@@ -40,6 +42,7 @@ function ModulePanelFallback(props: { message: string }) {
 
 export function SkillsPage(props: {
   skills?: SkillEntry[];
+  hubHeader?: ModuleHubHeader;
   planReminders?: PlanReminder[];
   onRefreshSkills?(): void | Promise<void>;
   onCreateSkillTemplate?(): void | Promise<void>;
@@ -57,7 +60,7 @@ export function SkillsPage(props: {
   onUpdateManagedSkill?(skillId: string, options?: { force?: boolean; expectedCurrentSha256?: string; expectedSourceSha256?: string }): boolean | Promise<boolean>;
   onSetSkillEnabled?(skillId: string, enabled: boolean): void | Promise<void>;
   onSetSkillPinned?(skillRef: string, pinned: boolean): void | Promise<void>;
-  onDeleteSkill?(skillId: string): void | Promise<void>;
+  onDeleteSkill?(skillRef: string): void | Promise<void>;
 }) {
   const copy = getSharedUiCopy(useUiLocale()).modules;
   const auditReport = deriveCapabilityAuditReport({
@@ -65,15 +68,17 @@ export function SkillsPage(props: {
     planReminders: props.planReminders ?? [],
   });
   return (
-    <Suspense fallback={<ModulePageFallback label={copy.skills} message={copy.loadingSkills} />}>
+    <Suspense fallback={<ModulePageFallback label={props.hubHeader?.title ?? copy.skills} message={copy.loadingSkills} />}>
       <SkillsModuleMain {...props} auditReport={auditReport} />
     </Suspense>
   );
 }
 
 export function AutomationsPage(props: {
-  skills?: SkillEntry[];
+  hubHeader?: ModuleHubHeader;
   reminders?: PlanReminder[];
+  createRequestNonce?: number;
+  onCreateRequestHandled?: () => void;
   keepSystemAwake?: boolean;
   onKeepSystemAwakeChange?: (next: boolean) => Promise<void>;
   onRefresh?: () => void | Promise<void>;
@@ -86,14 +91,10 @@ export function AutomationsPage(props: {
   onDelete?: (id: string) => void | Promise<void>;
 }) {
   const copy = getSharedUiCopy(useUiLocale()).modules;
-  const auditReport = deriveCapabilityAuditReport({
-    skills: props.skills ?? [],
-    planReminders: props.reminders ?? [],
-  });
   return (
-    <Suspense fallback={<ModulePageFallback label={copy.automations} message={copy.loadingAutomations} />}>
-      <main className="maka-main detailPane maka-module-main agents-chat-panel" aria-label={copy.automations}>
-        <PlanReminderPanel {...props} reminders={props.reminders ?? []} auditReport={auditReport} />
+    <Suspense fallback={<ModulePageFallback label={props.hubHeader?.title ?? copy.automations} message={copy.loadingAutomations} />}>
+      <main className="maka-main detailPane maka-module-main agents-chat-panel" aria-label={props.hubHeader?.title ?? copy.automations}>
+        <PlanReminderPanel {...props} reminders={props.reminders ?? []} />
       </main>
     </Suspense>
   );
@@ -101,6 +102,7 @@ export function AutomationsPage(props: {
 
 export function DailyReviewPage(props: {
   bridge?: DailyReviewBridge;
+  hubHeader?: ModuleHubHeader;
   onSelectSession?: (sessionId: string) => void;
   onCopyMarkdown?: (input: DailyReviewMarkdownActionInput) => Promise<void> | void;
   onAppendMarkdown?: (input: DailyReviewMarkdownActionInput) => Promise<void> | void;
@@ -108,7 +110,7 @@ export function DailyReviewPage(props: {
 }) {
   const copy = getSharedUiCopy(useUiLocale()).modules;
   return (
-    <main className="maka-main detailPane maka-module-main agents-chat-panel" data-module="daily-review" aria-label={copy.dailyReview}>
+    <main className="maka-main detailPane maka-module-main agents-chat-panel" data-module="daily-review" aria-label={props.hubHeader?.title ?? copy.dailyReview}>
       {props.bridge ? (
         // The PageHeader (title + subtitle + the 生成 actions) now lives INSIDE
         // the panel so the generation buttons can ride the header's actions slot
@@ -119,12 +121,13 @@ export function DailyReviewPage(props: {
         </Suspense>
       ) : (
         <>
-          <header className="maka-module-main-header">
-            <div>
-              <h2>{copy.dailyReview}</h2>
-              <p>{copy.dailyReviewDescription}</p>
-            </div>
-          </header>
+          <PageHeader
+            className="maka-module-main-header"
+            title={props.hubHeader?.title ?? copy.dailyReview}
+            subtitle={props.hubHeader?.subtitle ?? copy.dailyReviewDescription}
+            badge={props.hubHeader?.badge}
+            headingRowClassName={props.hubHeader ? 'maka-module-hub-heading' : undefined}
+          />
           <EmptyState Icon={CalendarDays} title={copy.dailyReviewDisconnectedTitle} body={copy.dailyReviewDisconnectedBody} />
         </>
       )}

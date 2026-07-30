@@ -3,8 +3,10 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, test, afterEach } from 'node:test';
+import { resolveEconomyTaskMode } from '../economy-task-policy.js';
 import { resolveHarborCellAiSdkEnv } from '../harbor-cell.js';
 import { applyConnectionDefaults, resolveHarborRunOptions } from '../harbor-cli.js';
+import { validateRealBackendIsolation } from '../isolation.js';
 
 /**
  * Tests for applyConnectionDefaults — the function that reads
@@ -433,6 +435,121 @@ describe('applyConnectionDefaults', () => {
 });
 
 describe('resolveHarborRunOptions backend guard', () => {
+  test('uses one boolean vocabulary for the Agent tool switch', async () => {
+    const defaultOptions = await resolveHarborRunOptions(
+      ['--backend', 'fake', '--instruction', 'test'],
+      {},
+    );
+    const enabledOptions = await resolveHarborRunOptions(
+      ['--backend', 'fake', '--instruction', 'test'],
+      { MAKA_AGENT_TOOLS: 'true' },
+    );
+
+    assert.equal(defaultOptions.config.agentTools, false);
+    assert.equal(enabledOptions.config.agentTools, true);
+    await assert.rejects(
+      resolveHarborRunOptions(['--backend', 'fake', '--instruction', 'test'], {
+        MAKA_AGENT_TOOLS: 'sometimes',
+      }),
+      /MAKA_AGENT_TOOLS must be a boolean/,
+    );
+  });
+
+  test('preserves an explicit economy-task disable over instruction signals', async () => {
+    const opts = await resolveHarborRunOptions(
+      ['--backend', 'fake', '--instruction', 'summarize the log files'],
+      { MAKA_ECONOMY_TASK_MODE: 'false' },
+    );
+
+    const selection = resolveEconomyTaskMode(opts.config, {
+      id: 'economy-signal-task',
+      instruction: opts.instruction,
+      workspaceDir: '/workspace',
+      verification: { command: 'true', protectedPaths: [] },
+    });
+
+    assert.equal(selection.enabled, false);
+    assert.equal(selection.triggerSource, 'config');
+  });
+
+  test('wires an explicit environment-proxy fetch into real container backends', async () => {
+    const opts = await resolveHarborRunOptions(
+      ['--instruction', 'test', '--isolation', 'harbor-local'],
+      {
+        MAKA_MODEL: 'openai-codex/gpt-5.6-sol',
+        MAKA_HOST_API_KEY: 'selected-host-token',
+        MAKA_HOST_BASE_URL: 'http://host.docker.internal:443',
+        NODE_USE_ENV_PROXY: '1',
+        HTTP_PROXY: 'http://agent:test@pier-egress-proxy:8080',
+        HTTPS_PROXY: 'http://agent:test@pier-egress-proxy:8080',
+        NO_PROXY: 'localhost,127.0.0.1',
+      },
+    );
+
+    try {
+      assert.ok(opts.providerEnvFetch);
+      assert.ok(opts.registerBackends);
+    } finally {
+      await opts.providerEnvFetch?.close();
+    }
+  });
+
+  test('keeps a local external workspace separate from the headless source fixture', async () => {
+    const opts = await resolveHarborRunOptions(
+      [
+        '--backend',
+        'fake',
+        '--instruction',
+        'test',
+        '--isolation',
+        'harbor-local',
+        '--workdir',
+        '/app',
+        '--out',
+        '/logs/agent/maka-task-run',
+      ],
+      {},
+    );
+
+    assert.equal(opts.workdir, '/app');
+    assert.equal(opts.sourceWorkspaceDir, '/logs/agent/maka-task-run/host-workspace-source');
+    assert.equal(
+      opts.realBackendIsolation?.submittedSnapshotRoot,
+      '/logs/agent/maka-task-run/submitted-snapshots',
+    );
+  });
+
+  test('rejects a persistent snapshot root inside its source workspace', async () => {
+    const opts = await resolveHarborRunOptions(
+      [
+        '--backend',
+        'fake',
+        '--instruction',
+        'test',
+        '--isolation',
+        'harbor-local',
+        '--workdir',
+        '/workspace',
+        '--out',
+        '/workspace/out',
+      ],
+      {},
+    );
+
+    assert.throws(
+      () => validateRealBackendIsolation(opts.realBackendIsolation),
+      /submittedSnapshotRoot must stay outside workspaceDir/,
+    );
+    assert.doesNotThrow(() =>
+      validateRealBackendIsolation({
+        kind: 'external',
+        label: 'Pier task container',
+        workspaceDir: '/app',
+        submittedSnapshotRoot: '/logs/agent/submitted-snapshots',
+      }),
+    );
+  });
+
   test('uses the strict cell soft-timeout parser in task-run mode', async () => {
     await assert.rejects(
       resolveHarborRunOptions(['--backend', 'fake', '--instruction', 'test'], {
@@ -440,6 +557,17 @@ describe('resolveHarborRunOptions backend guard', () => {
       }),
       /MAKA_CELL_SOFT_TIMEOUT_MS must be a positive integer/,
     );
+  });
+
+  test('task-run preserves the adapter absolute model deadline', async () => {
+    const opts = await resolveHarborRunOptions(
+      ['--mode', 'task-run', '--backend', 'fake', '--instruction', 'test'],
+      {
+        MAKA_CELL_DEADLINE_AT_MS: '2800000',
+      },
+    );
+
+    assert.equal(opts.deadlineAtMs, 2_800_000);
   });
 
   test('explicit host authority overrides stale ambient provider authority', async () => {

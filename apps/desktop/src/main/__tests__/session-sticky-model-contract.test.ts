@@ -44,7 +44,11 @@ describe('PR-SESSION-STICKY-MODEL-0 contract', () => {
     // and the session send projection share one normalization.
     assert.match(coreReadiness, /normalizeRequestedModelForReadiness\(\s*connection: LlmConnection,\s*requestedModel: string \| undefined,\s*\)/);
     assert.match(coreReadiness, /CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS\.has\(requestedModel\)/);
-    assert.match(main, /const \{ connection, apiKey, model \} = await getReadyConnection\(ctx\.header\.llmConnectionSlug, ctx\.header\.model\)/);
+    assert.match(
+      main,
+      /deps\.getReadyConnection\(\s*input\.header\.llmConnectionSlug,\s*input\.header\.model,\s*\)/,
+    );
+    assert.match(main, /resolveDesktopBackendToolSurface\(deps, ctx\)/);
     assert.match(main, /header: \{ \.\.\.ctx\.header, model, permissionMode: effectivePermissionMode \}/);
     assert.match(main, /modelId: model/);
     // #1038: the locked/sticky guarantee lives in the core projection —

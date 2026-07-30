@@ -88,15 +88,21 @@ export function MemorySettingsPage(props: {
             <strong>{copy.text.localFile}</strong>
             <small>{copy.text.localFileHelp}</small>
           </div>
-          <Chip variant={memoryStatusTone(effective.status)}>
-            {memoryStatusLabel(effective.status, copy)}
-          </Chip>
-          <Switch
-            ariaLabel={copy.text.enableLocalFile}
-            checked={effective.enabled}
-            disabled={memoryControlsDisabled}
-            onChange={(enabled) => void setEnabled(enabled)}
-          />
+          {/* #1363 review: one control cluster, not two loose siblings — on a
+              narrow card the row stacks and the chip + switch stay on one
+              line together instead of holding the row horizontal and
+              crushing the label. */}
+          <span className="settingsFormRowControlCluster">
+            <Chip variant={memoryStatusTone(effective.status)}>
+              {memoryStatusLabel(effective.status, copy)}
+            </Chip>
+            <Switch
+              ariaLabel={copy.text.enableLocalFile}
+              checked={effective.enabled}
+              disabled={memoryControlsDisabled}
+              onChange={(enabled) => void setEnabled(enabled)}
+            />
+          </span>
         </div>
 
         <div className="settingsFormRow">

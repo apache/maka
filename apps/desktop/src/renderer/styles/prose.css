@@ -93,6 +93,12 @@
   font-size: var(--font-size-base);
   line-height: var(--leading-normal);
   word-wrap: break-word;
+  /* CJK/Latin boundary spacing, +1.55px per boundary (1/8 em at 13px), also
+     across inline element boundaries. Chromium's initial value is
+     `no-autospace`, not the spec's `normal`, so it has to be asked for.
+     Not on :root — that would shift composer and settings metrics too.
+     MARKDOWN-PROSE-CJK-MIXED-SPACING-0 locks this. */
+  text-autospace: normal;
   /* No max-width here: the reading measure is owned by .maka-message-row
      (var(--maka-chat-measure), the same cap the composer uses), so the
      assistant block matches the composer width. An inner 72ch cap used to
@@ -111,6 +117,25 @@
 .maka-prose p {
   margin: 0 0 var(--space-3);
   text-wrap: pretty;
+}
+/* Hard break inside a paragraph. `remark-breaks` makes every single newline
+   one of these, and LLM answers use `**subhead**\nbody` for section splits, so
+   unstyled the ~4px the line box gives renders the stronger split tighter than
+   the 16px between paragraphs. CSS cannot space a native `<br>` at all, hence
+   the block span markdown-body pairs with it. 6px lands the gap at 10px.
+   MARKDOWN-PROSE-CJK-MIXED-SPACING-0 locks this. */
+.maka-hardbreak {
+  display: block;
+  height: var(--space-1-5);
+}
+/* `remark-breaks` makes EVERY newline a break, including continuation lines
+   inside a list item or a blockquote — containers that already group their
+   own content, where the gap inverted the grouping (measured 10.5px inside
+   one list item against 6.5px between two of them). Only a paragraph break
+   carries a section split. */
+.maka-prose li .maka-hardbreak,
+.maka-prose blockquote .maka-hardbreak {
+  height: 0;
 }
 .maka-prose h1,
 .maka-prose h2,
@@ -177,6 +202,17 @@
   border-radius: var(--radius-control);
   transition: border-bottom-color var(--duration-quick) var(--ease-out-strong), background var(--duration-quick) var(--ease-out-strong), box-shadow var(--duration-quick) var(--ease-out-strong);
 }
+/* That margin is the gap between the pill and its NEIGHBOURING text — at a
+   block edge there is no neighbour, so it indents the block instead: measured
+   2.98px on a paragraph, list item and blockquote opening with inline code,
+   against 0 for one opening with plain text, i.e. a ragged left edge down a
+   list of such items. Drop it at both edges. */
+.maka-prose code:first-child {
+  margin-inline-start: 0;
+}
+.maka-prose code:last-child {
+  margin-inline-end: 0;
+}
 .maka-prose a:hover {
   border-bottom-color: var(--link);
 }
@@ -193,6 +229,14 @@
   /* Digit columns in technical replies align (price tables, version
      numbers, build outputs). */
   font-variant-numeric: tabular-nums;
+  /* Geist Mono ships programming ligatures on by default, which collapse
+     runs like `###`, `===`, and `=>` into combined glyphs whose ink and
+     advance can extend left of the source column — misaligning fenced
+     code lines. Markdown code is a literal surface (same policy as
+     `.maka-code` in maka-tokens.css); disable ligatures at this semantic
+     boundary so both inline and fenced code inherit literal shaping
+     (#1431). */
+  font-variant-ligatures: none;
   /* No vertical padding and no border: the Geist Mono font box is already
      15.5px at this size, and with 1px padding + 1px border the pill's ink
      box hit 19.5px — the full line box — so hard-break lines carrying
@@ -200,6 +244,12 @@
      two pills). Bg-only pills leave ~5.5px of inter-line air, matching
      plain text; the dropped border was 3% alpha and read as invisible. */
   padding: 0 var(--space-1-5);
+  /* Autospace reaches across this boundary already, but its 1.55px is sized
+     for bare glyphs; against a pill with its own padding and background the
+     code still reads glued. Additive, measured: 78.36 → 81.48 (autospace)
+     → 87.45px (both), i.e. 4.55px of clear space per side against the 3.58px
+     of a literal space. MARKDOWN-PROSE-CJK-MIXED-SPACING-0 locks this. */
+  margin-inline: 0.25em;
   /* PR-UI-LAYOUT-28: inline code radius 4 → 5. Tiny bump but
    * pulls it slightly out of the "tight tag" feel into a calmer
    * pill rhythm that matches the rest of the warm-canvas chrome. */
@@ -286,6 +336,13 @@
   font-size: var(--font-size-ui);
   line-height: var(--leading-normal);
   white-space: pre;
+  /* The literal-code boundary: no prose text shaping crosses into fenced code,
+     the same invariant #1431 locked for ligatures. `.maka-prose` sets
+     `text-autospace: normal` and autospace inherits, so Chinese comments next
+     to Latin identifiers drifted 1.6px off the monospace grid per boundary.
+     Block tier only — the inline pill wants autospace on both sides.
+     Any future prose shaping belongs here too; the contract fails without it. */
+  text-autospace: no-autospace;
 }
 .maka-prose .maka-code-block pre code {
   padding: 0;
@@ -295,6 +352,12 @@
      box, so a leftover border paints a rounded outline around every wrapped
      line box inside the pre (clearly visible in dark). */
   border: 0;
+  /* Same boundary: `.maka-prose code` (0,1,1) matches `pre > code` too, and a
+     <code> inside `white-space: pre` is one inline box spanning every line, so
+     the pill's margin-inline offset only the FIRST source line (36.25 vs 33).
+     `border: 0` above does not clear the pill's radius, so zero that too. */
+  margin: 0;
+  border-radius: 0;
 }
 
 /* Syntax highlight palette for highlight.js / lowlight class names.
@@ -444,6 +507,12 @@
   white-space: nowrap;
   letter-spacing: var(--tracking-normal);
 }
+/* Don't reach for `word-break: auto-phrase` on `td` for squeezed Chinese cells:
+   measured inert in Chromium 150 — identical breaks to `normal` under both
+   `lang="zh"` and `lang="en"`, because the engine's phrase model is
+   Japanese-only. (The document lang IS set at runtime — syncUiLocaleDocument
+   in locale-context.tsx — so this is not a lang-tagging gap.)
+   `line-break: strict` / `word-break: keep-all` do work, at an overflow cost. */
 .maka-prose hr {
   margin: var(--space-4) 0;
   border: 0;

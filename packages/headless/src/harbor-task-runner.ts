@@ -12,6 +12,7 @@ import {
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import { fetchGitHubCopilotModels, isSupportedGitHubCopilotAccountToken } from '@maka/runtime';
 import {
+  selectHarborCellTokenSummary,
   validateHarborCellExecutionIdentity,
   validateHarborCellOutput,
   validateHarborCellTokenSummary,
@@ -24,9 +25,8 @@ import {
   type TaskRunInput,
   type TaskRunOutput,
   type TaskRunner,
-  type HarborVerifierAttempt,
-  type HarborVerifierOutcome,
 } from './fixed-prompt-controller.js';
+import type { HarborVerifierAttempt, HarborVerifierOutcome } from './fixed-prompt-wal-types.js';
 import {
   HARBOR_ORACLE_EXECUTION_POLICY,
   HARBOR_ORACLE_MAX_ATTEMPTS,
@@ -209,6 +209,7 @@ const EXPERIMENT_IDENTITY_ENV_KEYS = new Set([
   'MAKA_MODEL',
   'MAKA_PROVIDER',
   'MAKA_LLM_CONNECTION_SLUG',
+  'MAKA_AGENT_TOOLS',
   'MAKA_REASONING_EFFORT',
   'MAKA_OPENCODE_VARIANT',
   'MAKA_SYSTEM_PROMPT',
@@ -375,11 +376,19 @@ export function createHarborTaskRunner(options: HarborTaskRunnerOptions): TaskRu
       }
       const reward = await readReward(rewardPath, resultPath, input.task.id);
       const rawCell = await readCellOutput(cellOutputPath, input.task.id);
+      const usageCheckpoint = await readOptionalTokenSummary(
+        join(trialDir, TRIAL_USAGE_CHECKPOINT),
+      );
+      const selectedUsage = selectHarborCellTokenSummary(rawCell.tokenSummary, usageCheckpoint);
+      const checkpointedCell =
+        selectedUsage && selectedUsage !== rawCell.tokenSummary
+          ? { ...rawCell, tokenSummary: selectedUsage }
+          : rawCell;
       const cell =
-        rawCell.tokenSummary || !providerUsage || !runnerOptions.pricing
-          ? rawCell
+        checkpointedCell.tokenSummary || !providerUsage || !runnerOptions.pricing
+          ? checkpointedCell
           : {
-              ...rawCell,
+              ...checkpointedCell,
               tokenSummary: providerTokenSummary(providerUsage, runnerOptions.pricing),
             };
       const verifierStdout = await readOptionalText(join(trialDir, TRIAL_VERIFIER_STDOUT));
@@ -576,11 +585,16 @@ function resolveHarborTimeoutMs(options: HarborTaskRunnerOptions, input: TaskRun
 }
 
 function resolveNativeHarborTimeoutMs(
-  options: Pick<HarborTaskRunnerOptions, 'timeoutMultiplier'>,
+  options: Pick<HarborTaskRunnerOptions, 'timeoutMultiplier' | 'agentEnv'>,
   task: TaskRunInput['task'],
 ): number {
+  const configuredCellTimeoutSec = lenientPositiveIntEnv(options.agentEnv?.MAKA_CELL_TIMEOUT_SEC);
+  const agentTimeoutSec = Math.max(
+    task.metadata?.agentTimeoutSec ?? 0,
+    configuredCellTimeoutSec ?? 0,
+  );
   return resolveNativeTrialTimeoutMs({
-    nativePhasesSec: (task.metadata?.agentTimeoutSec ?? 0) + verifierPolicy(task).outerTimeoutSec,
+    nativePhasesSec: agentTimeoutSec + verifierPolicy(task).outerTimeoutSec,
     timeoutMultiplier: options.timeoutMultiplier ?? 1,
   });
 }
@@ -671,8 +685,21 @@ export async function readTimedOutTrialArtifacts(
   mode: 'cell' | 'task-run',
 ) {
   const cell = await readOptionalCellOutput(join(trialDir, TRIAL_CELL_OUTPUT), taskId);
-  if (cell)
-    return cellArtifactRefs(cell, join(trialDir, TRIAL_RUNTIME_EVENTS), trialDir, agent, mode);
+  if (cell) {
+    const usageCheckpoint = await readOptionalTokenSummary(join(trialDir, TRIAL_USAGE_CHECKPOINT));
+    const selectedUsage = selectHarborCellTokenSummary(cell.tokenSummary, usageCheckpoint);
+    const recoveredCell =
+      selectedUsage && selectedUsage !== cell.tokenSummary
+        ? { ...cell, tokenSummary: selectedUsage }
+        : cell;
+    return cellArtifactRefs(
+      recoveredCell,
+      join(trialDir, TRIAL_RUNTIME_EVENTS),
+      trialDir,
+      agent,
+      mode,
+    );
+  }
   const [executionIdentity, tokenSummary] = await Promise.all([
     readOptionalExecutionIdentity(join(trialDir, TRIAL_EXECUTION_IDENTITY)),
     readOptionalTokenSummary(join(trialDir, TRIAL_USAGE_CHECKPOINT)),
@@ -937,6 +964,7 @@ export function buildHarborJobConfig(
     MAKA_MODEL: makaModel,
     MAKA_PROVIDER: provider,
     MAKA_LLM_CONNECTION_SLUG: provider,
+    MAKA_AGENT_TOOLS: input.config.agentTools === true ? 'true' : 'false',
     // Verbatim — the controller hashes exactly these bytes and verifies the round-trip.
     MAKA_SYSTEM_PROMPT: input.systemPrompt,
   };
@@ -1080,14 +1108,10 @@ async function hostSideProviderRuntime(options: HarborTaskRunnerOptions): Promis
   telemetry?: () => ProviderRequestTelemetry[];
   close?: () => Promise<void>;
 } | null> {
+  const agent = options.agent ?? 'maka';
   const provider = options.provider ?? 'deepseek';
-  if (usesHostProviderProxy(options.agent) && provider === 'github-copilot') {
-    const adapter =
-      options.agent === 'kimi-code'
-        ? 'Kimi Code'
-        : options.agent === 'codex'
-          ? 'Codex'
-          : 'OpenCode';
+  if (usesHostProviderProxy(agent) && provider === 'github-copilot') {
+    const adapter = agent === 'kimi-code' ? 'Kimi Code' : agent === 'codex' ? 'Codex' : 'OpenCode';
     throw new Error(
       `GitHub Copilot Harbor runs use the Maka host agent; the ${adapter} Harbor adapter does not support this provider`,
     );
@@ -1120,23 +1144,24 @@ async function hostSideProviderRuntime(options: HarborTaskRunnerOptions): Promis
       )
     : undefined;
   const baseUrl = copilotCredential?.baseUrl ?? configuredBaseUrl;
-  if (options.resolveProviderCredential || usesHostProviderProxy(options.agent)) {
+  if (options.resolveProviderCredential || usesHostProviderProxy(agent)) {
     const apiKeyFile = options.apiKeyFile;
     const resolveProviderCredential = options.resolveProviderCredential;
     if (!apiKeyFile && !resolveProviderCredential) return null;
-    if (!baseUrl) throw new Error(`${options.agent} provider ${provider} requires a base URL`);
+    if (!baseUrl) throw new Error(`${agent} provider ${provider} requires a base URL`);
+    const apiProtocol = providerProxyApiProtocol(agent, options.agentEnv);
     const proxy = await startProviderAuthProxy({
-      upstreamBaseUrl: baseUrl,
-      ...(options.agent === 'maka' ? { advertisedHost: '127.0.0.1' } : {}),
+      upstreamBaseUrl: providerProxyUpstreamBaseUrl(baseUrl, provider, apiProtocol),
+      ...(agent === 'maka' ? { advertisedHost: '127.0.0.1' } : {}),
       ...(resolveProviderCredential
         ? { resolveUpstreamCredential: resolveProviderCredential }
         : { apiKeyFile: apiKeyFile! }),
-      authMode: options.agent === 'kimi-code' ? 'bearer' : providerProxyAuthMode(provider),
-      usageProtocol: providerProxyUsageProtocol(options.agent, provider),
+      authMode: agent === 'kimi-code' ? 'bearer' : providerProxyAuthMode(provider, apiProtocol),
+      usageProtocol: providerProxyUsageProtocol(agent, provider, apiProtocol),
     });
     return {
       env:
-        options.agent === 'maka'
+        agent === 'maka'
           ? {
               MAKA_HOST_BASE_URL: proxy.baseUrl,
               MAKA_HOST_API_KEY: proxy.token,
@@ -1196,8 +1221,35 @@ export function providerTokenSummary(
   };
 }
 
-/** Shared across runners: provider registry drives the proxy's client-facing auth header. */
-export function providerProxyAuthMode(provider: string): 'bearer' | 'x-api-key' {
+/** Match the Maka host connection's protocol authority when configuring its auth proxy. */
+export function providerProxyApiProtocol(
+  agent: HarborTaskRunnerOptions['agent'],
+  agentEnv: Record<string, string> | undefined,
+): string | undefined {
+  if (agent !== 'maka') return undefined;
+  return agentEnv?.MAKA_HOST_MODEL_API_PROTOCOL || agentEnv?.MAKA_MODEL_API_PROTOCOL || undefined;
+}
+
+/** OpenAI-compatible Kimi runtimes add /v1 to the advertised proxy base. */
+export function providerProxyUpstreamBaseUrl(
+  baseUrl: string,
+  provider: string,
+  apiProtocol?: string,
+): string {
+  if (provider !== 'kimi-coding-plan' || apiProtocol !== 'openai-chat') return baseUrl;
+  const upstream = new URL(baseUrl);
+  if (!/\/v1\/?$/i.test(upstream.pathname)) return baseUrl;
+  upstream.pathname = upstream.pathname.replace(/\/v1\/?$/i, '') || '/';
+  return upstream.toString();
+}
+
+/** Shared across runners: the selected Kimi protocol overrides its Anthropic registry default. */
+export function providerProxyAuthMode(
+  provider: string,
+  apiProtocol?: string,
+): 'bearer' | 'x-api-key' {
+  if (provider === 'kimi-coding-plan' && apiProtocol === 'openai-chat') return 'bearer';
+  if (provider === 'kimi-coding-plan' && apiProtocol === 'anthropic-messages') return 'x-api-key';
   const definition = (
     PROVIDER_DEFAULTS as Partial<Record<string, (typeof PROVIDER_DEFAULTS)[ProviderType]>>
   )[provider];
@@ -1211,8 +1263,12 @@ export function providerProxyAuthMode(provider: string): 'bearer' | 'x-api-key' 
 export function providerProxyUsageProtocol(
   agent: HarborTaskRunnerOptions['agent'],
   provider: string,
+  apiProtocol?: string,
 ): ProviderUsageProtocol | undefined {
   if (agent === 'kimi-code') return 'openai-chat-sse';
+  if (provider === 'kimi-coding-plan' && apiProtocol === 'openai-chat') return 'openai-chat-sse';
+  if (provider === 'kimi-coding-plan' && apiProtocol === 'anthropic-messages')
+    return 'anthropic-sse';
   const definition = (
     PROVIDER_DEFAULTS as Partial<Record<string, (typeof PROVIDER_DEFAULTS)[ProviderType]>>
   )[provider];

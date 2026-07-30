@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, Menu, nativeTheme, screen, shell } from 'electron';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type { AppSettings } from '@maka/core';
 import { isExternalUrl } from './external-link-guard.js';
 import { errorMessage } from './chat-readiness.js';
@@ -8,6 +9,7 @@ import { readSavedBounds, writeSavedBounds, SAFE_MIN_HEIGHT, SAFE_MIN_WIDTH, typ
 import { BrowserViewController } from './browser/controller.js';
 import { BrowserViewManager } from './browser/view-manager.js';
 import type { E2eFixture } from './e2e-fixture.js';
+import { installMainWindowPermissionPolicy } from './main-window-permission-policy.js';
 import { isThemePreference, toNativeThemeSource } from './theme-source.js';
 import { createWindowRevealGate } from './window-reveal.js';
 
@@ -16,7 +18,7 @@ type SettingsReader = {
 };
 
 export interface MainWindowController {
-  createWindow(): Promise<void>;
+  createWindow(signal: AbortSignal): Promise<void>;
   send(channel: string, ...args: unknown[]): void;
   // PR-SHOW-AFTER-FIRST-COMMIT: reveal the hidden window after the renderer's
   // first React commit. Idempotent + e2e-fixture-safe (see notifyRendererReady).
@@ -79,12 +81,13 @@ const HIDDEN_TRAFFIC_LIGHT_POSITION = { x: -100, y: -100 } as const;
 // wedged renderer still cannot leave the window invisible forever.
 const SHOW_FALLBACK_TIMEOUT_MS = 4000;
 
-// PR-WINDOW-TITLEBAR-0: the Windows titleBarOverlay height matches the
-// renderer `--h-titlebar: 36px` token so the native control strip and the
-// in-app top chrome share a baseline. The overlay color/symbolColor are
-// reused both at window creation (to avoid a first-frame flash against the
-// window `backgroundColor`) and on runtime mode/palette changes via
-// `setTitleBarOverlayTheme`.
+// PR-WINDOW-TITLEBAR-0: the titleBarOverlay height matches the renderer
+// `--h-titlebar: 36px` token so the native control strip and the in-app top
+// chrome share a baseline; `window-titlebar-contract.test.ts` fails if the two
+// numbers drift. The overlay color/symbolColor are reused both at window
+// creation (to avoid a first-frame flash against the window `backgroundColor`)
+// and on runtime mode/palette changes via `setTitleBarOverlayTheme` — Windows
+// only, which is why macOS passes the height alone.
 const TITLEBAR_OVERLAY_HEIGHT = 36;
 const titleBarOverlayOptions = (
   isDark: boolean,
@@ -143,7 +146,8 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     await browserViews?.disposeAll();
   }
 
-  async function createWindow(): Promise<void> {
+  async function createWindow(signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return;
     await mkdir(workspaceRoot, { recursive: true });
     installApplicationMenu();
     // Restore previously-saved bounds when available; first launch and
@@ -167,6 +171,10 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     // theme variant we're about to screenshot, so the very first frame
     // doesn't capture a light-on-dark or dark-on-light flash.
     const persistedTheme = (await settingsStore.get()).appearance?.theme ?? 'auto';
+    // Quit cleanup permanently closes process-scoped stores. Re-check after
+    // asynchronous preparation so an in-flight request cannot attach a new
+    // renderer to resources that teardown has already started closing.
+    if (signal.aborted) return;
     const themePref = e2eFixture?.theme ?? persistedTheme;
     const isDark =
       themePref === 'dark' ||
@@ -178,6 +186,16 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     // for the first frame or two on a cold start where the OS appearance
     // disagrees with the persisted in-app preference.
     nativeTheme.themeSource = toNativeThemeSource(themePref);
+
+    const rendererEntryPath = join(
+      import.meta.dirname,
+      '..',
+      '..',
+      'dist-renderer',
+      'index.html',
+    );
+    const rendererEntryUrl = process.env.VITE_DEV_SERVER_URL
+      ?? pathToFileURL(rendererEntryPath).href;
 
     // Re-arm the reveal gate for this window's lifecycle (macOS keeps the app
     // alive after close-all; the next createWindow starts hidden again and a
@@ -204,10 +222,23 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
       // flash; `setTitleBarOverlayTheme` re-syncs it when the theme
       // changes at runtime. Linux falls back to the default frame (no
       // overlay support is wired up yet).
+      //
+      // `titleBarOverlay` on macOS is NOT about drawing an overlay — the OS
+      // draws the traffic lights either way. It enables the Window Controls
+      // Overlay CSS environment variables, which is how the renderer learns
+      // where the native controls end instead of hard-coding a hand-measured
+      // gutter. Measured on this Electron (43.1.1, macOS): without it,
+      // `env(titlebar-area-x)` is unsupported and every fallback applies; with
+      // `{ height }` it reports the traffic lights' safe-area edge (83px) and
+      // keeps tracking window resizes. Only `height` is supported on macOS, so
+      // the color pair stays on the Windows path. The object form matters: the
+      // documented `titleBarOverlay: true` shorthand crashes this Electron on
+      // macOS (ERR_FAILED on first load, then SIGTRAP).
       ...(process.platform === 'darwin'
         ? {
             titleBarStyle: 'hiddenInset' as const,
             trafficLightPosition: MAIN_WINDOW_TRAFFIC_LIGHT_POSITION,
+            titleBarOverlay: { height: TITLEBAR_OVERLAY_HEIGHT },
           }
         : process.platform === 'win32'
           ? {
@@ -260,6 +291,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
         allowRunningInsecureContent: false,
       },
     });
+    installMainWindowPermissionPolicy(mainWindow.webContents, rendererEntryUrl);
 
     // Two-layer external-link hygiene: assistant markdown often emits `<a href>`
     // links to docs / GitHub / provider sign-up pages. Without these guards
@@ -357,9 +389,9 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     });
 
     if (process.env.VITE_DEV_SERVER_URL) {
-      await mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
+      await mainWindow.loadURL(rendererEntryUrl);
     } else {
-      await mainWindow.loadFile(join(import.meta.dirname, '..', '..', 'dist-renderer', 'index.html'));
+      await mainWindow.loadFile(rendererEntryPath);
     }
 
     // PR-SHOW-AFTER-FIRST-COMMIT: reveal fallback. Start this budget only once
@@ -518,6 +550,11 @@ function emitRealWindowSmokeDiagnostic(stage: string): void {
     isResizable: target.isResizable(),
     isMovable: target.isMovable(),
     isModal: target.isModal(),
+    // A hidden dock icon makes the run an accessory app: the window still
+    // takes clicks and keyboard focus, but it has no Dock tile and no
+    // Cmd+Tab entry, so a reviewer who switches away cannot switch back.
+    // null on platforms without a dock.
+    dockVisible: process.platform === 'darwin' ? (app.dock?.isVisible() ?? null) : null,
     webContentsUrl: target.webContents.getURL(),
   };
   target.webContents

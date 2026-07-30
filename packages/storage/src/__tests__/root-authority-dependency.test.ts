@@ -10,6 +10,7 @@ const compilerApi = new API({ cwd: process.cwd() });
 const projectConfig = join(process.cwd(), 'tsconfig.json');
 const compilerSnapshot = compilerApi.updateSnapshot({ openProjects: [projectConfig] });
 const compilerProject = loadCompilerProject();
+const allowedAuthorityLocalModules = new Set(['marker-file.ts', 'root-authority.ts']);
 const allowedAuthorityExternalImports = new Set([
   'fs-native-extensions',
   'node:crypto',
@@ -46,7 +47,10 @@ test('root authority cannot transitively reach domain Stores or Runtime composit
   const violations: string[] = [];
   for (const path of reachableModules(authorityEntrypoint)) {
     const localPath = relative(sourceRoot, path);
-    if (localPath !== 'root-authority.ts' && !localPath.startsWith(`root-authority${sep}`)) {
+    if (
+      !allowedAuthorityLocalModules.has(localPath) &&
+      !localPath.startsWith(`root-authority${sep}`)
+    ) {
       violations.push(`root authority reaches ${localPath}`);
     }
     for (const specifier of moduleSpecifiers(path)) {

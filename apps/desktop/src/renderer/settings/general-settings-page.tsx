@@ -34,6 +34,7 @@ import { settingsActionErrorMessage } from './settings-error-copy';
 import { useActionGuard, useKeyedActionGuard } from './use-action-guard';
 import { useOptimisticSettingsDraft } from './use-optimistic-settings-draft';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
+import { getShellCopy } from '../locales/shell-copy.js';
 
 export function GeneralSettingsPage(props: {
   settings: AppSettings;
@@ -107,9 +108,8 @@ export function GeneralSettingsPage(props: {
  * inline. The selection is grouped by connection, but the persisted
  * default is the pair `{ slug, model }` via `connections.setDefaultModel`.
  *
- * PR-DEFAULT-PERMISSION-MODE-0: the composer's per-session permission-mode
- * picker (询问权限 / 自动执行 / 跳过确认) always reset new sessions back to
- * 询问权限 -- there was no way to change what a *new* chat starts on. Added
+ * PR-DEFAULT-PERMISSION-MODE-0: the composer's per-session boundary picker
+ * did not previously control what a *new* chat starts on. Added
  * a second picker right below 默认模型, backed by
  * `settings.chatDefaults.permissionMode` (persisted via the generic
  * `settings.update` patch, unlike the model picker's dedicated
@@ -126,6 +126,7 @@ function GeneralDefaultsCard(props: {
 }) {
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).general;
+  const boundaryCopy = getShellCopy(locale).sessionSettingsActions;
   const toast = useToast();
   const mountedRef = useMountedRef();
   const persistGuard = useKeyedActionGuard<'default-model' | 'permission-mode'>();
@@ -175,6 +176,28 @@ function GeneralDefaultsCard(props: {
     // ordering guarantee.
     const releaseSave = persistGuard.begin('permission-mode');
     if (!releaseSave) return;
+    if (nextMode === 'bypass' && props.permissionMode !== 'bypass') {
+      let confirmed = false;
+      try {
+        confirmed = await toast.confirm({
+          title: boundaryCopy.bypassConfirmTitle,
+          description: boundaryCopy.bypassConfirmDescription,
+          confirmLabel: boundaryCopy.bypassConfirmLabel,
+          cancelLabel: boundaryCopy.bypassCancelLabel,
+          destructive: true,
+        });
+      } catch (error) {
+        releaseSave();
+        if (mountedRef.current) {
+          toast.error(copy.saveDefaultPermissionFailed, settingsActionErrorMessage(error, locale));
+        }
+        return;
+      }
+      if (!confirmed) {
+        releaseSave();
+        return;
+      }
+    }
     setSavingPermissionMode(true);
     try {
       await props.onUpdate({ chatDefaults: { permissionMode: nextMode } });

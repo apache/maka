@@ -91,6 +91,8 @@ export function botDisplayLabel(platform: BotPlatform): string {
       return '钉钉';
     case 'qq':
       return 'QQ';
+    case 'slack':
+      return 'Slack';
   }
 }
 

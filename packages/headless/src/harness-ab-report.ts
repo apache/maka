@@ -3,6 +3,7 @@ import type {
   HarnessOracleAnnotation,
   HarnessOracleAnnotationState,
 } from './harness-oracle-registry.js';
+import type { HarnessAbRunManifest } from './harness-ab-manifest.js';
 
 export interface HarnessAbArmEffectiveness {
   armId: string;
@@ -56,6 +57,9 @@ export interface HarnessAbReport {
     baseline: HarnessAbArmEconomy;
     candidate: HarnessAbArmEconomy;
   };
+  execution?: {
+    arms: [{ armId: string; placement: string }, { armId: string; placement: string }];
+  };
   oracleEvidence?: {
     snapshotFingerprint?: string;
     stateCounts: Partial<Record<HarnessOracleAnnotationState, number>>;
@@ -74,6 +78,7 @@ export function buildHarnessAbReport(
   summary: AbComparisonSummary,
   oracleEvidence?: HarnessAbOracleEvidenceReportInput,
   billingMode: HarnessAbReport['billingMode'] = 'metered',
+  manifest?: Pick<HarnessAbRunManifest, 'arms'>,
 ): HarnessAbReport {
   const coverage = {
     scheduledCells: summary.baseline.attempts + summary.candidate.attempts,
@@ -95,6 +100,7 @@ export function buildHarnessAbReport(
       : coverage.unscoredCells > 0 || coverage.missingFinalUsageCells > 0
         ? 'completed_with_gaps'
         : 'completed';
+  const execution = manifestExecution(manifest);
   return {
     schemaVersion: 'maka.harness_ab.report.v3',
     runId: summary.runId,
@@ -141,6 +147,7 @@ export function buildHarnessAbReport(
         summary.pairedAttempts.candidateMeteredPassed,
       ),
     },
+    ...(execution ? { execution } : {}),
     ...(oracleEvidence
       ? {
           oracleEvidence: {
@@ -300,6 +307,7 @@ export function renderHarnessAbReportMarkdown(report: HarnessAbReport): string {
     `Status: ${report.runStatus}${report.stopReason ? ` (${report.stopReason})` : ''}.`,
     '',
     `Run: ${report.runId}; tasks: ${report.taskCount}; paired evaluated: ${report.effectiveness.pairedEvaluated}.`,
+    ...executionPlacementMarkdown(report),
     `Cell coverage: ${report.coverage.attemptedCells}/${report.coverage.scheduledCells} attempted; ${report.coverage.modelScoredCells} model-scored; ${report.coverage.unscoredCells} unscored (including ${report.coverage.infraFailedCells} infra-failed); ${report.coverage.missingFinalUsageCells} missing final usage.`,
     `Economy coverage: fully metered pairs: ${report.economy.pairedMetered}; missing usage: ${report.economy.missingUsagePairs}.`,
     ...oracleEvidenceMarkdown(report),
@@ -334,6 +342,40 @@ export function renderHarnessAbReportMarkdown(report: HarnessAbReport): string {
       : 'No composite score: effectiveness and economy are reported as separate axes. Recorded cost is a cache-aware API-equivalent estimate from the frozen pricing profile.',
     '',
   ].join('\n');
+}
+
+function manifestExecution(
+  manifest: Pick<HarnessAbRunManifest, 'arms'> | undefined,
+): HarnessAbReport['execution'] {
+  if (!manifest) return undefined;
+  const placements = manifest.arms.map((arm) => {
+    const config = recordValue(arm.metadata?.config);
+    const execution = recordValue(config?.execution);
+    const placement = execution?.placement;
+    return typeof placement === 'string' && placement.trim().length > 0
+      ? { armId: arm.id, placement }
+      : undefined;
+  });
+  if (placements.every((placement) => placement === undefined)) return undefined;
+  if (placements.some((placement) => placement === undefined)) {
+    throw new Error('harness report execution placement must be declared for both arms');
+  }
+  return { arms: placements as NonNullable<HarnessAbReport['execution']>['arms'] };
+}
+
+function executionPlacementMarkdown(report: HarnessAbReport): string[] {
+  if (!report.execution) return [];
+  return [
+    `Execution placement: ${report.execution.arms
+      .map((arm) => `${arm.armId}=${arm.placement}`)
+      .join('; ')}.`,
+  ];
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
 function countOracleStates(

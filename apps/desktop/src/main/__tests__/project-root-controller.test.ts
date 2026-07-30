@@ -46,11 +46,35 @@ async function waitForPersistedPath(file: string, expected: string): Promise<voi
       const parsed = JSON.parse(await readFile(file, 'utf8')) as { projectPath?: string };
       if (parsed.projectPath === expected) return;
     } catch {
-      // Not written yet (setSelected persists fire-and-forget).
+      // Not written yet (setSelection persists fire-and-forget).
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  assert.fail(`setSelected must persist ${expected} to ${file}`);
+  assert.fail(`setSelection must persist ${expected} to ${file}`);
+}
+
+async function waitForPersistedSelection(
+  file: string,
+  expected: { projectId: string | null; projectPath: string },
+): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try {
+      const parsed = JSON.parse(await readFile(file, 'utf8')) as {
+        projectId?: string | null;
+        projectPath?: string;
+      };
+      if (
+        parsed.projectId === expected.projectId &&
+        parsed.projectPath === expected.projectPath
+      ) {
+        return;
+      }
+    } catch {
+      // Not written yet (setSelection persists fire-and-forget).
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(`setSelection must persist ${JSON.stringify(expected)} to ${file}`);
 }
 
 describe('project-root controller', () => {
@@ -105,7 +129,7 @@ describe('project-root controller', () => {
         lastProjectPathFile: fixture.lastProjectPathFile,
         fallbackRoots: () => [fixture.fallbackDir],
       });
-      controller.setSelected(fixture.selectedDir);
+      controller.setSelection('project-selected', fixture.selectedDir);
       assert.equal(await controller.current(), fixture.selectedDir);
     });
   });
@@ -116,7 +140,7 @@ describe('project-root controller', () => {
         lastProjectPathFile: fixture.lastProjectPathFile,
         fallbackRoots: () => [fixture.fallbackDir],
       });
-      controller.setSelected(fixture.selectedDir);
+      controller.setSelection('project-selected', fixture.selectedDir);
       await waitForPersistedPath(fixture.lastProjectPathFile, fixture.selectedDir);
 
       const restored = createProjectRootController({
@@ -124,6 +148,29 @@ describe('project-root controller', () => {
         fallbackRoots: () => [fixture.fallbackDir],
       });
       assert.equal(await restored.current(), fixture.selectedDir);
+    });
+  });
+
+  it('persists the project id and path as one selection snapshot', async () => {
+    await withFixture(async (fixture) => {
+      const controller = createProjectRootController({
+        lastProjectPathFile: fixture.lastProjectPathFile,
+        fallbackRoots: () => [fixture.fallbackDir],
+      });
+      controller.setSelection('project-1', fixture.selectedDir);
+      await waitForPersistedSelection(fixture.lastProjectPathFile, {
+        projectId: 'project-1',
+        projectPath: fixture.selectedDir,
+      });
+
+      const restored = createProjectRootController({
+        lastProjectPathFile: fixture.lastProjectPathFile,
+        fallbackRoots: () => [fixture.fallbackDir],
+      });
+      assert.deepEqual(await restored.currentSelection(), {
+        projectId: 'project-1',
+        path: fixture.selectedDir,
+      });
     });
   });
 

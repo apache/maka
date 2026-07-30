@@ -85,7 +85,6 @@ const BARE_PX_RE = /(?<![\w-])-?\d+(?:\.\d+)?px(?![\w-])/;
 const TRIANGLE_CARET_SELECTORS = new Set([
   '.maka-turn-thinking [data-slot="collapsible-trigger"]::before',
   '.maka-prose li.task-list-item > input[type="checkbox"]:checked::after',
-  '.maka-permission-raw [data-slot="collapsible-trigger"]::before',
 ]);
 
 const BORDER_STYLE_KEYWORDS = new Set([

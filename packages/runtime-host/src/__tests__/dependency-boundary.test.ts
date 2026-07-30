@@ -25,14 +25,45 @@ const allowedHostExternalImports = new Set([
 const allowedServerExternalImports = new Set([
   ...allowedHostExternalImports,
   '@maka/core/agent-run',
+  '@maka/core/artifacts',
+  '@maka/core/backend-types',
+  '@maka/core/events',
+  '@maka/core/interaction',
+  '@maka/core/llm-connections',
+  '@maka/core/local-memory',
+  '@maka/core/model-catalog',
+  '@maka/core/model-metadata',
+  '@maka/core/redaction',
+  '@maka/core/runtime-policy',
   '@maka/core/runtime-event',
   '@maka/core/session',
+  '@maka/core/task-ledger',
+  '@maka/core/usage-stats/types',
   '@maka/runtime',
+  '@maka/storage/agent-graph-control-store',
+  '@maka/storage/artifact-stores',
   '@maka/storage/execution-stores',
+  '@maka/storage/interaction-store',
+  '@maka/storage/memory-bundle-store',
+  '@maka/storage/runtime-policy-stores',
+  '@maka/storage/task-ledger-authority',
+  '@maka/storage/usage-stores',
+  'node:async_hooks',
 ]);
 const allowedExternalImports = {
   client: allowedHostExternalImports,
-  protocol: new Set(['node:util']),
+  protocol: new Set([
+    '@maka/core/attachments',
+    '@maka/core/artifacts',
+    '@maka/core/events',
+    '@maka/core/interaction',
+    '@maka/core/local-memory',
+    '@maka/core/runtime-policy',
+    '@maka/core/task-ledger',
+    '@maka/core/usage-stats/pricing',
+    '@maka/core/usage-stats/types',
+    'node:util',
+  ]),
 } as const;
 
 async function dependencyScannerFixture(target: string): Promise<void> {
@@ -80,7 +111,11 @@ test('protocol and client stay within their subpaths and the root-authority boun
           if (!isInside(sourceRoot, target)) violations.push(`${path}: ${specifier}`);
           continue;
         }
-        if (!allowedExternalImports[area].has(specifier)) violations.push(`${path}: ${specifier}`);
+        const allowedImports =
+          topLevelArea === 'protocol'
+            ? allowedExternalImports.protocol
+            : allowedExternalImports[area];
+        if (!allowedImports.has(specifier)) violations.push(`${path}: ${specifier}`);
       }
     }
   }
@@ -96,7 +131,9 @@ test('only the server subgraph can reach the M2 Runtime composition', async () =
     const allowedImports =
       topLevelArea === 'server' || localPath === 'candidate-main.ts'
         ? allowedServerExternalImports
-        : allowedHostExternalImports;
+        : topLevelArea === 'protocol'
+          ? allowedExternalImports.protocol
+          : allowedHostExternalImports;
     for (const specifier of moduleSpecifiers(path)) {
       if (isRelativeSpecifier(specifier)) {
         const target = sourcePathForSpecifier(path, specifier);
@@ -116,13 +153,25 @@ test('the production Candidate dependency graph remains non-serving', () => {
     'server/execution-candidate.ts',
     'server/execution-composition.ts',
     'server/root-turn-coordinator.ts',
+    'server/memory-coordinator.ts',
+    'server/memory-projection.ts',
+    'server/runtime-policy-coordinator.ts',
+    'server/session-continuity-coordinator.ts',
+    'server/task-ledger-coordinator.ts',
   ]);
   const violations: string[] = [];
   for (const path of reached) {
     const localPath = relative(sourceRoot, path);
     if (forbiddenLocalModules.has(localPath)) violations.push(localPath);
     for (const specifier of moduleSpecifiers(path)) {
-      if (specifier === '@maka/runtime' || specifier === '@maka/storage/execution-stores') {
+      if (
+        specifier === '@maka/runtime' ||
+        specifier === '@maka/storage/agent-graph-control-store' ||
+        specifier === '@maka/storage/execution-stores' ||
+        specifier === '@maka/storage/memory-bundle-store' ||
+        specifier === '@maka/storage/runtime-policy-stores' ||
+        specifier === '@maka/storage/task-ledger-authority'
+      ) {
         violations.push(`${localPath}: ${specifier}`);
       }
     }
@@ -137,7 +186,10 @@ test('the public server entrypoint does not expose the test execution compositio
   const forbidden = new Set([
     'server/execution-candidate.ts',
     'server/execution-composition.ts',
+    'server/memory-coordinator.ts',
+    'server/memory-projection.ts',
     'server/root-turn-coordinator.ts',
+    'server/session-continuity-coordinator.ts',
   ]);
   assert.deepEqual(
     reachableModules(serverEntrypoint, publicEntrypoints)

@@ -1,9 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import { stat } from 'node:fs/promises';
-import { ipcMain } from 'electron';
+import { ipcMain as electronIpcMain } from 'electron';
 import {
-  DEFAULT_SESSION_NAME,
   isCollaborationMode,
   isOrchestrationMode,
   isPermissionMode,
@@ -13,7 +12,8 @@ import {
   thinkingVariantsForModel,
 } from '@maka/core';
 import type {
-  CreateSessionInput,
+  CreateSessionRequestInput,
+  SandboxBoundaryExpansion,
   SessionEvent,
   SessionChangedEvent,
   SessionChangedReason,
@@ -31,15 +31,18 @@ import { resolveSessionSend } from './session-send-resolve.js';
 import { resizeImageForAttachment } from './attachment-resize-native.js';
 import { releaseBrowserSession } from './browser/session.js';
 import { sessionReadMessagesFailureMessage } from './session-read-error-copy.js';
-import { resolveDefaultPermissionMode } from './permission-mode-default.js';
+import { resolveCreateSessionInput } from './create-session-input.js';
 import {
-  normalizePermissionResponse,
-  normalizeRegenerateTurnInput,
+  normalizeSandboxBoundaryResponse,
   normalizeSessionSendCommand,
   normalizeStopSessionInput,
   normalizeUserQuestionResponse,
 } from './permission-response-guard.js';
-import { getE2eFixtureState, type resolveE2eFixture } from './e2e-fixture.js';
+import {
+  getE2eFixtureState,
+  retireE2eFixtureSandboxBoundaryRequest,
+  type resolveE2eFixture,
+} from './e2e-fixture.js';
 import type { requireReadyConnection } from './chat-readiness.js';
 import type { MainTaskLedgerWiring } from './task-ledger-wiring.js';
 import type { MainGoalWiring } from './goal-wiring.js';
@@ -49,6 +52,9 @@ import type { createMainWindowController } from './main-window.js';
 import { handleBranchFromTurn } from './session-branch.js';
 import { handleReviseBeforeTurn } from './session-revision.js';
 import { prepareSessionSendSkillPlan } from './session-send-skill-plan.js';
+import type { DesktopCreateSessionInput } from './new-session-project.js';
+import { registerSessionExecutionIpc } from './session-execution-ipc-main.js';
+import { createQuoteCompanionCleanupAuthority } from './quote-companion-cleanup.js';
 
 type SessionStore = ReturnType<typeof createSessionStore>;
 type ArtifactStore = ReturnType<typeof createArtifactStore>;
@@ -65,6 +71,7 @@ interface SessionToolCleanup {
 }
 
 export interface SessionsIpcDeps {
+  workspaceRoot: string;
   runtime: SessionManager;
   store: SessionStore;
   taskLedgerStore: MainTaskLedgerWiring['store'];
@@ -91,8 +98,10 @@ export interface SessionsIpcDeps {
   ) => Promise<PreparedSkillInvocationMessage>;
   invalidateSessionBindings?: (sessionId: string) => void;
   clearSkillHost?: (sessionId: string) => void;
+  stopAgentGraph?: (sessionId: string) => Promise<void>;
+  notifyAgentGraphPermissionResponse?: (sessionId: string) => void;
   ensureSessionWorkspaceAvailable: (sessionId: string) => Promise<void>;
-  createSession: (input: CreateSessionInput) => ReturnType<SessionManager['createSession']>;
+  createSession: (input: DesktopCreateSessionInput) => ReturnType<SessionManager['createSession']>;
   getReadyConnection: (
     slug: string | null | undefined,
     model?: string,
@@ -105,7 +114,6 @@ export interface SessionsIpcDeps {
       goalBoundary: 'external' | 'none';
     },
   ) => Promise<{ turnId: string; ok: boolean; error?: string }>;
-  getCurrentProjectRoot: () => Promise<string>;
   getWorkspacePrivacyContext: () => Promise<WorkspacePrivacyContext>;
   canCreateFakeSession: () => boolean;
 }
@@ -170,8 +178,12 @@ async function resolveSessionActionIds(
   return revisionFamilySessionIds(await runtime.listSessions(), sessionId);
 }
 
-export function registerSessionsIpc(deps: SessionsIpcDeps): void {
+export function registerSessionsIpc(
+  deps: SessionsIpcDeps,
+  ipcMain: Pick<typeof electronIpcMain, 'handle'> = electronIpcMain,
+): void {
   const {
+    workspaceRoot,
     runtime,
     store,
     taskLedgerStore,
@@ -190,6 +202,8 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
     prepareSkillInvocation,
     invalidateSessionBindings,
     clearSkillHost,
+    stopAgentGraph,
+    notifyAgentGraphPermissionResponse,
     ensureSessionWorkspaceAvailable,
     createSession,
     getReadyConnection,
@@ -197,7 +211,28 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
     getWorkspacePrivacyContext,
     canCreateFakeSession,
   } = deps;
-  const currentProjectRoot = deps.getCurrentProjectRoot;
+  registerSessionExecutionIpc({
+    ipcMain,
+    runtime,
+    ensureSessionCanSend,
+    ensureSessionWorkspaceAvailable,
+    streamEvents,
+    emitModeChanged: (sessionId) => emitSessionsChanged('mode-change', sessionId),
+  });
+  const removeSession = async (sessionId: string): Promise<void> => {
+    computerUseOverlay.clearForSession(sessionId);
+    computerUseTools.clearSession(sessionId);
+    await goalWiring.removeSession(sessionId, () => runtime.remove(sessionId));
+    invalidateSessionBindings?.(sessionId);
+    clearSkillHost?.(sessionId);
+    await releaseBrowserSession(sessionId);
+    automationManager.removeAllForSession(sessionId);
+    emitSessionsChanged('deleted', sessionId);
+  };
+  const quoteCompanionCleanup = createQuoteCompanionCleanupAuthority({
+    workspaceRoot,
+    removeSession,
+  });
 
   ipcMain.handle('shell-runs:list', (_event, sessionId: string) => runtime.listShellRunUpdates(sessionId));
   ipcMain.handle('tasks:list', async (_event, sessionId: string) => {
@@ -209,31 +244,37 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
     });
     return tasks.map(sanitizeTaskLedgerTask);
   });
-  ipcMain.handle('sessions:list', (_event, filter?: SessionListFilter) => runtime.listSessions(filter));
-  ipcMain.handle('sessions:create', async (_event, input?: Partial<CreateSessionInput>) => {
-    const cwd = input?.cwd ?? (await currentProjectRoot());
-    const collaborationMode = input?.collaborationMode ?? 'agent';
-    if (!isCollaborationMode(collaborationMode)) {
-      throw new TypeError('Invalid collaboration mode.');
-    }
-    const orchestrationMode = input?.orchestrationMode ?? 'default';
-    if (!isOrchestrationMode(orchestrationMode)) {
-      throw new TypeError('Invalid orchestration mode.');
-    }
+  ipcMain.handle('sessions:list', async (_event, filter?: SessionListFilter) => {
+    // Listing is also a recovery trigger. Await it so an orphaned hidden
+    // companion is removed before it can reappear in the sidebar after restart.
+    const recovery = await quoteCompanionCleanup.recover();
+    const pendingCleanup = new Set(recovery.failed.map(({ sessionId }) => sessionId));
+    return (await runtime.listSessions(filter)).filter(
+      ({ id }) => !pendingCleanup.has(id),
+    );
+  });
+  ipcMain.handle('sessions:create', async (_event, input?: CreateSessionRequestInput) => {
+    // #1433: `mode` is a product intent, not a session field. What it implies,
+    // what the renderer may ask for directly, and what the configured default
+    // fills in are all resolved in one pure place (create-session-input.ts),
+    // which is also the only place any of it can be tested.
+    const { permissionMode, collaborationMode, orchestrationMode, name, labels } =
+      await resolveCreateSessionInput(input, { readSettings: () => settingsStore.get() });
     if (input?.backend === 'fake') {
       if (!canCreateFakeSession()) {
         throw new Error('FakeBackend sessions are only available in development.');
       }
       const session = await createSession({
-        cwd,
+        ...(input?.cwd ? { cwd: input.cwd } : {}),
+        projectId: input?.projectId,
         backend: 'fake',
         llmConnectionSlug: input.llmConnectionSlug ?? 'fake',
         model: input.model ?? 'fake-model',
-        permissionMode: input.permissionMode ?? (await resolveDefaultPermissionMode(() => settingsStore.get())),
+        permissionMode,
         collaborationMode,
         orchestrationMode,
-        name: input.name ?? DEFAULT_SESSION_NAME,
-        labels: input.labels,
+        name,
+        labels,
       });
       emitSessionsChanged('created', session.id);
       return session;
@@ -244,16 +285,17 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
     const thinkingLevel = normalizeSupportedSessionThinkingLevel(input?.thinkingLevel, connection.providerType, model);
 
     const session = await createSession({
-      cwd,
+      ...(input?.cwd ? { cwd: input.cwd } : {}),
+      projectId: input?.projectId,
       backend: 'ai-sdk',
       llmConnectionSlug: connection.slug,
       model,
       ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
-      permissionMode: input?.permissionMode ?? (await resolveDefaultPermissionMode(() => settingsStore.get())),
+      permissionMode,
       collaborationMode,
       orchestrationMode,
-      name: input?.name ?? DEFAULT_SESSION_NAME,
-      labels: input?.labels,
+      name,
+      labels,
     });
     emitSessionsChanged('created', session.id);
     return session;
@@ -312,18 +354,47 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
   ipcMain.handle('sessions:stop', async (_event, sessionId: string, input?: { source?: 'stop_button' }) => {
     computerUseOverlay.clearForSession(sessionId);
     computerUseTools.clearSession(sessionId);
+    await stopAgentGraph?.(sessionId);
     await runtime.stopSession(sessionId, normalizeStopSessionInput(input));
     await runtime.interruptActivePlanExecution(sessionId, 'user_stopped_execution').catch(() => null);
     emitSessionsChanged('status-change', sessionId);
     emitSessionsChanged('turn-status-change', sessionId);
     emitSessionsChanged('message-appended', sessionId);
   });
-  ipcMain.handle('sessions:respondToPermission', async (_event, sessionId: string, response) => {
-    const normalized = normalizePermissionResponse(response);
+  ipcMain.handle('sessions:readExecutionBoundary', (_event, sessionId: string) =>
+    runtime.readExecutionBoundary(sessionId),
+  );
+  ipcMain.handle('sessions:listActiveSandboxBoundaryRequests', (_event, sessionId: string) => {
+    // Already filtered by retirement: `getE2eFixtureState` is the one owner of
+    // which fixture requests are still unanswered.
+    const fixtureRequest = getE2eFixtureState(e2eFixture)?.sandboxBoundaryBySession?.[sessionId];
+    return fixtureRequest
+      ? [fixtureRequest]
+      : runtime.listActiveSandboxBoundaryRequests(sessionId);
+  });
+  ipcMain.handle('sessions:respondToSandboxBoundary', async (_event, sessionId: string, response) => {
+    const normalized = normalizeSandboxBoundaryResponse(response);
+    const fixtureRequest = getE2eFixtureState(e2eFixture)?.sandboxBoundaryBySession?.[sessionId];
+    if (fixtureRequest?.requestId === normalized.requestId) {
+      // The fixture request is synthetic — no runtime turn is waiting on it —
+      // but allowing it must still move the real boundary, or the fixture
+      // would model an "allow" that grants nothing and no surface built on the
+      // boundary could be exercised against it (#1611).
+      if (normalized.decision === 'allow') {
+        // Retired only once the grant has landed. The runtime drops an active
+        // request when the decision is acknowledged, not when it is received;
+        // hiding this one before the write succeeds would let the fixture
+        // swallow a settlement failure the renderer is about to be told about.
+        await applyFixtureSandboxBoundaryExpansion(store, sessionId, fixtureRequest.expansion);
+      }
+      retireE2eFixtureSandboxBoundaryRequest(normalized.requestId);
+      return;
+    }
     if (normalized.decision === 'allow') {
       await ensureSessionWorkspaceAvailable(sessionId);
     }
-    return runtime.respondToPermission(sessionId, normalized);
+    await runtime.respondToSandboxBoundary(sessionId, normalized);
+    notifyAgentGraphPermissionResponse?.(sessionId);
   });
   ipcMain.handle('sessions:respondToUserQuestion', async (_event, sessionId: string, response) => {
     const normalized = normalizeUserQuestionResponse(response);
@@ -340,7 +411,7 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
           : Promise.resolve({
               disposition: 'passthrough' as const,
               sendText: sendCommand.text,
-              skillInvocation: { loaded: [], failed: [] },
+              skillInvocation: { loaded: [], failed: [], receipts: [] },
             }),
       resolveSend: () =>
         resolveSessionSend({
@@ -424,43 +495,6 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
       return { ok: true, base64: result.base64, mimeType: result.mimeType };
     },
   );
-  ipcMain.handle('sessions:compact', async (_event, sessionId: string) => {
-    await ensureSessionCanSend(sessionId);
-    const turnId = randomUUID();
-    void streamEvents(sessionId, runtime.compactSession(sessionId, { turnId }), {
-      turnId,
-      goalBoundary: 'none',
-    });
-  });
-  ipcMain.handle('sessions:resumeLatest', async (_event, sessionId: string) => {
-    const plan = await runtime.planLatestAuthoritativeSafeBoundaryContinuation(sessionId);
-    if (!plan.continuation) {
-      return {
-        disposition: 'park' as const,
-        rejectionReasons: plan.rejectionReasons,
-        diagnostics: plan.diagnostics,
-      };
-    }
-    const iterator = runtime.resumeSafeBoundaryContinuation(plan.continuation);
-    void streamEvents(sessionId, iterator, {
-      turnId: plan.continuation.turnId,
-      goalBoundary: 'none',
-    });
-    return {
-      disposition: 'started' as const,
-      runId: plan.continuation.runId,
-      turnId: plan.continuation.turnId,
-    };
-  });
-  ipcMain.handle('sessions:regenerateTurn', async (_event, sessionId: string, input: unknown) => {
-    await ensureSessionCanSend(sessionId);
-    const normalized = normalizeRegenerateTurnInput(input);
-    const turnId = normalized.turnId ?? randomUUID();
-    void streamEvents(sessionId, runtime.regenerateTurn(sessionId, { ...normalized, turnId }), {
-      turnId,
-      goalBoundary: 'external',
-    });
-  });
   ipcMain.handle('sessions:branchFromTurn', async (_event, sessionId: string, input: unknown) => {
     return handleBranchFromTurn(sessionId, input, {
       ensureSessionWorkspaceAvailable,
@@ -479,6 +513,7 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
     for (const id of await resolveSessionActionIds(runtime, sessionId, options)) {
       computerUseOverlay.clearForSession(id);
       computerUseTools.clearSession(id);
+      await stopAgentGraph?.(id);
       await goalWiring.archiveSession(id, () => runtime.archive(id));
       invalidateSessionBindings?.(id);
       clearSkillHost?.(id);
@@ -560,47 +595,6 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
     emitSessionsChanged('mode-change', sessionId);
     return result.state;
   });
-  ipcMain.handle('plan-mode:approve', async (_event, sessionId: string, input: unknown) => {
-    if (!input || typeof input !== 'object') throw new Error('Invalid plan approval');
-    const proposalId = (input as { proposalId?: unknown }).proposalId;
-    const expectedRevision = (input as { expectedRevision?: unknown }).expectedRevision;
-    const expectedStoreVersion = (input as { expectedStoreVersion?: unknown }).expectedStoreVersion;
-    if (typeof proposalId !== 'string' || !proposalId ||
-        typeof expectedRevision !== 'number' || !Number.isSafeInteger(expectedRevision) ||
-        (expectedStoreVersion !== undefined &&
-          (typeof expectedStoreVersion !== 'number' || !Number.isSafeInteger(expectedStoreVersion)))) {
-      throw new Error('Invalid plan approval');
-    }
-    await ensureSessionWorkspaceAvailable(sessionId);
-    const result = await runtime.approvePlan({
-      sessionId,
-      proposalId,
-      expectedRevision,
-      ...(expectedStoreVersion !== undefined ? { expectedStoreVersion } : {}),
-    });
-    if (result.event.type !== 'plan_approved') throw new Error('Plan approval did not create an execution');
-    const turnId = randomUUID();
-    const iterator = runtime.sendMessage(sessionId, {
-      turnId,
-      text: `Execute the approved plan ${result.event.execution.planId}.`,
-    });
-    void streamEvents(sessionId, iterator, { turnId, goalBoundary: 'external' });
-    emitSessionsChanged('mode-change', sessionId);
-    return { state: result.state, turnId, executionId: result.event.execution.executionId };
-  });
-  ipcMain.handle('plan-mode:resume', async (_event, sessionId: string, executionId: unknown) => {
-    if (typeof executionId !== 'string' || !executionId) throw new Error('Invalid execution id');
-    await ensureSessionWorkspaceAvailable(sessionId);
-    const result = await runtime.resumePlanExecution(sessionId, executionId);
-    const turnId = randomUUID();
-    const iterator = runtime.sendMessage(sessionId, {
-      turnId,
-      text: `Resume the approved plan execution ${executionId}.`,
-    });
-    void streamEvents(sessionId, iterator, { turnId, goalBoundary: 'external' });
-    emitSessionsChanged('mode-change', sessionId);
-    return { state: result.state, turnId, executionId };
-  });
   ipcMain.handle('plan-mode:abandonExecution', async (
     _event,
     sessionId: string,
@@ -657,14 +651,42 @@ export function registerSessionsIpc(deps: SessionsIpcDeps): void {
   });
   ipcMain.handle('sessions:remove', async (_event, sessionId: string, options?: unknown) => {
     for (const id of await resolveSessionActionIds(runtime, sessionId, options)) {
-      computerUseOverlay.clearForSession(id);
-      computerUseTools.clearSession(id);
-      await goalWiring.removeSession(id, () => runtime.remove(id));
-      invalidateSessionBindings?.(id);
-      clearSkillHost?.(id);
-      await releaseBrowserSession(id);
-      automationManager.removeAllForSession(id);
-      emitSessionsChanged('deleted', id);
+      await removeSession(id);
     }
+  });
+  ipcMain.handle('sessions:cleanupQuoteCompanion', async (_event, sessionId: string) => {
+    await quoteCompanionCleanup.cleanup(sessionId);
+  });
+}
+
+/**
+ * Apply an e2e-fixture boundary expansion through the real storage authority.
+ *
+ * The fixture's pending request is a synthetic event with no runtime turn
+ * behind it, so it cannot be settled the normal way. Creating and settling a
+ * genuine request with the same expansion keeps the boundary — which every
+ * permission surface reads — honest about what the user just granted, instead
+ * of leaving "allow" as a no-op the UI can silently contradict.
+ */
+async function applyFixtureSandboxBoundaryExpansion(
+  store: SessionStore,
+  sessionId: string,
+  expansion: SandboxBoundaryExpansion,
+): Promise<void> {
+  const created = await store.createSandboxBoundaryRequest?.({
+    sessionId,
+    requestId: randomUUID(),
+    // Provenance is required so a real producer cannot drop it (#1612). This
+    // request has no turn to point at, so it names itself rather than
+    // borrowing an id that restart recovery could later attribute a closure to.
+    turnId: 'e2e-fixture-expansion',
+    expansion,
+    justification: 'e2e fixture expansion',
+  });
+  if (!created) return;
+  await store.settleSandboxBoundaryRequest?.({
+    sessionId,
+    requestId: created.requestId,
+    decision: 'allow',
   });
 }

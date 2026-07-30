@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { SettingsSection } from '@maka/core';
+import type { ProviderType, SettingsSection } from '@maka/core';
 import { safeLocalStorageSet } from './browser-storage';
 
 /**
@@ -18,10 +18,12 @@ export function useSettingsModal() {
   );
   const [settingsProviderCatalogOpen, setSettingsProviderCatalogOpen] = useState(false);
   const [settingsConnectionDetailSlug, setSettingsConnectionDetailSlug] = useState<string | undefined>(undefined);
+  const [settingsCreateProviderType, setSettingsCreateProviderType] = useState<ProviderType | undefined>(undefined);
 
   function openSettings() {
     setSettingsProviderCatalogOpen(false);
     setSettingsConnectionDetailSlug(undefined);
+    setSettingsCreateProviderType(undefined);
     setSettingsOpen(true);
   }
 
@@ -30,6 +32,7 @@ export function useSettingsModal() {
     setSettingsRequestedSection(section);
     setSettingsProviderCatalogOpen(false);
     setSettingsConnectionDetailSlug(undefined);
+    setSettingsCreateProviderType(undefined);
     setSettingsOpen(true);
   }
 
@@ -38,6 +41,7 @@ export function useSettingsModal() {
     setSettingsRequestedSection('models');
     setSettingsProviderCatalogOpen(true);
     setSettingsConnectionDetailSlug(undefined);
+    setSettingsCreateProviderType(undefined);
     setSettingsOpen(true);
   }
 
@@ -47,6 +51,17 @@ export function useSettingsModal() {
     setSettingsRequestedSection('models');
     setSettingsProviderCatalogOpen(false);
     setSettingsConnectionDetailSlug(slug);
+    setSettingsCreateProviderType(undefined);
+    setSettingsOpen(true);
+  }
+
+  /** Open Settings → 模型 with the create-connection dialog for this provider expanded. */
+  function openProviderCreate(providerType: ProviderType) {
+    safeLocalStorageSet('maka-settings-section-v1', 'models');
+    setSettingsRequestedSection('models');
+    setSettingsProviderCatalogOpen(false);
+    setSettingsConnectionDetailSlug(undefined);
+    setSettingsCreateProviderType(providerType);
     setSettingsOpen(true);
   }
 
@@ -55,11 +70,13 @@ export function useSettingsModal() {
     settingsRequestedSection,
     settingsProviderCatalogOpen,
     settingsConnectionDetailSlug,
+    settingsCreateProviderType,
     setSettingsOpen,
     setSettingsProviderCatalogOpen,
     openSettings,
     openSettingsSection,
     openProviderCatalog,
     openConnectionDetail,
+    openProviderCreate,
   };
 }

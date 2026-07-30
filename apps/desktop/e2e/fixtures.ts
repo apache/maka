@@ -4,7 +4,8 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createConnectionStore, createFileCredentialStore, createSettingsStore } from '@maka/storage';
-import { closeElectronApplication } from './electron-lifecycle.js';
+import { buildFixtureEnv, isCiLinuxDisplay } from '../../../scripts/fixture-env.mjs';
+import { closeElectronApplication } from '../../../scripts/electron-lifecycle.mjs';
 
 const DESKTOP_ROOT = process.cwd();
 
@@ -40,11 +41,23 @@ async function seedE2eInvocableSkills(userDataDir: string): Promise<void> {
   const projectRoot = path.join(userDataDir, 'project');
   const projectSkillRoot = path.join(projectRoot, '.maka', 'skills');
   const workspaceSkillRoot = path.join(workspaceRoot, 'skills');
+  // Under the sandboxed HOME (see buildE2eEnv), so `~/.agents/skills` here is
+  // the throwaway dir, never the developer's. This is the only user-scope
+  // skill the suite sees, which is what makes the delete journey assertable.
+  const userSkillRoot = path.join(userDataDir, 'home', '.agents', 'skills');
   await Promise.all([
     mkdir(path.join(projectSkillRoot, 'project-only'), { recursive: true }),
     mkdir(path.join(projectSkillRoot, 'host-incompatible'), { recursive: true }),
+    mkdir(path.join(projectSkillRoot, 'agent-write'), { recursive: true }),
+    mkdir(path.join(projectSkillRoot, 'deep-research-only'), { recursive: true }),
     mkdir(path.join(workspaceSkillRoot, 'workspace-only'), { recursive: true }),
+    mkdir(path.join(userSkillRoot, 'user-only'), { recursive: true }),
   ]);
+  await writeFile(
+    path.join(userSkillRoot, 'user-only', 'SKILL.md'),
+    `---\nname: User Only\ndescription: User-scoped install, deletable from the panel.\n---\n# User Only`,
+    'utf8',
+  );
   await Promise.all([
     writeFile(
       path.join(projectSkillRoot, 'project-only', 'SKILL.md'),
@@ -54,6 +67,16 @@ async function seedE2eInvocableSkills(userDataDir: string): Promise<void> {
     writeFile(
       path.join(projectSkillRoot, 'host-incompatible', 'SKILL.md'),
       `---\nname: Host Incompatible\ndescription: Must be hidden from this host.\nrequired-tools: [DefinitelyMissingTool]\n---\n# Host Incompatible`,
+      'utf8',
+    ),
+    writeFile(
+      path.join(projectSkillRoot, 'agent-write', 'SKILL.md'),
+      `---\nname: Agent Write\ndescription: Requires a mutating tool excluded from Plan mode.\nrequired-tools: [Write]\n---\n# Agent Write`,
+      'utf8',
+    ),
+    writeFile(
+      path.join(projectSkillRoot, 'deep-research-only', 'SKILL.md'),
+      `---\nname: Deep Research Only\ndescription: Requires a tool available only in Deep Research mode.\nrequired-tools: [deep_research_status]\n---\n# Deep Research Only`,
       'utf8',
     ),
     writeFile(
@@ -70,49 +93,18 @@ async function seedE2eInvocableSkills(userDataDir: string): Promise<void> {
 }
 
 /**
- * Build the minimal env for an E2E Electron launch. Inheriting `process.env`
- * wholesale would leak the host's provider keys (which auto-bootstrap a
- * connection and break the "true first-run" assertion) and `VITE_DEV_SERVER_URL`
- * (which loads the dev server instead of the built bundle). Deny-list rather
- * than allow-list: Electron relies on undocumented platform env (macOS
- * CoreFoundation / X11 / sandbox session) that an allow-list would silently
- * drop and break the launch.
+ * The sandboxed HOME of the run currently under test. Set by withE2eWindow
+ * before Electron launches.
+ *
+ * Read it from inside a test BODY, never as a fixture: a fixture would have no
+ * declared dependency on the window fixture, so Playwright could resolve it
+ * before the window is set up and hand back a stale path.
  */
-function buildE2eEnv(
-  userDataDir: string,
-  e2eFixtureScenario?: string,
-  locale?: 'zh' | 'en',
-  platform?: 'darwin' | 'win32' | 'linux',
-): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  for (const key of Object.keys(env)) {
-    if (
-      key === 'VITE_DEV_SERVER_URL' ||
-      key === 'MAKA_E2E' ||
-      key === 'MAKA_E2E_USER_DATA_DIR' ||
-      key === 'MAKA_E2E_SHOW_WINDOW' ||
-      key === 'MAKA_E2E_FIXTURE' ||
-      key === 'MAKA_E2E_FIXTURE_LOCALE' ||
-      key === 'MAKA_E2E_FIXTURE_PLATFORM' ||
-      /_API_KEY$/.test(key) ||
-      /_API_TOKEN$/.test(key) ||
-      /_API_SECRET$/.test(key)
-    ) {
-      delete env[key];
-    }
-  }
-  env.MAKA_E2E = '1';
-  env.MAKA_E2E_USER_DATA_DIR = userDataDir;
-  if (e2eFixtureScenario) env.MAKA_E2E_FIXTURE = e2eFixtureScenario;
-  if (locale) env.MAKA_E2E_FIXTURE_LOCALE = locale;
-  if (platform) env.MAKA_E2E_FIXTURE_PLATFORM = platform;
-  // E2E windows launch hidden so local and macOS runs never steal the
-  // developer's focus. Linux CI runs under xvfb, where a hidden window's
-  // compositor is throttled to ~1fps — content-visibility turns never inflate
-  // and frame-paced protocols crawl. Only that isolated display needs a
-  // visible window.
-  if (process.env.CI && process.platform === 'linux') env.MAKA_E2E_SHOW_WINDOW = '1';
-  return env;
+let currentHomeDir = '';
+
+export function e2eHomeDir(): string {
+  if (!currentHomeDir) throw new Error('e2eHomeDir() is only valid inside a test that opened a window');
+  return currentHomeDir;
 }
 
 /**
@@ -135,6 +127,11 @@ async function withE2eWindow(
   use: (page: Page) => Promise<void>,
 ): Promise<void> {
   const userDataDir = await mkdtemp(path.join(tmpdir(), 'maka-e2e-'));
+  // Lives inside the throwaway userData dir so the existing teardown removes
+  // it too — there is no second path to leak.
+  const homeDir = path.join(userDataDir, 'home');
+  await mkdir(homeDir, { recursive: true });
+  currentHomeDir = homeDir;
   let app: ElectronApplication | undefined;
   const mainLogs: string[] = [];
   const rendererLogs: string[] = [];
@@ -147,7 +144,14 @@ async function withE2eWindow(
     app = await electron.launch({
       args: ['.'],
       cwd: DESKTOP_ROOT,
-      env: buildE2eEnv(userDataDir, e2eFixtureScenario, locale, platform),
+      env: buildFixtureEnv(userDataDir, homeDir, {
+        scenario: e2eFixtureScenario,
+        locale,
+        platform,
+        // xvfb throttles a hidden window's compositor to ~1fps; only that
+        // isolated display gets a visible window.
+        showWindow: isCiLinuxDisplay(),
+      }),
     });
     app.on('console', (message) => {
       mainLogs.push(message.text());
@@ -195,19 +199,25 @@ export const test = base.extend<{
   chatChromeDarwinWindow: Page;
   chatChromeWin32Window: Page;
   sidebarLongSessionsWindow: Page;
-  permissionWindow: Page;
+  sandboxBoundaryWindow: Page;
+  readOnlyBoundaryWindow: Page;
   staleSessionsWindow: Page;
   sessionWorkbarWindow: Page;
   botSettingsWindow: Page;
+  permissionSettingsWindow: Page;
+  usageSettingsWindow: Page;
+  searchSettingsWindow: Page;
   zhLocaleWindow: Page;
   enLocaleWindow: Page;
   localeSwitchWindow: Page;
   invocableSkillsWindow: Page;
+  planRemindersWindow: Page;
+  oauthReloginWindow: Page;
 }>({
   // Seeded: a pre-staged connection clears onboarding so the composer is ready.
   // Used by chat / session / settings / attachment specs.
   window: async ({}, use) => {
-    await withE2eWindow({ seed: true, readinessSelector: '.maka-onboarding-quickchat-input', locale: 'zh' }, use);
+    await withE2eWindow({ seed: true, readinessSelector: '.maka-composer-textarea', locale: 'zh' }, use);
   },
   // Empty: no connection staged — exercises the true first-run boot path.
   // Used by first-run only.
@@ -217,12 +227,25 @@ export const test = base.extend<{
   // Long transcript: boots the e2e-fixture `long-transcript` fixture, which
   // seeds a 24-turn (~1300px each) session and opens it as the active
   // session. Fixture mode seeds its own connections, so no connection is
-  // pre-staged here. Readiness = turns on screen: the session is open and
-  // above-viewport turns sit at their content-visibility placeholder size.
-  // Used by the scroll-geometry spec.
+  // pre-staged here. Readiness = turns on screen and RENDERED BY THE REAL
+  // MARKDOWN PIPELINE: the session is open and above-viewport turns sit at
+  // their content-visibility placeholder size. Used by the scroll-geometry
+  // spec.
+  //
+  // `.maka-markdown-pending` is the Suspense fallback for the lazily imported
+  // markdown chunk, and the turn-size warm-up will not start while one is on
+  // screen. Handing the page over before that chunk lands charged the spec's
+  // settle budget for a module load: under 50x CPU throttling the fallback
+  // holds for ~9.6s of a ~19s cold start, most of the spec's 15s, for work
+  // that is boot rather than settling.
   longTranscriptWindow: async ({}, use) => {
     await withE2eWindow(
-      { seed: false, readinessSelector: '.maka-turn', e2eFixtureScenario: 'long-transcript', locale: 'zh' },
+      {
+        seed: false,
+        readinessSelector: '.maka-chatViewport:has(.maka-turn):not(:has(.maka-markdown-pending))',
+        e2eFixtureScenario: 'long-transcript',
+        locale: 'zh',
+      },
       use,
     );
   },
@@ -230,12 +253,26 @@ export const test = base.extend<{
   // fixture, which seeds 60 active sessions and opens the newest one
   // (`...-00`) with the sidebar expanded. Fixture mode seeds its own
   // connections, so no connection is pre-staged here. Readiness = a session
-  // row on screen: the panel grid has mounted, the session list has loaded
-  // from IPC, and the footer sits below the constrained list row. Used by the
-  // sidebar-geometry spec.
+  // row on screen INSIDE AN EXPANDED SIDEBAR: the panel grid has mounted, the
+  // session list has loaded from IPC, and the footer sits below the
+  // constrained list row. Used by the sidebar-geometry and sidebar-navigation
+  // specs.
+  //
+  // The `[data-sidebar-state="expanded"]` part is load-bearing. The shell
+  // boots collapsed (the localStorage default), and `sidebarCollapsed: false`
+  // only lands later, from `applyE2eFixture` — a rAF plus two IPC round trips
+  // after mount. A bare `.maka-list-row` does not gate on it: a collapsed
+  // sidebar keeps the whole list mounted at full width behind `opacity: 0` in
+  // a 0px grid column, which Playwright still reports as visible. Tests then
+  // started against a sidebar that was about to expand under them.
   sidebarLongSessionsWindow: async ({}, use) => {
     await withE2eWindow(
-      { seed: false, readinessSelector: '.maka-list-row', e2eFixtureScenario: 'sidebar-long-sessions', locale: 'zh' },
+      {
+        seed: false,
+        readinessSelector: '[data-sidebar-state="expanded"] .maka-list-row',
+        e2eFixtureScenario: 'sidebar-long-sessions',
+        locale: 'zh',
+      },
       use,
     );
   },
@@ -256,12 +293,23 @@ export const test = base.extend<{
       use,
     );
   },
-  // Permission takeover: boots a deterministic destructive request in the
+  // Sandbox-boundary takeover: boots a deterministic expansion request in the
   // real desktop shell so the composer-slot placement and non-modal behavior
   // are covered without a provider or test-only renderer state path.
-  permissionWindow: async ({}, use) => {
+  sandboxBoundaryWindow: async ({}, use) => {
     await withE2eWindow(
-      { seed: false, readinessSelector: '.maka-permission-prompt', e2eFixtureScenario: 'permission-destructive', locale: 'zh' },
+      { seed: false, readinessSelector: '.maka-sandbox-boundary-prompt', e2eFixtureScenario: 'sandbox-boundary', locale: 'zh' },
+      use,
+    );
+  },
+  // Read-only boundary (#1611): the Deep Research fixture session is seeded
+  // with `permissionMode: 'explore'`, so the metadata store derives a genesis
+  // managed read-only boundary for it. That makes this the only window where
+  // the composer's permission label is driven by a real read-only profile
+  // travelling main → IPC → renderer.
+  readOnlyBoundaryWindow: async ({}, use) => {
+    await withE2eWindow(
+      { seed: false, readinessSelector: '.maka-composer-textarea', e2eFixtureScenario: 'deep-research-progress', locale: 'zh' },
       use,
     );
   },
@@ -294,6 +342,54 @@ export const test = base.extend<{
       use,
     );
   },
+  // #1361: Permission Center with a typed OS-permission snapshot (see
+  // `main/permission-snapshot-e2e-fixture.ts`). The narrow-layout contract is
+  // about rows that carry grant buttons, which the host's real TCC state cannot
+  // guarantee — a granted dev machine renders none, and Linux CI reports most
+  // permissions as `unsupported`.
+  permissionSettingsWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: false,
+        readinessSelector: '.settingsOsPermissionRow',
+        e2eFixtureScenario: 'settings-permissions',
+        locale: 'zh',
+      },
+      use,
+    );
+  },
+  // #1364: Usage with seeded request traffic + details-on settings, so the
+  // request-log DataTable actually renders (the default window fixture keeps
+  // `showDetails` false and has no logs — the table CSS could regress without
+  // failing anything).
+  usageSettingsWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: false,
+        // The tabs bar, not the table: the renderer's first stats fetch can
+        // race the fixture seeding, so the spec refreshes until the seeded
+        // request log lands.
+        readinessSelector: '.settingsUsageTabsBar',
+        e2eFixtureScenario: 'settings-usage',
+        locale: 'zh',
+      },
+      use,
+    );
+  },
+  // #1364: Web Search with a configured Tavily key; queries are answered by
+  // the typed fixture in `main/web-search-e2e-fixture.ts` (e2e runs offline),
+  // so the hostile-width result list is reachable deterministically.
+  searchSettingsWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: false,
+        readinessSelector: '.settingsWebSearchQueryInputRow',
+        e2eFixtureScenario: 'settings-search',
+        locale: 'zh',
+      },
+      use,
+    );
+  },
   // Representative e2e-fixture renderer launches in both supported locales.
   // These use the same production LocaleProvider override path as screenshot capture.
   zhLocaleWindow: async ({}, use) => {
@@ -311,17 +407,39 @@ export const test = base.extend<{
   // Keep this fixture unpinned so the Follow system assertion observes the
   // actual host language while the legacy fixtures remain deterministic.
   localeSwitchWindow: async ({}, use) => {
-    await withE2eWindow({ seed: true, readinessSelector: '.maka-onboarding-quickchat-input' }, use);
+    await withE2eWindow({ seed: true, readinessSelector: '.maka-composer-textarea' }, use);
   },
   // Project + Maka-workspace Skills with one deliberately host-incompatible
   // entry. Proves `/` uses Runtime discovery/gating rather than management UI data.
   invocableSkillsWindow: async ({}, use) => {
     await withE2eWindow({
       seed: true,
-      readinessSelector: '.maka-onboarding-quickchat-input',
+      readinessSelector: '.maka-composer-textarea',
       locale: 'zh',
       invocableSkills: true,
     }, use);
+  },
+  planRemindersWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: false,
+        readinessSelector: '.maka-plan-card',
+        e2eFixtureScenario: 'plan-reminders',
+        locale: 'zh',
+      },
+      use,
+    );
+  },
+  oauthReloginWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: false,
+        readinessSelector: '[role="dialog"]',
+        e2eFixtureScenario: 'oauth-relogin',
+        locale: 'zh',
+      },
+      use,
+    );
   },
 });
 

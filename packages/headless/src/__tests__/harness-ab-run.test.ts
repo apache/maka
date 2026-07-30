@@ -444,6 +444,7 @@ function harnessArm(id: 'maka' | 'opencode', calls: string[], beforeRun?: () => 
         model: config.model,
         systemPromptHash: promptHash,
         pricingProfile: 'glm-5.2-public-2026-07-13',
+        agentTools: false,
       },
       tokenSummary: tokenSummary({
         input: 100,

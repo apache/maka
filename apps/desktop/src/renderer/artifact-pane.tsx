@@ -512,7 +512,10 @@ export function ArtifactPane(props: {
                   <TooltipTrigger
                     render={<Button type="button" variant="destructive" size="icon-sm" />}
                     onClick={() => void runArtifactAction(`${selected.id}:delete`, () => deleteArtifact(selected.id))}
-                    disabled={artifactActionBusy || selected.source === 'deep_research'}
+                    disabled={
+                      artifactActionBusy || selected.source === 'deep_research' ||
+                      selected.source === 'tool_result_archive'
+                    }
                     data-pending={pendingArtifactAction === `${selected.id}:delete` ? 'true' : undefined}
                     aria-busy={pendingArtifactAction === `${selected.id}:delete` ? 'true' : undefined}
                   >
@@ -527,7 +530,13 @@ export function ArtifactPane(props: {
                   {pendingArtifactAction === `${selected.id}:delete` ? copy.pane.deleting : copy.pane.delete}
                 </span>
                   </TooltipTrigger>
-                  <TooltipContent>{pendingArtifactAction === `${selected.id}:delete` ? copy.pane.deleting : copy.pane.delete}</TooltipContent>
+                  <TooltipContent>
+                    {selected.source === 'tool_result_archive'
+                      ? copy.pane.runtimeArchiveReadOnly
+                      : pendingArtifactAction === `${selected.id}:delete`
+                        ? copy.pane.deleting
+                        : copy.pane.delete}
+                  </TooltipContent>
                 </Tooltip>
               </ToolbarGroup>
             </Toolbar>

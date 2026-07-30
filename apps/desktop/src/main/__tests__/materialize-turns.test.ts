@@ -744,3 +744,33 @@ describe('automation turn attribution (F6)', () => {
     assert.equal(turns[0]?.user?.automationOrigin, undefined);
   });
 });
+
+describe('Agent Graph supervisor turn attribution', () => {
+  it('projects a durable graph wake origin onto the turn user entry', () => {
+    const turns = materializeTurns([
+      {
+        type: 'user',
+        id: 'u-graph',
+        turnId: 't-graph',
+        ts: 1,
+        text: 'model-facing checkpoint',
+        displayText: 'Agent graph reached a supervisor checkpoint.',
+        origin: {
+          kind: 'agent_graph',
+          graphId: 'graph-1',
+          wakeId: 'graph-1:snapshot-1',
+          attemptId: 'attempt-1',
+        },
+      },
+    ] as StoredMessage[]);
+    assert.deepEqual(turns[0]?.user?.agentGraphOrigin, {
+      graphId: 'graph-1',
+      wakeId: 'graph-1:snapshot-1',
+      attemptId: 'attempt-1',
+    });
+    assert.equal(
+      turns[0]?.user?.text,
+      'Agent graph reached a supervisor checkpoint.',
+    );
+  });
+});

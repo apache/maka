@@ -485,14 +485,18 @@
   gap: var(--space-2-5);
 }
 
-/* Empty / load-error CTA shown when there are no connections yet. */
+/* Empty / load-error CTA shown when there are no connections yet.
+   Despite the name this is a full-width two-line card (16px padding,
+   <strong> heading + <small> body), not a chip — surface tier, matching
+   its structural twin .settingsWechatQrState. The control tier here came
+   from reading the class name rather than the element. */
 .enabledEmptyChip {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: var(--space-1-5);
   border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-surface);
   background: var(--background-elevated);
   color: var(--foreground);
   padding: var(--space-4) var(--space-4);

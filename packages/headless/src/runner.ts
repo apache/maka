@@ -1,11 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import type { BackendKind, OrchestrationMode, TurnOrchestration } from '@maka/core';
 import {
+  AgentGraphCoordinator,
+  AGENT_TOOL_GROUP_ID,
   BackendRegistry,
   SessionManager,
   buildChildAgentTools,
   type InvocationResult,
 } from '@maka/runtime';
+import { createReadImageSnapshotter } from '@maka/storage';
+import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import type { Config, ResultRecord, Task } from './contracts.js';
 import { registerFakeBackend } from './backends.js';
 import {
@@ -22,7 +26,7 @@ import {
   restoreProtectedPaths,
 } from './sandbox.js';
 import { defaultFinalScorer } from './scorer.js';
-import { buildIsolatedHeadlessTools } from './tools.js';
+import { buildHeadlessProductToolSurfaceForBackend } from './tools.js';
 import { normalizeVerifier, runVerifier, verifierProtectedPaths } from './verifier.js';
 import type { BenchmarkAdapterRegistry } from './benchmark-adapters.js';
 import { createHeadlessSessionCapabilityBridge } from './session-capabilities.js';
@@ -122,8 +126,18 @@ export async function runExperimentWithStorage(
   const effectiveConfig = { ...config, systemPrompt: prompt.systemPrompt };
 
   const workspace = await prepareWorkspace(task.workspaceDir);
+  let graphCoordinator: AgentGraphCoordinator | undefined;
+  let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
   try {
     const agentWorkspaceDir = deps.realBackendIsolation?.workspaceDir ?? workspace.dir;
+    const productToolSurface = buildHeadlessProductToolSurfaceForBackend(
+      effectiveConfig.backend,
+      deps.realBackendIsolation?.toolExecutor,
+      {
+        agentTools: effectiveConfig.agentTools,
+        snapshotImage: createReadImageSnapshotter(storage.artifactStore),
+      },
+    );
     const verifier = normalizeVerifier(task);
     const backends = new BackendRegistry();
     const sessionCapabilities = createHeadlessSessionCapabilityBridge();
@@ -136,6 +150,7 @@ export async function runExperimentWithStorage(
       workspaceDir: agentWorkspaceDir,
       ...sessionCapabilities.capabilities,
       artifactStore: storage.artifactStore,
+      ...(productToolSurface ? { productToolSurface } : {}),
       ...(backendNeedsIsolation(config.backend)
         ? {
             realBackendIsolation: deps.realBackendIsolation,
@@ -151,11 +166,9 @@ export async function runExperimentWithStorage(
       runStore,
       runtimeEventStore: storage.executionStores.runtimeEventStore,
       backends,
-      ...(deps.realBackendIsolation?.toolExecutor
+      ...(productToolSurface?.boundSurfaceIds.includes(AGENT_TOOL_GROUP_ID)
         ? {
-            childTools: buildChildAgentTools(
-              buildIsolatedHeadlessTools(deps.realBackendIsolation.toolExecutor),
-            ),
+            childTools: buildChildAgentTools(productToolSurface.tools),
           }
         : {}),
       newId,
@@ -165,38 +178,42 @@ export async function runExperimentWithStorage(
         invocation = result;
       },
     });
-    sessionCapabilities.bind(manager);
-
-    const session = await manager.createSession({
-      cwd: agentWorkspaceDir,
-      backend: config.backend,
-      llmConnectionSlug: config.llmConnectionSlug,
-      model: config.model,
-      permissionMode: 'execute',
-      ...(deps.orchestrationMode ? { orchestrationMode: deps.orchestrationMode } : {}),
-      name: `lab:${config.id}:${task.id}`,
+    const session = await manager.createSession(
+      {
+        cwd: agentWorkspaceDir,
+        backend: config.backend,
+        llmConnectionSlug: config.llmConnectionSlug,
+        model: config.model,
+        permissionMode: 'ask',
+        ...(deps.orchestrationMode ? { orchestrationMode: deps.orchestrationMode } : {}),
+        name: `lab:${config.id}:${task.id}`,
+      },
+      { initialBoundary: { kind: 'external', revision: 0 } },
+    );
+    graphControlStore = createAgentGraphControlStore(deps.storageRoot);
+    graphCoordinator = new AgentGraphCoordinator({
+      sessionStore: storage.executionStores.sessionStore,
+      runStore,
+      runtimeEventStore: storage.executionStores.runtimeEventStore,
+      controlStore: graphControlStore,
+      runtime: manager,
+      newId,
+      rootSessionId: session.id,
     });
+    sessionCapabilities.bind(manager, graphCoordinator);
 
     const turnId = newId();
     // Drain the turn to completion. The trajectory + status come from the
-    // captured InvocationResult, not the streamed SessionEvents. If a backend
-    // still asks this generic runner for an interactive permission decision,
-    // fail safe and deny it; isolated eval backends should run with explicit
-    // non-interactive policy/tooling.
-    for await (const event of manager.sendMessage(session.id, {
+    // captured InvocationResult, not the streamed SessionEvents. Headless
+    // execution is already enclosed by its explicit external isolation boundary.
+    for await (const _event of manager.sendMessage(session.id, {
       turnId,
       text: task.instruction,
       ...(deps.turnOrchestration ? { turnOrchestration: deps.turnOrchestration } : {}),
     })) {
-      if ((event as { type?: string }).type === 'permission_request') {
-        const { requestId } = event as { requestId: string };
-        await manager.respondToPermission(session.id, {
-          requestId,
-          decision: 'deny',
-          rememberForTurn: true,
-        });
-      }
+      // Event consumption drives the runtime to its terminal invocation.
     }
+    await sessionCapabilities.settle(session.id);
 
     const status = invocation?.status ?? 'failed';
     const runnerCompleted = status === 'completed';
@@ -287,6 +304,14 @@ export async function runExperimentWithStorage(
       await scoringWorkspace.cleanup();
     }
   } finally {
-    await workspace.cleanup();
+    try {
+      await graphCoordinator?.close();
+    } finally {
+      try {
+        graphControlStore?.close();
+      } finally {
+        await workspace.cleanup();
+      }
+    }
   }
 }

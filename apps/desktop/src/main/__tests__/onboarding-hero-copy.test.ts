@@ -50,7 +50,6 @@ describe('getOnboardingHeroCopy — per-variant mapping', () => {
     assert.equal(copy.kind, 'needs_connection');
     assert.equal(copy.cta.settingsSection, 'models');
     assert.match(copy.title, /[一-鿿]/);
-    assert.equal(copy.showQuickChat, undefined);
   });
 
   it('needs_default_connection routes to settings · models', () => {
@@ -94,15 +93,15 @@ describe('getOnboardingHeroCopy — per-variant mapping', () => {
     assert.match(copy.body, /模型/);
   });
 
-  it('ready_empty sets showQuickChat = true', () => {
+  it('ready_empty returns null (hero must NOT mount)', () => {
+    // #1433: a configured user with no sessions is not an onboarding
+    // case — they land on the normal empty chat with the one Composer.
     const copy = getOnboardingHeroCopy({
       kind: 'ready_empty',
       defaultConnectionSlug: 'a',
       defaultModel: 'm',
     } as OnboardingState);
-    assert.ok(copy);
-    assert.equal(copy.showQuickChat, true);
-    assert.match(copy.cta.label, /开始对话/);
+    assert.equal(copy, null);
   });
 
   it('blocked: all_connections_unhealthy is labeled, routes to settings · models, destructive tone', () => {
@@ -139,7 +138,6 @@ describe('getOnboardingHeroCopy — bilingual catalog', () => {
     { kind: 'needs_default_connection' },
     { kind: 'needs_connection_credentials', connectionSlug: 'anthropic-live' },
     { kind: 'needs_default_model', connectionSlug: 'openai-live' },
-    { kind: 'ready_empty', defaultConnectionSlug: 'a', defaultModel: 'm' },
     { kind: 'blocked', reason: 'all_connections_unhealthy' },
   ];
 
@@ -180,7 +178,6 @@ describe('getOnboardingHeroCopy — invariants', () => {
     { kind: 'needs_default_connection' },
     { kind: 'needs_connection_credentials', connectionSlug: 'anthropic-live' },
     { kind: 'needs_default_model', connectionSlug: 'openai-live' },
-    { kind: 'ready_empty', defaultConnectionSlug: 'a', defaultModel: 'm' },
     { kind: 'blocked', reason: 'all_connections_unhealthy' },
   ];
 
@@ -239,18 +236,6 @@ describe('getOnboardingHeroCopy — invariants', () => {
       const copy = getOnboardingHeroCopy(variant);
       assert.ok(copy);
       assert.ok(knownSections.has(copy.cta.settingsSection), `${variant.kind} bad CTA section`);
-    }
-  });
-
-  it('only ready_empty enables Quick Chat surface', () => {
-    for (const variant of ALL_VARIANTS) {
-      const copy = getOnboardingHeroCopy(variant);
-      assert.ok(copy);
-      if (variant.kind === 'ready_empty') {
-        assert.equal(copy.showQuickChat, true);
-      } else {
-        assert.notEqual(copy.showQuickChat, true, `${variant.kind} must not enable Quick Chat`);
-      }
     }
   });
 
@@ -316,7 +301,7 @@ describe('getOnboardingSetupSteps — first-run AI setup guide', () => {
     }
   });
 
-  it('does not render setup steps once Quick Chat or history takes over', () => {
+  it('does not render setup steps once setup is complete', () => {
     assert.equal(
       getOnboardingSetupSteps({
         kind: 'ready_empty',
@@ -366,7 +351,7 @@ describe('getOnboardingSetupSteps — first-run AI setup guide', () => {
 
   it('keeps the blocked hero action driven by the copy layer, not a hardcoded CTA', async () => {
     const hero = await readFile(new URL('../../../src/renderer/OnboardingHero.tsx', import.meta.url), 'utf8');
-    const blockedBlock = hero.match(/function BlockedHero[\s\S]*?function ReadyEmptyHero/)?.[0] ?? '';
+    const blockedBlock = hero.match(/function BlockedHero[\s\S]*?function SkipButton/)?.[0] ?? '';
 
     assert.match(blockedBlock, /const hero = getOnboardingHeroCopy\(state, locale\)!/);
     assert.match(blockedBlock, /title=\{hero\.title\}/);
@@ -404,7 +389,7 @@ describe('getOnboardingSetupSteps — first-run AI setup guide', () => {
   });
 });
 
-describe('OnboardingHero Quick Chat draft lifecycle', () => {
+describe('OnboardingHero structure', () => {
   it('renders first-run provider recommendations from the shared registry', async () => {
     const hero = await readFile(new URL('../../../src/renderer/OnboardingHero.tsx', import.meta.url), 'utf8');
 
@@ -415,107 +400,38 @@ describe('OnboardingHero Quick Chat draft lifecycle', () => {
 
   it('keeps first-run form controls on shared UI primitives', async () => {
     const hero = await readFile(new URL('../../../src/renderer/OnboardingHero.tsx', import.meta.url), 'utf8');
-    const checklist = await readFile(new URL('../../../src/renderer/FirstRunChecklist.tsx', import.meta.url), 'utf8');
 
     const heroImport = hero.match(/import \{[\s\S]*?\} from '@maka\/ui';/)?.[0] ?? '';
-    for (const name of ['Button', 'Item', 'ItemContent', 'ItemMedia', 'Textarea', 'appendPromptContextDraft']) {
+    for (const name of ['Button', 'Item', 'ItemContent', 'ItemMedia']) {
       assert.match(heroImport, new RegExp(`\\b${name}\\b`), `OnboardingHero must import ${name} from @maka/ui`);
     }
-    assert.match(checklist, /import \{[^}]*\bButton\b[^}]*\buseToast\b[^}]*\} from '@maka\/ui';/);
     // A bare `<button className=...>` is a hand-rolled control; forbid it. The
     // only raw `<button>` allowed is the polymorphic render target handed to an
     // `Item` (it carries no className — the primitive owns the styling).
     assert.doesNotMatch(hero, /<button[^>]*className=/, 'OnboardingHero actions must use the shared Button/Item primitives, not hand-styled buttons');
-    assert.doesNotMatch(hero, /<textarea\b/, 'OnboardingHero quick chat must use the shared Textarea primitive');
     assert.doesNotMatch(hero, /className="maka-button/, 'OnboardingHero must not keep legacy maka-button styling on migrated actions');
-    assert.doesNotMatch(checklist, /<button\b/, 'FirstRunChecklist actions must use the shared Button primitive');
   });
 
-  it('keeps the first prompt when quick chat submission fails', async () => {
-    const source = await readFile(new URL('../../../src/renderer/OnboardingHero.tsx', import.meta.url), 'utf8');
-    const propsBlock = source.match(/export interface OnboardingHeroProps \{[\s\S]*?\n\}/)?.[0] ?? '';
-    const readyBlock = source.match(/function ReadyEmptyHero[\s\S]*?interface SetupHeroProps/)?.[0] ?? '';
+  // #1433: the hero must never grow a second composer again. Everything
+  // below — text input, Skill chips, mention popup, file import — belongs
+  // to packages/ui/src/composer.tsx, which already owns the IME guard the
+  // deleted clone had to be patched with (PR-FE-BUG-HUNT-0).
+  it('carries no chat input of its own', async () => {
+    const hero = await readFile(new URL('../../../src/renderer/OnboardingHero.tsx', import.meta.url), 'utf8');
 
-    assert.match(
-      propsBlock,
-      /onQuickChatSubmit: \([\s\S]*prompt: string,[\s\S]*mode\?: QuickChatMode,[\s\S]*skillIds\?: readonly string\[\],[\s\S]*\) => boolean \| Promise<boolean>/,
-      'Quick Chat submit prop must report success/failure to the presentational hero',
+    assert.doesNotMatch(hero, /<textarea\b/i, 'the setup hero must not render a text input');
+    assert.doesNotMatch(hero, /\bTextarea\b/, 'the setup hero must not import the Textarea primitive');
+    assert.doesNotMatch(hero, /useMentionPopup|ComposerMentionPopup/, 'Skill mention popups belong to the Composer');
+    assert.doesNotMatch(hero, /useComposerSkillDraft|maka-composer-skill-chip/, 'Skill drafts belong to the Composer');
+    // Was `/onQuickChatSubmit|quickChatPending/`, which stopped being able to
+    // fail once #1433 deleted both identifiers repo-wide. The send path it was
+    // guarding still exists — it is just spelled `sessions.create` now, and
+    // the Composer and the command palette own it.
+    assert.doesNotMatch(
+      hero,
+      /sessions\.create|expertTeam\.start/,
+      'the setup hero must not own a send path — creating a session belongs to the Composer and the command palette',
     );
-    assert.match(
-      readyBlock,
-      /const submit = useCallback\(async \(\) => \{[\s\S]*?const skillIds = skillDraft\.skills\.map[\s\S]*?props\.onQuickChatSubmit\(draft, draftMode, skillIds\);[\s\S]*?if \(!submitted\) return;[\s\S]*?setDraft\(''\);[\s\S]*?setDraftMode\(undefined\);[\s\S]*?skillDraft\.clear/,
-      'ReadyEmptyHero must clear the draft only after the parent reports a successful session creation',
-    );
-  });
-
-  it('locally gates first-run quick chat submit before parent pending re-renders', async () => {
-    const source = await readFile(new URL('../../../src/renderer/OnboardingHero.tsx', import.meta.url), 'utf8');
-    const readyBlock = source.match(/function ReadyEmptyHero[\s\S]*?interface SetupHeroProps/)?.[0] ?? '';
-    const submitBlock = readyBlock.match(
-      /const submit = useCallback\(async \(\) => \{[\s\S]*?\n  \}, \[draft, draftMode, props, skillDraft\.skills\]\);/,
-    )?.[0] ?? '';
-
-    assert.match(readyBlock, /const \[submitPending, setSubmitPending\] = useState\(false\)/);
-    assert.match(readyBlock, /const submitPendingRef = useRef\(false\)/);
-    assert.match(readyBlock, /const readyHeroMountedRef = useMountedRef\(\)/);
-    assert.match(
-      readyBlock,
-      /useEffect\(\(\) => \{[\s\S]*return \(\) => \{[\s\S]*submitPendingRef\.current = false;[\s\S]*importActionOwnerRef\.current\?\.reset\(\);[\s\S]*\};[\s\S]*\}, \[\]\)/,
-      'ReadyEmptyHero must clear async pending owners on unmount and restore mounted state during StrictMode replay',
-    );
-    assert.match(readyBlock, /const quickChatBusy = props\.quickChatPending \|\| submitPending/);
-    assert.match(
-      submitBlock,
-      /if \(props\.quickChatPending \|\| submitPendingRef\.current\) return;[\s\S]*submitPendingRef\.current = true;[\s\S]*setSubmitPending\(true\);[\s\S]*await props\.onQuickChatSubmit\(draft, draftMode, skillIds\)[\s\S]*if \(!readyHeroMountedRef\.current\) return;[\s\S]*submitPendingRef\.current = false;[\s\S]*if \(readyHeroMountedRef\.current\) setSubmitPending\(false\);/,
-      'ReadyEmptyHero must synchronously drop duplicate Enter/click submits while the parent pending prop is still one render behind',
-    );
-    assert.match(source, /disabled=\{quickChatBusy\}/);
-    assert.match(source, /aria-busy=\{quickChatBusy \? 'true' : undefined\}/);
-    assert.match(source, /quickChatBusy \? copy\.submitPendingLabel : copy\.submitIdleLabel/);
-  });
-
-  it('wires structured Skill selection into the first-run Quick Chat input', async () => {
-    const source = await readFile(new URL('../../../src/renderer/OnboardingHero.tsx', import.meta.url), 'utf8');
-    const readyBlock = source.match(/function ReadyEmptyHero[\s\S]*?interface SetupHeroProps/)?.[0] ?? '';
-
-    assert.match(readyBlock, /useComposerSkillDraft\('onboarding-quick-chat'\)/);
-    assert.match(readyBlock, /useMentionPopup\(\{[\s\S]*mentionSkills: props\.mentionSkills/);
-    assert.match(readyBlock, /<ComposerMentionPopup[\s\S]*onSelect=\{selectMention\}/);
-    assert.match(readyBlock, /aria-expanded=\{mentionPopupOpen \? true : undefined\}/);
-    assert.match(readyBlock, /skillDraft\.removeLast\(\)/);
-    assert.match(
-      readyBlock,
-      /\}, \[draft, draftMode, props, skillDraft\.skills\]\);/,
-      'chip-only edits must refresh submit so removed Skills cannot be sent from a stale callback',
-    );
-    assert.match(readyBlock, /className="maka-composer-skill-chip"/);
-  });
-
-  it('clears first-run drag highlight when files leave the window', async () => {
-    const source = await readFile(new URL('../../../src/renderer/OnboardingHero.tsx', import.meta.url), 'utf8');
-    const readyBlock = source.match(/function ReadyEmptyHero[\s\S]*?interface SetupHeroProps/)?.[0] ?? '';
-
-    assert.match(readyBlock, /if \(!dragActive\) return;/);
-    assert.match(readyBlock, /window\.addEventListener\('blur', clearDragActive\)/);
-    assert.match(readyBlock, /window\.addEventListener\('dragend', clearDragActive\)/);
-    assert.match(readyBlock, /window\.addEventListener\('drop', clearDragActive\)/);
-    assert.match(source, /window\.removeEventListener\('blur', clearDragActive\)/);
-    assert.match(source, /window\.removeEventListener\('dragend', clearDragActive\)/);
-    assert.match(source, /window\.removeEventListener\('drop', clearDragActive\)/);
-  });
-
-  it('shows an inline pending status while first-run file imports run', async () => {
-    const source = await readFile(new URL('../../../src/renderer/OnboardingHero.tsx', import.meta.url), 'utf8');
-    const readyBlock = source.match(/function ReadyEmptyHero[\s\S]*?interface SetupHeroProps/)?.[0] ?? '';
-
-    assert.match(
-      readyBlock,
-      /const importStatusText = pendingImportAction === null[\s\S]*\? copy\.importFolderPending[\s\S]*: copy\.importFilesPending;/,
-      'file/folder/drop/paste imports need visible pending copy, not only disabled controls',
-    );
-    assert.match(readyBlock, /data-pending=\{importStatusText \? 'true' : undefined\}/);
-    assert.match(readyBlock, /aria-hidden=\{importStatusText \? undefined : 'true'\}/);
-    assert.match(readyBlock, /aria-live=\{importStatusText \? 'polite' : undefined\}/);
-    assert.match(readyBlock, /\{importStatusText \?\? copy\.quickChatExample\}/);
+    assert.doesNotMatch(hero, /onDrop=|onPaste=|onImportDroppedTextFiles/, 'file import belongs to the Composer');
   });
 });

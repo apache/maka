@@ -52,6 +52,59 @@
   line-height: var(--leading-normal);
 }
 
+.maka-module-hub-heading {
+  align-items: center;
+  column-gap: var(--space-2);
+  row-gap: var(--space-2);
+}
+
+.maka-module-hub-selector {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  white-space: nowrap;
+}
+
+.maka-module-hub-separator {
+  color: var(--border-strong);
+  font-size: 2em;
+  font-weight: var(--font-weight-normal);
+  line-height: var(--leading-tight);
+}
+
+.maka-module-hub-selector-trigger {
+  width: auto;
+  min-width: 0;
+  height: auto;
+  min-height: 0;
+  gap: var(--space-2);
+  padding: var(--space-1);
+  color: var(--foreground);
+  font-size: 2em;
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--tracking-normal);
+  line-height: var(--leading-tight);
+}
+
+.maka-module-hub-selector-trigger > svg {
+  flex: none;
+}
+
+.maka-module-hub-selector-chevron {
+  color: var(--foreground-secondary);
+}
+
+.maka-module-hub-selector-menu {
+  min-width: 180px;
+}
+
+.maka-module-hub-selector-option {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
 .maka-module-main-actions {
   display: inline-flex;
   align-items: center;

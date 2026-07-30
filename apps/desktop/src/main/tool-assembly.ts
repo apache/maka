@@ -3,32 +3,25 @@ import {
   buildAgentTeamChildTools,
   buildAgentTeamLeadTools,
   buildAskUserQuestionTool,
-  buildBuiltinTools,
+  buildRequestSandboxBoundaryTool,
   buildChildAgentTools,
-  buildDeferredToolGroupsFromCatalog,
-  buildHostCapabilitiesFromBinding,
   buildParentAgentTools,
   assertProductBindingCatalogClean,
   createBuiltinSandboxManager,
+  isBuiltinFilesystemWorkerSandboxAvailable,
   createSandboxDiagnosticsProvider,
   createFilesystemWorkerLaunchSpecProvider,
   FilesystemWorkerClient,
+  projectEffectiveProductToolSurface,
   resolveSkillDiscoveryPaths,
   ShellRunProcessManager,
-  SKILL_SEARCH_TOOL_NAME,
-  SKILL_TOOL_NAME,
 } from '@maka/runtime';
-import type {
-  HostCapabilitiesResolver,
-  MakaTool,
-  ToolAvailabilityConfig,
-} from '@maka/runtime';
+import type { HostCapabilitiesResolver, MakaTool } from '@maka/runtime';
 import type { WorkspacePrivacyContext } from '@maka/core/incognito';
 import { createAgentMailboxStore, createSettingsStore } from '@maka/storage';
 import { createComputerUseOverlayHook } from '@maka/computer-use';
 import { buildWebSearchAgentTool } from './web-search/agent-tool.js';
 import { buildRiveWorkflowTool } from './rive-workflow-tool.js';
-import { buildOfficeDocumentEditTool, buildOfficeDocumentTool } from './office-document-tool.js';
 import { buildExploreAgentTool } from './explore-agent-tool.js';
 import { buildBrowserTools } from './browser/browser-tools.js';
 import { createComputerUseHost } from './computer-use-host.js';
@@ -46,6 +39,7 @@ import type { createMainTaskLedgerWiring } from './task-ledger-wiring.js';
 import type { createMainAutomationWiring } from './automation-wiring.js';
 import type { createMainGoalWiring } from './goal-wiring.js';
 import type { ToolArtifactPersistence } from './tool-artifact-persistence.js';
+import { buildDesktopBuiltinTools } from './desktop-builtin-tools.js';
 
 type TaskLedgerWiring = ReturnType<typeof createMainTaskLedgerWiring>;
 type AutomationWiring = ReturnType<typeof createMainAutomationWiring>;
@@ -66,6 +60,7 @@ export interface DesktopToolAssemblyDeps {
   settingsStore: SettingsStore;
   shellRuns: ShellRunProcessManager;
   snapshotReadImage: ToolArtifactPersistence['snapshotReadImage'];
+  readArchivedToolResultResource: ToolArtifactPersistence['readArchivedToolResultResource'];
   getWorkspacePrivacyContext: () => Promise<WorkspacePrivacyContext>;
   resolveDesktopSkillHost: HostCapabilitiesResolver;
 }
@@ -73,7 +68,7 @@ export interface DesktopToolAssemblyDeps {
 /**
  * Assemble the desktop process's tool surface (issue #37 economy split).
  * Pure move of main.ts's module-scope tool-assembly cluster: the sandbox /
- * filesystem worker, the deferred capability groups (Rive, Office, browser,
+ * filesystem worker, the deferred capability groups (Rive, browser,
  * computer-use, agent orchestration), the WebSearch tool, the builtin + skill
  * host surface, the deferred-group tool-availability config, and the child
  * agent tool surface. Declaration order inside the function preserves the
@@ -93,15 +88,17 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     settingsStore,
     shellRuns,
     snapshotReadImage,
+    readArchivedToolResultResource,
     getWorkspacePrivacyContext,
     resolveDesktopSkillHost,
   } = deps;
 
   const sandboxManager = createBuiltinSandboxManager();
   const filesystemWorkerLaunchSpecProvider =
-    process.platform === 'darwin'
+    sandboxManager && isBuiltinFilesystemWorkerSandboxAvailable()
       ? createFilesystemWorkerLaunchSpecProvider({
           runtime: 'electron',
+          platform: process.platform,
           executable: process.execPath,
           resourceLocation: app.isPackaged
             ? { kind: 'desktop-packaged', resourcesPath: process.resourcesPath }
@@ -121,14 +118,13 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
       : {}),
   });
   // Unified tool availability (issue #37). Deferred capability groups (Rive,
-  // Office, browser, agent orchestration) are withheld from the
+  // Browser and agent orchestration tools are withheld from the
   // per-turn prompt and loaded on demand via `load_tools`, keeping their schemas
   // off the wire until needed. Everything else (ungrouped) stays always-on.
   // Kill-switch: set MAKA_DISABLE_DEFERRED_TOOLS to any value to turn economy off
   // and advertise every tool every turn (legacy behavior).
   const economyEnabled = !process.env.MAKA_DISABLE_DEFERRED_TOOLS;
   const riveTools: MakaTool[] = [buildRiveWorkflowTool()];
-  const officeTools: MakaTool[] = [buildOfficeDocumentTool(), buildOfficeDocumentEditTool()];
   // Embedded-browser observe→act tools. They drive the conversation's own
   // WebContentsView via the BrowserViewHost the desktop provides in registerIpc;
   // outside the app (no host) they report the browser as unavailable.
@@ -189,7 +185,6 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
   });
   const deferredTools: MakaTool[] = [
     ...riveTools,
-    ...officeTools,
     ...browserTools,
     ...computerUseTools,
     ...agentTools,
@@ -202,19 +197,19 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
   // the shared catalog ∩ this binding (#1099 S2). Skill listing uses the same host.
   const toolsBeforeSkill: MakaTool[] = [
     buildAskUserQuestionTool(),
-    ...buildBuiltinTools({
+    buildRequestSandboxBoundaryTool(),
+    ...buildDesktopBuiltinTools({
       shellRuns,
       runtimeResources: shellRuns,
+      archiveResources: { readArchivedToolResultResource },
       backgroundTasks: shellRuns,
       ptyControls: shellRuns,
       snapshotImage: snapshotReadImage,
       ...(sandboxManager ? { sandboxManager } : {}),
       ...(filesystemWorker ? {
         filesystemWorker,
-        enableBashAdditionalPermissions: true,
-        enableFileToolAdditionalPermissions: true,
       } : {}),
-    }).filter((tool: MakaTool) => tool.name !== 'Edit'),
+    }),
   ];
   const toolsAfterSkill: MakaTool[] = [
     // External reference plan-mode borrow: a bounded read-only local worker for
@@ -238,16 +233,6 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     // group tools just need to be present so they are dispatchable once loaded.
     ...deferredTools,
   ];
-  // Always-on Skill name is part of the host surface even before the tool instance
-  // is built (so requiredTools gates and capability tags stay complete).
-  const desktopBoundToolNames = [
-    ...toolsBeforeSkill.map((tool) => tool.name),
-    SKILL_TOOL_NAME,
-    SKILL_SEARCH_TOOL_NAME,
-    ...toolsAfterSkill.map((tool) => tool.name),
-  ];
-  assertProductBindingCatalogClean('desktop', desktopBoundToolNames);
-  const desktopHostCapabilities = buildHostCapabilitiesFromBinding(desktopBoundToolNames);
   // External reference lazy-skill pattern: the prompt lists available skills,
   // and this read-only tool loads the full SKILL.md only when the task matches.
   // Resolve per-call from the session cwd so skills at all 5 standard paths
@@ -270,37 +255,39 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     skillSearchTool,
     ...toolsAfterSkill,
   ];
-  const toolAvailability: ToolAvailabilityConfig = {
-    economy: economyEnabled,
-    groups: buildDeferredToolGroupsFromCatalog('desktop', desktopBoundToolNames),
-  };
-  // Child agents stay file-only for local reads; parent runtime refs such as
-  // maka://runtime/background-tasks/<id> are not part of their tool surface.
+  assertProductBindingCatalogClean(
+    'desktop',
+    builtinTools.map((tool) => tool.name),
+  );
+  const desktopProductToolSurface = projectEffectiveProductToolSurface({
+    host: 'desktop',
+    tools: builtinTools,
+    policy: { economy: economyEnabled },
+  });
+  // Build the union needed by catalog child profiles. SessionManager applies
+  // each profile's narrower allowlist; parent-facing runtime refs are omitted.
   const childAgentTools = buildChildAgentTools([
-    ...buildBuiltinTools({
+    ...buildDesktopBuiltinTools({
+      archiveResources: { readArchivedToolResultResource },
       snapshotImage: snapshotReadImage,
       ...(sandboxManager ? { sandboxManager } : {}),
       ...(filesystemWorker ? {
         filesystemWorker,
-        enableBashAdditionalPermissions: true,
-        enableFileToolAdditionalPermissions: true,
       } : {}),
-    }).filter((tool: MakaTool) => tool.name !== 'Edit'),
+    }),
     webSearchTool,
     ...agentTeamChildTools,
   ]);
 
   return {
     riveTools,
-    officeTools,
     browserTools,
     computerUse,
     computerUseOverlay,
     computerUseTools,
     agentTeamLeadTools,
-    desktopHostCapabilities,
-    builtinTools,
-    toolAvailability,
+    desktopProductToolSurface,
+    builtinTools: [...desktopProductToolSurface.tools],
     childAgentTools,
     sandboxDiagnosticsProvider,
   };

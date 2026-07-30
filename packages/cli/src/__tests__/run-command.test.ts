@@ -52,45 +52,33 @@ describe('maka run argument parsing', () => {
     assert.equal(parseMakaRunArgs(['x', '--max-steps', '1.5']).kind, 'error');
   });
 
-  test('parses a non-interactive permission mode and repeatable exact rules', () => {
-    assert.deepEqual(
-      parseMakaRunArgs([
-        'run tools',
-        '--permission-mode',
-        'execute',
-        '--allow',
-        'category:file_write',
-        '--allow',
-        'tool:WriteStdin',
-        '--deny',
-        'Bash(npm  test)',
-        '--allow',
-        'Bash(npm test)',
-      ]),
-      {
-        kind: 'run',
-        options: {
-          prompt: 'run tools',
-          stdinPrompt: false,
-          permissionMode: 'execute',
-          permissionRules: [
-            { effect: 'allow', kind: 'category', category: 'file_write' },
-            { effect: 'allow', kind: 'tool', toolName: 'WriteStdin' },
-            { effect: 'deny', kind: 'bash_exact', command: 'npm  test' },
-            { effect: 'allow', kind: 'bash_exact', command: 'npm test' },
-          ],
-        },
+  test('parses Graph Mode as an explicit non-interactive turn', () => {
+    assert.deepEqual(parseMakaRunArgs(['implement the graph', '--graph']), {
+      kind: 'run',
+      options: {
+        prompt: 'implement the graph',
+        stdinPrompt: false,
+        graph: true,
       },
-    );
+    });
+    assert.equal(parseMakaRunArgs(['x', '--graph', '--graph']).kind, 'error');
   });
 
-  test('rejects interactive ask mode and malformed permission rules', () => {
+  test('accepts only the explicit non-interactive sandbox bypass flag', () => {
+    assert.deepEqual(parseMakaRunArgs(['run tools', '--yolo']), {
+      kind: 'run',
+      options: {
+        prompt: 'run tools',
+        stdinPrompt: false,
+        yolo: true,
+      },
+    });
+  });
+
+  test('rejects removed permission modes and rule flags', () => {
     assert.equal(parseMakaRunArgs(['x', '--permission-mode', 'ask']).kind, 'error');
-    assert.equal(parseMakaRunArgs(['x', '--allow', 'category:not-real']).kind, 'error');
-    assert.equal(parseMakaRunArgs(['x', '--allow', 'tool:']).kind, 'error');
-    assert.equal(parseMakaRunArgs(['x', '--allow', 'tool: WriteStdin']).kind, 'error');
-    assert.equal(parseMakaRunArgs(['x', '--deny', 'Bash()']).kind, 'error');
-    assert.equal(parseMakaRunArgs(['x', '--allow', 'Write(*)']).kind, 'error');
+    assert.equal(parseMakaRunArgs(['x', '--allow', 'tool:Read']).kind, 'error');
+    assert.equal(parseMakaRunArgs(['x', '--deny', 'Bash(npm test)']).kind, 'error');
   });
 
   test('parses resume and continue session selectors and rejects combining them', () => {
@@ -124,6 +112,28 @@ describe('maka run process contract', () => {
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, 'prompt=hello\n');
     assert.equal(result.stderr, '');
+  });
+
+  test('waits for the complete Graph before printing the final supervisor output', async () => {
+    const result = await runFixture(['implement it', '--graph'], {
+      input: '',
+      env: { MAKA_RUN_EXPECT_GRAPH: '1' },
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, 'graph completed\n');
+    assert.equal(result.stderr, '');
+  });
+
+  test('does not wait for Graph completion after the root invocation fails', async () => {
+    const result = await runFixture(['implement it', '--graph'], {
+      scenario: 'graph-runtime-error',
+      input: '',
+    });
+
+    assert.equal(result.code, 1);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /provider failed before graph creation/);
+    assert.doesNotMatch(result.stderr, /graph-wait-called/);
   });
 
   test('uses stdin as the complete prompt for run -', async () => {
@@ -172,12 +182,40 @@ describe('maka run process contract', () => {
     assert.match(result.stderr, /tool-step limit reached/);
   });
 
-  test('denies an unresolved permission prompt and exits 1', async () => {
-    const result = await runFixture(['hello'], { scenario: 'permission', input: '' });
+  test('fails closed when a sandbox boundary request reaches non-interactive run', async () => {
+    const result = await runFixture(['hello'], { scenario: 'sandbox-boundary', input: '' });
     assert.equal(result.code, 1);
-    assert.match(result.stderr, /denied permission request for WebSearch/);
-    assert.match(result.stderr, /permission request permission-1 was denied/);
+    assert.match(result.stderr, /sandbox boundary expansion is unavailable/);
     assert.equal(result.stdout, '');
+  });
+
+  test('fails closed when a tool reports an unresolved sandbox boundary requirement', async () => {
+    const result = await runFixture(['hello'], {
+      scenario: 'sandbox-boundary-tool-result',
+      input: '',
+    });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /sandbox boundary expansion is unavailable/);
+    assert.equal(result.stdout, '');
+  });
+
+  test('accepts a completed boundary-safe alternative', async () => {
+    const result = await runFixture(['hello'], {
+      scenario: 'sandbox-boundary-recovered',
+      input: '',
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, 'recovered safely\n');
+  });
+
+  test('creates an Auto boundary by default', async () => {
+    const result = await runFixture(['hello'], {
+      input: '',
+      env: { MAKA_RUN_EXPECT_PERMISSION_MODE: 'ask' },
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, 'prompt=hello\n');
   });
 
   test('passes max steps as an invocation-local context limit', async () => {
@@ -189,38 +227,20 @@ describe('maka run process contract', () => {
     assert.match(result.stdout, /^maxSteps=3;/);
   });
 
-  test('passes permission mode and rules only to this invocation', async () => {
-    const permissionRules = [
-      { effect: 'deny', kind: 'category', category: 'read' },
-      { effect: 'allow', kind: 'bash_exact', command: 'npm test' },
-    ];
-    const result = await runFixture(
-      [
-        'hello',
-        '--permission-mode',
-        'bypass',
-        '--deny',
-        'category:read',
-        '--allow',
-        'Bash(npm test)',
-      ],
-      {
-        input: '',
-        env: {
-          MAKA_RUN_EXPECT_PERMISSION_MODE: 'bypass',
-          MAKA_RUN_EXPECT_PERMISSION_RULES: JSON.stringify(permissionRules),
-        },
-      },
-    );
+  test('creates a bypass boundary only when --yolo is explicit', async () => {
+    const result = await runFixture(['hello', '--yolo'], {
+      input: '',
+      env: { MAKA_RUN_EXPECT_PERMISSION_MODE: 'bypass' },
+    });
 
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, 'prompt=hello\n');
   });
 
-  test('returns exit 2 for ask mode before runtime startup', async () => {
+  test('returns exit 2 for removed permission flags before runtime startup', async () => {
     const result = await runFixture(['hello', '--permission-mode', 'ask'], { input: '' });
     assert.equal(result.code, 2);
-    assert.match(result.stderr, /permission-mode must be explore, execute, or bypass/);
+    assert.match(result.stderr, /unknown option: --permission-mode/);
     assert.equal(result.stdout, '');
   });
 
@@ -242,8 +262,6 @@ describe('maka run process contract', () => {
         resumed.llmConnectionSlug,
         '--model',
         resumed.model,
-        '--permission-mode',
-        resumed.permissionMode,
       ],
       {
         input: '',
@@ -258,6 +276,59 @@ describe('maka run process contract', () => {
         },
       },
     );
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, 'prompt=continue this\n');
+  });
+
+  test('names the mode the same way the desktop and TUI do (#1616)', async () => {
+    const help = await runFixture(['--help'], { input: '' });
+
+    assert.equal(help.code, 0, help.stderr);
+    assert.match(help.stdout, /--yolo\s+Give this session full access to your files and network/);
+    assert.doesNotMatch(help.stdout, /sandbox/i);
+    assert.doesNotMatch(help.stdout, /bypass/i);
+  });
+
+  test('fails closed when resuming a bypass session without --yolo', async () => {
+    const cwd = await realpath(process.cwd());
+    const resumed = fixtureSession({
+      id: 'resume-bypass',
+      cwd,
+      permissionMode: 'bypass',
+    });
+    const result = await runFixture(['continue this', '--resume', resumed.id], {
+      input: '',
+      env: {
+        MAKA_RUN_FIXTURE_SESSIONS: JSON.stringify([resumed]),
+        MAKA_RUN_BOUNDARY_KIND: 'bypass',
+        MAKA_RUN_EXPECT_NO_SEND: '1',
+      },
+    });
+
+    assert.equal(result.code, 2);
+    // The session id in this fixture is literally `resume-bypass`, so only the
+    // sentence itself is checked for the old name.
+    assert.match(result.stderr, /resuming a full-access session .* requires --yolo/i);
+    assert.doesNotMatch(result.stderr, /Bypass session/i);
+    assert.equal(result.stdout, '');
+  });
+
+  test('resumes in Bypass only when --yolo is explicit', async () => {
+    const cwd = await realpath(process.cwd());
+    const resumed = fixtureSession({
+      id: 'resume-bypass',
+      cwd,
+      permissionMode: 'bypass',
+    });
+    const result = await runFixture(['continue this', '--resume', resumed.id, '--yolo'], {
+      input: '',
+      env: {
+        MAKA_RUN_FIXTURE_SESSIONS: JSON.stringify([resumed]),
+        MAKA_RUN_BOUNDARY_KIND: 'bypass',
+        MAKA_RUN_EXPECT_BOUNDARY_KIND: 'bypass',
+      },
+    });
 
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, 'prompt=continue this\n');
@@ -322,6 +393,19 @@ describe('maka run process contract', () => {
     assert.match(result.stderr, /timed out after 50ms/);
   });
 
+  test('returns exit 1 when a graph descendant leaves a boundary failure unresolved', async () => {
+    const result = await runFixture(['graph task', '--graph'], {
+      input: '',
+      env: {
+        MAKA_RUN_EXPECT_GRAPH: '1',
+        MAKA_RUN_GRAPH_BOUNDARY_FAILURE: '1',
+      },
+    });
+
+    assert.equal(result.code, 1, result.stderr);
+    assert.equal(result.stdout, '');
+  });
+
   test('returns exit 130 on SIGINT', async () => {
     const child = spawn(process.execPath, [fixturePath, 'hello'], {
       env: { ...process.env, MAKA_RUN_FIXTURE_SCENARIO: 'slow' },
@@ -346,6 +430,44 @@ describe('maka run process contract', () => {
 
     assert.equal(signal, null);
     assert.equal(code, 130, stderr);
+    assert.equal(stdout, '');
+  });
+
+  test('returns exit 130 when SIGINT interrupts Graph completion wait', async () => {
+    const child = spawn(process.execPath, [fixturePath, 'implement it', '--graph'], {
+      env: { ...process.env, MAKA_RUN_FIXTURE_SCENARIO: 'graph-wait' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    child.stdin.end();
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString('utf8');
+    });
+    const ready = new Promise<void>((resolve) => {
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString('utf8');
+        if (stderr.includes('fixture-ready')) resolve();
+      });
+    });
+    await ready;
+    child.kill('SIGINT');
+
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    const exited = once(child, 'exit') as Promise<[number | null, NodeJS.Signals | null]>;
+    const result = await Promise.race([
+      exited.then(([code, signal]) => ({ code, signal })),
+      new Promise<{ code: null; signal: 'SIGKILL' }>((resolve) => {
+        killTimer = setTimeout(() => {
+          child.kill('SIGKILL');
+          resolve({ code: null, signal: 'SIGKILL' });
+        }, 500);
+      }),
+    ]);
+    if (killTimer !== undefined) clearTimeout(killTimer);
+
+    assert.equal(result.signal, null);
+    assert.equal(result.code, 130, stderr);
     assert.equal(stdout, '');
   });
 });

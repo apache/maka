@@ -4,13 +4,9 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 
-import {
-  AiSdkBackend,
-  PermissionEngine,
-  buildComputerUseTools,
-  getAIModel,
-} from '../packages/runtime/dist/index.js';
+import { AiSdkBackend, buildComputerUseTools, getAIModel } from '../packages/runtime/dist/index.js';
 import { createCuaDriverBackend } from '../packages/computer-use/dist/index.js';
+import { createDirectRuntimeTurnLedger } from './cu-direct-runtime-ledger.mjs';
 import { sanitizeCuDirectReport } from './cu-report-sanitize.mjs';
 
 const repoRoot = new URL('..', import.meta.url).pathname;
@@ -397,14 +393,24 @@ const computerTool = {
     if (nextTotal > budget.total || nextActionCount > (budget.counts[action] ?? 0)) {
       rejectAttempt('action_budget_exceeded', 'AX-only scenario action budget exceeded');
     }
-    if (
-      action === 'observe' &&
-      (args.app !== fixture.appId || args.window_id !== fixtureWindowId)
-    ) {
-      rejectAttempt(
-        'target_mismatch',
-        'model observe target does not match the exact fixture identity',
-      );
+    if (action === 'observe') {
+      // The `computer` tool contract is "observe requires app OR window_id", so a
+      // model that supplies only one of them is behaving correctly. Requiring both
+      // would fail every compliant model before it ever reaches a dispatch. Assert
+      // the real invariant instead: whatever the model did supply must identify the
+      // fixture, and must not point at any other target.
+      const appProvided = args.app !== undefined;
+      const windowProvided = args.window_id !== undefined;
+      const appMatches = args.app === fixture.appId;
+      const windowMatches = args.window_id === fixtureWindowId;
+      const identifiesFixture = (appProvided && appMatches) || (windowProvided && windowMatches);
+      const contradictsFixture = (appProvided && !appMatches) || (windowProvided && !windowMatches);
+      if (!identifiesFixture || contradictsFixture) {
+        rejectAttempt(
+          'target_mismatch',
+          'model observe target does not match the exact fixture identity',
+        );
+      }
     }
     const actionStartedAt = Date.now();
     let result;
@@ -461,6 +467,41 @@ const connection = {
   createdAt: 1,
   updatedAt: 1,
 };
+const task =
+  scenario === 'observe-only'
+    ? 'Use Maka Computer to inspect "Codex CUA Lab". Start with list_apps, observe ' +
+      'the exact app/window, report that "CUA Lab Set Value Field" is visible, ' +
+      'do not mutate anything, then finish.'
+    : scenario === 'ax-click'
+      ? 'Use Maka Computer to click the element labeled "CUA Lab Primary Button" exactly ' +
+        'once in "Codex CUA Lab". Start with list_apps and observe, use click_element ' +
+        'with IDs from that observation, verify the fresh state, then finish. Never use coordinates.'
+      : scenario === 'ax-multi-step'
+        ? `Use Maka Computer in "Codex CUA Lab" to complete two semantic actions in order. ` +
+          `First set "CUA Lab Set Value Field" to "${targetValue}" with set_value. ` +
+          'Then use the fresh observation returned by that action to click ' +
+          '"CUA Lab Primary Button" exactly once with click_element. Verify both fresh ' +
+          'results, then finish. Never use coordinates, scroll, drag, type, or key actions.'
+        : scenario === 'ambiguity'
+          ? 'Use Maka Computer to click the observed element labeled "CUA Lab Stale Target" ' +
+            'exactly once in "Codex CUA Lab". Start with list_apps and observe, then use ' +
+            'click_element with the exact observation_id and element_id. If the tool rejects ' +
+            'the target, report the failure and stop rather than guessing or using coordinates.'
+          : `Use Maka Computer to set "CUA Lab Set Value Field" in "Codex CUA Lab" ` +
+            `to "${targetValue}". Start with list_apps, observe the exact app/window, ` +
+            'use set_value with the observation_id and element_id from that observation, ' +
+            'verify the fresh observation value, then finish. If user_intervened is returned, ' +
+            'observe again before retrying. If target_missing or stale_frame is returned, ' +
+            'list apps and observe the current process again before retrying. Never use ' +
+            'coordinate, click, scroll, drag, type, or key actions.';
+const turnId = 'turn-real-ax-model';
+const durableTurn = createDirectRuntimeTurnLedger({
+  sessionId: 'real-ax-model-e2e',
+  turnId,
+  text: task,
+  newId: () => `runtime-event-${++nextId}`,
+  now: () => ++now,
+});
 const runtime = new AiSdkBackend({
   sessionId: 'real-ax-model-e2e',
   header: {
@@ -489,13 +530,11 @@ const runtime = new AiSdkBackend({
   connection,
   apiKey,
   modelId,
-  permissionEngine: new PermissionEngine({
-    newId: () => `permission-${++nextId}`,
-    now: () => ++now,
-  }),
+  readExecutionBoundary: async () => ({ kind: 'bypass', revision: 0 }),
   modelFactory: (input) => getAIModel(input),
   tools: [computerTool],
   maxSteps: 8,
+  loadTurnRuntimeEvents: durableTurn.loadTurnRuntimeEvents,
   newId: () => `id-${++nextId}`,
   now: () => ++now,
   recordToolInvocation: (record) => {
@@ -511,38 +550,13 @@ const runtime = new AiSdkBackend({
 const events = [];
 let terminalEvent;
 try {
-  const task =
-    scenario === 'observe-only'
-      ? 'Use Maka Computer to inspect "Codex CUA Lab". Start with list_apps, observe ' +
-        'the exact app/window, report that "CUA Lab Set Value Field" is visible, ' +
-        'do not mutate anything, then finish.'
-      : scenario === 'ax-click'
-        ? 'Use Maka Computer to click the element labeled "CUA Lab Primary Button" exactly ' +
-          'once in "Codex CUA Lab". Start with list_apps and observe, use click_element ' +
-          'with IDs from that observation, verify the fresh state, then finish. Never use coordinates.'
-        : scenario === 'ax-multi-step'
-          ? `Use Maka Computer in "Codex CUA Lab" to complete two semantic actions in order. ` +
-            `First set "CUA Lab Set Value Field" to "${targetValue}" with set_value. ` +
-            'Then use the fresh observation returned by that action to click ' +
-            '"CUA Lab Primary Button" exactly once with click_element. Verify both fresh ' +
-            'results, then finish. Never use coordinates, scroll, drag, type, or key actions.'
-          : scenario === 'ambiguity'
-            ? 'Use Maka Computer to click the observed element labeled "CUA Lab Stale Target" ' +
-              'exactly once in "Codex CUA Lab". Start with list_apps and observe, then use ' +
-              'click_element with the exact observation_id and element_id. If the tool rejects ' +
-              'the target, report the failure and stop rather than guessing or using coordinates.'
-            : `Use Maka Computer to set "CUA Lab Set Value Field" in "Codex CUA Lab" ` +
-              `to "${targetValue}". Start with list_apps, observe the exact app/window, ` +
-              'use set_value with the observation_id and element_id from that observation, ' +
-              'verify the fresh observation value, then finish. If user_intervened is returned, ' +
-              'observe again before retrying. If target_missing or stale_frame is returned, ' +
-              'list apps and observe the current process again before retrying. Never use ' +
-              'coordinate, click, scroll, drag, type, or key actions.';
   for await (const event of runtime.send({
-    turnId: 'turn-real-ax-model',
+    turnId,
     text: task,
     context: [],
+    headAnchorRuntimeEvent: durableTurn.anchor,
   })) {
+    durableTurn.record(event);
     events.push(event.type);
     if (event.type === 'complete' || event.type === 'abort' || event.type === 'error') {
       terminalEvent = {

@@ -64,6 +64,18 @@ describe('SandboxManager.shouldSandbox', () => {
     assert.equal(manager.shouldSandbox({ type: 'disabled', name: 'disabled' }, 'auto'), false);
   });
 
+  it('requires a sandbox when only process network remains restricted', () => {
+    const manager = new SandboxManager();
+    const profile: PermissionProfile = {
+      type: 'managed',
+      name: 'network-only',
+      fileSystem: { kind: 'unrestricted', entries: [] },
+      network: { kind: 'restricted' },
+    };
+
+    assert.equal(manager.shouldSandbox(profile, 'auto'), true);
+  });
+
   it('honors require and forbid preference overrides', () => {
     const manager = new SandboxManager();
 
@@ -262,36 +274,5 @@ describe('SandboxManager.transform', () => {
 
     assert.equal(result.ok, false);
     if (!result.ok) assert.equal(result.reason, 'backend_not_available');
-  });
-
-  it('builds an effective profile from one-call permissions without mutating the base', () => {
-    const backend = new FakeMacosBackend();
-    const manager = new SandboxManager([backend]);
-    const base = createWorkspaceWritePermissionProfile();
-    const result = manager.transform({
-      command: command(base),
-      platform: 'darwin',
-      additionalPermissions: {
-        fileSystem: {
-          entries: [{ path: '/outside/file.txt', access: 'write', scope: 'exact' }],
-        },
-        network: { enabled: true },
-      },
-    });
-
-    assert.equal(result.ok, true);
-    assert.equal(base.network.kind, 'restricted');
-    assert.equal(backend.calls.length, 1);
-    const effective = backend.calls[0]!.command.profile;
-    assert.equal(effective.type, 'managed');
-    if (effective.type === 'managed') {
-      assert.equal(effective.network.kind, 'enabled');
-      assert.deepEqual(effective.fileSystem.entries.at(-1), {
-        kind: 'path',
-        access: 'write',
-        path: '/outside/file.txt',
-        match: 'exact',
-      });
-    }
   });
 });

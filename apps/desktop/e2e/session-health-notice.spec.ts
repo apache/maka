@@ -14,9 +14,39 @@
 
 import { test, expect } from './fixtures';
 
+// The notice is a PEER of the composer form (both are children of
+// `.mainColumn`), not a child of it, so nothing inherits the composer's
+// measure for it — it has to opt in with the same
+// `min(--maka-chat-measure, 100% - 2*--space-6)` box. It shipped with a bare
+// `margin: 0 var(--space-3)` instead, so on any window wider than the 680px
+// measure the notice ran the full chat column while the composer card stayed
+// centered at 680 — two mismatched edges stacked on each other. Left/right
+// edges are the assertion; width alone would pass a notice that is the right
+// size but off-center.
+async function probeNoticeAlignment(page: import('@playwright/test').Page) {
+  return await page.evaluate(() => {
+    const notice = document.querySelector<HTMLElement>('.maka-session-health-notice');
+    const composer = document.querySelector<HTMLElement>('.composer .maka-composer-inner');
+    if (!notice || !composer) {
+      throw new Error('Expected both the health notice and the composer card to be mounted');
+    }
+    const noticeBox = notice.getBoundingClientRect();
+    const composerBox = composer.getBoundingClientRect();
+    return {
+      leftDelta: Math.abs(noticeBox.left - composerBox.left),
+      rightDelta: Math.abs(noticeBox.right - composerBox.right),
+    };
+  });
+}
+
 test('locked stale sessions show the health notice even with a ready default', async ({ staleSessionsWindow: page }) => {
   // Active = stale fake session (locked by its history): notice shows.
   await expect(page.getByText('会话已过期 · 请先配置真实模型')).toBeVisible();
+
+  // The notice shares the composer card's edges — see probeNoticeAlignment.
+  const alignment = await probeNoticeAlignment(page);
+  expect(alignment.leftDelta).toBeLessThanOrEqual(1);
+  expect(alignment.rightDelta).toBeLessThanOrEqual(1);
 
   // Switch to the locked legacy session → its deleted-connection notice.
   await page.getByRole('button', { name: '展开侧边栏' }).click();

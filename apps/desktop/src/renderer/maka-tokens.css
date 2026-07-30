@@ -127,6 +127,17 @@
   --brand-deep-hover: oklch(from var(--accent) calc(l - 0.06) c h);
   /* Fixed external channel identity; unlike palette-derived Maka accents. */
   --brand-wechat: #07c160;
+  /* Maka's own identity colour, sampled from the `maka` lockup in the app
+     icon (apps/desktop/assets/icon.png).
+     Deliberately NOT `var(--accent)`: an identity mark that turns mauve
+     when the user picks the mauve palette is a themed decoration, not a
+     mark. Same contract as --brand-wechat above — a fixed brand asset that
+     sits outside the palette system — which is also why it stays one value
+     across light and dark rather than being re-derived per theme.
+     Do not reach for this as a general accent: --accent / --brand-deep own
+     emphasis, and using this for CTAs is exactly the palette-invisibility
+     bug called out in the --brand-deep note above. */
+  --maka-brand: #71a8fd;
   /* Every MCP market tile now renders a real library brand mark on a neutral
      plate (mcp-brand-marks.tsx: simple-icons + @ant-design/icons-svg DingTalk +
      the vendored Feishu mark), so no per-brand plate-tint tokens are needed —
@@ -377,23 +388,48 @@
   --font-serif: Georgia, "Times New Roman", Times, serif;
 
   /* === layout ===
-     Concentric nesting:
-     when a rounded surface sits inside another rounded surface with padding
-     between them, the inner radius = outer radius − padding so the two
-     curves share a center and read as one machined shell. Two forms:
-       1. If outer − padding lands on a tier, pick that tier directly —
-          e.g. a settings card (8px surface) inside a 12px modal with 4px
-          padding: 12 − 4 = 8 = --radius-surface. The radius-converge
-          contract's SELECTOR_TIER already pins this.
-       2. If outer − padding does NOT land on a tier, use
-          `calc(var(--radius-*) - Npx)` — e.g. an input inside a 12px modal
-          with 8px inset: 12 − 8 = 4px (not a tier), so
-          `border-radius: calc(var(--radius-modal) - 8px)`. The radius
-          contract's calc allowlist permits only this shrink form. */
+     Concentric nesting — inner radius = outer radius − inset.
+
+     THE PRECONDITION IS ADJACENCY, not merely "inside". Two curves are
+     concentric only when the inner corner actually sits in the outer
+     corner: the child must hug that corner, and the inset must be equal
+     on BOTH edges meeting there. A child floating in the middle of its
+     parent has no outer curve to be concentric with, and a child whose
+     horizontal and vertical insets differ cannot share a center with
+     anything — the formula then returns an arbitrary number that merely
+     looks derived.
+
+     This paragraph used to say only "with padding between them", and
+     illustrated itself with an input in the middle row of the search
+     modal — 57px below the shell's top edge, 12px in from its sides,
+     touching no corner at all. The rule's only worked example was its
+     only misuse, and a contract test pinned the result. Adjacency is
+     the whole rule; state it or the rule licenses nonsense.
+
+     Both legitimate forms in this codebase:
+       1. Tier swap, when outer − inset lands on a tier — the segmented
+          track (8px surface) with a uniform 2px pad: 8 − 2 = 6 =
+          --radius-control for the buttons that hug its ends.
+          See styles/segmented.css.
+       2. `calc(var(--radius-*) - 1px)`, the border inset — a ::before
+          overlay at inset-0 hugging the inner edge of a 1px border.
+          See primitives/menu.tsx and primitives/empty.tsx.
+     Both are corner-adjacent with a uniform inset. If a proposed
+     shrink is neither, it is not concentric — pick the tier the
+     element's ROLE calls for instead. */
   --radius-control: 6px;
   --radius-surface: 8px;
   --radius-modal: 12px;
   --radius-pill: 999px;
+  /* Square icon plates (provider logo, about logo, feature status) are
+     governed by RATIO, not by tier: their roundness must read the same
+     at 32px and 48px, which a fixed px cannot do (8px reads 25% on a
+     32px plate and 16.7% on a 48px one — the same token, visibly
+     different shapes). A percentage is scale-invariant, so one value
+     is correct at every size, including sizes not yet added.
+     27% restores the anchor ratio measured in PR-UI-13 (12px on the
+     44px plate) that the tier convergence silently reverted. */
+  --radius-plate: 27%;
 
   /* PR-SPACING-CONVERGE-0 (issue #430 PR3, 2026-07-03):
      One ruler for every padding/gap/margin. Absolute 4px (not 0.25rem)
@@ -516,38 +552,36 @@
   --h-toolbar: 40px;
   --h-composer-min: 44px;
 
-  /* titlebar control baseline (macOS traffic-light center) */
-  --maka-titlebar-control-safe-left: 94px;
-  --maka-titlebar-control-safe-top: 20px;
+  /* OS window-resize corridor. A draggable app-region rect flush against a
+     window edge takes the native resize hit area with it — that is the P0 WAWQAQ
+     reported on `af681c1` (msg `5b85fdb1`): the window could not be resized from
+     its edges. Every drag surface therefore stays inset from the frame by this
+     much. The value matches the corridor the previous per-container drag strips
+     left implicitly (the chat header started at y=4). */
+  --maka-window-resize-edge: 4px;
 
-  /* Shared top chrome geometry for .maka-workspace-top-actions
-     (sidebar.css) and the in-flow chat status row (module-pages.css).
-     The status row only shares the toolbar's right edge; it no longer
-     anchors off the toolbar bottom. */
-  --maka-workspace-top-actions-top: calc(var(--maka-titlebar-control-safe-top) - 16px); /* pixel-measured lockstep with sidebar rail — lights' optical center is 20.75 */
-  --maka-workspace-top-actions-right: 24px;
-  /* Horizontal footprint the absolutely-positioned .maka-workspace-top-actions
-     toolbar occupies in the top-right corner: its right offset + five governed
-     28px compact icon buttons with 6px gaps (164px) + a 12px clearance gap. Right-aligned
-     chat-header content (model switcher, .maka-chat-header-mode-pill, memory
-     pill) and the chat-header drag strip reserve this footprint so neither
-     content nor titlebar hit regions sit underneath the toolbar. Companion to
-     PR-CHAT-HEADER-STATUS-CLUSTER-0, which only relocated the status cluster and
-     left the in-header pills overlapping. */
-  --maka-workspace-top-actions-inset: calc(var(--maka-workspace-top-actions-right) + 176px);
+  /* PR-WINDOW-TITLEBAR-0: where the OS-drawn window controls are, straight from
+     the platform. Electron enables Chromium's Window Controls Overlay env vars
+     on every platform where we hide the native titlebar (see main-window.ts), so
+     the safe area — the usable titlebar rectangle next to the native controls —
+     is a fact the renderer can read instead of a number someone measured. macOS
+     reports the traffic lights on the left (x ≈ 83, width to the window edge);
+     Windows reports its caption buttons on the right (x = 0, width short of the
+     edge), so the right-side control strip is the viewport minus the x/width
+     pair. The `env()` fallbacks make both gutters collapse to the design floor
+     on a platform with a native frame (Linux), where nothing overlaps.
 
-  /* PR-WINDOW-TITLEBAR-0: Electron exposes the titlebar safe area through
-     `titlebar-area-*` CSS env vars. The safe area is the usable titlebar
-     rectangle next to the native controls, so the right-side control overlay is
-     the viewport width minus the safe-area x/width pair. `env()` fallbacks keep
-     the overlay inset at 0px on platforms/windows without titleBarOverlay. */
+     `--maka-titlebar-control-safe-left: 94px` used to stand in for the macOS
+     side, with a comment claiming the DOM could not know it. It could: enabling
+     the overlay on macOS reports 83, and the hand-measured value was 11px of
+     slop applied on every platform — including the two that draw no controls
+     there at all. */
   --maka-titlebar-area-x: env(titlebar-area-x, 0px);
   --maka-titlebar-area-width: env(titlebar-area-width, 100vw);
   --maka-titlebar-overlay-right-width: max(
     0px,
     calc(100vw - var(--maka-titlebar-area-x) - var(--maka-titlebar-area-width))
   );
-  --maka-workspace-top-actions-right: calc(24px + var(--maka-titlebar-overlay-right-width));
 
   /* session list geometry */
   --w-sessionlist: 240px;
@@ -1152,12 +1186,6 @@ html[data-os="darwin"].dark {
     flex: 1;
     overflow-y: auto;
     padding: var(--space-6) 0 var(--space-4) 0;
-    display: flex;
-    flex-direction: column;
-    /* PR5 CHAT-TURN-SPACING-0: uniform 12px turn gap (between turns =
-       within turn) — the chat reads as a continuous coding-agent stream
-       instead of stacked Q+A blocks. */
-    gap: var(--space-3);
   }
 
   /* Turn grouping (per kenji UI-04): user msg + tools + assistant answer
@@ -1167,8 +1195,12 @@ html[data-os="darwin"].dark {
   .maka-turn {
     display: flex;
     flex-direction: column;
+    /* The content wrapper owns between-turn flex layout; turns must retain
+       their measured height for content-visibility warm-up and scrolling. */
+    flex: 0 0 auto;
     /* PR5 CHAT-TURN-SPACING-0: uniform 12px within-turn gap, matching the
-       between-turn gap (.maka-chat) — one density, no between/within split. */
+       between-turn gap (.maka-chatContent) — one density, no between/within
+       split. */
     gap: var(--space-3);
     max-width: var(--maka-chat-measure);
     margin: 0 auto;

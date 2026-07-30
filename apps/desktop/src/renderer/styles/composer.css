@@ -1,4 +1,4 @@
-/* Composer — outer container, controls, pickers, tool buttons, send/workspace/branch/streaming. Composer block merged in from tool-output.css (was misplaced there) — issue #546 PR3. Runtime permission prompt styles live in permission-dialog.css. */
+/* Composer — outer container, controls, pickers, tool buttons, send/workspace/branch/streaming. Composer block merged in from tool-output.css (was misplaced there) — issue #546 PR3. Runtime interaction prompt styles live in interaction-prompts.css. */
 .composer {
   flex: 0 0 auto;
   display: flex;
@@ -44,24 +44,6 @@
   flex: 0 0 auto;
 }
 
-.maka-composer-plan-mode-control,
-.maka-composer-swarm-mode-control {
-  height: 26px;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  padding: 0 var(--space-0-5) 0 var(--space-1);
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-  white-space: nowrap;
-}
-
-.maka-composer-plan-mode-label,
-.maka-composer-swarm-mode-label {
-  line-height: var(--leading-none);
-}
-
 .maka-composer-right-controls {
   flex: 0 0 auto;
   justify-content: flex-end;
@@ -81,7 +63,8 @@
    controls read identical at rest and on hover. */
 .maka-composer-left-controls [data-slot="select-trigger"],
 .maka-composer-right-controls .maka-model-switcher-trigger,
-.maka-composer-model-chip {
+.maka-composer-model-chip,
+.maka-composer-mode-indicator {
   height: 26px;
   display: inline-flex;
   align-items: center;
@@ -101,10 +84,25 @@
 }
 .maka-composer-left-controls [data-slot="select-trigger"]:hover,
 .maka-composer-right-controls .maka-model-switcher-trigger:hover:not(:disabled):not([data-disabled]),
-.maka-composer-model-chip:hover {
+.maka-composer-model-chip:hover,
+.maka-composer-mode-indicator:hover:not(:disabled) {
   background: var(--state-hover-bg);
   color: var(--foreground);
   border-color: transparent;
+}
+
+/* #1433: active-mode mark (Plan/Swarm) uses the unified composer-control
+   geometry above. Its stronger text plus the trailing X communicate both
+   “enabled” and the direct click-to-close action without inventing a smaller
+   chip or hover footprint beside the permission picker. */
+.maka-composer-mode-indicator {
+  color: var(--foreground);
+  font-weight: var(--font-weight-semibold);
+}
+
+.maka-composer-mode-indicator:disabled {
+  cursor: not-allowed;
+  color: var(--muted-foreground);
 }
 
 .maka-composer-model-chip {
@@ -396,11 +394,11 @@
   margin-left: auto;
 }
 
-/* Workspace directory picker menu — mirrors the branch menu layout.
-   Shows recently opened directories at the top with a separator before
-   the "选择其他目录..." option. */
+/* The project catalog is the only scrollable region. Add Project and the
+   deliberately low-emphasis No Project escape hatch stay fixed below it. */
 .maka-composer-workspace-menu {
-  min-width: 200px;
+  min-width: 220px;
+  max-width: min(320px, calc(100vw - var(--space-6)));
 }
 .maka-composer-workspace-menu [data-slot="menu-item"] svg {
   flex: 0 0 auto;
@@ -410,6 +408,40 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.maka-composer-project-scroll {
+  max-height: 224px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-color: var(--border-strong) transparent;
+  scrollbar-width: thin;
+}
+
+.maka-composer-project-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.maka-composer-project-scroll::-webkit-scrollbar-thumb {
+  border: var(--border-width-thick) solid transparent;
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+  background-clip: padding-box;
+}
+
+.maka-composer-project-status {
+  margin-left: auto;
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
+}
+
+.maka-composer-project-check {
+  margin-left: auto;
+}
+
+.maka-composer-no-project {
+  color: var(--muted-foreground);
 }
 
 /* Composer streaming hint — replaces the Enter/Shift+Enter help text while

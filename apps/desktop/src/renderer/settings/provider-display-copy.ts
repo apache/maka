@@ -168,6 +168,10 @@ export const PROVIDER_DISPLAY_COPY = {
     zh: { name: '火山方舟 Coding Plan', description: '火山引擎 Coding 订阅 · OpenAI 兼容', badge: 'Coding' },
     en: { name: 'Volcengine Ark Coding Plan (China)', description: 'Volcengine Ark coding subscription · OpenAI-compatible', badge: 'Coding' },
   },
+  'volcengine-agent-plan': {
+    zh: { name: '火山方舟 Agent Plan', description: '火山引擎 Agent 订阅 · Responses API', badge: 'Agent' },
+    en: { name: 'Volcengine Ark Agent Plan (China)', description: 'Volcengine Ark agent subscription · Responses API', badge: 'Agent' },
+  },
   'tencent-token-plan': {
     zh: { name: 'Tencent Token Plan', description: '腾讯云 Token 套餐，个人智能体与编码工具', badge: 'Token' },
     en: { name: 'Tencent Token Plan', description: 'Tencent Cloud token plan for personal agents and coding tools.', badge: 'Token' },
@@ -257,6 +261,10 @@ export const PROVIDER_DISPLAY_COPY = {
   'openai-codex': {
     zh: { name: 'OpenAI OAuth', description: 'ChatGPT / Codex 账号登录；登录后自动成为可用模型连接。' },
     en: { name: 'OpenAI OAuth', description: 'Sign in with a ChatGPT / Codex account; it becomes an available model connection once signed in.' },
+  },
+  'xai-oauth': {
+    zh: { name: 'xAI OAuth', description: '使用 SuperGrok 或 X Premium 账号登录。', badge: 'Account' },
+    en: { name: 'xAI OAuth', description: 'Sign in with SuperGrok or X Premium.', badge: 'Account' },
   },
   'gemini-cli': {
     zh: { name: 'Gemini CLI', description: 'Google 账号登录暂未接入聊天发送。' },

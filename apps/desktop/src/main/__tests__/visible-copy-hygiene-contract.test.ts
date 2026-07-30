@@ -268,36 +268,90 @@ describe('visible-copy hygiene contract (PR-SIDEBAR-IA-0 Phase 3 P0 fixup v2)', 
     });
   }
 
-  it('pins the zh empty-chat hero product tagline', async () => {
+  it('keeps the empty-chat hero free of staged conversation and product pitch', async () => {
+    // #1433: the hero used to stage a conversation the user never had —
+    // two chat bubbles ("好，我来帮你理清楚。" / "为这个任务起草计划") plus a
+    // Maka/user avatar pair — on the one surface that has no content, and
+    // pitched the product ("自主规划，陪你把事做完的智能个人助手。") to
+    // returning users every time they opened a new chat. The wordmark is
+    // the anchor now. This contract keeps that decision from silently
+    // regressing: fake message copy must not come back to the empty state.
     const heroPath = resolve(process.cwd(), '..', '..', 'packages', 'ui', 'src', 'chat-empty-hero.tsx');
     const copyPath = resolve(process.cwd(), '..', '..', 'packages', 'ui', 'src', 'conversation-copy.ts');
     const src = stripComments(await readFile(heroPath, 'utf8'));
     const copy = stripComments(await readFile(copyPath, 'utf8'));
 
-    assert.match(
-      copy,
-      /intro:\s*'自主规划，陪你把事做完的智能个人助手。'/,
-      'The default zh chat empty hero should carry Maka’s exact product tagline.',
-    );
-    assert.match(
-      copy,
-      /primaryBubble:\s*'好，我来帮你理清楚。'/,
-      'The default zh chat empty hero visual should not leak the English fixture bubble.',
-    );
-    assert.match(
-      copy,
-      /secondaryBubble:\s*'为这个任务起草计划'/,
-      'The default zh chat empty hero visual should keep the task prompt bubble Chinese-first.',
+    for (const [field, why] of [
+      ['primaryBubble', 'a staged assistant reply'],
+      ['secondaryBubble', 'a staged user prompt'],
+    ] as const) {
+      assert.doesNotMatch(
+        copy,
+        new RegExp(`${field}\\s*:`),
+        `The empty-chat hero must not reintroduce ${why}: the empty state has no conversation to show.`,
+      );
+    }
+    assert.doesNotMatch(
+      src,
+      /maka-hero-bubble|maka-hero-avatar/,
+      'The empty-chat hero must not render conversation bubbles or avatars.',
     );
     assert.match(
       src,
-      /maka-hero-bubble-primary">\{copy\.primaryBubble\}/,
-      'The empty hero primary bubble should render from the locale copy bundle.',
+      /<MakaWordmark\b/,
+      'The empty-chat hero should anchor on the Maka wordmark.',
     );
-    assert.match(
-      src,
-      /maka-hero-bubble-secondary">\{copy\.secondaryBubble\}/,
-      'The empty hero secondary bubble should render from the locale copy bundle.',
+
+    // The bubble assertions above cover the staged conversation; these cover
+    // the "product pitch" half of this test's name, which used to live only
+    // in the comment. Both old taglines are pinned by their literal text
+    // because the two locales had drifted into different jobs — zh pitched
+    // the product, en explained the composer — so neither string predicts
+    // the other, and a field-name check cannot tell them apart from
+    // `deepResearchEmpty.intro`, which is legitimate and must survive.
+    //
+    // Searched across BOTH files: the copy bundle is where the strings lived,
+    // but nothing stops a future edit from hardcoding one into the component,
+    // and a bundle-only check would not see it.
+    const allSource = `${src}\n${copy}`;
+    for (const [tagline, locale] of [
+      ['自主规划，陪你把事做完的智能个人助手。', 'zh'],
+      ['Describe what you want to change, ask, or look up.', 'en'],
+    ] as const) {
+      assert.ok(
+        !allSource.includes(tagline),
+        `The empty-chat hero must not reintroduce the ${locale} tagline: the daily empty chat is where returning users land, and they do not need the product explained every time.`,
+      );
+    }
+
+    // Structural backstop, as an allowlist rather than a ban on <p>. A ban
+    // only knows the tag the tagline happened to use — the same sentence in a
+    // <div> walks straight past it, which is not a hypothetical: it was the
+    // first thing tried against the earlier version of this assertion. It
+    // also fails in the other direction, rejecting a semantically correct <p>
+    // if the surface ever legitimately needs one and pushing the author
+    // toward a worse tag to get green.
+    //
+    // Naming the elements this surface may render inverts both problems: any
+    // added element trips it regardless of tag, and widening the surface
+    // becomes an explicit edit here with a reason, which is what a decision
+    // this small and this easy to erode actually needs.
+    const emptyHeroStart = src.indexOf('export function EmptyChatHero');
+    const nextExport = src.indexOf('\nexport function', emptyHeroStart + 1);
+    const emptyHeroBody = src.slice(emptyHeroStart, nextExport === -1 ? undefined : nextExport);
+    assert.ok(
+      emptyHeroStart !== -1 && emptyHeroBody.length > 0,
+      'Could not slice EmptyChatHero out of chat-empty-hero.tsx — this contract needs updating alongside the rename.',
+    );
+    const rendered = [...new Set(
+      [...emptyHeroBody.matchAll(/<([A-Za-z][\w.]*)/g)].map((m) => m[1]!),
+    )].sort();
+    assert.deepEqual(
+      rendered,
+      ['MakaWordmark', 'div', 'h1', 'header', 'section'],
+      'The empty-chat hero renders the wordmark and the greeting, nothing else. '
+        + 'Adding an element here means re-deciding that the empty state should say more than hello — '
+        + `do it deliberately and update this list. Currently rendered: ${rendered.join(', ')}`,
     );
   });
 });

@@ -1,16 +1,22 @@
 import assert from 'node:assert/strict';
 import { execFile, spawnSync } from 'node:child_process';
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { describe, test, type TestContext } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { decodeRuntimeEvent } from '@maka/core';
 import { HARBOR_CELL_CONTEXT_ENV_KEYS, resolveHarborCellAiSdkEnv } from '../harbor-cell.js';
+import { isBudgetExhaustedTrialException } from '../harbor-task-runner.js';
 
 const repoRoot = resolve(fileURLToPath(new URL('../../../..', import.meta.url)));
 const execFileAsync = promisify(execFile);
+const runtimeEventValidationCorpusJson = readFileSync(
+  resolve(repoRoot, 'packages/core/src/__tests__/fixtures/runtime-event-validation-corpus.json'),
+  'utf8',
+);
 
 function validContextEnvValue(key: string): string {
   if (key === 'MAKA_CONTEXT_BUDGET_NAME') return 'test-context-budget';
@@ -22,6 +28,73 @@ function validContextEnvValue(key: string): string {
 }
 
 describe('Harbor adapter contract', () => {
+  test('Maka trajectory builder preserves multi-step tool pairing and fails closed to a summary', (t: TestContext) => {
+    const providerOptionsEvent = decodeRuntimeEvent({
+      id: 'call-1-event',
+      invocationId: 'inv-1',
+      runId: 'run-1',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      ts: 1200,
+      partial: false,
+      role: 'model',
+      author: 'agent',
+      content: {
+        kind: 'function_call',
+        id: 'call-1',
+        name: 'Bash',
+        args: { command: 'echo ok' },
+        providerOptions: {
+          google: {
+            thoughtSignature: 'provider-thought-signature',
+            apiKey: 'private-provider-api-key',
+          },
+        },
+      },
+      refs: { stepId: 'step-1', toolCallId: 'call-1' },
+    });
+    const result = spawnSync(
+      'python3',
+      [
+        '-c',
+        pythonTrajectoryBuilderScript(
+          repoRoot,
+          JSON.stringify(providerOptionsEvent),
+          runtimeEventValidationCorpusJson,
+        ),
+      ],
+      {
+        cwd: repoRoot,
+        encoding: 'utf8',
+      },
+    );
+    if (result.error && 'code' in result.error && result.error.code === 'ENOENT') {
+      t.skip('python3 is not available');
+      return;
+    }
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /trajectory-builder ok/);
+  });
+
+  test('maka_agent.py emits a Harbor-valid multi-step ATIF trajectory', (t: TestContext) => {
+    const python = harborPython();
+    if (!python) {
+      assert.notEqual(
+        process.env.MAKA_REQUIRE_HARBOR_CONTRACT,
+        '1',
+        'Harbor 0.13.2 is required for the CI trajectory contract',
+      );
+      t.skip('Harbor 0.13.2 python is not available (CI has no harbor)');
+      return;
+    }
+    const result = spawnSync(python, ['-c', pythonTrajectoryHarborContractScript(repoRoot)], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /trajectory-harbor-contract ok/);
+  });
+
   test('run-cell.mjs delegates to the shared env entrypoint', async () => {
     const source = await readRepoFile('packages/headless/harbor/run-cell.mjs');
     const cellSource = await readRepoFile('packages/headless/src/harbor-cell.ts');
@@ -81,6 +154,7 @@ describe('Harbor adapter contract', () => {
       /economy_task_mode = True if economy_task_flag is True else economy_task_env == "true"/,
     );
     assert.match(source, /"MAKA_ECONOMY_TASK_MODE": "true" if economy_task_mode else "false"/);
+    assert.match(source, /"MAKA_AGENT_TOOLS"/);
     assert.doesNotMatch(
       source,
       /"MAKA_ECONOMY_TASK_MODE": "true" if self\._resolved_flags\.get\("economy_task_mode"\) else "false"/,
@@ -89,12 +163,22 @@ describe('Harbor adapter contract', () => {
     assert.doesNotMatch(source, /MAKA_INSTRUCTION_EOF/);
   });
 
+  test('maka_agent.py emits a host-cell timeout recognized as budget exhaustion', async () => {
+    const source = await readRepoFile('packages/headless/harbor/maka_agent.py');
+    const template = source.match(/f"(Maka host cell exceeded [^"]+)"/)?.[1];
+    assert.ok(template, 'host-cell timeout message template');
+    const message = template.replace('{self._cell_timeout_sec()}', '1800');
+
+    assert.equal(isBudgetExhaustedTrialException(`RuntimeError: ${message}`), true);
+  });
+
   test('headless Harbor text files do not contain hidden or unexpected control characters', async () => {
     const hiddenUnicode = /[\u202A-\u202E\u2066-\u2069\u200B\u200C\u200D\uFEFF]/u;
     const files = [
       'packages/headless/harbor/maka-improved-prompt-v1.txt',
       'packages/headless/harbor/codex_agent.py',
       'packages/headless/harbor/maka_agent.py',
+      'packages/headless/harbor/maka_trajectory.py',
       'packages/headless/harbor/maka_verifier.py',
       'packages/headless/harbor/run-cell.mjs',
       'packages/headless/harbor/run-host-cell.mjs',
@@ -283,6 +367,52 @@ describe('Harbor adapter contract', () => {
     assert.equal(env.COPILOT_GITHUB_TOKEN, undefined);
   });
 
+  test('run-host-cell.mjs forwards the Kimi A/B protocol to the host backend', async () => {
+    const { backendEnv } = await import(
+      new URL('../../harbor/run-host-cell.mjs', import.meta.url).href
+    );
+    const env = await backendEnv(
+      {
+        MAKA_HOST_API_KEY: 'kimi-plan-key',
+        MAKA_MODEL_API_PROTOCOL: 'openai-chat',
+      },
+      'kimi-coding-plan',
+    );
+
+    const resolved = resolveHarborCellAiSdkEnv({
+      provider: 'kimi-coding-plan',
+      model: 'k3',
+      env,
+      ts: 1,
+    });
+    assert.equal(env.MAKA_MODEL_API_PROTOCOL, 'openai-chat');
+    assert.equal(resolved.connection.models?.[0]?.apiProtocol, 'openai-chat');
+  });
+
+  test('run-host-cell.mjs preserves invalid Kimi host protocols for fail-closed validation', async () => {
+    const { backendEnv } = await import(
+      new URL('../../harbor/run-host-cell.mjs', import.meta.url).href
+    );
+    const env = await backendEnv(
+      {
+        MAKA_HOST_API_KEY: 'kimi-plan-key',
+        MAKA_HOST_MODEL_API_PROTOCOL: 'typo',
+      },
+      'kimi-coding-plan',
+    );
+
+    assert.throws(
+      () =>
+        resolveHarborCellAiSdkEnv({
+          provider: 'kimi-coding-plan',
+          model: 'k3',
+          env,
+          ts: 1,
+        }),
+      /Kimi Coding Plan protocol must be anthropic-messages or openai-chat/,
+    );
+  });
+
   test('run-host-cell.mjs accepts Ollama without provider credentials', async () => {
     const { backendEnv } = await import(
       new URL('../../harbor/run-host-cell.mjs', import.meta.url).href
@@ -383,18 +513,22 @@ describe('Harbor adapter contract', () => {
     }
   });
 
-  test('maka_agent.py task-run host mode preserves the heavy-task / autonomous bridge contract', async () => {
+  test('maka_agent.py preserves plain Harbor host task-run and Pier container task-run contracts', async () => {
     const source = await readRepoFile('packages/headless/harbor/maka_agent.py');
 
-    // Mode switch: default cell, opt-in task-run host bridge.
+    // Mode switch: default cell, opt-in task-run.
     assert.match(source, /MAKA_HARBOR_MODE/);
     assert.match(source, /def _harbor_mode\(self\) -> str:/);
     assert.match(source, /if self\._harbor_mode\(\) == "task-run":/);
+    assert.match(source, /async def _run_task_run_container\(/);
     assert.match(source, /async def _run_task_run_host\(/);
-    // Spawns the headless CLI in task-run + harbor-http isolation on the host.
+    // Plain Harbor keeps its host bridge; Pier runs the same task-run in the
+    // task container with the pinned runtime and local isolation.
     assert.match(source, /dist" \/ "cli\.js"/);
     assert.match(source, /"--mode",\s*\n\s*"task-run",/);
-    assert.match(source, /"--isolation",\s*\n\s*"harbor-http",/);
+    assert.match(source, /isolation: str = "harbor-http"/);
+    assert.match(source, /isolation="harbor-local"/);
+    assert.match(source, /_MAKA_NODE_TOOLCHAIN_NODE/);
     assert.match(source, /"--include-events"/);
     // autonomous / heavy-task derivation ported verbatim from the fork.
     assert.match(
@@ -419,6 +553,9 @@ describe('Harbor adapter contract', () => {
     // A non-zero runner subprocess is flagged as an infra failure inside the
     // executor scope so teardown reclaims orphaned scoped background processes.
     assert.match(source, /executor\.mark_reclaim_scoped_processes\(\)/);
+    // A scored deadline preserves services from completed commands for the
+    // post-exit verifier while still reclaiming commands that remain active.
+    assert.match(source, /executor\.mark_reclaim_active_commands\(\)/);
     // The bridged tool exec is a bare container exec (real exit code returned as
     // a 200), not exec_as_agent (which raises on non-zero and injects agent env).
     assert.match(source, /self\._environment\.exec\(\s*\n\s*command=_scoped_command\(/);
@@ -633,6 +770,9 @@ describe('Harbor adapter contract', () => {
     assert.match(source, /loadHarnessOracleRegistrySnapshot/);
     assert.match(source, /resolveHarnessOracleAnnotations/);
     assert.match(source, /taskIds: TERMINAL_BENCH_2_1_TASK_IDS/);
+    assert.match(source, /createPierProviderProxyHub/);
+    assert.match(source, /providerProxyHub/);
+    assert.match(source, /\.finally\(\(\) => providerProxyHub\?\.close\(\)\)/);
     assert.doesNotMatch(source, /ensureHarnessOracleQualification/);
     assert.doesNotMatch(source, /createHarborOracleQualifier/);
     assert.doesNotMatch(source, /qualification\.selectedTaskIds/);
@@ -1116,6 +1256,7 @@ function pierPython(): string | null {
 function pythonBridgeContractScript(root: string): string {
   return String.raw`
 import asyncio
+import concurrent.futures
 import contextlib
 import json
 import os
@@ -1273,7 +1414,7 @@ async def fix3_infra_failure_reclaims_scoped_processes():
     assert preserved is None, "clean exit killed a verifier-visible scoped process"
 
 
-async def fix4_deadline_reclaims_all_scoped_commands():
+async def fix4_deadline_reclaims_only_active_commands():
     with tempfile.TemporaryDirectory() as tmp:
         agent = MakaAgent(Path(tmp))
         env = BlockingLocalShellEnv()
@@ -1299,15 +1440,14 @@ async def fix4_deadline_reclaims_all_scoped_commands():
                     {"command": "sleep 30"},
                 ))
                 await asyncio.wait_for(env.active_started.wait(), timeout=2)
-                server.mark_reclaim_scoped_processes()
+                server.mark_reclaim_active_commands()
             await request
             assert env.active_process is not None and env.active_process.returncode is not None, (
                 "deadline teardown left an active bridged command running"
             )
-            deadline = time.time() + 2
-            while service.poll() is None and time.time() < deadline:
-                time.sleep(0.02)
-            assert service.poll() is not None, "deadline teardown left a completed background command running"
+            assert service.poll() is None, (
+                "deadline teardown killed a completed verifier-visible service"
+            )
         finally:
             if request is not None and not request.done():
                 request.cancel()
@@ -1321,6 +1461,25 @@ async def fix4_deadline_reclaims_all_scoped_commands():
                 for path in scope_dir.glob("*"):
                     path.unlink()
                 scope_dir.rmdir()
+
+
+async def fix4b_deadline_ignores_done_but_still_mapped_commands():
+    with tempfile.TemporaryDirectory() as tmp:
+        server = m._ToolExecutorServer(MakaAgent(Path(tmp)), LocalShellEnv())
+        completed = concurrent.futures.Future()
+        completed.set_result(None)
+        server._futures.add(completed)
+        server._future_command_ids[completed] = "completed-command"
+        cleanup_calls = []
+
+        async def capture_cleanup(command_ids):
+            cleanup_calls.append(command_ids)
+            return None
+
+        server._cleanup_processes = capture_cleanup
+        server.mark_reclaim_active_commands()
+        await server.__aexit__(None, None, None)
+        assert cleanup_calls == [[]], cleanup_calls
 
 
 class TimedOutLocalShellEnv:
@@ -1460,7 +1619,8 @@ async def fix6_cleanup_failure_is_not_reported_as_a_typed_timeout():
 asyncio.run(fix1_bridge_exec_contract())
 asyncio.run(fix2_workdir_probe_falls_back())
 asyncio.run(fix3_infra_failure_reclaims_scoped_processes())
-asyncio.run(fix4_deadline_reclaims_all_scoped_commands())
+asyncio.run(fix4_deadline_reclaims_only_active_commands())
+asyncio.run(fix4b_deadline_ignores_done_but_still_mapped_commands())
 asyncio.run(fix5_timed_out_command_is_reclaimed_immediately())
 asyncio.run(fix6_cleanup_failure_is_not_reported_as_a_typed_timeout())
 print("bridge-contract ok")
@@ -1520,6 +1680,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import types
 from pathlib import Path
 
@@ -1544,7 +1705,9 @@ class BaseInstalledAgent:
         self.logger = types.SimpleNamespace(debug=lambda *args, **kwargs: None)
 
     def _get_env(self, key):
-        return self._extra_env.get(key)
+        if key in self._extra_env:
+            return self._extra_env[key]
+        return os.environ.get(key)
 
     def version(self):
         return "test"
@@ -1780,6 +1943,180 @@ finally:
     scope_dir.rmdir()
 
 with tempfile.TemporaryDirectory() as tmp:
+    class ContainerTaskRunEnvironment:
+        session_id = "deep-swe-task"
+
+        def __init__(self):
+            self.agent_dir_ready = False
+            self.uploads = []
+            self.downloads = []
+            self.download_dirs = []
+
+        async def upload_file(self, local, remote):
+            assert self.agent_dir_ready, "instruction uploaded before /logs/agent exists"
+            self.uploads.append((str(local), str(remote)))
+
+        async def download_file(self, remote, local):
+            self.downloads.append(str(remote))
+            path = Path(local)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if str(remote).endswith("/maka-cell-output.json"):
+                path.write_text(json.dumps({
+                    "schemaVersion": 1,
+                    "status": "completed",
+                    "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+                    "promptHash": "sha256:test",
+                    "toolSummary": {
+                        "providerVisibleToolCount": 6,
+                        "actualToolCalls": 0,
+                        "actualToolNames": [],
+                        "actualToolCallCounts": {},
+                    },
+                    "steps": 1,
+                    "durationMs": 1,
+                    "startedAt": 1,
+                    "finishedAt": 2,
+                    "runtimeRefs": {
+                        "invocationId": "inv",
+                        "sessionId": "session",
+                        "runId": "run",
+                        "turnId": "turn",
+                    },
+                }), encoding="utf-8")
+            else:
+                path.write_text("", encoding="utf-8")
+
+        async def download_dir(self, remote, local):
+            self.download_dirs.append(str(remote))
+            Path(local).mkdir(parents=True, exist_ok=True)
+
+    class ContainerTaskRunAgent(MakaAgent):
+        def __init__(self, logs_dir, **kwargs):
+            super().__init__(logs_dir, **kwargs)
+            self.container_execs = []
+
+        async def exec_as_agent(self, environment, command, **kwargs):
+            self.container_execs.append((command, kwargs))
+            if command == "mkdir -p /logs/agent":
+                environment.agent_dir_ready = True
+            return types.SimpleNamespace(stdout="", stderr="", return_code=0)
+
+    async def forbidden_host_task_run(*args, **kwargs):
+        raise AssertionError("Pier task-run used the host bridge")
+
+    class FakeNetworkAllowlist:
+        def __init__(self, domains=None):
+            self.domains = domains or []
+
+    original_network_allowlist = maka_agent_mod._NetworkAllowlist
+    maka_agent_mod._NetworkAllowlist = FakeNetworkAllowlist
+    os.environ["MAKA_PROVIDER_PROXY_URL"] = "http://host.docker.internal:443"
+    os.environ["MAKA_PROVIDER_PROXY_TOKEN"] = "ephemeral-token"
+    try:
+        container_agent = ContainerTaskRunAgent(Path(tmp), extra_env={
+            "MAKA_BACKEND": "ai-sdk",
+            "MAKA_HARBOR_MODE": "task-run",
+            "MAKA_NODE_TOOLCHAIN_FINGERPRINT": "sha256:test-node",
+            "MAKA_CELL_TIMEOUT_SEC": "7200",
+        })
+        container_agent._resolved_flags = {
+            "maka_repo": "/opt/maka-agent",
+            "backend": "ai-sdk",
+        }
+        container_agent._run_task_run_host = forbidden_host_task_run
+        container_environment = ContainerTaskRunEnvironment()
+        container_context = AgentContext()
+        assert container_agent.network_allowlist().domains == ["host.docker.internal"]
+        assert container_agent.get_version_command() == "/opt/maka-node-toolchain/bin/node --version"
+        asyncio.run(
+            container_agent.run(
+                "finish the task",
+                container_environment,
+                container_context,
+            )
+        )
+    finally:
+        maka_agent_mod._NetworkAllowlist = original_network_allowlist
+
+    assert len(container_agent.container_execs) == 2, container_agent.container_execs
+    assert container_agent.container_execs[0][0] == "mkdir -p /logs/agent"
+    container_command, container_kwargs = container_agent.container_execs[1]
+    assert "/opt/maka-node-toolchain/bin/node" in container_command, container_command
+    assert "/opt/maka-agent/packages/headless/dist/cli.js" in container_command, container_command
+    assert "--mode task-run" in container_command, container_command
+    assert "--isolation harbor-local" in container_command, container_command
+    assert "harbor-http" not in container_command, container_command
+    container_env = container_kwargs["env"]
+    assert container_env["MAKA_HOST_BASE_URL"] == "http://host.docker.internal:443", container_env
+    assert container_env["MAKA_HOST_API_KEY"] == "ephemeral-token", container_env
+    assert container_env["NODE_USE_ENV_PROXY"] == "1", container_env
+    assert "MAKA_PROVIDER_PROXY_URL" not in container_env, container_env
+    assert "MAKA_PROVIDER_PROXY_TOKEN" not in container_env, container_env
+    assert "MAKA_HARBOR_TOOL_EXECUTOR_URL" not in container_env, container_env
+    assert "MAKA_HARBOR_TOOL_EXECUTOR_TOKEN" not in container_env, container_env
+    assert container_env["MAKA_OUTPUT_DIR"] == "/logs/agent/maka-task-run", container_env
+    assert container_env["MAKA_CELL_ARTIFACT_DIR"] == "/logs/agent", container_env
+    assert container_env["MAKA_STORAGE_ROOT"] == "/logs/agent/maka-task-run/runs", container_env
+    assert container_kwargs["timeout_sec"] == 7200, container_kwargs
+    assert "/logs/agent/maka-task-run" in container_environment.download_dirs
+    assert "/logs/agent/maka-cell-output.json" in container_environment.downloads
+    assert json.loads(
+        Path(container_context.metadata["maka_cell_output"]).read_text(encoding="utf-8")
+    )["status"] == "completed"
+
+    pier_agent = ContainerTaskRunAgent(Path(tmp), extra_env={
+        "MAKA_BACKEND": "ai-sdk",
+        "MAKA_HARBOR_MODE": "task-run",
+        "MAKA_NODE_TOOLCHAIN_FINGERPRINT": "sha256:test-node",
+        "MAKA_CELL_TIMEOUT_SEC": "1800",
+        "MAKA_CELL_SETTLEMENT_GRACE_SEC": "60",
+        "MAKA_AGENT_PHASE_TIMEOUT_SEC": "1860",
+    })
+    pier_agent._resolved_flags = {
+        "maka_repo": "/opt/maka-agent",
+        "backend": "ai-sdk",
+    }
+    pier_agent._run_task_run_host = forbidden_host_task_run
+    pier_environment = ContainerTaskRunEnvironment()
+    pier_context = AgentContext()
+    deadline_started_at_ms = int(time.time() * 1000)
+    maka_agent_mod._NetworkAllowlist = FakeNetworkAllowlist
+    try:
+        asyncio.run(
+            pier_agent.run(
+                "finish the task",
+                pier_environment,
+                pier_context,
+            )
+        )
+    finally:
+        maka_agent_mod._NetworkAllowlist = original_network_allowlist
+    deadline_finished_at_ms = int(time.time() * 1000)
+    pier_command, pier_kwargs = pier_agent.container_execs[1]
+    pier_env = pier_kwargs["env"]
+    model_deadline_at_ms = int(pier_env["MAKA_CELL_DEADLINE_AT_MS"])
+    assert deadline_started_at_ms + 1800000 <= model_deadline_at_ms
+    assert model_deadline_at_ms <= deadline_finished_at_ms + 1800000
+    assert "MAKA_CELL_SOFT_TIMEOUT_MS" not in pier_env, pier_env
+    assert 1859 < pier_kwargs["timeout_sec"] <= 1860, pier_kwargs
+
+    container_install_agent = ContainerTaskRunAgent(Path(tmp), extra_env={
+        "MAKA_BACKEND": "fake",
+        "MAKA_HARBOR_MODE": "task-run",
+        "MAKA_NODE_TOOLCHAIN_FINGERPRINT": "sha256:test-node",
+    })
+    container_install_agent._resolved_flags = {"backend": "fake"}
+    maka_agent_mod._NetworkAllowlist = FakeNetworkAllowlist
+    try:
+        asyncio.run(container_install_agent.install(ContainerTaskRunEnvironment()))
+    finally:
+        maka_agent_mod._NetworkAllowlist = original_network_allowlist
+    install_command, install_kwargs = container_install_agent.container_execs[0]
+    assert "sha256sum --check checksums.sha256" in install_command, install_command
+    assert "/opt/maka-node-toolchain/manifest.json" in install_command, install_command
+    assert "/opt/maka-agent/packages/headless/dist/cli.js" in install_command, install_command
+    assert install_kwargs["env"]["MAKA_EXPECTED_TOOLCHAIN_FINGERPRINT"] == "sha256:test-node"
+
     install_agent = MakaAgent(Path(tmp))
     install_agent._resolved_flags = {"maka_repo": "/opt/maka-agent"}
     fake_environment = types.SimpleNamespace(root_commands=[], agent_commands=[])
@@ -1909,7 +2246,7 @@ with tempfile.TemporaryDirectory() as tmp:
             "pricingSource": "runtime",
         },
         "steps": 1,
-        "runtimeRefs": {"sessionId": "session-1"},
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
     })
     assert context.n_input_tokens == 10, context.n_input_tokens
     assert context.n_output_tokens == 2, context.n_output_tokens
@@ -1945,7 +2282,7 @@ with tempfile.TemporaryDirectory() as tmp:
             "pricingSource": "runtime",
         },
         "steps": 1,
-        "runtimeRefs": {"sessionId": "session-1"},
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
     })
     expected_cost = (60 / 1_000_000 * 2) + (20 / 1_000_000 * 10) + (40 / 1_000_000 * 0.5)
     assert abs(priced_context.cost_usd - expected_cost) < 1e-12, priced_context.cost_usd
@@ -1972,7 +2309,7 @@ with tempfile.TemporaryDirectory() as tmp:
             "pricingSource": "runtime",
         },
         "steps": 1,
-        "runtimeRefs": {"sessionId": "session-1"},
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
     })
     assert zero_priced_context.cost_usd == 0, zero_priced_context.cost_usd
     assert zero_priced_context.metadata["maka_pricing_source"] == "env", zero_priced_context.metadata
@@ -1997,7 +2334,7 @@ with tempfile.TemporaryDirectory() as tmp:
                 "pricingSource": "runtime",
             },
             "steps": 1,
-            "runtimeRefs": {"sessionId": "session-1"},
+            "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
         })
     except ValueError as exc:
         assert "MAKA_TRIAL_INPUT_USD_PER_1M" in str(exc), str(exc)
@@ -2084,6 +2421,17 @@ with tempfile.TemporaryDirectory() as tmp:
     ))
     assert copilot_host_env["MAKA_HOST_MODEL_API_PROTOCOL"] == "openai-responses", copilot_host_env
 
+    kimi_protocol_env = MakaAgent(Path(tmp), extra_env={
+        "MAKA_HOST_API_KEY": "kimi-token",
+        "MAKA_PROVIDER": "kimi-coding-plan",
+        "MAKA_MODEL": "k3",
+        "MAKA_MODEL_API_PROTOCOL": "openai-chat",
+    })._host_cell_env(Path("/tmp/instruction.txt"), "/workspace", types.SimpleNamespace(
+        url="http://127.0.0.1:1",
+        token="test-token",
+    ))
+    assert kimi_protocol_env["MAKA_MODEL_API_PROTOCOL"] == "openai-chat", kimi_protocol_env
+
     # The default model must not be the deprecated deepseek-chat alias.
     default_model_env = MakaAgent(Path(tmp), extra_env={"MAKA_HOST_API_KEY_FILE": "/host/deepseek-key"})._cell_env(Path("/logs/agent/instruction.txt"))
     assert default_model_env["MAKA_MODEL"] == "deepseek/deepseek-v4-flash", default_model_env
@@ -2136,6 +2484,12 @@ with tempfile.TemporaryDirectory() as tmp:
     economy_env_with_default_flag = economy_env_with_default_flag_agent._cell_env(Path("/logs/agent/instruction.txt"))
     assert economy_env_with_default_flag["MAKA_ECONOMY_TASK_MODE"] == "true", economy_env_with_default_flag
 
+    agent_tools_env = MakaAgent(Path(tmp), extra_env={
+        "MAKA_BACKEND": "fake",
+        "MAKA_AGENT_TOOLS": "true",
+    })._cell_env(Path("/logs/agent/instruction.txt"))
+    assert agent_tools_env["MAKA_AGENT_TOOLS"] == "true", agent_tools_env
+
     # Host-side LLM mode must not forward provider secrets into the task-cell env.
     host_agent = MakaAgent(Path(tmp), extra_env={
         "MAKA_HOST_API_KEY_FILE": "/host/secrets/deepseek-key",
@@ -2155,6 +2509,7 @@ with tempfile.TemporaryDirectory() as tmp:
             self.url = "http://127.0.0.1:4321"
             self.token = "tool-token"
             self.reclaim_scoped_processes = False
+            self.reclaim_active_commands = False
             self.instances.append(self)
 
         async def __aenter__(self):
@@ -2165,6 +2520,9 @@ with tempfile.TemporaryDirectory() as tmp:
 
         def mark_reclaim_scoped_processes(self):
             self.reclaim_scoped_processes = True
+
+        def mark_reclaim_active_commands(self):
+            self.reclaim_active_commands = True
 
     class FakeHostProcess:
         pid = 123
@@ -2246,6 +2604,31 @@ with tempfile.TemporaryDirectory() as tmp:
         assert "MAKA_MAX_STEPS" not in task_run_env, task_run_env.get("MAKA_MAX_STEPS")
         assert task_run_timeouts[-1] == 7200, task_run_timeouts
 
+        host_repo_root = Path(tmp) / "different-host-repo"
+        relative_task_run_agent = MakaAgent(Path(tmp), extra_env={
+            "MAKA_BACKEND": "fake",
+            "MAKA_HARBOR_MODE": "task-run",
+            "MAKA_HOST_REPO_ROOT": str(host_repo_root),
+            "MAKA_TASK_RUN_OUT_DIR": "relative-task-run",
+        })
+        relative_task_run_agent._resolve_task_workdir = resolve_task_workdir
+        relative_task_run_agent._communicate_streaming = communicate_task_run
+        asyncio.run(
+            relative_task_run_agent._run_task_run_host(
+                "finish the task",
+                host_process_environment,
+                AgentContext(),
+            )
+        )
+        relative_task_run_env = captured_host_process["kwargs"]["env"]
+        expected_task_run_out = host_repo_root / "relative-task-run"
+        expected_storage_root = expected_task_run_out / "runs"
+        assert relative_task_run_env["MAKA_TASK_RUN_OUT_DIR"] == str(expected_task_run_out), relative_task_run_env
+        assert relative_task_run_env["MAKA_OUTPUT_DIR"] == str(expected_task_run_out), relative_task_run_env
+        assert relative_task_run_env["MAKA_STORAGE_ROOT"] == str(expected_storage_root), relative_task_run_env
+        assert relative_task_run_agent._trajectory_artifact_store_root() == expected_storage_root
+        assert captured_host_process["kwargs"]["cwd"] == str(host_repo_root)
+
         runner_env_path = Path(tmp) / "task-run.env"
         runner_env_path.write_text("MAKA_CELL_TIMEOUT_SEC=4321\n", encoding="utf-8")
         original_runner_env = maka_agent_mod._DEFAULT_RUNNER_ENV
@@ -2316,7 +2699,8 @@ with tempfile.TemporaryDirectory() as tmp:
             )
         )
         assert captured_host_process["kwargs"]["env"]["MAKA_CELL_SOFT_TIMEOUT_MS"] == "50000"
-        assert FakeToolExecutor.instances[-1].reclaim_scoped_processes
+        assert FakeToolExecutor.instances[-1].reclaim_active_commands
+        assert not FakeToolExecutor.instances[-1].reclaim_scoped_processes
 
         captured_host_process.clear()
         captured_host_process.update(host_cell_process)
@@ -2332,9 +2716,10 @@ with tempfile.TemporaryDirectory() as tmp:
 
         asyncio.create_subprocess_exec = fake_deadline_subprocess_exec
         asyncio.run(host_process_agent._run_host_cell(host_process_environment, Path(tmp) / "instruction.txt"))
-        assert FakeToolExecutor.instances[-1].reclaim_scoped_processes, (
-            "a settled deadline must freeze the workspace by reclaiming every scoped process"
+        assert FakeToolExecutor.instances[-1].reclaim_active_commands, (
+            "a settled deadline must reclaim commands still active at the cutoff"
         )
+        assert not FakeToolExecutor.instances[-1].reclaim_scoped_processes
 
         class CancelledHostProcess:
             def __init__(self):
@@ -2437,6 +2822,611 @@ with tempfile.TemporaryDirectory() as tmp:
     assert host_process_env["MAKA_HOST_API_KEY_FILE"] == "/host/deepseek-key", host_process_env
     assert host_process_env["MAKA_HARBOR_TOOL_EXECUTOR_URL"] == "http://127.0.0.1:4321", host_process_env
     assert host_process_env["MAKA_HARBOR_TOOL_EXECUTOR_TOKEN"] == "tool-token", host_process_env
+`;
+}
+
+function pythonTrajectoryBuilderScript(
+  root: string,
+  providerOptionsEventJson: string,
+  schemaCorpusJson: string,
+): string {
+  return String.raw`
+import json
+import sys
+import tempfile
+from pathlib import Path
+
+root = Path(${JSON.stringify(root)})
+sys.path.insert(0, str(root / "packages" / "headless" / "harbor"))
+
+from maka_trajectory import build_runtime_trajectory, load_runtime_trajectory, redact_text
+
+
+def event(event_id, ts, role, author, content=None, refs=None, status=None, actions=None):
+    value = {
+        "id": event_id,
+        "invocationId": "inv-1",
+        "runId": "run-1",
+        "sessionId": "session-1",
+        "turnId": "turn-1",
+        "ts": ts,
+        "partial": False,
+        "role": role,
+        "author": author,
+    }
+    if content is not None:
+        value["content"] = content
+    if refs is not None:
+        value["refs"] = refs
+    if status is not None:
+        value["status"] = status
+    if actions is not None:
+        value["actions"] = actions
+    return value
+
+
+events = [
+    event("user-1", 1000, "user", "host", {"kind": "text", "text": "Fix the repository", "displayText": "/fix", "origin": {"kind": "automation", "automationId": "automation-1"}, "attachments": [{"kind": "code", "name": "README.md", "mimeType": "text/markdown", "bytes": 12, "ref": {"kind": "workspace_file", "relativePath": "README.md"}}], "quotes": [{"text": "quoted context"}], "steering": True}),
+    event(
+        "thinking-1",
+        1100,
+        "model",
+        "agent",
+        {"kind": "thinking", "text": "Inspect with Bearer private-bearer-token and AUTH_TOKEN=private-auth-token; JSON {\"Authorization\":\"Basic private-json-basic-token\",\"api_key\":\"private-json-api-key\"}"},
+        {"providerEventId": "step-1"},
+    ),
+    event(
+        "call-1-event",
+        1200,
+        "model",
+        "agent",
+        {
+            "kind": "function_call",
+            "id": "call-1",
+            "name": "Bash",
+            "args": {
+                "command": "curl -H 'Authorization: Basic private-basic-token' -H 'X-API-Key: private-x-api-key' 'https://private-user:private-url-password@example.test?access_token=private-query-token' --api-key private-cli-api-key && psql postgres://private-db-user:private-db-password@example.test/db",
+                "apiKey": "sk-private-api-key",
+                "apikey": "private-compact-api-key",
+                "sessionToken": "private-session-token",
+            },
+        },
+        {"stepId": "step-1", "toolCallId": "call-1"},
+    ),
+    event(
+        "usage-1",
+        1250,
+        "system",
+        "system",
+        actions={"tokenUsage": {"input": 20, "output": 5, "cacheHitInput": 4, "costUsd": 0.01, "runtimeSteps": 1}},
+    ),
+    event(
+        "response-1",
+        1300,
+        "tool",
+        "tool",
+        {"kind": "function_response", "id": "call-1", "name": "Bash", "result": {"stdout": "ok", "accessToken": "private-access-token", "accesstoken": "private-compact-access-token", "idToken": "private-id-token"}},
+        {"toolCallId": "call-1"},
+    ),
+    event(
+        "call-2-event",
+        1400,
+        "model",
+        "agent",
+        {"kind": "function_call", "id": "call-2", "name": "Read", "args": {"path": "README.md"}},
+        {"stepId": "step-2", "toolCallId": "call-2"},
+    ),
+    event(
+        "response-2",
+        1500,
+        "tool",
+        "tool",
+        {"kind": "function_response", "id": "call-2", "name": "Read", "result": "contents", "isError": False},
+        {"toolCallId": "call-2"},
+    ),
+    event(
+        "text-3",
+        1600,
+        "model",
+        "agent",
+        {"kind": "text", "text": "Finished"},
+        {"providerEventId": "step-3"},
+    ),
+    event("terminal", 1700, "system", "system", status="completed", actions={"endInvocation": True}),
+]
+
+runtime_refs = {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"}
+trajectory = build_runtime_trajectory(events, "completed", runtime_refs)
+assert trajectory.artifact_kind == "full", trajectory
+assert trajectory.terminal_status == "completed", trajectory
+assert len(trajectory.steps) == 5, trajectory.steps
+assert [step["source"] for step in trajectory.steps] == ["user", "agent", "agent", "agent", "system"]
+first_action = trajectory.steps[1]
+assert first_action["tool_calls"][0]["tool_call_id"] == "call-1", first_action
+assert first_action["observation"]["results"][0]["source_call_id"] == "call-1", first_action
+assert "metrics" not in first_action, first_action
+second_action = trajectory.steps[2]
+assert second_action["tool_calls"][0]["tool_call_id"] == "call-2", second_action
+assert second_action["observation"]["results"][0]["source_call_id"] == "call-2", second_action
+user_step = trajectory.steps[0]
+assert user_step["extra"]["maka_display_text"] == "/fix", user_step
+assert user_step["extra"]["maka_origin"] == {"kind": "automation", "automationId": "automation-1"}, user_step
+assert user_step["extra"]["maka_steering"] is True, user_step
+assert user_step["extra"]["maka_attachments"][0]["ref"]["relativePath"] == "README.md", user_step
+assert user_step["extra"]["maka_quotes"][0]["text"] == "quoted context", user_step
+serialized = json.dumps(trajectory.steps)
+for secret in ("private-bearer-token", "private-basic-token", "private-x-api-key", "private-url-password", "private-query-token", "private-db-password", "private-cli-api-key", "sk-private-api-key", "private-compact-api-key", "private-access-token", "private-compact-access-token", "private-auth-token", "private-session-token", "private-id-token", "private-json-basic-token", "private-json-api-key"):
+    assert secret not in serialized, serialized
+assert "[REDACTED]" in serialized, serialized
+
+quoted = redact_text("prefix {'sessionToken': 'private-quoted-token', 'apikey': 'private-quoted-api-key', 'message': 'keep me'} suffix")
+assert "private-quoted-token" not in quoted, quoted
+assert "private-quoted-api-key" not in quoted, quoted
+assert "'sessionToken': '[REDACTED]'" in quoted, quoted
+assert "'apikey': '[REDACTED]'" in quoted, quoted
+assert "'message': 'keep me'" in quoted, quoted
+raw = redact_text("token=private-token Cookie: session=private-cookie; Path=/ Set-Cookie: sid=private-set-cookie")
+for secret in ("private-token", "private-cookie", "private-set-cookie"):
+    assert secret not in raw, raw
+quoted_authorization = redact_text("Authorization: \"Basic private-basic-token\"; Authorization: 'Bearer private-bearer-token'")
+for secret in ("private-basic-token", "private-bearer-token"):
+    assert secret not in quoted_authorization, quoted_authorization
+spaced = redact_text("token = private-spaced-token --token\t=\tprivate-tabbed-token")
+for secret in ("private-spaced-token", "private-tabbed-token"):
+    assert secret not in spaced, spaced
+prose = "Optimize token budget before answering. The cookie policy is documented."
+assert redact_text(prose) == prose, redact_text(prose)
+colon_prose = "A secret: the answer is 42."
+assert redact_text(colon_prose) == colon_prose, redact_text(colon_prose)
+header = redact_text("token: private-header-token\nnext line")
+assert "private-header-token" not in header, header
+flagged = redact_text("command --token private-flag-token")
+assert "private-flag-token" not in flagged, flagged
+namespaced_flags = redact_text("command --client-secret private-client-secret --github-token private-github-token --openai-api-key private-openai-key")
+for secret in ("private-client-secret", "private-github-token", "private-openai-key"):
+    assert secret not in namespaced_flags, namespaced_flags
+
+provider_options_events = json.loads(json.dumps(events))
+provider_options_events[2] = json.loads(${JSON.stringify(providerOptionsEventJson)})
+provider_options = build_runtime_trajectory(
+    provider_options_events, "completed", runtime_refs
+)
+assert provider_options.artifact_kind == "full", provider_options
+provider_options_extra = provider_options.steps[1]["tool_calls"][0]["extra"]
+assert provider_options_extra["maka_provider_options"] == {
+    "google": {
+        "thoughtSignature": "provider-thought-signature",
+        "apiKey": "[REDACTED]",
+    }
+}, provider_options_extra
+
+schema_corpus = json.loads(${JSON.stringify(schemaCorpusJson)})
+schema_runtime_refs = {
+    key: schema_corpus["baseEvent"][key]
+    for key in ("invocationId", "runId", "sessionId", "turnId")
+}
+for case in schema_corpus["cases"]:
+    corpus_event = {
+        **schema_corpus["baseEvent"],
+        **case["overrides"],
+    }
+    corpus_result = build_runtime_trajectory(
+        [corpus_event], "completed", schema_runtime_refs
+    )
+    if case["accepted"]:
+        assert corpus_result.reason != "runtime_event_schema_invalid", (case, corpus_result)
+    else:
+        assert corpus_result.reason == "runtime_event_schema_invalid", (case, corpus_result)
+
+thinking_provider_options_events = json.loads(json.dumps(events))
+thinking_provider_options_events[1]["content"]["providerOptions"] = {
+    "anthropic": {"signature": "provider-thinking-signature"}
+}
+thinking_provider_options = build_runtime_trajectory(
+    thinking_provider_options_events, "completed", runtime_refs
+)
+assert thinking_provider_options.artifact_kind == "full", thinking_provider_options
+
+identity_mismatch = build_runtime_trajectory(events, "completed", {
+    "invocationId": "different-invocation",
+    "runId": "run-1",
+    "sessionId": "session-1",
+    "turnId": "turn-1",
+})
+assert identity_mismatch.artifact_kind == "summary", identity_mismatch
+assert identity_mismatch.reason == "terminal_identity_mismatch", identity_mismatch
+
+aborted_events = events[:-1] + [
+    event("terminal-aborted", 1700, "system", "system", status="aborted", actions={"endInvocation": True}),
+]
+aborted = build_runtime_trajectory(aborted_events, "failed", runtime_refs)
+assert aborted.artifact_kind == "full", aborted
+assert aborted.terminal_status == "aborted", aborted
+
+failed_before_completed_terminal = build_runtime_trajectory(events, "failed", runtime_refs)
+assert failed_before_completed_terminal.artifact_kind == "full", failed_before_completed_terminal
+assert failed_before_completed_terminal.terminal_status == "completed", failed_before_completed_terminal
+
+malformed = build_runtime_trajectory([events[0], {}, events[-1]], "completed", runtime_refs)
+assert malformed.artifact_kind == "summary", malformed
+assert malformed.reason == "runtime_event_schema_invalid", malformed
+
+null_content = dict(events[3], content=None)
+malformed_null = build_runtime_trajectory([events[0], null_content, events[-1]], "completed", runtime_refs)
+assert malformed_null.artifact_kind == "summary", malformed_null
+assert malformed_null.reason == "runtime_event_schema_invalid", malformed_null
+
+continued_events = events[:-1] + [
+    event("terminal-first", 1700, "system", "system", status="failed", actions={"endInvocation": True}),
+    event("user-2", 1800, "user", "user", {"kind": "text", "text": "Continue"}),
+    event("text-4", 1900, "model", "agent", {"kind": "text", "text": "Recovered"}, {"providerEventId": "step-4"}),
+    event("terminal-final", 2000, "system", "system", status="completed", actions={"endInvocation": True}),
+]
+continued = build_runtime_trajectory(continued_events, "completed", runtime_refs)
+terminal_steps = [step for step in continued.steps if step["source"] == "system" and "maka_terminal_status" in step.get("extra", {})]
+assert [step["extra"]["maka_terminal_status"] for step in terminal_steps] == ["failed", "completed"], terminal_steps
+assert [step["extra"]["maka_runtime_event_id"] for step in terminal_steps] == ["terminal-first", "terminal-final"], terminal_steps
+
+partial_boundary = event("partial-boundary", 1800, "model", "agent")
+partial_boundary.update({"invocationId": "inv-2", "runId": "run-2", "turnId": "turn-2", "partial": True})
+third_user = event("user-third", 1900, "user", "user", {"kind": "text", "text": "Third invocation"})
+third_user.update({"invocationId": "inv-3", "runId": "run-3", "turnId": "turn-3"})
+third_terminal = event("terminal-third", 2000, "system", "system", status="completed", actions={"endInvocation": True})
+third_terminal.update({"invocationId": "inv-3", "runId": "run-3", "turnId": "turn-3"})
+stale_terminal_allowance = build_runtime_trajectory(
+    events[:1] + [continued_events[-4], partial_boundary, third_user, third_terminal],
+    "completed",
+    {"invocationId": "inv-3", "runId": "run-3", "sessionId": "session-1", "turnId": "turn-3"},
+)
+assert stale_terminal_allowance.artifact_kind == "summary", stale_terminal_allowance
+assert stale_terminal_allowance.reason == "runtime_identity_mismatch", stale_terminal_allowance
+
+missing_refs = build_runtime_trajectory(events, "completed")
+assert missing_refs.artifact_kind == "summary", missing_refs
+assert missing_refs.reason == "runtime_refs_incomplete", missing_refs
+
+malformed_refs = dict(runtime_refs, sessionId=123)
+malformed_refs_result = build_runtime_trajectory(events, "completed", malformed_refs)
+assert malformed_refs_result.artifact_kind == "summary", malformed_refs_result
+assert malformed_refs_result.reason == "runtime_refs_incomplete", malformed_refs_result
+
+invalid_quotes_events = json.loads(json.dumps(events))
+invalid_quotes_events[0]["content"]["quotes"] = [{"text": "quoted", "unexpected": True}]
+invalid_quotes = build_runtime_trajectory(invalid_quotes_events, "completed", runtime_refs)
+assert invalid_quotes.artifact_kind == "summary", invalid_quotes
+assert invalid_quotes.reason == "runtime_event_schema_invalid", invalid_quotes
+
+invalid_attachment_events = json.loads(json.dumps(events))
+invalid_attachment_events[0]["content"]["attachments"][0]["unexpected"] = True
+invalid_attachment = build_runtime_trajectory(invalid_attachment_events, "completed", runtime_refs)
+assert invalid_attachment.artifact_kind == "summary", invalid_attachment
+assert invalid_attachment.reason == "runtime_event_schema_invalid", invalid_attachment
+
+invalid_attachment_ref_events = json.loads(json.dumps(events))
+invalid_attachment_ref_events[0]["content"]["attachments"][0]["ref"]["unexpected"] = True
+invalid_attachment_ref = build_runtime_trajectory(invalid_attachment_ref_events, "completed", runtime_refs)
+assert invalid_attachment_ref.artifact_kind == "summary", invalid_attachment_ref
+assert invalid_attachment_ref.reason == "runtime_event_schema_invalid", invalid_attachment_ref
+
+mixed_events = json.loads(json.dumps(events))
+mixed_events[2]["runId"] = "foreign-run"
+mixed = build_runtime_trajectory(mixed_events, "completed", runtime_refs)
+assert mixed.artifact_kind == "summary", mixed
+assert mixed.reason == "runtime_identity_mismatch", mixed
+
+def continued_event(event_id, ts, role, author, content=None, refs=None, status=None, actions=None):
+    value = event(event_id, ts, role, author, content, refs, status, actions)
+    value.update({"invocationId": "inv-2", "runId": "run-2", "turnId": "turn-2"})
+    return value
+
+reused_ids = events[:-1] + [
+    event("terminal-first", 1700, "system", "system", status="failed", actions={"endInvocation": True}),
+    continued_event("call-reused", 1800, "model", "agent", {"kind": "function_call", "id": "call-1", "name": "Bash", "args": {}}, {"stepId": "step-1"}),
+    continued_event("response-reused", 1900, "tool", "tool", {"kind": "function_response", "id": "call-1", "name": "Bash", "result": "ok"}),
+    continued_event("terminal-final", 2000, "system", "system", status="completed", actions={"endInvocation": True}),
+]
+reused = build_runtime_trajectory(reused_ids, "completed", {
+    "invocationId": "inv-2",
+    "runId": "run-2",
+    "sessionId": "session-1",
+    "turnId": "turn-2",
+})
+assert reused.artifact_kind == "full", reused
+assert len([step for step in reused.steps if step.get("tool_calls")]) == 3, reused.steps
+
+correlated_ids = json.loads(json.dumps(events))
+correlated_ids[2]["content"]["id"] = "provider-call-payload-id"
+correlated_ids[2]["refs"]["toolCallId"] = "shared-runtime-correlation"
+correlated_ids[4]["content"]["id"] = "provider-response-payload-id"
+correlated_ids[4]["refs"]["toolCallId"] = "shared-runtime-correlation"
+correlated = build_runtime_trajectory(correlated_ids, "completed", runtime_refs)
+assert correlated.artifact_kind == "full", correlated
+assert correlated.steps[1]["tool_calls"][0]["tool_call_id"] == "shared-runtime-correlation", correlated.steps
+assert correlated.steps[1]["tool_calls"][0]["extra"]["maka_provider_tool_call_id"] == "provider-call-payload-id", correlated.steps
+assert correlated.steps[1]["observation"]["results"][0]["source_call_id"] == "shared-runtime-correlation", correlated.steps
+assert correlated.steps[1]["observation"]["results"][0]["extra"]["maka_provider_tool_response_id"] == "provider-response-payload-id", correlated.steps
+
+unpaired = build_runtime_trajectory([events[0], events[5], events[-1]], "completed", runtime_refs)
+assert unpaired.artifact_kind == "summary", unpaired
+assert unpaired.reason == "tool_response_missing", unpaired
+assert len(unpaired.steps) == 1 and unpaired.steps[0]["extra"]["maka_artifact_kind"] == "summary"
+
+with tempfile.TemporaryDirectory() as tmp:
+    invalid_path = Path(tmp) / "runtime-events.jsonl"
+    invalid_path.write_text('{"id":\n', encoding="utf-8")
+    invalid = load_runtime_trajectory(invalid_path, "failed")
+    assert invalid.artifact_kind == "summary", invalid
+    assert invalid.reason == "runtime_events_invalid_jsonl", invalid
+
+    invalid_path.write_bytes(b'\xff')
+    invalid_utf8 = load_runtime_trajectory(invalid_path, "failed")
+    assert invalid_utf8.artifact_kind == "summary", invalid_utf8
+    assert invalid_utf8.reason == "runtime_events_unreadable", invalid_utf8
+
+print("trajectory-builder ok")
+`;
+}
+
+function pythonTrajectoryHarborContractScript(root: string): string {
+  return String.raw`
+import asyncio
+import json
+import sys
+import tempfile
+from pathlib import Path
+
+root = Path(${JSON.stringify(root)})
+sys.path.insert(0, str(root / "packages" / "headless" / "harbor"))
+
+from harbor.models.agent.context import AgentContext
+from harbor.models.trajectories import Trajectory
+from maka_agent import MakaAgent
+
+
+def event(event_id, ts, role, author, content=None, refs=None, status=None, actions=None):
+    value = {
+        "id": event_id,
+        "invocationId": "inv-1",
+        "runId": "run-1",
+        "sessionId": "session-1",
+        "turnId": "turn-1",
+        "ts": ts,
+        "partial": False,
+        "role": role,
+        "author": author,
+    }
+    if content is not None:
+        value["content"] = content
+    if refs is not None:
+        value["refs"] = refs
+    if status is not None:
+        value["status"] = status
+    if actions is not None:
+        value["actions"] = actions
+    return value
+
+
+events = [
+    event("user", 1000, "user", "user", {"kind": "text", "text": "Solve the task"}),
+    event("call", 1100, "model", "agent", {"kind": "function_call", "id": "tool-1", "name": "Bash", "args": {"command": "echo ok", "password": "private-password"}}, {"stepId": "step-1"}),
+    event("result", 1200, "tool", "tool", {"kind": "function_response", "id": "tool-1", "name": "Bash", "result": {"stdout": "ok"}}, {"toolCallId": "tool-1"}),
+    event("answer", 1300, "model", "agent", {"kind": "text", "text": "Done"}, {"providerEventId": "step-2"}),
+    event("terminal", 1400, "system", "system", status="completed", actions={"endInvocation": True}),
+]
+
+with tempfile.TemporaryDirectory() as tmp:
+    logs_dir = Path(tmp)
+    runtime_path = logs_dir / "runtime-events.jsonl"
+    runtime_path.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+    agent = MakaAgent(logs_dir)
+    context = AgentContext()
+    agent._apply_cell_output(context, {
+        "status": "completed",
+        "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+        "promptHash": "sha256:test",
+        "tokenSummary": {"input": 10, "output": 2, "cachedInput": 3, "costUsd": 0.01},
+        "toolSummary": {"actualToolCalls": 1, "actualToolNames": ["Bash"], "actualToolCallCounts": {"Bash": 1}},
+        "steps": len(events),
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
+    })
+    payload = json.loads((logs_dir / "trajectory.json").read_text(encoding="utf-8"))
+    validated = Trajectory.model_validate(payload)
+    assert validated.extra["maka_artifact_kind"] == "full", validated.extra
+    assert len(validated.steps) == 4, validated.steps
+    assert validated.steps[1].tool_calls[0].tool_call_id == "tool-1", validated.steps[1]
+    assert validated.steps[1].observation.results[0].source_call_id == "tool-1", validated.steps[1]
+    assert validated.final_metrics.total_steps == len(validated.steps), validated.final_metrics
+    assert validated.final_metrics.total_cached_tokens == 3, validated.final_metrics
+    assert "private-password" not in json.dumps(payload), payload
+
+    image_events = [
+        event("image-user", 2000, "user", "user", {"kind": "text", "text": "Inspect the image"}),
+        event("image-call", 2100, "model", "agent", {"kind": "function_call", "id": "image-tool", "name": "Read", "args": {"path": "shot.png"}}, {"stepId": "image-step"}),
+        event("image-result", 2200, "tool", "tool", {"kind": "function_response", "id": "image-tool", "name": "Read", "result": {"kind": "image", "mimeType": "image/png", "ref": {"kind": "session_file", "sessionId": "session-1", "relativePath": "artifact-image"}}}),
+        event("image-answer", 2300, "model", "agent", {"kind": "text", "text": "Image inspected"}, {"providerEventId": "image-answer-step"}),
+        event("image-terminal", 2400, "system", "system", status="completed", actions={"endInvocation": True}),
+    ]
+    runtime_path.write_text("\n".join(json.dumps(event) for event in image_events) + "\n", encoding="utf-8")
+    artifact_root = logs_dir / "maka-storage" / "artifacts"
+    image_path = artifact_root / "session-1" / "artifact-image-shot.png"
+    image_path.parent.mkdir(parents=True)
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\nfixture")
+    metadata_path = artifact_root / "metadata.jsonl"
+    metadata_path.write_text(json.dumps({
+        "id": "artifact-image",
+        "sessionId": "session-1",
+        "turnId": "turn-1",
+        "createdAt": 2200,
+        "name": "shot.png",
+        "kind": "image",
+        "relativePath": "session-1/artifact-image-shot.png",
+        "sizeBytes": image_path.stat().st_size,
+        "mimeType": "image/png",
+        "source": "tool_result",
+        "status": "live",
+    }) + "\n", encoding="utf-8")
+    agent._apply_cell_output(context, {
+        "status": "completed",
+        "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
+    })
+    image_payload = json.loads((logs_dir / "trajectory.json").read_text(encoding="utf-8"))
+    image_validated = Trajectory.model_validate(image_payload)
+    image_content = image_validated.steps[1].observation.results[0].content
+    assert image_validated.extra["maka_artifact_kind"] == "full", image_validated.extra
+    assert image_content[0].type == "image", image_content
+    assert image_content[0].source.media_type == "image/png", image_content
+    assert image_content[0].source.path.startswith("trajectory-assets/"), image_content
+    assert image_content[0].source.path.endswith(".png"), image_content
+    assert (logs_dir / image_content[0].source.path).is_file(), image_content
+
+    materialized_path = logs_dir / image_content[0].source.path
+    protected_path = logs_dir / "protected-image-target"
+    materialized_path.unlink()
+    protected_path.write_bytes(b"protected")
+    materialized_path.symlink_to(protected_path)
+    agent._apply_cell_output(context, {
+        "status": "completed",
+        "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
+    })
+    assert not materialized_path.is_symlink(), materialized_path
+    assert protected_path.read_bytes() == b"protected", protected_path
+
+    image_path.unlink()
+    agent._apply_cell_output(context, {
+        "status": "completed",
+        "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
+    })
+    missing_image_payload = json.loads((logs_dir / "trajectory.json").read_text(encoding="utf-8"))
+    assert missing_image_payload["extra"]["maka_artifact_kind"] == "summary", missing_image_payload
+    assert missing_image_payload["extra"]["maka_summary_reason"] == "image_artifact_unavailable", missing_image_payload
+
+    escaping_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    escaping_metadata["relativePath"] = "../outside.png"
+    metadata_path.write_text(json.dumps(escaping_metadata) + "\n", encoding="utf-8")
+    agent._apply_cell_output(context, {
+        "status": "completed",
+        "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
+    })
+    escaping_payload = json.loads((logs_dir / "trajectory.json").read_text(encoding="utf-8"))
+    assert escaping_payload["extra"]["maka_artifact_kind"] == "summary", escaping_payload
+    assert escaping_payload["extra"]["maka_summary_reason"] == "image_artifact_path_invalid", escaping_payload
+
+    wrong_session_events = json.loads(json.dumps(image_events))
+    wrong_session_events[2]["content"]["result"]["ref"]["sessionId"] = "other-session"
+    runtime_path.write_text("\n".join(json.dumps(event) for event in wrong_session_events) + "\n", encoding="utf-8")
+    agent._apply_cell_output(context, {
+        "status": "completed",
+        "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
+    })
+    wrong_session_payload = json.loads((logs_dir / "trajectory.json").read_text(encoding="utf-8"))
+    assert wrong_session_payload["extra"]["maka_artifact_kind"] == "summary", wrong_session_payload
+    assert wrong_session_payload["extra"]["maka_summary_reason"] == "image_reference_invalid", wrong_session_payload
+
+    runtime_path.unlink()
+    unexpected_path = logs_dir / "unexpected-events.jsonl"
+    unexpected_path.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+    agent._apply_cell_output(context, {
+        "status": "completed",
+        "runtimeEventsPath": str(unexpected_path),
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
+    })
+    summary_payload = json.loads((logs_dir / "trajectory.json").read_text(encoding="utf-8"))
+    assert summary_payload["extra"]["maka_artifact_kind"] == "summary", summary_payload
+    assert summary_payload["extra"]["maka_summary_reason"] == "runtime_events_missing", summary_payload
+
+    download_logs = logs_dir / "downloaded"
+    download_logs.mkdir()
+    download_agent = MakaAgent(download_logs)
+
+    class DownloadEnvironment:
+        async def download_file(self, remote, local):
+            if remote == "/logs/agent/maka-cell-output.json":
+                Path(local).write_text(json.dumps({
+                    "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+                }), encoding="utf-8")
+                return
+            assert remote == "/logs/agent/runtime-events.jsonl", remote
+            Path(local).write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+
+    asyncio.run(download_agent._download_cell_output(DownloadEnvironment()))
+    assert (download_logs / "runtime-events.jsonl").is_file()
+
+    downloaded_image_events = events[:2] + [
+        event("downloaded-image", 1200, "tool", "tool", {"kind": "function_response", "id": "tool-1", "name": "Bash", "result": {"kind": "image", "mimeType": "image/png", "ref": {"kind": "session_file", "sessionId": "session-1", "relativePath": "downloaded-image"}}}),
+        events[3],
+        events[4],
+    ]
+    (download_logs / "runtime-events.jsonl").write_text(
+        "\n".join(json.dumps(event) for event in downloaded_image_events) + "\n",
+        encoding="utf-8",
+    )
+    downloaded_relative_path = "session-1/downloaded-image-shot.png"
+    downloaded_metadata = json.dumps({
+        "id": "downloaded-image",
+        "sessionId": "session-1",
+        "turnId": "turn-1",
+        "createdAt": 1200,
+        "name": "shot.png",
+        "kind": "image",
+        "relativePath": downloaded_relative_path,
+        "sizeBytes": 15,
+        "mimeType": "image/png",
+        "source": "tool_result",
+        "status": "live",
+    }) + "\n"
+
+    class ArtifactDownloadEnvironment:
+        async def download_file(self, remote, local):
+            if remote == "/logs/agent/maka-storage/artifacts/metadata.jsonl":
+                Path(local).write_text(downloaded_metadata, encoding="utf-8")
+                return
+            assert remote == f"/logs/agent/maka-storage/artifacts/{downloaded_relative_path}", remote
+            Path(local).write_bytes(b"\x89PNG\r\n\x1a\nfixture")
+
+    asyncio.run(download_agent._download_runtime_artifacts(ArtifactDownloadEnvironment()))
+    assert (download_logs / "maka-storage" / "artifacts" / downloaded_relative_path).is_file()
+
+    task_run_logs = logs_dir / "task-run"
+    task_run_logs.mkdir()
+    task_run_agent = MakaAgent(task_run_logs, extra_env={"MAKA_HARBOR_MODE": "task-run"})
+    task_run_runtime_path = task_run_logs / "runtime-events.jsonl"
+    task_run_runtime_path.write_text(
+        "\n".join(json.dumps(event) for event in image_events) + "\n", encoding="utf-8"
+    )
+    task_run_artifact_root = task_run_logs / "maka-task-run" / "runs" / "artifacts"
+    task_run_image_path = task_run_artifact_root / "session-1" / "task-run-shot.png"
+    task_run_image_path.parent.mkdir(parents=True)
+    task_run_image_path.write_bytes(b"\x89PNG\r\n\x1a\nfixture")
+    (task_run_artifact_root / "metadata.jsonl").parent.mkdir(parents=True, exist_ok=True)
+    (task_run_artifact_root / "metadata.jsonl").write_text(json.dumps({
+        "id": "artifact-image",
+        "sessionId": "session-1",
+        "turnId": "turn-1",
+        "createdAt": 2200,
+        "name": "task-run-shot.png",
+        "kind": "image",
+        "relativePath": "session-1/task-run-shot.png",
+        "sizeBytes": task_run_image_path.stat().st_size,
+        "mimeType": "image/png",
+        "source": "tool_result",
+        "status": "live",
+    }) + "\n", encoding="utf-8")
+    task_run_agent._apply_cell_output(AgentContext(), {
+        "status": "completed",
+        "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
+    })
+    task_run_payload = json.loads((task_run_logs / "trajectory.json").read_text(encoding="utf-8"))
+    assert task_run_payload["extra"]["maka_artifact_kind"] == "full", task_run_payload
+    task_run_content = task_run_payload["steps"][1]["observation"]["results"][0]["content"]
+    assert task_run_content[0]["source"]["media_type"] == "image/png", task_run_content
+
+print("trajectory-harbor-contract ok")
 `;
 }
 
@@ -2693,6 +3683,7 @@ try:
         cell = json.loads((Path(tmp) / "maka-cell-output.json").read_text(encoding="utf-8"))
         assert cell["executionIdentity"]["model"] == "glm-5.2", cell
         assert cell["executionIdentity"]["reasoningEffort"] == "max", cell
+        assert cell["executionIdentity"]["agentTools"] is False, cell
         assert cell["tokenSummary"]["cachedInput"] == 40, cell
         assert cell["tokenSummary"]["input"] == 110, cell
         assert cell["tokenSummary"]["output"] == 25, cell
@@ -2901,6 +3892,7 @@ with tempfile.TemporaryDirectory() as tmp:
     cell = json.loads((logs / "maka-cell-output.json").read_text(encoding="utf-8"))
     assert cell["executionIdentity"]["model"] == "k3", cell
     assert cell["executionIdentity"]["reasoningEffort"] == "max", cell
+    assert cell["executionIdentity"]["agentTools"] is False, cell
     assert cell["runtimeRefs"]["sessionId"] == "session-1", cell
     assert cell["toolSummary"]["actualToolCallCounts"] == {"Shell": 1}, cell
     assert "tokenSummary" not in cell, cell
@@ -3068,6 +4060,9 @@ class Codex:
         self._version = version
         self.model_name = model_name
         self.parent_calls = []
+        # Real harbor/pier bases set self.logger in __init__; the adapter's
+        # best-effort log hydration logs through it.
+        self.logger = types.SimpleNamespace(debug=lambda *args, **kwargs: None)
 
     def _get_env(self, key):
         return self._extra_env.get(key) or os.environ.get(key)
@@ -3253,6 +4248,7 @@ with tempfile.TemporaryDirectory() as tmp:
     assert cell["status"] == "completed", cell
     assert cell["executionIdentity"]["model"] == "gpt-5.6-sol", cell
     assert cell["executionIdentity"]["reasoningEffort"] == "max", cell
+    assert cell["executionIdentity"]["agentTools"] is False, cell
     assert cell["runtimeRefs"]["sessionId"] == "thread-1", cell
     assert cell["tokenSummary"]["input"] == 100, cell
     assert cell["tokenSummary"]["cachedInput"] == 40, cell
@@ -3612,6 +4608,24 @@ class FakeEnvironment:
             self.trial_paths.test_stdout_path.write_text("E: Failed to fetch https://deb.example.invalid/pkg.deb 502 Bad Gateway", encoding="utf-8")
             self.trial_paths.reward_text_path.write_text("0\n", encoding="utf-8")
             return types.SimpleNamespace(return_code=0, stdout="", stderr="")
+        if outcome == "infra_pytest_escaped_newline_with_fail_reward":
+            self.trial_paths.test_stdout_path.write_text(
+                "E       assert 'TEST PASSED' in 'Err:1 http://archive.ubuntu.com/ubuntu noble InRelease\\n"
+                "  502  Bad Gateway [IP: 198.18.0.119 80]\\nErr:2 http://security.ubuntu.com/ubuntu noble-security InRelease\\n'\n"
+                "E        +  where ... = CompletedProcess(args=['bash', '/tests/verify.sh'], returncode=0).stdout",
+                encoding="utf-8",
+            )
+            self.trial_paths.reward_text_path.write_text("0\n", encoding="utf-8")
+            return types.SimpleNamespace(return_code=0, stdout="", stderr="")
+        if outcome == "infra_pytest_real_newline_with_fail_reward":
+            self.trial_paths.test_stdout_path.write_text(
+                "E       assert 'TEST PASSED' in 'Err:1 http://archive.ubuntu.com/ubuntu noble InRelease\n"
+                "  502  Bad Gateway [IP: 198.18.0.119 80]\nErr:2 http://security.ubuntu.com/ubuntu noble-security InRelease\n'\n"
+                "E        +  where ... = CompletedProcess(args=['bash', '/tests/verify.sh'], returncode=0).stdout",
+                encoding="utf-8",
+            )
+            self.trial_paths.reward_text_path.write_text("0\n", encoding="utf-8")
+            return types.SimpleNamespace(return_code=0, stdout="", stderr="")
         if outcome == "infra_curl_ssl_with_fail_reward":
             self.trial_paths.test_stdout_path.write_text(
                 "curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to astral.sh:443\n"
@@ -3625,8 +4639,11 @@ class FakeEnvironment:
             self.trial_paths.test_stdout_path.write_text("APT warning: Failed to fetch optional archive", encoding="utf-8")
             self.trial_paths.reward_text_path.write_text("1\n", encoding="utf-8")
             return types.SimpleNamespace(return_code=0, stdout="", stderr="")
-        if outcome == "warning_with_fail_reward":
-            self.trial_paths.test_stdout_path.write_text("assertion expected: 502 Bad Gateway", encoding="utf-8")
+        if outcome == "candidate_assertion_mentions_apt_502":
+            self.trial_paths.test_stdout_path.write_text(
+                "E       assert 'Err:1 http://archive.ubuntu.com/ubuntu noble InRelease expected status: 502 Bad Gateway' == 'success'",
+                encoding="utf-8",
+            )
             self.trial_paths.reward_text_path.write_text("0\n", encoding="utf-8")
             return types.SimpleNamespace(return_code=0, stdout="", stderr="")
         if outcome == "timeout":
@@ -3676,6 +4693,18 @@ assert outcome["outcome"] == "passed", outcome
 assert [item["classification"] for item in outcome["attempts"]] == ["infra_setup_failed", "passed"], outcome
 assert len([command for command in commands if "timeout --signal=KILL" in command]) == 2, commands
 
+result, outcome, commands = asyncio.run(run_case(["infra_pytest_escaped_newline_with_fail_reward", "pass"]))
+assert result.rewards == {"reward": 1.0}, result.rewards
+assert outcome["outcome"] == "passed", outcome
+assert [item["classification"] for item in outcome["attempts"]] == ["infra_setup_failed", "passed"], outcome
+assert len([command for command in commands if "timeout --signal=KILL" in command]) == 2, commands
+
+result, outcome, commands = asyncio.run(run_case(["infra_pytest_real_newline_with_fail_reward", "pass"]))
+assert result.rewards == {"reward": 1.0}, result.rewards
+assert outcome["outcome"] == "passed", outcome
+assert [item["classification"] for item in outcome["attempts"]] == ["infra_setup_failed", "passed"], outcome
+assert len([command for command in commands if "timeout --signal=KILL" in command]) == 2, commands
+
 result, outcome, commands = asyncio.run(run_case(["infra_curl_ssl_with_fail_reward", "pass"]))
 assert result.rewards == {"reward": 1.0}, result.rewards
 assert outcome["outcome"] == "passed", outcome
@@ -3700,7 +4729,7 @@ assert outcome["outcome"] == "passed", outcome
 assert [item["classification"] for item in outcome["attempts"]] == ["passed"], outcome
 assert len([command for command in commands if "timeout --signal=KILL" in command]) == 1, commands
 
-result, outcome, commands = asyncio.run(run_case(["warning_with_fail_reward"]))
+result, outcome, commands = asyncio.run(run_case(["candidate_assertion_mentions_apt_502"]))
 assert result.rewards == {"reward": 0.0}, result.rewards
 assert outcome["outcome"] == "failed", outcome
 assert [item["classification"] for item in outcome["attempts"]] == ["failed"], outcome

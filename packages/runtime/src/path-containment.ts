@@ -1,4 +1,6 @@
-import { isAbsolute, relative, sep } from 'node:path';
+import { createHash } from 'node:crypto';
+import { lstat, mkdir, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises';
+import { isAbsolute, join, relative, sep } from 'node:path';
 
 /**
  * Shared filesystem-containment and identifier guards. This is the single
@@ -54,4 +56,102 @@ export function isSafeSkillId(value: string): boolean {
 export function toRelative(root: string, target: string): string {
   const rel = relative(root, target);
   return rel === '' ? '.' : rel.split(sep).join('/');
+}
+
+// ── Contained file I/O ────────────────────────────────────────────────────
+
+/**
+ * Read a regular file, verifying its realpath stays inside `rootDir`.
+ * Rejects symlinks and paths that escape the containment root.
+ */
+export async function readContainedRegularFile(
+  rootDir: string,
+  filePath: string,
+): Promise<{ ok: true; bytes: Buffer } | { ok: false }> {
+  try {
+    const [rootReal, fileStat] = await Promise.all([realpath(rootDir), lstat(filePath)]);
+    if (!fileStat.isFile() || fileStat.isSymbolicLink()) return { ok: false };
+    const fileReal = await realpath(filePath);
+    if (!isPathInside(rootReal, fileReal)) return { ok: false };
+    return { ok: true, bytes: await readFile(filePath) };
+  } catch {
+    return { ok: false };
+  }
+}
+
+/**
+ * Read a regular text file, verifying its realpath stays inside `rootDir`.
+ * Returns the content and its sha256 hash.
+ */
+export async function readContainedRegularTextFile(
+  rootDir: string,
+  filePath: string,
+): Promise<
+  | { ok: true; content: string; sha256: string }
+  | { ok: false; reason: 'blocked_path' | 'read_failed' }
+> {
+  try {
+    const [rootReal, fileStat] = await Promise.all([realpath(rootDir), lstat(filePath)]);
+    if (!fileStat.isFile() || fileStat.isSymbolicLink())
+      return { ok: false, reason: 'blocked_path' };
+    const fileReal = await realpath(filePath);
+    if (!isPathInside(rootReal, fileReal)) return { ok: false, reason: 'blocked_path' };
+    const content = await readFile(filePath, 'utf8');
+    return { ok: true, content, sha256: `sha256:${sha256(content)}` };
+  } catch {
+    return { ok: false, reason: 'read_failed' };
+  }
+}
+
+/**
+ * Atomically write a text file inside `rootDir` via a temp file + rename.
+ * Rejects symlinks and paths that escape the containment root.
+ */
+export async function writeContainedRegularTextFile(
+  rootDir: string,
+  filePath: string,
+  content: string,
+): Promise<boolean> {
+  const tempPath = join(rootDir, `.maka-write.${process.pid}.${Date.now()}.tmp`);
+  try {
+    const rootReal = await realpath(rootDir);
+    const existing = await lstat(filePath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (existing !== null && (!existing.isFile() || existing.isSymbolicLink())) return false;
+    if (existing !== null) {
+      const fileReal = await realpath(filePath);
+      if (!isPathInside(rootReal, fileReal)) return false;
+    }
+    await writeFile(tempPath, content, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    const tempStat = await lstat(tempPath);
+    if (!tempStat.isFile() || tempStat.isSymbolicLink()) {
+      await unlink(tempPath).catch(() => {});
+      return false;
+    }
+    const tempReal = await realpath(tempPath);
+    if (!isPathInside(rootReal, tempReal)) {
+      await unlink(tempPath).catch(() => {});
+      return false;
+    }
+    await rename(tempPath, filePath);
+    return true;
+  } catch {
+    await unlink(tempPath).catch(() => {});
+    return false;
+  }
+}
+
+// ── Generic type guard ────────────────────────────────────────────────────
+
+/** True when `value` is a plain record (object, not array, not null). */
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// ── Crypto helper ─────────────────────────────────────────────────────────
+
+function sha256(text: string): string {
+  return createHash('sha256').update(text).digest('hex');
 }

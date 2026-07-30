@@ -16,7 +16,7 @@ import {
   type TUI,
 } from '@earendil-works/pi-tui';
 import type { UserQuestionOption } from '@maka/core';
-import { PERMISSION_MODES, type PermissionMode } from '@maka/core/permission';
+import type { PermissionMode } from '@maka/core/permission';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { InvocableSkillEntry } from '@maka/runtime';
 import { PROVIDER_DEFAULTS, type ModelInfo, type ProviderType } from '@maka/core/llm-connections';
@@ -684,12 +684,30 @@ export class ModelSearchOverlay implements Component {
   }
 }
 
+/**
+ * #1611: `current` marks an option that is genuinely in force, so choosing it
+ * is a no-op. A read-only session is neither of these options, and marking
+ * Auto as current there turned "confirm what I already have" into a silent
+ * widening of the boundary. Legacy `execute` has no boundary of its own and
+ * really does resolve to Auto, so it still marks Auto.
+ */
 export function permissionModePickerItems(currentMode: PermissionMode): SelectItem[] {
-  return PERMISSION_MODES.map((mode) => ({
-    value: mode,
-    label: mode,
-    ...(mode === currentMode ? { description: 'current' } : {}),
-  }));
+  const autoIsCurrent = currentMode === 'ask' || currentMode === 'execute';
+  return [
+    {
+      value: 'auto',
+      label: 'Auto',
+      description: autoIsCurrent ? 'current · protected' : 'protected',
+    },
+    {
+      value: 'bypass',
+      label: 'Full access',
+      description:
+        currentMode === 'bypass'
+          ? 'current · your files and network, unprotected'
+          : 'your files and network, unprotected',
+    },
+  ];
 }
 
 /**

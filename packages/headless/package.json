@@ -1,6 +1,7 @@
 {
   "name": "@maka/headless",
   "version": "0.1.0",
+  "license": "Apache-2.0",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
@@ -38,12 +39,14 @@
     "#ab-manifest": "./dist/ab-manifest.js",
     "#prompt-ab-run": "./dist/prompt-ab-run.js",
     "#harbor-task-runner": "./dist/harbor-task-runner.js",
+    "#pier-task-runner": "./dist/pier-task-runner.js",
     "#harbor-smoke-config": "./dist/harbor-smoke-config.js",
     "#provider-env": "./dist/provider-env.js",
     "#harbor-cell": "./dist/harbor-cell.js",
     "#opencode-toolchain": "./dist/opencode-toolchain.js",
     "#kimi-code-toolchain": "./dist/kimi-code-toolchain.js",
     "#codex-toolchain": "./dist/codex-toolchain.js",
+    "#maka-node-toolchain": "./dist/maka-node-toolchain.js",
     "#codex-oauth-harness": "./dist/codex-oauth-harness.js",
     "#runtime-policy-ab-profile": "./dist/runtime-policy-ab-profile.js",
     "#runtime-policy-ab-spec": "./dist/runtime-policy-ab-spec.js",
@@ -54,6 +57,7 @@
     "#harness-oracle-policy": "./dist/harness-oracle-policy.js",
     "#harness-ab-run": "./dist/harness-ab-run.js",
     "#harness-ab-report": "./dist/harness-ab-report.js",
+    "#kimi-protocol-ab": "./dist/kimi-protocol-ab.js",
     "#prompt-structural-smoke": "./dist/prompt-structural-smoke.js"
   },
   "bin": {
@@ -71,6 +75,7 @@
     "@maka/runtime": "0.1.0",
     "@maka/storage": "0.1.0",
     "ai": "^7.0.31",
-    "fs-native-extensions": "^1.5.0"
+    "fs-native-extensions": "^1.5.0",
+    "undici": "^8.7.0"
   }
 }

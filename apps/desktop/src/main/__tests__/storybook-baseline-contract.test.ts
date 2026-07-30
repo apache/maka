@@ -6,25 +6,20 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 
-function findRepoRoot(start: string): string {
-  let dir = resolve(start);
-  for (;;) {
-    if (
-      existsSync(join(dir, 'apps', 'desktop', 'package.json'))
-      && existsSync(join(dir, 'packages', 'ui', 'package.json'))
-    ) {
-      return dir;
-    }
+import { REPO_ROOT } from './main-process-contract-source-helpers.js';
 
-    const parent = resolve(dir, '..');
-    if (parent === dir) {
-      throw new Error(`Unable to locate repo root from ${start}`);
-    }
-    dir = parent;
-  }
-}
-
-const REPO_ROOT = findRepoRoot(process.cwd());
+/**
+ * The rule these assertions enforce is "do not import the app shell", so match
+ * the import specifier rather than the bare name — #1433 item 6 added prose
+ * comments that cite `app-shell.tsx` as the file a story's real path runs
+ * through, and naming a file is not depending on it.
+ *
+ * Anchored to the module itself, not to any specifier containing the string:
+ * `app-shell-command-actions` is a leaf a story may legitimately import (the
+ * command-list builder would make command-search.stories.tsx MORE faithful,
+ * not less), and this rule is about the shell component.
+ */
+const IMPORTS_APP_SHELL = /from\s+['"][^'"]*app-shell(?:\.js)?['"]/;
 
 function readJson(path: string) {
   return JSON.parse(readFileSync(path, 'utf8')) as {
@@ -44,10 +39,11 @@ function readTypescriptConfig(repoRoot: string, configPath: string) {
 }
 
 describe('Storybook baseline contract', () => {
-  it('keeps Storybook as renderer tooling, not part of mandatory build or test', () => {
+  it('keeps Storybook as renderer tooling, not part of mandatory build, test, or CI', () => {
     const rootPkg = readJson(join(REPO_ROOT, 'package.json'));
     const desktopPkg = readJson(join(REPO_ROOT, 'apps', 'desktop', 'package.json'));
     const desktopScripts = desktopPkg.scripts ?? {};
+    const ciWorkflow = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
 
     assert.match(desktopScripts.storybook ?? '', /storybook dev\b/);
     assert.match(desktopScripts['build-storybook'] ?? '', /storybook build\b/);
@@ -60,6 +56,12 @@ describe('Storybook baseline contract', () => {
     })) {
       assert.doesNotMatch(script, /storybook/i, `${name} must not run Storybook yet`);
     }
+
+    assert.doesNotMatch(
+      ciWorkflow,
+      /\bstorybook-smoke:|build-storybook|smoke:storybook/,
+      'default CI must keep the Product Storybook smoke opt-in',
+    );
   });
 
   it('uses the renderer Vite/CSS setup so stories render against the app substrate', () => {
@@ -78,6 +80,75 @@ describe('Storybook baseline contract', () => {
     assert.match(main, /packages\/ui\/src/);
     assert.match(preview, /\.\.\/src\/renderer\/styles\.css/);
     assert.match(preview, /data-maka-theme/);
+  });
+
+  it('keeps Product stories free of implicit global geometry', () => {
+    const preview = readFileSync(join(REPO_ROOT, 'apps', 'desktop', '.storybook', 'preview.tsx'), 'utf8');
+
+    assert.match(preview, /context\.title\.startsWith\(['"]Product\/['"]\)/);
+    assert.match(preview, /if\s*\([^)]*Product/);
+    assert.match(preview, /return\s+<LocaleProvider[^>]*><Story\s*\/><\/LocaleProvider>/);
+    assert.match(preview, /p-6/, 'non-Product stories must retain explicit review padding');
+  });
+
+  it('uses production-owned hosts for the four module baselines', () => {
+    const storyPath = join(REPO_ROOT, 'apps', 'desktop', 'stories', 'module-hubs.stories.tsx');
+    const story = readFileSync(storyPath, 'utf8');
+
+    assert.match(story, /AppShellDetailPanel/);
+    assert.match(story, /AppShellWorkspaceTopActions/);
+    assert.doesNotMatch(
+      story,
+      /<AppShellDetailPanel[^>]*style=/,
+      'the story scaffold, not the production panel, must own iframe geometry',
+    );
+    for (const storyName of [
+      'ExtensionsSkills',
+      'ExtensionsMcp',
+      'ScheduledPlanReminders',
+      'ScheduledDailyReview',
+      'ExtensionsSkillsInstalled',
+      'ScheduledPlanRemindersConfigured',
+      'ScheduledDailyReviewLoading',
+      'ScheduledDailyReviewLoadError',
+    ]) {
+      assert.match(story, new RegExp(`export const ${storyName}: Story`));
+    }
+    assert.doesNotMatch(
+      story,
+      /className="maka-panel maka-panel-detail maka-floating-panel agents-content-area agents-parchment-paper-surface"/,
+      'stories must consume the production detail-panel host instead of copying its class chain',
+    );
+    for (const callback of [
+      'onRefreshSkills',
+      'onCreateSkillTemplate',
+      'onOpenSkill',
+      'onOpenSkillsFolder',
+      'onRefresh',
+      'onCreate',
+      'onUpdate',
+      'onToggle',
+      'onTriggerNow',
+      'onSnooze',
+      'onClearRunHistory',
+      'onDelete',
+    ]) {
+      assert.match(story, new RegExp(`${callback}=\\{noop\\}`), `${callback} must remain visible`);
+    }
+    assert.match(story, /status:\s*'paused'/, 'configured reminders must preserve paused-state coverage');
+    assert.match(story, /status:\s*'completed'/, 'configured reminders must preserve completed-state coverage');
+
+    for (const obsoleteStory of [
+      'skills-panel.stories.tsx',
+      'plan-reminder-panel.stories.tsx',
+      'daily-review-panel.stories.tsx',
+    ]) {
+      assert.equal(
+        existsSync(join(REPO_ROOT, 'packages', 'ui', 'stories', obsoleteStory)),
+        false,
+        `${obsoleteStory} must not remain as a parallel inner-panel baseline`,
+      );
+    }
   });
 
   it('offers only real Maka theme palettes in the Storybook toolbar', () => {
@@ -126,7 +197,7 @@ describe('Storybook baseline contract', () => {
     const allStorySrc = storyFiles.map((f) => readFileSync(join(storiesDir, f), 'utf8')).join('\n');
 
     const curatedPrimitives = [
-      'Button', 'Badge', 'Input', 'Textarea', 'Separator', 'Checkbox',
+      'Button', 'Badge', 'Input', 'Textarea', 'Separator',
       'DialogRoot', 'TabsRoot', 'SelectRoot', 'Label', 'Switch', 'Toggle', 'ToggleGroup',
       'RadioGroup', 'Radio', 'Progress', 'Alert', 'Empty', 'Spinner', 'Kbd',
       'Menu', 'Accordion', 'Toolbar', 'ToastProvider',
@@ -154,15 +225,19 @@ describe('Storybook baseline contract', () => {
     for (const storyName of [
       'Empty',
       'LongList',
-      'StatusGroups',
+      'ConversationStates',
       'RowActions',
       'LongTitlesAndNarrow',
-      'Collapsed',
     ]) {
       assert.match(src, new RegExp(`export const ${storyName}\\b`));
     }
-    assert.match(src, /statusGroups/);
-    assert.doesNotMatch(src, /app-shell/, 'Sidebar stories must not import the desktop app shell.');
+    assert.doesNotMatch(src, /StatusGroups|statusGroups/);
+    assert.doesNotMatch(src, IMPORTS_APP_SHELL, 'Sidebar stories must not import the desktop app shell.');
+
+    const appShellStories = join(REPO_ROOT, 'apps', 'desktop', 'stories', 'app-shell.stories.tsx');
+    const appShellSource = readFileSync(appShellStories, 'utf8');
+    assert.match(appShellSource, /export const CollapsedSidebar\b/);
+    assert.match(appShellSource, /export const SidebarMotion\b/);
   });
 
   it('storyboards ToolActivity result variants before visual polish', () => {
@@ -183,7 +258,6 @@ describe('Storybook baseline contract', () => {
       'TerminalAndLiveOutput',
       'FileDiffAndWebSearch',
       'SubagentAndExplore',
-      'OfficeDocument',
       'ErrorsAndPermissionDenied',
       'CopyFeedback',
       'DenseMixedResults',
@@ -198,7 +272,6 @@ describe('Storybook baseline contract', () => {
       'web_search_error',
       'subagent',
       'explore_agent',
-      'office_document',
     ]) {
       assert.match(fixtures, new RegExp(`kind:\\s*'${requiredKind}'`), `${requiredKind} fixture must exist`);
     }
@@ -230,7 +303,7 @@ describe('Storybook baseline contract', () => {
     assert.match(story, /OMITTED_RUNTIME_EXPORTS/);
     assert.match(story, /BotBrandLogo/);
     assert.match(story, /BOT_BRAND/);
-    for (const provider of ['telegram', 'feishu', 'wecom', 'wechat', 'discord', 'dingtalk', 'qq']) {
+    for (const provider of ['telegram', 'feishu', 'wecom', 'wechat', 'discord', 'dingtalk', 'qq', 'slack']) {
       assert.match(story, new RegExp(`['"]${provider}['"]`), `${provider} must appear in the bot brand icon story`);
     }
   });
@@ -342,13 +415,59 @@ describe('Storybook baseline contract', () => {
       'SelectedDetail',
       'AddProvider',
       'OAuthCards',
+      'XaiDeviceAuthorization',
     ]) {
       assert.match(story, new RegExp(`export const ${storyName}: Story`), `${storyName} story must be exported`);
     }
 
     assert.match(story, /ConnectionsBridge/, 'stories must drive ProvidersPanel through its bridge seam');
     assert.match(story, /claudeSubscription/, 'OAuth cards must render against story-local subscription fixtures');
+    assert.match(story, /xaiOAuth/, 'xAI device authorization must render against a story-local OAuth fixture');
+    assert.match(story, /ABCD-EFGH/, 'the xAI story must keep the user-facing device code visible');
     assert.doesNotMatch(storyPath, /src\/renderer/, 'desktop Storybook stories must stay out of the renderer build tree');
+  });
+
+  /**
+   * The Models page mounts `ModelOAuthSection`, which reads its card state
+   * straight off `window.maka` rather than through the `ConnectionsBridge`
+   * prop. A channel the story bridge does not carry rejects on mount, and the
+   * page still renders — every card frozen at its static "可用" label, the
+   * Claude card hidden behind an experimental gate that never answered, and no
+   * error banner. That is a screen the app never shows, which is exactly what
+   * apps/desktop/stories/FIDELITY.md exists to keep out of Storybook.
+   *
+   * The channel list is derived from the renderer so a new one goes red here
+   * instead of silently degrading the story. It is names only: a fixture that
+   * carries `claudeSubscription` but not its gate method still passes the
+   * derived half, so the gate is named separately below.
+   */
+  it('gives the Models settings page the subscription channels its cards read on mount', () => {
+    const oauthSection = readFileSync(
+      join(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer', 'settings', 'provider-oauth-section.tsx'),
+      'utf8',
+    );
+    const channels = [...new Set([...oauthSection.matchAll(/window\.maka\.(\w+)/g)].map((match) => match[1]))].sort();
+    assert.ok(channels.length > 0, 'ModelOAuthSection must reach the preload bridge for its card state');
+
+    const story = readFileSync(
+      join(REPO_ROOT, 'apps', 'desktop', 'stories', 'settings', 'settings-pages.stories.tsx'),
+      'utf8',
+    );
+    const bridge = story.slice(story.indexOf('const makaBridge = {'), story.indexOf('const withSettingsBridge'));
+    assert.ok(bridge, 'settings-pages.stories.tsx must define the bridge its settings pages render against');
+
+    const missing = channels.filter((channel) => !new RegExp(`^  ${channel}:`, 'm').test(bridge));
+    assert.deepEqual(
+      missing,
+      [],
+      `the Models story bridge is missing channels ModelOAuthSection calls on mount:\n${missing.join('\n')}`,
+    );
+
+    assert.match(
+      bridge,
+      /isExperimentalEnabled/,
+      'the Claude card stays hidden until the experimental gate answers, so the story bridge must answer it',
+    );
   });
 
   it('storyboards command palette and content search modal states before visual polish', () => {
@@ -370,8 +489,7 @@ describe('Storybook baseline contract', () => {
 
     for (const storyName of [
       'CommandPaletteGroupedResults',
-      'CommandPaletteEmpty',
-      'CommandPaletteDisabledCommand',
+      'CommandPaletteNoMatch',
       'CommandPaletteKeyboardFocusedSelection',
       'CommandPaletteContentSearchLoading',
       'CommandPaletteContentSearchResults',
@@ -389,7 +507,7 @@ describe('Storybook baseline contract', () => {
 
     assert.doesNotMatch(storyPath, /src\/renderer/, 'desktop Storybook stories must stay out of the renderer build tree');
     assert.doesNotMatch(story, /window\.maka/, 'Command/search stories must not depend on the preload bridge');
-    assert.doesNotMatch(story, /app-shell/, 'Command/search stories must not import the desktop app shell');
+    assert.doesNotMatch(story, IMPORTS_APP_SHELL, 'Command/search stories must not import the desktop app shell');
   });
 
   it('keeps Storybook stories out of the regular @maka/ui TypeScript build', () => {

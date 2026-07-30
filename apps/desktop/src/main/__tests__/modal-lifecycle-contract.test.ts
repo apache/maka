@@ -12,9 +12,8 @@
  *
  * This file extends the SearchModal-specific gate to ALL modals so
  * the same foot-gun cannot re-introduce itself in SettingsModal,
- * CommandPalette, or KeyboardHelpModal. PermissionPrompt is intentionally
- * absent because it is an in-flow composer surface, not a modal. If a new
- * modal lands, add it to MODAL_DECLS below.
+ * CommandPalette, or KeyboardHelpModal. In-flow composer interactions are not
+ * modals. If a new modal lands, add it to MODAL_DECLS below.
  *
  * Grep-style gate; no React mount required.
  */

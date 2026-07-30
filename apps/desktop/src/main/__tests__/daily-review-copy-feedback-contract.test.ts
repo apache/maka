@@ -36,7 +36,7 @@ describe('Daily Review copy feedback contract', () => {
     assert.match(main, /async function copyDailyReviewMarkdown\([\s\S]*?await navigator\.clipboard\.writeText\(input\.markdown\)/);
     assert.match(
       main,
-      /function isDailyReviewSurfaceActive\(\): boolean \{[\s\S]*return navSelectionRef\.current\.section === 'daily-review';[\s\S]*\}/,
+      /function isDailyReviewSurfaceActive\(\): boolean \{[\s\S]*return navSelectionRef\.current\.section === 'automations' && navSelectionRef\.current\.module === 'daily-review';[\s\S]*\}/,
       'Daily Review action feedback must be owned by the active Daily Review surface',
     );
     assert.match(
@@ -332,7 +332,7 @@ describe('Daily Review copy feedback contract', () => {
     const main = await readRendererShellCombinedSource();
     const panelBlock = extractFunctionBlock(ui, 'DailyReviewPanel');
     const helperBlock = main.match(/function dailyReviewActionErrorMessage\(error: unknown, fallback: string, locale: UiLocale\): string \{[\s\S]*?\n\}/)?.[0] ?? '';
-    const saveBlock = main.match(/async function saveDailyReviewMarkdown\([\s\S]*?const activePermission/)?.[0] ?? '';
+    const saveBlock = extractFunctionBlock(main, 'saveDailyReviewMarkdown');
     const saveTodayBlock = main.match(/onSaveTodayDailyReviewToFile: async \(\) => \{[\s\S]*?onCopyEnvSummary/)?.[0] ?? '';
 
     assert.match(uiHelpers, /generalizedErrorMessageChinese/);

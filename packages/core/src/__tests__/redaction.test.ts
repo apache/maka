@@ -9,12 +9,18 @@ import {
 describe('redactSecrets', () => {
   test('masks bearer tokens and provider key prefixes', () => {
     const text = redactSecrets(
-      'Authorization: Bearer sk-live-secret-token-value and ghp_abcdefghijklmnopqrstuvwxyz',
+      'Authorization: Bearer sk-live-secret-token-value Proxy-Authorization: Basic opaque-proxy-value and ghp_abcdefghijklmnopqrstuvwxyz',
     );
 
     assert.equal(text.includes('sk-live-secret-token-value'), false);
+    assert.equal(text.includes('opaque-proxy-value'), false);
     assert.equal(text.includes('ghp_abcdefghijklmnopqrstuvwxyz'), false);
     assert.match(text, /Authorization: Bearer \[redacted\]/);
+    assert.match(text, /Proxy-Authorization: Basic \[redacted\]/);
+  });
+
+  test('applies bounded text patterns to top-level JSON number primitives', () => {
+    assert.equal(redactSecrets('1234567890123456789012345678901234567890'), '[redacted]');
   });
 
   test('masks only sensitive URL query values', () => {
@@ -50,6 +56,174 @@ describe('redactSecrets', () => {
     assert.equal(text.includes('plain-provider-key'), false);
     assert.equal(text.includes('correct-horse-battery-staple'), false);
     assert.equal(text.includes('nested-token-value'), false);
+  });
+
+  test('redacts original string leaves without crossing serialized JSON boundaries', () => {
+    const text = redactSecrets(
+      JSON.stringify({
+        assignment: 'review note\npassword=dummy-value\nrun visible',
+        request: 'Authorization: Bearer opaque-value\nnext visible',
+      }),
+    );
+
+    assert.deepEqual(JSON.parse(text), {
+      assignment: 'review note\npassword=[redacted]\nrun visible',
+      request: 'Authorization: Bearer [redacted]\nnext visible',
+    });
+  });
+
+  test('masks common compound credential keys', () => {
+    const text = redactSecrets(
+      JSON.stringify({
+        client_secret: 'client-value',
+        refreshToken: 'refresh-value',
+        private_key: 'private-value',
+        session_token: 'session-value',
+        service_account_key: 'service-account-value',
+        ssh_key: 'ssh-key-value',
+        ssh_private_key: 'ssh-value',
+        credentials: 'credential-value',
+        cache_key: 'cached-result',
+        idempotencyKey: 'request-deduplication',
+        issue_key: 'ISSUE-1359',
+        keyboard: 'ordinary-keyboard',
+        objectKey: 'approval-target',
+        public_key: 'published-material',
+        tokenCount: 42,
+      }),
+    );
+
+    assert.doesNotMatch(
+      text,
+      /client-value|refresh-value|private-value|session-value|service-account-value|ssh-key-value|ssh-value|credential-value/,
+    );
+    assert.deepEqual(JSON.parse(text), {
+      client_secret: '[redacted]',
+      refreshToken: '[redacted]',
+      private_key: '[redacted]',
+      session_token: '[redacted]',
+      service_account_key: '[redacted]',
+      ssh_key: '[redacted]',
+      ssh_private_key: '[redacted]',
+      credentials: '[redacted]',
+      cache_key: 'cached-result',
+      idempotencyKey: 'request-deduplication',
+      issue_key: 'ISSUE-1359',
+      keyboard: 'ordinary-keyboard',
+      objectKey: 'approval-target',
+      public_key: 'published-material',
+      tokenCount: 42,
+    });
+  });
+
+  test('masks compound credential assignments without changing authorization schemes', () => {
+    const text = redactSecrets(
+      'ssh_private_key=ssh-value sessionToken=session-value service-account-key=service-value Authorization: Basic basic-value Proxy-Authorization: Bearer proxy-value issue_key=ISSUE-1359 objectKey=target',
+    );
+
+    assert.equal(
+      text,
+      'ssh_private_key=[redacted] sessionToken=[redacted] service-account-key=[redacted] Authorization: Basic [redacted] Proxy-Authorization: Bearer [redacted] issue_key=ISSUE-1359 objectKey=target',
+    );
+  });
+
+  test('does not consume a trailing command after a quoted review comment', () => {
+    assert.equal(
+      redactSecrets('# " review note\npassword=dummy-value\npython deploy.py --target production'),
+      '# " review note\npassword=[redacted]\npython deploy.py --target production',
+    );
+  });
+
+  test('preserves own __proto__ data properties while redacting serialized JSON', () => {
+    const redacted = JSON.parse(
+      redactSecrets(
+        '{"__proto__":{"password":"prototype-secret","keep":"visible"},"apiKey":"api-secret"}',
+      ),
+    );
+
+    assert.equal(Object.hasOwn(redacted, '__proto__'), true);
+    assert.deepEqual(redacted, {
+      ['__proto__']: {
+        password: '[redacted]',
+        keep: 'visible',
+      },
+      apiKey: '[redacted]',
+    });
+  });
+
+  test('handles a large batch of malformed sensitive assignment indexes in bounded time', {
+    timeout: 15_000,
+  }, () => {
+    const malformed = 'token['.repeat(50_000);
+
+    assert.equal(redactSecrets(malformed), malformed);
+  });
+
+  test('masks standard secret access key names without owning arbitrary access keys', () => {
+    const json = redactSecrets(
+      JSON.stringify({
+        awsSecretAccessKey: 'aws-secret',
+        secretAccessKey: 'standard-secret',
+        AWS_SECRET_ACCESS_KEY: 'environment-secret',
+        accessKey: 'ordinary-access-key',
+      }),
+    );
+
+    assert.deepEqual(JSON.parse(json), {
+      awsSecretAccessKey: '[redacted]',
+      secretAccessKey: '[redacted]',
+      AWS_SECRET_ACCESS_KEY: '[redacted]',
+      accessKey: 'ordinary-access-key',
+    });
+    assert.equal(
+      redactSecrets(
+        'awsSecretAccessKey=aws-secret secretAccessKey:standard-secret AWS_SECRET_ACCESS_KEY="environment-secret" accessKey=ordinary-access-key',
+      ),
+      'awsSecretAccessKey=[redacted] secretAccessKey:[redacted] AWS_SECRET_ACCESS_KEY="[redacted]" accessKey=ordinary-access-key',
+    );
+  });
+
+  test('masks space-separated AWS CLI secret access key values', () => {
+    assert.equal(
+      redactSecrets(
+        "aws configure set aws_secret_access_key aws-config-secret && aws s3 cp . s3://bucket --secret-access-key 'aws-flag-secret'",
+      ),
+      "aws configure set aws_secret_access_key [redacted] && aws s3 cp . s3://bucket --secret-access-key '[redacted]'",
+    );
+    assert.equal(
+      redactSecrets('aws configure set aws_secret_access_key "quoted-secret"'),
+      'aws configure set aws_secret_access_key "[redacted]"',
+    );
+  });
+
+  test('masks AWS secrets across POSIX line continuations', () => {
+    assert.equal(
+      redactSecrets(
+        'aws configure set aws_secret_access_key \\\nconfig-secret\nAWS_SECRET_ACCESS_KEY=\\\nenvironment-secret',
+      ),
+      'aws configure set aws_secret_access_key \\\n[redacted]\nAWS_SECRET_ACCESS_KEY=\\\n[redacted]',
+    );
+    assert.equal(
+      redactSecrets('aws s3 cp . s3://bucket --secret-access-key flag-\\\nsecret'),
+      'aws s3 cp . s3://bucket --secret-access-key [redacted]',
+    );
+    assert.equal(
+      redactSecrets('AWS_SECRET_ACCESS_KEY\\\n=environment-secret'),
+      'AWS_SECRET_ACCESS_KEY\\\n=[redacted]',
+    );
+    assert.equal(
+      redactSecrets(
+        'aws configure set aws_secret_access_\\\nkey config-secret && tool --secret-access-\\\r\nkey flag-secret && AWS_SECRET_ACCESS_\\\nKEY=environment-secret',
+      ),
+      'aws configure set aws_secret_access_\\\nkey [redacted] && tool --secret-access-\\\r\nkey [redacted] && AWS_SECRET_ACCESS_\\\nKEY=[redacted]',
+    );
+  });
+
+  test('does not mask similar non-secret AWS CLI tokens', () => {
+    const text =
+      'aws configure set region us-east-1; aws configure set my_aws_secret_access_\\\nkey visible; tool --secret-access-key-\\\r\nfile credentials.txt; AWS_SECRET_ACCESS_KEY_\\\nFILE=visible';
+
+    assert.equal(redactSecrets(text), text);
   });
 
   test('masks escaped and non-string sensitive JSON values structurally', () => {

@@ -1,0 +1,374 @@
+import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import type { LlmConnection, SessionHeader } from '@maka/core';
+import { buildForegroundBashTool, buildManagedBashTool } from '../shell-tools.js';
+import { ToolRuntime, type MakaTool, type ToolRuntimeInput } from '../tool-runtime.js';
+
+describe('ToolRuntime settlement', () => {
+  it('returns the raw result and provider-facing model output', async () => {
+    const runtime = makeRuntime();
+    const result = { ok: true, value: 42 };
+
+    const settlement = await runtime.settleToolCall({
+      tool: tool(() => result),
+      turnId: 'turn-1',
+      stepId: 'step-1',
+      toolCallId: 'call-1',
+      input: {},
+      abortSignal: new AbortController().signal,
+      eventSink: {
+        push: () => {},
+        pushAndWaitUntilConsumed: async () => {},
+      },
+    });
+
+    assert.deepEqual(settlement, {
+      result,
+      modelOutput: { type: 'json', value: result },
+    });
+  });
+
+  it('keeps the durable Bash command while omitting it from the live model output', async () => {
+    const runtime = makeRuntime();
+    const bash = buildForegroundBashTool({
+      description: 'shell',
+      execute: async () => ({
+        exitCode: 0,
+        stdout: 'done',
+        stderr: '',
+        stdoutTruncated: true,
+        stderrTruncated: false,
+      }),
+    });
+    const settlement = await runtime.settleToolCall({
+      tool: bash,
+      turnId: 'turn-1',
+      stepId: 'step-1',
+      toolCallId: 'call-1',
+      input: { command: 'printf durable-command' },
+      abortSignal: new AbortController().signal,
+      eventSink: {
+        push: () => {},
+        pushAndWaitUntilConsumed: async () => {},
+      },
+    });
+
+    assert.equal((settlement.result as { cmd?: unknown }).cmd, 'printf durable-command');
+    assert.deepEqual(settlement.modelOutput, {
+      type: 'json',
+      value: {
+        kind: 'terminal',
+        cwd: '/workspace/repo',
+        status: 'completed',
+        exitCode: 0,
+        output: {
+          mode: 'pipes',
+          stdout: 'done',
+          stderr: '',
+          stdoutTruncated: true,
+          stderrTruncated: false,
+          redacted: false,
+        },
+      },
+    });
+  });
+
+  it('projects every managed foreground Bash terminal state without its command', async () => {
+    const terminalResults = [
+      {
+        kind: 'terminal' as const,
+        cwd: '/workspace/repo',
+        cmd: 'printf completed',
+        status: 'completed' as const,
+        exitCode: 0,
+        output: {
+          mode: 'pipes' as const,
+          stdout: 'tail',
+          stderr: '',
+          stdoutTruncated: true,
+          stderrTruncated: false,
+          redacted: false,
+        },
+      },
+      {
+        kind: 'terminal' as const,
+        cwd: '/workspace/repo',
+        cmd: 'printf failed',
+        status: 'failed' as const,
+        exitCode: 2,
+        output: {
+          mode: 'pipes' as const,
+          stdout: '',
+          stderr: 'failed',
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          redacted: false,
+        },
+        sandboxDenial: {
+          likely: true as const,
+          backend: 'macos-seatbelt' as const,
+          recovery: 'require_escalated' as const,
+        },
+      },
+      {
+        kind: 'terminal' as const,
+        cwd: '/workspace/repo',
+        cmd: 'printf timed-out',
+        status: 'timed_out' as const,
+        exitCode: 124,
+        output: {
+          mode: 'pipes' as const,
+          stdout: 'partial',
+          stderr: '',
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          redacted: false,
+        },
+      },
+      {
+        kind: 'terminal' as const,
+        cwd: '/workspace/repo',
+        cmd: 'printf cancelled',
+        status: 'cancelled' as const,
+        exitCode: 130,
+        output: {
+          mode: 'pipes' as const,
+          stdout: '',
+          stderr: 'cancelled',
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          redacted: true,
+        },
+      },
+    ];
+
+    for (const [index, terminal] of terminalResults.entries()) {
+      const runtime = makeRuntime();
+      const bash = buildManagedBashTool({
+        runForegroundBash: async () => terminal,
+        runBackgroundBash: async () => {
+          throw new Error('not used');
+        },
+      });
+      const settlement = await runtime.settleToolCall({
+        tool: bash,
+        turnId: 'turn-1',
+        stepId: 'step-1',
+        toolCallId: `call-${index}`,
+        input: { command: terminal.cmd },
+        abortSignal: new AbortController().signal,
+        eventSink: {
+          push: () => {},
+          pushAndWaitUntilConsumed: async () => {},
+        },
+      });
+      const { cmd: _cmd, ...projected } = terminal;
+
+      assert.deepEqual(settlement.result, terminal);
+      assert.deepEqual(settlement.modelOutput, { type: 'json', value: projected });
+      assert.equal(terminalResults[index]?.cmd, terminal.cmd);
+    }
+  });
+
+  it('preserves live provider error mapping', async () => {
+    const runtime = makeRuntime();
+    const result = {
+      error: 'internal detail',
+      text: 'tool text',
+      modelText: 'safe model detail',
+    };
+
+    const settlement = await runtime.settleToolCall({
+      tool: {
+        ...tool(() => result),
+        toModelOutput: () => ({
+          type: 'content',
+          value: [{ type: 'text', text: 'must not be used' }],
+        }),
+      },
+      turnId: 'turn-1',
+      stepId: 'step-1',
+      toolCallId: 'call-1',
+      input: {},
+      abortSignal: new AbortController().signal,
+      eventSink: {
+        push: () => {},
+        pushAndWaitUntilConsumed: async () => {},
+      },
+    });
+
+    assert.deepEqual(settlement, {
+      result,
+      modelOutput: { type: 'error-text', value: 'Error: safe model detail' },
+    });
+  });
+
+  it('falls back from provider text to the raw error message', async () => {
+    const runtime = makeRuntime();
+    for (const [result, expected] of [
+      [{ error: 'internal detail', text: 'tool text' }, 'Error: tool text'],
+      [{ error: 'internal detail' }, 'Error: internal detail'],
+    ] as const) {
+      const settlement = await runtime.settleToolCall({
+        tool: tool(() => result),
+        turnId: 'turn-1',
+        stepId: 'step-1',
+        toolCallId: `call-${expected}`,
+        input: {},
+        abortSignal: new AbortController().signal,
+        eventSink: {
+          push: () => {},
+          pushAndWaitUntilConsumed: async () => {},
+        },
+      });
+
+      assert.deepEqual(settlement.modelOutput, { type: 'error-text', value: expected });
+    }
+  });
+
+  it('keeps structured durable failures on the live success arm', async () => {
+    const runtime = makeRuntime();
+    const events: Array<{ type: string; isError?: boolean }> = [];
+    const result = {
+      kind: 'subagent',
+      agentName: 'Reviewer',
+      turnId: 'child-turn',
+      status: 'failed',
+      permissionMode: 'explore',
+      summary: 'review failed',
+      artifactIds: [],
+    };
+
+    const settlement = await runtime.settleToolCall({
+      tool: tool(() => result),
+      turnId: 'turn-1',
+      stepId: 'step-1',
+      toolCallId: 'call-1',
+      input: {},
+      abortSignal: new AbortController().signal,
+      eventSink: {
+        push: (event) => events.push(event),
+        pushAndWaitUntilConsumed: async (event) => {
+          events.push(event);
+        },
+      },
+    });
+
+    assert.equal(
+      events.some((event) => event.type === 'tool_result' && event.isError === true),
+      true,
+    );
+    assert.deepEqual(settlement.modelOutput, { type: 'json', value: result });
+  });
+
+  it('uses the runtime model-output materializer for default tool results', async () => {
+    const result = { kind: 'image', ref: 'artifact-1' };
+    const runtime = makeRuntime({
+      materializeDefaultToolResultOutput: async ({ toolCallId, output }) => {
+        assert.equal(toolCallId, 'call-1');
+        assert.equal(output, result);
+        return { type: 'text', value: 'materialized image' };
+      },
+    });
+
+    const settlement = await runtime.settleToolCall({
+      tool: tool(() => result),
+      turnId: 'turn-1',
+      stepId: 'step-1',
+      toolCallId: 'call-1',
+      input: {},
+      abortSignal: new AbortController().signal,
+      eventSink: {
+        push: () => {},
+        pushAndWaitUntilConsumed: async () => {},
+      },
+    });
+
+    assert.deepEqual(settlement.modelOutput, { type: 'text', value: 'materialized image' });
+  });
+
+  it('registers step admission synchronously before settlement awaits', async () => {
+    const runtime = makeRuntime();
+    const pending = runtime.settleToolCall({
+      tool: tool(() => ({ ok: true })),
+      turnId: 'turn-1',
+      stepId: 'step-1',
+      toolCallId: 'call-1',
+      input: {},
+      abortSignal: new AbortController().signal,
+      eventSink: {
+        push: () => {},
+        pushAndWaitUntilConsumed: async () => {},
+      },
+    });
+
+    await pending;
+  });
+});
+
+function makeRuntime(
+  overrides: Pick<ToolRuntimeInput, 'materializeDefaultToolResultOutput'> = {},
+): ToolRuntime {
+  return createTestToolRuntime({
+    sessionId: 'session-1',
+    header: header(),
+    connection: connection(),
+    modelId: 'model-1',
+    appendMessage: async () => {},
+    newId: nextId(),
+    now: () => 1,
+    getPermissionPauseTarget: () => null,
+    ...overrides,
+  });
+}
+
+function tool(impl: MakaTool['impl']): MakaTool {
+  return {
+    name: 'Read',
+    description: 'read',
+    parameters: {},
+    impl,
+  };
+}
+
+function header(): SessionHeader {
+  return {
+    id: 'session-1',
+    workspaceRoot: '/workspace/repo',
+    cwd: '/workspace/repo',
+    createdAt: 1,
+    lastUsedAt: 1,
+    name: 'test',
+    titleIsManual: false,
+    isFlagged: false,
+    labels: [],
+    isArchived: false,
+    status: 'active',
+    statusUpdatedAt: 1,
+    hasUnread: false,
+    backend: 'ai-sdk',
+    llmConnectionSlug: 'connection-1',
+    connectionLocked: true,
+    model: 'model-1',
+    permissionMode: 'ask',
+    schemaVersion: 1,
+  };
+}
+
+function connection(): LlmConnection {
+  return {
+    slug: 'connection-1',
+    name: 'test',
+    providerType: 'openai',
+    defaultModel: 'model-1',
+    enabled: true,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+}
+
+function nextId(): () => string {
+  let value = 0;
+  return () => `id-${++value}`;
+}

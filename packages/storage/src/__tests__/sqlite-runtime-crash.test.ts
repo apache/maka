@@ -6,12 +6,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import type { RuntimeEvent } from '@maka/core';
+import { canonicalToolArgsHash, type RuntimeEvent } from '@maka/core';
 import {
   createSqliteRuntimeStore,
   type SqliteRuntimeStoreFailpoint,
 } from '../sqlite-runtime-store.js';
 
+const CRASH_READ_ARGS_HASH = canonicalToolArgsHash('Read', {
+  path: '/workspace/README.md',
+});
 const childMode = process.env.MAKA_SQLITE_CRASH_CHILD;
 
 if (childMode) {
@@ -64,6 +67,45 @@ if (childMode) {
           'outcome_committed',
         );
         assert.deepEqual(await store.listUnsettledToolOperations(), []);
+      });
+    });
+
+    for (const mode of [
+      'inside_recovery_reconcile',
+      'inside_recovery_outcome',
+      'inside_recovery_decision',
+    ]) {
+      it(`rolls back the whole recovery bundle when killed at ${mode}`, {
+        timeout: 30_000,
+      }, async () => {
+        await withKilledChild(mode, async (store) => {
+          assert.deepEqual(
+            (await store.readRuntimeEvents('session-1', 'run-1')).map((event) => event.id),
+            ['call-event-1', 'dispatch-event-1'],
+          );
+          assert.equal((await store.readToolOperation('operation-1'))?.currentState, 'prepared');
+        });
+      });
+    }
+
+    it('retains the whole recovery bundle when killed after COMMIT', {
+      timeout: 30_000,
+    }, async () => {
+      await withKilledChild('after_recovery_commit', async (store) => {
+        assert.deepEqual(
+          (await store.readRuntimeEvents('session-1', 'run-1')).map((event) => event.id),
+          [
+            'call-event-1',
+            'dispatch-event-1',
+            'reconcile-event-1',
+            'response-event-1',
+            'decision-event-1',
+          ],
+        );
+        assert.equal(
+          (await store.readToolOperation('operation-1'))?.currentState,
+          'recovery_completed',
+        );
       });
     });
   });
@@ -130,16 +172,31 @@ async function runCrashChild(mode: string): Promise<void> {
   const markerPath = requiredEnv('MAKA_SQLITE_CRASH_MARKER');
   let runtimeInsertCount = 0;
   const failpoint = (point: SqliteRuntimeStoreFailpoint) => {
-    if (point !== 'after_runtime_event_insert') return;
-    runtimeInsertCount += 1;
-    if (mode === 'inside_t1' && runtimeInsertCount === 1) blockUntilKilled();
-    if (mode === 'inside_t2' && runtimeInsertCount === 2) blockUntilKilled();
+    if (point === 'after_runtime_event_insert') {
+      runtimeInsertCount += 1;
+      if (mode === 'inside_t1' && runtimeInsertCount === 1) blockUntilKilled();
+      if (mode === 'inside_t2' && runtimeInsertCount === 2) blockUntilKilled();
+    }
+    if (point === 'after_recovery_reconcile' && mode === 'inside_recovery_reconcile') {
+      blockUntilKilled();
+    }
+    if (point === 'after_recovery_outcome' && mode === 'inside_recovery_outcome') {
+      blockUntilKilled();
+    }
+    if (point === 'after_recovery_decision' && mode === 'inside_recovery_decision') {
+      blockUntilKilled();
+    }
   };
   const store = createSqliteRuntimeStore(dbPath, { failpoint });
   await store.commitToolPrepared(preparedCommit());
   if (mode === 'after_effect') {
     writeFileSync(markerPath, 'effect-happened');
     blockUntilKilled();
+  }
+  if (mode.startsWith('inside_recovery_') || mode === 'after_recovery_commit') {
+    await store.commitToolRecoveryBundle(recoveryCommit());
+    if (mode === 'after_recovery_commit') blockUntilKilled();
+    throw new Error(`Recovery crash mode ${mode} missed its failpoint`);
   }
   await store.commitToolOutcome(outcomeCommit());
   if (mode === 'after_t2') blockUntilKilled();
@@ -161,13 +218,13 @@ function requiredEnv(name: string): string {
 function preparedCommit() {
   return {
     operationId: 'operation-1',
-    journalEventId: 'journal-prepared-1',
+    journalEventId: 'operation-1_prepared',
     runtimeEvent: functionCallEvent(),
     dispatchRuntimeEvent: toolDispatchEvent(),
     providerToolCallId: 'provider-call-1',
     toolName: 'Read',
-    canonicalArgsHash: 'sha256:args-1',
-    recoveryMode: 'replay_safe' as const,
+    canonicalArgsHash: CRASH_READ_ARGS_HASH,
+    recoveryMode: 'reconcile' as const,
     committedAt: 1,
   };
 }
@@ -175,7 +232,7 @@ function preparedCommit() {
 function outcomeCommit() {
   return {
     operationId: 'operation-1',
-    journalEventId: 'journal-outcome-1',
+    journalEventId: 'operation-1_outcome',
     runtimeEvent: functionResponseEvent(),
     committedAt: 2,
   };
@@ -198,8 +255,8 @@ function toolDispatchEvent(): RuntimeEvent {
         operationId: 'operation-1',
         providerToolCallId: 'provider-call-1',
         toolName: 'Read',
-        canonicalArgsHash: 'sha256:args-1',
-        recoveryMode: 'replay_safe',
+        canonicalArgsHash: CRASH_READ_ARGS_HASH,
+        recoveryMode: 'reconcile',
       },
     },
     refs: { operationId: 'operation-1', toolCallId: 'provider-call-1' },
@@ -242,6 +299,78 @@ function functionResponseEvent(): RuntimeEvent {
       id: 'provider-call-1',
       name: 'Read',
       result: 'contents',
+    },
+    refs: { operationId: 'operation-1', toolCallId: 'provider-call-1' },
+  };
+}
+
+function recoveryCommit() {
+  return {
+    operationId: 'operation-1',
+    reconcileRuntimeEvent: reconcileEvent(),
+    outcomeRuntimeEvent: functionResponseEvent(),
+    decisionRuntimeEvent: decisionEvent(),
+  };
+}
+
+function reconcileEvent(): RuntimeEvent {
+  return {
+    id: 'reconcile-event-1',
+    invocationId: 'invocation-1',
+    runId: 'run-1',
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    ts: 2,
+    partial: false,
+    role: 'system',
+    author: 'system',
+    actions: {
+      toolRecovery: {
+        kind: 'maka.tool.reconcile_result',
+        version: 1,
+        payload: {
+          protocol: 'tool_reconcile_v1',
+          operationId: 'operation-1',
+          observation: 'matches_expected_state',
+          observationSchema: 'state_identity_v1',
+          observationDigest:
+            'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        },
+      },
+    },
+    refs: { operationId: 'operation-1', toolCallId: 'provider-call-1' },
+  };
+}
+
+function decisionEvent(): RuntimeEvent {
+  return {
+    id: 'decision-event-1',
+    invocationId: 'invocation-1',
+    runId: 'run-1',
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    ts: 3,
+    partial: false,
+    role: 'system',
+    author: 'system',
+    actions: {
+      toolRecovery: {
+        kind: 'maka.tool.recovery_decision',
+        version: 1,
+        payload: {
+          protocol: 'tool_recovery_v1',
+          operationId: 'operation-1',
+          disposition: 'completed',
+          reasonCode: 'reconcile_matches_expected_state',
+          outcomeEventId: 'response-event-1',
+          evidenceEventIds: [
+            'call-event-1',
+            'dispatch-event-1',
+            'reconcile-event-1',
+            'response-event-1',
+          ],
+        },
+      },
     },
     refs: { operationId: 'operation-1', toolCallId: 'provider-call-1' },
   };

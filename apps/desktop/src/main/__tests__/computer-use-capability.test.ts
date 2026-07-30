@@ -18,7 +18,7 @@ describe('Desktop Computer Use production wiring', () => {
     assert.match(main, /computerUseTools/);
     // Deferred group identity lives in the shared catalog; desktop derives it.
     assert.match(catalog, /id:\s*'computer_use'/);
-    assert.match(main, /buildDeferredToolGroupsFromCatalog\(\s*'desktop'/);
+    assert.match(main, /projectEffectiveProductToolSurface\(\{[\s\S]*host:\s*'desktop'/);
     assert.doesNotMatch(main, /createAnthropicComputerHarness|createKimiComputerHarness|createMiniMaxComputerHarness/);
   });
 
@@ -28,8 +28,9 @@ describe('Desktop Computer Use production wiring', () => {
     assert.match(main, /sessions:stop[\s\S]*computerUseOverlay\.clearForSession/);
     assert.match(main, /sessions:archive[\s\S]*computerUseTools\.clearSession/);
     assert.match(main, /sessions:archive[\s\S]*computerUseOverlay\.clearForSession/);
-    assert.match(main, /sessions:remove[\s\S]*computerUseTools\.clearSession/);
-    assert.match(main, /sessions:remove[\s\S]*computerUseOverlay\.clearForSession/);
+    assert.match(main, /const removeSession[\s\S]*computerUseTools\.clearSession/);
+    assert.match(main, /const removeSession[\s\S]*computerUseOverlay\.clearForSession/);
+    assert.match(main, /sessions:remove[\s\S]*await removeSession/);
     assert.match(main, /isTurnStatusChangingSessionEvent[\s\S]*computerUseTools\.clearSession/);
     assert.match(main, /catch \(error\)[\s\S]*computerUseTools\.clearSession/);
     assert.match(main, /Promise\.allSettled\(\[[\s\S]*computerUse\.backend\?\.dispose/);
@@ -44,7 +45,7 @@ describe('Desktop Computer Use production wiring', () => {
       readMainProcessCombinedSource(),
     ]);
     const capability = snapshot.match(
-      /function computerUseCapability[\s\S]*?(?=function officeDocumentsCapability)/,
+      /function computerUseCapability[\s\S]*?(?=function staticCapability)/,
     )?.[0];
     assert.ok(capability, 'Computer Use capability block must exist');
     assert.match(capability, /required_scoped_lease/);
@@ -64,7 +65,7 @@ describe('Desktop Computer Use production wiring', () => {
       readFile(resolve(ROOT, 'apps/desktop/package.json'), 'utf8'),
     ]);
     assert.match(main, /computerUseToolsForModel\([\s\S]*supportsVision/);
-    assert.match(main, /computerUseAvailabilityForModel\([\s\S]*supportsVision/);
+    assert.match(main, /projectEffectiveProductToolSurface\(\{[\s\S]*tools:\s*selectedTools/);
     assert.match(
       packageJson,
       /"smoke:browser":\s*"[^"]*@maka\/computer-use[^"]*build:main/,

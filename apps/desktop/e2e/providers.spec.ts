@@ -239,7 +239,7 @@ test('adds a no-auth local runtime with no key field and a currentColor mask mar
   await page.getByRole('button', { name: /添加模型供应商：LM Studio/ }).click();
 
   await expect(page.getByLabel('模型供应商连接标识')).toHaveValue('lm-studio');
-  await expect(page.getByLabel('模型供应商服务地址')).toHaveValue('http://localhost:1234/v1');
+  await expect(page.getByLabel('模型供应商服务地址')).toHaveValue('http://127.0.0.1:1234/v1');
   await expect(page.getByLabel('模型供应商默认模型')).toHaveCount(0);
   await expect(page.getByLabel(/LM Studio 模型密钥/)).toHaveCount(0);
   await page.getByRole('button', { name: '保存供应商' }).click();

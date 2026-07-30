@@ -1,0 +1,293 @@
+/* Turn-scoped interactions take over the composer's in-flow slot so the
+   conversation and any live browser remain visible while Maka waits. */
+.maka-composer-interaction-slot {
+  display: contents;
+}
+
+.maka-sandbox-boundary-prompt-inner {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+}
+
+.maka-sandbox-boundary-copy h2,
+.maka-sandbox-boundary-copy p {
+  margin: 0;
+}
+
+.maka-sandbox-boundary-copy h2 {
+  color: var(--text-primary);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-semibold);
+}
+
+.maka-sandbox-boundary-copy p {
+  margin-top: var(--space-1);
+  color: var(--text-secondary);
+  font-size: var(--font-size-caption);
+  line-height: var(--leading-normal);
+}
+
+.maka-sandbox-boundary-scopes {
+  display: grid;
+  gap: var(--space-1);
+  max-height: min(16rem, 40vh);
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.maka-sandbox-boundary-scopes li {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  color: var(--text-secondary);
+  font-size: var(--font-size-caption);
+}
+
+.maka-sandbox-boundary-scopes code {
+  min-width: 0;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.maka-sandbox-boundary-scopes span {
+  flex: none;
+  color: var(--text-tertiary);
+}
+
+.maka-sandbox-boundary-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.maka-composer-interaction {
+  width: 100%;
+}
+
+.maka-composer-interaction-inner {
+  width: min(var(--maka-chat-measure), 100%);
+  box-sizing: border-box;
+  display: grid;
+  gap: var(--space-2);
+  margin: 0 auto;
+  padding: var(--space-2-5);
+  overflow: hidden;
+  border: var(--border-width-hairline) solid var(--border);
+  border-radius: var(--radius-surface);
+  background: var(--background);
+  box-shadow: 0 0 0 1px oklch(from var(--foreground) l c h / var(--composer-ring-alpha, 0.035));
+  container-type: inline-size;
+}
+
+.maka-question-progress {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.maka-question-options {
+  display: grid;
+  gap: var(--space-1-5);
+}
+
+.maka-question-choice-group {
+  display: grid;
+  gap: var(--space-1-5);
+}
+
+.maka-question-option {
+  width: 100%;
+  min-height: 44px;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-2-5);
+  color: var(--foreground);
+  text-align: left;
+  border: var(--border-width-hairline) solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--background);
+  transition:
+    background var(--duration-quick) var(--ease-out-strong),
+    border-color var(--duration-quick) var(--ease-out-strong),
+    box-shadow var(--duration-quick) var(--ease-out-strong);
+}
+
+.maka-question-option:hover {
+  background: var(--state-hover-bg);
+}
+
+.maka-question-option[data-checked] {
+  border-color: var(--ring);
+  background: var(--state-selected-bg);
+  box-shadow: 0 0 0 1px var(--foreground-alpha-10);
+}
+
+.maka-question-option:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+.maka-question-radio {
+  width: 14px;
+  height: 14px;
+  margin-top: var(--space-0-5);
+  border: var(--border-width-hairline) solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--background);
+}
+
+.maka-question-option[data-checked] .maka-question-radio {
+  border-color: var(--foreground);
+  background: var(--foreground);
+  box-shadow: inset 0 0 0 3px var(--background);
+}
+
+.maka-question-option-copy {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-0-5);
+}
+
+.maka-question-option-copy strong {
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--leading-snug);
+}
+
+.maka-question-option-copy small {
+  color: var(--foreground-secondary);
+  font-size: var(--font-size-caption);
+  line-height: var(--leading-normal);
+}
+
+.maka-question-other-field {
+  width: 100%;
+  min-height: 44px;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-2-5);
+  cursor: text;
+  border: var(--border-width-hairline) solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--background);
+  transition:
+    background var(--duration-quick) var(--ease-out-strong),
+    border-color var(--duration-quick) var(--ease-out-strong),
+    box-shadow var(--duration-quick) var(--ease-out-strong);
+}
+
+.maka-question-other-field:hover {
+  background: var(--state-hover-bg);
+}
+
+.maka-question-other-field[data-selected] {
+  border-color: var(--ring);
+  background: var(--state-selected-bg);
+  box-shadow: 0 0 0 1px var(--foreground-alpha-10);
+}
+
+.maka-question-other-field:focus-within {
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+.maka-question-other-field:has(.maka-question-other-input:disabled) {
+  cursor: not-allowed;
+  opacity: var(--opacity-disabled);
+}
+
+.maka-question-other-icon {
+  width: 14px;
+  height: 14px;
+  color: var(--foreground-secondary);
+}
+
+.maka-question-other-input {
+  width: 100%;
+  min-width: 0;
+  color: var(--foreground);
+  font-size: var(--font-size-ui);
+  line-height: var(--leading-snug);
+}
+
+.maka-question-other-input:disabled {
+  opacity: 1;
+}
+
+.maka-question-other-input::placeholder {
+  color: var(--foreground-secondary);
+  opacity: var(--opacity-muted);
+}
+
+.maka-interaction-actions.maka-question-actions {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+}
+
+.maka-question-actions > [data-slot="button"]:last-child {
+  grid-column: 4;
+}
+
+.maka-interaction-header {
+  min-width: 0;
+}
+
+.maka-interaction-title-row {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.maka-interaction-title {
+  min-width: 0;
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--font-size-heading);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--leading-tight);
+}
+
+.maka-interaction-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding-top: var(--space-1-5);
+  border-top: var(--border-width-hairline) solid var(--border);
+}
+
+@container (max-width: 460px) {
+  .maka-interaction-actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .maka-interaction-actions.maka-question-actions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    flex-direction: initial;
+  }
+
+  .maka-question-actions > [data-slot="button"] {
+    width: 100%;
+  }
+
+  .maka-question-actions > [data-slot="button"]:last-child {
+    grid-column: auto;
+  }
+}

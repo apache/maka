@@ -69,21 +69,6 @@ describe('ToolActivity result preview contract', () => {
         expected: [/data-kind="terminal"/, /失败 · 退出码 1/, /stdout 已隐藏 1 行/, /输出已截断/],
       },
       {
-        kind: 'office_document',
-        content: {
-          kind: 'office_document',
-          ok: false,
-          operation: 'set-prop',
-          path: 'report.docx',
-          args: ['set-prop', `token=${SECRET}`],
-          stdout: '',
-          stderr: `failed ${SECRET}`,
-          reason: 'officecli_failed',
-          message: '',
-        },
-        expected: [/data-kind="office_document"/, /诊断：操作失败/, /report\.docx/],
-      },
-      {
         kind: 'rive_workflow',
         content: {
           kind: 'rive_workflow',

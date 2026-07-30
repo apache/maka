@@ -71,6 +71,12 @@ describe('window-bounded reserve derivation (issue #882 PR 3 review P2)', () => 
     assert.deepEqual(policy?.historyCompact?.midTurn, { enabled: true, reserveTokens: 16_384 });
   });
 
+  test('uses the official Agent Plan default-model window instead of the unknown-model fallback', () => {
+    const policy = buildDefaultContextBudgetPolicy(agentPlanConnection(), { env: {} });
+    assert.equal(policy?.maxHistoryEstimatedTokens, 256_000 - 16_384);
+    assert.deepEqual(policy?.historyCompact?.midTurn, { enabled: true, reserveTokens: 16_384 });
+  });
+
   test('keeps the classic 16384 reserve when the window is unknown (metadata-less model)', () => {
     const policy = buildDefaultContextBudgetPolicy(
       {
@@ -114,6 +120,18 @@ function connection(): LlmConnection {
     name: 'Anthropic',
     providerType: 'anthropic',
     defaultModel: 'claude-sonnet-4-5-20250929',
+    enabled: true,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+}
+
+function agentPlanConnection(): LlmConnection {
+  return {
+    slug: 'volcengine-agent-plan',
+    name: 'Volcengine Agent Plan',
+    providerType: 'volcengine-agent-plan',
+    defaultModel: 'ark-code-latest',
     enabled: true,
     createdAt: 1,
     updatedAt: 1,

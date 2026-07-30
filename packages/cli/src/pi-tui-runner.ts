@@ -13,7 +13,7 @@ import {
   type SelectItem,
   type Terminal,
 } from '@earendil-works/pi-tui';
-import { PERMISSION_MODES, isPermissionMode, type PermissionMode } from '@maka/core/permission';
+import type { PermissionMode } from '@maka/core/permission';
 import {
   isThinkingLevel,
   thinkingVariantsForModel,
@@ -22,9 +22,8 @@ import {
 import { type ModelInfo, type ProviderType } from '@maka/core/llm-connections';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import {
-  ShellRunUpdateBuffer,
-  mergeShellRunUpdate,
-  projectShellRunUpdateForSession,
+  projectRevisionLinkedSessionTree,
+  type SessionSummary,
   type ShellRunUpdate,
 } from '@maka/core';
 import {
@@ -34,7 +33,7 @@ import {
   type ForeignSessionSummary,
 } from '@maka/core/foreign-session';
 import type { ForeignSessionStore } from '@maka/storage';
-import type { GoalTurnOutcome, SessionActivityLease } from '@maka/runtime';
+import type { ContextDiagnostics, GoalTurnOutcome, SessionActivityLease } from '@maka/runtime';
 import type { ModelChoice } from './connection-target.js';
 import {
   listApiKeyOnboardableProviders,
@@ -44,15 +43,18 @@ import {
 import type { MakaCliSkillSurface, SessionRecapGenerator } from './runtime-bootstrap.js';
 import { AUTO_RECAP_DISPLAY_LIMIT_BYTES, shouldAutoRecap } from './session-recap.js';
 import {
-  composeSkillInvocationMessage,
   listInvocableSkills,
-  resolveSkillInvocations,
+  prepareSkillInvocationMessage,
   type InvocableSkillEntry,
-  type LoadedSkillInstructions,
 } from '@maka/runtime';
 import { MakaSkillHighlightEditor } from './skill-highlight-editor.js';
-import { parseSkillInvocationTokens, stripSkillInvocationTokens } from './skill-token.js';
-import { parseSwarmCommand, type ParsedSwarmCommand } from '@maka/core';
+import { parseSkillInvocationTokens } from './skill-token.js';
+import {
+  parseGraphCommand,
+  parseSwarmCommand,
+  type ParsedGraphCommand,
+  type ParsedSwarmCommand,
+} from '@maka/core';
 import type { CliGoalTurnHost } from './cli-goal-continuation.js';
 import {
   inspectSessionResumeAvailability,
@@ -64,15 +66,15 @@ import {
   appendUserPrompt,
   applyMakaSessionEventToTranscript,
   createMakaPiTranscriptState,
-  activePermissionRequest,
+  activeSandboxBoundaryRequest,
   activeUserQuestionRequest,
   completePendingInteraction,
   applyShellRunViewUpdateToTranscript,
+  permissionModeLabel,
   replaceTranscriptWithStoredMessages,
   submitCompactToTranscript,
   toggleAllThinkingExpansion,
   toggleAllToolExpansion,
-  togglePendingPermissionDetails,
   type MakaPiTranscriptMetadata,
 } from './pi-transcript.js';
 import {
@@ -83,6 +85,7 @@ import {
 import { editorTheme, selectListTheme } from './tui-ansi.js';
 import { MakaAutocompleteAboveEditorComponent } from './tui-autocomplete-layout.js';
 import { createShellRunElapsedTicker } from './shell-run-elapsed-ticker.js';
+import { createShellRunHydrationController } from './shell-run-hydration.js';
 import {
   AttentionController,
   DISABLE_FOCUS_REPORTING,
@@ -272,6 +275,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     usage: state.usage,
     modelContextWindow,
     turnElapsedMs: turnStartedAt !== undefined ? Date.now() - turnStartedAt : undefined,
+    providerRetry: state.providerRetry,
   });
 
   const transcript = new MakaTranscriptComponent(state, metadata);
@@ -382,61 +386,50 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     disabled: '已禁用',
     host_incompatible: '当前主机缺少其依赖的工具',
     invalid_name: '名称无效',
+    too_many_requests: '调用请求过多',
   };
 
   interface PreparedSkillPrompt {
-    sendText: string;
+    disposition: 'passthrough' | 'ready' | 'blocked';
+    sendText?: string;
     loadedNames: string[];
     warnings: string[];
   }
 
-  // Resolve `/skill:<name>` tokens and compose the injectable message. Fully
-  // fail-soft: zero resolved tokens or any thrown error returns the untouched
-  // prompt — skill resolution must never block a send (issue decision: warn at
-  // most; failed tokens stay as literal text).
+  // Resolve `/skill:<name>` tokens through the shared Runtime contract. Failed
+  // invocation tokens never reach the model; when all requests fail, Runtime
+  // returns a bounded receipt and the TUI does not create a provider turn.
   const prepareSkillInvocation = async (prompt: string): Promise<PreparedSkillPrompt> => {
-    const passthrough: PreparedSkillPrompt = { sendText: prompt, loadedNames: [], warnings: [] };
-    if (!input.skills) return passthrough;
-    const tokens = parseSkillInvocationTokens(prompt);
-    if (tokens.length === 0) return passthrough;
-    try {
-      const resolved = await resolveSkillInvocations(
-        input.skills.source(cwd),
-        input.skills.host,
-        tokens.map((token) => token.name),
-      );
-      const loaded: LoadedSkillInstructions[] = [];
-      const okRequests: string[] = [];
-      const failed: Array<{ request: string; reason: string }> = [];
-      for (const entry of resolved) {
-        if (entry.result.ok) {
-          loaded.push(entry.result.skill);
-          okRequests.push(entry.request);
-        } else {
-          failed.push({ request: entry.request, reason: entry.result.reason });
-        }
-      }
-      const warnings =
-        failed.length > 0
-          ? [
-              `未能加载技能 ${failed.map((entry) => `/skill:${entry.request}（${SKILL_INVOCATION_FAILURE_REASON_LABEL[entry.reason] ?? entry.reason}）`).join('、')}，已按原文发送。`,
-            ]
-          : [];
-      if (loaded.length === 0) {
-        return { ...passthrough, warnings };
-      }
-      const stripped = stripSkillInvocationTokens(
-        prompt,
-        new Set(okRequests.map((request) => request.toLowerCase())),
-      );
-      return {
-        sendText: composeSkillInvocationMessage({ userText: stripped, skills: loaded }),
-        loadedNames: loaded.map((skill) => skill.name),
-        warnings,
-      };
-    } catch {
-      return passthrough;
+    if (!input.skills) {
+      return { disposition: 'passthrough', sendText: prompt, loadedNames: [], warnings: [] };
     }
+    const prepared = await prepareSkillInvocationMessage({
+      text: prompt,
+      source: input.skills.source(cwd),
+      host: input.skills.host,
+    });
+    const failed = prepared.skillInvocation.failed;
+    const failedLabels = failed.map((entry) =>
+      entry.reason === 'too_many_requests'
+        ? `请求超过 ${entry.requestLimit} 个上限（${SKILL_INVOCATION_FAILURE_REASON_LABEL[entry.reason]}）`
+        : `/skill:${entry.request}（${SKILL_INVOCATION_FAILURE_REASON_LABEL[entry.reason] ?? entry.reason}）`,
+    );
+    const warnings =
+      failed.length > 0
+        ? [
+            `未能加载技能 ${failedLabels.join('、')}；${
+              prepared.disposition === 'blocked'
+                ? '未发起模型请求。'
+                : '失败的调用标记未发送给模型。'
+            }`,
+          ]
+        : [];
+    return {
+      disposition: prepared.disposition,
+      ...('sendText' in prepared ? { sendText: prepared.sendText } : {}),
+      loadedNames: prepared.skillInvocation.loaded.map((skill) => skill.name),
+      warnings,
+    };
   };
 
   // 1-second heartbeat that re-renders the activity strip's elapsed counter
@@ -453,94 +446,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       turnElapsedInterval = undefined;
     }
   };
-  let shellRunOwnerMappings: ShellRunUpdate[] = [];
-  let hydratingShellRunsFor: string | undefined;
-  let shellRunHydrationEpoch = 0;
-  let shellRunHydrationRetryTimer: ReturnType<typeof setTimeout> | undefined;
-  const pendingShellRunUpdates = new ShellRunUpdateBuffer('cli.pi-tui-hydration-buffer');
-  const applyShellRunViewUpdate = (
-    candidate: ShellRunUpdate,
-    options?: { announceSettle?: boolean },
-  ): boolean => {
-    const index = shellRunOwnerMappings.findIndex(
-      (update) =>
-        update.sessionId === candidate.sessionId &&
-        update.sourceToolCallId === candidate.sourceToolCallId,
-    );
-    const merged = mergeShellRunUpdate(
-      index >= 0 ? shellRunOwnerMappings[index] : undefined,
-      candidate,
-      'cli.pi-tui-runner',
-    );
-    const retainOwnerMapping =
-      merged.update.ownership.kind === 'source_owned' && merged.update.result.status === 'running';
-    if (index >= 0 && retainOwnerMapping) shellRunOwnerMappings[index] = merged.update;
-    else if (index >= 0) shellRunOwnerMappings.splice(index, 1);
-    else if (retainOwnerMapping) shellRunOwnerMappings.push(merged.update);
-    return applyShellRunViewUpdateToTranscript(state, merged.update, options);
-  };
-  const replayPendingShellRunUpdates = (sessionId: string): boolean => {
-    const buffered = pendingShellRunUpdates.drain();
-    for (const update of buffered.updates) {
-      const projected = projectShellRunUpdateForSession(sessionId, shellRunOwnerMappings, update);
-      for (const viewUpdate of projected) applyShellRunViewUpdate(viewUpdate);
-    }
-    return buffered.overflowed;
-  };
-  const resetShellRunSessionState = (): void => {
-    shellRunOwnerMappings = [];
-    shellRunHydrationEpoch += 1;
-    if (shellRunHydrationRetryTimer !== undefined) clearTimeout(shellRunHydrationRetryTimer);
-    shellRunHydrationRetryTimer = undefined;
-    hydratingShellRunsFor = undefined;
-    pendingShellRunUpdates.clear();
-  };
-  const hydrateShellRuns = async (
-    sessionId: string,
-    epoch: number,
-    retryDelayMs = 250,
-  ): Promise<void> => {
-    try {
-      const updates = await input.listShellRunUpdates?.(sessionId);
-      if (closed || epoch !== shellRunHydrationEpoch || input.driver.getSessionId() !== sessionId)
-        return;
-      // Catch-up replays durable state, not a live event: flip cards silently.
-      // Updates buffered from the live subscription during the await are
-      // genuinely live and stay announceable in the drain below.
-      for (const update of updates ?? [])
-        applyShellRunViewUpdate(update, { announceSettle: false });
-      const overflowed = replayPendingShellRunUpdates(sessionId);
+  const shellRunHydration = createShellRunHydrationController({
+    driver: input.driver,
+    applyToTranscript: (update, options) =>
+      applyShellRunViewUpdateToTranscript(state, update, options),
+    listShellRunUpdates: input.listShellRunUpdates,
+    subscribeShellRunUpdates: input.subscribeShellRunUpdates,
+    onViewChanged: () => {
       shellRunElapsedTicker.sync();
       requestRender();
-      if (overflowed) {
-        void hydrateShellRuns(sessionId, epoch);
-        return;
-      }
-      hydratingShellRunsFor = undefined;
-    } catch {
-      if (closed || epoch !== shellRunHydrationEpoch || input.driver.getSessionId() !== sessionId)
-        return;
-      shellRunHydrationRetryTimer = setTimeout(() => {
-        shellRunHydrationRetryTimer = undefined;
-        void hydrateShellRuns(sessionId, epoch, Math.min(retryDelayMs * 2, 5_000));
-      }, retryDelayMs);
-    }
-  };
-  const unsubscribeShellRunUpdates = input.subscribeShellRunUpdates?.((update) => {
-    const sessionId = input.driver.getSessionId();
-    if (closed || !sessionId) return;
-    if (hydratingShellRunsFor === sessionId) {
-      pendingShellRunUpdates.add(update);
-      return;
-    }
-    const projected = projectShellRunUpdateForSession(sessionId, shellRunOwnerMappings, update);
-    let changed = false;
-    for (const viewUpdate of projected) {
-      if (applyShellRunViewUpdate(viewUpdate)) changed = true;
-    }
-    if (!changed) return;
-    shellRunElapsedTicker.sync();
-    requestRender();
+    },
+    isClosed: () => closed,
   });
 
   const reportError = (error: unknown) => {
@@ -599,8 +515,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     unbindGoalHost?.();
     unbindGoalHost = undefined;
     unsubscribeSessionTitleChanges();
-    unsubscribeShellRunUpdates?.();
-    resetShellRunSessionState();
+    shellRunHydration.dispose();
     shellRunElapsedTicker.dispose();
     stopTurnElapsedTicker();
     stopFallbackRetry();
@@ -658,21 +573,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   process.once('uncaughtException', handleUncaughtException);
   process.once('unhandledRejection', handleUnhandledRejection);
 
-  const respondToPendingPermission = (
-    decision: 'allow' | 'deny',
-    rememberForTurn = false,
-  ): boolean => {
-    const request = activePermissionRequest(state);
+  const respondToPendingSandboxBoundary = (decision: 'allow' | 'deny'): boolean => {
+    const request = activeSandboxBoundaryRequest(state);
     if (!request || permissionResponseInFlightRequestId !== null) return false;
     permissionResponseInFlightRequestId = request.requestId;
     // Keep the prompt visible until the driver accepts the response. If it
     // rejects, the user can retry with y/n instead of being stuck. A resolved
     // call only means the response was submitted; the event stream owns dequeue.
     void input.driver
-      .respondToPermission({
+      .respondToSandboxBoundary({
         requestId: request.requestId,
         decision,
-        ...(decision === 'allow' && request.rememberForTurnAllowed ? { rememberForTurn } : {}),
       })
       .catch((error) => {
         if (permissionResponseInFlightRequestId === request.requestId) {
@@ -791,6 +702,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           text: `已加载技能：${prepared.loadedNames.join('、')}`,
         });
       }
+      if (prepared.disposition === 'blocked') return;
       // Hand off to the turn: runAgentTurn re-asserts busy and re-enables
       // submit so mid-turn Enter can steer. Clearing disableSubmit only there
       // keeps the prep window closed until the turn owns the flags.
@@ -798,7 +710,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         kind: 'external',
         prompt,
         sessionId: input.driver.getSessionId(),
-        ...(prepared.sendText !== prompt ? { sendText: prepared.sendText } : {}),
+        ...(prepared.sendText !== undefined && prepared.sendText !== prompt
+          ? { sendText: prepared.sendText }
+          : {}),
       });
       handedOff = true;
     } catch (error) {
@@ -967,6 +881,21 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         }
         return;
       }
+      const graphCommand = parseGraphCommand(prompt);
+      if (graphCommand) {
+        editor.addToHistory(prompt);
+        if (graphCommand.kind === 'status') {
+          showGraphStatus();
+        } else {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: 'Cannot change or start Graph Mode while a turn is running.',
+          });
+          requestRender();
+        }
+        return;
+      }
       steerRunningTurn(prompt);
       return;
     }
@@ -1018,7 +947,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         if (event.type === 'error') attention.attentionNeeded();
         if (
           permissionResponseInFlightRequestId !== null &&
-          activePermissionRequest(state)?.requestId !== permissionResponseInFlightRequestId
+          activeSandboxBoundaryRequest(state)?.requestId !== permissionResponseInFlightRequestId
         ) {
           permissionResponseInFlightRequestId = null;
         }
@@ -1219,19 +1148,18 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     ) {
       modelContextWindow = undefined;
     }
-    permissionMode = summary.permissionMode;
+    // #1611: the driver derives this from the resumed session's execution
+    // boundary; `summary.permissionMode` is only what the header was last set
+    // to and goes stale as soon as an approved expansion widens the boundary.
+    permissionMode = input.driver.getPermissionMode?.() ?? summary.permissionMode;
     orchestrationMode = summary.orchestrationMode ?? 'default';
     thinkingLevel = summary.thinkingLevel;
     thinkingLevels = providerType ? thinkingVariantsForModel(providerType, summary.model) : [];
     refreshEditorCwd?.(cwd);
     replaceTranscriptWithStoredMessages(state, messages);
-    resetShellRunSessionState();
+    shellRunHydration.reset();
     if (input.listShellRunUpdates) {
-      const sessionId = summary.id;
-      hydratingShellRunsFor = sessionId;
-      await hydrateShellRuns(sessionId, shellRunHydrationEpoch);
-    } else {
-      hydratingShellRunsFor = undefined;
+      await shellRunHydration.hydrate(summary.id);
     }
     shellRunElapsedTicker.sync();
   };
@@ -1703,6 +1631,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const showSessionList = async () => {
     const sessions = await input.driver.listSessions();
+    const sessionTree = projectRevisionLinkedSessionTree(
+      sessions,
+      input.driver.getSessionId() ?? undefined,
+    );
+    const projectedSessions = flattenLinkedSessionTree(
+      sessionTree.roots,
+      sessionTree.childrenByParentId,
+    );
     // Maka-session availability and the foreign scan are independent I/O; run
     // them concurrently so the picker's open latency is the slower of the two,
     // not their sum.
@@ -1745,19 +1681,22 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const renderScope = (): void => {
       const visibleSessions =
         sessionListScope === 'current'
-          ? sessions.filter((session) => session.cwd === cwd)
-          : sessions;
-      const items: SelectItem[] = visibleSessions.map((session) => {
+          ? projectedSessions.filter(({ session }) => session.cwd === cwd)
+          : projectedSessions;
+      const items: SelectItem[] = visibleSessions.map(({ session, depth }) => {
         const state = availability.get(session.id);
         const location =
           sessionListScope === 'all' && session.cwd ? ` ${basename(session.cwd)}` : '';
+        const childDetail = session.subagentRuntime
+          ? ` subagent:${session.subagentRuntime.profile} ${session.status}`
+          : '';
         return {
           value: session.id,
-          label: session.name || session.id,
+          label: `${depth > 0 ? `${'  '.repeat(depth - 1)}↳ ` : ''}${session.name || session.id}`,
           description:
             state?.available === false
               ? `${shortSessionId(session.id)} ${state.reason}`
-              : `${shortSessionId(session.id)}${location} ${session.llmConnectionSlug} ${session.model}`,
+              : `${shortSessionId(session.id)}${location}${childDetail} ${session.llmConnectionSlug} ${session.model}`,
         };
       });
       // Foreign sessions are cwd-scoped; show them in both scope views (they
@@ -1836,8 +1775,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const newSession = () => {
     input.driver.startNewSession();
+    // A fresh session is not bound by the previous one's boundary; re-read the
+    // mode the next session will actually be created with.
+    permissionMode = input.driver.getPermissionMode?.() ?? permissionMode;
     attention.setBaseTitle(input.title);
-    resetShellRunSessionState();
+    shellRunHydration.reset();
     // Fresh transcript for the fresh session; the next prompt creates it on disk.
     // Leave the transcript empty (no confirmation notice) so /new opens on the
     // same welcome block as a cold start — the welcome block is the "fresh
@@ -1995,13 +1937,49 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const setPermissionMode = async (mode: PermissionMode) => {
     await input.driver.setPermissionMode(mode);
-    permissionMode = mode;
+    // Report the boundary that resulted, not the one that was requested.
+    permissionMode = input.driver.getPermissionMode?.() ?? mode;
     state.entries.push({
       kind: 'notice',
       level: 'info',
-      text: `Permission mode: ${mode}`,
+      text: `Permissions: ${permissionModeLabel(permissionMode)}`,
     });
     requestRender();
+  };
+
+  const requestSandboxBoundaryMode = (mode: 'auto' | 'bypass') => {
+    if (mode === 'auto' || permissionMode === 'bypass') {
+      void runControl(() => setPermissionMode(mode === 'auto' ? 'ask' : 'bypass'));
+      return;
+    }
+    const confirmation = [
+      {
+        value: 'keep',
+        label: 'Keep Auto',
+        description: 'Stay inside the protected environment',
+      },
+      {
+        value: 'bypass',
+        label: 'Turn on full access',
+        description:
+          'Reach your files and your network directly; use only for trusted or externally isolated tasks',
+      },
+    ];
+    showSelectPicker(
+      'Switch to full access?',
+      'keep',
+      confirmation,
+      (choice) => {
+        if (choice.value === 'bypass') {
+          void runControl(() => setPermissionMode('bypass'));
+        }
+      },
+      {
+        minPrimaryColumnWidth: 18,
+        maxPrimaryColumnWidth: 28,
+        selectedIndex: 0,
+      },
+    );
   };
 
   const showSwarmStatus = () => {
@@ -2056,6 +2034,59 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       prompt: command.task,
       sessionId: input.driver.getSessionId(),
       turnOrchestration: { mode: 'swarm', source: 'slash_command' },
+    });
+  };
+
+  const showGraphStatus = () => {
+    state.entries.push({
+      kind: 'notice',
+      level: 'info',
+      text:
+        orchestrationMode === 'graph' ? 'Graph Mode is on for this session.' : 'Graph Mode is off.',
+    });
+    requestRender();
+  };
+
+  const setGraphMode = async (mode: OrchestrationMode) => {
+    if (!input.driver.setOrchestrationMode) {
+      throw new Error('Graph Mode is unavailable on this session driver.');
+    }
+    await input.driver.setOrchestrationMode(mode);
+    orchestrationMode = mode;
+    state.entries.push({
+      kind: 'notice',
+      level: 'info',
+      text: mode === 'graph' ? 'Graph Mode enabled for this session.' : 'Graph Mode disabled.',
+    });
+    requestRender();
+  };
+
+  const runGraphCommand = (command: ParsedGraphCommand, idleMs: number) => {
+    if (command.kind === 'status') {
+      showGraphStatus();
+      return;
+    }
+    if (command.kind === 'set_mode') {
+      void runControl(() => setGraphMode(command.mode));
+      return;
+    }
+    if (input.firstRun) {
+      void showSetupWizard();
+      return;
+    }
+    lastActivityAt = Date.now();
+    promptSeq += 1;
+    maybeTriggerAutoRecap(idleMs);
+    state.entries.push({
+      kind: 'notice',
+      level: 'info',
+      text: 'Using Graph Mode for this turn only.',
+    });
+    void runAgentTurn({
+      kind: 'external',
+      prompt: command.task,
+      sessionId: input.driver.getSessionId(),
+      turnOrchestration: { mode: 'graph', source: 'slash_command' },
     });
   };
 
@@ -2118,24 +2149,55 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const showPermissionModeList = () => {
     const items = permissionModePickerItems(permissionMode);
+    // Where the cursor opens. It is NOT a claim about the current state —
+    // `permissionModePickerItems` marks `current` only on an option that is
+    // genuinely in force, so a read-only session marks neither and choosing
+    // Auto reads as the permission change it is.
+    const cursorValue = permissionMode === 'bypass' ? 'bypass' : 'auto';
     showSelectPicker(
-      'Select Permission Mode',
-      permissionMode,
+      'Permissions',
+      permissionModeLabel(permissionMode),
       items,
       (item) => {
-        if (!isPermissionMode(item.value)) return;
-        const mode = item.value;
-        void runControl(() => setPermissionMode(mode));
+        if (item.value === 'auto' || item.value === 'bypass') {
+          requestSandboxBoundaryMode(item.value);
+        }
       },
       {
         minPrimaryColumnWidth: 16,
         maxPrimaryColumnWidth: 24,
-        selectedIndex: items.findIndex((item) => item.value === permissionMode),
+        selectedIndex: items.findIndex((item) => item.value === cursorValue),
       },
     );
   };
 
   const slashCommands: MakaSlashCommand[] = [
+    {
+      name: 'context',
+      description: 'Show latest request context usage',
+      run: (parts: string[]) => {
+        if (parts.length !== 1) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: 'Usage: /context',
+          });
+          requestRender();
+          return;
+        }
+        void runControl(async () => {
+          const diagnostics: ContextDiagnostics = input.driver.getContextDiagnostics
+            ? await input.driver.getContextDiagnostics()
+            : { status: 'unavailable', reason: 'trace_unavailable' };
+          state.entries.push({
+            kind: 'notice',
+            level: 'info',
+            text: formatContextDiagnostics(diagnostics),
+          });
+          requestRender();
+        });
+      },
+    },
     {
       name: 'compact',
       description: 'Compact session context',
@@ -2280,23 +2342,23 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     {
       name: 'permissions',
-      description: 'Set permission mode',
+      description: 'Set session permissions',
       run: (parts: string[]) => {
         if (parts.length === 1) {
           showPermissionModeList();
           return;
         }
         const mode = parts.length === 2 ? parts[1] : undefined;
-        if (!isPermissionMode(mode)) {
+        if (mode !== 'auto' && mode !== 'bypass') {
           state.entries.push({
             kind: 'notice',
             level: 'error',
-            text: `Usage: /permissions ${PERMISSION_MODES.join('|')}`,
+            text: 'Usage: /permissions auto|bypass',
           });
           requestRender();
           return;
         }
-        void runControl(() => setPermissionMode(mode));
+        requestSandboxBoundaryMode(mode);
       },
     },
     {
@@ -2377,6 +2439,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       },
     },
     {
+      name: 'graph',
+      description: 'Show, enable, disable, or run one Graph turn',
+      run: (_parts: string[], rawTail: string | undefined, context: { idleMs: number }) => {
+        const parsed = parseGraphCommand(`/graph${rawTail ? ` ${rawTail}` : ''}`);
+        if (parsed) runGraphCommand(parsed, context.idleMs);
+      },
+    },
+    {
       name: 'swarm',
       description: 'Show, enable, disable, or run one Swarm turn',
       run: (_parts: string[], rawTail: string | undefined, context: { idleMs: number }) => {
@@ -2439,6 +2509,18 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       return { consume: true };
     }
     if (tui.hasOverlay()) return undefined;
+    const pendingSandboxBoundary = activeSandboxBoundaryRequest(state);
+    if (pendingSandboxBoundary && !matchesKey(data, Key.ctrl('c'))) {
+      if (
+        !isKeyRepeat(data) &&
+        (matchesKey(data, 'y') || matchesKey(data, Key.enter) || matchesKey(data, Key.return))
+      ) {
+        respondToPendingSandboxBoundary('allow');
+      } else if (!isKeyRepeat(data) && (matchesKey(data, 'n') || matchesKey(data, Key.escape))) {
+        respondToPendingSandboxBoundary('deny');
+      }
+      return { consume: true };
+    }
     // Alt+Enter: queue a followup (during a turn) or submit (when idle). Alt+↑:
     // take back the queued messages to re-edit. Neither is an editor binding
     // (newline is shift+enter/ctrl+j; history is plain up), so intercepting
@@ -2463,10 +2545,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // one (e.g. `Esc`, type, `Esc`).
     if (!matchesKey(data, Key.escape)) lastIdleEscapeAt = 0;
     if (matchesKey(data, Key.ctrl('o')) && !isKeyRepeat(data)) {
-      if (togglePendingPermissionDetails(state)) {
-        requestRender();
-        return { consume: true };
-      }
       if (toggleAllToolExpansion(state)) {
         requestRender();
         return { consume: true };
@@ -2478,28 +2556,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         return { consume: true };
       }
     }
-    const pendingPermission = activePermissionRequest(state);
-    if (pendingPermission) {
-      if (matchesKey(data, 'y') || matchesKey(data, Key.enter) || matchesKey(data, Key.return)) {
-        respondToPendingPermission('allow', false);
-        return { consume: true };
-      }
-      if (matchesKey(data, 'a') && pendingPermission.rememberForTurnAllowed) {
-        respondToPendingPermission('allow', true);
-        return { consume: true };
-      }
-      if (matchesKey(data, 'n') || matchesKey(data, Key.escape)) {
-        respondToPendingPermission('deny');
-        return { consume: true };
-      }
-    }
     if (turnRunning && matchesKey(data, Key.ctrl('c'))) {
       if (interruptRequested) handleProcessExit(0);
       else requestTurnInterrupt();
       return { consume: true };
     }
     // Double Escape interrupts the running turn. This must sit below the
-    // permission branch so Escape keeps meaning "deny" while a prompt is
+    // boundary branch so Escape keeps meaning "deny" while a prompt is
     // pending, and it only arms while a prompt turn is actually running.
     if (turnRunning && matchesKey(data, Key.escape)) {
       // Once an interrupt is issued, swallow further Escapes until the turn
@@ -2620,7 +2683,101 @@ const BOTTOM_PICKER_MARGIN_ROWS = 4;
 // The editor's autocomplete window height. Keep it at least as large as the
 // full slash-command menu, so a bare `/` shows every command rather than
 // silently clipping the last command.
-const EDITOR_AUTOCOMPLETE_MAX_VISIBLE = 16;
+const EDITOR_AUTOCOMPLETE_MAX_VISIBLE = 24;
+
+function formatContextDiagnostics(diagnostics: ContextDiagnostics): string {
+  if (diagnostics.status === 'unavailable') {
+    return diagnostics.reason === 'no_completed_request'
+      ? 'Context unavailable\nNo completed provider request exists for this session.'
+      : 'Context unavailable\nProvider request trace data could not be read.';
+  }
+
+  const lines = [
+    'Context',
+    'Latest completed request',
+    `${diagnostics.providerId} · ${diagnostics.modelId}`,
+    '',
+    'Usage',
+  ];
+  const pushMetric = (label: string, value: string, source: string): void => {
+    lines.push(`  ${label}: ${value}`, `    ${source}`);
+  };
+  pushMetric(
+    'Used',
+    diagnostics.inputTokens === undefined
+      ? 'unavailable'
+      : `${formatContextCount(diagnostics.inputTokens)} tokens`,
+    diagnostics.inputTokens === undefined ? 'provider report missing' : 'provider-reported',
+  );
+  pushMetric(
+    'Total',
+    diagnostics.contextWindow === undefined
+      ? 'unavailable'
+      : `${formatContextCount(diagnostics.contextWindow)} tokens`,
+    diagnostics.contextWindow === undefined
+      ? 'request-model snapshot missing'
+      : 'request-model snapshot',
+  );
+
+  if (diagnostics.inputTokens !== undefined && diagnostics.contextWindow !== undefined) {
+    const free = Math.max(0, diagnostics.contextWindow - diagnostics.inputTokens);
+    const percent = Math.round((diagnostics.inputTokens / diagnostics.contextWindow) * 100);
+    pushMetric('Free', `${formatContextCount(free)} tokens`, 'calculated');
+    pushMetric('Share', `${percent}%`, 'calculated');
+  } else {
+    pushMetric('Free', 'unavailable', 'requires Used and Total');
+    pushMetric('Share', 'unavailable', 'requires Used and Total');
+  }
+
+  lines.push('', 'Estimated breakdown');
+  if (diagnostics.segments.length === 0) {
+    lines.push('  Unavailable', '    no captured request segments');
+  } else {
+    const labels: Record<(typeof diagnostics.segments)[number]['kind'], string> = {
+      system_instructions: 'System instructions',
+      tool_definitions: 'Tool definitions',
+      messages: 'Messages',
+      other: 'Other options',
+    };
+    for (const segment of diagnostics.segments) {
+      lines.push(
+        `  ${labels[segment.kind]}: ≈${formatContextCount(segment.estimatedTokens)} tokens`,
+      );
+    }
+  }
+
+  if (diagnostics.compaction) {
+    const compaction = diagnostics.compaction;
+    lines.push(
+      '',
+      'History compaction',
+      `  ${compaction.phase.replace('_', '-')} · ${formatContextCount(compaction.eventCount)} events / ${formatContextCount(compaction.turnCount)} turns`,
+      `  ≈${formatContextCount(compaction.estimatedTokens)} tokens · local estimate`,
+    );
+  } else {
+    lines.push('', 'History compaction', '  Unavailable for this request');
+  }
+  return lines.join('\n');
+}
+
+function formatContextCount(value: number): string {
+  return value.toLocaleString('en-US');
+}
+
+function flattenLinkedSessionTree(
+  roots: readonly SessionSummary[],
+  childrenByParentId: ReadonlyMap<string, readonly SessionSummary[]>,
+): Array<{ session: SessionSummary; depth: number }> {
+  const flattened: Array<{ session: SessionSummary; depth: number }> = [];
+  const visit = (session: SessionSummary, depth: number): void => {
+    flattened.push({ session, depth });
+    for (const child of childrenByParentId.get(session.id) ?? []) {
+      visit(child, depth + 1);
+    }
+  };
+  for (const root of roots) visit(root, 0);
+  return flattened;
+}
 
 // A short, stable slice of a session id — enough to tell two same-named
 // sessions apart in the picker without showing the full unreadable uuid.

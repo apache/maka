@@ -22,7 +22,22 @@ export type {
 } from './credential-store.js';
 export * from './settings-store.js';
 export * from './telemetry-repo.js';
-export * from './artifact-store.js';
+export * from './usage-stores.js';
+export {
+  ARTIFACT_BINARY_PREVIEW_LIMIT_BYTES,
+  ARTIFACT_TEXT_PREVIEW_LIMIT_BYTES,
+  createArtifactStore,
+  isSafeRelativeArtifactPath,
+  resolveArtifactPath,
+  sanitizeArtifactName,
+} from './artifact-store.js';
+export type {
+  ArtifactStore,
+  ArtifactStoreReader,
+  CreateArtifactInput,
+  DurableArtifactAttachmentReader,
+  DurableArtifactBinaryReadResult,
+} from './artifact-store.js';
 export * from './artifact-attachments.js';
 export * from './provider-request-capture-artifact.js';
 export * from './plan-reminder-store.js';
@@ -37,3 +52,8 @@ export * from './sqlite-runtime-store.js';
 export * from './runtime-event-transfer.js';
 export * from './mcp-config-store.js';
 export * from './workspace-identity.js';
+export * from './memory-bundle-store.js';
+export * from './project-catalog.js';
+export * from './git-worktree-child-executor.js';
+export * from './project-session-migration.js';
+export * from './session-bundle-policy.js';

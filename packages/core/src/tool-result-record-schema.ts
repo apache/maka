@@ -1,9 +1,11 @@
 import {
   decodeCanonicalShellToolResultContent,
+  isSandboxDenialSignal,
   normalizeShellToolResultContent,
 } from './shell-run-result.js';
 import { isPermissionMode } from './permission.js';
-import type { ToolResultContent } from './events.js';
+import { isStorageRef, type ToolResultContent } from './events.js';
+import { validateSandboxBoundaryExpansion } from './sandbox-boundary.js';
 import {
   defineObjectShape,
   hasExactShape,
@@ -13,14 +15,20 @@ import {
   isRecord,
   isStringArray,
 } from './record-schema.js';
-import { isStorageRef } from './interaction-record-schema.js';
 
 type Result<K extends ToolResultContent['kind']> = Extract<ToolResultContent, { kind: K }>;
 type ExploreResult = Result<'explore_agent'>;
 type AgentSwarmResult = Result<'agent_swarm'>;
 type RiveResult = Result<'rive_workflow'>;
 
-const TEXT_SHAPE = defineObjectShape<Result<'text'>>()(['kind', 'text'], []);
+const TEXT_SHAPE = defineObjectShape<Result<'text'>>()(
+  ['kind', 'text'],
+  ['sandboxDenial', 'sandboxFailure'],
+);
+const SANDBOX_FAILURE_SHAPE = defineObjectShape<NonNullable<Result<'text'>['sandboxFailure']>>()(
+  ['reason'],
+  ['requiredExpansion'],
+);
 const JSON_SHAPE = defineObjectShape<Result<'json'>>()(['kind', 'value'], []);
 const FILE_DIFF_SHAPE = defineObjectShape<Result<'file_diff'>>()(['kind', 'paths', 'diff'], []);
 const FILE_WRITE_SHAPE = defineObjectShape<Result<'file_write'>>()(['kind', 'path', 'bytes'], []);
@@ -55,10 +63,6 @@ const WEB_SEARCH_ROW_SHAPE = defineObjectShape<WebSearchRow>()(
 const WEB_SEARCH_ERROR_SHAPE = defineObjectShape<Result<'web_search_error'>>()(
   ['kind', 'ok', 'provider', 'reason', 'message'],
   ['query', 'credentialSource'],
-);
-const OFFICE_DOCUMENT_SHAPE = defineObjectShape<Result<'office_document'>>()(
-  ['kind', 'ok'],
-  ['operation', 'path', 'args', 'stdout', 'stderr', 'truncated', 'reason', 'message'],
 );
 const EXPLORE_SHAPE = defineObjectShape<ExploreResult>()(
   [
@@ -117,7 +121,16 @@ const EXPLORE_MATCH_SHAPE = defineObjectShape<ExploreMatch>()(
 );
 const SUBAGENT_SHAPE = defineObjectShape<Result<'subagent'>>()(
   ['kind', 'agentName', 'turnId', 'status', 'permissionMode', 'summary', 'artifactIds'],
-  ['agentId', 'runId', 'startedAt', 'completedAt', 'durationMs', 'eventCount', 'failureClass'],
+  [
+    'childSessionId',
+    'agentId',
+    'runId',
+    'startedAt',
+    'completedAt',
+    'durationMs',
+    'eventCount',
+    'failureClass',
+  ],
 );
 const AGENT_SWARM_SHAPE = defineObjectShape<AgentSwarmResult>()(
   ['kind', 'status', 'items', 'startedAt', 'completedAt', 'durationMs'],
@@ -127,6 +140,7 @@ type AgentSwarmItem = AgentSwarmResult['items'][number];
 const AGENT_SWARM_ITEM_SHAPE = defineObjectShape<AgentSwarmItem>()(
   ['itemId', 'index', 'profile', 'started', 'status', 'summary', 'artifactIds'],
   [
+    'childSessionId',
     'agentId',
     'agentName',
     'turnId',
@@ -177,7 +191,11 @@ export function normalizeToolResultContentForRead(value: unknown): ToolResultCon
   const shell = normalizeShellToolResultContent(value);
   if (shell.state === 'invalid') throw new Error('Invalid shell tool result content');
   const normalized = shell.state === 'valid' ? shell.content : value;
-  return decodeCanonicalToolResultContent(normalized);
+  return decodeCanonicalToolResultContent(normalizeLegacySubagentToolResultContent(normalized));
+}
+
+export function decodePersistedToolResultContentForRecovery(value: unknown): ToolResultContent {
+  return decodeCanonicalToolResultContent(normalizeLegacySubagentToolResultContent(value));
 }
 
 export function decodeCanonicalToolResultContent(value: unknown): ToolResultContent {
@@ -190,11 +208,34 @@ export function decodeCanonicalToolResultContent(value: unknown): ToolResultCont
   return value;
 }
 
+function normalizeLegacySubagentToolResultContent(value: unknown): unknown {
+  if (
+    !isRecord(value) ||
+    value.kind !== 'subagent' ||
+    value.status !== 'waiting_permission' ||
+    !hasValidSubagentResultFields(value)
+  ) {
+    return value;
+  }
+  return { ...value, status: 'waiting_for_user' };
+}
+
 function isNonShellToolResultContent(value: unknown): value is ToolResultContent {
   if (!isRecord(value) || typeof value.kind !== 'string') return false;
   switch (value.kind) {
     case 'text':
-      return hasExactShape(value, TEXT_SHAPE) && typeof value.text === 'string';
+      return (
+        hasExactShape(value, TEXT_SHAPE) &&
+        typeof value.text === 'string' &&
+        (value.sandboxDenial === undefined || isSandboxDenialSignal(value.sandboxDenial)) &&
+        (value.sandboxFailure === undefined ||
+          (isRecord(value.sandboxFailure) &&
+            hasExactShape(value.sandboxFailure, SANDBOX_FAILURE_SHAPE) &&
+            (value.sandboxFailure.reason === 'sandbox_boundary_required' ||
+              value.sandboxFailure.reason === 'requires_bypass') &&
+            (value.sandboxFailure.requiredExpansion === undefined ||
+              validateSandboxBoundaryExpansion(value.sandboxFailure.requiredExpansion).ok)))
+      );
     case 'json':
       return hasExactShape(value, JSON_SHAPE) && Object.hasOwn(value, 'value');
     case 'file_diff':
@@ -254,39 +295,14 @@ function isNonShellToolResultContent(value: unknown): value is ToolResultContent
         typeof value.message === 'string' &&
         isOptionalString(value.credentialSource)
       );
-    case 'office_document':
-      return (
-        hasExactShape(value, OFFICE_DOCUMENT_SHAPE) &&
-        typeof value.ok === 'boolean' &&
-        isOptionalString(value.operation) &&
-        isOptionalString(value.path) &&
-        (value.args === undefined || isStringArray(value.args)) &&
-        isOptionalString(value.stdout) &&
-        isOptionalString(value.stderr) &&
-        (value.truncated === undefined || typeof value.truncated === 'boolean') &&
-        isOptionalString(value.reason) &&
-        isOptionalString(value.message)
-      );
     case 'explore_agent':
       return isExploreResult(value);
     case 'subagent':
       return (
-        hasExactShape(value, SUBAGENT_SHAPE) &&
-        isOptionalString(value.agentId) &&
-        typeof value.agentName === 'string' &&
-        typeof value.turnId === 'string' &&
-        isOptionalString(value.runId) &&
-        ['completed', 'failed', 'cancelled', 'running', 'waiting_permission'].includes(
+        hasValidSubagentResultFields(value) &&
+        ['completed', 'failed', 'cancelled', 'running', 'waiting_for_user'].includes(
           value.status as string,
-        ) &&
-        isPermissionMode(value.permissionMode) &&
-        typeof value.summary === 'string' &&
-        isStringArray(value.artifactIds) &&
-        isOptionalFiniteNumber(value.startedAt) &&
-        isOptionalFiniteNumber(value.completedAt) &&
-        isOptionalFiniteNumber(value.durationMs) &&
-        isOptionalFiniteNumber(value.eventCount) &&
-        isOptionalString(value.failureClass)
+        )
       );
     case 'agent_swarm':
       return isAgentSwarmResult(value);
@@ -295,6 +311,25 @@ function isNonShellToolResultContent(value: unknown): value is ToolResultContent
     default:
       return false;
   }
+}
+
+function hasValidSubagentResultFields(value: Record<string, unknown>): boolean {
+  return (
+    hasExactShape(value, SUBAGENT_SHAPE) &&
+    isOptionalString(value.childSessionId) &&
+    isOptionalString(value.agentId) &&
+    typeof value.agentName === 'string' &&
+    typeof value.turnId === 'string' &&
+    isOptionalString(value.runId) &&
+    isPermissionMode(value.permissionMode) &&
+    typeof value.summary === 'string' &&
+    isStringArray(value.artifactIds) &&
+    isOptionalFiniteNumber(value.startedAt) &&
+    isOptionalFiniteNumber(value.completedAt) &&
+    isOptionalFiniteNumber(value.durationMs) &&
+    isOptionalFiniteNumber(value.eventCount) &&
+    isOptionalString(value.failureClass)
+  );
 }
 
 function isAgentSwarmResult(value: Record<string, unknown>): value is AgentSwarmResult {
@@ -318,6 +353,7 @@ function isAgentSwarmItem(value: unknown): value is AgentSwarmItem {
     Number(value.index) >= 0 &&
     typeof value.profile === 'string' &&
     typeof value.started === 'boolean' &&
+    isOptionalString(value.childSessionId) &&
     isOptionalString(value.agentId) &&
     isOptionalString(value.agentName) &&
     isOptionalString(value.turnId) &&

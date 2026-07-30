@@ -10,37 +10,54 @@
    `.maka-chat-jump-bottom`). The header status cluster was removed.     */
 
 
+/* A right-aligned strip of per-session status chips (memory / deep-research /
+   goal), each rendered only when that state is active — so most of the time the
+   row is empty, and takes no space.
+   It carried three rulers until the shell grew a real titlebar row: a
+   `margin-right` reserving the workspace toolbar's hand-summed width, a
+   collapsed-state `margin-left` reserving the topbar rail's, and the transition
+   animating the latter. The strip now sits in the content row, below the
+   titlebar, where neither cluster can reach it. No fixed height either: an empty
+   status strip should take no vertical space, so the height follows the chips. */
 .maka-chat-header {
-  height: 32px;
   display: flex;
   align-items: flex-end;
+  justify-content: flex-end;
   gap: var(--space-1);
-  /* The header is also a drag strip, so its box must stop before the
-     absolutely-positioned .maka-workspace-top-actions toolbar instead of
-     merely padding content away from it. Otherwise the transparent drag
-     region covers the titlebar icon buttons. */
-  margin-right: var(--maka-workspace-top-actions-inset);
   padding: 0 var(--space-2-5);
   background: transparent;
   border-bottom: 0;
-  -webkit-app-region: drag;
-}
-
-.maka-shell-2col[data-sidebar-state="collapsed"] .maka-chat-header {
-  margin-left: var(--maka-sidebar-collapsed-topbar-inset);
 }
 
 /* #1032: hard-block session health notice sits above the composer,
-   outside the message scroll area (sibling of maka-composer-interaction-slot). */
+   outside the message scroll area (sibling of maka-composer-interaction-slot).
+   It is a peer of the composer form, so it must resolve to the SAME box as the
+   composer card: capped at the chat measure, centered, and inset by the
+   composer's own `--space-6` gutters. The old `margin: 0 var(--space-3)` left it
+   uncapped, so on a wide window the notice ran the full chat column while the
+   composer stayed at 680px — a visibly mismatched edge. Same formula as
+   `.maka-composer-no-model-hint` / `.maka-composer-revision-notice`.
+
+   #1629: the boundary-unreadable notice stands in for the composer it replaces,
+   so it is the same kind of peer and shares the formula rather than restating
+   it. `.maka-session-health-notice` stays last in each group — the
+   session-health-notice layout contract reads its rule body by matching the
+   selector immediately before the brace. */
+.maka-boundary-unreadable-notice,
 .maka-session-health-notice {
-  margin: 0 var(--space-3) var(--space-2);
+  width: min(var(--maka-chat-measure), calc(100% - (2 * var(--space-6))));
+  max-width: var(--maka-chat-measure);
+  margin: 0 auto var(--space-2);
   -webkit-app-region: no-drag;
 }
 
+.maka-boundary-unreadable-notice-alert,
 .maka-session-health-notice-alert {
-  width: auto;
+  width: 100%;
+  box-sizing: border-box;
 }
 
+.maka-boundary-unreadable-notice-action,
 .maka-session-health-notice-action {
   appearance: none;
   border: var(--border-width-hairline) solid oklch(from var(--border) l c h / 0.9);
@@ -54,13 +71,21 @@
   cursor: default;
 }
 
+.maka-boundary-unreadable-notice-action:hover:not(:disabled),
 .maka-session-health-notice-action:hover {
   background: var(--state-hover-bg);
 }
 
+.maka-boundary-unreadable-notice-action:focus-visible,
 .maka-session-health-notice-action:focus-visible {
   outline: var(--focus-ring-width) solid var(--focus-ring);
   outline-offset: var(--focus-ring-offset);
+}
+
+/* Only the boundary notice's action has a pending state: it re-reads in place,
+   where the health notice's action navigates away. */
+.maka-boundary-unreadable-notice-action:disabled {
+  opacity: var(--opacity-disabled);
 }
 
 /* PR-REMOVE-CHAT-TAB (WAWQAQ msg d401938d 2026-06-23): the
@@ -68,10 +93,6 @@
    the top-left of the chat header are removed. ~95 LOC of .maka-chat-tab*
    rules came out with them. Session name + model live in the sidebar;
    create-session lives in the sidebar new-task button. */
-
-.maka-chat-header-spacer {
-  flex: 1;
-}
 
 /* PR-MEMORY-VISIBILITY-INDICATOR-0: small clickable pill that fires
    when local MEMORY.md is being injected into the agent's system
@@ -155,6 +176,9 @@
     position: relative;
     min-height: 100%;
     padding-inline: clamp(var(--space-6), 4vw, var(--space-10));
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
   }
 
 .maka-chat-shell {

@@ -234,9 +234,8 @@ describe('onboarding mounted snapshot handoff', () => {
 });
 
 describe('first-run error boundaries', () => {
-  it('keeps onboarding and checklist probe errors localized and scrubbed', async () => {
+  it('keeps onboarding probe errors localized and scrubbed', async () => {
     const onboarding = await readFile(join(process.cwd(), 'src/renderer/use-onboarding-snapshot.ts'), 'utf8');
-    const checklist = await readFile(join(process.cwd(), 'src/renderer/FirstRunChecklist.tsx'), 'utf8');
 
     assert.match(onboarding, /function onboardingSnapshotErrorMessage\(error: unknown, locale: UiLocale\): string \{[\s\S]*locale === 'zh' \? generalizedErrorMessageChinese\(error, fallback\) : generalizedErrorMessage\(error, fallback\)/);
     assert.match(onboarding, /emitError\(onboardingSnapshotErrorMessage\(err, getLocale\(\)\)\)/);
@@ -247,8 +246,6 @@ describe('first-run error boundaries', () => {
     assert.match(onboarding, /if \(!active \|\| ticket !== inflightTicket\) return/);
     assert.match(onboarding, /dispose\(\): void \{[\s\S]*active = false;[\s\S]*inflightTicket \+= 1;/);
 
-    assert.match(checklist, /function firstRunChecklistErrorMessage\(error: unknown, locale: UiLocale\): string \{[\s\S]*locale === 'zh' \? generalizedErrorMessageChinese\(error, fallback\) : generalizedErrorMessage\(error, fallback\)/);
-    assert.doesNotMatch(checklist, /error instanceof Error[\s\S]*error\.message[\s\S]*String\(error\)/);
     assert.doesNotMatch(onboardingSnapshotErrorMessage(new Error('IPC failed'), 'en'), /[\u3400-\u9fff]/);
   });
 });

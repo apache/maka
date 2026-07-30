@@ -34,7 +34,7 @@ export interface AppShellSkillActions {
   ): Promise<boolean>;
   setSkillEnabled(skillId: string, enabled: boolean): Promise<void>;
   setSkillPinned(skillRef: string, pinned: boolean): Promise<void>;
-  deleteSkill(skillId: string): Promise<void>;
+  deleteSkill(skillRef: string): Promise<void>;
   openSkill(skillId: string): Promise<void>;
 }
 
@@ -277,9 +277,9 @@ export function createAppShellSkillActions(deps: {
     }
   }
 
-  async function deleteSkill(skillId: string) {
+  async function deleteSkill(skillRef: string) {
     try {
-      const result = await window.maka.skills.delete(skillId);
+      const result = await window.maka.skills.delete(skillRef);
       if (!result.ok) {
         if (isSkillsSurfaceActive()) toastApi.error(copy.deleteFailedTitle, copy.deleteFailures[result.reason]);
         return;
@@ -290,7 +290,10 @@ export function createAppShellSkillActions(deps: {
       await refreshBundledSkillCatalog({
         shouldShowError: isSkillsSurfaceActive,
       });
-      if (isSkillsSurfaceActive()) toastApi.success(copy.deletedTitle, copy.deletedDescription(skillId));
+      // The ref is scope-qualified (`user:agents:gh-cli`); the toast shows the
+      // bare skill id, which is what the row itself is labelled with.
+      const displayId = skillRef.slice(skillRef.lastIndexOf(':') + 1);
+      if (isSkillsSurfaceActive()) toastApi.success(copy.deletedTitle, copy.deletedDescription(displayId));
     } catch (error) {
       if (isSkillsSurfaceActive()) {
         toastApi.error(copy.deleteFailedTitle, localizedShellErrorMessage(error, copy.deleteFallback, uiLocale));

@@ -3,9 +3,8 @@ import { promises as fs } from 'node:fs';
 import { glob as nodeGlob } from 'node:fs/promises';
 import { dirname, isAbsolute, parse, resolve } from 'node:path';
 import { isPathInside } from '../path-containment.js';
-import { additionalPermissionAllowsPath } from '@maka/core/additional-permissions';
+import { sandboxBoundaryExpansionAllowsPath } from '@maka/core';
 
-import { hashAdditionalPermissionProfile } from '../additional-permission-hash.js';
 import { computeEditedSource } from '../edit-replace.js';
 import { isSupportedImagePath, readWorkspaceImage } from '../image-file.js';
 import {
@@ -17,6 +16,7 @@ import {
   type FilesystemWorkerResult,
   type FilesystemWorkerTarget,
 } from './protocol.js';
+import { isLikelySandboxDenial } from '../sandbox/detect.js';
 
 const DEFAULT_GLOB_LIMIT = 200;
 const MAX_GREP_OUTPUT_BYTES = 8 * 1024 * 1024;
@@ -49,12 +49,6 @@ export async function executeFilesystemWorkerRequest(
   dependencies: FilesystemWorkerOperationDependencies = {},
 ): Promise<FilesystemWorkerResponse> {
   try {
-    if (request.permissionsHash !== hashAdditionalPermissionProfile(request.operationPermission)) {
-      throw operationError(
-        'invalid_request',
-        'Filesystem operation permission hash did not match.',
-      );
-    }
     await assertTargetUnchanged(request.operation.path, request.expectedTarget);
     return {
       version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
@@ -62,7 +56,7 @@ export async function executeFilesystemWorkerRequest(
       ok: true,
       result: await executeFilesystemOperation(
         request.operation,
-        request.operationPermission,
+        request.operationBoundary,
         dependencies,
       ),
     };
@@ -79,7 +73,7 @@ export async function executeFilesystemWorkerRequest(
 
 export async function executeFilesystemOperation(
   operation: FilesystemWorkerOperation,
-  operationPermission: FilesystemWorkerRequest['operationPermission'],
+  operationBoundary: FilesystemWorkerRequest['operationBoundary'],
   dependencies: FilesystemWorkerOperationDependencies = {},
 ): Promise<FilesystemWorkerResult> {
   switch (operation.kind) {
@@ -89,7 +83,7 @@ export async function executeFilesystemOperation(
         operation.path,
         'Read',
         'read',
-        operationPermission,
+        operationBoundary,
       );
       if (isSupportedImagePath(path)) {
         try {
@@ -119,7 +113,7 @@ export async function executeFilesystemOperation(
         operation.cwd,
         operation.path,
         'Write',
-        operationPermission,
+        operationBoundary,
       );
       await fs.writeFile(path, operation.content, 'utf8');
       return { kind: 'write', ok: true, path, bytes: Buffer.byteLength(operation.content, 'utf8') };
@@ -130,7 +124,7 @@ export async function executeFilesystemOperation(
         operation.path,
         'Edit',
         'write',
-        operationPermission,
+        operationBoundary,
       );
       const content = await fs.readFile(path, 'utf8');
       let edited: ReturnType<typeof computeEditedSource>;
@@ -164,7 +158,7 @@ export async function executeFilesystemOperation(
         operation.path,
         'FormatJson',
         'write',
-        operationPermission,
+        operationBoundary,
       );
       const original = await fs.readFile(path, 'utf8');
       const bytesBefore = Buffer.byteLength(original, 'utf8');
@@ -204,7 +198,7 @@ export async function executeFilesystemOperation(
         operation.path,
         'Glob cwd',
         'read',
-        operationPermission,
+        operationBoundary,
       );
       const files: string[] = [];
       const limit = operation.limit ?? DEFAULT_GLOB_LIMIT;
@@ -220,7 +214,7 @@ export async function executeFilesystemOperation(
         operation.path,
         'Grep',
         'read',
-        operationPermission,
+        operationBoundary,
       );
       if (!dependencies.grepExecutable)
         throw operationError('grep_unavailable', 'Grep is unavailable in this runtime.');
@@ -239,7 +233,9 @@ export async function executeFilesystemOperation(
       if (result.exitCode !== 0) {
         const detail = result.stderrTail.trim();
         throw operationError(
-          'filesystem_error',
+          isLikelySandboxDenial({ stdout: result.stdout, stderr: detail, sandboxed: true })
+            ? 'sandbox_denied'
+            : 'filesystem_error',
           detail
             ? `Grep failed while searching files.\n${detail}`
             : 'Grep failed while searching files.',
@@ -310,7 +306,7 @@ async function resolveWritableAllowed(
   cwd: string,
   inputPath: string,
   label: string,
-  permission: FilesystemWorkerRequest['operationPermission'],
+  permission: FilesystemWorkerRequest['operationBoundary'],
 ): Promise<string> {
   const { root, candidate } = await resolveCandidate(cwd, inputPath, label, 'write', permission);
   try {
@@ -325,7 +321,7 @@ async function resolveWritableAllowed(
   if (!isPathInside(root, parent) && !exactWriteCoversParent(permission, candidate, parent)) {
     throw operationError(
       'path_denied',
-      `${label} parent was not covered by the one-call permission.`,
+      `${label} parent was not covered by the operation boundary.`,
     );
   }
   return candidate;
@@ -336,7 +332,7 @@ async function resolveExistingAllowed(
   inputPath: string,
   label: string,
   access: 'read' | 'write',
-  permission: FilesystemWorkerRequest['operationPermission'],
+  permission: FilesystemWorkerRequest['operationBoundary'],
 ): Promise<string> {
   const { root, candidate } = await resolveCandidate(cwd, inputPath, label, access, permission);
   const target = await fs.realpath(candidate);
@@ -349,18 +345,15 @@ async function resolveCandidate(
   inputPath: string,
   label: string,
   access: 'read' | 'write',
-  permission: FilesystemWorkerRequest['operationPermission'],
+  permission: FilesystemWorkerRequest['operationBoundary'],
 ): Promise<{ root: string; candidate: string }> {
   const root = await fs.realpath(cwd);
   const candidate = resolve(root, inputPath);
   if (
     !isPathInside(root, candidate) &&
-    !additionalPermissionAllowsPath(permission, candidate, access)
+    !sandboxBoundaryExpansionAllowsPath(permission, candidate, access)
   ) {
-    throw operationError(
-      'path_denied',
-      `${label} path was not covered by the one-call permission.`,
-    );
+    throw operationError('path_denied', `${label} path was not covered by the operation boundary.`);
   }
   return { root, candidate };
 }
@@ -370,20 +363,20 @@ function assertAllowed(
   target: string,
   label: string,
   access: 'read' | 'write',
-  permission: FilesystemWorkerRequest['operationPermission'],
+  permission: FilesystemWorkerRequest['operationBoundary'],
 ): void {
-  if (isPathInside(root, target) || additionalPermissionAllowsPath(permission, target, access))
+  if (isPathInside(root, target) || sandboxBoundaryExpansionAllowsPath(permission, target, access))
     return;
   throw operationError('path_denied', `${label} path escaped its approved target.`);
 }
 
 function exactWriteCoversParent(
-  permission: FilesystemWorkerRequest['operationPermission'],
+  permission: FilesystemWorkerRequest['operationBoundary'],
   target: string,
   parent: string,
 ): boolean {
   return (
-    permission.fileSystem?.entries.some(
+    permission.filesystem?.entries.some(
       (entry) =>
         entry.access === 'write' &&
         entry.scope === 'exact' &&

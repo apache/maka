@@ -345,7 +345,7 @@ function createFirstRunSessionDriver(): MakaSessionDriver {
     listSessions: async () => [],
     preparePrompt: notReady,
     compactSession: async function* () {},
-    respondToPermission: async () => {},
+    respondToSandboxBoundary: async () => {},
     setModel: async () => {},
     setThinkingLevel: async () => {},
     setPermissionMode: async () => {},

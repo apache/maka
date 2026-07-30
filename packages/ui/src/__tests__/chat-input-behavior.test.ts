@@ -9,7 +9,9 @@ import {
   mentionQueryMatches,
   skillMentionQuery,
 } from '../chat-input-behavior.js';
-import { addUniqueComposerSkillSelection } from '../use-composer-skill-draft.js';
+import {
+  addUniqueComposerSkillSelection,
+} from '../use-composer-skill-draft.js';
 
 describe('shared chat input behavior', () => {
   it('recognizes IME composition from either the native flag or Process key', () => {
@@ -159,5 +161,19 @@ describe('structured Skill selections', () => {
       { id: 'alpha', name: 'Alpha' },
       { id: 'beta', name: 'Beta' },
     ]);
+  });
+
+  it('keeps same-id selections from different stable refs distinct', () => {
+    const project = {
+      ref: 'project:maka:writer',
+      id: 'writer',
+      name: 'Project Writer',
+    };
+    const user = {
+      ref: 'user:agents:writer',
+      id: 'writer',
+      name: 'User Writer',
+    };
+    assert.deepEqual(addUniqueComposerSkillSelection([project], user), [project, user]);
   });
 });

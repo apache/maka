@@ -10,7 +10,7 @@ import type {
   SynthesisCacheLoadResult,
   SynthesisCacheWriteInput,
   SynthesisCacheWriteResult,
-} from './ai-sdk-backend.js';
+} from './ai-sdk-compaction-contract.js';
 
 /**
  * The synthesis-cache persistence glue lives here (rather than on a desktop or

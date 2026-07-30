@@ -228,9 +228,9 @@
     padding: var(--space-2) var(--space-1);
   }
 
-/* Unlayered on purpose: the shared `.maka-empty-state` base (onboarding.css)
-   is unlayered `position: absolute` centering, and unlayered rules always beat
-   @layer rules — inside @layer components this override silently never applied,
+/* Must share maka.legacy with the `.maka-empty-state` base (onboarding.css),
+   whose `position: absolute` centering it overrides by specificity — inside
+   @layer components (below maka.legacy) this override silently never applied,
    so the empty card floated as a translucent overlay. Reset it to in-flow. */
 .maka-daily-review-panel .maka-daily-review-summary-empty {
   position: static;

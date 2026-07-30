@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { UiLocale } from '@maka/core';
-import type { ComposerDefaults } from './composer-defaults';
+import type { ProjectRecord, UiLocale } from '@maka/core';
 import {
   createAppShellProjectActions,
   type AppShellProjectActions,
@@ -19,9 +18,9 @@ type ToastApi = {
 /**
  * Owns the workspace / project-picker cluster: the new-task project, active
  * session project projection, branch list + its in-flight flag, the
- * recent-workspace history, and the project-picker pending state / dedup
- * refs. Seeds appInfo + recentProjectPaths from the persisted composer
- * defaults so the home view is populated before the async `app:info`
+ * persistent project catalog, and the project-picker pending state / dedup
+ * refs. Seeds appInfo from the persisted composer defaults so the home view
+ * is populated before the async `app:info`
  * round-trip completes on mount.
  *
  * The picker refs are returned so AppShell can hand them to the bootstrap
@@ -31,47 +30,64 @@ type ToastApi = {
  */
 export function useAppShellProjectContext(options: {
   uiLocale: UiLocale;
-  persistedComposerDefaults: ComposerDefaults | null;
   rendererMountedRef: RefBox<boolean>;
   sessionId?: string;
   sessionCwd?: string;
+  sessionProjectId?: string | null;
   onProjectSelected(ownerSessionId?: string): void;
   toastApi: ToastApi;
 }): AppShellProjectActions & {
   projectInfo: RendererAppInfo | null;
+  projects: ProjectRecord[];
+  selectedProjectId: string | null | undefined;
+  currentProjectId: string | null | undefined;
+  currentProject: ProjectRecord | undefined;
   branchList: { branches: string[]; current?: string } | null;
   branchPending: boolean;
-  recentProjectPaths: string[];
   projectPickerPending: boolean;
   projectPickerPendingRef: RefBox<boolean>;
   projectPickerRequestRef: RefBox<number>;
 } {
   const {
     uiLocale,
-    persistedComposerDefaults,
     rendererMountedRef,
     sessionId,
     sessionCwd,
+    sessionProjectId,
     onProjectSelected,
     toastApi,
   } = options;
-  const [appInfo, setAppInfo] = useState<RendererAppInfo | null>(
-    persistedComposerDefaults?.projectPath
-      ? {
-          projectPath: persistedComposerDefaults.projectPath,
-          projectGit: { isGitRepo: false },
-        }
-      : null,
-  );
+  const [appInfo, setAppInfo] = useState<RendererAppInfo | null>(null);
   const [sessionProjectInfo, setSessionProjectInfo] = useState<SessionProjectInfoState | null>(null);
   const [branchListState, setBranchList] = useState<ProjectBranchListState | null>(null);
   const [branchPending, setBranchPending] = useState(false);
-  const [recentProjectPaths, setRecentProjectPaths] = useState<string[]>(
-    persistedComposerDefaults?.recentProjectPaths ?? [],
-  );
+  const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null | undefined>(undefined);
   const [projectPickerPending, setProjectPickerPending] = useState(false);
   const projectPickerPendingRef = useRef(false);
   const projectPickerRequestRef = useRef(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all([window.maka.projects.list(), window.maka.app.info()]).then(
+      ([next, info]) => {
+        if (cancelled) return;
+        setProjects(next);
+        setAppInfo({
+          projectId: info.projectId,
+          projectPath: info.projectPath,
+          projectGit: info.projectGit,
+        });
+        setSelectedProjectId(info.projectId);
+      },
+      () => {
+        // Project management failures surface at the next user action.
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -100,6 +116,10 @@ export function useAppShellProjectContext(options: {
     ? (resolvedSessionProjectInfo ??
       (sessionCwd ? { projectPath: sessionCwd, projectGit: { isGitRepo: false } } : null))
     : appInfo;
+  const currentProjectId = sessionId ? (sessionProjectId ?? null) : selectedProjectId;
+  const currentProject = projects.find(
+    (project) => project.id === currentProjectId || project.aliases?.includes(currentProjectId ?? ''),
+  );
   const branchList =
     branchListState?.contextKey === (sessionId ?? null)
     ? { branches: branchListState.branches, current: branchListState.current }
@@ -115,8 +135,10 @@ export function useAppShellProjectContext(options: {
     setProjectPickerPending,
     setBranchPending,
     setBranchList,
-    setRecentProjectPaths,
-    recentProjectPaths,
+    setProjects,
+    setSelectedProjectId,
+    selectedProjectId,
+    projects,
     projectInfo,
     sessionId,
     onProjectSelected,
@@ -125,9 +147,12 @@ export function useAppShellProjectContext(options: {
 
   return {
     projectInfo,
+    projects,
+    selectedProjectId,
+    currentProjectId,
+    currentProject,
     branchList,
     branchPending,
-    recentProjectPaths,
     projectPickerPending,
     projectPickerPendingRef,
     projectPickerRequestRef,

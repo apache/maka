@@ -1,7 +1,7 @@
 // Local bot channel brand logos.
 //
 // Sources and licenses:
-// - Telegram, Discord, WeChat, QQ: Simple Icons, CC0-1.0.
+// - Telegram, Discord, WeChat, QQ, Slack: Simple Icons, CC0-1.0.
 // - WeCom: TDesign Icons `logo-wecom`, MIT, by Tencent.
 // - DingTalk: MingCute Icon `dingtalk-fill`, Apache-2.0.
 // - Feishu/Lark: Allogo `feishu/icon.svg`; Allogo code is MIT, and
@@ -103,6 +103,20 @@ function QQLogo(): ReactNode {
   );
 }
 
+function SlackLogo(): ReactNode {
+  return (
+    <>
+      <rect width="24" height="24" rx="5" ry="5" fill="#fff" />
+      <g transform="translate(4 4)">
+        <path fill="#36C5F0" d="M3.38 9.64a1.69 1.69 0 1 1-1.69-1.69h1.69zM4.23 9.64a1.69 1.69 0 0 1 3.38 0v4.23a1.69 1.69 0 0 1-3.38 0z" />
+        <path fill="#2EB67D" d="M6.36 3.38a1.69 1.69 0 1 1 1.69-1.69v1.69zM6.36 4.23a1.69 1.69 0 0 1 0 3.38H2.13a1.69 1.69 0 0 1 0-3.38z" />
+        <path fill="#ECB22E" d="M12.62 6.36a1.69 1.69 0 1 1 1.69 1.69h-1.69zM11.77 6.36a1.69 1.69 0 0 1-3.38 0V2.13a1.69 1.69 0 0 1 3.38 0z" />
+        <path fill="#E01E5A" d="M9.64 12.62a1.69 1.69 0 1 1-1.69 1.69v-1.69zM9.64 11.77a1.69 1.69 0 0 1 0-3.38h4.23a1.69 1.69 0 0 1 0 3.38z" />
+      </g>
+    </>
+  );
+}
+
 const BOT_BRAND_LOGOS = {
   telegram: TelegramLogo,
   feishu: FeishuLogo,
@@ -111,6 +125,7 @@ const BOT_BRAND_LOGOS = {
   discord: DiscordLogo,
   dingtalk: DingTalkLogo,
   qq: QQLogo,
+  slack: SlackLogo,
 } satisfies Record<BotProvider, BotBrandLogoPaths>;
 
 export function BotBrandLogo({

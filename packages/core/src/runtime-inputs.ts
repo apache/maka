@@ -2,18 +2,32 @@
  * Inputs to runtime APIs (create session, send message, list/filter).
  */
 
-import type { AttachmentRef, QuoteRef } from './events.js';
-import type { BackendKind, SessionBlockedReason, SessionStatus } from './session.js';
+import type { MessageContent } from './events.js';
+import type {
+  BackendKind,
+  SessionBlockedReason,
+  SessionStatus,
+  SubagentSessionParent,
+  SubagentSessionRuntime,
+  SubagentSessionSpawn,
+} from './session.js';
 import type { PermissionMode } from './permission.js';
 import type { ThinkingLevel } from './model-thinking.js';
 import type { CollaborationMode } from './collaboration.js';
 import type { OrchestrationMode, TurnOrchestration } from './orchestration.js';
+import type { SessionStartMode } from './explore-agent.js';
+import type { SubagentWorkspaceBinding } from './subagent-workspace.js';
 
 export type { TurnOrchestration } from './orchestration.js';
 
 export interface CreateSessionInput {
   /** Absolute path to the session's working dir (project root). */
   cwd: string;
+  /**
+   * Stable project-catalog association. Main resolves `undefined`
+   * automatically; `null` is the explicit no-project choice.
+   */
+  projectId?: string | null;
   /** If omitted, runtime auto-derives a placeholder; users may rename later. */
   name?: string;
   backend: BackendKind;
@@ -31,6 +45,10 @@ export interface CreateSessionInput {
   blockedReason?: SessionBlockedReason;
   parentSessionId?: string;
   branchOfTurnId?: string;
+  subagentParent?: SubagentSessionParent;
+  subagentRuntime?: SubagentSessionRuntime;
+  subagentSpawn?: SubagentSessionSpawn;
+  subagentWorkspace?: SubagentWorkspaceBinding;
   revisionRootSessionId?: string;
   revisionParentSessionId?: string;
   revisionOfTurnId?: string;
@@ -39,28 +57,28 @@ export interface CreateSessionInput {
   labels?: string[];
 }
 
-export interface UserMessageInput {
+/**
+ * What the desktop `sessions:create` IPC accepts: a partial
+ * `CreateSessionInput` the main process completes, plus the product intent the
+ * renderer may name instead of spelling out what it implies (#1433).
+ *
+ * It lives beside `CreateSessionInput` rather than in the handler because
+ * three modules describe this one wire shape — the handler, the preload
+ * bridge, and the renderer's bridge contract — and only the first of them can
+ * import from main. Written out three times it drifts silently: the renderer
+ * type-checks against `bridge-contract.d.ts` alone, so a field added on one
+ * side and not the other is a type error nowhere.
+ */
+export type CreateSessionRequestInput = Partial<CreateSessionInput> & {
+  mode?: SessionStartMode;
+};
+
+export interface UserMessageInput extends MessageContent {
   /** Caller-generated uuid. Same id used in the UserMessage.turnId and in
    *  every event emitted by this turn. */
   turnId: string;
-  /**
-   * Model-facing turn text (and the default human-facing text). When the
-   * client wraps the user's typed input — e.g. explicit skill invocation
-   * injects `<invoked-skill>` blocks — put the composed envelope here and
-   * the original typed text in `displayText`.
-   */
-  text: string;
-  /**
-   * Human-facing text when it differs from `text`. Session title derivation,
-   * transcript restore, rewind refill, and sidebar previews should prefer
-   * this over `text`. Omit when the two are identical.
-   */
-  displayText?: string;
   /** Trusted host-supplied orchestration override for this turn only. */
   turnOrchestration?: TurnOrchestration;
-  attachments?: AttachmentRef[];
-  /** Inline quoted excerpts; folded into model content, rendered as chips. */
-  quotes?: QuoteRef[];
   parentRunId?: string;
   /** Child AgentRun whose durable conversation this child continues. */
   resumedFromRunId?: string;
@@ -78,8 +96,17 @@ export interface UserMessageInput {
   origin?: TurnOrigin;
 }
 
-/** Non-user trigger source for a turn (e.g. a scheduled automation fire). */
-export type TurnOrigin = { kind: 'automation'; automationId: string };
+/** Non-user trigger source for a turn. */
+export type TurnOrigin =
+  | { kind: 'automation'; automationId: string }
+  | {
+      kind: 'agent_graph';
+      graphId: string;
+      /** Durable, graph-snapshot-scoped idempotency key for this supervisor wake. */
+      wakeId: string;
+      /** Durable identity of one delivery attempt for the wake. */
+      attemptId: string;
+    };
 
 export interface AgentSpec {
   id: string;
@@ -114,4 +141,6 @@ export interface SessionListFilter {
   isArchived?: boolean;
   isFlagged?: boolean;
   labelSlug?: string;
+  /** Return linked subagent sessions owned by this parent session. */
+  subagentParentSessionId?: string;
 }

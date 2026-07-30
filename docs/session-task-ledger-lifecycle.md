@@ -136,6 +136,27 @@ behavior remains compatible with the original full-list behavior.
 PascalCase aliases are not advertised and require an explicit compatibility
 flag in main-process wiring.
 
+### Runtime Host Authority
+
+The non-serving Runtime Host composition opens the interactive Task Ledger
+writer under its Storage root owner lease. One per-Session coordinator
+implements the Runtime `TaskLedgerStore` port and serves the read-only
+`task.ledger.query` Client operation. Reads, mutations, claims, and child
+outcomes invoked through that port therefore share the same Session admission
+boundary instead of creating a second Task Ledger authority.
+
+Binding the port into the Host's real-model task and child-agent tool
+composition is part of the later Hosted execution slice. This authority slice
+establishes the port and its Client projection without claiming that
+non-serving Host tool composition is already active.
+
+Client queries return the canonical, sanitized projection in item- and
+byte-bounded pages. A content revision pins each traversal; a continuation from
+an older projection returns `revision_changed` rather than mixing snapshots
+across Host epochs. The authority preserves the existing `task-events.jsonl`,
+`tasks.json`, legacy-read, and backfill behavior. Desktop keeps its embedded
+writer until the production cutover replaces all root writers atomically.
+
 ## Child Agent Ownership
 
 `agent_spawn(task_id=...)` resolves the task in the current session and claims

@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import type { RuntimeEvent } from '@maka/core';
+import { canonicalToolArgsHash, type RuntimeEvent } from '@maka/core';
 import {
   SQLITE_RUNTIME_SCHEMA_VERSION,
   createSqliteRuntimeStore,
@@ -28,6 +28,38 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
+  it('makes a raw canonical-equivalent terminal durability retry idempotent', async () => {
+    await withStore(async (store) => {
+      const terminal: RuntimeEvent = {
+        id: 'terminal-event-1',
+        sessionId: 'session-1',
+        invocationId: 'invocation-1',
+        runId: 'run-1',
+        turnId: 'turn-1',
+        ts: 5,
+        partial: false,
+        role: 'system',
+        author: 'system',
+        status: 'completed',
+        content: {
+          kind: 'text',
+          text: 'done',
+          displayText: 'done',
+          attachments: [],
+          quotes: [],
+        },
+        actions: { endInvocation: true },
+      };
+
+      await store.appendRuntimeEvent('session-1', 'run-1', terminal);
+      await store.ensureTerminalRuntimeEventDurable('session-1', 'run-1', terminal);
+
+      const events = await store.readImmutableRuntimeEvents('session-1', 'run-1');
+      assert.equal(events.length, 1);
+      assert.deepEqual(events[0]?.content, { kind: 'text', text: 'done' });
+    });
+  });
+
   it('commits function_call, dispatch fact, and operation projection atomically in T1', async () => {
     await withStore(async (store) => {
       const call = functionCallEvent();
@@ -35,12 +67,12 @@ describe('SqliteRuntimeStore', () => {
 
       const input = {
         operationId: 'operation-1',
-        journalEventId: 'journal-prepared-1',
+        journalEventId: 'operation-1_prepared',
         runtimeEvent: call,
         dispatchRuntimeEvent: dispatch,
         providerToolCallId: 'provider-call-1',
         toolName: 'Read',
-        canonicalArgsHash: 'sha256:args-1',
+        canonicalArgsHash: READ_ARGS_HASH,
         recoveryMode: 'replay_safe',
         committedAt: 10,
       } as const;
@@ -56,7 +88,7 @@ describe('SqliteRuntimeStore', () => {
         turnId: 'turn-1',
         providerToolCallId: 'provider-call-1',
         toolName: 'Read',
-        canonicalArgsHash: 'sha256:args-1',
+        canonicalArgsHash: READ_ARGS_HASH,
         recoveryMode: 'replay_safe',
         currentState: 'prepared',
         callEventId: 'call-event-1',
@@ -99,7 +131,7 @@ describe('SqliteRuntimeStore', () => {
       await assert.rejects(
         store.commitToolPrepared({
           operationId: 'operation-t1-failure',
-          journalEventId: 'journal-t1-failure',
+          journalEventId: 'operation-t1-failure_prepared',
           runtimeEvent: functionCallEvent({ id: 'call-t1-failure' }),
           dispatchRuntimeEvent: toolDispatchEvent({
             id: 'dispatch-t1-failure',
@@ -110,14 +142,14 @@ describe('SqliteRuntimeStore', () => {
                 operationId: 'operation-t1-failure',
                 providerToolCallId: 'provider-call-1',
                 toolName: 'Read',
-                canonicalArgsHash: 'sha256:t1-failure',
+                canonicalArgsHash: READ_ARGS_HASH,
                 recoveryMode: 'replay_safe',
               },
             },
           }),
           providerToolCallId: 'provider-call-1',
           toolName: 'Read',
-          canonicalArgsHash: 'sha256:t1-failure',
+          canonicalArgsHash: READ_ARGS_HASH,
           recoveryMode: 'replay_safe',
           committedAt: 11,
         }),
@@ -138,7 +170,7 @@ describe('SqliteRuntimeStore', () => {
 
       const result = await store.commitToolOutcome({
         operationId: 'operation-1',
-        journalEventId: 'journal-outcome-1',
+        journalEventId: 'operation-1_outcome',
         runtimeEvent: outcome,
         committedAt: 20,
       });
@@ -158,7 +190,7 @@ describe('SqliteRuntimeStore', () => {
         turnId: 'turn-1',
         providerToolCallId: 'provider-call-1',
         toolName: 'Read',
-        canonicalArgsHash: 'sha256:args-1',
+        canonicalArgsHash: READ_ARGS_HASH,
         recoveryMode: 'replay_safe',
         currentState: 'outcome_committed',
         callEventId: 'call-event-1',
@@ -182,7 +214,7 @@ describe('SqliteRuntimeStore', () => {
       await assert.rejects(
         store.commitToolOutcome({
           operationId: 'operation-1',
-          journalEventId: 'journal-outcome-failure',
+          journalEventId: 'operation-1_outcome',
           runtimeEvent: functionResponseEvent({ id: 'response-t2-failure' }),
           committedAt: 21,
         }),
@@ -211,13 +243,13 @@ describe('SqliteRuntimeStore', () => {
 
       const firstOutcome = await store.commitToolOutcome({
         operationId: 'operation-1',
-        journalEventId: 'journal-outcome-1',
+        journalEventId: 'operation-1_outcome',
         runtimeEvent: functionResponseEvent(),
         committedAt: 20,
       });
       const duplicateOutcome = await store.commitToolOutcome({
         operationId: 'operation-1',
-        journalEventId: 'journal-outcome-1',
+        journalEventId: 'operation-1_outcome',
         runtimeEvent: functionResponseEvent(),
         committedAt: 20,
       });
@@ -229,8 +261,15 @@ describe('SqliteRuntimeStore', () => {
       await assert.rejects(
         store.commitToolPrepared({
           operationId: 'operation-1',
-          journalEventId: 'journal-prepared-drift',
-          runtimeEvent: functionCallEvent(),
+          journalEventId: 'operation-1_prepared',
+          runtimeEvent: functionCallEvent({
+            content: {
+              kind: 'function_call',
+              id: 'provider-call-1',
+              name: 'Read',
+              args: { path: '/workspace/repo/OTHER.md' },
+            },
+          }),
           dispatchRuntimeEvent: toolDispatchEvent({
             actions: {
               toolDispatch: {
@@ -238,18 +277,18 @@ describe('SqliteRuntimeStore', () => {
                 operationId: 'operation-1',
                 providerToolCallId: 'provider-call-1',
                 toolName: 'Read',
-                canonicalArgsHash: 'sha256:different-args',
+                canonicalArgsHash: DIFFERENT_READ_ARGS_HASH,
                 recoveryMode: 'replay_safe',
               },
             },
           }),
           providerToolCallId: 'provider-call-1',
           toolName: 'Read',
-          canonicalArgsHash: 'sha256:different-args',
+          canonicalArgsHash: DIFFERENT_READ_ARGS_HASH,
           recoveryMode: 'replay_safe',
           committedAt: 30,
         }),
-        /operation identity conflict/,
+        /duplicate_event_id/,
       );
     });
   });
@@ -259,7 +298,7 @@ describe('SqliteRuntimeStore', () => {
       await commitPrepared(store);
       await store.commitToolOutcome({
         operationId: 'operation-1',
-        journalEventId: 'journal-outcome-1',
+        journalEventId: 'operation-1_outcome',
         runtimeEvent: functionResponseEvent(),
         committedAt: 20,
       });
@@ -349,6 +388,7 @@ describe('SqliteRuntimeStore', () => {
           refs: { providerEventId: 'message-1' },
         }),
       );
+      await store.appendRuntimeEvent('session-1', 'run-1', functionCallEvent());
       await store.appendRuntimeEvent(
         'session-1',
         'run-1',
@@ -359,9 +399,9 @@ describe('SqliteRuntimeStore', () => {
 
       assert.deepEqual(
         (await store.readRuntimeEvents('session-1', 'run-1')).map((event) => event.id),
-        ['text-final', 'response-event-1'],
+        ['text-final', 'call-event-1', 'response-event-1'],
       );
-      assert.equal((await store.readImmutableRuntimeEvents('session-1', 'run-1')).length, 2);
+      assert.equal((await store.readImmutableRuntimeEvents('session-1', 'run-1')).length, 3);
     });
   });
 });
@@ -453,7 +493,7 @@ function toolDispatchEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent 
         operationId: 'operation-1',
         providerToolCallId: 'provider-call-1',
         toolName: 'Read',
-        canonicalArgsHash: 'sha256:args-1',
+        canonicalArgsHash: READ_ARGS_HASH,
         recoveryMode: 'replay_safe',
       },
     },
@@ -465,13 +505,20 @@ function toolDispatchEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent 
 function commitPrepared(store: Store) {
   return store.commitToolPrepared({
     operationId: 'operation-1',
-    journalEventId: 'journal-prepared-1',
+    journalEventId: 'operation-1_prepared',
     runtimeEvent: functionCallEvent(),
     dispatchRuntimeEvent: toolDispatchEvent(),
     providerToolCallId: 'provider-call-1',
     toolName: 'Read',
-    canonicalArgsHash: 'sha256:args-1',
+    canonicalArgsHash: READ_ARGS_HASH,
     recoveryMode: 'replay_safe',
     committedAt: 10,
   });
 }
+
+const READ_ARGS_HASH = canonicalToolArgsHash('Read', {
+  path: '/workspace/repo/README.md',
+});
+const DIFFERENT_READ_ARGS_HASH = canonicalToolArgsHash('Read', {
+  path: '/workspace/repo/OTHER.md',
+});

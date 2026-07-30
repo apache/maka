@@ -86,11 +86,12 @@ export function backfillRuntimeEventsFromStoredMessages(
           ...base,
           id: newId(),
           role: 'user',
-          author: 'user',
+          author: message.origin ? 'host' : 'user',
           content: {
             kind: 'text',
             text: message.text,
             ...(message.displayText !== undefined ? { displayText: message.displayText } : {}),
+            ...(message.origin !== undefined ? { origin: message.origin } : {}),
             ...(message.attachments !== undefined && message.attachments.length > 0
               ? { attachments: message.attachments }
               : {}),
@@ -113,22 +114,26 @@ export function backfillRuntimeEventsFromStoredMessages(
           actions: { stateDelta: recoveryState(now, message) },
           refs: { storedMessageId: message.id },
         });
-        if (message.thinking && message.thinking.text.length > 0) {
-          events.push({
-            ...base,
-            id: newId(),
-            role: 'model',
-            author: 'agent',
-            content: {
-              kind: 'thinking',
-              text: message.thinking.text,
-              ...(message.thinking.signature !== undefined
-                ? { signature: message.thinking.signature }
-                : {}),
-            },
-            actions: { stateDelta: recoveryState(now, message) },
-            refs: { storedMessageId: message.id },
-          });
+        if (message.thinking) {
+          const parts = message.thinking.parts ?? [message.thinking];
+          for (const part of parts) {
+            events.push({
+              ...base,
+              id: newId(),
+              role: 'model',
+              author: 'agent',
+              content: {
+                kind: 'thinking',
+                text: part.text,
+                ...(part.signature !== undefined ? { signature: part.signature } : {}),
+                ...(part.providerOptions !== undefined
+                  ? { providerOptions: structuredClone(part.providerOptions) }
+                  : {}),
+              },
+              actions: { stateDelta: recoveryState(now, message) },
+              refs: { storedMessageId: message.id },
+            });
+          }
         }
         break;
 
@@ -143,6 +148,9 @@ export function backfillRuntimeEventsFromStoredMessages(
             id: message.id,
             name: message.toolName,
             args: message.args,
+            ...(message.providerOptions !== undefined
+              ? { providerOptions: structuredClone(message.providerOptions) }
+              : {}),
           },
           actions: {
             stateDelta: {
@@ -248,7 +256,12 @@ export function backfillRuntimeEventsFromStoredMessages(
             stateDelta: recoveryState(now, message),
             tokenUsage: tokenUsageFromMessage(message),
           },
-          refs: { storedMessageId: message.id },
+          refs: {
+            storedMessageId: message.id,
+            ...(message.providerRequestTraceId !== undefined
+              ? { providerRequestTraceId: message.providerRequestTraceId }
+              : {}),
+          },
         });
         break;
 
@@ -417,9 +430,13 @@ function tokenUsageFromMessage(
     ...(message.reasoning !== undefined ? { reasoning: message.reasoning } : {}),
     ...(message.total !== undefined ? { total: message.total } : {}),
     ...(message.rawFinishReason !== undefined ? { rawFinishReason: message.rawFinishReason } : {}),
+    ...(message.runtimeSteps !== undefined ? { runtimeSteps: message.runtimeSteps } : {}),
     ...(message.cacheRead !== undefined ? { cacheRead: message.cacheRead } : {}),
     ...(message.cacheCreation !== undefined ? { cacheCreation: message.cacheCreation } : {}),
     ...(message.costUsd !== undefined ? { costUsd: message.costUsd } : {}),
+    ...(message.contextRemaining !== undefined
+      ? { contextRemaining: message.contextRemaining }
+      : {}),
     ...(message.systemPromptHash !== undefined
       ? { systemPromptHash: message.systemPromptHash }
       : {}),

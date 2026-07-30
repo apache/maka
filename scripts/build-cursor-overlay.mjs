@@ -45,11 +45,49 @@ export async function buildCursorOverlay({ logLevel = 'info' } = {}) {
     logLevel,
   });
   await copyFile(join(srcOverlay, 'cursor-overlay.html'), join(outDir, 'cursor-overlay.html'));
+  await buildPermissionOverlay({ logLevel });
+  return outDir;
+}
+
+/**
+ * The drag-to-grant permission card. Same shape as the cursor overlay —
+ * IIFE page bundle + CJS preload + verbatim html — and it shares
+ * `dist/overlay`, so one `build:overlay` step covers both panels.
+ *
+ * Unlike the cursor overlay this page IS interactive (the user grabs the
+ * row out of it), so its preload is send-capable; see the preload source
+ * for what it is allowed to say.
+ */
+export async function buildPermissionOverlay({ logLevel = 'info' } = {}) {
+  await mkdir(outDir, { recursive: true });
+  await esbuild.build({
+    entryPoints: [join(srcOverlay, 'permission-overlay.ts')],
+    bundle: true,
+    format: 'iife',
+    platform: 'browser',
+    target: 'chrome120',
+    outfile: join(outDir, 'permission-overlay.js'),
+    plugins: [jsToTs],
+    logLevel,
+  });
+  await esbuild.build({
+    entryPoints: [join(srcOverlay, 'permission-overlay-preload.ts')],
+    bundle: true,
+    format: 'cjs',
+    platform: 'node',
+    external: ['electron'],
+    outfile: join(outDir, 'permission-overlay-preload.cjs'),
+    logLevel,
+  });
+  await copyFile(
+    join(srcOverlay, 'permission-overlay.html'),
+    join(outDir, 'permission-overlay.html'),
+  );
   return outDir;
 }
 
 // Run directly (npm run build:overlay) or import buildCursorOverlay (dev.mjs).
 if (import.meta.url === `file://${process.argv[1]}`) {
   const dir = await buildCursorOverlay();
-  console.log('cursor overlay built →', dir);
+  console.log('overlays built →', dir);
 }

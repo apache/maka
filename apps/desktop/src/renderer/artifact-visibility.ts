@@ -2,7 +2,7 @@ import type { ArtifactRecord, ArtifactSource } from '@maka/core';
 
 const USER_VISIBLE_ARTIFACT_SOURCES = {
   tool_result: true,
-  tool_result_archive: false,
+  tool_result_archive: true,
   synthesis_cache_block: false,
   history_compact_block: false,
   history_compact_source: false,

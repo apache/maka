@@ -1,3 +1,5 @@
+import { validateSandboxBoundaryExpansion, type SandboxBoundaryExpansion } from '@maka/core';
+
 import type { SandboxType } from './types.js';
 
 const SANDBOX_ERROR_DOMAINS = ['command', 'background_command', 'filesystem'] as const;
@@ -27,6 +29,7 @@ export interface SandboxErrorMetadata {
   recoverable: boolean;
   profileName?: string;
   requestId?: string;
+  requiredExpansion?: SandboxBoundaryExpansion;
 }
 
 export interface SandboxErrorWithMetadata extends Error, SandboxErrorMetadata {
@@ -41,6 +44,8 @@ export class SandboxCommandError extends Error implements SandboxErrorWithMetada
   readonly backend?: SandboxType;
   readonly recoverable: boolean;
   readonly profileName?: string;
+  readonly requestId?: string;
+  readonly requiredExpansion?: SandboxBoundaryExpansion;
 
   constructor(input: SandboxErrorMetadata & { message?: string }) {
     super(input.message ?? `Command sandbox failed: ${input.reason}.`);
@@ -51,6 +56,8 @@ export class SandboxCommandError extends Error implements SandboxErrorWithMetada
     this.backend = input.backend;
     this.recoverable = input.recoverable;
     this.profileName = input.profileName;
+    this.requestId = input.requestId;
+    this.requiredExpansion = input.requiredExpansion;
   }
 }
 
@@ -78,6 +85,9 @@ export function sandboxErrorMetadata(error: unknown): SandboxErrorMetadata | und
     ...(isBoundedMatch(value.requestId, SAFE_IDENTIFIER_PATTERN)
       ? { requestId: value.requestId }
       : {}),
+    ...(isSandboxBoundaryExpansion(value.requiredExpansion)
+      ? { requiredExpansion: value.requiredExpansion }
+      : {}),
   };
 }
 
@@ -97,4 +107,9 @@ function isBoundedMatch(value: unknown, pattern: RegExp): value is string {
     value.length <= MAX_METADATA_VALUE_CHARS &&
     pattern.test(value)
   );
+}
+
+function isSandboxBoundaryExpansion(value: unknown): value is SandboxBoundaryExpansion {
+  if (value === undefined) return false;
+  return validateSandboxBoundaryExpansion(value).ok;
 }

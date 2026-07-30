@@ -18,7 +18,7 @@ maka eval compare <results.jsonl>
 maka eval task-run run <spec.json> --task <id> --config <id> [--out <dir>]
 maka eval task-run inspect <taskRunId> --store <out>/runs [--json]
 maka eval task-run export <taskRunId> --store <out>/runs --out <dir> [--include-events]
-maka eval task-run resume <taskRunId> --spec <spec.json> --out <dir> [--grant-file <json>]
+maka eval task-run resume <taskRunId> --spec <spec.json> --out <dir>
 maka eval task-run retry-failed <results.jsonl|out-dir> --spec <spec.json> --out <dir>
 maka eval ahe export <taskRunId...> --store <out>/runs --repo <repo> --out <dir>
 maka eval harbor run --instruction <text> --workdir <dir> --out <dir> --isolation harbor-local
@@ -44,9 +44,14 @@ default**:
   `runExperiment` plus a `registerBackends` factory. The isolation record is an
   explicit assertion that tool execution is already outside the host credential
   process (for example Harbor / Terminal-Bench or a Docker workspace executor).
-- If the caller wants Maka's standard tool surface, use
-  `buildIsolatedHeadlessTools(executor)`: it routes `Bash` plus
-  `Read`/`Write`/`Edit`/`Glob`/`Grep` through the supplied isolation boundary.
+- The standard runners project Maka's product-tool surface once and expose it
+  as `context.productToolSurface`: it contains `Bash` plus
+  `Read`/`Write`/`Edit`/`Glob`/`Grep`, all routed through the supplied isolation
+  boundary. Parent-facing Agent tools and child-session admission are disabled
+  by default. Set `Config.agentTools: true` to opt in. The Harbor and Pier task
+  runners project that config to the canonical cell setting
+  `MAKA_AGENT_TOOLS=true`; direct Harbor cell/CLI entrypoints accept the same
+  environment setting (`false` is the default).
   Executors can implement native file-operation methods, or rely on the
   command-backed fallback when the isolated workspace has `node` available.
   The headless helper rejects absolute paths, `..` escapes, and absolute glob
@@ -59,9 +64,8 @@ trust posture, never the eval default.)
 Programmatic sketch:
 
 ```ts
+import { projectEffectiveProductToolSurface } from '@maka/runtime';
 import {
-  buildIsolatedHeadlessToolAvailability,
-  buildIsolatedHeadlessTools,
   runExperiment,
   type IsolatedToolExecutor,
 } from '@maka/headless';
@@ -87,11 +91,18 @@ await runExperiment(config, task, {
   },
   registerBackends(registry, context) {
     registry.register('ai-sdk', (ctx) => {
-      const tools = [...(ctx.tools ?? buildIsolatedHeadlessTools(context.toolExecutor!))];
+      const rootProductToolSurface = context.productToolSurface!;
+      const productToolSurface = ctx.tools
+        ? projectEffectiveProductToolSurface({
+            host: 'headless',
+            tools: ctx.tools,
+            policy: rootProductToolSurface.identity.policy,
+          })
+        : rootProductToolSurface;
       return createAiSdkBackend({
         ...ctx,
-        tools,
-        toolAvailability: buildIsolatedHeadlessToolAvailability(tools.map((tool) => tool.name)),
+        tools: [...productToolSurface.tools],
+        toolAvailability: productToolSurface.toolAvailability,
       });
     });
   },
@@ -185,22 +196,25 @@ node packages/headless/harbor/run-terminal-bench-smoke.mjs --profile maka-heavy 
 node packages/headless/harbor/run-terminal-bench-smoke.mjs --compare --task '*sqlite-with-gcov'
 ```
 
-## Terminal-Bench 2.1 harness comparison
+## Harness A/B comparison
 
-`harbor/run-harness-ab.mjs` compares Maka with one pinned CLI under the same model, reasoning effort, task instructions, task order, account/provider route, and Harbor verifier while each agent retains its native runtime policy. The default is the official Kimi Code 0.26.0 CLI on Kimi K3 Max; set `MAKA_HARNESS_AB_COMPETITOR=opencode` for OpenCode 1.17.18 or `MAKA_HARNESS_AB_COMPETITOR=codex` for the official Codex CLI 0.144.6 on `gpt-5.6-sol` with `xhigh` reasoning. The Codex profile uses ChatGPT/Codex OAuth for both arms and records account-plan billing rather than public API spend. The task root must match the 89 task ids and canonical task-tree fingerprint of the frozen official Terminal-Bench 2.1 revision; a matching export with one task directory per id is accepted directly. The A/B task order is frozen independently of Oracle evidence. Maka keeps active and stale tool-result pruning enabled while semantic compact is explicitly disabled in both the manifest and runtime environment.
+`harbor/run-harness-ab.mjs` compares Maka with one pinned CLI under the same model, reasoning effort, task instructions, task order, account/provider route, and benchmark verifier while each agent retains its native runtime policy. A run resolves three named axes before creating its run root: benchmark (`MAKA_HARNESS_AB_BENCHMARK`), runtime (`MAKA_HARNESS_AB_RUNTIME`), and competitor harness (`MAKA_HARNESS_AB_COMPETITOR`). Runtime profiles own provider, model, reasoning, route, authentication mode, billing, and pricing; harness profiles own only the pinned CLI and adapter configuration. Omitting the runtime preserves existing behavior: Kimi Code and OpenCode use Kimi K3 Max, while Codex uses `gpt-5.6-sol` with `xhigh` reasoning. The A/B task order is frozen independently of Oracle evidence. Maka keeps active and stale tool-result pruning enabled while semantic compact is explicitly disabled in both the manifest and runtime environment.
+
+The supported compositions are deliberately sparse: Terminal-Bench 2.1 supports Kimi with Kimi Code or OpenCode, GLM-5.2 with OpenCode, and Codex with Codex; DeepSWE 1.1 supports Kimi with Kimi Code and Codex with Codex. The default `terminal-bench-2.1` benchmark binds the frozen 89-task Terminal-Bench 2.1 source to Harbor. The runner consumes an existing task tree whose ids and canonical fingerprint match the pinned revision; it does not download or duplicate that source. `deep-swe-1.1` binds the frozen 30-task DeepSWE subset to Pier (`pier` on `PATH`; the resolved `pier --version` is frozen into the toolchain and resume identity and recorded in the manifest), reads tasks from `~/.maka/eval/task-sources/deep-swe-6db64a40/tasks` by default, and grades with each task's own verifier. `MAKA_HARNESS_AB_LIMIT=5` stays the operational canary for every benchmark; the full DeepSWE profile is `30`.
 
 Validate the frozen task source and preview the A/B plan without reading a key or starting Harbor:
 
 ```sh
 MAKA_HARNESS_AB_OUT_DIR=/path/to/out \
 MAKA_HARNESS_AB_TASKS_ROOT=/path/to/terminal-bench-2.1-tasks \
-MAKA_HARNESS_AB_COMPETITOR=codex \
+MAKA_HARNESS_AB_RUNTIME=zai-coding-plan-glm-5.2-max \
+MAKA_HARNESS_AB_COMPETITOR=opencode \
 MAKA_HARNESS_AB_LIMIT=5 \
 MAKA_HARNESS_AB_DRY_RUN=1 \
 node packages/headless/harbor/run-harness-ab.mjs
 ```
 
-For a Kimi-backed live run, remove `MAKA_HARNESS_AB_DRY_RUN` and set `MAKA_HARNESS_AB_KEY_FILE` to a credential file outside git. The Codex profile instead resolves and refreshes Maka's `codex-subscription` OAuth record from the default desktop workspace before each upstream request; override that source with `MAKA_HARNESS_AB_WORKSPACE_ROOT` or `MAKA_HARNESS_AB_OAUTH_CONNECTION_SLUG`. The run manifest fingerprints the resolved account identity and rejects an account change while allowing token refreshes for the same account. The pinned Codex adapter uses the Responses HTTP transport because the host credential proxy does not relay WebSocket upgrades. Both arms receive only a per-cell host proxy capability, never an access token, refresh token, provider key, or credential-file path. The pinned competitor toolchain is downloaded once, verified against checked-in archive and file hashes, then mounted read-only into its task containers. `MAKA_HARNESS_AB_LIMIT=5` runs the operational canary; rerun the same run id with `89` to continue the same WAL through the complete frozen profile. Set `MAKA_HARNESS_AB_TASK_IDS` to a comma-separated set of frozen Terminal-Bench 2.1 task ids and an explicit `MAKA_HARNESS_AB_RUN_ID` to run a smaller resumable profile under one manifest. Execution policy is independent of the competitor profile and defaults safely to one task pair with sequential arms. Set `MAKA_HARNESS_AB_PAIR_CONCURRENCY` from `1` through `4` and `MAKA_HARNESS_AB_ARM_EXECUTION` to `sequential` or `parallel` for a particular experiment; the immutable manifest freezes the effective values and rejects changes when resuming. Only missing cells run.
+For a live Kimi run, remove `MAKA_HARNESS_AB_DRY_RUN`; `MAKA_HARNESS_AB_KEY_FILE` overrides its historical default key-file path. A live GLM run instead requires `MAKA_HARNESS_AB_ZAI_KEY_FILE`. Each plan runtime ignores the other plan's key-file environment so a stale export cannot silently route the wrong credential. Both plan runtimes record account-plan billing with zero observed price and preserve token totals; any public list-price projection belongs in later analysis rather than the immutable run manifest. The Codex runtime instead resolves and refreshes Maka's `codex-subscription` OAuth record from the default desktop workspace before each upstream request; override that source with `MAKA_HARNESS_AB_WORKSPACE_ROOT` or `MAKA_HARNESS_AB_OAUTH_CONNECTION_SLUG`. The run manifest fingerprints the resolved account identity and rejects an account change while allowing token refreshes for the same account. The pinned Codex adapter uses the Responses HTTP transport because the host credential proxy does not relay WebSocket upgrades. Both arms receive only a per-cell host proxy capability, never an access token, refresh token, provider key, or credential-file path. The pinned competitor toolchain is downloaded once, verified against checked-in archive and file hashes, then mounted read-only into its task containers. `MAKA_HARNESS_AB_LIMIT=5` runs the operational canary; rerun the same run id with `89` to continue the same WAL through the complete frozen profile. Set `MAKA_HARNESS_AB_TASK_IDS` to a comma-separated set of frozen Terminal-Bench 2.1 task ids and an explicit `MAKA_HARNESS_AB_RUN_ID` to run a smaller resumable profile under one manifest. Execution policy is independent of the composition and defaults safely to one task pair with sequential arms. Set `MAKA_HARNESS_AB_PAIR_CONCURRENCY` from `1` through `4` and `MAKA_HARNESS_AB_ARM_EXECUTION` to `sequential` or `parallel` for a particular experiment; the immutable manifest freezes the effective values and rejects changes when resuming. Only missing cells run.
 
 Oracle evidence is advisory. To consume a CI-issued registry snapshot, set both `MAKA_HARNESS_AB_ORACLE_REGISTRY_URL` and `MAKA_HARNESS_AB_ORACLE_REGISTRY_FINGERPRINT`. The runner downloads the lightweight pinned snapshot, validates its content and per-task identities, and records `passed`, `failed`, `timed_out`, `infra_failed`, `stale`, or `missing` annotations in the manifest and report. Missing, stale, failed, unavailable, invalid, or unresolvable evidence emits warnings but never invokes Oracle, changes task selection, blocks new A/B execution, or changes statistical inclusion. A resumed run reuses the advisory snapshot frozen in its existing manifest instead of resolving current registry state again. Legacy manifests retain their historical Oracle-gated `qualification` metadata as read-only history; the current runner does not append new cells to a run created by the old qualification profile.
 

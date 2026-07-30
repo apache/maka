@@ -31,10 +31,6 @@ const SIDEBAR_NAV_FILE = resolve(REPO_ROOT, 'packages/ui/src/session-sidebar-nav
 const PROVIDER_BRAND_MARKS_FILE = resolve(REPO_ROOT, 'apps/desktop/src/renderer/settings/provider-brand-marks.tsx');
 const PROVIDER_CATALOG_FILE = resolve(REPO_ROOT, 'apps/desktop/src/renderer/settings/provider-catalog.tsx');
 const PROVIDER_CONNECTION_DIALOG_FILE = resolve(REPO_ROOT, 'apps/desktop/src/renderer/settings/provider-connection-dialog.tsx');
-const MINIMAX_BRAND_ASSET_FILE = resolve(
-  REPO_ROOT,
-  'apps/desktop/src/renderer/assets/provider-brands/minimax-logo-only-vertical-color-bg-white-text.svg',
-);
 const XAI_BRAND_MARK_FILE = resolve(REPO_ROOT, 'apps/desktop/src/renderer/assets/provider-brands/xai.svg');
 const XIAOMI_BRAND_MARK_FILE = resolve(REPO_ROOT, 'apps/desktop/src/renderer/assets/provider-brands/xiaomimimo.svg');
 const ZAI_BRAND_MARK_FILE = resolve(REPO_ROOT, 'apps/desktop/src/renderer/assets/provider-brands/zai.svg');
@@ -97,6 +93,14 @@ const STROKE_EXCEPTION_FILES = new Set([
 //   - apps/desktop/src/renderer/settings/provider-brand-marks.tsx — the LLM
 //     provider brand marks (SiliconCloud, Ollama, xAI, …); every path here is
 //     byte-provenance-pinned above to an upstream brand package.
+//   - packages/ui/src/maka-wordmark.tsx — Maka's own wordmark (#1433). The
+//     one mark here that is first-party rather than vendored: its path was
+//     traced with potrace from the `maka` lockup in
+//     apps/desktop/assets/icon.png, so the geometry has the same "official
+//     logo, reproduced exactly" provenance the vendored marks have. lucide
+//     obviously ships no Maka glyph, and routing a product logo through the
+//     generic icon funnel would subject it to the shared stroke and sizing
+//     seam, which is exactly what a mark must not follow.
 //   - apps/desktop/src/renderer/mcp-brand-marks.tsx — the MCP catalog brand
 //     marks. This is the SANCTIONED pattern for library-sourced marks: the
 //     `<svg>` is an inert MOUNTING SHELL that wraps `<path>` children whose
@@ -113,6 +117,7 @@ const STROKE_EXCEPTION_FILES = new Set([
 // justification (inert shell around library-sourced path geometry).
 const INLINE_SVG_ALLOWLIST = new Set([
   resolve(REPO_ROOT, 'packages/ui/src/bot-brand-logo.tsx'),
+  resolve(REPO_ROOT, 'packages/ui/src/maka-wordmark.tsx'),
   resolve(REPO_ROOT, 'apps/desktop/src/renderer/settings/provider-brand-marks.tsx'),
   resolve(REPO_ROOT, 'apps/desktop/src/renderer/mcp-brand-marks.tsx'),
 ]);
@@ -208,12 +213,10 @@ describe('icon + typography governance contract', () => {
       .map((name) => name.trim())
       .filter(Boolean)
       .sort();
-    // Decided semantic mapping (maintainer 2026-07-10: 新任务 matches the
-    // collapsed-topbar compose icon): 新任务 → SquarePen, 每日回顾 → CalendarCheck,
-    // 扩展 → Blocks/ChevronDown, 定时任务 → Timer, 设置 → Settings. The
-    // expanded tree uses text-only children so Skills and MCP read as one
-    // nested branch instead of a second row of primary navigation icons.
-    const expected = ['Blocks', 'CalendarCheck', 'ChevronDown', 'ChevronRight', 'Settings', 'SquarePen', 'Timer'];
+    // Hub-level mapping: 新任务 → SquarePen, 扩展 → Blocks,
+    // 定时任务 → Timer, 设置 → Settings. Skills/MCP and Plan reminders/
+    // Daily review switch inside their main surfaces, not in sidebar rows.
+    const expected = ['Blocks', 'Settings', 'SquarePen', 'Timer'];
     assert.deepEqual(
       imported,
       expected,
@@ -264,25 +267,13 @@ describe('icon + typography governance contract', () => {
     );
   });
 
-  it('vendors the byte-exact official MiniMax brand-package SVG', async () => {
+  it('uses the governed Simple Icons MiniMax mark', async () => {
     const componentSrc = await readFile(PROVIDER_BRAND_MARKS_FILE, 'utf8');
-    const asset = await readFile(MINIMAX_BRAND_ASSET_FILE);
-
-    assert.equal(
-      createHash('sha256').update(asset).digest('hex'),
-      '386033f6d1cfc5359877b402221a819f272cf6333eae12a95858fdcc226811a5',
-      'MiniMax mark must remain byte-identical to the official brand-package member',
-    );
-    assert.match(componentSrc, /https:\/\/platform\.minimax\.io\/docs\/faq\/contact-us#brand-resources/);
-    assert.match(componentSrc, /https:\/\/file\.cdn\.minimax\.io\/public\/MiniMax_Logo\.zip/);
+    assert.match(componentSrc, /import \{ siMinimax \} from 'simple-icons'/);
     assert.match(
       componentSrc,
-      /MiniMax_Logo\/svg\/logo-only\/vertical\/minimax_logo-only_vertical_color-bg_white-text\.svg/,
-    );
-    assert.match(
-      componentSrc,
-      /function MiniMaxMark\(\): ReactElement \{\s*return <img src=\{minimaxBrandMark\} alt="" \/>;\s*\}/,
-      'MiniMax providers must render the vendored official file, never an inline hand-drawn path',
+      /<path fill=\{`#\$\{siMinimax\.hex\}`\} d=\{siMinimax\.path\} \/>/,
+      'MiniMax providers must render the Simple Icons path, never an unlicensed vendored asset',
     );
   });
 
@@ -304,7 +295,11 @@ describe('icon + typography governance contract', () => {
       /Real xAI\/Grok mark vendored byte-for-byte from Lobe Icons:[\s\S]*@lobehub\/icons-static-svg@1\.91\.0[\s\S]*32f4083f7a20b67ecdc7b29c0af031ada5a29c52[\s\S]*packages\/static-svg\/icons\/xai\.svg[\s\S]*license: MIT[\s\S]*function XAI\(\)[\s\S]*<ProviderAssetMask src=\{xaiMarkUrl\} \/>/,
       'xAI must render the traceable upstream SVG asset as a currentColor mask instead of a generic or hand-drawn mark',
     );
-    assert.match(marks, /case 'xai':\s*return <XAI \/>/, 'the stable xai provider id must resolve to the upstream mark');
+    assert.match(
+      marks,
+      /case 'xai':\s*case 'xai-oauth':\s*return <XAI \/>/,
+      'both xAI credential paths must resolve to the same upstream mark',
+    );
     assert.match(catalog, /<ProviderLogo type=\{props\.type\} \/>/, 'catalog cards must consume the shared provider logo seam');
     assert.match(
       providerDialog,
@@ -819,8 +814,8 @@ describe('icon + typography governance contract', () => {
     );
     assert.match(
       componentSrc,
-      /case 'volcengine-ark':\s*case 'volcengine-coding-plan':\s*return <img src=\{volcengineBrandMark\} alt="" \/>/,
-      'direct Ark and Coding Plan must share the single governed Volcengine asset route',
+      /case 'volcengine-ark':\s*case 'volcengine-coding-plan':\s*case 'volcengine-agent-plan':\s*return <img src=\{volcengineBrandMark\} alt="" \/>/,
+      'direct Ark, Coding Plan, and Agent Plan must share the single governed Volcengine asset route',
     );
   });
 

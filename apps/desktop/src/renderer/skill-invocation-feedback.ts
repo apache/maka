@@ -16,7 +16,7 @@ export function skillInvocationDisplayText(
   return skillInvocation.loaded.map((skill) => `/skill:${skill.id}`).join(' ');
 }
 
-/** Keep Desktop invocation feedback identical across Quick Chat and Composer. */
+/** The Composer is the only Desktop surface that invokes Skills (#1433). */
 export function showSkillInvocationFeedback(
   uiLocale: UiLocale,
   toastApi: SkillInvocationToastApi,
@@ -25,9 +25,10 @@ export function showSkillInvocationFeedback(
   const failures = skillInvocation.failed;
   if (failures.length === 0) return;
   const copy = getShellCopy(uiLocale).chatActions;
-  const items = failures.map(
-    (failure) =>
-      `/skill:${failure.request} (${copy.skillInvocationFailureReason[failure.reason]})`,
+  const items = failures.map((failure) =>
+    failure.reason === 'too_many_requests'
+      ? copy.skillInvocationFailureReason[failure.reason]
+      : `/skill:${failure.request} (${copy.skillInvocationFailureReason[failure.reason]})`,
   );
   if (skillInvocation.loaded.length === 0) {
     toastApi.error(

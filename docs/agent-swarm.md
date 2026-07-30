@@ -20,10 +20,14 @@ It is intentionally a structured-concurrency convenience over existing child
 | One specialist result, or the next task depends on the previous result | `agent_spawn` sequentially | The dependency is explicit and each result can refine the next prompt. |
 | Several finite, independent items with one final synthesis | `agent_swarm` | Bounded worker-pool execution, stable ordered results, and isolated failures. |
 | Durable ownership, task claiming, or worker communication | Agent Team | Members have roles, mailbox collaboration, and Task Ledger coordination. |
-| DAG dependencies, retry policies, arbitrary workflow resume, dynamic expansion, or distributed execution | Rive | Workflow state and recovery need a durable orchestration authority. |
+| Dynamic dependent Agent work supervised from the root conversation | Agent Graph | Child Sessions are operators, committed RuntimeEvents are records, and SQLite owns durable schedule and admission state. |
+| Explicit workflow steps, arbitrary workflow resume, or distributed execution | Rive | Workflow state and recovery need a dedicated workflow authority. |
 
 The main Agent should call Swarm deliberately. The runtime does not infer that a
 request is parallelizable and does not automatically fan work out.
+
+For the deeper boundary between foreground fan-out and durable dynamic
+scheduling, see [Graph Is a Schedule, Not a Second Runtime](./architecture/agent-graph-stream-scheduling-draft.md).
 
 ## Contract
 

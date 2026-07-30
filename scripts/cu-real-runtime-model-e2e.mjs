@@ -1,13 +1,9 @@
-import {
-  AiSdkBackend,
-  PermissionEngine,
-  buildComputerUseTools,
-  getAIModel,
-} from '../packages/runtime/dist/index.js';
+import { AiSdkBackend, buildComputerUseTools, getAIModel } from '../packages/runtime/dist/index.js';
 import {
   createSyntheticComputerScenario,
   canonicalizeSyntheticComputerArgs,
 } from './cu-synthetic-model-scenario.mjs';
+import { createDirectRuntimeTurnLedger } from './cu-direct-runtime-ledger.mjs';
 
 const baseUrl = process.env.MAKA_CU_MODEL_BASE_URL ?? 'http://127.0.0.1:8538/v1';
 const modelId = process.env.MAKA_CU_MODEL_ID ?? 'gpt-5.6-sol';
@@ -97,6 +93,19 @@ const connection = {
 };
 let nextId = 0;
 let now = Date.now();
+const turnId = 'turn-real-model';
+const turnText =
+  'Use Maka Computer to set "CUA Lab Set Value Field" in "Codex CUA Lab" ' +
+  'to "model-e2e". Start with list_apps, observe the exact app/window, ' +
+  'use set_value with IDs from the observation, verify the fresh observation, ' +
+  'and then finish.';
+const durableTurn = createDirectRuntimeTurnLedger({
+  sessionId: 'real-runtime-model-e2e',
+  turnId,
+  text: turnText,
+  newId: () => `runtime-event-${++nextId}`,
+  now: () => ++now,
+});
 const runtime = new AiSdkBackend({
   sessionId: 'real-runtime-model-e2e',
   header: {
@@ -125,13 +134,11 @@ const runtime = new AiSdkBackend({
   connection,
   apiKey: 'bridge-managed',
   modelId,
-  permissionEngine: new PermissionEngine({
-    newId: () => `permission-${++nextId}`,
-    now: () => ++now,
-  }),
+  readExecutionBoundary: async () => ({ kind: 'bypass', revision: 0 }),
   modelFactory: (input) => getAIModel(input),
   tools: [computerTool],
   maxSteps: 8,
+  loadTurnRuntimeEvents: durableTurn.loadTurnRuntimeEvents,
   newId: () => `id-${++nextId}`,
   now: () => ++now,
   recordToolInvocation: (record) => {
@@ -145,14 +152,12 @@ const runtime = new AiSdkBackend({
 
 const events = [];
 for await (const event of runtime.send({
-  turnId: 'turn-real-model',
-  text:
-    'Use Maka Computer to set "CUA Lab Set Value Field" in "Codex CUA Lab" ' +
-    'to "model-e2e". Start with list_apps, observe the exact app/window, ' +
-    'use set_value with IDs from the observation, verify the fresh observation, ' +
-    'and then finish.',
+  turnId,
+  text: turnText,
   context: [],
+  headAnchorRuntimeEvent: durableTurn.anchor,
 })) {
+  durableTurn.record(event);
   events.push(event.type);
 }
 

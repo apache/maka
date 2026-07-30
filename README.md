@@ -1,6 +1,7 @@
 # Maka
 
 [![CI](https://github.com/Maka-Agent/maka-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Maka-Agent/maka-agent/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 [![docs](https://img.shields.io/badge/docs-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-blue?logo=googletranslate&logoColor=white)](./README.zh-CN.md)
 
 ![Maka — Your work. Your agent.](./.github/assets/maka-hero.en.png)
@@ -10,7 +11,7 @@
 Maka does more than answer questions. With controlled permissions, it can inspect projects, execute tools, produce artifacts, and preserve model messages, tool calls, and durable-task progress as recoverable execution facts. The same Runtime is available through the desktop app, terminal TUI, non-interactive CLI, and Headless runner.
 
 > [!IMPORTANT]
-> Maka is under active development and currently targets users running from source or contributing to the project. Data formats, CLI commands, and experimental capabilities may still change.
+> Maka is under active development. The macOS Apple Silicon desktop build is an early public release; data formats, CLI commands, and experimental capabilities may still change.
 
 ## Why Maka
 
@@ -43,7 +44,7 @@ Read [Maka Backend Architecture](./ARCHITECTURE.md) for the complete design.
 
 - Create, archive, search, rename, retry, regenerate, and branch sessions from a Turn;
 - Artifact lists and previews, workspace instructions, model settings, and permission settings;
-- Local memory, web search, an open HTTP/SSE gateway, bot entry points, and Office workflows;
+- Local memory, web search, an open HTTP/SSE gateway, and bot entry points;
 - Integrations are configured independently, and not every experimental entry is available by default.
 
 ### Durable tasks and evolution
@@ -54,6 +55,17 @@ Read [Maka Backend Architecture](./ARCHITECTURE.md) for the complete design.
 - AHE target protocol and evidence export; complete automatic self-iteration remains an external or experimental workflow.
 
 ## Quick start
+
+### Download Desktop for macOS
+
+The signed and notarized Desktop app is available from [GitHub Releases](https://github.com/Maka-Agent/maka-agent/releases/latest) for Apple Silicon Macs only (`arm64`).
+
+1. Download `Maka-<version>-mac-arm64.dmg`;
+2. Open the DMG and drag Maka to Applications;
+3. Install `ripgrep` with `brew install ripgrep` to enable Runtime's `Grep` tool;
+4. Launch Maka and configure your own model connection under `Settings → Models`.
+
+Computer Use is not included in this first public build. Intel Macs, Windows, and Linux packages are not supported yet.
 
 ### Requirements
 
@@ -107,8 +119,14 @@ Then start the TUI or run one Turn:
 ```sh
 npm --workspace maka-agent exec -- maka
 npm --workspace maka-agent exec -- maka run "Summarize this repository and identify its most important risk"
+npm --workspace maka-agent exec -- maka run --graph "Implement two independent slices, integrate them, then review the result"
 npm --workspace maka-agent exec -- maka --help
 ```
+
+The TUI also accepts `/graph on`, `/graph off`, and `/graph <task>`. Non-interactive
+`--graph` runs wait for the durable Graph to finish before printing the final
+supervisor output. Graph implementation operators use isolated Git worktrees, so
+the source project must be a clean Git worktree.
 
 The CLI reads the same model connections and workspace configuration written by Desktop. See [`packages/headless/README.md`](./packages/headless/README.md) for Headless commands and its trust posture.
 
@@ -227,3 +245,9 @@ Before submitting code, run typecheck, build, and focused tests proportionate to
 - [Backend architecture](./ARCHITECTURE.md)
 - [Product design](./DESIGN.md)
 - [Security policy](./SECURITY.md)
+
+## License
+
+Maka is licensed under the [Apache License 2.0](./LICENSE). See
+[NOTICE](./NOTICE) for attribution information. Third-party components remain
+subject to their respective licenses and notices.

@@ -1,7 +1,9 @@
 /**
- * Expert-team session entry — a thin, dependency-injected handler modeled on
- * `quick-chat.ts` so the readiness gating and discriminated-union result can be
- * unit-tested without spinning up an Electron app.
+ * Expert-team session entry — a thin, dependency-injected handler so the
+ * readiness gating and discriminated-union result can be unit-tested without
+ * spinning up an Electron app. #1433 folded the sibling handler it was modeled
+ * on (`quick-chat.ts`) into `sessions:create`; this one survives because it
+ * also sends a first message, which session creation does not.
  *
  * Starting an expert team creates a normal session labeled
  * `mode:expert-team:<teamId>`. That label activates the team lead's persona and

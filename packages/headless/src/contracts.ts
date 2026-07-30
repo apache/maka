@@ -161,6 +161,12 @@ export interface Config {
    * system prompt for simple data-transform tasks.
    */
   economyTaskMode?: boolean | EconomyTaskModeConfig;
+  /**
+   * Explicit opt-in for Maka's parent-facing Agent tool group. Omitted and
+   * false both leave the group unbound; true binds it behind the catalog's
+   * deferred `load_tools` activation.
+   */
+  agentTools?: boolean;
 }
 
 export interface HeavyTaskModeConfig {

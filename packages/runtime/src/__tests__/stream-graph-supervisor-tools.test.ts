@@ -1,0 +1,482 @@
+import assert from 'node:assert/strict';
+import { describe, test } from 'node:test';
+import { createSqliteSessionMetadataStore } from '@maka/storage';
+import type { AgentGraphSupervisorObservation } from '../stream-graph-dispatch.js';
+import type { MakaToolContext } from '../tool-runtime.js';
+import {
+  UPDATE_AGENT_GRAPH_TOOL_NAME,
+  VIEW_AGENT_GRAPH_TOOL_NAME,
+  buildAgentGraphSupervisorTools,
+  projectAgentGraphSchedule,
+} from '../stream-graph-supervisor-tools.js';
+
+describe('stream graph supervisor tools', () => {
+  test('exposes one compact read tool and one durable schedule update tool', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:', { now: nextNumber(100) });
+    const [viewTool, updateTool] = buildAgentGraphSupervisorTools({
+      graphId: 'graph-supervised',
+      scheduleStore: store,
+      observeGraph: async () => observationWithRecords('graph-supervised', ['verified-result']),
+    });
+    try {
+      assert.equal(viewTool.name, VIEW_AGENT_GRAPH_TOOL_NAME);
+      assert.equal(updateTool.name, UPDATE_AGENT_GRAPH_TOOL_NAME);
+      assert.equal(viewTool.recoveryMode, 'replay_safe');
+      assert.equal(updateTool.recoveryMode, 'idempotent');
+
+      const firstInput = {
+        add_work: [
+          {
+            agent_id: 'fact-checker',
+            instruction: 'Verify the conflicting figures.',
+            input_ids: ['result-b', 'result-a'],
+          },
+          {
+            operator_id: 'writer',
+            instruction: 'Prepare a follow-up explanation.',
+            input_ids: ['result-a'],
+          },
+        ],
+      };
+      const first = await updateTool.impl(firstInput, toolContext('tool-1'));
+      const retry = await updateTool.impl(firstInput, toolContext('tool-1'));
+      assert.deepEqual(retry, first);
+      assert.equal((await store.listAgentGraphScheduleUpdates('graph-supervised')).length, 1);
+      assert.deepEqual(first.schedule.work[0]?.inputIds, ['result-a', 'result-b']);
+      assert.equal(first.runtime.operators[0]?.status, 'running');
+      assert.equal(first.runtime.operators[0]?.childSessionId, 'session-writer');
+      assert.equal(first.runtime.operators[0]?.currentRunId, 'run-writer');
+      assert.deepEqual(first.runtime.readiness[0]?.waitingFor, [
+        { kind: 'input_route', upstreamOperatorIds: ['researcher'] },
+      ]);
+      assert.doesNotMatch(JSON.stringify(first), /graph-supervised|updateId|"revision"/);
+
+      const [firstWork, secondWork] = first.schedule.work;
+      assert.ok(firstWork);
+      assert.ok(secondWork);
+      const second = await updateTool.impl(
+        {
+          add_work: [
+            {
+              operator_id: 'fact-checker',
+              instruction: 'Recheck the figures against primary filings.',
+              input_ids: ['result-a', 'result-b'],
+              replaces: firstWork.workId,
+            },
+          ],
+          stop: [{ target_id: secondWork.workId, reason: 'The explanation is premature.' }],
+        },
+        toolContext('tool-2'),
+      );
+      assert.equal(
+        (await store.listAgentGraphScheduleUpdates('graph-supervised')).at(-1)?.revision,
+        2,
+      );
+      assert.deepEqual(
+        second.schedule.work.map((work) => work.status),
+        ['requested', 'superseded', 'stopped'],
+      );
+
+      const thirdWork = second.schedule.work.find((work) => work.status === 'requested');
+      assert.ok(thirdWork);
+      await assert.rejects(
+        async () =>
+          await updateTool.impl(
+            {
+              finish: {
+                result_ids: ['does-not-exist'],
+                reason: 'This typo must not close the graph.',
+              },
+            },
+            toolContext('tool-invalid-finish'),
+          ),
+        /not committed graph records/,
+      );
+      assert.equal((await store.listAgentGraphScheduleUpdates('graph-supervised')).length, 2);
+      assert.equal(
+        (await viewTool.impl({}, toolContext('tool-view-before-finish'))).schedule.closed,
+        false,
+      );
+      const finished = await updateTool.impl(
+        {
+          stop: [{ target_id: thirdWork.workId, reason: 'Verification is complete.' }],
+          finish: {
+            result_ids: ['verified-result'],
+            reason: 'Use the verified result as the final answer.',
+          },
+        },
+        toolContext('tool-3'),
+      );
+      assert.equal(
+        (await store.listAgentGraphScheduleUpdates('graph-supervised')).at(-1)?.revision,
+        3,
+      );
+      assert.equal(finished.schedule.closed, true);
+      assert.deepEqual(finished.schedule.finish?.resultIds, ['verified-result']);
+
+      const viewed = await viewTool.impl({}, toolContext('tool-view'));
+      assert.deepEqual(viewed.schedule, finished.schedule);
+      const providerFilledLatest = await viewTool.impl(
+        { mode: 'latest', cursor: 'provider-placeholder' },
+        toolContext('tool-view-provider-filled'),
+      );
+      assert.deepEqual(providerFilledLatest.schedule, finished.schedule);
+      await assert.rejects(
+        async () =>
+          updateTool.impl(
+            {
+              add_work: [
+                {
+                  agent_id: 'researcher',
+                  instruction: 'Start work after the graph is finished.',
+                  input_ids: [],
+                },
+              ],
+            },
+            toolContext('tool-4'),
+          ),
+        /already finished/,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test('keeps graph identity and idempotency fields out of the model-facing update schema', () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    const [, updateTool] = buildAgentGraphSupervisorTools({
+      graphId: 'graph-supervised',
+      scheduleStore: store,
+      observeGraph: async () => observationWithRecords('graph-supervised'),
+    });
+    try {
+      const schema = updateTool.parameters as {
+        safeParse(value: unknown): { success: boolean };
+      };
+      assert.equal(schema.safeParse({}).success, false);
+      assert.equal(
+        schema.safeParse({
+          add_work: [{ agent_id: 'researcher', instruction: 'Defaults to no input ids.' }],
+        }).success,
+        true,
+      );
+      assert.equal(
+        schema.safeParse({
+          add_work: [
+            {
+              agent_id: 'researcher',
+              operator_id: 'existing',
+              instruction: 'Ambiguous target.',
+              input_ids: [],
+            },
+          ],
+        }).success,
+        false,
+      );
+      assert.equal(
+        schema.safeParse({
+          graph_id: 'forged-graph',
+          add_work: [
+            {
+              agent_id: 'researcher',
+              instruction: 'Try to escape the bound graph.',
+              input_ids: [],
+            },
+          ],
+        }).success,
+        false,
+      );
+      assert.equal(
+        schema.safeParse({
+          add_work: [
+            {
+              agent_id: 'researcher',
+              instruction: 'Cannot add work while finishing.',
+              input_ids: [],
+            },
+          ],
+          finish: { result_ids: ['result-1'], reason: 'Done.' },
+        }).success,
+        false,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test('uses explicit discriminators when a provider fills unrelated optional fields', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    const [, updateTool] = buildAgentGraphSupervisorTools({
+      graphId: 'graph-provider-filled',
+      scheduleStore: store,
+      observeGraph: async () => observationWithRecords('graph-provider-filled'),
+    });
+    try {
+      const result = await updateTool.impl(
+        {
+          operation: 'add_work',
+          add_work: [
+            {
+              target_kind: 'new_agent',
+              agent_id: 'implementation',
+              operator_id: 'provider-placeholder',
+              instruction: 'Implement node A.',
+              input_ids: [],
+              replaces: 'provider-placeholder',
+              replacement_mode: 'none',
+            },
+          ],
+          stop: [],
+          finish: {
+            result_ids: ['provider-placeholder'],
+            reason: 'provider-placeholder',
+          },
+        },
+        toolContext('tool-provider-filled'),
+      );
+
+      assert.equal(result.schedule.closed, false);
+      assert.equal(result.schedule.finish, undefined);
+      assert.deepEqual(result.schedule.work[0]?.target, {
+        kind: 'agent',
+        agentId: 'implementation',
+      });
+      assert.equal(result.schedule.work[0]?.replaces, undefined);
+    } finally {
+      store.close();
+    }
+  });
+
+  test('fails closed on non-contiguous durable schedule replay', () => {
+    assert.throws(
+      () =>
+        projectAgentGraphSchedule('graph-supervised', [
+          {
+            schemaVersion: 1,
+            updateId: `graph_update_${'a'.repeat(32)}`,
+            updateFingerprint: `sha256:${'b'.repeat(64)}`,
+            graphId: 'graph-supervised',
+            source: {
+              sessionId: 'session-main',
+              runId: 'run-main',
+              turnId: 'turn-main',
+              toolCallId: 'tool-main',
+            },
+            addWork: [],
+            stop: [{ targetId: 'work-1', reason: 'Stop stale work.' }],
+            revision: 2,
+            committedAt: 1,
+          },
+        ]),
+      /non-contiguous revision 2/,
+    );
+  });
+
+  test('fails closed when the runtime observation is for another graph', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    const [viewTool] = buildAgentGraphSupervisorTools({
+      graphId: 'graph-supervised',
+      scheduleStore: store,
+      observeGraph: async () => observationWithRecords('graph-other'),
+    });
+    try {
+      await assert.rejects(
+        async () => await viewTool.impl({}, toolContext('tool-view')),
+        /another graph/,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test('paginates all live state instead of hiding older requested work', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    const [viewTool, updateTool] = buildAgentGraphSupervisorTools({
+      graphId: 'graph-supervised',
+      scheduleStore: store,
+      observeGraph: async () => observationWithRecords('graph-supervised'),
+    });
+    try {
+      for (let batch = 0; batch < 4; batch += 1) {
+        await updateTool.impl(
+          {
+            add_work: Array.from({ length: 20 }, (_, index) => ({
+              agent_id: `agent-${batch}-${index}`,
+              instruction: `Run live work ${batch}-${index}.`,
+            })),
+          },
+          toolContext(`tool-batch-${batch}`),
+        );
+      }
+
+      const firstPage = await viewTool.impl({}, toolContext('tool-view-1'));
+      assert.equal(firstPage.schedule.work.length, 64);
+      assert.ok(firstPage.nextCursor);
+      const secondPage = await viewTool.impl(
+        { cursor: firstPage.nextCursor },
+        toolContext('tool-view-2'),
+      );
+      assert.equal(secondPage.schedule.work.length, 16);
+      assert.equal(secondPage.runtime.operators.length, 1);
+      assert.equal(secondPage.runtime.readiness.length, 1);
+      assert.equal(secondPage.nextCursor, undefined);
+      assert.equal(
+        new Set([
+          ...firstPage.schedule.work.map((work) => work.workId),
+          ...secondPage.schedule.work.map((work) => work.workId),
+        ]).size,
+        80,
+      );
+    } finally {
+      store.close();
+    }
+  });
+});
+
+function observationWithRecords(
+  graphId: string,
+  recordIds: readonly string[] = [],
+): AgentGraphSupervisorObservation {
+  const topologyFingerprint = `sha256:${'a'.repeat(64)}`;
+  const policyFingerprint = `sha256:${'b'.repeat(64)}`;
+  const readinessContextFingerprint = `sha256:${'c'.repeat(64)}`;
+  const activationId = 'activation-writer';
+  const records = recordIds.map((recordId, index) => {
+    const runtimeEventId = `runtime-event-${index}`;
+    const eventTime = index + 1;
+    return {
+      schemaVersion: 1 as const,
+      recordId,
+      graphId,
+      operatorId: 'writer',
+      activationId,
+      sessionId: 'session-writer',
+      agentRunId: 'run-writer',
+      eventTime,
+      orderKey: {
+        runCreatedAt: 1,
+        operatorId: 'writer',
+        runId: 'run-writer',
+        committedEventOrdinal: index,
+        runtimeEventId,
+      },
+      ...(index > 0 ? { previousRecordId: recordIds[index - 1] } : {}),
+      type: 'agent_runtime_event' as const,
+      facets: ['message' as const],
+      supervisorSignals: [],
+      source: {
+        kind: 'runtime_event' as const,
+        runtimeEventId,
+        sessionId: 'session-writer',
+        runId: 'run-writer',
+        turnId: 'turn-writer',
+        ts: eventTime,
+      },
+    };
+  });
+  const lastRecord = records.at(-1);
+  return {
+    projection: {
+      graphId,
+      operators: [{ operatorId: 'writer', sessionId: 'session-writer' }],
+      ignoredPartialEvents: 0,
+      records,
+      supervisorMetaStream: records.map((record) => ({
+        recordId: record.recordId,
+        graphId,
+        operatorId: record.operatorId,
+        activationId,
+        eventTime: record.eventTime,
+        orderKey: { ...record.orderKey },
+        facets: [...record.facets],
+        signals: [],
+        source: { ...record.source },
+      })),
+      state: {
+        graphId,
+        appliedRecordIds: records.map((record) => record.recordId),
+        operators: lastRecord
+          ? {
+              writer: {
+                operatorId: 'writer',
+                sessionId: 'session-writer',
+                status: 'running',
+                currentActivationId: activationId,
+                activations: {
+                  [activationId]: {
+                    activationId,
+                    agentRunId: 'run-writer',
+                    status: 'running',
+                    recordCount: records.length,
+                    firstEventTime: records[0]!.eventTime,
+                    lastEventTime: lastRecord.eventTime,
+                    lastRecordId: lastRecord.recordId,
+                  },
+                },
+              },
+            }
+          : {},
+      },
+    },
+    readiness: {
+      schemaVersion: 1,
+      graphId,
+      topologyFingerprint,
+      trace: {
+        schemaVersion: 1,
+        graphId,
+        topologyFingerprint,
+        topologicalOrder: ['writer'],
+        rootOperatorIds: ['writer'],
+        sinkOperatorIds: ['writer'],
+        recordIds: records.map((record) => record.recordId),
+        operators: {
+          writer: {
+            operatorId: 'writer',
+            sessionId: 'session-writer',
+            topologicalIndex: 0,
+            upstreamOperatorIds: [],
+            downstreamOperatorIds: [],
+            emittedRecordIds: records.map((record) => record.recordId),
+            receivedRouteIds: [],
+          },
+        },
+        edges: {},
+        routes: [],
+      },
+      readiness: {},
+      supervisorView: [
+        {
+          graphId,
+          topologyFingerprint,
+          readinessId: 'readiness-writer',
+          operatorId: 'writer',
+          policyKind: 'map',
+          policyFingerprint,
+          readinessContextFingerprint,
+          status: 'waiting',
+          intentIds: [],
+          waitingFor: [{ kind: 'input_route', upstreamOperatorIds: ['researcher'] }],
+        },
+      ],
+    },
+    claims: [],
+  };
+}
+
+function toolContext(toolCallId: string): MakaToolContext {
+  return {
+    sessionId: 'session-main',
+    runId: 'run-main',
+    turnId: 'turn-main',
+    toolCallId,
+    cwd: '/workspace',
+    abortSignal: new AbortController().signal,
+    emitOutput() {},
+  };
+}
+
+function nextNumber(start: number): () => number {
+  let value = start;
+  return () => value++;
+}

@@ -1,5 +1,6 @@
 import {
   deriveTurnRecords,
+  isActiveShellRunStatus,
   mergeShellRunStateWithDiagnostics,
   projectToolActivityArgs,
   STEP_LIMIT_NOTICE_TEXT,
@@ -22,6 +23,8 @@ export interface ChatItem {
   quotes?: QuoteRef[];
   /** Present when the turn was fired by an automation, not hand-typed. */
   automationOrigin?: { automationId: string };
+  /** Present when the host resumed the root Agent at a durable graph milestone. */
+  agentGraphOrigin?: { graphId: string; wakeId: string; attemptId: string };
 }
 
 /**
@@ -393,7 +396,7 @@ export function overlayShellRunUpdates(
     );
     byToolUseId.set(update.sourceToolCallId, {
       result: merged.result,
-      source: merged.result.status !== 'running' || update.ownership.kind === 'local'
+      source: !isActiveShellRunStatus(merged.result.status) || update.ownership.kind === 'local'
         ? undefined
         : update.ownership.kind === 'source_owned' ? 'owned' : 'unavailable',
     });
@@ -478,6 +481,15 @@ export function materializeTurns(messages: StoredMessage[]): TurnViewModel[] {
         ...(message.attachments && message.attachments.length > 0 ? { attachments: message.attachments } : {}),
         ...(message.quotes && message.quotes.length > 0 ? { quotes: message.quotes } : {}),
         ...(message.origin?.kind === 'automation' ? { automationOrigin: { automationId: message.origin.automationId } } : {}),
+        ...(message.origin?.kind === 'agent_graph'
+          ? {
+              agentGraphOrigin: {
+                graphId: message.origin.graphId,
+                wakeId: message.origin.wakeId,
+                attemptId: message.origin.attemptId,
+              },
+            }
+          : {}),
       };
     } else if (message.type === 'assistant') {
       // A turn now holds one AssistantMessage per model step. Concatenate their

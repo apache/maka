@@ -8,6 +8,8 @@
         "src/main/main.ts",
         "src/overlay/cursor-overlay.ts",
         "src/overlay/cursor-overlay-preload.ts",
+        "src/overlay/permission-overlay.ts",
+        "src/overlay/permission-overlay-preload.ts",
         "src/main/**/*.test.ts",
         "e2e/**/*.spec.ts",
         ".storybook/preview.@(ts|tsx)",
@@ -15,8 +17,12 @@
         "scripts/browser-observe-act-smoke.mjs"
       ],
       "project": ["src/**/*.{ts,tsx}", "e2e/**/*.ts", "stories/**/*.{ts,tsx}", "scripts/**/*.mjs"],
-      "ignoreDependencies": ["@fontsource-variable/geist", "@fontsource-variable/geist-mono"],
-      "ignoreBinaries": ["taskkill"]
+      "ignoreDependencies": [
+        "@fontsource-variable/geist",
+        "@fontsource-variable/geist-mono",
+        "electron-builder"
+      ],
+      "ignoreBinaries": ["taskkill", "electron-builder"]
     },
     "packages/ui": {
       "entry": ["src/**/*.test.ts", "src/**/*.test.tsx", "stories/**/*.@(ts|tsx)"],

@@ -26,6 +26,7 @@ import {
   type LucideIcon,
 } from '@maka/ui/icons';
 import type {
+  ChatDefaultPermissionMode,
   LlmConnection,
   PermissionMode,
   SessionSummary,
@@ -101,7 +102,7 @@ export function buildCommandList(args: {
    * composer's permission-mode dropdown (PR-MOVE-PERMISSION-MODE
    * relocated the picker out of the chat header).
    */
-  onSetPermissionMode?(mode: PermissionMode): Promise<void> | void;
+  onSetPermissionMode?(mode: ChatDefaultPermissionMode): Promise<void> | void;
   activePermissionMode?: PermissionMode;
   /**
    * PR-CMD-PALETTE-PASTE-DAILY-REVIEW-0: fetch today's review and
@@ -238,7 +239,7 @@ export function buildCommandList(args: {
       ...staticCopy('nav:automations'),
       Icon: Clock,
       keywords: [...copy.staticKeywords['nav:automations']],
-      run: () => select({ section: 'automations' }),
+      run: () => select({ section: 'automations', module: 'plan-reminders' }),
     });
     cmds.push({
       id: 'nav:skills',
@@ -246,7 +247,7 @@ export function buildCommandList(args: {
       ...staticCopy('nav:skills'),
       Icon: Blocks,
       keywords: [...copy.staticKeywords['nav:skills']],
-      run: () => select({ section: 'skills' }),
+      run: () => select({ section: 'extensions', module: 'skills' }),
     });
     cmds.push({
       id: 'nav:mcp',
@@ -254,7 +255,7 @@ export function buildCommandList(args: {
       ...staticCopy('nav:mcp'),
       Icon: Plug,
       keywords: [...copy.staticKeywords['nav:mcp']],
-      run: () => select({ section: 'mcp' }),
+      run: () => select({ section: 'extensions', module: 'mcp' }),
     });
     cmds.push({
       id: 'nav:daily-review',
@@ -262,7 +263,7 @@ export function buildCommandList(args: {
       ...staticCopy('nav:daily-review'),
       Icon: CalendarDays,
       keywords: [...copy.staticKeywords['nav:daily-review']],
-      run: () => select({ section: 'daily-review' }),
+      run: () => select({ section: 'automations', module: 'daily-review' }),
     });
   }
 
@@ -407,7 +408,7 @@ export function buildCommandList(args: {
   if (args.onSetPermissionMode && args.activeSessionId) {
     const setMode = args.onSetPermissionMode;
     const current = args.activePermissionMode;
-    const modes: PermissionMode[] = ['explore', 'ask', 'execute', 'bypass'];
+    const modes: ChatDefaultPermissionMode[] = ['ask', 'bypass'];
     for (const mode of modes) {
       const localized = copy.permissionModes[mode];
       cmds.push({
