@@ -19,6 +19,7 @@ import {
 } from '../client/index.js';
 import {
   RUNTIME_HOST_PROTOCOL_VERSION,
+  type SessionCatalogItem,
   type SessionCatalogProjection,
   type SessionCreateInput,
   type SubscriptionFrame,
@@ -29,6 +30,7 @@ const CURRENT_PROTOCOL = {
   max: RUNTIME_HOST_PROTOCOL_VERSION,
 } as const;
 const PROCESS_TIMEOUT_MS = 10_000;
+const WIRE_OVERSIZED_MODEL_ID = '😀'.repeat(256);
 
 test('two UDS Clients share stable Session creation, CAS configuration, and catalog continuity', {
   skip: process.platform === 'win32' ? 'POSIX UDS integration' : false,
@@ -37,7 +39,8 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-session-catalog-'));
   const root = join(base, 'root');
   const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
-  const { largeLabelSessionId, unreadSessionId } = await seedAuthority(root, capability);
+  const { connectionId, largeLabelSessionId, oversizedSessionId, unreadSessionId } =
+    await seedAuthority(root, capability);
   let host: ExecutionHostHandle | undefined;
   try {
     host = await startHost(root, capability.rootId);
@@ -51,7 +54,9 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
         labels: ['catalog'],
         modelTarget: { kind: 'default' },
       };
-      const created = await desktop.request('session.create', createInput);
+      const created = requireSessionProjection(
+        await desktop.request('session.create', createInput),
+      );
       assert.equal(created.id, createInput.sessionId);
       assert.equal(created.permissionMode, 'ask');
       assert.equal(created.labelsTruncated, false);
@@ -59,6 +64,37 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
       assert.equal(largeLabels.labels.length, 32);
       assert.equal(largeLabels.labelsTruncated, true);
       assert.deepEqual(largeLabels.labels.slice(0, 2), ['visible', 'label-0']);
+      assert.deepEqual(
+        await desktop.request('session.catalog.query', {
+          kind: 'get',
+          sessionId: oversizedSessionId,
+        }),
+        {
+          kind: 'session',
+          session: {
+            kind: 'unsupported_legacy_record',
+            id: oversizedSessionId,
+            revision: 1,
+            reason: 'not_wire_representable',
+          },
+        },
+      );
+      assert.deepEqual(
+        await desktop.request('session.metadata.update', {
+          sessionId: oversizedSessionId,
+          expectedRevision: 1,
+          patch: { isFlagged: true },
+        }),
+        {
+          kind: 'committed',
+          session: {
+            kind: 'unsupported_legacy_record',
+            id: oversizedSessionId,
+            revision: 2,
+            reason: 'not_wire_representable',
+          },
+        },
+      );
       await assert.rejects(
         desktop.request('session.create', {
           sessionId: 'relative-session',
@@ -100,12 +136,13 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
       });
       assert.equal(renamed.kind, 'committed');
       if (renamed.kind !== 'committed') assert.fail('Session rename must commit');
-      assert.equal(renamed.session.revision, created.revision + 1);
-      assert.equal(renamed.session.name, 'Renamed Session');
+      const renamedSession = requireSessionProjection(renamed.session);
+      assert.equal(renamedSession.revision, created.revision + 1);
+      assert.equal(renamedSession.name, 'Renamed Session');
       const continuity = await nextProjection(iterator);
-      assert.equal(continuity.snapshot.session.metadataRevision, renamed.session.revision);
+      assert.equal(continuity.snapshot.session.metadataRevision, renamedSession.revision);
 
-      const configurationRevision = renamed.session.revision;
+      const configurationRevision = renamedSession.revision;
       const configurationOutcomes = await Promise.all([
         desktop.request('session.configuration.update', {
           sessionId: created.id,
@@ -141,7 +178,7 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
       if (committedConfiguration?.kind !== 'committed') {
         assert.fail('One Session configuration must commit');
       }
-      const configuredSession = committedConfiguration.session;
+      const configuredSession = requireSessionProjection(committedConfiguration.session);
       assert.deepEqual(await querySession(desktop, created.id), configuredSession);
       const unchangedConfiguration = await desktop.request('session.configuration.update', {
         sessionId: configuredSession.id,
@@ -181,26 +218,64 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
         operationError('operation_unavailable'),
       );
 
-      const read = await desktop.request('session.read_marker.set', {
-        sessionId: unreadSessionId,
-        readThroughMessageId: 'message-2',
-      });
+      await setDefaultModel(desktop, connectionId, WIRE_OVERSIZED_MODEL_ID);
+      const rejectedSessionId = 'wire-oversized-default-model';
+      await assert.rejects(
+        desktop.request('session.create', {
+          sessionId: rejectedSessionId,
+          cwd: root,
+          modelTarget: { kind: 'default' },
+        }),
+        operationError('invalid_request'),
+      );
+      assert.deepEqual(
+        await desktop.request('session.catalog.query', {
+          kind: 'get',
+          sessionId: rejectedSessionId,
+        }),
+        { kind: 'session', session: null },
+      );
+      await assert.rejects(
+        desktop.request('session.configuration.update', {
+          sessionId: configuredSession.id,
+          expectedRevision: configuredSession.revision,
+          configuration: {
+            modelTarget: { kind: 'default' },
+            thinkingLevel: null,
+            permissionMode: configuredSession.permissionMode,
+            collaborationMode: configuredSession.collaborationMode,
+            orchestrationMode: configuredSession.orchestrationMode,
+          },
+        }),
+        operationError('invalid_request'),
+      );
+      assert.deepEqual(await querySession(desktop, configuredSession.id), configuredSession);
+      await setDefaultModel(tui, connectionId, 'gpt-5');
+
+      const read = requireSessionProjection(
+        await desktop.request('session.read_marker.set', {
+          sessionId: unreadSessionId,
+          readThroughMessageId: 'message-2',
+        }),
+      );
       assert.equal(read.hasUnread, false);
       assert.equal(read.lastReadMessageId, 'message-2');
       const readFromTui = await querySession(tui, unreadSessionId);
       assert.equal(readFromTui.hasUnread, false);
       assert.equal(readFromTui.lastReadMessageId, 'message-2');
 
-      const bulk = await Promise.all(
-        Array.from({ length: 34 }, (_, index) =>
-          desktop.request('session.create', {
-            sessionId: `bulk-${String(index).padStart(2, '0')}`,
-            cwd: root,
-            labels: ['paged'],
-            modelTarget: { kind: 'default' },
-          }),
-        ),
-      );
+      const bulk = (
+        await Promise.all(
+          Array.from({ length: 34 }, (_, index) =>
+            desktop.request('session.create', {
+              sessionId: `bulk-${String(index).padStart(2, '0')}`,
+              cwd: root,
+              labels: ['paged'],
+              modelTarget: { kind: 'default' },
+            }),
+          ),
+        )
+      ).map(requireSessionProjection);
       const firstPage = await desktop.request('session.catalog.query', {
         kind: 'list_start',
       });
@@ -217,7 +292,7 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
       if (continuation.kind !== 'page') {
         assert.fail('Stable Session catalog continuation must return a page');
       }
-      assert.equal(firstPage.sessions.length + continuation.sessions.length, bulk.length + 3);
+      assert.equal(firstPage.sessions.length + continuation.sessions.length, bulk.length + 4);
 
       const filteredStart = await desktop.request('session.catalog.query', {
         kind: 'list_start',
@@ -240,7 +315,7 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
       assert.equal(filteredContinuation.sessions.length, 2);
       assert.equal(
         [...filteredStart.sessions, ...filteredContinuation.sessions].every((session) =>
-          session.labels.includes('paged'),
+          requireSessionProjection(session).labels.includes('paged'),
         ),
         true,
       );
@@ -282,7 +357,7 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
       if (flagged.kind !== 'page') assert.fail('Flagged Session query must return a page');
       assert.deepEqual(
         flagged.sessions.map((session) => session.id).sort(),
-        [created.id, bulkSession.id].sort(),
+        [created.id, bulkSession.id, oversizedSessionId].sort(),
       );
 
       await subscription.close();
@@ -306,7 +381,9 @@ async function seedAuthority(
   root: string,
   capability: StorageRootCapability<'interactive'>,
 ): Promise<{
+  readonly connectionId: string;
   readonly largeLabelSessionId: string;
+  readonly oversizedSessionId: string;
   readonly unreadSessionId: string;
 }> {
   const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -358,6 +435,14 @@ async function seedAuthority(
       model: 'fake-model',
       permissionMode: 'ask',
     });
+    const oversized = await execution.sessionStore.create({
+      cwd: root,
+      projectId: 'p'.repeat(257),
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
 
     const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
     const initial = await policy.connectionCatalog.getSnapshot();
@@ -368,7 +453,7 @@ async function seedAuthority(
         name: 'Session Catalog OpenAI',
         providerType: 'openai',
         enabled: true,
-        enabledModelIds: ['gpt-5'],
+        enabledModelIds: ['gpt-5', WIRE_OVERSIZED_MODEL_ID],
       },
     });
     assert.equal(created.kind, 'committed');
@@ -392,7 +477,10 @@ async function seedAuthority(
     assert.equal(fetch.kind, 'ready');
     if (fetch.kind !== 'ready') throw new Error('Model discovery setup was not ready');
     const discovered = await policy.operations.completeModelFetch(fetch.ticket, {
-      models: [{ id: 'gpt-5', apiProtocol: 'openai-responses' }],
+      models: [
+        { id: 'gpt-5', apiProtocol: 'openai-responses' },
+        { id: WIRE_OVERSIZED_MODEL_ID, apiProtocol: 'openai-responses' },
+      ],
       source: 'fetched',
       fetchedAt: 1,
     });
@@ -406,12 +494,30 @@ async function seedAuthority(
     });
     assert.equal(target.kind, 'committed');
     return {
+      connectionId: connection.connectionId,
       largeLabelSessionId: largeLabels.id,
+      oversizedSessionId: oversized.id,
       unreadSessionId: unread.id,
     };
   } finally {
     await owner.close();
   }
+}
+
+async function setDefaultModel(
+  connection: RuntimeHostConnection,
+  connectionId: string,
+  modelId: string,
+): Promise<void> {
+  const catalog = await connection.request('connection.catalog.query', { kind: 'start' });
+  assert.equal(catalog.kind, 'page');
+  if (catalog.kind !== 'page') assert.fail('Connection catalog must return a page');
+  const result = await connection.request('connection.catalog.set-default-target', {
+    expectedCatalogRevision: catalog.revision,
+    target: { connectionId, modelId },
+  });
+  assert.equal(result.kind, 'committed');
+  if (result.kind !== 'committed') assert.fail('Default model update must commit');
 }
 
 async function querySession(
@@ -426,7 +532,14 @@ async function querySession(
   if (result.kind !== 'session' || !result.session) {
     assert.fail('Session catalog get must return the Session');
   }
-  return result.session;
+  return requireSessionProjection(result.session);
+}
+
+function requireSessionProjection(item: SessionCatalogItem): SessionCatalogProjection {
+  if ('kind' in item) {
+    assert.fail(`Expected a representable Session, received ${item.kind}`);
+  }
+  return item;
 }
 
 async function nextProjection(

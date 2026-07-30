@@ -25,12 +25,14 @@ import {
   decodeSessionCatalogProjection,
   SESSION_CATALOG_LABEL_MAX_BYTES,
   SESSION_CATALOG_LABEL_MAX_ITEMS,
+  SESSION_CATALOG_MODEL_MAX_BYTES,
   SESSION_CATALOG_PAGE_MAX_ITEMS,
   SESSION_CATALOG_RESULT_MAX_BYTES,
   type OperationError,
   type OperationOutcome,
+  RuntimeHostProtocolError,
   type SessionCatalogFilter,
-  type SessionCatalogProjection,
+  type SessionCatalogItem,
   type SessionCatalogQueryInput,
   type SessionCatalogQueryResult,
   type SessionCatalogRevision,
@@ -465,6 +467,12 @@ export class HostSessionCatalogCoordinator {
     if (isModelExplicitlyUnsupportedForChat(model)) {
       throw new SessionOperationFailure('invalid_request', 'Session model is not chat-capable');
     }
+    if (Buffer.byteLength(selected.modelId, 'utf8') > SESSION_CATALOG_MODEL_MAX_BYTES) {
+      throw new SessionOperationFailure(
+        'invalid_request',
+        'Session model identifier exceeds the wire limit',
+      );
+    }
     if (
       thinkingLevel !== undefined &&
       !thinkingVariantsForModel(connection.providerType, selected.modelId).includes(thinkingLevel)
@@ -583,68 +591,80 @@ function prepareCreate(input: SessionCreateInput): PreparedSessionCreate {
   };
 }
 
-function projectSession(record: SessionCatalogRecord): SessionCatalogProjection {
+function projectSession(record: SessionCatalogRecord): SessionCatalogItem {
   const { header, summary } = record;
   const projectedLabels = projectCatalogLabels(header.labels);
-  return decodeSessionCatalogProjection({
-    id: header.id,
-    revision: record.revision,
-    cwd: header.cwd,
-    ...(header.projectId !== undefined ? { projectId: header.projectId } : {}),
-    createdAt: header.createdAt,
-    lastUsedAt: header.lastUsedAt,
-    name: header.name,
-    isFlagged: header.isFlagged,
-    isArchived: header.isArchived,
-    labels: projectedLabels.labels,
-    labelsTruncated: projectedLabels.truncated,
-    hasUnread: header.hasUnread,
-    ...(header.lastReadMessageId === undefined
-      ? {}
-      : { lastReadMessageId: header.lastReadMessageId }),
-    ...(summary.lastMessageAt === undefined ? {} : { lastMessageAt: summary.lastMessageAt }),
-    ...(summary.lastMessagePreview === undefined
-      ? {}
-      : { lastMessagePreview: summary.lastMessagePreview }),
-    status: header.status,
-    ...(header.blockedReason === undefined ? {} : { blockedReason: header.blockedReason }),
-    ...(header.statusUpdatedAt === undefined ? {} : { statusUpdatedAt: header.statusUpdatedAt }),
-    ...(header.parentSessionId === undefined ? {} : { parentSessionId: header.parentSessionId }),
-    ...(header.branchOfTurnId === undefined ? {} : { branchOfTurnId: header.branchOfTurnId }),
-    ...(header.subagentParent === undefined
-      ? {}
-      : {
-          subagent: {
-            parentSessionId: header.subagentParent.parentSessionId,
-            ...(header.subagentRuntime?.agentId === undefined
-              ? {}
-              : { agentId: header.subagentRuntime.agentId }),
-            ...(header.subagentRuntime?.agentName === undefined
-              ? {}
-              : { agentName: header.subagentRuntime.agentName }),
-            ...(header.subagentRuntime?.profile === undefined
-              ? {}
-              : { profile: header.subagentRuntime.profile }),
-          },
-        }),
-    ...(header.revisionRootSessionId === undefined
-      ? {}
-      : { revisionRootSessionId: header.revisionRootSessionId }),
-    ...(header.revisionParentSessionId === undefined
-      ? {}
-      : { revisionParentSessionId: header.revisionParentSessionId }),
-    ...(header.revisionOfTurnId === undefined ? {} : { revisionOfTurnId: header.revisionOfTurnId }),
-    ...(header.revisionIndex === undefined ? {} : { revisionIndex: header.revisionIndex }),
-    ...(header.revisionState === undefined ? {} : { revisionState: header.revisionState }),
-    backend: header.backend,
-    llmConnectionSlug: header.llmConnectionSlug,
-    connectionLocked: header.connectionLocked,
-    model: header.model,
-    ...(header.thinkingLevel === undefined ? {} : { thinkingLevel: header.thinkingLevel }),
-    permissionMode: header.permissionMode,
-    collaborationMode: header.collaborationMode ?? 'agent',
-    orchestrationMode: header.orchestrationMode ?? 'default',
-  });
+  try {
+    return decodeSessionCatalogProjection({
+      id: header.id,
+      revision: record.revision,
+      cwd: header.cwd,
+      ...(header.projectId !== undefined ? { projectId: header.projectId } : {}),
+      createdAt: header.createdAt,
+      lastUsedAt: header.lastUsedAt,
+      name: header.name,
+      isFlagged: header.isFlagged,
+      isArchived: header.isArchived,
+      labels: projectedLabels.labels,
+      labelsTruncated: projectedLabels.truncated,
+      hasUnread: header.hasUnread,
+      ...(header.lastReadMessageId === undefined
+        ? {}
+        : { lastReadMessageId: header.lastReadMessageId }),
+      ...(summary.lastMessageAt === undefined ? {} : { lastMessageAt: summary.lastMessageAt }),
+      ...(summary.lastMessagePreview === undefined
+        ? {}
+        : { lastMessagePreview: summary.lastMessagePreview }),
+      status: header.status,
+      ...(header.blockedReason === undefined ? {} : { blockedReason: header.blockedReason }),
+      ...(header.statusUpdatedAt === undefined ? {} : { statusUpdatedAt: header.statusUpdatedAt }),
+      ...(header.parentSessionId === undefined ? {} : { parentSessionId: header.parentSessionId }),
+      ...(header.branchOfTurnId === undefined ? {} : { branchOfTurnId: header.branchOfTurnId }),
+      ...(header.subagentParent === undefined
+        ? {}
+        : {
+            subagent: {
+              parentSessionId: header.subagentParent.parentSessionId,
+              ...(header.subagentRuntime?.agentId === undefined
+                ? {}
+                : { agentId: header.subagentRuntime.agentId }),
+              ...(header.subagentRuntime?.agentName === undefined
+                ? {}
+                : { agentName: header.subagentRuntime.agentName }),
+              ...(header.subagentRuntime?.profile === undefined
+                ? {}
+                : { profile: header.subagentRuntime.profile }),
+            },
+          }),
+      ...(header.revisionRootSessionId === undefined
+        ? {}
+        : { revisionRootSessionId: header.revisionRootSessionId }),
+      ...(header.revisionParentSessionId === undefined
+        ? {}
+        : { revisionParentSessionId: header.revisionParentSessionId }),
+      ...(header.revisionOfTurnId === undefined
+        ? {}
+        : { revisionOfTurnId: header.revisionOfTurnId }),
+      ...(header.revisionIndex === undefined ? {} : { revisionIndex: header.revisionIndex }),
+      ...(header.revisionState === undefined ? {} : { revisionState: header.revisionState }),
+      backend: header.backend,
+      llmConnectionSlug: header.llmConnectionSlug,
+      connectionLocked: header.connectionLocked,
+      model: header.model,
+      ...(header.thinkingLevel === undefined ? {} : { thinkingLevel: header.thinkingLevel }),
+      permissionMode: header.permissionMode,
+      collaborationMode: header.collaborationMode ?? 'agent',
+      orchestrationMode: header.orchestrationMode ?? 'default',
+    });
+  } catch (error) {
+    if (!(error instanceof RuntimeHostProtocolError) || error.code !== 'invalid_frame') throw error;
+    return {
+      kind: 'unsupported_legacy_record',
+      id: header.id,
+      revision: record.revision,
+      reason: 'not_wire_representable',
+    };
+  }
 }
 
 function projectCatalogLabels(labels: readonly string[]): {
@@ -678,7 +698,7 @@ function page(
   hasMore: boolean,
   filter: SessionCatalogFilter,
 ): SessionCatalogQueryResult {
-  const items: SessionCatalogProjection[] = [];
+  const items: SessionCatalogItem[] = [];
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index];
     if (!record) throw new Error('Session catalog record index is invalid');
@@ -844,7 +864,7 @@ function successQuery(
   return { ok: true, result };
 }
 
-function createSuccess(result: SessionCatalogProjection): OperationOutcome<'session.create'> {
+function createSuccess(result: SessionCatalogItem): OperationOutcome<'session.create'> {
   return { ok: true, result };
 }
 

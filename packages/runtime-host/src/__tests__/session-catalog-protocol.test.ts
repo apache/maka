@@ -3,6 +3,7 @@ import { describe, test } from 'node:test';
 import {
   decodeClientFrame,
   decodeHostFrame,
+  decodeSessionCatalogItem,
   decodeSessionCatalogQueryResult,
   HOST_OPERATION_SPECS,
   RuntimeHostProtocolError,
@@ -277,6 +278,20 @@ describe('Session catalog protocol', () => {
       actualRevision: `sha256:${'b'.repeat(64)}` as const,
     };
     assert.deepEqual(decodeSessionCatalogQueryResult(changed), changed);
+  });
+
+  test('decodes only the closed unsupported legacy record shape', () => {
+    const unsupported = {
+      kind: 'unsupported_legacy_record' as const,
+      id: 'session-1',
+      revision: 2,
+      reason: 'not_wire_representable' as const,
+    };
+    assert.deepEqual(decodeSessionCatalogItem(unsupported), unsupported);
+    assert.throws(
+      () => decodeSessionCatalogItem({ ...unsupported, projectId: 'hidden' }),
+      isProtocolError,
+    );
   });
 });
 

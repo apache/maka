@@ -8,7 +8,16 @@ import {
   type SessionStatus,
 } from '@maka/core/session';
 import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
-import { requireCount, requireEntityId, requireExactRecord, requireRecord } from './codec.js';
+import {
+  assertAllowedKeys,
+  requireCount,
+  requireEncodedByteLimit,
+  requireEntityId,
+  requireExactRecord,
+  requireRecord,
+  requireShapedRecord,
+  requireUtf8String,
+} from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 
@@ -195,11 +204,20 @@ export interface SessionCatalogProjection {
   readonly orchestrationMode: OrchestrationMode;
 }
 
+export interface UnsupportedLegacySessionCatalogRecord {
+  readonly kind: 'unsupported_legacy_record';
+  readonly id: string;
+  readonly revision: number;
+  readonly reason: 'not_wire_representable';
+}
+
+export type SessionCatalogItem = SessionCatalogProjection | UnsupportedLegacySessionCatalogRecord;
+
 export type SessionCatalogQueryResult =
   | {
       readonly kind: 'page';
       readonly revision: SessionCatalogRevision;
-      readonly sessions: readonly SessionCatalogProjection[];
+      readonly sessions: readonly SessionCatalogItem[];
       readonly nextCursor: string | null;
     }
   | {
@@ -209,11 +227,11 @@ export type SessionCatalogQueryResult =
     }
   | {
       readonly kind: 'session';
-      readonly session: SessionCatalogProjection | null;
+      readonly session: SessionCatalogItem | null;
     };
 
 export type SessionUpdateResult =
-  | { readonly kind: 'committed'; readonly session: SessionCatalogProjection }
+  | { readonly kind: 'committed'; readonly session: SessionCatalogItem }
   | {
       readonly kind: 'revision_conflict';
       readonly expectedRevision: number;
@@ -234,14 +252,14 @@ export const SESSION_CATALOG_OPERATION_SPECS = {
   }),
   'session.create': defineOperation<
     SessionCreateInput,
-    SessionCatalogProjection,
+    SessionCatalogItem,
     (typeof CREATE_ERRORS)[number]
   >({
     mode: 'command',
     availability: 'ready',
     errors: CREATE_ERRORS,
     decodeInput: decodeSessionCreateInput,
-    decodeOutput: decodeSessionCatalogProjection,
+    decodeOutput: decodeSessionCatalogItem,
     assertOutputForInput: (input, output) => assertSessionIdentity(input.sessionId, output),
   }),
   'session.metadata.update': defineOperation<
@@ -270,14 +288,14 @@ export const SESSION_CATALOG_OPERATION_SPECS = {
   }),
   'session.read_marker.set': defineOperation<
     SessionReadMarkerSetInput,
-    SessionCatalogProjection,
+    SessionCatalogItem,
     (typeof READ_MARKER_ERRORS)[number]
   >({
     mode: 'command',
     availability: 'ready',
     errors: READ_MARKER_ERRORS,
     decodeInput: decodeSessionReadMarkerSetInput,
-    decodeOutput: decodeSessionCatalogProjection,
+    decodeOutput: decodeSessionCatalogItem,
     assertOutputForInput: (input, output) => assertSessionIdentity(input.sessionId, output),
   }),
 } as const;
@@ -285,7 +303,7 @@ export const SESSION_CATALOG_OPERATION_SPECS = {
 export function decodeSessionCatalogQueryInput(value: unknown): SessionCatalogQueryInput {
   const input = requireRecord(value, 'Session catalog query input');
   if (input.kind === 'list_start') {
-    const exact = optionalExactRecord(
+    const exact = requireShapedRecord(
       input,
       'Session catalog list start input',
       ['kind'],
@@ -297,7 +315,7 @@ export function decodeSessionCatalogQueryInput(value: unknown): SessionCatalogQu
     };
   }
   if (input.kind === 'list_continue') {
-    const exact = optionalExactRecord(
+    const exact = requireShapedRecord(
       input,
       'Session catalog list continuation input',
       ['kind', 'revision', 'cursor'],
@@ -307,7 +325,11 @@ export function decodeSessionCatalogQueryInput(value: unknown): SessionCatalogQu
       kind: 'list_continue',
       ...(Object.hasOwn(exact, 'filter') ? { filter: decodeFilter(exact.filter) } : {}),
       revision: catalogRevision(exact.revision),
-      cursor: boundedUtf8(exact.cursor, 'Session catalog cursor', SESSION_CATALOG_CURSOR_MAX_BYTES),
+      cursor: requireUtf8String(
+        exact.cursor,
+        'Session catalog cursor',
+        SESSION_CATALOG_CURSOR_MAX_BYTES,
+      ),
     };
   }
   if (input.kind === 'get') {
@@ -318,7 +340,7 @@ export function decodeSessionCatalogQueryInput(value: unknown): SessionCatalogQu
 }
 
 export function decodeSessionCreateInput(value: unknown): SessionCreateInput {
-  const input = optionalExactRecord(
+  const input = requireShapedRecord(
     value,
     'Session create input',
     ['sessionId', 'cwd', 'modelTarget'],
@@ -334,7 +356,7 @@ export function decodeSessionCreateInput(value: unknown): SessionCreateInput {
   );
   return {
     sessionId: requireEntityId(input.sessionId, 'sessionId'),
-    cwd: boundedUtf8(input.cwd, 'Session cwd', SESSION_CATALOG_CWD_MAX_BYTES),
+    cwd: requireUtf8String(input.cwd, 'Session cwd', SESSION_CATALOG_CWD_MAX_BYTES),
     ...(Object.hasOwn(input, 'projectId')
       ? {
           projectId:
@@ -371,7 +393,7 @@ export function decodeSessionMetadataUpdateInput(value: unknown): SessionMetadat
     'expectedRevision',
     'patch',
   ]);
-  const patch = optionalExactRecord(
+  const patch = requireShapedRecord(
     input.patch,
     'Session metadata patch',
     [],
@@ -451,7 +473,7 @@ export function decodeSessionCatalogQueryResult(value: unknown): SessionCatalogQ
     const exact = requireExactRecord(result, 'Session catalog item result', ['kind', 'session']);
     return {
       kind: 'session',
-      session: exact.session === null ? null : decodeSessionCatalogProjection(exact.session),
+      session: exact.session === null ? null : decodeSessionCatalogItem(exact.session),
     };
   }
   if (result.kind !== 'page') throw invalidProtocolFrame('Invalid Session catalog result kind');
@@ -467,11 +489,11 @@ export function decodeSessionCatalogQueryResult(value: unknown): SessionCatalogQ
   const decoded: SessionCatalogQueryResult = {
     kind: 'page',
     revision: catalogRevision(page.revision),
-    sessions: page.sessions.map(decodeSessionCatalogProjection),
+    sessions: page.sessions.map(decodeSessionCatalogItem),
     nextCursor:
       page.nextCursor === null
         ? null
-        : boundedUtf8(
+        : requireUtf8String(
             page.nextCursor,
             'Session catalog next cursor',
             SESSION_CATALOG_CURSOR_MAX_BYTES,
@@ -488,7 +510,7 @@ export function decodeSessionUpdateResult(value: unknown): SessionUpdateResult {
       'kind',
       'session',
     ]);
-    return { kind: 'committed', session: decodeSessionCatalogProjection(exact.session) };
+    return { kind: 'committed', session: decodeSessionCatalogItem(exact.session) };
   }
   if (result.kind === 'revision_conflict') {
     const exact = requireExactRecord(result, 'Session revision conflict result', [
@@ -514,7 +536,7 @@ export function decodeSessionCatalogProjection(value: unknown): SessionCatalogPr
   const projection: SessionCatalogProjection = {
     id: requireEntityId(record.id, 'Session id'),
     revision: positiveRevision(record.revision, 'Session revision'),
-    cwd: boundedUtf8(record.cwd, 'Session cwd', SESSION_CATALOG_CWD_MAX_BYTES),
+    cwd: requireUtf8String(record.cwd, 'Session cwd', SESSION_CATALOG_CWD_MAX_BYTES),
     ...optionalProjectId(record),
     createdAt: timestamp(record.createdAt, 'Session createdAt'),
     lastUsedAt: timestamp(record.lastUsedAt, 'Session lastUsedAt'),
@@ -539,13 +561,13 @@ export function decodeSessionCatalogProjection(value: unknown): SessionCatalogPr
     ...optionalRevisionIndex(record),
     ...optionalRevisionState(record),
     backend: backend(record.backend),
-    llmConnectionSlug: boundedUtf8(
+    llmConnectionSlug: requireUtf8String(
       record.llmConnectionSlug,
       'Session connection slug',
       SESSION_CATALOG_CONNECTION_SLUG_MAX_BYTES,
     ),
     connectionLocked: boolean(record.connectionLocked, 'Session connection lock'),
-    model: boundedUtf8(record.model, 'Session model', SESSION_CATALOG_MODEL_MAX_BYTES),
+    model: requireUtf8String(record.model, 'Session model', SESSION_CATALOG_MODEL_MAX_BYTES),
     ...optionalThinkingLevel(record),
     permissionMode: permissionMode(record.permissionMode),
     collaborationMode: collaborationMode(record.collaborationMode),
@@ -559,8 +581,30 @@ export function decodeSessionCatalogProjection(value: unknown): SessionCatalogPr
   return projection;
 }
 
+export function decodeSessionCatalogItem(value: unknown): SessionCatalogItem {
+  const record = requireRecord(value, 'Session catalog item');
+  if (record.kind !== 'unsupported_legacy_record') {
+    return decodeSessionCatalogProjection(record);
+  }
+  const exact = requireExactRecord(record, 'unsupported legacy Session catalog record', [
+    'kind',
+    'id',
+    'revision',
+    'reason',
+  ]);
+  if (exact.reason !== 'not_wire_representable') {
+    throw invalidProtocolFrame('Invalid unsupported legacy Session catalog reason');
+  }
+  return {
+    kind: 'unsupported_legacy_record',
+    id: requireEntityId(exact.id, 'Session id'),
+    revision: positiveRevision(exact.revision, 'Session revision'),
+    reason: exact.reason,
+  };
+}
+
 function decodeFilter(value: unknown): SessionCatalogFilter {
-  const filter = optionalExactRecord(
+  const filter = requireShapedRecord(
     value,
     'Session catalog filter',
     [],
@@ -599,12 +643,12 @@ function modelTarget(value: unknown): SessionModelTarget {
     ]);
     return {
       kind: 'explicit',
-      connectionSlug: boundedUtf8(
+      connectionSlug: requireUtf8String(
         exact.connectionSlug,
         'Session connection slug',
         SESSION_CATALOG_CONNECTION_SLUG_MAX_BYTES,
       ),
-      model: boundedUtf8(exact.model, 'Session model', SESSION_CATALOG_MODEL_MAX_BYTES),
+      model: requireUtf8String(exact.model, 'Session model', SESSION_CATALOG_MODEL_MAX_BYTES),
     };
   }
   throw invalidProtocolFrame('Invalid Session model target');
@@ -694,7 +738,7 @@ function optionalSubagent(
   record: Record<string, unknown>,
 ): Pick<SessionCatalogProjection, 'subagent'> | Record<string, never> {
   if (!Object.hasOwn(record, 'subagent')) return {};
-  const subagent = optionalExactRecord(
+  const subagent = requireShapedRecord(
     record.subagent,
     'Session subagent projection',
     ['parentSessionId'],
@@ -799,64 +843,16 @@ function catalogRevision(value: unknown): SessionCatalogRevision {
 }
 
 function boundedText(value: unknown, label: string, maxBytes: number): string {
-  const text = boundedUtf8(value, label, maxBytes);
+  const text = requireUtf8String(value, label, maxBytes);
   if (text.trim() !== text || /[\u0000-\u001f\u007f]/.test(text)) {
     throw invalidProtocolFrame(`Invalid ${label}`);
   }
   return text;
 }
 
-function boundedUtf8(value: unknown, label: string, maxBytes: number): string {
-  if (
-    typeof value !== 'string' ||
-    value.length === 0 ||
-    Buffer.byteLength(value, 'utf8') > maxBytes
-  ) {
-    throw invalidProtocolFrame(`Invalid ${label}`);
-  }
-  return value;
-}
-
 function boolean(value: unknown, label: string): boolean {
   if (typeof value !== 'boolean') throw invalidProtocolFrame(`Invalid ${label}`);
   return value;
-}
-
-function optionalExactRecord(
-  value: unknown,
-  label: string,
-  required: readonly string[],
-  optional: readonly string[],
-): Record<string, unknown> {
-  const record = requireRecord(value, label);
-  assertAllowedKeys(record, label, [...required, ...optional]);
-  if (required.some((key) => !Object.hasOwn(record, key))) {
-    throw invalidProtocolFrame(`Invalid ${label} fields`);
-  }
-  return record;
-}
-
-function assertAllowedKeys(
-  record: Record<string, unknown>,
-  label: string,
-  allowed: readonly string[],
-): void {
-  const allowedSet = new Set(allowed);
-  if (Object.keys(record).some((key) => !allowedSet.has(key))) {
-    throw invalidProtocolFrame(`Unknown ${label} field`);
-  }
-}
-
-function requireEncodedByteLimit(value: unknown, label: string, maxBytes: number): void {
-  let encoded: string;
-  try {
-    encoded = JSON.stringify(value);
-  } catch {
-    throw invalidProtocolFrame(`Invalid ${label}`);
-  }
-  if (Buffer.byteLength(encoded, 'utf8') > maxBytes) {
-    throw invalidProtocolFrame(`${label} exceeds byte limit`);
-  }
 }
 
 function assertUpdateOutputIdentity(
