@@ -306,9 +306,9 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
   // Keyboard ownership is session + turn scoped. Only a successful click may
   // establish it; pointer-only scroll/drag actions do not imply text focus.
   /** cua-driver's `scroll` counts wheel clicks; both executors declare pages. */
-const SCROLL_CLICKS_PER_PAGE = 3;
+  const SCROLL_CLICKS_PER_PAGE = 3;
 
-interface KeyboardTarget {
+  interface KeyboardTarget {
     window: CuaResolvedWindow;
     editable: boolean;
     pageTarget?: CuaResolvedPageTextTarget;
