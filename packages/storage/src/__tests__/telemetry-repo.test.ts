@@ -212,9 +212,11 @@ describe('FileTelemetryRepo', () => {
       await reopened.load();
       const rows = reopened.logs({ range: 'all' }).rows;
       assert.equal(rows.length, 1, 'the file still decodes');
+      const decisions = rows[0]?.contextBudget?.compactionDecisions as
+        | Array<{ estimatedTokensSaved: number }>
+        | undefined;
       assert.equal(
-        (rows[0]?.contextBudget?.compactionDecisions as Array<{ estimatedTokensSaved: number }>)[0]
-          ?.estimatedTokensSaved,
+        decisions?.[0]?.estimatedTokensSaved,
         -396,
         'and the negative saving survives the round trip',
       );
