@@ -1073,6 +1073,59 @@ test('public turn.stop rejects an admission queued behind its exact-Run closure 
   }
 });
 
+test('public turn.interrupt contains a question admission rejected by its own stop closure', {
+  timeout: 20_000,
+}, async () => {
+  let backend: StopReleasedAdmissionBackend | undefined;
+  const fixture = await createFailureFixture({
+    withInteractions: true,
+    registerBackend: (backends) => {
+      backends.register('fake', (context) => {
+        backend = new StopReleasedAdmissionBackend(context.sessionId);
+        return backend;
+      });
+    },
+  });
+
+  try {
+    const turnId = 'turn-public-interrupt-stop-released-admission';
+    const started = await fixture.coordinator.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId,
+        content: { text: 'admit a question only after stop arrives' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    if (!started.ok) return;
+    assert.ok(backend);
+    await backend.ready.promise;
+
+    const interrupted = await fixture.messages.handlers['turn.interrupt'](
+      {
+        originHostEpoch: fixture.hostEpoch,
+        interruptId: 'interrupt-stop-released-admission',
+        sessionId: fixture.sessionId,
+        turnId,
+        runId: started.result.runId,
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(interrupted.ok, true);
+    if (!interrupted.ok) return;
+    assert.equal(interrupted.result.turn.status, 'cancelled');
+    assert.equal(fixture.interactions?.isPoisoned(), false);
+    assert.equal(fixture.drainRequested(), false);
+
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.interactions?.close();
+  } finally {
+    await fixture.dispose();
+  }
+});
+
 test('public turn.interrupt releases the Session lane while a queried Run is still starting', {
   timeout: 20_000,
 }, async () => {
@@ -2169,6 +2222,61 @@ class QueuedAdmissionBackend implements AgentBackend {
 
   async dispose(): Promise<void> {
     this.admissionTrigger.resolve();
+  }
+}
+
+class StopReleasedAdmissionBackend implements AgentBackend {
+  readonly kind = 'fake' as const;
+  readonly ready = deferred<void>();
+  private readonly stopped = deferred<void>();
+
+  constructor(readonly sessionId: string) {}
+
+  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    yield {
+      type: 'text_delta',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      messageId: randomUUID(),
+      text: 'running before stop-released admission',
+    };
+    this.ready.resolve();
+    await this.stopped.promise;
+    if (!input.hostedInteraction) {
+      throw new Error('StopReleasedAdmissionBackend requires hosted Interaction authority');
+    }
+    await input.hostedInteraction.admitUserQuestionRequest({
+      request: {
+        type: 'user_question_request',
+        id: randomUUID(),
+        turnId: input.turnId,
+        ts: Date.now(),
+        requestId: randomUUID(),
+        toolUseId: randomUUID(),
+        questions: [
+          {
+            question: 'Continue?',
+            options: [{ label: 'Yes' }, { label: 'No' }],
+          },
+        ],
+      },
+      settlement: {
+        applyAnswer: async () => {},
+        applyClosure: async () => {},
+      },
+    });
+    throw new Error('Question admission unexpectedly crossed the stop closure');
+  }
+
+  async stop(): Promise<void> {
+    this.stopped.resolve();
+  }
+
+  async respondToSandboxBoundary(): Promise<void> {}
+
+  async dispose(): Promise<void> {
+    this.stopped.resolve();
   }
 }
 

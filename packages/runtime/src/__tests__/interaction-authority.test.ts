@@ -76,6 +76,42 @@ describe('Runtime Interaction authority seam', () => {
     assert.deepEqual(log, ['close:turn_terminal', 'release']);
   });
 
+  test('rejects a question registered after stop closure as an exact closed-Run admission', async () => {
+    const binding = await bindRuntimeInteractionRun(authority(), RUN);
+    await binding.close('turn_stopped');
+
+    await assert.rejects(
+      binding.admitUserQuestionRequest({
+        request: {
+          type: 'user_question_request',
+          id: 'question-event-after-stop',
+          turnId: RUN.turnId,
+          ts: 1,
+          requestId: 'question-after-stop',
+          toolUseId: 'tool-after-stop',
+          questions: [
+            {
+              question: 'Continue?',
+              options: [{ label: 'Yes' }, { label: 'No' }],
+            },
+          ],
+        },
+        settlement: {
+          applyAnswer: async () => {},
+          applyClosure: async () => {},
+        },
+      }),
+      (error: unknown) =>
+        error instanceof RuntimeInteractionAdmissionRejectedError &&
+        error.requestId === 'question-after-stop' &&
+        error.reason === 'run_closed' &&
+        error.closureReason === 'turn_stopped',
+    );
+
+    await binding.settleLocalClosures();
+    binding.release();
+  });
+
   test('publishes a hosted question only after admission and resolves only through its continuation', async () => {
     const admission = deferred<void>();
     let question: RuntimeUserQuestionContinuation | undefined;

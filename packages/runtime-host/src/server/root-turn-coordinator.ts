@@ -17,6 +17,7 @@ import {
 import {
   classifyTerminalRuntimeLedger,
   RuntimeHostedRootConflictError,
+  RuntimeInteractionAdmissionRejectedError,
   RuntimeInteractionFailStopError,
   RuntimeInteractionInvariantError,
   RuntimeMessageAuthorityInvariantError,
@@ -1032,9 +1033,12 @@ export class RootTurnCoordinator {
             containedRunFailure =
               executionAuditFailure === undefined &&
               startSettled.phase === 'resolved' &&
-              !active.stopRequested &&
-              snapshot.status === 'failed' &&
-              isContainableRunFailure(error);
+              ((!active.stopRequested &&
+                snapshot.status === 'failed' &&
+                isContainableRunFailure(error)) ||
+                (active.stopRequested &&
+                  snapshot.status === 'cancelled' &&
+                  isStoppedInteractionAdmission(error)));
           }
         } catch {
           // Preserve the execution error unless identity audit found a stronger failure.
@@ -1479,6 +1483,16 @@ function isContainableRunFailure(error: unknown): error is Error {
     !(error instanceof RuntimeMessageAuthorityInvariantError) &&
     !(error instanceof RuntimeInteractionInvariantError) &&
     !(error instanceof RuntimeInteractionFailStopError)
+  );
+}
+
+function isStoppedInteractionAdmission(
+  error: unknown,
+): error is RuntimeInteractionAdmissionRejectedError {
+  return (
+    error instanceof RuntimeInteractionAdmissionRejectedError &&
+    error.reason === 'run_closed' &&
+    error.closureReason === 'turn_stopped'
   );
 }
 
