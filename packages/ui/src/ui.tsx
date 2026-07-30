@@ -529,7 +529,8 @@ export function PopoverPositioner({ children, align, sideOffset }: PopoverPositi
   return <PopoverPositionContext.Provider value={value}>{children}</PopoverPositionContext.Provider>;
 }
 
-const POPOVER_FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+const POPOVER_FOCUSABLE =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 interface PopoverPopupProps extends React.HTMLAttributes<HTMLDivElement> {
   /** Lands initial focus on a specific element instead of the first focusable one. */
