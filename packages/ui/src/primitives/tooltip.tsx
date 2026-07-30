@@ -9,6 +9,8 @@ import {
   useContext,
   useRef,
   type ButtonHTMLAttributes,
+  type MouseEvent as ReactMouseEvent,
+  type MouseEventHandler,
   type ReactElement,
   type ReactNode,
   type Ref,
@@ -81,6 +83,7 @@ type TooltipTriggerRenderElement = ReactElement<{
   className?: string;
   children?: ReactNode;
   ref?: Ref<HTMLElement>;
+  onClick?: MouseEventHandler<HTMLElement>;
   "aria-describedby"?: string;
 }>;
 
@@ -104,6 +107,19 @@ export function TooltipTrigger({
   const describedBy = existingDescribedBy
     ? `${existingDescribedBy} ${tooltip.describedBy}`
     : tooltip.describedBy;
+  // The Base UI trigger dismissed the tooltip on activation (closeOnClick
+  // default): clicking a button must not leave its hint floating under the
+  // pointer. Astryx's useTooltip returns no hide(), so this goes through its
+  // own seams — hidePopover() on the layer element (whose `toggle` listener
+  // syncs React state back) plus a synthetic mouseleave on the trigger,
+  // which cancels a show still pending its delay so the hint cannot pop in
+  // after the click. Astryx re-shows only on a real mouseenter, so the
+  // tooltip stays away until the pointer re-enters — closeOnClick semantics.
+  const hideOnActivate = (event: ReactMouseEvent<HTMLElement>) => {
+    const surface = document.getElementById(tooltip.describedBy);
+    if (surface?.matches(":popover-open")) surface.hidePopover();
+    event.currentTarget.dispatchEvent(new MouseEvent("mouseleave"));
+  };
   if (render) {
     const merged = {
       ...props,
@@ -111,6 +127,13 @@ export function TooltipTrigger({
       ref: mergeRefs<HTMLElement>(tooltip.ref, render.props.ref),
       "aria-describedby": describedBy,
       "data-slot": "tooltip-trigger",
+      onClick: (event: ReactMouseEvent<HTMLElement>) => {
+        render.props.onClick?.(event);
+        // Call-site props are button-typed but land on the render element —
+        // the same widening the prop spread below already performs.
+        (props.onClick as MouseEventHandler<HTMLElement> | undefined)?.(event);
+        hideOnActivate(event);
+      },
     };
     return children !== undefined
       ? cloneElement(render, merged, children)
@@ -124,6 +147,10 @@ export function TooltipTrigger({
       ref={tooltip.ref as RefCallback<HTMLButtonElement>}
       aria-describedby={describedBy}
       data-slot="tooltip-trigger"
+      onClick={(event) => {
+        props.onClick?.(event);
+        hideOnActivate(event);
+      }}
     >
       {children}
     </button>

@@ -44,6 +44,24 @@ test('tooltip opens on hover in the top layer and dismisses on Escape', async ({
   await expect(tooltip).toBeVisible();
   await page.mouse.move(10, 300);
   await expect(tooltip).toBeHidden();
+
+  // Activating the trigger dismisses the tooltip (Base UI closeOnClick
+  // parity): clicking a chrome button must not leave its hint floating under
+  // the pointer. The one-shot check right after the click is what pins the
+  // fix — every other hide path (hover bridge, focusout) is delayed by at
+  // least 100ms, while the trigger's own dismissal is synchronous. The held
+  // re-check catches a show still pending its 200ms delay popping in late.
+  // The new-task button is the right subject: it resets only the main pane —
+  // no modal to inert the tooltip out of the role tree (the search trigger)
+  // and no chrome layout shift that could slide a neighboring trigger under
+  // the stationary pointer (the sidebar toggle).
+  const newTask = page.getByRole('button', { name: '新任务' });
+  await newTask.hover();
+  await expect(tooltip).toBeVisible();
+  await newTask.click();
+  expect(await tooltip.isHidden()).toBe(true);
+  await page.waitForTimeout(350);
+  await expect(tooltip).toBeHidden();
 });
 
 test('time-picker popover owns focus placement and every dismiss path', async ({
