@@ -412,11 +412,14 @@ const captureExpr = (scopes = []) => `(() => {
   };
   walk(document.body, 'body', {}, null);
   // Non-vacuous mount proof (#1565 PR 2): count the rules that actually sit
-  // in an astryx.* cascade layer. Zero means Astryx CSS never loaded — and a
-  // zero-diff pass in that state proves nothing, because the thing being
-  // buried under maka.legacy is not there. Counted via CSSOM so a bundler
-  // that drops the layer() wrapper (which would ALSO invert the cascade)
-  // fails this probe instead of passing it harder.
+  // in one of the contracted astryx-* cascade layers. Zero means Astryx CSS
+  // never loaded — and a zero-diff pass in that state proves nothing, because
+  // the thing being buried under maka.legacy is not there. Counted via CSSOM
+  // so a bundler that drops the layer() wrapper (which would ALSO invert the
+  // cascade) fails this probe instead of passing it harder. Exact names, not
+  // a prefix: astryx.css nests its own @layer astryx-base inside the import
+  // layer, and a prefix match would double-count it.
+  const ASTRYX_LAYERS = new Set(['astryx-reset', 'astryx-tokens', 'astryx-components']);
   let astryxLayerRules = 0;
   const countLayers = (rules) => {
     for (const rule of rules) {
@@ -426,7 +429,7 @@ const captureExpr = (scopes = []) => `(() => {
       } catch {
         continue;
       }
-      if (rule instanceof CSSLayerBlockRule && /^astryx(\\.|$)/.test(rule.name)) {
+      if (rule instanceof CSSLayerBlockRule && ASTRYX_LAYERS.has(rule.name)) {
         astryxLayerRules += inner ? inner.length : 0;
       }
       if (inner) countLayers(inner);
@@ -748,9 +751,13 @@ export function diffRecords(baseline, current) {
         kind: 'changed',
         path,
         label: record.label ?? next.label,
-        // The current side's attribution wins: a swapped element is claimed
-        // by the scope that landed it, not the one that used to own it.
-        scope: next.scope ?? record.scope,
+        // Current side ONLY — never the base side's claim. A changed element
+        // still exists after the swap, so the migrated selectors must match
+        // what actually landed there; falling back to the base attribution
+        // would let a mistyped migrated selector waive every change inside
+        // the old legacy subtree (fail-open). Removed records keep the base
+        // claim (they have no current side), added records the current one.
+        scope: next.scope,
         properties,
       });
     }
@@ -782,6 +789,32 @@ export function partitionChanges(changes, declaredNames) {
     (change.scope && declared.has(change.scope) ? inScope : outOfScope).push(change);
   }
   return { inScope, outOfScope };
+}
+
+/**
+ * Mechanical ceiling under "a scope declares a component, not the app".
+ * The in-browser floor rejects selectors that match html/body/#root, but a
+ * selector like `#root *` or a top-level frame class declares essentially
+ * everything without touching those roots — which is indistinguishable from
+ * disabling the gate. #1565 scopes are components (a workbar, a panel, a
+ * rail); none of them legitimately claims most of a route's boxes, on either
+ * side of the comparison.
+ */
+export const SCOPE_COVERAGE_LIMIT = 0.5;
+
+export function checkScopeCoverage(records, limit = SCOPE_COVERAGE_LIMIT) {
+  if (records.length === 0) return [];
+  const claimed = new Map();
+  for (const record of records) {
+    if (record.scope) claimed.set(record.scope, (claimed.get(record.scope) ?? 0) + 1);
+  }
+  const violations = [];
+  for (const [scope, count] of claimed) {
+    if (count > records.length * limit) {
+      violations.push({ scope, claimed: count, total: records.length });
+    }
+  }
+  return violations;
 }
 
 /**
@@ -915,7 +948,7 @@ async function main() {
         if (current.astryxLayerRules === 0) {
           failures += 1;
           console.log(
-            `FAIL ${key}: no rules under any astryx.* cascade layer — Astryx CSS is not loaded, so a zero diff here is vacuous`,
+            `FAIL ${key}: no rules under any astryx-* cascade layer — Astryx CSS is not loaded, so a zero diff here is vacuous`,
           );
         }
         // An omission rule that never matches silently inflates every record.
@@ -938,6 +971,19 @@ async function main() {
           console.log(
             `FAIL ${key}: scope "${violation.scope}" selector ${violation.selector}: ${violation.reason}`,
           );
+        }
+        // Same rationale, one level up: a selector that avoids the roots but
+        // claims most of a side's boxes has still declared the app.
+        for (const side of [
+          { name: 'base', records: baseRecords },
+          { name: 'current', records },
+        ]) {
+          for (const violation of checkScopeCoverage(side.records)) {
+            failures += 1;
+            console.log(
+              `FAIL ${key}: scope "${violation.scope}" claims ${violation.claimed} of ${violation.total} captured elements on the ${side.name} side — a scope declares a component, not the app`,
+            );
+          }
         }
         const changes = diffRecords(baseRecords, records);
         const declared = scopes

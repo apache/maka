@@ -2,9 +2,10 @@
 @import "tailwindcss";
 @source "../../../../packages/ui/src";
 
-/* Astryx substrate (#1565 PR 2). Each import is wrapped in its astryx.*
+/* Astryx substrate (#1565 PR 2). Each import is wrapped in its astryx-*
    layer — see cascade-layers.css for why unlayered Astryx would invert the
-   whole cascade.
+   whole cascade, and why the layers are top-level names rather than
+   astryx.* sub-layers.
 
    Three Astryx sheets are deliberately NOT imported yet — each targets bare
    elements or shadows product tokens, which no layer order can bury (a rule
@@ -21,7 +22,7 @@
    - tailwind-theme.css: the existing @theme inline bridge below stays the
      single source for utility tokens until Tailwind leaves in PR 12.
    Layer slots for all of them are already reserved in cascade-layers.css. */
-@import "@astryxdesign/core/astryx.css" layer(astryx.components);
+@import "@astryxdesign/core/astryx.css" layer(astryx-components);
 
 /* Bundled Geist fallbacks; maka-tokens.css owns the product font stacks. */
 @import "@fontsource-variable/geist";

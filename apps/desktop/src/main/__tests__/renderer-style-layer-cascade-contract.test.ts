@@ -70,9 +70,28 @@ describe('renderer style layer cascade contract', () => {
     const declarations = [...layersFile.matchAll(/@layer\s+([^;{]+);/g)];
     assert.equal(declarations.length, 1, 'cascade-layers.css must contain exactly one @layer order declaration');
     const order = declarations[0][1].split(',').map((name) => name.trim());
+    // The astryx layers must be TOP-LEVEL names. A sub-layer sits at its
+    // parent's position, and a parent is ordered by its FIRST occurrence —
+    // `astryx.reset, …, base, astryx.components` would collapse every
+    // astryx.* layer to the astryx.reset slot below `base`, and Tailwind
+    // preflight would beat every Astryx component rule (#1565 PR 2 review).
+    // maka.legacy is exempt: it is the sole maka.* layer, so it has no
+    // sibling sub-layer to mis-order against.
+    const nested = order.filter((name) => name.includes('.') && name !== 'maka.legacy');
+    assert.deepEqual(
+      nested,
+      [],
+      'cascade-layers.css must not use dotted sub-layers: a sub-layer collapses to its parent layer’s ' +
+        'first-occurrence position, which silently breaks the intended interleaving',
+    );
     for (const [earlier, later] of [
+      ['astryx-reset', 'astryx-tokens'],
+      ['astryx-tokens', 'theme'],
       ['theme', 'base'],
-      ['base', 'components'],
+      // Astryx component rules must beat Tailwind preflight's element resets,
+      // and product CSS must keep beating Astryx until a slice removes it.
+      ['base', 'astryx-components'],
+      ['astryx-components', 'components'],
       ['components', 'utilities'],
       ['utilities', 'maka.legacy'],
     ]) {
@@ -119,16 +138,16 @@ describe('renderer style layer cascade contract', () => {
       './maka-tokens.css',
     ]);
     // Astryx ships its sheets unlayered; each import must be pinned into its
-    // astryx.* layer or it outranks maka.legacy and repaints the app (#1565
-    // PR 2). Exact layer per file, not "any astryx.*": reset above components
+    // astryx-* layer or it outranks maka.legacy and repaints the app (#1565
+    // PR 2). Exact layer per file, not "any astryx-*": reset above components
     // would flip Astryx's own internal cascade. reset.css (PR 12, with the
     // Tailwind-preflight retirement) and theme.css (PR 3, with the first
     // component consumer) are not imported yet; their entries pin the layer
     // each must land in when it arrives.
     const contractedAstryx = new Map([
-      ['@astryxdesign/core/reset.css', 'astryx.reset'],
-      ['@astryxdesign/core/astryx.css', 'astryx.components'],
-      ['@astryxdesign/theme-neutral/theme.css', 'astryx.tokens'],
+      ['@astryxdesign/core/reset.css', 'astryx-reset'],
+      ['@astryxdesign/core/astryx.css', 'astryx-components'],
+      ['@astryxdesign/theme-neutral/theme.css', 'astryx-tokens'],
     ]);
     const misplaced = imports.filter(({ specifier, layer }) => {
       if (contractedUnlayered.has(specifier)) return layer !== null;

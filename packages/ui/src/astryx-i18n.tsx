@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import { InternationalizationProvider } from '@astryxdesign/core/i18n';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 import { getConversationCopy } from './conversation-copy.js';
@@ -26,8 +26,12 @@ import type { UiLocale } from './locale-helpers.js';
  */
 export function AstryxLocaleProvider({ children }: { children: ReactNode }) {
   const locale = useUiLocale();
+  // Referentially stable per locale: the provider memoises its context value
+  // on the overrides object, so a fresh map every render would re-render
+  // every Astryx i18n consumer on every AppShell render.
+  const overrides = useMemo(() => astryxMessageOverrides(locale), [locale]);
   return (
-    <InternationalizationProvider locale={locale} overrides={astryxMessageOverrides(locale)}>
+    <InternationalizationProvider locale={locale} overrides={overrides}>
       {children}
     </InternationalizationProvider>
   );

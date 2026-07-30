@@ -9,6 +9,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
   checkSalvagedAnchors,
+  checkScopeCoverage,
   diffRecords,
   findDeadOmissionRules,
   INHERITED_PROPERTIES,
@@ -235,6 +236,16 @@ describe('declared scopes', () => {
     assert.equal(changes[0].scope, 'button');
   });
 
+  it('fails closed when only the base side claimed a changed element', () => {
+    // A mistyped migrated selector leaves the current side unclaimed. The
+    // base side's legacy claim must NOT carry over, or every change inside
+    // the old subtree would be silently waived (external review finding).
+    const before = [record('body>div', { color: 'red', scope: 'legacy-button' })];
+    const after = [record('body>div', { color: 'blue' })];
+    const { outOfScope } = partitionChanges(diffRecords(before, after), ['legacy-button']);
+    assert.equal(outOfScope.length, 1);
+  });
+
   it('keeps the base attribution for a removed element', () => {
     // The migrated side no longer has the element, so only the base capture
     // knows which scope claimed it — the legacy selector the slice declared.
@@ -265,5 +276,25 @@ describe('declared scopes', () => {
     const { inScope, outOfScope } = partitionChanges(changes, []);
     assert.equal(inScope.length, 0);
     assert.equal(outOfScope.length, 1);
+  });
+});
+
+describe('checkScopeCoverage', () => {
+  const claimed = (n, scope) => Array.from({ length: n }, (_, i) => record(`p${i}`, { scope }));
+
+  it('fails a scope that claims most of a capture', () => {
+    // `#root *` avoids the in-browser root floor (it matches no root element)
+    // but still declares essentially the whole UI (external review finding).
+    const records = [...claimed(6, 'frame'), ...claimed(4, undefined)];
+    assert.deepEqual(checkScopeCoverage(records), [{ scope: 'frame', claimed: 6, total: 10 }]);
+  });
+
+  it('accepts component-sized scopes', () => {
+    const records = [...claimed(3, 'workbar'), ...claimed(2, 'panel'), ...claimed(5, undefined)];
+    assert.deepEqual(checkScopeCoverage(records), []);
+  });
+
+  it('says nothing about an empty capture', () => {
+    assert.deepEqual(checkScopeCoverage([]), []);
   });
 });
