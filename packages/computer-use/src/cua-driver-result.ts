@@ -91,8 +91,7 @@ const AX_ACTION_UNSUPPORTED = -25206;
  * not quietly grow to mean anything.
  */
 function classifyUnmappedDriverError(message: string): 'unsupported_action' | 'capture_failed' {
-  return message.includes(String(AX_ACTION_UNSUPPORTED)) ||
-    /action[ _]?unsupported/i.test(message)
+  return message.includes(String(AX_ACTION_UNSUPPORTED)) || /action[ _]?unsupported/i.test(message)
     ? 'unsupported_action'
     : 'capture_failed';
 }
@@ -117,9 +116,7 @@ export function normalizeCuaDriverOutcome(
     const message = resultText(result, 'cua-driver reported an error');
     return {
       ok: false,
-      error: isComputerUseErrorCode(rawError)
-        ? rawError
-        : classifyUnmappedDriverError(message),
+      error: isComputerUseErrorCode(rawError) ? rawError : classifyUnmappedDriverError(message),
       message,
       ...(evidence ? { evidence } : {}),
     };
