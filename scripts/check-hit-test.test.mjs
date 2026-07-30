@@ -7,6 +7,7 @@
 // tool silently shrinking the requested coverage.
 import { strict as assert } from 'node:assert';
 import { spawn } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -32,6 +33,12 @@ function runCli(args) {
 }
 
 describe('check-hit-test CLI', () => {
+  it('maps its fixture window without opting into foreground focus', async () => {
+    const source = await readFile(SCRIPT, 'utf8');
+    assert.match(source, /mapWindowInactive:\s*true/);
+    assert.doesNotMatch(source, /showWindow:\s*true/);
+  });
+
   it('rejects an unknown route with the allowed set', async () => {
     const { code, stderr } = await runCli(['--route', 'not-a-route']);
     assert.equal(code, 2);

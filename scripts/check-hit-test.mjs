@@ -283,8 +283,8 @@ function parseArgs(argv) {
 
 // elementFromPoint only agrees with getBoundingClientRect once the window is
 // mapped — against a hidden fixture window it reports unrelated elements and
-// buries the run in false positives. So this probe asks for a visible window
-// and accepts that it steals focus for a few seconds per route.
+// buries the run in false positives. It does not need foreground focus, so the
+// launcher maps the window inactive while the app stays out of the Dock.
 //
 // No retry. An earlier version retried once on any error, which also swallowed
 // a genuine renderer exception in the probe and reported the second identical
@@ -293,7 +293,7 @@ function parseArgs(argv) {
 async function probeRoute(route) {
   return withFixtureWindow(
     route.scenario,
-    { theme: 'light', showWindow: true, readySelector: route.ready },
+    { theme: 'light', mapWindowInactive: true, readySelector: route.ready },
     async ({ evaluate }) => JSON.parse(await evaluate(PROBE_EXPR)),
   );
 }
@@ -312,7 +312,7 @@ async function main() {
   const routes = args.routes ? ROUTES.filter((route) => args.routes.includes(route.id)) : ROUTES;
   let failures = 0;
   for (const [index, route] of routes.entries()) {
-    // These windows are visible, and macOS does not hand the next one a
+    // These windows are mapped, and macOS does not hand the next one a
     // compositor while the last is still tearing down: booting them back to
     // back produced CDP connect failures and renderer timeouts that a gap
     // makes go away. Cheap next to a 13s boot.
