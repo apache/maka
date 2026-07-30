@@ -273,7 +273,12 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
         badge={props.hubHeader?.badge}
         headingRowClassName={props.hubHeader ? 'maka-module-hub-heading' : undefined}
         actions={
-          <div className="maka-module-main-actions" role="group" aria-label={copy.page.actionsAria}>
+          <div
+            className="maka-module-main-actions"
+            data-maka-contract="module-actions"
+            role="group"
+            aria-label={copy.page.actionsAria}
+          >
             <Button variant="secondary" onClick={() => void reload()} disabled={busy === 'load'}>
               <RefreshCcw aria-hidden="true" /> {busy === 'load' ? copy.page.refreshing : copy.page.refresh}
             </Button>
@@ -408,7 +413,10 @@ function McpCatalogCard(props: {
   const installing = props.phase === 'installing';
   const cancelling = props.phase === 'cancelling';
   return (
-    <article className="maka-mcp-market-card">
+    <article
+      className="maka-mcp-market-card"
+      data-maka-contract="mcp-market-card"
+    >
       <div
         className="maka-mcp-market-icon"
         data-brand={props.entry.id}

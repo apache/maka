@@ -252,7 +252,10 @@ function NeedsConnectionHero(props: {
           duplicated what clicking any provider row above already does (the
           list header even says 点一个进入设置). One affordance per action —
           the footer keeps only genuinely distinct paths. */}
-      <footer className="maka-onboarding-footer">
+      <footer
+        className="maka-onboarding-footer"
+        data-maka-contract="onboarding-actions"
+      >
         <Button type="button" variant="secondary" onClick={props.onBrowseProviders}>
           {copy.needsConnection.browseProviders}
         </Button>
@@ -534,7 +537,10 @@ function SetupHero(props: SetupHeroProps) {
         <p>{props.body}</p>
       </header>
       {props.setupSteps && <SetupProgress steps={props.setupSteps} />}
-      <footer className="maka-onboarding-footer">
+      <footer
+        className="maka-onboarding-footer"
+        data-maka-contract="onboarding-actions"
+      >
         <Button
           type="button"
           onClick={props.primaryCta.onClick}
