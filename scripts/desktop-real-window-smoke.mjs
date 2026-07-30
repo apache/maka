@@ -289,6 +289,11 @@ async function launchElectron(args, diagnostics) {
     cwd: DESKTOP_DIR,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
+    // Group leader, like every runtime spawn: the shared tree terminator
+    // kills by process group (`kill(-pid)`), which only lands when the child
+    // owns its group. A visible Electron ignores SIGTERM, so this launcher
+    // depends on that escalation actually working.
+    detached: process.platform !== 'win32',
   });
   const launchCommand = `${electronBin} ${launchArgs.join(' ')}`;
   diagnostics.launch = {

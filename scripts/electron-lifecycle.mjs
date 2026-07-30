@@ -73,6 +73,18 @@ export async function closeElectronApplication(
   if (child.exitCode === null && child.signalCode === null) {
     await terminateTree(child, 'SIGKILL');
   }
+  // The tree terminator signals the child's process GROUP. A child that was
+  // not spawned detached is not a group leader, so the group signal reports
+  // "no such process" and the terminator concludes the tree is gone while
+  // the root lives on — measured with the smoke gate's visible window, which
+  // also ignores SIGTERM. A direct kill always lands on the root itself.
+  if (child.exitCode === null && child.signalCode === null) {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      // Exited between the check and the signal.
+    }
+  }
   if (!(await waitForExit(child, 2_000))) {
     throw new Error('Electron process did not exit after SIGKILL');
   }
