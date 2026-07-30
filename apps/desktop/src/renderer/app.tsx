@@ -42,6 +42,10 @@ export function App({
   return (
     <StrictMode>
       <Theme theme={neutralTheme} mode={astryxMode}>
+        {/* No LayerProvider yet (#1565): it only configures the Astryx toast
+            viewport — a permanent top-layer element the visual harness cannot
+            capture. It mounts in PR 6 with the Toast migration, which owns the
+            harness's top-layer exemption. Tooltip/Popover hooks self-serve. */}
         <AppShell initialOnboardingSnapshot={initialOnboardingSnapshot} />
       </Theme>
     </StrictMode>
