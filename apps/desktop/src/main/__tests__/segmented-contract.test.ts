@@ -53,7 +53,7 @@ describe('segmented control chrome contract', () => {
     assert.match(recipe, /\.maka-segmented button:disabled\s*\{[^}]*opacity:\s*var\(--opacity-disabled\)/);
 
     const entry = await readFile(resolve(RENDERER, 'styles.css'), 'utf8');
-    assert.match(entry, /@import "\.\/styles\/segmented\.css";/);
+    assert.match(entry, /@import "\.\/styles\/segmented\.css" layer\(maka\.legacy\);/);
   });
 
   it('keeps the recipe out of every other renderer stylesheet', async () => {

@@ -15,7 +15,11 @@
 /* maka-tokens.css stays unlayered: it declares its own @layer base/
    utilities/components blocks that must keep merging into the top-level
    Tailwind layers. Wrapping the import would nest them under maka.legacy
-   and raise them above the utilities layer. */
+   and raise them above the utilities layer. Residual asymmetry: its few
+   unlayered non-token rules (.maka-shimmer, the .maka-skeleton family,
+   svg.lucide) now beat all maka.legacy rules unconditionally, no longer
+   by source order — do not add competing declarations for them under
+   styles/. */
 @import "./maka-tokens.css";
 @import "./reference-shell.css" layer(maka.legacy);
 @import "./styles/base.css" layer(maka.legacy);
