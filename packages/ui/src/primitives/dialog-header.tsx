@@ -19,7 +19,7 @@
 
 import type { ReactNode } from 'react';
 import { X } from '../icons.js';
-import { Button } from '@astryxdesign/core';
+import { IconButton } from '@astryxdesign/core';
 import { useUiLocale } from '../locale-context.js';
 import { getShellControlsCopy } from '../shell-controls-copy.js';
 
@@ -71,9 +71,8 @@ export function DialogHeader({ icon, title, titleId, subtitle, onClose, closeLab
           </p>
         )}
       </div>
-      <Button
+      <IconButton
         variant="ghost"
-        isIconOnly
         size="sm"
         label={closeLabel ?? copy.shared.close}
         icon={<X aria-hidden="true" />}

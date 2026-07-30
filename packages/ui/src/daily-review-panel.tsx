@@ -20,7 +20,7 @@ import {
   formatDailyReviewMarkdown,
   formatDailyReviewModelLabel,
 } from './daily-review-helpers.js';
-import { Button as UiButton } from '@astryxdesign/core';
+import { Button as UiButton, IconButton } from '@astryxdesign/core';
 import { Chip, type ChipProps } from './primitives/chip.js';
 import { Segmented } from './primitives/segmented.js';
 import { Alert, AlertAction, AlertDescription } from './primitives/alert.js';
@@ -399,9 +399,8 @@ export function DailyReviewPanel(props: {
           className="maka-daily-review-range-tabs"
         />
         <div className="maka-daily-review-scope-stepper">
-          <UiButton
+          <IconButton
             variant="ghost"
-            isIconOnly
             size="sm"
             className="maka-daily-review-stepper"
             onClick={() => setOffsetDays((n) => n - range)}
@@ -409,9 +408,8 @@ export function DailyReviewPanel(props: {
             icon={<ChevronLeft aria-hidden="true" />}
           />
           <div className="maka-daily-review-day">{dayLabel}</div>
-          <UiButton
+          <IconButton
             variant="ghost"
-            isIconOnly
             size="sm"
             className="maka-daily-review-stepper"
             onClick={() => setOffsetDays((n) => Math.min(0, n + range))}

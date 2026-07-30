@@ -1612,8 +1612,11 @@ description: Exercise workspace-contained open paths.
     assert.match(skillPanel, /<div className="maka-skill-market-grid">/, '市场 tab renders managed sources as a card grid');
     assert.match(skillPanel, /const marketSources = useMemo\(/, '市场 grid is a pure client-side filter/sort over managedSkillSources');
     assert.match(skillPanel, /copy\.market\.official/, '市场 grid carries the localized official section label');
-    // #1565 PR 3: Astryx icon-only Button — isIconOnly + size="sm", accessible name via label.
-    assert.match(skillPanel, /variant="secondary"\s+isIconOnly\s+size="sm"[\s\S]*?label=\{copy\.install\.action\(source\.name\)\}/, 'only the governed install icon-button acts; the market card body stays inert');
+    assert.match(
+      skillPanel,
+      /<IconButton\s+variant="secondary"\s+size="sm"[\s\S]*?label=\{copy\.install\.action\(source\.name\)\}/,
+      'only the governed install icon-button acts; the market card body stays inert',
+    );
     assert.match(skillPanel, /copy\.market\.importLocal/);
     assert.doesNotMatch(skillPanel, /const managedSources = \(/, '来源库 list was replaced by the 市场 card grid');
     assert.match(skillPanel, /onInstallManagedSkill\?\(sourceId: string\): void \| Promise<void>/);

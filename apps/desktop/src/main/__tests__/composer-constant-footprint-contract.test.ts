@@ -147,10 +147,15 @@ describe('PR-COMPOSER-CONSTANT-FOOTPRINT-0 contract (issue #740)', () => {
     const stopBlock = source.match(/props\.streaming \? \(\s*<UiButton[\s\S]*?\/>/);
     assert.ok(stopBlock, 'stop button block (streaming branch) not found');
     assert.doesNotMatch(stopBlock[0], /size="/, 'stop button must stay on the default 32px md tier');
-    const sendBlock = source.match(/<UiButton\s+variant="primary"\s+isIconOnly[\s\S]*?icon=\{<ArrowUp/);
+    const sendBlock = source.match(
+      /<IconButton\s+variant="primary"[\s\S]*?icon=\{<ArrowUp/,
+    );
     assert.ok(sendBlock, 'send button block (rest branch) not found');
     assert.doesNotMatch(sendBlock[0], /size="/, 'send button must stay on the default 32px md tier');
-    assert.match(source, /variant="primary"\s+isIconOnly\s+type="submit"[\s\S]*?label=\{copy\.sendLabel\}/);
+    assert.match(
+      source,
+      /<IconButton\s+variant="primary"\s+type="submit"[\s\S]*?label=\{copy\.sendLabel\}/,
+    );
   });
 
   it('negative cases: same-block duplicate, selector-list companion, compound .maka-composer.composer padding return, .maka-composer padding return, textarea min-h-* return, stop off-tier return', () => {

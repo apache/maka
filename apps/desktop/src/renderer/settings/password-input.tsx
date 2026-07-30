@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState, type Ref } from 'react';
 import { Check, Copy, Eye, EyeOff } from '@maka/ui/icons';
-import { Button, Input, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import {
+  IconButton,
+  Input,
+  useMountedRef,
+  useToast,
+  useUiLocale,
+} from '@maka/ui';
 import { useActionGuard } from './use-action-guard';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
 
@@ -89,10 +95,9 @@ export function PasswordInput(props: {
       />
       <div className="settingsPasswordActions">
         {props.value && !props.disabled && (
-          <Button
+          <IconButton
             variant="ghost"
             size="sm"
-            isIconOnly
             isDisabled={copying}
             onClick={() => void copyValue()}
             label={copying ? copy.copying : justCopied ? copy.copied : copy.copy}
@@ -101,10 +106,9 @@ export function PasswordInput(props: {
               : <Copy size={16} aria-hidden="true" />}
           />
         )}
-        <Button
+        <IconButton
           variant="ghost"
           size="sm"
-          isIconOnly
           onClick={() => setVisible((current) => !current)}
           isDisabled={props.disabled}
           label={visible ? copy.hide : copy.show}

@@ -25,8 +25,10 @@ describe('Desktop explicit Skill invocation contract', () => {
     assert.match(composer, /className="maka-composer-skill-chip"/);
     assert.match(composer, /props\.onSend\(text, skillIds\)/);
     assert.match(composer, /clearDraft\(draftKey\);\s*skillDraft\.clear\(draftKey\)/);
-    // #1565 PR 3: Astryx icon-only Button (`isIconOnly`) replaced size="icon" + shape="pill".
-    assert.match(composer, /<UiButton[\s\S]*?isIconOnly[\s\S]*?className="maka-composer-skill-chip-remove"/);
+    assert.match(
+      composer,
+      /<IconButton[\s\S]*?className="maka-composer-skill-chip-remove"/,
+    );
     assert.match(
       composer,
       /skillDraft\.remove\(skill\.ref \?\? skill\.id\);[\s\S]*?requestAnimationFrame\(\(\) => textareaRef\.current\?\.focus\(\)\)/,

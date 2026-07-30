@@ -266,11 +266,13 @@ describe('renderer style layer cascade contract', () => {
       readFile('src/renderer/settings/password-input.tsx', 'utf8'),
     ]);
 
-    // #1565 PR 3: Astryx Button — visible text moves to the `label` prop and
-    // quiet/icon-sm becomes ghost + sm + isIconOnly.
+    // Astryx Button owns visible text; IconButton owns icon-only actions.
     assert.match(permission, /<Button\s+variant="secondary"\s+size="sm"[\s\S]*?label=\{copy\.detectAgain\}/);
     assert.match(health, /<Button\s+variant="secondary"\s+size="sm"[\s\S]*?label=\{copy\.refresh\}/);
-    assert.equal(password.match(/variant="ghost"\s+size="sm"\s+isIconOnly/g)?.length, 2);
+    assert.equal(
+      password.match(/<IconButton\s+variant="ghost"\s+size="sm"/g)?.length,
+      2,
+    );
 
     for (const legacyClass of ['settingsPermissionRefresh', 'settingsHealthRefresh', 'settingsPasswordToggle']) {
       assert.doesNotMatch(`${permission}\n${health}\n${password}`, new RegExp(`className="${legacyClass}"`));

@@ -14,7 +14,7 @@ import {
 } from './icons.js';
 import type { CapabilityAuditReport } from '@maka/core';
 import { deriveCapabilityAuditReport } from '@maka/core';
-import { Button as UiButton } from '@astryxdesign/core';
+import { Button as UiButton, IconButton } from '@astryxdesign/core';
 import { Switch, TabsRoot, TabsList, TabsTrigger, TabsPanel } from './ui.js';
 import { Chip, type ChipProps } from './primitives/chip.js';
 import { PageHeader } from './primitives/page-header.js';
@@ -324,9 +324,8 @@ function SkillLibraryPanel(props: {
                   {/* + install acts; the card itself is inert (honest
                       affordance). Disabled once the source is in the
                       workspace, so it reads as a real state, not a toggle. */}
-                  <UiButton
+                  <IconButton
                     variant="secondary"
-                    isIconOnly
                     size="sm"
                     onClick={() => props.onInstallManagedSkill?.(source.id)}
                     isDisabled={installed || props.actionBusy || !props.onInstallManagedSkill}
@@ -385,9 +384,8 @@ function SkillLibraryPanel(props: {
                   </div>
                   {/* Install copies the shipped body into the workspace. Disabled
                       once installed, so the button reads as a state, not a toggle. */}
-                  <UiButton
+                  <IconButton
                     variant="secondary"
-                    isIconOnly
                     size="sm"
                     onClick={() => props.onInstallBundledSkill?.(entry.id)}
                     isDisabled={entry.installed || props.actionBusy || !props.onInstallBundledSkill}
@@ -557,9 +555,8 @@ function SkillLibraryPanel(props: {
                   )}
                   {!isDiscoveryDiagnostic && (
                     <>
-                      <UiButton
+                      <IconButton
                         variant="secondary"
-                        isIconOnly
                         size="sm"
                         className="maka-skill-library-open-button"
                         onClick={() => props.onOpenSkill?.(skillRef)}
@@ -579,9 +576,8 @@ function SkillLibraryPanel(props: {
                     </>
                   )}
                   {!isDiscoveryDiagnostic && props.onSetSkillPinned && (
-                    <UiButton
+                    <IconButton
                       variant="secondary"
-                      isIconOnly
                       size="sm"
                       className="maka-skill-library-pin-button"
                       onClick={() => props.onSetSkillPinned?.(skillRef, !skill.pinned)}

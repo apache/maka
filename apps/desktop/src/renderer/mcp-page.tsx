@@ -8,6 +8,7 @@ import {
   DialogHeader,
   DialogRoot,
   EmptyState,
+  IconButton,
   Input,
   InputGroup,
   InputGroupAddon,
@@ -510,8 +511,8 @@ function McpServerRow(props: {
             icon={<RefreshCcw aria-hidden="true" />}
             label={props.busy === `test:${props.serverId}` ? props.copy.row.testing : props.copy.row.test}
           />
-          <Button size="sm" isIconOnly variant="ghost" label={props.copy.row.editAria(props.serverId)} tooltip={props.copy.row.edit} onClick={props.onEdit} icon={<Pencil aria-hidden="true" />} />
-          <Button size="sm" isIconOnly variant="ghost" label={props.copy.row.deleteAria(props.serverId)} tooltip={props.copy.row.delete} onClick={props.onRemove} isDisabled={props.busy === `remove:${props.serverId}`} icon={<Trash2 aria-hidden="true" />} />
+          <IconButton size="sm" variant="ghost" label={props.copy.row.editAria(props.serverId)} tooltip={props.copy.row.edit} onClick={props.onEdit} icon={<Pencil aria-hidden="true" />} />
+          <IconButton size="sm" variant="ghost" label={props.copy.row.deleteAria(props.serverId)} tooltip={props.copy.row.delete} onClick={props.onRemove} isDisabled={props.busy === `remove:${props.serverId}`} icon={<Trash2 aria-hidden="true" />} />
         </div>
       </div>
       {props.status?.error && <div className="maka-mcp-server-error" role="alert">{props.status.error}</div>}

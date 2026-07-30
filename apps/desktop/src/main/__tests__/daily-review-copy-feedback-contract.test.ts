@@ -96,8 +96,10 @@ describe('Daily Review copy feedback contract', () => {
     const css = await readRendererContractCss();
     const panelBlock = extractFunctionBlock(ui, 'DailyReviewPanel');
 
-    // #1565 PR 3: Astryx icon-only Button (`isIconOnly` + size="sm") replaced size="icon-sm".
-    assert.match(panelBlock, /<UiButton[\s\S]*?variant="ghost"[\s\S]*?isIconOnly[\s\S]*?size="sm"[\s\S]*?className="maka-daily-review-stepper"/);
+    assert.match(
+      panelBlock,
+      /<IconButton[\s\S]*?variant="ghost"[\s\S]*?size="sm"[\s\S]*?className="maka-daily-review-stepper"/,
+    );
     assert.match(panelBlock, /<Segmented[\s\S]*?className="maka-daily-review-range-tabs"/);
     // PR3 (#527) added min-w-[Nrem] utilities to the copy/append/save buttons
     // (text-swap width lock for 复制/已复制 feedback). Match each semantic

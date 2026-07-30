@@ -14,7 +14,6 @@ import {
   X,
 } from '@maka/ui/icons';
 import {
-  Button,
   DialogContent,
   DialogRoot,
   Empty,
@@ -22,6 +21,7 @@ import {
   EmptyHeader,
   EmptyMedia,
   EmptyTitle,
+  IconButton,
   InputGroup,
   InputGroupAddon,
   InputGroupInput,
@@ -230,10 +230,9 @@ export function CommandPalette(props: {
                 }
               />
             </InputGroup>
-            <Button
+            <IconButton
               variant="ghost"
               size="sm"
-              isIconOnly
               icon={<X aria-hidden="true" />}
               label={copy.closeLabel}
               onClick={props.onClose}

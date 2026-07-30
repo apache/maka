@@ -7,7 +7,7 @@ import { Search, X } from './icons.js';
 import { EmptyState } from './empty-state.js';
 import { DialogHeader } from './primitives/dialog-header.js';
 import { InputGroup, InputGroupAddon, InputGroupInput } from './primitives/input-group.js';
-import { Button as UiButton } from '@astryxdesign/core';
+import { IconButton } from '@astryxdesign/core';
 import { DialogContent, DialogRoot } from './ui.js';
 import { useUiLocale } from './locale-context.js';
 import { getShellControlsCopy } from './shell-controls-copy.js';
@@ -298,9 +298,8 @@ export function SearchModal(props: {
             />
             {query.length > 0 && (
               <InputGroupAddon align="inline-end">
-                <UiButton
+                <IconButton
                   variant="ghost"
-                  isIconOnly
                   size="sm"
                   label={copy.clearLabel}
                   icon={<X size={14} aria-hidden="true" />}

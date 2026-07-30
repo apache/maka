@@ -97,6 +97,24 @@ function mixOklchToSrgb(c1: [number, number, number], c2: [number, number, numbe
 }
 
 describe('issue #406 design-system governance contract', () => {
+  it('uses IconButton instead of repeating icon-only semantics on Button', async () => {
+    const sources = (
+      await Promise.all([
+        readSourceTree(resolve(REPO_ROOT, 'packages/ui/src')),
+        readSourceTree(resolve(REPO_ROOT, 'apps/desktop/src/renderer')),
+      ])
+    ).flat();
+    const violations = sources
+      .filter(({ source }) => /\bisIconOnly\b/.test(source))
+      .map(({ path }) => relative(REPO_ROOT, path));
+
+    assert.deepEqual(
+      violations,
+      [],
+      'production icon-only actions must use IconButton, which makes the required icon and forbidden visible children part of the type contract',
+    );
+  });
+
   it('keeps featured skill banners neutral instead of using blue as decorative texture', async () => {
     const source = stripCssComments(await readFile(resolve(REPO_ROOT, 'apps/desktop/src/renderer/styles/module-pages/skills.css'), 'utf8'));
     const block = source.match(/\.maka-skill-featured-banner\s*\{([\s\S]*?)\n\}/)?.[1] ?? '';

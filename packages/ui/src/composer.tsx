@@ -34,7 +34,7 @@ import { ComposerMentionPopup, mentionOptionId } from './composer-mention-popup.
 import { useMentionPopup } from './use-mention-popup.js';
 import { ComposerWorkspaceRow, type ComposerBranchPicker, type ComposerWorkspacePicker } from './composer-workspace-row.js';
 import type { AttachmentRef, PermissionMode, ProviderType, QuoteRef, SessionSummary } from '@maka/core';
-import { Button as UiButton } from '@astryxdesign/core';
+import { Button as UiButton, IconButton } from '@astryxdesign/core';
 import { buttonVariants, cn } from './ui.js';
 import { Textarea as UiTextarea } from './primitives/textarea.js';
 import { AttachmentFileCard } from './attachment-file-card.js';
@@ -712,9 +712,8 @@ export const Composer = forwardRef<
             {skillDraft.skills.map((skill) => (
               <li className="maka-composer-skill-chip" key={skill.ref ?? skill.id}>
                 <span>{skill.name}</span>
-                <UiButton
+                <IconButton
                   variant="ghost"
-                  isIconOnly
                   className="maka-composer-skill-chip-remove"
                   label={copy.removeSkillAriaLabel(skill.name)}
                   icon={<X size={12} aria-hidden="true" />}
@@ -1075,9 +1074,8 @@ export const Composer = forwardRef<
                 label={props.stopPending ? copy.stopping : copy.stopLabel}
               />
             ) : (
-              <UiButton
+              <IconButton
                 variant="primary"
-                isIconOnly
                 type="submit"
                 isDisabled={sendDisabled}
                 label={copy.sendLabel}

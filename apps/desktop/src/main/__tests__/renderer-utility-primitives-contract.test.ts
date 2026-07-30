@@ -136,8 +136,7 @@ describe('renderer utility surfaces use shared UI primitives', () => {
     assert.doesNotMatch(source, /<InputGroupAddon align="inline-end"/, 'Palette input must not duplicate footer shortcuts inline');
     assert.match(
       source,
-      // #1565 PR 3: the icon-only Astryx close Button exposes its accessible name via `label`.
-      /<div className="maka-palette-header">[\s\S]*?<InputGroup[\s\S]*?<\/InputGroup>[\s\S]*?label=\{copy\.closeLabel\}/,
+      /<div className="maka-palette-header">[\s\S]*?<InputGroup[\s\S]*?<\/InputGroup>[\s\S]*?<IconButton[\s\S]*?label=\{copy\.closeLabel\}/,
       'Palette header must place the close action after the search InputGroup',
     );
     assert.match(source, /<Autocomplete.Item[\s\S]*className="maka-palette-item"/, 'Command palette rows must be Autocomplete.Item (#520 PR8)');
@@ -193,11 +192,16 @@ describe('renderer utility surfaces use shared UI primitives', () => {
     // close button) instead of an ad-hoc header. The command palette is
     // intentionally headerless (its input row IS the header) and is excluded.
     const header = await readFile(join(repoRoot, 'packages/ui/src/primitives/dialog-header.tsx'), 'utf8');
-    // The shared close button is the SAME form everywhere: ghost icon-only sm
-    // Astryx Button + X, label defaults to 关闭, no border box. (#1565 PR 3:
-    // quiet/icon-sm/aria-label became ghost/isIconOnly+sm/label.)
+    // The shared close button is the SAME form everywhere: ghost sm Astryx
+    // IconButton + X, label defaults to 关闭, no border box.
+    assert.match(
+      header,
+      /<IconButton/,
+      'DialogHeader close must use the dedicated icon-only primitive',
+    );
     assert.match(header, /variant="ghost"/, 'DialogHeader close must be the ghost Button variant');
-    assert.match(header, /isIconOnly[\s\S]*?size="sm"/, 'DialogHeader close must be icon-only sm');
+    assert.match(header, /size="sm"/, 'DialogHeader close must use the small control tier');
+    assert.doesNotMatch(header, /isIconOnly/);
     assert.match(header, /label=\{closeLabel \?\? copy\.shared\.close\}/, 'DialogHeader close accessible name follows the resolved UI locale');
     assert.match(header, /<X aria-hidden="true" \/>/, 'DialogHeader close renders the X icon');
     assert.match(header, /export function DialogHeader/, 'DialogHeader must be exported');
@@ -291,9 +295,14 @@ describe('renderer utility surfaces use shared UI primitives', () => {
     assert.match(skillsCss, /\.maka-skill-library-open-button\s*\{\s*justify-self:\s*end;\s*\}/);
 
     const skills = consumers[3];
-    // #1565 PR 3: Astryx icon-only Buttons (`isIconOnly` + size="sm") replaced size="icon-sm".
-    assert.match(skills, /variant="secondary"\s+isIconOnly\s+size="sm"\s+onClick=\{\(\) => props\.onInstallManagedSkill/);
-    assert.match(skills, /variant="secondary"\s+isIconOnly\s+size="sm"\s+className="maka-skill-library-open-button"/);
+    assert.match(
+      skills,
+      /<IconButton\s+variant="secondary"\s+size="sm"\s+onClick=\{\(\) => props\.onInstallManagedSkill/,
+    );
+    assert.match(
+      skills,
+      /<IconButton\s+variant="secondary"\s+size="sm"\s+className="maka-skill-library-open-button"/,
+    );
     assert.match(skills, /variant="secondary"\s+size="sm"\s+onClick=\{\(\) => void reviewManagedSkillUpdate/);
     assert.doesNotMatch(skills, /className="maka-skill-filter-pill"/);
     assert.doesNotMatch(skills, /className="maka-skill-market-install-button"/);
@@ -359,9 +368,12 @@ describe('renderer utility surfaces use shared UI primitives', () => {
     }
 
     // #1565 PR 3: the attachment menu trigger is a Base UI render-prop on the
-    // legacy buttonVariants seam; the send button is an icon-only Astryx Button.
+    // legacy buttonVariants seam; the send button uses Astryx IconButton.
     assert.match(composer, /buttonVariants\(\{ variant: 'quiet', size: 'icon-sm', shape: 'pill' \}\)[\s\S]*?aria-label=\{pendingImportAction/);
-    assert.match(composer, /variant="primary"\s+isIconOnly[\s\S]*?label=\{copy\.sendLabel\}/);
+    assert.match(
+      composer,
+      /<IconButton\s+variant="primary"[\s\S]*?label=\{copy\.sendLabel\}/,
+    );
     assert.match(plan, /variant="secondary"\s+size="sm"[\s\S]*onClick=\{\(\) => applyRunAtPreset/);
 
     assert.match(story, /import \{ SessionListPanel \} from '\.\.\/src\/session-list-panel\.js';/);

@@ -14,6 +14,7 @@ import {
   DataTable,
   type DataTableColumn,
   EmptyState,
+  IconButton,
   Input,
   Segmented,
   SettingsSelect,
@@ -131,10 +132,9 @@ export function UsageSettingsPage(props: {
             page refresh (one action, one shape everywhere); pinned to the
             row's trailing edge so the time cluster reads as a single
             left-aligned group. */}
-        <Button
+        <IconButton
           variant="ghost"
           size="sm"
-          isIconOnly
           isDisabled={refreshing}
           aria-busy={refreshing}
           data-pending={refreshing ? 'true' : undefined}
