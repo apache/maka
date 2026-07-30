@@ -39,26 +39,20 @@ const CLOSE_GRACE_MS = 5_000;
 export const CAPTURE_TIMEZONE = process.env.FIXTURE_TIMEZONE ?? 'UTC';
 
 /**
- * Decide how the fixture window reaches the compositor.
+ * Electron 43 defaults to native Wayland when XDG_SESSION_TYPE=wayland, where
+ * BrowserWindow.showInactive() is unsupported.
  *
- * @param {{
- *   showWindow?: boolean,
- *   mapWindowInactive?: boolean,
- *   ciLinuxDisplay?: boolean,
- * }} [options]
- * @returns {'hidden' | 'inactive' | 'visible'}
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {NodeJS.Platform} [platform]
  */
-export function resolveFixtureWindowMode(options = {}) {
-  const {
-    showWindow = false,
-    mapWindowInactive = false,
-    ciLinuxDisplay = isCiLinuxDisplay(),
-  } = options;
-  if (showWindow && mapWindowInactive) {
-    throw new Error('showWindow and mapWindowInactive are mutually exclusive');
-  }
-  if (showWindow || ciLinuxDisplay) return 'visible';
-  return mapWindowInactive ? 'inactive' : 'hidden';
+export function assertInactiveWindowMappingSupported(
+  env = process.env,
+  platform = process.platform,
+) {
+  if (platform !== 'linux' || env.XDG_SESSION_TYPE?.toLowerCase() !== 'wayland') return;
+  throw new Error(
+    'inactive fixture mapping is unsupported on native Wayland; run under XWayland with --ozone-platform=x11',
+  );
 }
 
 /**
@@ -70,7 +64,18 @@ export function resolveFixtureWindowMode(options = {}) {
 export async function mapFixtureWindowInactive(app, page) {
   const windowHandle = await app.browserWindow(page);
   try {
-    await windowHandle.evaluate((window) => window.showInactive());
+    const state = await windowHandle.evaluate((window) => {
+      window.showInactive();
+      return {
+        visible: window.isVisible(),
+        focused: window.isFocused(),
+      };
+    });
+    if (!state.visible || state.focused) {
+      throw new Error(
+        `inactive fixture mapping failed: visible=${state.visible} focused=${state.focused}`,
+      );
+    }
   } finally {
     await windowHandle.dispose();
   }
@@ -111,7 +116,6 @@ const SETTLE_EXPR = `(async () => {
  * @param {{
  *   theme?: 'light' | 'dark',
  *   platform?: 'darwin' | 'win32' | 'linux',
- *   showWindow?: boolean,
  *   mapWindowInactive?: boolean,
  *   readySelector?: string,
  *   readyTimeoutMs?: number,
@@ -124,10 +128,6 @@ export async function withFixtureWindow(scenario, options, fn) {
   const {
     theme = 'light',
     platform,
-    // A fixture window stays hidden for its whole lifecycle unless this is
-    // set. Reading computed style works either way, but anything that depends
-    // on the compositor — hit testing, real input — needs a mapped window.
-    showWindow = false,
     // Hit testing needs a mapped window, not foreground focus. Keep the app
     // accessory/Dock-hidden and map only this launch's BrowserWindow.
     mapWindowInactive = false,
@@ -141,7 +141,12 @@ export async function withFixtureWindow(scenario, options, fn) {
     // ref's build from a temporary worktree through the same launcher.
     desktopDir = DESKTOP_DIR,
   } = options ?? {};
-  const windowMode = resolveFixtureWindowMode({ showWindow, mapWindowInactive });
+  // xvfb throttles a hidden window's compositor to ~1fps; only that isolated
+  // display gets a visible window. Local hit tests stay accessory/Dock-hidden.
+  const ciVisible = isCiLinuxDisplay();
+  if (mapWindowInactive && !ciVisible) {
+    assertInactiveWindowMappingSupported();
+  }
 
   const userDataDir = await mkdtemp(join(tmpdir(), 'maka-fixture-'));
   // Inside the throwaway userData dir so the same teardown removes it; there
@@ -159,14 +164,12 @@ export async function withFixtureWindow(scenario, options, fn) {
         scenario,
         theme,
         platform,
-        // xvfb throttles a hidden window's compositor to ~1fps; only that
-        // isolated display gets a visible window.
-        showWindow: windowMode === 'visible',
+        showWindow: ciVisible,
         timezone: CAPTURE_TIMEZONE,
       }),
     });
     const page = await app.firstWindow();
-    if (windowMode === 'inactive') await mapFixtureWindowInactive(app, page);
+    if (mapWindowInactive && !ciVisible) await mapFixtureWindowInactive(app, page);
     page.on('console', (message) => {
       rendererLogs.push(`[console:${message.type()}] ${message.text()}`);
       if (rendererLogs.length > 30) rendererLogs.shift();
