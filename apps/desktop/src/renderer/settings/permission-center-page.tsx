@@ -457,7 +457,7 @@ function OsPermissionRow(props: {
       <div className="settingsOsPermissionBody">
         <div className="settingsOsPermissionHeading">
           <strong>{label}</strong>
-          <Badge variant={statusBadgeVariant(stateCopy.tone)}>{stateCopy.label}</Badge>
+          <Badge variant={statusBadgeVariant(stateCopy.tone)} label={stateCopy.label} />
         </div>
         <small className="settingsOsPermissionPurpose">{purpose}</small>
         {impact ? (

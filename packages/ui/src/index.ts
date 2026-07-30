@@ -122,11 +122,11 @@ export {
   AccordionPrimitive as PrimitiveAccordionPrimitive,
 } from './primitives/accordion.js';
 // PR-USE-SHADCN-BASE-UI-BADGE: the canonical pill Badge primitive. #520 PR9
-// collapsed the legacy ui.tsx Badge onto this one. Badge is the pill emphasis
-// marker (health/permission center). Variants: default / destructive / error
-// / info / outline / secondary / success / warning.
-export { Badge, badgeVariants } from './primitives/badge.js';
-export type { BadgeProps } from './primitives/badge.js';
+// collapsed the legacy ui.tsx Badge onto this one. #1565 PR 3: the recipe is
+// the Astryx Badge now (label prop, status + palette variants); same barrel
+// slot, implementation swapped behind it. badgeVariants retired with the cva
+// recipe (no consumers).
+export { Badge, type BadgeProps, type BadgeVariant } from '@astryxdesign/core';
 // PR-USE-SHADCN-BASE-UI-CHIP: squared compact status label. #520 PR9 collapsed
 // .settingsBadge + .settingsConnectionBadge CSS chips onto this one. Chip is
 // the squared (radius-control) counterpart to pill Badge, for dense settings

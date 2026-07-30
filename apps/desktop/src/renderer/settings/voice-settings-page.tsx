@@ -186,7 +186,7 @@ export function VoiceModelsSettingsPage() {
         iconClassName="settingsFeatureStatusIcon"
         headingRowClassName="settingsFeatureStatusHeroHeading"
         title={copy.title}
-        badge={<Badge variant="secondary">{copy.badge}</Badge>}
+        badge={<Badge variant="neutral" label={copy.badge} />}
         subtitle={copy.subtitle}
       />
 

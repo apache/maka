@@ -307,7 +307,8 @@ const COMPONENT_RADIUS: ComponentRadiusCheck[] = [
   { file: 'packages/ui/src/primitives/tabs.tsx', name: 'TabsList', tier: 'surface' },
   { file: 'packages/ui/src/primitives/tabs.tsx', name: 'TabsTab', tier: 'control' },
   { file: 'packages/ui/src/primitives/input-group.tsx', name: 'InputGroup', tier: 'control' },
-  { file: 'packages/ui/src/primitives/badge.tsx', name: 'badgeVariants', tier: 'pill' },
+  // #1565 PR 3: the Badge entry left this table — it is the Astryx primitive
+  // now, whose pill radius is Astryx-owned.
   { file: 'packages/ui/src/primitives/item.tsx', name: 'itemVariants', tier: 'surface' },
   { file: 'packages/ui/src/primitives/menu.tsx', name: 'MenuPopup', tier: 'surface' },
   { file: 'packages/ui/src/primitives/alert.tsx', name: 'alertVariants', tier: 'surface' },

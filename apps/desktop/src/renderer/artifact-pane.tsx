@@ -421,9 +421,7 @@ export function ArtifactPane(props: {
                 </span>
                   </span>
                   {record.status === 'deleted' && (
-                <Badge variant="destructive" className="maka-artifact-row-badge">
-                  {copy.pane.deletedBadge}
-                </Badge>
+                <Badge variant="error" className="maka-artifact-row-badge" label={copy.pane.deletedBadge} />
                   )}
                 </BaseButton>
               </li>

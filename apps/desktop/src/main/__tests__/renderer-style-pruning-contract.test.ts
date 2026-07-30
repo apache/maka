@@ -42,6 +42,11 @@ const DYNAMIC_STYLE_HOOKS = new Set([
   // as a className literal in our source, but interaction-prompts.css and
   // settings/rows.css target it for layout overrides on migrated buttons.
   'astryx-button',
+  // #1565: `.astryx-badge` is the stable component class the Astryx
+  // Badge renders at runtime (themeProps buildClassName) — it never appears
+  // as a className literal in our source, but health.css targets it for the
+  // blockers-row wrapping override.
+  'astryx-badge',
   'settingsPaletteSwatch-default',
   'settingsPaletteSwatch-onedark',
   'settingsPaletteSwatch-catppuccin-mocha',

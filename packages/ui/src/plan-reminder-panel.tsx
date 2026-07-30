@@ -43,8 +43,7 @@ import {
   TabsRoot,
   TabsTrigger,
 } from './ui.js';
-import { Button as UiButton } from '@astryxdesign/core';
-import { Badge } from './primitives/badge.js';
+import { Badge, Button as UiButton } from '@astryxdesign/core';
 import { Chip, type ChipProps } from './primitives/chip.js';
 import { PageHeader } from './primitives/page-header.js';
 import { Input } from './primitives/input.js';
@@ -414,9 +413,10 @@ export function PlanReminderPanel(props: {
                         <div className="maka-plan-card-title-row">
                           <h3 className="maka-plan-card-title">{reminder.title}</h3>
                           {reminder.status !== 'scheduled' && (
-                            <Badge variant={reminder.status === 'paused' ? 'warning' : 'secondary'}>
-                              {planReminderStatusLabel(reminder.status, locale)}
-                            </Badge>
+                            <Badge
+                              variant={reminder.status === 'paused' ? 'warning' : 'neutral'}
+                              label={planReminderStatusLabel(reminder.status, locale)}
+                            />
                           )}
                         </div>
                         <p className="maka-plan-card-note">
