@@ -59,9 +59,15 @@ test('copies Markdown code and reports a clipboard failure', async ({ window: pa
   await expect(copyStatus).toHaveText('已复制代码');
   await expect(astryxPoliteRegion).toHaveText('已复制代码');
   await expect(page.getByText('Copied', { exact: true })).toHaveCount(0);
-  expect(await page.evaluate(
+  const copiedCode = await page.evaluate(
     () => (window as typeof window & { __copiedCode?: string }).__copiedCode,
-  )).toBe('const answer = 42;\n\nreturn answer;');
+  );
+  // The fenced-code AST may retain its closing newline. The regression
+  // boundary is the exact internal blank line without DOM-only U+200B fillers.
+  expect(copiedCode?.replace(/\n$/, '')).toBe(
+    'const answer = 42;\n\nreturn answer;',
+  );
+  expect(copiedCode).not.toContain('\u200B');
 
   await expect(codeBlock.getByRole('button', { name: '复制代码' })).toBeVisible();
 
