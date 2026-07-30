@@ -66,6 +66,37 @@ function resultText(result: JsonRpcToolResult | undefined, fallback: string): st
   );
 }
 
+/**
+ * `kAXErrorActionUnsupported`. AppKit returns it when an element has no such
+ * action — pressing a text area, for instance, which is not a thing you do to
+ * a text area.
+ */
+const AX_ACTION_UNSUPPORTED = -25206;
+
+/**
+ * A code for a driver error that Maka's enum does not name.
+ *
+ * This used to be `capture_failed` for everything, which is a specific claim —
+ * "the screenshot did not work" — and it was wrong for every error that was not
+ * about capture. Watched on a real desktop chain: `click_element` on a
+ * `AXTextArea` came back "capture_failed: AX action failed:
+ * AXUIElementPerformAction(AXPress) returned -25206". Nothing about capture had
+ * failed. The model spent seven tool calls re-observing and retrying the same
+ * click, because the code told it the failure was transient and the message
+ * that said otherwise was behind it.
+ *
+ * `unsupported_action` is the truthful reading of that one, and it is already
+ * in the enum. Everything still unrecognised stays `capture_failed` rather than
+ * being widened into a second catch-all — a code that means one thing should
+ * not quietly grow to mean anything.
+ */
+function classifyUnmappedDriverError(message: string): 'unsupported_action' | 'capture_failed' {
+  return message.includes(String(AX_ACTION_UNSUPPORTED)) ||
+    /action[ _]?unsupported/i.test(message)
+    ? 'unsupported_action'
+    : 'capture_failed';
+}
+
 export function normalizeCuaDriverOutcome(
   result: JsonRpcToolResult | undefined,
 ): CuDispatchOutcome {
@@ -83,10 +114,13 @@ export function normalizeCuaDriverOutcome(
 
   if (result.isError) {
     const rawError = structuredContent?.error;
+    const message = resultText(result, 'cua-driver reported an error');
     return {
       ok: false,
-      error: isComputerUseErrorCode(rawError) ? rawError : 'capture_failed',
-      message: resultText(result, 'cua-driver reported an error'),
+      error: isComputerUseErrorCode(rawError)
+        ? rawError
+        : classifyUnmappedDriverError(message),
+      message,
       ...(evidence ? { evidence } : {}),
     };
   }
