@@ -79,14 +79,30 @@ export function buildFixtureEnv(userDataDir, homeDir, options = {}) {
   // compare captures pin it, and the E2E suite does not, because its
   // assertions never read a wall-clock string.
   if (options.timezone) env.MAKA_E2E_FIXTURE_TIMEZONE = options.timezone;
-  // Windows launch hidden so local and macOS runs never steal the developer's
-  // focus. Linux CI runs under xvfb, where a hidden window's compositor is
-  // throttled to ~1fps — content-visibility turns never inflate and
-  // frame-paced protocols crawl. Only that isolated display needs a visible
-  // window; a caller that needs the compositor (hit testing, real input) asks
-  // for it explicitly.
-  if (options.showWindow || (process.env.CI && process.platform === 'linux')) {
-    env.MAKA_E2E_SHOW_WINDOW = '1';
-  }
+  // Windows launch hidden so a run never steals the developer's focus; a
+  // caller that needs the compositor (hit testing, real input) or a throttled
+  // headless display (see isCiLinuxDisplay) asks for a visible window
+  // explicitly. The decision stays with the caller: this builder is a pure
+  // function of its arguments, so a test asserting "hidden run stays hidden"
+  // means the same thing on a laptop and on a CI runner.
+  if (options.showWindow) env.MAKA_E2E_SHOW_WINDOW = '1';
   return env;
+}
+
+/**
+ * Whether the current host is a Linux CI display, where a fixture window must
+ * be shown even for captures: under xvfb a hidden window's compositor is
+ * throttled to ~1fps — content-visibility turns never inflate and frame-paced
+ * protocols crawl. Only that isolated virtual display gets a visible window;
+ * nobody is watching it.
+ *
+ * This is the one ambient read the launch environment needs, kept out of
+ * `buildFixtureEnv` so the builder stays a pure function. Callers compose it:
+ * `showWindow: wantVisible || isCiLinuxDisplay()`.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {NodeJS.Platform} [platform]
+ */
+export function isCiLinuxDisplay(env = process.env, platform = process.platform) {
+  return Boolean(env.CI) && platform === 'linux';
 }

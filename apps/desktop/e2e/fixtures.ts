@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createConnectionStore, createFileCredentialStore, createSettingsStore } from '@maka/storage';
-import { buildFixtureEnv } from '../../../scripts/fixture-env.mjs';
+import { buildFixtureEnv, isCiLinuxDisplay } from '../../../scripts/fixture-env.mjs';
 import { closeElectronApplication } from './electron-lifecycle.js';
 
 const DESKTOP_ROOT = process.cwd();
@@ -148,6 +148,9 @@ async function withE2eWindow(
         scenario: e2eFixtureScenario,
         locale,
         platform,
+        // xvfb throttles a hidden window's compositor to ~1fps; only that
+        // isolated display gets a visible window.
+        showWindow: isCiLinuxDisplay(),
       }),
     });
     app.on('console', (message) => {

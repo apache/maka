@@ -7,7 +7,7 @@
 // just changes what you captured.
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
-import { buildFixtureEnv, isDeniedEnvKey } from './fixture-env.mjs';
+import { buildFixtureEnv, isCiLinuxDisplay, isDeniedEnvKey } from './fixture-env.mjs';
 
 const originals = new Map();
 function setEnv(key, value) {
@@ -70,6 +70,16 @@ describe('buildFixtureEnv', () => {
     assert.equal(env.MAKA_E2E_SHOW_WINDOW, undefined);
   });
 
+  it('answers only from its arguments, never from the ambient environment', () => {
+    // The first version of this builder read process.env.CI inline, so this
+    // very suite passed on every laptop and failed on the Linux CI runner —
+    // "hidden run" meant a different thing depending on where you asked. The
+    // ambient read now lives in isCiLinuxDisplay for callers to compose.
+    setEnv('CI', 'true');
+    const env = buildFixtureEnv('/tmp/data', '/tmp/home', { scenario: 'first-run' });
+    assert.equal(env.MAKA_E2E_SHOW_WINDOW, undefined);
+  });
+
   it('sets show-window only when asked', () => {
     const env = buildFixtureEnv('/tmp/data', '/tmp/home', { showWindow: true });
     assert.equal(env.MAKA_E2E_SHOW_WINDOW, '1');
@@ -107,5 +117,16 @@ describe('buildFixtureEnv', () => {
     const env = buildFixtureEnv('/tmp/data', '/tmp/home');
     assert.equal(env.MAKA_E2E, '1');
     assert.equal(env.MAKA_SKIP_SHELL_ENV, '1');
+  });
+});
+
+describe('isCiLinuxDisplay', () => {
+  it('asks for a visible window only on a Linux CI display', () => {
+    // xvfb throttles a hidden window's compositor to ~1fps; a laptop must
+    // stay hidden so a run never steals the developer's focus.
+    assert.equal(isCiLinuxDisplay({ CI: 'true' }, 'linux'), true);
+    assert.equal(isCiLinuxDisplay({}, 'linux'), false);
+    assert.equal(isCiLinuxDisplay({ CI: 'true' }, 'darwin'), false);
+    assert.equal(isCiLinuxDisplay({ CI: 'true' }, 'win32'), false);
   });
 });

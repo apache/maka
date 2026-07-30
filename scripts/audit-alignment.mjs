@@ -8,26 +8,43 @@
 //                       role=switch is pill by design and exempt)
 // Usage: node scripts/audit-alignment.mjs   (expects a built renderer)
 // Rule of thumb: mixed types align CENTERS; same types also match heights.
-import { DEFAULT_SETTLE_MS, withFixtureWindow } from './fixture-window.mjs';
+//
+// Deliberate change from the original raw-spawn launcher: fixture windows now
+// launch through `withFixtureWindow`, which means MAKA_E2E=1, a throwaway
+// userData dir, and a sandboxed $HOME. The audit used to run against the real
+// userData path — a developer with Maka open lost the single-instance lock —
+// and could enumerate the real `~/.maka/skills`. Fixture pages render fixture
+// data either way, so control geometry is unaffected; the isolation is the
+// point.
+import { withFixtureWindow } from './fixture-window.mjs';
 
+// Each fixture names the element that means "this surface has rendered", so
+// the audit never measures a half-mounted page. The module pages share one
+// shell (`.maka-module-main`), every settings scenario mounts the settings
+// modal (`.settingsSurface`), and turn-narrative is the chat surface.
 const FIXTURES = [
-  'module-skills',
-  'module-mcp',
-  'module-daily-review',
-  'plan-reminders',
-  'settings-general',
-  'fetched-empty',
-  'settings-data',
-  'settings-gateway',
+  ['module-skills', '.maka-module-main'],
+  ['module-mcp', '.maka-module-main'],
+  ['module-daily-review', '.maka-module-main'],
+  ['plan-reminders', '.maka-module-main'],
+  ['settings-general', '.settingsSurface'],
+  ['fetched-empty', '.settingsSurface'],
+  ['settings-data', '.settingsSurface'],
+  ['settings-gateway', '.settingsSurface'],
   // 使用统计 restyle: the range/refresh row, underline tab bar, and stats
   // tables now sit under the alignment auditor's watch.
-  'settings-usage',
-  'turn-narrative',
-  'settings-permissions',
+  ['settings-usage', '.settingsSurface'],
+  ['turn-narrative', '.maka-session-workbar'],
+  ['settings-permissions', '.settingsSurface'],
   // #1233 deferral: bot QR-onboarding modal in its deterministic waiting state.
-  'settings-bots-onboarding',
+  ['settings-bots-onboarding', '.settingsSurface'],
 ];
-const SETTLE_MS = Number(process.env.AUDIT_SETTLE_MS ?? DEFAULT_SETTLE_MS);
+// 2500ms, not the capture harness's 1000ms: this audit is a CI gate, and its
+// slowest surfaces (the QR-onboarding modal, the usage stats tables) populate
+// after their settings shell mounts. The readiness selector proves the shell
+// rendered; the settle budget is what covers content that arrives after it,
+// and CI runners are the slow end of the fleet.
+const SETTLE_MS = Number(process.env.AUDIT_SETTLE_MS ?? 2_500);
 let totalIssues = 0;
 let fixtureErrors = 0;
 
@@ -66,11 +83,11 @@ const EXPR = `(()=>{
   return JSON.stringify(issues.slice(0,12));
 })()`;
 
-for (const fixture of FIXTURES) {
+for (const [fixture, readySelector] of FIXTURES) {
   try {
     const issues = await withFixtureWindow(
       fixture,
-      { theme: 'light', settleMs: SETTLE_MS },
+      { theme: 'light', readySelector, settleMs: SETTLE_MS },
       async ({ evaluate }) => JSON.parse(await evaluate(EXPR)),
     );
     console.log('==', fixture, '==');

@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { _electron as electron } from '@playwright/test';
-import { buildFixtureEnv } from './fixture-env.mjs';
+import { buildFixtureEnv, isCiLinuxDisplay } from './fixture-env.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DESKTOP_DIR = join(ROOT, 'apps', 'desktop');
@@ -102,7 +102,9 @@ export async function withFixtureWindow(scenario, options, fn) {
       env: buildFixtureEnv(userDataDir, homeDir, {
         scenario,
         theme,
-        showWindow,
+        // xvfb throttles a hidden window's compositor to ~1fps; only that
+        // isolated display gets a visible window.
+        showWindow: showWindow || isCiLinuxDisplay(),
         timezone: CAPTURE_TIMEZONE,
       }),
     });
