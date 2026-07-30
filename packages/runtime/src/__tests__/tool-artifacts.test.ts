@@ -97,9 +97,9 @@ describe('deriveToolArtifactCandidates', () => {
     });
 
     // resolve() is platform-native; only assert the relative suffix contract.
-    expect(candidate?.sourcePath?.replaceAll('\\', '/').endsWith('/workspace/maka/reports/build.log')).toBe(
-      true,
-    );
+    expect(
+      candidate?.sourcePath?.replaceAll('\\', '/').endsWith('/workspace/maka/reports/build.log'),
+    ).toBe(true);
     expect(candidate?.kind).toBe('file');
 
     expect(
