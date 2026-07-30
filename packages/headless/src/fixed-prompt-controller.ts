@@ -1127,11 +1127,14 @@ function projectStructuredVerifierOutcome(event: FixedPromptWalEvent): FixedProm
  * artifact; this boundary check also protects alternate runners and stored WAL
  * events from treating malformed or infrastructure-only attempts as grades.
  */
-function structuredVerifierGrade(harbor: TaskRunOutput['harbor']): 'passed' | 'failed' | undefined {
+function structuredVerifierGrade(harbor: unknown): 'passed' | 'failed' | undefined {
+  if (!isRecord(harbor) || typeof harbor.reward !== 'number' || !Number.isFinite(harbor.reward))
+    return undefined;
+  const reward = harbor.reward;
   const verifier = harbor.verifier;
   if (
-    !Number.isFinite(harbor.reward) ||
-    !verifier ||
+    !isRecord(verifier) ||
+    !Array.isArray(verifier.attempts) ||
     verifier.attempts.length < 1 ||
     verifier.attempts.length > 2
   )
@@ -1139,10 +1142,13 @@ function structuredVerifierGrade(harbor: TaskRunOutput['harbor']): 'passed' | 'f
   if (
     verifier.attempts.some(
       (attempt, index) =>
+        !isRecord(attempt) ||
         attempt.attempt !== index + 1 ||
+        typeof attempt.durationMs !== 'number' ||
         !Number.isFinite(attempt.durationMs) ||
         attempt.durationMs < 0 ||
-        (attempt.reward !== undefined && !Number.isFinite(attempt.reward)),
+        (attempt.reward !== undefined &&
+          (typeof attempt.reward !== 'number' || !Number.isFinite(attempt.reward))),
     )
   )
     return undefined;
@@ -1158,18 +1164,20 @@ function structuredVerifierGrade(harbor: TaskRunOutput['harbor']): 'passed' | 'f
     return undefined;
 
   const finalAttempt = verifier.attempts.at(-1)!;
+  if (!isRecord(finalAttempt)) return undefined;
+  const finalReward = typeof finalAttempt.reward === 'number' ? finalAttempt.reward : undefined;
   if (
     verifier.outcome === 'passed' &&
-    harbor.reward > 0 &&
+    reward > 0 &&
     finalAttempt.classification === 'passed' &&
-    (finalAttempt.reward ?? 0) > 0
+    (finalReward ?? 0) > 0
   )
     return 'passed';
   if (
     verifier.outcome === 'failed' &&
-    harbor.reward === 0 &&
+    reward === 0 &&
     finalAttempt.classification === 'failed' &&
-    finalAttempt.reward === 0
+    finalReward === 0
   )
     return 'failed';
   return undefined;

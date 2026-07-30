@@ -2840,6 +2840,56 @@ describe('fixed prompt controller', () => {
     });
   });
 
+  test('keeps malformed stored verifier attempts on the ungraded path', async () => {
+    await withDir(async (dir) => {
+      const systemPromptPath = join(dir, 'system_prompt.md');
+      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+
+      for (const [label, verifier] of [
+        ['missing', { outcome: 'failed' }],
+        ['non-array', { outcome: 'failed', attempts: 'not-an-array' }],
+      ] as const) {
+        const resultsJsonlPath = join(dir, `results-${label}.jsonl`);
+        const stored = taskCompletedEvent({ taskId: 'task-a' });
+        assert.equal(stored.type, 'task_completed');
+        if (stored.type !== 'task_completed') throw new Error('expected completed fixture');
+        await writeFile(
+          resultsJsonlPath,
+          `${JSON.stringify({
+            ...stored,
+            status: 'failed',
+            passed: false,
+            scored: false,
+            eligible: false,
+            errorClass: 'infra_failed',
+            harbor: { reward: 0, verifier },
+          })}\n`,
+          'utf8',
+        );
+        let runnerCalls = 0;
+
+        const result = await runFixedPromptController({
+          runId: 'run-1',
+          roundId: 'round-1',
+          config,
+          systemPromptPath,
+          resultsJsonlPath,
+          tasks: [{ id: 'task-a', path: '/bench/task-a' }],
+          taskRunner: async () => {
+            runnerCalls += 1;
+            return harborOutput({ taskId: 'task-a' });
+          },
+        });
+
+        assert.equal(runnerCalls, 0);
+        assert.equal(result.events[0]?.type, 'task_completed');
+        assert.equal(result.events[0]?.scored, false);
+        assert.equal(result.events[0]?.eligible, false);
+        assert.equal(result.events[0]?.errorClass, 'infra_failed');
+      }
+    });
+  });
+
   test('projects a stored structured verifier pass without resampling Harbor', async () => {
     await withDir(async (dir) => {
       const systemPromptPath = join(dir, 'system_prompt.md');
