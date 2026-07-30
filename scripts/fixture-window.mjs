@@ -40,19 +40,16 @@ export const CAPTURE_TIMEZONE = process.env.FIXTURE_TIMEZONE ?? 'UTC';
 
 /**
  * Electron 43 defaults to native Wayland when XDG_SESSION_TYPE=wayland, where
- * BrowserWindow.showInactive() is unsupported.
+ * BrowserWindow.showInactive() is unsupported. Keep inactive fixtures on
+ * XWayland; other launches retain Electron's platform default.
  *
  * @param {NodeJS.ProcessEnv} [env]
  * @param {NodeJS.Platform} [platform]
  */
-export function assertInactiveWindowMappingSupported(
-  env = process.env,
-  platform = process.platform,
-) {
-  if (platform !== 'linux' || env.XDG_SESSION_TYPE?.toLowerCase() !== 'wayland') return;
-  throw new Error(
-    'inactive fixture mapping is unsupported on native Wayland; run under XWayland with --ozone-platform=x11',
-  );
+export function inactiveWindowElectronArgs(env = process.env, platform = process.platform) {
+  return platform === 'linux' && env.XDG_SESSION_TYPE?.toLowerCase() === 'wayland'
+    ? ['.', '--ozone-platform=x11']
+    : ['.'];
 }
 
 /**
@@ -144,9 +141,7 @@ export async function withFixtureWindow(scenario, options, fn) {
   // xvfb throttles a hidden window's compositor to ~1fps; only that isolated
   // display gets a visible window. Local hit tests stay accessory/Dock-hidden.
   const ciVisible = isCiLinuxDisplay();
-  if (mapWindowInactive && !ciVisible) {
-    assertInactiveWindowMappingSupported();
-  }
+  const launchArgs = mapWindowInactive && !ciVisible ? inactiveWindowElectronArgs() : ['.'];
 
   const userDataDir = await mkdtemp(join(tmpdir(), 'maka-fixture-'));
   // Inside the throwaway userData dir so the same teardown removes it; there
@@ -158,7 +153,7 @@ export async function withFixtureWindow(scenario, options, fn) {
   const rendererLogs = [];
   try {
     app = await electron.launch({
-      args: ['.'],
+      args: launchArgs,
       cwd: desktopDir,
       env: buildFixtureEnv(userDataDir, homeDir, {
         scenario,

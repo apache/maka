@@ -1,9 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import {
-  assertInactiveWindowMappingSupported,
-  mapFixtureWindowInactive,
-} from './fixture-window.mjs';
+import { inactiveWindowElectronArgs, mapFixtureWindowInactive } from './fixture-window.mjs';
 
 function fakeElectronWindow({ visible = true, focused = false } = {}) {
   const page = {};
@@ -41,12 +38,14 @@ function fakeElectronWindow({ visible = true, focused = false } = {}) {
   };
 }
 
-describe('assertInactiveWindowMappingSupported', () => {
-  it('rejects native Wayland before an unsupported inactive launch', () => {
-    assert.throws(
-      () => assertInactiveWindowMappingSupported({ XDG_SESSION_TYPE: 'wayland' }, 'linux'),
-      /XWayland.*--ozone-platform=x11/,
-    );
+describe('inactiveWindowElectronArgs', () => {
+  it('forces XWayland only when Electron would otherwise use native Wayland', () => {
+    assert.deepEqual(inactiveWindowElectronArgs({ XDG_SESSION_TYPE: 'wayland' }, 'linux'), [
+      '.',
+      '--ozone-platform=x11',
+    ]);
+    assert.deepEqual(inactiveWindowElectronArgs({ XDG_SESSION_TYPE: 'x11' }, 'linux'), ['.']);
+    assert.deepEqual(inactiveWindowElectronArgs({ XDG_SESSION_TYPE: 'wayland' }, 'darwin'), ['.']);
   });
 });
 
