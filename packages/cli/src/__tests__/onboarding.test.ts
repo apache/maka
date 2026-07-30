@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import { validateSlug } from '@maka/core/llm-connections';
 import type { LlmConnection, ModelInfo, ProviderType } from '@maka/core/llm-connections';
 import type { ConnectionStore, CredentialStore } from '@maka/storage';
 import {
@@ -17,10 +18,16 @@ describe('listOnboardingProviders', () => {
       defaultModel: 'gpt-5.5',
       enabledModelIds: ['gpt-5.5', 'gpt-5.5-mini'],
     });
+    const minimax = makeConnection({
+      slug: 'minimax',
+      providerType: 'MiniMax',
+      defaultModel: 'MiniMax-M3',
+      enabledModelIds: ['MiniMax-M3'],
+    });
 
     const providers = await listOnboardingProviders({
       connectionStore: {
-        list: async () => [openai],
+        list: async () => [openai, minimax],
       },
     });
 
@@ -31,6 +38,9 @@ describe('listOnboardingProviders', () => {
     const anthropic = providers.find((p) => p.providerType === 'anthropic');
     assert.equal(anthropic?.hasConnection, false);
     assert.deepEqual(anthropic?.enabledModelIds, []);
+    const minimaxEntry = providers.find((p) => p.providerType === 'MiniMax');
+    assert.equal(minimaxEntry?.hasConnection, true);
+    assert.deepEqual(minimaxEntry?.enabledModelIds, ['MiniMax-M3']);
   });
 
   test('only lists API-key providers that do not require a base url', async () => {
@@ -53,9 +63,9 @@ describe('verifyApiKeyConnection', () => {
     let probed: Array<{ slug: string; providerType: ProviderType; apiKey: string }> = [];
     const connectionStore: Pick<
       ConnectionStore,
-      'get' | 'create' | 'update' | 'remove' | 'getDefault' | 'setDefault'
+      'list' | 'create' | 'update' | 'remove' | 'getDefault' | 'setDefault'
     > = {
-      get: async () => null,
+      list: async () => [],
       create: async () => {
         created = true;
         return makeConnection({});
@@ -101,7 +111,7 @@ describe('verifyApiKeyConnection', () => {
     const result = await verifyApiKeyConnection({
       providerType: 'openai',
       apiKey: '   ',
-      connectionStore: { get: async () => null },
+      connectionStore: { list: async () => [] },
       credentialStore: { getSecret: async () => null },
       fetchModels: async () => {
         probed = true;
@@ -127,7 +137,7 @@ describe('verifyApiKeyConnection', () => {
       providerType: 'openai',
       apiKey: '',
       connectionStore: {
-        get: async () => makeConnection({ slug: 'openai', providerType: 'openai' }),
+        list: async () => [makeConnection({ slug: 'openai', providerType: 'openai' })],
       },
       credentialStore,
       fetchModels: async (_connection, apiKey) => {
@@ -148,7 +158,7 @@ describe('verifyApiKeyConnection', () => {
       providerType: 'openai',
       apiKey: 'sk-rotated',
       connectionStore: {
-        get: async () => makeConnection({ slug: 'openai', providerType: 'openai' }),
+        list: async () => [makeConnection({ slug: 'openai', providerType: 'openai' })],
       },
       credentialStore: {
         getSecret: async () => {
@@ -171,7 +181,7 @@ describe('verifyApiKeyConnection', () => {
     const result = await verifyApiKeyConnection({
       providerType: 'openai',
       apiKey: 'sk-bad',
-      connectionStore: { get: async () => null },
+      connectionStore: { list: async () => [] },
       credentialStore: { getSecret: async () => null },
       fetchModels: async () => {
         throw new Error('HTTP 401');
@@ -186,7 +196,7 @@ describe('verifyApiKeyConnection', () => {
     const result = await verifyApiKeyConnection({
       providerType: 'ollama',
       apiKey: 'unused',
-      connectionStore: { get: async () => null },
+      connectionStore: { list: async () => [] },
       credentialStore: { getSecret: async () => null },
       fetchModels: async () => {
         probed = true;
@@ -201,6 +211,55 @@ describe('verifyApiKeyConnection', () => {
 });
 
 describe('saveApiKeyConnection', () => {
+  test('uses a valid derived slug throughout MiniMax persistence', async () => {
+    const createdSlugs: string[] = [];
+    const updatedSlugs: string[] = [];
+    const credentialSlugs: string[] = [];
+    const defaultSlugs: string[] = [];
+
+    const result = await saveApiKeyConnection({
+      providerType: 'MiniMax',
+      apiKey: 'minimax-key',
+      enabledModelIds: ['MiniMax-M3'],
+      models: [{ id: 'MiniMax-M3' }],
+      connectionStore: {
+        list: async () => [],
+        create: async (input) => {
+          createdSlugs.push(input.slug);
+          return makeConnection({
+            slug: input.slug,
+            providerType: input.providerType,
+            defaultModel: input.defaultModel,
+          });
+        },
+        update: async (slug) => {
+          updatedSlugs.push(slug);
+          return makeConnection({ slug, providerType: 'MiniMax', defaultModel: 'MiniMax-M3' });
+        },
+        remove: async () => {},
+        getDefault: async () => null,
+        setDefault: async (slug) => {
+          if (slug) defaultSlugs.push(slug);
+        },
+      },
+      credentialStore: {
+        getSecret: async () => null,
+        setSecret: async (slug) => {
+          credentialSlugs.push(slug);
+        },
+        deleteSecret: async () => {},
+      },
+      fetchModelChoices: async () => [],
+    });
+
+    assert.equal(result.kind, 'ok');
+    assert.deepEqual(createdSlugs, ['minimax']);
+    assert.equal(validateSlug(createdSlugs[0]!), null);
+    assert.deepEqual(updatedSlugs, ['minimax']);
+    assert.deepEqual(credentialSlugs, ['minimax']);
+    assert.deepEqual(defaultSlugs, ['minimax']);
+  });
+
   test('persists a new connection with curation and sets default only when none exists', async () => {
     const createdInputs: Array<{ slug: string; providerType: ProviderType; defaultModel: string }> =
       [];
@@ -220,7 +279,7 @@ describe('saveApiKeyConnection', () => {
       enabledModelIds: ['gpt-5.5', 'gpt-5.5-mini'],
       models: [{ id: 'gpt-5.5' }, { id: 'gpt-5.5-mini' }],
       connectionStore: {
-        get: async () => null,
+        list: async () => [],
         create: async (input) => {
           createdInputs.push({
             slug: input.slug,
@@ -291,7 +350,7 @@ describe('saveApiKeyConnection', () => {
       enabledModelIds: ['gpt-5.5'],
       models: [{ id: 'gpt-5.5' }],
       connectionStore: {
-        get: async () => null,
+        list: async () => [],
         create: async (input) =>
           makeConnection({ slug: input.slug, providerType: input.providerType }),
         update: async () => {
@@ -327,7 +386,7 @@ describe('saveApiKeyConnection', () => {
       enabledModelIds: ['gpt-5.5'],
       models: [{ id: 'gpt-5.5' }],
       connectionStore: {
-        get: async () => null,
+        list: async () => [],
         create: async (input) =>
           makeConnection({ slug: input.slug, providerType: input.providerType }),
         update: async () => {
@@ -364,8 +423,9 @@ describe('saveApiKeyConnection', () => {
       enabledModelIds: ['gpt-5.5'],
       models: [{ id: 'gpt-5.5' }],
       connectionStore: {
-        get: async () =>
+        list: async () => [
           makeConnection({ slug: 'openai', providerType: 'openai', defaultModel: 'gpt-5.5' }),
+        ],
         create: async () => {
           throw new Error('create must not be called for an existing connection');
         },
@@ -406,8 +466,9 @@ describe('saveApiKeyConnection', () => {
       enabledModelIds: ['gpt-5.5', 'gpt-5.5-mini'],
       models: [{ id: 'gpt-5.5' }, { id: 'gpt-5.5-mini' }],
       connectionStore: {
-        get: async () =>
+        list: async () => [
           makeConnection({ slug: 'openai', providerType: 'openai', defaultModel: 'gpt-5.5' }),
+        ],
         create: async () => {
           throw new Error('create must not be called for an existing connection');
         },
@@ -449,7 +510,7 @@ describe('saveApiKeyConnection', () => {
       enabledModelIds: ['gpt-5.5'],
       models: [{ id: 'gpt-5.5' }],
       connectionStore: {
-        get: async () => makeConnection({ slug: 'openai', providerType: 'openai' }),
+        list: async () => [makeConnection({ slug: 'openai', providerType: 'openai' })],
         create: async () => {
           throw new Error('create must not be called');
         },
@@ -485,10 +546,9 @@ describe('saveApiKeyConnection', () => {
       enabledModelIds: ['claude-sonnet-5'],
       models: [{ id: 'claude-sonnet-5' }],
       connectionStore: {
-        get: async (slug) =>
-          slug === 'anthropic'
-            ? makeConnection({ slug: 'anthropic', providerType: 'anthropic' })
-            : null,
+        list: async () => [
+          makeConnection({ slug: 'anthropic', providerType: 'anthropic' }),
+        ],
         create: async (input) =>
           makeConnection({ slug: input.slug, providerType: input.providerType }),
         update: async () => makeConnection({ slug: 'anthropic', providerType: 'anthropic' }),
@@ -523,12 +583,13 @@ describe('saveApiKeyConnection', () => {
         enabledModelIds: enabled,
         models: enabled.map((id) => ({ id })),
         connectionStore: {
-          get: async () =>
+          list: async () => [
             makeConnection({
               slug: 'openai',
               providerType: 'openai',
               defaultModel: existingDefault,
             }),
+          ],
           create: async () => {
             throw new Error('create must not be called');
           },
@@ -561,7 +622,7 @@ describe('saveApiKeyConnection', () => {
       enabledModelIds: [],
       models: [],
       connectionStore: {
-        get: async () => null,
+        list: async () => [],
         create: async () => {
           created = true;
           return makeConnection({});
@@ -598,7 +659,7 @@ describe('saveApiKeyConnection', () => {
       enabledModelIds: ['x'],
       models: [{ id: 'x' }],
       connectionStore: {
-        get: async () => null,
+        list: async () => [],
         create: async () => makeConnection({}),
         update: async () => makeConnection({}),
         remove: async () => {},
