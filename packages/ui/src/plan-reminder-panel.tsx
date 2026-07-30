@@ -35,15 +35,17 @@ import {
 import { PlanReminderFormDialog } from './plan-reminder-form-dialog.js';
 import { PlanReminderSelect } from './plan-reminder-select.js';
 import {
-  buttonVariants,
-  cn,
   Switch,
   TabsList,
   TabsPanel,
   TabsRoot,
   TabsTrigger,
 } from './ui.js';
-import { Badge, Button as UiButton } from '@astryxdesign/core';
+import {
+  Badge,
+  Button as UiButton,
+  IconButton,
+} from '@astryxdesign/core';
 import { Chip, type ChipProps } from './primitives/chip.js';
 import { PageHeader } from './primitives/page-header.js';
 import { Input } from './primitives/input.js';
@@ -272,13 +274,16 @@ export function PlanReminderPanel(props: {
                 label={copy.page.create}
               />
               <Menu>
-                {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
                 <MenuTrigger
-                  render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'icon' }))} />}
+                  render={
+                    <IconButton
+                      variant="ghost"
+                      label={copy.page.pageSettings}
+                      icon={<MoreHorizontal size={16} aria-hidden="true" />}
+                    />
+                  }
                   aria-label={copy.page.pageSettings}
-                >
-                  <MoreHorizontal size={16} aria-hidden="true" />
-                </MenuTrigger>
+                />
                 <MenuPopup className="maka-plan-page-menu" align="end">
                   <MenuItem
                     onClick={() => void refreshFromPanel()}
@@ -461,14 +466,19 @@ export function PlanReminderPanel(props: {
                           />
                         )}
                         <Menu>
-                          {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
                           <MenuTrigger
-                            render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }))} />}
+                            render={
+                              <IconButton
+                                variant="ghost"
+                                size="sm"
+                                isDisabled={reminderActionPending}
+                                label={`${copy.page.reminderActions}: ${reminder.title}`}
+                                icon={<MoreHorizontal size={16} aria-hidden="true" />}
+                              />
+                            }
                             disabled={reminderActionPending}
                             aria-label={`${copy.page.reminderActions}: ${reminder.title}`}
-                          >
-                            <MoreHorizontal size={16} aria-hidden="true" />
-                          </MenuTrigger>
+                          />
                           <MenuPopup className="maka-plan-card-menu" align="end">
                             <MenuItem
                               onClick={() => editReminder(reminder)}
