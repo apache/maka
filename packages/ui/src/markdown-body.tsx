@@ -53,7 +53,7 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
 }
 
 function MarkdownImage(props: { src: string; alt: string }) {
-  if (!isSafeMarkdownUrl(props.src)) return <span>[{props.alt}]</span>;
+  if (!isSafeMarkdownImageUrl(props.src)) return <span>[{props.alt}]</span>;
   // Astryx calls this component only for images inside a paragraph. Tailwind
   // preflight makes bare images block-level, so preserve the inline flow that
   // badges and sentence-level icons require; preflight keeps max-width/height.
@@ -114,7 +114,7 @@ function neutralizeUnsafeImagesInLine(line: string): string {
         const srcClose = findClosingParen(line, srcStart);
         if (srcClose !== -1) {
           const src = line.slice(srcStart, srcClose);
-          if (isSafeMarkdownUrl(src)) {
+          if (isSafeMarkdownImageUrl(src)) {
             output += line.slice(cursor, srcClose + 1);
           } else {
             output += `!\\[${line.slice(cursor + 2, srcClose + 1)}`;
@@ -141,8 +141,13 @@ function findClosingParen(text: string, start: number): number {
   return -1;
 }
 
-function isSafeMarkdownUrl(url: string): boolean {
-  return isMakaUriCandidate(url) || isSafeExternalScheme(url);
+function isSafeMarkdownImageUrl(url: string): boolean {
+  try {
+    const protocol = new URL(url).protocol;
+    return protocol === 'http:' || protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
 /**

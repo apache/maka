@@ -131,6 +131,23 @@ it('never loads non-allowlisted Markdown image sources', () => {
   assert.doesNotMatch(markup, /\bsrc="(?:file|custom):/);
 });
 
+it('does not treat navigation and communication schemes as image resources', () => {
+  for (const src of [
+    'maka://tool/run',
+    'MAKA://auth/login',
+    'maka://settings/models',
+    'maka://compose?text=hello',
+    'mailto:user@example.com',
+  ]) {
+    const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+      text: `![not-an-image](${src})`,
+    }));
+
+    assert.doesNotMatch(markup, /<img\b/, src);
+    assert.doesNotMatch(markup, /\bsrc=/, src);
+  }
+});
+
 it('keeps allowlisted images and image-like code intact', () => {
   const markup = renderToStaticMarkup(createElement(MarkdownBody, {
     text: [
