@@ -237,6 +237,7 @@ export async function runMakaCli(argv: string[] = process.argv.slice(2)): Promis
           llmConnectionSlug: context.target.connection.slug,
           model: context.target.model,
           permissionMode: 'ask',
+          editingProtocol: context.editingProtocol,
         });
         await runMakaPiTui({
           driver,

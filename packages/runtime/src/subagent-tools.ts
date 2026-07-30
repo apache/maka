@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   TASK_ID_MAX_CHARS,
   isSafeTaskId,
+  type EditingProtocol,
   type TaskLedgerStore,
   type ToolResultContent,
 } from '@maka/core';
@@ -69,6 +70,24 @@ export function buildChildAgentTools(tools: readonly MakaTool[]): MakaTool[] {
     out.push(tool);
   }
   return out;
+}
+
+/**
+ * Enforce the parent's editing surface as a hard capability ceiling.
+ *
+ * Hosts bind a union so different sessions can choose different protocols.
+ * A child may narrow that union for its profile, but it must never regain the
+ * editing protocol hidden from the parent session.
+ */
+export function childAgentToolsWithinEditingProtocol(
+  tools: readonly MakaTool[],
+  editingProtocol: EditingProtocol = 'edit_write',
+): MakaTool[] {
+  return tools.filter((tool) =>
+    editingProtocol === 'apply_patch'
+      ? tool.name !== 'Edit' && tool.name !== 'Write'
+      : tool.name !== 'ApplyPatch',
+  );
 }
 
 export function buildSubagentSpawnTool(deps: { taskLedger?: TaskLedgerStore } = {}): MakaTool<

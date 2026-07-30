@@ -118,6 +118,7 @@ import { registerDailyReviewIpc } from './daily-review-ipc-main.js';
 import { registerUsageIpc } from './usage-ipc-main.js';
 import { registerWebSearchIpc } from './web-search-ipc-main.js';
 import { registerNotificationsIpc } from './notifications-ipc-main.js';
+import { resolveEditingProtocolEnv } from './create-session-input.js';
 import { registerAppIpc } from './app-ipc-main.js';
 import { registerGitIpc } from './git-ipc-main.js';
 import { registerWorkspaceSearchIpc } from './workspace-search-ipc-main.js';
@@ -699,7 +700,6 @@ const desktopBackendToolSurfaceDeps = {
   agentTeamLeadTools,
   builtinTools,
   toolEconomy: desktopProductToolSurface.identity.policy.economy,
-  editingProtocol: desktopProductToolSurface.identity.policy.editingProtocol,
   planStore,
   getAgentGraphSupervisorTools: (sessionId: string) =>
     agentGraphCoordinator.toolsForSession(sessionId),
@@ -1111,6 +1111,7 @@ function registerIpc(): void {
     streamEvents,
     getWorkspacePrivacyContext,
     canCreateFakeSession: canCreateFakeSessionFromRenderer,
+    defaultEditingProtocol: resolveEditingProtocolEnv(process.env.MAKA_EDITING_PROTOCOL),
   });
   registerSubscriptionIpc({
     connectionStore,

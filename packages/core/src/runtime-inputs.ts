@@ -17,6 +17,7 @@ import type { CollaborationMode } from './collaboration.js';
 import type { OrchestrationMode, TurnOrchestration } from './orchestration.js';
 import type { SessionStartMode } from './explore-agent.js';
 import type { SubagentWorkspaceBinding } from './subagent-workspace.js';
+import type { EditingProtocol } from './apply-patch.js';
 
 export type { TurnOrchestration } from './orchestration.js';
 
@@ -37,6 +38,8 @@ export interface CreateSessionInput {
   /** Per-model reasoning-depth variant; `undefined` = model default. */
   thinkingLevel?: ThinkingLevel;
   permissionMode: PermissionMode;
+  /** Per-session editing surface; defaults to Edit/Write for compatibility. */
+  editingProtocol?: EditingProtocol;
   /** Defaults to `agent`. */
   collaborationMode?: CollaborationMode;
   /** Defaults to `default`. Orthogonal to Agent/Plan collaboration mode. */

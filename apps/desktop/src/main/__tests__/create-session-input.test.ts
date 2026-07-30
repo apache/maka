@@ -10,7 +10,11 @@ import { describe, it } from 'node:test';
 import type { AppSettings, ChatDefaultPermissionMode } from '@maka/core';
 import { DEEP_RESEARCH_SESSION_LABEL, DEFAULT_SESSION_NAME } from '@maka/core';
 
-import { type CreateSessionRequest, resolveCreateSessionInput } from '../create-session-input.js';
+import {
+  type CreateSessionRequest,
+  resolveCreateSessionInput,
+  resolveEditingProtocolEnv,
+} from '../create-session-input.js';
 
 function settings(permissionMode: ChatDefaultPermissionMode) {
   return async () => ({ chatDefaults: { permissionMode } }) as AppSettings;
@@ -125,5 +129,28 @@ describe('resolveCreateSessionInput', () => {
     assert.deepEqual(resolved.labels, ['pinned']);
     assert.equal(resolved.collaborationMode, 'plan');
     assert.equal(resolved.orchestrationMode, 'swarm');
+  });
+
+  it('normalizes the editing protocol per session request', async () => {
+    assert.equal((await resolve({ editingProtocol: 'apply_patch' })).editingProtocol, 'apply_patch');
+    assert.equal((await resolve({})).editingProtocol, 'edit_write');
+    await assert.rejects(() => resolve({ editingProtocol: 'all' }), TypeError);
+  });
+
+  it('uses the process setting only as the default for an individual session', async () => {
+    const readSettings = settings('ask');
+    const configured = await resolveCreateSessionInput(undefined, {
+      readSettings,
+      defaultEditingProtocol: 'apply_patch',
+    });
+    const overridden = await resolveCreateSessionInput(
+      { editingProtocol: 'edit_write' },
+      { readSettings, defaultEditingProtocol: 'apply_patch' },
+    );
+
+    assert.equal(configured.editingProtocol, 'apply_patch');
+    assert.equal(overridden.editingProtocol, 'edit_write');
+    assert.equal(resolveEditingProtocolEnv('apply_patch'), 'apply_patch');
+    assert.throws(() => resolveEditingProtocolEnv('all'));
   });
 });

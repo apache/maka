@@ -53,7 +53,6 @@ export interface DesktopBackendToolSurfaceDeps {
   agentTeamLeadTools: readonly MakaTool[];
   builtinTools: readonly MakaTool[];
   toolEconomy: boolean;
-  editingProtocol?: EditingProtocol;
   planStore: PlanStore;
   getAgentGraphSupervisorTools?: (
     sessionId: string,
@@ -93,6 +92,7 @@ export interface DesktopBackendToolSurface {
 
 export interface DesktopNewSessionSkillContext {
   collaborationMode?: CollaborationMode;
+  editingProtocol?: EditingProtocol;
 }
 
 /**
@@ -155,6 +155,7 @@ export async function resolveDesktopNewSessionSkillHost(
     connectionLocked: false,
     model: input.readyConnection.model,
     permissionMode: 'ask',
+    editingProtocol: input.context?.editingProtocol ?? 'edit_write',
     collaborationMode: input.context?.collaborationMode ?? 'agent',
     orchestrationMode: 'default',
     schemaVersion: 1,
@@ -262,7 +263,7 @@ export async function resolveDesktopBackendToolSurface(
     tools: selectedTools,
     policy: {
       economy: toolEconomy,
-      ...(deps.editingProtocol ? { editingProtocol: deps.editingProtocol } : {}),
+      editingProtocol: input.header.editingProtocol ?? 'edit_write',
     },
   });
 

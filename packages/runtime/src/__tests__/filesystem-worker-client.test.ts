@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
-import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdtemp,
+  mkdir,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
@@ -31,6 +40,7 @@ import {
   type FilesystemWorkerRequest,
   type FilesystemWorkerResult,
 } from '../filesystem-worker/protocol.js';
+import { executeFilesystemWorkerRequest } from '../filesystem-worker/operations.js';
 import { LinuxBubblewrapBackend } from '../sandbox/linux-sandbox.js';
 import { MacosSeatbeltBackend } from '../sandbox/macos-seatbelt.js';
 import { SandboxManager } from '../sandbox/sandbox-manager.js';
@@ -52,6 +62,28 @@ test('Read image payloads fit within the filesystem worker response limit', () =
 });
 
 describe('filesystem worker client permission snapshots', () => {
+  test('deletes a symlink operand without deleting its canonical target', {
+    skip: process.platform === 'win32' ? 'POSIX filesystem worker path policy required' : false,
+  }, async () => {
+    const workspace = await temporaryDirectory('maka-worker-client-symlink-delete-');
+    const target = join(workspace, 'target.txt');
+    const link = join(workspace, 'link.txt');
+    await writeFile(target, 'keep me', 'utf8');
+    await symlink(target, link);
+    const { client, requests } = fakeClient({ executeRequest: true });
+
+    await client.execute({
+      operation: { kind: 'delete', path: link },
+      cwd: workspace,
+      mode: 'execute',
+    });
+
+    await assert.rejects(lstat(link), { code: 'ENOENT' });
+    assert.equal(await readFile(target, 'utf8'), 'keep me');
+    assert.equal(requests[0]?.operation.path, link);
+    assert.equal(requests[0]?.expectedTarget.enforcementPath, target);
+  });
+
   for (const kind of ['bypass', 'external'] as const) {
     test(`rejects an authoritative ${kind} boundary instead of falling back to legacy mode`, async () => {
       const workspace = await temporaryDirectory(`maka-worker-client-${kind}-`);
@@ -418,6 +450,7 @@ function fakeClient(
     operationErrorCode?: FilesystemWorkerErrorCode;
     platform?: SandboxPlatform;
     beforeLaunchSpecReturn?: () => void;
+    executeRequest?: boolean;
   } = {},
 ): {
   client: FilesystemWorkerClient;
@@ -463,26 +496,27 @@ function fakeClient(
       processInputs.push(input);
       const request = FilesystemWorkerRequestSchema.parse(JSON.parse(input.stdin));
       requests.push(request);
+      const response = options.executeRequest
+        ? await executeFilesystemWorkerRequest(request)
+        : options.operationErrorCode
+          ? {
+              version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
+              requestId: request.requestId,
+              ok: false as const,
+              error: {
+                code: options.operationErrorCode,
+                message: 'Sandbox denied the filesystem operation.',
+              },
+            }
+          : {
+              version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
+              requestId: request.requestId,
+              ok: true as const,
+              result: fakeResult(request),
+            };
       return {
         exitCode: 0,
-        stdout: JSON.stringify(
-          options.operationErrorCode
-            ? {
-                version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
-                requestId: request.requestId,
-                ok: false,
-                error: {
-                  code: options.operationErrorCode,
-                  message: 'Sandbox denied the filesystem operation.',
-                },
-              }
-            : {
-                version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
-                requestId: request.requestId,
-                ok: true,
-                result: fakeResult(request),
-              },
-        ),
+        stdout: JSON.stringify(response),
         stderrTail: '',
         timedOut: false,
         aborted: false,

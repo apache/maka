@@ -155,6 +155,7 @@ describe('Harbor adapter contract', () => {
     );
     assert.match(source, /"MAKA_ECONOMY_TASK_MODE": "true" if economy_task_mode else "false"/);
     assert.match(source, /"MAKA_AGENT_TOOLS"/);
+    assert.match(source, /"MAKA_EDITING_PROTOCOL"/);
     assert.doesNotMatch(
       source,
       /"MAKA_ECONOMY_TASK_MODE": "true" if self\._resolved_flags\.get\("economy_task_mode"\) else "false"/,
@@ -2489,6 +2490,12 @@ with tempfile.TemporaryDirectory() as tmp:
         "MAKA_AGENT_TOOLS": "true",
     })._cell_env(Path("/logs/agent/instruction.txt"))
     assert agent_tools_env["MAKA_AGENT_TOOLS"] == "true", agent_tools_env
+
+    editing_protocol_env = MakaAgent(Path(tmp), extra_env={
+        "MAKA_BACKEND": "fake",
+        "MAKA_EDITING_PROTOCOL": "apply_patch",
+    })._cell_env(Path("/logs/agent/instruction.txt"))
+    assert editing_protocol_env["MAKA_EDITING_PROTOCOL"] == "apply_patch", editing_protocol_env
 
     # Host-side LLM mode must not forward provider secrets into the task-cell env.
     host_agent = MakaAgent(Path(tmp), extra_env={

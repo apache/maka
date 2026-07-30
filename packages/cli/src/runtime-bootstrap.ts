@@ -100,6 +100,8 @@ export interface MakaCliRuntimeContext {
   /** Host-injected configuration root used by connections, credentials, and settings. */
   configRoot: string;
   cwd: string;
+  /** Editing surface captured for sessions created by this runtime context. */
+  editingProtocol: EditingProtocol;
   runtime: SessionManager;
   target: ReadySessionTarget;
   /** Selectable models across every ready connection, for the `/model` picker. */
@@ -665,8 +667,11 @@ export async function createMakaCliRuntimeContext(
         : [];
     const productToolSurface = projectEffectiveProductToolSurface({
       host: 'cli',
-      tools: ctx.tools ? ctx.tools : [...allTools, ...agentGraphSupervisorTools],
-      policy: cliProductToolSurface.identity.policy,
+      tools: ctx.tools ? ctx.tools : [...boundTools, ...agentGraphSupervisorTools],
+      policy: {
+        ...cliProductToolSurface.identity.policy,
+        editingProtocol: header.editingProtocol ?? editingProtocol,
+      },
     });
     const backendTools = [...productToolSurface.tools];
     const admitsAgentChildren = productToolSurface.boundSurfaceIds.includes(AGENT_TOOL_GROUP_ID);
@@ -816,7 +821,17 @@ export async function createMakaCliRuntimeContext(
     inspectContinuationSafety: createLocalContinuationSafetyInspector({
       readSessionCwd: async (sessionId) => (await store.readHeader(sessionId)).cwd,
       resolveWorkspaceIdentity: async (cwd) => resolveWorkspaceIdentity({ path: cwd }),
-      listAvailableToolNames: async () => allTools.map((tool) => tool.name),
+      listAvailableToolNames: async (sessionId) => {
+        const header = await store.readHeader(sessionId);
+        return projectEffectiveProductToolSurface({
+          host: 'cli',
+          tools: boundTools,
+          policy: {
+            ...cliProductToolSurface.identity.policy,
+            editingProtocol: header.editingProtocol ?? editingProtocol,
+          },
+        }).tools.map((tool) => tool.name);
+      },
       hasPendingBackgroundOperations: async (sessionId) => {
         const [shellUpdates, runs] = await Promise.all([
           shellRuns.listSessionUpdates(sessionId),
@@ -1044,6 +1059,7 @@ export async function createMakaCliRuntimeContext(
     stateRoot,
     configRoot,
     cwd: input.cwd,
+    editingProtocol,
     runtime,
     target,
     modelChoices,

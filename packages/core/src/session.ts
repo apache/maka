@@ -42,6 +42,7 @@ import {
   normalizeToolResultContentForRead,
 } from './tool-result-record-schema.js';
 import type { SubagentWorkspaceBinding } from './subagent-workspace.js';
+import type { EditingProtocol } from './apply-patch.js';
 
 export { isDeepResearchSession } from './explore-agent.js';
 export { isExpertTeamSession } from './expert-team.js';
@@ -225,6 +226,8 @@ export interface SessionHeader {
   /** Per-model reasoning-depth variant; `undefined` = model default. Cleared on model switch. */
   thinkingLevel?: import('./model-thinking.js').ThinkingLevel;
   permissionMode: PermissionMode;
+  /** Editing surface captured when the session is created. Legacy records default to Edit/Write. */
+  editingProtocol?: EditingProtocol;
   /** Defaults to `agent` when absent on legacy session records. */
   collaborationMode?: CollaborationMode;
   /** Defaults to `default` when absent on legacy session records. */
@@ -274,6 +277,8 @@ export interface SessionSummary {
   /** Per-model reasoning-depth variant; `undefined` = model default. Cleared on model switch. */
   thinkingLevel?: import('./model-thinking.js').ThinkingLevel;
   permissionMode: PermissionMode;
+  /** Editing surface captured for this session. Legacy summaries default to Edit/Write. */
+  editingProtocol?: EditingProtocol;
   /** Defaults to `agent` when absent on legacy summaries. */
   collaborationMode?: CollaborationMode;
   /** Defaults to `default` when absent on legacy summaries. */

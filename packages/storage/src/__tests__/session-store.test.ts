@@ -51,6 +51,7 @@ describe('FileSessionStore CRUD', () => {
       const header = await store.create(makeInput({ name: 'Status' }));
 
       assert.equal(header.status, 'active');
+      assert.equal(header.editingProtocol, 'edit_write');
       assert.equal(header.collaborationMode, 'agent');
       assert.equal(header.orchestrationMode, 'default');
       assert.equal(typeof header.statusUpdatedAt, 'number');
@@ -59,6 +60,7 @@ describe('FileSessionStore CRUD', () => {
       assert.equal(summary?.statusUpdatedAt, header.statusUpdatedAt);
       assert.equal(summary?.model, 'fake-model');
       assert.equal(summary?.cwd, '/tmp/cwd');
+      assert.equal(summary?.editingProtocol, 'edit_write');
       assert.equal(summary?.collaborationMode, 'agent');
       assert.equal(summary?.orchestrationMode, 'default');
     });
@@ -69,6 +71,15 @@ describe('FileSessionStore CRUD', () => {
       const header = await store.create(makeInput({ orchestrationMode: 'swarm' }));
       assert.equal(header.orchestrationMode, 'swarm');
       assert.equal((await store.list())[0]?.orchestrationMode, 'swarm');
+    });
+  });
+
+  test('persists a requested editing protocol in headers and summaries', async () => {
+    await withStore(async (store) => {
+      const header = await store.create(makeInput({ editingProtocol: 'apply_patch' }));
+      assert.equal(header.editingProtocol, 'apply_patch');
+      assert.equal((await store.readHeader(header.id)).editingProtocol, 'apply_patch');
+      assert.equal((await store.list())[0]?.editingProtocol, 'apply_patch');
     });
   });
 

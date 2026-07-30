@@ -19,6 +19,7 @@ import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import { userFacingText } from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
+import type { EditingProtocol } from '@maka/core/apply-patch';
 import type {
   ContextDiagnostics,
   RuntimeContinuation,
@@ -97,6 +98,7 @@ export interface MakaSessionDriverInput {
   llmConnectionSlug: string;
   model: string;
   permissionMode?: PermissionMode;
+  editingProtocol?: EditingProtocol;
   orchestrationMode?: OrchestrationMode;
   newId?: () => string;
   inspectCwdChanges?: InspectCwdChanges;
@@ -529,6 +531,7 @@ class RuntimeMakaSessionDriver implements MakaSessionDriver {
       llmConnectionSlug: this.llmConnectionSlug,
       model: this.model,
       permissionMode: this.permissionMode,
+      editingProtocol: this.input.editingProtocol ?? 'edit_write',
       ...(this.orchestrationMode !== 'default'
         ? { orchestrationMode: this.orchestrationMode }
         : {}),

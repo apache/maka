@@ -13,6 +13,7 @@ import {
   type CreateMakaCliRuntimeContextInput,
 } from './runtime-bootstrap.js';
 import type { ReadySessionTarget } from './connection-target.js';
+import type { EditingProtocol } from '@maka/core/apply-patch';
 import { selectMakaRunSession } from './run-session-selection.js';
 import { resolveMakaWorkspaceRoot } from './workspace-root.js';
 
@@ -52,6 +53,7 @@ export interface MakaRunRuntime {
 export interface MakaRunContext {
   runtime: MakaRunRuntime;
   target: ReadySessionTarget;
+  editingProtocol?: EditingProtocol;
   agentGraph?: {
     reserveActivity(sessionId: string): { release(): void };
     waitForCompletion(sessionId: string): Promise<void>;
@@ -272,6 +274,7 @@ export async function runMakaTextCli(
             llmConnectionSlug: context.target.connection.slug,
             model: context.target.model,
             permissionMode: parsed.options.yolo ? 'bypass' : 'ask',
+            editingProtocol: context.editingProtocol ?? 'edit_write',
             ...(parsed.options.thinking !== undefined
               ? { thinkingLevel: parsed.options.thinking }
               : {}),

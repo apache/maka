@@ -41,6 +41,7 @@ export interface NewSessionSkillContext {
   llmConnectionSlug?: string;
   model?: string;
   collaborationMode?: CollaborationMode;
+  editingProtocol?: import('@maka/core').EditingProtocol;
 }
 
 interface WorkspaceResourcesIpcDeps {

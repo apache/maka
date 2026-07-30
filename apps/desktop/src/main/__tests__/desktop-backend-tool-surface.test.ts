@@ -140,9 +140,14 @@ describe('Desktop backend tool surface', () => {
     const surface = await resolveDesktopBackendToolSurface(
       makeDeps({
         builtinTools: [readTool, writeTool, applyPatchTool],
-        editingProtocol: 'apply_patch',
       }),
-      inputFor('claude-sonnet-4-5-20250929'),
+      {
+        ...inputFor('claude-sonnet-4-5-20250929'),
+        header: {
+          ...inputFor('claude-sonnet-4-5-20250929').header,
+          editingProtocol: 'apply_patch',
+        },
+      },
     );
 
     assert.equal(surface.skillHost.toolNames.has('ApplyPatch'), true);

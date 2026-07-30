@@ -43,6 +43,7 @@ import {
   AGENT_SPAWN_TOOL_NAME,
   CHILD_AGENT_TOOL_NAMES,
   buildChildAgentTools,
+  childAgentToolsWithinEditingProtocol,
   buildParentAgentTools,
   buildSubagentListTool,
   buildSubagentOutputTool,
@@ -285,6 +286,26 @@ describe('subagent tools', () => {
         testCatalogTool('Edit', 'file_write'),
         testCatalogTool('Bash', 'shell_unsafe'),
       ],
+    });
+  });
+
+  test('ApplyPatch-only parents cannot elevate implementation children to Write or Edit', () => {
+    const parentScopedTools = childAgentToolsWithinEditingProtocol(
+      buildChildAgentTools(buildBuiltinTools({ editingProtocol: 'all' })),
+      'apply_patch',
+    );
+
+    expect(parentScopedTools.some((tool) => tool.name === 'Write')).toBe(false);
+    expect(parentScopedTools.some((tool) => tool.name === 'Edit')).toBe(false);
+    expect(
+      listBuiltinAgentDefinitions({
+        tools: parentScopedTools,
+        worktreeChildExecutorAvailable: true,
+      }).find((definition) => definition.id === IMPLEMENTATION_AGENT_ID)?.availability,
+    ).toEqual({
+      status: 'unavailable',
+      reason: 'missing_tools',
+      missingTools: ['Write', 'Edit'],
     });
   });
 

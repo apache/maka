@@ -223,6 +223,25 @@ describe('isolated headless tools', () => {
     );
   });
 
+  test('nested writable targets emit real shell parameter expansion', async () => {
+    let captured = '';
+    const tools = buildIsolatedHeadlessTools({
+      async exec(input) {
+        captured = input.command;
+        return { exitCode: 0, stdout: fileToolOutputForCommand(input.command), stderr: '' };
+      },
+    });
+
+    await tool(tools, 'Write').impl(
+      { path: 'generated/deep/file.txt', content: 'nested\n' },
+      toolCtx('/workspace'),
+    );
+
+    assert.equal(captured.includes('segment=${remaining%%/*}'), true);
+    assert.equal(captured.includes('remaining=${remaining#*/}'), true);
+    assert.equal(captured.includes(String.raw`segment=\${remaining%%/*}`), false);
+  });
+
   test('command-backed file tools forward active-turn cancellation to the isolated executor', async () => {
     const seenSignals: Array<AbortSignal | undefined> = [];
     const tools = buildIsolatedHeadlessTools({

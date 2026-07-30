@@ -22,6 +22,7 @@ import { chainWrite } from './write-queue.js';
 import {
   DEFAULT_SESSION_NAME,
   deriveTurnRecords,
+  isEditingProtocol,
   isCollaborationMode,
   isOrchestrationMode,
   isPermissionMode,
@@ -593,6 +594,7 @@ class FileSessionStore implements SessionStore {
       connectionLocked: false,
       model: input.model ?? 'default',
       permissionMode: input.permissionMode,
+      editingProtocol: input.editingProtocol ?? 'edit_write',
       collaborationMode: input.collaborationMode ?? 'agent',
       orchestrationMode: input.orchestrationMode ?? 'default',
       ...(input.thinkingLevel !== undefined ? { thinkingLevel: input.thinkingLevel } : {}),
@@ -1140,6 +1142,7 @@ type StoredSessionHeader = Omit<
   | 'backend'
   | 'model'
   | 'permissionMode'
+  | 'editingProtocol'
   | 'collaborationMode'
   | 'orchestrationMode'
   | 'status'
@@ -1149,6 +1152,7 @@ type StoredSessionHeader = Omit<
   backend: string;
   model?: unknown;
   permissionMode?: unknown;
+  editingProtocol?: unknown;
   collaborationMode?: unknown;
   orchestrationMode?: unknown;
   status?: unknown;
@@ -1188,6 +1192,9 @@ export function decodeSessionHeader(value: unknown, sessionId: string): SessionH
   }
   const header = value as StoredSessionHeader;
   const permissionMode = isPermissionMode(header.permissionMode) ? header.permissionMode : 'ask';
+  const editingProtocol = isEditingProtocol(header.editingProtocol)
+    ? header.editingProtocol
+    : 'edit_write';
   const collaborationMode = isCollaborationMode(header.collaborationMode)
     ? header.collaborationMode
     : 'agent';
@@ -1224,6 +1231,7 @@ export function decodeSessionHeader(value: unknown, sessionId: string): SessionH
         backend: 'ai-sdk',
         model,
         permissionMode,
+        editingProtocol,
         collaborationMode,
         orchestrationMode,
       },
@@ -1239,6 +1247,7 @@ export function decodeSessionHeader(value: unknown, sessionId: string): SessionH
         backend: 'pi-agent',
         model,
         permissionMode,
+        editingProtocol,
         collaborationMode,
         orchestrationMode,
       },
@@ -1254,6 +1263,7 @@ export function decodeSessionHeader(value: unknown, sessionId: string): SessionH
         backend: 'pi-agent',
         model,
         permissionMode,
+        editingProtocol,
         collaborationMode,
         orchestrationMode,
       },
@@ -1268,6 +1278,7 @@ export function decodeSessionHeader(value: unknown, sessionId: string): SessionH
       backend: header.backend === 'ai-sdk' ? 'ai-sdk' : 'fake',
       model,
       permissionMode,
+      editingProtocol,
       collaborationMode,
       orchestrationMode,
     },
@@ -1325,6 +1336,7 @@ export function normalizeSessionHeader(
     typeof header.connectionLocked === 'boolean' &&
     typeof header.model === 'string' &&
     isPermissionMode(header.permissionMode) &&
+    isEditingProtocol(header.editingProtocol ?? 'edit_write') &&
     isCollaborationMode(header.collaborationMode) &&
     isOrchestrationMode(header.orchestrationMode) &&
     header.schemaVersion === 1;
@@ -1334,9 +1346,17 @@ export function normalizeSessionHeader(
   const normalizedName = normalizeSessionName(header.name);
   if (header.blockedReason === undefined) {
     const { blockedReason: _blockedReason, ...withoutBlockedReason } = header;
-    return { ...withoutBlockedReason, name: normalizedName };
+    return {
+      ...withoutBlockedReason,
+      name: normalizedName,
+      editingProtocol: header.editingProtocol ?? 'edit_write',
+    };
   }
-  return { ...header, name: normalizedName };
+  return {
+    ...header,
+    name: normalizedName,
+    editingProtocol: header.editingProtocol ?? 'edit_write',
+  };
 }
 
 function isValidRevisionLineage(header: SessionHeader): boolean {
@@ -1450,6 +1470,7 @@ function toSummary(header: SessionHeader, messages: StoredMessage[] = []): Sessi
     connectionLocked: header.connectionLocked,
     model: header.model,
     permissionMode: header.permissionMode,
+    editingProtocol: header.editingProtocol ?? 'edit_write',
     collaborationMode: header.collaborationMode ?? 'agent',
     orchestrationMode: header.orchestrationMode ?? 'default',
     ...(header.thinkingLevel !== undefined ? { thinkingLevel: header.thinkingLevel } : {}),

@@ -891,8 +891,8 @@ writable_target() {
   while [ "$remaining" != "." ] && [ -n "$remaining" ]; do
     case "$remaining" in
       */*)
-        segment=\${remaining%%/*}
-        remaining=\${remaining#*/}
+        segment=${'${remaining%%/*}'}
+        remaining=${'${remaining#*/}'}
         ;;
       *)
         segment=$remaining

@@ -6,6 +6,10 @@
  */
 export type EditingProtocol = 'edit_write' | 'apply_patch';
 
+export function isEditingProtocol(value: unknown): value is EditingProtocol {
+  return value === 'edit_write' || value === 'apply_patch';
+}
+
 /**
  * Grammar (lenient around heredoc wrappers):
  *   *** Begin Patch

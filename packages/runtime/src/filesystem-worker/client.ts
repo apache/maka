@@ -220,7 +220,11 @@ export class FilesystemWorkerClient {
     } as const;
     const operation = FilesystemWorkerOperationSchema.parse({
       ...parsedOperation.data,
-      path: target.enforcementPath,
+      // Delete must keep the original directory entry as its operand. The
+      // canonical enforcement path remains pinned separately in
+      // expectedTarget and operationBoundary so the worker can reject a
+      // changed target without replacing a symlink operand with its target.
+      path: parsedOperation.data.kind === 'delete' ? target.displayPath : target.enforcementPath,
     });
     const request = {
       version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
