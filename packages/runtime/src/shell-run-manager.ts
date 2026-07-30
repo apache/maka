@@ -1616,7 +1616,7 @@ export class ShellRunProcessManager
   private armTimeout(live: LiveShellRun): void {
     if (live.timeoutMs === undefined) return;
     live.timeoutTimer = setTimeout(() => {
-      if (live.rootExited || live.finalizeOnce) return;
+      if (live.rootExited || live.finalizeOnce || live.termination) return;
       live.lifecycleCause ??= 'timeout';
       this.requestForcedTermination(live, 'timeout');
     }, live.timeoutMs);
