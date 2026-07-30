@@ -136,7 +136,7 @@ export class HostSessionCatalogCoordinator {
         const record = await this.#readCatalogRecordIfPresent(input.sessionId);
         return successQuery({
           kind: 'session',
-          session: record ? projectSession(record) : null,
+          session: record ? projectSessionCatalogRecord(record) : null,
         });
       }
 
@@ -189,7 +189,7 @@ export class HostSessionCatalogCoordinator {
         );
         if (probe.kind === 'existing') {
           return createSuccess(
-            projectSession(await this.#stores.readCatalogRecord(input.sessionId)),
+            projectSessionCatalogRecord(await this.#stores.readCatalogRecord(input.sessionId)),
           );
         }
         if (probe.kind === 'conflict') {
@@ -228,7 +228,9 @@ export class HostSessionCatalogCoordinator {
           );
         }
         await this.#continuity.refreshCanonical(input.sessionId, lease);
-        return createSuccess(projectSession(await this.#stores.readCatalogRecord(input.sessionId)));
+        return createSuccess(
+          projectSessionCatalogRecord(await this.#stores.readCatalogRecord(input.sessionId)),
+        );
       } catch (error) {
         if (error instanceof SessionOperationFailure) {
           return createFailure(error.code, error.message);
@@ -318,7 +320,9 @@ export class HostSessionCatalogCoordinator {
         ) {
           return configurationSuccess({
             kind: 'committed',
-            session: projectSession(await this.#stores.readCatalogRecord(input.sessionId)),
+            session: projectSessionCatalogRecord(
+              await this.#stores.readCatalogRecord(input.sessionId),
+            ),
           });
         }
         commitAttempted = true;
@@ -373,7 +377,9 @@ export class HostSessionCatalogCoordinator {
         await this.#continuity.refreshCanonical(input.sessionId, lease);
         return {
           ok: true,
-          result: projectSession(await this.#stores.readCatalogRecord(input.sessionId)),
+          result: projectSessionCatalogRecord(
+            await this.#stores.readCatalogRecord(input.sessionId),
+          ),
         };
       } catch (error) {
         if (isNotFound(error)) return readMarkerFailure('not_found', 'Session does not exist');
@@ -402,7 +408,7 @@ export class HostSessionCatalogCoordinator {
     await this.#continuity.refreshCanonical(sessionId, lease);
     return {
       kind: 'committed',
-      session: projectSession(await this.#stores.readCatalogRecord(sessionId)),
+      session: projectSessionCatalogRecord(await this.#stores.readCatalogRecord(sessionId)),
     };
   }
 
@@ -632,7 +638,7 @@ async function prepareCreate(input: SessionCreateInput): Promise<PreparedSession
   };
 }
 
-function projectSession(record: SessionCatalogRecord): SessionCatalogItem {
+export function projectSessionCatalogRecord(record: SessionCatalogRecord): SessionCatalogItem {
   const { header, summary } = record;
   const projectedLabels = projectCatalogLabels(header.labels);
   const projection: SessionCatalogProjection = {
@@ -742,7 +748,7 @@ function page(
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index];
     if (!record) throw new Error('Session catalog record index is invalid');
-    const item = projectSession(record);
+    const item = projectSessionCatalogRecord(record);
     const moreItems = index + 1 < records.length || hasMore;
     const candidate = {
       kind: 'page' as const,

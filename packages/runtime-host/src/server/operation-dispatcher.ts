@@ -52,7 +52,14 @@ export type SessionContinuityOperationKey = Extract<
   OperationKey,
   'subscription.open' | 'subscription.close'
 >;
-export type SessionCatalogOperationKey = Extract<OperationKey, `session.${string}`>;
+export type SessionRevisionOperationKey = Extract<
+  OperationKey,
+  'session.branch.create' | 'session.revision.create'
+>;
+export type SessionCatalogOperationKey = Exclude<
+  Extract<OperationKey, `session.${string}`>,
+  SessionRevisionOperationKey
+>;
 export type TaskLedgerOperationKey = Extract<OperationKey, 'task.ledger.query'>;
 export type ArtifactOperationKey = Extract<OperationKey, `artifact.${string}`>;
 export type SkillCatalogOperationKey = Extract<OperationKey, `skill.catalog.${string}`>;
@@ -75,6 +82,10 @@ export type SessionContinuityOperationHandlerMap = Pick<
 export type SessionCatalogOperationHandlerMap = Pick<
   OperationHandlerMap,
   SessionCatalogOperationKey
+>;
+export type SessionRevisionOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  SessionRevisionOperationKey
 >;
 export type TaskLedgerOperationHandlerMap = Pick<OperationHandlerMap, TaskLedgerOperationKey>;
 export type ArtifactOperationHandlerMap = Pick<OperationHandlerMap, ArtifactOperationKey>;

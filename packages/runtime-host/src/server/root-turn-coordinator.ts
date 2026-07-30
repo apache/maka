@@ -339,6 +339,7 @@ export class RootTurnCoordinator {
   async readSessionHeader(sessionId: string): Promise<HostMessageSessionHeader | null> {
     try {
       const header = await this.stores.sessionStore.readHeaderSnapshot(sessionId);
+      if (header.conversationCopy?.state === 'preparing') return null;
       return {
         isArchived: header.isArchived || header.status === 'archived',
         unavailableReason: unsupportedSessionModeReason(header),
@@ -1000,6 +1001,7 @@ export class RootTurnCoordinator {
             runId: active.runId,
             userMessageId: active.userMessageId,
             onRunStarted: async () => {
+              await this.manager.commitRevisionVersion(input.sessionId);
               await this.continuity.refreshCanonical(input.sessionId);
               startSettled.resolve();
               await active.execution?.onReady?.();
@@ -1016,6 +1018,7 @@ export class RootTurnCoordinator {
                 if (startedRunId !== active.runId) {
                   throw new Error('Runtime started a different Run than the admitted identity');
                 }
+                await this.manager.commitRevisionVersion(input.sessionId);
                 await this.continuity.refreshCanonical(input.sessionId);
                 startSettled.resolve();
               },

@@ -5,13 +5,18 @@ import {
   StorageRootAuthorityError,
   type StorageRootLease,
 } from './root-authority.js';
-import { createSqliteTaskLedgerStore, type SqliteTaskLedgerStore } from './task-ledger-store.js';
+import {
+  createSqliteTaskLedgerStore,
+  type ConversationTaskLedgerCopyInput,
+  type SqliteTaskLedgerStore,
+} from './task-ledger-store.js';
 import {
   getTaskLedgerCanonicalReader,
   type TaskLedgerCanonicalReader,
 } from './task-ledger-store-internal.js';
 
 export type { TaskLedgerCanonicalReader } from './task-ledger-store-internal.js';
+export type { ConversationTaskLedgerCopyInput } from './task-ledger-store.js';
 
 const writerBrand: unique symbol = Symbol('InteractiveTaskLedgerWriter');
 const writers = new WeakSet<object>();
@@ -23,6 +28,8 @@ export interface InteractiveTaskLedgerWriter extends TaskLedgerStore, TaskLedger
   readonly access: 'write';
   readonly [writerBrand]: true;
   close(): void;
+  copyConversationTaskLedger(input: ConversationTaskLedgerCopyInput): Promise<void>;
+  purgeConversationTaskLedger(sessionId: string): Promise<void>;
 }
 
 export function authenticateInteractiveTaskLedgerWriter(
@@ -114,6 +121,16 @@ function createInteractiveWriterFacade(
       run(() => store.claimAvailable(sessionId, id, owner, scope, context)),
     settleAgentOutcome: (sessionId, id, outcome, context) =>
       run(() => store.settleAgentOutcome(sessionId, id, outcome, context)),
+    copyConversationTaskLedger: (input) => {
+      const acceptedInput: ConversationTaskLedgerCopyInput = Object.freeze({
+        ...input,
+        turnIds: Object.freeze([...input.turnIds]),
+        runIdMap: Object.freeze(input.runIdMap.map((entry) => Object.freeze({ ...entry }))),
+      });
+      return run(() => store.copyConversationTaskLedger(acceptedInput));
+    },
+    purgeConversationTaskLedger: (sessionId) =>
+      run(() => store.purgeConversationTaskLedger(sessionId)),
     subscribe: (listener) => store.subscribe(listener),
     close: () => {
       if (closed) return;

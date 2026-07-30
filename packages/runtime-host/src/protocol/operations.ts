@@ -16,6 +16,7 @@ import {
 import { RUNTIME_POLICY_OPERATION_SPECS } from './runtime-policy.js';
 import { SESSION_CATALOG_OPERATION_SPECS } from './session-catalog.js';
 import { SESSION_CONTINUITY_OPERATION_SPECS } from './session-continuity.js';
+import { SESSION_REVISION_OPERATION_SPECS } from './session-revision.js';
 import { SKILL_CATALOG_OPERATION_SPECS } from './skill-catalog.js';
 import { TASK_LEDGER_OPERATION_SPECS } from './task-ledger.js';
 import { TURN_OPERATION_SPECS } from './turn.js';
@@ -86,6 +87,7 @@ export * from './client-capability.js';
 export * from './memory.js';
 export * from './runtime-policy.js';
 export * from './session-catalog.js';
+export * from './session-revision.js';
 export * from './skill-catalog.js';
 export * from './usage-pricing.js';
 
@@ -99,6 +101,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   INTERACTION_OPERATION_SPECS,
   SESSION_CONTINUITY_OPERATION_SPECS,
   SESSION_CATALOG_OPERATION_SPECS,
+  SESSION_REVISION_OPERATION_SPECS,
   ARTIFACT_OPERATION_SPECS,
   SKILL_CATALOG_OPERATION_SPECS,
   USAGE_PRICING_OPERATION_SPECS,

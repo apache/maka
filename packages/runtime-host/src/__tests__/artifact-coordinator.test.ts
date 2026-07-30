@@ -7,6 +7,7 @@ import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-sto
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { HostArtifactCoordinator } from '../server/artifact-coordinator.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
+import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 
 const connectionContext: ConnectionContext = {
   hostEpoch: 'host-epoch-1',
@@ -38,9 +39,13 @@ test('Artifact mutation failure requests Host drain and fails closed', async () 
     await rm(metadataPath);
     await mkdir(metadataPath);
     let drainRequests = 0;
-    const coordinator = new HostArtifactCoordinator(store, () => {
-      drainRequests += 1;
-    });
+    const coordinator = new HostArtifactCoordinator(
+      store,
+      () => {
+        drainRequests += 1;
+      },
+      new SessionAdmissionGate(),
+    );
 
     assert.deepEqual(
       await coordinator.handlers['artifact.delete'](

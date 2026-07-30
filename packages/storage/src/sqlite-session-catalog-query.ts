@@ -18,6 +18,9 @@ export function buildSqliteSessionCatalogPageQuery(
   const orderBy = usesLabel ? 'selected_label' : 'projection';
   const where: string[] = [];
   const parameters: Array<string | number> = [];
+  where.push(
+    "COALESCE(json_extract(metadata.payload_json, '$.conversationCopy.state'), '') <> 'preparing'",
+  );
   if (filter.labelSlug !== undefined) {
     where.push('selected_label.label = ?');
     parameters.push(filter.labelSlug);

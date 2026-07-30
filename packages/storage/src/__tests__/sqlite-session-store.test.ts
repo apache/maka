@@ -641,6 +641,122 @@ describe('default SQLite session metadata store', () => {
     }
   });
 
+  test('hides preparing conversation copies and discards them without tombstoning stable identity', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-copy-publication-'));
+    const store = createSessionStore(root);
+    const sessionId = 'stable-copy';
+    const requestFingerprint: `sha256:${string}` = `sha256:${'f'.repeat(64)}`;
+    const input = makeInput({
+      parentSessionId: 'source-session',
+      branchOfTurnId: 'turn-1',
+      conversationCopy: {
+        kind: 'branch',
+        sourceSessionId: 'source-session',
+        sourceTurnId: 'turn-1',
+        requestFingerprint,
+        state: 'preparing',
+      },
+    });
+    try {
+      assert.equal(
+        (await store.createStableSession({ sessionId, requestFingerprint, input })).kind,
+        'created',
+      );
+      assert.deepEqual(await store.list(), []);
+      const page = await store.listCatalogPage(undefined, undefined, 10);
+      assert.equal(page.kind, 'page');
+      if (page.kind !== 'page') assert.fail('Expected a Session catalog page');
+      assert.deepEqual(page.records, []);
+      await assert.rejects(() => store.readCatalogRecord(sessionId), isSessionNotFoundError);
+
+      assert.equal(await store.discardStableConversationCopy(sessionId, requestFingerprint), true);
+      assert.equal(
+        (await store.createStableSession({ sessionId, requestFingerprint, input })).kind,
+        'created',
+      );
+      await store.updateHeader(sessionId, {
+        conversationCopy: { ...input.conversationCopy!, state: 'committed' },
+      });
+      assert.equal((await store.list())[0]?.id, sessionId);
+      assert.equal((await store.readCatalogRecord(sessionId)).header.id, sessionId);
+      await assert.rejects(
+        () => store.updateHeader(sessionId, { conversationCopy: undefined }),
+        /conversation-copy identity is immutable/,
+      );
+      await assert.rejects(
+        () => store.discardStableConversationCopy(sessionId, requestFingerprint),
+        /matching incomplete conversation copy/,
+      );
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('recovers pending catalog publication after an incomplete copy loses its transcript', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-copy-recovery-'));
+    const sessionId = 'interrupted-copy';
+    const requestFingerprint: `sha256:${string}` = `sha256:${'a'.repeat(64)}`;
+    const input = makeInput({
+      parentSessionId: 'source-session',
+      branchOfTurnId: 'turn-1',
+      conversationCopy: {
+        kind: 'branch',
+        sourceSessionId: 'source-session',
+        sourceTurnId: 'turn-1',
+        requestFingerprint,
+        state: 'preparing',
+      },
+    });
+    const initial = createSessionStore(root);
+    try {
+      assert.equal(
+        (
+          await initial.createStableSession({
+            sessionId,
+            requestFingerprint,
+            input,
+          })
+        ).kind,
+        'created',
+      );
+    } finally {
+      await initial.close?.();
+    }
+
+    const metadata = createSqliteSessionMetadataStore(
+      join(root, SQLITE_SESSION_METADATA_DATABASE_NAME),
+    );
+    try {
+      await metadata.requireCatalogProjectionRecovery();
+    } finally {
+      metadata.close();
+    }
+    await rm(join(root, 'sessions', sessionId), { recursive: true, force: true });
+
+    const recovered = createSessionStore(root);
+    try {
+      assert.equal((await recovered.listHeaders())[0]?.id, sessionId);
+      assert.equal(
+        await recovered.discardStableConversationCopy(sessionId, requestFingerprint),
+        true,
+      );
+      assert.equal(
+        (
+          await recovered.createStableSession({
+            sessionId,
+            requestFingerprint,
+            input,
+          })
+        ).kind,
+        'created',
+      );
+    } finally {
+      await recovered.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('persists the stable project association in SQLite metadata and summaries', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-default-session-project-'));
     const store = createSessionStore(root);

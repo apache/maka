@@ -142,6 +142,20 @@ export interface SubagentSessionSpawn {
   initialRunId: string;
 }
 
+/**
+ * Internal publication state for a Host-owned cross-Session conversation copy.
+ *
+ * Preparing copies are not product Sessions yet. The Host publishes them only
+ * after Messages, Runtime Events, Artifacts, and Task Ledger state are durable.
+ */
+export interface SessionConversationCopy {
+  kind: 'branch' | 'revision';
+  sourceSessionId: string;
+  sourceTurnId: string;
+  requestFingerprint: `sha256:${string}`;
+  state: 'preparing' | 'committed';
+}
+
 export type SubagentSessionRuntimeSummary = Omit<
   SubagentSessionRuntime,
   'systemPrompt' | 'categoryPolicy'
@@ -200,6 +214,8 @@ export interface SessionHeader {
   subagentSpawn?: SubagentSessionSpawn;
   /** Immutable host-managed filesystem isolation for this child Session. */
   subagentWorkspace?: SubagentWorkspaceBinding;
+  /** Immutable Host publication identity for a cross-Session conversation copy. */
+  conversationCopy?: SessionConversationCopy;
   /** Stable root id for an edit-and-resend version family. */
   revisionRootSessionId?: string;
   /** Immediate previous version in the same conversation slot. */
@@ -334,6 +350,10 @@ const SUBAGENT_SESSION_SPAWN_IDENTITY_SHAPE = defineObjectShape<SubagentSessionS
   ['schemaVersion', 'requestFingerprint', 'initialTurnId', 'initialRunId'],
   [],
 );
+const SESSION_CONVERSATION_COPY_SHAPE = defineObjectShape<SessionConversationCopy>()(
+  ['kind', 'sourceSessionId', 'sourceTurnId', 'requestFingerprint', 'state'],
+  [],
+);
 const SESSION_LINEAGE_ID_MAX_CHARS = 512;
 const SESSION_LINEAGE_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 const SUBAGENT_RUNTIME_NAME_MAX_CHARS = 512;
@@ -412,6 +432,20 @@ export function isSubagentSessionSpawn(value: unknown): value is SubagentSession
     SUBAGENT_REQUEST_FINGERPRINT_PATTERN.test(value.requestFingerprint) &&
     isSessionLineageId(value.initialTurnId) &&
     isSessionLineageId(value.initialRunId)
+  );
+}
+
+/** Strict decoder guard for Host-owned conversation-copy publication state. */
+export function isSessionConversationCopy(value: unknown): value is SessionConversationCopy {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, SESSION_CONVERSATION_COPY_SHAPE) &&
+    (value.kind === 'branch' || value.kind === 'revision') &&
+    isSessionLineageId(value.sourceSessionId) &&
+    isSessionLineageId(value.sourceTurnId) &&
+    typeof value.requestFingerprint === 'string' &&
+    /^sha256:[0-9a-f]{64}$/.test(value.requestFingerprint) &&
+    (value.state === 'preparing' || value.state === 'committed')
   );
 }
 

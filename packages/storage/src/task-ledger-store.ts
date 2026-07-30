@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
@@ -35,6 +35,7 @@ import {
 } from '@maka/core/task-ledger';
 import { chainWrite } from './write-queue.js';
 import { assertSafeSessionId } from './session-store.js';
+import { syncDirectory } from './stable-storage.js';
 import { registerTaskLedgerCanonicalReader } from './task-ledger-store-internal.js';
 import {
   acquireOperationalStateDatabase,
@@ -45,11 +46,27 @@ import {
 
 export type { TaskLedgerStore } from '@maka/core/task-ledger';
 
-export function createTaskLedgerStore(workspaceRoot: string): TaskLedgerStore {
+export interface ConversationTaskLedgerCopyInput {
+  readonly sourceSessionId: string;
+  readonly targetSessionId: string;
+  readonly turnIds: readonly string[];
+  readonly beforeTs?: number;
+  readonly runIdMap: readonly {
+    readonly sourceRunId: string;
+    readonly targetRunId: string;
+  }[];
+}
+
+export interface TaskLedgerAuthorityStore extends TaskLedgerStore {
+  copyConversationTaskLedger(input: ConversationTaskLedgerCopyInput): Promise<void>;
+  purgeConversationTaskLedger(sessionId: string): Promise<void>;
+}
+
+export function createTaskLedgerStore(workspaceRoot: string): TaskLedgerAuthorityStore {
   return new FileTaskLedgerStore(workspaceRoot);
 }
 
-export interface SqliteTaskLedgerStore extends TaskLedgerStore {
+export interface SqliteTaskLedgerStore extends TaskLedgerAuthorityStore {
   ready(): Promise<void>;
   close(): void;
 }
@@ -65,7 +82,7 @@ export function createSqliteTaskLedgerStore(
   return new SqliteTaskLedgerStoreImpl(workspaceRoot, options);
 }
 
-class FileTaskLedgerStore implements TaskLedgerStore {
+class FileTaskLedgerStore implements TaskLedgerAuthorityStore {
   private readonly sessionsRoot: string;
   private readonly writeQueues = new Map<string, Promise<void>>();
   private readonly listeners = new Set<(event: TaskLedgerChangedEvent) => void>();
@@ -115,6 +132,90 @@ class FileTaskLedgerStore implements TaskLedgerStore {
   subscribe(listener: (event: TaskLedgerChangedEvent) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  async copyConversationTaskLedger(input: ConversationTaskLedgerCopyInput): Promise<void> {
+    assertSafeSessionId(input.sourceSessionId);
+    assertSafeSessionId(input.targetSessionId);
+    if (input.sourceSessionId === input.targetSessionId) {
+      throw new Error('Task Ledger conversation copy requires distinct Sessions');
+    }
+    if (
+      input.beforeTs !== undefined &&
+      (!Number.isSafeInteger(input.beforeTs) || input.beforeTs < 0)
+    ) {
+      throw new Error('Task Ledger conversation-copy boundary is invalid');
+    }
+    const turnIds = new Set(input.turnIds);
+    const runIds = new Map(
+      input.runIdMap.map(({ sourceRunId, targetRunId }) => [sourceRunId, targetRunId]),
+    );
+    const source = await this.readConversationCopyEvents(input.sourceSessionId);
+    const selected: TaskLedgerEvent[] = [];
+    let crossedBoundary = false;
+    for (const event of source) {
+      const eventTurnId = event.refs?.turnId;
+      const retained =
+        eventTurnId !== undefined
+          ? turnIds.has(eventTurnId)
+          : input.beforeTs === undefined || event.ts < input.beforeTs;
+      if (!retained) {
+        crossedBoundary = true;
+        continue;
+      }
+      if (crossedBoundary) {
+        throw new Error('Task Ledger events cross the conversation-copy boundary');
+      }
+      selected.push(
+        rewriteConversationTaskEvent(event, input.sourceSessionId, input.targetSessionId, runIds),
+      );
+    }
+    if (selected.length === 0) return;
+    const projection = projectTaskLedgerEvents(selected);
+    if (projection.diagnostics.length > 0) {
+      throw new Error(
+        `Task Ledger conversation copy is not projectable: ${projection.diagnostics.join('; ')}`,
+      );
+    }
+
+    await chainWrite(this.writeQueues, input.targetSessionId, async () => {
+      if (
+        await this.copyCanonicalConversationTaskLedger(
+          input.targetSessionId,
+          selected,
+          projection.tasks,
+        )
+      ) {
+        return;
+      }
+      const eventsPath = this.eventsPath(input.targetSessionId);
+      const tasksPath = this.filePath(input.targetSessionId);
+      await assertConversationCopyTargetAbsent(eventsPath);
+      await assertConversationCopyTargetAbsent(tasksPath);
+      await mkdir(dirname(eventsPath), { recursive: true });
+      await writeFile(
+        eventsPath,
+        selected.map((event) => JSON.stringify(event)).join('\n') + '\n',
+        { encoding: 'utf8', flag: 'wx' },
+      );
+      await this.write(input.targetSessionId, projection.tasks);
+    });
+  }
+
+  async purgeConversationTaskLedger(sessionId: string): Promise<void> {
+    assertSafeSessionId(sessionId);
+    await chainWrite(this.writeQueues, sessionId, async () => {
+      if (await this.purgeCanonicalConversationTaskLedger(sessionId)) return;
+      const eventsPath = this.eventsPath(sessionId);
+      const tasksPath = this.filePath(sessionId);
+      await rm(eventsPath, { force: true });
+      await rm(tasksPath, { force: true });
+      try {
+        await syncDirectory(dirname(eventsPath));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    });
   }
 
   async create(
@@ -600,6 +701,21 @@ class FileTaskLedgerStore implements TaskLedgerStore {
     return events;
   }
 
+  private async readConversationCopyEvents(sessionId: string): Promise<TaskLedgerEvent[]> {
+    try {
+      return await this.readTaskEvents(sessionId);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      const legacy = await this.readForMutateWithSource(sessionId);
+      if (legacy.tasks.length > 0) {
+        throw new Error(
+          'Legacy Task Ledger snapshots cannot be placed at an exact conversation boundary',
+        );
+      }
+      return [];
+    }
+  }
+
   private async mutate(
     sessionId: string,
     fn: (tasks: Task[]) => Task[],
@@ -696,6 +812,18 @@ class FileTaskLedgerStore implements TaskLedgerStore {
     return false;
   }
 
+  protected async copyCanonicalConversationTaskLedger(
+    _sessionId: string,
+    _events: readonly TaskLedgerEvent[],
+    _tasks: readonly Task[],
+  ): Promise<boolean> {
+    return false;
+  }
+
+  protected async purgeCanonicalConversationTaskLedger(_sessionId: string): Promise<boolean> {
+    return false;
+  }
+
   private applyListOptions(tasks: Task[], options: TaskLedgerListOptions): Task[] {
     const now = options.now ?? Date.now();
     const filtered = tasks.filter((task) => {
@@ -774,6 +902,46 @@ class SqliteTaskLedgerStoreImpl extends FileTaskLedgerStore implements SqliteTas
     await this.#ready;
     this.#lease.transaction('write', () => {
       writeTaskLedgerProjection(this.#lease.database, sessionId, tasks);
+    });
+    return true;
+  }
+
+  protected override async copyCanonicalConversationTaskLedger(
+    sessionId: string,
+    events: readonly TaskLedgerEvent[],
+    tasks: readonly Task[],
+  ): Promise<boolean> {
+    await this.#ready;
+    this.#lease.transaction('write', () => {
+      const existing = this.#lease.database
+        .prepare(`
+          SELECT
+            (SELECT COUNT(*) FROM workflow_task_ledger_events WHERE session_id = ?) +
+            (SELECT COUNT(*) FROM workflow_task_ledger_projections WHERE session_id = ?) AS count
+        `)
+        .get(sessionId, sessionId) as { count?: unknown };
+      if (existing.count !== 0) {
+        throw new Error('Task Ledger conversation-copy target already exists');
+      }
+      for (const event of events) {
+        insertTaskLedgerEvent(this.#lease.database, sessionId, event);
+      }
+      writeTaskLedgerProjection(this.#lease.database, sessionId, [...tasks]);
+    });
+    return true;
+  }
+
+  protected override async purgeCanonicalConversationTaskLedger(
+    sessionId: string,
+  ): Promise<boolean> {
+    await this.#ready;
+    this.#lease.transaction('write', () => {
+      this.#lease.database
+        .prepare('DELETE FROM workflow_task_ledger_events WHERE session_id = ?')
+        .run(sessionId);
+      this.#lease.database
+        .prepare('DELETE FROM workflow_task_ledger_projections WHERE session_id = ?')
+        .run(sessionId);
     });
     return true;
   }
@@ -1170,6 +1338,69 @@ function clearStaleTaskEvidence(task: Task): Task {
   if (next.status !== 'failed') delete next.failureReason;
   if (next.status !== 'completed') delete next.completionEvidence;
   return next;
+}
+
+function rewriteConversationTaskEvent(
+  event: TaskLedgerEvent,
+  sourceSessionId: string,
+  targetSessionId: string,
+  runIds: ReadonlyMap<string, string>,
+): TaskLedgerEvent {
+  const owner = event.task.owner;
+  const rewrittenOwner =
+    owner === undefined
+      ? undefined
+      : {
+          ...owner,
+          ...(owner.sessionId === sourceSessionId ? { sessionId: targetSessionId } : {}),
+          ...(owner.runId
+            ? {
+                runId: requiredConversationCopyRunId(runIds, owner.runId),
+              }
+            : {}),
+        };
+  const refs =
+    event.refs === undefined
+      ? undefined
+      : {
+          ...event.refs,
+          ...(event.refs.runId
+            ? { runId: requiredConversationCopyRunId(runIds, event.refs.runId) }
+            : {}),
+        };
+  return {
+    ...event,
+    eventId: `task-copy-${createHash('sha256')
+      .update(JSON.stringify([targetSessionId, event.eventId]))
+      .digest('hex')}`,
+    sessionId: targetSessionId,
+    task: {
+      ...event.task,
+      ...(rewrittenOwner ? { owner: rewrittenOwner } : {}),
+    },
+    ...(refs ? { refs } : {}),
+  };
+}
+
+function requiredConversationCopyRunId(
+  runIds: ReadonlyMap<string, string>,
+  sourceRunId: string,
+): string {
+  const targetRunId = runIds.get(sourceRunId);
+  if (!targetRunId) {
+    throw new Error(`Conversation copy is missing AgentRun ${sourceRunId}`);
+  }
+  return targetRunId;
+}
+
+async function assertConversationCopyTargetAbsent(path: string): Promise<void> {
+  try {
+    await readFile(path, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  throw new Error('Task Ledger conversation-copy target already exists');
 }
 
 function buildTaskLedgerEvent(input: {

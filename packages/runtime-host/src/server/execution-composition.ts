@@ -32,6 +32,7 @@ import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js
 import { HostRuntimePolicyCoordinator } from './runtime-policy-coordinator.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
 import { HostSessionCatalogCoordinator } from './session-catalog-coordinator.js';
+import { HostSessionRevisionCoordinator } from './session-revision-coordinator.js';
 import { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
 import { HostSkillCatalogCoordinator } from './skill-catalog-coordinator.js';
 import { SkillCatalogRepository } from './skill-catalog-repository.js';
@@ -275,10 +276,25 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       requestDrain: context.requestDrain,
     });
-    const artifacts = new HostArtifactCoordinator(openedArtifactStore, context.requestDrain);
+    const sessionRevisions = new HostSessionRevisionCoordinator({
+      stores,
+      artifacts: openedArtifactStore,
+      taskLedger: taskLedgerStore,
+      manager,
+      admission: sessionAdmission,
+      continuity: continuityCoordinator,
+      isSessionActive: (sessionId) => coordinator.readRootState(sessionId).kind === 'active',
+      requestDrain: context.requestDrain,
+    });
+    const artifacts = new HostArtifactCoordinator(
+      openedArtifactStore,
+      context.requestDrain,
+      sessionAdmission,
+    );
     const handlers = {
       ...coordinator.handlers,
       ...sessionCatalog.handlers,
+      ...sessionRevisions.handlers,
       ...messages.handlers,
       ...interactions.handlers,
       ...runtimePolicy.handlers,
@@ -295,6 +311,8 @@ export async function createExecutionRuntimeHostComposition(
       recoveryTask ??= (async () => {
         await requireMemory(memory).recover();
         await skills.recover();
+        await openedArtifactStore.recover();
+        await sessionRevisions.recover();
         const sessions = await stores.sessionStore.listForRecovery();
         for (const session of sessions) {
           await stores.runtimeEventStore.repairImmutableSteeringMessageProofsForRecovery(
@@ -306,7 +324,6 @@ export async function createExecutionRuntimeHostComposition(
           sessions.map((session) => session.id),
         );
         await coordinator.prepareRecovery();
-        await openedArtifactStore.recover();
         await interactions.recoverPendingAfterHostRestart();
         await manager.recoverInterruptedSessionsStrict(stores);
         await graphCoordinator.recover();

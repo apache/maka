@@ -74,6 +74,7 @@ import {
   decodeAgentGraphIntentClaim,
   executionBoundaryContains,
   failureClassFromCompleteStopReason,
+  deriveTurnRecords,
   isActiveShellRunStatus,
   isDeepResearchSession,
   isSessionInlineRun,
@@ -102,9 +103,14 @@ import { type RuntimeEventTerminalFact } from './runtime-event-read-model.js';
 import {
   RuntimeReadModel,
   RuntimeReadModelError,
+  type RuntimeReadModelProjectionCache,
   type RuntimeReadModelSessionView,
 } from './runtime-read-model.js';
 import { inspectAgentRunReadModel, type AgentRunInspectModel } from './agent-run-inspect.js';
+import {
+  cloneConversationRuntimeLedger as cloneConversationLedger,
+  createConversationCopySlice,
+} from './conversation-copy.js';
 import { firstRuntimeRepairRunId, RuntimeLedgerRepair } from './runtime-ledger-repair.js';
 import {
   buildRecoveredTerminalRuntimeEvent,
@@ -560,6 +566,7 @@ export interface SessionStore {
   list(filter?: SessionListFilter): Promise<SessionSummary[]>;
   readHeader(sessionId: string): Promise<SessionHeader>;
   readMessages(sessionId: string): Promise<StoredMessage[]>;
+  readMessagesSnapshot?(sessionId: string): Promise<StoredMessage[]>;
   listTurns(sessionId: string): Promise<TurnRecord[]>;
   appendMessage(sessionId: string, m: StoredMessage): Promise<void>;
   appendMessages(sessionId: string, ms: StoredMessage[]): Promise<void>;
@@ -4234,23 +4241,32 @@ export class SessionManager {
 
   async branchFromTurn(sessionId: string, input: BranchFromTurnInput): Promise<SessionSummary> {
     const sourceView = await this.getSessionView(sessionId);
-    // Inclusive: keep everything up to and including the chosen turn. A found
-    // turn always has at least its own messages, so an empty copy means the
-    // turn does not exist.
-    const copied = copyMessagesThroughTurnBoundary(sourceView.messages, input.sourceTurnId);
-    if (copied.length === 0)
-      throw new Error(`Cannot branch from unknown turn ${input.sourceTurnId}`);
-    return this.createBranchSession(sessionId, sourceView, copied, input);
+    const slice = createConversationCopySlice(sourceView.messages, input.sourceTurnId, 'through');
+    if (!slice) throw new Error(`Cannot branch from unknown turn ${input.sourceTurnId}`);
+    return this.createBranchSession(sessionId, sourceView, [...slice.messages], input);
+  }
+
+  /** Canonical, repaired source view for a Host-owned cross-Session copy. */
+  async readConversationCopySnapshot(sessionId: string): Promise<RuntimeReadModelSessionView> {
+    const readMessages =
+      this.deps.store.readMessagesSnapshot?.bind(this.deps.store) ??
+      this.deps.store.readMessages.bind(this.deps.store);
+    const view = await this.getSessionView(sessionId, { readMessages });
+    if (view.runs.length > 0 || view.messages.length > 0) return view;
+    const messages = await readMessages(sessionId);
+    if (messages.length === 0) return view;
+    return {
+      ...view,
+      messages,
+      turns: deriveTurnRecords(messages),
+    };
   }
 
   async branchBeforeTurn(sessionId: string, input: BranchFromTurnInput): Promise<SessionSummary> {
     const sourceView = await this.getSessionView(sessionId);
-    // Exclusive dual of branchFromTurn: keep everything strictly before the
-    // chosen turn, dropping it and every later turn. An empty copy is valid
-    // here (the turn is the first one) — it branches to a fresh, empty context.
-    const copied = copyMessagesBeforeTurn(sourceView.messages, input.sourceTurnId);
-    if (copied === null) throw new Error(`Cannot branch before unknown turn ${input.sourceTurnId}`);
-    return this.createBranchSession(sessionId, sourceView, copied, input);
+    const slice = createConversationCopySlice(sourceView.messages, input.sourceTurnId, 'before');
+    if (!slice) throw new Error(`Cannot branch before unknown turn ${input.sourceTurnId}`);
+    return this.createBranchSession(sessionId, sourceView, [...slice.messages], input);
   }
 
   /**
@@ -4260,9 +4276,9 @@ export class SessionManager {
    */
   async reviseBeforeTurn(sessionId: string, input: ReviseBeforeTurnInput): Promise<SessionSummary> {
     const sourceView = await this.getSessionView(sessionId);
-    const copied = copyMessagesBeforeTurn(sourceView.messages, input.sourceTurnId);
-    if (copied === null) throw new Error(`Cannot revise before unknown turn ${input.sourceTurnId}`);
-    return this.createRevisionSession(sessionId, sourceView, copied, input);
+    const slice = createConversationCopySlice(sourceView.messages, input.sourceTurnId, 'before');
+    if (!slice) throw new Error(`Cannot revise before unknown turn ${input.sourceTurnId}`);
+    return this.createRevisionSession(sessionId, sourceView, [...slice.messages], input);
   }
 
   private async createRevisionSession(
@@ -4309,7 +4325,7 @@ export class SessionManager {
       },
       boundary,
     );
-    await this.cloneConversationRuntimeLedger(next.id, sourceView, copied);
+    await this.cloneConversationRuntimeLedger(sessionId, next.id, sourceView, copied);
     if (copied.length > 0) await this.deps.store.appendMessages(next.id, copied);
     await this.deps.store.appendMessage(next.id, {
       type: 'system_note',
@@ -4360,7 +4376,7 @@ export class SessionManager {
       },
       boundary,
     );
-    await this.cloneConversationRuntimeLedger(next.id, sourceView, copied);
+    await this.cloneConversationRuntimeLedger(sessionId, next.id, sourceView, copied);
     if (copied.length > 0) await this.deps.store.appendMessages(next.id, copied);
     await this.deps.store.appendMessage(next.id, {
       type: 'system_note',
@@ -4659,11 +4675,14 @@ export class SessionManager {
     return user;
   }
 
-  private async getSessionView(sessionId: string): Promise<RuntimeReadModelSessionView> {
+  private async getSessionView(
+    sessionId: string,
+    projectionCache: RuntimeReadModelProjectionCache = this.deps.store,
+  ): Promise<RuntimeReadModelSessionView> {
     const repaired = new Set<string>();
     for (let attempt = 0; attempt < MAX_RUNTIME_LEDGER_REPAIR_ATTEMPTS; attempt += 1) {
       try {
-        const view = await this.readModel().getSessionView(sessionId);
+        const view = await this.readModel(projectionCache).getSessionView(sessionId);
         const runId = firstRuntimeRepairRunId(view.diagnostics, repaired);
         if (!runId) return view;
         if (!(await this.repairMissingTerminalFactOnce(sessionId, runId))) return view;
@@ -4676,17 +4695,19 @@ export class SessionManager {
         repaired.add(runId);
       }
     }
-    return this.readModel().getSessionView(sessionId);
+    return this.readModel(projectionCache).getSessionView(sessionId);
   }
 
-  private readModel(): RuntimeReadModel {
+  private readModel(
+    projectionCache: RuntimeReadModelProjectionCache = this.deps.store,
+  ): RuntimeReadModel {
     if (!this.deps.runStore || !this.deps.runtimeEventStore) {
       throw new Error('RuntimeReadModel requires AgentRunStore and RuntimeEventStore');
     }
     return new RuntimeReadModel({
       runStore: this.deps.runStore,
       runtimeEventStore: this.deps.runtimeEventStore,
-      projectionCache: this.deps.store,
+      projectionCache,
       ...(this.deps.canonicalPermissionOutcomes
         ? { canonicalPermissionOutcomes: this.deps.canonicalPermissionOutcomes }
         : {}),
@@ -4700,86 +4721,25 @@ export class SessionManager {
   }
 
   private async cloneConversationRuntimeLedger(
+    sourceSessionId: string,
     childSessionId: string,
     sourceView: RuntimeReadModelSessionView,
     copiedMessages: readonly StoredMessage[],
   ): Promise<void> {
     if (!this.deps.runStore || !this.deps.runtimeEventStore) return;
-    const copiedTurnIds = new Set<string>();
-    for (const message of copiedMessages) {
-      if ('turnId' in message && typeof message.turnId === 'string')
-        copiedTurnIds.add(message.turnId);
-    }
-    if (copiedTurnIds.size === 0) return;
-    const copiedPermissionDecisions = new Map(
-      copiedMessages.flatMap((message) =>
-        message.type === 'permission_decision' ? [[message.id, message] as const] : [],
-      ),
-    );
-
-    for (const sourceRun of sourceView.runs) {
-      if (!copiedTurnIds.has(sourceRun.turnId)) continue;
-      const sourceEvents = sourceView.events.filter(
-        (event) => event.runId === sourceRun.runId && copiedTurnIds.has(event.turnId),
-      );
-      if (sourceEvents.length === 0) continue;
-
-      const runId = this.deps.newId();
-      const invocationId = this.deps.newId();
-      const clonedRun = cloneRunHeaderForConversationCopy(
-        sourceRun,
-        childSessionId,
-        runId,
-        invocationId,
-      );
-      await this.deps.runStore.createRun(clonedRun);
-
-      const sourceTerminalLedger = classifyTerminalRuntimeLedger(sourceRun, sourceEvents);
-      const clonedEventBySourceId = new Map<string, RuntimeEvent>();
-      for (const event of sourceEvents) {
-        const clonedEvent = cloneRuntimeEventForConversationCopy(
-          event,
-          {
-            sessionId: childSessionId,
-            runId,
-            eventId: this.deps.newId(),
-            invocationId,
-          },
-          copiedPermissionDecisions,
-        );
-        await this.deps.runtimeEventStore.appendRuntimeEvent(childSessionId, runId, clonedEvent);
-        clonedEventBySourceId.set(event.id, clonedEvent);
-      }
-
-      if (sourceTerminalLedger.kind === 'fact' && isTerminalRunStatus(sourceRun.status)) {
-        const terminalEvent = clonedEventBySourceId.get(sourceTerminalLedger.fact.terminalEvent.id);
-        if (!terminalEvent) continue;
-        await commitTerminalRunWithRuntimeFact({
-          runStore: this.deps.runStore,
-          runtimeEventStore: this.deps.runtimeEventStore,
-          newId: this.deps.newId,
-          sessionId: childSessionId,
-          runId,
-          turnId: sourceRun.turnId,
-          status: sourceTerminalLedger.fact.runStatus,
-          ts: terminalEvent.ts,
-          terminalEvent,
-          ...(sourceTerminalLedger.fact.failureClass
-            ? { failureClass: sourceTerminalLedger.fact.failureClass }
-            : {}),
-          ...(sourceRun.failureMessage ? { failureMessage: sourceRun.failureMessage } : {}),
-          ...(sourceTerminalLedger.fact.abortSource
-            ? { abortSource: sourceTerminalLedger.fact.abortSource }
-            : {}),
-          runEventData: {
-            recovered: true,
-            recoveryReason: 'conversation_runtime_ledger_clone',
-            sourceSessionId: sourceRun.sessionId,
-            sourceRunId: sourceRun.runId,
-          },
-        });
-      }
-    }
+    await cloneConversationLedger({
+      source: sourceView,
+      sourceSessionId,
+      targetSessionId: childSessionId,
+      copiedMessages,
+      referenceMap: {
+        sourceSessionId: childSessionId,
+        targetSessionId: childSessionId,
+      },
+      runStore: this.deps.runStore,
+      runtimeEventStore: this.deps.runtimeEventStore,
+      newId: this.deps.newId,
+    });
   }
 
   private async recoverAgentRunsFromLedger(
@@ -5374,110 +5334,6 @@ function turnStateLineage(
     ...(state.branchOfTurnId ? { branchOfTurnId: state.branchOfTurnId } : {}),
     ...(state.parentSessionId ? { parentSessionId: state.parentSessionId } : {}),
   };
-}
-
-function cloneRuntimeEventForConversationCopy(
-  event: RuntimeEvent,
-  ids: { sessionId: string; runId: string; eventId: string; invocationId: string },
-  copiedPermissionDecisions: ReadonlyMap<
-    string,
-    Extract<StoredMessage, { type: 'permission_decision' }>
-  >,
-): RuntimeEvent {
-  const cloned: RuntimeEvent = {
-    ...event,
-    id: ids.eventId,
-    invocationId: ids.invocationId,
-    sessionId: ids.sessionId,
-    runId: ids.runId,
-  };
-  const accepted = event.actions?.permissionAnswerAccepted;
-  const decision = accepted ? copiedPermissionDecisions.get(accepted.requestId) : undefined;
-  if (!decision || !cloned.actions) return cloned;
-  const { permissionAnswerAccepted: _accepted, ...actions } = cloned.actions;
-  cloned.actions = {
-    ...actions,
-    permissionDecision: {
-      requestId: decision.id,
-      toolName: decision.toolName,
-      decision: decision.decision,
-      ...(decision.rememberForTurn !== undefined
-        ? { rememberForTurn: decision.rememberForTurn }
-        : {}),
-      ...(decision.reviewer !== undefined ? { reviewer: decision.reviewer } : {}),
-      ...(decision.rationale !== undefined ? { rationale: decision.rationale } : {}),
-      ...(decision.riskLevel !== undefined ? { riskLevel: decision.riskLevel } : {}),
-    },
-  };
-  cloned.ts = decision.ts;
-  return cloned;
-}
-
-function cloneRunHeaderForConversationCopy(
-  sourceRun: AgentRunHeader,
-  childSessionId: string,
-  runId: string,
-  invocationId: string,
-): AgentRunHeader {
-  const cloned = { ...sourceRun, invocationId, sessionId: childSessionId, runId };
-  if (isTerminalRunStatus(sourceRun.status)) {
-    cloned.status = 'running';
-    delete cloned.completedAt;
-    delete cloned.failureClass;
-    delete cloned.failureMessage;
-    delete cloned.abortSource;
-  }
-  return cloned;
-}
-
-function copyMessagesThroughTurnBoundary(
-  messages: readonly StoredMessage[],
-  turnId: string,
-): StoredMessage[] {
-  let lastIndex = -1;
-  for (let index = 0; index < messages.length; index += 1) {
-    const message = messages[index]!;
-    if ((message as { turnId?: string }).turnId === turnId) {
-      lastIndex = index;
-    }
-  }
-  if (lastIndex < 0) return [];
-  // Branch v1 copies conversation context only. Turn metadata is intentionally
-  // not copied into the child session; lineage lives on the child session
-  // header (`parentSessionId` + `branchOfTurnId`) and future turns.
-  return messages.slice(0, lastIndex + 1).filter((message) => message.type !== 'turn_state');
-}
-
-// Exclusive dual of copyMessagesThroughTurnBoundary: every message belonging to
-// a turn strictly before the chosen one, dropping it and every later turn.
-// Returns null when the turn is absent (so the caller can reject an unknown
-// turn), and an empty array when the turn is the first one (a valid branch into
-// empty context). Membership, not array position, decides what to keep: the read
-// model does not guarantee a turn's messages are contiguous or that a user
-// prompt precedes its turn_state in array order, so a positional slice could
-// drop an earlier turn's prompt. turn_state is dropped for the same reason as in
-// the inclusive copy — lineage lives on the child header, not copied metadata.
-function copyMessagesBeforeTurn(
-  messages: readonly StoredMessage[],
-  turnId: string,
-): StoredMessage[] | null {
-  const turnOrder: string[] = [];
-  const seen = new Set<string>();
-  for (const message of messages) {
-    const messageTurnId = (message as { turnId?: string }).turnId;
-    if (messageTurnId && !seen.has(messageTurnId)) {
-      seen.add(messageTurnId);
-      turnOrder.push(messageTurnId);
-    }
-  }
-  const cut = turnOrder.indexOf(turnId);
-  if (cut < 0) return null;
-  const keep = new Set(turnOrder.slice(0, cut));
-  return messages.filter((message) => {
-    if (message.type === 'turn_state') return false;
-    const messageTurnId = (message as { turnId?: string }).turnId;
-    return messageTurnId !== undefined && keep.has(messageTurnId);
-  });
 }
 
 function isTerminalRunStatus(status: AgentRunHeader['status']): boolean {

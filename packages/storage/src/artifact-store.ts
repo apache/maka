@@ -130,6 +130,17 @@ export interface ArtifactSessionEntry {
   readonly record: ArtifactRecord | null;
 }
 
+export interface ConversationArtifactCopyInput {
+  readonly sourceSessionId: string;
+  readonly targetSessionId: string;
+  readonly turnIds: readonly string[];
+}
+
+export interface ConversationArtifactCopyResult {
+  readonly artifactIds: ReadonlyMap<string, string>;
+  readonly relativePaths: ReadonlyMap<string, string>;
+}
+
 export interface ArtifactStoreReader {
   list(sessionId: string, opts?: { includeDeleted?: boolean }): Promise<ArtifactRecord[]>;
   get(artifactId: string): Promise<ArtifactRecord | null>;
@@ -164,6 +175,10 @@ export type ArtifactUserDeleteResult =
   | { readonly kind: 'protected' };
 
 export interface ArtifactAuthorityStore extends ArtifactStore {
+  copyConversationArtifacts(
+    input: ConversationArtifactCopyInput,
+  ): Promise<ConversationArtifactCopyResult>;
+  purgeSessionArtifacts(sessionId: string): Promise<void>;
   deleteUserArtifactInSession(
     sessionId: string,
     artifactId: string,
@@ -369,6 +384,74 @@ class FileArtifactStore implements ArtifactAuthorityStore {
         }
       }
     });
+  }
+
+  async copyConversationArtifacts(
+    input: ConversationArtifactCopyInput,
+  ): Promise<ConversationArtifactCopyResult> {
+    assertCanonicalArtifactEntityId(input.sourceSessionId, 'sessionId');
+    assertCanonicalArtifactEntityId(input.targetSessionId, 'sessionId');
+    if (input.sourceSessionId === input.targetSessionId) {
+      throw new Error('Artifact conversation copy requires distinct Sessions');
+    }
+    const turnIds = new Set(input.turnIds);
+    for (const turnId of turnIds) assertArtifactTurnKey(turnId);
+    const snapshots = await this.enqueue(async () => {
+      await this.load();
+      const records = this.records.filter(
+        (record) =>
+          record.sessionId === input.sourceSessionId &&
+          record.status === 'live' &&
+          turnIds.has(record.turnId),
+      );
+      return Promise.all(
+        records.map(async (record) => {
+          const prepared = await this.prepareRecordRead(record, Number.MAX_SAFE_INTEGER, false);
+          if (!prepared.ok) {
+            throw new Error(`Artifact ${record.id} could not be copied: ${prepared.reason}`);
+          }
+          const read = await readPreparedBytes(prepared);
+          if (!read.ok) {
+            throw new Error(`Artifact ${record.id} could not be copied: ${read.reason}`);
+          }
+          return { record, content: new Uint8Array(read.bytes) };
+        }),
+      );
+    });
+
+    const artifactIds = new Map<string, string>();
+    const relativePaths = new Map<string, string>();
+    for (const snapshot of snapshots) {
+      const targetId = conversationCopyArtifactId(
+        input.sourceSessionId,
+        input.targetSessionId,
+        snapshot.record.id,
+      );
+      const created = await this.create({
+        id: targetId,
+        sessionId: input.targetSessionId,
+        turnId: snapshot.record.turnId,
+        name: snapshot.record.name,
+        kind: snapshot.record.kind,
+        content: snapshot.content,
+        ...(snapshot.record.mimeType ? { mimeType: snapshot.record.mimeType } : {}),
+        ...(snapshot.record.source ? { source: snapshot.record.source } : {}),
+        ...(snapshot.record.summary ? { summary: snapshot.record.summary } : {}),
+        ...(snapshot.record.deepResearchRole
+          ? { deepResearchRole: snapshot.record.deepResearchRole }
+          : {}),
+        now: snapshot.record.createdAt,
+      });
+      artifactIds.set(snapshot.record.id, created.id);
+      relativePaths.set(snapshot.record.relativePath, created.relativePath);
+    }
+    return { artifactIds, relativePaths };
+  }
+
+  async purgeSessionArtifacts(sessionId: string): Promise<void> {
+    assertCanonicalArtifactEntityId(sessionId, 'sessionId');
+    const records = await this.list(sessionId, { includeDeleted: true });
+    if (records.length > 0) await this.purge(records.map((record) => record.id));
   }
 
   private async replayExistingArtifactUnlocked(
@@ -1437,6 +1520,16 @@ function invalidPublicationResidue(stagingName: string): Error {
 
 function artifactReplayConflict(artifactId: string): Error {
   return new Error(`Artifact ${artifactId} already exists with different metadata or content`);
+}
+
+function conversationCopyArtifactId(
+  sourceSessionId: string,
+  targetSessionId: string,
+  sourceArtifactId: string,
+): string {
+  return `copy_${createHash('sha256')
+    .update(JSON.stringify([sourceSessionId, targetSessionId, sourceArtifactId]))
+    .digest('hex')}`;
 }
 
 function artifactWriteRecoveryRequired(): Error {

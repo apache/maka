@@ -271,6 +271,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.probeStableSessionCreate(sessionId, requestFingerprint)),
       createStableSession: (request, initialBoundary) =>
         run(() => sessionStore.createStableSession(request, initialBoundary)),
+      discardStableConversationCopy: (sessionId, requestFingerprint) =>
+        run(() => sessionStore.discardStableConversationCopy(sessionId, requestFingerprint)),
       createSubagent: (input, initialBoundary) =>
         run(() => sessionStore.createSubagent(input, initialBoundary)),
       createAgentGraphOperator: (input, request, expectedRevision, initialBoundary) =>
@@ -334,6 +336,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         }),
     },
     agentRunStore: {
+      purgeConversationRuntimeLedger: (sessionId) =>
+        run(() => agentRunStore.purgeConversationRuntimeLedger(sessionId)),
       createRun: (header, options) => run(() => agentRunStore.createRun(header, options)),
       updateRun: (sessionId, runId, patch, options) =>
         run(() => agentRunStore.updateRun(sessionId, runId, patch, options)),

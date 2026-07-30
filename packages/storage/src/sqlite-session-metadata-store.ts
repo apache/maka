@@ -64,6 +64,10 @@ import {
   SessionNotFoundError,
 } from './session-store.js';
 import {
+  isDiscardableConversationCopy,
+  isValidConversationCopyTransition,
+} from './session-conversation-copy.js';
+import {
   configureSqliteSessionMetadataDatabase,
   migrateSqliteSessionMetadataDatabase,
   readSqliteSessionMetadataSchemaVersion,
@@ -661,6 +665,21 @@ export class SqliteSessionMetadataStore {
     });
   }
 
+  async hasStableSessionCreateClaim(
+    sessionId: string,
+    requestFingerprint: string,
+  ): Promise<boolean> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertSessionCreateFingerprint(requestFingerprint);
+    const row = this.db
+      .prepare(
+        'SELECT request_fingerprint AS requestFingerprint FROM session_create_claims WHERE session_id = ?',
+      )
+      .get(sessionId) as { requestFingerprint?: unknown } | undefined;
+    return row?.requestFingerprint === requestFingerprint;
+  }
+
   async createStableSession(
     header: SessionHeader,
     requestFingerprint: string,
@@ -688,6 +707,43 @@ export class SqliteSessionMetadataStore {
         kind: 'created' as const,
         record: this.insertHeader(normalized, 1, committedAt, initialBoundary),
       };
+    });
+  }
+
+  async discardStableSessionCreate(
+    sessionId: string,
+    requestFingerprint: string,
+  ): Promise<boolean> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertSessionCreateFingerprint(requestFingerprint);
+    return this.transaction(() => {
+      const probe = this.probeStableSessionCreateSync(sessionId, requestFingerprint);
+      if (probe.kind === 'conflict') {
+        throw new SessionMetadataConflictError(
+          'Stable Session identity belongs to a different request',
+        );
+      }
+      if (probe.kind === 'existing') {
+        const copy = probe.record.header.conversationCopy;
+        if (
+          copy?.requestFingerprint !== requestFingerprint ||
+          !isDiscardableConversationCopy(probe.record.header)
+        ) {
+          throw new SessionMetadataConflictError(
+            'Only a matching incomplete conversation copy can be discarded',
+          );
+        }
+      }
+      const deleted =
+        this.db.prepare('DELETE FROM session_metadata WHERE session_id = ?').run(sessionId)
+          .changes === 1;
+      this.db
+        .prepare(
+          'DELETE FROM session_create_claims WHERE session_id = ? AND request_fingerprint = ?',
+        )
+        .run(sessionId, requestFingerprint);
+      return deleted;
     });
   }
 
@@ -860,6 +916,10 @@ export class SqliteSessionMetadataStore {
         JOIN session_metadata metadata
           ON metadata.session_id = projection.session_id
         WHERE projection.session_id = ?
+          AND COALESCE(
+            json_extract(metadata.payload_json, '$.conversationCopy.state'),
+            ''
+          ) <> 'preparing'
       `)
       .get(sessionId) as SessionMetadataCatalogRow | undefined;
     if (!row) throw new SessionNotFoundError(sessionId);
@@ -2415,6 +2475,7 @@ export class SqliteSessionMetadataStore {
         current.metadataVersion,
       );
     }
+    assertConversationCopyTransition(current.header, patch);
     const next = normalizeSessionHeader({ ...current.header, ...patch }, sessionId);
     if (next.id !== sessionId) {
       throw new SessionMetadataConflictError('Session metadata identity cannot be changed');
@@ -3595,6 +3656,16 @@ function assertMetadataVersion(value: number, label: string): void {
 function assertSessionCreateFingerprint(value: string): void {
   if (!/^sha256:[0-9a-f]{64}$/.test(value)) {
     throw new Error('Session create request fingerprint is invalid');
+  }
+}
+
+function assertConversationCopyTransition(
+  current: SessionHeader,
+  patch: Partial<SessionHeader>,
+): void {
+  if (!Object.prototype.hasOwnProperty.call(patch, 'conversationCopy')) return;
+  if (!isValidConversationCopyTransition(current, patch.conversationCopy)) {
+    throw new SessionMetadataConflictError('Session conversation-copy identity is immutable');
   }
 }
 

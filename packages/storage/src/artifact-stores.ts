@@ -3,6 +3,8 @@ import {
   createArtifactStoreWriteAuthority,
   type ArtifactAuthorityStore,
   type ArtifactStoreWriteAuthority,
+  type ConversationArtifactCopyInput,
+  type ConversationArtifactCopyResult,
   type CreateArtifactInput,
   type DurableArtifactAttachmentReader,
 } from './artifact-store.js';
@@ -31,6 +33,10 @@ export interface InteractiveArtifactStoreWriter extends DurableArtifactAttachmen
   readonly [writerBrand]: true;
   recover(): Promise<void>;
   create(input: CreateArtifactInput): Promise<ArtifactRecord>;
+  copyConversationArtifacts(
+    input: ConversationArtifactCopyInput,
+  ): Promise<ConversationArtifactCopyResult>;
+  purgeSessionArtifacts(sessionId: string): Promise<void>;
   listPage: ArtifactAuthorityStore['listPage'];
   getInSession: ArtifactAuthorityStore['getInSession'];
   readTextInSession: ArtifactAuthorityStore['readTextInSession'];
@@ -168,6 +174,14 @@ function createWriterFacade(
       const acceptedInput = snapshotCreateInput(input);
       return run(() => store.create(acceptedInput));
     },
+    copyConversationArtifacts: (input) => {
+      const acceptedInput: ConversationArtifactCopyInput = Object.freeze({
+        ...input,
+        turnIds: Object.freeze([...input.turnIds]),
+      });
+      return run(() => store.copyConversationArtifacts(acceptedInput));
+    },
+    purgeSessionArtifacts: (sessionId) => run(() => store.purgeSessionArtifacts(sessionId)),
     deleteUserArtifactInSession: (sessionId, artifactId) =>
       run(() => store.deleteUserArtifactInSession(sessionId, artifactId)),
   };

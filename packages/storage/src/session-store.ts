@@ -19,6 +19,10 @@ import {
   type StableSessionCreateProbe,
 } from './sqlite-session-metadata-store.js';
 import {
+  isDiscardableConversationCopy,
+  isValidConversationCopyTransition,
+} from './session-conversation-copy.js';
+import {
   createSessionTranscriptMarker,
   decodeSessionTranscriptMarker,
   isSessionTranscriptMarker,
@@ -36,6 +40,7 @@ import {
   isOrchestrationMode,
   isPermissionMode,
   isSessionBlockedReason,
+  isSessionConversationCopy,
   isSubagentSessionParent,
   isSubagentSessionRuntime,
   isSubagentSessionSpawn,
@@ -210,6 +215,7 @@ export interface SessionAuthorityStore extends SessionStore {
     request: CreateStableSessionRequest,
     initialBoundary?: ExecutionBoundary,
   ): Promise<CreateStableSessionResult>;
+  discardStableConversationCopy(sessionId: string, requestFingerprint: string): Promise<boolean>;
   listCatalogPage(
     filter: SessionListFilter | undefined,
     cursor: SessionCatalogPageCursor | undefined,
@@ -327,6 +333,31 @@ class SqliteSessionStore implements SessionAuthorityStore {
       : result;
   }
 
+  async discardStableConversationCopy(
+    sessionId: string,
+    requestFingerprint: string,
+  ): Promise<boolean> {
+    await this.ensureReady();
+    if (!(await this.metadata.hasStableSessionCreateClaim(sessionId, requestFingerprint))) {
+      throw new Error('Session is not owned by the matching stable create request');
+    }
+    const probe = await this.metadata.probeStableSessionCreate(sessionId, requestFingerprint);
+    if (probe.kind === 'conflict') {
+      throw new Error('Stable Session identity belongs to a different request');
+    }
+    if (probe.kind === 'existing') {
+      const copy = probe.record.header.conversationCopy;
+      if (
+        copy?.requestFingerprint !== requestFingerprint ||
+        !isDiscardableConversationCopy(probe.record.header)
+      ) {
+        throw new Error('Only a matching incomplete conversation copy can be discarded');
+      }
+    }
+    await this.files.remove(sessionId);
+    return this.metadata.discardStableSessionCreate(sessionId, requestFingerprint);
+  }
+
   async createSubagent(
     input: CreateSessionInput,
     initialBoundary?: ExecutionBoundary,
@@ -413,7 +444,9 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   async list(filter?: SessionListFilter): Promise<SessionSummary[]> {
     await this.ensureReady();
-    const records = await this.metadata.list(filter);
+    const records = (await this.metadata.list(filter)).filter(
+      (record) => record.header.conversationCopy?.state !== 'preparing',
+    );
     const withPreviews: Array<{
       record: SessionMetadataRecord;
       previewMessages: StoredMessage[];
@@ -727,11 +760,15 @@ class SqliteSessionStore implements SessionAuthorityStore {
     if (!(await this.metadata.hasPendingCatalogProjectionWrites())) return;
     const projections = new Map<string, ReturnType<typeof catalogMessageProjection>>();
     for (const record of await this.metadata.list()) {
-      const messages = await this.files.readTranscriptMessagesForRecovery(
-        record.header.id,
-        record.header,
-      );
-      projections.set(record.header.id, catalogMessageProjection(messages));
+      try {
+        const messages = await this.files.readTranscriptMessagesForRecovery(
+          record.header.id,
+          record.header,
+        );
+        projections.set(record.header.id, catalogMessageProjection(messages));
+      } catch (error) {
+        if (!isDiscardableConversationCopy(record.header)) throw error;
+      }
     }
     await this.metadata.recoverCatalogProjections(projections);
   }
@@ -888,6 +925,7 @@ class FileSessionStore implements SessionStore {
       ...(input.subagentRuntime ? { subagentRuntime: input.subagentRuntime } : {}),
       ...(input.subagentSpawn ? { subagentSpawn: input.subagentSpawn } : {}),
       ...(input.subagentWorkspace ? { subagentWorkspace: input.subagentWorkspace } : {}),
+      ...(input.conversationCopy ? { conversationCopy: input.conversationCopy } : {}),
       ...(input.revisionRootSessionId
         ? { revisionRootSessionId: input.revisionRootSessionId }
         : {}),
@@ -1176,6 +1214,7 @@ class FileSessionStore implements SessionStore {
     let nextHeader: SessionHeader | undefined;
     await this.withQueue(sessionId, async () => {
       const { header, messages } = await this.readFilePartsUnlocked(sessionId);
+      assertConversationCopyTransition(header, patch);
       nextHeader = { ...header, ...patch };
       assertValidSessionLineage(nextHeader);
       const lines = [
@@ -1691,6 +1730,7 @@ export function normalizeSessionHeader(
     (header.statusUpdatedAt === undefined || isFiniteNumber(header.statusUpdatedAt)) &&
     (header.parentSessionId === undefined || typeof header.parentSessionId === 'string') &&
     (header.branchOfTurnId === undefined || typeof header.branchOfTurnId === 'string') &&
+    isValidConversationCopyLineage(header) &&
     isValidRevisionLineage(header) &&
     isValidSubagentSessionLineage(header) &&
     (header.lastReadMessageId === undefined || typeof header.lastReadMessageId === 'string') &&
@@ -1738,11 +1778,52 @@ function isValidRevisionLineage(header: SessionHeader): boolean {
 }
 
 function assertValidSessionLineage(header: SessionHeader): void {
+  if (!isValidConversationCopyLineage(header)) {
+    throw new Error('Invalid Session conversation-copy lineage');
+  }
   if (!isValidRevisionLineage(header)) {
     throw new Error('Invalid session revision lineage');
   }
   if (!isValidSubagentSessionLineage(header)) {
     throw new Error('Invalid subagent session lineage');
+  }
+}
+
+function isValidConversationCopyLineage(header: SessionHeader): boolean {
+  const copy = header.conversationCopy;
+  if (copy === undefined) return true;
+  if (
+    !isSessionConversationCopy(copy) ||
+    !isSafeSessionId(copy.sourceSessionId) ||
+    copy.sourceSessionId === header.id ||
+    header.subagentParent !== undefined
+  ) {
+    return false;
+  }
+  if (copy.kind === 'branch') {
+    return (
+      header.parentSessionId === copy.sourceSessionId &&
+      header.branchOfTurnId === copy.sourceTurnId &&
+      header.revisionRootSessionId === undefined &&
+      header.revisionParentSessionId === undefined &&
+      header.revisionOfTurnId === undefined &&
+      header.revisionIndex === undefined &&
+      header.revisionState === undefined
+    );
+  }
+  return (
+    header.revisionParentSessionId === copy.sourceSessionId &&
+    header.revisionOfTurnId === copy.sourceTurnId
+  );
+}
+
+function assertConversationCopyTransition(
+  current: SessionHeader,
+  patch: Partial<SessionHeader>,
+): void {
+  if (!Object.prototype.hasOwnProperty.call(patch, 'conversationCopy')) return;
+  if (!isValidConversationCopyTransition(current, patch.conversationCopy)) {
+    throw new Error('Session conversation-copy identity is immutable');
   }
 }
 

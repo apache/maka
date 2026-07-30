@@ -121,6 +121,7 @@ export interface RootTurnAdmissionStore {
 }
 
 export interface DurableAgentRunStore extends AgentRunStore, RootTurnAdmissionStore {
+  purgeConversationRuntimeLedger(sessionId: string): Promise<void>;
   listSessionRunsForRecovery(sessionId: string): Promise<AgentRunHeader[]>;
   readEventsForRecovery(sessionId: string, runId: string): Promise<AgentRunEvent[]>;
   readEventsForEvidence(sessionId: string, runId: string): Promise<AgentRunEvent[]>;
@@ -509,6 +510,17 @@ class FileAgentRunStore implements DurableAgentRunStore {
   constructor(workspaceRoot: string) {
     this.durabilityRoot = resolve(workspaceRoot);
     this.sessionsRoot = join(this.durabilityRoot, 'sessions');
+  }
+
+  async purgeConversationRuntimeLedger(sessionId: string): Promise<void> {
+    assertSafeId(sessionId, 'Invalid session id');
+    const sessionRoot = join(this.sessionsRoot, sessionId);
+    const messageProofsRoot = join(sessionRoot, 'message-proofs');
+    await rm(this.runsRoot(sessionId), { recursive: true, force: true });
+    await rm(join(sessionRoot, 'projections'), { recursive: true, force: true });
+    await rm(join(messageProofsRoot, 'steering'), { recursive: true, force: true });
+    await syncDirectoryIfPresent(messageProofsRoot);
+    await syncDirectoryIfPresent(sessionRoot);
   }
 
   async createRun(
@@ -2955,6 +2967,14 @@ function isExclusiveWriteTemp(name: string, targetName: string): boolean {
 function hasExactKeys(record: Record<string, unknown>, expected: readonly string[]): boolean {
   const keys = Object.keys(record);
   return keys.length === expected.length && expected.every((key) => Object.hasOwn(record, key));
+}
+
+async function syncDirectoryIfPresent(path: string): Promise<void> {
+  try {
+    await syncDirectory(path);
+  } catch (error) {
+    if (!isMissingFile(error)) throw error;
+  }
 }
 
 function isMissingFile(error: unknown): boolean {
