@@ -1,9 +1,10 @@
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  Client,
+  SSEClientTransport,
+  StreamableHTTPClientTransport,
+  type Transport,
+} from '@modelcontextprotocol/client';
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { isDeepStrictEqual } from 'node:util';
 import { redactSecrets } from '@maka/core/redaction';
 import {
@@ -266,10 +267,13 @@ export class McpClientManager {
         'connection generation is no longer available',
       );
     }
-    const result = await client.callTool({ name: toolName, arguments: args }, undefined, {
-      signal: options.signal,
-      timeout: options.timeoutMs ?? this.timeouts.callToolMs,
-    });
+    const result = await client.callTool(
+      { name: toolName, arguments: args },
+      {
+        signal: options.signal,
+        timeout: options.timeoutMs ?? this.timeouts.callToolMs,
+      },
+    );
     if (!('content' in result)) {
       throw new McpToolCallError(
         serverId,
@@ -329,7 +333,7 @@ export class McpClientManager {
       entry.transport = connected.transport;
       entry.stdioTransport = connected.stdioTransport;
       const tools = await listAllTools(connected.client, serverId, this.timeouts.listToolsMs);
-      connected.client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
+      connected.client.setNotificationHandler('notifications/tools/list_changed', async () => {
         if (this.connections.get(serverId) !== entry) return;
         await this.refreshTools(serverId).catch((error) => {
           if (this.connections.get(serverId) !== entry) return;
@@ -434,6 +438,8 @@ export class McpClientManager {
       { name: this.clientName, version: this.clientVersion },
       {
         capabilities: {},
+        versionNegotiation: { mode: 'legacy' },
+        enforceStrictCapabilities: false,
       },
     );
   }

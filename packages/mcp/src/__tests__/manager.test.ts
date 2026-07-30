@@ -2,10 +2,9 @@ import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, test } from 'node:test';
-import { Server as McpServer } from '@modelcontextprotocol/sdk/server/index.js';
-import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
+import { Server as McpServer } from '@modelcontextprotocol/server';
+import { SSEServerTransport } from '@modelcontextprotocol/server-legacy/sse';
 import type { McpConfigFile } from '@maka/core/mcp';
 import { buildStdioEnvironment, McpClientManager, McpToolCallError } from '../index.js';
 
@@ -34,6 +33,7 @@ describe('McpClientManager remote transport E2E', () => {
         (request) => request.path === '/mcp' && request.authorization === 'Bearer remote-test',
       ),
     );
+    assertLegacyHandshake(fixture);
   });
 
   test('auto falls back to legacy SSE without replacing protocol headers', async () => {
@@ -57,6 +57,7 @@ describe('McpClientManager remote transport E2E', () => {
           request.authorization === 'Bearer remote-test',
       ),
     );
+    assertLegacyHandshake(fixture);
   });
 });
 
@@ -261,6 +262,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<voi
 interface RemoteRequest {
   method: string;
   path: string;
+  protocolMethods: string[];
   authorization?: string;
   accept?: string;
 }
@@ -276,24 +278,30 @@ async function createRemoteFixture(kind: 'streamable-http' | 'sse'): Promise<Rem
   const sseTransports = new Map<string, { transport: SSEServerTransport; server: McpServer }>();
   const httpServer = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
-    requests.push({
+    const request: RemoteRequest = {
       method: req.method ?? 'GET',
       path: url.pathname,
+      protocolMethods: [],
       ...(typeof req.headers.authorization === 'string'
         ? { authorization: req.headers.authorization }
         : {}),
       ...(typeof req.headers.accept === 'string' ? { accept: req.headers.accept } : {}),
-    });
+    };
+    requests.push(request);
     try {
       if (kind === 'streamable-http' && url.pathname === '/mcp' && req.method === 'POST') {
-        const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+        const body = await readJsonBody(req);
+        request.protocolMethods.push(...readProtocolMethods(body));
+        const transport = new NodeStreamableHTTPServerTransport({
+          sessionIdGenerator: undefined,
+        });
         const server = createProtocolServer();
         await server.connect(transport);
         res.once('close', () => {
           void transport.close();
           void server.close();
         });
-        await transport.handleRequest(req, res, await readJsonBody(req));
+        await transport.handleRequest(req, res, body);
         return;
       }
       if (kind === 'sse' && url.pathname === '/sse' && req.method === 'GET') {
@@ -305,12 +313,14 @@ async function createRemoteFixture(kind: 'streamable-http' | 'sse'): Promise<Rem
         return;
       }
       if (kind === 'sse' && url.pathname === '/messages' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        request.protocolMethods.push(...readProtocolMethods(body));
         const entry = sseTransports.get(url.searchParams.get('sessionId') ?? '');
         if (!entry) {
           res.writeHead(400).end('unknown SSE session');
           return;
         }
-        await entry.transport.handlePostMessage(req, res, await readJsonBody(req));
+        await entry.transport.handlePostMessage(req, res, body);
         return;
       }
       res
@@ -351,19 +361,43 @@ function createProtocolServer(): McpServer {
     { name: 'maka-remote-fixture', version: '1.0.0' },
     { capabilities: { tools: {} } },
   );
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  server.setRequestHandler('tools/list', async () => ({
     tools: [
       {
         name: 'echo',
         description: 'Echo text',
-        inputSchema: { type: 'object', properties: { value: { type: 'string' } } },
+        inputSchema: {
+          type: 'object',
+          properties: { value: { type: 'string' } },
+        },
       },
     ],
   }));
-  server.setRequestHandler(CallToolRequestSchema, async ({ params }) => ({
+  server.setRequestHandler('tools/call', async ({ params }) => ({
     content: [{ type: 'text', text: String(params.arguments?.value ?? '') }],
   }));
   return server;
+}
+
+function assertLegacyHandshake(fixture: RemoteFixture): void {
+  const methods = fixture.requests.flatMap((request) => request.protocolMethods);
+  assert.equal(methods[0], 'initialize');
+  assert.equal(methods.includes('server/discover'), false);
+}
+
+function readProtocolMethods(body: unknown): string[] {
+  const messages = Array.isArray(body) ? body : [body];
+  return messages.flatMap((message) => {
+    if (
+      typeof message === 'object' &&
+      message !== null &&
+      'method' in message &&
+      typeof message.method === 'string'
+    ) {
+      return [message.method];
+    }
+    return [];
+  });
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
