@@ -1,5 +1,8 @@
 import type { ErrorEvent, CompleteEvent } from '@maka/core/events';
-import { providerAuthRequiresSecret, type LlmConnection } from '@maka/core/llm-connections';
+import {
+  providerAuthRequiresSecret,
+  type RuntimeExecutionConnection,
+} from '@maka/core/llm-connections';
 import { lookupModelMetadata, openAiAdapterApiProtocol } from '@maka/core/model-metadata';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import type { CacheMissInputSource } from '@maka/core/usage-stats/types';
@@ -51,7 +54,7 @@ import {
  * `LanguageModelV2` type into core's dependency graph.
  */
 export interface ModelFactoryInput {
-  connection: LlmConnection;
+  connection: RuntimeExecutionConnection;
   apiKey: string;
   modelId: string;
   kimiOpenAiTransportState?: KimiOpenAiTransportState;
@@ -67,7 +70,7 @@ export interface RepairableAiSdkToolCall {
 }
 
 export interface ModelAdapterInput {
-  connection: LlmConnection;
+  connection: RuntimeExecutionConnection;
   apiKey: string;
   modelId: string;
   modelFactory: ModelFactory;
@@ -343,7 +346,7 @@ export class ModelAdapter {
 }
 
 function selectedModelMaxOutputTokens(
-  connection: LlmConnection,
+  connection: RuntimeExecutionConnection,
   modelId: string,
   providerOptions: Record<string, unknown> | undefined,
 ): number | undefined {
@@ -359,7 +362,7 @@ function selectedModelMaxOutputTokens(
     : wireOutputLimit;
 }
 
-function usesAnthropicMessages(connection: LlmConnection, modelId: string): boolean {
+function usesAnthropicMessages(connection: RuntimeExecutionConnection, modelId: string): boolean {
   const { adapter, apiProtocol } = resolveModelRuntime(connection, modelId);
   return (
     adapter.kind === 'anthropic' ||
@@ -368,14 +371,14 @@ function usesAnthropicMessages(connection: LlmConnection, modelId: string): bool
   );
 }
 
-function usesKimiOpenAiChat(connection: LlmConnection, modelId: string): boolean {
+function usesKimiOpenAiChat(connection: RuntimeExecutionConnection, modelId: string): boolean {
   return (
     connection.providerType === 'kimi-coding-plan' &&
     resolveModelRuntime(connection, modelId).apiProtocol === 'openai-chat'
   );
 }
 
-function usesOpenAiResponses(connection: LlmConnection, modelId: string): boolean {
+function usesOpenAiResponses(connection: RuntimeExecutionConnection, modelId: string): boolean {
   const runtime = resolveModelRuntime(connection, modelId);
   if (runtime.adapter.kind !== 'openai') return false;
   return (

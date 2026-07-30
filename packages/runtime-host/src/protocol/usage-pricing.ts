@@ -122,7 +122,7 @@ export interface LlmUsageLogProjection {
   readonly source: 'llm';
   readonly id: string;
   readonly ts: number;
-  readonly callKind?: 'main' | 'semantic_compact';
+  readonly callKind?: 'main' | 'semantic_compact' | 'history_compact';
   readonly callId?: string;
   readonly connectionSlug?: string;
   readonly providerId: string;
@@ -814,7 +814,7 @@ function decodeLlmUsageLog(value: unknown): LlmUsageLogProjection {
     source: 'llm',
     id: projectionText(row.id, 'usage log id'),
     ts: nonnegativeFinite(row.ts, 'usage log timestamp'),
-    ...optionalEnum(row, 'callKind', ['main', 'semantic_compact'] as const),
+    ...optionalEnum(row, 'callKind', ['main', 'semantic_compact', 'history_compact'] as const),
     ...optionalProjectionText(row, 'callId'),
     ...optionalProjectionText(row, 'connectionSlug'),
     providerId: projectionText(row.providerId, 'usage log provider'),

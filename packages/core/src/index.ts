@@ -1231,6 +1231,7 @@ export type {
   ProviderDefaults,
   ProviderRuntimeAdapter,
   ProviderType,
+  RuntimeExecutionConnection,
   UpdateConnectionInput,
 } from './llm-connections.js';
 export {

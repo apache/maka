@@ -10,8 +10,11 @@ import {
   MIN_SKILLS_PROMPT_TOKENS,
   MAX_SKILL_TOOL_BODY_CHARS,
   buildSkillAgentTool,
+  buildSkillAgentToolFromInventory,
   buildSkillSearchAgentTool,
+  buildSkillSearchAgentToolFromInventory,
   buildSkillsPromptFragment,
+  buildSkillsPromptFragmentFromInventoryWithReport,
   buildSkillsPromptFragmentWithReport,
   gateSkillsByHostCapabilities,
   loadSkillInstructions,
@@ -1270,6 +1273,64 @@ Body.`,
           diagnostic.issues.some((issue) => issue.code === 'duplicate_id'),
         ),
       );
+    });
+  });
+
+  it('uses one canonical inventory for prompt, Skill, and SkillSearch without exposing shadowed duplicates', async () => {
+    await withWorkspace(async (workspaceRoot) => {
+      const projectRoot = join(workspaceRoot, 'project');
+      const homeDir = join(workspaceRoot, 'home');
+      await mkdir(projectRoot, { recursive: true });
+      await mkdir(homeDir, { recursive: true });
+      await writeSkillInDirectory(
+        join(projectRoot, '.maka', 'skills'),
+        'writer',
+        'Project Writer',
+        'Project active quill workflow.',
+      );
+      await writeSkillInDirectory(
+        join(homeDir, '.agents', 'skills'),
+        'writer',
+        'User Writer',
+        'Obsidian lantern archival workflow.',
+      );
+
+      const source = resolveSkillDiscoveryPaths(projectRoot, workspaceRoot, homeDir);
+      const scan = await scanSkillsWithDiagnostics(source);
+      const prompt = buildSkillsPromptFragmentFromInventoryWithReport(scan.inventory);
+      assert.match(prompt.text ?? '', /Project active quill workflow/);
+      assert.doesNotMatch(prompt.text ?? '', /Obsidian lantern archival workflow/);
+      assert.equal(
+        prompt.report.decisions.some(
+          (decision) => decision.ref === 'user:agents:writer' && decision.reason === 'shadowed',
+        ),
+        true,
+      );
+
+      const resolveInventory = async () => scan.inventory;
+      const skillTool = buildSkillAgentToolFromInventory(resolveInventory);
+      const searchTool = buildSkillSearchAgentToolFromInventory(resolveInventory);
+      const context = {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        cwd: projectRoot,
+      } as MakaToolContext;
+
+      const loaded = await skillTool.impl({ name: 'writer' }, context);
+      assert.equal(loaded.ok, true);
+      if (!loaded.ok) return;
+      assert.equal(loaded.skill.ref, 'project:maka:writer');
+      assert.match(loaded.skill.instructions, /Project Writer/);
+      assert.doesNotMatch(loaded.skill.instructions, /User Writer/);
+
+      const shadowed = await skillTool.impl({ name: 'user:agents:writer' }, context);
+      assert.equal(shadowed.ok, false);
+      if (shadowed.ok) return;
+      assert.equal(shadowed.reason, 'not_found');
+
+      const searched = await searchTool.impl({ query: 'obsidian lantern' }, context);
+      assert.equal(searched.totalEligible, 1);
+      assert.deepEqual(searched.matches, []);
     });
   });
 

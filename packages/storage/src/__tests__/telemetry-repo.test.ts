@@ -234,20 +234,36 @@ describe('FileTelemetryRepo', () => {
     });
   });
 
-  test('carries auxiliary LLM call identity through logs()', async () => {
+  test('carries auxiliary LLM call identities through logs()', async () => {
     await withRepo(async (repo) => {
       await repo.load();
-      await repo.insertLlmCall(
-        llmRecord({
-          id: 'usage_semantic_compact_turn_1_2_3',
-          callKind: 'semantic_compact',
-          callId: 'semantic_compact_turn_1_2_3',
-        }),
-      );
+      await Promise.all([
+        repo.insertLlmCall(
+          llmRecord({
+            id: 'usage_history_compact_turn_1_1_2',
+            callKind: 'history_compact',
+            callId: 'history_compact_turn_1_1_2',
+            ts: 1,
+          }),
+        ),
+        repo.insertLlmCall(
+          llmRecord({
+            id: 'usage_semantic_compact_turn_1_2_3',
+            callKind: 'semantic_compact',
+            callId: 'semantic_compact_turn_1_2_3',
+            ts: 2,
+          }),
+        ),
+      ]);
 
-      const row = repo.logs({ range: 'all' }).rows[0];
-      assert.equal(row?.callKind, 'semantic_compact');
-      assert.equal(row?.callId, 'semantic_compact_turn_1_2_3');
+      const rows = repo.logs({ range: 'all' }).rows;
+      assert.deepEqual(
+        rows.map((row) => [row.callKind, row.callId]),
+        [
+          ['semantic_compact', 'semantic_compact_turn_1_2_3'],
+          ['history_compact', 'history_compact_turn_1_1_2'],
+        ],
+      );
     });
   });
 

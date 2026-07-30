@@ -131,6 +131,8 @@ export {
   selectSkillsForContext,
   selectSkillScanForContext,
   buildSkillsPromptFragment,
+  buildSkillsPromptFragmentFromInventory,
+  buildSkillsPromptFragmentFromInventoryWithReport,
   buildSkillsPromptFragmentWithReport,
   loadSkillInstructions,
   loadSkillInstructionsFromScan,
@@ -161,12 +163,17 @@ export type {
 // ── From skills-agent-tools ────────────────────────────────────────────────
 export {
   buildSkillAgentTool,
+  buildSkillAgentToolFromInventory,
   buildSkillSearchAgentTool,
+  buildSkillSearchAgentToolFromInventory,
   SkillShadowSelectionTracker,
   SKILL_TOOL_NAME,
   SKILL_SEARCH_TOOL_NAME,
 } from './skills-agent-tools.js';
-export type { SkillToolOptions } from './skills-agent-tools.js';
+export type {
+  SkillInventoryResolver,
+  SkillToolOptions,
+} from './skills-agent-tools.js';
 
 // ── From skills-starter ───────────────────────────────────────────────────
 export { buildStarterSkillTemplate } from './skills-starter.js';

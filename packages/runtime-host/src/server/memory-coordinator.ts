@@ -13,6 +13,7 @@ import {
   stableLocalMemoryProposalId,
 } from '@maka/core/local-memory';
 import { redactSecrets } from '@maka/core/redaction';
+import type { RuntimePolicySnapshot } from '@maka/core/runtime-policy';
 import {
   authenticateInteractiveMemoryBundleStoreWriter,
   MemoryBundleBackupRevisionConflictError,
@@ -48,7 +49,7 @@ const MAX_STAGED_UPLOAD_BYTES = 1024 * 1024;
 const UPLOAD_TTL_MS = 5 * 60 * 1000;
 
 export interface HostMemoryPromptProjection {
-  readonly policyRevision: number;
+  readonly policy: RuntimePolicySnapshot;
   readonly bundleRevision: MemoryRevision | null;
   readonly memoryRevision: MemoryRevision | null;
   readonly body?: string;
@@ -142,7 +143,7 @@ export class HostMemoryCoordinator {
         !policy.policy.memory.agentReadEnabled
       ) {
         return {
-          policyRevision: policy.revision,
+          policy,
           bundleRevision: null,
           memoryRevision: null,
         };
@@ -150,7 +151,7 @@ export class HostMemoryCoordinator {
       const snapshot = await this.#store.read();
       if (snapshot.memory.kind !== 'document') {
         return {
-          policyRevision: policy.revision,
+          policy,
           bundleRevision: snapshot.revision,
           memoryRevision: snapshot.memory.revision,
         };
@@ -158,7 +159,7 @@ export class HostMemoryCoordinator {
       const content = decodeDocument(snapshot.memory);
       const body = buildLocalMemoryPromptBody(content, { sessionId });
       return {
-        policyRevision: policy.revision,
+        policy,
         bundleRevision: snapshot.revision,
         memoryRevision: snapshot.memory.revision,
         ...(body ? { body } : {}),

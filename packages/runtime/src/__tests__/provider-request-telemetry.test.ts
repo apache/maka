@@ -361,6 +361,68 @@ describe('provider request tracker', () => {
     assert.equal((attempts[1] as Record<string, unknown>).cacheMissInputSource, 'derived');
   });
 
+  test('captures and attributes a non-streaming physical provider call', async () => {
+    const captures: Array<{ captureId: string; serializedRequest: string }> = [];
+    const attempts: Array<Record<string, unknown>> = [];
+    let providerCalls = 0;
+    let id = 0;
+    const tracker = new telemetry.ProviderRequestTracker({
+      traceId: 'history-trace',
+      turnId: 'turn-history',
+      now: () => 1_000 + id,
+      newId: () => `history-${++id}`,
+      persistCapture: async (capture) => {
+        captures.push(capture);
+        return { artifactId: 'history-artifact' };
+      },
+      recordAttempt: (attempt) => {
+        attempts.push(attempt as unknown as Record<string, unknown>);
+      },
+    });
+    const params = preparedParams('history summary');
+    const result = await tracker.trackGenerate({
+      providerId: 'openai',
+      modelId: 'gpt-history',
+      params,
+      abortSignal: new AbortController().signal,
+      doGenerate: async () => {
+        providerCalls += 1;
+        return {
+          text: 'summary',
+          finishReason: { unified: 'stop', raw: 'stop' },
+          usage: {
+            inputTokens: { total: 7, noCache: 7 },
+            outputTokens: { total: 3, text: 3 },
+            raw: { prompt_tokens: 7, completion_tokens: 3 },
+          },
+        };
+      },
+    });
+
+    assert.equal(result.text, 'summary');
+    assert.equal(providerCalls, 1);
+    assert.equal(captures.length, 1);
+    assert.deepEqual(JSON.parse(captures[0]!.serializedRequest), params);
+    assert.deepEqual(
+      attempts.map(({ status, finishReason, inputTokens, outputTokens, captureId }) => ({
+        status,
+        finishReason,
+        inputTokens,
+        outputTokens,
+        captureId,
+      })),
+      [
+        {
+          status: 'completed',
+          finishReason: 'stop',
+          inputTokens: 7,
+          outputTokens: 3,
+          captureId: captures[0]!.captureId,
+        },
+      ],
+    );
+  });
+
   test('captures a changed logical body separately and blocks provider calls on capture failure', async () => {
     const captures: string[] = [];
     const Tracker = Reflect.get(telemetry, 'ProviderRequestTracker') as unknown as new (

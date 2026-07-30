@@ -11,7 +11,7 @@ import {
   type SharedV4ProviderMetadata,
   type SharedV4ProviderOptions,
 } from '@ai-sdk/provider';
-import { type LlmConnection, type ProviderType } from '@maka/core/llm-connections';
+import { type ProviderType, type RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import { openAiAdapterApiProtocol } from '@maka/core/model-metadata';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import { thinkingOptionsForModel, thinkingVariantsForModel } from '@maka/core/model-thinking';
@@ -24,7 +24,7 @@ import { resolveModelRuntime } from './model-runtime.js';
 import { claudeSubscriptionHeaders, openAiCodexHeaders } from './subscription-auth.js';
 
 export interface ModelFactoryInput {
-  connection: LlmConnection;
+  connection: RuntimeExecutionConnection;
   apiKey: string;
   modelId: string;
   fetch?: typeof globalThis.fetch;
@@ -303,7 +303,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function buildProviderOptions(
-  connection: LlmConnection,
+  connection: RuntimeExecutionConnection,
   modelId: string,
   thinkingLevel?: ThinkingLevel,
 ): SharedV4ProviderOptions {

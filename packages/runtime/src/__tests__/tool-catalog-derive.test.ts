@@ -274,6 +274,38 @@ describe('projectEffectiveProductToolSurface', () => {
       assert.deepEqual(surface.identity.productToolNames, expected[host].productToolNames);
     }
   });
+
+  it('projects the Runtime Host pure tool binding without desktop-only surfaces', () => {
+    const surface = projectEffectiveProductToolSurface({
+      host: 'runtime-host',
+      tools: [
+        tool('AskUserQuestion'),
+        tool('Skill'),
+        tool('SkillSearch'),
+        tool('task_create'),
+        tool('task_update'),
+        tool('task_list'),
+        tool('task_get'),
+        tool('browser_navigate'),
+      ],
+      policy: { economy: true },
+    });
+
+    assert.deepEqual(
+      surface.tools.map((candidate) => candidate.name),
+      [
+        'AskUserQuestion',
+        'Skill',
+        'SkillSearch',
+        'task_create',
+        'task_update',
+        'task_list',
+        'task_get',
+      ],
+    );
+    assert.deepEqual(surface.boundSurfaceIds, []);
+    assert.deepEqual(surface.toolAvailability, { economy: true, groups: [] });
+  });
 });
 
 describe('buildHostCapabilitiesFromBinding', () => {

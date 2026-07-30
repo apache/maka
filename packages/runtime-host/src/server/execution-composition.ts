@@ -18,6 +18,7 @@ import { CanonicalSessionProjectionReader } from './canonical-session-projection
 import { HostCanonicalPermissionOutcomeReader } from './canonical-permission-outcome-reader.js';
 import { HostArtifactCoordinator } from './artifact-coordinator.js';
 import { HostConnectionEffectCoordinator } from './connection-effect-coordinator.js';
+import { createHostAiSdkBackend } from './execution-model-composition.js';
 import type { RuntimeHostComposition, RuntimeHostCompositionContext } from './host-kernel.js';
 import { HostInteractionCoordinator } from './interaction-coordinator.js';
 import { HostMemoryCoordinator } from './memory-coordinator.js';
@@ -55,7 +56,6 @@ export async function createExecutionRuntimeHostComposition(
     const runtimePolicyActivation = new RuntimePolicyActivationGate();
     const sessionAdmission = new SessionAdmissionGate();
     const taskLedger = new HostTaskLedgerCoordinator(taskLedgerStore, sessionAdmission);
-    const usagePricing = new HostUsagePricingCoordinator(openedUsageStores, context.requestDrain);
     const openedGraphControlStore = createAgentGraphControlStore(
       context.owner.capability.canonicalPath,
     );
@@ -120,6 +120,7 @@ export async function createExecutionRuntimeHostComposition(
     let rootCloseTask: Promise<void> | undefined;
     let closeTask: Promise<void> | undefined;
     let usageDrain: Promise<void> | undefined;
+    let backendInvalidationPoisoned = false;
     const beginDrain = () => {
       if (draining) return;
       draining = true;
@@ -154,6 +155,24 @@ export async function createExecutionRuntimeHostComposition(
     const canonicalPermissionOutcomes = new HostCanonicalPermissionOutcomeReader({
       store: stores.interactionStore,
     });
+    memory = new HostMemoryCoordinator({
+      store: memoryStore,
+      runtimePolicyStores,
+      activation: runtimePolicyActivation,
+      requestDrain: context.requestDrain,
+    });
+    backends.register('ai-sdk', (backendContext) =>
+      createHostAiSdkBackend({
+        context: backendContext,
+        runtimePolicy: runtimePolicyStores,
+        skills,
+        memory: requireMemory(memory),
+        taskLedger,
+        artifacts: openedArtifactStore,
+        usage: openedUsageStores,
+        requestDrain: context.requestDrain,
+      }),
+    );
     const runtimeAuthority: RuntimeHostedRootAuthority = {
       bindRun: (identity) => messages.bindRun(identity),
       executeRoot: (input) => requireRootCoordinator(rootCoordinator).executeRoot(input),
@@ -192,22 +211,23 @@ export async function createExecutionRuntimeHostComposition(
       runtime: manager,
       newId: randomUUID,
     });
-    memory = new HostMemoryCoordinator({
-      store: memoryStore,
-      runtimePolicyStores,
-      activation: runtimePolicyActivation,
-      requestDrain: context.requestDrain,
-    });
-    const runPostCommitInvalidation = async (invalidate: () => Promise<void>) => {
-      try {
-        await invalidate();
-      } catch (error) {
+    const observeBackendInvalidation = (completion: Promise<void>) => {
+      void completion.catch(() => {
+        backendInvalidationPoisoned = true;
+        runtimePolicyActivation.poison();
         context.requestDrain();
-        throw error;
-      }
+      });
     };
-    const invalidateRuntimePolicy = () =>
-      runPostCommitInvalidation(() => manager.refreshIdleBackends());
+    const registerBackendInvalidation = (): Promise<void> => {
+      observeBackendInvalidation(manager.beginBackendRefresh().completion);
+      return Promise.resolve();
+    };
+    const usagePricing = new HostUsagePricingCoordinator(
+      openedUsageStores,
+      context.requestDrain,
+      runtimePolicyActivation,
+      registerBackendInvalidation,
+    );
     rootCoordinator = new RootTurnCoordinator(
       manager,
       stores,
@@ -223,16 +243,20 @@ export async function createExecutionRuntimeHostComposition(
     const runtimePolicy = new HostRuntimePolicyCoordinator(
       runtimePolicyStores,
       runtimePolicyActivation,
-      () =>
-        runPostCommitInvalidation(async () => {
+      async () => {
+        try {
           await requireMemory(memory).refreshAfterPolicyMutation();
-          await manager.refreshIdleBackends();
-        }),
+        } catch (error) {
+          context.requestDrain();
+          throw error;
+        }
+        await registerBackendInvalidation();
+      },
     );
     const connectionEffects = new HostConnectionEffectCoordinator({
       stores: runtimePolicyStores,
       activation: runtimePolicyActivation,
-      onCommittedMutation: invalidateRuntimePolicy,
+      onCommittedMutation: registerBackendInvalidation,
     });
     const artifacts = new HostArtifactCoordinator(openedArtifactStore, context.requestDrain);
     const handlers = {
@@ -292,6 +316,13 @@ export async function createExecutionRuntimeHostComposition(
           try {
             rootCloseTask ??= coordinator.close();
             await rootCloseTask;
+          } catch (error) {
+            errors.push(error);
+          }
+        }
+        if (!backendInvalidationPoisoned) {
+          try {
+            await manager.refreshIdleBackends();
           } catch (error) {
             errors.push(error);
           }

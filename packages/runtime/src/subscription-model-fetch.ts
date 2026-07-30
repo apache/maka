@@ -1,12 +1,12 @@
 import { redactSecrets } from '@maka/core';
-import type { LlmConnection } from '@maka/core/llm-connections';
+import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import {
   GITHUB_COPILOT_API_VERSION,
   GITHUB_COPILOT_COMPAT_HEADERS,
 } from './subscription-credentials.js';
 
 export interface SubscriptionModelFetchInput {
-  connection: LlmConnection;
+  connection: RuntimeExecutionConnection;
   sessionId: string;
   modelId: string;
   fetchFn?: typeof fetch;

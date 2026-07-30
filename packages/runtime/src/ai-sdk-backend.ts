@@ -403,6 +403,7 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
 
 export interface SystemPromptContext {
   sessionId: string;
+  turnId: string;
   cwd: string;
   workspaceRoot: string;
   /** Diagnostic-only skill catalog trace; never affects prompt construction. */
@@ -895,14 +896,14 @@ export class AiSdkBackend implements AgentBackend {
         watchdog.start();
         const activeTools = plan.activeTools;
         const systemPrompt = joinPromptFragments([
-          await this.resolveSystemPrompt(),
+          await this.resolveSystemPrompt(turnId),
           this.currentOrchestration?.mode === 'swarm' ? renderSwarmModePrompt() : undefined,
           this.currentOrchestration?.mode === 'graph' ? renderGraphModePrompt() : undefined,
         ]);
         const turnTailPrompt = input.continuation
           ? undefined
           : joinPromptFragments([
-              await this.resolveTurnTailPrompt(),
+              await this.resolveTurnTailPrompt(turnId),
               await this.resolveShellRunContextSummary(),
               this.input.sandboxDiagnosticsSnapshot
                 ? renderSandboxTurnTailPrompt(this.input.sandboxDiagnosticsSnapshot)
@@ -2797,10 +2798,11 @@ export class AiSdkBackend implements AgentBackend {
     );
   }
 
-  private async resolveSystemPrompt(): Promise<string | undefined> {
+  private async resolveSystemPrompt(turnId: string): Promise<string | undefined> {
     if (typeof this.input.systemPrompt === 'function') {
       return await this.input.systemPrompt({
         sessionId: this.sessionId,
+        turnId,
         cwd: this.input.header.cwd,
         workspaceRoot: this.input.header.workspaceRoot,
         emitSkillCatalogTrace: (message, data) =>
@@ -2810,10 +2812,11 @@ export class AiSdkBackend implements AgentBackend {
     return this.input.systemPrompt;
   }
 
-  private async resolveTurnTailPrompt(): Promise<string | undefined> {
+  private async resolveTurnTailPrompt(turnId: string): Promise<string | undefined> {
     if (typeof this.input.turnTailPrompt === 'function') {
       return await this.input.turnTailPrompt({
         sessionId: this.sessionId,
+        turnId,
         cwd: this.input.header.cwd,
         workspaceRoot: this.input.header.workspaceRoot,
       });

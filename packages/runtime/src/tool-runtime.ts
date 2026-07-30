@@ -30,7 +30,7 @@ import type {
 } from '@maka/core/backend-types';
 import type { AgentSpec } from '@maka/core/runtime-inputs';
 import type { PermissionMode, ToolCategory, ToolExecutionFacts } from '@maka/core/permission';
-import type { LlmConnection } from '@maka/core/llm-connections';
+import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type {
   UserQuestion,
   UserQuestionResponse,
@@ -289,7 +289,7 @@ function composeChildAbortSignal(
 export interface ToolRuntimeInput {
   sessionId: string;
   header: SessionHeader;
-  connection: LlmConnection;
+  connection: RuntimeExecutionConnection;
   modelId: string;
   appendMessage: AppendMessageFn;
   readExecutionBoundary: () => Promise<ExecutionBoundary>;

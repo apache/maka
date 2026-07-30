@@ -19,9 +19,23 @@ export interface ConnectionEffectFetchTransport {
   close(): Promise<void>;
 }
 
+export type ProxiedFetchProxy = ConnectionEffectProxySnapshot;
+
+export interface ProxiedFetchTransport {
+  readonly fetch: typeof globalThis.fetch;
+  close(): Promise<void>;
+}
+
 export function createConnectionEffectFetchTransport(
   proxy: ConnectionEffectProxySnapshot | null,
 ): ConnectionEffectFetchTransport {
+  return createProxiedFetchTransport(proxy);
+}
+
+/** Owns one immutable direct/proxy dispatcher snapshot for a provider client. */
+export function createProxiedFetchTransport(
+  proxy: ProxiedFetchProxy | null,
+): ProxiedFetchTransport {
   const proxySnapshot: ProxySettings | null = proxy?.enabled
     ? { ...proxy, bypassList: [...proxy.bypassList] }
     : null;
@@ -30,8 +44,8 @@ export function createConnectionEffectFetchTransport(
   let closePromise: Promise<void> | undefined;
   let closed = false;
 
-  const fetch: ConnectionEffectFetch = async (input, init) => {
-    if (closed) throw new Error('Connection effect fetch transport is closed');
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    if (closed) throw new Error('Proxied fetch transport is closed');
 
     const url =
       typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;

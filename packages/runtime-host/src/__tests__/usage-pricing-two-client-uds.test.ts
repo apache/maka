@@ -24,6 +24,7 @@ import {
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
 import { RuntimeHostKernel } from '../server/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
+import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
 import { HostUsagePricingCoordinator } from '../server/usage-pricing-coordinator.js';
 
 const PROTOCOL = {
@@ -70,9 +71,13 @@ test('usage authority drain rejects a new pricing mutation with typed lifecycle 
   try {
     const stores = await openInteractiveUsageStoresForWrite(owner.lease);
     let drainRequests = 0;
-    const coordinator = new HostUsagePricingCoordinator(stores, () => {
-      drainRequests += 1;
-    });
+    const coordinator = new HostUsagePricingCoordinator(
+      stores,
+      () => {
+        drainRequests += 1;
+      },
+      new RuntimePolicyActivationGate(),
+    );
     await stores.beginDrain();
     assert.deepEqual(
       await coordinator.handlers['pricing.mutate'](
@@ -99,14 +104,149 @@ test('usage authority drain rejects a new pricing mutation with typed lifecycle 
   }
 });
 
+test('pricing changes invalidate backend snapshots while unchanged writes do not', async () => {
+  await withUsageAuthority('pricing-backend-invalidation', async ({ stores }) => {
+    let drainRequests = 0;
+    let invalidations = 0;
+    const coordinator = new HostUsagePricingCoordinator(
+      stores,
+      () => {
+        drainRequests += 1;
+      },
+      new RuntimePolicyActivationGate(),
+      async () => {
+        invalidations += 1;
+      },
+    );
+    const value = pricing('provider:model', 1);
+    assert.deepEqual(
+      await coordinator.handlers['pricing.mutate'](
+        {
+          expectedRevision: 0,
+          mutation: { kind: 'upsert', pricing: value },
+        },
+        CONNECTION_CONTEXT,
+      ),
+      {
+        ok: true,
+        result: { kind: 'committed', revision: 1 },
+      },
+    );
+    assert.equal(invalidations, 1);
+
+    assert.deepEqual(
+      await coordinator.handlers['pricing.mutate'](
+        {
+          expectedRevision: 1,
+          mutation: { kind: 'upsert', pricing: value },
+        },
+        CONNECTION_CONTEXT,
+      ),
+      {
+        ok: true,
+        result: { kind: 'unchanged', revision: 1 },
+      },
+    );
+    assert.equal(invalidations, 1);
+    assert.equal(drainRequests, 0);
+
+    const failingInvalidation = new HostUsagePricingCoordinator(
+      stores,
+      () => {
+        drainRequests += 1;
+      },
+      new RuntimePolicyActivationGate(),
+      async () => {
+        throw new Error('injected backend invalidation failure');
+      },
+    );
+    assert.deepEqual(
+      await failingInvalidation.handlers['pricing.mutate'](
+        {
+          expectedRevision: 1,
+          mutation: { kind: 'upsert', pricing: pricing('provider:model', 2) },
+        },
+        CONNECTION_CONTEXT,
+      ),
+      {
+        ok: true,
+        result: { kind: 'committed', revision: 2 },
+      },
+    );
+    assert.equal(drainRequests, 1);
+  });
+});
+
+test('pricing mutation fences backend activation through the shared activation gate', async () => {
+  await withUsageAuthority('pricing-activation-gate', async ({ stores }) => {
+    const activation = new RuntimePolicyActivationGate();
+    const priorActivationEntered = deferred();
+    const releasePriorActivation = deferred();
+    const invalidationEntered = deferred();
+    const releaseInvalidation = deferred();
+    const priorActivation = activation.runBackendActivation(async () => {
+      priorActivationEntered.resolve();
+      await releasePriorActivation.promise;
+    });
+    await priorActivationEntered.promise;
+
+    const coordinator = new HostUsagePricingCoordinator(
+      stores,
+      () => {},
+      activation,
+      async () => {
+        invalidationEntered.resolve();
+        await releaseInvalidation.promise;
+      },
+    );
+    const mutation = coordinator.handlers['pricing.mutate'](
+      {
+        expectedRevision: 0,
+        mutation: { kind: 'upsert', pricing: pricing('provider:fenced', 1) },
+      },
+      CONNECTION_CONTEXT,
+    );
+    let nextActivationStarted = false;
+    const nextActivation = activation.runBackendActivation(() => {
+      nextActivationStarted = true;
+    });
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal((await stores.pricing.snapshot()).revision, 0);
+    assert.equal(nextActivationStarted, false);
+
+    releasePriorActivation.resolve();
+    await priorActivation;
+    await invalidationEntered.promise;
+    assert.equal((await stores.pricing.snapshot()).revision, 1);
+    assert.equal(nextActivationStarted, false);
+
+    releaseInvalidation.resolve();
+    assert.deepEqual(await mutation, {
+      ok: true,
+      result: { kind: 'committed', revision: 1 },
+    });
+    await nextActivation;
+    assert.equal(nextActivationStarted, true);
+  });
+});
+
 test('pricing commit-unknown requests drain before the typed failure and poisoned read', {
   skip: process.platform === 'win32',
 }, async () => {
   await withUsageAuthority('pricing-commit-unknown', async ({ root, stores }) => {
     let drainRequests = 0;
-    const coordinator = new HostUsagePricingCoordinator(stores, () => {
-      drainRequests += 1;
-    });
+    let invalidations = 0;
+    const coordinator = new HostUsagePricingCoordinator(
+      stores,
+      () => {
+        drainRequests += 1;
+      },
+      new RuntimePolicyActivationGate(),
+      async () => {
+        invalidations += 1;
+      },
+    );
     const restoreSync = await failNextDirectorySync(root);
     let mutation;
     try {
@@ -128,6 +268,7 @@ test('pricing commit-unknown requests drain before the typed failure and poisone
       },
     });
     assert.equal(drainRequests, 1);
+    assert.equal(invalidations, 1);
     assert.deepEqual(
       await coordinator.handlers['pricing.query']({ kind: 'start' }, CONNECTION_CONTEXT),
       {
@@ -145,9 +286,13 @@ test('pricing commit-unknown requests drain before the typed failure and poisone
 test('pricing publication failure requests drain while expected failures do not', async () => {
   await withUsageAuthority('pricing-publication', async ({ root, stores }) => {
     let drainRequests = 0;
-    const coordinator = new HostUsagePricingCoordinator(stores, () => {
-      drainRequests += 1;
-    });
+    const coordinator = new HostUsagePricingCoordinator(
+      stores,
+      () => {
+        drainRequests += 1;
+      },
+      new RuntimePolicyActivationGate(),
+    );
     assert.deepEqual(
       await coordinator.handlers['pricing.mutate'](
         {
@@ -226,9 +371,13 @@ test('telemetry poisoned read fails closed and requests drain once', {
 }, async () => {
   await withUsageAuthority('telemetry-commit-unknown', async ({ root, stores }) => {
     let drainRequests = 0;
-    const coordinator = new HostUsagePricingCoordinator(stores, () => {
-      drainRequests += 1;
-    });
+    const coordinator = new HostUsagePricingCoordinator(
+      stores,
+      () => {
+        drainRequests += 1;
+      },
+      new RuntimePolicyActivationGate(),
+    );
     const restoreSync = await failNextDirectorySync(root);
     try {
       await assert.rejects(stores.telemetry.recordToolInvocation(toolRecord('tool-poison', 30)));
@@ -616,6 +765,17 @@ function requirePricingPage(
   assert.equal(result.kind, 'page');
   if (result.kind !== 'page') throw new Error('Pricing revision changed during page read');
   return result;
+}
+
+function deferred(): {
+  readonly promise: Promise<void>;
+  resolve(): void;
+} {
+  let resolve!: () => void;
+  const promise = new Promise<void>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
 }
 
 function usageRecord(

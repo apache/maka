@@ -1041,6 +1041,7 @@ describe('Maka CLI runtime bootstrap', () => {
           typeof systemPrompt === 'function'
             ? await systemPrompt({
                 sessionId: session.id,
+                turnId: 'bootstrap-test-turn',
                 cwd: context.cwd,
                 workspaceRoot: stateRoot,
               })
