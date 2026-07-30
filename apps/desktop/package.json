@@ -58,7 +58,6 @@
   },
   "devDependencies": {
     "@ant-design/icons-svg": "4.5.0",
-    "@astryxdesign/cli": "0.1.9",
     "@babel/parser": "^7.29.3",
     "@fontsource-variable/geist": "^5.2.9",
     "@fontsource-variable/geist-mono": "^5.2.8",
