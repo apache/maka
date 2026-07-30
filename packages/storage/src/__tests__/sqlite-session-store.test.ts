@@ -18,6 +18,7 @@ import {
   SessionReadMarkerMessageNotFoundError,
   SessionNotFoundError,
   SQLITE_SESSION_METADATA_DATABASE_NAME,
+  type StableSessionCreateInput,
 } from '../session-store.js';
 import {
   createSqliteSessionMetadataStore,
@@ -646,9 +647,11 @@ describe('default SQLite session metadata store', () => {
     const store = createSessionStore(root);
     const sessionId = 'stable-copy';
     const requestFingerprint: `sha256:${string}` = `sha256:${'f'.repeat(64)}`;
-    const input = makeInput({
-      parentSessionId: 'source-session',
-      branchOfTurnId: 'turn-1',
+    const input: StableSessionCreateInput = {
+      ...makeInput({
+        parentSessionId: 'source-session',
+        branchOfTurnId: 'turn-1',
+      }),
       conversationCopy: {
         kind: 'branch',
         sourceSessionId: 'source-session',
@@ -656,8 +659,12 @@ describe('default SQLite session metadata store', () => {
         requestFingerprint,
         state: 'preparing',
       },
-    });
+    };
     try {
+      await assert.rejects(
+        () => store.create(input),
+        /Conversation copy metadata requires createStableSession/,
+      );
       assert.equal(
         (await store.createStableSession({ sessionId, requestFingerprint, input })).kind,
         'created',
@@ -697,9 +704,11 @@ describe('default SQLite session metadata store', () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-copy-recovery-'));
     const sessionId = 'interrupted-copy';
     const requestFingerprint: `sha256:${string}` = `sha256:${'a'.repeat(64)}`;
-    const input = makeInput({
-      parentSessionId: 'source-session',
-      branchOfTurnId: 'turn-1',
+    const input: StableSessionCreateInput = {
+      ...makeInput({
+        parentSessionId: 'source-session',
+        branchOfTurnId: 'turn-1',
+      }),
       conversationCopy: {
         kind: 'branch',
         sourceSessionId: 'source-session',
@@ -707,7 +716,7 @@ describe('default SQLite session metadata store', () => {
         requestFingerprint,
         state: 'preparing',
       },
-    });
+    };
     const initial = createSessionStore(root);
     try {
       assert.equal(

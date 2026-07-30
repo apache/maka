@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { AgentRunHeader, RuntimeEvent, StoredMessage } from '@maka/core';
-import { decodeCanonicalToolResultContent } from '@maka/core';
+import { canonicalToolArgsHash, decodeCanonicalToolResultContent } from '@maka/core';
 import { createAgentRunStore, createRuntimeEventStore } from '@maka/storage';
 import {
   cloneConversationRuntimeLedger,
@@ -144,6 +144,7 @@ test('conversation copy rewrites owned references without changing opaque tool p
     },
   ];
   const references = {
+    mode: 'exact' as const,
     sourceSessionId: 'session-source',
     targetSessionId: 'session-target',
     artifactIds: new Map([['artifact-source', 'artifact-target']]),
@@ -152,6 +153,8 @@ test('conversation copy rewrites owned references without changing opaque tool p
     ]),
     runIds: new Map([['run-source', 'run-target']]),
     invocationIds: new Map([['invocation-source', 'invocation-target']]),
+    runtimeEventIds: new Map([['event-source', 'event-target']]),
+    providerTraceIds: new Map<string, string>(),
   };
   const rewritten = messages.map((message) => rewriteConversationCopyMessage(message, references));
 
@@ -173,9 +176,14 @@ test('conversation copy rewrites owned references without changing opaque tool p
     rewritten[2].content.kind === 'json' &&
     typeof rewritten[2].content.value === 'object' &&
     rewritten[2].content.value !== null
-      ? (rewritten[2].content.value as { artifactId?: string; resourceRef?: string })
+      ? (rewritten[2].content.value as {
+          artifactId?: string;
+          resourceRef?: string;
+          runtimeEventId?: string;
+        })
       : undefined;
   assert.equal(archived?.artifactId, 'artifact-target');
+  assert.equal(archived?.runtimeEventId, 'event-target');
   assert.equal(
     archived?.resourceRef,
     buildToolResultArchiveResourceRef({
@@ -191,6 +199,18 @@ test('conversation copy rewrites owned references without changing opaque tool p
   assert.equal(swarm?.runId, 'run-target');
   assert.equal(swarm?.resumedFromRunId, 'run-target');
   assert.deepEqual(swarm?.artifactIds, ['artifact-target']);
+  const preserved = rewriteConversationCopyMessage(messages[0]!, {
+    mode: 'preserve_external',
+    sourceSessionId: 'session-source',
+    targetSessionId: 'session-target',
+    runIds: new Map(),
+    runtimeEventIds: new Map(),
+    providerTraceIds: new Map(),
+  });
+  assert.deepEqual(
+    preserved.type === 'user' ? preserved.attachments?.[0]?.ref : undefined,
+    messages[0]?.type === 'user' ? messages[0].attachments?.[0]?.ref : undefined,
+  );
   for (const message of [messages[2]!, messages[3]!]) {
     assert.throws(
       () =>
@@ -301,12 +321,13 @@ test('conversation copy rejects a retained AgentRun without RuntimeEvent facts',
       () =>
         cloneConversationRuntimeLedger({
           source,
-          sourceSessionId: 'session-source',
-          targetSessionId: 'session-target',
           copiedMessages: source.messages,
           referenceMap: {
+            mode: 'exact',
             sourceSessionId: 'session-source',
             targetSessionId: 'session-target',
+            artifactIds: new Map(),
+            relativePaths: new Map(),
           },
           runStore,
           runtimeEventStore,
@@ -315,6 +336,183 @@ test('conversation copy rejects a retained AgentRun without RuntimeEvent facts',
       /Cannot copy AgentRun run-child without RuntimeEvent facts/,
     );
     assert.deepEqual(await runStore.listSessionRuns('session-target'), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('conversation copy rewrites a complete tool recovery bundle atomically', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-conversation-recovery-copy-'));
+  try {
+    const runStore = createAgentRunStore(root);
+    const runtimeEventStore = createRuntimeEventStore(root);
+    await runStore.createRun(
+      agentRunHeader({
+        runId: 'run-source',
+        invocationId: 'invocation-source',
+        turnId: 'turn-1',
+        cwd: root,
+      }),
+    );
+    const sourceEvents: RuntimeEvent[] = [
+      runtimeEvent({
+        id: 'event-user',
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'recover the write' },
+      }),
+      runtimeEvent({
+        id: 'event-call',
+        ts: 2,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'provider-call-1',
+          name: 'Write',
+          args: { path: 'notes.txt', content: 'after' },
+        },
+      }),
+      runtimeEvent({
+        id: 'event-dispatch',
+        ts: 3,
+        actions: {
+          toolDispatch: {
+            protocol: 't1_after_preflight_v1',
+            operationId: 'operation-1',
+            providerToolCallId: 'provider-call-1',
+            toolName: 'Write',
+            canonicalArgsHash: canonicalToolArgsHash('Write', {
+              path: 'notes.txt',
+              content: 'after',
+            }),
+            recoveryMode: 'reconcile',
+          },
+        },
+        refs: { operationId: 'operation-1', toolCallId: 'provider-call-1' },
+      }),
+      runtimeEvent({
+        id: 'event-reconcile',
+        ts: 4,
+        actions: {
+          toolRecovery: {
+            kind: 'maka.tool.reconcile_result',
+            version: 1,
+            payload: {
+              protocol: 'tool_reconcile_v1',
+              operationId: 'operation-1',
+              observation: 'matches_expected_state',
+              observationSchema: 'state_identity_v1',
+              observationDigest: `sha256:${'b'.repeat(64)}`,
+            },
+          },
+        },
+        refs: { operationId: 'operation-1', toolCallId: 'provider-call-1' },
+      }),
+      runtimeEvent({
+        id: 'event-outcome',
+        ts: 5,
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'provider-call-1',
+          name: 'Write',
+          result: { kind: 'text', text: 'ok' },
+          isError: false,
+        },
+        refs: { operationId: 'operation-1', toolCallId: 'provider-call-1' },
+      }),
+      runtimeEvent({
+        id: 'event-decision',
+        ts: 6,
+        actions: {
+          toolRecovery: {
+            kind: 'maka.tool.recovery_decision',
+            version: 1,
+            payload: {
+              protocol: 'tool_recovery_v1',
+              operationId: 'operation-1',
+              disposition: 'completed',
+              reasonCode: 'reconcile_matches_expected_state',
+              outcomeEventId: 'event-outcome',
+              evidenceEventIds: [
+                'event-call',
+                'event-dispatch',
+                'event-reconcile',
+                'event-outcome',
+              ],
+            },
+          },
+        },
+        refs: { operationId: 'operation-1', toolCallId: 'provider-call-1' },
+      }),
+      runtimeEvent({
+        id: 'event-terminal',
+        ts: 7,
+        status: 'completed',
+      }),
+    ];
+    await runtimeEventStore.importConversationCopyRuntimeEvents(
+      'session-source',
+      'run-source',
+      sourceEvents,
+    );
+    await runStore.appendEvent('session-source', 'run-source', {
+      type: 'run_completed',
+      id: 'completed-source',
+      runId: 'run-source',
+      sessionId: 'session-source',
+      turnId: 'turn-1',
+      ts: 7,
+    });
+    const source = await new RuntimeReadModel({
+      runStore,
+      runtimeEventStore,
+    }).getSessionView('session-source');
+    const copied = await cloneConversationRuntimeLedger({
+      source,
+      copiedMessages: source.messages,
+      referenceMap: {
+        mode: 'exact',
+        sourceSessionId: 'session-source',
+        targetSessionId: 'session-target',
+        artifactIds: new Map(),
+        relativePaths: new Map(),
+      },
+      runStore,
+      runtimeEventStore,
+      newId: () => crypto.randomUUID(),
+    });
+    const eventIds = new Map(
+      copied.runtimeEventIdMap.map(({ sourceRuntimeEventId, targetRuntimeEventId }) => [
+        sourceRuntimeEventId,
+        targetRuntimeEventId,
+      ]),
+    );
+    const [targetRun] = await runStore.listSessionRuns('session-target');
+    assert.ok(targetRun);
+    const targetEvents = await runtimeEventStore.readRuntimeEvents(
+      'session-target',
+      targetRun.runId,
+    );
+    const decision = targetEvents.find((event) => event.id === eventIds.get('event-decision'))
+      ?.actions?.toolRecovery;
+    assert.equal(decision?.kind, 'maka.tool.recovery_decision');
+    if (decision?.kind !== 'maka.tool.recovery_decision') {
+      assert.fail('Copied recovery decision is missing');
+    }
+    assert.equal(decision.payload.disposition, 'completed');
+    if (decision.payload.disposition !== 'completed') {
+      assert.fail('Copied recovery decision must be completed');
+    }
+    assert.equal(decision.payload.outcomeEventId, eventIds.get('event-outcome'));
+    assert.deepEqual(
+      decision.payload.evidenceEventIds,
+      ['event-call', 'event-dispatch', 'event-reconcile', 'event-outcome'].map((eventId) =>
+        eventIds.get(eventId),
+      ),
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -539,13 +737,13 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
       () =>
         cloneConversationRuntimeLedger({
           source,
-          sourceSessionId: 'session-source',
-          targetSessionId: 'session-missing-artifact',
           copiedMessages: source.messages,
           referenceMap: {
+            mode: 'exact',
             sourceSessionId: 'session-source',
             targetSessionId: 'session-missing-artifact',
             artifactIds: new Map([['artifact-source', 'artifact-target']]),
+            relativePaths: new Map(),
           },
           runStore,
           runtimeEventStore,
@@ -568,16 +766,16 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
 
     const copied = await cloneConversationRuntimeLedger({
       source,
-      sourceSessionId: 'session-source',
-      targetSessionId: 'session-target',
       copiedMessages: source.messages,
       referenceMap: {
+        mode: 'exact',
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
         artifactIds: new Map([
           ['artifact-source', 'artifact-target'],
           ['artifact-deleted', 'artifact-target-deleted'],
         ]),
+        relativePaths: new Map(),
       },
       runStore,
       runtimeEventStore,
@@ -776,12 +974,13 @@ test('conversation copy rebuilds a later inline checkpoint over the retained cro
 
     await cloneConversationRuntimeLedger({
       source,
-      sourceSessionId: 'session-source',
-      targetSessionId: 'session-target',
       copiedMessages: source.messages,
       referenceMap: {
+        mode: 'exact',
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
+        artifactIds: new Map(),
+        relativePaths: new Map(),
       },
       runStore,
       runtimeEventStore,
@@ -946,12 +1145,13 @@ test('conversation copy rebuilds a resumed child checkpoint over its child run c
 
     const copied = await cloneConversationRuntimeLedger({
       source,
-      sourceSessionId: 'session-source',
-      targetSessionId: 'session-target',
       copiedMessages: source.messages,
       referenceMap: {
+        mode: 'exact',
         sourceSessionId: 'session-source',
         targetSessionId: 'session-target',
+        artifactIds: new Map(),
+        relativePaths: new Map(),
       },
       runStore,
       runtimeEventStore,

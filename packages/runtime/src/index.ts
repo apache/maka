@@ -54,6 +54,8 @@ export {
 export type {
   CloneConversationRuntimeLedgerInput,
   CloneConversationRuntimeLedgerResult,
+  ConversationCopyArtifactReferenceMap,
+  ConversationCopyMessageReferenceMap,
   ConversationCopyReferenceMap,
   ConversationCopySlice,
 } from './conversation-copy.js';

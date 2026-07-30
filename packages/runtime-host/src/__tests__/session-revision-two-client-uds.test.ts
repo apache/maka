@@ -31,6 +31,10 @@ const CURRENT_PROTOCOL = {
   max: RUNTIME_HOST_PROTOCOL_VERSION,
 } as const;
 const PROCESS_TIMEOUT_MS = 10_000;
+const REVISION_TARGET_ID = 'revision-target';
+const ADMITTED_REVISION_TARGET_ID = 'admitted-revision-target';
+const LINEAGE_REVISION_TARGET_ID = 'lineage-revision-target';
+const LINEAGE_BRANCH_TARGET_ID = 'lineage-branch-target';
 
 test('two UDS Clients share exact retryable Session branch and revision authority', {
   skip: process.platform === 'win32' ? 'POSIX UDS integration' : false,
@@ -46,224 +50,22 @@ test('two UDS Clients share exact retryable Session branch and revision authorit
   let host: ExecutionHostHandle | undefined;
   try {
     host = await startHost(root, capability.rootId);
-    const desktop = await connectClient(root, 'desktop');
-    const tui = await connectClient(root, 'tui');
-    let revisionTargetId = 'revision-target';
-    const admittedRevisionTargetId = 'admitted-revision-target';
-    const lineageRevisionTargetId = 'lineage-revision-target';
-    const lineageBranchTargetId = 'lineage-branch-target';
-    try {
-      const source = await querySession(desktop, sourceSessionId);
-      const linkedChildSource = await querySession(desktop, linkedChildSourceSessionId);
-      await assert.rejects(
-        desktop.request('session.branch.create', {
-          sourceSessionId: linkedChildSourceSessionId,
-          targetSessionId: 'linked-child-copy-target',
-          sourceTurnId: 'linked-turn',
-          expectedSourceRevision: linkedChildSource.revision,
-        }),
-        operationError('operation_unavailable'),
-      );
-      assert.deepEqual(
-        await tui.request('session.catalog.query', {
-          kind: 'get',
-          sessionId: 'linked-child-copy-target',
-        }),
-        { kind: 'session', session: null },
-      );
-      const branchInput = {
-        sourceSessionId,
-        targetSessionId: 'branch-target',
-        sourceTurnId: 'turn-1',
-        expectedSourceRevision: source.revision,
-      };
-      const [desktopBranch, tuiBranch] = await Promise.all([
-        desktop.request('session.branch.create', branchInput),
-        tui.request('session.branch.create', branchInput),
-      ]);
-      assert.deepEqual(desktopBranch, tuiBranch);
-      assert.equal(desktopBranch.kind, 'committed');
-      if (desktopBranch.kind !== 'committed') assert.fail('Branch must commit');
-      const branch = requireSessionProjection(desktopBranch.session);
-      assert.equal(branch.parentSessionId, sourceSessionId);
-      assert.equal(branch.branchOfTurnId, 'turn-1');
-      assert.equal(branch.isFlagged, true);
-      assert.equal(branch.connectionLocked, true);
-
-      const artifactPage = await desktop.request('artifact.query', {
-        kind: 'list_start',
-        sessionId: branch.id,
-      });
-      assert.equal(artifactPage.kind, 'page');
-      if (artifactPage.kind !== 'page') assert.fail('Branch Artifact query must return a page');
-      assert.equal(artifactPage.artifacts.length, 2);
-      assert.notEqual(artifactPage.artifacts[0]?.id, 'source-artifact');
-      const taskPage = await tui.request('task.ledger.query', {
-        kind: 'list_start',
-        sessionId: branch.id,
-      });
-      assert.equal(taskPage.kind, 'page');
-      if (taskPage.kind !== 'page') assert.fail('Branch Task Ledger query must return a page');
-      assert.deepEqual(taskPage.tasks.map((task) => task.subject).sort(), [
-        'Legacy child task',
-        'Retained task',
-      ]);
-
-      const renamed = await desktop.request('session.metadata.update', {
-        sessionId: sourceSessionId,
-        expectedRevision: source.revision,
-        patch: { name: 'Renamed source' },
-      });
-      assert.equal(renamed.kind, 'committed');
-      if (renamed.kind !== 'committed') assert.fail('Source rename must commit');
-      const renamedSource = requireSessionProjection(renamed.session);
-      assert.deepEqual(await tui.request('session.branch.create', branchInput), desktopBranch);
-
-      const revisionInput = {
-        sourceSessionId,
-        targetSessionId: revisionTargetId,
-        sourceTurnId: 'turn-2',
-        expectedSourceRevision: renamedSource.revision,
-      };
-      const revised = await desktop.request('session.revision.create', revisionInput);
-      assert.equal(revised.kind, 'committed');
-      if (revised.kind !== 'committed') assert.fail('Revision must commit');
-      const revision = requireSessionProjection(revised.session);
-      assert.equal(revision.revisionRootSessionId, sourceSessionId);
-      assert.equal(revision.revisionParentSessionId, sourceSessionId);
-      assert.equal(revision.revisionOfTurnId, 'turn-2');
-      assert.equal(revision.revisionIndex, 2);
-      assert.equal(revision.revisionState, 'preparing');
-
-      const stale = await tui.request('session.revision.create', {
-        ...revisionInput,
-        targetSessionId: 'stale-revision-target',
-        expectedSourceRevision: renamedSource.revision + 1,
-      });
-      assert.deepEqual(stale, {
-        kind: 'source_revision_conflict',
-        expectedRevision: renamedSource.revision + 1,
-        actualRevision: renamedSource.revision,
-      });
-      await assert.rejects(
-        desktop.request('session.branch.create', {
-          ...branchInput,
-          sourceTurnId: 'turn-2',
-        }),
-        operationError('operation_conflict'),
-      );
-
-      await desktop.startTurn({
-        sessionId: busySessionId,
-        turnId: 'busy-turn',
-        content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
-      });
-      const busy = await querySession(desktop, busySessionId);
-      await assert.rejects(
-        tui.request('session.branch.create', {
-          sourceSessionId: busySessionId,
-          targetSessionId: 'busy-source-copy',
-          sourceTurnId: 'busy-turn',
-          expectedSourceRevision: busy.revision,
-        }),
-        operationError('session_busy'),
-      );
-    } finally {
-      await Promise.allSettled([desktop.close(), tui.close()]);
-    }
+    await verifyConcurrentRevisionAuthority(
+      root,
+      sourceSessionId,
+      busySessionId,
+      linkedChildSourceSessionId,
+    );
     await stopHost(host);
     host = undefined;
 
     host = await startHost(root, capability.rootId);
-    const restarted = await connectClient(root, 'desktop');
-    try {
-      assert.deepEqual(
-        await restarted.request('session.catalog.query', {
-          kind: 'get',
-          sessionId: revisionTargetId,
-        }),
-        { kind: 'session', session: null },
-      );
-      const source = await querySession(restarted, sourceSessionId);
-      const retried = await restarted.request('session.revision.create', {
-        sourceSessionId,
-        targetSessionId: revisionTargetId,
-        sourceTurnId: 'turn-2',
-        expectedSourceRevision: source.revision,
-      });
-      assert.equal(retried.kind, 'committed');
-      if (retried.kind !== 'committed') assert.fail('Recovered revision retry must commit');
-      assert.equal(requireSessionProjection(retried.session).revisionIndex, 2);
-
-      const admitted = await restarted.request('session.revision.create', {
-        sourceSessionId,
-        targetSessionId: admittedRevisionTargetId,
-        sourceTurnId: 'turn-2',
-        expectedSourceRevision: source.revision,
-      });
-      assert.equal(admitted.kind, 'committed');
-      if (admitted.kind !== 'committed') assert.fail('Admitted revision must commit');
-      assert.equal(requireSessionProjection(admitted.session).revisionIndex, 3);
-      await restarted.startTurn({
-        sessionId: admittedRevisionTargetId,
-        turnId: 'turn-3',
-        content: { text: 'commit this revision' },
-      });
-      assert.equal(
-        (await querySession(restarted, admittedRevisionTargetId)).revisionState,
-        'committed',
-      );
-
-      const lineageRevision = await restarted.request('session.revision.create', {
-        sourceSessionId,
-        targetSessionId: lineageRevisionTargetId,
-        sourceTurnId: 'turn-2',
-        expectedSourceRevision: source.revision,
-      });
-      assert.equal(lineageRevision.kind, 'committed');
-      if (lineageRevision.kind !== 'committed') {
-        assert.fail('Lineage revision must commit');
-      }
-      const lineageSource = requireSessionProjection(lineageRevision.session);
-      assert.equal(lineageSource.revisionState, 'preparing');
-      const lineageBranch = await restarted.request('session.branch.create', {
-        sourceSessionId: lineageRevisionTargetId,
-        targetSessionId: lineageBranchTargetId,
-        sourceTurnId: 'turn-1',
-        expectedSourceRevision: lineageSource.revision,
-      });
-      assert.equal(lineageBranch.kind, 'committed');
-    } finally {
-      await restarted.close();
-    }
+    await verifyRestartRecoveryAndAdmission(root, sourceSessionId);
     await stopHost(host);
     host = undefined;
 
     host = await startHost(root, capability.rootId);
-    const recovered = await connectClient(root, 'desktop');
-    try {
-      assert.deepEqual(
-        await recovered.request('session.catalog.query', {
-          kind: 'get',
-          sessionId: revisionTargetId,
-        }),
-        { kind: 'session', session: null },
-      );
-      assert.equal(
-        (await querySession(recovered, admittedRevisionTargetId)).revisionState,
-        'committed',
-      );
-      assert.equal(
-        (await querySession(recovered, lineageRevisionTargetId)).revisionState,
-        'committed',
-      );
-      assert.equal(
-        (await querySession(recovered, lineageBranchTargetId)).parentSessionId,
-        lineageRevisionTargetId,
-      );
-    } finally {
-      await recovered.close();
-    }
+    await verifySecondRestartRetention(root);
     await stopHost(host);
     host = undefined;
 
@@ -271,9 +73,9 @@ test('two UDS Clients share exact retryable Session branch and revision authorit
       capability,
       sourceSessionId,
       'branch-target',
-      admittedRevisionTargetId,
-      lineageRevisionTargetId,
-      lineageBranchTargetId,
+      ADMITTED_REVISION_TARGET_ID,
+      LINEAGE_REVISION_TARGET_ID,
+      LINEAGE_BRANCH_TARGET_ID,
     );
   } finally {
     await terminateHost(host);
@@ -285,6 +87,227 @@ test('two UDS Clients share exact retryable Session branch and revision authorit
     await rm(base, { recursive: true, force: true });
   }
 });
+
+async function verifyConcurrentRevisionAuthority(
+  root: string,
+  sourceSessionId: string,
+  busySessionId: string,
+  linkedChildSourceSessionId: string,
+): Promise<void> {
+  const desktop = await connectClient(root, 'desktop');
+  const tui = await connectClient(root, 'tui');
+  try {
+    const source = await querySession(desktop, sourceSessionId);
+    const linkedChildSource = await querySession(desktop, linkedChildSourceSessionId);
+    await assert.rejects(
+      desktop.request('session.branch.create', {
+        sourceSessionId: linkedChildSourceSessionId,
+        targetSessionId: 'linked-child-copy-target',
+        sourceTurnId: 'linked-turn',
+        expectedSourceRevision: linkedChildSource.revision,
+      }),
+      operationError('operation_unavailable'),
+    );
+    assert.deepEqual(
+      await tui.request('session.catalog.query', {
+        kind: 'get',
+        sessionId: 'linked-child-copy-target',
+      }),
+      { kind: 'session', session: null },
+    );
+    const branchInput = {
+      sourceSessionId,
+      targetSessionId: 'branch-target',
+      sourceTurnId: 'turn-1',
+      expectedSourceRevision: source.revision,
+    };
+    const [desktopBranch, tuiBranch] = await Promise.all([
+      desktop.request('session.branch.create', branchInput),
+      tui.request('session.branch.create', branchInput),
+    ]);
+    assert.deepEqual(desktopBranch, tuiBranch);
+    assert.equal(desktopBranch.kind, 'committed');
+    if (desktopBranch.kind !== 'committed') assert.fail('Branch must commit');
+    const branch = requireSessionProjection(desktopBranch.session);
+    assert.equal(branch.parentSessionId, sourceSessionId);
+    assert.equal(branch.branchOfTurnId, 'turn-1');
+    assert.equal(branch.isFlagged, true);
+    assert.equal(branch.connectionLocked, true);
+
+    const artifactPage = await desktop.request('artifact.query', {
+      kind: 'list_start',
+      sessionId: branch.id,
+    });
+    assert.equal(artifactPage.kind, 'page');
+    if (artifactPage.kind !== 'page') assert.fail('Branch Artifact query must return a page');
+    assert.equal(artifactPage.artifacts.length, 2);
+    assert.notEqual(artifactPage.artifacts[0]?.id, 'source-artifact');
+    const taskPage = await tui.request('task.ledger.query', {
+      kind: 'list_start',
+      sessionId: branch.id,
+    });
+    assert.equal(taskPage.kind, 'page');
+    if (taskPage.kind !== 'page') assert.fail('Branch Task Ledger query must return a page');
+    assert.deepEqual(taskPage.tasks.map((task) => task.subject).sort(), [
+      'Legacy child task',
+      'Retained task',
+    ]);
+
+    const renamed = await desktop.request('session.metadata.update', {
+      sessionId: sourceSessionId,
+      expectedRevision: source.revision,
+      patch: { name: 'Renamed source' },
+    });
+    assert.equal(renamed.kind, 'committed');
+    if (renamed.kind !== 'committed') assert.fail('Source rename must commit');
+    const renamedSource = requireSessionProjection(renamed.session);
+    assert.deepEqual(await tui.request('session.branch.create', branchInput), desktopBranch);
+
+    const revisionInput = {
+      sourceSessionId,
+      targetSessionId: REVISION_TARGET_ID,
+      sourceTurnId: 'turn-2',
+      expectedSourceRevision: renamedSource.revision,
+    };
+    const revised = await desktop.request('session.revision.create', revisionInput);
+    assert.equal(revised.kind, 'committed');
+    if (revised.kind !== 'committed') assert.fail('Revision must commit');
+    const revision = requireSessionProjection(revised.session);
+    assert.equal(revision.revisionRootSessionId, sourceSessionId);
+    assert.equal(revision.revisionParentSessionId, sourceSessionId);
+    assert.equal(revision.revisionOfTurnId, 'turn-2');
+    assert.equal(revision.revisionIndex, 2);
+    assert.equal(revision.revisionState, 'preparing');
+
+    const stale = await tui.request('session.revision.create', {
+      ...revisionInput,
+      targetSessionId: 'stale-revision-target',
+      expectedSourceRevision: renamedSource.revision + 1,
+    });
+    assert.deepEqual(stale, {
+      kind: 'source_revision_conflict',
+      expectedRevision: renamedSource.revision + 1,
+      actualRevision: renamedSource.revision,
+    });
+    await assert.rejects(
+      desktop.request('session.branch.create', {
+        ...branchInput,
+        sourceTurnId: 'turn-2',
+      }),
+      operationError('operation_conflict'),
+    );
+
+    await desktop.startTurn({
+      sessionId: busySessionId,
+      turnId: 'busy-turn',
+      content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
+    });
+    const busy = await querySession(desktop, busySessionId);
+    await assert.rejects(
+      tui.request('session.branch.create', {
+        sourceSessionId: busySessionId,
+        targetSessionId: 'busy-source-copy',
+        sourceTurnId: 'busy-turn',
+        expectedSourceRevision: busy.revision,
+      }),
+      operationError('session_busy'),
+    );
+  } finally {
+    await Promise.allSettled([desktop.close(), tui.close()]);
+  }
+}
+
+async function verifyRestartRecoveryAndAdmission(
+  root: string,
+  sourceSessionId: string,
+): Promise<void> {
+  const restarted = await connectClient(root, 'desktop');
+  try {
+    assert.deepEqual(
+      await restarted.request('session.catalog.query', {
+        kind: 'get',
+        sessionId: REVISION_TARGET_ID,
+      }),
+      { kind: 'session', session: null },
+    );
+    const source = await querySession(restarted, sourceSessionId);
+    const retried = await restarted.request('session.revision.create', {
+      sourceSessionId,
+      targetSessionId: REVISION_TARGET_ID,
+      sourceTurnId: 'turn-2',
+      expectedSourceRevision: source.revision,
+    });
+    assert.equal(retried.kind, 'committed');
+    if (retried.kind !== 'committed') assert.fail('Recovered revision retry must commit');
+    assert.equal(requireSessionProjection(retried.session).revisionIndex, 2);
+
+    const admitted = await restarted.request('session.revision.create', {
+      sourceSessionId,
+      targetSessionId: ADMITTED_REVISION_TARGET_ID,
+      sourceTurnId: 'turn-2',
+      expectedSourceRevision: source.revision,
+    });
+    assert.equal(admitted.kind, 'committed');
+    if (admitted.kind !== 'committed') assert.fail('Admitted revision must commit');
+    assert.equal(requireSessionProjection(admitted.session).revisionIndex, 3);
+    await restarted.startTurn({
+      sessionId: ADMITTED_REVISION_TARGET_ID,
+      turnId: 'turn-3',
+      content: { text: 'commit this revision' },
+    });
+    assert.equal(
+      (await querySession(restarted, ADMITTED_REVISION_TARGET_ID)).revisionState,
+      'committed',
+    );
+
+    const lineageRevision = await restarted.request('session.revision.create', {
+      sourceSessionId,
+      targetSessionId: LINEAGE_REVISION_TARGET_ID,
+      sourceTurnId: 'turn-2',
+      expectedSourceRevision: source.revision,
+    });
+    assert.equal(lineageRevision.kind, 'committed');
+    if (lineageRevision.kind !== 'committed') assert.fail('Lineage revision must commit');
+    const lineageSource = requireSessionProjection(lineageRevision.session);
+    assert.equal(lineageSource.revisionState, 'preparing');
+    const lineageBranch = await restarted.request('session.branch.create', {
+      sourceSessionId: LINEAGE_REVISION_TARGET_ID,
+      targetSessionId: LINEAGE_BRANCH_TARGET_ID,
+      sourceTurnId: 'turn-1',
+      expectedSourceRevision: lineageSource.revision,
+    });
+    assert.equal(lineageBranch.kind, 'committed');
+  } finally {
+    await restarted.close();
+  }
+}
+
+async function verifySecondRestartRetention(root: string): Promise<void> {
+  const recovered = await connectClient(root, 'desktop');
+  try {
+    assert.deepEqual(
+      await recovered.request('session.catalog.query', {
+        kind: 'get',
+        sessionId: REVISION_TARGET_ID,
+      }),
+      { kind: 'session', session: null },
+    );
+    assert.equal(
+      (await querySession(recovered, ADMITTED_REVISION_TARGET_ID)).revisionState,
+      'committed',
+    );
+    assert.equal(
+      (await querySession(recovered, LINEAGE_REVISION_TARGET_ID)).revisionState,
+      'committed',
+    );
+    assert.equal(
+      (await querySession(recovered, LINEAGE_BRANCH_TARGET_ID)).parentSessionId,
+      LINEAGE_REVISION_TARGET_ID,
+    );
+  } finally {
+    await recovered.close();
+  }
+}
 
 async function seedSource(
   root: string,

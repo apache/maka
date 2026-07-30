@@ -4729,11 +4729,10 @@ export class SessionManager {
     if (!this.deps.runStore || !this.deps.runtimeEventStore) return;
     await cloneConversationLedger({
       source: sourceView,
-      sourceSessionId,
-      targetSessionId: childSessionId,
       copiedMessages,
       referenceMap: {
-        sourceSessionId: childSessionId,
+        mode: 'preserve_external',
+        sourceSessionId,
         targetSessionId: childSessionId,
       },
       runStore: this.deps.runStore,

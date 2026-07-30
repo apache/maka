@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { type BigIntStats, constants as fsConstants, createReadStream, type Dirent } from 'node:fs';
 import {
   access,
+  copyFile,
   link,
   lstat,
   mkdir,
@@ -94,6 +95,8 @@ interface ArtifactRemovalEntry {
   readonly unlinkPath: string;
   readonly comparisonIdentity: string;
 }
+
+type ArtifactRecordDraft = Omit<ArtifactRecord, 'sizeBytes'>;
 
 interface RecoverableOrphan {
   readonly canonicalPath: string;
@@ -310,22 +313,8 @@ class FileArtifactStore implements ArtifactAuthorityStore {
         id,
         canonicalName: name,
       });
-      const target = join(this.artifactRoot, relativePath);
-      const targetDirectory = dirname(target);
-      const createdDirectory = await mkdir(targetDirectory, { recursive: true });
-      if (createdDirectory !== undefined) {
-        await syncDirectoryChain(targetDirectory, this.workspaceRoot);
-      }
-      await assertArtifactDirectory(this.artifactRoot, targetDirectory);
-      const tempPath = join(targetDirectory, publicationStagingName(basename(target)));
-      let preserveStaging = false;
-      let targetLinked = false;
-      try {
-        await writeFile(tempPath, acceptedInput.content, { flag: 'wx' });
-        await syncFile(tempPath);
-        await syncDirectory(targetDirectory);
-        const size = await stat(tempPath);
-        const record: ArtifactRecord = {
+      return this.publishNewArtifactUnlocked(
+        {
           id,
           sessionId: acceptedInput.sessionId,
           turnId: acceptedInput.turnId,
@@ -333,7 +322,6 @@ class FileArtifactStore implements ArtifactAuthorityStore {
           name,
           kind: acceptedInput.kind,
           relativePath,
-          sizeBytes: size.size,
           ...(acceptedInput.mimeType ? { mimeType: acceptedInput.mimeType } : {}),
           ...(acceptedInput.source ? { source: acceptedInput.source } : {}),
           ...(acceptedInput.summary ? { summary: acceptedInput.summary } : {}),
@@ -341,48 +329,9 @@ class FileArtifactStore implements ArtifactAuthorityStore {
             ? { deepResearchRole: acceptedInput.deepResearchRole }
             : {}),
           status: 'live',
-        };
-        const nextRecords = [...this.records, record];
-        try {
-          try {
-            await link(tempPath, target);
-            targetLinked = true;
-          } catch (error) {
-            if (isAlreadyExists(error)) throw new Error(`Artifact target already exists: ${id}`);
-            throw error;
-          }
-          await syncDirectory(targetDirectory);
-          await this.writeMetadataUnlocked(nextRecords);
-        } catch (error) {
-          if (targetLinked && isPublishedMetadataError(error)) {
-            preserveStaging = true;
-            this.invalidateWriterState();
-          } else if (targetLinked) {
-            try {
-              await removeFileDurably(target, targetDirectory);
-            } catch (cleanupError) {
-              preserveStaging = true;
-              this.invalidateWriterState();
-              throw new AggregateError(
-                [error, cleanupError],
-                `Artifact ${id} metadata publication and payload cleanup both failed`,
-              );
-            }
-          }
-          throw error;
-        }
-        this.replaceRecords(nextRecords);
-        return { ...record };
-      } finally {
-        if (!preserveStaging) {
-          try {
-            await removeFileDurably(tempPath, targetDirectory);
-          } catch (error) {
-            this.invalidateWriterState();
-            throw error;
-          }
-        }
-      }
+        },
+        (tempPath) => writeFile(tempPath, acceptedInput.content, { flag: 'wx' }),
+      );
     });
   }
 
@@ -396,56 +345,150 @@ class FileArtifactStore implements ArtifactAuthorityStore {
     }
     const turnIds = new Set(input.turnIds);
     for (const turnId of turnIds) assertArtifactTurnKey(turnId);
-    const snapshots = await this.enqueue(async () => {
+    const records = await this.enqueue(async () => {
       await this.load();
-      const records = this.records.filter(
-        (record) =>
-          record.sessionId === input.sourceSessionId &&
-          record.status === 'live' &&
-          turnIds.has(record.turnId),
-      );
-      return Promise.all(
-        records.map(async (record) => {
-          const prepared = await this.prepareRecordRead(record, Number.MAX_SAFE_INTEGER, false);
-          if (!prepared.ok) {
-            throw new Error(`Artifact ${record.id} could not be copied: ${prepared.reason}`);
-          }
-          const read = await readPreparedBytes(prepared);
-          if (!read.ok) {
-            throw new Error(`Artifact ${record.id} could not be copied: ${read.reason}`);
-          }
-          return { record, content: new Uint8Array(read.bytes) };
-        }),
-      );
+      return this.records
+        .filter(
+          (record) => record.sessionId === input.sourceSessionId && turnIds.has(record.turnId),
+        )
+        .map((record) => ({ ...record }));
     });
 
     const artifactIds = new Map<string, string>();
     const relativePaths = new Map<string, string>();
-    for (const snapshot of snapshots) {
+    for (const record of records) {
       const targetId = conversationCopyArtifactId(
         input.sourceSessionId,
         input.targetSessionId,
-        snapshot.record.id,
+        record.id,
       );
-      const created = await this.create({
-        id: targetId,
-        sessionId: input.targetSessionId,
-        turnId: snapshot.record.turnId,
-        name: snapshot.record.name,
-        kind: snapshot.record.kind,
-        content: snapshot.content,
-        ...(snapshot.record.mimeType ? { mimeType: snapshot.record.mimeType } : {}),
-        ...(snapshot.record.source ? { source: snapshot.record.source } : {}),
-        ...(snapshot.record.summary ? { summary: snapshot.record.summary } : {}),
-        ...(snapshot.record.deepResearchRole
-          ? { deepResearchRole: snapshot.record.deepResearchRole }
-          : {}),
-        now: snapshot.record.createdAt,
-      });
-      artifactIds.set(snapshot.record.id, created.id);
-      relativePaths.set(snapshot.record.relativePath, created.relativePath);
+      const prepared = await this.enqueue(() =>
+        this.prepareRecordRead(record, record.sizeBytes, true),
+      );
+      if (!prepared.ok) {
+        throw new Error(`Artifact ${record.id} could not be copied: ${prepared.reason}`);
+      }
+      const created = await this.copyConversationArtifact(
+        prepared,
+        input.targetSessionId,
+        targetId,
+      );
+      artifactIds.set(record.id, created.id);
+      relativePaths.set(record.relativePath, created.relativePath);
     }
     return { artifactIds, relativePaths };
+  }
+
+  private copyConversationArtifact(
+    prepared: PreparedArtifactRead,
+    targetSessionId: string,
+    targetId: string,
+  ): Promise<ArtifactRecord> {
+    const source = prepared.record;
+    const name = sanitizeArtifactName(source.name);
+    const relativePath = `${targetSessionId}/${targetId}-${name}`;
+    const publicationInput = { sessionId: targetSessionId, name };
+    assertCanonicalArtifactEntityId(targetId, 'id');
+    validateRelativeArtifactPath(relativePath);
+    validateCanonicalArtifactTargetName(basename(relativePath));
+    return this.enqueueMutation(async () => {
+      await this.prepareMutationUnlocked({
+        kind: 'copy',
+        input: publicationInput,
+        identity: { id: targetId, canonicalName: name },
+      });
+      if (this.records.some((record) => record.id === targetId)) {
+        throw new Error(`Artifact target already exists: ${targetId}`);
+      }
+      await this.assertNoCompatiblePublicationStagingUnlocked(publicationInput, {
+        id: targetId,
+        canonicalName: name,
+      });
+      await this.assertNoCompatiblePayloadExistsUnlocked(publicationInput, {
+        id: targetId,
+        canonicalName: name,
+      });
+      return this.publishNewArtifactUnlocked(
+        {
+          ...source,
+          id: targetId,
+          sessionId: targetSessionId,
+          name,
+          relativePath,
+        },
+        (tempPath) => copyFile(prepared.path, tempPath, fsConstants.COPYFILE_EXCL),
+        source.sizeBytes,
+      );
+    });
+  }
+
+  private async publishNewArtifactUnlocked(
+    draft: ArtifactRecordDraft,
+    writeStaging: (tempPath: string) => Promise<void>,
+    expectedSize?: number,
+  ): Promise<ArtifactRecord> {
+    const target = join(this.artifactRoot, draft.relativePath);
+    const targetDirectory = dirname(target);
+    const createdDirectory = await mkdir(targetDirectory, { recursive: true });
+    if (createdDirectory !== undefined) {
+      await syncDirectoryChain(targetDirectory, this.workspaceRoot);
+    }
+    await assertArtifactDirectory(this.artifactRoot, targetDirectory);
+    const tempPath = join(targetDirectory, publicationStagingName(basename(target)));
+    let preserveStaging = false;
+    let targetLinked = false;
+    try {
+      await writeStaging(tempPath);
+      await syncFile(tempPath);
+      await syncDirectory(targetDirectory);
+      const size = await stat(tempPath);
+      if (expectedSize !== undefined && size.size !== expectedSize) {
+        throw new Error(`Artifact source changed while copying: ${draft.id}`);
+      }
+      const record: ArtifactRecord = { ...draft, sizeBytes: size.size };
+      const nextRecords = [...this.records, record];
+      try {
+        try {
+          await link(tempPath, target);
+          targetLinked = true;
+        } catch (error) {
+          if (isAlreadyExists(error)) {
+            throw new Error(`Artifact target already exists: ${draft.id}`);
+          }
+          throw error;
+        }
+        await syncDirectory(targetDirectory);
+        await this.writeMetadataUnlocked(nextRecords);
+      } catch (error) {
+        if (targetLinked && isPublishedMetadataError(error)) {
+          preserveStaging = true;
+          this.invalidateWriterState();
+        } else if (targetLinked) {
+          try {
+            await removeFileDurably(target, targetDirectory);
+          } catch (cleanupError) {
+            preserveStaging = true;
+            this.invalidateWriterState();
+            throw new AggregateError(
+              [error, cleanupError],
+              `Artifact ${draft.id} metadata publication and payload cleanup both failed`,
+            );
+          }
+        }
+        throw error;
+      }
+      this.replaceRecords(nextRecords);
+      return { ...record };
+    } finally {
+      if (!preserveStaging) {
+        try {
+          await removeFileDurably(tempPath, targetDirectory);
+        } catch (error) {
+          this.invalidateWriterState();
+          throw error;
+        }
+      }
+    }
   }
 
   async purgeSessionArtifacts(sessionId: string): Promise<void> {
@@ -894,6 +937,11 @@ class FileArtifactStore implements ArtifactAuthorityStore {
           readonly input: CreateArtifactInput;
           readonly identity: { readonly id: string; readonly canonicalName: string };
         }
+      | {
+          readonly kind: 'copy';
+          readonly input: Pick<CreateArtifactInput, 'sessionId' | 'name'>;
+          readonly identity: { readonly id: string; readonly canonicalName: string };
+        }
       | { readonly kind: 'delete' | 'purge' },
   ): Promise<void> {
     if (this.recoveryMode === 'legacy') {
@@ -905,8 +953,10 @@ class FileArtifactStore implements ArtifactAuthorityStore {
         await this.reloadForMutationUnlocked();
         await this.recoverPurgeIntentUnlocked();
       }
-      if (purpose.kind === 'create') {
+      if (purpose.kind === 'create' || purpose.kind === 'copy') {
         await this.recoverCompatiblePublicationsUnlocked(purpose.input, purpose.identity);
+      }
+      if (purpose.kind === 'create') {
         this.recoverableOrphans = await this.findCompatibleRecoverableOrphansUnlocked(
           purpose.input,
           purpose.identity,
@@ -1130,7 +1180,7 @@ class FileArtifactStore implements ArtifactAuthorityStore {
   }
 
   private async recoverCompatiblePublicationsUnlocked(
-    input: CreateArtifactInput,
+    input: Pick<CreateArtifactInput, 'sessionId' | 'name'>,
     identity: { id: string; canonicalName: string },
   ): Promise<void> {
     const sessionDirectory = join(this.artifactRoot, input.sessionId);
@@ -1159,7 +1209,7 @@ class FileArtifactStore implements ArtifactAuthorityStore {
   }
 
   private async assertNoCompatiblePayloadExistsUnlocked(
-    input: CreateArtifactInput,
+    input: Pick<CreateArtifactInput, 'sessionId' | 'name'>,
     identity: { id: string; canonicalName: string },
   ): Promise<void> {
     const names = compatibleArtifactNames(input.name, identity.canonicalName);
@@ -1175,7 +1225,7 @@ class FileArtifactStore implements ArtifactAuthorityStore {
   }
 
   private async assertNoCompatiblePublicationStagingUnlocked(
-    input: CreateArtifactInput,
+    input: Pick<CreateArtifactInput, 'sessionId' | 'name'>,
     identity: { id: string; canonicalName: string },
   ): Promise<void> {
     const targetHashes = new Set(

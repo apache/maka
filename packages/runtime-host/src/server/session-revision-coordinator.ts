@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
-import type { SessionHeader, StoredMessage } from '@maka/core/session';
+import type { SessionConversationCopy, SessionHeader, StoredMessage } from '@maka/core/session';
 import {
   cloneConversationRuntimeLedger,
   createConversationCopySlice,
@@ -36,6 +36,9 @@ import type { SessionContinuityCoordinator } from './session-continuity-coordina
 
 type ConversationCopyKind = 'branch' | 'revision';
 type ConversationCopyOutcome = OperationOutcome<SessionRevisionOperationKey>;
+type ConversationCopyCreateInput = CreateSessionInput & {
+  readonly conversationCopy: SessionConversationCopy;
+};
 
 export interface HostSessionRevisionCoordinatorOptions {
   readonly stores: ExecutionStoresWriter<'interactive'>;
@@ -203,7 +206,7 @@ export class HostSessionRevisionCoordinator {
       );
     }
 
-    let createInput: CreateSessionInput;
+    let createInput: ConversationCopyCreateInput;
     try {
       createInput = await this.#createInput(kind, input, requestFingerprint, sourceHeader);
     } catch {
@@ -259,6 +262,7 @@ export class HostSessionRevisionCoordinator {
         turnIds: copyTurnIds,
       });
       const references = {
+        mode: 'exact' as const,
         sourceSessionId: input.sourceSessionId,
         targetSessionId: input.targetSessionId,
         artifactIds: artifactCopy.artifactIds,
@@ -266,8 +270,6 @@ export class HostSessionRevisionCoordinator {
       };
       const runtimeCopy = await cloneConversationRuntimeLedger({
         source,
-        sourceSessionId: input.sourceSessionId,
-        targetSessionId: input.targetSessionId,
         copiedMessages: slice.messages,
         copyTurnIds,
         referenceMap: references,
@@ -345,8 +347,8 @@ export class HostSessionRevisionCoordinator {
     input: SessionConversationCopyInput,
     requestFingerprint: `sha256:${string}`,
     source: SessionHeader,
-  ): Promise<CreateSessionInput> {
-    const common: CreateSessionInput = {
+  ): Promise<ConversationCopyCreateInput> {
+    const common: ConversationCopyCreateInput = {
       cwd: source.cwd,
       ...(source.projectId !== undefined ? { projectId: source.projectId } : {}),
       backend: source.backend,
@@ -496,9 +498,17 @@ export class HostSessionRevisionCoordinator {
   async #discard(header: SessionHeader): Promise<void> {
     const copy = header.conversationCopy;
     if (!copy) throw new Error('Session is not a conversation copy');
-    await this.#artifacts.purgeSessionArtifacts(header.id);
-    await this.#taskLedger.purgeConversationTaskLedger(header.id);
-    await this.#stores.agentRunStore.purgeConversationRuntimeLedger(header.id);
+    const sidecars = await Promise.allSettled([
+      this.#artifacts.purgeSessionArtifacts(header.id),
+      this.#taskLedger.purgeConversationTaskLedger(header.id),
+      this.#stores.agentRunStore.purgeConversationRuntimeLedger(header.id),
+    ]);
+    const failures = sidecars.flatMap((result) =>
+      result.status === 'rejected' ? [result.reason] : [],
+    );
+    if (failures.length > 0) {
+      throw new AggregateError(failures, `Conversation copy ${header.id} could not be purged`);
+    }
     await this.#stores.sessionStore.discardStableConversationCopy(
       header.id,
       copy.requestFingerprint,
@@ -548,7 +558,7 @@ function conversationCopyFingerprint(
 function conversationCopyStartNote(
   kind: ConversationCopyKind,
   input: SessionConversationCopyInput,
-  createInput: CreateSessionInput,
+  createInput: ConversationCopyCreateInput,
 ): StoredMessage {
   return {
     type: 'system_note',

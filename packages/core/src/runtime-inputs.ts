@@ -10,7 +10,6 @@ import type {
   SubagentSessionParent,
   SubagentSessionRuntime,
   SubagentSessionSpawn,
-  SessionConversationCopy,
 } from './session.js';
 import type { PermissionMode } from './permission.js';
 import type { ThinkingLevel } from './model-thinking.js';
@@ -50,7 +49,6 @@ export interface CreateSessionInput {
   subagentRuntime?: SubagentSessionRuntime;
   subagentSpawn?: SubagentSessionSpawn;
   subagentWorkspace?: SubagentWorkspaceBinding;
-  conversationCopy?: SessionConversationCopy;
   revisionRootSessionId?: string;
   revisionParentSessionId?: string;
   revisionOfTurnId?: string;

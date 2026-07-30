@@ -9,6 +9,7 @@ import type {
   ToolResultContent,
 } from '@maka/core';
 import { decodeCanonicalToolResultContent, isSessionInlineRun } from '@maka/core';
+import { TOOL_RECOVERY_DECISION_FACT_KIND } from '@maka/core/tool-recovery-fact';
 import type { RuntimeReadModelSessionView } from './runtime-read-model.js';
 import {
   buildHistoryCompactCheckpoint,
@@ -35,27 +36,45 @@ export interface ConversationCopySlice {
   readonly beforeTs?: number;
 }
 
-export interface ConversationCopyReferenceMap {
+interface ConversationCopyIdentityMap {
   readonly sourceSessionId: string;
   readonly targetSessionId: string;
-  readonly artifactIds?: ReadonlyMap<string, string>;
-  readonly relativePaths?: ReadonlyMap<string, string>;
-  readonly runIds?: ReadonlyMap<string, string>;
-  readonly invocationIds?: ReadonlyMap<string, string>;
-  readonly runtimeEventIds?: ReadonlyMap<string, string>;
-  readonly providerTraceIds?: ReadonlyMap<string, string>;
-  readonly agentRunEventIds?: ReadonlyMap<string, string>;
 }
+
+export type ConversationCopyArtifactReferenceMap =
+  | (ConversationCopyIdentityMap & {
+      readonly mode: 'exact';
+      readonly artifactIds: ReadonlyMap<string, string>;
+      readonly relativePaths: ReadonlyMap<string, string>;
+    })
+  | (ConversationCopyIdentityMap & {
+      readonly mode: 'preserve_external';
+    });
+
+export type ConversationCopyMessageReferenceMap = ConversationCopyArtifactReferenceMap & {
+  readonly runIds: ReadonlyMap<string, string>;
+  readonly runtimeEventIds: ReadonlyMap<string, string>;
+  readonly providerTraceIds: ReadonlyMap<string, string>;
+};
+
+export type ConversationCopyReferenceMap = ConversationCopyMessageReferenceMap & {
+  readonly invocationIds: ReadonlyMap<string, string>;
+  readonly agentRunEventIds: ReadonlyMap<string, string>;
+};
 
 export interface CloneConversationRuntimeLedgerInput {
   readonly source: RuntimeReadModelSessionView;
-  readonly sourceSessionId: string;
-  readonly targetSessionId: string;
   readonly copiedMessages: readonly StoredMessage[];
   readonly copyTurnIds?: readonly string[];
-  readonly referenceMap: ConversationCopyReferenceMap;
+  readonly referenceMap: ConversationCopyArtifactReferenceMap;
   readonly runStore: AgentRunStore;
-  readonly runtimeEventStore: RuntimeEventStore;
+  readonly runtimeEventStore: RuntimeEventStore & {
+    importConversationCopyRuntimeEvents?(
+      sessionId: string,
+      runId: string,
+      events: readonly RuntimeEvent[],
+    ): Promise<void>;
+  };
   readonly newId: () => string;
 }
 
@@ -116,7 +135,7 @@ export function createConversationCopySlice(
 
 export function rewriteConversationCopyMessage(
   message: StoredMessage,
-  references: ConversationCopyReferenceMap,
+  references: ConversationCopyMessageReferenceMap,
 ): StoredMessage {
   if (message.type === 'user' && message.attachments) {
     return {
@@ -166,7 +185,7 @@ export async function cloneConversationRuntimeLedger(
   if (transcriptTurnIds.length === 0) {
     return { runIdMap: [], runtimeEventIdMap: [], providerTraceIdMap: [] };
   }
-  const sourceRuns = await input.runStore.listSessionRuns(input.sourceSessionId);
+  const sourceRuns = await input.runStore.listSessionRuns(input.referenceMap.sourceSessionId);
   const copyTurnIds =
     input.copyTurnIds ?? conversationCopyTurnClosure(sourceRuns, transcriptTurnIds);
   const copiedTurnIds = new Set(copyTurnIds);
@@ -228,7 +247,6 @@ export async function cloneConversationRuntimeLedger(
   const providerTraceIds = providerTraceIdMap(flattenedPlans, input.newId);
   const references: ConversationCopyReferenceMap = {
     ...input.referenceMap,
-    targetSessionId: input.targetSessionId,
     runIds,
     invocationIds,
     runtimeEventIds,
@@ -245,7 +263,7 @@ export async function cloneConversationRuntimeLedger(
         cloneRuntimeEvent(
           event,
           {
-            sessionId: input.targetSessionId,
+            sessionId: input.referenceMap.targetSessionId,
             runId,
             eventId: runtimeEventIds.get(event.id)!,
             invocationId,
@@ -263,22 +281,34 @@ export async function cloneConversationRuntimeLedger(
     const invocationId = targetInvocationIds.get(plan.run.runId)!;
     const clonedRun = cloneRunHeader(
       plan.run,
-      input.targetSessionId,
+      input.referenceMap.targetSessionId,
       runId,
       invocationId,
       references,
     );
     await input.runStore.createRun(clonedRun);
 
-    for (const event of plan.events) {
-      const clonedEvent = clonedEventBySourceId.get(event.id)!;
-      await input.runtimeEventStore.appendRuntimeEvent(input.targetSessionId, runId, clonedEvent);
+    const clonedRuntimeEvents = plan.events.map((event) => clonedEventBySourceId.get(event.id)!);
+    if (input.runtimeEventStore.importConversationCopyRuntimeEvents) {
+      await input.runtimeEventStore.importConversationCopyRuntimeEvents(
+        input.referenceMap.targetSessionId,
+        runId,
+        clonedRuntimeEvents,
+      );
+    } else {
+      for (const clonedEvent of clonedRuntimeEvents) {
+        await input.runtimeEventStore.appendRuntimeEvent(
+          input.referenceMap.targetSessionId,
+          runId,
+          clonedEvent,
+        );
+      }
     }
     for (const event of plan.operationalEvents) {
       const clonedEvent = cloneAgentRunEvent(
         event,
         {
-          sessionId: input.targetSessionId,
+          sessionId: input.referenceMap.targetSessionId,
           runId,
           eventId: operationalEventIds.get(event.id),
         },
@@ -290,7 +320,7 @@ export async function cloneConversationRuntimeLedger(
         providerTraceIds,
       );
       if (clonedEvent) {
-        await input.runStore.appendEvent(input.targetSessionId, runId, clonedEvent);
+        await input.runStore.appendEvent(input.referenceMap.targetSessionId, runId, clonedEvent);
       }
     }
 
@@ -303,7 +333,7 @@ export async function cloneConversationRuntimeLedger(
         runStore: input.runStore,
         runtimeEventStore: input.runtimeEventStore,
         newId: input.newId,
-        sessionId: input.targetSessionId,
+        sessionId: input.referenceMap.targetSessionId,
         runId,
         turnId: plan.run.turnId,
         status: plan.terminal.fact.runStatus,
@@ -526,17 +556,13 @@ function requiredMappedId(
 
 function rewriteOwnedArtifactId(
   sourceArtifactId: string,
-  references: ConversationCopyReferenceMap,
+  references: ConversationCopyArtifactReferenceMap,
 ): string {
+  if (references.mode === 'preserve_external') return sourceArtifactId;
   return rewriteOwnedId(sourceArtifactId, references.artifactIds, 'Artifact');
 }
 
-function rewriteOwnedId(
-  sourceId: string,
-  ids: ReadonlyMap<string, string> | undefined,
-  kind: string,
-): string {
-  if (!ids) return sourceId;
+function rewriteOwnedId(sourceId: string, ids: ReadonlyMap<string, string>, kind: string): string {
   return requiredMappedId(ids, sourceId, kind);
 }
 
@@ -697,7 +723,7 @@ function rewriteRuntimeEventReferences(
     ? (() => {
         const { traceEventId: _traceEventId, ...preserved } = event.refs;
         const traceEventId = event.refs.traceEventId
-          ? references.agentRunEventIds?.get(event.refs.traceEventId)
+          ? references.agentRunEventIds.get(event.refs.traceEventId)
           : undefined;
         return {
           ...preserved,
@@ -733,16 +759,48 @@ function rewriteRuntimeEventReferences(
         };
       })()
     : undefined;
+  const actions = rewriteRuntimeEventActions(event.actions, references);
   return {
     ...event,
     ...(content ? { content } : {}),
+    ...(actions ? { actions } : {}),
     ...(refs ? { refs } : {}),
+  };
+}
+
+function rewriteRuntimeEventActions(
+  actions: RuntimeEvent['actions'],
+  references: ConversationCopyReferenceMap,
+): RuntimeEvent['actions'] {
+  const recovery = actions?.toolRecovery;
+  if (!recovery || recovery.kind !== TOOL_RECOVERY_DECISION_FACT_KIND) return actions;
+  const payload = recovery.payload;
+  return {
+    ...actions,
+    toolRecovery: {
+      ...recovery,
+      payload: {
+        ...payload,
+        evidenceEventIds: payload.evidenceEventIds.map((eventId) =>
+          requiredMappedId(references.runtimeEventIds, eventId, 'RuntimeEvent'),
+        ),
+        ...(payload.disposition === 'completed'
+          ? {
+              outcomeEventId: requiredMappedId(
+                references.runtimeEventIds,
+                payload.outcomeEventId,
+                'RuntimeEvent',
+              ),
+            }
+          : {}),
+      },
+    },
   };
 }
 
 function rewriteToolResultContent(
   content: ToolResultContent,
-  references: ConversationCopyReferenceMap,
+  references: ConversationCopyMessageReferenceMap,
 ): ToolResultContent {
   if (content.kind === 'image') {
     return { ...content, ref: rewriteStorageRef(content.ref, references) };
@@ -797,7 +855,7 @@ function rewriteToolResultContent(
 
 function rewriteRuntimeToolResult(
   value: unknown,
-  references: ConversationCopyReferenceMap,
+  references: ConversationCopyMessageReferenceMap,
 ): unknown {
   if (isArchivedToolResultPlaceholder(value)) {
     return rewriteArchivedToolResult(value, references);
@@ -813,14 +871,18 @@ function rewriteRuntimeToolResult(
 
 function rewriteArtifactIds(
   artifactIds: readonly string[],
-  references: ConversationCopyReferenceMap,
+  references: ConversationCopyArtifactReferenceMap,
 ): readonly string[] {
   return artifactIds.map((artifactId) => rewriteOwnedArtifactId(artifactId, references));
 }
 
-function rewriteStorageRef(ref: StorageRef, references: ConversationCopyReferenceMap): StorageRef {
+function rewriteStorageRef(
+  ref: StorageRef,
+  references: ConversationCopyArtifactReferenceMap,
+): StorageRef {
   if (ref.kind !== 'session_file' || ref.sessionId !== references.sourceSessionId) return ref;
-  const relativePath = references.relativePaths?.get(ref.relativePath);
+  if (references.mode === 'preserve_external') return ref;
+  const relativePath = references.relativePaths.get(ref.relativePath);
   if (!relativePath) {
     throw new Error(`Conversation copy is missing Session file ${ref.relativePath}`);
   }
@@ -833,7 +895,7 @@ function rewriteStorageRef(ref: StorageRef, references: ConversationCopyReferenc
 
 function rewriteArchivedToolResult(
   value: ArchivedToolResultPlaceholder,
-  references: ConversationCopyReferenceMap,
+  references: ConversationCopyMessageReferenceMap,
 ): ArchivedToolResultPlaceholder {
   const artifactId = rewriteOwnedArtifactId(value.artifactId, references);
   const resource = value.resourceRef

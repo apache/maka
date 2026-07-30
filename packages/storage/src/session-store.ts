@@ -59,6 +59,7 @@ import type {
   SandboxBoundaryRequest,
   SandboxBoundarySettlement,
   SessionHeader,
+  SessionConversationCopy,
   SessionListFilter,
   SessionSummary,
   StoredMessage,
@@ -127,8 +128,12 @@ export type SessionCatalogPageResult =
 export interface CreateStableSessionRequest {
   readonly sessionId: string;
   readonly requestFingerprint: string;
-  readonly input: CreateSessionInput;
+  readonly input: StableSessionCreateInput;
 }
+
+export type StableSessionCreateInput = CreateSessionInput & {
+  readonly conversationCopy?: SessionConversationCopy;
+};
 
 export type CreateStableSessionResult =
   | { readonly kind: 'created'; readonly record: SessionHeaderSnapshot }
@@ -283,6 +288,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
     initialBoundary?: ExecutionBoundary,
   ): Promise<SessionHeader> {
     await this.ensureReady();
+    assertNoConversationCopyMetadata(input);
     if (input.subagentSpawn) {
       throw new Error('Subagent spawn metadata requires createSubagent()');
     }
@@ -310,6 +316,12 @@ class SqliteSessionStore implements SessionAuthorityStore {
     initialBoundary?: ExecutionBoundary,
   ): Promise<CreateStableSessionResult> {
     await this.ensureReady();
+    if (
+      request.input.conversationCopy &&
+      request.input.conversationCopy.requestFingerprint !== request.requestFingerprint
+    ) {
+      throw new Error('Conversation copy fingerprint does not match the stable create request');
+    }
     if (request.input.subagentSpawn) {
       throw new Error('Subagent spawn metadata requires createSubagent()');
     }
@@ -363,6 +375,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
     initialBoundary?: ExecutionBoundary,
   ): Promise<{ header: SessionHeader; created: boolean }> {
     await this.ensureReady();
+    assertNoConversationCopyMetadata(input);
     const staged = await this.files.createTranscript(input);
     try {
       const result = await this.metadata.createSubagent(staged, initialBoundary);
@@ -381,6 +394,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
     initialBoundary?: ExecutionBoundary,
   ): Promise<{ header: SessionHeader } & AgentGraphOperatorProvisionResult> {
     await this.ensureReady();
+    assertNoConversationCopyMetadata(input);
     const staged = await this.files.createTranscript(input);
     try {
       const result = await this.metadata.createAgentGraphOperator(
@@ -853,6 +867,7 @@ class FileSessionStore implements SessionStore {
   }
 
   async create(input: CreateSessionInput): Promise<SessionHeader> {
+    assertNoConversationCopyMetadata(input);
     if (input.subagentSpawn) {
       throw new Error('Child-session idempotency requires the SQLite metadata control plane');
     }
@@ -860,14 +875,21 @@ class FileSessionStore implements SessionStore {
   }
 
   async createTranscript(input: CreateSessionInput, sessionId?: string): Promise<SessionHeader> {
+    assertNoConversationCopyMetadata(input);
     return this.createWithInitialRecord(input, 'transcript-marker', sessionId);
   }
 
   async ensureStableTranscript(
-    input: CreateSessionInput,
+    input: StableSessionCreateInput,
     sessionId: string,
   ): Promise<SessionHeader> {
-    return this.createWithInitialRecord(input, 'transcript-marker', sessionId, true);
+    return this.createWithInitialRecord(
+      input,
+      'transcript-marker',
+      sessionId,
+      true,
+      input.conversationCopy,
+    );
   }
 
   private async createWithInitialRecord(
@@ -875,6 +897,7 @@ class FileSessionStore implements SessionStore {
     initialRecord: 'legacy-header' | 'transcript-marker',
     sessionId?: string,
     reuseStableTranscript = false,
+    conversationCopy?: SessionConversationCopy,
   ): Promise<SessionHeader> {
     if (
       input.projectId !== undefined &&
@@ -925,7 +948,7 @@ class FileSessionStore implements SessionStore {
       ...(input.subagentRuntime ? { subagentRuntime: input.subagentRuntime } : {}),
       ...(input.subagentSpawn ? { subagentSpawn: input.subagentSpawn } : {}),
       ...(input.subagentWorkspace ? { subagentWorkspace: input.subagentWorkspace } : {}),
-      ...(input.conversationCopy ? { conversationCopy: input.conversationCopy } : {}),
+      ...(conversationCopy ? { conversationCopy } : {}),
       ...(input.revisionRootSessionId
         ? { revisionRootSessionId: input.revisionRootSessionId }
         : {}),
@@ -1869,6 +1892,12 @@ function isFiniteNumber(value: unknown): value is number {
 
 function hasErrorCode(error: unknown, code: string): boolean {
   return (error as NodeJS.ErrnoException | undefined)?.code === code;
+}
+
+function assertNoConversationCopyMetadata(input: CreateSessionInput): void {
+  if (Object.prototype.hasOwnProperty.call(input, 'conversationCopy')) {
+    throw new Error('Conversation copy metadata requires createStableSession()');
+  }
 }
 
 function projectHeaderSnapshot(record: SessionMetadataRecord): SessionHeaderSnapshot {

@@ -40,6 +40,7 @@ import {
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENT_COUNT,
   messageContentsEqual,
+  scanToolLedger,
   validateGenericToolLedgerAppend,
   validateToolLedgerTransition,
   type AgentRunEvent,
@@ -140,6 +141,11 @@ export interface DurableAgentRunStore extends AgentRunStore, RootTurnAdmissionSt
 }
 
 export interface DurableRuntimeEventStore extends RuntimeEventStore {
+  importConversationCopyRuntimeEvents(
+    sessionId: string,
+    runId: string,
+    events: readonly RuntimeEvent[],
+  ): Promise<void>;
   readImmutableRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
   readImmutableSteeringMessageProof(
     sessionId: string,
@@ -1781,6 +1787,51 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
       return;
     }
     await this.appendRuntimeEventForRun(sessionId, runId, canonicalEvent, options);
+  }
+
+  async importConversationCopyRuntimeEvents(
+    sessionId: string,
+    runId: string,
+    events: readonly RuntimeEvent[],
+  ): Promise<void> {
+    assertSafeId(sessionId, 'Invalid session id');
+    assertSafeId(runId, 'Invalid run id');
+    const canonicalEvents = events.map(canonicalizeRuntimeEventForStorage);
+    if (canonicalEvents.some((event) => event.partial)) {
+      throw new Error('Conversation copy cannot import partial RuntimeEvents');
+    }
+    const scan = scanToolLedger(canonicalEvents);
+    if (scan.hasCorruption) {
+      throw new Error(
+        `Conversation copy RuntimeEvent ledger is corrupt: ${scan.issues[0]?.code ?? 'unknown'}`,
+      );
+    }
+    await this.withQueue(sessionId, runId, async () => {
+      const header = await this.readRunHeader(sessionId, runId);
+      for (const event of canonicalEvents) decodeRuntimeEvent(event, header);
+      const path = this.runtimeEventsPath(sessionId, runId);
+      const existing = await readRuntimeEventJsonl(path, header);
+      if (existing.length > 0) {
+        if (!isDeepStrictEqual(existing, canonicalEvents)) {
+          throw new Error(`Conversation copy RuntimeEvent identity conflict for run ${runId}`);
+        }
+      } else if (canonicalEvents.length > 0) {
+        await appendJsonl(
+          path,
+          `${canonicalEvents.map((event) => encodeCanonicalRuntimeEvent(event).json).join('\n')}\n`,
+          { durable: true, durabilityRoot: this.durabilityRoot },
+        );
+      }
+      for (const event of canonicalEvents) {
+        await this.settleImmutableRuntimeEventPostEffects({
+          sessionId,
+          runId,
+          event,
+          path,
+          ensureDurability: false,
+        });
+      }
+    });
   }
 
   private async appendRuntimeEventForRun(
