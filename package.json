@@ -43,6 +43,7 @@
     "verify:macos-arm64": "node scripts/verify-macos-arm64-dmg.mjs",
     "measure:session-bundle": "node scripts/measure-session-bundle.mjs",
     "check:chat-visual": "electron scripts/check-chat-marker-computed-style.mjs",
+    "check:visual-contract": "node scripts/check-visual-contract.mjs",
     "sync:model-metadata": "node scripts/sync-model-metadata.mjs",
     "cost:deepseek-baseline": "node scripts/deepseek-live-cost-baseline.mjs",
     "benchmark:kimi-protocol-ab": "node packages/headless/harbor/run-kimi-protocol-ab.mjs",

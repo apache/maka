@@ -1,0 +1,6049 @@
+[
+ {
+  "path": "body",
+  "rect": [
+   0,
+   0,
+   1240,
+   820
+  ],
+  "display": "block",
+  "pointerEvents": "auto",
+  "cursor": "auto",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontFamily": "-apple-system, \"system-ui\", system-ui, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", \"Microsoft YaHei UI\", \"Noto Sans CJK SC\", \"Noto Sans SC\", \"WenQuanYi Micro Hei\", \"Source Han Sans SC\", \"Geist Variable\", sans-serif",
+  "fontSize": "13px",
+  "fontWeight": "400",
+  "lineHeight": "19.5px",
+  "color": "oklch(0.17 0.005 286)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div",
+  "rect": [
+   0,
+   0,
+   1240,
+   820
+  ],
+  "display": "flex",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "alignItems": "center",
+  "justifyContent": "center",
+  "placeItems": "center normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div",
+  "rect": [
+   0,
+   0,
+   1240,
+   820
+  ],
+  "classes": "appFrame",
+  "display": "block",
+  "position": "relative",
+  "inset": "0px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "backgroundColor": "oklch(0.976 0 0)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div",
+  "rect": [
+   0,
+   0,
+   1240,
+   820
+  ],
+  "classes": "maka-shell-2col",
+  "display": "grid",
+  "position": "relative",
+  "inset": "0px",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "alignItems": "stretch",
+  "placeItems": "stretch normal",
+  "gap": "0px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>header",
+  "rect": [
+   4,
+   4,
+   1232,
+   32
+  ],
+  "classes": "maka-window-titlebar",
+  "display": "flex",
+  "padding": "0px 24px 0px 88px",
+  "margin": "4px 4px 0px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "8px",
+  "gridArea": "1 / 1 / auto / -1"
+ },
+ {
+  "path": "body>div>div>div>header>div",
+  "rect": [
+   92,
+   6,
+   64,
+   28
+  ],
+  "label": "窗口快捷操作",
+  "classes": "maka-shell-topbar-rail",
+  "display": "flex",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "8px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>header>div>button",
+  "rect": [
+   92,
+   6,
+   28,
+   28
+  ],
+  "label": "搜索对话",
+  "classes": "maka-titlebar-action",
+  "display": "flex",
+  "cursor": "default",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "lineHeight": "18px",
+  "color": "oklch(0.336 0.004 300.8)",
+  "alignItems": "center",
+  "justifyContent": "center",
+  "placeItems": "center normal",
+  "gap": "8px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>header>div>button>svg",
+  "rect": [
+   98,
+   12,
+   16,
+   16
+  ],
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>header>div>button>svg>path",
+  "rect": [
+   109,
+   23,
+   3,
+   3
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>header>div>button>svg>circle",
+  "rect": [
+   100,
+   14,
+   10.5,
+   10.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>header>div>button:2",
+  "rect": [
+   128,
+   6,
+   28,
+   28
+  ],
+  "label": "收起侧边栏",
+  "classes": "maka-titlebar-action",
+  "display": "flex",
+  "cursor": "default",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "lineHeight": "18px",
+  "color": "oklch(0.336 0.004 300.8)",
+  "alignItems": "center",
+  "justifyContent": "center",
+  "placeItems": "center normal",
+  "gap": "8px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>header>div>button:2>svg",
+  "rect": [
+   134,
+   12,
+   16,
+   16
+  ],
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>header>div>button:2>svg>rect",
+  "rect": [
+   136,
+   14,
+   12,
+   12
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>header>div>button:2>svg>path:2",
+  "rect": [
+   142.5,
+   18,
+   2,
+   4
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>header>div:2",
+  "rect": [
+   1184,
+   6,
+   28,
+   28
+  ],
+  "label": "工作区辅助操作",
+  "role": "toolbar",
+  "classes": "maka-workspace-top-actions",
+  "display": "flex",
+  "margin": "0px 0px 0px 1020px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "color": "oklch(0.336 0.004 300.8)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "6px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>header>div:2>button",
+  "rect": [
+   1184,
+   6,
+   28,
+   28
+  ],
+  "label": "更多操作",
+  "classes": "maka-titlebar-action",
+  "display": "flex",
+  "cursor": "default",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "lineHeight": "18px",
+  "alignItems": "center",
+  "justifyContent": "center",
+  "placeItems": "center normal",
+  "gap": "8px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>header>div:2>button>svg",
+  "rect": [
+   1190,
+   12,
+   16,
+   16
+  ],
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>header>div:2>button>svg>circle",
+  "rect": [
+   1197.5,
+   19.5,
+   1.5,
+   1.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>header>div:2>button>svg>circle:2",
+  "rect": [
+   1202,
+   19.5,
+   1.5,
+   1.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>header>div:2>button>svg>circle:3",
+  "rect": [
+   1192.5,
+   19.5,
+   1.5,
+   1.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div",
+  "rect": [
+   0,
+   36,
+   210,
+   784
+  ],
+  "classes": "maka-panel maka-panel-list maka-floating-panel",
+  "display": "block",
+  "overflow": "hidden",
+  "borderColor": "oklch(0.17 0.005 286)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside",
+  "rect": [
+   0,
+   36,
+   210,
+   784
+  ],
+  "label": "对话列表",
+  "classes": "maka-session-panel",
+  "display": "grid",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>nav",
+  "rect": [
+   0,
+   36,
+   210,
+   106
+  ],
+  "label": "主导航",
+  "classes": "maka-sidebar-modules",
+  "display": "grid",
+  "padding": "4px 8px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "1px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>nav>button",
+  "rect": [
+   8,
+   40,
+   194,
+   32
+  ],
+  "label": "新任务",
+  "classes": "maka-nav-row maka-nav-new-task",
+  "display": "grid",
+  "cursor": "default",
+  "padding": "2px 6px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "fontWeight": "500",
+  "lineHeight": "18px",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "8px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>nav>button>svg",
+  "rect": [
+   14,
+   48,
+   16,
+   16
+  ],
+  "classes": "maka-nav-icon",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "color": "oklch(0.336 0.004 300.8)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>nav>button>svg>path",
+  "rect": [
+   16,
+   50,
+   12,
+   12
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>nav>button>svg>path:2",
+  "rect": [
+   19.5,
+   49.5,
+   9.5,
+   9.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>nav>button>span",
+  "rect": [
+   38,
+   47,
+   127.5,
+   18
+  ],
+  "label": "新任务",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>nav>button>kbd",
+  "rect": [
+   173.5,
+   48,
+   22.5,
+   16.5
+  ],
+  "label": "⌘ N",
+  "classes": "maka-nav-kbd",
+  "display": "block",
+  "borderColor": "oklch(0.585 0.0025 323)",
+  "fontSize": "11px",
+  "fontWeight": "400",
+  "lineHeight": "16.5px",
+  "color": "oklch(0.585 0.0025 323)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>nav>button:2",
+  "rect": [
+   8,
+   73,
+   194,
+   32
+  ],
+  "label": "扩展",
+  "classes": "maka-nav-row",
+  "display": "grid",
+  "cursor": "default",
+  "padding": "2px 6px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "fontWeight": "600",
+  "lineHeight": "18px",
+  "backgroundColor": "oklch(0.17 0.005 286 / 0.065)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "8px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>nav>button:2>svg",
+  "rect": [
+   14,
+   81,
+   16,
+   16
+  ],
+  "classes": "maka-nav-icon",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>nav>button:2>svg>path",
+  "rect": [
+   15.5,
+   85,
+   10.5,
+   10.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>nav>button:2>svg>rect",
+  "rect": [
+   23.5,
+   82.5,
+   5.5,
+   5.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>nav>button:2>span",
+  "rect": [
+   38,
+   80,
+   150,
+   18
+  ],
+  "label": "扩展",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>nav>button:3",
+  "rect": [
+   8,
+   106,
+   194,
+   32
+  ],
+  "label": "定时任务",
+  "classes": "maka-nav-row",
+  "display": "grid",
+  "cursor": "default",
+  "padding": "2px 6px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "fontWeight": "500",
+  "lineHeight": "18px",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "8px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>nav>button:3>svg",
+  "rect": [
+   14,
+   114,
+   16,
+   16
+  ],
+  "classes": "maka-nav-icon",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "color": "oklch(0.336 0.004 300.8)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>nav>button:3>svg>line:2",
+  "rect": [
+   22,
+   121.5,
+   2,
+   2
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>nav>button:3>svg>circle",
+  "rect": [
+   16.5,
+   118,
+   10.5,
+   10.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>nav>button:3>span",
+  "rect": [
+   38,
+   113,
+   150,
+   18
+  ],
+  "label": "定时任务",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>div",
+  "rect": [
+   0,
+   142,
+   210,
+   32
+  ],
+  "classes": "maka-session-list-toolbar",
+  "display": "flex",
+  "padding": "0px 8px 2px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "alignItems": "center",
+  "justifyContent": "space-between",
+  "placeItems": "center normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>div>span",
+  "rect": [
+   8,
+   147.5,
+   32,
+   19.5
+  ],
+  "label": "会话",
+  "classes": "maka-session-list-heading",
+  "display": "block",
+  "padding": "0px 0px 0px 6px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontWeight": "600",
+  "color": "oklch(0.585 0.0025 323)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>div>button",
+  "rect": [
+   174,
+   143,
+   28,
+   28
+  ],
+  "label": "会话分组方式",
+  "display": "flex",
+  "cursor": "default",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "lineHeight": "18px",
+  "color": "oklch(0.336 0.004 300.8)",
+  "alignItems": "center",
+  "justifyContent": "center",
+  "placeItems": "center normal",
+  "gap": "8px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>div>button>svg",
+  "rect": [
+   180,
+   149,
+   16,
+   16
+  ],
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>div>button>svg>path:4",
+  "rect": [
+   182,
+   159,
+   4,
+   2.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>div>button>svg>rect",
+  "rect": [
+   182,
+   151.5,
+   4,
+   4
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section",
+  "rect": [
+   0,
+   174,
+   210,
+   599
+  ],
+  "label": "会话",
+  "classes": "maka-session-list",
+  "display": "grid",
+  "position": "relative",
+  "inset": "0px",
+  "overflow": "hidden",
+  "padding": "4px 0px 0px",
+  "borderStyle": "none solid solid",
+  "borderColor": "oklch(0.17 0.005 286) oklch(0.17 0.005 286 / 0.1) oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div",
+  "rect": [
+   0,
+   178,
+   210,
+   200
+  ],
+  "classes": "maka-overlay-scrollarea maka-list-stack",
+  "display": "flex",
+  "position": "relative",
+  "inset": "0px",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "alignItems": "stretch",
+  "placeItems": "stretch normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2",
+  "rect": [
+   0,
+   178,
+   210,
+   200
+  ],
+  "classes": "maka-overlay-scrollarea-viewport maka-list-stackViewport",
+  "display": "block",
+  "position": "relative",
+  "inset": "0px",
+  "zIndex": "0",
+  "overflow": "auto",
+  "borderColor": "oklch(0.17 0.005 286)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div",
+  "rect": [
+   0,
+   178,
+   210,
+   200
+  ],
+  "classes": "maka-overlay-scrollarea-content maka-list-stackContent",
+  "display": "grid",
+  "padding": "2px 8px 6px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "1px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div",
+  "rect": [
+   8,
+   180,
+   194,
+   192
+  ],
+  "classes": "maka-list-group",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "0px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div",
+  "rect": [
+   8,
+   180,
+   194,
+   192
+  ],
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div",
+  "rect": [
+   8,
+   180,
+   194,
+   32
+  ],
+  "classes": "maka-list-session-tree",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div>div",
+  "rect": [
+   8,
+   180,
+   194,
+   32
+  ],
+  "classes": "maka-list-row",
+  "display": "flex",
+  "position": "relative",
+  "inset": "0px",
+  "overflow": "hidden",
+  "borderColor": "oklch(0.17 0.005 286)",
+  "borderRadius": "6px",
+  "alignItems": "stretch",
+  "placeItems": "stretch normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div>div>button",
+  "rect": [
+   8,
+   180,
+   194,
+   32
+  ],
+  "classes": "maka-list-row-main",
+  "display": "grid",
+  "cursor": "default",
+  "padding": "2px 8px 2px 10px",
+  "borderColor": "oklch(0.17 0.005 286)",
+  "borderRadius": "6px",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "6px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div>div>button>div",
+  "rect": [
+   18,
+   186.5,
+   130,
+   19.5
+  ],
+  "classes": "maka-list-row-text",
+  "display": "flex",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div>div>button>div>div",
+  "rect": [
+   18,
+   186.5,
+   102,
+   19.5
+  ],
+  "classes": "maka-list-row-name",
+  "display": "flex",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontWeight": "500",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "6px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div>div>button>div>div>span",
+  "rect": [
+   18,
+   189,
+   14,
+   14
+  ],
+  "label": "进行中",
+  "classes": "maka-list-row-status-icon",
+  "display": "flex",
+  "overflow": "hidden",
+  "margin": "0px 4px 0px 0px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "color": "oklch(0.7 0.135 250)",
+  "alignItems": "center",
+  "justifyContent": "center",
+  "placeItems": "center normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div>div>button>div>div>span>svg",
+  "rect": [
+   19,
+   190,
+   12,
+   12
+  ],
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div>div>button>div>div>span>svg>path",
+  "rect": [
+   20.5,
+   191.5,
+   9,
+   9
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div>div>button>div>div>span:2",
+  "rect": [
+   42,
+   186.5,
+   78,
+   19.5
+  ],
+  "label": "正在处理请求",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div>div>button>span",
+  "rect": [
+   154,
+   188,
+   40,
+   16.5
+  ],
+  "label": "2秒钟前",
+  "classes": "maka-list-row-meta",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "11px",
+  "fontWeight": "500",
+  "lineHeight": "16.5px",
+  "color": "oklch(0.585 0.0025 323)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div>div>button:2>svg",
+  "rect": [
+   178,
+   188,
+   16,
+   16
+  ],
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div>div>button:2>svg>circle",
+  "rect": [
+   185.5,
+   195.5,
+   1.5,
+   1.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div>div>button:2>svg>circle:2",
+  "rect": [
+   190,
+   195.5,
+   1.5,
+   1.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div>div>button:2>svg>circle:3",
+  "rect": [
+   180.5,
+   195.5,
+   1.5,
+   1.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:2",
+  "rect": [
+   8,
+   212,
+   194,
+   32
+  ],
+  "classes": "maka-list-session-tree",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:2>div",
+  "rect": [
+   8,
+   212,
+   194,
+   32
+  ],
+  "classes": "maka-list-row",
+  "display": "flex",
+  "position": "relative",
+  "inset": "0px",
+  "overflow": "hidden",
+  "borderColor": "oklch(0.17 0.005 286)",
+  "borderRadius": "6px",
+  "alignItems": "stretch",
+  "placeItems": "stretch normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:2>div>button",
+  "rect": [
+   8,
+   212,
+   194,
+   32
+  ],
+  "classes": "maka-list-row-main",
+  "display": "grid",
+  "cursor": "default",
+  "padding": "2px 8px 2px 10px",
+  "borderColor": "oklch(0.17 0.005 286)",
+  "borderRadius": "6px",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "6px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:2>div>button>div",
+  "rect": [
+   18,
+   218.5,
+   162,
+   19.5
+  ],
+  "classes": "maka-list-row-text",
+  "display": "flex",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:2>div>button>div>div",
+  "rect": [
+   18,
+   218.5,
+   78,
+   19.5
+  ],
+  "classes": "maka-list-row-name",
+  "display": "flex",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontWeight": "500",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "6px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:2>div>button>div>div>span",
+  "rect": [
+   18,
+   218.5,
+   78,
+   19.5
+  ],
+  "label": "后台流式任务",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:2>div>button>span",
+  "rect": [
+   186,
+   224,
+   8,
+   8
+  ],
+  "label": "未读消息",
+  "classes": "maka-list-row-unread",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "999px",
+  "backgroundColor": "oklch(0.7 0.135 250)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:2>div>button:2>svg",
+  "rect": [
+   178,
+   220,
+   16,
+   16
+  ],
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:2>div>button:2>svg>circle",
+  "rect": [
+   185.5,
+   227.5,
+   1.5,
+   1.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:2>div>button:2>svg>circle:2",
+  "rect": [
+   190,
+   227.5,
+   1.5,
+   1.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:2>div>button:2>svg>circle:3",
+  "rect": [
+   180.5,
+   227.5,
+   1.5,
+   1.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:3",
+  "rect": [
+   8,
+   244,
+   194,
+   32
+  ],
+  "classes": "maka-list-session-tree",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:3>div",
+  "rect": [
+   8,
+   244,
+   194,
+   32
+  ],
+  "classes": "maka-list-row",
+  "display": "flex",
+  "position": "relative",
+  "inset": "0px",
+  "overflow": "hidden",
+  "borderColor": "oklch(0.17 0.005 286)",
+  "borderRadius": "6px",
+  "alignItems": "stretch",
+  "placeItems": "stretch normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:3>div>button",
+  "rect": [
+   8,
+   244,
+   194,
+   32
+  ],
+  "classes": "maka-list-row-main",
+  "display": "grid",
+  "cursor": "default",
+  "padding": "2px 8px 2px 10px",
+  "borderColor": "oklch(0.17 0.005 286)",
+  "borderRadius": "6px",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "6px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:3>div>button>div",
+  "rect": [
+   18,
+   250.5,
+   130,
+   19.5
+  ],
+  "classes": "maka-list-row-text",
+  "display": "flex",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:3>div>button>div>div",
+  "rect": [
+   18,
+   250.5,
+   78,
+   19.5
+  ],
+  "classes": "maka-list-row-name",
+  "display": "flex",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontWeight": "500",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "6px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:3>div>button>div>div>span",
+  "rect": [
+   18,
+   250.5,
+   78,
+   19.5
+  ],
+  "label": "危险权限确认",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:3>div>button>span",
+  "rect": [
+   154,
+   252,
+   40,
+   16.5
+  ],
+  "label": "4分钟前",
+  "classes": "maka-list-row-meta",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "11px",
+  "fontWeight": "500",
+  "lineHeight": "16.5px",
+  "color": "oklch(0.585 0.0025 323)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:3>div>button:2>svg",
+  "rect": [
+   178,
+   252,
+   16,
+   16
+  ],
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:3>div>button:2>svg>circle",
+  "rect": [
+   185.5,
+   259.5,
+   1.5,
+   1.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:3>div>button:2>svg>circle:2",
+  "rect": [
+   190,
+   259.5,
+   1.5,
+   1.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:3>div>button:2>svg>circle:3",
+  "rect": [
+   180.5,
+   259.5,
+   1.5,
+   1.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:4",
+  "rect": [
+   8,
+   276,
+   194,
+   32
+  ],
+  "classes": "maka-list-session-tree",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:4>div",
+  "rect": [
+   8,
+   276,
+   194,
+   32
+  ],
+  "classes": "maka-list-row",
+  "display": "flex",
+  "position": "relative",
+  "inset": "0px",
+  "overflow": "hidden",
+  "borderColor": "oklch(0.17 0.005 286)",
+  "borderRadius": "6px",
+  "backgroundColor": "oklch(0.17 0.005 286 / 0.065)",
+  "alignItems": "stretch",
+  "placeItems": "stretch normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:4>div>button",
+  "rect": [
+   8,
+   276,
+   194,
+   32
+  ],
+  "classes": "maka-list-row-main",
+  "display": "grid",
+  "cursor": "default",
+  "padding": "2px 8px 2px 10px",
+  "borderColor": "oklch(0.17 0.005 286)",
+  "borderRadius": "6px",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "6px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:4>div>button>div",
+  "rect": [
+   18,
+   282.5,
+   130,
+   19.5
+  ],
+  "classes": "maka-list-row-text",
+  "display": "flex",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:4>div>button>div>div",
+  "rect": [
+   18,
+   282.5,
+   130,
+   19.5
+  ],
+  "classes": "maka-list-row-name",
+  "display": "flex",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontWeight": "600",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "6px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:4>div>button>div>div>span",
+  "rect": [
+   18,
+   282.5,
+   130,
+   19.5
+  ],
+  "label": "模型管理与工具调用示例",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:4>div>button>span",
+  "rect": [
+   154,
+   284,
+   40,
+   16.5
+  ],
+  "label": "4分钟前",
+  "classes": "maka-list-row-meta",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "11px",
+  "fontWeight": "500",
+  "lineHeight": "16.5px",
+  "color": "oklch(0.585 0.0025 323)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:4>div>button:2>svg",
+  "rect": [
+   178,
+   284,
+   16,
+   16
+  ],
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:4>div>button:2>svg>circle",
+  "rect": [
+   185.5,
+   291.5,
+   1.5,
+   1.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:4>div>button:2>svg>circle:2",
+  "rect": [
+   190,
+   291.5,
+   1.5,
+   1.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:4>div>button:2>svg>circle:3",
+  "rect": [
+   180.5,
+   291.5,
+   1.5,
+   1.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:5",
+  "rect": [
+   8,
+   308,
+   194,
+   32
+  ],
+  "classes": "maka-list-session-tree",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:5>div",
+  "rect": [
+   8,
+   308,
+   194,
+   32
+  ],
+  "classes": "maka-list-row",
+  "display": "flex",
+  "position": "relative",
+  "inset": "0px",
+  "overflow": "hidden",
+  "borderColor": "oklch(0.17 0.005 286)",
+  "borderRadius": "6px",
+  "alignItems": "stretch",
+  "placeItems": "stretch normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:5>div>button",
+  "rect": [
+   8,
+   308,
+   194,
+   32
+  ],
+  "classes": "maka-list-row-main",
+  "display": "grid",
+  "cursor": "default",
+  "padding": "2px 8px 2px 10px",
+  "borderColor": "oklch(0.17 0.005 286)",
+  "borderRadius": "6px",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "6px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:5>div>button>div",
+  "rect": [
+   18,
+   314.5,
+   130,
+   19.5
+  ],
+  "classes": "maka-list-row-text",
+  "display": "flex",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:5>div>button>div>div",
+  "rect": [
+   18,
+   314.5,
+   78,
+   19.5
+  ],
+  "classes": "maka-list-row-name",
+  "display": "flex",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontWeight": "500",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "6px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:5>div>button>div>div>span",
+  "rect": [
+   18,
+   314.5,
+   78,
+   19.5
+  ],
+  "label": "生成文件验收",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:5>div>button>span",
+  "rect": [
+   154,
+   316,
+   40,
+   16.5
+  ],
+  "label": "6分钟前",
+  "classes": "maka-list-row-meta",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "11px",
+  "fontWeight": "500",
+  "lineHeight": "16.5px",
+  "color": "oklch(0.585 0.0025 323)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:5>div>button:2>svg",
+  "rect": [
+   178,
+   316,
+   16,
+   16
+  ],
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:5>div>button:2>svg>circle",
+  "rect": [
+   185.5,
+   323.5,
+   1.5,
+   1.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:5>div>button:2>svg>circle:2",
+  "rect": [
+   190,
+   323.5,
+   1.5,
+   1.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:5>div>button:2>svg>circle:3",
+  "rect": [
+   180.5,
+   323.5,
+   1.5,
+   1.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:6",
+  "rect": [
+   8,
+   340,
+   194,
+   32
+  ],
+  "classes": "maka-list-session-tree",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:6>div",
+  "rect": [
+   8,
+   340,
+   194,
+   32
+  ],
+  "classes": "maka-list-row",
+  "display": "flex",
+  "position": "relative",
+  "inset": "0px",
+  "overflow": "hidden",
+  "borderColor": "oklch(0.17 0.005 286)",
+  "borderRadius": "6px",
+  "alignItems": "stretch",
+  "placeItems": "stretch normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:6>div>button",
+  "rect": [
+   8,
+   340,
+   194,
+   32
+  ],
+  "classes": "maka-list-row-main",
+  "display": "grid",
+  "cursor": "default",
+  "padding": "2px 8px 2px 10px",
+  "borderColor": "oklch(0.17 0.005 286)",
+  "borderRadius": "6px",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "6px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:6>div>button>div",
+  "rect": [
+   18,
+   346.5,
+   122.5,
+   19.5
+  ],
+  "classes": "maka-list-row-text",
+  "display": "flex",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:6>div>button>div>div",
+  "rect": [
+   18,
+   346.5,
+   78,
+   19.5
+  ],
+  "classes": "maka-list-row-name",
+  "display": "flex",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontWeight": "500",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "6px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:6>div>button>div>div>span",
+  "rect": [
+   18,
+   346.5,
+   78,
+   19.5
+  ],
+  "label": "连接失败提示",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:6>div>button>span",
+  "rect": [
+   146.5,
+   348,
+   47.5,
+   16.5
+  ],
+  "label": "20分钟前",
+  "classes": "maka-list-row-meta",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "11px",
+  "fontWeight": "500",
+  "lineHeight": "16.5px",
+  "color": "oklch(0.585 0.0025 323)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:6>div>button:2>svg",
+  "rect": [
+   178,
+   348,
+   16,
+   16
+  ],
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:6>div>button:2>svg>circle",
+  "rect": [
+   185.5,
+   355.5,
+   1.5,
+   1.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:6>div>button:2>svg>circle:2",
+  "rect": [
+   190,
+   355.5,
+   1.5,
+   1.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>section>div>div:2>div>div>div>div:6>div>button:2>svg>circle:3",
+  "rect": [
+   180.5,
+   355.5,
+   1.5,
+   1.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>footer",
+  "rect": [
+   0,
+   773,
+   210,
+   47
+  ],
+  "classes": "maka-session-panel-footer",
+  "display": "grid",
+  "padding": "8px",
+  "borderWidth": "1px 0px 0px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.05) oklch(0.17 0.005 286 / 0.1) oklch(0.17 0.005 286 / 0.1)",
+  "backgroundColor": "oklch(0.976 0 0 / 0.15)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "6px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>footer>button",
+  "rect": [
+   8,
+   782,
+   188,
+   30
+  ],
+  "label": "设置",
+  "classes": "maka-sidebar-settings-button",
+  "display": "grid",
+  "cursor": "default",
+  "padding": "6px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "fontWeight": "500",
+  "lineHeight": "18px",
+  "color": "oklch(0.336 0.004 300.8)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "8px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>footer>button>svg",
+  "rect": [
+   14,
+   789,
+   16,
+   16
+  ],
+  "classes": "maka-nav-icon",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>footer>button>svg>path",
+  "rect": [
+   16,
+   790.5,
+   12,
+   13.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>footer>button>svg>circle",
+  "rect": [
+   20,
+   795,
+   4,
+   4
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div>aside>footer>button>span",
+  "rect": [
+   38,
+   788,
+   152,
+   18
+  ],
+  "label": "设置",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:2",
+  "rect": [
+   206,
+   36,
+   8,
+   784
+  ],
+  "label": "调整对话列表宽度",
+  "role": "separator",
+  "classes": "maka-resize-handle",
+  "display": "block",
+  "position": "relative",
+  "inset": "0px",
+  "cursor": "col-resize",
+  "padding": "0px 4px",
+  "margin": "0px -4px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3",
+  "rect": [
+   214,
+   40,
+   1022,
+   776
+  ],
+  "classes": "maka-panel maka-panel-detail maka-floating-panel",
+  "display": "flex",
+  "position": "relative",
+  "inset": "0px",
+  "overflow": "hidden",
+  "margin": "4px",
+  "borderColor": "oklch(0.17 0.005 286)",
+  "borderRadius": "12px",
+  "backgroundColor": "oklch(1 0 0)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div",
+  "rect": [
+   214,
+   40,
+   1022,
+   776
+  ],
+  "classes": "maka-detail-with-artifacts",
+  "display": "flex",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "alignItems": "stretch",
+  "placeItems": "stretch normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div",
+  "rect": [
+   214,
+   40,
+   1022,
+   776
+  ],
+  "classes": "mainColumn",
+  "display": "grid",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main",
+  "rect": [
+   214,
+   40,
+   1022,
+   776
+  ],
+  "label": "扩展",
+  "classes": "maka-main detailPane maka-module-main",
+  "display": "grid",
+  "overflow": "auto",
+  "padding": "64px 24px 24px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "16px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header",
+  "rect": [
+   275,
+   104,
+   900,
+   64
+  ],
+  "classes": "maka-module-main-header",
+  "display": "flex",
+  "borderStyle": "solid solid none",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1) oklch(0.17 0.005 286 / 0.1) oklch(0.17 0.005 286)",
+  "alignItems": "flex-start",
+  "justifyContent": "space-between",
+  "placeItems": "flex-start normal",
+  "gap": "12px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header>div",
+  "rect": [
+   275,
+   104,
+   221.5,
+   64
+  ],
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header>div>div",
+  "rect": [
+   275,
+   104,
+   221.5,
+   40.5
+  ],
+  "classes": "maka-module-hub-heading",
+  "display": "flex",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "8px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header>div>div>h2",
+  "rect": [
+   275,
+   108,
+   52,
+   32.5
+  ],
+  "label": "扩展",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "26px",
+  "fontWeight": "600",
+  "lineHeight": "32.5px",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header>div>div>span",
+  "rect": [
+   335,
+   104,
+   128.5,
+   40.5
+  ],
+  "classes": "maka-module-hub-selector",
+  "display": "flex",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "8px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header>div>div>span>span",
+  "rect": [
+   335,
+   108,
+   7.5,
+   32.5
+  ],
+  "label": "/",
+  "classes": "maka-module-hub-separator",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "26px",
+  "lineHeight": "32.5px",
+  "color": "oklch(0.17 0.005 286 / 0.16)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header>div>div>span>button",
+  "rect": [
+   350.5,
+   104,
+   113,
+   40.5
+  ],
+  "label": "扩展内容：MCP",
+  "classes": "maka-module-hub-selector-trigger",
+  "display": "flex",
+  "cursor": "default",
+  "padding": "4px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "fontSize": "26px",
+  "fontWeight": "600",
+  "lineHeight": "32.5px",
+  "alignItems": "center",
+  "justifyContent": "center",
+  "placeItems": "center normal",
+  "gap": "8px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header>div>div>span>button>svg",
+  "rect": [
+   354.5,
+   116.5,
+   16,
+   16
+  ],
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header>div>div>span>button>svg>path:3",
+  "rect": [
+   358.5,
+   121.5,
+   8,
+   6
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header>div>div>span>button>span",
+  "rect": [
+   378.5,
+   108,
+   57,
+   32.5
+  ],
+  "label": "MCP",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header>div>div>span>button>svg:2",
+  "rect": [
+   443.5,
+   116.5,
+   16,
+   16
+  ],
+  "classes": "maka-module-hub-selector-chevron",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "color": "oklch(0.336 0.004 300.8)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header>div>div>span>button>svg:2>path",
+  "rect": [
+   447.5,
+   122.5,
+   8,
+   4
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header>div>p",
+  "rect": [
+   275,
+   148.5,
+   221.5,
+   19.5
+  ],
+  "label": "管理 Maka 可调用的技能与外部工具。",
+  "display": "block",
+  "margin": "4px 0px 0px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "color": "oklch(0.336 0.004 300.8)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header>div:2",
+  "rect": [
+   862,
+   104,
+   313,
+   32
+  ],
+  "label": "MCP 操作",
+  "role": "group",
+  "classes": "maka-module-main-actions",
+  "display": "flex",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "alignItems": "center",
+  "justifyContent": "flex-end",
+  "placeItems": "center normal",
+  "gap": "8px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header>div:2>button",
+  "rect": [
+   862,
+   104,
+   76,
+   32
+  ],
+  "label": "刷新",
+  "display": "flex",
+  "cursor": "default",
+  "padding": "0px 12px",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "lineHeight": "18px",
+  "alignItems": "center",
+  "justifyContent": "center",
+  "placeItems": "center normal",
+  "gap": "8px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header>div:2>button>svg",
+  "rect": [
+   875,
+   112,
+   16,
+   16
+  ],
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header>div:2>button>svg>path",
+  "rect": [
+   877,
+   114,
+   12,
+   6
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header>div:2>button>svg>path:2",
+  "rect": [
+   877,
+   114,
+   3.5,
+   3.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header>div:2>button>svg>path:3",
+  "rect": [
+   877,
+   120,
+   12,
+   6
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header>div:2>button>svg>path:4",
+  "rect": [
+   886,
+   122.5,
+   3.5,
+   3.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header>div:2>button:2",
+  "rect": [
+   946,
+   104,
+   114,
+   32
+  ],
+  "label": "JSON 导入",
+  "display": "flex",
+  "cursor": "default",
+  "padding": "0px 12px",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "lineHeight": "18px",
+  "alignItems": "center",
+  "justifyContent": "center",
+  "placeItems": "center normal",
+  "gap": "8px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header>div:2>button:2>svg",
+  "rect": [
+   959,
+   112,
+   16,
+   16
+  ],
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header>div:2>button:2>svg>path",
+  "rect": [
+   962,
+   113.5,
+   10.5,
+   13.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header>div:2>button:2>svg>path:2",
+  "rect": [
+   968.5,
+   113.5,
+   4,
+   4
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header>div:2>button:2>svg>path:3",
+  "rect": [
+   964.5,
+   120.5,
+   1.5,
+   3.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header>div:2>button:2>svg>path:4",
+  "rect": [
+   968.5,
+   120.5,
+   1.5,
+   3.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header>div:2>button:3",
+  "rect": [
+   1068.5,
+   104,
+   106.5,
+   32
+  ],
+  "label": "添加 MCP",
+  "display": "flex",
+  "cursor": "default",
+  "padding": "0px 12px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "fontWeight": "500",
+  "lineHeight": "18px",
+  "color": "oklch(0.3 0.06 250)",
+  "backgroundColor": "oklch(0.85 0.08 250)",
+  "alignItems": "center",
+  "justifyContent": "center",
+  "placeItems": "center normal",
+  "gap": "8px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>header>div:2>button:3>svg",
+  "rect": [
+   1080.5,
+   112,
+   16,
+   16
+  ],
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section",
+  "rect": [
+   275,
+   184,
+   900,
+   1057
+  ],
+  "label": "MCP 市场与已安装项",
+  "classes": "maka-mcp-workspace",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "16px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div",
+  "rect": [
+   275,
+   184,
+   900,
+   116
+  ],
+  "classes": "maka-mcp-hero",
+  "display": "flex",
+  "overflow": "hidden",
+  "padding": "20px 24px",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "8px",
+  "backgroundColor": "oklch(1 0 0)",
+  "alignItems": "center",
+  "justifyContent": "space-between",
+  "placeItems": "center normal",
+  "gap": "32px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div>div",
+  "rect": [
+   300,
+   218.5,
+   420.5,
+   47
+  ],
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "8px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div>div>strong",
+  "rect": [
+   300,
+   218.5,
+   420.5,
+   19.5
+  ],
+  "label": "把 Maka 连接到你的工作环境",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "15.5px",
+  "fontWeight": "600",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div>div>span",
+  "rect": [
+   300,
+   246,
+   420.5,
+   19.5
+  ],
+  "label": "从精选模板开始，或添加任意 stdio、Streamable HTTP 与 SS",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "color": "oklch(0.336 0.004 300.8)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div>div:2",
+  "rect": [
+   898,
+   208,
+   252,
+   68
+  ],
+  "classes": "maka-mcp-hero-signal",
+  "display": "flex",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "alignItems": "center",
+  "justifyContent": "flex-end",
+  "placeItems": "center normal",
+  "gap": "12px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div>div:2>span",
+  "rect": [
+   898,
+   208,
+   76,
+   68
+  ],
+  "display": "flex",
+  "padding": "12px 8px",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "color": "oklch(0.336 0.004 300.8)",
+  "backgroundColor": "oklch(1 0 0)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "6px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div>div:2>span>svg",
+  "rect": [
+   925,
+   221,
+   22,
+   22
+  ],
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div>div:2>span>svg>path:2",
+  "rect": [
+   928.5,
+   225.5,
+   5.5,
+   11
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div>div:2>span>small",
+  "rect": [
+   910,
+   249,
+   51.5,
+   14
+  ],
+  "label": "本地 stdio",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "11px",
+  "fontWeight": "500",
+  "lineHeight": "14px",
+  "color": "oklch(0.585 0.0025 323)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div>div:2>span:2",
+  "rect": [
+   986,
+   208,
+   76,
+   68
+  ],
+  "display": "flex",
+  "padding": "12px 8px",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "color": "oklch(0.336 0.004 300.8)",
+  "backgroundColor": "oklch(1 0 0)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "6px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div>div:2>span:2>svg",
+  "rect": [
+   1013,
+   221,
+   22,
+   22
+  ],
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div>div:2>span:2>svg>path:3",
+  "rect": [
+   1018.5,
+   228.5,
+   11,
+   8.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div>div:2>span:2>small",
+  "rect": [
+   1002,
+   249,
+   44,
+   14
+  ],
+  "label": "连接管理",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "11px",
+  "fontWeight": "500",
+  "lineHeight": "14px",
+  "color": "oklch(0.585 0.0025 323)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div>div:2>span:3",
+  "rect": [
+   1074,
+   208,
+   76,
+   68
+  ],
+  "display": "flex",
+  "padding": "12px 8px",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "color": "oklch(0.336 0.004 300.8)",
+  "backgroundColor": "oklch(1 0 0)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "6px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div>div:2>span:3>svg",
+  "rect": [
+   1101,
+   221,
+   22,
+   22
+  ],
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div>div:2>span:3>svg>circle",
+  "rect": [
+   1103,
+   223,
+   18.5,
+   18.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div>div:2>span:3>svg>path",
+  "rect": [
+   1108.5,
+   223,
+   7.5,
+   18.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div>div:2>span:3>small",
+  "rect": [
+   1084.5,
+   249,
+   55,
+   14
+  ],
+  "label": "远程 HTTP",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "11px",
+  "fontWeight": "500",
+  "lineHeight": "14px",
+  "color": "oklch(0.585 0.0025 323)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2",
+  "rect": [
+   275,
+   316,
+   900,
+   909
+  ],
+  "display": "flex",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "8px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div",
+  "rect": [
+   275,
+   316,
+   900,
+   41
+  ],
+  "classes": "maka-mcp-tabs-bar",
+  "display": "flex",
+  "borderWidth": "0px 0px 1px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "alignItems": "center",
+  "justifyContent": "space-between",
+  "placeItems": "center normal",
+  "gap": "16px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div>div",
+  "rect": [
+   275,
+   316,
+   131.5,
+   40
+  ],
+  "label": "MCP 分类",
+  "role": "tablist",
+  "classes": "maka-tabs-list maka-mcp-tabs",
+  "display": "flex",
+  "position": "relative",
+  "inset": "0px",
+  "zIndex": "0",
+  "padding": "4px 0px",
+  "borderStyle": "solid solid none",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1) oklch(0.17 0.005 286 / 0.1) oklch(0.336 0.004 300.8)",
+  "color": "oklch(0.336 0.004 300.8)",
+  "alignItems": "center",
+  "justifyContent": "center",
+  "placeItems": "center normal",
+  "gap": "16px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div>div>button",
+  "rect": [
+   275,
+   320,
+   54.5,
+   32
+  ],
+  "label": "市场",
+  "role": "tab",
+  "classes": "maka-tab maka-mcp-tab",
+  "display": "flex",
+  "position": "relative",
+  "inset": "0px",
+  "cursor": "pointer",
+  "padding": "0px 1px",
+  "borderColor": "oklch(0.585 0.0025 323)",
+  "fontWeight": "500",
+  "lineHeight": "18px",
+  "color": "oklch(0.585 0.0025 323)",
+  "alignItems": "center",
+  "justifyContent": "center",
+  "placeItems": "center normal",
+  "gap": "4px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div>div>button>span",
+  "rect": [
+   306,
+   328,
+   22.5,
+   16
+  ],
+  "label": "14",
+  "display": "flex",
+  "padding": "0px 4px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "999px",
+  "fontSize": "11px",
+  "fontWeight": "600",
+  "lineHeight": "15px",
+  "backgroundColor": "oklch(0.17 0.005 286 / 0.06)",
+  "alignItems": "center",
+  "justifyContent": "center",
+  "placeItems": "center normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div>div>button:2",
+  "rect": [
+   345.5,
+   320,
+   61,
+   32
+  ],
+  "label": "已安装",
+  "role": "tab",
+  "classes": "maka-tab maka-mcp-tab",
+  "display": "flex",
+  "position": "relative",
+  "inset": "0px",
+  "cursor": "pointer",
+  "padding": "0px 1px",
+  "borderColor": "oklch(0.585 0.0025 323)",
+  "fontWeight": "500",
+  "lineHeight": "18px",
+  "color": "oklch(0.585 0.0025 323)",
+  "alignItems": "center",
+  "justifyContent": "center",
+  "placeItems": "center normal",
+  "gap": "4px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div>div>button:2>span",
+  "rect": [
+   389.5,
+   328,
+   16,
+   16
+  ],
+  "label": "2",
+  "display": "flex",
+  "padding": "0px 4px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "999px",
+  "fontSize": "11px",
+  "fontWeight": "600",
+  "lineHeight": "15px",
+  "backgroundColor": "oklch(0.17 0.005 286 / 0.06)",
+  "alignItems": "center",
+  "justifyContent": "center",
+  "placeItems": "center normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div>div>span",
+  "rect": [
+   275,
+   355,
+   54.5,
+   2
+  ],
+  "role": "presentation",
+  "display": "block",
+  "position": "absolute",
+  "inset": "38px 77px 0px 0px",
+  "zIndex": "10",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "backgroundColor": "oklch(0.17 0.005 286)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div>div:2",
+  "rect": [
+   875,
+   320,
+   300,
+   24
+  ],
+  "role": "group",
+  "classes": "maka-mcp-search",
+  "display": "flex",
+  "position": "relative",
+  "inset": "0px",
+  "margin": "0px 0px 8px",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.16)",
+  "borderRadius": "6px",
+  "lineHeight": "18px",
+  "backgroundColor": "oklch(1 0 0)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div>div:2>div",
+  "rect": [
+   876,
+   324,
+   23,
+   16
+  ],
+  "display": "flex",
+  "cursor": "text",
+  "padding": "0px 0px 0px 11px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "lineHeight": "13px",
+  "alignItems": "center",
+  "justifyContent": "center",
+  "placeItems": "center normal",
+  "gap": "8px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div>div:2>div>svg",
+  "rect": [
+   885,
+   324,
+   16,
+   16
+  ],
+  "display": "block",
+  "opacity": "0.8",
+  "overflow": "hidden",
+  "margin": "0px -2px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div>div:2>div>svg>path",
+  "rect": [
+   896,
+   335,
+   3,
+   3
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div>div:2>div>svg>circle",
+  "rect": [
+   887,
+   326,
+   10.5,
+   10.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div>div:2>input",
+  "rect": [
+   899,
+   323,
+   153.5,
+   18
+  ],
+  "label": "搜索 MCP",
+  "display": "block",
+  "cursor": "text",
+  "overflow": "clip",
+  "padding": "0px 0px 0px 8px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2",
+  "rect": [
+   275,
+   365,
+   900,
+   860
+  ],
+  "role": "tabpanel",
+  "classes": "maka-mcp-tab-panel",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div",
+  "rect": [
+   275,
+   365,
+   900,
+   860
+  ],
+  "classes": "maka-mcp-market-grid",
+  "display": "grid",
+  "overflow": "auto",
+  "padding": "2px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "12px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article",
+  "rect": [
+   277,
+   367,
+   442,
+   112
+  ],
+  "classes": "maka-mcp-market-card",
+  "display": "grid",
+  "padding": "16px",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "8px",
+  "backgroundColor": "oklch(1 0 0)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "12px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article>div",
+  "rect": [
+   294,
+   397,
+   52,
+   52
+  ],
+  "classes": "maka-mcp-market-icon",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "backgroundColor": "oklch(0.9585 0.00025 356.3)",
+  "alignItems": "center",
+  "placeItems": "center",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article>div>svg",
+  "rect": [
+   303.5,
+   406.5,
+   33.5,
+   33.5
+  ],
+  "classes": "maka-mcp-brand-mark",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article>div>svg>path",
+  "rect": [
+   308,
+   407.5,
+   24.5,
+   31
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article>div:2",
+  "rect": [
+   358,
+   390,
+   298,
+   66.5
+  ],
+  "classes": "maka-mcp-market-copy",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "4px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article>div:2>strong",
+  "rect": [
+   358,
+   390,
+   298,
+   22.5
+  ],
+  "label": "钉钉",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "15px",
+  "fontWeight": "600",
+  "lineHeight": "22.5px",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article>div:2>p",
+  "rect": [
+   358,
+   416.5,
+   298,
+   19.5
+  ],
+  "label": "管理联系人、日历、待办与协作信息。",
+  "display": "flow-root",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "color": "oklch(0.336 0.004 300.8)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article>div:2>small",
+  "rect": [
+   358,
+   440,
+   298,
+   16.5
+  ],
+  "label": "沟通协作 · 需要 Client ID 与 Client Secret",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "11px",
+  "lineHeight": "16.5px",
+  "color": "oklch(0.585 0.0025 323)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article>button",
+  "rect": [
+   668,
+   406,
+   34,
+   34
+  ],
+  "label": "安装 钉钉",
+  "classes": "maka-mcp-install-button",
+  "display": "grid",
+  "position": "relative",
+  "inset": "0px",
+  "cursor": "default",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "rgba(0, 0, 0, 0)",
+  "borderRadius": "999px",
+  "alignItems": "center",
+  "placeItems": "center",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article>button>svg",
+  "rect": [
+   675.5,
+   413.5,
+   19,
+   19
+  ],
+  "display": "block",
+  "position": "absolute",
+  "inset": "6.5px",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:2",
+  "rect": [
+   731,
+   367,
+   442,
+   112
+  ],
+  "classes": "maka-mcp-market-card",
+  "display": "grid",
+  "padding": "16px",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "8px",
+  "backgroundColor": "oklch(1 0 0)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "12px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:2>div",
+  "rect": [
+   748,
+   397,
+   52,
+   52
+  ],
+  "classes": "maka-mcp-market-icon",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "backgroundColor": "oklch(0.9585 0.00025 356.3)",
+  "alignItems": "center",
+  "placeItems": "center",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:2>div>svg",
+  "rect": [
+   757.5,
+   406.5,
+   33.5,
+   33.5
+  ],
+  "classes": "maka-mcp-brand-mark",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:2>div>svg>path",
+  "rect": [
+   766,
+   411,
+   15.5,
+   11
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:2>div>svg>path:2",
+  "rect": [
+   786,
+   426,
+   0,
+   0
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:2>div>svg>path:3",
+  "rect": [
+   772.5,
+   418.5,
+   16.5,
+   10.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:2>div>svg>path:4",
+  "rect": [
+   786,
+   425.5,
+   0,
+   0
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:2>div>svg>path:5",
+  "rect": [
+   759,
+   420,
+   23,
+   15
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:2>div:2",
+  "rect": [
+   812,
+   390,
+   298,
+   66.5
+  ],
+  "classes": "maka-mcp-market-copy",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "4px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:2>div:2>strong",
+  "rect": [
+   812,
+   390,
+   298,
+   22.5
+  ],
+  "label": "飞书",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "15px",
+  "fontWeight": "600",
+  "lineHeight": "22.5px",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:2>div:2>p",
+  "rect": [
+   812,
+   416.5,
+   298,
+   19.5
+  ],
+  "label": "访问飞书文档、日历、消息与 OpenAPI。",
+  "display": "flow-root",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "color": "oklch(0.336 0.004 300.8)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:2>div:2>small",
+  "rect": [
+   812,
+   440,
+   298,
+   16.5
+  ],
+  "label": "沟通协作 · 需要 App ID 与 App Secret",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "11px",
+  "lineHeight": "16.5px",
+  "color": "oklch(0.585 0.0025 323)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:2>button",
+  "rect": [
+   1122,
+   406,
+   34,
+   34
+  ],
+  "label": "安装 飞书",
+  "classes": "maka-mcp-install-button",
+  "display": "grid",
+  "position": "relative",
+  "inset": "0px",
+  "cursor": "default",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "rgba(0, 0, 0, 0)",
+  "borderRadius": "999px",
+  "alignItems": "center",
+  "placeItems": "center",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:2>button>svg",
+  "rect": [
+   1129.5,
+   413.5,
+   19,
+   19
+  ],
+  "display": "block",
+  "position": "absolute",
+  "inset": "6.5px",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:3",
+  "rect": [
+   277,
+   491,
+   442,
+   112
+  ],
+  "classes": "maka-mcp-market-card",
+  "display": "grid",
+  "padding": "16px",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "8px",
+  "backgroundColor": "oklch(1 0 0)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "12px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:3>div",
+  "rect": [
+   294,
+   521,
+   52,
+   52
+  ],
+  "classes": "maka-mcp-market-icon",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "backgroundColor": "oklch(0.9585 0.00025 356.3)",
+  "alignItems": "center",
+  "placeItems": "center",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:3>div>svg",
+  "rect": [
+   303.5,
+   530.5,
+   33.5,
+   33.5
+  ],
+  "classes": "maka-mcp-brand-mark",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:3>div>svg>path",
+  "rect": [
+   303.5,
+   530.5,
+   33.5,
+   33.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:3>div:2",
+  "rect": [
+   358,
+   514,
+   298,
+   66.5
+  ],
+  "classes": "maka-mcp-market-copy",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "4px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:3>div:2>strong",
+  "rect": [
+   358,
+   514,
+   298,
+   22.5
+  ],
+  "label": "Slack",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "15px",
+  "fontWeight": "600",
+  "lineHeight": "22.5px",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:3>div:2>p",
+  "rect": [
+   358,
+   540.5,
+   298,
+   19.5
+  ],
+  "label": "发送消息、管理频道并与 Slack workspace 协作。",
+  "display": "flow-root",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "color": "oklch(0.336 0.004 300.8)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:3>div:2>small",
+  "rect": [
+   358,
+   564,
+   298,
+   16.5
+  ],
+  "label": "沟通协作 · 需要 Bot Token 与 Team ID",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "11px",
+  "lineHeight": "16.5px",
+  "color": "oklch(0.585 0.0025 323)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:3>button",
+  "rect": [
+   668,
+   530,
+   34,
+   34
+  ],
+  "label": "安装 Slack",
+  "classes": "maka-mcp-install-button",
+  "display": "grid",
+  "position": "relative",
+  "inset": "0px",
+  "cursor": "default",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "rgba(0, 0, 0, 0)",
+  "borderRadius": "999px",
+  "alignItems": "center",
+  "placeItems": "center",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:3>button>svg",
+  "rect": [
+   675.5,
+   537.5,
+   19,
+   19
+  ],
+  "display": "block",
+  "position": "absolute",
+  "inset": "6.5px",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:4",
+  "rect": [
+   731,
+   491,
+   442,
+   112
+  ],
+  "classes": "maka-mcp-market-card",
+  "display": "grid",
+  "padding": "16px",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "8px",
+  "backgroundColor": "oklch(1 0 0)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "12px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:4>div",
+  "rect": [
+   748,
+   521,
+   52,
+   52
+  ],
+  "classes": "maka-mcp-market-icon",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "backgroundColor": "oklch(0.9585 0.00025 356.3)",
+  "alignItems": "center",
+  "placeItems": "center",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:4>div>svg",
+  "rect": [
+   757.5,
+   530.5,
+   33.5,
+   33.5
+  ],
+  "classes": "maka-mcp-brand-mark",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:4>div>svg>path",
+  "rect": [
+   757.5,
+   531,
+   33.5,
+   31.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:4>div:2",
+  "rect": [
+   812,
+   514,
+   298,
+   66.5
+  ],
+  "classes": "maka-mcp-market-copy",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "4px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:4>div:2>strong",
+  "rect": [
+   812,
+   514,
+   298,
+   22.5
+  ],
+  "label": "LINE",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "15px",
+  "fontWeight": "600",
+  "lineHeight": "22.5px",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:4>div:2>p",
+  "rect": [
+   812,
+   540.5,
+   298,
+   19.5
+  ],
+  "label": "通过 LINE Bot Messaging API 发送和管理消息。",
+  "display": "flow-root",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "color": "oklch(0.336 0.004 300.8)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:4>div:2>small",
+  "rect": [
+   812,
+   564,
+   298,
+   16.5
+  ],
+  "label": "沟通协作 · 需要 Channel Access Token",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "11px",
+  "lineHeight": "16.5px",
+  "color": "oklch(0.585 0.0025 323)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:4>button",
+  "rect": [
+   1122,
+   530,
+   34,
+   34
+  ],
+  "label": "安装 LINE",
+  "classes": "maka-mcp-install-button",
+  "display": "grid",
+  "position": "relative",
+  "inset": "0px",
+  "cursor": "default",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "rgba(0, 0, 0, 0)",
+  "borderRadius": "999px",
+  "alignItems": "center",
+  "placeItems": "center",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:4>button>svg",
+  "rect": [
+   1129.5,
+   537.5,
+   19,
+   19
+  ],
+  "display": "block",
+  "position": "absolute",
+  "inset": "6.5px",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:5",
+  "rect": [
+   277,
+   615,
+   442,
+   112
+  ],
+  "classes": "maka-mcp-market-card",
+  "display": "grid",
+  "padding": "16px",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "8px",
+  "backgroundColor": "oklch(1 0 0)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "12px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:5>div",
+  "rect": [
+   294,
+   645,
+   52,
+   52
+  ],
+  "classes": "maka-mcp-market-icon",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "backgroundColor": "oklch(0.9585 0.00025 356.3)",
+  "alignItems": "center",
+  "placeItems": "center",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:5>div>svg",
+  "rect": [
+   303.5,
+   654.5,
+   33.5,
+   33.5
+  ],
+  "classes": "maka-mcp-brand-mark",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:5>div>svg>path",
+  "rect": [
+   304,
+   654.5,
+   32,
+   33.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:5>div:2",
+  "rect": [
+   358,
+   638,
+   298,
+   66.5
+  ],
+  "classes": "maka-mcp-market-copy",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "4px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:5>div:2>strong",
+  "rect": [
+   358,
+   638,
+   298,
+   22.5
+  ],
+  "label": "Notion",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "15px",
+  "fontWeight": "600",
+  "lineHeight": "22.5px",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:5>div:2>p",
+  "rect": [
+   358,
+   664.5,
+   298,
+   19.5
+  ],
+  "label": "搜索、读取和更新 Notion workspace。",
+  "display": "flow-root",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "color": "oklch(0.336 0.004 300.8)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:5>div:2>small",
+  "rect": [
+   358,
+   688,
+   298,
+   16.5
+  ],
+  "label": "知识与文档 · 需要登录授权",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "11px",
+  "lineHeight": "16.5px",
+  "color": "oklch(0.585 0.0025 323)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:5>button",
+  "rect": [
+   668,
+   654,
+   34,
+   34
+  ],
+  "label": "安装 Notion",
+  "classes": "maka-mcp-install-button",
+  "display": "grid",
+  "position": "relative",
+  "inset": "0px",
+  "cursor": "default",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "rgba(0, 0, 0, 0)",
+  "borderRadius": "999px",
+  "alignItems": "center",
+  "placeItems": "center",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:5>button>svg",
+  "rect": [
+   675.5,
+   661.5,
+   19,
+   19
+  ],
+  "display": "block",
+  "position": "absolute",
+  "inset": "6.5px",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:6",
+  "rect": [
+   731,
+   615,
+   442,
+   112
+  ],
+  "classes": "maka-mcp-market-card",
+  "display": "grid",
+  "padding": "16px",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "8px",
+  "backgroundColor": "oklch(1 0 0)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "12px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:6>div",
+  "rect": [
+   748,
+   645,
+   52,
+   52
+  ],
+  "classes": "maka-mcp-market-icon",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "backgroundColor": "oklch(0.9585 0.00025 356.3)",
+  "alignItems": "center",
+  "placeItems": "center",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:6>div>svg",
+  "rect": [
+   757.5,
+   654.5,
+   33.5,
+   33.5
+  ],
+  "classes": "maka-mcp-brand-mark",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:6>div>svg>path",
+  "rect": [
+   760.5,
+   654.5,
+   27,
+   33.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:6>div:2",
+  "rect": [
+   812,
+   638,
+   298,
+   66.5
+  ],
+  "classes": "maka-mcp-market-copy",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "4px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:6>div:2>strong",
+  "rect": [
+   812,
+   638,
+   298,
+   22.5
+  ],
+  "label": "macOS 应用",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "15px",
+  "fontWeight": "600",
+  "lineHeight": "22.5px",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:6>div:2>p",
+  "rect": [
+   812,
+   664.5,
+   298,
+   19.5
+  ],
+  "label": "连接系统日历与提醒事项，并使用原生权限模型。",
+  "display": "flow-root",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "color": "oklch(0.336 0.004 300.8)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:6>div:2>small",
+  "rect": [
+   812,
+   688,
+   298,
+   16.5
+  ],
+  "label": "系统与效率 · 仅 macOS",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "11px",
+  "lineHeight": "16.5px",
+  "color": "oklch(0.585 0.0025 323)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:6>button",
+  "rect": [
+   1122,
+   654,
+   34,
+   34
+  ],
+  "label": "安装 macOS 应用",
+  "classes": "maka-mcp-install-button",
+  "display": "grid",
+  "position": "relative",
+  "inset": "0px",
+  "cursor": "default",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "rgba(0, 0, 0, 0)",
+  "borderRadius": "999px",
+  "alignItems": "center",
+  "placeItems": "center",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:6>button>svg",
+  "rect": [
+   1129.5,
+   661.5,
+   19,
+   19
+  ],
+  "display": "block",
+  "position": "absolute",
+  "inset": "6.5px",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:7",
+  "rect": [
+   277,
+   739,
+   442,
+   112
+  ],
+  "classes": "maka-mcp-market-card",
+  "display": "grid",
+  "padding": "16px",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "8px",
+  "backgroundColor": "oklch(1 0 0)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "12px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:7>div",
+  "rect": [
+   294,
+   769,
+   52,
+   52
+  ],
+  "classes": "maka-mcp-market-icon",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "backgroundColor": "oklch(0.9585 0.00025 356.3)",
+  "alignItems": "center",
+  "placeItems": "center",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:7>div>svg",
+  "rect": [
+   303.5,
+   778.5,
+   33.5,
+   33.5
+  ],
+  "classes": "maka-mcp-brand-mark",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:7>div>svg>path",
+  "rect": [
+   303.5,
+   778.5,
+   33.5,
+   33.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:7>div:2",
+  "rect": [
+   358,
+   762,
+   298,
+   66.5
+  ],
+  "classes": "maka-mcp-market-copy",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "4px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:7>div:2>strong",
+  "rect": [
+   358,
+   762,
+   298,
+   22.5
+  ],
+  "label": "Google 日历",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "15px",
+  "fontWeight": "600",
+  "lineHeight": "22.5px",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:7>div:2>p",
+  "rect": [
+   358,
+   788.5,
+   298,
+   19.5
+  ],
+  "label": "管理日程、创建会议并查询空闲时间。",
+  "display": "flow-root",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "color": "oklch(0.336 0.004 300.8)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:7>div:2>small",
+  "rect": [
+   358,
+   812,
+   298,
+   16.5
+  ],
+  "label": "系统与效率 · 需要 OAuth credentials 文件",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "11px",
+  "lineHeight": "16.5px",
+  "color": "oklch(0.585 0.0025 323)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:7>button",
+  "rect": [
+   668,
+   778,
+   34,
+   34
+  ],
+  "label": "安装 Google 日历",
+  "classes": "maka-mcp-install-button",
+  "display": "grid",
+  "position": "relative",
+  "inset": "0px",
+  "cursor": "default",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "rgba(0, 0, 0, 0)",
+  "borderRadius": "999px",
+  "alignItems": "center",
+  "placeItems": "center",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:7>button>svg",
+  "rect": [
+   675.5,
+   785.5,
+   19,
+   19
+  ],
+  "display": "block",
+  "position": "absolute",
+  "inset": "6.5px",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:8",
+  "rect": [
+   731,
+   739,
+   442,
+   112
+  ],
+  "classes": "maka-mcp-market-card",
+  "display": "grid",
+  "padding": "16px",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "8px",
+  "backgroundColor": "oklch(1 0 0)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "12px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:8>div",
+  "rect": [
+   748,
+   769,
+   52,
+   52
+  ],
+  "classes": "maka-mcp-market-icon",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "backgroundColor": "oklch(0.9585 0.00025 356.3)",
+  "alignItems": "center",
+  "placeItems": "center",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:8>div>svg",
+  "rect": [
+   757.5,
+   778.5,
+   33.5,
+   33.5
+  ],
+  "classes": "maka-mcp-brand-mark",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:8>div>svg>path",
+  "rect": [
+   762.5,
+   778.5,
+   23,
+   33.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:8>div:2",
+  "rect": [
+   812,
+   762,
+   298,
+   66.5
+  ],
+  "classes": "maka-mcp-market-copy",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "4px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:8>div:2>strong",
+  "rect": [
+   812,
+   762,
+   298,
+   22.5
+  ],
+  "label": "Figma",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "15px",
+  "fontWeight": "600",
+  "lineHeight": "22.5px",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:8>div:2>p",
+  "rect": [
+   812,
+   788.5,
+   298,
+   19.5
+  ],
+  "label": "读取设计文件、组件与开发交付信息。",
+  "display": "flow-root",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "color": "oklch(0.336 0.004 300.8)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:8>div:2>small",
+  "rect": [
+   812,
+   812,
+   298,
+   16.5
+  ],
+  "label": "设计与开发 · 需要 Personal Access Token",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "11px",
+  "lineHeight": "16.5px",
+  "color": "oklch(0.585 0.0025 323)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:8>button",
+  "rect": [
+   1122,
+   778,
+   34,
+   34
+  ],
+  "label": "安装 Figma",
+  "classes": "maka-mcp-install-button",
+  "display": "grid",
+  "position": "relative",
+  "inset": "0px",
+  "cursor": "default",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "rgba(0, 0, 0, 0)",
+  "borderRadius": "999px",
+  "alignItems": "center",
+  "placeItems": "center",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:8>button>svg",
+  "rect": [
+   1129.5,
+   785.5,
+   19,
+   19
+  ],
+  "display": "block",
+  "position": "absolute",
+  "inset": "6.5px",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:9",
+  "rect": [
+   277,
+   863,
+   442,
+   112
+  ],
+  "classes": "maka-mcp-market-card",
+  "display": "grid",
+  "padding": "16px",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "8px",
+  "backgroundColor": "oklch(1 0 0)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "12px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:9>div",
+  "rect": [
+   294,
+   893,
+   52,
+   52
+  ],
+  "classes": "maka-mcp-market-icon",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "backgroundColor": "oklch(0.9585 0.00025 356.3)",
+  "alignItems": "center",
+  "placeItems": "center",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:9>div>svg",
+  "rect": [
+   303.5,
+   902.5,
+   33.5,
+   33.5
+  ],
+  "classes": "maka-mcp-brand-mark",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:9>div>svg>path",
+  "rect": [
+   303.5,
+   904.5,
+   33.5,
+   29
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:9>div:2",
+  "rect": [
+   358,
+   886,
+   298,
+   66.5
+  ],
+  "classes": "maka-mcp-market-copy",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "4px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:9>div:2>strong",
+  "rect": [
+   358,
+   886,
+   298,
+   22.5
+  ],
+  "label": "Vercel",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "15px",
+  "fontWeight": "600",
+  "lineHeight": "22.5px",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:9>div:2>p",
+  "rect": [
+   358,
+   912.5,
+   298,
+   19.5
+  ],
+  "label": "检查项目、部署状态、日志与平台文档。",
+  "display": "flow-root",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "color": "oklch(0.336 0.004 300.8)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:9>div:2>small",
+  "rect": [
+   358,
+   936,
+   298,
+   16.5
+  ],
+  "label": "设计与开发 · 需要登录授权",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "11px",
+  "lineHeight": "16.5px",
+  "color": "oklch(0.585 0.0025 323)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:9>button",
+  "rect": [
+   668,
+   902,
+   34,
+   34
+  ],
+  "label": "安装 Vercel",
+  "classes": "maka-mcp-install-button",
+  "display": "grid",
+  "position": "relative",
+  "inset": "0px",
+  "cursor": "default",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "rgba(0, 0, 0, 0)",
+  "borderRadius": "999px",
+  "alignItems": "center",
+  "placeItems": "center",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:9>button>svg",
+  "rect": [
+   675.5,
+   909.5,
+   19,
+   19
+  ],
+  "display": "block",
+  "position": "absolute",
+  "inset": "6.5px",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:10",
+  "rect": [
+   731,
+   863,
+   442,
+   112
+  ],
+  "classes": "maka-mcp-market-card",
+  "display": "grid",
+  "padding": "16px",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "8px",
+  "backgroundColor": "oklch(1 0 0)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "12px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:10>div",
+  "rect": [
+   748,
+   893,
+   52,
+   52
+  ],
+  "classes": "maka-mcp-market-icon",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "backgroundColor": "oklch(0.9585 0.00025 356.3)",
+  "alignItems": "center",
+  "placeItems": "center",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:10>div>svg",
+  "rect": [
+   757.5,
+   902.5,
+   33.5,
+   33.5
+  ],
+  "classes": "maka-mcp-brand-mark",
+  "display": "block",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:10>div>svg>path",
+  "rect": [
+   758,
+   902.5,
+   32.5,
+   33.5
+  ],
+  "display": "inline",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:10>div:2",
+  "rect": [
+   812,
+   886,
+   298,
+   66.5
+  ],
+  "classes": "maka-mcp-market-copy",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "4px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:10>div:2>strong",
+  "rect": [
+   812,
+   886,
+   298,
+   22.5
+  ],
+  "label": "Supabase",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "15px",
+  "fontWeight": "600",
+  "lineHeight": "22.5px",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:10>div:2>p",
+  "rect": [
+   812,
+   912.5,
+   298,
+   19.5
+  ],
+  "label": "管理数据库、项目配置、迁移与 Edge Functions。",
+  "display": "flow-root",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "color": "oklch(0.336 0.004 300.8)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:10>div:2>small",
+  "rect": [
+   812,
+   936,
+   298,
+   16.5
+  ],
+  "label": "设计与开发 · 需要登录授权",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "11px",
+  "lineHeight": "16.5px",
+  "color": "oklch(0.585 0.0025 323)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:10>button",
+  "rect": [
+   1122,
+   902,
+   34,
+   34
+  ],
+  "label": "安装 Supabase",
+  "classes": "maka-mcp-install-button",
+  "display": "grid",
+  "position": "relative",
+  "inset": "0px",
+  "cursor": "default",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "rgba(0, 0, 0, 0)",
+  "borderRadius": "999px",
+  "alignItems": "center",
+  "placeItems": "center",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:10>button>svg",
+  "rect": [
+   1129.5,
+   909.5,
+   19,
+   19
+  ],
+  "display": "block",
+  "position": "absolute",
+  "inset": "6.5px",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:11",
+  "rect": [
+   277,
+   987,
+   442,
+   112
+  ],
+  "classes": "maka-mcp-market-card",
+  "display": "grid",
+  "padding": "16px",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "8px",
+  "backgroundColor": "oklch(1 0 0)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "12px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:11>div",
+  "rect": [
+   294,
+   1017,
+   52,
+   52
+  ],
+  "classes": "maka-mcp-market-icon",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "color": "oklch(0.336 0.004 300.8)",
+  "backgroundColor": "oklch(0.17 0.005 286 / 0.05)",
+  "alignItems": "center",
+  "placeItems": "center",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:11>div>span",
+  "rect": [
+   310.5,
+   1032,
+   18.5,
+   22.5
+  ],
+  "label": "FS",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "15px",
+  "fontWeight": "700",
+  "lineHeight": "22.5px",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:11>div:2",
+  "rect": [
+   358,
+   1010,
+   288,
+   66.5
+  ],
+  "classes": "maka-mcp-market-copy",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "4px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:11>div:2>strong",
+  "rect": [
+   358,
+   1010,
+   288,
+   22.5
+  ],
+  "label": "本地文件",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "15px",
+  "fontWeight": "600",
+  "lineHeight": "22.5px",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:11>div:2>p",
+  "rect": [
+   358,
+   1036.5,
+   288,
+   19.5
+  ],
+  "label": "在指定目录中安全地读取、写入和管理文件。",
+  "display": "flow-root",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "color": "oklch(0.336 0.004 300.8)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:11>div:2>small",
+  "rect": [
+   358,
+   1060,
+   288,
+   16.5
+  ],
+  "label": "文件与知识 · 需要选择允许访问的目录",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "11px",
+  "lineHeight": "16.5px",
+  "color": "oklch(0.585 0.0025 323)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:11>button",
+  "rect": [
+   658,
+   1029,
+   44,
+   28
+  ],
+  "label": "管理",
+  "display": "flex",
+  "cursor": "default",
+  "padding": "0px 8px",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "lineHeight": "18px",
+  "alignItems": "center",
+  "justifyContent": "center",
+  "placeItems": "center normal",
+  "gap": "8px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:12",
+  "rect": [
+   731,
+   987,
+   442,
+   112
+  ],
+  "classes": "maka-mcp-market-card",
+  "display": "grid",
+  "padding": "16px",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "8px",
+  "backgroundColor": "oklch(1 0 0)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "12px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:12>div",
+  "rect": [
+   748,
+   1017,
+   52,
+   52
+  ],
+  "classes": "maka-mcp-market-icon",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "color": "oklch(0.336 0.004 300.8)",
+  "backgroundColor": "oklch(0.17 0.005 286 / 0.05)",
+  "alignItems": "center",
+  "placeItems": "center",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:12>div>span",
+  "rect": [
+   767.5,
+   1032,
+   13.5,
+   22.5
+  ],
+  "label": "M",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "15px",
+  "fontWeight": "700",
+  "lineHeight": "22.5px",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:12>div:2",
+  "rect": [
+   812,
+   1010,
+   298,
+   66.5
+  ],
+  "classes": "maka-mcp-market-copy",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "4px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:12>div:2>strong",
+  "rect": [
+   812,
+   1010,
+   298,
+   22.5
+  ],
+  "label": "持久记忆",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "15px",
+  "fontWeight": "600",
+  "lineHeight": "22.5px",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:12>div:2>p",
+  "rect": [
+   812,
+   1036.5,
+   298,
+   19.5
+  ],
+  "label": "用结构化知识图谱记住实体、关系和重要事实。",
+  "display": "flow-root",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "color": "oklch(0.336 0.004 300.8)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:12>div:2>small",
+  "rect": [
+   812,
+   1060,
+   298,
+   16.5
+  ],
+  "label": "文件与知识",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "11px",
+  "lineHeight": "16.5px",
+  "color": "oklch(0.585 0.0025 323)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:12>button",
+  "rect": [
+   1122,
+   1026,
+   34,
+   34
+  ],
+  "label": "安装 持久记忆",
+  "classes": "maka-mcp-install-button",
+  "display": "grid",
+  "position": "relative",
+  "inset": "0px",
+  "cursor": "default",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "rgba(0, 0, 0, 0)",
+  "borderRadius": "999px",
+  "alignItems": "center",
+  "placeItems": "center",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:12>button>svg",
+  "rect": [
+   1129.5,
+   1033.5,
+   19,
+   19
+  ],
+  "display": "block",
+  "position": "absolute",
+  "inset": "6.5px",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:13",
+  "rect": [
+   277,
+   1111,
+   442,
+   112
+  ],
+  "classes": "maka-mcp-market-card",
+  "display": "grid",
+  "padding": "16px",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "8px",
+  "backgroundColor": "oklch(1 0 0)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "12px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:13>div",
+  "rect": [
+   294,
+   1141,
+   52,
+   52
+  ],
+  "classes": "maka-mcp-market-icon",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "color": "oklch(0.336 0.004 300.8)",
+  "backgroundColor": "oklch(0.17 0.005 286 / 0.05)",
+  "alignItems": "center",
+  "placeItems": "center",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:13>div>span",
+  "rect": [
+   307.5,
+   1156,
+   25,
+   22.5
+  ],
+  "label": "PW",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "15px",
+  "fontWeight": "700",
+  "lineHeight": "22.5px",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:13>div:2",
+  "rect": [
+   358,
+   1134,
+   298,
+   66.5
+  ],
+  "classes": "maka-mcp-market-copy",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "4px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:13>div:2>strong",
+  "rect": [
+   358,
+   1134,
+   298,
+   22.5
+  ],
+  "label": "浏览器自动化",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "15px",
+  "fontWeight": "600",
+  "lineHeight": "22.5px",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:13>div:2>p",
+  "rect": [
+   358,
+   1160.5,
+   298,
+   19.5
+  ],
+  "label": "让 Maka 通过 Playwright 读取和操作真实网页。",
+  "display": "flow-root",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "color": "oklch(0.336 0.004 300.8)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:13>div:2>small",
+  "rect": [
+   358,
+   1184,
+   298,
+   16.5
+  ],
+  "label": "设计与开发",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "11px",
+  "lineHeight": "16.5px",
+  "color": "oklch(0.585 0.0025 323)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:13>button",
+  "rect": [
+   668,
+   1150,
+   34,
+   34
+  ],
+  "label": "安装 浏览器自动化",
+  "classes": "maka-mcp-install-button",
+  "display": "grid",
+  "position": "relative",
+  "inset": "0px",
+  "cursor": "default",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "rgba(0, 0, 0, 0)",
+  "borderRadius": "999px",
+  "alignItems": "center",
+  "placeItems": "center",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:13>button>svg",
+  "rect": [
+   675.5,
+   1157.5,
+   19,
+   19
+  ],
+  "display": "block",
+  "position": "absolute",
+  "inset": "6.5px",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:14",
+  "rect": [
+   731,
+   1111,
+   442,
+   112
+  ],
+  "classes": "maka-mcp-market-card",
+  "display": "grid",
+  "padding": "16px",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "8px",
+  "backgroundColor": "oklch(1 0 0)",
+  "alignItems": "center",
+  "placeItems": "center normal",
+  "gap": "12px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:14>div",
+  "rect": [
+   748,
+   1141,
+   52,
+   52
+  ],
+  "classes": "maka-mcp-market-icon",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "borderRadius": "6px",
+  "color": "oklch(0.336 0.004 300.8)",
+  "backgroundColor": "oklch(0.17 0.005 286 / 0.05)",
+  "alignItems": "center",
+  "placeItems": "center",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:14>div>span",
+  "rect": [
+   764,
+   1156,
+   19.5,
+   22.5
+  ],
+  "label": "ST",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "15px",
+  "fontWeight": "700",
+  "lineHeight": "22.5px",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:14>div:2",
+  "rect": [
+   812,
+   1134,
+   298,
+   66.5
+  ],
+  "classes": "maka-mcp-market-copy",
+  "display": "grid",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "4px",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:14>div:2>strong",
+  "rect": [
+   812,
+   1134,
+   298,
+   22.5
+  ],
+  "label": "序列思考",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "15px",
+  "fontWeight": "600",
+  "lineHeight": "22.5px",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:14>div:2>p",
+  "rect": [
+   812,
+   1160.5,
+   298,
+   19.5
+  ],
+  "label": "为复杂问题提供可修正、可验证的结构化推理。",
+  "display": "flow-root",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "color": "oklch(0.336 0.004 300.8)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:14>div:2>small",
+  "rect": [
+   812,
+   1184,
+   298,
+   16.5
+  ],
+  "label": "推理与规划",
+  "display": "block",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "fontSize": "11px",
+  "lineHeight": "16.5px",
+  "color": "oklch(0.585 0.0025 323)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:14>button",
+  "rect": [
+   1122,
+   1150,
+   34,
+   34
+  ],
+  "label": "安装 序列思考",
+  "classes": "maka-mcp-install-button",
+  "display": "grid",
+  "position": "relative",
+  "inset": "0px",
+  "cursor": "default",
+  "borderWidth": "1px",
+  "borderStyle": "solid",
+  "borderColor": "rgba(0, 0, 0, 0)",
+  "borderRadius": "999px",
+  "alignItems": "center",
+  "placeItems": "center",
+  "gap": "normal",
+  "gridArea": "auto"
+ },
+ {
+  "path": "body>div>div>div>div:3>div>div>main>section>div:2>div:2>div>article:14>button>svg",
+  "rect": [
+   1129.5,
+   1157.5,
+   19,
+   19
+  ],
+  "display": "block",
+  "position": "absolute",
+  "inset": "6.5px",
+  "overflow": "hidden",
+  "borderStyle": "solid",
+  "borderColor": "oklch(0.17 0.005 286 / 0.1)",
+  "placeItems": "normal",
+  "gap": "normal",
+  "gridArea": "auto"
+ }
+]
