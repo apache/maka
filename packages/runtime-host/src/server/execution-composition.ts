@@ -29,6 +29,7 @@ import { RootTurnCoordinator } from './root-turn-coordinator.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
 import { HostRuntimePolicyCoordinator } from './runtime-policy-coordinator.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
+import { HostSessionCatalogCoordinator } from './session-catalog-coordinator.js';
 import { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
 import { HostSkillCatalogCoordinator } from './skill-catalog-coordinator.js';
 import { SkillCatalogRepository } from './skill-catalog-repository.js';
@@ -251,9 +252,18 @@ export async function createExecutionRuntimeHostComposition(
       activation: runtimePolicyActivation,
       onCommittedMutation: registerBackendInvalidation,
     });
+    const sessionCatalog = new HostSessionCatalogCoordinator({
+      stores: stores.sessionStore,
+      runtimePolicy: runtimePolicyStores,
+      manager,
+      admission: sessionAdmission,
+      continuity: continuityCoordinator,
+      requestDrain: context.requestDrain,
+    });
     const artifacts = new HostArtifactCoordinator(openedArtifactStore, context.requestDrain);
     const handlers = {
       ...coordinator.handlers,
+      ...sessionCatalog.handlers,
       ...messages.handlers,
       ...interactions.handlers,
       ...runtimePolicy.handlers,

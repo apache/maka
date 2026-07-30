@@ -52,6 +52,7 @@ export type SessionContinuityOperationKey = Extract<
   OperationKey,
   'subscription.open' | 'subscription.close'
 >;
+export type SessionCatalogOperationKey = Extract<OperationKey, `session.${string}`>;
 export type TaskLedgerOperationKey = Extract<OperationKey, 'task.ledger.query'>;
 export type ArtifactOperationKey = Extract<OperationKey, `artifact.${string}`>;
 export type SkillCatalogOperationKey = Extract<OperationKey, `skill.catalog.${string}`>;
@@ -69,6 +70,10 @@ export type InteractionOperationHandlerMap = Pick<OperationHandlerMap, Interacti
 export type SessionContinuityOperationHandlerMap = Pick<
   OperationHandlerMap,
   SessionContinuityOperationKey
+>;
+export type SessionCatalogOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  SessionCatalogOperationKey
 >;
 export type TaskLedgerOperationHandlerMap = Pick<OperationHandlerMap, TaskLedgerOperationKey>;
 export type ArtifactOperationHandlerMap = Pick<OperationHandlerMap, ArtifactOperationKey>;

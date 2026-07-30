@@ -67,6 +67,11 @@ describe('Runtime Host bootstrap protocol', () => {
       'queue.retract',
       'runtime.policy.mutate',
       'runtime.policy.query',
+      'session.catalog.query',
+      'session.configuration.update',
+      'session.create',
+      'session.metadata.update',
+      'session.read_marker.set',
       'skill.catalog.mutate',
       'skill.catalog.preview-update',
       'skill.catalog.query',
@@ -111,7 +116,7 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('keeps subscription operations closed, ready-only, and queue Epoch correlated', () => {
-    assert.equal(SESSION_CONTINUITY_SCHEMA_VERSION, 1);
+    assert.equal(SESSION_CONTINUITY_SCHEMA_VERSION, 2);
     assert.deepEqual(
       Object.fromEntries(
         (['subscription.open', 'subscription.close'] as const).map((operation) => [
@@ -1040,9 +1045,10 @@ function attachmentRef(
 
 function continuitySnapshot(hostEpoch: string) {
   return {
-    schemaVersion: 1 as const,
+    schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
     session: {
       sessionId: 'session-1',
+      metadataRevision: 1,
       status: 'running' as const,
       createdAt: 1,
       lastUsedAt: 2,

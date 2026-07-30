@@ -8,6 +8,8 @@
 export {
   SessionManager,
   BackendRegistry,
+  SessionConfigurationRevisionConflictError,
+  SessionConfigurationTransitionError,
   headerToSummary,
   changesBackendConfig,
 } from './session-manager.js';
@@ -17,6 +19,9 @@ export type {
   PlanSafeBoundaryContinuationInput,
   SessionManagerDeps,
   RuntimeContinuationLifecycleEvent,
+  SessionConfigurationStoreUpdate,
+  SessionConfigurationTransitionRequest,
+  SessionConfigurationTransitionErrorCode,
   SessionStore,
   StrictRecoveryAgentRunStore,
   StrictRecoverySessionStore,

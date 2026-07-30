@@ -80,6 +80,7 @@
     "./usage-stats/pricing": "./dist/usage-stats/pricing.js",
     "./usage-record-schema": "./dist/usage-record-schema.js",
     "./session-send-projection": "./dist/session-send-projection.js",
+    "./session-name": "./dist/session-name.js",
     "./tool-catalog": "./dist/tool-catalog.js"
   },
   "scripts": {

@@ -69,6 +69,10 @@ import {
   readSqliteSessionMetadataSchemaVersion,
 } from './sqlite-session-metadata-schema.js';
 import type { OperationalStateDatabaseLease } from './operational-state-store.js';
+import {
+  buildSqliteSessionCatalogPageQuery,
+  type SqliteSessionCatalogCursor,
+} from './sqlite-session-catalog-query.js';
 
 export { SQLITE_SESSION_METADATA_SCHEMA_VERSION } from './sqlite-session-metadata-schema.js';
 
@@ -115,6 +119,28 @@ export interface SessionMetadataRecord {
   committedAt: number;
 }
 
+export interface SessionMetadataCatalogRecord extends SessionMetadataRecord {
+  readonly lastMessagePreview?: string;
+}
+
+export interface SessionCatalogRevisionState {
+  readonly epoch: string;
+  readonly generation: number;
+}
+
+export type SessionMetadataCatalogCursor = SqliteSessionCatalogCursor;
+
+export interface SessionMetadataCatalogPage {
+  readonly revision: SessionCatalogRevisionState;
+  readonly records: readonly SessionMetadataCatalogRecord[];
+  readonly hasMore: boolean;
+}
+
+export interface SessionCatalogMessageProjection {
+  readonly lastMessageAt?: number;
+  readonly lastMessagePreview?: string;
+}
+
 export interface SessionAuthoritySnapshot {
   record: SessionMetadataRecord;
   boundary: ExecutionBoundary;
@@ -123,6 +149,40 @@ export interface SessionAuthoritySnapshot {
 export interface IdempotentSubagentSessionMetadataResult {
   record: SessionMetadataRecord;
   created: boolean;
+}
+
+export type StableSessionCreateProbe =
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'existing'; readonly record: SessionMetadataRecord }
+  | {
+      readonly kind: 'conflict';
+      readonly reason: 'identity_mismatch' | 'removed';
+    };
+
+export type StableSessionMetadataCreateResult =
+  | { readonly kind: 'created'; readonly record: SessionMetadataRecord }
+  | { readonly kind: 'existing'; readonly record: SessionMetadataRecord }
+  | {
+      readonly kind: 'conflict';
+      readonly reason: 'identity_mismatch' | 'removed';
+    };
+
+export interface SessionConfigurationMetadataUpdate {
+  readonly expectedVersion: number;
+  readonly configuration: {
+    readonly backend: SessionHeader['backend'];
+    readonly llmConnectionSlug: string;
+    readonly connectionLocked: boolean;
+    readonly model: string;
+    readonly thinkingLevel: SessionHeader['thinkingLevel'];
+    readonly permissionMode: SessionHeader['permissionMode'];
+    readonly collaborationMode: NonNullable<SessionHeader['collaborationMode']>;
+    readonly orchestrationMode: NonNullable<SessionHeader['orchestrationMode']>;
+    readonly labels: readonly string[];
+  };
+  readonly lifecycle:
+    | { readonly kind: 'preserve' }
+    | { readonly kind: 'clear_connection_block'; readonly statusUpdatedAt: number };
 }
 
 export interface IdempotentAgentGraphOperatorMetadataResult
@@ -147,6 +207,20 @@ export interface SessionMetadataImportResult {
 
 export class SessionMetadataConflictError extends Error {
   readonly name: string = 'SessionMetadataConflictError';
+}
+
+export class SessionMetadataVersionConflictError extends SessionMetadataConflictError {
+  readonly name = 'SessionMetadataVersionConflictError';
+
+  constructor(
+    readonly sessionId: string,
+    readonly expectedVersion: number,
+    readonly actualVersion: number,
+  ) {
+    super(
+      `Session metadata version conflict for ${sessionId}: expected ${expectedVersion}, found ${actualVersion}`,
+    );
+  }
 }
 
 export class AgentGraphIntentClaimConflictError extends SessionMetadataConflictError {
@@ -483,87 +557,49 @@ export class SqliteSessionMetadataStore {
   ): Promise<ExecutionBoundary> {
     this.assertOpen();
     assertSafeSessionId(sessionId);
+    return this.transaction(
+      () => this.setExecutionBoundaryKindSync(sessionId, kind, projection).boundary,
+    );
+  }
+
+  async updateSessionConfiguration(
+    sessionId: string,
+    input: SessionConfigurationMetadataUpdate,
+  ): Promise<SessionMetadataRecord> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertMetadataVersion(input.expectedVersion, 'Session configuration expected version');
+    const kind = input.configuration.permissionMode === 'bypass' ? 'bypass' : 'managed';
     return this.transaction(() => {
-      const record = this.readRecordSync(sessionId);
-      if (!record) throw new SessionNotFoundError(sessionId);
-      this.ensureGenesisExecutionBoundary(record.header);
-      const current = this.readCurrentExecutionBoundarySync(sessionId);
-      if (current.kind === 'external') {
-        throw new SessionMetadataConflictError(
-          'An externally isolated session cannot enter Auto or Bypass',
+      const current = this.readRecordSync(sessionId);
+      if (!current) throw new SessionNotFoundError(sessionId);
+      if (current.metadataVersion !== input.expectedVersion) {
+        throw new SessionMetadataVersionConflictError(
+          sessionId,
+          input.expectedVersion,
+          current.metadataVersion,
         );
       }
-      const projectedMode =
-        projection?.permissionMode ??
-        (kind === 'bypass'
-          ? 'bypass'
-          : record.header.permissionMode === 'bypass'
-            ? 'ask'
-            : record.header.permissionMode);
-      if ((projectedMode === 'bypass') !== (kind === 'bypass')) {
-        throw new Error('Execution boundary kind and legacy permission mode disagree');
-      }
-
-      let boundary: ExecutionBoundary = current;
-      const nextManagedProfile =
-        kind === 'managed'
-          ? projectedMode === 'explore'
-            ? requireManagedProfile(createGenesisExecutionBoundary('explore'))
-            : current.kind === 'managed' && !isCanonicalReadOnlySandboxProfile(current.profile)
-              ? current.profile
-              : this.readLatestAutoSandboxProfileSync(sessionId)
-          : undefined;
-      const boundaryChanged =
-        current.kind !== kind ||
-        (kind === 'managed' &&
-          current.kind === 'managed' &&
-          !isDeepStrictEqual(current.profile, nextManagedProfile));
-      if (boundaryChanged) {
-        const revision = current.revision + 1;
-        boundary =
-          kind === 'bypass'
-            ? { kind: 'bypass', revision }
-            : {
-                kind: 'managed',
-                profile: nextManagedProfile!,
-                revision,
-              };
-        const committedAt = this.now();
-        this.db
-          .prepare(`
-            INSERT INTO sandbox_boundary_log(
-              session_id,
-              entry_id,
-              entry_kind,
-              status,
-              applied_revision,
-              boundary_json,
-              created_at,
-              settled_at
-            ) VALUES (?, ?, 'user_change', 'applied', ?, ?, ?, ?)
-          `)
-          .run(
-            sessionId,
-            `change:${revision}`,
-            revision,
-            JSON.stringify(boundary),
-            committedAt,
-            committedAt,
-          );
-        this.options.failpoint?.('after_sandbox_boundary_write');
-      }
-
-      const projectedLabels = projection?.labels ? [...projection.labels] : record.header.labels;
-      if (
-        record.header.permissionMode !== projectedMode ||
-        !isDeepStrictEqual(record.header.labels, projectedLabels)
-      ) {
-        this.updateHeaderSync(sessionId, {
-          permissionMode: projectedMode,
-          labels: projectedLabels,
-        });
-      }
-      return boundary;
+      const lifecyclePatch =
+        input.lifecycle.kind === 'preserve'
+          ? {}
+          : clearConnectionBlock(current, input.lifecycle.statusUpdatedAt);
+      return this.setExecutionBoundaryKindSync(
+        sessionId,
+        kind,
+        {
+          permissionMode: input.configuration.permissionMode,
+          labels: input.configuration.labels,
+        },
+        {
+          expectedVersion: input.expectedVersion,
+          headerPatch: {
+            ...input.configuration,
+            labels: [...input.configuration.labels],
+            ...lifecyclePatch,
+          },
+        },
+      ).record;
     });
   }
 
@@ -587,6 +623,71 @@ export class SqliteSessionMetadataStore {
         throw new SessionMetadataConflictError(`Session metadata already exists: ${normalized.id}`);
       }
       return this.insertHeader(normalized, 1, this.now(), initialBoundary);
+    });
+  }
+
+  async probeStableSessionCreate(
+    sessionId: string,
+    requestFingerprint: string,
+  ): Promise<StableSessionCreateProbe> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertSessionCreateFingerprint(requestFingerprint);
+    return this.readTransaction(() =>
+      this.probeStableSessionCreateSync(sessionId, requestFingerprint),
+    );
+  }
+
+  async claimStableSessionCreate(
+    sessionId: string,
+    requestFingerprint: string,
+  ): Promise<StableSessionCreateProbe> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertSessionCreateFingerprint(requestFingerprint);
+    return this.transaction(() => {
+      const probe = this.probeStableSessionCreateSync(sessionId, requestFingerprint);
+      if (probe.kind !== 'absent') return probe;
+      this.db
+        .prepare(`
+          INSERT OR IGNORE INTO session_create_claims(
+            session_id,
+            request_fingerprint,
+            claimed_at
+          ) VALUES (?, ?, ?)
+        `)
+        .run(sessionId, requestFingerprint, this.now());
+      return this.probeStableSessionCreateSync(sessionId, requestFingerprint);
+    });
+  }
+
+  async createStableSession(
+    header: SessionHeader,
+    requestFingerprint: string,
+    initialBoundary?: ExecutionBoundary,
+  ): Promise<StableSessionMetadataCreateResult> {
+    this.assertOpen();
+    const normalized = normalizeSessionHeader(header);
+    assertSafeSessionId(normalized.id);
+    assertSessionCreateFingerprint(requestFingerprint);
+    if (normalized.subagentSpawn) {
+      throw new Error('Subagent spawn metadata requires idempotent child-session creation');
+    }
+    return this.transaction(() => {
+      const probe = this.probeStableSessionCreateSync(normalized.id, requestFingerprint);
+      if (probe.kind !== 'absent') return probe;
+      const committedAt = this.now();
+      this.db
+        .prepare(`
+          INSERT INTO session_create_claims(session_id, request_fingerprint, claimed_at)
+          VALUES (?, ?, ?)
+          ON CONFLICT(session_id) DO NOTHING
+        `)
+        .run(normalized.id, requestFingerprint, committedAt);
+      return {
+        kind: 'created' as const,
+        record: this.insertHeader(normalized, 1, committedAt, initialBoundary),
+      };
     });
   }
 
@@ -744,6 +845,27 @@ export class SqliteSessionMetadataStore {
     return record;
   }
 
+  async readCatalogRecord(sessionId: string): Promise<SessionMetadataCatalogRecord> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    const row = this.db
+      .prepare(`
+        SELECT
+          metadata.session_id,
+          metadata.payload_json,
+          metadata.metadata_version,
+          metadata.committed_at,
+          projection.last_message_preview
+        FROM session_catalog_projection projection
+        JOIN session_metadata metadata
+          ON metadata.session_id = projection.session_id
+        WHERE projection.session_id = ?
+      `)
+      .get(sessionId) as SessionMetadataCatalogRow | undefined;
+    if (!row) throw new SessionNotFoundError(sessionId);
+    return decodeCatalogRecord(row);
+  }
+
   async has(sessionId: string): Promise<boolean> {
     this.assertOpen();
     assertSafeSessionId(sessionId);
@@ -758,32 +880,7 @@ export class SqliteSessionMetadataStore {
 
   async list(filter: SessionListFilter = {}): Promise<SessionMetadataRecord[]> {
     this.assertOpen();
-    const where: string[] = [];
-    const parameters: Array<string | number> = [];
-    if (filter.isArchived !== undefined) {
-      where.push('metadata.is_archived = ?');
-      parameters.push(filter.isArchived ? 1 : 0);
-    }
-    if (filter.isFlagged !== undefined) {
-      where.push('metadata.is_flagged = ?');
-      parameters.push(filter.isFlagged ? 1 : 0);
-    }
-    if (filter.labelSlug !== undefined) {
-      where.push(`
-        EXISTS (
-          SELECT 1
-          FROM session_metadata_labels labels
-          WHERE labels.session_id = metadata.session_id
-            AND labels.label = ?
-        )
-      `);
-      parameters.push(filter.labelSlug);
-    }
-    if (filter.subagentParentSessionId !== undefined) {
-      assertSafeSessionId(filter.subagentParentSessionId);
-      where.push('metadata.subagent_parent_session_id = ?');
-      parameters.push(filter.subagentParentSessionId);
-    }
+    const { where, parameters } = buildSessionListPredicate(filter);
     const rows = this.db
       .prepare(`
         SELECT session_id, payload_json, metadata_version, committed_at
@@ -795,6 +892,101 @@ export class SqliteSessionMetadataStore {
       `)
       .all(...parameters) as unknown as SessionMetadataRow[];
     return rows.map(decodeRecord);
+  }
+
+  async listCatalogPage(
+    filter: SessionListFilter,
+    cursor: SessionMetadataCatalogCursor | undefined,
+    limit: number,
+  ): Promise<SessionMetadataCatalogPage> {
+    this.assertOpen();
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 128) {
+      throw new Error('Session catalog page limit must be between 1 and 128');
+    }
+    if (cursor) {
+      assertSafeSessionId(cursor.sessionId);
+      if (!Number.isSafeInteger(cursor.activityAt) || cursor.activityAt < 0) {
+        throw new Error('Session catalog cursor activity is invalid');
+      }
+    }
+    if (filter.subagentParentSessionId !== undefined) {
+      assertSafeSessionId(filter.subagentParentSessionId);
+    }
+    return this.readTransaction(() => {
+      const query = buildSqliteSessionCatalogPageQuery(filter, cursor);
+      const rows = this.db
+        .prepare(query.sql)
+        .all(...query.parameters, limit + 1) as unknown as SessionMetadataCatalogRow[];
+      return {
+        revision: this.readCatalogRevisionSync(),
+        records: rows.slice(0, limit).map(decodeCatalogRecord),
+        hasMore: rows.length > limit,
+      };
+    });
+  }
+
+  async readCatalogRevision(): Promise<SessionCatalogRevisionState> {
+    this.assertOpen();
+    return this.readCatalogRevisionSync();
+  }
+
+  async beginCatalogProjectionWrite(): Promise<void> {
+    this.assertOpen();
+    this.transaction(() => {
+      const result = this.db
+        .prepare(`
+          UPDATE session_catalog_state
+          SET pending_writes = pending_writes + 1
+          WHERE scope = 'catalog'
+        `)
+        .run();
+      if (result.changes !== 1) throw new Error('Session catalog revision state is unavailable');
+    });
+  }
+
+  async commitCatalogProjectionWrite(
+    sessionId: string,
+    projection: SessionCatalogMessageProjection,
+  ): Promise<void> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertCatalogMessageProjection(projection);
+    this.transaction(() => {
+      this.updateCatalogProjectionSync(sessionId, projection, false);
+      this.finishCatalogProjectionWriteSync();
+    });
+  }
+
+  async requireCatalogProjectionRecovery(): Promise<void> {
+    await this.beginCatalogProjectionWrite();
+  }
+
+  async hasPendingCatalogProjectionWrites(): Promise<boolean> {
+    this.assertOpen();
+    return this.readCatalogStateSync().pendingWrites > 0;
+  }
+
+  async recoverCatalogProjections(
+    projections: ReadonlyMap<string, SessionCatalogMessageProjection>,
+  ): Promise<void> {
+    this.assertOpen();
+    for (const [sessionId, projection] of projections) {
+      assertSafeSessionId(sessionId);
+      assertCatalogMessageProjection(projection);
+    }
+    this.transaction(() => {
+      for (const [sessionId, projection] of projections) {
+        this.updateCatalogProjectionSync(sessionId, projection, true);
+      }
+      const result = this.db
+        .prepare(`
+          UPDATE session_catalog_state
+          SET pending_writes = 0
+          WHERE scope = 'catalog'
+        `)
+        .run();
+      if (result.changes !== 1) throw new Error('Session catalog revision state is unavailable');
+    });
   }
 
   async claimAgentGraphIntent(
@@ -1810,7 +2002,7 @@ export class SqliteSessionMetadataStore {
   async update(
     sessionId: string,
     patch: Partial<SessionHeader>,
-    options: { expectedVersion?: number } = {},
+    options: { expectedVersion?: number; skipNoop?: boolean } = {},
   ): Promise<SessionMetadataRecord> {
     this.assertOpen();
     assertSafeSessionId(sessionId);
@@ -2205,7 +2397,11 @@ export class SqliteSessionMetadataStore {
   private updateHeaderSync(
     sessionId: string,
     patch: Partial<SessionHeader>,
-    options: { expectedVersion?: number } = {},
+    options: {
+      expectedVersion?: number;
+      skipNoop?: boolean;
+      catalogPreview?: { readonly kind: 'replace'; readonly value?: string };
+    } = {},
   ): SessionMetadataRecord {
     const current = this.readRecordSync(sessionId);
     if (!current) throw new SessionNotFoundError(sessionId);
@@ -2213,13 +2409,22 @@ export class SqliteSessionMetadataStore {
       options.expectedVersion !== undefined &&
       options.expectedVersion !== current.metadataVersion
     ) {
-      throw new SessionMetadataConflictError(
-        `Session metadata version conflict for ${sessionId}: expected ${options.expectedVersion}, found ${current.metadataVersion}`,
+      throw new SessionMetadataVersionConflictError(
+        sessionId,
+        options.expectedVersion,
+        current.metadataVersion,
       );
     }
     const next = normalizeSessionHeader({ ...current.header, ...patch }, sessionId);
     if (next.id !== sessionId) {
       throw new SessionMetadataConflictError('Session metadata identity cannot be changed');
+    }
+    const currentPreview =
+      options.catalogPreview === undefined ? undefined : this.readCatalogPreviewSync(sessionId);
+    const previewChanged =
+      options.catalogPreview !== undefined && options.catalogPreview.value !== currentPreview;
+    if (options.skipNoop && isDeepStrictEqual(next, current.header) && !previewChanged) {
+      return current;
     }
     const metadataVersion = current.metadataVersion + 1;
     const committedAt = this.now();
@@ -2279,7 +2484,127 @@ export class SqliteSessionMetadataStore {
     this.options.failpoint?.('after_session_row_write');
     this.replaceLabels(next);
     this.options.failpoint?.('after_session_labels_write');
+    if (options.catalogPreview) {
+      const preview = this.db
+        .prepare(`
+          UPDATE session_catalog_projection
+          SET last_message_preview = ?
+          WHERE session_id = ?
+        `)
+        .run(options.catalogPreview.value ?? null, sessionId);
+      if (preview.changes !== 1) {
+        throw new SessionMetadataConflictError(
+          `Session catalog projection is missing: ${sessionId}`,
+        );
+      }
+    }
     return { header: next, metadataVersion, committedAt };
+  }
+
+  private setExecutionBoundaryKindSync(
+    sessionId: string,
+    kind: 'managed' | 'bypass',
+    projection?: {
+      permissionMode: SessionHeader['permissionMode'];
+      labels?: readonly string[];
+    },
+    options: {
+      expectedVersion?: number;
+      headerPatch?: Partial<SessionHeader>;
+    } = {},
+  ): { boundary: ExecutionBoundary; record: SessionMetadataRecord } {
+    const record = this.readRecordSync(sessionId);
+    if (!record) throw new SessionNotFoundError(sessionId);
+    if (
+      options.expectedVersion !== undefined &&
+      options.expectedVersion !== record.metadataVersion
+    ) {
+      throw new SessionMetadataVersionConflictError(
+        sessionId,
+        options.expectedVersion,
+        record.metadataVersion,
+      );
+    }
+    this.ensureGenesisExecutionBoundary(record.header);
+    const current = this.readCurrentExecutionBoundarySync(sessionId);
+    if (current.kind === 'external') {
+      throw new SessionMetadataConflictError(
+        'An externally isolated session cannot enter Auto or Bypass',
+      );
+    }
+    const projectedMode =
+      projection?.permissionMode ??
+      (kind === 'bypass'
+        ? 'bypass'
+        : record.header.permissionMode === 'bypass'
+          ? 'ask'
+          : record.header.permissionMode);
+    if ((projectedMode === 'bypass') !== (kind === 'bypass')) {
+      throw new Error('Execution boundary kind and legacy permission mode disagree');
+    }
+
+    let boundary: ExecutionBoundary = current;
+    const nextManagedProfile =
+      kind === 'managed'
+        ? projectedMode === 'explore'
+          ? requireManagedProfile(createGenesisExecutionBoundary('explore'))
+          : current.kind === 'managed' && !isCanonicalReadOnlySandboxProfile(current.profile)
+            ? current.profile
+            : this.readLatestAutoSandboxProfileSync(sessionId)
+        : undefined;
+    const boundaryChanged =
+      current.kind !== kind ||
+      (kind === 'managed' &&
+        current.kind === 'managed' &&
+        !isDeepStrictEqual(current.profile, nextManagedProfile));
+    if (boundaryChanged) {
+      const revision = current.revision + 1;
+      boundary =
+        kind === 'bypass'
+          ? { kind: 'bypass', revision }
+          : {
+              kind: 'managed',
+              profile: nextManagedProfile!,
+              revision,
+            };
+      const committedAt = this.now();
+      this.db
+        .prepare(`
+          INSERT INTO sandbox_boundary_log(
+            session_id,
+            entry_id,
+            entry_kind,
+            status,
+            applied_revision,
+            boundary_json,
+            created_at,
+            settled_at
+          ) VALUES (?, ?, 'user_change', 'applied', ?, ?, ?, ?)
+        `)
+        .run(
+          sessionId,
+          `change:${revision}`,
+          revision,
+          JSON.stringify(boundary),
+          committedAt,
+          committedAt,
+        );
+      this.options.failpoint?.('after_sandbox_boundary_write');
+    }
+
+    const projectedLabels = projection?.labels ? [...projection.labels] : record.header.labels;
+    const patch = {
+      ...options.headerPatch,
+      permissionMode: projectedMode,
+      labels: projectedLabels,
+    };
+    const updated = this.updateHeaderSync(sessionId, patch, {
+      ...(options.expectedVersion === undefined
+        ? {}
+        : { expectedVersion: options.expectedVersion }),
+      skipNoop: true,
+    });
+    return { boundary, record: updated };
   }
 
   private replaceLabels(header: SessionHeader): void {
@@ -2302,6 +2627,128 @@ export class SqliteSessionMetadataStore {
       `)
       .get(sessionId) as SessionMetadataRow | undefined;
     return row ? decodeRecord(row) : undefined;
+  }
+
+  private readCatalogPreviewSync(sessionId: string): string | undefined {
+    const row = this.db
+      .prepare(`
+        SELECT last_message_preview
+        FROM session_catalog_projection
+        WHERE session_id = ?
+      `)
+      .get(sessionId) as { last_message_preview?: unknown } | undefined;
+    if (!row) {
+      throw new SessionMetadataConflictError(`Session catalog projection is missing: ${sessionId}`);
+    }
+    return decodeCatalogPreview(row.last_message_preview, sessionId);
+  }
+
+  private updateCatalogProjectionSync(
+    sessionId: string,
+    projection: SessionCatalogMessageProjection,
+    replacePreview: boolean,
+  ): void {
+    const current = this.readRecordSync(sessionId);
+    if (!current) throw new SessionNotFoundError(sessionId);
+    const lastMessageAt = maxTimestamp(current.header.lastMessageAt, projection.lastMessageAt);
+    this.updateHeaderSync(
+      sessionId,
+      {
+        ...(lastMessageAt === undefined ? {} : { lastMessageAt }),
+      },
+      {
+        skipNoop: true,
+        ...(replacePreview || projection.lastMessagePreview !== undefined
+          ? {
+              catalogPreview: {
+                kind: 'replace',
+                ...(projection.lastMessagePreview === undefined
+                  ? {}
+                  : { value: projection.lastMessagePreview }),
+              } as const,
+            }
+          : {}),
+      },
+    );
+  }
+
+  private finishCatalogProjectionWriteSync(): void {
+    const result = this.db
+      .prepare(`
+        UPDATE session_catalog_state
+        SET pending_writes = pending_writes - 1
+        WHERE scope = 'catalog' AND pending_writes > 0
+      `)
+      .run();
+    if (result.changes !== 1) {
+      throw new Error('Session catalog projection write was not pending');
+    }
+  }
+
+  private readCatalogRevisionSync(): SessionCatalogRevisionState {
+    const state = this.readCatalogStateSync();
+    return { epoch: state.epoch, generation: state.generation };
+  }
+
+  private readCatalogStateSync(): SessionCatalogRevisionState & {
+    readonly pendingWrites: number;
+  } {
+    const row = this.db
+      .prepare(`
+        SELECT epoch, generation, pending_writes
+        FROM session_catalog_state
+        WHERE scope = 'catalog'
+      `)
+      .get() as { epoch?: unknown; generation?: unknown; pending_writes?: unknown } | undefined;
+    if (
+      !row ||
+      typeof row.epoch !== 'string' ||
+      !/^[0-9a-f]{32}$/.test(row.epoch) ||
+      !Number.isSafeInteger(row.generation) ||
+      (row.generation as number) < 0 ||
+      !Number.isSafeInteger(row.pending_writes) ||
+      (row.pending_writes as number) < 0
+    ) {
+      throw new Error('Invalid Session catalog revision state');
+    }
+    return {
+      epoch: row.epoch,
+      generation: row.generation as number,
+      pendingWrites: row.pending_writes as number,
+    };
+  }
+
+  private probeStableSessionCreateSync(
+    sessionId: string,
+    requestFingerprint: string,
+  ): StableSessionCreateProbe {
+    const claim = this.db
+      .prepare(`
+        SELECT request_fingerprint AS requestFingerprint
+        FROM session_create_claims
+        WHERE session_id = ?
+      `)
+      .get(sessionId) as { requestFingerprint?: unknown } | undefined;
+    const record = this.readRecordSync(sessionId);
+    if (!claim) {
+      if (record || this.hasTombstone(sessionId)) {
+        return {
+          kind: 'conflict',
+          reason: record ? 'identity_mismatch' : 'removed',
+        };
+      }
+      return { kind: 'absent' };
+    }
+    if (this.hasTombstone(sessionId)) {
+      return { kind: 'conflict', reason: 'removed' };
+    }
+    if (
+      typeof claim.requestFingerprint !== 'string' ||
+      claim.requestFingerprint !== requestFingerprint
+    ) {
+      return { kind: 'conflict', reason: 'identity_mismatch' };
+    }
+    return record ? { kind: 'existing', record } : { kind: 'absent' };
   }
 
   private tryClaimSubagentSpawn(
@@ -2747,6 +3194,60 @@ interface SessionMetadataRow {
   committed_at: number;
 }
 
+interface SessionMetadataCatalogRow extends SessionMetadataRow {
+  last_message_preview: string | null;
+}
+
+function buildSessionListPredicate(filter: SessionListFilter): {
+  where: string[];
+  parameters: Array<string | number>;
+} {
+  const where: string[] = [];
+  const parameters: Array<string | number> = [];
+  if (filter.isArchived !== undefined) {
+    where.push('metadata.is_archived = ?');
+    parameters.push(filter.isArchived ? 1 : 0);
+  }
+  if (filter.isFlagged !== undefined) {
+    where.push('metadata.is_flagged = ?');
+    parameters.push(filter.isFlagged ? 1 : 0);
+  }
+  if (filter.labelSlug !== undefined) {
+    where.push(`
+      EXISTS (
+        SELECT 1
+        FROM session_metadata_labels labels
+        WHERE labels.session_id = metadata.session_id
+          AND labels.label = ?
+      )
+    `);
+    parameters.push(filter.labelSlug);
+  }
+  if (filter.subagentParentSessionId !== undefined) {
+    assertSafeSessionId(filter.subagentParentSessionId);
+    where.push('metadata.subagent_parent_session_id = ?');
+    parameters.push(filter.subagentParentSessionId);
+  }
+  return { where, parameters };
+}
+
+function clearConnectionBlock(
+  current: SessionMetadataRecord,
+  statusUpdatedAt: number,
+): Pick<SessionHeader, 'status' | 'blockedReason' | 'statusUpdatedAt'> {
+  if (current.header.blockedReason !== 'NO_REAL_CONNECTION') {
+    throw new SessionMetadataConflictError('Session no longer has a connection block to clear');
+  }
+  if (!Number.isSafeInteger(statusUpdatedAt) || statusUpdatedAt < 0) {
+    throw new Error('Session connection unblock timestamp is invalid');
+  }
+  return {
+    status: 'active',
+    blockedReason: undefined,
+    statusUpdatedAt,
+  };
+}
+
 const SANDBOX_BOUNDARY_REQUEST_COLUMNS = `
   session_id AS sessionId,
   request_id AS requestId,
@@ -3001,6 +3502,43 @@ function decodeRecord(row: SessionMetadataRow): SessionMetadataRecord {
   };
 }
 
+function decodeCatalogRecord(row: SessionMetadataCatalogRow): SessionMetadataCatalogRecord {
+  const lastMessagePreview = decodeCatalogPreview(row.last_message_preview, row.session_id);
+  return {
+    ...decodeRecord(row),
+    ...(lastMessagePreview === undefined ? {} : { lastMessagePreview }),
+  };
+}
+
+function decodeCatalogPreview(value: unknown, sessionId: string): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value !== 'string' || Array.from(value).length > 96) {
+    throw new Error(`Invalid SQLite Session catalog preview for ${sessionId}`);
+  }
+  return value;
+}
+
+function assertCatalogMessageProjection(projection: SessionCatalogMessageProjection): void {
+  if (
+    projection.lastMessageAt !== undefined &&
+    (!Number.isSafeInteger(projection.lastMessageAt) || projection.lastMessageAt < 0)
+  ) {
+    throw new Error('Session catalog message timestamp is invalid');
+  }
+  if (
+    projection.lastMessagePreview !== undefined &&
+    Array.from(projection.lastMessagePreview).length > 96
+  ) {
+    throw new Error('Session catalog message preview is too long');
+  }
+}
+
+function maxTimestamp(left: number | undefined, right: number | undefined): number | undefined {
+  if (left === undefined) return right;
+  if (right === undefined) return left;
+  return Math.max(left, right);
+}
+
 function decodeSandboxBoundaryRequestRow(row: SandboxBoundaryRequestRow): SandboxBoundaryRequest {
   const validated = validateSandboxBoundaryExpansion(JSON.parse(row.expansionJson) as unknown);
   if (
@@ -3043,6 +3581,18 @@ function decodeSandboxBoundaryRequestRow(row: SandboxBoundaryRequestRow): Sandbo
 
 function booleanInteger(value: boolean): 0 | 1 {
   return value ? 1 : 0;
+}
+
+function assertMetadataVersion(value: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(`${label} must be a positive safe integer`);
+  }
+}
+
+function assertSessionCreateFingerprint(value: string): void {
+  if (!/^sha256:[0-9a-f]{64}$/.test(value)) {
+    throw new Error('Session create request fingerprint is invalid');
+  }
 }
 
 function requireManagedProfile(

@@ -19,7 +19,7 @@ import {
   type RootTurnSourceMessageReceipt,
 } from './agent-run-store.js';
 import { createMessageReceiptStore, type MessageReceiptStore } from './message-receipt-store.js';
-import { createSessionStore, type SessionStore } from './session-store.js';
+import { createSessionStore, type SessionAuthorityStore } from './session-store.js';
 import {
   assertStorageRootLease,
   runWithStorageRootLease,
@@ -46,7 +46,14 @@ const executionStoresWritersByLease = new WeakMap<object, object>();
 const executionStoresWritersOpeningByLease = new WeakMap<object, Promise<void>>();
 
 export { normalizeRootTurnAdmissionPayload } from './agent-run-store.js';
-export { isSessionNotFoundError } from './session-store.js';
+export {
+  isSessionNotFoundError,
+  SessionReadMarkerMessageNotFoundError,
+} from './session-store.js';
+export {
+  SessionMetadataConflictError,
+  SessionMetadataVersionConflictError,
+} from './sqlite-session-metadata-store.js';
 
 export type {
   AdmitRootTurnInput,
@@ -62,8 +69,13 @@ export type {
   MessageReceiptOperation,
   MessageReceiptStore,
 } from './message-receipt-store.js';
+export type {
+  SessionCatalogPageCursor,
+  SessionCatalogPageResult,
+  SessionCatalogRecord,
+} from './session-store.js';
 
-export type ExecutionSessionWriter = SessionStore;
+export type ExecutionSessionWriter = SessionAuthorityStore;
 export type ExecutionAgentRunWriter = DurableAgentRunStore;
 export type ExecutionRuntimeEventWriter = DurableRuntimeEventStore;
 export type ExecutionMessageReceiptWriter = MessageReceiptStore;
@@ -225,6 +237,10 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
     [executionStoresWriterBrand]: kind,
     sessionStore: {
       create: (input, initialBoundary) => run(() => sessionStore.create(input, initialBoundary)),
+      probeStableSessionCreate: (sessionId, requestFingerprint) =>
+        run(() => sessionStore.probeStableSessionCreate(sessionId, requestFingerprint)),
+      createStableSession: (request, initialBoundary) =>
+        run(() => sessionStore.createStableSession(request, initialBoundary)),
       createSubagent: (input, initialBoundary) =>
         run(() => sessionStore.createSubagent(input, initialBoundary)),
       createAgentGraphOperator: (input, request, expectedRevision, initialBoundary) =>
@@ -244,9 +260,14 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       setExecutionBoundaryKind: (sessionId, boundaryKind, projection) =>
         run(() => sessionStore.setExecutionBoundaryKind(sessionId, boundaryKind, projection)),
       list: (filter) => run(() => sessionStore.list(filter)),
+      listCatalogPage: (filter, cursor, limit, expectedRevision) =>
+        run(() => sessionStore.listCatalogPage(filter, cursor, limit, expectedRevision)),
       listHeaders: () => run(() => sessionStore.listHeaders()),
       listForRecovery: () => run(() => sessionStore.listForRecovery()),
       readHeaderSnapshot: (sessionId) => run(() => sessionStore.readHeaderSnapshot(sessionId)),
+      readHeaderRecordSnapshot: (sessionId) =>
+        run(() => sessionStore.readHeaderRecordSnapshot(sessionId)),
+      readCatalogRecord: (sessionId) => run(() => sessionStore.readCatalogRecord(sessionId)),
       readMessagesSnapshot: (sessionId) => run(() => sessionStore.readMessagesSnapshot(sessionId)),
       readMessagesForRecovery: (sessionId) =>
         run(() => sessionStore.readMessagesForRecovery(sessionId)),
@@ -259,6 +280,12 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       appendMessages: (sessionId, messages) =>
         run(() => sessionStore.appendMessages(sessionId, messages)),
       updateHeader: (sessionId, patch) => run(() => sessionStore.updateHeader(sessionId, patch)),
+      updateHeaderVersioned: (sessionId, patch, expectedRevision) =>
+        run(() => sessionStore.updateHeaderVersioned(sessionId, patch, expectedRevision)),
+      updateSessionConfiguration: (sessionId, input) =>
+        run(() => sessionStore.updateSessionConfiguration(sessionId, input)),
+      markSessionReadThroughMessage: (sessionId, messageId) =>
+        run(() => sessionStore.markSessionReadThroughMessage(sessionId, messageId)),
       markSessionReadThrough: (sessionId, readThroughTs) =>
         run(() => sessionStore.markSessionReadThrough(sessionId, readThroughTs)),
       archive: (sessionId) => run(() => sessionStore.archive(sessionId)),

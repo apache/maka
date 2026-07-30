@@ -135,6 +135,7 @@ describe('SQLite agent graph intent claims', () => {
 
       const legacy = new DatabaseSync(path);
       legacy.exec(`
+        DROP TABLE session_create_claims;
         DROP TABLE sandbox_boundary_log;
         DROP TABLE agent_graph_supervisor_wake_attempts;
         DROP TABLE agent_graph_supervisor_wakes;
@@ -186,7 +187,7 @@ describe('SQLite agent graph intent claims', () => {
 
       const migrated = createSqliteSessionMetadataStore(path);
       try {
-        assert.equal(migrated.schemaVersion(), 14);
+        assert.equal(migrated.schemaVersion(), 16);
         assert.deepEqual(
           await migrated.beginAgentGraphIntentExecutionAtScheduleRevision(
             'graph-1',
