@@ -295,15 +295,6 @@ const COMPONENT_RADIUS: ComponentRadiusCheck[] = [
   // review P3.1); the modal popup class now lives in MODAL_POPUP_CLASS.
   { file: 'packages/ui/src/ui.tsx', name: 'MODAL_POPUP_CLASS', tier: 'modal' },
   { file: 'packages/ui/src/ui.tsx', name: 'ToggleGroup', tier: 'surface' },
-  // TabsTrigger/TabsList were dropped from this table when #499 P0-3 moved
-  // them to primitives/tabs.tsx, on the stated grounds that they became
-  // "governed by primitives-design-contract escape hatches". That file
-  // contains no radius or rounded assertion at all, so the move left the
-  // vocabulary's own "tab trigger" (control) and "tab list" (surface) as the
-  // only two named roles with no governance anywhere. The components merely
-  // changed file; re-pointing the entry is the whole fix.
-  { file: 'packages/ui/src/primitives/tabs.tsx', name: 'TabsList', tier: 'surface' },
-  { file: 'packages/ui/src/primitives/tabs.tsx', name: 'TabsTab', tier: 'control' },
   { file: 'packages/ui/src/primitives/input-group.tsx', name: 'InputGroup', tier: 'control' },
   // #1565 PR 3: the Badge entry left this table — it is the Astryx primitive
   // now, whose pill radius is Astryx-owned.

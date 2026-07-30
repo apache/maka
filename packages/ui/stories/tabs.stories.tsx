@@ -28,9 +28,9 @@ export const ThreeTabs: Story = {
       <div style={{ maxWidth: 480 }}>
         <TabsRoot value={value} onValueChange={setValue}>
           <TabsList aria-label="概览标签">
-            <TabsTrigger value="overview">概览</TabsTrigger>
-            <TabsTrigger value="activity">活动</TabsTrigger>
-            <TabsTrigger value="settings">设置</TabsTrigger>
+            <TabsTrigger value="overview" label="概览" />
+            <TabsTrigger value="activity" label="活动" />
+            <TabsTrigger value="settings" label="设置" />
           </TabsList>
           <TabsPanel value="overview">
             <Panel>概览内容：这里是会话的整体摘要。</Panel>
@@ -54,9 +54,9 @@ export const DisabledTab: Story = {
       <div style={{ maxWidth: 480 }}>
         <TabsRoot value={value} onValueChange={setValue}>
           <TabsList aria-label="带禁用项">
-            <TabsTrigger value="general">通用</TabsTrigger>
-            <TabsTrigger value="advanced" disabled>高级</TabsTrigger>
-            <TabsTrigger value="about">关于</TabsTrigger>
+            <TabsTrigger value="general" label="通用" />
+            <TabsTrigger value="advanced" label="高级" aria-disabled="true" onClick={(event) => event.preventDefault()} />
+            <TabsTrigger value="about" label="关于" />
           </TabsList>
           <TabsPanel value="general">
             <Panel>通用设置。</Panel>
@@ -82,7 +82,7 @@ export const OverflowTabs: Story = {
         <TabsRoot value={value} onValueChange={setValue}>
           <TabsList aria-label="溢出标签" style={{ overflowX: 'auto' }}>
             {labels.map((label, i) => (
-              <TabsTrigger key={i} value={`tab-${i + 1}`}>{label}</TabsTrigger>
+              <TabsTrigger key={i} value={`tab-${i + 1}`} label={label} />
             ))}
           </TabsList>
           {labels.map((_, i) => (

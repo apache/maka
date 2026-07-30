@@ -48,6 +48,22 @@ const ALLOWED_PENDING: ReadonlyArray<{ name: string; reason: string }> = [
   // intentionally empty
 ];
 
+// Issue #1565 freezes the public barrel while replacing Base UI internals.
+// These inert names remain only for source compatibility; internal product
+// code must not consume them or revive the retired implementation.
+const FROZEN_COMPATIBILITY = new Set([
+  'SelectRoot',
+  'SelectTrigger',
+  'SelectValue',
+  'SelectPortal',
+  'SelectPositioner',
+  'SelectPopup',
+  'SelectGroup',
+  'SelectGroupLabel',
+  'SelectSeparator',
+  'SelectItem',
+]);
+
 async function readSourceFiles(dir: string): Promise<{ path: string; content: string }[]> {
   const entries = await readdir(dir, { withFileTypes: true });
   const files = await Promise.all(
@@ -96,7 +112,7 @@ describe('PR-UI-DEAD-EXPORT-SWEEP-0 ui.tsx dead-export contract', () => {
     const pending = new Set(ALLOWED_PENDING.map((entry) => entry.name));
     const dead: string[] = [];
     for (const name of exports) {
-      if (pending.has(name)) continue;
+      if (pending.has(name) || FROZEN_COMPATIBILITY.has(name)) continue;
       const re = new RegExp(`\\b${name}\\b`);
       const hasConsumer = allSources.some((file) => {
         if (file.path === UI_FILE) return false;

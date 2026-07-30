@@ -313,9 +313,9 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
 
         <TabsRoot value={activeTab} onValueChange={(value) => setActiveTab(value as 'market' | 'installed')}>
           <div className="maka-mcp-tabs-bar">
-            <TabsList variant="underline" className="maka-mcp-tabs" aria-label={copy.page.categoriesAria}>
-              <TabsTrigger className="maka-mcp-tab" value="market">{copy.page.market} <span>{catalog.length}</span></TabsTrigger>
-              <TabsTrigger className="maka-mcp-tab" value="installed">{copy.page.installed} <span>{entries.length}</span></TabsTrigger>
+            <TabsList variant="underline" aria-label={copy.page.categoriesAria}>
+              <TabsTrigger value="market" label={copy.page.market} endContent={<span className="maka-mcp-tab-count">{catalog.length}</span>} />
+              <TabsTrigger value="installed" label={copy.page.installed} endContent={<span className="maka-mcp-tab-count">{entries.length}</span>} />
             </TabsList>
             <InputGroup className="maka-mcp-search">
               <InputGroupAddon><Search aria-hidden="true" /></InputGroupAddon>

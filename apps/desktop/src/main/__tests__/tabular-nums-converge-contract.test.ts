@@ -51,7 +51,7 @@ const TABULAR_NUMS_SELECTORS = [
   '.settingsUsageRecordCount',
   '.settingsMemoryEntryGroupHeader',
   // skill counts
-  '.maka-skill-tab span',
+  '.maka-skill-tab-count',
   '.maka-skill-section-row small',
   // search result counts
   '.maka-search-modal-result-summary',

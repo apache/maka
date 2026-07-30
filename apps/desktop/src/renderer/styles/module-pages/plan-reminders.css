@@ -92,26 +92,6 @@
   row-gap: var(--space-2-5);
 }
 
-.maka-plan-tabs-list {
-  gap: var(--space-4);
-  border-radius: 0;
-  background: transparent;
-  padding: 0;
-}
-
-.maka-plan-tab {
-  position: relative;
-  gap: var(--space-1-5);
-  min-width: 0;
-  height: 28px;
-  padding: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--muted-foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
-}
-
 .maka-plan-toolbar {
   display: flex;
   flex-wrap: wrap;

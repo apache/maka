@@ -157,12 +157,12 @@ export function UsageSettingsPage(props: {
         onValueChange={(activeTab) => void updateUsage({ activeTab: activeTab as UsageActiveTab })}
       >
         <div className="settingsUsageTabsBar">
-          <TabsList variant="underline" className="settingsUsageTabs" aria-label={copy.viewAria}>
-            <TabsTrigger className="settingsUsageTab" value="requests">{copy.tabs[0]} <span>{tabCounts.requests}</span></TabsTrigger>
-            <TabsTrigger className="settingsUsageTab" value="providers">{copy.tabs[1]} <span>{tabCounts.providers}</span></TabsTrigger>
-            <TabsTrigger className="settingsUsageTab" value="models">{copy.tabs[2]} <span>{tabCounts.models}</span></TabsTrigger>
-            <TabsTrigger className="settingsUsageTab" value="tools">{copy.tabs[3]} <span>{tabCounts.tools}</span></TabsTrigger>
-            <TabsTrigger className="settingsUsageTab" value="pricing">{copy.tabs[4]} <span>{tabCounts.pricing}</span></TabsTrigger>
+          <TabsList variant="underline" aria-label={copy.viewAria}>
+            <TabsTrigger value="requests" label={copy.tabs[0]} endContent={<span className="settingsUsageTabCount">{tabCounts.requests}</span>} />
+            <TabsTrigger value="providers" label={copy.tabs[1]} endContent={<span className="settingsUsageTabCount">{tabCounts.providers}</span>} />
+            <TabsTrigger value="models" label={copy.tabs[2]} endContent={<span className="settingsUsageTabCount">{tabCounts.models}</span>} />
+            <TabsTrigger value="tools" label={copy.tabs[3]} endContent={<span className="settingsUsageTabCount">{tabCounts.tools}</span>} />
+            <TabsTrigger value="pricing" label={copy.tabs[4]} endContent={<span className="settingsUsageTabCount">{tabCounts.pricing}</span>} />
           </TabsList>
         </div>
 

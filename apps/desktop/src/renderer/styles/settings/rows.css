@@ -281,10 +281,6 @@
   justify-self: end;
 }
 
-.settingsRow[data-control-width="select"] > .settingsSelectTrigger {
-  justify-self: end;
-}
-
 /* === fields and grids =================================================== */
 
 .settingsFormGrid {
@@ -363,8 +359,7 @@
    the description column has space to breathe.
    PR-SETTINGS-INPUT-POLISH-0: cap from 280 → 320 since rows are now
    roomier (24px L/R padding). */
-.settingsField[data-orient="horizontal"] > input,
-.settingsField[data-orient="horizontal"] > .settingsSelectTrigger {
+.settingsField[data-orient="horizontal"] > input {
   max-width: 320px;
 }
 /* The horizontal row above the first one shouldn't carry a top border;
@@ -463,8 +458,7 @@
   }
 
   .settingsRow[data-control-width="compact"] > input,
-  .settingsRow[data-control-width="compact"] > .settingsTimeInput,
-  .settingsRow[data-control-width="select"] > .settingsSelectTrigger {
+  .settingsRow[data-control-width="compact"] > .settingsTimeInput {
     justify-self: start;
   }
 

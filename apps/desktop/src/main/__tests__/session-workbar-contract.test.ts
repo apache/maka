@@ -9,9 +9,9 @@ describe('session workbar contract', () => {
   it('owns three stable peer tabs and disables Browser without a live view', async () => {
     const source = await readFile(resolve(REPO_ROOT, 'apps/desktop/src/renderer/session-workbar.tsx'), 'utf8');
 
-    assert.match(source, /value="tasks"[\s\S]*?>[\s\S]*\{copy\.tasks\}/);
-    assert.match(source, /value="browser"[\s\S]*disabled=\{!props\.browserLive\}[\s\S]*?>[\s\S]*\{copy\.browser\}/);
-    assert.match(source, /value="files"[\s\S]*?>[\s\S]*\{copy\.files\}/);
+    assert.match(source, /value="tasks"[\s\S]*?label=\{copy\.tasks\}/);
+    assert.match(source, /value="browser"[\s\S]*?label=\{copy\.browser\}[\s\S]*?aria-disabled=\{!props\.browserLive\}/);
+    assert.match(source, /value="files"[\s\S]*?label=\{copy\.files\}/);
     assert.match(source, /<TaskLedgerPanel\b/);
     assert.match(source, /<BrowserPanel\b/);
     assert.match(source, /<ArtifactPane\b/);

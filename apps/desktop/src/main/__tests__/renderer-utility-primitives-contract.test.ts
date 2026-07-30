@@ -367,9 +367,10 @@ describe('renderer utility surfaces use shared UI primitives', () => {
       );
     }
 
-    // #1565 PR 3: the attachment menu trigger is a Base UI render-prop on the
-    // legacy buttonVariants seam; the send button uses Astryx IconButton.
-    assert.match(composer, /buttonVariants\(\{ variant: 'quiet', size: 'icon-sm', shape: 'pill' \}\)[\s\S]*?aria-label=\{pendingImportAction/);
+    assert.match(
+      composer,
+      /button=\{\{[\s\S]*?pendingImportAction === 'pick'[\s\S]*?isIconOnly:\s*true,[\s\S]*?variant:\s*'ghost',[\s\S]*?size:\s*'sm'/,
+    );
     assert.match(
       composer,
       /<IconButton\s+variant="primary"[\s\S]*?label=\{copy\.sendLabel\}/,

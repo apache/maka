@@ -198,27 +198,7 @@ color: oklch(from var(--brand-deep) 0.55 min(c, 0.015) h);
   min-height: var(--h-control-sm);
 }
 
-.maka-skill-tabs {
-  display: flex;
-  gap: var(--space-4);
-  border-bottom: 0;
-}
-
-.maka-skill-tab {
-  position: relative;
-  display: inline-flex;
-  height: 32px;
-  align-items: center;
-  gap: var(--space-1);
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--muted-foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-  padding: 0 1px;
-}
-.maka-skill-tab span {
+.maka-skill-tab-count {
   font-variant-numeric: tabular-nums;
   min-width: 16px;
   height: 16px;

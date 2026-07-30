@@ -46,4 +46,11 @@ describe('#1565 PR 6 Astryx floating-component authority', () => {
     ).join('\n');
     assert.doesNotMatch(consumers, /<Menu(?:Trigger|Popup|Sub)/);
   });
+
+  it('makes Astryx TabList the only tab-navigation behavior authority', async () => {
+    const source = await readUiSource('primitives/tabs.tsx');
+
+    assert.match(source, /from '@astryxdesign\/core\/TabList'/);
+    assert.doesNotMatch(source, /@base-ui\/react\/tabs|TabsPrimitive\.Indicator/);
+  });
 });

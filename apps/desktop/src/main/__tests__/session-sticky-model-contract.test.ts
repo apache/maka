@@ -180,7 +180,6 @@ describe('PR-SESSION-STICKY-MODEL-0 contract', () => {
     assert.doesNotMatch(ui, /@base-ui\/react\/combobox|BaseCombobox/);
     assert.match(ui, /footer=\{\(\{ open, close \}\) => \(/);
     assert.match(ui, /props\.footer\?\.\(\{ open: isOpen, close \}\)/);
-    assert.match(ui, /data-model-picker-nested-popup=""/);
     // Maka retains only product grouping and provider marks; Astryx owns the
     // combobox selection, keyboard, and native-popover behavior.
     assert.match(ui, /filteredGroups\.map\(\(group\) => \{/);

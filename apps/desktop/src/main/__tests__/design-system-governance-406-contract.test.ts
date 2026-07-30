@@ -243,11 +243,10 @@ describe('issue #406 design-system governance contract', () => {
 
     const menu = await readFile(resolve(REPO_ROOT, 'packages/ui/src/primitives/menu.tsx'), 'utf8');
     const tabs = await readFile(resolve(REPO_ROOT, 'packages/ui/src/primitives/tabs.tsx'), 'utf8');
-    assert.match(menu, /data-checked:bg-control/);
-    assert.match(tabs, /bg-foreground data-\[orientation=horizontal\]:h-0\.5/);
-    assert.doesNotMatch(menu, /data-checked:bg-primary/);
-    assert.doesNotMatch(tabs, /bg-control data-\[orientation=horizontal\]:h-0\.5/);
-    assert.doesNotMatch(tabs, /bg-primary data-\[orientation=horizontal\]:h-0\.5/);
+    assert.match(menu, /from '@astryxdesign\/core\/DropdownMenu'/);
+    assert.match(tabs, /from '@astryxdesign\/core\/TabList'/);
+    assert.doesNotMatch(menu, /data-checked:bg-(?:control|primary)/);
+    assert.doesNotMatch(tabs, /bg-(?:foreground|control|primary)/);
 
   });
 

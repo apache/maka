@@ -264,9 +264,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
           >
             <PrimitiveTabsList variant="pill" className="catalogTabs catalogPillTabs" aria-label={copy.categoriesAria}>
               {CATALOG_TABS.map((tab) => (
-                <PrimitiveTabsTrigger key={tab} value={tab} data-catalog-tab={tab}>
-                  <strong>{copy.tabs[tab]}</strong>
-                </PrimitiveTabsTrigger>
+                <PrimitiveTabsTrigger key={tab} value={tab} label={copy.tabs[tab]} data-catalog-tab={tab} />
               ))}
             </PrimitiveTabsList>
             <InputGroup className="providerCatalogSearch">

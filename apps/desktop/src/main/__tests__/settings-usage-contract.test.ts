@@ -119,7 +119,7 @@ describe('Settings usage dashboard contract', () => {
     );
     assert.match(
       usagePage,
-      /<TabsList variant="underline" className="settingsUsageTabs" aria-label=\{copy\.viewAria\}>/,
+      /<TabsList variant="underline" aria-label=\{copy\.viewAria\}>/,
       'the tab row must use the underline TabsList so it reads as tabs, not a toggle chip',
     );
     assert.doesNotMatch(
@@ -138,7 +138,7 @@ describe('Settings usage dashboard contract', () => {
     ] as const) {
       assert.match(
         usagePage,
-        new RegExp(`<TabsTrigger className="settingsUsageTab" value="${value}">\\{copy\\.tabs\\[${copyIndex}\\]\\} <span>`),
+        new RegExp(`<TabsTrigger value="${value}" label=\\{copy\\.tabs\\[${copyIndex}\\]\\} endContent=\\{<span className="settingsUsageTabCount">`),
         `tab ${value} must render its localized label with a count pill`,
       );
     }
