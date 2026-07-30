@@ -418,9 +418,19 @@ interface PopoverRootProps {
 export function PopoverRoot({ children, open, onOpenChange, onOpenChangeComplete, label }: PopoverRootProps): React.ReactElement {
   const callbacksRef = React.useRef({ onOpenChange, onOpenChangeComplete });
   callbacksRef.current = { onOpenChange, onOpenChangeComplete };
-  const onShow = React.useCallback(() => callbacksRef.current.onOpenChange?.(true), []);
+  // Prop-driven reconcile transitions stay silent on `onOpenChange`: the
+  // parent initiated them, so echoing them back would double-report (with
+  // `open` held true, Escape reports false and the reconcile show() would
+  // otherwise report a spurious true). `useLayer` fires these callbacks
+  // synchronously inside show()/hide(), so a flag around the calls suffices.
+  // `onOpenChangeComplete` still fires — a settle is a settle no matter who
+  // initiated the transition, and TimePicker keys its settled state on it.
+  const reconcilingRef = React.useRef(false);
+  const onShow = React.useCallback(() => {
+    if (!reconcilingRef.current) callbacksRef.current.onOpenChange?.(true);
+  }, []);
   const onHide = React.useCallback(() => {
-    callbacksRef.current.onOpenChange?.(false);
+    if (!reconcilingRef.current) callbacksRef.current.onOpenChange?.(false);
     callbacksRef.current.onOpenChangeComplete?.(false);
   }, []);
   // Auto-focus is owned here (not by Astryx) so `initialFocus` can land on a
@@ -448,8 +458,13 @@ export function PopoverRoot({ children, open, onOpenChange, onOpenChangeComplete
   const { isOpen, show, hide } = popover;
   React.useEffect(() => {
     if (open === undefined) return;
-    if (open && !isOpen) show();
-    else if (!open && isOpen) hide();
+    reconcilingRef.current = true;
+    try {
+      if (open && !isOpen) show();
+      else if (!open && isOpen) hide();
+    } finally {
+      reconcilingRef.current = false;
+    }
   }, [open, isOpen, show, hide]);
 
   return <PopoverContext.Provider value={context}>{children}</PopoverContext.Provider>;
