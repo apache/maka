@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { StoredMessage } from '@maka/core';
-import { createPinnedBottomFollower } from './pinned-bottom.js';
+import { createPinnedBottomFollower, resolvePinnedBottomScroll } from './pinned-bottom.js';
 import { createTurnSizeWarmup } from './turn-size-warmup.js';
 
 const SCROLL_BOTTOM_THRESHOLD = 64;
@@ -15,6 +15,7 @@ export function useChatScroll(input: {
   const viewportRef = useRef<HTMLDivElement>(null);
   const [pinnedToBottom, setPinnedToBottom] = useState(true);
   const pinnedToBottomRef = useRef(true);
+  const lastFollowedScrollTopRef = useRef<number | undefined>(undefined);
   const [highlightedTurnId, setHighlightedTurnId] = useState<string | null>(null);
 
   // A session owns one transcript DOM. Reset its initial position to latest.
@@ -22,7 +23,10 @@ export function useChatScroll(input: {
     pinnedToBottomRef.current = true;
     setPinnedToBottom(true);
     const viewport = viewportRef.current;
-    if (viewport) viewport.scrollTop = viewport.scrollHeight;
+    if (viewport) {
+      viewport.scrollTop = viewport.scrollHeight;
+      lastFollowedScrollTopRef.current = viewport.scrollTop;
+    }
   }, [input.sessionId]);
 
   // Follow the content's actual layout clock. Smooth streaming reveals text on
@@ -31,11 +35,18 @@ export function useChatScroll(input: {
     const viewport = viewportRef.current;
     const content = viewport?.querySelector(':scope > [data-overlayscrollbars-content]');
     if (!viewport || !content) return;
-    return createPinnedBottomFollower({
+    const stop = createPinnedBottomFollower({
       viewport,
       content,
       isPinned: () => pinnedToBottomRef.current,
+      onFollow: (scrollTop) => {
+        lastFollowedScrollTopRef.current = scrollTop;
+      },
     });
+    return () => {
+      lastFollowedScrollTopRef.current = undefined;
+      stop();
+    };
   }, [input.sessionId]);
 
   // Replace content-visibility placeholders with final-layout remembered sizes.
@@ -123,8 +134,23 @@ export function useChatScroll(input: {
   function onScroll() {
     const viewport = viewportRef.current;
     if (!viewport) return;
-    const distanceFromBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
-    const pinned = distanceFromBottom <= SCROLL_BOTTOM_THRESHOLD;
+    const lastFollowedScrollTop = lastFollowedScrollTopRef.current;
+    const movedFromLastFollow =
+      lastFollowedScrollTop !== undefined &&
+      Math.abs(viewport.scrollTop - lastFollowedScrollTop) > 1;
+    const { pinned, shouldFollow } = resolvePinnedBottomScroll({
+      scrollTop: viewport.scrollTop,
+      scrollHeight: viewport.scrollHeight,
+      clientHeight: viewport.clientHeight,
+      threshold: SCROLL_BOTTOM_THRESHOLD,
+      wasPinned: pinnedToBottomRef.current,
+      lastFollowedScrollTop,
+    });
+    if (movedFromLastFollow || !pinned) lastFollowedScrollTopRef.current = undefined;
+    if (shouldFollow) {
+      viewport.scrollTop = viewport.scrollHeight;
+      lastFollowedScrollTopRef.current = viewport.scrollTop;
+    }
     pinnedToBottomRef.current = pinned;
     setPinnedToBottom(pinned);
   }
