@@ -1733,6 +1733,22 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
     },
 
     async observeApp(input, signal, context) {
+      // A locked screen has to refuse a read, not only a write.
+      //
+      // `run`, `runSemantic` and `launchApp` check; observation did not, and
+      // the failure is quiet in the worst way: with the screen locked the
+      // window server stops exposing window contents, so cua-driver answers
+      // with the app's menu bar and nothing else. That arrives looking like an
+      // ordinary observation. Measured on this machine with
+      // `CGSSessionScreenIsLocked = 1`: Calculator observed as 7 elements, all
+      // `AXMenuBar`, and the model would have been told the app has no
+      // controls rather than that it could not be looked at.
+      //
+      // No typed outcome here — an observation returns a tree or throws — but
+      // the throw carries the same sentence the refusals do, and the next
+      // action the model attempts answers with `screen_locked` and moves the
+      // session state.
+      if (await screenLockFailure()) throw new Error(SCREEN_LOCKED_MESSAGE);
       return withOperationQueue(
         signal,
         () => observeWindow(input, signal, context),
@@ -1741,6 +1757,7 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
     },
 
     async captureObservation(input, signal, context) {
+      if (await screenLockFailure()) throw new Error(SCREEN_LOCKED_MESSAGE);
       return withOperationQueue(
         signal,
         () => observeWindow(input, signal, context),

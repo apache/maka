@@ -1056,6 +1056,30 @@ describe('cua-driver backend', () => {
     assert.equal(toolCalls(await readRecords(logPath), 'click').length, 0);
   });
 
+  it('refuses to observe while the screen is locked', async () => {
+    // The quiet half of the lock. With the screen locked the window server
+    // stops exposing window contents, so cua-driver answers a window walk with
+    // the app's menu bar and nothing else — and that arrives looking like an
+    // ordinary observation. Measured on a real machine with
+    // `CGSSessionScreenIsLocked = 1`: Calculator observed as 7 elements, every
+    // one `AXMenuBar`, which would have told the model the app has no controls
+    // rather than that it could not be looked at.
+    //
+    // Dispatch already refused. A read has to as well, or the model acts on a
+    // picture of a screen it is not allowed to see.
+    const { backend, logPath } = makeBackend({ screenLocked: () => true });
+    const signal = new AbortController().signal;
+    await assert.rejects(
+      backend.observeApp!(
+        { app: 'Fixture', windowId: 77, includeScreenshot: false },
+        signal,
+        { sessionId: 's1', turnId: 't1', toolCallId: 'lock-guard-observe' },
+      ),
+      /unlock/,
+    );
+    assert.equal(toolCalls(await readRecords(logPath), 'get_window_state').length, 0);
+  });
+
   it('refuses coordinate dispatch while the screen is locked', async () => {
     const { backend, logPath } = makeBackend({ screenLocked: () => true });
     const signal = new AbortController().signal;
