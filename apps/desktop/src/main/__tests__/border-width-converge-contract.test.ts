@@ -84,7 +84,6 @@ const BARE_PX_RE = /(?<![\w-])-?\d+(?:\.\d+)?px(?![\w-])/;
  *  confirming it is geometry, not a stroke. */
 const TRIANGLE_CARET_SELECTORS = new Set([
   '.maka-turn-thinking [data-slot="collapsible-trigger"]::before',
-  '.maka-prose li.task-list-item > input[type="checkbox"]:checked::after',
 ]);
 
 const BORDER_STYLE_KEYWORDS = new Set([
@@ -211,7 +210,6 @@ describe('border-width whitelist negative cases', () => {
   it('findCssOffenders allows triangle caret geometry on allowlisted selectors, flags multi-value and single bare-px elsewhere', () => {
     // Known caret selectors: multi-value geometry is allowed.
     assert.deepEqual(findCssOffenders('.maka-turn-thinking [data-slot="collapsible-trigger"]::before {\n  border-width: 4px 0 4px 5px;\n}', 't'), [], 'allowlisted caret: 4px 0 4px 5px must pass');
-    assert.deepEqual(findCssOffenders('.maka-prose li.task-list-item > input[type="checkbox"]:checked::after {\n  border-width: 0 2px 2px 0;\n}', 't'), [], 'allowlisted caret: 0 2px 2px 0 must pass');
     // Non-allowlisted selector: a multi-value bare px is a stroke drift, not
     // triangle geometry — a heuristic that spared ALL multi-value would miss it.
     assert.ok(findCssOffenders('.foo {\n  border-width: 1px 2px;\n}', 't').length > 0, 'non-allowlisted multi-value bare px must fail');

@@ -64,44 +64,6 @@ const DYNAMIC_STYLE_HOOKS = new Set([
   'settingsPaletteSwatch-dusk',
   'settingsPaletteSwatch-sand',
   'settingsPaletteSwatch-mono',
-  // highlight.js token classes — emitted at runtime by rehype-highlight
-  // (highlight.js v11 via lowlight) inside markdown code blocks, styled in
-  // chat-message.css (#546 PR4). Verified emitted by the installed
-  // highlight.js 11.11.1 against the lowlight `common` grammar set.
-  // `class_` / `function_` are the v11 sub-scope classes of `hljs-title`
-  // (rendered as class="hljs-title class_"); `hljs-class` is the v10-era
-  // scope still emitted by php/perl/c grammars in the common set.
-  'hljs-addition',
-  'hljs-attr',
-  'hljs-attribute',
-  'hljs-built_in',
-  'hljs-bullet',
-  'hljs-class',
-  'hljs-comment',
-  'hljs-deletion',
-  'hljs-doctag',
-  'hljs-emphasis',
-  'hljs-keyword',
-  'hljs-literal',
-  'hljs-meta',
-  'hljs-name',
-  'hljs-number',
-  'hljs-quote',
-  'hljs-regexp',
-  'hljs-selector-tag',
-  'hljs-string',
-  'hljs-strong',
-  'hljs-symbol',
-  'hljs-tag',
-  'hljs-title',
-  'hljs-type',
-  'hljs-variable',
-  'class_',
-  'function_',
-  // GFM task-list classes — emitted at runtime by remark-gfm + remark-rehype
-  // on `- [ ]` / `- [x]` list items, styled in chat-message.css (#546 PR4).
-  'contains-task-list',
-  'task-list-item',
 ]);
 
 async function readCssFiles(dir) {

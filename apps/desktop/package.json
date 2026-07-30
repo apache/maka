@@ -74,7 +74,6 @@
     "postcss": "8.5.15",
     "simple-icons": "15.22.0",
     "storybook": "^10.4.6",
-    "streamdown": "^2.5.0",
     "tailwindcss": "^4.3.1",
     "vite": "^8.1.5"
   }

@@ -67,12 +67,10 @@
 @import "./styles/palette.css" layer(maka.legacy);
 @import "./styles/hero.css" layer(maka.legacy);
 @import "./styles/chat-message.css" layer(components);
-@import "./styles/prose.css" layer(components);
 @import "./styles/composer.css" layer(maka.legacy);
 @import "./styles/composer-mention.css" layer(maka.legacy);
 @import "./styles/chat-detail.css" layer(maka.legacy);
 @import "./styles/settings.css" layer(maka.legacy);
-@import "./styles/markdown-link.css" layer(components);
 @import "./styles/interaction-prompts.css" layer(maka.legacy);
 @import "./styles/daily-review.css" layer(maka.legacy);
 @import "./styles/theme-glass.css" layer(maka.legacy);

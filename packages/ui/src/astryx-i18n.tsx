@@ -45,6 +45,11 @@ export function astryxMessageOverrides(locale: UiLocale) {
     [locale]: {
       '@astryx.codeBlock.copyCode': shared.markdown.copyCode,
       '@astryx.codeBlock.copied': shared.markdown.copiedCode,
+      '@astryx.codeBlock.code': shared.markdown.code,
+      '@astryx.markdown.taskList': shared.markdown.taskList,
+      '@astryx.markdown.table': shared.markdown.table,
+      '@astryx.checkboxList.item.checkbox': shared.markdown.checkbox,
+      '@astryx.link.newTab': shared.markdown.opensInNewTab,
       '@astryx.dialog.close': shared.primitives.close,
       '@astryx.popover.close': shared.primitives.close,
       '@astryx.lightbox.close': shared.primitives.close,

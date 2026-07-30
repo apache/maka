@@ -615,45 +615,10 @@ describe('chat markdown copy feedback contract', () => {
     );
   });
 
-  it('gates code-block copy and keeps code-copy accessibility copy locale-aware', async () => {
-    // PR-UI-LIB-EXTRACT-6 (round 7/10): `CodeBlock` moved out of
-    // `components.tsx` into `markdown.tsx` (along with `Markdown`,
-    // `MarkdownLink`, and the helper functions). A later lazy-load
-    // split then moved the heavy markdown pipeline (`Markdown`,
-    // `MarkdownLink`, `CodeBlock`, helpers) into `markdown-body.tsx`
-    // so the initial renderer chunk doesn't parse the streaming Markdown
-    // pipeline / rehype-highlight (highlight.js) before first paint.
-    // The behavioral assertions stay; we just read from the file where
-    // the component now lives.
-    const markdownPath = resolve(process.cwd(), '..', '..', 'packages', 'ui', 'src', 'markdown-body.tsx');
-    const src = await readFile(markdownPath, 'utf8');
-    const block = src.match(/function CodeBlock[\s\S]*?function isElementWithClassName/)?.[0] ?? '';
-
-    assert.match(block, /useClipboardCopyFeedback\(1400, \{ redact: false \}\)/, 'Code copy should preserve raw code text.');
-    assert.match(block, /await copyFeedback\.copy\('code', text\)/, 'Code copy should route through the guarded helper.');
-    assert.match(block, /codeCopy\.copyingCode/, 'Code copy should expose pending feedback.');
-    assert.match(block, /codeCopy\.copiedCode/, 'Code copy should expose success feedback.');
-    assert.match(block, /codeCopy\.copyCodeFailed/, 'Code copy should expose failure feedback.');
-    assert.match(block, /aria-busy=\{copyPending \? 'true' : undefined\}/, 'Code copy should expose busy state.');
-    assert.match(block, /disabled=\{copyPending\}/, 'Code copy should disable while pending.');
-    assert.match(block, /data-copy-feedback=\{copyPhase \?\? undefined\}/, 'Code copy should expose stable copy state.');
-    assert.doesNotMatch(
-      block,
-      /navigator\.clipboard\.writeText\(text\)|Copy code|Copied|clipboard unavailable/,
-      'Code copy should not regress to English/silent copy feedback.',
-    );
-  });
-
-  it('keeps message and code copy pending/failure states visible', async () => {
-    // .maka-message-copy lives in chat-message.css (#546 PR4 relocated the
-    // message-body surface out of maka-tokens.css); .maka-code-block-copy
-    // rides with the prose/code-block chrome in prose.css (#618 item 3).
+  it('keeps message copy pending/failure states visible', async () => {
     const chatSrc = await readFile(join(process.cwd(), 'src', 'renderer', 'styles', 'chat-message.css'), 'utf8');
-    const proseSrc = await readFile(join(process.cwd(), 'src', 'renderer', 'styles', 'prose.css'), 'utf8');
 
     assert.match(chatSrc, /\.maka-message-copy\[data-pending="true"\]/, 'Message copy needs a visible pending selector.');
     assert.match(chatSrc, /\.maka-message-copy\[data-copy-feedback="failed"\]/, 'Message copy needs a visible failed selector.');
-    assert.match(proseSrc, /\.maka-code-block-copy\[data-pending="true"\]/, 'Code copy needs a visible pending selector.');
-    assert.match(proseSrc, /\.maka-code-block-copy\[data-copy-feedback="failed"\]/, 'Code copy needs a visible failed selector.');
   });
 });

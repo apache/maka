@@ -30,9 +30,6 @@
     "lucide-react": "^0.577.0",
     "overlayscrollbars": "^2.16.0",
     "react": "^19.2.1",
-    "rehype-highlight": "^7.0.2",
-    "remark-breaks": "^4.0.0",
-    "streamdown": "^2.5.0",
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {

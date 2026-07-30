@@ -2,9 +2,8 @@
    Chat message body
    ----------------------------------------------------------------------------
    The MessageBody surface: message row shell, assistant bubble shell, the
-   hover copy button, the streaming caret, and the user-turn meta row. The
-   Markdown prose element layer (.maka-prose + code-block chrome + hljs
-   palette) lives in prose.css (#618 item 3).
+   hover copy button, the streaming caret, and the user-turn meta row.
+   Astryx owns Markdown prose, code-block chrome, and syntax colors.
 
    Relocated from maka-tokens.css. Authored unlayered (the renderer styles/
    contract requires it) but pulled into @layer components by
@@ -29,18 +28,16 @@
    neutral `--chat-user-bg` token path; the shell utilities live in
    packages/ui/src/primitives/chat.tsx. */
 /* Assistant: no bubble — just text on background, like an editor. The
-   markdown typography (color, line-height, break-word, edge-margin trims)
-   lives on .maka-prose in prose.css — the assistant Bubble variant carries
-   both classes, so the shell keeps only container geometry (#618 item 2).
+   Markdown typography and block rhythm belong to Astryx, so the shell keeps
+   only container geometry.
    The reading measure (max-width) lives on .maka-message-row above, shared
    with the composer, so the assistant block matches the composer width. */
 .maka-bubble-assistant {
   padding: var(--space-0-5) 0 0;
 }
 /* The streaming ▎ caret + its trailing-<p> inline hack were retired by the
-   streaming UI rework: the "still writing" signal is now the per-word fade-in
-   (@keyframes maka-stream-fade-in, wrapped by markdown-body's rehype pass), so
-   the trailing paragraph keeps its normal block layout. */
+   streaming UI rework. Chat smooths the visible text before it reaches
+   Markdown; PR 8 owns the remaining streaming and scroll-anchoring boundary. */
 
 /* --- Hover-revealed copy button on assistant messages -------------------- */
 /* The wrapper is position: relative so the button can anchor to the top-right
@@ -158,18 +155,14 @@
    packages/ui/src/primitives/chat.tsx); the layout is now location-
    independent instead of keyed on a `[data-role="assistant"]` descendant. */
 
-[data-slot="message"] pre {
+[data-slot="message"] pre:not(.astryx-codeblock) {
   margin: 0;
   font: inherit;
 }
 
-/* System-note pill. Ties (0,2,1) with `.maka-prose .maka-code-block pre`,
-   which now sits later in the cascade (prose.css imports after this file) —
-   so a fenced code block inside a system note would render as a full code
-   block, not this pill. No system note carries a <pre> today (they're
-   plain-text labels from SYSTEM_NOTE_LABELS), so the pill only ever styles
-   bare <pre> without code-block chrome. */
-[data-slot="message"][data-role="system"] pre {
+/* System-note pill. Astryx code blocks are explicitly excluded so the shared
+   raw-pre treatment cannot become a second styling authority. */
+[data-slot="message"][data-role="system"] pre:not(.astryx-codeblock) {
   display: inline-flex;
   border-radius: var(--radius-pill);
   background: oklch(from var(--info) l c h / 0.08);

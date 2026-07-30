@@ -2,8 +2,8 @@
  * Static-analysis contract for the native cursor convention.
  *
  * Native macOS / Windows reserve the pointing-hand cursor (`cursor: pointer`)
- * for hyperlinks; every other control uses the default arrow. Only the
- * link-styled in-app nav button (`.maka-markdown-link-internal`) may carry it.
+ * for hyperlinks; every other control uses the default arrow. Astryx owns the
+ * link cursor inside its component CSS, so Maka renderer CSS declares none.
  * The runtime look-and-feel (which element shows which cursor) is still
  * verified in a real window — this is the source bound.
  */
@@ -16,8 +16,7 @@ import { readRendererContractCss } from './contract-css-helpers.js';
 
 const TOKENS_PATH = join(process.cwd(), 'src', 'renderer', 'maka-tokens.css');
 
-/** Only the link-styled in-app nav button may carry the hand cursor. */
-const CURSOR_POINTER_ALLOWLIST = ['.maka-markdown-link-internal'];
+const CURSOR_POINTER_ALLOWLIST: string[] = [];
 
 /**
  * Selectors of every rule that declares `cursor: pointer`, sorted. Comments are
@@ -37,12 +36,12 @@ function selectorsWithHandCursor(css: string): string[] {
 }
 
 describe('native cursor convention contract', () => {
-  it('styles.css: cursor:pointer lives only on the link-styled nav button', async () => {
+  it('styles.css leaves link cursor ownership to Astryx', async () => {
     const css = await readRendererContractCss();
     assert.deepEqual(
       selectorsWithHandCursor(css),
       [...CURSOR_POINTER_ALLOWLIST].sort(),
-      'Only `.maka-markdown-link-internal` may carry `cursor: pointer` — it presents as a link, and native macOS reserves the hand for links while every other control uses the default arrow. Drop the declaration, or reuse the link class if the element genuinely is the in-app link button.',
+      'Maka renderer CSS must not declare cursor:pointer; Astryx owns link cursor behavior.',
     );
   });
 
@@ -51,7 +50,7 @@ describe('native cursor convention contract', () => {
     assert.deepEqual(
       selectorsWithHandCursor(css),
       [],
-      'Design tokens must not set `cursor: pointer`; the hand cursor belongs only on the link-styled nav button in styles.css.',
+      'Design tokens must not set cursor:pointer.',
     );
   });
 });

@@ -681,7 +681,7 @@ function DailyReviewArchiveBody(props: { archive: DailyReviewArchive | null; loa
               {/* Reports are LLM-generated markdown — bullet lists and
                   inline code rendered as flat pre-wrap text read as mush.
                   Reuse the shared Markdown pipeline (same one chat uses). */}
-              <div className="maka-daily-review-archive-section-body maka-prose">
+              <div className="maka-daily-review-archive-section-body">
                 <Markdown text={section.content} />
               </div>
             </section>

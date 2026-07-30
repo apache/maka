@@ -250,29 +250,9 @@ describe('renderer style layer cascade contract', () => {
     }
   });
 
-  /**
-   * Regression guard for #618 item 1.
-   *
-   * markdown-link.css decorates <a>/<button>/<span> nodes that render INSIDE
-   * the prose layer (`.maka-prose`, imported via layer(components)). Unlayered
-   * author rules beat every layer regardless of specificity, so an unlayered
-   * `.maka-markdown-link-external { text-decoration: underline }` silently
-   * defeats the layered `.maka-prose a { text-decoration: none }` while the
-   * layered border-bottom hairline still applies — every external prose link
-   * paints two underlines a few px apart. Inside layer(components),
-   * `.maka-prose a` (0,1,1) outweighs `.maka-markdown-link-external` (0,1,0)
-   * and the prose treatment wins; the internal (<button>) and broken (<span>)
-   * variants never matched `.maka-prose a` and keep their own styling.
-   */
-  it('imports markdown-link.css into layer(components) so .maka-prose a beats the external-link underline', async () => {
+  it('does not retain a second prose or Markdown-link styling authority beside Astryx', async () => {
     const styles = stripCssComments(await readFile(STYLES_FILE, 'utf8'));
-    const importLine = styles.split('\n').find((line) => line.includes('./styles/markdown-link.css'));
-    assert.ok(importLine, 'styles.css must import ./styles/markdown-link.css');
-    assert.match(
-      importLine,
-      /@import\s+"\.\/styles\/markdown-link\.css"\s+layer\(components\)\s*;/,
-      'markdown-link.css must be imported with layer(components): unlayered, its text-decoration: underline beats the layered .maka-prose a { text-decoration: none } and external prose links paint two underlines (#618 item 1)',
-    );
+    assert.doesNotMatch(styles, /styles\/(?:prose|markdown-link)\.css/);
   });
 
   it('keeps the darwin glass .maka-nav-row color override directly in maka.legacy so it beats quiet Button text utilities', async () => {

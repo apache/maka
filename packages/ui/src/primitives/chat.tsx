@@ -9,10 +9,9 @@ import type React from "react";
  *
  * `Message` is the per-turn row container; `Bubble` is the message body
  * surface. They retire the bespoke `.message.{role}` / `.maka-bubble-user`
- * shell CSS, moving the row/bubble *shell* onto the Tailwind substrate while
- * leaving Markdown prose (now the `.maka-prose` layer in prose.css, split
- * off the assistant bubble shell by #546 PR4 / #618 item 3) and the turn machinery
- * (summary / lineage / footer / markers — PR2) untouched.
+ * shell CSS, moving the row/bubble *shell* onto the Tailwind substrate. Astryx
+ * owns Markdown prose; turn machinery (summary / lineage / footer / markers)
+ * stays separate.
  *
  * The row keeps the authored `.maka-message-row` base (centered reading column).
  * That base lives in chat-message.css (#546 PR4 relocated it out of
@@ -71,14 +70,9 @@ const bubbleVariants = cva("", {
       // `--radius-surface` token (8px) per #406 gap 4 radius governance.
       // Keeps the neutral `--chat-user-bg` token path (never primary/accent).
       user: "max-w-[min(100%,640px)] whitespace-pre-wrap break-words rounded-[var(--radius-surface)] bg-[var(--chat-user-bg)] px-3 py-2.5 leading-normal text-[color:var(--chat-user-foreground,var(--foreground))]",
-      // Assistant / system: open prose, no bubble. The shell stays
-      // `.maka-bubble-assistant` (now just surface padding — typography,
-      // edge-margin trims, and line-height/break-word live on the prose
-      // layer, #618 item 2; the reading measure is owned by
-      // `.maka-message-row`, not the prose layer); the Markdown prose layer
-      // `.maka-prose` (p / h / ul / code / ... typography) rides alongside
-      // and stays reusable on its own.
-      assistant: "maka-bubble-assistant maka-prose",
+      // Assistant / system: open prose, no bubble. This class owns only
+      // container padding; Astryx Markdown owns typography and block rhythm.
+      assistant: "maka-bubble-assistant",
     },
   },
 });

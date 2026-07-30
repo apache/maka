@@ -137,6 +137,35 @@ const conversation: StoredMessage[] = [
   assistant('msg-4', 'turn-2', 4, '不整体挂载 AppShell，改为用真实的子组件（侧栏、聊天区、顶栏）拼出布局。能稳定反映页面长什么样，又不被 IPC 耦合拖住。'),
 ];
 
+const markdownCoreConversation: StoredMessage[] = [
+  user('msg-md-1', 'turn-md', 6, '把 Markdown 核心能力放在一条回答里，方便视觉检查。'),
+  assistant(
+    'msg-md-2',
+    'turn-md',
+    5,
+    [
+      '# Markdown core',
+      '',
+      '正文支持 **粗体**、*斜体*、`inlineCode()`，以及 [安全外链](https://github.com/maka-agent/maka-agent)。',
+      '',
+      '- [x] Astryx 解析与排版',
+      '- [ ] 明暗主题视觉检查',
+      '',
+      '| 能力 | 状态 |',
+      '| --- | --- |',
+      '| 安全链接 | 已接管 |',
+      '| 代码高亮 | 已接管 |',
+      '',
+      '```typescript',
+      'const renderer = "Astryx";',
+      'return renderer;',
+      '```',
+      '',
+      '> 非白名单协议保持不可点击，原始 HTML 保持为文本。',
+    ].join('\n'),
+  ),
+];
+
 const baseChatProps: ChatViewProps = {
   messages: conversation,
   activeSession,
@@ -382,6 +411,13 @@ export const StreamingTurn: Story = {
       }}
     />
   ),
+};
+
+// Real path: open an assistant answer containing rich Markdown. This keeps the
+// PR 7-owned typography, task-list, table, link, and highlighted-code states in
+// one stable light/dark review surface.
+export const MarkdownCore: Story = {
+  render: () => <ComposedShell chat={{ messages: markdownCoreConversation }} />,
 };
 
 // Real path: the agent calls a tool that needs approval → session enters

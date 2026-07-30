@@ -95,7 +95,12 @@ function readJson(path) {
 }
 
 function normalizeText(text) {
-  return text.replace(/\r\n?/g, '\n').trim();
+  return text
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .join('\n')
+    .trim();
 }
 
 function collectDesktopClosure() {
