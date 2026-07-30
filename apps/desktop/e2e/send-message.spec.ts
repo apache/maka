@@ -38,7 +38,10 @@ test('copies Markdown code and reports a clipboard failure', async ({ window: pa
   const codeBlock = page.locator('[data-maka-contract="markdown"] .astryx-codeblock').last();
   const copyStatus = codeBlock
     .locator('xpath=ancestor::*[@data-maka-contract="markdown"]')
-    .getByRole('status');
+    .locator('[data-copy-feedback]');
+  const astryxPoliteRegion = page.locator(
+    '[data-astryx-live-region="polite"]',
+  );
   await expect(codeBlock).toBeVisible();
   await page.evaluate(() => {
     Object.defineProperty(navigator.clipboard, 'writeText', {
@@ -53,6 +56,8 @@ test('copies Markdown code and reports a clipboard failure', async ({ window: pa
   await expect(codeBlock.getByRole('button', { name: '已复制代码' })).toBeVisible();
   await expect(copyStatus).toBeVisible();
   await expect(copyStatus).toHaveText('已复制代码');
+  await expect(astryxPoliteRegion).toHaveText('已复制代码');
+  await expect(page.getByText('Copied', { exact: true })).toHaveCount(0);
   expect(await page.evaluate(
     () => (window as typeof window & { __copiedCode?: string }).__copiedCode,
   )).toBe('const answer = 42;\n\nreturn answer;');
@@ -71,4 +76,5 @@ test('copies Markdown code and reports a clipboard failure', async ({ window: pa
   await codeBlock.getByRole('button', { name: '复制代码' }).click();
   await expect(copyStatus).toBeVisible();
   await expect(copyStatus).toHaveText('复制代码失败');
+  await expect(astryxPoliteRegion).toHaveText('复制代码失败');
 });

@@ -13,6 +13,7 @@
 
 import {
   useContext,
+  useEffect,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from 'react';
@@ -23,6 +24,7 @@ import {
 import { trimStreamingArtifacts } from '@astryxdesign/core/Markdown/utils';
 import { Link as AstryxLink } from '@astryxdesign/core/Link';
 import { Text as AstryxText } from '@astryxdesign/core/Text';
+import { useAnnounce } from '@astryxdesign/core/hooks';
 import {
   isMakaUriCandidate,
   isSafeExternalScheme,
@@ -56,8 +58,13 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
     if (!(event.target instanceof Element)) return;
     const button = event.target.closest('button');
     const codeBlock = button?.closest('pre.astryx-codeblock');
-    if (!codeBlock || !event.currentTarget.contains(codeBlock)) return;
+    if (
+      !(button instanceof HTMLButtonElement)
+      || !codeBlock
+      || !event.currentTarget.contains(codeBlock)
+    ) return;
 
+    localizeNextAstryxCopyAnnouncement(button);
     const clipboard = navigator.clipboard;
     const originalDescriptor = Object.getOwnPropertyDescriptor(
       clipboard,
@@ -114,20 +121,51 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
   );
 }
 
+function localizeNextAstryxCopyAnnouncement(button: HTMLButtonElement) {
+  const initialLabel = button.getAttribute('aria-label');
+  let timeout = 0;
+  const observer = new MutationObserver(() => {
+    const copiedLabel = button.getAttribute('aria-label');
+    const liveRegion = document.querySelector<HTMLElement>(
+      '[data-astryx-live-region="polite"]',
+    );
+    if (
+      !copiedLabel
+      || copiedLabel === initialLabel
+      || liveRegion?.textContent !== 'Copied'
+    ) return;
+
+    observer.disconnect();
+    window.clearTimeout(timeout);
+    liveRegion.textContent = copiedLabel;
+  });
+  observer.observe(document.body, {
+    attributes: true,
+    attributeFilter: ['aria-label'],
+    characterData: true,
+    childList: true,
+    subtree: true,
+  });
+  timeout = window.setTimeout(() => observer.disconnect(), 1000);
+}
+
 function MarkdownCodeCopyStatus(props: { phase: ClipboardCopyPhase }) {
   const copy = getSharedUiCopy(useUiLocale()).markdown;
+  const announce = useAnnounce();
   const label = props.phase === 'pending'
     ? copy.copyingCode
     : props.phase === 'copied'
       ? copy.copiedCode
       : copy.copyCodeFailed;
+  useEffect(() => {
+    if (props.phase === 'failed') announce(label);
+  }, [announce, label, props.phase]);
+
   return (
     <AstryxText
       as="div"
       type="supporting"
       display="block"
-      role="status"
-      aria-live="polite"
       data-copy-feedback={props.phase}
     >
       {label}
