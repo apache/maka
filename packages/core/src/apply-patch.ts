@@ -241,8 +241,6 @@ export function applyUpdateChunksToContent(
   // Preserve CR-only, CRLF, LF, and mixed endings outside the edited region by
   // carrying each original line's terminator through untouched lines.
   const originalLines = splitContentLinesWithEnds(original);
-  const hadTrailingNewline =
-    original.length > 0 && (original.endsWith('\n') || original.endsWith('\r'));
   let bodies = originalLines.map((line) => line.body);
   let endings = originalLines.map((line) => line.ending);
   const defaultEnding = detectDefaultLineEnding(original);
@@ -261,27 +259,33 @@ export function applyUpdateChunksToContent(
         },
       };
     }
-    const insertedEnds = chunk.newLines.map(() => defaultEnding);
+    const removedEnds = endings.slice(match.start, match.end);
+    const insertedEnds = chunk.newLines.map((_, index) => {
+      if (index < chunk.newLines.length - 1) return defaultEnding;
+      if (removedEnds.length > 0) return removedEnds.at(-1) === '' ? '' : defaultEnding;
+      if (match.start < bodies.length) return defaultEnding;
+      return endings.at(-1) ? defaultEnding : '';
+    });
+    // Appending to a file without an EOF newline still needs a separator
+    // between the former last line and the first inserted line. The inserted
+    // last line itself keeps the file's no-EOF-newline state.
+    if (
+      match.start === bodies.length &&
+      match.end === bodies.length &&
+      chunk.newLines.length > 0 &&
+      bodies.length > 0 &&
+      endings.at(-1) === ''
+    ) {
+      endings[endings.length - 1] = defaultEnding;
+    }
     bodies = [...bodies.slice(0, match.start), ...chunk.newLines, ...bodies.slice(match.end)];
     endings = [...endings.slice(0, match.start), ...insertedEnds, ...endings.slice(match.end)];
   }
 
-  let content = '';
-  for (let i = 0; i < bodies.length; i += 1) {
-    content += bodies[i]!;
-    const isLast = i === bodies.length - 1;
-    const ending = endings[i] ?? '';
-    if (!isLast) {
-      content += ending || defaultEnding;
-    } else if (hadTrailingNewline) {
-      content += ending || defaultEnding;
-    } else if (ending) {
-      // Last original line had no terminator; keep that for untouched last line.
-      // For replaced/inserted last lines, only add a terminator when the original
-      // file used trailing newlines (handled above).
-    }
-  }
-  return { ok: true, content };
+  return {
+    ok: true,
+    content: bodies.map((body, index) => body + (endings[index] ?? '')).join(''),
+  };
 }
 
 export function collectPatchPaths(hunks: readonly ApplyPatchHunk[]): string[] {

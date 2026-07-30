@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildBuiltinTools } from '../builtin-tools.js';
@@ -132,6 +132,20 @@ describe('ApplyPatch tool integration', () => {
       assert.equal(await readFile(join(root, 'existing.txt'), 'utf8'), 'hello maka\n');
       await assert.rejects(() => readFile(join(root, 'to-delete.txt'), 'utf8'));
 
+      const nested = await apply.impl(
+        {
+          patch: envelope(
+            ['*** Add File: generated/deep/nested.txt', '+created with parents', ''].join('\n'),
+          ),
+        },
+        toolCtx(root),
+      );
+      assert.equal((nested as { ok: boolean }).ok, true);
+      assert.equal(
+        await readFile(join(root, 'generated', 'deep', 'nested.txt'), 'utf8'),
+        'created with parents\n',
+      );
+
       const before = await readFile(join(root, 'src', 'a.ts'), 'utf8');
       await assert.rejects(async () => {
         await apply.impl(
@@ -172,6 +186,53 @@ describe('ApplyPatch tool integration', () => {
       assert.equal((moved as { ok: boolean }).ok, true);
       assert.equal(await readFile(join(root, 'src', 'b.ts'), 'utf8'), 'const x = 2;\n');
       await assert.rejects(() => readFile(join(root, 'src', 'a.ts'), 'utf8'));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('Delete and Move unlink their symlink operands without deleting the target', async (t) => {
+    if (process.platform === 'win32') {
+      t.skip('file symlink creation is not reliably available on Windows CI');
+      return;
+    }
+    const root = await mkdtemp(join(tmpdir(), 'maka-apply-patch-symlink-'));
+    try {
+      await writeFile(join(root, 'target.txt'), 'target\n', 'utf8');
+      await symlink('target.txt', join(root, 'delete-link.txt'));
+      await symlink('target.txt', join(root, 'move-link.txt'));
+      const apply = buildBuiltinTools({ editingProtocol: 'apply_patch' }).find(
+        (tool) => tool.name === 'ApplyPatch',
+      );
+      assert.ok(apply);
+
+      await apply.impl(
+        {
+          patch: envelope(['*** Delete File: delete-link.txt', ''].join('\n')),
+        },
+        toolCtx(root),
+      );
+      await assert.rejects(() => lstat(join(root, 'delete-link.txt')));
+      assert.equal(await readFile(join(root, 'target.txt'), 'utf8'), 'target\n');
+
+      await apply.impl(
+        {
+          patch: envelope(
+            [
+              '*** Update File: move-link.txt',
+              '*** Move to: moved.txt',
+              '@@',
+              '-target',
+              '+moved',
+              '',
+            ].join('\n'),
+          ),
+        },
+        toolCtx(root),
+      );
+      await assert.rejects(() => lstat(join(root, 'move-link.txt')));
+      assert.equal(await readFile(join(root, 'target.txt'), 'utf8'), 'target\n');
+      assert.equal(await readFile(join(root, 'moved.txt'), 'utf8'), 'moved\n');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -257,6 +318,7 @@ describe('shared ApplyPatch engine partial move failure', () => {
     assert.equal(result.ok, false);
     assert.equal(result.partial, true);
     assert.deepEqual(result.completed, ['dest.txt']);
+    assert.deepEqual(result.uncompleted, ['src.txt']);
     assert.ok(files.has('dest.txt'));
     assert.ok(files.has('src.txt'));
   });
@@ -379,5 +441,43 @@ describe('shared ApplyPatch engine partial move failure', () => {
       },
     );
     assert.equal(files.get('a.txt'), 'a\n');
+  });
+
+  test('canonical path aliases cannot bypass duplicate Add tracking', async () => {
+    const files = new Map<string, string>();
+    const fs: ApplyPatchFsAdapter = {
+      async lockKey(path) {
+        return path;
+      },
+      async pathExists(path) {
+        return files.has(path);
+      },
+      async readText(path) {
+        const content = files.get(path);
+        if (content === undefined) throw new Error(`missing ${path}`);
+        return content;
+      },
+      async writeText(path, content) {
+        files.set(path, content);
+        return { path, bytes: Buffer.byteLength(content, 'utf8') };
+      },
+      async deletePath(path) {
+        files.delete(path);
+        return { path };
+      },
+    };
+
+    await assert.rejects(
+      () =>
+        executeApplyPatchWithAdapter(
+          envelope(
+            ['*** Add File: x.txt', '+first', '*** Add File: ./x.txt', '+second', ''].join('\n'),
+          ),
+          fs,
+          async (_key, run) => run(),
+        ),
+      /already exists/i,
+    );
+    assert.equal(files.size, 0);
   });
 });

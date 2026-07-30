@@ -255,6 +255,9 @@ export async function runTaskOnceWithStorage(
       deps.realBackendIsolation?.toolExecutor,
       {
         agentTools: effectiveConfig.agentTools,
+        ...(effectiveConfig.editingProtocol
+          ? { editingProtocol: effectiveConfig.editingProtocol }
+          : {}),
         ...(heavyTaskEvidence ? { heavyTaskEvidence } : {}),
         snapshotImage: createReadImageSnapshotter(storage.artifactStore),
       },

@@ -195,6 +195,71 @@ describe('filesystem worker operations', () => {
     await assert.rejects(readFile(outsidePath, 'utf8'), { code: 'ENOENT' });
   });
 
+  test('creates missing destination parents for an approved write', async () => {
+    const root = await temporaryDirectory('maka-worker-write-parent-');
+    const target = join(root, 'generated', 'deep', 'file.txt');
+
+    const response = await executeFilesystemWorkerRequest(
+      requestFor(
+        { kind: 'write', cwd: root, path: target, content: 'nested' },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'missing' },
+      ),
+    );
+
+    assert.equal(response.ok, true);
+    assert.equal(await readFile(target, 'utf8'), 'nested');
+  });
+
+  test('deletes an in-workspace symlink operand without deleting its target', async (t) => {
+    if (process.platform === 'win32') {
+      t.skip('file symlink creation is not reliably available on Windows CI');
+      return;
+    }
+    const root = await temporaryDirectory('maka-worker-delete-link-');
+    const target = join(root, 'target.txt');
+    const link = join(root, 'link.txt');
+    await writeFile(target, 'keep', 'utf8');
+    await symlink(target, link);
+
+    const response = await executeFilesystemWorkerRequest(
+      requestFor(
+        { kind: 'delete', cwd: root, path: link },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
+        target,
+      ),
+    );
+
+    assert.equal(response.ok, true);
+    assert.equal(await readFile(target, 'utf8'), 'keep');
+    await assert.rejects(readFile(link, 'utf8'), { code: 'ENOENT' });
+  });
+
+  test('rejects deleting a symlink whose target escapes the workspace', async (t) => {
+    if (process.platform === 'win32') {
+      t.skip('file symlink creation is not reliably available on Windows CI');
+      return;
+    }
+    const root = await temporaryDirectory('maka-worker-delete-link-root-');
+    const outside = await temporaryDirectory('maka-worker-delete-link-outside-');
+    const target = join(outside, 'target.txt');
+    const link = join(root, 'link.txt');
+    await writeFile(target, 'keep', 'utf8');
+    await symlink(target, link);
+
+    const response = await executeFilesystemWorkerRequest(
+      requestFor(
+        { kind: 'delete', cwd: root, path: link },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
+        target,
+      ),
+    );
+
+    assert.equal(response.ok, false);
+    if (!response.ok) assert.equal(response.error.code, 'path_denied');
+    assert.equal(await readFile(link, 'utf8'), 'keep');
+    assert.equal(await readFile(target, 'utf8'), 'keep');
+  });
+
   test('fails when an approved target changes type before execution', async () => {
     const root = await temporaryDirectory('maka-worker-type-');
     const target = join(root, 'target');

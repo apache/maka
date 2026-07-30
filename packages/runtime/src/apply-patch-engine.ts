@@ -12,6 +12,7 @@ import {
   parseApplyPatch,
   type ApplyPatchHunk,
 } from '@maka/core/apply-patch';
+import { posix as pathPosix } from 'node:path';
 
 /** Write/delete intent used for permission preflight before any mutation. */
 export type ApplyPatchAccessIntent =
@@ -86,15 +87,16 @@ export async function executeApplyPatchWithAdapter(
       throw new Error(`ApplyPatch rejected path ${JSON.stringify(path)}: ${pathError}`);
     }
   }
+  const hunks = parsed.value.hunks.map(canonicalizeHunkPaths);
 
   const lockKeySet = new Set<string>();
-  for (const path of collectPatchPaths(parsed.value.hunks)) {
+  for (const path of collectPatchPaths(hunks)) {
     lockKeySet.add(await fs.lockKey(path));
   }
   const orderedKeys = [...lockKeySet].sort();
 
   const run = async (): Promise<ApplyPatchEngineResult> => {
-    const prepared = await planUnderLocks(parsed.value.hunks, fs);
+    const prepared = await planUnderLocks(hunks, fs);
     if (fs.preflightPermissions) {
       await fs.preflightPermissions(collectAccessIntents(prepared));
     }
@@ -102,6 +104,21 @@ export async function executeApplyPatchWithAdapter(
   };
 
   return withNestedLocks(orderedKeys, withLock, run);
+}
+
+function canonicalizeHunkPaths(hunk: ApplyPatchHunk): ApplyPatchHunk {
+  const path = canonicalPatchPath(hunk.path);
+  if (hunk.kind === 'add') return { ...hunk, path };
+  if (hunk.kind === 'delete') return { ...hunk, path };
+  return {
+    ...hunk,
+    path,
+    ...(hunk.movePath ? { movePath: canonicalPatchPath(hunk.movePath) } : {}),
+  };
+}
+
+function canonicalPatchPath(path: string): string {
+  return pathPosix.normalize(path.replaceAll('\\', '/').trim());
 }
 
 function collectAccessIntents(prepared: readonly PreparedStep[]): ApplyPatchAccessIntent[] {
@@ -286,7 +303,13 @@ async function settlePrepared(
     }
   }
 
-  const uncompleted = operations.filter((op) => op.status !== 'completed').map((op) => op.path);
+  const uncompleted = operations
+    .filter((op) => op.status !== 'completed')
+    .map((op) =>
+      op.operation === 'move' && op.status === 'failed' && op.bytes !== undefined && op.fromPath
+        ? op.fromPath
+        : op.path,
+    );
 
   if (!failure) {
     return { ok: true, operations, completed, uncompleted: [] };

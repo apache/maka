@@ -81,6 +81,7 @@ import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
 import { fetchProviderModels } from '@maka/runtime';
 import { createApiKeyOnboardingSurface, type MakaOnboardingSurface } from './onboarding.js';
 import { isActiveShellRunStatus, resolveModelVisionSupport } from '@maka/core';
+import type { EditingProtocol } from '@maka/core/apply-patch';
 import type { ModelChoice, ReadySessionTarget } from './connection-target.js';
 import {
   listReadyModelChoices,
@@ -162,6 +163,8 @@ export interface SessionRecapGenerator {
 
 export interface CreateMakaCliRuntimeContextInput {
   surface: 'tui' | 'run';
+  /** Explicit per-run editing surface override; defaults to Edit/Write. */
+  editingProtocol?: EditingProtocol;
   /** Legacy root; both new roots default to this path. */
   workspaceRoot: string;
   /** Optional portable session-owned state root. */
@@ -213,6 +216,8 @@ export async function createMakaCliRuntimeContext(
   const stateRoot = input.stateRoot ?? input.workspaceRoot;
   const configRoot = input.configRoot ?? input.workspaceRoot;
   const agentGraphEnabled = input.surface === 'tui' || input.enableAgentGraph === true;
+  const editingProtocol =
+    input.editingProtocol ?? editingProtocolFromEnv(process.env.MAKA_EDITING_PROTOCOL);
   if (input.stateRoot !== undefined || input.configRoot !== undefined) {
     await assertSessionBundleRootLayout({
       stateRoot,
@@ -617,6 +622,7 @@ export async function createMakaCliRuntimeContext(
     tools: boundTools,
     policy: {
       economy: input.surface === 'tui' && !process.env.MAKA_DISABLE_DEFERRED_TOOLS,
+      editingProtocol,
     },
   });
   const allTools = [...cliProductToolSurface.tools];
@@ -1102,6 +1108,12 @@ export async function createMakaCliRuntimeContext(
       runtimePersistence.close();
     },
   };
+}
+
+function editingProtocolFromEnv(value: string | undefined): EditingProtocol {
+  if (value === undefined || value === '') return 'edit_write';
+  if (value === 'edit_write' || value === 'apply_patch') return value;
+  throw new Error('MAKA_EDITING_PROTOCOL must be "edit_write" or "apply_patch"');
 }
 
 export async function getOrCreateCliClaudeDeviceId(

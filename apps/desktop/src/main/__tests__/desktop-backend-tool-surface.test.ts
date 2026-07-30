@@ -22,6 +22,7 @@ import {
 
 const readTool = tool('Read', 'read');
 const writeTool = tool('Write', 'file_write');
+const applyPatchTool = tool('ApplyPatch', 'file_write');
 const computerTool = tool('maka_computer', 'computer_use');
 const availability: ToolAvailabilityConfig = {
   economy: true,
@@ -133,6 +134,20 @@ describe('Desktop backend tool surface', () => {
     assert.equal(readinessCalls, 1);
     assert.equal(surface.skillHost.toolNames.has('Read'), true);
     assert.equal(surface.skillHost.toolNames.has('Write'), true);
+  });
+
+  it('projects ApplyPatch through the standard Desktop backend policy', async () => {
+    const surface = await resolveDesktopBackendToolSurface(
+      makeDeps({
+        builtinTools: [readTool, writeTool, applyPatchTool],
+        editingProtocol: 'apply_patch',
+      }),
+      inputFor('claude-sonnet-4-5-20250929'),
+    );
+
+    assert.equal(surface.skillHost.toolNames.has('ApplyPatch'), true);
+    assert.equal(surface.skillHost.toolNames.has('Write'), false);
+    assert.equal(surface.selectedTools.some((tool) => tool.name === 'Edit'), false);
   });
 
   it('keeps expert-team tools on the parent surface and scoped child tools isolated', async () => {

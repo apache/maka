@@ -860,6 +860,8 @@ function classifyExecutionIdentityFailure(
         ? !identity.productToolSurface.policy.disabledSurfaceIds.includes('agent')
         : identity.agentTools) !==
         (expectedConfig.agentTools === true) ||
+      (identity.productToolSurface?.policy.editingProtocol ?? 'edit_write') !==
+        (expectedConfig.editingProtocol ?? 'edit_write') ||
       identity.systemPromptHash !== expectedPromptHash ||
       (expectedPricingProfile !== undefined && identity.pricingProfile !== expectedPricingProfile)
     ) {

@@ -16,7 +16,7 @@ import {
   resolveSkillDiscoveryPaths,
   ShellRunProcessManager,
 } from '@maka/runtime';
-import type { HostCapabilitiesResolver, MakaTool } from '@maka/runtime';
+import type { EditingProtocol, HostCapabilitiesResolver, MakaTool } from '@maka/runtime';
 import type { WorkspacePrivacyContext } from '@maka/core/incognito';
 import { createAgentMailboxStore, createSettingsStore } from '@maka/storage';
 import { createComputerUseOverlayHook } from '@maka/computer-use';
@@ -63,6 +63,8 @@ export interface DesktopToolAssemblyDeps {
   readArchivedToolResultResource: ToolArtifactPersistence['readArchivedToolResultResource'];
   getWorkspacePrivacyContext: () => Promise<WorkspacePrivacyContext>;
   resolveDesktopSkillHost: HostCapabilitiesResolver;
+  /** Explicit process-run editing surface override; defaults to Edit/Write. */
+  editingProtocol?: EditingProtocol;
 }
 
 /**
@@ -124,6 +126,8 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
   // Kill-switch: set MAKA_DISABLE_DEFERRED_TOOLS to any value to turn economy off
   // and advertise every tool every turn (legacy behavior).
   const economyEnabled = !process.env.MAKA_DISABLE_DEFERRED_TOOLS;
+  const editingProtocol =
+    deps.editingProtocol ?? editingProtocolFromEnv(process.env.MAKA_EDITING_PROTOCOL);
   const riveTools: MakaTool[] = [buildRiveWorkflowTool()];
   // Embedded-browser observe→act tools. They drive the conversation's own
   // WebContentsView via the BrowserViewHost the desktop provides in registerIpc;
@@ -262,7 +266,7 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
   const desktopProductToolSurface = projectEffectiveProductToolSurface({
     host: 'desktop',
     tools: builtinTools,
-    policy: { economy: economyEnabled },
+    policy: { economy: economyEnabled, editingProtocol },
   });
   // Build the union needed by catalog child profiles. SessionManager applies
   // each profile's narrower allowlist; parent-facing runtime refs are omitted.
@@ -291,4 +295,10 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     childAgentTools,
     sandboxDiagnosticsProvider,
   };
+}
+
+function editingProtocolFromEnv(value: string | undefined): EditingProtocol {
+  if (value === undefined || value === '') return 'edit_write';
+  if (value === 'edit_write' || value === 'apply_patch') return value;
+  throw new Error('MAKA_EDITING_PROTOCOL must be "edit_write" or "apply_patch"');
 }

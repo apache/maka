@@ -30,6 +30,7 @@ import {
 } from '@maka/runtime';
 import type {
   BackendFactoryContext,
+  EditingProtocol,
   HostCapabilities,
   MakaTool,
   ToolAvailabilityConfig,
@@ -52,6 +53,7 @@ export interface DesktopBackendToolSurfaceDeps {
   agentTeamLeadTools: readonly MakaTool[];
   builtinTools: readonly MakaTool[];
   toolEconomy: boolean;
+  editingProtocol?: EditingProtocol;
   planStore: PlanStore;
   getAgentGraphSupervisorTools?: (
     sessionId: string,
@@ -258,7 +260,10 @@ export async function resolveDesktopBackendToolSurface(
   const productToolSurface = projectEffectiveProductToolSurface({
     host: 'desktop',
     tools: selectedTools,
-    policy: { economy: toolEconomy },
+    policy: {
+      economy: toolEconomy,
+      ...(deps.editingProtocol ? { editingProtocol: deps.editingProtocol } : {}),
+    },
   });
 
   return {

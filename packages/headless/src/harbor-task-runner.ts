@@ -968,6 +968,9 @@ export function buildHarborJobConfig(
     // Verbatim — the controller hashes exactly these bytes and verifies the round-trip.
     MAKA_SYSTEM_PROMPT: input.systemPrompt,
   };
+  if (input.config.editingProtocol) {
+    agentEnv.MAKA_EDITING_PROTOCOL = input.config.editingProtocol;
+  }
   if (options.reasoningEffort) {
     agentEnv.MAKA_REASONING_EFFORT = options.reasoningEffort;
     if (adapter === 'opencode') agentEnv.MAKA_OPENCODE_VARIANT = options.reasoningEffort;

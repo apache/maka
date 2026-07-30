@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import { glob as nodeGlob } from 'node:fs/promises';
-import { dirname, isAbsolute, parse, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, parse, resolve } from 'node:path';
 import { isPathInside } from '../path-containment.js';
 import { sandboxBoundaryExpansionAllowsPath } from '@maka/core';
 
@@ -115,6 +115,7 @@ export async function executeFilesystemOperation(
         'Write',
         operationBoundary,
       );
+      await fs.mkdir(dirname(path), { recursive: true });
       await fs.writeFile(path, operation.content, 'utf8');
       return { kind: 'write', ok: true, path, bytes: Buffer.byteLength(operation.content, 'utf8') };
     }
@@ -192,11 +193,10 @@ export async function executeFilesystemOperation(
       };
     }
     case 'delete': {
-      const path = await resolveExistingAllowed(
+      const path = await resolveDeleteOperandAllowed(
         operation.cwd,
         operation.path,
         'Delete',
-        'write',
         operationBoundary,
       );
       await fs.unlink(path);
@@ -327,15 +327,41 @@ async function resolveWritableAllowed(
   } catch (error) {
     if (nodeErrorCode(error) !== 'ENOENT') throw error;
   }
-  const parent = await fs.realpath(dirname(candidate));
-  assertAllowed(root, candidate, label, 'write', permission);
+  const enforcementPath = await realpathAllowMissing(candidate);
+  const parent = dirname(enforcementPath);
+  assertAllowed(root, enforcementPath, label, 'write', permission);
   if (!isPathInside(root, parent) && !exactWriteCoversParent(permission, candidate, parent)) {
     throw operationError(
       'path_denied',
       `${label} parent was not covered by the operation boundary.`,
     );
   }
-  return candidate;
+  return enforcementPath;
+}
+
+async function resolveDeleteOperandAllowed(
+  cwd: string,
+  inputPath: string,
+  label: string,
+  permission: FilesystemWorkerRequest['operationBoundary'],
+): Promise<string> {
+  const { root, candidate } = await resolveCandidate(cwd, inputPath, label, 'write', permission);
+  const parent = await fs.realpath(dirname(candidate));
+  if (!isPathInside(root, parent)) {
+    throw operationError('path_denied', `${label} path escaped its approved target.`);
+  }
+  const operand = resolve(parent, basename(candidate));
+  const metadata = await fs.lstat(operand);
+  if (metadata.isSymbolicLink()) {
+    const target = await fs.realpath(operand);
+    if (!isPathInside(root, target)) {
+      throw operationError('path_denied', `${label} symlink escaped the workspace.`);
+    }
+    return operand;
+  }
+  const target = await fs.realpath(operand);
+  assertAllowed(root, target, label, 'write', permission);
+  return operand;
 }
 
 async function resolveExistingAllowed(

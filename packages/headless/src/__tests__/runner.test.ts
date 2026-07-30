@@ -396,6 +396,7 @@ describe('fail-closed (a model-backed backend does not run without isolation)', 
         backend: 'ai-sdk',
         llmConnectionSlug: 'deepseek',
         model: 'deepseek-chat',
+        editingProtocol: 'apply_patch',
       };
       const task: Task = {
         id: 'real-task',
@@ -408,7 +409,15 @@ describe('fail-closed (a model-backed backend does not run without isolation)', 
       const result = await runExperiment(realConfig, task, {
         storageRoot,
         registerBackends: registerIsolatedRealBackend(contexts),
-        realBackendIsolation: { kind: 'external', label: 'unit-test isolated backend' },
+        realBackendIsolation: {
+          kind: 'external',
+          label: 'unit-test isolated backend',
+          toolExecutor: {
+            async exec() {
+              return { exitCode: 0, stdout: '', stderr: '' };
+            },
+          },
+        },
       });
 
       assert.equal(result.status, 'completed');
@@ -417,6 +426,10 @@ describe('fail-closed (a model-backed backend does not run without isolation)', 
       assert.equal(contexts[0]?.realBackendIsolation?.label, 'unit-test isolated backend');
       assert.equal(contexts[0]?.config.id, 'real-cfg');
       assert.equal(contexts[0]?.task.id, 'real-task');
+      assert.equal(contexts[0]?.productToolSurface?.identity.policy.editingProtocol, 'apply_patch');
+      assert.equal(contexts[0]?.productToolSurface?.toolNames.has('ApplyPatch'), true);
+      assert.equal(contexts[0]?.productToolSurface?.toolNames.has('Write'), false);
+      assert.equal(contexts[0]?.productToolSurface?.toolNames.has('Edit'), false);
       assert.equal(typeof contexts[0]?.spawnChildAgent, 'function');
       assert.equal(typeof contexts[0]?.spawnChildSession, 'function');
       assert.equal(typeof contexts[0]?.retryChildAgent, 'function');

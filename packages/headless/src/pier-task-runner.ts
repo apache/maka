@@ -696,6 +696,7 @@ function buildPierAgentEnv(
     // whitespace from --ae values, and a stripped copy in the adapter's
     // extra_env would shadow the byte-exact os.environ value. See processEnv.
   };
+  if (input.config.editingProtocol) env.MAKA_EDITING_PROTOCOL = input.config.editingProtocol;
   if (options.reasoningEffort) env.MAKA_REASONING_EFFORT = options.reasoningEffort;
   if (agent === 'maka' && options.makaNodeToolchainPath) {
     env.MAKA_NODE_TOOLCHAIN_FINGERPRINT = MAKA_NODE_TOOLCHAIN_FINGERPRINT;

@@ -699,6 +699,7 @@ const desktopBackendToolSurfaceDeps = {
   agentTeamLeadTools,
   builtinTools,
   toolEconomy: desktopProductToolSurface.identity.policy.economy,
+  editingProtocol: desktopProductToolSurface.identity.policy.editingProtocol,
   planStore,
   getAgentGraphSupervisorTools: (sessionId: string) =>
     agentGraphCoordinator.toolsForSession(sessionId),

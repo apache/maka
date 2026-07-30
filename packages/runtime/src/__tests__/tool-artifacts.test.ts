@@ -88,6 +88,34 @@ describe('deriveToolArtifactCandidates', () => {
     expect(candidates[1]?.sourcePath).toBe('/workspace/maka/src/main.ts');
   });
 
+  test('ApplyPatch derives the written destination from a partially failed Move', () => {
+    const candidates = deriveToolArtifactCandidates({
+      toolName: 'ApplyPatch',
+      cwd: '/workspace/maka',
+      args: { patch: '*** Begin Patch\n*** End Patch\n' },
+      result: {
+        ok: false,
+        partial: true,
+        operations: [
+          {
+            operation: 'move',
+            path: '/workspace/maka/dest.txt',
+            fromPath: '/workspace/maka/source.txt',
+            status: 'failed',
+            bytes: 12,
+            error: 'delete failed',
+          },
+        ],
+        completed: ['/workspace/maka/dest.txt'],
+        uncompleted: ['/workspace/maka/source.txt'],
+      },
+    });
+
+    expect(candidates.map((candidate) => candidate.sourcePath)).toEqual([
+      '/workspace/maka/dest.txt',
+    ]);
+  });
+
   test('Bash derives only explicit stdout redirects and does not scan stdout/stderr text', () => {
     const [candidate] = deriveToolArtifactCandidates({
       toolName: 'Bash',

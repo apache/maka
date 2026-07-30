@@ -132,4 +132,15 @@ describe('applyUpdateChunksToContent', () => {
     // the file's dominant default ending (CRLF here because the file has CRLF).
     assert.equal(result.content, 'a\r\nB\r\nc\r');
   });
+
+  test('deleting a final line preserves the preceding untouched newline', () => {
+    const result = applyUpdateChunksToContent(
+      'first\nlast',
+      [{ oldLines: ['last'], newLines: [], isEndOfFile: true }],
+      'f.txt',
+    );
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.content, 'first\n');
+  });
 });

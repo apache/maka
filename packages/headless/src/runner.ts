@@ -135,6 +135,9 @@ export async function runExperimentWithStorage(
       deps.realBackendIsolation?.toolExecutor,
       {
         agentTools: effectiveConfig.agentTools,
+        ...(effectiveConfig.editingProtocol
+          ? { editingProtocol: effectiveConfig.editingProtocol }
+          : {}),
         snapshotImage: createReadImageSnapshotter(storage.artifactStore),
       },
     );

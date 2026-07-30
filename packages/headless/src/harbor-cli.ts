@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { BackendKind, ProviderType } from '@maka/core';
 import { PROVIDER_DEFAULTS, normalizeProviderType } from '@maka/core';
-import type { Config, Task } from './contracts.js';
+import { editingProtocolFromValue, type Config, type Task } from './contracts.js';
 import {
   type HarborCellExecutionIdentity,
   combineInvocations,
@@ -454,6 +454,7 @@ export async function resolveHarborRunOptions(
       ? true
       : booleanEnv(env.MAKA_ECONOMY_TASK_MODE, 'MAKA_ECONOMY_TASK_MODE'),
     agentTools: booleanEnv(env.MAKA_AGENT_TOOLS, 'MAKA_AGENT_TOOLS') ?? false,
+    editingProtocol: editingProtocolFromValue(env.MAKA_EDITING_PROTOCOL, 'MAKA_EDITING_PROTOCOL'),
   });
   const realBackendIsolation = buildIsolation(isolation, env, workdir, outDir);
   const providerEnvFetch = backend === 'ai-sdk' ? createProviderEnvFetch(env) : undefined;
@@ -582,6 +583,7 @@ function buildConfig(input: {
   heavyTask: boolean;
   economyTask: boolean | undefined;
   agentTools: boolean;
+  editingProtocol: Config['editingProtocol'];
 }): Config {
   const thinkingLevel = reasoningEffortFromEnv(input.env.MAKA_REASONING_EFFORT);
   const economyTaskMode =
@@ -603,6 +605,7 @@ function buildConfig(input: {
       model: input.env.MAKA_MODEL ?? input.env.HARBOR_MODEL ?? 'fake',
       ...(thinkingLevel ? { thinkingLevel } : {}),
       agentTools: input.agentTools,
+      ...(input.editingProtocol ? { editingProtocol: input.editingProtocol } : {}),
       ...(input.heavyTask
         ? { heavyTaskMode: { enabled: true, reason: 'maka eval harbor run --heavy-task' } }
         : {}),
@@ -626,6 +629,7 @@ function buildConfig(input: {
     model: modelSpec.model,
     ...(thinkingLevel ? { thinkingLevel } : {}),
     agentTools: input.agentTools,
+    ...(input.editingProtocol ? { editingProtocol: input.editingProtocol } : {}),
     ...(input.env.MAKA_SYSTEM_PROMPT !== undefined
       ? { systemPrompt: input.env.MAKA_SYSTEM_PROMPT }
       : {}),

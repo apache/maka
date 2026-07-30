@@ -365,8 +365,9 @@ function createIsolatedApplyPatchFs(
           'ApplyPatch exists',
         );
         return true;
-      } catch {
-        return false;
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('does not exist:')) return false;
+        throw error;
       }
     },
     async readText(path, label) {
@@ -833,15 +834,16 @@ function assertNoDriveOrParentSegment(inputPath: string, label: string): void {
 }
 
 function assertNormalizedRelativePath(inputPath: string, label: string): string {
+  const normalized = pathPosix.normalize(inputPath.replaceAll('\\', '/'));
   if (
-    inputPath.length === 0 ||
-    inputPath.startsWith('/') ||
-    /^[A-Za-z]:[\\/]/.test(inputPath) ||
-    inputPath.split(/[\\/]+/).includes('..')
+    normalized.length === 0 ||
+    normalized.startsWith('/') ||
+    /^[A-Za-z]:[\\/]/.test(normalized) ||
+    normalized.split(/[\\/]+/).includes('..')
   ) {
     throw new Error(`${label} must stay inside the isolated workspace`);
   }
-  return inputPath;
+  return normalized;
 }
 
 const COMMON_SHELL_HELPERS = String.raw`
@@ -883,11 +885,33 @@ existing_target() {
 writable_target() {
   input_path=$1
   label=$2
-  target=$root/$input_path
-  parent=$(dirname "$target")
-  base=$(basename "$target")
-  parent_real=$(cd -P "$parent" 2>/dev/null && pwd -P) || fail "$label must stay inside workspace"
-  inside_workspace "$parent_real" || fail "$label must stay inside workspace"
+  parent_rel=$(dirname "$input_path")
+  parent_real=$root
+  remaining=$parent_rel
+  while [ "$remaining" != "." ] && [ -n "$remaining" ]; do
+    case "$remaining" in
+      */*)
+        segment=\${remaining%%/*}
+        remaining=\${remaining#*/}
+        ;;
+      *)
+        segment=$remaining
+        remaining=.
+        ;;
+    esac
+    [ "$segment" = "." ] && continue
+    next=$parent_real/$segment
+    [ -L "$next" ] && fail "$label must stay inside workspace"
+    if [ -e "$next" ]; then
+      [ -d "$next" ] || fail "$label parent is not a directory"
+    else
+      mkdir "$next" || fail "$label parent could not be created"
+    fi
+    parent_real=$(cd -P "$next" 2>/dev/null && pwd -P) ||
+      fail "$label must stay inside workspace"
+    inside_workspace "$parent_real" || fail "$label must stay inside workspace"
+  done
+  base=$(basename "$input_path")
   real=$parent_real/$base
   [ -L "$real" ] && fail "$label must stay inside workspace"
   printf '%s\n' "$real"

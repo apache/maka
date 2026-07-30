@@ -112,7 +112,9 @@ function deriveApplyPatchArtifacts(
   for (const operation of operations) {
     if (!operation || typeof operation !== 'object' || Array.isArray(operation)) continue;
     const record = operation as Record<string, unknown>;
-    if (record.status !== 'completed') continue;
+    const completedMoveDestination =
+      record.operation === 'move' && record.status === 'failed' && typeof record.bytes === 'number';
+    if (record.status !== 'completed' && !completedMoveDestination) continue;
     const rawPath = typeof record.path === 'string' ? record.path : undefined;
     if (!rawPath || seen.has(rawPath)) continue;
     seen.add(rawPath);

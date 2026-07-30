@@ -299,6 +299,41 @@ describe('Maka CLI runtime bootstrap', () => {
     });
   });
 
+  test('projects ApplyPatch through the standard CLI runtime input', async () => {
+    await withWorkspace(async (workspaceRoot) => {
+      const connectionStore = createConnectionStore(workspaceRoot);
+      await connectionStore.create({
+        slug: 'local',
+        name: 'Local Ollama',
+        providerType: 'ollama',
+        defaultModel: 'llama3.2',
+      });
+
+      const context = await createMakaCliRuntimeContext({
+        surface: 'run',
+        workspaceRoot,
+        cwd: '/repo',
+        editingProtocol: 'apply_patch',
+      });
+      try {
+        assert.equal(
+          context.tools.some((tool) => tool.name === 'ApplyPatch'),
+          true,
+        );
+        assert.equal(
+          context.tools.some((tool) => tool.name === 'Write'),
+          false,
+        );
+        assert.equal(
+          context.tools.some((tool) => tool.name === 'Edit'),
+          false,
+        );
+      } finally {
+        await context.close();
+      }
+    });
+  });
+
   test('registers interactive-only tools exclusively on the TUI surface', async () => {
     await withWorkspace(async (workspaceRoot) => {
       const connectionStore = createConnectionStore(workspaceRoot);

@@ -53,6 +53,7 @@ import {
   type WorkspaceExecutor,
 } from './workspace-executor.js';
 import { mkdir, realpath, unlink } from 'node:fs/promises';
+import { isPathInside } from './path-containment.js';
 
 // tool-runtime.ts is the single source of truth for the tool shape; this
 // re-export only keeps back-compat for callers that imported from
@@ -1172,7 +1173,10 @@ function createRuntimeApplyPatchFs(input: RuntimeApplyPatchDeps): ApplyPatchFsAd
 
   return {
     async lockKey(path) {
-      if (filesystemWorker) return fileToolWriteLockKey(canonicalCwd, path);
+      if (filesystemWorker) {
+        await assertApplyPatchPathContained(canonicalCwd, path);
+        return fileToolWriteLockKey(canonicalCwd, path);
+      }
       return (await input.executor.writeLockKey({ cwd, path })).key;
     },
     async pathExists(path) {
@@ -1187,8 +1191,20 @@ function createRuntimeApplyPatchFs(input: RuntimeApplyPatchDeps): ApplyPatchFsAd
           label: 'ApplyPatch exists',
         });
         return true;
-      } catch {
-        return false;
+      } catch (error) {
+        if (error instanceof FilesystemWorkerClientError && error.reason === 'not_found') {
+          return false;
+        }
+        if (
+          !filesystemWorker &&
+          typeof error === 'object' &&
+          error !== null &&
+          'code' in error &&
+          (error.code === 'ENOENT' || error.code === 'ENOTDIR')
+        ) {
+          return false;
+        }
+        throw error;
       }
     },
     async readText(path, label) {
@@ -1215,6 +1231,8 @@ function createRuntimeApplyPatchFs(input: RuntimeApplyPatchDeps): ApplyPatchFsAd
         }
         return { path: result.path, bytes: result.bytes };
       }
+      const target = await assertApplyPatchPathContained(cwd, path);
+      await mkdir(dirname(target.enforcementPath), { recursive: true });
       const { path: resolvedPath } = await input.executor.resolveWritablePath({
         cwd,
         path,
@@ -1231,13 +1249,18 @@ function createRuntimeApplyPatchFs(input: RuntimeApplyPatchDeps): ApplyPatchFsAd
         }
         return { path: result.path };
       }
-      const { path: resolvedPath } = await input.executor.resolveExistingPath({
+      await input.executor.resolveExistingPath({
         cwd,
         path,
         label: 'ApplyPatch Delete',
       });
-      await unlink(resolvedPath);
-      return { path: resolvedPath };
+      const { path: operandPath } = await input.executor.resolveWritablePath({
+        cwd,
+        path,
+        label: 'ApplyPatch Delete',
+      });
+      await unlink(operandPath);
+      return { path: operandPath };
     },
     async preflightPermissions(accesses: readonly ApplyPatchAccessIntent[]) {
       await preflightApplyPatchPermissions({
@@ -1251,6 +1274,23 @@ function createRuntimeApplyPatchFs(input: RuntimeApplyPatchDeps): ApplyPatchFsAd
       });
     },
   };
+}
+
+async function assertApplyPatchPathContained(
+  cwd: string,
+  path: string,
+): Promise<Awaited<ReturnType<typeof normalizeSandboxBoundaryPath>>> {
+  const root = await realpath(cwd);
+  const target = await normalizeSandboxBoundaryPath({
+    path,
+    access: 'write',
+    scope: 'exact',
+    cwd: root,
+  });
+  if (!isPathInside(root, target.displayPath) || !isPathInside(root, target.enforcementPath)) {
+    throw new Error(`ApplyPatch path must stay inside session cwd: ${path}`);
+  }
+  return target;
 }
 
 async function preflightApplyPatchPermissions(input: {
@@ -1268,11 +1308,7 @@ async function preflightApplyPatchPermissions(input: {
   if (!input.filesystemWorker) {
     for (const intent of input.accesses) {
       if (intent.access === 'write') {
-        await input.executor.resolveWritablePath({
-          cwd: input.cwd,
-          path: intent.path,
-          label: 'ApplyPatch preflight',
-        });
+        await assertApplyPatchPathContained(input.cwd, intent.path);
       } else {
         await input.executor.resolveExistingPath({
           cwd: input.cwd,
