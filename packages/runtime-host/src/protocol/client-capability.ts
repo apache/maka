@@ -55,6 +55,7 @@ export type ClientCapabilityAffinity = 'call' | 'turn' | 'session';
 export const CLIENT_CAPABILITY_MAX_OFFERS = 32;
 export const CLIENT_CAPABILITY_MAX_TOOLS_PER_OFFER = 64;
 export const CLIENT_CAPABILITY_MAX_TOOLS = 256;
+export const CLIENT_CAPABILITY_MAX_MANIFEST_BYTES = 56 * 1024;
 export const CLIENT_CAPABILITY_MAX_RESULT_BYTES = 24 * 1024 * 1024;
 export const CLIENT_CAPABILITY_RESULT_CHUNK_MAX_BYTES = 36 * 1024;
 export const CLIENT_CAPABILITY_MAX_RESULT_CHUNKS = Math.ceil(
@@ -244,10 +245,14 @@ export function decodeClientCapabilityReplaceInput(value: unknown): ClientCapabi
   if (toolCount > CLIENT_CAPABILITY_MAX_TOOLS) {
     throw invalidProtocolFrame('Too many Client Capability tools');
   }
-  return {
+  const decoded = {
     registrationId: requireEntityId(record.registrationId, 'registrationId'),
     offers,
   };
+  if (jsonByteLength(decoded) > CLIENT_CAPABILITY_MAX_MANIFEST_BYTES) {
+    throw invalidProtocolFrame('Client Capability manifest is too large');
+  }
+  return decoded;
 }
 
 export function decodeClientCapabilityReplaceResult(value: unknown): ClientCapabilityReplaceResult {

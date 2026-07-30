@@ -178,9 +178,10 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
             };
           }
         } else if (previousBinding?.kind === 'lost') {
-          candidate = candidates.find(
-            (entry) => entry.registration.connectionId === initiatingConnectionId,
-          );
+          candidate =
+            candidates.find(
+              (entry) => entry.registration.connectionId === initiatingConnectionId,
+            ) ?? (candidates.length === 1 ? candidates[0] : undefined);
           if (!candidate) {
             return {
               ok: false,
@@ -243,7 +244,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
 
       const bindingsChanged = !bindingMapsEqual(previous, next);
       const turnBindingsChanged = !bindingMapsEqual(previousTurn, nextTurn);
-      this.#sessions.set(sessionId, {
+      this.#storeSessionState(sessionId, {
         initiatingConnectionId,
         sessionBindings: next,
         turnBindings: nextTurn,
@@ -367,6 +368,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
       this.#releaseRegistrationIfUnused(registration);
     }
     if (provider.registrations.size === 0) this.#providers.delete(connectionId);
+    this.#pruneEmptySessions();
   }
 
   beginDrain(): void {
@@ -629,7 +631,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
         next ??= new Map(bindings);
         next.set(contractId, { kind: 'lost' });
       }
-      if (next) this.#sessions.set(sessionId, { ...state, sessionBindings: next });
+      if (next) this.#storeSessionState(sessionId, { ...state, sessionBindings: next });
     }
   }
 
@@ -647,7 +649,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
         }
       }
       if (next.size === bindings.size) continue;
-      this.#sessions.set(sessionId, { ...state, sessionBindings: next });
+      this.#storeSessionState(sessionId, { ...state, sessionBindings: next });
     }
   }
 
@@ -665,8 +667,35 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
         }
       }
       if (next.size === bindings.size) continue;
-      this.#sessions.set(sessionId, { ...state, turnBindings: next });
+      this.#storeSessionState(sessionId, { ...state, turnBindings: next });
     }
+  }
+
+  #storeSessionState(sessionId: string, state: SessionCapabilityState): void {
+    if (
+      state.sessionBindings.size === 0 &&
+      state.turnBindings.size === 0 &&
+      !this.#hasCallOffers()
+    ) {
+      this.#sessions.delete(sessionId);
+      return;
+    }
+    this.#sessions.set(sessionId, state);
+  }
+
+  #pruneEmptySessions(): void {
+    if (this.#hasCallOffers()) return;
+    for (const [sessionId, state] of this.#sessions) {
+      if (state.sessionBindings.size === 0 && state.turnBindings.size === 0) {
+        this.#sessions.delete(sessionId);
+      }
+    }
+  }
+
+  #hasCallOffers(): boolean {
+    return [...this.#eligibleOffersByContract().values()].some(
+      (candidates) => candidates[0]?.offer.offer.affinity === 'call',
+    );
   }
 
   #releaseRegistrationIfUnused(registration: CapabilityRegistration): void {

@@ -10,6 +10,7 @@ import {
   type SandboxBoundarySettlement,
   type SettleSandboxBoundaryRequest,
 } from '@maka/core';
+import { ToolOutcomeUnknownError } from '@maka/core/events';
 import type {
   SandboxBoundaryDecisionAckEvent,
   SandboxBoundaryRequestEvent,
@@ -2099,13 +2100,7 @@ function sandboxBoundaryFailureSignal(
 }
 
 function uncertainOutcomeSignalFromError(error: unknown): ToolUncertainOutcomeSignal | undefined {
-  if (
-    !error ||
-    typeof error !== 'object' ||
-    (error as { code?: unknown }).code !== 'outcome_unknown'
-  ) {
-    return undefined;
-  }
+  if (!(error instanceof ToolOutcomeUnknownError)) return undefined;
   return {
     code: 'outcome_unknown',
     retrySafe: false,

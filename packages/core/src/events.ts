@@ -466,6 +466,15 @@ export interface ToolUncertainOutcomeSignal {
   retrySafe: false;
 }
 
+export class ToolOutcomeUnknownError extends Error {
+  readonly code = 'outcome_unknown';
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'ToolOutcomeUnknownError';
+  }
+}
+
 export type ShellRunCompactResult = ShellRunResultMetadata &
   ({ mode: 'pipes'; output?: never } | { mode: 'pty'; output?: never });
 

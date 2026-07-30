@@ -2,6 +2,7 @@ import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { LlmConnection, SessionEvent, SessionHeader, StoredMessage } from '@maka/core';
+import { ToolOutcomeUnknownError } from '@maka/core/events';
 import type {
   RuntimeCommitSink,
   ToolOutcomeCommit,
@@ -270,7 +271,7 @@ describe('ToolRuntime durable boundary', () => {
       },
     });
     const uncertain = tool(() => {
-      throw new OutcomeUnknownError('Provider disconnected after accepting the action');
+      throw new ToolOutcomeUnknownError('Provider disconnected after accepting the action');
     });
     uncertain.recoveryMode = 'never_auto_retry';
 
@@ -301,10 +302,6 @@ describe('ToolRuntime durable boundary', () => {
     });
   });
 });
-
-class OutcomeUnknownError extends Error {
-  readonly code = 'outcome_unknown';
-}
 
 function makeHarness(
   sink: RuntimeCommitSink,

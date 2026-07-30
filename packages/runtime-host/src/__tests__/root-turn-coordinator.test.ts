@@ -1162,6 +1162,95 @@ test('queued follow-up binds Client Capabilities to its submitting connection', 
   }
 });
 
+test('queued follow-up survives capability loss without fail-stopping the Host', {
+  timeout: 20_000,
+}, async () => {
+  const clientCapabilities = new HostClientCapabilityCoordinator({
+    activation: new RuntimePolicyActivationGate(),
+    onRegistryChanged: () => undefined,
+  });
+  let backend: LinkedChildAuthorityBackend | undefined;
+  const fixture = await createFailureFixture({
+    clientCapabilities,
+    registerBackend: (backends) => {
+      backends.register('fake', (context) => {
+        backend = new LinkedChildAuthorityBackend(context.sessionId);
+        return backend;
+      });
+    },
+  });
+  const provider = clientCapabilities.attachConnection('provider-a', { send: async () => {} });
+
+  try {
+    const replaced = await clientCapabilities.handlers['client.capability.replace'](
+      {
+        registrationId: 'registration-a',
+        offers: [
+          {
+            offerId: 'browser',
+            version: '0',
+            affinity: 'session',
+            label: 'Browser',
+            tools: [
+              {
+                serverId: 'browser',
+                name: 'navigate',
+                inputSchema: { type: 'object' },
+              },
+            ],
+          },
+        ],
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-a'),
+    );
+    assert.equal(replaced.ok, true);
+
+    const firstTurnId = 'turn-client-capability-loss';
+    const started = await fixture.coordinator.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: firstTurnId,
+        content: { text: HOLD_EXTERNAL_PROMPT },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-a'),
+    );
+    assert.equal(started.ok, true);
+    const queued = await fixture.messages.handlers['turn.message.submit'](
+      {
+        originHostEpoch: fixture.hostEpoch,
+        sessionId: fixture.sessionId,
+        messageId: 'followup-after-provider-loss',
+        content: { text: 'preserve this acknowledged follow-up' },
+        placement: 'next_turn',
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-a'),
+    );
+    assert.equal(queued.ok && queued.result.disposition, 'followup');
+
+    provider.close();
+    backend?.release();
+    await waitUntil(
+      () => fixture.coordinator.readRootState(fixture.sessionId).kind === 'idle',
+      5_000,
+    );
+    const admissions = await fixture.stores.agentRunStore.listRootTurnAdmissionsForRecovery(
+      fixture.sessionId,
+    );
+    assert.equal(admissions.length, 2);
+    const followup = admissions[1];
+    assert.ok(followup);
+    assert.equal(
+      (await fixture.stores.agentRunStore.readRun(fixture.sessionId, followup.runId)).status,
+      'completed',
+    );
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    provider.close();
+    clientCapabilities.close();
+    await fixture.dispose();
+  }
+});
+
 test('an exact terminal retry does not require a live Client Capability binding', {
   timeout: 20_000,
 }, async () => {

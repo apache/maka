@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import { ToolOutcomeUnknownError } from '@maka/core/events';
 import type { McpCallResult } from '@maka/core/mcp';
 import {
   ClientCapabilityInvocationError,
@@ -143,7 +144,7 @@ describe('Host Client Capability coordinator', () => {
     coordinator.close();
   });
 
-  test('requires a compatible initiating provider to restore a lost binding', async () => {
+  test('rebinds a lost Session contract to the sole compatible provider', async () => {
     const coordinator = createCoordinator();
     const first = coordinator.attachConnection('connection-a', { send: async () => {} });
     await replace(coordinator, 'connection-a', 'registration-a', 'inspect');
@@ -152,15 +153,49 @@ describe('Host Client Capability coordinator', () => {
 
     const replacement = coordinator.attachConnection('connection-b', { send: async () => {} });
     await replace(coordinator, 'connection-b', 'registration-b', 'inspect');
-    const observer = await coordinator.bindSession('session-a', 'observer');
-    assert.equal(observer.ok, false);
-    if (!observer.ok) assert.match(observer.message, /compatible initiating Client/);
-
-    assert.deepEqual(await coordinator.bindSession('session-a', 'connection-b'), { ok: true });
+    assert.deepEqual(await coordinator.bindSession('session-a', 'connection-a'), { ok: true });
     const snapshot = coordinator.snapshotForSession('session-a');
     assert.deepEqual(snapshot?.registrationIds, ['registration-b']);
     snapshot?.release();
     replacement.close();
+    coordinator.close();
+  });
+
+  test('does not retain an initiating Client for a Session with no capability state', async () => {
+    const coordinator = createCoordinator();
+    assert.deepEqual(await coordinator.bindSession('session-a', 'connection-a'), { ok: true });
+
+    const first = coordinator.attachConnection('connection-a', { send: async () => {} });
+    const second = coordinator.attachConnection('connection-b', { send: async () => {} });
+    await replace(
+      coordinator,
+      'connection-a',
+      'registration-a',
+      'inspect',
+      '0',
+      'opaque_offer',
+      'call',
+    );
+    await replace(
+      coordinator,
+      'connection-b',
+      'registration-b',
+      'inspect',
+      '0',
+      'opaque_offer',
+      'call',
+    );
+
+    const snapshot = coordinator.snapshotForSession('session-a');
+    assert.ok(snapshot);
+    await assert.rejects(
+      () => invoke(snapshot.tools[0]),
+      (error: unknown) =>
+        error instanceof ClientCapabilityInvocationError && error.code === 'capability_ambiguous',
+    );
+    snapshot.release();
+    first.close();
+    second.close();
     coordinator.close();
   });
 
@@ -427,8 +462,7 @@ describe('Host Client Capability coordinator', () => {
     abort.abort(new DOMException('Cancelled by test', 'AbortError'));
     await assert.rejects(
       Promise.resolve(pending),
-      (error: unknown) =>
-        error instanceof ClientCapabilityInvocationError && error.code === 'outcome_unknown',
+      (error: unknown) => error instanceof ToolOutcomeUnknownError,
     );
     const invocationId = sent.find(
       (frame) => frame.kind === 'client.capability.call',
@@ -458,7 +492,7 @@ describe('Host Client Capability coordinator', () => {
 
 async function assertLossClassification(
   accept: boolean,
-  expected: ClientCapabilityInvocationError['code'],
+  expected: ClientCapabilityInvocationError['code'] | 'outcome_unknown',
 ): Promise<void> {
   const coordinator = createCoordinator();
   let connection!: ClientCapabilityConnection;
@@ -480,7 +514,10 @@ async function assertLossClassification(
   assert.ok(snapshot);
   await assert.rejects(
     () => invoke(snapshot.tools[0]),
-    (error: unknown) => error instanceof ClientCapabilityInvocationError && error.code === expected,
+    (error: unknown) =>
+      expected === 'outcome_unknown'
+        ? error instanceof ToolOutcomeUnknownError
+        : error instanceof ClientCapabilityInvocationError && error.code === expected,
   );
   snapshot.release();
   coordinator.close();

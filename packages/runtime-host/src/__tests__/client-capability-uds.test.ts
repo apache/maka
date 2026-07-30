@@ -77,6 +77,34 @@ test('unknown Client Capability loads, invokes, chunks, and disconnects over rea
     if (connected.kind !== 'connected') return;
     client = connected.connection;
 
+    const unsafeRequest = client.request.bind(client) as unknown as (
+      operation: string,
+      input: unknown,
+      timeoutMs?: number,
+    ) => Promise<unknown>;
+    await assert.rejects(
+      unsafeRequest('client.capability.replace', {
+        registrationId: 'bypassed-registration',
+        offers: [
+          {
+            offerId: 'bypassed',
+            version: '0',
+            affinity: 'call',
+            label: 'Bypassed',
+            tools: [
+              {
+                serverId: 'bypassed',
+                name: 'inspect',
+                inputSchema: { type: 'object' },
+              },
+            ],
+          },
+        ],
+      }),
+      /dedicated capability channel/,
+    );
+    await client.status();
+
     const largeValue = 'x'.repeat(100_000);
     let providerCloseCalls = 0;
     const provider: ClientCapabilityProvider = {

@@ -95,6 +95,7 @@ export {
   isStorageRef,
   messageContentsEqual,
   normalizeMessageContent,
+  ToolOutcomeUnknownError,
   TOOL_ACTIVITY_KINDS,
   TOOL_OUTPUT_DELTA_MAX_CHARS,
   TOOL_OUTPUT_STREAMS,

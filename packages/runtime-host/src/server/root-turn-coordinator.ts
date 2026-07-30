@@ -1159,13 +1159,10 @@ export class RootTurnCoordinator {
         'Follow-up batch lost its initiating Client identity',
       );
     }
-    const binding = await this.clientCapabilities?.bindSession(
-      batch.sessionId,
-      initiatingConnectionId,
-    );
-    if (binding && !binding.ok) {
-      throw new RuntimeMessageAuthorityInvariantError(binding.message);
-    }
+    // A confirmed follow-up must become a durable root even when its former
+    // provider is unavailable. Execution observes capability loss through the
+    // normal tool boundary instead of turning a Client disconnect into fail-stop.
+    await this.clientCapabilities?.bindSession(batch.sessionId, initiatingConnectionId);
 
     const turnId = randomUUID();
     const admitted = await this.rootAdmissionOwner.admitRootTurn({

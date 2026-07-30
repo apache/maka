@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
+  CLIENT_CAPABILITY_MAX_MANIFEST_BYTES,
   CLIENT_CAPABILITY_MAX_OFFERS,
   CLIENT_CAPABILITY_RESULT_CHUNK_MAX_BYTES,
   decodeClientFrame,
@@ -129,6 +130,26 @@ describe('Client Capability protocol', () => {
           ),
         ),
       (error: unknown) => error instanceof RuntimeHostProtocolError,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame(
+          replaceFrame([
+            {
+              ...offer('oversized_manifest', 'tool'),
+              tools: Array.from({ length: 3 }, (_, index) => ({
+                serverId: 'oversized_manifest',
+                name: `tool_${index}`,
+                inputSchema: {
+                  type: 'object',
+                  description: 'x'.repeat(Math.ceil(CLIENT_CAPABILITY_MAX_MANIFEST_BYTES / 3)),
+                },
+              })),
+            },
+          ]),
+        ),
+      (error: unknown) =>
+        error instanceof RuntimeHostProtocolError && error.code === 'invalid_frame',
     );
     assert.throws(
       () => decodeClientFrame(replaceFrame([offer('same', 'tool'), offer('same', 'other')])),

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { ToolOutcomeUnknownError } from '@maka/core/events';
 import {
   CLIENT_CAPABILITY_MAX_RESULT_BYTES,
   CLIENT_CAPABILITY_RESULT_CHUNK_MAX_BYTES,
@@ -15,7 +16,6 @@ const MAX_RETIRED_INVOCATIONS = 1_024;
 export type ClientCapabilityInvocationFailure =
   | 'capability_ambiguous'
   | 'capability_lost'
-  | 'outcome_unknown'
   | 'provider_overloaded'
   | 'provider_rejected'
   | 'provider_failed'
@@ -127,8 +127,7 @@ export class ClientCapabilityInvocationBroker<
               undefined,
               invocation.phase === 'dispatched'
                 ? asError(abortReason(signal))
-                : new ClientCapabilityInvocationError(
-                    'outcome_unknown',
+                : new ToolOutcomeUnknownError(
                     'Client Capability invocation was cancelled after provider acceptance',
                   ),
               true,
@@ -147,8 +146,7 @@ export class ClientCapabilityInvocationBroker<
                 'timed_out',
                 'Client Capability invocation timed out before provider acceptance',
               )
-            : new ClientCapabilityInvocationError(
-                'outcome_unknown',
+            : new ToolOutcomeUnknownError(
                 'Client Capability invocation timed out after provider acceptance',
               ),
           true,
@@ -235,8 +233,7 @@ export class ClientCapabilityInvocationBroker<
             this.#settle(
               current,
               undefined,
-              new ClientCapabilityInvocationError(
-                'outcome_unknown',
+              new ToolOutcomeUnknownError(
                 'Client Capability acceptance acknowledgement could not be delivered',
               ),
               false,
@@ -295,12 +292,14 @@ export class ClientCapabilityInvocationBroker<
       this.#settle(
         invocation,
         undefined,
-        new ClientCapabilityInvocationError(
-          invocation.phase === 'dispatched' ? 'capability_lost' : 'outcome_unknown',
-          invocation.phase === 'dispatched'
-            ? 'Client Capability provider disconnected before accepting the call'
-            : 'Client Capability provider disconnected after accepting the call',
-        ),
+        invocation.phase === 'dispatched'
+          ? new ClientCapabilityInvocationError(
+              'capability_lost',
+              'Client Capability provider disconnected before accepting the call',
+            )
+          : new ToolOutcomeUnknownError(
+              'Client Capability provider disconnected after accepting the call',
+            ),
         false,
       );
     }

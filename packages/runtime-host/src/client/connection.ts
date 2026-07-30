@@ -133,7 +133,10 @@ export interface RuntimeHostConnection {
 
 export type DirectRequestOperationKey = Exclude<
   OperationKey,
-  'subscription.open' | 'subscription.close'
+  | 'subscription.open'
+  | 'subscription.close'
+  | 'client.capability.replace'
+  | 'client.capability.unregister'
 >;
 
 export class RuntimeHostOperationError extends Error {
@@ -201,6 +204,11 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     input: OperationInput<K>,
     timeoutMs?: number,
   ): Promise<OperationOutput<K>> {
+    if (isClientCapabilityMutation(operation)) {
+      return Promise.reject(
+        new Error('Client Capability mutations require the dedicated capability channel'),
+      );
+    }
     return this.#requestOperation(
       operation,
       input,
@@ -462,6 +470,10 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     this.#clientCapabilities.close(error);
     this.#transport.destroy();
   }
+}
+
+function isClientCapabilityMutation(operation: unknown): boolean {
+  return operation === 'client.capability.replace' || operation === 'client.capability.unregister';
 }
 
 export async function connectRuntimeHost(
