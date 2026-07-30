@@ -41,6 +41,20 @@ test('desktop packager has signed macOS arm64 install and update targets', async
   assert.ok(config.files.includes('!**/__tests__/**'));
 });
 
+test('macOS release declares the privacy copy and hardened-runtime permissions it uses', async () => {
+  const [{ default: config }, entitlements] = await Promise.all([
+    import(new URL('electron-builder.config.mjs', desktopRoot)),
+    readFile(new URL('build/entitlements.mac.plist', desktopRoot), 'utf8'),
+  ]);
+
+  assert.match(config.mac.extendInfo.NSMicrophoneUsageDescription, /microphone/i);
+  assert.match(config.mac.extendInfo.NSAppleEventsUsageDescription, /automate other applications/i);
+  assert.match(
+    entitlements,
+    /<key>com\.apple\.security\.automation\.apple-events<\/key>\s*<true\/>/,
+  );
+});
+
 test('Electron is a build tool rather than a packaged application dependency', async () => {
   assert.equal(desktopManifest.dependencies.electron, undefined);
   assert.match(desktopManifest.devDependencies.electron, /^\d+\.\d+\.\d+$/);

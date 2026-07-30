@@ -13,8 +13,8 @@ export type OsPermissionId = (typeof OS_PERMISSION_IDS)[number];
  * The macOS permissions granted by dragging the app bundle onto the
  * Privacy list, rather than through a consent dialog.
  *
- * These two are the ones the OS exposes no programmatic prompt for, so
- * the stock path is: open System Settings, find the pane, press `+`,
+ * These two are the ones whose normal setup requires adding the app to a
+ * System Settings list, so the stock path is: open System Settings, press `+`,
  * navigate a file picker to /Applications, pick the app, tick the box.
  * Dropping the bundle satisfies the same explicit-consent intent in one
  * gesture, which is what the drag-to-grant onboarding automates.

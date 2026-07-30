@@ -78,6 +78,40 @@ describe('voice capture smoke Settings contract', () => {
       /try \{[\s\S]*const result = await query\.call\(navigator\.permissions, \{ name: 'microphone' \}\);[\s\S]*\} catch \{[\s\S]*return 'unknown';[\s\S]*\}/,
       'permission query rejection must degrade to unknown instead of surfacing an unhandled rejection',
     );
+    assert.match(
+      src,
+      /async function readMicrophonePermission[\s\S]*window\.maka\.permissions\.getSnapshot\(\)[\s\S]*readBrowserMicrophonePermission\(\)/,
+      'Voice must prefer the main-process OS permission snapshot and use the browser probe only as a fallback',
+    );
+    assert.match(
+      src,
+      /window\.addEventListener\('focus', refreshWhenVisible\)/,
+      'Voice must re-read microphone permission after the user returns from System Settings',
+    );
+    assert.match(
+      src,
+      /let permissionReadRevision = 0;[\s\S]*const revision = \+\+permissionReadRevision;[\s\S]*revision === permissionReadRevision/,
+      'an older microphone probe must not overwrite a newer focus-triggered permission read',
+    );
+  });
+
+  it('routes microphone consent through the typed permission bridge before capture', async () => {
+    const src = await readFile(
+      join(REPO_ROOT, 'apps/desktop/src/renderer/settings/voice-settings-page.tsx'),
+      'utf8',
+    );
+    const run = src.match(/async function runCaptureSmoke\(\)[\s\S]*?(?=\n  return \()/)?.[0] ?? '';
+    assert.match(run, /window\.maka\.permissions\.getSnapshot\(\)/);
+    assert.match(
+      run,
+      /systemMicrophone\.status !== 'granted'[\s\S]*systemMicrophone\.status !== 'not_determined'[\s\S]*openSystemSettings\('microphone'\)[\s\S]*systemMicrophone\.status === 'denied'/,
+      'denied and unknown macOS microphone states must fail closed into System Settings instead of triggering renderer capture',
+    );
+    assert.match(
+      run,
+      /systemMicrophone\?\.status === 'not_determined'[\s\S]*requestAccess\('microphone'\)[\s\S]*if \(!voicePageMountedRef\.current\) return;[\s\S]*navigator\.mediaDevices\.getUserMedia/,
+      'first-use consent must settle before the renderer starts capture',
+    );
   });
 
   it('gates voice capture smoke with a synchronous pending owner', async () => {
@@ -243,7 +277,11 @@ describe('voice capture smoke Settings contract', () => {
     const snapshot = await readFile(CAPABILITY_SNAPSHOT, 'utf8');
     assert.match(snapshot, /未配置平台凭据/, 'bot missing credentials state must be localized');
     assert.match(snapshot, /macOS 不区分辅助功能权限是未授权还是未申请/, 'Accessibility TCC limitation must be localized');
-    assert.match(snapshot, /主进程暂时无法读取通知授权状态/, 'notification unknown state must be localized');
+    assert.match(
+      snapshot,
+      /Electron 无法可靠读取 macOS 通知授权状态，请在系统设置中确认/,
+      'notification unknown state must be honest, localized, and actionable',
+    );
     assert.match(snapshot, /Electron 暂不支持读取逐 App 的 Apple Events 授权状态/, 'Automation TCC limitation must be localized');
     assert.doesNotMatch(
       snapshot,

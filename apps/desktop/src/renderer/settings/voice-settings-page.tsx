@@ -35,11 +35,23 @@ export function VoiceModelsSettingsPage() {
 
   useEffect(() => {
     let cancelled = false;
-    void readBrowserMicrophonePermission().then((next) => {
-      if (!cancelled) setPermission(next);
-    });
+    let permissionReadRevision = 0;
+    const refreshPermission = () => {
+      const revision = ++permissionReadRevision;
+      void readMicrophonePermission().then((next) => {
+        if (!cancelled && revision === permissionReadRevision) setPermission(next);
+      });
+    };
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') refreshPermission();
+    };
+    refreshPermission();
+    window.addEventListener('focus', refreshWhenVisible);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
     return () => {
       cancelled = true;
+      window.removeEventListener('focus', refreshWhenVisible);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
     };
   }, []);
 
@@ -61,6 +73,39 @@ export function VoiceModelsSettingsPage() {
     setSmoke({ status: 'checking' });
     let stream: MediaStream | null = null;
     try {
+      const systemSnapshot = await window.maka.permissions.getSnapshot().catch(() => null);
+      const systemMicrophone = systemSnapshot?.permissions.microphone;
+      if (
+        systemSnapshot?.platform === 'darwin'
+        && systemMicrophone
+        && systemMicrophone.status !== 'granted'
+        && systemMicrophone.status !== 'not_determined'
+      ) {
+        const opened = await window.maka.permissions.openSystemSettings('microphone');
+        if (voicePageMountedRef.current) {
+          const denied = systemMicrophone.status === 'denied';
+          setPermission(denied ? 'denied' : 'unknown');
+          setSmoke({ status: 'error', reason: denied ? 'denied' : 'failed' });
+          if (!opened.ok) toast.error(copy.failedTitle, copy.failed);
+        }
+        return;
+      }
+      if (
+        systemSnapshot?.platform === 'darwin'
+        && systemMicrophone?.status === 'not_determined'
+      ) {
+        const requested = await window.maka.permissions.requestAccess('microphone');
+        if (!requested.ok) {
+          if (voicePageMountedRef.current) {
+            const denied = requested.reason === 'denied';
+            setPermission(denied ? 'denied' : 'unknown');
+            setSmoke({ status: 'error', reason: denied ? 'denied' : 'failed' });
+            toast.error(copy.failedTitle, denied ? copy.denied : copy.failed);
+          }
+          return;
+        }
+      }
+      if (!voicePageMountedRef.current) return;
       stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: caps.maxChannels,
@@ -193,6 +238,18 @@ export function VoiceModelsSettingsPage() {
       </ul>
     </section>
   );
+}
+
+async function readMicrophonePermission(): Promise<VoicePermissionStatus> {
+  try {
+    const snapshot = await window.maka.permissions.getSnapshot();
+    const status = snapshot.permissions.microphone.status;
+    if (status !== 'unknown' && status !== 'unsupported') return status;
+  } catch {
+    // Fall through to the renderer probe. It is useful on platforms where
+    // Electron cannot expose an OS-level microphone status.
+  }
+  return readBrowserMicrophonePermission();
 }
 
 async function readBrowserMicrophonePermission(): Promise<VoicePermissionStatus> {

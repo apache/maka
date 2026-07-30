@@ -166,7 +166,13 @@ export type PermissionActionResult =
   | { ok: true }
   | {
       ok: false;
-      reason: 'invalid_id' | 'unsupported_platform' | 'unsupported_permission' | 'failed';
+      reason:
+        | 'invalid_id'
+        | 'unsupported_platform'
+        | 'unsupported_permission'
+        | 'open_settings_failed'
+        | 'denied'
+        | 'failed';
       message?: string;
     };
 

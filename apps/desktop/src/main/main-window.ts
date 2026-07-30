@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, Menu, nativeTheme, screen, shell } from 'electron';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type { AppSettings } from '@maka/core';
 import { isExternalUrl } from './external-link-guard.js';
 import { errorMessage } from './chat-readiness.js';
@@ -8,6 +9,7 @@ import { readSavedBounds, writeSavedBounds, SAFE_MIN_HEIGHT, SAFE_MIN_WIDTH, typ
 import { BrowserViewController } from './browser/controller.js';
 import { BrowserViewManager } from './browser/view-manager.js';
 import type { E2eFixture } from './e2e-fixture.js';
+import { installMainWindowPermissionPolicy } from './main-window-permission-policy.js';
 import { isThemePreference, toNativeThemeSource } from './theme-source.js';
 import { createWindowRevealGate } from './window-reveal.js';
 
@@ -185,6 +187,16 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     // disagrees with the persisted in-app preference.
     nativeTheme.themeSource = toNativeThemeSource(themePref);
 
+    const rendererEntryPath = join(
+      import.meta.dirname,
+      '..',
+      '..',
+      'dist-renderer',
+      'index.html',
+    );
+    const rendererEntryUrl = process.env.VITE_DEV_SERVER_URL
+      ?? pathToFileURL(rendererEntryPath).href;
+
     // Re-arm the reveal gate for this window's lifecycle (macOS keeps the app
     // alive after close-all; the next createWindow starts hidden again and a
     // stale ready/pending-focus state must not reveal it early).
@@ -279,6 +291,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
         allowRunningInsecureContent: false,
       },
     });
+    installMainWindowPermissionPolicy(mainWindow.webContents, rendererEntryUrl);
 
     // Two-layer external-link hygiene: assistant markdown often emits `<a href>`
     // links to docs / GitHub / provider sign-up pages. Without these guards
@@ -376,9 +389,9 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     });
 
     if (process.env.VITE_DEV_SERVER_URL) {
-      await mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
+      await mainWindow.loadURL(rendererEntryUrl);
     } else {
-      await mainWindow.loadFile(join(import.meta.dirname, '..', '..', 'dist-renderer', 'index.html'));
+      await mainWindow.loadFile(rendererEntryPath);
     }
 
     // PR-SHOW-AFTER-FIRST-COMMIT: reveal fallback. Start this budget only once
