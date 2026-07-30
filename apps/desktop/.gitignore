@@ -1,3 +1,5 @@
 # Playwright E2E run artifacts: traces, videos, screenshots, last-run state.
 test-results/
 resources/workers/
+# Compiled by build:resources from native/settings-window-locator/locator.swift.
+resources/native/

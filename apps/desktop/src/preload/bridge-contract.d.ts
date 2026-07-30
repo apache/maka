@@ -421,7 +421,11 @@ export interface MakaBridge {
      * `accessibility` and `screen_recording` — the two permissions with
      * no programmatic consent dialog.
      */
-    startDragOnboarding(permId: string): Promise<PermissionOverlayStartResult>;
+    startDragOnboarding(
+      permId: string,
+      /** Screen rect of the button pressed, so the card can fly out of it. */
+      sourceRect?: { x: number; y: number; width: number; height: number },
+    ): Promise<PermissionOverlayStartResult>;
   };
   capabilities: {
     getSnapshot(): Promise<CapabilitySnapshotCollection>;

@@ -92,6 +92,7 @@ export function PermissionCenterPage() {
   async function runPermissionAction(
     permId: OsPermissionId,
     kind: 'request' | 'openSettings' | 'dragGrant',
+    sourceRect?: { x: number; y: number; width: number; height: number },
   ) {
     const actionKey = `${permId}:${kind}`;
     if (!permissionActionGuard.begin(actionKey)) return;
@@ -101,7 +102,7 @@ export function PermissionCenterPage() {
         kind === 'request'
           ? await window.maka.permissions.requestAccess(permId)
           : kind === 'dragGrant'
-            ? await window.maka.permissions.startDragOnboarding(permId)
+            ? await window.maka.permissions.startDragOnboarding(permId, sourceRect)
             : await window.maka.permissions.openSystemSettings(permId);
       if (result.ok) {
         // Refresh snapshot so the user sees the new state when they
@@ -190,10 +191,10 @@ export function PermissionCenterPage() {
               copy={copy}
               locale={locale}
               busy={pendingPermAction !== null}
-              pendingKey={pendingPermAction === `${id}:request` ? 'request' : pendingPermAction === `${id}:openSettings` ? 'openSettings' : null}
+              pendingKey={pendingPermAction === `${id}:request` ? 'request' : pendingPermAction === `${id}:openSettings` ? 'openSettings' : pendingPermAction === `${id}:dragGrant` ? 'dragGrant' : null}
               onRequest={() => void runPermissionAction(id, 'request')}
               onOpenSettings={() => void runPermissionAction(id, 'openSettings')}
-              onDragGrant={() => void runPermissionAction(id, 'dragGrant')}
+              onDragGrant={(sourceRect) => void runPermissionAction(id, 'dragGrant', sourceRect)}
             />
           ))}
         </ul>
@@ -285,6 +286,14 @@ function permissionActionFailureCopy(reason: string, message: string | undefined
       return copy.actionFailures.unsupported_platform;
     case 'unsupported_permission':
       return copy.actionFailures.unsupported_permission;
+    // Reasons only the drag-to-grant path can return. Without these the
+    // toast fell through to "please retry", which is wrong for
+    // already_open (retrying can never help — close the other card) and
+    // leaked the raw enum for open_settings_failed.
+    case 'already_open':
+      return copy.actionFailures.already_open;
+    case 'open_settings_failed':
+      return copy.actionFailures.open_settings_failed;
     case 'failed':
       return message ?? copy.actionFailures.failed;
     default:
@@ -402,7 +411,7 @@ function OsPermissionRow(props: {
   pendingKey: 'request' | 'openSettings' | 'dragGrant' | null;
   onRequest: () => void;
   onOpenSettings: () => void;
-  onDragGrant: () => void;
+  onDragGrant: (sourceRect?: { x: number; y: number; width: number; height: number }) => void;
 }) {
   const { snapshot, busy, pendingKey } = props;
   const permissionCopy = props.copy.osPermissions[snapshot.id];
@@ -477,7 +486,18 @@ function OsPermissionRow(props: {
           <Button
             type="button"
             size="sm"
-            onClick={props.onDragGrant}
+            onClick={(event) => {
+              // Screen coordinates, so the overlay (a separate window) can
+              // launch from this button. `screenX/screenY` is the app
+              // window's own origin; the DOM rect is relative to it.
+              const rect = event.currentTarget.getBoundingClientRect();
+              props.onDragGrant({
+                x: Math.round(window.screenX + rect.left),
+                y: Math.round(window.screenY + rect.top),
+                width: Math.round(rect.width),
+                height: Math.round(rect.height),
+              });
+            }}
             disabled={busy}
             aria-busy={pendingKey === 'dragGrant' ? 'true' : undefined}
           >

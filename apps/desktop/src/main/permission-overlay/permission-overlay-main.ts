@@ -25,6 +25,12 @@ import { fileURLToPath } from 'node:url';
 import type { UiLocale } from '@maka/core';
 import { openSystemPermissionPane } from '../permissions-actions.js';
 import { resolveAppBundle } from './app-bundle.js';
+import type { Rect } from './card-flight.js';
+import {
+  defaultExists,
+  defaultRunBinary,
+  locateSettingsWindow,
+} from './settings-window-locator.js';
 import { getPermissionOverlayCopy } from './permission-overlay-copy.js';
 import {
   createPermissionOverlayController,
@@ -54,6 +60,23 @@ function overlayAssetDir(): string {
   return join(here, '..', '..', 'overlay');
 }
 
+/**
+ * The locator binary. Built by `build:locator` into `resources/native`,
+ * which electron-builder ships as `Contents/Resources/native`. Absent in
+ * a build without the Xcode toolchain — the card then falls back to
+ * cursor anchoring rather than failing.
+ */
+function locatorBinaryPath(app: Electron['app']): string {
+  // dist/main/permission-overlay -> apps/desktop, then resources/native.
+  const devPath = join(here, '..', '..', '..', 'resources', 'native', 'settings-window-locator');
+  if (!app.isPackaged) return devPath;
+  return join(process.resourcesPath, 'native', 'settings-window-locator');
+}
+
+/** Locator timeout. Well under the 200ms docking tick so a slow call
+ *  cannot let two spawns overlap. */
+const LOCATOR_TIMEOUT_MS = 150;
+
 export interface PermissionOverlayMainDeps {
   /**
    * Resolved UI locale, so the card speaks the same language as the app.
@@ -68,8 +91,9 @@ export function createPermissionOverlayMain(
   deps: PermissionOverlayMainDeps,
 ): PermissionOverlayController {
   let locale: UiLocale = 'en';
+  let iconDataUrl: string | null = null;
   const electron = requireElectron('electron') as Electron;
-  const { BrowserWindow, app, nativeImage, screen, systemPreferences } = electron;
+  const { BrowserWindow, app, screen, systemPreferences } = electron;
 
   function isGranted(id: DragGrantPermissionId): boolean {
     if (process.platform !== 'darwin') return false;
@@ -79,16 +103,30 @@ export function createPermissionOverlayMain(
     return systemPreferences.getMediaAccessStatus('screen') === 'granted';
   }
 
-  function appIconDataUrl(bundlePath: string | null): string | null {
+  /**
+   * The icon of the bundle the user is about to drag.
+   *
+   * `app.getFileIcon`, not `nativeImage.createFromPath` on the `.icns`:
+   * nativeImage decodes PNG/JPEG and friends, NOT icns, so probing
+   * `Contents/Resources/icon.icns` returns an empty image and the card
+   * renders a blank tile. (The file is there — that is exactly how this
+   * shipped broken.) `getFileIcon` asks the OS for the icon the bundle
+   * actually displays, which is also the right answer semantically: what
+   * you see on the card is what Finder and the Privacy list will show.
+   *
+   * Async, hence resolved once per run in the `start()` wrapper below
+   * rather than inside the synchronous payload builder.
+   */
+  async function resolveAppIconDataUrl(bundlePath: string | null): Promise<string | null> {
     if (!bundlePath) return null;
-    for (const name of ['icon.icns', 'electron.icns']) {
-      const candidate = join(bundlePath, 'Contents', 'Resources', name);
-      if (!existsSync(candidate)) continue;
-      const image = nativeImage.createFromPath(candidate);
-      if (image.isEmpty()) continue;
-      return image.resize({ width: 64, height: 64 }).toDataURL();
+    try {
+      const icon = await app.getFileIcon(bundlePath, { size: 'large' });
+      if (icon.isEmpty()) return null;
+      return icon.resize({ width: 64, height: 64 }).toDataURL();
+    } catch {
+      // A missing icon is cosmetic; never let it break the flow.
+      return null;
     }
-    return null;
   }
 
   const controller = createPermissionOverlayController({
@@ -99,9 +137,13 @@ export function createPermissionOverlayMain(
       const display = screen.getDisplayNearestPoint(point);
       return { x: point.x, y: point.y, workArea: display.workArea };
     },
+    workAreaForPoint: (x, y) => screen.getDisplayNearestPoint({ x: Math.round(x), y: Math.round(y) }).workArea,
     openSystemSettings: async (id) => {
       const result = await openSystemPermissionPane(id);
-      return result.ok ? { ok: true } : { ok: false, message: result.message ?? result.reason };
+      // Deliberately no `message` fallback to `result.reason`: that put a
+      // raw enum ("unsupported_permission") in the user's toast body. The
+      // renderer has localized copy keyed on the reason.
+      return result.ok ? { ok: true } : { ok: false, message: result.message };
     },
     isGranted,
     setInterval: (fn, ms) => setInterval(fn, ms),
@@ -118,12 +160,33 @@ export function createPermissionOverlayMain(
       return {
         permission: id,
         appName: app.getName(),
-        iconDataUrl: appIconDataUrl(bundlePath),
+        iconDataUrl,
         draggable: bundlePath !== null,
         copy: serializeCopy(locale, id, app.getName()),
       };
     },
     log: (message) => console.warn(message),
+    // The main process has no requestAnimationFrame; a 16ms timer is the
+    // closest thing, and the flight is short enough that drift is invisible.
+    now: () => performance.now(),
+    requestTick: (fn) => { setTimeout(fn, 16); },
+    reducedMotion: () => {
+      try {
+        return systemPreferences.getAnimationSettings().prefersReducedMotion;
+      } catch {
+        // Never let an animation preference lookup break the flow.
+        return false;
+      }
+    },
+    // The REASON matters, not just success: "no binary" must not be
+    // mistaken for "the user closed System Settings".
+    locateSettingsWindow: () => locateSettingsWindow({
+      binaryPath: locatorBinaryPath(app),
+      platform: process.platform,
+      timeoutMs: LOCATOR_TIMEOUT_MS,
+      exists: defaultExists,
+      runBinary: defaultRunBinary,
+    }),
     createWindow: (bounds) => {
       const win = new BrowserWindow({
         ...bounds,
@@ -186,13 +249,19 @@ export function createPermissionOverlayMain(
   // not a reason to block the flow — the last known value still renders.
   return {
     ...controller,
-    async start(id: unknown) {
+    async start(id: unknown, sourceRect?: Rect | null) {
       try {
         locale = await deps.resolveLocale();
       } catch (error) {
         console.warn('[permission-overlay] locale lookup failed, keeping', locale, error);
       }
-      return controller.start(id);
+      const bundle = resolveAppBundle({
+        executablePath: app.getPath('exe'),
+        platform: process.platform,
+        exists: existsSync,
+      });
+      iconDataUrl = await resolveAppIconDataUrl(bundle.ok ? bundle.bundlePath : null);
+      return controller.start(id, sourceRect);
     },
   };
 }
@@ -231,7 +300,7 @@ function attachCardGestures(win: import('electron').BrowserWindow): void {
       exists: existsSync,
     });
 
-  win.webContents.on('ipc-message', (_event, channel, payload: unknown) => {
+  win.webContents.on('ipc-message', async (_event, channel, payload: unknown) => {
     if (channel === 'permission-overlay:dismiss') {
       if (!win.isDestroyed()) win.close();
       return;
@@ -272,14 +341,32 @@ function attachCardGestures(win: import('electron').BrowserWindow): void {
       if (!fromRenderer.isEmpty()) icon = fromRenderer;
     }
     if (icon.isEmpty()) {
-      const fallback = nativeImage.createFromPath(
-        join(resolved.bundlePath, 'Contents', 'Resources', 'icon.icns'),
-      );
-      if (!fallback.isEmpty()) icon = fallback.resize({ width: 64, height: 64 });
+      // Same trap as the card's tile: nativeImage cannot decode `.icns`,
+      // so reading Contents/Resources/icon.icns here yields an empty image
+      // and the drag would carry no picture at all. Ask the OS instead.
+      try {
+        const fallback = await app.getFileIcon(resolved.bundlePath, { size: 'large' });
+        if (!fallback.isEmpty()) icon = fallback.resize({ width: 64, height: 64 });
+      } catch { /* a drag with no image still drags. */ }
     }
 
     if (!win.isDestroyed()) win.webContents.startDrag({ file: resolved.bundlePath, icon });
   });
+}
+
+/**
+ * The launch rect is renderer-supplied, so it is validated rather than
+ * trusted: it only ever decides where an animation starts, and a garbage
+ * value would put the card at NaN and make it invisible. Anything not a
+ * finite, positive-area rect degrades to "no flight".
+ */
+function sanitizeSourceRect(value: unknown): Rect | null {
+  if (!value || typeof value !== 'object') return null;
+  const v = value as Record<string, unknown>;
+  const nums = [v.x, v.y, v.width, v.height];
+  if (!nums.every((n) => typeof n === 'number' && Number.isFinite(n))) return null;
+  if ((v.width as number) <= 0 || (v.height as number) <= 0) return null;
+  return { x: v.x as number, y: v.y as number, width: v.width as number, height: v.height as number };
 }
 
 export interface PermissionOverlayIpcDeps {
@@ -296,8 +383,8 @@ export function registerPermissionOverlayIpc(deps: PermissionOverlayIpcDeps): vo
   const electron = requireElectron('electron') as Electron;
   const { ipcMain } = electron;
 
-  ipcMain.handle('permissions:startDragOnboarding', async (_event, id: unknown) => {
-    return deps.controller.start(id);
+  ipcMain.handle('permissions:startDragOnboarding', async (_event, id: unknown, sourceRect: unknown) => {
+    return deps.controller.start(id, sanitizeSourceRect(sourceRect));
   });
 }
 

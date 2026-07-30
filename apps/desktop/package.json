@@ -16,7 +16,7 @@
     "build-storybook": "storybook build -c .storybook --output-dir storybook-static",
     "smoke:storybook": "node ../../scripts/storybook-visual-smoke.mjs",
     "build": "npm run build:resources && npm run build:main && npm run build:preload && npm run build:overlay && npm run build:renderer",
-    "build:resources": "node scripts/copy-runtime-filesystem-worker.mjs",
+    "build:resources": "node scripts/copy-runtime-filesystem-worker.mjs && node scripts/build-settings-window-locator.mjs",
     "build:test": "npm run build:main && npm run build:preload && npm run build:overlay",
     "clean:main": "node ../../scripts/clean-paths.mjs dist/main tsconfig.main.tsbuildinfo",
     "build:main": "tsc -p tsconfig.main.json",

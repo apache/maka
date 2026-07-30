@@ -13,6 +13,15 @@ export default {
       to: 'bundled-tools.json',
     },
     {
+      // Built by build:resources from native/settings-window-locator.
+      // Without this the drag-to-grant card cannot find System Settings in
+      // a packaged app — and, before the reason-aware fallback, killed
+      // itself one second after opening because "no binary" looked
+      // identical to "the user closed the pane".
+      from: 'resources/native',
+      to: 'native',
+    },
+    {
       from: 'resources/workers/filesystem-worker.js',
       to: 'workers/filesystem-worker.js',
     },

@@ -1,6 +1,6 @@
 # Drag-to-grant permission onboarding (macOS)
 
-Status: **Stage 1 built** (`apps/desktop/src/main/permission-overlay/`,
+Status: **Stage 1 + Stage 2 built** (`apps/desktop/src/main/permission-overlay/`,
 `apps/desktop/src/overlay/permission-overlay.*`). Stage 2 is still a proposal.
 Written 2026-07-27 for maka.
 
@@ -99,7 +99,30 @@ no window or timer stacking on re-entry, teardown on grant / dismiss /
 window-gone, and a give-up timeout so an abandoned flow cannot leave an
 immortal always-on-top card (a hole both reference implementations have).
 
-**Stage 2 — add the locator binary** as progressive enhancement. Not built. When it
+**Stage 2 — the locator binary. DONE.** `native/settings-window-locator/`
+compiled by `build:resources` into `resources/native` as a universal
+binary (~89KB). The card docks under the Settings window, follows it on a
+200ms tick, and flies out of the button that launched it.
+
+Deliberate departures from both references:
+
+- **Docks BELOW the window, not over it.** The card is always-on-top;
+  parking it across the Privacy list would cover the rows the user has to
+  drop onto. It also makes "drag it up into the list" literally true.
+- **Centred on the whole window**, not offset by a hardcoded 170px
+  sidebar. That constant is exactly what rots across macOS releases.
+- **Returns CG (top-left) coordinates**, skipping the AppKit conversion —
+  see the landmine section above.
+- **Detects that Settings went away** (5 consecutive locator misses) and
+  closes, instead of freezing an always-on-top card in place.
+- **Missing binary is not an error.** No Xcode toolchain at build time →
+  the build warns and continues, and the card falls back to the Stage 1
+  cursor anchor.
+
+Not covered by this stage: Developer ID signing / notarization of the
+binary. That pipeline is already owed by the pinned cua-driver artifact
+(`docs/cua-driver-artifact-integrity.md`, `distributionReady: false`);
+the locator inherits it when it lands rather than justifying it alone. When it
 returns a frame, the card docks to the Settings window and follows it;
 when it returns `null`, fall back to the Stage 1 anchor. Unlike Alma,
 log the degradation loudly — a silent fallback is indistinguishable

@@ -502,8 +502,11 @@ const makaBridge = {
     requestAccess(permId: string): Promise<PermissionActionResult> {
       return ipcRenderer.invoke('permissions:requestAccess', permId);
     },
-    startDragOnboarding(permId: string): Promise<PermissionOverlayStartResult> {
-      return ipcRenderer.invoke('permissions:startDragOnboarding', permId);
+    startDragOnboarding(
+      permId: string,
+      sourceRect?: { x: number; y: number; width: number; height: number },
+    ): Promise<PermissionOverlayStartResult> {
+      return ipcRenderer.invoke('permissions:startDragOnboarding', permId, sourceRect);
     },
   },
   capabilities: {
