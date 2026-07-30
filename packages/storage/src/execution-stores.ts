@@ -11,7 +11,6 @@ import type {
 } from '@maka/core';
 import {
   createAgentRunStore,
-  createRuntimeEventStore,
   type AdmitRootTurnInput,
   type AdmitRootTurnResult,
   type DurableAgentRunStore,
@@ -34,12 +33,17 @@ import {
   type InteractiveInteractionStoreReaderFacade,
   type InteractiveInteractionStoreWriterFacade,
 } from './interaction-store.js';
+import {
+  openRuntimeEventPersistence,
+  openRuntimeEventReadPersistence,
+} from './runtime-event-transfer.js';
 
 const executionStoresWriterBrand: unique symbol = Symbol('ExecutionStoresWriter');
 const executionStoresReaderBrand: unique symbol = Symbol('ExecutionStoresReader');
 const executionStoresWriterKinds = new WeakMap<object, StorageRootKind>();
 const executionStoresReaderKinds = new WeakMap<object, StorageRootKind>();
 const executionStoresWritersByLease = new WeakMap<object, object>();
+const executionStoresWritersOpeningByLease = new WeakMap<object, Promise<void>>();
 
 export { normalizeRootTurnAdmissionPayload } from './agent-run-store.js';
 export { isSessionNotFoundError } from './session-store.js';
@@ -91,6 +95,7 @@ export interface ExecutionSessionReader {
   readHeader(sessionId: string): Promise<SessionHeader>;
   readMessages(sessionId: string): Promise<StoredMessage[]>;
   listTurns(sessionId: string): Promise<TurnRecord[]>;
+  close?(): Promise<void>;
 }
 
 export interface ExecutionAgentRunReader {
@@ -177,9 +182,39 @@ async function openExecutionStoresForWrite<K extends StorageRootKind, E extends 
   const existing = executionStoresWritersByLease.get(lease);
   if (existing) return existing as ExecutionStoresWriterBase<K> & E;
 
+  const opening = executionStoresWritersOpeningByLease.get(lease);
+  if (opening) {
+    await opening;
+    return openExecutionStoresForWrite(lease, kind, extension);
+  }
+
+  let releaseOpening!: () => void;
+  const openingGate = new Promise<void>((resolve) => {
+    releaseOpening = resolve;
+  });
+  executionStoresWritersOpeningByLease.set(lease, openingGate);
+  try {
+    return await createExecutionStoresForWrite(lease, kind, extension);
+  } finally {
+    executionStoresWritersOpeningByLease.delete(lease);
+    releaseOpening();
+  }
+}
+
+async function createExecutionStoresForWrite<K extends StorageRootKind, E extends object>(
+  lease: StorageRootLease<K, 'write'>,
+  kind: K,
+  extension: E,
+): Promise<ExecutionStoresWriterBase<K> & E> {
   const sessionStore = createSessionStore(lease.canonicalPath);
   const agentRunStore = createAgentRunStore(lease.canonicalPath);
-  const runtimeEventStore = createRuntimeEventStore(lease.canonicalPath);
+  const runtimePersistence = await openRuntimeEventPersistence({
+    workspaceRoot: lease.canonicalPath,
+  }).catch(async (error) => {
+    await sessionStore.close?.().catch(() => {});
+    throw error;
+  });
+  const runtimeEventStore = runtimePersistence.runtimeEventStore;
   const messageReceiptStore = createMessageReceiptStore(lease.canonicalPath);
   const run = <T>(operation: () => Promise<T>) =>
     runWithStorageRootLease(lease, kind, 'write', operation);
@@ -234,9 +269,7 @@ async function openExecutionStoresForWrite<K extends StorageRootKind, E extends 
       setGeneratedTitleIfAbsent: (sessionId, title) =>
         run(() => sessionStore.setGeneratedTitleIfAbsent(sessionId, title)),
       remove: (sessionId) => run(() => sessionStore.remove(sessionId)),
-      close: async () => {
-        await sessionStore.close?.();
-      },
+      close: () => closeExecutionStorePersistence(sessionStore, runtimePersistence),
     },
     agentRunStore: {
       createRun: (header, options) => run(() => agentRunStore.createRun(header, options)),
@@ -267,6 +300,7 @@ async function openExecutionStoresForWrite<K extends StorageRootKind, E extends 
         run(() => agentRunStore.listRootTurnAdmissionsForRecovery(sessionId)),
     },
     runtimeEventStore: {
+      durability: runtimeEventStore.durability,
       appendRuntimeEvent: (sessionId, runId, event, options) =>
         run(() => runtimeEventStore.appendRuntimeEvent(sessionId, runId, event, options)),
       ensureTerminalRuntimeEventDurable: (sessionId, runId, event) =>
@@ -319,7 +353,13 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
   await assertStorageRootLease(lease, kind, 'read');
   const sessionStore = createSessionStore(lease.canonicalPath);
   const agentRunStore = createAgentRunStore(lease.canonicalPath);
-  const runtimeEventStore = createRuntimeEventStore(lease.canonicalPath);
+  const runtimePersistence = await openRuntimeEventReadPersistence({
+    workspaceRoot: lease.canonicalPath,
+  }).catch(async (error) => {
+    await sessionStore.close?.().catch(() => {});
+    throw error;
+  });
+  const runtimeEventStore = runtimePersistence.runtimeEventStore;
   const run = <T>(operation: () => Promise<T>) =>
     runWithStorageRootLease(lease, kind, 'read', operation);
 
@@ -332,6 +372,7 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
       readHeader: (sessionId) => run(() => sessionStore.readHeaderSnapshot(sessionId)),
       readMessages: (sessionId) => run(() => sessionStore.readMessagesSnapshot(sessionId)),
       listTurns: (sessionId) => run(() => sessionStore.listTurnsSnapshot(sessionId)),
+      close: () => closeExecutionStorePersistence(sessionStore, runtimePersistence),
     },
     agentRunStore: {
       readRun: (sessionId, runId) => run(() => agentRunStore.readRun(sessionId, runId)),
@@ -369,6 +410,26 @@ function freezeExecutionStoresFacade(stores: {
   Object.freeze(stores.runtimeEventStore);
   if (stores.messageReceiptStore) Object.freeze(stores.messageReceiptStore);
   Object.freeze(stores);
+}
+
+async function closeExecutionStorePersistence(
+  sessionStore: Pick<SessionStore, 'close'>,
+  runtimePersistence: { close(): void },
+): Promise<void> {
+  const errors: unknown[] = [];
+  try {
+    runtimePersistence.close();
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    await sessionStore.close?.();
+  } catch (error) {
+    errors.push(error);
+  }
+  if (errors.length > 0) {
+    throw new AggregateError(errors, 'Unable to close execution store persistence');
+  }
 }
 
 function invalidExecutionStores(

@@ -225,10 +225,6 @@ export async function createMakaCliRuntimeContext(
   const runStore = createAgentRunStore(stateRoot);
   const runtimePersistence = await openRuntimeEventPersistence({
     workspaceRoot: stateRoot,
-    // Graph execution can dispatch durable tools from both the supervisor and
-    // child agents. Those tool facts must cross the SQLite atomic boundary;
-    // the legacy JSONL event store intentionally rejects them.
-    sqliteCanonical: agentGraphEnabled || process.env.MAKA_RUNTIME_SQLITE_CANONICAL === '1',
   });
   const runtimeEventStore = runtimePersistence.runtimeEventStore;
   const shellRunStore = createShellRunStore(stateRoot);

@@ -1,7 +1,8 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { decodePersistedRuntimeEvent, type RuntimeEvent, type RuntimeEventStore } from '@maka/core';
-import { createRuntimeEventStore } from './agent-run-store.js';
+import { createRuntimeEventStore, type DurableRuntimeEventStore } from './agent-run-store.js';
+import { classifyJsonRecord } from './json-prefix.js';
 import type { SqliteRuntimeStore } from './sqlite-runtime-store.js';
 import { createSqliteRuntimeStore } from './sqlite-runtime-store.js';
 
@@ -9,10 +10,16 @@ export const SQLITE_RUNTIME_DATABASE_NAME = 'runtime.sqlite';
 const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
 export type RuntimeEventPersistence = {
-  kind: 'jsonl' | 'sqlite';
-  runtimeEventStore: RuntimeEventStore;
-  runtimeCommitStore?: SqliteRuntimeStore;
+  kind: 'sqlite';
+  runtimeEventStore: SqliteRuntimeStore;
+  runtimeCommitStore: SqliteRuntimeStore;
   importReport?: LegacyRuntimeEventImportReport;
+  close(): void;
+};
+
+export type RuntimeEventReadPersistence = {
+  kind: 'jsonl' | 'sqlite';
+  runtimeEventStore: DurableRuntimeEventStore;
   close(): void;
 };
 
@@ -28,16 +35,8 @@ export interface LegacyRuntimeEventImportReport extends RuntimeEventImportReport
 
 export async function openRuntimeEventPersistence(input: {
   workspaceRoot: string;
-  sqliteCanonical: boolean;
 }): Promise<RuntimeEventPersistence> {
   const databasePath = join(input.workspaceRoot, SQLITE_RUNTIME_DATABASE_NAME);
-  if (!input.sqliteCanonical && !(await pathExists(databasePath))) {
-    return {
-      kind: 'jsonl',
-      runtimeEventStore: createRuntimeEventStore(input.workspaceRoot),
-      close: () => {},
-    };
-  }
   const store = createSqliteRuntimeStore(databasePath);
   try {
     const importReport = await importLegacyRuntimeEventJsonlTree({
@@ -55,6 +54,32 @@ export async function openRuntimeEventPersistence(input: {
     store.close();
     throw error;
   }
+}
+
+/**
+ * Open the canonical RuntimeEvent read model without mutating the storage root.
+ *
+ * A legacy-only root remains readable until a writer performs the one-way
+ * import. Once runtime.sqlite exists, readers never merge or fall back to
+ * JSONL, so SQLite-only facts cannot disappear behind a stale file projection.
+ */
+export async function openRuntimeEventReadPersistence(input: {
+  workspaceRoot: string;
+}): Promise<RuntimeEventReadPersistence> {
+  const databasePath = join(input.workspaceRoot, SQLITE_RUNTIME_DATABASE_NAME);
+  if (!(await pathExists(databasePath))) {
+    return {
+      kind: 'jsonl',
+      runtimeEventStore: createRuntimeEventStore(input.workspaceRoot),
+      close: () => {},
+    };
+  }
+  const store = createSqliteRuntimeStore(databasePath, { readOnly: true });
+  return {
+    kind: 'sqlite',
+    runtimeEventStore: store,
+    close: () => store.close(),
+  };
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -182,6 +207,14 @@ function parseLegacyRuntimeEventJsonl(
 ): RuntimeEvent[] {
   const events: RuntimeEvent[] = [];
   const lines = jsonl.split('\n');
+  let lastNonEmptyIndex = -1;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (lines[index]?.trim()) {
+      lastNonEmptyIndex = index;
+      break;
+    }
+  }
+  const endsWithNewline = jsonl.endsWith('\n');
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
     if (!line?.trim()) continue;
@@ -191,6 +224,13 @@ function parseLegacyRuntimeEventJsonl(
       if (isLegacyStreamPartialSnapshot(parsed)) continue;
       event = decodePersistedRuntimeEvent(parsed);
     } catch (error) {
+      if (
+        !endsWithNewline &&
+        index === lastNonEmptyIndex &&
+        classifyJsonRecord(line) === 'incomplete-prefix'
+      ) {
+        continue;
+      }
       throw new Error(`Invalid legacy RuntimeEvent JSONL line ${index + 1} for run ${runId}`, {
         cause: error,
       });

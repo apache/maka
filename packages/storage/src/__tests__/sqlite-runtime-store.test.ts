@@ -404,6 +404,41 @@ describe('SqliteRuntimeStore', () => {
       assert.equal((await store.readImmutableRuntimeEvents('session-1', 'run-1')).length, 3);
     });
   });
+
+  it('uses the immutable SQLite event as the steering-message recovery proof', async () => {
+    await withStore(async (store) => {
+      const steering = functionCallEvent({
+        id: 'steering-event-1',
+        content: { kind: 'text', text: 'steer', steering: true },
+        refs: { providerEventId: 'message-steering' },
+      });
+
+      await store.appendRuntimeEvent('session-1', 'run-1', steering, { durable: true });
+      await store.appendRuntimeEvent('session-1', 'run-1', steering, { durable: true });
+
+      assert.deepEqual(
+        await store.readImmutableSteeringMessageProof('session-1', 'message-steering'),
+        { event: steering },
+      );
+      await store.repairImmutableSteeringMessageProofsForRecovery('session-1');
+      await assert.rejects(
+        store.appendRuntimeEvent(
+          'session-1',
+          'run-2',
+          functionCallEvent({
+            id: 'steering-event-conflict',
+            invocationId: 'invocation-2',
+            runId: 'run-2',
+            turnId: 'turn-2',
+            content: { kind: 'text', text: 'different', steering: true },
+            refs: { providerEventId: 'message-steering' },
+          }),
+        ),
+        /Immutable steering message identity conflict: message-steering/,
+      );
+      assert.deepEqual(await store.readImmutableRuntimeEvents('session-1', 'run-2'), []);
+    });
+  });
 });
 
 type Store = ReturnType<typeof createSqliteRuntimeStore>;

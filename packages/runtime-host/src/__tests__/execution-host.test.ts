@@ -1063,7 +1063,7 @@ test('startup recovery rejects claimed graph Run lineage drift', async () => {
   });
 });
 
-test('startup recovery repairs a truncated RuntimeEvent tail before terminalizing the Run', async () => {
+test('startup recovery imports past a truncated legacy RuntimeEvent tail without rewriting it', async () => {
   await withExecutionRoot(async (fixture) => {
     const turnId = randomUUID();
     const { runId } = await fixture.seedRunWithoutUserMessage(
@@ -1086,9 +1086,7 @@ test('startup recovery repairs a truncated RuntimeEvent tail before terminalizin
     await client.close();
     await fixture.stopHost(host);
 
-    const bytes = await readFile(runtimeEventsPath, 'utf8');
-    assert.doesNotMatch(bytes, /truncated/);
-    assertJsonLines(bytes);
+    assert.equal(await readFile(runtimeEventsPath, 'utf8'), '{"id":"truncated"');
     const ledger = await fixture.readTurn(turnId);
     assert.equal(ledger.terminalEvents.length, 1);
   });

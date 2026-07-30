@@ -273,7 +273,6 @@ const planStore = createPlanStore(workspaceRoot);
 const runStore = createAgentRunStore(workspaceRoot);
 const runtimePersistence = await openRuntimeEventPersistence({
   workspaceRoot,
-  sqliteCanonical: process.env.MAKA_RUNTIME_SQLITE_CANONICAL === '1',
 });
 const runtimeEventStore = runtimePersistence.runtimeEventStore;
 const shellRunStore = createShellRunStore(workspaceRoot);

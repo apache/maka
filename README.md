@@ -184,16 +184,15 @@ Current boundaries that matter:
 
 Read [SECURITY.md](./SECURITY.md) for security reporting and policy, and [docs/README.md](./docs/README.md) for current privacy and sandbox contracts.
 
-## Experimental runtime recovery flags
+## Experimental runtime recovery flag
 
-Runtime recovery remains opt-in. Both flags below are disabled by default:
+RuntimeEvent persistence is always canonical in `runtime.sqlite`. On the first
+write, Maka batch-idempotently imports legacy RuntimeEvent JSONL without
+rewriting it. Legacy-only workspaces remain available to read-only inspection
+until that first write.
 
-- `MAKA_RUNTIME_SQLITE_CANONICAL=1` migrates the current workspace's canonical
-  RuntimeEvent store to `runtime.sqlite`. This is a **one-way, sticky migration
-  trigger**, not a reversible backend selector: after `runtime.sqlite` exists,
-  disabling the variable does not switch the workspace back to JSONL. Automatic
-  pre-migration backup and populated v2-to-v4 upgrade coverage are not complete,
-  so back up the workspace before enabling this flag.
+Runtime continuation remains opt-in:
+
 - `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` enables the Desktop interrupted-turn
   **Safe resume** action, CLI/TUI `/resume`, and Desktop startup auto-resume.
   These paths may call the configured model provider and consume tokens. Enable

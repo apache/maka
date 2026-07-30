@@ -20,6 +20,7 @@ import {
   decodeRuntimeEvent,
 } from './execution-record-codec.js';
 import { classifyJsonRecord } from './json-prefix.js';
+import { immutableSteeringMessageId } from './runtime-event-invariants.js';
 import { syncDirectory, syncDirectoryChain, syncFile } from './stable-storage.js';
 import { chainWrite } from './write-queue.js';
 import {
@@ -1410,17 +1411,6 @@ function completedPartialRuntimeStreamKey(event: RuntimeEvent): string | undefin
     identity = `tool:call:${event.refs.toolCallId}`;
   }
   return identity ? runtimePartialStreamKey(identity, event) : undefined;
-}
-
-function immutableSteeringMessageId(event: RuntimeEvent): string | undefined {
-  const messageId = event.refs?.providerEventId;
-  return event.partial === false &&
-    typeof messageId === 'string' &&
-    isSafeId(messageId) &&
-    event.content?.kind === 'text' &&
-    event.content.steering === true
-    ? messageId
-    : undefined;
 }
 
 function runtimePartialStreamKey(identity: string, event: RuntimeEvent): string {

@@ -516,20 +516,22 @@ CLI/TUI 的 `/resume` 走同一个 `SessionManager` plan/execute seam，只是�
 
 后一个问题必须由 Phase 4 checkpoint/carrier 解决。当前 safe-boundary continuation 不能被描述成 workspace snapshot restore。
 
-## Phase 2：为什么 SQLite 是 durable mode
+## Phase 2：SQLite 是 RuntimeEvent 的 durable store
 
 没有 `RuntimeCommitSink` 的 JSONL host 不能声明 T1 协议。只有 host 真正把 SQLite store 同时接成 `RuntimeEventStore` 和 `RuntimeCommitSink`，AiSdk tool path 才会在 Run 首事件写入 `t1_after_preflight_v1` marker。
 
 当前启动规则是：
 
 ```text
-MAKA_RUNTIME_SQLITE_CANONICAL=1
-  → 触发当前 workspace 迁移
+打开 RuntimeEvent writer
+  → 创建或迁移 runtime.sqlite
   → 批量、幂等导入 legacy RuntimeEvent JSONL
-  → SQLite 成为唯一 canonical RuntimeEvent writer
+  → RuntimeEvent 只写 SQLite
 ```
 
-一旦 workspace 中存在 `runtime.sqlite`，之后即使环境变量关闭也继续使用 SQLite。这是 sticky migration，不是可以来回切换的实验开关。否则 SQLite-only 事件会在“回退”后静默消失，形成两个事实源。
+这里不再有 backend selection flag。只读检查可以读取尚未创建数据库的 legacy-only
+workspace；第一个 writer 执行单向导入。一旦存在 `runtime.sqlite`，所有 reader
+都只读 SQLite，不会再与过期 JSONL 合并或 fallback。
 
 JSONL 在迁移后只承担 legacy import 和显式 export；Session message JSONL 与 AgentRun operational JSONL 仍保留各自用途，但不与 SQLite 竞争 RuntimeEvent authority。
 
@@ -830,11 +832,10 @@ flowchart TD
 
 ## Feature flags、迁移与回滚
 
-当前两个主要开关含义不同：
+RuntimeEvent 迁移不再由开关控制；首次写入必然迁移。当前恢复行为开关如下：
 
 | 开关 | 作用 | 回滚含义 |
 |---|---|---|
-| `MAKA_RUNTIME_SQLITE_CANONICAL=1` | 触发 workspace 迁移到 SQLite canonical | 不能靠关闭变量回到 JSONL；已迁移 workspace sticky 使用 SQLite |
 | `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` | 开启 Desktop 手动/自动 resume 与 CLI `/resume` | 可关闭用户可见 continuation，但不会删除或改写 durable facts |
 
 真正降级到不理解新 schema 的旧版本前，必须显式 export 并验证。Migration 失败不能删除 legacy JSONL；数据库版本比当前程序新时必须 fail closed。
