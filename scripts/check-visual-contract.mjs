@@ -71,7 +71,7 @@ const THEMES = ['light', 'dark'];
 // capture a third of the size of its longhand equivalent. Computed
 // width/height are omitted because the recorded rect already carries the
 // used box, and it also reflects transforms and flex stretching.
-const PROPERTIES = [
+export const PROPERTIES = [
   'display',
   'position',
   'inset',
@@ -117,7 +117,7 @@ const PROPERTIES = [
 // `auto / auto / auto / auto`) and those entries never matched once, so the
 // properties they were meant to suppress appeared on all 3,964 records.
 // `findDeadOmissionRules` below fails the run if that regresses.
-const INITIAL_VALUES = {
+export const INITIAL_VALUES = {
   position: 'static',
   inset: 'auto',
   zIndex: 'auto',
@@ -129,7 +129,6 @@ const INITIAL_VALUES = {
   borderStyle: 'none',
   borderRadius: '0px',
   boxShadow: 'none',
-  textAlign: 'start',
   backgroundColor: 'rgba(0, 0, 0, 0)',
   backgroundImage: 'none',
   alignItems: 'normal',
@@ -139,7 +138,15 @@ const INITIAL_VALUES = {
   gap: 'normal',
   gridArea: 'auto',
 };
-const INHERITED_PROPERTIES = [
+// Every property here that CSS inherits, and none that it does not. A CSS-
+// inherited property in PROPERTIES but missing from this list is the bug
+// class that shipped twice: each descendant re-records the ancestor's value,
+// so one container change prints as N descendant lines and eats the print
+// limit. An inherited property must not also appear in INITIAL_VALUES —
+// "absent" has to mean exactly one thing (equal to the nearest recorded
+// ancestor), or a reader cannot recover the value. Both rules are pinned by
+// check-visual-contract.test.mjs.
+export const INHERITED_PROPERTIES = [
   'cursor',
   'pointerEvents',
   'fontFamily',
@@ -147,6 +154,7 @@ const INHERITED_PROPERTIES = [
   'fontWeight',
   'lineHeight',
   'color',
+  'textAlign',
 ];
 
 const CAPTURE_EXPR = `(() => {
@@ -192,6 +200,14 @@ const CAPTURE_EXPR = `(() => {
     if (el.matches(DECORATION)) return;
     const rect = el.getBoundingClientRect();
     const style = getComputedStyle(el);
+    // Opacity multiplies down the tree and is not inherited: every descendant
+    // of an opacity:0 element reports its own opacity as 1 and a non-zero
+    // rect, yet nothing beneath can paint. Without this prune the collapsed
+    // session panel put 105 invisible records into the chat capture, and a
+    // style change inside it would read as a visual diff on pixels that never
+    // change. visibility:hidden does NOT prune — a descendant can restore
+    // visibility:visible and genuinely paint.
+    if (Number.parseFloat(style.opacity) === 0) return;
     const ownInherited = {};
     for (const property of INHERITED) ownInherited[property] = roundPx(style[property]);
     // Only elements a reviewer could see. An invisible element that stays
@@ -201,8 +217,7 @@ const CAPTURE_EXPR = `(() => {
       rect.width > 0 &&
       rect.height > 0 &&
       style.visibility !== 'hidden' &&
-      style.display !== 'none' &&
-      Number.parseFloat(style.opacity) > 0;
+      style.display !== 'none';
     if (visible) {
       const record = {
         path,
@@ -290,16 +305,21 @@ const SALVAGED_ANCHORS = [
     route: 'chat',
     anchor: 'maka-composer-inner',
   },
+  // Route mcp-hub, not chat: the chat fixture keeps the session panel
+  // collapsed, where these rows sit under an opacity:0 ancestor. Before the
+  // capture pruned invisible subtrees, the anchors "matched" phantom records
+  // there — presence without a single visible pixel. The mcp-hub fixture
+  // opens the sidebar, so the rows it watches actually paint.
   {
     commit: '9aad59740',
     regression: 'every session timestamp stacked above its title',
-    route: 'chat',
+    route: 'mcp-hub',
     anchor: 'maka-list-row-meta',
   },
   {
     commit: '3dbd68ca7',
     regression: 'sidebar nav rows had two competing styling authorities',
-    route: 'chat',
+    route: 'mcp-hub',
     anchor: 'maka-list-row',
   },
   {

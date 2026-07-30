@@ -11,6 +11,9 @@ import {
   checkSalvagedAnchors,
   diffRecords,
   findDeadOmissionRules,
+  INHERITED_PROPERTIES,
+  INITIAL_VALUES,
+  PROPERTIES,
   summarise,
 } from './check-visual-contract.mjs';
 
@@ -93,6 +96,55 @@ describe('summarise', () => {
       { kind: 'added', path: 'c' },
     ];
     assert.equal(summarise(changes, 10).text, '2 changed, 1 added');
+  });
+});
+
+describe('property tables', () => {
+  // Which properties CSS itself inherits, among those worth capturing. This
+  // is a spec fact, restated here so the tables cannot drift from it: the
+  // harness shipped `textAlign` in PROPERTIES but not INHERITED_PROPERTIES,
+  // and 79–85% of all records re-recorded an ancestor's value — one container
+  // change printed as N descendant lines and ate the 40-line print limit.
+  // `findDeadOmissionRules` cannot see this class (it only checks
+  // INITIAL_VALUES keys), so it is pinned statically instead.
+  const CSS_INHERITED = new Set([
+    'color',
+    'cursor',
+    'fontFamily',
+    'fontSize',
+    'fontStyle',
+    'fontWeight',
+    'letterSpacing',
+    'lineHeight',
+    'pointerEvents',
+    'textAlign',
+    'textTransform',
+    'visibility',
+    'whiteSpace',
+    'wordBreak',
+  ]);
+
+  it('routes every CSS-inherited property through the inherited omission', () => {
+    for (const property of PROPERTIES) {
+      if (!CSS_INHERITED.has(property)) continue;
+      assert.ok(
+        INHERITED_PROPERTIES.includes(property),
+        `${property} is CSS-inherited but absent from INHERITED_PROPERTIES: every descendant will re-record its ancestor's value`,
+      );
+    }
+  });
+
+  it('never gives an inherited property an initial-value rule too', () => {
+    // "Absent" must mean exactly one thing. If an inherited property also had
+    // an INITIAL_VALUES entry, a record could omit it for either reason, and
+    // a reader recovering the value from the nearest recorded ancestor would
+    // recover the wrong one.
+    for (const property of INHERITED_PROPERTIES) {
+      assert.ok(
+        !(property in INITIAL_VALUES),
+        `${property} is in both INHERITED_PROPERTIES and INITIAL_VALUES`,
+      );
+    }
   });
 });
 
