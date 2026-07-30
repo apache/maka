@@ -1085,11 +1085,11 @@ export function buildComputerUseTools(deps: {
                                   : { pages: input.scroll_amount / SCROLL_UNITS_PER_PAGE }),
                                 elementIdentity: record.elements?.get(input.element_id)?.identity,
                               }
-                          : {
-                              type: 'press_key' as const,
-                              observationId: input.observation_id,
-                              key: input.text,
-                            }),
+                            : {
+                                type: 'press_key' as const,
+                                observationId: input.observation_id,
+                                key: input.text,
+                              }),
                     };
             const binding = claimBoundAction(record, input.observation_id, modelAction);
             if ('rejection' in binding) return bindingFailure(binding.rejection);
