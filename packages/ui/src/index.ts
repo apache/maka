@@ -172,3 +172,6 @@ export {
   type FadeRingState,
   type FadeBatch,
 } from './stream-fade.js';
+
+// #1565 PR 2: Astryx i18n adapter — appended, never reordered (barrel freeze).
+export * from './astryx-i18n.js';

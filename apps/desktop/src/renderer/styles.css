@@ -2,6 +2,27 @@
 @import "tailwindcss";
 @source "../../../../packages/ui/src";
 
+/* Astryx substrate (#1565 PR 2). Each import is wrapped in its astryx.*
+   layer — see cascade-layers.css for why unlayered Astryx would invert the
+   whole cascade.
+
+   Three Astryx sheets are deliberately NOT imported yet — each targets bare
+   elements or shadows product tokens, which no layer order can bury (a rule
+   wins wherever no product rule competes; a custom property on the Theme
+   wrapper wins by tree distance):
+   - reset.css (cursor on buttons, small/code sizing) replaces Tailwind
+     preflight and lands with the slice that removes it (PR 12).
+   - theme-neutral/theme.css declares its tokens on the Theme wrapper AND
+     ships @scope'd element typography (:where(p), :where(h1..h6) take the
+     Astryx font). It lands with the first component consumer (PR 3) —
+     preferably as an `astryx theme build` of a Maka-named theme so the
+     element-typography block is dropped at the source, not neutralized
+     downstream.
+   - tailwind-theme.css: the existing @theme inline bridge below stays the
+     single source for utility tokens until Tailwind leaves in PR 12.
+   Layer slots for all of them are already reserved in cascade-layers.css. */
+@import "@astryxdesign/core/astryx.css" layer(astryx.components);
+
 /* Bundled Geist fallbacks; maka-tokens.css owns the product font stacks. */
 @import "@fontsource-variable/geist";
 @import "@fontsource-variable/geist-mono";
@@ -57,6 +78,7 @@
 @import "./styles/prompt-rail.css" layer(maka.legacy);
 @import "./styles/quote-chip.css" layer(maka.legacy);
 @import "./styles/quote-side-panel.css" layer(maka.legacy);
+@import "./styles/astryx-mount.css" layer(maka.legacy);
 
 @theme inline {
   --color-background: var(--background);

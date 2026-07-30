@@ -3,7 +3,7 @@ import { Card } from '@maka/ui';
 
 export function SettingsRows({ className, children }: { className?: string; children: ReactNode }) {
   return (
-    <Card className={className ? `settingsRows ${className}` : 'settingsRows'}>
+    <Card className={className ? `settingsRows ${className}` : 'settingsRows'} data-maka-contract="settings-rows">
       {children}
     </Card>
   );

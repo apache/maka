@@ -38,6 +38,8 @@
     "smoke:browser": "npm --workspace @maka/core run build && npm --workspace @maka/runtime run build && npm --workspace @maka/computer-use run build && npm run build:main && electron scripts/browser-observe-act-smoke.mjs"
   },
   "dependencies": {
+    "@astryxdesign/core": "0.1.9",
+    "@astryxdesign/theme-neutral": "0.1.9",
     "@base-ui/react": "^1.5.0",
     "@jackwener/opencli": "1.8.4",
     "@maka/computer-use": "0.1.0",

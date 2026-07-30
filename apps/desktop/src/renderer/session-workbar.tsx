@@ -61,6 +61,7 @@ export function SessionWorkbar(props: {
   return (
     <aside
       className="maka-session-workbar"
+      data-maka-contract="session-workbar"
       aria-label={copy.ariaLabel}
       style={{ '--maka-session-workbar-width': `${props.width}px` } as CSSProperties}
     >
@@ -68,14 +69,14 @@ export function SessionWorkbar(props: {
         <PrimitiveTabsList variant="underline" className="maka-session-workbar-tab-list" aria-label={copy.sectionsAriaLabel}>
           <PrimitiveTabsTrigger value="tasks">
             <span>{copy.tasks}</span>
-            <span className="maka-session-workbar-count">{taskCount}</span>
+            <span className="maka-session-workbar-count" data-maka-contract="session-workbar-count">{taskCount}</span>
           </PrimitiveTabsTrigger>
           <PrimitiveTabsTrigger value="browser" disabled={!props.browserLive}>
             <span>{copy.browser}</span>
           </PrimitiveTabsTrigger>
           <PrimitiveTabsTrigger value="files">
             <span>{copy.files}</span>
-            <span className="maka-session-workbar-count">{artifactCount}</span>
+            <span className="maka-session-workbar-count" data-maka-contract="session-workbar-count">{artifactCount}</span>
           </PrimitiveTabsTrigger>
           {props.quote && (
             <PrimitiveTabsTrigger value="quote">

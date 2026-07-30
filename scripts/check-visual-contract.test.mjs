@@ -13,6 +13,7 @@ import {
   findDeadOmissionRules,
   INHERITED_PROPERTIES,
   INITIAL_VALUES,
+  partitionChanges,
   PROPERTIES,
   summarise,
 } from './check-visual-contract.mjs';
@@ -187,23 +188,82 @@ describe('findDeadOmissionRules', () => {
 });
 
 describe('checkSalvagedAnchors', () => {
-  const anchors = [{ commit: 'abc', regression: 'r', route: 'chat', anchor: 'maka-list-row' }];
+  const anchors = [{ commit: 'abc', regression: 'r', route: 'chat', anchor: 'list-row' }];
   const captureKey = 'chat.light.darwin';
 
-  it('accepts an exact class token', () => {
-    const captures = new Map([[captureKey, [record('a', { classes: 'maka-list-row other' })]]]);
+  it('accepts a record carrying the exact hook', () => {
+    const captures = new Map([[captureKey, [record('a', { contract: 'list-row' })]]]);
     assert.deepEqual(checkSalvagedAnchors(captures, anchors), []);
   });
 
-  it('rejects a longer class that merely contains the anchor', () => {
-    // `maka-list-row-meta` is a different element; a substring match would
-    // report the anchor as watched by something that is not the element the
+  it('rejects a different hook that merely contains the anchor', () => {
+    // `list-row-meta` is a different element; a substring match would report
+    // the anchor as watched by something that is not the element the
     // regression happened on.
-    const captures = new Map([[captureKey, [record('a', { classes: 'maka-list-row-meta' })]]]);
+    const captures = new Map([[captureKey, [record('a', { contract: 'list-row-meta' })]]]);
+    assert.equal(checkSalvagedAnchors(captures, anchors).length, 1);
+  });
+
+  it('does not accept a product class in place of the hook', () => {
+    // Anchors moved off product classes on purpose: the class dies with the
+    // slice that migrates the component, the hook survives it.
+    const captures = new Map([[captureKey, [record('a', { classes: 'maka-list-row' })]]]);
     assert.equal(checkSalvagedAnchors(captures, anchors).length, 1);
   });
 
   it('skips routes that were not captured this run', () => {
     assert.deepEqual(checkSalvagedAnchors(new Map(), anchors), []);
+  });
+});
+
+describe('declared scopes', () => {
+  it('never reports harness bookkeeping as a visual diff', () => {
+    // PR 2 adds the hooks while `main` has none: if `contract` or `scope`
+    // were compared, the hook rollout itself would break the zero-diff gate.
+    const before = [record('body>div'), record('body>div>span')];
+    const after = [
+      record('body>div', { contract: 'session-workbar', scope: 'workbar' }),
+      record('body>div>span', { scope: 'workbar' }),
+    ];
+    assert.deepEqual(diffRecords(before, after), []);
+  });
+
+  it('attributes a changed element to the scope that landed it', () => {
+    const before = [record('body>div', { color: 'red', scope: 'legacy-button' })];
+    const after = [record('body>div', { color: 'blue', scope: 'button' })];
+    const changes = diffRecords(before, after);
+    assert.equal(changes[0].scope, 'button');
+  });
+
+  it('keeps the base attribution for a removed element', () => {
+    // The migrated side no longer has the element, so only the base capture
+    // knows which scope claimed it — the legacy selector the slice declared.
+    const changes = diffRecords([record('body>div', { scope: 'button' })], []);
+    assert.equal(changes[0].kind, 'removed');
+    assert.equal(changes[0].scope, 'button');
+  });
+
+  it('splits declared changes from undeclared ones', () => {
+    const changes = [
+      { kind: 'changed', path: 'a', scope: 'button' },
+      { kind: 'added', path: 'b', scope: 'badge' },
+      { kind: 'changed', path: 'c' },
+    ];
+    const { inScope, outOfScope } = partitionChanges(changes, ['button']);
+    assert.deepEqual(
+      inScope.map((change) => change.path),
+      ['a'],
+    );
+    assert.deepEqual(
+      outOfScope.map((change) => change.path),
+      ['b', 'c'],
+    );
+  });
+
+  it('treats an empty declaration as the zero-diff gate', () => {
+    const changes = [{ kind: 'changed', path: 'a', scope: 'button' }];
+    const { inScope, outOfScope } = partitionChanges(changes, []);
+    assert.equal(inScope.length, 0);
+    assert.equal(outOfScope.length, 1);
   });
 });

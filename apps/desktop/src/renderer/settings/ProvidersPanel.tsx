@@ -181,7 +181,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
 
   if (loading) {
     return (
-      <div className="providersPanel providersLoading" aria-busy="true" aria-label={copy.loadingAria}>
+      <div className="providersPanel providersLoading" data-maka-contract="providers-panel" aria-busy="true" aria-label={copy.loadingAria}>
         <div className="providersLoadingStrip">
           <div className="maka-skeleton maka-skeleton-line" data-size="lg" style={{ width: '34%' }} />
           <div className="maka-skeleton maka-skeleton-line" data-size="sm" style={{ width: '52%' }} />
@@ -196,7 +196,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   const createType = dialogState?.kind === 'create' ? dialogState.providerType : null;
 
   return (
-    <div ref={providersPanelRef} className="providersPanel providersMarketPanel">
+    <div ref={providersPanelRef} className="providersPanel providersMarketPanel" data-maka-contract="providers-panel">
       <section className="providerMarket">
         <div className="enabledStrip" aria-label={copy.connectionsAria}>
           <SectionHeader

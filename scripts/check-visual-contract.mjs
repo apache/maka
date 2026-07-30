@@ -3,6 +3,7 @@
 //   node scripts/check-visual-contract.mjs                  # compare main → working tree
 //   node scripts/check-visual-contract.mjs --against <ref>  # a different base
 //   node scripts/check-visual-contract.mjs --route chat --theme dark --platform win32
+//   node scripts/check-visual-contract.mjs --scopes <file>  # declared-subtree mode
 //
 // One command captures BOTH sides and diffs them in memory: the base ref is
 // checked out into a cached temporary worktree with its own `npm ci` (see
@@ -56,32 +57,10 @@ import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { CONTRACT_HOOK, PLATFORMS, ROUTES, THEMES } from './contract-routes.mjs';
 import { withFixtureWindow } from './fixture-window.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-
-// The five representative routes from #1565. The issue names product routes;
-// these are the MAKA_E2E_FIXTURE scenarios that actually open them on main —
-// there is no scenario literally named "settings-providers" or "chat".
-// `ready` is the element that means "this surface has rendered". Without it
-// the only alternative is a fixed sleep, which captures a half-mounted route
-// as a clean one on a slow machine — and writes that into the baseline.
-const ROUTES = [
-  // Chat session with the task workbar open.
-  { id: 'chat', scenario: 'turn-narrative', ready: '.maka-session-workbar' },
-  { id: 'settings-general', scenario: 'settings-general', ready: '.settingsRows' },
-  // Providers live under the 模型 settings section.
-  { id: 'settings-providers', scenario: 'provider-workspace', ready: '.providersPanel' },
-  { id: 'mcp-hub', scenario: 'module-mcp', ready: '.maka-module-main-header' },
-  // Empty profile, first launch.
-  { id: 'onboarding', scenario: 'first-run', ready: '.maka-onboarding-surface' },
-];
-const THEMES = ['light', 'dark'];
-// #1565 asks for darwin AND win32: the per-OS CSS is keyed off
-// `html[data-os]`, so a regression under the win32 cascade is invisible in a
-// darwin-only capture for the whole migration. The fixture platform override
-// flips `data-os` through the production path on any host.
-const PLATFORMS = ['darwin', 'win32'];
 
 // #1565 mandates the alignment properties (alignItems/justifyContent/gap/
 // gridArea) alongside the usual box and paint set: flex and grid misalignment
@@ -202,10 +181,58 @@ export const INHERITED_PROPERTIES = [
   'textAlign',
 ];
 
-const CAPTURE_EXPR = `(() => {
+// The capture is generated per run: declared scopes are embedded so both
+// sides mark each element with the migration scope that owns it. A scope
+// declares selectors for BOTH sides of a swap — the legacy element it
+// replaces (matched in the base capture) and the migrated element it lands
+// (matched in the current capture) — which is what lets removed, added and
+// changed records all be attributed to the scope that claimed them.
+const captureExpr = (scopes = []) => `(() => {
   const PROPERTIES = ${JSON.stringify(PROPERTIES)};
   const INITIAL_VALUES = ${JSON.stringify(INITIAL_VALUES)};
   const INHERITED = new Set(${JSON.stringify(INHERITED_PROPERTIES)});
+  const SCOPES = ${JSON.stringify(scopes)};
+  const CONTRACT_HOOK = ${JSON.stringify(CONTRACT_HOOK)};
+  // A scope that matches the app root would "declare" the entire UI, which
+  // is indistinguishable from disabling the contract. #1565 allows the
+  // chrome slice to declare only titlebar / sidebar / rail, never the shell
+  // root; this is the mechanical floor under that rule. Invalid selectors
+  // are violations too — a typo must not silently declare nothing.
+  const scopeViolations = [];
+  const rootTargets = [
+    document.documentElement,
+    document.body,
+    document.getElementById('root'),
+  ].filter(Boolean);
+  for (const scope of SCOPES) {
+    for (const selector of scope.selectors) {
+      let valid = true;
+      try {
+        document.documentElement.matches(selector);
+      } catch {
+        valid = false;
+      }
+      if (!valid) {
+        scopeViolations.push({ scope: scope.name, selector, reason: 'invalid selector' });
+        continue;
+      }
+      if (rootTargets.some((el) => el.matches(selector))) {
+        scopeViolations.push({ scope: scope.name, selector, reason: 'matches the app root' });
+      }
+    }
+  }
+  const scopeOf = (el) => {
+    for (const scope of SCOPES) {
+      for (const selector of scope.selectors) {
+        try {
+          if (el.matches(selector)) return scope.name;
+        } catch {
+          // Already reported in scopeViolations.
+        }
+      }
+    }
+    return null;
+  };
   // Stop the clock before reading a single style. transform is sampled, and a
   // running spinner serialises a different matrix at every phase — the two
   // sides are captured seconds apart, so animated values would diff on time,
@@ -287,8 +314,13 @@ const CAPTURE_EXPR = `(() => {
   // cannot see: flip that wrapper's color and the child really repaints while
   // the capture stays byte-identical. Comparing against the nearest recorded
   // ancestor keeps every omission recoverable by a reader of the file.
-  const walk = (el, path, inherited) => {
+  const walk = (el, path, inherited, scope) => {
     if (el.matches(DECORATION)) return;
+    // The nearest ancestor-or-self that a declared scope claims. Portal
+    // content is attributed the same way: a portal root that carries the
+    // scope's identity hook claims its whole subtree, even though that
+    // subtree is nowhere near the trigger in the DOM.
+    const ownScope = scopeOf(el) ?? scope;
     const rect = el.getBoundingClientRect();
     const style = getComputedStyle(el);
     // Opacity multiplies down the tree and is not inherited: every descendant
@@ -328,6 +360,11 @@ const CAPTURE_EXPR = `(() => {
         .filter((name) => name.startsWith('maka-') || /[A-Z]/.test(name))
         .slice(0, 3);
       if (named.length > 0) record.classes = named.join(' ');
+      // Harness bookkeeping, not visual properties: diffRecords skips both
+      // keys, so adding or renaming a hook is never itself a visual diff.
+      const contract = el.getAttribute(CONTRACT_HOOK);
+      if (contract) record.contract = contract;
+      if (ownScope) record.scope = ownScope;
       writeStyles(style, record, inherited);
       out.push(record);
       // Painted pseudo-elements. A cascade migration can flip a decoration
@@ -341,6 +378,7 @@ const CAPTURE_EXPR = `(() => {
         if (ps.visibility === 'hidden' || Number.parseFloat(ps.opacity) === 0) continue;
         const pseudoRecord = { path: path + pseudo };
         if (ps.content !== '""') pseudoRecord.content = ps.content.slice(0, 40);
+        if (ownScope) pseudoRecord.scope = ownScope;
         writeStyles(ps, pseudoRecord, ownInherited);
         out.push(pseudoRecord);
       }
@@ -349,17 +387,64 @@ const CAPTURE_EXPR = `(() => {
     // hold visible children (common for absolutely positioned overlays). Only
     // a recorded element updates the inherited baseline (see walk above).
     const nextInherited = visible ? ownInherited : inherited;
-    const children = el.children;
-    const counts = new Map();
-    for (const child of children) {
+    walkChildren(el, path, nextInherited, ownScope, new Map());
+  };
+  // Path identity follows the BOX tree, not the DOM tree. A display:contents
+  // element generates no box: inserting one moves nothing on screen, so it
+  // must not re-key every descendant path into a wall of removed/added pairs
+  // (Astryx's Theme mounts exactly such a wrapper). Its children number among
+  // their layout siblings; the wrapper itself has no rect and no record. Any
+  // inherited value it changes still shows up honestly — each child's own
+  // computed style is compared against the nearest RECORDED ancestor, which
+  // sits above the boxless wrapper.
+  const walkChildren = (el, path, inherited, scope, counts) => {
+    for (const child of el.children) {
+      if (getComputedStyle(child).display === 'contents') {
+        const childScope = scopeOf(child) ?? scope;
+        walkChildren(child, path, inherited, childScope, counts);
+        continue;
+      }
       const tag = child.tagName.toLowerCase();
       const index = (counts.get(tag) ?? 0) + 1;
       counts.set(tag, index);
-      walk(child, path + '>' + tag + (index > 1 ? ':' + index : ''), nextInherited);
+      walk(child, path + '>' + tag + (index > 1 ? ':' + index : ''), inherited, scope);
     }
   };
-  walk(document.body, 'body', {});
-  return JSON.stringify({ records: out, omission: { sampled, hits } });
+  walk(document.body, 'body', {}, null);
+  // Non-vacuous mount proof (#1565 PR 2): count the rules that actually sit
+  // in an astryx.* cascade layer. Zero means Astryx CSS never loaded — and a
+  // zero-diff pass in that state proves nothing, because the thing being
+  // buried under maka.legacy is not there. Counted via CSSOM so a bundler
+  // that drops the layer() wrapper (which would ALSO invert the cascade)
+  // fails this probe instead of passing it harder.
+  let astryxLayerRules = 0;
+  const countLayers = (rules) => {
+    for (const rule of rules) {
+      let inner;
+      try {
+        inner = rule.cssRules;
+      } catch {
+        continue;
+      }
+      if (rule instanceof CSSLayerBlockRule && /^astryx(\\.|$)/.test(rule.name)) {
+        astryxLayerRules += inner ? inner.length : 0;
+      }
+      if (inner) countLayers(inner);
+    }
+  };
+  for (const sheet of document.styleSheets) {
+    try {
+      countLayers(sheet.cssRules);
+    } catch {
+      // Cross-origin sheet: nothing of ours lives there.
+    }
+  }
+  return JSON.stringify({
+    records: out,
+    omission: { sampled, hits },
+    scopeViolations,
+    astryxLayerRules,
+  });
 })()`;
 
 // #1565 asks for the mega-branch's late "fix cascade / fix click" commits to
@@ -380,18 +465,22 @@ const CAPTURE_EXPR = `(() => {
 //
 // One is only partly covered: fd38a37ce (composer frame jumping on focus) is
 // a focus-state regression, and this harness captures the resting state.
+// Anchors are `data-maka-contract` hook names, not product classes: the
+// classes these regressions happened on are exactly what the slices delete,
+// and an anchor that dies with the class it watches reports "the harness
+// stopped watching" for every migration that behaves correctly.
 const SALVAGED_ANCHORS = [
   {
     commit: 'be5e69584',
     regression: 'titlebar clusters wrapped onto a second row',
     route: 'chat',
-    anchor: 'maka-shell-topbar-rail',
+    anchor: 'shell-topbar-rail',
   },
   {
     commit: 'fd38a37ce',
     regression: 'composer frame jumped when focused (resting state only)',
     route: 'chat',
-    anchor: 'maka-composer-inner',
+    anchor: 'composer-inner',
   },
   // Route mcp-hub, not chat: the chat fixture keeps the session panel
   // collapsed, where these rows sit under an opacity:0 ancestor. Before the
@@ -402,39 +491,36 @@ const SALVAGED_ANCHORS = [
     commit: '9aad59740',
     regression: 'every session timestamp stacked above its title',
     route: 'mcp-hub',
-    anchor: 'maka-list-row-meta',
+    anchor: 'list-row-meta',
   },
   {
     commit: '3dbd68ca7',
     regression: 'sidebar nav rows had two competing styling authorities',
     route: 'mcp-hub',
-    anchor: 'maka-list-row',
+    anchor: 'list-row',
   },
   {
     commit: '9d20a9396',
     regression: "task ledger's recent-count collided with its label",
     route: 'chat',
-    anchor: 'maka-session-workbar-count',
+    anchor: 'session-workbar-count',
   },
   {
     commit: 'be1406705',
     regression: 'settings content column painted over the nav rail',
     route: 'settings-general',
-    anchor: 'settingsSidebar',
+    anchor: 'settings-sidebar',
   },
 ];
 
-// Exact class-token match, not substring: `maka-list-row` as a substring is
-// satisfied by `maka-list-row-meta`, so a loose check would report an anchor
-// as watched by an element that is not the one the regression happened on.
+// Exact hook match: `list-row` must not be satisfied by `list-row-meta`,
+// which is a different element than the one the regression happened on.
 export function checkSalvagedAnchors(captures, anchors = SALVAGED_ANCHORS) {
   const missing = [];
   for (const entry of anchors) {
     const records = captures.get(`${entry.route}.light.darwin`);
     if (!records) continue;
-    const present = records.some((record) =>
-      (record.classes ?? '').split(' ').includes(entry.anchor),
-    );
+    const present = records.some((record) => record.contract === entry.anchor);
     if (!present) missing.push(entry);
   }
   return missing;
@@ -461,7 +547,14 @@ export function findDeadOmissionRules(omission, initialValues = INITIAL_VALUES) 
 }
 
 export function parseArgs(argv) {
-  const args = { against: 'main', routes: null, themes: null, platforms: null, help: false };
+  const args = {
+    against: 'main',
+    routes: null,
+    themes: null,
+    platforms: null,
+    scopes: null,
+    help: false,
+  };
   const value = (index, flag) => {
     const next = argv[index];
     if (next === undefined || next.startsWith('--')) {
@@ -486,6 +579,7 @@ export function parseArgs(argv) {
   for (let i = 2; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--against') args.against = value(++i, arg);
+    else if (arg === '--scopes') args.scopes = value(++i, arg);
     else if (arg === '--route') (args.routes ??= []).push(oneOf(++i, arg, routeIds));
     else if (arg === '--theme') (args.themes ??= []).push(oneOf(++i, arg, THEMES));
     else if (arg === '--platform') (args.platforms ??= []).push(oneOf(++i, arg, PLATFORMS));
@@ -632,31 +726,62 @@ export function diffRecords(baseline, current) {
   const before = byPath(baseline);
   const after = byPath(current);
   const changes = [];
+  // Harness bookkeeping, not visual properties: `contract` names the hook,
+  // `scope` names the migration scope that claimed the element. Adding a hook
+  // or declaring a scope must never itself read as a visual diff.
+  const BOOKKEEPING = new Set(['path', 'contract', 'scope']);
   for (const [path, record] of before) {
     const next = after.get(path);
     if (!next) {
-      changes.push({ kind: 'removed', path, label: record.label });
+      changes.push({ kind: 'removed', path, label: record.label, scope: record.scope });
       continue;
     }
     const properties = [];
     for (const key of new Set([...Object.keys(record), ...Object.keys(next)])) {
-      if (key === 'path') continue;
+      if (BOOKKEEPING.has(key)) continue;
       const a = JSON.stringify(record[key]);
       const b = JSON.stringify(next[key]);
       if (a !== b) properties.push({ property: key, before: record[key], after: next[key] });
     }
     if (properties.length > 0) {
-      changes.push({ kind: 'changed', path, label: record.label ?? next.label, properties });
+      changes.push({
+        kind: 'changed',
+        path,
+        label: record.label ?? next.label,
+        // The current side's attribution wins: a swapped element is claimed
+        // by the scope that landed it, not the one that used to own it.
+        scope: next.scope ?? record.scope,
+        properties,
+      });
     }
   }
   for (const [path, record] of after) {
-    if (!before.has(path)) changes.push({ kind: 'added', path, label: record.label });
+    if (!before.has(path)) {
+      changes.push({ kind: 'added', path, label: record.label, scope: record.scope });
+    }
   }
   // `changed` first: those are diffs on elements that still exist, which is
   // the signal. A structural edit produces a flood of removed/added that would
   // otherwise push every real property change past the print limit.
   const rank = { changed: 0, removed: 1, added: 2 };
   return changes.sort((a, b) => rank[a.kind] - rank[b.kind]);
+}
+
+/**
+ * Split a diff into the changes a slice declared and the ones it did not.
+ * The declared side is judged against the design package by a reviewer; the
+ * undeclared side fails the run. Zero-diff is the special case where the
+ * declared set is empty — then every change is out of scope, which is
+ * exactly the PR 1/PR 2 gate.
+ */
+export function partitionChanges(changes, declaredNames) {
+  const declared = new Set(declaredNames);
+  const inScope = [];
+  const outOfScope = [];
+  for (const change of changes) {
+    (change.scope && declared.has(change.scope) ? inScope : outOfScope).push(change);
+  }
+  return { inScope, outOfScope };
 }
 
 /**
@@ -693,9 +818,14 @@ async function main() {
   const args = parseArgs(process.argv);
   if (args.help) {
     console.log(
-      `Usage: check-visual-contract.mjs [--against ref] [--route id]... [--theme light|dark]... [--platform darwin|win32]...\n\n` +
+      `Usage: check-visual-contract.mjs [--against ref] [--scopes file] [--route id]... [--theme light|dark]... [--platform darwin|win32]...\n\n` +
         `Builds the base ref (cached, temp worktree) and the working tree, captures\n` +
         `every route x theme x platform from both builds, and diffs them in memory.\n\n` +
+        `--scopes points at a JSON file declaring the subtrees a slice migrates:\n` +
+        `  { "slice": "pr3-atoms", "scopes": [ { "name": "button", "selectors": ["..."] } ] }\n` +
+        `Each scope lists selectors for the legacy element it replaces AND the\n` +
+        `migrated element it lands. Diffs inside a declared scope are reported for\n` +
+        `review; any diff outside them fails. Without --scopes the gate is zero diff.\n\n` +
         `Routes: ${ROUTES.map((route) => route.id).join(', ')}\n`,
     );
     return;
@@ -703,6 +833,32 @@ async function main() {
   const routes = args.routes ? ROUTES.filter((route) => args.routes.includes(route.id)) : ROUTES;
   const themes = args.themes ?? THEMES;
   const platforms = args.platforms ?? PLATFORMS;
+  // Fail closed on a malformed scope file: a scope that silently loads as
+  // empty would demote the run to zero-diff mode and fail on every declared
+  // change, which at least errs loud — but a scope missing its selectors
+  // would declare nothing and fail the same way for a confusing reason.
+  let scopes = null;
+  if (args.scopes) {
+    const parsed = JSON.parse(await readFile(args.scopes, 'utf8'));
+    if (
+      !Array.isArray(parsed.scopes) ||
+      parsed.scopes.length === 0 ||
+      parsed.scopes.some(
+        (scope) =>
+          typeof scope.name !== 'string' ||
+          !Array.isArray(scope.selectors) ||
+          scope.selectors.length === 0 ||
+          scope.selectors.some((selector) => typeof selector !== 'string'),
+      )
+    ) {
+      console.error(
+        `[visual-contract] ${args.scopes} must be { "slice": string, "scopes": [{ "name": string, "selectors": [string, ...] }, ...] }`,
+      );
+      process.exit(2);
+    }
+    scopes = parsed.scopes;
+  }
+  const expr = captureExpr(scopes ?? []);
   const base = await ensureBaseBuild(args.against);
   console.log('building the working tree');
   await buildDesktop(ROOT);
@@ -733,7 +889,7 @@ async function main() {
                     `renderer never reached data-os=${platform} theme=${theme}; the capture would have measured the wrong cascade`,
                   );
                 });
-              return JSON.parse(await evaluate(CAPTURE_EXPR));
+              return JSON.parse(await evaluate(expr));
             },
           );
         let base;
@@ -754,6 +910,14 @@ async function main() {
         const baseRecords = base.records;
         const records = current.records;
         captures.set(`${route.id}.${theme}.${platform}`, records);
+        // Current side only: the base predates the Astryx mount. From PR 2 on,
+        // a working tree with zero astryx-layer rules is a vacuous pass.
+        if (current.astryxLayerRules === 0) {
+          failures += 1;
+          console.log(
+            `FAIL ${key}: no rules under any astryx.* cascade layer — Astryx CSS is not loaded, so a zero diff here is vacuous`,
+          );
+        }
         // An omission rule that never matches silently inflates every record.
         for (const dead of findDeadOmissionRules(current.omission)) {
           failures += 1;
@@ -761,21 +925,47 @@ async function main() {
             `FAIL ${key}: "${dead.property}" never matched its INITIAL_VALUES entry across ${dead.sampled} sampled elements — the entry does not match what Chromium serialises`,
           );
         }
+        // Both sides run the same capture, but the DOMs differ; a scope that
+        // reaches the app root on either side has declared the whole UI.
+        const violations = new Map(
+          [...(base.scopeViolations ?? []), ...(current.scopeViolations ?? [])].map((violation) => [
+            `${violation.scope} ${violation.selector}`,
+            violation,
+          ]),
+        );
+        for (const violation of violations.values()) {
+          failures += 1;
+          console.log(
+            `FAIL ${key}: scope "${violation.scope}" selector ${violation.selector}: ${violation.reason}`,
+          );
+        }
         const changes = diffRecords(baseRecords, records);
-        if (changes.length === 0) {
-          console.log(`ok   ${key} (${records.length} elements)`);
+        const declared = scopes
+          ? partitionChanges(
+              changes,
+              scopes.map((scope) => scope.name),
+            )
+          : null;
+        const failing = declared ? declared.outOfScope : changes;
+        const scopedNote = declared?.inScope.length
+          ? ` (${declared.inScope.length} declared change(s) for review)`
+          : '';
+        if (failing.length === 0) {
+          console.log(`ok   ${key} (${records.length} elements)${scopedNote}`);
           continue;
         }
         failures += 1;
-        const { text, structural } = summarise(changes, baseRecords.length);
-        console.log(`FAIL ${key}: ${text}`);
+        const { text, structural } = summarise(failing, baseRecords.length);
+        console.log(
+          `FAIL ${key}: ${text}${declared ? ' outside the declared scopes' : ''}${scopedNote}`,
+        );
         if (structural) {
           console.log(
             '  note: most of the base capture was replaced rather than changed, which is what inserting or removing a wrapper element looks like — element identity is the path through the tree, so everything below the edit is re-keyed. Compare the surviving `changed` entries; the removed/added pairs are the same elements under new paths.',
           );
         }
-        for (const change of changes.slice(0, 40)) console.log(formatChange(change));
-        if (changes.length > 40) console.log(`  … ${changes.length - 40} more`);
+        for (const change of failing.slice(0, 40)) console.log(formatChange(change));
+        if (failing.length > 40) console.log(`  … ${failing.length - 40} more`);
       }
     }
   }

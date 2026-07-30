@@ -264,7 +264,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   }
 
   return (
-    <main className="maka-main detailPane maka-module-main maka-mcp-page agents-chat-panel" data-module="mcp" aria-label={props.hubHeader?.title ?? 'MCP'}>
+    <main className="maka-main detailPane maka-module-main maka-mcp-page agents-chat-panel" data-maka-contract="module-main" data-module="mcp" aria-label={props.hubHeader?.title ?? 'MCP'}>
       <PageHeader
         className="maka-module-main-header"
         as="h2"

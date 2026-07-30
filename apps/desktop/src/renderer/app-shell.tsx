@@ -33,6 +33,7 @@ import {
   type ComposerHandle,
   type MakaUriDest,
   MakaUriContext,
+  AstryxLocaleProvider,
   LocaleProvider,
   ModuleHubSelector,
   ToastProvider,
@@ -184,17 +185,23 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
 
   return (
     <LocaleProvider locale={uiLocale} override={uiLocaleOverride}>
-      <ToastProvider>
-        <ErrorBoundary locale={uiLocale}>
-          <AppShellContent
-            initialOnboardingSnapshot={initialOnboardingSnapshot}
-            uiLocale={uiLocale}
-            uiLocaleOverride={uiLocaleOverride}
-            setUiLocaleOverride={setUiLocaleOverride}
-            setUiLocalePreference={setUiLocalePreference}
-          />
-        </ErrorBoundary>
-      </ToastProvider>
+      {/* #1565: Astryx's message catalog is keyed off OUR locale context, so it
+          must sit inside LocaleProvider — not at the `<Theme>` level, where
+          `useUiLocale()` throws before anything renders. Still above every
+          Astryx subtree. */}
+      <AstryxLocaleProvider>
+        <ToastProvider>
+          <ErrorBoundary locale={uiLocale}>
+            <AppShellContent
+              initialOnboardingSnapshot={initialOnboardingSnapshot}
+              uiLocale={uiLocale}
+              uiLocaleOverride={uiLocaleOverride}
+              setUiLocaleOverride={setUiLocaleOverride}
+              setUiLocalePreference={setUiLocalePreference}
+            />
+          </ErrorBoundary>
+        </ToastProvider>
+      </AstryxLocaleProvider>
     </LocaleProvider>
   );
 }

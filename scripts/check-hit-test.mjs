@@ -26,15 +26,8 @@
 //
 // Migration-only scaffolding: not in CI, removed in PR 14.
 import { pathToFileURL } from 'node:url';
+import { ROUTES, hook } from './contract-routes.mjs';
 import { withFixtureWindow } from './fixture-window.mjs';
-
-const ROUTES = [
-  { id: 'chat', scenario: 'turn-narrative', ready: '.maka-session-workbar' },
-  { id: 'settings-general', scenario: 'settings-general', ready: '.settingsRows' },
-  { id: 'settings-providers', scenario: 'provider-workspace', ready: '.providersPanel' },
-  { id: 'mcp-hub', scenario: 'module-mcp', ready: '.maka-module-main-header' },
-  { id: 'onboarding', scenario: 'first-run', ready: '.maka-onboarding-surface' },
-];
 
 // #1565's selector list.
 const INTERACTIVE_SELECTOR =
@@ -98,7 +91,7 @@ const PROBE_EXPR = `(() => {
   // migration in a way a class name does not.
   const overlay = [
     ...document.querySelectorAll(
-      '[data-modal="true"], [role=dialog], [role=alertdialog], dialog[open], [role=menu], .maka-search-modal',
+      '[data-modal="true"], [role=dialog], [role=alertdialog], dialog[open], [role=menu], ${hook('search-modal')}',
     ),
   ].find((el) => {
     const box = rectOf(el);

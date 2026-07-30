@@ -809,6 +809,7 @@ const SessionRow = memo(function SessionRow(props: {
   return (
     <div
       className="maka-list-row"
+      data-maka-contract="list-row"
       data-active={active}
       data-editing={editing}
       data-menu-open={menuOpen ? 'true' : undefined}
@@ -861,7 +862,7 @@ const SessionRow = memo(function SessionRow(props: {
               autoComplete="off"
               spellCheck={false}
             />
-            <div className="maka-list-row-meta">{formatSessionMeta(session, locale)}</div>
+            <div className="maka-list-row-meta" data-maka-contract="list-row-meta">{formatSessionMeta(session, locale)}</div>
           </div>
         </form>
       ) : (
@@ -963,7 +964,7 @@ const SessionRow = memo(function SessionRow(props: {
           {shouldShowSessionUnreadDot(session, Boolean(streaming), active) ? (
             <span className="maka-list-row-unread" aria-label={copy.unreadAriaLabel} />
           ) : (
-            <span className="maka-list-row-meta">{formatSessionMeta(session, locale)}</span>
+            <span className="maka-list-row-meta" data-maka-contract="list-row-meta">{formatSessionMeta(session, locale)}</span>
           )}
         </BaseButton>
       )}

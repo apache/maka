@@ -118,11 +118,23 @@ describe('renderer style layer cascade contract', () => {
       '@fontsource-variable/geist-mono',
       './maka-tokens.css',
     ]);
-    const misplaced = imports.filter(({ specifier, layer }) =>
-      contractedUnlayered.has(specifier)
-        ? layer !== null
-        : layer !== 'maka.legacy' && layer !== 'components',
-    );
+    // Astryx ships its sheets unlayered; each import must be pinned into its
+    // astryx.* layer or it outranks maka.legacy and repaints the app (#1565
+    // PR 2). Exact layer per file, not "any astryx.*": reset above components
+    // would flip Astryx's own internal cascade. reset.css (PR 12, with the
+    // Tailwind-preflight retirement) and theme.css (PR 3, with the first
+    // component consumer) are not imported yet; their entries pin the layer
+    // each must land in when it arrives.
+    const contractedAstryx = new Map([
+      ['@astryxdesign/core/reset.css', 'astryx.reset'],
+      ['@astryxdesign/core/astryx.css', 'astryx.components'],
+      ['@astryxdesign/theme-neutral/theme.css', 'astryx.tokens'],
+    ]);
+    const misplaced = imports.filter(({ specifier, layer }) => {
+      if (contractedUnlayered.has(specifier)) return layer !== null;
+      if (contractedAstryx.has(specifier)) return layer !== contractedAstryx.get(specifier);
+      return layer !== 'maka.legacy' && layer !== 'components';
+    });
     assert.deepEqual(
       misplaced.map(({ specifier, layer }) => `${specifier} -> ${layer ?? 'unlayered'}`),
       [],

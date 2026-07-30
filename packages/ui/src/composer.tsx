@@ -674,6 +674,7 @@ export const Composer = forwardRef<
     >
       <div
         className="maka-composer-inner composerInner agents-parchment-paper-surface"
+        data-maka-contract="composer-inner"
         data-streaming={props.streaming ? 'true' : undefined}
       >
         {/* No px on the chip row: `.maka-composer-inner` already pads the card,

@@ -19,7 +19,7 @@ const SessionWorkbar = lazy(() => import('./session-workbar').then((m) => ({ def
 function SessionWorkbarFallback() {
   const copy = getShellCopy(useUiLocale()).app;
   return (
-    <aside className="maka-session-workbar" role="status" aria-busy="true" aria-label={copy.loadingWorkbarLabel}>
+    <aside className="maka-session-workbar" data-maka-contract="session-workbar" role="status" aria-busy="true" aria-label={copy.loadingWorkbarLabel}>
       <div className="maka-lazy-fallback" data-surface="panel">{copy.loadingWorkbar}</div>
     </aside>
   );

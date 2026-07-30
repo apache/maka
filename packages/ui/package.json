@@ -22,6 +22,7 @@
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
+    "@astryxdesign/core": "0.1.9",
     "@base-ui/react": "^1.5.0",
     "@maka/core": "0.1.0",
     "class-variance-authority": "^0.7.1",
