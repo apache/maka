@@ -10,6 +10,7 @@
  */
 
 import { execFile, spawn } from 'node:child_process';
+import { closeElectronApplication } from './electron-lifecycle.mjs';
 import { buildFixtureEnv } from './fixture-env.mjs';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -596,6 +597,24 @@ function escapeMd(value) {
   return String(value).replaceAll('|', '\\|').replaceAll('\n', '<br>');
 }
 
+// Bounded stop through the shared Electron lifecycle owner: SIGTERM as the
+// graceful close, then the same 5s-grace → SIGKILL-the-tree escalation every
+// other launcher uses. A wedged Electron must cost seconds, not a hung gate.
+async function stopElectron(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  await closeElectronApplication(
+    {
+      close: () =>
+        new Promise((resolve) => {
+          child.once('exit', resolve);
+          child.kill('SIGTERM');
+        }),
+      process: () => child,
+    },
+    5_000,
+  );
+}
+
 // Launch-only mode. The checklist and the report belong to the smoke gate;
 // looking at a route in the running app needs neither, and a migration that
 // must stay visually neutral needs to look constantly. Same launch path as
@@ -612,7 +631,7 @@ async function runManualLaunch(args, diagnostics) {
   console.log('[real-window-smoke] close the window or press Ctrl-C to stop it.');
   await new Promise((resolve) => {
     const stop = () => {
-      if (!launchInfo.child.killed) launchInfo.child.kill('SIGTERM');
+      void stopElectron(launchInfo.child);
     };
     process.on('SIGINT', stop);
     process.on('SIGTERM', stop);
@@ -643,24 +662,28 @@ async function main() {
     `[real-window-smoke] scenario=${args.scenario} viewport=${args.width}x${args.height}`,
   );
   const launchInfo = await launchElectron(args, diagnostics);
-  if (launchInfo?.waitForDiagnostics) {
-    await launchInfo.waitForDiagnostics(
-      Number.isFinite(args.diagnosticWaitMs) ? args.diagnosticWaitMs : 1500,
-    );
-    diagnostics.windowDiagnosticObserved = (diagnostics.windowDiagnostics?.length ?? 0) > 0;
-  }
-  const programmaticResults = buildProgrammaticResults(args, diagnostics);
-  const results = args.programmaticOnly
-    ? programmaticResults
-    : [
-        ...programmaticResults,
-        ...(args.unverifiedNote !== null
-          ? buildUnverifiedOsHitTestResults(args)
-          : await promptChecks(args)),
-      ];
-  const report = await writeReport(args, launchInfo, results, diagnostics);
-  if (launchInfo?.child && !launchInfo.child.killed) {
-    launchInfo.child.kill('SIGTERM');
+  let report;
+  try {
+    if (launchInfo?.waitForDiagnostics) {
+      await launchInfo.waitForDiagnostics(
+        Number.isFinite(args.diagnosticWaitMs) ? args.diagnosticWaitMs : 1500,
+      );
+      diagnostics.windowDiagnosticObserved = (diagnostics.windowDiagnostics?.length ?? 0) > 0;
+    }
+    const programmaticResults = buildProgrammaticResults(args, diagnostics);
+    const results = args.programmaticOnly
+      ? programmaticResults
+      : [
+          ...programmaticResults,
+          ...(args.unverifiedNote !== null
+            ? buildUnverifiedOsHitTestResults(args)
+            : await promptChecks(args)),
+        ];
+    report = await writeReport(args, launchInfo, results, diagnostics);
+  } finally {
+    // Reclaim the window even when a later step throws — a failed report
+    // write must not leave a live Electron behind.
+    if (launchInfo?.child) await stopElectron(launchInfo.child);
   }
   process.exit(report.ok ? 0 : 1);
 }

@@ -10,7 +10,16 @@
 // Lives in scripts/ beside fixture-env.mjs for the same reason: a bare-node
 // .mjs harness cannot import a .ts module, while the Playwright suite can
 // import this one. One launch concern, one home.
-import { terminateChildProcessTree } from '@maka/runtime';
+// Resolved from the built dist (the package's entry point). On a fresh clone
+// nothing under packages/ is built yet, and the raw ERR_MODULE_NOT_FOUND from
+// deep inside an import chain (test file → harness → launcher → here) does
+// not say what to do about it.
+const { terminateChildProcessTree } = await import('@maka/runtime').catch((cause) => {
+  throw new Error(
+    "electron-lifecycle needs @maka/runtime's built dist. Run `npm --workspace @maka/runtime run build` (or any desktop build) first.",
+    { cause },
+  );
+});
 
 /**
  * @typedef {{
