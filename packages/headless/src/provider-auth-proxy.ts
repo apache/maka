@@ -547,9 +547,11 @@ function upstreamStartTimedDispatcher(
 ): Dispatcher {
   return dispatcher.compose((dispatch) => (options, handler) => {
     const timed: Dispatcher.DispatchHandler = Object.create(handler);
-    timed.onRequestStart = (controller, context) => {
+    timed.onRequestStart = function (controller, context) {
       requestTelemetry.upstreamStartMs ??= elapsedMs(startedAt, now());
-      return handler.onRequestStart?.(controller, context);
+      // Keep `this` = the wrapper for the delegated call too, so handler state
+      // written across callbacks always lands on one object.
+      return handler.onRequestStart?.call(this, controller, context);
     };
     return dispatch(options, timed);
   });
