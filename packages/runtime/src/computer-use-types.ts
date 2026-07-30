@@ -123,6 +123,25 @@ export type CuSemanticAction =
       elementIdentity?: CuObservedElement['identity'];
     }
   | {
+      /**
+       * Scroll an element rather than a point.
+       *
+       * The coordinate `scroll` aims at a pixel and needs a visible window to
+       * anchor the conversion; this addresses the scroll area itself, which is
+       * the difference that shows when the window is behind something else.
+       * `maka.cu/2` declares it (`{kind:"scroll", direction, pages}`) and
+       * cua-driver advertises `scroll` among its element actions, so both
+       * executors already speak it — this is the member that lets Maka say it.
+       */
+      type: 'scroll_element';
+      observationId: string;
+      elementId: string;
+      direction: 'up' | 'down' | 'left' | 'right';
+      /** Pages, the unit both executors declare. Defaults to one. */
+      pages?: number;
+      elementIdentity?: CuObservedElement['identity'];
+    }
+  | {
       type: 'press_key';
       observationId: string;
       key: string;

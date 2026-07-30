@@ -63,6 +63,15 @@ export const computerParams = z.discriminatedUnion('action', [
     .strict(),
   z
     .object({
+      action: z.literal('scroll_element'),
+      observation_id: z.string().min(1).max(256),
+      element_id: z.string().min(1).max(256),
+      scroll_direction: z.enum(['up', 'down', 'left', 'right']),
+      scroll_amount: z.number().int().min(0).max(100).optional(),
+    })
+    .strict(),
+  z
+    .object({
       action: z.literal('press_key'),
       observation_id: z.string().min(1).max(256),
       text,
@@ -215,6 +224,7 @@ export function adaptToCuAction(args: ComputerParams): CuAction {
     case 'set_value':
     case 'select_text':
     case 'secondary_action':
+    case 'scroll_element':
     case 'press_key':
       throw new Error(`semantic action '${args.action}' requires the semantic backend`);
     case 'screenshot':

@@ -2257,6 +2257,48 @@ describe('cua-driver backend', () => {
     );
   });
 
+  it('scrolls an element through the AX path, not a coordinate', async () => {
+    // The coordinate `scroll` aims at a pixel and needs a visible window to
+    // anchor the conversion. `scroll_element` addresses the scroll area, which
+    // is the difference that shows when the window is behind something else.
+    // Both executors already declared it — `maka.cu/2` as
+    // `{kind:"scroll", direction, pages}`, cua-driver among its element
+    // actions — and Maka's semantic action union was the only place it was
+    // missing.
+    const { backend, logPath } = makeBackend();
+    const sig = new AbortController().signal;
+    const observation = await backend.observeApp!(
+      { app: 'Fixture', windowId: 77, includeScreenshot: false },
+      sig,
+      DEFAULT_RUN_CONTEXT,
+    );
+    const scrolled = await backend.runSemantic!(
+      {
+        type: 'scroll_element',
+        observationId: observation.observationId,
+        elementId: '7',
+        direction: 'down',
+        pages: 2,
+        elementIdentity: observation.elements[0]!.identity,
+      },
+      sig,
+      {
+        ...DEFAULT_RUN_CONTEXT,
+        toolCallId: 'scroll-element',
+        boundAction: boundElementAction(observation, '7'),
+      },
+    );
+    assert.equal(scrolled.outcome.ok, true);
+
+    const records = await readRecords(logPath);
+    const call = toolCall(records, 'scroll');
+    assert.ok(call, 'the driver was asked to scroll');
+    assert.equal(call!.element_index, 7, 'by element, never by coordinate');
+    assert.equal(call!.x, undefined);
+    assert.equal(call!.direction, 'down');
+    assert.equal(call!.clicks, 6, 'two pages at three wheel clicks each');
+  });
+
   it('parallel click then type waits for the new click target instead of using the old window', async () => {
     const { backend, logPath } = makeBackend({ delayTool: 'click', delayMs: 120 });
     const sig = new AbortController().signal;

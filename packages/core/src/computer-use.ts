@@ -266,7 +266,16 @@ const POINTER_ACTIONS = new Set([
 ]);
 
 const KEYBOARD_ACTIONS = new Set(['type', 'key', 'hold_key', 'press_key']);
-const SEMANTIC_ACTIONS = new Set(['click_element', 'set_value', 'select_text', 'secondary_action']);
+const SEMANTIC_ACTIONS = new Set([
+  'click_element',
+  'set_value',
+  'select_text',
+  'secondary_action',
+  // Scrolling an element moves what is on screen without changing any value.
+  // It is still a mutation of the target's state, and it is the semantic twin
+  // of the coordinate `scroll` that already sits in POINTER_ACTIONS.
+  'scroll_element',
+]);
 
 const APPROVAL_ACTIONS = new Set([
   'list_apps',
@@ -275,6 +284,7 @@ const APPROVAL_ACTIONS = new Set([
   'set_value',
   'select_text',
   'secondary_action',
+  'scroll_element',
   'press_key',
   ...CU_ACTION_TYPES,
 ]);

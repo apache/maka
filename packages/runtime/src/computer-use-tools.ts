@@ -34,6 +34,13 @@ import {
   type CuaSessionSnapshot,
 } from './cua-session-state.js';
 
+/**
+ * `scroll_amount` has no declared unit at the tool boundary ("Amount for
+ * scroll", 0..100) while both executors declare pages. Fixed here so the two
+ * ends cannot disagree silently.
+ */
+const SCROLL_UNITS_PER_PAGE = 10;
+
 const COMPUTER_USE_CATEGORY = 'computer_use';
 
 import {
@@ -93,6 +100,7 @@ const computerWireParams = z
         'set_value',
         'select_text',
         'secondary_action',
+        'scroll_element',
         'press_key',
         ...CU_ACTION_TYPES,
       ] as [string, ...string[]])
@@ -496,6 +504,7 @@ export function buildComputerUseTools(deps: {
       action.type === 'set_value' ||
       action.type === 'select_text' ||
       action.type === 'press_key' ||
+      action.type === 'scroll_element' ||
       action.type === 'secondary_action';
     const semanticAction = semantic ? (action as CuSemanticAction) : undefined;
     const semanticValue =
@@ -507,7 +516,9 @@ export function buildComputerUseTools(deps: {
             ? semanticAction.action
             : semanticAction?.type === 'press_key'
               ? semanticAction.key
-              : undefined;
+              : semanticAction?.type === 'scroll_element'
+                ? `${semanticAction.direction}:${semanticAction.pages ?? 1}`
+                : undefined;
     const elementId =
       semanticAction && 'elementId' in semanticAction ? semanticAction.elementId : undefined;
     const fingerprint = semanticAction
@@ -1018,6 +1029,7 @@ export function buildComputerUseTools(deps: {
             input.action === 'set_value' ||
             input.action === 'select_text' ||
             input.action === 'secondary_action' ||
+            input.action === 'scroll_element' ||
             input.action === 'press_key'
           ) {
             if (!deps.backend.runSemantic) {
@@ -1062,6 +1074,17 @@ export function buildComputerUseTools(deps: {
                               action: input.text,
                               elementIdentity: record.elements?.get(input.element_id)?.identity,
                             }
+                          : input.action === 'scroll_element'
+                            ? {
+                                type: 'scroll_element' as const,
+                                observationId: input.observation_id,
+                                elementId: input.element_id,
+                                direction: input.scroll_direction ?? 'down',
+                                ...(input.scroll_amount === undefined
+                                  ? {}
+                                  : { pages: input.scroll_amount / SCROLL_UNITS_PER_PAGE }),
+                                elementIdentity: record.elements?.get(input.element_id)?.identity,
+                              }
                           : {
                               type: 'press_key' as const,
                               observationId: input.observation_id,
@@ -1087,7 +1110,16 @@ export function buildComputerUseTools(deps: {
                     ? { type: 'type', text: semanticAction.value }
                     : semanticAction.type === 'select_text'
                       ? { type: 'type', text: semanticAction.text }
-                      : { type: 'key', text: semanticAction.action };
+                      : semanticAction.type === 'scroll_element'
+                        ? {
+                            type: 'scroll',
+                            scrollDirection: semanticAction.direction,
+                            scrollAmount: Math.round(
+                              (semanticAction.pages ?? 1) * SCROLL_UNITS_PER_PAGE,
+                            ),
+                            coordinate: binding.sourceCoordinate ?? { x: 0, y: 0 },
+                          }
+                        : { type: 'key', text: semanticAction.action };
             let result: CuRunResult | undefined;
             let consumeFailure: ComputerToolResult | undefined;
             let presentation: Awaited<ReturnType<typeof runWithPresentation>> | undefined;

@@ -305,7 +305,10 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
 
   // Keyboard ownership is session + turn scoped. Only a successful click may
   // establish it; pointer-only scroll/drag actions do not imply text focus.
-  interface KeyboardTarget {
+  /** cua-driver's `scroll` counts wheel clicks; both executors declare pages. */
+const SCROLL_CLICKS_PER_PAGE = 3;
+
+interface KeyboardTarget {
     window: CuaResolvedWindow;
     editable: boolean;
     pageTarget?: CuaResolvedPageTextTarget;
@@ -1533,6 +1536,37 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
               signal,
             );
             if (visibilityFailure) return visibilityFailure;
+            if (action.type === 'scroll_element') {
+              // cua-driver's `scroll` takes an element the same way `click`
+              // does, so this is the AX path: it addresses the scroll area
+              // rather than a pixel, which is what makes it work on a window
+              // that is behind something else.
+              const result = await actionClient.callTool(
+                'scroll',
+                {
+                  pid: validated.pid,
+                  window_id: validated.windowId,
+                  element_index: refetched.element_index,
+                  ...(refetched.element_token ? { element_token: refetched.element_token } : {}),
+                  direction: action.direction,
+                  clicks: Math.max(1, Math.round((action.pages ?? 1) * SCROLL_CLICKS_PER_PAGE)),
+                },
+                signal,
+              );
+              const outcome = normalizeCuaDriverOutcome(result);
+              if (!outcome.ok) return { outcome };
+              let fresh: CuObservation;
+              try {
+                fresh = await observeResolvedWindow(validated, true, signal, context);
+              } catch {
+                return deliveredVerificationFailure('scroll_element', 'ax');
+              }
+              return {
+                outcome,
+                observation: fresh,
+                ...(fresh.screenshot ? { screenshot: fresh.screenshot } : {}),
+              };
+            }
             const args = {
               pid: validated.pid,
               window_id: validated.windowId,
