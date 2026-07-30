@@ -33,6 +33,7 @@ import {
   type CompanionQuoteSnapshot,
   type StagedCompanionQuote,
 } from './quote-companion-panel-state';
+import type { CompanionForkVisibilityEvent } from './quote-companion-visibility';
 
 export interface UseQuoteCompanionInput {
   /** Stable owner for the currently mounted panel generation. */
@@ -47,9 +48,9 @@ export interface UseQuoteCompanionInput {
   locale: UiLocale;
   /** Called once a send has consumed the staged quotes, so the host clears them. */
   onQuotesConsumed: (snapshot: CompanionQuoteSnapshot) => void;
-  /** Reports the companion fork's id (or undefined) so the host can hide it from
-   *  the main session list while the panel is open — the fork is ephemeral. */
-  onForkChange?: (forkId: string | undefined) => void;
+  /** Reports creation and authoritative cleanup so the host can keep every
+   *  ephemeral fork hidden for its complete lifetime. */
+  onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
 }
 
 export interface UseQuoteCompanionResult {
@@ -98,15 +99,22 @@ function requiredAssistantMessageId(projection: LiveTurnProjection | undefined):
  * which removes the ephemeral fork.
  */
 export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompanionResult {
-  const { panelId, locale, sourceSession, pendingQuotes, onQuotesConsumed, onForkChange } = input;
+  const {
+    panelId,
+    locale,
+    sourceSession,
+    pendingQuotes,
+    onQuotesConsumed,
+    onForkVisibilityChange,
+  } = input;
   const copy = getDesktopConversationCopy(locale).quoteCompanion;
   const [companion, setCompanion] = useState<SessionSummary | undefined>(undefined);
   const companionIdRef = useRef<string | null>(null);
   // A created fork is hidden immediately, before its permission pin completes,
   // but is not considered usable until onForkCommitted promotes it.
   const pendingForkIdRef = useRef<string | null>(null);
-  const onForkChangeRef = useRef(onForkChange);
-  onForkChangeRef.current = onForkChange;
+  const onForkVisibilityChangeRef = useRef(onForkVisibilityChange);
+  onForkVisibilityChangeRef.current = onForkVisibilityChange;
   const localeRef = useRef(locale);
   localeRef.current = locale;
   const copyRef = useRef(copy);
@@ -174,8 +182,15 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       if (id) {
         // The main-process authority records this intent before attempting the
         // full removal, and retries it on a later session list / app restart.
-        window.maka.sessions.cleanupQuoteCompanion(id).catch(() => {});
-        onForkChangeRef.current?.(undefined);
+        void window.maka.sessions
+          .cleanupQuoteCompanion(id)
+          .then(() =>
+            onForkVisibilityChangeRef.current?.({
+              type: 'cleanup-succeeded',
+              sessionId: id,
+            }),
+          )
+          .catch(() => {});
       }
     };
   }, []);
@@ -199,8 +214,16 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         quotes: quoteSnapshot.quotes.length > 0 ? [...quoteSnapshot.quotes] : undefined,
         onForkCreated: (session) => {
           pendingForkIdRef.current = session.id;
-          onForkChangeRef.current?.(session.id);
+          onForkVisibilityChangeRef.current?.({
+            type: 'fork-created',
+            sessionId: session.id,
+          });
         },
+        onForkCleanupSucceeded: (sessionId) =>
+          onForkVisibilityChangeRef.current?.({
+            type: 'cleanup-succeeded',
+            sessionId,
+          }),
         onForkCommitted: (session) => {
           pendingForkIdRef.current = null;
           companionIdRef.current = session.id;
@@ -245,7 +268,6 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         };
         if (result.code === 'permission_pin_failed') {
           pendingForkIdRef.current = null;
-          onForkChangeRef.current?.(undefined);
         }
         setError(byCode[result.code]);
         setTurnInFlight(false);

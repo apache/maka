@@ -20,6 +20,7 @@ import type {
   CompanionQuoteSnapshot,
   QuoteCompanionPanelState,
 } from './quote-companion-panel-state';
+import type { CompanionForkVisibilityEvent } from './quote-companion-visibility';
 
 export function SessionWorkbar(props: {
   sessionId: string;
@@ -34,7 +35,7 @@ export function SessionWorkbar(props: {
   quote?: QuoteCompanionPanelState | null;
   onClearQuote?: () => void;
   onQuotesConsumed?: (snapshot: CompanionQuoteSnapshot) => void;
-  onForkChange?: (forkId: string | undefined) => void;
+  onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
   /** The main session the companion forks from (inherits context + model). */
   sourceSession?: SessionSummary;
   /** Shared global choice list, used to label the companion's inherited model. */
@@ -108,7 +109,7 @@ export function SessionWorkbar(props: {
               modelChoices={props.modelChoices ?? []}
               onClear={props.onClearQuote}
               onQuotesConsumed={props.onQuotesConsumed ?? (() => {})}
-              onForkChange={props.onForkChange}
+              onForkVisibilityChange={props.onForkVisibilityChange}
             />
           </PrimitiveTabsPanel>
         )}

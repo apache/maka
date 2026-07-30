@@ -68,6 +68,8 @@ export interface EnsureCompanionForkDeps {
   /** Fired as soon as creation returns, before the permission pin round-trip.
    *  The host uses the id to hide this ephemeral child immediately. */
   onForkCreated?: (session: SessionSummary) => void;
+  /** Fired only after the main-process cleanup authority confirms deletion. */
+  onForkCleanupSucceeded?: (sessionId: string) => void;
 }
 
 /** The latest durable (settled) turn of the source session — the fork boundary.
@@ -99,8 +101,11 @@ export function deriveCompanionComposerState(
  * queued for the next `sessions.list` call or Desktop restart, so renderer
  * lifecycle paths can remain fire-and-forget without losing recovery.
  */
-function scheduleCompanionCleanup(api: CompanionSessionApi, sessionId: string): void {
-  void api.cleanupQuoteCompanion(sessionId).catch(() => {});
+function scheduleCompanionCleanup(deps: EnsureCompanionForkDeps, sessionId: string): void {
+  void deps.api
+    .cleanupQuoteCompanion(sessionId)
+    .then(() => deps.onForkCleanupSucceeded?.(sessionId))
+    .catch(() => {});
 }
 
 /**
@@ -149,7 +154,7 @@ export async function ensureCompanionFork(
   }
 
   if (isDisposed()) {
-    scheduleCompanionCleanup(api, created.id);
+    scheduleCompanionCleanup(deps, created.id);
     return { status: 'disposed' };
   }
   // `sessions:branchFromTurn` broadcasts `sessions:changed(created)` before the
@@ -163,15 +168,15 @@ export async function ensureCompanionFork(
   try {
     ready = await api.setPermissionMode(created.id, COMPANION_PERMISSION_MODE);
   } catch {
-    scheduleCompanionCleanup(api, created.id);
+    scheduleCompanionCleanup(deps, created.id);
     return { status: 'error', code: 'permission_pin_failed' };
   }
   if (ready.permissionMode !== COMPANION_PERMISSION_MODE) {
-    scheduleCompanionCleanup(api, created.id);
+    scheduleCompanionCleanup(deps, created.id);
     return { status: 'error', code: 'permission_pin_failed' };
   }
   if (isDisposed()) {
-    scheduleCompanionCleanup(api, created.id);
+    scheduleCompanionCleanup(deps, created.id);
     return { status: 'disposed' };
   }
 

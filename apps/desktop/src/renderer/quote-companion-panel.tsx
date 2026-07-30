@@ -15,6 +15,7 @@ import type {
   CompanionQuoteSnapshot,
   StagedCompanionQuote,
 } from './quote-companion-panel-state';
+import type { CompanionForkVisibilityEvent } from './quote-companion-visibility';
 
 /**
  * The "追问引用" workbar tab: a follow-up thread about the selected excerpt(s).
@@ -35,7 +36,7 @@ export function QuoteCompanionPanel(props: {
   modelChoices: readonly ChatModelChoice[];
   onClear?: () => void;
   onQuotesConsumed: (snapshot: CompanionQuoteSnapshot) => void;
-  onForkChange?: (forkId: string | undefined) => void;
+  onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
 }) {
   const locale = useUiLocale();
   const copy = getDesktopConversationCopy(locale).quoteCompanion;
@@ -46,7 +47,7 @@ export function QuoteCompanionPanel(props: {
     sourceSession: props.sourceSession,
     locale,
     onQuotesConsumed: props.onQuotesConsumed,
-    onForkChange: props.onForkChange,
+    onForkVisibilityChange: props.onForkVisibilityChange,
   });
 
   // The companion inherits the source model and does not switch it; look up a

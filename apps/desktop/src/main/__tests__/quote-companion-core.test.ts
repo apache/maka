@@ -46,6 +46,7 @@ interface FakeControl {
   /** permissionMode `setPermissionMode` returns (default = the requested mode). */
   afterSetMode?: string;
   setModeThrows?: boolean;
+  cleanupThrows?: boolean;
   sendThrows?: boolean;
   sendResult?: { ok: true } | { ok: false; reason?: string };
   /** Runs right after the fork is created (e.g. to flip `disposed`). */
@@ -88,6 +89,7 @@ function makeApi(control: FakeControl = {}) {
     },
     cleanupQuoteCompanion: async (id) => {
       calls.removed.push(id);
+      if (control.cleanupThrows) throw new Error('cleanup failed');
     },
     send: async (id, cmd) => {
       calls.sent.push({ id, cmd });
@@ -256,6 +258,26 @@ describe('performCompanionTurn', () => {
     assert.deepEqual(calls.removed, ['fork-1']);
     assert.equal(calls.sent.length, 0);
     assert.deepEqual(rec.events, ['created:fork-1']);
+  });
+
+  it('does not release a hidden fork when authoritative cleanup fails', async () => {
+    const { api } = makeApi({ setModeThrows: true, cleanupThrows: true });
+    const events: string[] = [];
+
+    const result = await performCompanionTurn({
+      api,
+      isDisposed: () => false,
+      ...base,
+      onForkCreated: (session) => events.push(`created:${session.id}`),
+      onForkCleanupSucceeded: (sessionId) => events.push(`cleaned:${sessionId}`),
+      onForkCommitted: () => {},
+      onBeforeSend: () => {},
+      onQuotesConsumed: () => {},
+    });
+    await Promise.resolve();
+
+    assert.deepEqual(result, { status: 'error', code: 'permission_pin_failed' });
+    assert.deepEqual(events, ['created:fork-1']);
   });
 
   it('fail-closed: a fork not confirmed `explore` is removed and never sends', async () => {

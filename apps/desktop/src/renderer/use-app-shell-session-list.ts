@@ -21,6 +21,8 @@ export function useAppShellSessionList(toastApi: ToastApi) {
   const uiLocaleRef = useRef(uiLocale);
   uiLocaleRef.current = uiLocale;
   const [sessions, setSessionsState] = useState<SessionSummary[]>([]);
+  const [authoritativeSessionIds, setAuthoritativeSessionIds] =
+    useState<ReadonlySet<string> | null>(null);
   const sessionsRef = useRef<SessionSummary[]>([]);
   const sessionReadBoundariesRef = useRef<SessionReadBoundaries>({});
   const refresherRef = useRef<SessionListRefresher | null>(null);
@@ -43,7 +45,11 @@ export function useAppShellSessionList(toastApi: ToastApi) {
       listSessions: () => window.maka.sessions.list(),
       readBoundaries: () => sessionReadBoundariesRef.current,
       currentSessions: () => sessionsRef.current,
-      commitSessions: (next) => commitSessions(next.map(normalizeSessionSummaryForDisplay)),
+      commitSessions: (next) => {
+        const normalized = next.map(normalizeSessionSummaryForDisplay);
+        commitSessions(normalized);
+        setAuthoritativeSessionIds(new Set(normalized.map(({ id }) => id)));
+      },
       onError: (error) => {
         const locale = uiLocaleRef.current;
         const copy = getDesktopConversationCopy(locale).actions;
@@ -106,6 +112,7 @@ export function useAppShellSessionList(toastApi: ToastApi) {
 
   return {
     sessions,
+    authoritativeSessionIds,
     sessionsRef,
     setSessions,
     refreshSessions,

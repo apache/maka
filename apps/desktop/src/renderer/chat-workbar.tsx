@@ -9,6 +9,7 @@ import type {
   CompanionQuoteSnapshot,
   QuoteCompanionPanelState,
 } from './quote-companion-panel-state';
+import type { CompanionForkVisibilityEvent } from './quote-companion-visibility';
 
 // The session workbar owns the task ledger, embedded browser, and artifact
 // preview. Keep the combined auxiliary surface out of the first chat paint.
@@ -45,7 +46,7 @@ interface ChatWorkbarProps {
   quote?: QuoteCompanionPanelState | null;
   onClearQuote?: () => void;
   onQuotesConsumed?: (snapshot: CompanionQuoteSnapshot) => void;
-  onForkChange?: (forkId: string | undefined) => void;
+  onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];
 }
@@ -63,7 +64,7 @@ export function ChatWorkbar({
   quote,
   onClearQuote,
   onQuotesConsumed,
-  onForkChange,
+  onForkVisibilityChange,
   sourceSession,
   modelChoices,
 }: ChatWorkbarProps) {
@@ -95,7 +96,7 @@ export function ChatWorkbar({
           quote={quote}
           onClearQuote={onClearQuote}
           onQuotesConsumed={onQuotesConsumed}
-          onForkChange={onForkChange}
+          onForkVisibilityChange={onForkVisibilityChange}
           sourceSession={sourceSession}
           modelChoices={modelChoices}
         />
