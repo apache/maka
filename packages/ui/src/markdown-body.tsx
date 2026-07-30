@@ -11,18 +11,27 @@
  * second text smoother. PR 8 transfers the wider streaming and scroll boundary.
  */
 
-import { useContext, type ReactNode } from 'react';
+import {
+  useContext,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from 'react';
 import {
   Markdown as AstryxMarkdown,
   type MarkdownComponents,
 } from '@astryxdesign/core/Markdown';
 import { trimStreamingArtifacts } from '@astryxdesign/core/Markdown/utils';
 import { Link as AstryxLink } from '@astryxdesign/core/Link';
+import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 import {
   isMakaUriCandidate,
   isSafeExternalScheme,
   parseMakaUri,
 } from './maka-uri.js';
+import {
+  useClipboardCopyFeedback,
+  type ClipboardCopyPhase,
+} from './clipboard-feedback.js';
 import { MakaUriContext } from './markdown.js';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
@@ -37,6 +46,22 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
     ? trimStreamingArtifacts(props.text)
     : props.text;
   const safeText = neutralizeUnsafeMarkdownImages(parseableText);
+  const copyFeedback = useClipboardCopyFeedback(1400, { redact: false });
+  const copyPhase = copyFeedback.phaseFor('code');
+
+  // Astryx 0.1.9 owns this button but discards clipboard rejections. Capture
+  // only its CodeBlock copy action until Astryx exposes an error callback.
+  function handleClickCapture(event: ReactMouseEvent<HTMLDivElement>) {
+    if (!(event.target instanceof Element)) return;
+    const button = event.target.closest('button');
+    const codeBlock = button?.closest('pre.astryx-codeblock');
+    if (!codeBlock || !event.currentTarget.contains(codeBlock)) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    void copyFeedback.copy('code', readCodeBlockText(codeBlock));
+  }
+
   return (
     <div
       data-maka-contract="markdown"
@@ -44,6 +69,7 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
       // contract harness a stable declared subtree without adding a layout
       // box or interfering with Astryx's document root.
       style={{ display: 'contents' }}
+      onClickCapture={handleClickCapture}
     >
       <AstryxMarkdown
         autolink="gfm"
@@ -51,7 +77,35 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
       >
         {safeText}
       </AstryxMarkdown>
+      {copyPhase && <MarkdownCodeCopyStatus phase={copyPhase} />}
     </div>
+  );
+}
+
+function readCodeBlockText(codeBlock: Element): string {
+  const lines = codeBlock.querySelectorAll<HTMLElement>('[data-line]');
+  if (lines.length > 0) {
+    return Array.from(lines, (line) => line.textContent ?? '').join('\n');
+  }
+  return codeBlock.querySelector('code')?.textContent ?? '';
+}
+
+function MarkdownCodeCopyStatus(props: { phase: ClipboardCopyPhase }) {
+  const copy = getSharedUiCopy(useUiLocale()).markdown;
+  const label = props.phase === 'pending'
+    ? copy.copyingCode
+    : props.phase === 'copied'
+      ? copy.copiedCode
+      : copy.copyCodeFailed;
+  return (
+    <VisuallyHidden
+      as="div"
+      role="status"
+      aria-live="polite"
+      data-copy-feedback={props.phase}
+    >
+      {label}
+    </VisuallyHidden>
   );
 }
 

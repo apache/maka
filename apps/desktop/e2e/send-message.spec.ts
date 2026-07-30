@@ -21,3 +21,47 @@ test('send a message and see the fake backend stream a reply', async ({ window: 
     page.locator('.maka-model-switcher-trigger .maka-composer-provider-mark[data-provider="anthropic"] svg'),
   ).toBeVisible();
 });
+
+test('copies Markdown code and reports a clipboard failure', async ({ window: page }) => {
+  const composer = page.locator('.maka-composer-textarea');
+  await composer.fill([
+    'show code',
+    '',
+    '```ts',
+    'const answer = 42;',
+    '```',
+  ].join('\n'));
+  await composer.press('Enter');
+
+  const codeBlock = page.locator('[data-maka-contract="markdown"] .astryx-codeblock').last();
+  const copyStatus = codeBlock
+    .locator('xpath=ancestor::*[@data-maka-contract="markdown"]')
+    .getByRole('status');
+  await expect(codeBlock).toBeVisible();
+  await page.evaluate(() => {
+    Object.defineProperty(navigator.clipboard, 'writeText', {
+      configurable: true,
+      value: async (text: string) => {
+        (window as typeof window & { __copiedCode?: string }).__copiedCode = text;
+      },
+    });
+  });
+
+  await codeBlock.getByRole('button', { name: '复制代码' }).click();
+  await expect(copyStatus).toHaveText('已复制代码');
+  expect(await page.evaluate(
+    () => (window as typeof window & { __copiedCode?: string }).__copiedCode,
+  )).toBe('const answer = 42;');
+
+  await page.evaluate(() => {
+    Object.defineProperty(navigator.clipboard, 'writeText', {
+      configurable: true,
+      value: async () => {
+        throw new Error('clipboard denied by test');
+      },
+    });
+  });
+
+  await codeBlock.getByRole('button', { name: '复制代码' }).click();
+  await expect(copyStatus).toHaveText('复制代码失败');
+});
