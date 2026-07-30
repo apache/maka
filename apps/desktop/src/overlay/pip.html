@@ -114,6 +114,33 @@
         stroke-width: 2;
         stroke-linecap: round;
       }
+      /* Resize grip, from Codex's `PIPStackResizeInteraction`. It sits in the
+         corner opposite the anchor, so dragging away from the anchor grows the
+         mirror — the same gesture reads the same way in every corner. */
+      #resize {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 16px;
+        height: 16px;
+        opacity: 0;
+        transition: opacity 120ms ease-out;
+        pointer-events: none;
+        cursor: nwse-resize;
+      }
+      #resize::after {
+        content: '';
+        position: absolute;
+        inset: 4px;
+        border-left: 1.5px solid rgb(255 255 255 / 0.55);
+        border-top: 1.5px solid rgb(255 255 255 / 0.55);
+        border-radius: 2px 0 0 0;
+      }
+      #controls[data-visible='1'] ~ #resize,
+      #resize[data-visible='1'] {
+        opacity: 1;
+        pointer-events: auto;
+      }
       /* While dragging, the whole tile is the handle. */
       body[data-dragging='1'] {
         cursor: grabbing;
@@ -124,6 +151,7 @@
     <div id="shell">
       <img id="frame" alt="" />
       <div id="cursor"></div>
+      <div id="resize" data-visible="0" aria-hidden="true"></div>
       <div id="controls" data-visible="0">
         <button type="button" data-control="stop" aria-label="停止 Computer Use" title="停止 Computer Use">
           <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1" fill="currentColor" stroke="none" /></svg>

@@ -185,6 +185,44 @@ app.whenReady().then(async () => {
     JSON.stringify(afterResize),
   );
 
+  // ── the grip resizes it, away from whichever corner it rests on ──────────
+  const beforeGrip = mirror.getBounds();
+  const gripAt = await contents.executeJavaScript(
+    "(() => { const r = document.getElementById('resize').getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()",
+  );
+  pointer = { x: beforeGrip.x + gripAt.x, y: beforeGrip.y + gripAt.y };
+  contents.sendInputEvent({ type: 'mouseMove', ...gripAt });
+  await sleep(150);
+  contents.sendInputEvent({ type: 'mouseDown', ...gripAt, button: 'left', clickCount: 1 });
+  await sleep(60);
+  // Anchored top-left, so the grip is below the anchor and dragging down grows.
+  for (const dy of [30, 60, 90]) {
+    pointer = { x: pointer.x, y: beforeGrip.y + gripAt.y + dy };
+    contents.sendInputEvent({ type: 'mouseMove', ...gripAt });
+    await sleep(60);
+  }
+  contents.sendInputEvent({ type: 'mouseUp', ...gripAt, button: 'left', clickCount: 1 });
+  await sleep(300);
+  const afterGrip = mirror.getBounds();
+  const grew =
+    Math.max(afterGrip.width, afterGrip.height) > Math.max(beforeGrip.width, beforeGrip.height);
+  check(
+    'dragging the grip away from the anchor grows the mirror',
+    grew,
+    `${beforeGrip.width}x${beforeGrip.height} → ${afterGrip.width}x${afterGrip.height}`,
+  );
+  check(
+    'and it stays inside Codex’s [100, 400] clamp',
+    Math.max(afterGrip.width, afterGrip.height) <= 400 &&
+      Math.min(afterGrip.width, afterGrip.height) >= 1,
+    `${afterGrip.width}x${afterGrip.height}`,
+  );
+  check(
+    'and it is still on the corner it was resting on',
+    afterGrip.x === appResized.x + 24 && afterGrip.y === appResized.y + 24,
+    JSON.stringify(afterGrip),
+  );
+
   // ── hide dismisses it ─────────────────────────────────────────────────────
   contents.sendInputEvent({ type: 'mouseMove', ...inMirror(60, 20) });
   await sleep(200);

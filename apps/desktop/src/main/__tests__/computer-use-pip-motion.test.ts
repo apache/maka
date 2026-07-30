@@ -14,6 +14,7 @@ import {
   PIP_THROW_SCALE,
   PipDragTracker,
   anchorFor,
+  pipResizeEdge,
   clampToWorkArea,
   pickPipAnchor,
   pipAnchors,
@@ -113,6 +114,36 @@ test('picture-in-picture motion', async (t) => {
     assert.equal(PIP_THROW_REFERENCE, 5000);
     assert.equal(PIP_THROW_MAX, 0.45);
     assert.equal(PIP_FLICK_MIN_SPEED, 120);
+  });
+
+  await t.test('a resize drag grows away from the anchor, in every corner', () => {
+    // `-[PIPStackResizeInteraction maxDisplaySizeForPointerScreenPoint:]` is
+    // four instructions: a sign chosen from the alignment, and the pointer's
+    // vertical travel added to the edge it started at. Only the vertical
+    // component moves it, and the sign is what makes the gesture read the same
+    // wherever the mirror is resting: away from the anchor grows it.
+    //
+    // Anchored at the top, the grip is below, so dragging down grows.
+    assert.equal(pipResizeEdge(200, 500, 560, 'top-left'), 260);
+    assert.equal(pipResizeEdge(200, 500, 440, 'top-left'), 140);
+    // Anchored at the bottom, the grip is above, so dragging up grows.
+    assert.equal(pipResizeEdge(200, 500, 440, 'bottom-right'), 260);
+    assert.equal(pipResizeEdge(200, 500, 560, 'bottom-right'), 140);
+  });
+
+  await t.test('a resize stays inside Codex’s clamp and lands on whole points', () => {
+    // The same [100, 400] the rest of the sizing uses — the three constants are
+    // literally the same doubles in the binary. A fractional edge on a
+    // transparent window shimmers, which is what Codex's
+    // `snapPointToBackingScale:` exists to stop.
+    assert.equal(pipResizeEdge(200, 500, 5000, 'top-left'), 400, 'ceiling');
+    assert.equal(pipResizeEdge(200, 500, -5000, 'top-left'), 100, 'floor');
+    assert.equal(pipResizeEdge(200, 500, 500.4, 'top-left') % 1, 0, 'whole points');
+  });
+
+  await t.test('a resize that does not move the pointer does not move the edge', () => {
+    assert.equal(pipResizeEdge(200, 500, 500, 'top-left'), 200);
+    assert.equal(pipResizeEdge(137, 500, 500, 'bottom-left'), 137);
   });
 
   await t.test('never leaves the mirror off the display', () => {

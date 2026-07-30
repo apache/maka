@@ -6,6 +6,7 @@ import {
   PIP_SPRING,
   PipDragTracker,
   anchorFor,
+  pipResizeEdge,
   clampToWorkArea,
   pickPipAnchor,
   pipAnchors,
@@ -371,6 +372,17 @@ export function createComputerUsePipController(
    */
   let alignment: PipAlignment = 'bottom-right';
   let drag: PipDragTracker | null = null;
+  /**
+   * A resize in flight: the edge and pointer height it started from.
+   *
+   * Codex's `PIPStackResizeInteraction` keeps exactly this pair
+   * (`initialMaxDisplaySize`, `initialPointerScreenPoint`) and derives the new
+   * edge from the pointer's vertical travel; nothing about the gesture is
+   * incremental, so a jittery pointer cannot accumulate drift.
+   */
+  let resize: { edge: number; pointerY: number } | null = null;
+  /** Longest edge the user has settled on, if they have moved it. */
+  let chosenEdge: number | undefined;
   let motion: MotionState | null = null;
   let motionTarget: Point | null = null;
   let cancelFrame: (() => void) | null = null;
@@ -607,6 +619,32 @@ export function createComputerUsePipController(
   function handleMessage(w: PipWindowLike, channel: string, payload: unknown): void {
     if (win !== w || w.isDestroyed()) return;
     switch (channel) {
+      case 'pip:resize-begin': {
+        const bounds = w.getBounds();
+        const pointer = deps.cursorPoint?.();
+        if (!pointer) return;
+        resize = { edge: Math.max(bounds.width, bounds.height), pointerY: pointer.y };
+        return;
+      }
+      case 'pip:resize-move': {
+        if (!resize) return;
+        const pointer = deps.cursorPoint?.();
+        if (!pointer) return;
+        const edge = pipResizeEdge(resize.edge, resize.pointerY, pointer.y, alignment);
+        if (edge === chosenEdge) return;
+        chosenEdge = edge;
+        const size = pipDisplaySize(aspect, edge);
+        const current = w.getBounds();
+        // Re-seat as it grows: the mirror hangs off a corner, so a size change
+        // moves the other three edges and leaving the origin alone would walk
+        // it off its anchor.
+        w.setBounds({ ...current, ...size });
+        moveTo(w, restPoint({ ...current, ...size }), size);
+        return;
+      }
+      case 'pip:resize-end':
+        resize = null;
+        return;
       case 'pip:pointer-down':
         beginDrag(w);
         return;
@@ -709,7 +747,7 @@ export function createComputerUsePipController(
       // flight: those own the position until they finish.
       if (reshaped && !drag && !motion) {
         const current = w.getBounds();
-        const size = pipDisplaySize(aspect);
+        const size = pipDisplaySize(aspect, chosenEdge);
         w.setBounds({ ...current, ...size });
         moveTo(w, restPoint({ ...current, ...size }), size);
       }
@@ -771,6 +809,9 @@ function defaultCreateWindow(
     'pip:pointer-move',
     'pip:pointer-up',
     'pip:control',
+    'pip:resize-begin',
+    'pip:resize-move',
+    'pip:resize-end',
   ] as const;
   return {
     send: (channel, payload) => w.webContents.send(channel, payload),

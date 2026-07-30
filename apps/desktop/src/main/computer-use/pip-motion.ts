@@ -50,6 +50,11 @@ export interface PipAnchor {
  * bounces past the corner; dragging is ζ≈0.92, just under critical, so the
  * window keeps a trace of give while the pointer pulls it.
  */
+/** Codex clamps the longest edge to [100, 400] and defaults to 200. */
+export const PIP_MIN_EDGE = 100;
+export const PIP_DEFAULT_EDGE = 200;
+export const PIP_MAX_EDGE = 400;
+
 export const PIP_SPRING = {
   dragging: { stiffness: 900, damping: 55 },
   settling: { stiffness: 320, damping: 42 },
@@ -205,6 +210,35 @@ export function pickPipAnchor(
     }
   }
   return best;
+}
+
+/**
+ * Where a resize drag takes the mirror's longest edge.
+ *
+ * From `-[PIPStackResizeInteraction maxDisplaySizeForPointerScreenPoint:]`,
+ * which is four instructions:
+ *
+ *     sign = (alignment & ~1) == 2 ? +1 : -1
+ *     size = initialMaxDisplaySize + (pointer.y - initialPointer.y) * sign
+ *
+ * Only the vertical component moves it, and the sign comes from which corner
+ * the mirror is resting on: dragging away from the anchor grows it, dragging
+ * toward it shrinks it, so the gesture reads the same in every corner.
+ *
+ * Clamped to the same [100, 400] the rest of the sizing uses — the constants
+ * are literally the same three doubles in the binary — and snapped to whole
+ * points, which is what Codex's `snapPointToBackingScale:` does for the same
+ * reason: a fractional edge on a transparent window shimmers.
+ */
+export function pipResizeEdge(
+  initialEdge: number,
+  initialPointerY: number,
+  pointerY: number,
+  alignment: PipAlignment,
+): number {
+  const growsDownward = alignment === 'top-left' || alignment === 'top-right';
+  const delta = (pointerY - initialPointerY) * (growsDownward ? 1 : -1);
+  return Math.round(Math.min(PIP_MAX_EDGE, Math.max(PIP_MIN_EDGE, initialEdge + delta)));
 }
 
 /**

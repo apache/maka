@@ -15,6 +15,7 @@ declare global {
 const frame = document.getElementById('frame') as HTMLImageElement;
 const cursor = document.getElementById('cursor') as HTMLDivElement;
 const controls = document.getElementById('controls') as HTMLDivElement;
+const resize = document.getElementById('resize') as HTMLDivElement;
 
 /** Size of the captured frame, needed to place the cursor within it. */
 let capture = { widthPx: 0, heightPx: 0 };
@@ -90,12 +91,35 @@ window.computerUsePip.onCursor((payload) => {
 let dragging = false;
 
 window.computerUsePip.onControls((payload) => {
-  controls.dataset.visible = isRecord(payload) && payload.visible === true ? '1' : '0';
+  const visible = isRecord(payload) && payload.visible === true ? '1' : '0';
+  controls.dataset.visible = visible;
+  resize.dataset.visible = visible;
 });
 
 document.addEventListener('mousemove', () => {
   if (dragging) window.computerUsePip.send('pip:pointer-move');
 });
+
+let resizing = false;
+
+resize.addEventListener('mousedown', (event) => {
+  // The grip owns the press; the tile's drag must not also start.
+  event.stopPropagation();
+  resizing = true;
+  window.computerUsePip.send('pip:resize-begin');
+});
+
+document.addEventListener('mousemove', () => {
+  if (resizing) window.computerUsePip.send('pip:resize-move');
+});
+
+for (const event of ['mouseup', 'blur'] as const) {
+  window.addEventListener(event, () => {
+    if (!resizing) return;
+    resizing = false;
+    window.computerUsePip.send('pip:resize-end');
+  });
+}
 
 document.addEventListener('mousedown', (event) => {
   // The controls are buttons; let them be pressed rather than starting a drag

@@ -14,6 +14,9 @@ const SEND_CHANNELS = new Set([
   'pip:pointer-move',
   'pip:pointer-up',
   'pip:control',
+  'pip:resize-begin',
+  'pip:resize-move',
+  'pip:resize-end',
 ]);
 
 contextBridge.exposeInMainWorld('computerUsePip', {
