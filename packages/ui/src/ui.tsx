@@ -461,10 +461,14 @@ export const PopoverTrigger = forwardRef<HTMLButtonElement, React.ButtonHTMLAttr
 ) {
   const { popover } = usePopoverContext('PopoverTrigger');
   // The trigger is an outside element to `popover="auto"`, so pressing it
-  // while open light-dismisses on pointerdown — and the same gesture's click
-  // would then re-open. Track per-gesture causality instead of a hide
-  // timestamp (Astryx's own Popover uses a 50ms window, which also swallows
-  // a genuine fast re-open after dismissing elsewhere).
+  // while open light-dismisses during the press (on pointerup per the HTML
+  // spec) — and the same gesture's click would then re-open. Track
+  // per-gesture causality instead of a hide timestamp (Astryx's own Popover
+  // uses a 50ms window, which also swallows a genuine fast re-open after
+  // dismissing elsewhere). The guard judges only pointer-sourced clicks
+  // (`event.detail > 0`): a keyboard activation has no paired pointerdown,
+  // so a flag left behind by an aborted press (drag off, pointercancel —
+  // gestures that end without a click on the trigger) must not swallow it.
   const wasOpenAtPointerDownRef = React.useRef(false);
   return (
     <button
@@ -479,10 +483,11 @@ export const PopoverTrigger = forwardRef<HTMLButtonElement, React.ButtonHTMLAttr
         onPointerDown?.(event);
       }}
       onClick={(event) => {
+        const dismissedByThisGesture =
+          event.detail > 0 && wasOpenAtPointerDownRef.current && !popover.isOpen;
+        wasOpenAtPointerDownRef.current = false;
         onClick?.(event);
         if (event.defaultPrevented) return;
-        const dismissedByThisGesture = wasOpenAtPointerDownRef.current && !popover.isOpen;
-        wasOpenAtPointerDownRef.current = false;
         if (dismissedByThisGesture) return;
         popover.toggle();
       }}
