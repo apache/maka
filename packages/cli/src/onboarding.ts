@@ -2,6 +2,7 @@ import {
   CATALOG_PROVIDER_TYPES,
   PROVIDER_DEFAULTS,
   connectionEnabledModelIds,
+  deriveConnectionSlug,
   providerAuthSupportsApiKey,
   type ConnectionLastTestStatus,
   type LlmConnection,
@@ -12,16 +13,6 @@ import {
 import type { ConnectionStore, CredentialStore } from '@maka/storage';
 import type { ModelChoice } from './connection-target.js';
 import { listReadyModelChoices } from './connection-target.js';
-
-/** Mirror the desktop's default-slug derivation for catalog provider types. */
-function nextSlug(type: ProviderType, existing: readonly string[]): string {
-  const base = type.toLowerCase().replace(/[^a-z0-9-]/g, '-');
-  if (!existing.includes(base)) return base;
-  for (let i = 2; ; i += 1) {
-    const candidate = `${base}-${i}`;
-    if (!existing.includes(candidate)) return candidate;
-  }
-}
 
 export interface OnboardableProvider {
   providerType: ProviderType;
@@ -135,11 +126,10 @@ export async function listOnboardingProviders(input: {
   connectionStore: Pick<ConnectionStore, 'list'>;
 }): Promise<OnboardingProviderEntry[]> {
   const connections = await input.connectionStore.list();
-  const byProviderType = new Map(
-    connections.map((connection) => [connection.providerType, connection]),
-  );
+  const bySlug = new Map(connections.map((connection) => [connection.slug, connection]));
   return listApiKeyOnboardableProviders().map((provider) => {
-    const existing = byProviderType.get(provider.providerType);
+    const candidate = bySlug.get(deriveConnectionSlug(provider.providerType));
+    const existing = candidate?.providerType === provider.providerType ? candidate : undefined;
     return {
       ...provider,
       hasConnection: existing !== undefined,
@@ -154,7 +144,7 @@ export interface VerifyApiKeyConnectionInput {
    *  blank for a new required-key connection is rejected. Never returned to the
    *   wizard — verify is host-owned. */
   apiKey?: string;
-  connectionStore: Pick<ConnectionStore, 'list'>;
+  connectionStore: Pick<ConnectionStore, 'get'>;
   credentialStore: Pick<CredentialStore, 'getSecret'>;
   fetchModels: (connection: LlmConnection, apiKey: string) => Promise<ModelInfo[]>;
 }
@@ -178,9 +168,15 @@ export async function verifyApiKeyConnection(
   const def = PROVIDER_DEFAULTS[input.providerType];
   const requiresKey = def?.authKind === 'api_key';
   const suppliedKey = input.apiKey?.trim() ?? '';
-  const existing = (await input.connectionStore.list()).find(
-    (connection) => connection.providerType === input.providerType,
-  );
+  const canonicalSlug = deriveConnectionSlug(input.providerType);
+  const candidate = await input.connectionStore.get(canonicalSlug);
+  if (candidate && candidate.providerType !== input.providerType) {
+    return {
+      kind: 'error',
+      text: `Connection slug "${canonicalSlug}" belongs to another provider`,
+    };
+  }
+  const existing = candidate;
   let connection: LlmConnection;
   let secret: string;
   if (existing) {
@@ -211,7 +207,7 @@ function transientOnboardingConnection(providerType: ProviderType): LlmConnectio
   const def = PROVIDER_DEFAULTS[providerType];
   const now = Date.now();
   return {
-    slug: nextSlug(providerType, []),
+    slug: deriveConnectionSlug(providerType),
     name: def.label,
     providerType,
     ...(def.baseUrl ? { baseUrl: def.baseUrl } : {}),
@@ -233,7 +229,7 @@ export interface SaveApiKeyConnectionInput {
   models: readonly ModelInfo[];
   connectionStore: Pick<
     ConnectionStore,
-    'list' | 'create' | 'update' | 'remove' | 'getDefault' | 'setDefault'
+    'get' | 'create' | 'update' | 'remove' | 'getDefault' | 'setDefault'
   >;
   credentialStore: Pick<CredentialStore, 'getSecret' | 'setSecret' | 'deleteSecret'>;
   /** Refreshed authoritative ready model choices for the running TUI. */
@@ -264,15 +260,20 @@ export async function saveApiKeyConnection(
   }
   const def = PROVIDER_DEFAULTS[input.providerType];
   const suppliedKey = input.apiKey?.trim() ?? '';
-  const connections = await input.connectionStore.list();
-  const existing = connections.find(
-    (connection) => connection.providerType === input.providerType,
-  );
-  let savedConnectionSlug = existing?.slug;
+  const canonicalSlug = deriveConnectionSlug(input.providerType);
+  const candidate = await input.connectionStore.get(canonicalSlug);
+  if (candidate && candidate.providerType !== input.providerType) {
+    return {
+      kind: 'error',
+      text: `Connection slug "${canonicalSlug}" belongs to another provider`,
+    };
+  }
+  const existing = candidate;
   const normalizedDefault =
     existing && enabled.includes(existing.defaultModel) ? existing.defaultModel : enabled[0]!;
   const testAt = new Date().toISOString();
   const modelPatch = {
+    enabled: true,
     defaultModel: normalizedDefault,
     enabledModelIds: enabled,
     models: [...input.models],
@@ -281,9 +282,10 @@ export async function saveApiKeyConnection(
     lastTestStatus: 'verified' as ConnectionLastTestStatus,
     lastTestAt: testAt,
   };
+  let connectionSlug: string;
 
   if (existing) {
-    const connectionSlug = existing.slug;
+    connectionSlug = existing.slug;
     // Rotate the key first (if supplied): a rotation failure leaves the existing
     // connection untouched (previous secret + previous curation stand). A failed
     // curation write rolls the rotation back so the connection keeps its previous
@@ -314,16 +316,12 @@ export async function saveApiKeyConnection(
     }
   } else {
     const created = await input.connectionStore.create({
-      slug: nextSlug(
-        input.providerType,
-        connections.map((connection) => connection.slug),
-      ),
+      slug: canonicalSlug,
       name: def.label,
       providerType: input.providerType,
       defaultModel: normalizedDefault,
     });
-    const connectionSlug = created.slug;
-    savedConnectionSlug = connectionSlug;
+    connectionSlug = created.slug;
     try {
       await input.credentialStore.setSecret(connectionSlug, 'api_key', suppliedKey);
     } catch (error) {
@@ -345,8 +343,8 @@ export async function saveApiKeyConnection(
 
   // setDefault only when no default connection exists (first run, or a host with
   // no prior default). In-session setup never replaces an existing default.
-  if ((await input.connectionStore.getDefault()) === null && savedConnectionSlug) {
-    await input.connectionStore.setDefault(savedConnectionSlug);
+  if ((await input.connectionStore.getDefault()) === null) {
+    await input.connectionStore.setDefault(connectionSlug);
   }
 
   const modelChoices = await input.fetchModelChoices();

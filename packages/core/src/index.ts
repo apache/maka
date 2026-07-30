@@ -11,7 +11,18 @@ export * from './mcp.js';
 export * from './collaboration.js';
 export * from './orchestration.js';
 export * from './swarm-command.js';
+export * from './graph-command.js';
 export * from './plan.js';
+export * from './agent-graph-control.js';
+export * from './agent-graph-schedule.js';
+export * from './agent-graph-topology.js';
+export * from './agent-graph-client-projection.js';
+export * from './agent-graph-supervisor-wake.js';
+export * from './agent-graph-timeline.js';
+export * from './runtime-policy.js';
+export * from './interaction.js';
+export * from './project.js';
+export * from './subagent-workspace.js';
 
 // events.ts
 export type {
@@ -33,11 +44,17 @@ export type {
   ShellRunStateResult,
   ShellRunUpdateOwnership,
   ShellRunUpdate,
+  SandboxDenialSignal,
   SandboxDenialRecovery,
+  SandboxBoundaryRequestEvent,
+  SandboxBoundaryDecisionAckEvent,
   AdditionalPermissionRequestEvent,
   SandboxEscalationRequestEvent,
   AnyPermissionRequestEvent,
   PermissionRequestEvent,
+  PermissionAnswerAckEvent,
+  PermissionClosureAckEvent,
+  PermissionClosureReason,
   PermissionDecisionAckEvent,
   UserQuestionRequestEvent,
   PlanSubmittedEvent,
@@ -46,12 +63,17 @@ export type {
   SteeringMessageEvent,
   QueueUpdateEvent,
   QueueEnqueueOutcome,
+  ProviderRetryEvent,
+  ProviderRetryScheduledEvent,
+  ProviderRetryStartedEvent,
+  ProviderRetryReason,
   ErrorEvent,
   CompleteEvent,
   AbortEvent,
   StorageRef,
   AttachmentRef,
   QuoteRef,
+  MessageContent,
   AttachmentIngestItem,
   CompleteStopReason,
   ContextBudgetExhaustedDetail,
@@ -64,7 +86,15 @@ export type {
   UserQuestionResult,
 } from './user-question.js';
 export {
+  decodeMessageContent,
   failureClassFromCompleteStopReason,
+  isAttachmentRef,
+  isCanonicalAttachmentRef,
+  isCanonicalStorageRef,
+  isMessageContent,
+  isStorageRef,
+  messageContentsEqual,
+  normalizeMessageContent,
   TOOL_ACTIVITY_KINDS,
   TOOL_OUTPUT_DELTA_MAX_CHARS,
   TOOL_OUTPUT_STREAMS,
@@ -101,6 +131,9 @@ export type {
   RuntimeEventContentKind,
   RuntimeEventTokenUsage,
   RuntimeEventPermissionDecision,
+  RuntimeEventPermissionAnswerAccepted,
+  RuntimeEventPermissionClosureAccepted,
+  RuntimeEventUserQuestionAnswerAccepted,
   RuntimeEventProtocolMarker,
   RuntimeEventToolDispatch,
   RuntimeEventActions,
@@ -119,6 +152,7 @@ export {
   isRuntimeEventAuthor,
   isRuntimeEventStatus,
   decodeRuntimeEvent,
+  decodePersistedRuntimeEvent,
   isTerminalRuntimeEventStatus,
   isTerminalRuntimeEvent,
   isPartialRuntimeEvent,
@@ -156,15 +190,79 @@ export {
 // runtime-event-store.ts
 export type { RuntimeEventStore } from './runtime-event-store.js';
 export { DurableStoreWriteError } from './runtime-event-store.js';
+export type {
+  RuntimeRecoveryBundleCommit,
+  RuntimeRecoveryBundleStore,
+} from './runtime-event-store.js';
+export { TOOL_RECOVERY_BUNDLE_CAPABILITY_V1 } from './runtime-event-store.js';
+export type {
+  ToolLedgerIssue,
+  ToolLedgerIssueCode,
+  GenericToolLedgerAppendValidation,
+  ToolLedgerLane,
+  ToolLedgerLaneValidation,
+  ToolLedgerScanOperation,
+  ToolLedgerScanResult,
+  ToolLedgerTransitionKind,
+  ToolLedgerTransitionValidation,
+} from './tool-ledger-scanner.js';
+export {
+  scanToolLedger,
+  validateGenericToolLedgerAppend,
+  validateToolLedgerEventLane,
+  validateToolLedgerTransition,
+} from './tool-ledger-scanner.js';
+export type {
+  ToolReconcileObservation,
+  ToolReconcileResultFact,
+  ToolRecoveryCompletedDecisionFact,
+  ToolRecoveryDecisionFact,
+  ToolRecoveryFactEnvelope,
+  ToolRecoveryParkedDecisionFact,
+  ToolRecoveryParkReason,
+} from './tool-recovery-fact.js';
+export {
+  TOOL_RECONCILE_RESULT_FACT_KIND,
+  TOOL_RECOVERY_DECISION_FACT_KIND,
+  TOOL_RECOVERY_FACT_VERSION,
+  isToolReconcileResultFact,
+  isToolRecoveryDecisionFact,
+  isToolRecoveryFactEnvelope,
+} from './tool-recovery-fact.js';
+export type {
+  ScannedToolRecoveryInterpretation,
+  ToolRecoveryBundleValidationCode,
+  ToolRecoveryBundleValidationResult,
+  ToolRecoveryEventBundle,
+  ToolRecoveryOperationIdentity,
+} from './tool-recovery-bundle.js';
+export {
+  ToolRecoveryBundleValidationError,
+  assertToolRecoveryEventBundle,
+  interpretScannedToolRecovery,
+  validateToolRecoveryEventBundle,
+} from './tool-recovery-bundle.js';
+export { canonicalToolArgsHash, stableJsonStringify } from './tool-args-identity.js';
+export {
+  encodeCanonicalRuntimeEvent,
+  type CanonicalRuntimeEventEncoding,
+} from './canonical-runtime-event.js';
 
 // session.ts
 export type {
   SessionHeader,
   SessionSummary,
+  LinkedSessionTree,
+  LinkedSessionTreeProjectionOptions,
   SessionChangedEvent,
   SessionChangedReason,
   SessionStatus,
   SessionBlockedReason,
+  SubagentSessionLifecycle,
+  SubagentSessionParent,
+  SubagentSessionRuntime,
+  SubagentSessionRuntimeSummary,
+  SubagentSessionSpawn,
   TurnRecord,
   TurnStateMessage,
   TurnStatus,
@@ -182,17 +280,30 @@ export type {
 export {
   SESSION_STATUSES,
   SESSION_BLOCKED_REASONS,
+  SUBAGENT_SESSION_LIFECYCLES,
+  SUBAGENT_SESSION_RUNTIME_SCHEMA_VERSION,
+  SUBAGENT_SESSION_SPAWN_SCHEMA_VERSION,
   TURN_STATUSES,
+  childSessionsForParent,
+  filterLinkedSessionTree,
+  projectLinkedSessionTree,
   STEP_LIMIT_NOTICE_TEXT,
   deriveTurnRecords,
   isSessionStatus,
   isSessionBlockedReason,
+  isSubagentSessionParent,
+  isSubagentSessionRuntime,
+  isSubagentSessionSpawn,
+  subagentSessionRuntimeSummary,
   isTurnStatus,
   decodeStoredMessageForRead,
   decodeStoredMessageForRecovery,
   userFacingText,
 } from './session.js';
-export { decodeCanonicalToolResultContent } from './tool-result-record-schema.js';
+export {
+  decodeCanonicalToolResultContent,
+  normalizeToolResultContentForRead,
+} from './tool-result-record-schema.js';
 
 // model-thinking.ts
 export type { ThinkingLevel } from './model-thinking.js';
@@ -210,6 +321,7 @@ export type {
   AgentRunInputSummary,
   AgentRunStatus,
   AgentRunStore,
+  RootExecutionDescriptor,
 } from './agent-run.js';
 export {
   AGENT_RUN_STATUSES,
@@ -227,6 +339,7 @@ export type {
   ShellRunOperation,
   ShellRunPatch,
   ShellRunRecord,
+  ShellRunActiveStatus,
   ShellRunStatus,
   ShellRunStore,
   ShellRunTerminalStatus,
@@ -280,12 +393,15 @@ export {
 export { redactSecrets as displayRedactSecrets } from './display-redaction.js';
 export {
   SHELL_RUN_ID_MAX_CHARS,
+  SHELL_RUN_ACTIVE_STATUSES,
   SHELL_RUN_STATUSES,
   SHELL_RUN_TERMINAL_STATUSES,
   isShellOutput,
+  isActiveShellRunStatus,
   isShellRunId,
   isShellRunStatus,
   isValidShellRunState,
+  isValidShellRunStatusTransition,
   isTerminalShellRunStatus,
 } from './shell-run.js';
 
@@ -319,7 +435,6 @@ export type {
   PermissionMode,
   ApprovalsReviewer,
   ApprovalRiskLevel,
-  ActiveApprovalRoutingPolicy,
   ToolCategory,
   PolicyDecision,
   ToolExecutionFacts,
@@ -327,23 +442,18 @@ export type {
   ToolExecutionNetwork,
   ToolExecutionSecrets,
   ToolExecutionWriteBack,
-  PreToolUseInput,
-  PreToolUseResult,
   AdditionalPermissionRequest,
   SandboxEscalationRequest,
   SandboxEscalationRiskSummary,
   PermissionRequest,
   PermissionRequestPayload,
   PermissionResponse,
-  ToolPermissionRule,
-  ToolPermissionRuleMatchInput,
 } from './permission.js';
 export {
   PERMISSION_MODES,
   APPROVALS_REVIEWERS,
   APPROVAL_RISK_LEVELS,
   TOOL_CATEGORIES,
-  PERMISSION_POLICY,
   BUILTIN_TOOL_CATEGORY,
   PRIVILEGED_SHELL_PREFIXES,
   PRIVILEGED_SHELL_PATTERNS,
@@ -351,11 +461,9 @@ export {
   DESTRUCTIVE_GIT_PATTERNS,
   categorizeBash,
   classifyToolUse,
-  approvalRoutingPolicyForMode,
   isPermissionMode,
+  isPermissionModeWithinCeiling,
   isToolCategory,
-  matchToolPermissionRules,
-  preToolUse,
 } from './permission.js';
 
 // computer-use.ts
@@ -430,7 +538,54 @@ export {
   createWorkspaceWritePermissionProfile,
   isDeniedPath,
   isProtectedMetadataPath,
+  isReadOnlyPermissionProfile,
 } from './permission-profile.js';
+
+// sandbox-boundary.ts
+export type {
+  ExecutionBoundary,
+  CreateSandboxBoundaryRequest,
+  LegacyPermissionMode,
+  SandboxBoundaryAccess,
+  SandboxBoundaryExpansion,
+  SandboxBoundaryExpansionAssessment,
+  SandboxBoundaryExpansionValidationFailureReason,
+  SandboxBoundaryExpansionValidationResult,
+  SandboxBoundaryFilesystemEntry,
+  SandboxBoundaryDecision,
+  SandboxBoundaryResponse,
+  SandboxBoundaryRequest,
+  SandboxBoundaryRequestStatus,
+  SandboxBoundarySettlement,
+  SandboxBoundaryScope,
+  SandboxProfile,
+  SettleSandboxBoundaryRequest,
+} from './sandbox-boundary.js';
+export {
+  MAX_EXECUTION_BOUNDARY_SERIALIZED_BYTES,
+  MAX_SANDBOX_BOUNDARY_FILESYSTEM_ENTRIES,
+  MAX_SANDBOX_BOUNDARY_PATH_CHARS,
+  MAX_SANDBOX_BOUNDARY_SERIALIZED_BYTES,
+  SANDBOX_BOUNDARY_ACCESS_MODES,
+  SANDBOX_BOUNDARY_HOST_RESTART_CLOSURE_REASON,
+  SANDBOX_BOUNDARY_REQUEST_STATUSES,
+  SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS,
+  SANDBOX_BOUNDARY_SCOPES,
+  applySandboxBoundaryExpansion,
+  assertExecutionBoundaryCapacity,
+  assessSandboxBoundaryExpansion,
+  compactSandboxBoundaryFilesystemEntries,
+  createBypassExecutionBoundary,
+  createExternalExecutionBoundary,
+  createGenesisExecutionBoundary,
+  createManagedExecutionBoundary,
+  decodeExecutionBoundary,
+  executionBoundaryContains,
+  executionBoundaryDisplayMode,
+  isSandboxBoundaryRestartClosure,
+  sandboxBoundaryExpansionAllowsPath,
+  validateSandboxBoundaryExpansion,
+} from './sandbox-boundary.js';
 
 // additional-permissions.ts
 export type {
@@ -448,10 +603,6 @@ export {
   MAX_ADDITIONAL_FILESYSTEM_ENTRIES,
   MAX_ADDITIONAL_PERMISSION_PATH_CHARS,
   MAX_ADDITIONAL_PERMISSION_SERIALIZED_BYTES,
-  additionalPermissionAllowsPath,
-  additionalPermissionMatchesPath,
-  additionalPermissionRequiredForPath,
-  applyAdditionalPermissionProfile,
   compactAdditionalFileSystemPermissions,
   serializeAdditionalPermissionProfile,
   validateAdditionalPermissionProfile,
@@ -463,20 +614,6 @@ export type {
   CompiledPermissionProfile,
 } from './permission-profile-compiler.js';
 export { compilePermissionProfile } from './permission-profile-compiler.js';
-
-// permission-request-health.ts
-export type {
-  PermissionRequestHealth,
-  PermissionRequestHealthStatus,
-} from './permission-request-health.js';
-export {
-  PERMISSION_REQUEST_EXPIRED_AFTER_MS,
-  PERMISSION_REQUEST_HEALTH_STATUSES,
-  PERMISSION_REQUEST_STALE_AFTER_MS,
-  derivePermissionRequestHealth,
-  formatPermissionRequestWait,
-  isPermissionRequestHealthStatus,
-} from './permission-request-health.js';
 
 // connections.ts
 export type {
@@ -512,6 +649,7 @@ export type {
   BranchFromTurnInput,
   ChildAgentTurnInput,
   CreateSessionInput,
+  CreateSessionRequestInput,
   RegenerateTurnInput,
   ReviseBeforeTurnInput,
   TurnOrchestration,
@@ -521,6 +659,7 @@ export type {
 
 export {
   collapseSessionRevisions,
+  projectRevisionLinkedSessionTree,
   revisionFamilySessionIds,
   sessionRevisionFamilyId,
   visibleSessionRevisionMembers,
@@ -550,6 +689,7 @@ export type {
   DeriveCapabilityReadinessInput,
   FeatureEnablementState,
   MemoryAcceptanceState,
+  DragGrantPermissionId,
   OsPermissionId,
   OsPermissionSnapshot,
   OsPermissionState,
@@ -562,6 +702,8 @@ export {
   CAPABILITY_READINESS_STATES,
   FEATURE_ENABLEMENT_STATES,
   MEMORY_ACCEPTANCE_STATES,
+  DRAG_GRANT_PERMISSION_IDS,
+  isDragGrantPermissionId,
   OS_PERMISSION_IDS,
   OS_PERMISSION_STATES,
   RUNTIME_PROBE_STATES,
@@ -993,6 +1135,7 @@ export type {
   LocalMemoryBackupInfo,
   LocalMemoryOrigin,
   LocalMemoryParseResult,
+  LocalMemoryPromptContext,
   LocalMemorySettings,
   LocalMemoryScope,
   LocalMemorySource,
@@ -1072,7 +1215,6 @@ export {
 export type {
   BackendSendInput,
   RuntimeContinuationMetadata,
-  PermissionDecision,
   AgentBackend,
   BackendCompactHistoryInput,
   BackendCompactHistoryResult,
@@ -1094,6 +1236,7 @@ export type {
   ProviderDefaults,
   ProviderRuntimeAdapter,
   ProviderType,
+  RuntimeExecutionConnection,
   UpdateConnectionInput,
 } from './llm-connections.js';
 export {
@@ -1105,12 +1248,15 @@ export {
   READY_PROVIDER_TYPES,
   backendKindOf,
   connectionEnabledModelIds,
+  deriveConnectionSlug,
+  isWiredOAuthProvider,
   reconcileConnectionAfterModelFetch,
   effectiveBaseUrl,
   migrateConnectionV1ToV2,
   normalizeConnectionBaseUrl,
   normalizeProviderType,
   persistedBaseUrl,
+  providerSupportsModelDiscovery,
   validateConnectionBaseUrl,
   validateSlug,
 } from './llm-connections.js';
@@ -1488,7 +1634,7 @@ export {
 } from './web-search.js';
 
 // explore-agent.ts — read-only deep research session profile.
-export type { QuickChatMode } from './explore-agent.js';
+export type { SessionStartMode } from './explore-agent.js';
 export {
   DEEP_RESEARCH_EVIDENCE_CHECKLIST,
   DEEP_RESEARCH_IMPLEMENTATION_PROMPT_MAX_CHARS,
@@ -1498,12 +1644,9 @@ export {
   DEEP_RESEARCH_SCOPE_OPTIONS,
   DEEP_RESEARCH_STARTER_PROMPTS,
   DEEP_RESEARCH_WORKFLOW_STEPS,
-  QUICK_CHAT_MODES,
   buildDeepResearchSystemPromptFragment,
   buildDeepResearchImplementationPrompt,
   isDeepResearchSession,
-  isQuickChatMode,
-  normalizeQuickChatMode,
 } from './explore-agent.js';
 
 // expert-team.ts — expert-team session labels.

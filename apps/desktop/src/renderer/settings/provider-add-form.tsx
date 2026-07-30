@@ -1,6 +1,16 @@
 import { useState, type FormEvent } from 'react';
-import { PROVIDER_DEFAULTS, validateSlug, type ProviderType } from '@maka/core';
-import { providerAuthRequiresSecret, providerAuthSupportsApiKey } from '@maka/core/llm-connections';
+import {
+  PROVIDER_DEFAULTS,
+  deriveConnectionSlug,
+  isWiredOAuthProvider,
+  validateSlug,
+  type ProviderType,
+} from '@maka/core';
+import {
+  providerAuthRequiresSecret,
+  providerAuthSupportsApiKey,
+  providerSupportsModelDiscovery,
+} from '@maka/core/llm-connections';
 import { Alert, AlertDescription, AlertTitle, Button, Chip, Input, useMountedRef, useUiLocale } from '@maka/ui';
 import { buildCatalogRecommendedDefaultModel } from '../model-catalog-choices';
 import { PasswordInput } from './password-input';
@@ -8,8 +18,6 @@ import { providerDisplay } from './provider-display';
 import { useActionGuard } from './use-action-guard';
 import {
   categoryLabel,
-  isWiredOAuthProvider,
-  nextSlug,
   providerPanelActionErrorMessage,
   type ConnectionsBridge,
 } from './provider-panel-shared';
@@ -20,14 +28,16 @@ export function AddProviderForm(props: {
   providerType: ProviderType;
   existingSlugs: string[];
   onCancel(): void;
-  onCreated(slug: string): Promise<void>;
+  onCreated(slug: string, modelDiscoveryError?: unknown): Promise<void>;
 }) {
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).add;
   const defaults = PROVIDER_DEFAULTS[props.providerType];
   const display = providerDisplay(props.providerType, locale);
   const recommendedDefaultModel = buildCatalogRecommendedDefaultModel(props.providerType);
-  const [slug, setSlug] = useState(() => nextSlug(props.providerType, props.existingSlugs));
+  const [slug, setSlug] = useState(() =>
+    deriveConnectionSlug(props.providerType, props.existingSlugs),
+  );
   const [name, setName] = useState(display.name);
   const [baseUrl, setBaseUrl] = useState(defaults.baseUrl);
   const [cloudflareAccountId, setCloudflareAccountId] = useState('');
@@ -44,6 +54,7 @@ export function AddProviderForm(props: {
   const isCustomRelay = defaults.category === 'custom';
   const isExperimental = defaults.status === 'phase3-experimental';
   const isWiredOAuth = isWiredOAuthProvider(props.providerType);
+  const supportsRemoteDiscovery = providerSupportsModelDiscovery(props.providerType);
   const supportsApiKey = providerAuthSupportsApiKey(props.providerType);
   const requiresApiKey = providerAuthRequiresSecret(props.providerType) && supportsApiKey;
   const usesApiKeyDialog = usesQuickApiKeyDialog(props.providerType);
@@ -86,9 +97,16 @@ export function AddProviderForm(props: {
         ...(normalizedApiKey ? { apiKey: normalizedApiKey } : {}),
       });
       if (!addProviderMountedRef.current) return;
-      if (isCustomRelay) await props.bridge.fetchModels(connection.slug).catch(() => undefined);
+      let modelDiscoveryError: unknown;
+      if (supportsRemoteDiscovery) {
+        try {
+          await props.bridge.fetchModels(connection.slug);
+        } catch (error) {
+          if (!isCustomRelay) modelDiscoveryError = error;
+        }
+      }
       if (!addProviderMountedRef.current) return;
-      await props.onCreated(connection.slug);
+      await props.onCreated(connection.slug, modelDiscoveryError);
     } catch (err) {
       if (addProviderMountedRef.current) setError(providerPanelActionErrorMessage(err, locale));
     } finally {

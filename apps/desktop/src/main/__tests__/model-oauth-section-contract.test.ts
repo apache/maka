@@ -3,8 +3,8 @@
  * the provider settings source files
  * (PR-MODEL-OAUTH-ALL-0).
  *
- * Pins the user-visible OAuth login surface: three runnable cards
- * (Claude / Codex / GitHub Copilot), each marked
+ * Pins the user-visible OAuth login surface: four runnable cards
+ * (Claude / Codex / GitHub Copilot / xAI), each marked
  * `status: 'available'`, and each click wires through to its
  * matching `window.maka.<provider>Subscription` bridge namespace.
  *
@@ -115,7 +115,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       src,
-      /onCreated=\{async \(\) => \{[\s\S]*const lifecycle = providerDialogLifecycleRef\.current;[\s\S]*const reloaded = await reload\(\);[\s\S]*providerDialogLifecycleRef\.current !== lifecycle[\s\S]*\) return;[\s\S]*closeDialog\(\);/,
+      /onCreated=\{async \(_slug, modelDiscoveryError\) => \{[\s\S]*const lifecycle = providerDialogLifecycleRef\.current;[\s\S]*const reloaded = await reload\(\);[\s\S]*providerDialogLifecycleRef\.current !== lifecycle[\s\S]*\) return;[\s\S]*closeDialog\(\);/,
       'AddProviderForm completion must not close a newer dialog after the original dialog was dismissed',
     );
     assert.match(
@@ -129,7 +129,8 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     const providers = await readProviderSettingsCombinedSource();
     const main = await readMainProcessCombinedSource();
     const detail = providers.match(/function ConnectionDetail[\s\S]*?function modelIdListsEqual\(/)?.[0] ?? '';
-    const addForm = providers.match(/function AddProviderForm[\s\S]*?function nextSlug/)?.[0] ?? '';
+    const addForm =
+      providers.match(/function AddProviderForm[\s\S]*?function usesQuickApiKeyDialog/)?.[0] ?? '';
 
     assert.match(
       providers,
@@ -268,7 +269,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       addForm,
-      /const connection = await props\.bridge\.create\([\s\S]*\);[\s\S]*if \(!addProviderMountedRef\.current\) return;[\s\S]*await props\.onCreated\(connection\.slug\);/,
+      /const connection = await props\.bridge\.create\([\s\S]*\);[\s\S]*if \(!addProviderMountedRef\.current\) return;[\s\S]*await props\.onCreated\(connection\.slug, modelDiscoveryError\);/,
       'AddProviderForm create completion must not re-open/select provider detail after the sheet was closed mid-save',
     );
     assert.match(
@@ -296,6 +297,11 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
       /connections:fetchModels[\s\S]*generalizedErrorMessageChinese\(error,\s*'拉取模型列表失败'\)/,
       'main-process fetchModels errors must be localized before crossing IPC to renderer toasts',
     );
+    assert.match(
+      main,
+      /error instanceof ConnectionModelDiscoveryPreconditionError[\s\S]*throw error/,
+      'safe discovery precondition copy must survive IPC error generalization',
+    );
     assert.doesNotMatch(
       main,
       /No OAuth login stored for this connection|No API key set for this connection|Failed to fetch provider models/,
@@ -314,7 +320,56 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     assert.match(src, /initialFocus=\{\(\) =>[\s\S]*summary[\s\S]*\?\? true\}/, 'connection dialogs must focus the visible Advanced summary when no form control precedes it');
     assert.match(src, /ariaLabel="API Key"/);
     assert.match(src, /\.\.\.\(normalizedApiKey \? \{ apiKey: normalizedApiKey \} : \{\}\)/);
+    assert.match(
+      src,
+      /const supportsRemoteDiscovery = providerSupportsModelDiscovery\(props\.providerType\);[\s\S]*if \(supportsRemoteDiscovery\) \{[\s\S]*props\.bridge\.fetchModels\(connection\.slug\)[\s\S]*props\.onCreated\(connection\.slug, modelDiscoveryError\)/,
+      'new connections with a discovery strategy must fetch the current catalog immediately',
+    );
     assert.doesNotMatch(src, /ProviderPageHeader|providerInlineEditor/, 'creation must not retain an in-pane child editor');
+  });
+
+  it('refreshes discoverable providers after credential or endpoint changes', async () => {
+    const detail = await readFile(
+      resolve(
+        REPO_ROOT,
+        'apps',
+        'desktop',
+        'src',
+        'renderer',
+        'settings',
+        'use-connection-detail.ts',
+      ),
+      'utf8',
+    );
+
+    assert.match(
+      detail,
+      /const supportsRemoteDiscovery = providerSupportsModelDiscovery\(connection\.providerType\);/,
+      'connection detail must derive refresh support from the provider discovery contract',
+    );
+    assert.match(
+      detail,
+      /if \([\s\S]*supportsRemoteDiscovery[\s\S]*&&[\s\S]*\(wroteNewKey \|\| hasBaseUrlChange \|\| models\.length === 0\)[\s\S]*\) \{[\s\S]*refreshModels\(\{ silent: true \}\)/,
+      'saving a new credential or endpoint must refresh the remote model catalog',
+    );
+
+    const component = await readFile(
+      resolve(
+        REPO_ROOT,
+        'apps',
+        'desktop',
+        'src',
+        'renderer',
+        'settings',
+        'provider-connection-detail.tsx',
+      ),
+      'utf8',
+    );
+    assert.match(
+      component,
+      /\{supportsRemoteDiscovery && \([\s\S]*onClick=\{\(\) => void refreshModels\(\)\}[\s\S]*\)\}/,
+      'fallback-only providers must not render a model-refresh action',
+    );
   });
 
   it('OAuth login uses the same centered connection dialog as API providers', async () => {
@@ -470,7 +525,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     const ids = [...body.matchAll(/id:\s*'([a-z-]+)'/g)].map((m) => m[1]);
     assert.deepEqual(
       ids.sort(),
-      ['claude', 'codex', 'github-copilot'],
+      ['claude', 'codex', 'github-copilot', 'xai'],
       'the catalog must hide account logins that cannot create a runnable model connection',
     );
 
@@ -563,7 +618,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     assert.ok(match, 'modelOAuthCards locale-aware factory must exist');
     const body = match[1]!;
     const statuses = [...body.matchAll(/status:\s*'([a-z_]+)'/g)].map((m) => m[1]);
-    assert.equal(statuses.length, 3, 'each visible runnable card must declare a status');
+    assert.equal(statuses.length, 4, 'each visible runnable card must declare a status');
     for (const s of statuses) {
       assert.equal(s, 'available', `card status must be 'available', got '${s}'`);
     }
@@ -957,8 +1012,8 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     // catches enabled-model refresh failures.
     assert.match(
       src,
-      /async function refreshAfterModalClose\(\)[\s\S]*?await refreshAllCards\(\)[\s\S]*?await props\.onConnectionsChanged\(\)/,
-      'modal onClose must call refreshAllCards so the card updates after login',
+      /async function refreshAfterOAuthChange\(\)[\s\S]*?await refreshAllCards\(\)[\s\S]*?await props\.onConnectionsChanged\(\)/,
+      'OAuth changes must refresh both the account card and connection list',
     );
     assert.match(
       src,
@@ -967,8 +1022,13 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       src,
-      /onClose=\{\(\)\s*=>\s*\{[\s\S]*?void refreshAfterModalClose\(\)/,
+      /onClose=\{\(\)\s*=>\s*\{[\s\S]*?void refreshAfterOAuthChange\(\)/,
       'modal onClose must call the fail-soft refresh helper',
+    );
+    assert.match(
+      src,
+      /<SubscriptionLoginModal[\s\S]*onLoginSuccess=\{refreshAfterOAuthChange\}/,
+      'successful Codex OAuth must refresh immediately without waiting for modal close',
     );
     // 5. Card render shows "已登录" badge when authenticated.
     assert.match(
@@ -992,7 +1052,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     const sectionMatch = src.match(/function ModelOAuthSection[\s\S]*?function ClaudeSubscriptionModal/);
     assert.ok(sectionMatch, 'ModelOAuthSection must exist');
     const section = sectionMatch[0]!;
-    const refreshMatch = section.match(/async function refreshAllCards\(\)[\s\S]*?async function refreshAfterModalClose/);
+    const refreshMatch = section.match(/async function refreshAllCards\(\)[\s\S]*?async function refreshAfterOAuthChange/);
     assert.ok(refreshMatch, 'refreshAllCards must exist inside ModelOAuthSection');
     const refresh = refreshMatch[0]!;
 
@@ -1048,7 +1108,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       section,
-      /async function refreshAfterModalClose\(\) \{[\s\S]*const refreshed = await refreshAllCards\(\);[\s\S]*if \(!modelOAuthMountedRef\.current \|\| !refreshed\) return;[\s\S]*await props\.onConnectionsChanged\(\);/,
+      /async function refreshAfterOAuthChange\(\) \{[\s\S]*const refreshed = await refreshAllCards\(\);[\s\S]*if \(!modelOAuthMountedRef\.current \|\| !refreshed\) return;[\s\S]*await props\.onConnectionsChanged\(\);/,
       'modal close continuation must not refresh enabled providers after a stale OAuth card refresh',
     );
     assert.match(
@@ -1093,10 +1153,17 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
   });
 
-  it('SubscriptionLoginModal keeps only the runnable Codex catalog bridge', async () => {
+  it('SubscriptionLoginModal routes the runnable Codex and xAI browser flows through one seam', async () => {
     const src = await readProviderSettingsCombinedSource();
     const modal = src.match(/function SubscriptionLoginModal[\s\S]*?function ClaudeSubscriptionCard/)?.[0] ?? '';
     assert.match(modal, /window\.maka\.openAiCodex/);
+    assert.match(modal, /window\.maka\.xaiOAuth/);
+    assert.match(modal, /service: 'codex' \| 'xai'/);
+    assert.match(
+      modal,
+      /\{isXai \? copy\.deviceCode : copy\.stateHint\}/,
+      'xAI must identify the RFC 8628 user code instead of presenting it as a loopback state hint',
+    );
     assert.doesNotMatch(modal, /pickSubscriptionBridge|cursorSubscription|antigravitySubscription/, 'hidden non-runnable catalog services must not retain unreachable modal branches');
   });
 
