@@ -1,10 +1,22 @@
 import { EventEmitter } from 'node:events';
 import { test, expect } from '@playwright/test';
-import {
-  closeElectronApplication,
-  type ClosableElectronApplication,
-  type ElectronProcessHandle,
-} from './electron-lifecycle.js';
+import { closeElectronApplication } from '../../../scripts/electron-lifecycle.mjs';
+
+// Local shapes for the fake: the implementation moved to a plain-node .mjs
+// (shared with the migration contract harness), which carries its types as
+// JSDoc rather than exported interfaces.
+interface ElectronProcessHandle {
+  exitCode: number | null;
+  signalCode: NodeJS.Signals | null;
+  kill(signal: NodeJS.Signals): boolean;
+  once(event: 'exit', listener: () => void): unknown;
+  off(event: 'exit', listener: () => void): unknown;
+}
+
+interface ClosableElectronApplication {
+  close(): Promise<void>;
+  process(): ElectronProcessHandle;
+}
 
 class FakeElectronProcess extends EventEmitter implements ElectronProcessHandle {
   exitCode: number | null = null;

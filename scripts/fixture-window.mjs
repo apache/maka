@@ -18,6 +18,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { _electron as electron } from '@playwright/test';
+import { closeElectronApplication } from './electron-lifecycle.mjs';
 import { buildFixtureEnv, isCiLinuxDisplay } from './fixture-env.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -25,6 +26,12 @@ const DESKTOP_DIR = join(ROOT, 'apps', 'desktop');
 
 export const DEFAULT_READY_TIMEOUT_MS = Number(process.env.FIXTURE_READY_TIMEOUT_MS ?? 30_000);
 export const DEFAULT_SETTLE_MS = Number(process.env.FIXTURE_SETTLE_MS ?? 1_000);
+// Playwright's evaluate has no deadline of its own: a renderer that wedges or
+// an expression that returns a never-settling promise would hang the run
+// forever. Generous, because a capture expression walks the whole tree.
+const EVALUATE_TIMEOUT_MS = Number(process.env.FIXTURE_EVALUATE_TIMEOUT_MS ?? 60_000);
+// Grace for ElectronApplication.close() before the process tree is SIGKILLed.
+const CLOSE_GRACE_MS = 5_000;
 /**
  * Pinned so a capture taken here matches one taken anywhere else. Any IANA
  * name works; UTC is the one nobody has to look up.
@@ -128,14 +135,40 @@ export async function withFixtureWindow(scenario, options, fn) {
     }
     // Readiness says the surface mounted; this covers the paint after it.
     if (settleMs > 0) await page.waitForTimeout(settleMs);
-    const evaluate = (expression) => page.evaluate(expression);
+    const evaluate = (expression) =>
+      withDeadline(page.evaluate(expression), EVALUATE_TIMEOUT_MS, `${scenario}: evaluate`);
     await evaluate(SETTLE_EXPR);
     return await fn({ evaluate, page });
   } finally {
     try {
-      if (app) await app.close();
+      // Bounded: a wedged Electron must cost seconds, not a hung run. The
+      // same close the E2E suite uses — grace, then SIGKILL the tree.
+      if (app) await closeElectronApplication(app, CLOSE_GRACE_MS);
     } finally {
       await rm(userDataDir, { recursive: true, force: true });
     }
+  }
+}
+
+/**
+ * @param {Promise<any>} promise
+ * @param {number} timeoutMs
+ * @param {string} label
+ */
+async function withDeadline(promise, timeoutMs, label) {
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${label} did not settle within ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
