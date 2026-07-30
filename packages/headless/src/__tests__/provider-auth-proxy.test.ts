@@ -1159,3 +1159,94 @@ test('proxy keeps upstream on HTTP/1.1 and forwards concurrent streams in parall
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('proxy telemetry separates dispatcher queue time from upstream wait', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-provider-proxy-'));
+  const keyFile = join(dir, 'provider-key');
+  await writeFile(keyFile, 'provider-secret-key\n', 'utf8');
+  // The injected clock makes every recorded timestamp exact, so the
+  // assertions below are equalities, not wall-clock thresholds.
+  let clock = 0;
+  let releaseFirst: () => void = () => {};
+  let firstArrived: () => void = () => {};
+  const firstUpstream = new Promise<void>((resolve) => {
+    firstArrived = resolve;
+  });
+  const upstream = http2CreateSecureServer(
+    { key: TEST_TLS_KEY, cert: TEST_TLS_CERT, allowHTTP1: true },
+    (request, response) => {
+      if (request.url === '/api/v4/first') {
+        response.writeHead(200, { 'content-type': 'text/plain' });
+        response.write('held');
+        releaseFirst = () => response.end('done');
+        firstArrived();
+        return;
+      }
+      // The queued request reaches the wire only after the held one ends;
+      // advance the clock before answering so pure upstream wait shows up as
+      // responseHeadersMs minus upstreamStartMs.
+      clock = 7000;
+      response.writeHead(200, { 'content-type': 'text/plain' });
+      response.end('ok');
+    },
+  );
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  const upstreamAddress = upstream.address();
+  assert.ok(upstreamAddress && typeof upstreamAddress !== 'string');
+  // A single upstream connection forces the second request to sit in the
+  // dispatcher queue until the first stream ends. The compose counter is the
+  // deterministic gate that it entered the pool before the clock advances.
+  let dispatches = 0;
+  let secondQueued: () => void = () => {};
+  const secondInPool = new Promise<void>((resolve) => {
+    secondQueued = resolve;
+  });
+  const upstreamDispatcher = createProviderUpstreamDispatcher({
+    connections: 1,
+    connect: { ca: TEST_TLS_CERT },
+  }).compose((dispatch) => (options, handler) => {
+    const dispatched = dispatch(options, handler);
+    dispatches += 1;
+    if (dispatches === 2) secondQueued();
+    return dispatched;
+  });
+  const proxy = await startProviderAuthProxy({
+    upstreamBaseUrl: `https://127.0.0.1:${upstreamAddress.port}/api/v4/`,
+    apiKeyFile: keyFile,
+    advertisedHost: '127.0.0.1',
+    now: () => clock,
+    upstreamDispatcher,
+  });
+  try {
+    const request = (path: string) =>
+      fetch(`${proxy.baseUrl}/${path}`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${proxy.token}`, 'content-type': 'application/json' },
+        body: '{}',
+        signal: AbortSignal.timeout(10_000),
+      });
+    const first = request('first');
+    await firstUpstream;
+    clock = 1000;
+    const second = request('second');
+    await secondInPool;
+    clock = 6000;
+    releaseFirst();
+    const [firstResponse, secondResponse] = await Promise.all([first, second]);
+    assert.equal(firstResponse.status, 200);
+    assert.equal(secondResponse.status, 200);
+    await Promise.all([firstResponse.text(), secondResponse.text()]);
+    const byPath = new Map(proxy.telemetry().map((entry) => [entry.path, entry]));
+    assert.equal(byPath.get('/api/v4/first')?.upstreamStartMs, 0);
+    // Started at 1000, left the dispatcher queue at 6000 when the held
+    // connection freed, got upstream headers at 7000. A stamp taken before
+    // dispatch reads 0; one taken at response headers reads 6000; a dropped
+    // stamp reads undefined. Only queue-exit semantics yield 5000.
+    assert.equal(byPath.get('/api/v4/second')?.upstreamStartMs, 5000);
+    assert.equal(byPath.get('/api/v4/second')?.responseHeadersMs, 6000);
+  } finally {
+    await proxy.close();
+    upstream.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
