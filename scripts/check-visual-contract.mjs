@@ -27,16 +27,24 @@
 // base is out of scope for the migration: "zero diff" means "the migration
 // did not move this element", never "this element is right".
 //
-// Known blind spot, stated rather than papered over: elements inside a
-// `display: none` subtree have no box and never enter the capture, so closed
-// menus, popovers and unmounted dialogs are out of contract. Covering them
-// means driving the UI open, which is an interaction test, not a snapshot.
+// Known blind spots, stated rather than papered over:
+//   - Elements inside a `display: none` subtree have no box and never enter
+//     the capture, so closed menus, popovers and unmounted dialogs are out of
+//     contract. Covering them means driving the UI open, which is an
+//     interaction test, not a snapshot.
+//   - Pseudo-elements are captured as paint signatures only: they expose no
+//     client rect, so a pseudo that moves without changing any computed
+//     property is invisible here.
+//   - Top-layer content (dialog.showModal, popover, fullscreen) renders even
+//     under an opacity:0 ancestor, but the walk prunes that subtree. Nothing
+//     in the app uses the native top layer today; if that changes, the prune
+//     needs a top-layer exemption.
 //
 // Migration-only scaffolding. It is deliberately not wired into CI, following
 // the check:chat-visual precedent, and is removed in PR 14 together with the
 // maka.legacy layer.
 import { spawn } from 'node:child_process';
-import { access, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -101,6 +109,7 @@ export const PROPERTIES = [
   'borderRadius',
   'boxShadow',
   'outline',
+  'mixBlendMode',
   'fontFamily',
   'fontSize',
   'fontWeight',
@@ -142,6 +151,7 @@ export const INITIAL_VALUES = {
   borderStyle: 'none',
   borderRadius: '0px',
   boxShadow: 'none',
+  mixBlendMode: 'normal',
   backgroundColor: 'rgba(0, 0, 0, 0)',
   backgroundImage: 'none',
   alignItems: 'normal',
@@ -201,6 +211,36 @@ const CAPTURE_EXPR = `(() => {
   // whole.
   const DECORATION = '.os-scrollbar, .os-trinsic-observer';
   const out = [];
+  // Dead-rule accounting happens HERE, at the raw sample, not by inspecting
+  // the compressed output afterwards: a rule can be shadowed by another skip
+  // (the border/outline paint gates) and an output-based check would never
+  // know whether it matched. A rule with zero hits across every sampled
+  // element never matches what Chromium serialises.
+  const hits = {};
+  for (const property of Object.keys(INITIAL_VALUES)) hits[property] = 0;
+  let sampled = 0;
+  const writeStyles = (style, record, inheritedBase) => {
+    sampled += 1;
+    const paintsBorder = Number.parseFloat(style.borderWidth) > 0;
+    // Outline's shorthand resolves its colour from currentColor, so an
+    // unpainted outline still serialises a per-element value that can never
+    // equal a fixed initial. Style is what decides whether it paints.
+    const paintsOutline = style.outlineStyle !== 'none';
+    for (const property of PROPERTIES) {
+      const value = roundPx(style[property]);
+      if (value === '' || value == null) continue;
+      if (INITIAL_VALUES[property] === value) {
+        hits[property] += 1;
+        continue;
+      }
+      // Tailwind's preflight sets border-style:solid on every element, so a
+      // zero-width border carries a style and a colour that paint nothing.
+      if (!paintsBorder && (property === 'borderStyle' || property === 'borderColor')) continue;
+      if (!paintsOutline && property === 'outline') continue;
+      if (INHERITED.has(property) && inheritedBase[property] === value) continue;
+      record[property] = value;
+    }
+  };
   // The 'inherited' argument is the inherited state of the nearest RECORDED
   // ancestor, not of the parent element. Those differ whenever a wrapper has
   // no box — a zero-size or display:contents node is skipped, so nothing in
@@ -250,25 +290,22 @@ const CAPTURE_EXPR = `(() => {
         .filter((name) => name.startsWith('maka-') || /[A-Z]/.test(name))
         .slice(0, 3);
       if (named.length > 0) record.classes = named.join(' ');
-      // Tailwind's preflight sets border-style:solid on every element, so
-      // a zero-width border carries a style and a colour that paint nothing.
-      // Recording them put two constants on nearly every record.
-      const paintsBorder = Number.parseFloat(style.borderWidth) > 0;
-      // Same shape for outline, with a twist: its shorthand resolves the
-      // colour from currentColor, so an unpainted outline still serialises a
-      // per-element value that can never equal a fixed initial. Style is what
-      // decides whether it paints.
-      const paintsOutline = style.outlineStyle !== 'none';
-      for (const property of PROPERTIES) {
-        if (!paintsBorder && (property === 'borderStyle' || property === 'borderColor')) continue;
-        if (!paintsOutline && property === 'outline') continue;
-        const value = roundPx(style[property]);
-        if (value === '' || value == null) continue;
-        if (INITIAL_VALUES[property] === value) continue;
-        if (INHERITED.has(property) && inherited[property] === value) continue;
-        record[property] = value;
-      }
+      writeStyles(style, record, inherited);
       out.push(record);
+      // Painted pseudo-elements. A cascade migration can flip a decoration
+      // like the body::after film-grain overlay — opacity, blend mode,
+      // background — while the host element's own record stays byte-identical.
+      // Pseudo-elements have no client rect to read, so this is a paint
+      // signature only; they inherit from their originating element.
+      for (const pseudo of ['::before', '::after']) {
+        const ps = getComputedStyle(el, pseudo);
+        if (ps.content === 'none' || ps.display === 'none') continue;
+        if (ps.visibility === 'hidden' || Number.parseFloat(ps.opacity) === 0) continue;
+        const pseudoRecord = { path: path + pseudo };
+        if (ps.content !== '""') pseudoRecord.content = ps.content.slice(0, 40);
+        writeStyles(ps, pseudoRecord, ownInherited);
+        out.push(pseudoRecord);
+      }
     }
     // Descend even through invisible parents: a zero-size wrapper can still
     // hold visible children (common for absolutely positioned overlays). Only
@@ -284,7 +321,7 @@ const CAPTURE_EXPR = `(() => {
     }
   };
   walk(document.body, 'body', {});
-  return JSON.stringify(out);
+  return JSON.stringify({ records: out, omission: { sampled, hits } });
 })()`;
 
 // #1565 asks for the mega-branch's late "fix cascade / fix click" commits to
@@ -366,17 +403,21 @@ export function checkSalvagedAnchors(captures, anchors = SALVAGED_ANCHORS) {
 }
 
 /**
- * Fail loudly when an omission rule stops matching what Chromium serialises.
+ * Fail loudly when an omission rule never matches what Chromium serialises.
  * The previous table guessed three values, none of them ever matched, and the
  * properties they were meant to drop ended up on every record — invisible,
  * because over-recording never fails anything.
+ *
+ * Judged from the raw sampling counts the capture takes as it reads each
+ * computed value, not from the compressed output: a rule shadowed by another
+ * skip (the border/outline paint gates) is invisible in the output but still
+ * counted at the sample.
  */
-export function findDeadOmissionRules(records, initialValues = INITIAL_VALUES) {
-  if (records.length === 0) return [];
+export function findDeadOmissionRules(omission, initialValues = INITIAL_VALUES) {
+  if (!omission || omission.sampled === 0) return [];
   const dead = [];
   for (const property of Object.keys(initialValues)) {
-    const present = records.filter((record) => property in record).length;
-    if (present === records.length) dead.push({ property, present, total: records.length });
+    if ((omission.hits[property] ?? 0) === 0) dead.push({ property, sampled: omission.sampled });
   }
   return dead;
 }
@@ -391,12 +432,25 @@ export function parseArgs(argv) {
     }
     return next;
   };
+  // Closed sets. An unknown value must not reach the capture: the fixture
+  // fails closed on an invalid platform (the app reports the real host OS),
+  // so `--platform not-an-os` would print a green comparison labelled with a
+  // platform it never measured.
+  const oneOf = (index, flag, allowed) => {
+    const next = value(index, flag);
+    if (!allowed.includes(next)) {
+      console.error(`[visual-contract] ${flag} must be one of: ${allowed.join(', ')}`);
+      process.exit(2);
+    }
+    return next;
+  };
+  const routeIds = ROUTES.map((route) => route.id);
   for (let i = 2; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--against') args.against = value(++i, arg);
-    else if (arg === '--route') (args.routes ??= []).push(value(++i, arg));
-    else if (arg === '--theme') (args.themes ??= []).push(value(++i, arg));
-    else if (arg === '--platform') (args.platforms ??= []).push(value(++i, arg));
+    else if (arg === '--route') (args.routes ??= []).push(oneOf(++i, arg, routeIds));
+    else if (arg === '--theme') (args.themes ??= []).push(oneOf(++i, arg, THEMES));
+    else if (arg === '--platform') (args.platforms ??= []).push(oneOf(++i, arg, PLATFORMS));
     else if (arg === '--help' || arg === '-h') args.help = true;
     else {
       console.error(`[visual-contract] unknown arg: ${arg}`);
@@ -468,48 +522,60 @@ async function buildDesktop(dir) {
 }
 
 /**
- * A worktree of `ref` with a finished build, cached in tmpdir keyed by the
- * resolved commit — iterating on a slice rebuilds only the working tree, not
- * the base. The cache is sound because the key is the content: a different
- * base commit is a different directory. Stale worktree registrations are
- * pruned on the next run after the OS clears its tmpdir.
+ * A worktree of `ref` with its own `npm ci` and a finished build, cached in
+ * tmpdir keyed by the resolved commit — iterating on a slice rebuilds only
+ * the working tree, not the base. The cache is sound because the key is the
+ * content: a different base commit is a different directory. Stale worktree
+ * registrations are pruned on the next run after the OS clears its tmpdir.
  *
- * node_modules are shared by symlink instead of a per-worktree `npm ci`,
- * which is why the compare refuses to run across a package-lock change: a
- * base built against the wrong dependency tree measures nothing.
+ * The install is deliberately NOT shared with this checkout. An earlier
+ * version symlinked node_modules across, and the workspace links inside it
+ * (`node_modules/@maka/* → ../../packages/*`) resolved right back to the
+ * WORKING TREE's packages — the base bundled and loaded the candidate's own
+ * code, so a slice that changed a workspace package compared it against
+ * itself. `npm ci` against the base's own lockfile is the only dependency
+ * closure that actually belongs to the base; it also means a slice may
+ * legitimately change dependencies. Cost: one install per new base commit,
+ * then cached.
  */
 async function ensureBaseBuild(ref) {
   const sha = (await run('git', ['rev-parse', `${ref}^{commit}`], ROOT)).trim();
-  const baseLock = await run('git', ['show', `${sha}:package-lock.json`], ROOT);
-  const currentLock = await readFile(join(ROOT, 'package-lock.json'), 'utf8');
-  if (baseLock !== currentLock) {
-    throw new Error(
-      `package-lock.json differs between ${ref} and the working tree, so the base cannot reuse this checkout's node_modules. Rebase the slice or run the compare from a checkout whose dependencies match the base.`,
-    );
-  }
   const dir = join(tmpdir(), `maka-visual-contract-${sha.slice(0, 12)}`);
-  const marker = join(dir, '.maka-visual-contract-built');
+  // The marker name encodes the install scheme: caches built by the earlier
+  // symlink-sharing version carry a different marker and are rebuilt, not
+  // trusted — their dependency closure was the working tree's, not the base's.
+  const marker = join(dir, '.maka-visual-contract-ci-built');
   if (await exists(marker)) {
     console.log(`base ${ref} (${sha.slice(0, 12)}): reusing cached build in ${dir}`);
     return { dir, sha };
   }
-  console.log(`base ${ref} (${sha.slice(0, 12)}): building in ${dir}`);
-  await rm(dir, { recursive: true, force: true });
-  await run('git', ['worktree', 'prune'], ROOT);
-  await run('git', ['worktree', 'add', '--detach', dir, sha], ROOT);
-  for (const rel of [
-    'node_modules',
-    'apps/desktop/node_modules',
-    'packages/headless/node_modules',
-    'packages/runtime/node_modules',
-  ]) {
-    if ((await exists(join(ROOT, rel))) && !(await exists(join(dir, rel)))) {
-      await symlink(join(ROOT, rel), join(dir, rel), 'dir');
-    }
+  // Two concurrent runs must not build into the same directory — the loser
+  // would rm the winner's half-finished build. mkdir is atomic; the loser
+  // fails loudly rather than corrupting the cache.
+  const lockDir = `${dir}.lock`;
+  try {
+    await mkdir(lockDir);
+  } catch {
+    throw new Error(
+      `another compare is already building this base (${lockDir} exists). Wait for it, or remove the lock if that run is dead.`,
+    );
   }
-  await buildDesktop(dir);
-  await writeFile(marker, sha);
-  return { dir, sha };
+  try {
+    if (await exists(marker)) {
+      console.log(`base ${ref} (${sha.slice(0, 12)}): reusing cached build in ${dir}`);
+      return { dir, sha };
+    }
+    console.log(`base ${ref} (${sha.slice(0, 12)}): worktree + npm ci + build in ${dir}`);
+    await rm(dir, { recursive: true, force: true });
+    await run('git', ['worktree', 'prune'], ROOT);
+    await run('git', ['worktree', 'add', '--detach', dir, sha], ROOT);
+    await run('npm', ['ci'], dir, { inherit: true });
+    await buildDesktop(dir);
+    await writeFile(marker, sha);
+    return { dir, sha };
+  } finally {
+    await rm(lockDir, { recursive: true, force: true });
+  }
 }
 
 // Report every element that appeared, disappeared, or changed any recorded
@@ -599,10 +665,6 @@ async function main() {
   const routes = args.routes ? ROUTES.filter((route) => args.routes.includes(route.id)) : ROUTES;
   const themes = args.themes ?? THEMES;
   const platforms = args.platforms ?? PLATFORMS;
-  if (routes.length === 0) {
-    console.error('[visual-contract] no matching route');
-    process.exit(2);
-  }
   const base = await ensureBaseBuild(args.against);
   console.log('building the working tree');
   await buildDesktop(ROOT);
@@ -618,14 +680,30 @@ async function main() {
           withFixtureWindow(
             route.scenario,
             { theme, platform, readySelector: route.ready, desktopDir },
-            async ({ evaluate }) => JSON.parse(await evaluate(CAPTURE_EXPR)),
+            async ({ evaluate, page }) => {
+              // The capture must prove it measured the cascade it claims.
+              // data-os arrives async over app:info and fails silently unset;
+              // if that seam regresses, both platform columns would capture
+              // the host cascade and diff green forever.
+              await page
+                .waitForFunction(
+                  `document.documentElement.getAttribute('data-os') === '${platform}' && document.documentElement.classList.contains('dark') === ${theme === 'dark'}`,
+                  { timeout: 10_000 },
+                )
+                .catch(() => {
+                  throw new Error(
+                    `renderer never reached data-os=${platform} theme=${theme}; the capture would have measured the wrong cascade`,
+                  );
+                });
+              return JSON.parse(await evaluate(CAPTURE_EXPR));
+            },
           );
-        let baseRecords;
-        let records;
+        let base;
+        let current;
         try {
           // Both sides concurrently: the launcher attaches to the window it
           // spawned (not a port), so two live fixture windows cannot cross.
-          [baseRecords, records] = await Promise.all([
+          [base, current] = await Promise.all([
             capture(baseDesktopDir),
             capture(join(ROOT, 'apps', 'desktop')),
           ]);
@@ -635,12 +713,14 @@ async function main() {
           continue;
         }
         compared += 1;
+        const baseRecords = base.records;
+        const records = current.records;
         captures.set(`${route.id}.${theme}.${platform}`, records);
         // An omission rule that never matches silently inflates every record.
-        for (const dead of findDeadOmissionRules(records)) {
+        for (const dead of findDeadOmissionRules(current.omission)) {
           failures += 1;
           console.log(
-            `FAIL ${key}: "${dead.property}" survives on all ${dead.total} records, so its INITIAL_VALUES entry never matches what Chromium serialises`,
+            `FAIL ${key}: "${dead.property}" never matched its INITIAL_VALUES entry across ${dead.sampled} sampled elements — the entry does not match what Chromium serialises`,
           );
         }
         const changes = diffRecords(baseRecords, records);

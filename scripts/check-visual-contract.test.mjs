@@ -134,6 +134,18 @@ describe('property tables', () => {
     }
   });
 
+  it('never routes a non-inherited property through the inherited omission', () => {
+    // The reverse direction: a non-inherited property in INHERITED_PROPERTIES
+    // would be omitted whenever it happens to equal an ancestor's value —
+    // an omission the reader would wrongly "recover" as inheritance.
+    for (const property of INHERITED_PROPERTIES) {
+      assert.ok(
+        CSS_INHERITED.has(property),
+        `${property} is in INHERITED_PROPERTIES but CSS does not inherit it`,
+      );
+    }
+  });
+
   it('never gives an inherited property an initial-value rule too', () => {
     // "Absent" must mean exactly one thing. If an inherited property also had
     // an INITIAL_VALUES entry, a record could omit it for either reason, and
@@ -149,21 +161,28 @@ describe('property tables', () => {
 });
 
 describe('findDeadOmissionRules', () => {
-  it('flags a rule whose value never matches what the browser serialises', () => {
+  it('flags a rule that never matched a single raw sample', () => {
     // The real bug: `gap: 'normal normal'` in the table, `normal` from
-    // Chromium, so every record kept a constant nobody could read as signal.
-    const records = [record('a', { gap: 'normal' }), record('b', { gap: 'normal' })];
-    const dead = findDeadOmissionRules(records, { gap: 'normal normal' });
-    assert.deepEqual(dead, [{ property: 'gap', present: 2, total: 2 }]);
+    // Chromium, so the rule matched zero samples and every record kept a
+    // constant nobody could read as signal.
+    const dead = findDeadOmissionRules(
+      { sampled: 120, hits: { gap: 0 } },
+      { gap: 'normal normal' },
+    );
+    assert.deepEqual(dead, [{ property: 'gap', sampled: 120 }]);
   });
 
-  it('stays quiet when the rule actually suppresses the value', () => {
-    const records = [record('a'), record('b', { gap: '8px' })];
-    assert.deepEqual(findDeadOmissionRules(records, { gap: 'normal' }), []);
+  it('stays quiet when the rule matched at least once', () => {
+    // One hit proves the table value is what Chromium serialises. Counted at
+    // the raw sample, so a rule shadowed by the border/outline paint gates
+    // still proves itself — the previous output-based check could not see
+    // through those gates.
+    const omission = { sampled: 120, hits: { gap: 1 } };
+    assert.deepEqual(findDeadOmissionRules(omission, { gap: 'normal' }), []);
   });
 
   it('says nothing about an empty capture', () => {
-    assert.deepEqual(findDeadOmissionRules([], { gap: 'normal' }), []);
+    assert.deepEqual(findDeadOmissionRules({ sampled: 0, hits: {} }, { gap: 'normal' }), []);
   });
 });
 
