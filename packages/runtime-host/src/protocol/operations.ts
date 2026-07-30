@@ -1,6 +1,7 @@
 import { ARTIFACT_OPERATION_SPECS } from './artifact.js';
 import { requireExactRecord, requireId, requireRecord, requireString } from './codec.js';
 import { CONNECTION_EFFECT_OPERATION_SPECS } from './connection-effects.js';
+import { CLIENT_CAPABILITY_OPERATION_SPECS } from './client-capability.js';
 import { invalidProtocolFrame } from './errors.js';
 import { HOST_STATUS_OPERATION_SPECS } from './host-status.js';
 import { INTERACTION_OPERATION_SPECS } from './interaction.js';
@@ -20,8 +21,15 @@ import { TASK_LEDGER_OPERATION_SPECS } from './task-ledger.js';
 import { TURN_OPERATION_SPECS } from './turn.js';
 import { USAGE_PRICING_OPERATION_SPECS } from './usage-pricing.js';
 
-export type { HostLifecycleState, HostStatusInput, HostStatusResult } from './host-status.js';
-export type { HostOperationError, HostOperationErrorCode } from './operation-spec.js';
+export type {
+  HostLifecycleState,
+  HostStatusInput,
+  HostStatusResult,
+} from './host-status.js';
+export type {
+  HostOperationError,
+  HostOperationErrorCode,
+} from './operation-spec.js';
 export {
   ARTIFACT_CURSOR_MAX_BYTES,
   ARTIFACT_MIME_TYPE_MAX_BYTES,
@@ -74,6 +82,7 @@ export type {
   TurnStopInput,
 } from './turn.js';
 export * from './connection-effects.js';
+export * from './client-capability.js';
 export * from './memory.js';
 export * from './runtime-policy.js';
 export * from './session-catalog.js';
@@ -94,6 +103,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   SKILL_CATALOG_OPERATION_SPECS,
   USAGE_PRICING_OPERATION_SPECS,
   MEMORY_OPERATION_SPECS,
+  CLIENT_CAPABILITY_OPERATION_SPECS,
 );
 
 export type OperationSpecMap = typeof HOST_OPERATION_SPECS;

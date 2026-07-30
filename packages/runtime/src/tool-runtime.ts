@@ -20,6 +20,7 @@ import type {
   ToolResultContent,
   ToolResultEvent,
   ToolStartEvent,
+  ToolUncertainOutcomeSignal,
   UserQuestionRequestEvent,
 } from '@maka/core/events';
 import type { ToolCallMessage, ToolResultMessage } from '@maka/core/session';
@@ -714,12 +715,14 @@ export class ToolRuntime {
     queue: DurableSessionEventSink,
     sandboxDenial?: SandboxDenialSignal,
     sandboxFailure?: Extract<ToolResultContent, { kind: 'text' }>['sandboxFailure'],
+    uncertainOutcome?: ToolUncertainOutcomeSignal,
   ): Promise<void> {
     const content: ToolResultContent = {
       kind: 'text',
       text: formatSyntheticToolErrorText(text),
       ...(sandboxDenial ? { sandboxDenial } : {}),
       ...(sandboxFailure ? { sandboxFailure } : {}),
+      ...(uncertainOutcome ? { uncertainOutcome } : {}),
     };
     const durableAttempt = this.durableToolAttempts.get(durableAttemptKey(turnId, toolUseId));
     const durableOutcome = await durableAttempt?.commitOutcome(content, true);
@@ -1184,6 +1187,8 @@ export class ToolRuntime {
       if (isInteractionControlError(err)) throw err;
       output.flush();
       const sandboxError = serializeSandboxError(err);
+      const uncertainOutcome = uncertainOutcomeSignalFromError(err);
+      const errorClass = uncertainOutcome ? 'OutcomeUnknown' : classifyError(err);
       const terminalFailure = coerceTerminalFailure(
         tool,
         this.input.header.cwd,
@@ -1242,7 +1247,7 @@ export class ToolRuntime {
           modelId: this.input.modelId,
           durationMs,
           status: 'error',
-          errorClass: classifyError(err),
+          errorClass,
           argsSummary:
             tool.categoryHint === 'computer_use'
               ? summarizePersistedArgs(persistedArgs)
@@ -1257,15 +1262,17 @@ export class ToolRuntime {
           toolName: tool.name,
           durationMs,
           status: 'error',
-          errorClass: classifyError(err),
+          errorClass,
           ...(sandboxError ? { sandbox: sandboxError } : {}),
         });
         return this.errorReturn(terminalFailure.message);
       }
       const msg =
         tool.categoryHint === 'computer_use'
-          ? `Computer Use failed: ${classifyError(err)}`
-          : formatSyntheticToolErrorText(err);
+          ? `Computer Use failed: ${errorClass}`
+          : uncertainOutcome
+            ? `outcome_unknown: ${formatSyntheticToolErrorText(err)}`
+            : formatSyntheticToolErrorText(err);
       await this.writeSyntheticToolResult(
         toolUseId,
         turnId,
@@ -1273,6 +1280,7 @@ export class ToolRuntime {
         queue,
         sandboxDenialSignalFromError(err),
         sandboxBoundaryFailureSignal(sandboxError),
+        uncertainOutcome,
       );
       this.input.recordToolInvocation?.({
         sessionId: this.input.sessionId,
@@ -1283,7 +1291,7 @@ export class ToolRuntime {
         modelId: this.input.modelId,
         durationMs: Math.max(0, this.input.now() - startedAt),
         status: 'error',
-        errorClass: classifyError(err),
+        errorClass,
         argsSummary:
           tool.categoryHint === 'computer_use'
             ? summarizePersistedArgs(persistedArgs)
@@ -1297,7 +1305,7 @@ export class ToolRuntime {
         toolName: tool.name,
         durationMs: Math.max(0, this.input.now() - startedAt),
         status: 'error',
-        errorClass: classifyError(err),
+        errorClass,
         ...(sandboxError ? { sandbox: sandboxError } : {}),
       });
       return sandboxError ? { error: msg, sandbox: sandboxError } : this.errorReturn(msg);
@@ -2052,6 +2060,20 @@ function sandboxBoundaryFailureSignal(
     ...(metadata.requiredExpansion
       ? { requiredExpansion: metadata.requiredExpansion as SandboxBoundaryExpansion }
       : {}),
+  };
+}
+
+function uncertainOutcomeSignalFromError(error: unknown): ToolUncertainOutcomeSignal | undefined {
+  if (
+    !error ||
+    typeof error !== 'object' ||
+    (error as { code?: unknown }).code !== 'outcome_unknown'
+  ) {
+    return undefined;
+  }
+  return {
+    code: 'outcome_unknown',
+    retrySafe: false,
   };
 }
 

@@ -58,6 +58,7 @@ import {
   type RuntimeSessionTransientEvent,
   SessionContinuityCoordinator,
 } from './session-continuity-coordinator.js';
+import type { HostClientCapabilityCoordinator } from './client-capability-coordinator.js';
 
 type RootTerminalInteractionFence = Pick<
   HostInteractionCoordinator,
@@ -129,6 +130,7 @@ export class RootTurnCoordinator {
     private readonly continuity: SessionContinuityCoordinator,
     private readonly acquireRecoveryResidency: () => RuntimeHostResidency,
     private readonly requestHostDrain: () => void,
+    private readonly clientCapabilities?: HostClientCapabilityCoordinator,
   ) {
     this.stores = authenticateExecutionStoresWriter(stores, 'interactive');
   }
@@ -350,7 +352,12 @@ export class RootTurnCoordinator {
   readRootState(sessionId: string): HostMessageRootState {
     const active = this.#activeBySession.get(sessionId);
     return active
-      ? { kind: 'active', sessionId, turnId: active.turnId, runId: active.runId }
+      ? {
+          kind: 'active',
+          sessionId,
+          turnId: active.turnId,
+          runId: active.runId,
+        }
       : { kind: 'idle' };
   }
 
@@ -506,7 +513,11 @@ export class RootTurnCoordinator {
       const declared = await this.sessionAdmission.run(sessionId, (lease) => {
         const active = this.#activeBySession.get(sessionId);
         if (!active) return undefined;
-        const identity = { sessionId, turnId: active.turnId, runId: active.runId };
+        const identity = {
+          sessionId,
+          turnId: active.turnId,
+          runId: active.runId,
+        };
         return this.declareStopFence(
           identity,
           () => this.messages.commitStopFence(identity),
@@ -545,7 +556,7 @@ export class RootTurnCoordinator {
   startFromMessage(
     input: HostMessageStartInput,
     admissionLease: SessionAdmissionLease,
-  ): Promise<{ readonly turnId: string }> {
+  ): Promise<{ readonly turnId: string } | { readonly error: string }> {
     return this.runCommand(async () => {
       const content = normalizeMessageContent(input.content);
       if (
@@ -561,6 +572,11 @@ export class RootTurnCoordinator {
           'Message authority attempted an idle start while a root Turn was active',
         );
       }
+      const binding = await this.clientCapabilities?.bindSession(
+        input.sessionId,
+        input.initiatingConnectionId,
+      );
+      if (binding && !binding.ok) return { error: binding.message };
 
       const turnId = randomUUID();
       const admitted = await this.rootAdmissionOwner.admitRootTurn({
@@ -660,6 +676,25 @@ export class RootTurnCoordinator {
               operationConflict('Turn identity was already admitted with a different payload'),
             );
           }
+          const existingRun = await this.readRunIfPresent(input.sessionId, existing.runId);
+          if (existingRun) {
+            const snapshot = await this.readCanonicalSnapshot(
+              input.sessionId,
+              input.turnId,
+              existing.runId,
+              existingRun,
+            );
+            if (isTerminalSnapshot(snapshot)) {
+              return completedStart({ ok: true, result: snapshot });
+            }
+          }
+          const binding = await this.clientCapabilities?.bindSession(
+            input.sessionId,
+            context.connectionId,
+          );
+          if (binding && !binding.ok) {
+            return completedStart(operationConflict(binding.message));
+          }
           return this.prepareAdmittedTurn(
             canonicalInput,
             existing,
@@ -689,6 +724,13 @@ export class RootTurnCoordinator {
           return completedStart(sessionBusy('Session already has an active root Turn'));
         }
 
+        const binding = await this.clientCapabilities?.bindSession(
+          input.sessionId,
+          context.connectionId,
+        );
+        if (binding && !binding.ok) {
+          return completedStart(operationConflict(binding.message));
+        }
         const admission = await this.rootAdmissionOwner.admitRootTurn({
           sessionId: input.sessionId,
           turnId: input.turnId,
@@ -884,7 +926,11 @@ export class RootTurnCoordinator {
     }
 
     const residency = acquireResidency();
-    const messageIdentity = { sessionId: input.sessionId, turnId: input.turnId, runId };
+    const messageIdentity = {
+      sessionId: input.sessionId,
+      turnId: input.turnId,
+      runId,
+    };
     let messageReserved = false;
     try {
       this.messages.reserveRootTurn(messageIdentity);
@@ -1079,7 +1125,11 @@ export class RootTurnCoordinator {
           'Terminal root Turn no longer owns the Session',
         );
       }
-      const identity = { sessionId, turnId: active.turnId, runId: active.runId };
+      const identity = {
+        sessionId,
+        turnId: active.turnId,
+        runId: active.runId,
+      };
       await this.interactions.assertTerminalFence(identity, lease);
       const batch = this.messages.beginTerminalTransition(identity);
       await this.continuity.publishTerminalProjection(
@@ -1279,7 +1329,9 @@ class HostedRootAdmissionGateError extends Error {
   readonly name = 'HostedRootAdmissionGateError';
 
   constructor(readonly cause: unknown) {
-    super('Hosted root execution was rejected before durable admission', { cause });
+    super('Hosted root execution was rejected before durable admission', {
+      cause,
+    });
   }
 }
 
@@ -1530,7 +1582,10 @@ function sessionArchived(message: string) {
 }
 
 function operationUnavailable(message: string) {
-  return { ok: false, error: { code: 'operation_unavailable', message } } as const;
+  return {
+    ok: false,
+    error: { code: 'operation_unavailable', message },
+  } as const;
 }
 
 function operationConflict(message: string) {

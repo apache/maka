@@ -8,6 +8,14 @@ import {
   type SubscriptionFrame,
 } from './session-continuity.js';
 import {
+  decodeClientCapabilityClientFrame,
+  decodeClientCapabilityHostFrame,
+  isClientCapabilityClientFrameKind,
+  isClientCapabilityHostFrameKind,
+  type ClientCapabilityClientFrame,
+  type ClientCapabilityHostFrame,
+} from './client-capability.js';
+import {
   decodeRequestFrame,
   decodeResponseFrame,
   type HostLifecycleState,
@@ -17,6 +25,7 @@ import {
 
 export { RuntimeHostProtocolError } from './errors.js';
 export * from './interaction.js';
+export * from './client-capability.js';
 export * from './message.js';
 export * from './operations.js';
 export * from './session-continuity.js';
@@ -65,8 +74,12 @@ export interface HostDraining {
 
 export type HostHandshakeResult = HostAccepted | HostIncompatible | HostDraining;
 
-export type ClientFrame = ClientHello | RequestFrame;
-export type HostFrame = HostHandshakeResult | ResponseFrame | SubscriptionFrame;
+export type ClientFrame = ClientHello | RequestFrame | ClientCapabilityClientFrame;
+export type HostFrame =
+  | HostHandshakeResult
+  | ResponseFrame
+  | SubscriptionFrame
+  | ClientCapabilityHostFrame;
 
 export interface HostRegistration {
   kind: 'maka-runtime-host';
@@ -117,6 +130,9 @@ export function decodeClientFrame(value: unknown): ClientFrame {
       protocolMax,
     } satisfies ClientHello;
   }
+  if (isClientCapabilityClientFrameKind(frame.kind)) {
+    return decodeClientCapabilityClientFrame(frame);
+  }
   return decodeRequestFrame(frame);
 }
 
@@ -151,6 +167,9 @@ export function decodeHostFrame(value: unknown): HostFrame {
     };
   }
   if (isSubscriptionFrameKind(frame.kind)) return decodeSubscriptionFrame(frame);
+  if (isClientCapabilityHostFrameKind(frame.kind)) {
+    return decodeClientCapabilityHostFrame(frame);
+  }
   return decodeResponseFrame(frame);
 }
 

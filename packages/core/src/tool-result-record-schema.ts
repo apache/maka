@@ -23,12 +23,15 @@ type RiveResult = Result<'rive_workflow'>;
 
 const TEXT_SHAPE = defineObjectShape<Result<'text'>>()(
   ['kind', 'text'],
-  ['sandboxDenial', 'sandboxFailure'],
+  ['sandboxDenial', 'sandboxFailure', 'uncertainOutcome'],
 );
 const SANDBOX_FAILURE_SHAPE = defineObjectShape<NonNullable<Result<'text'>['sandboxFailure']>>()(
   ['reason'],
   ['requiredExpansion'],
 );
+const UNCERTAIN_OUTCOME_SHAPE = defineObjectShape<
+  NonNullable<Result<'text'>['uncertainOutcome']>
+>()(['code', 'retrySafe'], []);
 const JSON_SHAPE = defineObjectShape<Result<'json'>>()(['kind', 'value'], []);
 const FILE_DIFF_SHAPE = defineObjectShape<Result<'file_diff'>>()(['kind', 'paths', 'diff'], []);
 const FILE_WRITE_SHAPE = defineObjectShape<Result<'file_write'>>()(['kind', 'path', 'bytes'], []);
@@ -234,7 +237,12 @@ function isNonShellToolResultContent(value: unknown): value is ToolResultContent
             (value.sandboxFailure.reason === 'sandbox_boundary_required' ||
               value.sandboxFailure.reason === 'requires_bypass') &&
             (value.sandboxFailure.requiredExpansion === undefined ||
-              validateSandboxBoundaryExpansion(value.sandboxFailure.requiredExpansion).ok)))
+              validateSandboxBoundaryExpansion(value.sandboxFailure.requiredExpansion).ok))) &&
+        (value.uncertainOutcome === undefined ||
+          (isRecord(value.uncertainOutcome) &&
+            hasExactShape(value.uncertainOutcome, UNCERTAIN_OUTCOME_SHAPE) &&
+            value.uncertainOutcome.code === 'outcome_unknown' &&
+            value.uncertainOutcome.retrySafe === false))
       );
     case 'json':
       return hasExactShape(value, JSON_SHAPE) && Object.hasOwn(value, 'value');

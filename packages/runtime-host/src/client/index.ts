@@ -17,3 +17,4 @@ export {
   type ConnectOrSpawnRuntimeHostInput,
   type ConnectOrSpawnRuntimeHostResult,
 } from './connect-or-spawn.js';
+export { type ClientCapabilityProvider } from './client-capability.js';

@@ -47,6 +47,8 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.deepEqual(Object.keys(HOST_OPERATION_SPECS).sort(), [
       'artifact.delete',
       'artifact.query',
+      'client.capability.replace',
+      'client.capability.unregister',
       'connection.catalog.create',
       'connection.catalog.query',
       'connection.catalog.remove',

@@ -41,7 +41,7 @@ import {
 } from '../protocol/index.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
 import { worstCaseMessageQueueProjection } from './message-queue-capacity.js';
-import type { MessageOperationHandlerMap } from './operation-dispatcher.js';
+import type { ConnectionContext, MessageOperationHandlerMap } from './operation-dispatcher.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
 
 type MessageOperationErrorCode =
@@ -73,6 +73,7 @@ export interface HostMessageStartInput {
   readonly sessionId: string;
   readonly content: MessageContent;
   readonly sourceMessage: RootTurnSourceMessage;
+  readonly initiatingConnectionId: string;
 }
 
 export interface HostMessageStopClaim {
@@ -97,7 +98,7 @@ export interface HostMessageRootPort {
   startFromMessage(
     input: HostMessageStartInput,
     admission: SessionAdmissionLease,
-  ): Promise<{ readonly turnId: string }>;
+  ): Promise<{ readonly turnId: string } | { readonly error: string }>;
   claimStop(
     input: Omit<TurnInterruptInput, 'originHostEpoch' | 'interruptId'>,
     commitQueueFence: () => QueueFenceResult,
@@ -223,7 +224,7 @@ export interface QueueFenceResult {
 /** The sole in-memory message authority for one Runtime Host Epoch. */
 export class HostMessageCoordinator implements RuntimeMessageAuthority {
   readonly handlers: MessageOperationHandlerMap = {
-    'turn.message.submit': (input) => this.submit(input),
+    'turn.message.submit': (input, context) => this.submit(input, context),
     'queue.retract': (input) => this.retract(input),
     'turn.interrupt': (input) => this.interrupt(input),
   };
@@ -427,7 +428,10 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     this.#sessions.clear();
   }
 
-  private submit(input: TurnMessageSubmitInput): Promise<MessageOutcome<TurnMessageSubmitResult>> {
+  private submit(
+    input: TurnMessageSubmitInput,
+    context: ConnectionContext,
+  ): Promise<MessageOutcome<TurnMessageSubmitResult>> {
     const payload = canonicalSubmitPayload(input);
     const isCurrentEpoch = input.originHostEpoch === this.#hostEpoch;
     if (isCurrentEpoch) {
@@ -443,9 +447,9 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     if (this.#failStopped) {
       return Promise.resolve(failure('host_draining', 'Runtime Host message authority has failed'));
     }
-    if (!isCurrentEpoch) return this.#submitAdmitted(input, payload);
+    if (!isCurrentEpoch) return this.#submitAdmitted(input, payload, context.connectionId);
     const key = operationKey(input.sessionId, input.messageId);
-    const result = this.#submitAdmitted(input, payload);
+    const result = this.#submitAdmitted(input, payload, context.connectionId);
     this.#pendingSubmits.set(key, { payload, result });
     void result.then(
       () => this.#deletePendingSubmit(key, result),
@@ -457,6 +461,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   #submitAdmitted(
     input: TurnMessageSubmitInput,
     payload: CanonicalSubmitPayload,
+    initiatingConnectionId: string,
   ): Promise<MessageOutcome<TurnMessageSubmitResult>> {
     return this.#sessionAdmission.run(input.sessionId, async (admission) => {
       if (this.#failStopped) {
@@ -519,9 +524,13 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
             sessionId: input.sessionId,
             content: payload.content,
             sourceMessage,
+            initiatingConnectionId,
           },
           admission,
         );
+        if ('error' in started) {
+          return failure('operation_conflict', started.error);
+        }
         if (!isEntityId(started.turnId)) {
           throw new RuntimeMessageAuthorityInvariantError('Started Turn identity is not encodable');
         }

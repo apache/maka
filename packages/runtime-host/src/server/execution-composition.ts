@@ -18,6 +18,7 @@ import { CanonicalSessionProjectionReader } from './canonical-session-projection
 import { HostCanonicalPermissionOutcomeReader } from './canonical-permission-outcome-reader.js';
 import { HostArtifactCoordinator } from './artifact-coordinator.js';
 import { HostConnectionEffectCoordinator } from './connection-effect-coordinator.js';
+import { HostClientCapabilityCoordinator } from './client-capability-coordinator.js';
 import { createHostAiSdkBackend } from './execution-model-composition.js';
 import type { RuntimeHostComposition, RuntimeHostCompositionContext } from './host-kernel.js';
 import { HostInteractionCoordinator } from './interaction-coordinator.js';
@@ -71,6 +72,7 @@ export async function createExecutionRuntimeHostComposition(
     let continuity: SessionContinuityCoordinator | undefined;
     let canonicalProjection: CanonicalSessionProjectionReader | undefined;
     let memory: HostMemoryCoordinator | undefined;
+    let clientCapabilities: HostClientCapabilityCoordinator | undefined;
     const rootPort: HostMessageRootPort = {
       readSessionHeader: (sessionId) =>
         requireRootCoordinator(rootCoordinator).readSessionHeader(sessionId),
@@ -129,6 +131,7 @@ export async function createExecutionRuntimeHostComposition(
       connectionEffects.beginDrain();
       skills.beginDrain();
       memory?.beginDrain();
+      clientCapabilities?.beginDrain();
     };
     const interactions = new HostInteractionCoordinator({
       store: stores.interactionStore,
@@ -165,6 +168,7 @@ export async function createExecutionRuntimeHostComposition(
         taskLedger,
         artifacts: openedArtifactStore,
         usage: openedUsageStores,
+        clientCapabilities: requireClientCapabilities(clientCapabilities),
         requestDrain: context.requestDrain,
       }),
     );
@@ -216,6 +220,10 @@ export async function createExecutionRuntimeHostComposition(
     const registerBackendInvalidation = (): void => {
       observeBackendInvalidation(manager.refreshIdleBackends());
     };
+    clientCapabilities = new HostClientCapabilityCoordinator({
+      activation: runtimePolicyActivation,
+      onRegistryChanged: registerBackendInvalidation,
+    });
     const usagePricing = new HostUsagePricingCoordinator(
       openedUsageStores,
       context.requestDrain,
@@ -232,6 +240,7 @@ export async function createExecutionRuntimeHostComposition(
       continuityCoordinator,
       context.acquireResidency,
       context.requestDrain,
+      clientCapabilities,
     );
     const coordinator = rootCoordinator;
     const runtimePolicy = new HostRuntimePolicyCoordinator(
@@ -274,6 +283,7 @@ export async function createExecutionRuntimeHostComposition(
       ...skills.handlers,
       ...usagePricing.handlers,
       ...requireMemory(memory).handlers,
+      ...clientCapabilities.handlers,
     } satisfies DomainOperationHandlerMap;
     const recover = () => {
       recoveryTask ??= (async () => {
@@ -361,6 +371,11 @@ export async function createExecutionRuntimeHostComposition(
           errors.push(error);
         }
         try {
+          clientCapabilities?.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
           await openedUsageStores.close();
         } catch (error) {
           errors.push(error);
@@ -380,8 +395,11 @@ export async function createExecutionRuntimeHostComposition(
     return {
       handlers,
       continuity: continuityCoordinator,
-      releaseConnection: (connectionId: string) =>
-        requireMemory(memory).releaseConnection(connectionId),
+      clientCapabilities,
+      releaseConnection: (connectionId: string) => {
+        requireMemory(memory).releaseConnection(connectionId);
+        clientCapabilities?.releaseConnection(connectionId);
+      },
       beginDrain,
       recover,
       close,
@@ -430,4 +448,11 @@ function requireCanonicalProjection(
 function requireMemory(memory: HostMemoryCoordinator | undefined): HostMemoryCoordinator {
   if (!memory) throw new Error('Runtime Host Memory coordinator is not composed');
   return memory;
+}
+
+function requireClientCapabilities(
+  coordinator: HostClientCapabilityCoordinator | undefined,
+): HostClientCapabilityCoordinator {
+  if (!coordinator) throw new Error('Runtime Host Client Capability coordinator is not composed');
+  return coordinator;
 }

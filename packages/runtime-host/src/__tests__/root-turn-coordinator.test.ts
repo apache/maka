@@ -30,6 +30,7 @@ import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storag
 import type { SubscriptionFrame } from '../protocol/index.js';
 import { HostCanonicalPermissionOutcomeReader } from '../server/canonical-permission-outcome-reader.js';
 import { CanonicalSessionProjectionReader } from '../server/canonical-session-projection.js';
+import { HostClientCapabilityCoordinator } from '../server/client-capability-coordinator.js';
 import type { RuntimeHostResidency } from '../server/host-kernel.js';
 import { HostInteractionCoordinator } from '../server/interaction-coordinator.js';
 import { type HostMessageRootPort, HostMessageCoordinator } from '../server/message-coordinator.js';
@@ -41,6 +42,7 @@ import {
 } from '../server/session-admission-gate.js';
 import { SessionContinuityCoordinator } from '../server/session-continuity-coordinator.js';
 import type { SessionContinuityFrameSink } from '../server/session-continuity-service.js';
+import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
 
 const HOLD_EXTERNAL_PROMPT = 'hold external root before follow-up';
 
@@ -999,6 +1001,154 @@ test('shutdown re-scans a successor created by an in-flight terminal handoff', {
   }
 });
 
+test('Client Capability ambiguity fails before durable root admission', async () => {
+  const clientCapabilities = new HostClientCapabilityCoordinator({
+    activation: new RuntimePolicyActivationGate(),
+    onRegistryChanged: () => undefined,
+  });
+  const fixture = await createFailureFixture({
+    clientCapabilities,
+    registerBackend: (backends) => {
+      backends.register('fake', (context) => new FakeBackend(context));
+    },
+  });
+  const first = clientCapabilities.attachConnection('provider-a', { send: async () => {} });
+  const second = clientCapabilities.attachConnection('provider-b', { send: async () => {} });
+
+  try {
+    for (const [connectionId, registrationId] of [
+      ['provider-a', 'registration-a'],
+      ['provider-b', 'registration-b'],
+    ] as const) {
+      const replaced = await clientCapabilities.handlers['client.capability.replace'](
+        {
+          registrationId,
+          offers: [
+            {
+              offerId: 'opaque',
+              version: '0',
+              affinity: 'session',
+              label: 'Opaque',
+              tools: [
+                {
+                  serverId: 'opaque',
+                  name: 'inspect',
+                  inputSchema: { type: 'object' },
+                },
+              ],
+            },
+          ],
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency, connectionId),
+      );
+      assert.equal(replaced.ok, true);
+    }
+
+    const turnId = 'turn-client-capability-ambiguity';
+    const started = await fixture.coordinator.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId,
+        content: { text: 'must not be admitted' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'observer'),
+    );
+    assert.equal(started.ok, false);
+    if (!started.ok) assert.equal(started.error.code, 'operation_conflict');
+    assert.equal(
+      await fixture.stores.agentRunStore.readRootTurnAdmission(fixture.sessionId, turnId),
+      undefined,
+    );
+  } finally {
+    first.close();
+    second.close();
+    clientCapabilities.close();
+    await fixture.dispose();
+  }
+});
+
+test('an exact terminal retry does not require a live Client Capability binding', {
+  timeout: 20_000,
+}, async () => {
+  const clientCapabilities = new HostClientCapabilityCoordinator({
+    activation: new RuntimePolicyActivationGate(),
+    onRegistryChanged: () => undefined,
+  });
+  const fixture = await createFailureFixture({
+    clientCapabilities,
+    registerBackend: (backends) => {
+      backends.register('fake', (context) => new FakeBackend(context));
+    },
+  });
+  const provider = clientCapabilities.attachConnection('provider-a', { send: async () => {} });
+
+  try {
+    const replaced = await clientCapabilities.handlers['client.capability.replace'](
+      {
+        registrationId: 'registration-a',
+        offers: [
+          {
+            offerId: 'opaque',
+            version: '0',
+            affinity: 'session',
+            label: 'Opaque',
+            tools: [
+              {
+                serverId: 'opaque',
+                name: 'inspect',
+                inputSchema: { type: 'object' },
+              },
+            ],
+          },
+        ],
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-a'),
+    );
+    assert.equal(replaced.ok, true);
+    const input = {
+      sessionId: fixture.sessionId,
+      turnId: 'turn-client-capability-terminal-retry',
+      content: { text: 'complete before the provider disconnects' },
+    } as const;
+    const started = await fixture.coordinator.handlers['turn.start'](
+      input,
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-a'),
+    );
+    assert.equal(started.ok, true);
+    if (!started.ok) return;
+    let terminal = started.result;
+    for (
+      let attempt = 0;
+      attempt < 200 &&
+      terminal.status !== 'completed' &&
+      terminal.status !== 'failed' &&
+      terminal.status !== 'cancelled';
+      attempt += 1
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const queried = await fixture.coordinator.handlers['turn.query'](
+        { sessionId: input.sessionId, turnId: input.turnId },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency, 'observer'),
+      );
+      assert.equal(queried.ok, true);
+      if (!queried.ok) return;
+      terminal = queried.result;
+    }
+    assert.equal(terminal.status, 'completed');
+
+    provider.close();
+    const retried = await fixture.coordinator.handlers['turn.start'](
+      input,
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'observer'),
+    );
+    assert.deepEqual(retried, { ok: true, result: terminal });
+  } finally {
+    provider.close();
+    clientCapabilities.close();
+    await fixture.dispose();
+  }
+});
+
 test('public turn.stop rejects an admission queued behind its exact-Run closure without poisoning', {
   timeout: 20_000,
 }, async () => {
@@ -1811,6 +1961,7 @@ async function createFailureFixture(options: {
   wrapMessageAuthority?(authority: RuntimeMessageAuthority): RuntimeMessageAuthority;
   withInteractions?: boolean;
   beforeInteractionPreflight?(): Promise<void>;
+  clientCapabilities?: HostClientCapabilityCoordinator;
 }) {
   const base = await mkdtemp(join(tmpdir(), 'maka-root-turn-message-failure-'));
   const capability = await resolveStorageRoot({
@@ -1946,6 +2097,7 @@ async function createFailureFixture(options: {
     continuity,
     acquireResidency,
     requestDrain,
+    options.clientCapabilities,
   );
 
   return {

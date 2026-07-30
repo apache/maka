@@ -259,7 +259,52 @@ describe('ToolRuntime durable boundary', () => {
       true,
     );
   });
+
+  it('commits outcome_unknown as a structured non-retryable tool failure', async () => {
+    const outcomes: ToolOutcomeCommit[] = [];
+    const harness = makeHarness({
+      commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
+      commitToolOutcome: async (input) => {
+        outcomes.push(input);
+        return { created: true, runtimeEventSeq: 2 };
+      },
+    });
+    const uncertain = tool(() => {
+      throw new OutcomeUnknownError('Provider disconnected after accepting the action');
+    });
+    uncertain.recoveryMode = 'never_auto_retry';
+
+    const result = await harness.execute(uncertain);
+
+    assert.deepEqual(result, {
+      error: 'outcome_unknown: Provider disconnected after accepting the action',
+    });
+    const response = outcomes[0]?.runtimeEvent.content;
+    assert.equal(response?.kind, 'function_response');
+    assert.equal(response?.kind === 'function_response' && response.isError, true);
+    assert.deepEqual(response?.kind === 'function_response' ? response.result : undefined, {
+      kind: 'text',
+      text: 'outcome_unknown: Provider disconnected after accepting the action',
+      uncertainOutcome: {
+        code: 'outcome_unknown',
+        retrySafe: false,
+      },
+    });
+    const message = harness.messages.find((candidate) => candidate.type === 'tool_result');
+    assert.deepEqual(message?.type === 'tool_result' ? message.content : undefined, {
+      kind: 'text',
+      text: 'outcome_unknown: Provider disconnected after accepting the action',
+      uncertainOutcome: {
+        code: 'outcome_unknown',
+        retrySafe: false,
+      },
+    });
+  });
 });
+
+class OutcomeUnknownError extends Error {
+  readonly code = 'outcome_unknown';
+}
 
 function makeHarness(
   sink: RuntimeCommitSink,

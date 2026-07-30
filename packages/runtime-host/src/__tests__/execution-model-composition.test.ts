@@ -73,6 +73,34 @@ test('backend creation aborts a stalled pricing snapshot read', async () => {
   });
 });
 
+test('backend creation does not acquire Client Capabilities beyond a bound tool ceiling', async () => {
+  let snapshotCalls = 0;
+  const backend = await createHostAiSdkBackend(
+    backendCreationFixture({
+      abortSignal: new AbortController().signal,
+      resolveExecutionConnection: async () => readyExecutionConnection(),
+      readPricing: async () => ({ revision: 0, overrides: [] }),
+      tools: [
+        {
+          name: 'bounded_tool',
+          description: 'The exact activation ceiling.',
+          parameters: {},
+          impl: async () => 'bounded',
+        },
+      ],
+      snapshotClientCapabilities: () => {
+        snapshotCalls += 1;
+        throw new Error('Client Capability snapshot must not be acquired');
+      },
+    }),
+  );
+  try {
+    assert.equal(snapshotCalls, 0);
+  } finally {
+    await backend.dispose();
+  }
+});
+
 test('production Host executes a canonical ai-sdk Session against a real provider wire', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-real-model-'));
   const root = join(base, 'interactive');
@@ -435,6 +463,97 @@ test('one turn shares one canonical Skill inventory across prompt and lazy tools
   assert.equal(inventoryReads, 2);
 });
 
+test('Client Capability tools join the existing load_tools catalog without a parallel loader', () => {
+  const capabilityTool: MakaTool = {
+    name: 'mcp__opaque__inspect',
+    description: 'Fixture Client Capability tool.',
+    parameters: {},
+    categoryHint: 'client_capability',
+    impl: async () => ({ content: [{ type: 'text', text: 'ok' }] }),
+  };
+  const composition = createHostExecutionModelComposition({
+    policy: {
+      getSnapshot: async () => ({
+        revision: 0,
+        policy: createDefaultRuntimePolicy(),
+      }),
+    },
+    skills: {
+      readCanonicalModelInventory: async () => ({ inventory: [] }),
+    } as unknown as HostSkillCatalogCoordinator,
+    memory: {} as HostMemoryCoordinator,
+    taskLedger: {} as TaskLedgerStore,
+    clientCapabilities: {
+      tools: [capabilityTool],
+      groups: [
+        {
+          id: 'client_fixture',
+          label: 'Opaque fixture',
+          description: 'Loaded through the canonical tool connector.',
+          toolNames: [capabilityTool.name],
+        },
+      ],
+    },
+  });
+
+  assert.ok(composition.tools.includes(capabilityTool));
+  assert.deepEqual(
+    composition.toolAvailability.groups?.find((group) => group.id === 'client_fixture'),
+    {
+      id: 'client_fixture',
+      label: 'Opaque fixture',
+      description: 'Loaded through the canonical tool connector.',
+      toolNames: [capabilityTool.name],
+    },
+  );
+});
+
+test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
+  const boundTool: MakaTool = {
+    name: 'bounded_tool',
+    description: 'The only tool admitted for this activation.',
+    parameters: {},
+    impl: async () => 'bounded',
+  };
+  const capabilityTool: MakaTool = {
+    name: 'mcp__opaque__inspect',
+    description: 'A dynamic capability outside the exact ceiling.',
+    parameters: {},
+    categoryHint: 'client_capability',
+    impl: async () => 'capability',
+  };
+  const composition = createHostExecutionModelComposition({
+    policy: {
+      getSnapshot: async () => ({
+        revision: 0,
+        policy: createDefaultRuntimePolicy(),
+      }),
+    },
+    skills: {
+      readCanonicalModelInventory: async () => ({ inventory: [] }),
+    } as unknown as HostSkillCatalogCoordinator,
+    memory: {} as HostMemoryCoordinator,
+    taskLedger: {} as TaskLedgerStore,
+    boundTools: [boundTool],
+    clientCapabilities: {
+      tools: [capabilityTool],
+      groups: [
+        {
+          id: 'client_fixture',
+          label: 'Opaque fixture',
+          toolNames: [capabilityTool.name],
+        },
+      ],
+    },
+  });
+
+  assert.deepEqual(composition.tools, [boundTool]);
+  assert.equal(
+    composition.toolAvailability.groups?.some((group) => group.id === 'client_fixture'),
+    false,
+  );
+});
+
 function skillFixture(id: string, description: string, content: string): ScannedSkill {
   return {
     ref: `project:agents:${id}`,
@@ -553,6 +672,8 @@ function backendCreationFixture(input: {
   abortSignal: AbortSignal;
   resolveExecutionConnection: () => Promise<unknown>;
   readPricing: () => Promise<unknown>;
+  tools?: readonly MakaTool[];
+  snapshotClientCapabilities?: () => unknown;
 }): HostAiSdkBackendInput {
   return {
     context: {
@@ -563,16 +684,43 @@ function backendCreationFixture(input: {
         model: MODEL_ID,
       },
       abortSignal: input.abortSignal,
-    } as BackendFactoryContext,
+      ...(input.tools ? { tools: input.tools } : {}),
+      store: {
+        appendMessage: async () => undefined,
+        readExecutionBoundary: async () => undefined,
+      },
+    } as unknown as BackendFactoryContext,
     runtimePolicy: {
       operations: {
         resolveExecutionConnection: input.resolveExecutionConnection,
       },
+      runtimePolicy: {
+        getSnapshot: async () => ({
+          revision: 0,
+          policy: createDefaultRuntimePolicy(),
+        }),
+      },
     },
+    skills: {
+      readCanonicalModelInventory: async () => ({ inventory: [] }),
+    },
+    memory: {},
+    taskLedger: {
+      list: async () => [],
+    },
+    artifacts: {},
     usage: {
       pricing: {
         snapshot: input.readPricing,
       },
+      telemetry: {
+        recordLlmCall: async () => undefined,
+        recordToolInvocation: async () => undefined,
+      },
+    },
+    requestDrain: () => undefined,
+    clientCapabilities: {
+      snapshotForSession: input.snapshotClientCapabilities ?? (() => undefined),
     },
   } as unknown as HostAiSdkBackendInput;
 }

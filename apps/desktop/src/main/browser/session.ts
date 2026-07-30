@@ -119,6 +119,7 @@ const pendingAcquires = new Map<string, Promise<Connection>>();
 // resolveEndpoint would resurrect the just-disposed view and the connection
 // would outlive the conversation with nothing left to ever clean it up.
 const releaseEpochs = new Map<string, number>();
+const releaseDispositions = new Map<string, 'detach' | 'dispose'>();
 // In-flight actions per conversation, so the visible lease can REVOKE — not just
 // preflight. canDrive gates the START on screen; this severs an action that was
 // still running when the user switched away (browser:active-session), so a
@@ -242,10 +243,17 @@ async function acquire(sessionId: string): Promise<Connection> {
       // Unwind completely: close the socket, dispose the recreated view.
       conn.closed = true;
       await conn.bridge.close().catch(() => {});
-      await browserViewHost()
-        .disposeSession(sessionId)
-        .catch(() => {});
-      throw new Error('The conversation was deleted while the browser was connecting.');
+      const disposition = releaseDispositions.get(sessionId) ?? 'detach';
+      await (
+        disposition === 'dispose'
+          ? browserViewHost().disposeSession(sessionId)
+          : browserViewHost().releaseSession(sessionId)
+      ).catch(() => {});
+      throw new Error(
+        disposition === 'dispose'
+          ? 'The conversation was deleted while the browser was connecting.'
+          : 'Browser automation was released while connecting.',
+      );
     }
     bySession.set(sessionId, conn);
     return conn;
@@ -373,7 +381,7 @@ export async function releaseBrowserSession(sessionId: string): Promise<void> {
   // when it sees the new epoch (see acquire) — it cannot be awaited here because
   // it may not have registered in pendingAcquires yet, and a hung endpoint
   // resolution must not block the session's deletion.
-  releaseEpochs.set(sessionId, (releaseEpochs.get(sessionId) ?? 0) + 1);
+  markBrowserSessionReleased(sessionId, 'dispose');
   const conn = bySession.get(sessionId);
   if (conn) {
     bySession.delete(sessionId);
@@ -391,6 +399,30 @@ export async function releaseBrowserSession(sessionId: string): Promise<void> {
   }
 }
 
+/** Detach automation while preserving the user's visible embedded browser view. */
+export async function releaseBrowserAutomationSession(sessionId: string): Promise<void> {
+  markBrowserSessionReleased(sessionId, 'detach');
+  const conn = bySession.get(sessionId);
+  if (conn) {
+    bySession.delete(sessionId);
+    conn.closed = true;
+    await conn.bridge.close().catch(() => {});
+  }
+  if (browserAutomationAvailable()) {
+    await browserViewHost()
+      .releaseSession(sessionId)
+      .catch(() => {});
+  }
+}
+
+function markBrowserSessionReleased(
+  sessionId: string,
+  disposition: 'detach' | 'dispose',
+): void {
+  releaseEpochs.set(sessionId, (releaseEpochs.get(sessionId) ?? 0) + 1);
+  releaseDispositions.set(sessionId, disposition);
+}
+
 export { browserAutomationAvailable };
 
 /** Test seam: reset module state between tests. */
@@ -402,5 +434,6 @@ export function resetBrowserSessionsForTest(): void {
   bySession.clear();
   pendingAcquires.clear();
   releaseEpochs.clear();
+  releaseDispositions.clear();
   inFlightBySession.clear();
 }
