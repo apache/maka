@@ -208,29 +208,23 @@ export function DataSettingsPage() {
           dialog confirm). */}
       <div className="settingsActionRow" role="group" aria-label={copy.actionsAria}>
         <Button
-          type="button"
           variant="secondary"
           onClick={() => void openWorkspace()}
-          disabled={!info || dataActionDisabled}
-        >
-          {isDataActionPending('workspace:open') ? copy.opening : copy.openWorkspace}
-        </Button>
+          isDisabled={!info || dataActionDisabled}
+          label={isDataActionPending('workspace:open') ? copy.opening : copy.openWorkspace}
+        />
         <Button
-          type="button"
           variant="secondary"
           onClick={() => void copyPath()}
-          disabled={!info || dataActionDisabled}
-        >
-          {isDataActionPending('workspace:path:copy') ? copy.copying : copy.copyPath}
-        </Button>
+          isDisabled={!info || dataActionDisabled}
+          label={isDataActionPending('workspace:path:copy') ? copy.copying : copy.copyPath}
+        />
         <Button
-          type="button"
           variant="destructive"
           onClick={() => void clearInputHistory()}
-          disabled={dataActionDisabled}
-        >
-          {isDataActionPending('input-history:clear') ? copy.clearing : copy.clearHistory}
-        </Button>
+          isDisabled={dataActionDisabled}
+          label={isDataActionPending('input-history:clear') ? copy.clearing : copy.clearHistory}
+        />
       </div>
       <Alert variant="info">
         <AlertDescription>{copy.backupNotice}</AlertDescription>
@@ -282,12 +276,8 @@ export function DataSettingsPage() {
           />
         </div>
         <div className="settingsActionRow">
-          <Button type="button" disabled={configBusy !== null} onClick={() => void exportConfig()}>
-            {configBusy === 'export' ? copy.exporting : copy.exportConfig}
-          </Button>
-          <Button type="button" disabled={configBusy !== null} onClick={() => void importConfig()}>
-            {configBusy === 'import' ? copy.importing : copy.importConfig}
-          </Button>
+          <Button variant="primary" isDisabled={configBusy !== null} onClick={() => void exportConfig()} label={configBusy === 'export' ? copy.exporting : copy.exportConfig} />
+          <Button variant="primary" isDisabled={configBusy !== null} onClick={() => void importConfig()} label={configBusy === 'import' ? copy.importing : copy.importConfig} />
         </div>
       </section>
     </div>

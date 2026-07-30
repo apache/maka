@@ -256,19 +256,15 @@ function NeedsConnectionHero(props: {
         className="maka-onboarding-footer"
         data-maka-contract="onboarding-actions"
       >
-        <Button type="button" variant="secondary" onClick={props.onBrowseProviders}>
-          {copy.needsConnection.browseProviders}
-        </Button>
+        <Button variant="secondary" onClick={props.onBrowseProviders} label={copy.needsConnection.browseProviders} />
         {props.onRefreshConnections && (
           <Button
-            type="button"
             variant="secondary"
             onClick={props.onRefreshConnections}
-            disabled={props.refreshConnectionsPending === true}
+            isDisabled={props.refreshConnectionsPending === true}
             aria-busy={props.refreshConnectionsPending === true ? 'true' : undefined}
-          >
-            {props.refreshConnectionsPending === true ? copy.refresh.pending : copy.refresh.connection}
-          </Button>
+            label={props.refreshConnectionsPending === true ? copy.refresh.pending : copy.refresh.connection}
+          />
         )}
         {props.onSkip && <SkipButton onSkip={props.onSkip} />}
       </footer>
@@ -477,14 +473,12 @@ function SkipButton(props: { onSkip: () => Promise<void> | void; label?: string 
   }, [pending, props]);
   return (
     <Button
-      type="button"
       variant="secondary"
       onClick={onClick}
-      disabled={pending}
+      isDisabled={pending}
       aria-busy={pending ? 'true' : undefined}
-    >
-      {pending ? copy.skipping : (props.label ?? copy.skip)}
-    </Button>
+      label={pending ? copy.skipping : (props.label ?? copy.skip)}
+    />
   );
 }
 
@@ -542,21 +536,18 @@ function SetupHero(props: SetupHeroProps) {
         data-maka-contract="onboarding-actions"
       >
         <Button
-          type="button"
+          variant="primary"
           onClick={props.primaryCta.onClick}
-        >
-          {props.primaryCta.label}
-        </Button>
+          label={props.primaryCta.label}
+        />
         {props.secondaryCta && (
           <Button
-            type="button"
             variant="secondary"
             onClick={props.secondaryCta.onClick}
-            disabled={props.secondaryCta.disabled === true}
+            isDisabled={props.secondaryCta.disabled === true}
             aria-busy={props.secondaryCta.busy === true ? 'true' : undefined}
-          >
-            {props.secondaryCta.label}
-          </Button>
+            label={props.secondaryCta.label}
+          />
         )}
         {props.onSkip && <SkipButton onSkip={props.onSkip} />}
       </footer>

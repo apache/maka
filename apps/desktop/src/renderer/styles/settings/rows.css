@@ -488,7 +488,7 @@
      card an action button wider than the row would bleed past the card
      edge. Let it shrink and let the label wrap, keeping the primitive's
      32px as a floor. */
-  .settingsActionRow > [data-slot="button"] {
+  .settingsActionRow > .astryx-button {
     flex-shrink: 1;
     height: auto;
     min-height: 2rem;

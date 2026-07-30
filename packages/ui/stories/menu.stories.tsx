@@ -15,7 +15,7 @@ import {
   MenuSubTrigger,
   MenuTrigger,
 } from '../src/primitives/menu.js';
-import { Button } from '../src/ui.js';
+import { buttonVariants, cn } from '../src/ui.js';
 
 const meta = {
   title: 'Primitives/Menu',
@@ -32,7 +32,8 @@ function OpenMenuCell({ label, children }: { label: string; children: React.Reac
   return (
     <div style={{ minHeight: 220, minWidth: 180 }}>
       <Menu open>
-        <MenuTrigger render={<Button variant="secondary" size="sm" />}>{label}</MenuTrigger>
+        {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
+        <MenuTrigger render={<button type="button" className={cn(buttonVariants({ variant: 'secondary', size: 'sm' }))} />}>{label}</MenuTrigger>
         <MenuPopup>{children}</MenuPopup>
       </Menu>
     </div>
@@ -42,7 +43,8 @@ function OpenMenuCell({ label, children }: { label: string; children: React.Reac
 export const Basic: Story = {
   render: () => (
     <Menu>
-      <MenuTrigger render={<Button variant="secondary" />}>打开菜单</MenuTrigger>
+      {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
+      <MenuTrigger render={<button type="button" className={cn(buttonVariants({ variant: 'secondary' }))} />}>打开菜单</MenuTrigger>
       <MenuPopup>
         <MenuItem>新建文件</MenuItem>
         <MenuItem>打开…</MenuItem>

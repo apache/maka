@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { DialogClose, DialogContent, DialogRoot, Button, Label } from '../src/ui.js';
+import { buttonVariants, cn, DialogClose, DialogContent, DialogRoot, Label } from '../src/ui.js';
+import { Button } from '../src/index.js';
 import { Input } from '../src/primitives/input.js';
 import { Textarea } from '../src/primitives/textarea.js';
 
@@ -36,7 +37,7 @@ function ControlledDialog({
   const [open, setOpen] = useState(false);
   return (
     <>
-      <Button onClick={() => setOpen(true)}>{triggerLabel}</Button>
+      <Button variant="primary" onClick={() => setOpen(true)} label={triggerLabel} />
       <DialogRoot open={open} onOpenChange={setOpen}>
         <DialogContent showClose={showClose}>{children}</DialogContent>
       </DialogRoot>
@@ -47,8 +48,8 @@ function ControlledDialog({
 function Footer({ onClose }: { onClose: () => void }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-      <Button variant="ghost" onClick={onClose}>取消</Button>
-      <Button onClick={onClose}>确认</Button>
+      <Button variant="ghost" onClick={onClose} label="取消" />
+      <Button variant="primary" onClick={onClose} label="确认" />
     </div>
   );
 }
@@ -80,7 +81,7 @@ function ControlledDialogTriggerFooter() {
   const [open, setOpen] = useState(false);
   return (
     <>
-      <Button onClick={() => setOpen(true)}>打开（带操作）</Button>
+      <Button variant="primary" onClick={() => setOpen(true)} label="打开（带操作）" />
       <DialogRoot open={open} onOpenChange={setOpen}>
         <DialogContent>
           <div style={{ display: 'grid', gap: 12, padding: 24, width: 360 }}>
@@ -123,7 +124,7 @@ function ControlledDialogClose() {
   const [open, setOpen] = useState(false);
   return (
     <>
-      <Button onClick={() => setOpen(true)}>打开（DialogClose 关闭）</Button>
+      <Button variant="primary" onClick={() => setOpen(true)} label="打开（DialogClose 关闭）" />
       <DialogRoot open={open} onOpenChange={setOpen}>
         <DialogContent showClose={false}>
           <div style={{ display: 'grid', gap: 12, padding: 24, width: 360 }}>
@@ -132,7 +133,8 @@ function ControlledDialogClose() {
               DialogClose 包裹的按钮点击后会自动关闭 dialog。
             </p>
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <DialogClose render={<Button variant="ghost" />}>关闭</DialogClose>
+              {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
+              <DialogClose render={<button type="button" className={cn(buttonVariants({ variant: 'ghost' }))} />}>关闭</DialogClose>
             </div>
           </div>
         </DialogContent>
@@ -153,7 +155,7 @@ function ControlledDialogTriggerForm() {
   const [open, setOpen] = useState(false);
   return (
     <>
-      <Button onClick={() => setOpen(true)}>打开表单</Button>
+      <Button variant="primary" onClick={() => setOpen(true)} label="打开表单" />
       <DialogRoot open={open} onOpenChange={setOpen}>
         <DialogContent>
           <div style={{ display: 'grid', gap: 14, padding: 24, width: 'min(92vw, 480px)' }}>
@@ -167,8 +169,8 @@ function ControlledDialogTriggerForm() {
               <Textarea id="dialog-desc" defaultValue="本周完成了 Storybook P0 组件覆盖。" />
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-              <Button variant="ghost" onClick={() => setOpen(false)}>取消</Button>
-              <Button onClick={() => setOpen(false)}>保存</Button>
+              <Button variant="ghost" onClick={() => setOpen(false)} label="取消" />
+              <Button variant="primary" onClick={() => setOpen(false)} label="保存" />
             </div>
           </div>
         </DialogContent>

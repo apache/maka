@@ -270,30 +270,25 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
           {hasRunOnceIpc && (
             <>
               <Button
-                type="button"
                 variant="secondary"
                 onClick={() => void triggerRun('deep')}
-                disabled={runningMode !== null}
-              >
-                {runningMode === 'deep' ? copy.generating : copy.generateDeep}
-              </Button>
+                isDisabled={runningMode !== null}
+                label={runningMode === 'deep' ? copy.generating : copy.generateDeep}
+              />
               <Button
-                type="button"
                 variant="secondary"
                 onClick={() => void triggerRun('daily')}
-                disabled={runningMode !== null}
-              >
-                {runningMode === 'daily' ? copy.generating : copy.generateDaily}
-              </Button>
+                isDisabled={runningMode !== null}
+                label={runningMode === 'daily' ? copy.generating : copy.generateDaily}
+              />
             </>
           )}
           {props.onOpenDailyReview && (
             <Button
-              type="button"
+              variant="primary"
               onClick={props.onOpenDailyReview}
-            >
-              {copy.open}
-            </Button>
+              label={copy.open}
+            />
           )}
         </div>
       )}

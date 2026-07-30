@@ -176,26 +176,22 @@ export function BotOnboardingModal(props: {
           <p className="settingsBotOnboardingPrivacy">{onboardingCopy.privacy}</p>
           {snapshot?.canOpenInBrowser && ['waiting', 'scanned'].includes(snapshot.state) && (
             <Button
-              type="button"
-              variant="quiet"
+              variant="ghost"
               size="sm"
               onClick={() => void openInBrowser()}
-            >
-              {onboardingCopy.openBrowser}
-            </Button>
+              label={onboardingCopy.openBrowser}
+            />
           )}
         </div>
         <div className="settingsBotOnboardingActions">
           {snapshot?.state === 'connected' ? (
-            <Button type="button" onClick={close}>{onboardingCopy.done}</Button>
+            <Button variant="primary" onClick={close} label={onboardingCopy.done} />
           ) : snapshot?.state === 'expired' || snapshot?.state === 'denied' || error ? (
-            <Button type="button" onClick={() => void start()}>{onboardingCopy.regenerate}</Button>
+            <Button variant="primary" onClick={() => void start()} label={onboardingCopy.regenerate} />
           ) : (
             <>
-              <Button type="button" variant="secondary" disabled={starting} onClick={() => void start()}>
-                {onboardingCopy.refreshQr}
-              </Button>
-              <Button type="button" variant="quiet" onClick={close}>{onboardingCopy.cancel}</Button>
+              <Button variant="secondary" isDisabled={starting} onClick={() => void start()} label={onboardingCopy.refreshQr} />
+              <Button variant="ghost" onClick={close} label={onboardingCopy.cancel} />
             </>
           )}
         </div>

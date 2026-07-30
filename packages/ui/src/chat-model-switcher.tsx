@@ -11,7 +11,7 @@
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from './primitives/menu.js';
-import { Button as UiButton } from './ui.js';
+import { Button as UiButton } from '@astryxdesign/core';
 import { ModelPicker } from './model-picker.js';
 import { Settings } from './icons.js';
 import {
@@ -307,16 +307,14 @@ export function ModelChipStatic(props: { label: string; onOpenSettings?: () => v
   if (props.onOpenSettings) {
     return (
       <UiButton
-        type="button"
-        variant="quiet"
+        variant="ghost"
         size="sm"
         onClick={props.onOpenSettings}
         aria-label={copy.configureAriaLabel(props.label)}
-        title={copy.configureTitle}
-      >
-        <Settings size={12} aria-hidden="true" />
-        <span className="maka-composer-model-chip-text">{props.label}</span>
-      </UiButton>
+        tooltip={copy.configureTitle}
+        icon={<Settings size={12} aria-hidden="true" />}
+        label={props.label}
+      />
     );
   }
   return (

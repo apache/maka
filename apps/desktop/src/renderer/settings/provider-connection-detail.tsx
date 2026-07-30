@@ -75,9 +75,7 @@ function UnknownConnectionDetail({ props }: { props: ConnectionDetailProps }) {
       <p>
         {copy.unknownDescription(connection.providerType)}
       </p>
-      <Button variant="destructive" type="button" onClick={remove} disabled={deleting}>
-        {deleting ? copy.deleting : copy.deleteUnused}
-      </Button>
+      <Button variant="destructive" onClick={remove} isDisabled={deleting} label={deleting ? copy.deleting : copy.deleteUnused} />
     </div>
   );
 }
@@ -155,9 +153,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             {/* Persistent button (disabled until a new key is typed) so the
                 credential actions row keeps a fixed height — no jitter when the
                 user starts pasting a key. */}
-            <Button type="button" disabled={detailActionBusy || !hasApiKeyChange} onClick={save}>
-              {busy ? copy.saving : copy.updateKey}
-            </Button>
+            <Button variant="primary" isDisabled={detailActionBusy || !hasApiKeyChange} onClick={save} label={busy ? copy.saving : copy.updateKey} />
           </div>
         </div>
       )}
@@ -236,29 +232,19 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                 risk — so it renders no permanently-disabled Save at all. */}
             {!hasFixedOAuthBaseUrl && (
               <div className="providerEndpointActions">
-                <Button type="button" disabled={detailActionBusy || !hasBaseUrlChange} onClick={save}>
-                  {busy ? copy.saving : copy.saveEndpoint}
-                </Button>
+                <Button variant="primary" isDisabled={detailActionBusy || !hasBaseUrlChange} onClick={save} label={busy ? copy.saving : copy.saveEndpoint} />
               </div>
             )}
           </div>
           <div className="providerAdvancedActions">
-            <Button variant="secondary" type="button" disabled={detailActionBusy || !hasUsableCredential} onClick={runTest}>
-              {testing ? copy.testing : copy.testConnection}
-            </Button>
+            <Button variant="secondary" isDisabled={detailActionBusy || !hasUsableCredential} onClick={runTest} label={testing ? copy.testing : copy.testConnection} />
             {supportsRemoteDiscovery && (
-              <Button variant="quiet" type="button" disabled={detailActionBusy || !hasUsableCredential} onClick={() => void refreshModels()}>
-                {fetchingModels ? copy.updating : copy.updateModels}
-              </Button>
+              <Button variant="ghost" isDisabled={detailActionBusy || !hasUsableCredential} onClick={() => void refreshModels()} label={fetchingModels ? copy.updating : copy.updateModels} />
             )}
             {!props.isDefault && connection.enabled && (
-              <Button variant="quiet" type="button" disabled={detailActionBusy} onClick={setAsDefault}>
-                {settingDefault ? copy.setting : copy.setDefault}
-              </Button>
+              <Button variant="ghost" isDisabled={detailActionBusy} onClick={setAsDefault} label={settingDefault ? copy.setting : copy.setDefault} />
             )}
-            <Button className="providerAdvancedDanger" variant="quiet" type="button" disabled={detailActionBusy} onClick={remove}>
-              {deleting ? copy.deleting : copy.deleteConnection}
-            </Button>
+            <Button className="providerAdvancedDanger" variant="ghost" isDisabled={detailActionBusy} onClick={remove} label={deleting ? copy.deleting : copy.deleteConnection} />
           </div>
         </div>
       </details>
@@ -330,9 +316,7 @@ function GitHubCopilotReloginNotice(props: {
       <AlertDescription>{loggedIn ? copy.copilotLoggedInDetail : copy.copilotWaitingDetail}</AlertDescription>
       {!loading && (
         <AlertAction>
-          <Button type="button" size="sm" disabled={busy} onClick={() => void connect()}>
-            {busy ? copy.importing : loggedIn ? copy.reimport : copy.importCredential}
-          </Button>
+          <Button variant="primary" size="sm" isDisabled={busy} onClick={() => void connect()} label={busy ? copy.importing : loggedIn ? copy.reimport : copy.importCredential} />
         </AlertAction>
       )}
     </Alert>
@@ -381,13 +365,12 @@ function OAuthReloginNotice(props: {
       {!loading && (
         <AlertAction>
           <Button
-            type="button"
+            variant="primary"
             size="sm"
-            disabled={flow.actionBusy}
+            isDisabled={flow.actionBusy}
             onClick={() => void flow.startLogin()}
-          >
-            {flow.pendingAction === 'login' ? copy.loggingIn : loggedIn ? copy.relogin : copy.login}
-          </Button>
+            label={flow.pendingAction === 'login' ? copy.loggingIn : loggedIn ? copy.relogin : copy.login}
+          />
         </AlertAction>
       )}
     </Alert>

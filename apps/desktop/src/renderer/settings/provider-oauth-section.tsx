@@ -305,21 +305,18 @@ function SubscriptionLoginModal(props: {
           <div className="settingsConnectionActions">
             {!flow.isLoggedIn ? (
               <Button
-                type="button"
+                variant="primary"
                 onClick={() => void flow.startLogin()}
-                disabled={flow.actionBusy}
-              >
-                {flow.pendingAction === 'login' ? copy.openingBrowser : copy.login(display.shortName)}
-              </Button>
+                isDisabled={flow.actionBusy}
+                label={flow.pendingAction === 'login' ? copy.openingBrowser : copy.login(display.shortName)}
+              />
             ) : (
               <Button
-                type="button"
                 variant="ghost"
                 onClick={() => void flow.logout()}
-                disabled={flow.actionBusy}
-              >
-                {flow.pendingAction === 'logout' ? copy.loggingOut : copy.logout}
-              </Button>
+                isDisabled={flow.actionBusy}
+                label={flow.pendingAction === 'logout' ? copy.loggingOut : copy.logout}
+              />
             )}
           </div>
         </div>
@@ -378,17 +375,11 @@ function GitHubCopilotSubscriptionModal(props: { onClose(): void }) {
               : copy.copilotSetup}
         </p>
         <div className="settingsConnectionActions">
-          <Button type="button" onClick={() => void flow.startLogin()} disabled={flow.actionBusy}>
-            {flow.pendingAction === 'login' ? copy.importing : loggedIn ? copy.reimport : copy.importCredential}
-          </Button>
+          <Button variant="primary" onClick={() => void flow.startLogin()} isDisabled={flow.actionBusy} label={flow.pendingAction === 'login' ? copy.importing : loggedIn ? copy.reimport : copy.importCredential} />
           {loggedIn && (
             <>
-              <Button type="button" variant="secondary" onClick={() => void refreshTokens?.()} disabled={flow.actionBusy}>
-                {flow.pendingAction === 'refresh' ? copy.verifying : copy.reverify}
-              </Button>
-              <Button type="button" variant="ghost" onClick={() => void flow.logout()} disabled={flow.actionBusy}>
-                {flow.pendingAction === 'logout' ? copy.removing : copy.removeLocal}
-              </Button>
+              <Button variant="secondary" onClick={() => void refreshTokens?.()} isDisabled={flow.actionBusy} label={flow.pendingAction === 'refresh' ? copy.verifying : copy.reverify} />
+              <Button variant="ghost" onClick={() => void flow.logout()} isDisabled={flow.actionBusy} label={flow.pendingAction === 'logout' ? copy.removing : copy.removeLocal} />
             </>
           )}
         </div>

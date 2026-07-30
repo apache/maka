@@ -1,5 +1,4 @@
 import React, { forwardRef } from 'react';
-import { Button as BaseButton } from '@base-ui/react/button';
 import { Dialog as BaseDialog } from '@base-ui/react/dialog';
 import { AlertDialog as BaseAlertDialog } from '@base-ui/react/alert-dialog';
 import { Field as BaseField } from '@base-ui/react/field';
@@ -68,6 +67,12 @@ export function pickerTriggerClasses(appearance: PickerTriggerAppearance = 'fiel
 // this PR actually needs state-based classes; do not pre-design it.
 // ===========================================================================
 
+// #1565 PR 3: the Button COMPONENT is the Astryx primitive now (re-exported
+// from index.ts). buttonVariants stays as a LEGACY className recipe only: its
+// remaining consumers are controls owned by later slices (Dialog close /
+// Toast action / Menu trigger render-props, where composing the Astryx
+// Button into a Base UI render-prop would wrap both systems around one
+// control). Each owning slice retires its usage; PR 11 deletes the recipe.
 export const buttonVariants = cva(
   [
     'inline-flex shrink-0 items-center justify-center gap-2 rounded-sm',
@@ -128,26 +133,6 @@ export const buttonVariants = cva(
     },
   },
 );
-
-interface ButtonProps
-  extends Omit<React.ComponentPropsWithoutRef<typeof BaseButton>, 'className'>,
-    VariantProps<typeof buttonVariants> {
-  className?: string;
-}
-
-export const Button = forwardRef<HTMLElement, ButtonProps>(function Button(
-  { className, variant, size, shape, ...props },
-  ref,
-) {
-  return (
-    <BaseButton
-      ref={ref}
-      className={cn(buttonVariants({ variant, size, shape }), className)}
-      data-slot="button"
-      {...props}
-    />
-  );
-});
 
 // #520 item 22: Input, Textarea, inputClasses, bareFieldClasses retired onto
 // packages/ui/src/primitives/input.tsx + primitives/textarea.tsx (Base UI

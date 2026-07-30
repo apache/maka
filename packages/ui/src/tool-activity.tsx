@@ -50,7 +50,8 @@ import { Alert, AlertAction, AlertDescription, AlertTitle } from './primitives/a
 import { Collapsible, CollapsibleTrigger, CollapsiblePanel } from './primitives/collapsible.js';
 import { previewVariants, TextShimmer, toolVariants } from './primitives/chat.js';
 import { redactSecrets } from './redact.js';
-import { Button as UiButton, cn } from './ui.js';
+import { Button as UiButton } from '@astryxdesign/core';
+import { cn } from './ui.js';
 import { describeLoadToolResult, formatToolIntent } from './tool-format.js';
 import {
   formatDuration,
@@ -677,7 +678,6 @@ function ToolErrorBanner(props: {
       {errorText && (
         <AlertAction>
           <UiButton
-            type="button"
             variant="ghost"
             size="sm"
             className="[align-self:start] data-[pending=true]:cursor-progress data-[copy-feedback=copied]:text-[color:var(--link)] data-[copy-feedback=copied]:border-[oklch(from_var(--link)_l_c_h_/_0.35)] data-[copy-feedback=failed]:text-[color:var(--destructive)] data-[copy-feedback=failed]:border-[oklch(from_var(--destructive)_l_c_h_/_0.35)]"
@@ -685,12 +685,11 @@ function ToolErrorBanner(props: {
             data-copy-feedback={copyPhase ?? undefined}
             aria-label={bannerCopy.copyAriaLabel(copyLabel)}
             aria-busy={copyPending ? 'true' : undefined}
-            disabled={copyPending}
+            isDisabled={copyPending}
             onClick={() => void copy()}
-          >
-            {copyPhase === 'copied' ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
-            <span>{copyLabel}</span>
-          </UiButton>
+            icon={copyPhase === 'copied' ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
+            label={copyLabel}
+          />
         </AlertAction>
       )}
     </Alert>
@@ -748,15 +747,13 @@ export function OverlayHost(props: { content?: ToolResultContent; onClose(): voi
     <div className="maka-modal-backdrop overlay">
       <UiButton
         className={previewVariants({ part: 'close' })}
-        type="button"
         variant="ghost"
         size="sm"
         onClick={props.onClose}
         aria-label={copy.closeAriaLabel}
-      >
-        <X size={14} aria-hidden="true" />
-        <span>{copy.close}</span>
-      </UiButton>
+        icon={<X size={14} aria-hidden="true" />}
+        label={copy.close}
+      />
       <ToolResultPreview content={props.content} />
     </div>
   );

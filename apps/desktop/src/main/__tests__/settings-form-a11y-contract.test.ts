@@ -220,8 +220,10 @@ describe('Settings form accessibility labels', () => {
     assert.match(passwordInput, /if \(mountedRef\.current\) showCopiedFeedback\(\)/);
     assert.match(passwordInput, /if \(mountedRef\.current\) toast\.error\(copy\.copyFailed, copy\.clipboardUnavailable\)/);
     assert.match(passwordInput, /copyGuard\.finish\(\);[\s\S]*if \(mountedRef\.current\) setCopying\(false\)/);
-    assert.match(passwordInput, /disabled=\{copying\}/);
-    assert.match(passwordInput, /aria-label=\{copying \? copy\.copying : justCopied \? copy\.copied : copy\.copy\}/);
+    // #1565 PR 3: Astryx Button — `isDisabled` replaces `disabled`, and the
+    // icon-only button's `label` prop is rendered as its aria-label.
+    assert.match(passwordInput, /isDisabled=\{copying\}/);
+    assert.match(passwordInput, /label=\{copying \? copy\.copying : justCopied \? copy\.copied : copy\.copy\}/);
     assert.match(passwordInput, /toast\.error\(copy\.copyFailed, copy\.clipboardUnavailable\)/);
     assert.doesNotMatch(
       passwordInput,

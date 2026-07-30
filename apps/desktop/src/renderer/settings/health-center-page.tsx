@@ -67,9 +67,7 @@ export function HealthCenterPage() {
           <AlertTitle>{copy.readFailed}</AlertTitle>
           <AlertDescription>{error ?? copy.noData}</AlertDescription>
           <AlertAction>
-            <Button type="button" onClick={() => setRefreshTick((tick) => tick + 1)}>
-              {copy.readAgain}
-            </Button>
+            <Button variant="primary" onClick={() => setRefreshTick((tick) => tick + 1)} label={copy.readAgain} />
           </AlertAction>
         </Alert>
       </div>
@@ -102,13 +100,11 @@ export function HealthCenterPage() {
               {copy.lastRead}<RelativeTime ts={healthCheckedAtMs} className="settingsHelpInlineTime" />
             </small>
             <Button
-              type="button"
               variant="secondary"
               size="sm"
               onClick={() => setRefreshTick((tick) => tick + 1)}
-            >
-              {copy.refresh}
-            </Button>
+              label={copy.refresh}
+            />
           </>
         }
       />

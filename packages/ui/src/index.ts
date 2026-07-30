@@ -179,6 +179,10 @@ export * from './astryx-i18n.js';
 // #1565 PR 3: Astryx atoms. These append-only exports leave the frozen
 // @maka/ui surface intact; the mechanical atom cut follows separately.
 export {
+  Button,
+  type ButtonProps,
+  type ButtonVariant,
+  type ButtonSize,
   Divider,
   type DividerProps,
   Text,

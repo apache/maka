@@ -211,15 +211,14 @@ export function VoiceModelsSettingsPage() {
 
       <div className="settingsActionRow">
         <Button
-          type="button"
+          variant="primary"
           onClick={() => void runCaptureSmoke()}
-          disabled={isBusy}
+          isDisabled={isBusy}
           aria-busy={isBusy}
           aria-describedby={smokeStatusId}
           data-pending={isBusy ? 'true' : undefined}
-        >
-          {isBusy ? copy.checking : copy.run}
-        </Button>
+          label={isBusy ? copy.checking : copy.run}
+        />
       </div>
 
       <Alert

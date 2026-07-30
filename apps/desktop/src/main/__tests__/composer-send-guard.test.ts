@@ -40,7 +40,8 @@ describe('composer send guard', () => {
     // U3: `noModelConnection` is folded into the guard so Send stays inert in
     // the post-skip no-model dead end (the inline hint points at Settings · 模型).
     assert.match(source, /\(!hasDraftText && skillDraft\.skills\.length === 0\)/);
-    assert.match(source, /disabled=\{sendDisabled\}/, 'send button must be disabled while empty, in flight, or with no model connection');
+    // #1565 PR 3: Astryx Button spells the disabled prop `isDisabled`.
+    assert.match(source, /isDisabled=\{sendDisabled\}/, 'send button must be disabled while empty, in flight, or with no model connection');
     assert.match(copySource, /sendLabel: '发送'/, 'Chinese UI must not keep English Send button copy');
     assert.match(copySource, /stopLabel: '停止'/, 'Chinese UI must not keep English Stop button copy');
   });
@@ -91,7 +92,8 @@ describe('composer send guard', () => {
       /if \(event\.key === 'Escape' && props\.streaming\) \{[\s\S]*?event\.preventDefault\(\);[\s\S]*?if \(props\.stopPending\) return;[\s\S]*?props\.onStop\(\);/,
       'Esc must not re-send stop while a stop request is already pending',
     );
-    assert.match(source, /disabled=\{props\.stopPending\}/);
+    // #1565 PR 3: Astryx Button spells the disabled prop `isDisabled`.
+    assert.match(source, /isDisabled=\{props\.stopPending\}/);
     assert.match(source, /if \(props\.stopPending\) return;[\s\S]*void props\.onStop\(\);/);
     assert.match(source, /aria-busy=\{props\.stopPending \? 'true' : undefined\}/);
     assert.match(source, /data-pending=\{props\.stopPending \? 'true' : undefined\}/);

@@ -12,7 +12,8 @@ import {
   SquarePen,
 } from '@maka/ui/icons';
 import {
-  Button as UiButton,
+  buttonVariants,
+  cn,
   Menu,
   MenuItem,
   MenuPopup,
@@ -34,10 +35,12 @@ export function AppShellTopbarActions(props: {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).chrome;
   return (
+    // #1565 PR 3: the Tooltip/Menu render-prop buttons below stay on legacy
+    // buttonVariants until their owning slices (5/6/10) retire them.
     <div className="maka-shell-topbar-rail" data-maka-contract="shell-topbar-rail" aria-label={copy.windowActions}>
       <Tooltip>
         <TooltipTrigger
-          render={<UiButton variant="quiet" size="icon-sm" />}
+          render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }))} />}
           type="button"
           className="maka-titlebar-action"
           data-maka-search-trigger="true"
@@ -50,7 +53,7 @@ export function AppShellTopbarActions(props: {
       </Tooltip>
       <Tooltip>
         <TooltipTrigger
-          render={<UiButton variant="quiet" size="icon-sm" />}
+          render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }))} />}
           type="button"
           className="maka-titlebar-action"
           onClick={props.sidebarCollapsed ? props.onExpandSidebar : props.onCollapseSidebar}
@@ -64,7 +67,7 @@ export function AppShellTopbarActions(props: {
       {props.sidebarCollapsed && (
         <Tooltip>
           <TooltipTrigger
-            render={<UiButton variant="quiet" size="icon-sm" />}
+            render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }))} />}
             type="button"
             className="maka-titlebar-action"
             onClick={props.onCreateSession}
@@ -96,7 +99,7 @@ export function AppShellWorkspaceTopActions(props: {
     <div className="maka-workspace-top-actions" role="toolbar" aria-label={copy.workspaceActions}>
       <Menu>
         <MenuTrigger
-          render={<UiButton variant="quiet" size="icon-sm" />}
+          render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }))} />}
           type="button"
           className="maka-titlebar-action"
           aria-label={copy.moreActions}
@@ -125,7 +128,7 @@ export function AppShellWorkspaceTopActions(props: {
       {props.workbarAvailable && (
         <Tooltip>
           <TooltipTrigger
-            render={<UiButton variant="quiet" size="icon-sm" />}
+            render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }))} />}
             type="button"
             className="maka-titlebar-action"
             onClick={props.onToggleWorkbar}

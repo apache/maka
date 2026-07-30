@@ -231,14 +231,13 @@ export function CommandPalette(props: {
               />
             </InputGroup>
             <Button
-              type="button"
-              variant="quiet"
-              size="icon-sm"
-              aria-label={copy.closeLabel}
+              variant="ghost"
+              size="sm"
+              isIconOnly
+              icon={<X aria-hidden="true" />}
+              label={copy.closeLabel}
               onClick={props.onClose}
-            >
-              <X aria-hidden="true" />
-            </Button>
+            />
           </div>
           <Autocomplete.List className="maka-palette-list" id="maka-palette-list" aria-label={copy.resultsLabel}>
             {grouped.length === 0 ? (

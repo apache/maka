@@ -37,6 +37,11 @@ const DYNAMIC_STYLE_HOOKS = new Set([
   // rules in `styles/settings/theme-preview.css` are real and consumed
   // at runtime; allowlist them so the orphan-selector guard doesn't
   // delete the colored backgrounds again.
+  // #1565: `.astryx-button` is the stable component class the Astryx
+  // Button renders at runtime (themeProps buildClassName) — it never appears
+  // as a className literal in our source, but interaction-prompts.css and
+  // settings/rows.css target it for layout overrides on migrated buttons.
+  'astryx-button',
   'settingsPaletteSwatch-default',
   'settingsPaletteSwatch-onedark',
   'settingsPaletteSwatch-catppuccin-mocha',

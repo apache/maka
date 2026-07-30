@@ -4,7 +4,7 @@ import { useUiLocale } from './locale-context.js';
 import { Blocks, CalendarCheck, ChevronDown, Plug, Sun } from './icons.js';
 import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from './primitives/menu.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
-import { Button } from './ui.js';
+import { buttonVariants, cn } from './ui.js';
 
 export type ModuleHubHeader = {
   title: string;
@@ -39,8 +39,10 @@ function Selector(props: {
     <span className="maka-module-hub-selector">
       <span className="maka-module-hub-separator" aria-hidden="true">/</span>
       <Menu>
+        {/* #1565 PR 3: Base UI render-prop composition stays on the legacy
+            buttonVariants classes until PR 6 (Menu) retires it. */}
         <MenuTrigger
-          render={<Button variant="quiet" />}
+          render={<button type="button" className={cn(buttonVariants({ variant: 'quiet' }))} />}
           className="maka-module-hub-selector-trigger"
           aria-label={props.ariaLabel}
         >

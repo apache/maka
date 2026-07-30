@@ -29,7 +29,8 @@ import {
 } from 'react';
 import { Toast as BaseToast } from '@base-ui/react/toast';
 import { AlertCircle, AlertTriangle, CheckCircle2, Info, X } from './icons.js';
-import { AlertDialogContent, AlertDialogRoot, Button } from './ui.js';
+import { Button } from '@astryxdesign/core';
+import { AlertDialogContent, AlertDialogRoot, buttonVariants, cn } from './ui.js';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 
@@ -239,15 +240,23 @@ function ToastViewport() {
                 <BaseToast.Description render={<small />}>{entry.description}</BaseToast.Description>
               )}
             </div>
+            {/* #1565 PR 3: Base UI render-prop composition stays on the
+                legacy buttonVariants classes — folding the Astryx Button
+                into Toast.Action would wrap both systems around one
+                control. PR 6 (Toast) retires this. */}
             {entry.actionProps && (
               <BaseToast.Action
                 {...entry.actionProps}
-                render={<Button type="button" variant="secondary" size="sm" />}
+                render={
+                  <button type="button" className={cn(buttonVariants({ variant: 'secondary', size: 'sm' }))} />
+                }
               />
             )}
             <BaseToast.Close
               aria-label={copy.closeNotification}
-              render={<Button type="button" variant="quiet" size="icon-sm" />}
+              render={
+                <button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }))} />
+              }
             >
               <X size={14} aria-hidden="true" />
             </BaseToast.Close>
@@ -292,19 +301,15 @@ function ConfirmDialog(props: { request: PendingConfirm; onResolve(result: boole
         <div className="maka-modal-footer">
           <Button
             ref={cancelRef}
-            type="button"
             variant="ghost"
             onClick={() => props.onResolve(false)}
-          >
-            {cancelLabel}
-          </Button>
+            label={cancelLabel}
+          />
           <Button
-            type="button"
-            variant={destructive ? 'destructive' : 'default'}
+            variant={destructive ? 'destructive' : 'primary'}
             onClick={() => props.onResolve(true)}
-          >
-            {confirmLabel}
-          </Button>
+            label={confirmLabel}
+          />
         </div>
       </AlertDialogContent>
     </AlertDialogRoot>

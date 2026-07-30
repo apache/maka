@@ -140,10 +140,8 @@ export function AddProviderForm(props: {
         </label>
         {error && <p className="providerError" id={errorId} role="alert">{error}</p>}
         <div className="providerKeyDialogActions">
-          <Button variant="ghost" type="button" disabled={busy} onClick={props.onCancel}>{copy.cancel}</Button>
-          <Button type="submit" disabled={busy}>
-            {busy ? copy.connecting : copy.connect}
-          </Button>
+          <Button variant="ghost" isDisabled={busy} onClick={props.onCancel} label={copy.cancel} />
+          <Button variant="primary" type="submit" isDisabled={busy} label={busy ? copy.connecting : copy.connect} />
         </div>
       </form>
     );
@@ -223,10 +221,8 @@ export function AddProviderForm(props: {
       )}
       {error && <p className="providerError" role="alert">{error}</p>}
       <div className="providerActions">
-        <Button variant="ghost" type="button" disabled={busy} onClick={props.onCancel}>{copy.cancel}</Button>
-        <Button type="button" disabled={busy || isExperimental} onClick={submit}>
-          {busy ? copy.saving : copy.save}
-        </Button>
+        <Button variant="ghost" isDisabled={busy} onClick={props.onCancel} label={copy.cancel} />
+        <Button variant="primary" isDisabled={busy || isExperimental} onClick={submit} label={busy ? copy.saving : copy.save} />
       </div>
     </div>
   );

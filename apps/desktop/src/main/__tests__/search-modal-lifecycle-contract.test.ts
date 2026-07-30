@@ -318,7 +318,9 @@ describe('SearchModal lifecycle contract (PR-SIDEBAR-IA-0 Phase 3 P0 fixup)', ()
 
     assert.match(styles, /\.maka-search-modal-input::-webkit-search-cancel-button\s*\{\s*display:\s*none;/, 'Native search cancel is intentionally hidden for visual consistency');
     assert.match(searchModal, /query\.length > 0 && \(/, 'Clear button should appear only when the query has content');
-    assert.match(searchModal, /<UiButton\s+variant="quiet"\s+size="icon-sm"\s+type="button"\s+aria-label=\{copy\.clearLabel\}/, 'Search modal must provide a governed compact clear button');
+    // #1565 PR 3: quiet/icon-sm → Astryx ghost + isIconOnly + sm; the label
+    // prop becomes the accessible name on icon-only buttons.
+    assert.match(searchModal, /<UiButton\s+variant="ghost"\s+isIconOnly\s+size="sm"\s+label=\{copy\.clearLabel\}/, 'Search modal must provide a governed compact clear button');
     assert.match(searchModal, /onClick=\{clearSearchQuery\}/, 'Clear search button must use the shared clear helper');
     assert.match(searchModal, /function clearSearchQuery\(\) \{[\s\S]*setQuery\(''\);[\s\S]*clearSearchState\(\);[\s\S]*inputRef\.current\?\.focus\(\);[\s\S]*\}/, 'Clear search helper must clear the query, invalidate search state, and return focus to input');
     assert.doesNotMatch(styles, /\.maka-search-modal-clear/, 'Clear search button styling belongs to the shared Button primitive');

@@ -114,8 +114,12 @@ describe('localized conversation journey', () => {
     assert.match(withHint, /maka-composer-no-model-hint/);
     assert.match(withHint, /还没有可用的模型连接，无法发送。/);
     assert.match(withHint, /maka-composer-no-model-hint-action[^>]*>前往模型设置</);
-    // Disabled Send carries the explanatory title (not the neutral 发送 label).
-    assert.match(withHint, /type="submit"[^>]*disabled[^>]*title="先添加一个模型连接才能发送。"/);
+    // Disabled Send carries the explanatory tooltip (not the neutral 发送
+    // label). #1565 PR 3: the Astryx Button renders the tooltip as a popover
+    // element and keeps a tooltip'd disabled button focusable via
+    // aria-disabled, so the hint stays reachable for keyboard users.
+    assert.match(withHint, /type="submit"[^>]*aria-disabled="true"/);
+    assert.match(withHint, /role="tooltip"[^>]*>[^]*?先添加一个模型连接才能发送。/);
     // Default (a model connection exists) shows neither the hint nor the title.
     const noHint = render('zh', <Composer onSend={() => {}} onStop={() => {}} />);
     assert.doesNotMatch(noHint, /maka-composer-no-model-hint/);

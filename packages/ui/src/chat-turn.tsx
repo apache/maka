@@ -7,7 +7,8 @@ import { Markdown } from './markdown.js';
 import { formatAbsoluteTimestamp, formatClockTime, turnAbortMarkerLabel } from './chat-display-helpers.js';
 import { prepareSmoothStreamText, useSmoothStreamContent } from './smooth-stream.js';
 import { tokenizeFade, useStreamFade, type StreamFade } from './stream-fade.js';
-import { Button as UiButton, cn, DialogContent, DialogRoot } from './ui.js';
+import { Button as UiButton } from '@astryxdesign/core';
+import { buttonVariants, cn, DialogContent, DialogRoot } from './ui.js';
 import type { AttachmentRef, ProviderRetryEvent, QuoteRef } from '@maka/core';
 import type { TurnTimelineItem, TurnViewModel } from './materialize.js';
 import { foldTimeline, type FoldedTimelineChild } from './timeline-fold.js';
@@ -173,13 +174,12 @@ const MessageBody = memo(function MessageBody(props: {
           <MessageCopyButton text={props.text} footerStyle />
           {props.onEditUserMessage && (
             <Tooltip>
+              {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
               <TooltipTrigger
                 render={
-                  <UiButton
+                  <button
                     type="button"
-                    variant="quiet"
-                    size="icon-sm"
-                    className={markerVariants({ variant: 'footer-action' })}
+                    className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }), markerVariants({ variant: 'footer-action' }))}
                     aria-label={editActionLabel}
                     aria-disabled={props.editDisabled === true ? 'true' : undefined}
                     data-action="edit"
@@ -245,13 +245,12 @@ function MessageCopyButton(props: { text: string; label?: string; footerStyle?: 
     // so the user-message copy and the assistant copy read as one button.
     return (
       <Tooltip>
+        {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
         <TooltipTrigger
           render={
-            <UiButton
+            <button
               type="button"
-              variant="quiet"
-              size="icon-sm"
-              className={markerVariants({ variant: 'footer-action' })}
+              className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }), markerVariants({ variant: 'footer-action' }))}
               aria-label={baseLabel}
               aria-busy={copyPending ? 'true' : undefined}
               disabled={copyPending}
@@ -404,17 +403,15 @@ export const TurnView = memo(function TurnView(props: {
           {forwardBadges.map((badge) => (
             <UiButton
               key={badge.id}
-              type="button"
-              variant="quiet"
+              variant="ghost"
               size="sm"
               className={markerVariants({ variant: 'lineage-badge' })}
               data-direction="forward"
-              title={badge.tooltip ?? badge.label}
+              tooltip={badge.tooltip ?? badge.label}
               onClick={() => props.onLineageBadgeClick?.(badge.targetTurnId)}
-            >
-              <GitBranch size={11} aria-hidden="true" />
-              <span>{badge.label}</span>
-            </UiButton>
+              icon={<GitBranch size={11} aria-hidden="true" />}
+              label={badge.label}
+            />
           ))}
         </Marker>
       )}
@@ -532,15 +529,13 @@ export const TurnView = memo(function TurnView(props: {
                 )}
                 {props.safeResumeAction && (
                   <UiButton
-                    type="button"
-                    variant="quiet"
+                    variant="ghost"
                     size="sm"
                     className="maka-turn-failed-resume"
-                    disabled={props.safeResumeAction.pending}
+                    isDisabled={props.safeResumeAction.pending}
                     onClick={props.safeResumeAction.onResume}
-                  >
-                    {props.safeResumeAction.pending ? copy.safeResumePending : copy.safeResume}
-                  </UiButton>
+                    label={props.safeResumeAction.pending ? copy.safeResumePending : copy.safeResume}
+                  />
                 )}
               </Marker>
             )}
@@ -578,17 +573,15 @@ export const TurnView = memo(function TurnView(props: {
               {reverseBadges.map((badge) => (
                 <UiButton
                   key={badge.id}
-                  type="button"
-                  variant="quiet"
+                  variant="ghost"
                   size="sm"
                   className={markerVariants({ variant: 'lineage-badge' })}
                   data-direction="reverse"
-                  title={badge.tooltip ?? badge.label}
+                  tooltip={badge.tooltip ?? badge.label}
                   onClick={() => props.onLineageBadgeClick?.(badge.targetTurnId)}
-                >
-                  <GitBranch size={11} aria-hidden="true" />
-                  <span>{badge.label}</span>
-                </UiButton>
+                  icon={<GitBranch size={11} aria-hidden="true" />}
+                  label={badge.label}
+                />
               ))}
             </Marker>
           )}
@@ -750,13 +743,12 @@ function TurnFooterActions(props: {
           : STATUS_FOOTER_ICON[action.id];
         return (
           <Tooltip key={action.id}>
+            {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
             <TooltipTrigger
               render={
-                <UiButton
+                <button
                   type="button"
-                  variant="quiet"
-                  size="icon-sm"
-                  className={markerVariants({ variant: 'footer-action' })}
+                  className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }), markerVariants({ variant: 'footer-action' }))}
                   aria-label={action.label}
                   data-action={action.id}
                   data-pending={isActionPending || undefined}

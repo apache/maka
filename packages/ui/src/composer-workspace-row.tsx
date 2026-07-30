@@ -8,7 +8,7 @@
 
 import type { ProjectRecord } from '@maka/core';
 import { AlertTriangle, Check, ChevronDown, FolderOpen, GitBranch, Plus } from './icons.js';
-import { Button as UiButton } from './ui.js';
+import { buttonVariants, cn } from './ui.js';
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from './primitives/menu.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
@@ -52,17 +52,16 @@ export function ComposerWorkspaceRow(props: {
           triggers. Shared Button owns their visual and interaction states;
           local classes only constrain layout and label truncation. */}
       <Menu defaultOpen={wp.defaultOpen}>
+        {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
         <MenuTrigger
           render={({ onClick: menuToggleClick, ...triggerRest }) => (
-            <UiButton
+            <button
               {...triggerRest}
               onClick={(e) => {
                 menuToggleClick?.(e);
               }}
               type="button"
-              variant="quiet"
-              size="sm"
-              className="maka-composer-workspace-picker"
+              className={cn(buttonVariants({ variant: 'quiet', size: 'sm' }), 'maka-composer-workspace-picker')}
               disabled={wp.pending === true}
               aria-busy={wp.pending === true ? 'true' : undefined}
               title={copy.chooseTitle(wp.branch ?? undefined)}
@@ -73,7 +72,7 @@ export function ComposerWorkspaceRow(props: {
                 ? <span className="maka-composer-workspace-current">{wp.label}</span>
                 : <span>{copy.choose}</span>}
               <ChevronDown size={12} aria-hidden="true" />
-            </UiButton>
+            </button>
           )}
         />
         <MenuPopup className="maka-composer-workspace-menu" align="start" side="top" sideOffset={6}>
@@ -117,18 +116,17 @@ export function ComposerWorkspaceRow(props: {
         const triggerDisabled = bp.pending === true;
         return (
           <Menu>
+            {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
             <MenuTrigger
               render={({ onClick: menuToggleClick, ...triggerRest }) => (
-                <UiButton
+                <button
                   {...triggerRest}
                   onClick={(e) => {
                     bp.onOpen();
                     menuToggleClick?.(e);
                   }}
                   type="button"
-                  variant="quiet"
-                  size="sm"
-                  className="maka-composer-branch-picker"
+                  className={cn(buttonVariants({ variant: 'quiet', size: 'sm' }), 'maka-composer-branch-picker')}
                   disabled={triggerDisabled}
                   aria-busy={triggerDisabled ? 'true' : undefined}
                   title={copy.branchTitle(bp.branch ?? undefined)}
@@ -137,7 +135,7 @@ export function ComposerWorkspaceRow(props: {
                   <GitBranch size={13} aria-hidden="true" />
                   <span className="maka-composer-branch-current">{bp.branch ?? '—'}</span>
                   <ChevronDown size={12} aria-hidden="true" />
-                </UiButton>
+                </button>
               )}
             />
             <MenuPopup className="maka-composer-branch-menu" align="start" side="top" sideOffset={6}>

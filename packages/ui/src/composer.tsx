@@ -34,7 +34,8 @@ import { ComposerMentionPopup, mentionOptionId } from './composer-mention-popup.
 import { useMentionPopup } from './use-mention-popup.js';
 import { ComposerWorkspaceRow, type ComposerBranchPicker, type ComposerWorkspacePicker } from './composer-workspace-row.js';
 import type { AttachmentRef, PermissionMode, ProviderType, QuoteRef, SessionSummary } from '@maka/core';
-import { Button as UiButton } from './ui.js';
+import { Button as UiButton } from '@astryxdesign/core';
+import { buttonVariants, cn } from './ui.js';
 import { Textarea as UiTextarea } from './primitives/textarea.js';
 import { AttachmentFileCard } from './attachment-file-card.js';
 import { QuoteRefChip } from './quote-ref-chip.js';
@@ -712,19 +713,16 @@ export const Composer = forwardRef<
               <li className="maka-composer-skill-chip" key={skill.ref ?? skill.id}>
                 <span>{skill.name}</span>
                 <UiButton
-                  type="button"
-                  variant="quiet"
-                  size="icon"
-                  shape="pill"
+                  variant="ghost"
+                  isIconOnly
                   className="maka-composer-skill-chip-remove"
-                  aria-label={copy.removeSkillAriaLabel(skill.name)}
+                  label={copy.removeSkillAriaLabel(skill.name)}
+                  icon={<X size={12} aria-hidden="true" />}
                   onClick={() => {
                     skillDraft.remove(skill.ref ?? skill.id);
                     window.requestAnimationFrame(() => textareaRef.current?.focus());
                   }}
-                >
-                  <X size={12} aria-hidden="true" />
-                </UiButton>
+                />
               </li>
             ))}
           </ul>
@@ -779,14 +777,13 @@ export const Composer = forwardRef<
                 vanishing the whole menu (and Plan/Swarm / expert teams). */}
             {(props.onPickAttachments || (props.expertTeams?.length ?? 0) > 0 || props.onPlanModeChange || props.onSwarmModeChange || props.onGraphModeChange) ? (
               <Menu>
+                {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
                 <MenuTrigger
                   render={({ onClick: menuToggleClick, ...triggerRest }) => (
-                    <UiButton
+                    <button
                       {...triggerRest}
-                      variant="quiet"
-                      size="icon-sm"
-                      shape="pill"
                       type="button"
+                      className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm', shape: 'pill' }))}
                       disabled={props.disabled || importActionBusy}
                       onClick={(e) => { menuToggleClick?.(e); }}
                       aria-label={pendingImportAction === 'pick' ? copy.addingAttachment : copy.add}
@@ -795,7 +792,7 @@ export const Composer = forwardRef<
                       title={copy.addTitle}
                     >
                       <Plus size={15} aria-hidden="true" />
-                    </UiButton>
+                    </button>
                   )}
                 />
                 <MenuPopup className="maka-composer-context-menu" align="start" side="top" sideOffset={6}>
@@ -1067,33 +1064,28 @@ export const Composer = forwardRef<
             )}
             {props.streaming ? (
               <UiButton
-                variant="default"
-                size="md"
-                type="button"
-                disabled={props.stopPending}
+                variant="primary"
+                isDisabled={props.stopPending}
                 onClick={() => {
                   if (props.stopPending) return;
                   void props.onStop();
                 }}
                 aria-busy={props.stopPending ? 'true' : undefined}
                 data-pending={props.stopPending ? 'true' : undefined}
-              >
-                {props.stopPending ? copy.stopping : copy.stopLabel}
-              </UiButton>
+                label={props.stopPending ? copy.stopping : copy.stopLabel}
+              />
             ) : (
               <UiButton
-                variant="default"
-                size="icon"
-                shape="pill"
+                variant="primary"
+                isIconOnly
                 type="submit"
-                disabled={sendDisabled}
-                aria-label={copy.sendLabel}
+                isDisabled={sendDisabled}
+                label={copy.sendLabel}
                 aria-busy={sendPending ? 'true' : undefined}
                 data-pending={sendPending ? 'true' : undefined}
-                title={sendTitle}
-              >
-                <ArrowUp size={16} aria-hidden="true" />
-              </UiButton>
+                tooltip={sendTitle}
+                icon={<ArrowUp size={16} aria-hidden="true" />}
+              />
             )}
           </div>
         </div>

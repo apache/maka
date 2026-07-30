@@ -1,6 +1,6 @@
 import { StrictMode, useEffect } from 'react';
 import { Theme } from '@astryxdesign/core/theme';
-import { neutralTheme } from '@astryxdesign/theme-neutral/built';
+import { makaTheme } from './astryx-theme/maka';
 import { AppShell } from './app-shell';
 import { useAstryxThemeMode } from './astryx-theme-mode';
 import type { OnboardingSnapshot } from '../preload/bridge-contract.js';
@@ -41,7 +41,7 @@ export function App({
   const astryxMode = useAstryxThemeMode();
   return (
     <StrictMode>
-      <Theme theme={neutralTheme} mode={astryxMode}>
+      <Theme theme={makaTheme} mode={astryxMode}>
         {/* No LayerProvider yet (#1565): it only configures the Astryx toast
             viewport — a permanent top-layer element the visual harness cannot
             capture. It mounts in PR 6 with the Toast migration, which owns the

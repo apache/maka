@@ -27,7 +27,7 @@ import {
 import { EmptyState } from './empty-state.js';
 import { OverlayScrollArea } from './overlay-scroll-area.js';
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from './primitives/menu.js';
-import { Button as UiButton } from './ui.js';
+import { buttonVariants, cn } from './ui.js';
 import { Button as BaseButton } from '@base-ui/react/button';
 import { describeBlockedReason, presentSessionStatus } from './session-status-presentation.js';
 import { useUiLocale } from './locale-context.js';
@@ -494,8 +494,9 @@ function ProjectSessionGroup(props: ProjectGroupSharedProps & {
         )}
         {project && props.projectActions && !editing && (
           <Menu>
+            {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
             <MenuTrigger
-              render={<UiButton variant="quiet" size="icon-sm" />}
+              render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }))} />}
               className="maka-list-project-menu-trigger"
               aria-label={copy.projectActionsAriaLabel(project.name)}
               disabled={pendingAction !== null}

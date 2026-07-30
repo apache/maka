@@ -35,13 +35,15 @@ import {
 import { PlanReminderFormDialog } from './plan-reminder-form-dialog.js';
 import { PlanReminderSelect } from './plan-reminder-select.js';
 import {
-  Button as UiButton,
+  buttonVariants,
+  cn,
   Switch,
   TabsList,
   TabsPanel,
   TabsRoot,
   TabsTrigger,
 } from './ui.js';
+import { Button as UiButton } from '@astryxdesign/core';
 import { Badge } from './primitives/badge.js';
 import { Chip, type ChipProps } from './primitives/chip.js';
 import { PageHeader } from './primitives/page-header.js';
@@ -264,13 +266,16 @@ export function PlanReminderPanel(props: {
           contentClassName="maka-plan-heading"
           actions={
             <div className="maka-plan-top-actions" aria-label={copy.page.actionsAriaLabel}>
-              <UiButton type="button" onClick={openCreateReminderDialog}>
-                <Plus size={15} aria-hidden="true" />
-                {copy.page.create}
-              </UiButton>
+              <UiButton
+                variant="primary"
+                onClick={openCreateReminderDialog}
+                icon={<Plus size={15} aria-hidden="true" />}
+                label={copy.page.create}
+              />
               <Menu>
+                {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
                 <MenuTrigger
-                  render={<UiButton variant="quiet" size="icon" />}
+                  render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'icon' }))} />}
                   aria-label={copy.page.pageSettings}
                 >
                   <MoreHorizontal size={16} aria-hidden="true" />
@@ -376,7 +381,7 @@ export function PlanReminderPanel(props: {
             {normalizedListQuery && (
               <div className="maka-plan-search-summary" role="status" aria-live="polite">
                 <span>{copy.page.searchMatches(searchMatchedReminders.length)}</span>
-                <UiButton type="button" variant="ghost" size="sm" onClick={() => setListQuery('')}>{copy.page.clearSearch}</UiButton>
+                <UiButton variant="ghost" size="sm" onClick={() => setListQuery('')} label={copy.page.clearSearch} />
               </div>
             )}
             {props.reminders.length === 0 ? (
@@ -456,8 +461,9 @@ export function PlanReminderPanel(props: {
                           />
                         )}
                         <Menu>
+                          {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
                           <MenuTrigger
-                            render={<UiButton variant="quiet" size="icon-sm" />}
+                            render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }))} />}
                             disabled={reminderActionPending}
                             aria-label={`${copy.page.reminderActions}: ${reminder.title}`}
                           >

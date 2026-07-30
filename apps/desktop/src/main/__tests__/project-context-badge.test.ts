@@ -216,7 +216,9 @@ describe('project context workspace picker', () => {
 
     assert.match(ui, /workspacePicker\?: ComposerWorkspacePicker;/);
     assert.match(ui, /<ComposerWorkspaceRow workspacePicker=\{props\.workspacePicker\} branchPicker=\{props\.branchPicker\} \/>/);
-    assert.match(workspaceRow, /className="maka-composer-workspace-picker"/);
+    // #1565 PR 3: the picker trigger is a Menu render-prop composition kept on
+    // legacy buttonVariants; the layout hook class rides through cn().
+    assert.match(workspaceRow, /cn\(buttonVariants\(\{ variant: 'quiet', size: 'sm' \}\), 'maka-composer-workspace-picker'\)/);
     assert.match(workspaceRow, /branch\?: string \| null;/);
     assert.match(workspaceRow, /pending\?: boolean;/);
     assert.match(workspaceRow, /projects:\s*readonly ProjectRecord\[\]/);

@@ -207,29 +207,31 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
       /<EnabledModelManager[\s\S]*disabled=\{detailActionBusy\}/,
       'ConnectionDetail enabled-model editor must freeze while any detail action is in flight',
     );
+    // #1565 PR 3: Astryx Button — `isDisabled` replaces `disabled`, pending
+    // copy moved from children text into the `label` prop.
     assert.match(
       detail,
-      /<Button type="button" disabled=\{detailActionBusy \|\| !hasApiKeyChange\} onClick=\{save\}>[\s\S]*\{busy \? copy\.saving : copy\.updateKey\}/,
+      /<Button variant="primary" isDisabled=\{detailActionBusy \|\| !hasApiKeyChange\} onClick=\{save\} label=\{busy \? copy\.saving : copy\.updateKey\}/,
       'ConnectionDetail key save button stays present but disabled until the key draft is dirty (constant dialog height)',
     );
     assert.match(
       detail,
-      /className="providerEndpointActions"[\s\S]*<Button type="button" disabled=\{detailActionBusy \|\| !hasBaseUrlChange\} onClick=\{save\}>[\s\S]*\{busy \? copy\.saving : copy\.saveEndpoint\}/,
+      /className="providerEndpointActions">[\s\S]*?<Button variant="primary" isDisabled=\{detailActionBusy \|\| !hasBaseUrlChange\} onClick=\{save\} label=\{busy \? copy\.saving : copy\.saveEndpoint\}/,
       'ConnectionDetail endpoint save button stays present but disabled until the endpoint draft is dirty',
     );
     assert.match(
       detail,
-      /disabled=\{detailActionBusy \|\| !hasUsableCredential\} onClick=\{runTest\}[\s\S]*\{testing \? copy\.testing : copy\.testConnection\}/,
+      /isDisabled=\{detailActionBusy \|\| !hasUsableCredential\} onClick=\{runTest\} label=\{testing \? copy\.testing : copy\.testConnection\}/,
       'ConnectionDetail test button must show visible pending feedback and disable all peer actions',
     );
     assert.match(
       detail,
-      /disabled=\{detailActionBusy\} onClick=\{setAsDefault\}[\s\S]*\{settingDefault \? copy\.setting : copy\.setDefault\}/,
+      /isDisabled=\{detailActionBusy\} onClick=\{setAsDefault\} label=\{settingDefault \? copy\.setting : copy\.setDefault\}/,
       'ConnectionDetail default button must show visible pending feedback and disable all peer actions',
     );
     assert.match(
       detail,
-      /disabled=\{detailActionBusy\} onClick=\{remove\}[\s\S]*\{deleting \? copy\.deleting : copy\.deleteConnection\}/,
+      /isDisabled=\{detailActionBusy\} onClick=\{remove\} label=\{deleting \? copy\.deleting : copy\.deleteConnection\}/,
       'ConnectionDetail delete button must show visible pending feedback and disable all peer actions',
     );
     assert.match(
@@ -282,9 +284,10 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
       /disabled=\{isExperimental \|\| busy\} aria-label=\{copy\.slugAria\}/,
       'AddProviderForm fields must freeze while a create request is in flight so visible draft cannot drift from the submitted payload',
     );
+    // #1565 PR 3: Astryx Button — `isDisabled` + `label` prop, self-closing.
     assert.match(
       addForm,
-      /<Button variant="ghost" type="button" disabled=\{busy\} onClick=\{props\.onCancel\}>\{copy\.cancel\}<\/Button>/,
+      /<Button variant="ghost" isDisabled=\{busy\} onClick=\{props\.onCancel\} label=\{copy\.cancel\} \/>/,
       'AddProviderForm cancel must be disabled while create is in flight',
     );
     assert.doesNotMatch(
@@ -707,9 +710,10 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
       /if \(!connection\.enabled\) \{[\s\S]*toast\.error\(copy\.connectionDisabled/,
       'ConnectionDetail must guard against stale disabled connections before setDefault',
     );
+    // #1565 PR 3: Astryx Button — `quiet`→`ghost`, `isDisabled`, `label` prop.
     assert.match(
       detail,
-      /!\s*props\.isDefault && connection\.enabled && \([\s\S]*<Button variant="quiet" type="button" disabled=\{detailActionBusy\} onClick=\{setAsDefault\}>[\s\S]*\{settingDefault \? copy\.setting : copy\.setDefault\}[\s\S]*<\/Button>/,
+      /!\s*props\.isDefault && connection\.enabled && \([\s\S]*?<Button variant="ghost" isDisabled=\{detailActionBusy\} onClick=\{setAsDefault\} label=\{settingDefault \? copy\.setting : copy\.setDefault\} \/>/,
       'disabled connections must not render the set-default action',
     );
   });
@@ -726,9 +730,10 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     // The Save buttons stay mounted (disabled while the field is clean) so the
     // dialog does not add or drop a row — and thus does not jitter in height —
     // the moment the user starts typing a key or editing the endpoint.
+    // #1565 PR 3: Astryx Button — `isDisabled` replaces `disabled`.
     assert.match(
       detail,
-      /<Button type="button" disabled=\{detailActionBusy \|\| !hasApiKeyChange\} onClick=\{save\}>[\s\S]*<Button type="button" disabled=\{detailActionBusy \|\| !hasBaseUrlChange\} onClick=\{save\}>/,
+      /<Button variant="primary" isDisabled=\{detailActionBusy \|\| !hasApiKeyChange\} onClick=\{save\}[\s\S]*<Button variant="primary" isDisabled=\{detailActionBusy \|\| !hasBaseUrlChange\} onClick=\{save\}/,
       'each Save action stays beside its field and disabled (not unmounted) until that field changes',
     );
     // An OAuth-fixed endpoint is readOnly with no dirty path (no jitter risk),
@@ -820,9 +825,10 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
       /async function remove\(\) \{[\s\S]*setDeleting\(true\);[\s\S]*let deleted = false;[\s\S]*await props\.bridge\.delete\(connection\.slug\);[\s\S]*deleted = true;[\s\S]*await props\.onDeleted\(\);[\s\S]*catch \(error\) \{[\s\S]*toast\.error\([\s\S]*deleted \? copy\.refreshFailed : copy\.deleteFailed/,
       'ConnectionDetail delete failures and post-delete refresh failures must be visible',
     );
+    // #1565 PR 3: Astryx Button — `quiet`→`ghost`, `isDisabled`, `label` prop.
     assert.match(
       detail,
-      /<Button className="providerAdvancedDanger" variant="quiet" type="button" disabled=\{detailActionBusy\} onClick=\{remove\}>[\s\S]*\{deleting \? copy\.deleting : copy\.deleteConnection\}[\s\S]*<\/Button>/,
+      /<Button className="providerAdvancedDanger" variant="ghost" isDisabled=\{detailActionBusy\} onClick=\{remove\} label=\{deleting \? copy\.deleting : copy\.deleteConnection\} \/>/,
       'Delete should be disabled while provider detail actions are busy and show its own pending copy',
     );
   });
@@ -846,8 +852,9 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
       'credential-presence probe failures must not be downgraded to missing credentials',
     );
     assert.match(detail, /role="alert"[\s\S]*copy\.credentialUnknownDetail/);
-    assert.match(detail, /disabled=\{detailActionBusy \|\| !hasUsableCredential\} onClick=\{\(\) => void refreshModels\(\)\}/);
-    assert.match(detail, /disabled=\{detailActionBusy \|\| !hasUsableCredential\}/);
+    // #1565 PR 3: Astryx Button takes `isDisabled` instead of `disabled`.
+    assert.match(detail, /isDisabled=\{detailActionBusy \|\| !hasUsableCredential\} onClick=\{\(\) => void refreshModels\(\)\}/);
+    assert.match(detail, /isDisabled=\{detailActionBusy \|\| !hasUsableCredential\}/);
     assert.doesNotMatch(
       detail,
       /void props\.bridge\.hasSecret\(connection\.slug\)\.then\(setHasSecret\);/,
@@ -1198,7 +1205,8 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
       /createOneShotActionGuard|pendingGuard|useRef|useMountedRef/,
       'GitHub Copilot modal must not own a parallel pending-action guard — the shared hook provides it',
     );
-    assert.match(copilotModal, /disabled=\{flow\.actionBusy\}/, 'Copilot account actions must share the one busy flag');
+    // #1565 PR 3: Astryx Button takes `isDisabled` instead of `disabled`.
+    assert.match(copilotModal, /isDisabled=\{flow\.actionBusy\}/, 'Copilot account actions must share the one busy flag');
     assert.match(copilotModal, /flow\.pendingAction === 'login' \? copy\.importing : loggedIn \? copy\.reimport : copy\.importCredential/, 'Copilot connect must expose its locale-specific pending copy');
     assert.match(copilotModal, /flow\.pendingAction === 'refresh' \? copy\.verifying : copy\.reverify/, 'Copilot token refresh must expose locale-specific progress copy');
     assert.match(copilotModal, /flow\.pendingAction === 'logout' \? copy\.removing : copy\.removeLocal/, 'Copilot logout must expose locale-specific progress copy');
@@ -1308,7 +1316,8 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     assert.match(hook, /const actionBusy = pendingAction !== null/, 'shared OAuth flow needs a shared busy flag derived from the named action');
     // The thin modal renders login/logout straight from the hook return.
     assert.match(browserModal, /const flow = useOAuthLoginFlow\(\{/, 'SubscriptionLoginModal must consume the shared login-flow hook');
-    assert.match(browserModal, /disabled=\{flow\.actionBusy\}/, 'browser OAuth action buttons must disable while another one-shot action is pending');
+    // #1565 PR 3: Astryx Button takes `isDisabled` instead of `disabled`.
+    assert.match(browserModal, /isDisabled=\{flow\.actionBusy\}/, 'browser OAuth action buttons must disable while another one-shot action is pending');
     assert.match(browserModal, /flow\.pendingAction === 'login' \? copy\.openingBrowser : copy\.login\(display\.shortName\)/, 'browser OAuth login start must expose locale-specific pending copy');
     assert.match(browserModal, /flow\.pendingAction === 'logout' \? copy\.loggingOut : copy\.logout/, 'browser OAuth logout must expose locale-specific progress feedback');
     assert.match(claudeCard, /const refresh = async \(\) => \{[\s\S]*catch \(error\) \{[\s\S]*toast\.error\(copy\.refreshFailed, message\);[\s\S]*setPasteError\(message\);/, 'Claude OAuth state refresh must surface thrown failures');
@@ -1418,7 +1427,8 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
       'authorizing must take the start/login branch instead of the authenticated refresh/logout branch',
     );
     assert.match(claudeCard, /const actionBusy = pendingAction !== null/);
-    assert.match(actionsBlock, /disabled=\{actionBusy \|\| claudeLoginPending\}/);
+    // #1565 PR 3: Astryx Button takes `isDisabled` instead of `disabled`.
+    assert.match(actionsBlock, /isDisabled=\{actionBusy \|\| claudeLoginPending\}/);
     assert.match(actionsBlock, /\? copy\.loggingIn/, 'pending Claude OAuth should show a disabled locale-specific login-in-progress action');
     assert.match(actionsBlock, /pendingAction === 'login'[\s\S]*copy\.openingBrowser/, 'login start must expose a locale-specific pending label before the auth code panel appears');
     assert.match(actionsBlock, /pendingAction === 'quota' \? copy\.refreshing : copy\.refreshQuota/, 'quota refresh must expose local progress feedback');
@@ -1454,7 +1464,8 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     // hasSecret===false.
     assert.match(notice, /const loggedIn = hasSecret === true;/);
     assert.match(notice, /\{!loading && \(/);
-    assert.match(notice, /<Button[\s\S]*size="sm"[\s\S]*disabled=\{flow\.actionBusy\}[\s\S]*onClick=\{\(\) => void flow\.startLogin\(\)\}/);
+    // #1565 PR 3: Astryx Button takes `isDisabled` instead of `disabled`.
+    assert.match(notice, /<Button[\s\S]*size="sm"[\s\S]*isDisabled=\{flow\.actionBusy\}[\s\S]*onClick=\{\(\) => void flow\.startLogin\(\)\}/);
     assert.match(notice, /flow\.pendingAction === 'login' \? copy\.loggingIn : loggedIn \? copy\.relogin : copy\.login/);
     // Honest logged-in banner: it points at the re-auth action instead of
     // claiming there is nothing to do.

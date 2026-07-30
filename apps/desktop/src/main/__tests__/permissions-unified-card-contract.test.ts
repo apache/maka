@@ -97,13 +97,15 @@ describe('PR-PERMISSIONS-UNIFIED-CARD-0 contract (#309)', () => {
     // The drag-to-grant flow added a second possible primary, so the
     // condition covers both — otherwise a row showing 引导授权 would put
     // two default-variant buttons side by side with no visual hierarchy.
+    // #1565 PR 3: Astryx Button renamed the primary variant `default` → `primary`.
     assert.match(
       actionsBlock,
-      /variant=\{showRequest \|\| showDragGrant \? 'secondary' : 'default'\}/,
-      'open-settings button must be bordered secondary whenever a primary action is present, default when alone',
+      /variant=\{showRequest \|\| showDragGrant \? 'secondary' : 'primary'\}/,
+      'open-settings button must be bordered secondary whenever a primary action is present, primary when alone',
     );
     // The guided flow is a primary CTA — it must not be quietly demoted.
-    const dragGrantButton = actionsBlock.match(/showDragGrant && \(\s*<Button[\s\S]*?<\/Button>\s*\)/)?.[0] ?? '';
+    // #1565 PR 3: Astryx Button takes `label=` and self-closes, no children.
+    const dragGrantButton = actionsBlock.match(/showDragGrant && \(\s*<Button[\s\S]*?\/>\s*\)/)?.[0] ?? '';
     assert.ok(dragGrantButton, 'showDragGrant && Button JSX must be findable');
     assert.doesNotMatch(
       dragGrantButton,
@@ -116,10 +118,9 @@ describe('PR-PERMISSIONS-UNIFIED-CARD-0 contract (#309)', () => {
       'no ghost variant in the OS-permission actions row — a clickable beside a real button needs a visible edge',
     );
 
-    // Request button does not pass a `variant` prop — it defaults to the
-    // primary `default` variant. Make sure no future edit silently
-    // demotes it to ghost.
-    const requestButton = actionsBlock.match(/showRequest && \(\s*<Button[\s\S]*?<\/Button>\s*\)/)?.[0] ?? '';
+    // Request button is the explicit `primary` variant. Make sure no future
+    // edit silently demotes it to ghost. (#1565 PR 3: self-closing Astryx Button.)
+    const requestButton = actionsBlock.match(/showRequest && \(\s*<Button[\s\S]*?\/>\s*\)/)?.[0] ?? '';
     assert.ok(requestButton, 'showRequest && Button JSX must be findable');
     assert.doesNotMatch(
       requestButton,

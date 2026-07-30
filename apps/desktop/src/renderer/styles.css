@@ -7,22 +7,25 @@
    whole cascade, and why the layers are top-level names rather than
    astryx.* sub-layers.
 
-   Three Astryx sheets are deliberately NOT imported yet — each targets bare
+   Two Astryx sheets are deliberately NOT imported yet — each targets bare
    elements or shadows product tokens, which no layer order can bury (a rule
    wins wherever no product rule competes; a custom property on the Theme
    wrapper wins by tree distance):
    - reset.css (cursor on buttons, small/code sizing) replaces Tailwind
      preflight and lands with the slice that removes it (PR 12).
-   - theme-neutral/theme.css declares its tokens on the Theme wrapper AND
-     ships @scope'd element typography (:where(p), :where(h1..h6) take the
-     Astryx font). It lands with the first component consumer (PR 3) —
-     preferably as an `astryx theme build` of a Maka-named theme so the
-     element-typography block is dropped at the source, not neutralized
-     downstream.
    - tailwind-theme.css: the existing @theme inline bridge below stays the
      single source for utility tokens until Tailwind leaves in PR 12.
-   Layer slots for all of them are already reserved in cascade-layers.css. */
+   Layer slots for them are already reserved in cascade-layers.css.
+
+   maka.css below lands with the first Astryx atom consumers: an `astryx
+   theme build` of the Maka-named theme (a pure extends of neutral). The CLI
+   cannot drop the @scope'd element-typography block at the source (--no-prose
+   was removed for build⇄runtime parity), so scripts/build-astryx-theme.mjs
+   strips it post-build — safe because built themes skip runtime injection,
+   making the imported file the only CSS source. Its internal @layer
+   astryx-theme nests into the astryx-tokens slot below. */
 @import "@astryxdesign/core/astryx.css" layer(astryx-components);
+@import "./astryx-theme/maka.css" layer(astryx-tokens);
 
 /* Bundled Geist fallbacks; maka-tokens.css owns the product font stacks. */
 @import "@fontsource-variable/geist";

@@ -8,7 +8,7 @@ import {
 } from './session-history-list.js';
 import { SessionSidebarFooter, SessionSidebarNav, type SidebarUpdateReminder } from './session-sidebar-nav.js';
 import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from './primitives/menu.js';
-import { Button as UiButton } from './ui.js';
+import { buttonVariants, cn } from './ui.js';
 import { ListTodo } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
@@ -60,8 +60,9 @@ export function SessionListPanel(props: {
         <div className="maka-session-list-toolbar">
           <span className="maka-session-list-heading">{copy.title}</span>
           <Menu>
+            {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
             <MenuTrigger
-              render={<UiButton variant="quiet" size="icon-sm" />}
+              render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }))} />}
               type="button"
               aria-label={copy.groupingAriaLabel}
               title={copy.groupingAriaLabel}

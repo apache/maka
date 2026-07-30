@@ -35,8 +35,10 @@ import {
   toPlanReminderDateTimeInputValue,
 } from './plan-reminder-helpers.js';
 import { PlanReminderSelect } from './plan-reminder-select.js';
+import { Button as UiButton } from '@astryxdesign/core';
 import {
-  Button as UiButton,
+  buttonVariants,
+  cn,
   DialogClose,
   DialogContent,
   DialogRoot,
@@ -202,8 +204,9 @@ export function PlanReminderFormDialog(props: {
             <div className="maka-plan-form-header-actions">
               {!isEditing && (
                 <Menu>
+                  {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
                   <MenuTrigger
-                    render={<UiButton variant="quiet" size="sm" />}
+                    render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'sm' }))} />}
                     disabled={formInteractionDisabled}
                     aria-label={copy.useTemplate}
                   >
@@ -219,8 +222,9 @@ export function PlanReminderFormDialog(props: {
                   </MenuPopup>
                 </Menu>
               )}
+              {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
               <DialogClose
-                render={<UiButton variant="quiet" size="icon-sm" />}
+                render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }))} />}
                 type="button"
                 onClick={closeReminderDialog}
                 disabled={formInteractionDisabled}
@@ -262,15 +266,13 @@ export function PlanReminderFormDialog(props: {
             {copy.presets.map(([preset, label]) => (
               <UiButton
                 key={preset}
-                type="button"
                 variant="secondary"
                 size="sm"
                 className="maka-plan-preset"
                 onClick={() => applyRunAtPreset(preset)}
-                disabled={formInteractionDisabled}
-              >
-                {label}
-              </UiButton>
+                isDisabled={formInteractionDisabled}
+                label={label}
+              />
             ))}
           </div>
           <div className="maka-plan-form-grid">
@@ -365,16 +367,17 @@ export function PlanReminderFormDialog(props: {
           <footer className="maka-plan-form-footer">
             <UiButton
               variant="secondary"
-              type="button"
               onClick={closeReminderDialog}
-              disabled={formInteractionDisabled}
-            >
-              {copy.cancel}
-            </UiButton>
-            <UiButton type="submit" disabled={submitDisabled}>
-              {isEditing ? <Check size={14} aria-hidden="true" /> : <Plus size={14} aria-hidden="true" />}
-              <span>{submitPending ? (isEditing ? copy.saving : copy.creating) : (isEditing ? copy.save : copy.create)}</span>
-            </UiButton>
+              isDisabled={formInteractionDisabled}
+              label={copy.cancel}
+            />
+            <UiButton
+              variant="primary"
+              type="submit"
+              isDisabled={submitDisabled}
+              icon={isEditing ? <Check size={14} aria-hidden="true" /> : <Plus size={14} aria-hidden="true" />}
+              label={submitPending ? (isEditing ? copy.saving : copy.creating) : (isEditing ? copy.save : copy.create)}
+            />
           </footer>
         </form>
       </DialogContent>

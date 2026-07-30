@@ -393,14 +393,13 @@ function NetworkProxySection(props: {
 
           <div className="settingsActionRow">
             <Button
-              type="button"
-              disabled={testing}
+              variant="primary"
+              isDisabled={testing}
               aria-busy={testing}
               data-pending={testing ? 'true' : undefined}
               onClick={() => void testProxy()}
-            >
-              {testing ? copy.testing : copy.testCurrent}
-            </Button>
+              label={testing ? copy.testing : copy.testCurrent}
+            />
           </div>
         </>
       )}
