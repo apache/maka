@@ -65,3 +65,21 @@ test('force-kills Electron when graceful E2E teardown does not settle', async ()
   expect(terminatedTree).toBe(true);
   expect(child.killedWith).toBeUndefined();
 });
+
+test('falls back to a direct SIGKILL when the group kill misses the root', async () => {
+  // The tree terminator signals the child's process group; on a child that is
+  // not a group leader the group signal reports ESRCH and the terminator
+  // returns as if the tree were gone while the root lives on. The bounded
+  // close must then land a kill on the root itself — measured for real with
+  // the smoke gate's visible window, which also ignores SIGTERM.
+  const child = new FakeElectronProcess();
+  const app: ClosableElectronApplication = {
+    close: () => new Promise<void>(() => {}),
+    process: () => child,
+  };
+
+  await closeElectronApplication(app, 0, async () => true);
+
+  expect(child.killedWith).toBe('SIGKILL');
+  expect(child.signalCode).toBe('SIGKILL');
+});
