@@ -10,10 +10,14 @@ import type { Socket } from 'node:net';
 import { Agent, type Dispatcher, Headers, fetch as upstreamFetch } from 'undici';
 
 /** Upstream connections must stay on HTTP/1.1. Providers negotiate h2 via
- * ALPN, and undici's HTTP/2 client runs one request at a time per origin
- * connection, so concurrent streaming completions from parallel cells
- * serialize behind each other's full generation streams — observed as
- * multi-minute first-token waits attributed to the provider. */
+ * ALPN, and undici <= 8.7 (bundled in Node 26) refuses to multiplex
+ * stream/async-iterable request bodies on an h2 session with requests in
+ * flight, while its fetch wraps every non-empty body into an async iterable —
+ * so concurrent streaming completions from parallel cells serialized behind
+ * each other's full generation streams, recorded as provider first-token
+ * latency. undici 8.8 removed that gate, but forcing h1 keeps the proxy
+ * independent of which undici build serves the fetch: h1 pools sidestep the
+ * whole class by dialing parallel connections. */
 export function createProviderUpstreamDispatcher(options: Agent.Options = {}): Dispatcher {
   return new Agent({ ...options, allowH2: false });
 }

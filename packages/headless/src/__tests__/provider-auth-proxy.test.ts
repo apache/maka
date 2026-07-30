@@ -1098,11 +1098,11 @@ test('proxy keeps upstream on HTTP/1.1 and forwards concurrent streams in parall
   const dir = await mkdtemp(join(tmpdir(), 'maka-provider-proxy-'));
   const keyFile = join(dir, 'provider-key');
   await writeFile(keyFile, 'provider-secret-key\n', 'utf8');
-  // An upstream that offers h2 via ALPN, like real provider gateways. If the
-  // upstream dispatcher ever negotiates h2, undici services one request at a
-  // time per connection: the second request below would never reach the
-  // upstream while the first stream is held open, and requests would report
-  // httpVersion 2.0.
+  // An upstream that offers h2 via ALPN, like real provider gateways. The
+  // httpVersion assertion is the regression lock: an h2-negotiating
+  // dispatcher reports 2.0 regardless of timing. The held-open streams
+  // additionally deadlock the staggered-dispatch path of undici <= 8.7,
+  // which refuses to multiplex non-empty fetch bodies on a busy h2 session.
   const seenHttpVersions: string[] = [];
   let releaseBoth: () => void = () => {};
   const bothArrived = new Promise<void>((resolve) => {
