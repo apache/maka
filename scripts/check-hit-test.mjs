@@ -25,6 +25,7 @@
 //   node scripts/check-hit-test.mjs --route chat
 //
 // Migration-only scaffolding: not in CI, removed in PR 14.
+import { pathToFileURL } from 'node:url';
 import { withFixtureWindow } from './fixture-window.mjs';
 
 const ROUTES = [
@@ -262,13 +263,22 @@ const PROBE_EXPR = `(() => {
 
 function parseArgs(argv) {
   const args = { routes: null };
+  const routeIds = ROUTES.map((route) => route.id);
   for (let i = 2; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (arg === '--route') (args.routes ??= []).push(argv[++i]);
-    else if (arg === '--help' || arg === '-h') {
-      console.log(
-        `Usage: check-hit-test.mjs [--route id]...\n\nRoutes: ${ROUTES.map((r) => r.id).join(', ')}\n`,
-      );
+    if (arg === '--route') {
+      // Closed set, checked per value. Filtering later and failing only when
+      // NOTHING matched let `--route chat --route chatt` drop the typo and
+      // exit 0 as "1 route(s) clean" — a coverage tool must not shrink the
+      // requested coverage silently.
+      const next = argv[++i];
+      if (!routeIds.includes(next)) {
+        console.error(`[hit-test] --route must be one of: ${routeIds.join(', ')}`);
+        process.exit(2);
+      }
+      (args.routes ??= []).push(next);
+    } else if (arg === '--help' || arg === '-h') {
+      console.log(`Usage: check-hit-test.mjs [--route id]...\n\nRoutes: ${routeIds.join(', ')}\n`);
       process.exit(0);
     } else {
       console.error(`[hit-test] unknown arg: ${arg}`);
@@ -307,10 +317,6 @@ function coverage(report) {
 async function main() {
   const args = parseArgs(process.argv);
   const routes = args.routes ? ROUTES.filter((route) => args.routes.includes(route.id)) : ROUTES;
-  if (routes.length === 0) {
-    console.error('[hit-test] no matching route');
-    process.exit(2);
-  }
   let failures = 0;
   for (const [index, route] of routes.entries()) {
     // These windows are visible, and macOS does not hand the next one a
@@ -354,4 +360,9 @@ async function main() {
   process.exit(failures === 0 ? 0 : 1);
 }
 
-await main();
+// Only when run directly. pathToFileURL, not string concatenation: a
+// percent-encoding path segment (a space, a non-ASCII directory) would
+// otherwise make the direct run a silent no-op that exits 0.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await main();
+}
