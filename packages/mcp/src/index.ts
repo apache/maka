@@ -1,7 +1,11 @@
 import {
   Client,
+  ProtocolError,
+  SdkError,
+  SdkErrorCode,
   SSEClientTransport,
   StreamableHTTPClientTransport,
+  type Tool,
   type Transport,
 } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
@@ -17,6 +21,13 @@ import {
   type McpTestResult,
   type McpToolDescriptor,
 } from '@maka/core/mcp';
+import {
+  formatMcpHeaderExclusionWarning,
+  partitionMcpHeaderToolDefinitions,
+  validateMcpHeaderArguments,
+  type McpHeaderDeclaration,
+} from './sep-2243.js';
+import { discoverMcpTools } from './tool-discovery.js';
 
 const DEFAULT_TIMEOUTS = {
   remoteConnectMs: 30_000,
@@ -24,8 +35,6 @@ const DEFAULT_TIMEOUTS = {
   listToolsMs: 15_000,
   callToolMs: 600_000,
 } as const;
-const MAX_TOOL_PAGES = 1_000;
-const MAX_TOOLS_PER_SERVER = 1_000;
 const STDERR_LINES = 10;
 const STDERR_LINE_CHARS = 2_000;
 
@@ -41,6 +50,18 @@ export type McpManagerChangeListener = (status: McpServerStatus) => void;
 
 type McpTimeouts = { [K in keyof typeof DEFAULT_TIMEOUTS]: number };
 
+interface ToolSnapshotEntry {
+  definition: Tool;
+  descriptor: McpToolDescriptor;
+  headerDeclarations: readonly McpHeaderDeclaration[];
+}
+
+interface ToolRefreshState {
+  readonly client: Client;
+  pending: boolean;
+  promise: Promise<McpToolDescriptor[]>;
+}
+
 interface Connection {
   config: McpServerConfig;
   fingerprint: string;
@@ -50,6 +71,9 @@ interface Connection {
   connectPromise?: Promise<McpServerStatus>;
   connectController?: AbortController;
   status: McpServerStatus;
+  toolSnapshot: Map<string, ToolSnapshotEntry>;
+  enforceMcpHeaders: boolean;
+  refreshState?: ToolRefreshState;
   closing: boolean;
 }
 
@@ -57,8 +81,8 @@ export class McpToolCallError extends Error {
   readonly serverId: string;
   readonly toolName: string;
 
-  constructor(serverId: string, toolName: string, message: string) {
-    super(`MCP ${serverId}/${toolName}: ${message}`);
+  constructor(serverId: string, toolName: string, message: string, options?: ErrorOptions) {
+    super(`MCP ${serverId}/${toolName}: ${message}`, options);
     this.name = 'McpToolCallError';
     this.serverId = serverId;
     this.toolName = toolName;
@@ -115,6 +139,8 @@ export class McpClientManager {
           config: serverConfig,
           fingerprint,
           closing: false,
+          toolSnapshot: new Map(),
+          enforceMcpHeaders: false,
           status: this.makeStatus(
             serverId,
             serverConfig.enabled === false ? 'disabled' : 'disconnected',
@@ -197,6 +223,9 @@ export class McpClientManager {
     entry.transport = undefined;
     entry.stdioTransport = undefined;
     entry.connectPromise = undefined;
+    entry.toolSnapshot.clear();
+    entry.enforceMcpHeaders = false;
+    entry.refreshState = undefined;
     if (hadCallableTools) this.toolSnapshotRevisionValue += 1;
     if (remove) {
       this.connections.delete(serverId);
@@ -220,19 +249,23 @@ export class McpClientManager {
   async refreshTools(serverId: string): Promise<McpToolDescriptor[]> {
     const entry = this.requireConnection(serverId);
     if (!entry.client || entry.status.state !== 'connected') await this.connect(serverId);
-    if (!entry.client) throw new Error(`MCP server "${serverId}" is not connected`);
-    const tools = await listAllTools(entry.client, serverId, this.timeouts.listToolsMs);
-    if (!isDeepStrictEqual(entry.status.tools, tools)) {
-      this.toolSnapshotRevisionValue += 1;
+    const client = entry.client;
+    if (!client) throw new Error(`MCP server "${serverId}" is not connected`);
+    if (entry.refreshState?.client === client) {
+      entry.refreshState.pending = true;
+      return entry.refreshState.promise;
     }
-    this.update(entry, {
-      ...entry.status,
-      tools,
-      toolCount: tools.length,
-      error: undefined,
-      updatedAt: this.now(),
+
+    const state: ToolRefreshState = {
+      client,
+      pending: false,
+      promise: Promise.resolve([]),
+    };
+    state.promise = this.refreshToolLoop(serverId, entry, state).finally(() => {
+      if (entry.refreshState === state) entry.refreshState = undefined;
     });
-    return tools.map(cloneTool);
+    entry.refreshState = state;
+    return state.promise;
   }
 
   async callTool(
@@ -267,18 +300,38 @@ export class McpClientManager {
         'connection generation is no longer available',
       );
     }
-    const result = await client.callTool(
-      { name: toolName, arguments: args },
-      {
-        signal: options.signal,
-        timeout: options.timeoutMs ?? this.timeouts.callToolMs,
-      },
-    );
+    const snapshot = entry.toolSnapshot.get(toolName);
+    if (!snapshot) {
+      throw new McpToolCallError(serverId, toolName, 'tool is not in the current snapshot');
+    }
+    if (entry.enforceMcpHeaders) {
+      const validation = validateMcpHeaderArguments(snapshot.headerDeclarations, args);
+      if (!validation.valid) {
+        throw new McpToolCallError(
+          serverId,
+          toolName,
+          `unsafe integer argument at ${validation.path.join('.')}`,
+        );
+      }
+    }
+    let result;
+    try {
+      result = await client.callTool(
+        { name: toolName, arguments: args },
+        {
+          signal: options.signal,
+          timeout: options.timeoutMs ?? this.timeouts.callToolMs,
+          toolDefinition: snapshot.definition,
+        },
+      );
+    } catch (error) {
+      throw normalizeToolCallError(serverId, toolName, error, options.signal);
+    }
     if (!('content' in result)) {
       throw new McpToolCallError(
         serverId,
         toolName,
-        'server returned a task result unsupported by V1',
+        'server returned an unsupported deferred tool result',
       );
     }
     if (!Array.isArray(result.content)) {
@@ -332,11 +385,14 @@ export class McpClientManager {
       entry.client = connected.client;
       entry.transport = connected.transport;
       entry.stdioTransport = connected.stdioTransport;
-      const tools = await listAllTools(connected.client, serverId, this.timeouts.listToolsMs);
+      const enforceMcpHeaders =
+        connected.kind === 'streamable-http' && connected.client.getProtocolEra() === 'modern';
+      const definitions = await listAllTools(connected.client, serverId, this.timeouts.listToolsMs);
+      const snapshot = createToolSnapshot(serverId, definitions, enforceMcpHeaders);
       connected.client.setNotificationHandler('notifications/tools/list_changed', async () => {
-        if (this.connections.get(serverId) !== entry) return;
+        if (this.connections.get(serverId) !== entry || entry.client !== connected.client) return;
         await this.refreshTools(serverId).catch((error) => {
-          if (this.connections.get(serverId) !== entry) return;
+          if (this.connections.get(serverId) !== entry || entry.client !== connected.client) return;
           // Discovery refresh failure does not mean the transport closed. Keep
           // the previous tool snapshot callable and avoid opening a second
           // client over a still-live connection.
@@ -347,13 +403,15 @@ export class McpClientManager {
           });
         });
       });
-      if (tools.length > 0) this.toolSnapshotRevisionValue += 1;
+      entry.toolSnapshot = snapshot.entries;
+      entry.enforceMcpHeaders = enforceMcpHeaders;
+      if (snapshot.descriptors.length > 0) this.toolSnapshotRevisionValue += 1;
       this.update(entry, {
         serverId,
         state: 'connected',
         transport: connected.kind,
-        toolCount: tools.length,
-        tools,
+        toolCount: snapshot.descriptors.length,
+        tools: snapshot.descriptors,
         stderrTail: entry.status.stderrTail,
         updatedAt: this.now(),
       });
@@ -363,6 +421,9 @@ export class McpClientManager {
       entry.client = undefined;
       entry.transport = undefined;
       entry.stdioTransport = undefined;
+      entry.toolSnapshot.clear();
+      entry.enforceMcpHeaders = false;
+      entry.refreshState = undefined;
       if (!signal.aborted) this.markError(entry, error);
       throw error;
     }
@@ -444,6 +505,49 @@ export class McpClientManager {
     );
   }
 
+  private async refreshToolLoop(
+    serverId: string,
+    entry: Connection,
+    state: ToolRefreshState,
+  ): Promise<McpToolDescriptor[]> {
+    while (true) {
+      state.pending = false;
+      let definitions: Tool[] | undefined;
+      let failure: unknown;
+      try {
+        definitions = await listAllTools(state.client, serverId, this.timeouts.listToolsMs);
+      } catch (error) {
+        failure = error;
+      }
+      if (
+        this.connections.get(serverId) !== entry ||
+        entry.client !== state.client ||
+        entry.status.state !== 'connected'
+      ) {
+        throw new Error(`MCP server "${serverId}" connection changed during tool refresh`, {
+          cause: failure,
+        });
+      }
+      if (state.pending) continue;
+      if (failure !== undefined) throw failure;
+      if (!definitions) throw new Error(`MCP server "${serverId}" returned no tool definitions`);
+
+      const snapshot = createToolSnapshot(serverId, definitions, entry.enforceMcpHeaders);
+      if (!isDeepStrictEqual(entry.status.tools, snapshot.descriptors)) {
+        this.toolSnapshotRevisionValue += 1;
+      }
+      entry.toolSnapshot = snapshot.entries;
+      this.update(entry, {
+        ...entry.status,
+        tools: snapshot.descriptors,
+        toolCount: snapshot.descriptors.length,
+        error: undefined,
+        updatedAt: this.now(),
+      });
+      return snapshot.descriptors.map(cloneTool);
+    }
+  }
+
   private handleTransportClose(entry: Connection): void {
     if (entry.closing) return;
     if (entry.status.state === 'connected' && entry.status.tools.length > 0) {
@@ -452,6 +556,9 @@ export class McpClientManager {
     entry.client = undefined;
     entry.transport = undefined;
     entry.stdioTransport = undefined;
+    entry.toolSnapshot.clear();
+    entry.enforceMcpHeaders = false;
+    entry.refreshState = undefined;
     this.update(entry, { ...entry.status, state: 'disconnected', updatedAt: this.now() });
   }
 
@@ -484,39 +591,63 @@ export class McpClientManager {
   }
 }
 
-async function listAllTools(
-  client: Client,
+async function listAllTools(client: Client, serverId: string, timeout: number): Promise<Tool[]> {
+  return discoverMcpTools(
+    {
+      requestToolsPage: (cursor, timeoutMs) =>
+        client.request(
+          {
+            method: 'tools/list',
+            ...(cursor !== undefined ? { params: { cursor } } : {}),
+          },
+          { timeout: timeoutMs },
+        ),
+    },
+    serverId,
+    timeout,
+  );
+}
+
+function createToolSnapshot(
   serverId: string,
-  timeout: number,
-): Promise<McpToolDescriptor[]> {
-  const result: McpToolDescriptor[] = [];
-  const seenCursors = new Set<string>();
-  const seenNames = new Set<string>();
-  let cursor: string | undefined;
-  for (let page = 0; page < MAX_TOOL_PAGES; page += 1) {
-    const response = await client.listTools(cursor ? { cursor } : undefined, { timeout });
-    for (const tool of response.tools) {
-      if (result.length >= MAX_TOOLS_PER_SERVER) {
-        throw new Error(`MCP server "${serverId}" exceeded ${MAX_TOOLS_PER_SERVER} tools`);
-      }
-      if (seenNames.has(tool.name))
-        throw new Error(`MCP server "${serverId}" returned duplicate tool "${tool.name}"`);
-      seenNames.add(tool.name);
-      result.push({
-        serverId,
-        name: tool.name,
-        description: tool.description,
-        inputSchema: tool.inputSchema,
-        annotations: tool.annotations,
-      });
-    }
-    if (!response.nextCursor) return result;
-    if (seenCursors.has(response.nextCursor))
-      throw new Error(`MCP server "${serverId}" repeated a tools cursor`);
-    seenCursors.add(response.nextCursor);
-    cursor = response.nextCursor;
+  definitions: readonly Tool[],
+  enforceMcpHeaders: boolean,
+): { entries: Map<string, ToolSnapshotEntry>; descriptors: McpToolDescriptor[] } {
+  const partition = enforceMcpHeaders
+    ? partitionMcpHeaderToolDefinitions(definitions)
+    : {
+        valid: definitions.map((tool) => ({ tool, declarations: [] })),
+        rejected: [],
+      };
+  const warning = formatMcpHeaderExclusionWarning(partition.rejected);
+  if (warning) console.warn(warning);
+
+  const entries = new Map<string, ToolSnapshotEntry>();
+  const descriptors: McpToolDescriptor[] = [];
+  for (const { tool, declarations } of partition.valid) {
+    const definition = structuredClone(tool);
+    const descriptor = descriptorFromTool(serverId, definition);
+    entries.set(definition.name, {
+      definition,
+      descriptor,
+      headerDeclarations: declarations.map((declaration) => ({
+        ...declaration,
+        path: [...declaration.path],
+      })),
+    });
+    descriptors.push(descriptor);
   }
-  throw new Error(`MCP server "${serverId}" exceeded ${MAX_TOOL_PAGES} tool pages`);
+  return { entries, descriptors };
+}
+
+function descriptorFromTool(serverId: string, tool: Tool): McpToolDescriptor {
+  return {
+    serverId,
+    name: tool.name,
+    description: tool.description,
+    inputSchema: structuredClone(tool.inputSchema),
+    annotations: tool.annotations ? { ...tool.annotations } : undefined,
+  };
 }
 
 function normalizeContent(value: unknown): McpContentBlock {
@@ -571,6 +702,48 @@ function summarizeErrorContent(content: unknown[]): string {
     .join('\n')
     .trim();
   return text || 'server reported an error';
+}
+
+function normalizeToolCallError(
+  serverId: string,
+  toolName: string,
+  error: unknown,
+  signal?: AbortSignal,
+): Error {
+  if (error instanceof McpToolCallError) return error;
+  if (signal?.aborted) {
+    return new McpToolCallError(serverId, toolName, 'tool call aborted', { cause: error });
+  }
+  if (error instanceof SdkError) {
+    switch (error.code) {
+      case SdkErrorCode.RequestTimeout:
+        return new McpToolCallError(serverId, toolName, 'tool call timed out', { cause: error });
+      case SdkErrorCode.InvalidResult:
+        return new McpToolCallError(serverId, toolName, 'server returned an invalid tool result', {
+          cause: error,
+        });
+      case SdkErrorCode.UnsupportedResultType:
+        return new McpToolCallError(
+          serverId,
+          toolName,
+          'server returned an unsupported deferred tool result',
+          { cause: error },
+        );
+      default:
+        return new McpToolCallError(serverId, toolName, 'tool call failed', { cause: error });
+    }
+  }
+  if (error instanceof ProtocolError) {
+    return new McpToolCallError(
+      serverId,
+      toolName,
+      'server rejected the tool call or returned an invalid result',
+      { cause: error },
+    );
+  }
+  return error instanceof Error
+    ? error
+    : new McpToolCallError(serverId, toolName, 'tool call failed', { cause: error });
 }
 
 export function buildStdioEnvironment(

@@ -119,6 +119,10 @@ const ALLOW = new Map([
     'packages/runtime-host/src/server/execution-composition.ts',
     'optional environment-backed bootstrap failure is generalized before startup logging; no credential or provider payloads.',
   ],
+  [
+    'packages/mcp/src/index.ts',
+    'bounded aggregate diagnostics for excluded Tool metadata contain capped names and stable reason codes, never arguments or credentials.',
+  ],
 ]);
 
 async function walk(root) {
@@ -161,7 +165,12 @@ async function main() {
         CONSOLE_RE.lastIndex = 0;
         const match = CONSOLE_RE.exec(line);
         if (match) {
-          offenders.push({ path: rel, line: i + 1, method: match[1], code: line.trim() });
+          offenders.push({
+            path: rel,
+            line: i + 1,
+            method: match[1],
+            code: line.trim(),
+          });
         }
       });
     }

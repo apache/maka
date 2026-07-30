@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createServer, type IncomingMessage } from 'node:http';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, test } from 'node:test';
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
@@ -58,6 +58,107 @@ describe('McpClientManager remote transport E2E', () => {
       ),
     );
     assertLegacyHandshake(fixture);
+  });
+
+  test('still sends low-level discovery when a legacy server omits tools capability', async () => {
+    const fixture = await createRemoteFixture('streamable-http', {
+      advertiseTools: false,
+    });
+    const manager = createManager();
+
+    await manager.sync(remoteConfig(fixture.url));
+
+    assert.ok(
+      fixture.requests.some((request) => request.protocolMethods.includes('tools/list')),
+      JSON.stringify({
+        status: manager.status('remote'),
+        methods: fixture.requests.flatMap((request) => request.protocolMethods),
+      }),
+    );
+  });
+
+  test('keeps the previous callable snapshot after an invalid refresh', async () => {
+    const fixture = await createRemoteFixture('streamable-http');
+    const manager = createManager();
+    await manager.sync(remoteConfig(fixture.url));
+    const before = manager.status('remote')?.tools;
+
+    fixture.setToolListMode('duplicate');
+    await assert.rejects(manager.refreshTools('remote'), /duplicate tool "echo"/u);
+
+    assert.deepEqual(manager.status('remote')?.tools, before);
+    assert.deepEqual(await manager.callTool('remote', 'echo', { value: 'still-valid' }), {
+      content: [{ type: 'text', text: 'still-valid' }],
+      structuredContent: undefined,
+    });
+  });
+
+  test('coalesces a refresh signal and publishes only the final attempt', async () => {
+    const fixture = await createRemoteFixture('streamable-http');
+    const manager = createManager();
+    await manager.sync(remoteConfig(fixture.url));
+    const before = manager.status('remote')?.tools;
+    const listsBefore = countProtocolMethod(fixture, 'tools/list');
+
+    fixture.setToolListMode('replacement');
+    const gate = fixture.holdNextToolList();
+    const first = manager.refreshTools('remote');
+    await gate.started;
+    fixture.setToolListMode('duplicate');
+    const second = manager.refreshTools('remote');
+    gate.release();
+
+    const settled = await Promise.allSettled([first, second]);
+    assert.equal(
+      settled.every((result) => result.status === 'rejected'),
+      true,
+    );
+    for (const result of settled) {
+      if (result.status === 'rejected') assert.match(String(result.reason), /duplicate tool/u);
+    }
+    assert.deepEqual(manager.status('remote')?.tools, before);
+    assert.equal(countProtocolMethod(fixture, 'tools/list') - listsBefore, 2);
+  });
+
+  test('uses the validated Tool definition for output checks', async () => {
+    const fixture = await createRemoteFixture('streamable-http');
+    const manager = createManager();
+    await manager.sync(remoteConfig(fixture.url));
+
+    await assert.rejects(
+      manager.callTool('remote', 'invalid-output', {}),
+      (error: unknown) =>
+        error instanceof McpToolCallError && /invalid result/u.test(error.message),
+    );
+  });
+
+  test('rejects a Tool outside the validated snapshot before the wire', async () => {
+    const fixture = await createRemoteFixture('streamable-http');
+    const manager = createManager();
+    await manager.sync(remoteConfig(fixture.url));
+    const callsBefore = countProtocolMethod(fixture, 'tools/call');
+
+    await assert.rejects(
+      manager.callTool('remote', 'not-discovered', {}),
+      (error: unknown) =>
+        error instanceof McpToolCallError &&
+        /tool is not in the current snapshot/u.test(error.message),
+    );
+
+    assert.equal(countProtocolMethod(fixture, 'tools/call'), callsBefore);
+  });
+
+  test('preserves legacy structured object content', async () => {
+    const fixture = await createRemoteFixture('streamable-http');
+    const manager = createManager();
+    await manager.sync(remoteConfig(fixture.url));
+
+    const structuredContent = { value: 1 };
+    const result = await manager.callTool('remote', 'echo', {
+      value: 'structured',
+      structuredContent,
+    });
+    assert.deepEqual(result.structuredContent, structuredContent);
   });
 });
 
@@ -270,11 +371,20 @@ interface RemoteRequest {
 interface RemoteFixture {
   url: string;
   requests: RemoteRequest[];
+  setToolListMode(mode: ToolListMode): void;
+  holdNextToolList(): { started: Promise<void>; release(): void };
   close(): Promise<void>;
 }
 
-async function createRemoteFixture(kind: 'streamable-http' | 'sse'): Promise<RemoteFixture> {
+type ToolListMode = 'valid' | 'duplicate' | 'replacement';
+
+async function createRemoteFixture(
+  kind: 'streamable-http' | 'sse',
+  options: { advertiseTools?: boolean } = {},
+): Promise<RemoteFixture> {
   const requests: RemoteRequest[] = [];
+  let toolListMode: ToolListMode = 'valid';
+  let nextToolListGate: InternalToolListGate | undefined;
   const sseTransports = new Map<string, { transport: SSEServerTransport; server: McpServer }>();
   const httpServer = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
@@ -292,10 +402,24 @@ async function createRemoteFixture(kind: 'streamable-http' | 'sse'): Promise<Rem
       if (kind === 'streamable-http' && url.pathname === '/mcp' && req.method === 'POST') {
         const body = await readJsonBody(req);
         request.protocolMethods.push(...readProtocolMethods(body));
+        if (options.advertiseTools === false) {
+          handleCapabilityOmittingLegacyRequest(res, body);
+          return;
+        }
         const transport = new NodeStreamableHTTPServerTransport({
           sessionIdGenerator: undefined,
         });
-        const server = createProtocolServer();
+        const server = createProtocolServer({
+          advertiseTools: true,
+          toolListMode: () => toolListMode,
+          beforeToolList: async () => {
+            const gate = nextToolListGate;
+            if (!gate) return;
+            nextToolListGate = undefined;
+            gate.markStarted();
+            await gate.waitForRelease;
+          },
+        });
         await server.connect(transport);
         res.once('close', () => {
           void transport.close();
@@ -306,7 +430,11 @@ async function createRemoteFixture(kind: 'streamable-http' | 'sse'): Promise<Rem
       }
       if (kind === 'sse' && url.pathname === '/sse' && req.method === 'GET') {
         const transport = new SSEServerTransport('/messages', res);
-        const server = createProtocolServer();
+        const server = createProtocolServer({
+          advertiseTools: options.advertiseTools !== false,
+          toolListMode: () => toolListMode,
+          beforeToolList: async () => {},
+        });
         sseTransports.set(transport.sessionId, { transport, server });
         res.once('close', () => sseTransports.delete(transport.sessionId));
         await server.connect(transport);
@@ -340,6 +468,22 @@ async function createRemoteFixture(kind: 'streamable-http' | 'sse'): Promise<Rem
   const fixture: RemoteFixture = {
     url: `http://127.0.0.1:${address.port}${kind === 'streamable-http' ? '/mcp' : ''}`,
     requests,
+    setToolListMode: (mode) => {
+      toolListMode = mode;
+    },
+    holdNextToolList: () => {
+      if (nextToolListGate) throw new Error('a tools/list gate is already pending');
+      let markStarted = () => {};
+      let release = () => {};
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      const waitForRelease = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      nextToolListGate = { markStarted, waitForRelease };
+      return { started, release };
+    },
     close: async () => {
       await Promise.all(
         [...sseTransports.values()].map(async ({ transport, server }) => {
@@ -356,33 +500,117 @@ async function createRemoteFixture(kind: 'streamable-http' | 'sse'): Promise<Rem
   return fixture;
 }
 
-function createProtocolServer(): McpServer {
+function createProtocolServer(options: {
+  advertiseTools: boolean;
+  toolListMode: () => ToolListMode;
+  beforeToolList: () => Promise<void>;
+}): McpServer {
   const server = new McpServer(
     { name: 'maka-remote-fixture', version: '1.0.0' },
-    { capabilities: { tools: {} } },
+    { capabilities: options.advertiseTools ? { tools: {} } : {} },
   );
-  server.setRequestHandler('tools/list', async () => ({
-    tools: [
-      {
-        name: 'echo',
-        description: 'Echo text',
-        inputSchema: {
-          type: 'object',
-          properties: { value: { type: 'string' } },
-        },
-      },
-    ],
-  }));
-  server.setRequestHandler('tools/call', async ({ params }) => ({
-    content: [{ type: 'text', text: String(params.arguments?.value ?? '') }],
-  }));
+  server.setRequestHandler('tools/list', async () => {
+    const mode = options.toolListMode();
+    await options.beforeToolList();
+    return {
+      tools:
+        mode === 'duplicate'
+          ? [remoteToolDefinition('echo'), remoteToolDefinition('echo')]
+          : mode === 'replacement'
+            ? [remoteToolDefinition('replacement')]
+            : [remoteToolDefinition('echo'), remoteToolDefinition('invalid-output')],
+    };
+  });
+  server.setRequestHandler('tools/call', async ({ params }) => {
+    if (params.name === 'invalid-output') {
+      return {
+        content: [{ type: 'text', text: 'invalid' }],
+        structuredContent: { wrong: true },
+      };
+    }
+    const args = params.arguments ?? {};
+    return {
+      content: [{ type: 'text', text: String(args.value ?? '') }],
+      ...(Object.hasOwn(args, 'structuredContent')
+        ? { structuredContent: args.structuredContent }
+        : {}),
+    };
+  });
   return server;
+}
+
+interface InternalToolListGate {
+  markStarted(): void;
+  waitForRelease: Promise<void>;
+}
+
+function remoteToolDefinition(name: string) {
+  return {
+    name,
+    description: name === 'echo' ? 'Echo text' : 'Return invalid structured output',
+    inputSchema: {
+      type: 'object' as const,
+      properties: { value: { type: 'string' } },
+    },
+    ...(name === 'invalid-output'
+      ? {
+          outputSchema: {
+            type: 'object' as const,
+            properties: { ok: { type: 'boolean' } },
+            required: ['ok'],
+            additionalProperties: false,
+          },
+        }
+      : {}),
+  };
+}
+
+function handleCapabilityOmittingLegacyRequest(res: ServerResponse, body: unknown): void {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    res.writeHead(400).end('invalid JSON-RPC request');
+    return;
+  }
+  const id = 'id' in body ? body.id : undefined;
+  const method = 'method' in body && typeof body.method === 'string' ? body.method : undefined;
+  if (method === 'notifications/initialized') {
+    res.writeHead(202).end();
+    return;
+  }
+  const result =
+    method === 'initialize'
+      ? {
+          protocolVersion: '2025-11-25',
+          capabilities: {},
+          serverInfo: { name: 'capability-omitting-fixture', version: '1.0.0' },
+        }
+      : method === 'tools/list'
+        ? { tools: [remoteToolDefinition('echo'), remoteToolDefinition('invalid-output')] }
+        : undefined;
+  if (result === undefined) {
+    res.writeHead(200, { 'content-type': 'application/json' }).end(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id,
+        error: { code: -32601, message: 'method not found' },
+      }),
+    );
+    return;
+  }
+  res
+    .writeHead(200, { 'content-type': 'application/json' })
+    .end(JSON.stringify({ jsonrpc: '2.0', id, result }));
 }
 
 function assertLegacyHandshake(fixture: RemoteFixture): void {
   const methods = fixture.requests.flatMap((request) => request.protocolMethods);
   assert.equal(methods[0], 'initialize');
   assert.equal(methods.includes('server/discover'), false);
+}
+
+function countProtocolMethod(fixture: RemoteFixture, method: string): number {
+  return fixture.requests
+    .flatMap((request) => request.protocolMethods)
+    .filter((candidate) => candidate === method).length;
 }
 
 function readProtocolMethods(body: unknown): string[] {
