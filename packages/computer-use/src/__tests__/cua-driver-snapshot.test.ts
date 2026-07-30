@@ -6,6 +6,7 @@ import {
   elementAtScreenPoint,
   resolveWindowAtDeclaredPoint,
   windowPointFromSnapshot,
+  withoutMenuBar,
 } from '../cua-driver-snapshot.js';
 
 describe('cua-driver snapshot coordinate authority', () => {
@@ -137,5 +138,60 @@ describe('cua-driver AX hit testing', () => {
 
   it('does not select secure text fields for automated keyboard input', () => {
     assert.equal(editableElementAtScreenPoint(elements, { x: 520, y: 110 }), undefined);
+  });
+});
+
+describe('cua-driver menu bar exclusion', () => {
+  const node = (index: number, role: string, parent?: number) => ({
+    element_index: index,
+    role,
+    ...(parent === undefined ? {} : { parent_index: parent }),
+    frame: { x: 0, y: 0, w: 10, h: 10 },
+  });
+
+  it('drops the menu bar, which belongs to the app and not the window', () => {
+    // `get_window_state` walks the app, so an app's menu bar arrives with its
+    // window. Once macOS has built the menu item tree that is enormous:
+    // measured on Calculator, a 500-element budget came back as 474 elements
+    // of which every single one was a menu, and the window's own 34 controls
+    // were nowhere in the answer. Nothing told the model the tree had been cut.
+    const kept = withoutMenuBar([
+      node(0, 'AXMenuBar'),
+      node(1, 'AXMenuBarItem', 0),
+      node(2, 'AXMenu', 1),
+      node(3, 'AXMenuItem', 2),
+      node(4, 'AXWindow'),
+      node(5, 'AXButton', 4),
+    ]);
+    assert.deepEqual(
+      kept.map((element) => String(element.role)),
+      ['AXWindow', 'AXButton'],
+    );
+  });
+
+  it('drops what hangs off a menu even when the role is not a menu role', () => {
+    // A menu item may contain anything — a custom view, an image, a slider.
+    // Filtering on role alone would keep those and leave the model holding
+    // fragments of a menu it cannot see the shape of.
+    const kept = withoutMenuBar([
+      node(0, 'AXMenuBar'),
+      node(1, 'AXMenuBarItem', 0),
+      node(2, 'AXMenu', 1),
+      node(3, 'AXMenuItem', 2),
+      node(4, 'AXSlider', 3),
+      node(5, 'AXGroup', 4),
+      node(6, 'AXWindow'),
+      node(7, 'AXSlider', 6),
+    ]);
+    assert.deepEqual(
+      kept.map((element) => element.element_index),
+      [6, 7],
+      'the slider inside the menu goes; the one inside the window stays',
+    );
+  });
+
+  it('keeps everything when there is no menu bar', () => {
+    const elements = [node(0, 'AXWindow'), node(1, 'AXButton', 0)];
+    assert.equal(withoutMenuBar(elements).length, 2);
   });
 });

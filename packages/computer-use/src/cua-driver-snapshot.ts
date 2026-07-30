@@ -146,6 +146,41 @@ export function windowPointFromSnapshot(input: {
   };
 }
 
+/**
+ * The app's menu bar, which is not part of any window.
+ *
+ * `AXMenuBar` hangs off the application element, not the window, so it has no
+ * business in a window observation — and once macOS has built an app's menu
+ * item tree it is enormous. Calculator's is 400+ nodes; the whole of
+ * Calculator's actual window is 34.
+ */
+const MENU_BAR_ROLES = new Set(['AXMenuBar', 'AXMenuBarItem', 'AXMenu', 'AXMenuItem']);
+
+/**
+ * Drop the menu bar and everything under it.
+ *
+ * Roles alone are not enough: a menu item's children can be anything, and an
+ * app is free to put a non-menu role inside one. So this walks parents too,
+ * and drops any element descended from something already dropped.
+ */
+export function withoutMenuBar(elements: readonly CuaSnapshotElement[]): CuaSnapshotElement[] {
+  const dropped = new Set<number>();
+  const kept: CuaSnapshotElement[] = [];
+  for (const element of elements) {
+    const index = element.element_index;
+    const parent = element.parent_index;
+    const inMenu =
+      MENU_BAR_ROLES.has(String(element.role)) ||
+      (typeof parent === 'number' && dropped.has(parent));
+    if (inMenu) {
+      if (typeof index === 'number') dropped.add(index);
+      continue;
+    }
+    kept.push(element);
+  }
+  return kept;
+}
+
 export function normalizeCuaSnapshotElement(element: CuaSnapshotElement):
   | {
       element_index: number;

@@ -62,6 +62,7 @@ import {
   type CuaResolvedPageTextTarget,
 } from './cua-driver-page-target.js';
 import {
+  withoutMenuBar,
   editableElementAtScreenPoint,
   elementAtScreenPoint,
   normalizeCuaSnapshotElement,
@@ -99,6 +100,17 @@ class CuaDriverCaptureError extends Error {
     super(result.outcome.message);
   }
 }
+
+/**
+ * How many AX nodes to ask cua-driver to walk per observation.
+ *
+ * The driver truncates depth-first and the menu bar comes first, so this has to
+ * clear the menu before it reaches the window. cua-driver's own default is
+ * 2000; 500 was chosen when a menu bar was small. `withoutMenuBar` drops the
+ * menu subtree afterwards, so the extra budget is spent on window contents and
+ * never reaches the model.
+ */
+const MAX_AX_ELEMENTS = 2000;
 
 export interface CuaDriverBackendOptions {
   /** Absolute path to the bundled `cua-driver` binary. */
@@ -678,7 +690,20 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
         pid: target.pid,
         window_id: target.windowId,
         include_screenshot: true,
-        max_elements: 500,
+        // The cap has to clear the menu bar before it reaches the window.
+        //
+        // `max_elements` truncates depth-first and the menu bar comes first, so
+        // once macOS has built an app's menu item tree — which it does the
+        // first time anything walks it, and then keeps — a 500-element budget
+        // is spent entirely on menus. Measured on Calculator: the driver
+        // returned 474 elements under that cap and every one of them was
+        // `AXMenuBar` / `AXMenuBarItem` / `AXMenu` / `AXMenuItem`. The model
+        // was told the app consists of menus, with nothing saying the window
+        // had been cut off.
+        //
+        // The menu subtree is dropped below, so this budget buys window
+        // contents rather than paying for what is about to be discarded.
+        max_elements: MAX_AX_ELEMENTS,
         max_depth: 25,
       },
       signal,
@@ -701,7 +726,7 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
       throw new Error('cua-driver returned invalid AX elements');
     }
     return {
-      elements: structured.elements as CuaSnapshotElement[],
+      elements: withoutMenuBar(structured.elements as CuaSnapshotElement[]),
       screenshotWidthPx: Number(structured.screenshot_width),
       screenshotHeightPx: Number(structured.screenshot_height),
       windowPoint,
@@ -938,7 +963,7 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
         pid: window.pid,
         window_id: window.windowId,
         include_screenshot: includeScreenshot,
-        max_elements: 500,
+        max_elements: MAX_AX_ELEMENTS,
         max_depth: 25,
       },
       signal,
@@ -947,7 +972,7 @@ export function createCuaDriverBackend(opts: CuaDriverBackendOptions): CuDispatc
     if (!outcome.ok) throw new Error(outcome.message);
     const structured = state?.structuredContent ?? {};
     const elements = new Map<string, NonNullable<ReturnType<typeof normalizeCuaSnapshotElement>>>();
-    for (const candidate of (structured.elements ?? []) as CuaSnapshotElement[]) {
+    for (const candidate of withoutMenuBar((structured.elements ?? []) as CuaSnapshotElement[])) {
       const element = normalizeCuaSnapshotElement(candidate);
       if (!element) continue;
       const elementId = String(element.element_index);
