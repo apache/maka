@@ -1,24 +1,31 @@
 // Computed-style contract for the Astryx renderer migration (#1565, PR 0).
 //
-// Walks the representative fixture routes in light and dark, records a
-// computed-style signature for every visible element, and compares the result
-// against a baseline captured earlier on the same machine.
+//   node scripts/check-visual-contract.mjs                  # compare main → working tree
+//   node scripts/check-visual-contract.mjs --against <ref>  # a different base
+//   node scripts/check-visual-contract.mjs --route chat --theme dark --platform win32
 //
-//   node scripts/check-visual-contract.mjs --update   # capture, on main
-//   …apply the migration slice…
-//   node scripts/check-visual-contract.mjs            # compare, exit 1 on diff
-//   node scripts/check-visual-contract.mjs --route chat --theme dark
+// One command captures BOTH sides and diffs them in memory: the base ref is
+// checked out into a cached temporary worktree (node_modules shared — the
+// compare refuses to run across a package-lock change), both sides are built,
+// and every route × theme × platform is captured from each build in turn.
+// There is no baseline file. An earlier version had one, captured by hand on
+// the base branch and compared by hand after switching: every step a human
+// could skip (rebuild after switching, recapture after rebasing) produced a
+// convincing zero-diff pass that had measured the same binary twice. A
+// measurement instrument must not be able to confuse "no change" with "not
+// measured", so the instrument owns the whole measurement now.
 //
-// Baselines are NOT committed. They encode the capturing host: font metrics,
-// and on macOS the traffic-light inset the titlebar reserves. A baseline taken
-// on one machine reads as thousands of diffs on another, so committing one
-// would publish a reference nobody else can use — while adding a megabyte to
-// every review. Capture on `main`, apply the slice, compare: the two captures
-// that matter always come from the same host.
+// Both sides come from the same host in the same run, which is what makes the
+// captures comparable at all — font metrics and the macOS traffic-light inset
+// are host facts, encoded in every capture.
 //
-// This gates NO-CHANGE, not correctness. A pre-existing visual bug on main is
-// out of scope for the migration: "zero diff" means "the migration did not
-// move this element", never "this element is right".
+// The win32 column runs on any host: MAKA_E2E_FIXTURE_PLATFORM drives the
+// production `app:info → data-os` path, which is what keys the per-OS CSS.
+// It covers the cascade, not native chrome.
+//
+// This gates NO-CHANGE, not correctness. A pre-existing visual bug on the
+// base is out of scope for the migration: "zero diff" means "the migration
+// did not move this element", never "this element is right".
 //
 // Known blind spot, stated rather than papered over: elements inside a
 // `display: none` subtree have no box and never enter the capture, so closed
@@ -28,13 +35,14 @@
 // Migration-only scaffolding. It is deliberately not wired into CI, following
 // the check:chat-visual precedent, and is removed in PR 14 together with the
 // maka.legacy layer.
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join, relative } from 'node:path';
+import { spawn } from 'node:child_process';
+import { access, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withFixtureWindow } from './fixture-window.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const BASELINE_DIR = join(ROOT, 'apps', 'desktop', 'tests', 'visual-contract');
 
 // The five representative routes from #1565. The issue names product routes;
 // these are the MAKA_E2E_FIXTURE scenarios that actually open them on main —
@@ -53,6 +61,11 @@ const ROUTES = [
   { id: 'onboarding', scenario: 'first-run', ready: '.maka-onboarding-surface' },
 ];
 const THEMES = ['light', 'dark'];
+// #1565 asks for darwin AND win32: the per-OS CSS is keyed off
+// `html[data-os]`, so a regression under the win32 cascade is invisible in a
+// darwin-only capture for the whole migration. The fixture platform override
+// flips `data-os` through the production path on any host.
+const PLATFORMS = ['darwin', 'win32'];
 
 // #1565 mandates the alignment properties (alignItems/justifyContent/gap/
 // gridArea) alongside the usual box and paint set: flex and grid misalignment
@@ -339,10 +352,10 @@ const SALVAGED_ANCHORS = [
 // Exact class-token match, not substring: `maka-list-row` as a substring is
 // satisfied by `maka-list-row-meta`, so a loose check would report an anchor
 // as watched by an element that is not the one the regression happened on.
-export function checkSalvagedAnchors(baselines, anchors = SALVAGED_ANCHORS) {
+export function checkSalvagedAnchors(captures, anchors = SALVAGED_ANCHORS) {
   const missing = [];
   for (const entry of anchors) {
-    const records = baselines.get(`${entry.route}.light`);
+    const records = captures.get(`${entry.route}.light.darwin`);
     if (!records) continue;
     const present = records.some((record) =>
       (record.classes ?? '').split(' ').includes(entry.anchor),
@@ -369,7 +382,7 @@ export function findDeadOmissionRules(records, initialValues = INITIAL_VALUES) {
 }
 
 export function parseArgs(argv) {
-  const args = { update: false, routes: null, themes: null, help: false };
+  const args = { against: 'main', routes: null, themes: null, platforms: null, help: false };
   const value = (index, flag) => {
     const next = argv[index];
     if (next === undefined || next.startsWith('--')) {
@@ -380,9 +393,10 @@ export function parseArgs(argv) {
   };
   for (let i = 2; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (arg === '--update') args.update = true;
+    if (arg === '--against') args.against = value(++i, arg);
     else if (arg === '--route') (args.routes ??= []).push(value(++i, arg));
     else if (arg === '--theme') (args.themes ??= []).push(value(++i, arg));
+    else if (arg === '--platform') (args.platforms ??= []).push(value(++i, arg));
     else if (arg === '--help' || arg === '-h') args.help = true;
     else {
       console.error(`[visual-contract] unknown arg: ${arg}`);
@@ -392,17 +406,110 @@ export function parseArgs(argv) {
   return args;
 }
 
-function baselinePath(routeId, theme) {
-  return join(BASELINE_DIR, `${routeId}.${theme}.json`);
+/** Run a command to completion, returning stdout; throw with stderr on failure. */
+function run(command, argv, cwd, { inherit = false } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, argv, {
+      cwd,
+      stdio: inherit ? ['ignore', 'inherit', 'inherit'] : ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr?.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve(stdout);
+      else
+        reject(
+          new Error(`${command} ${argv.join(' ')} exited ${code}${stderr ? `\n${stderr}` : ''}`),
+        );
+    });
+  });
 }
 
-async function readBaseline(routeId, theme) {
+async function exists(path) {
   try {
-    return JSON.parse(await readFile(baselinePath(routeId, theme), 'utf8'));
-  } catch (err) {
-    if (err.code === 'ENOENT') return null;
-    throw err;
+    await access(path);
+    return true;
+  } catch {
+    return false;
   }
+}
+
+/**
+ * Build the desktop app plus its workspace dependencies inside `dir`.
+ * `build:with-deps` names that chain, but a base ref can predate the script,
+ * so fall back to the same chain its `e2e` script has always inlined.
+ */
+async function buildDesktop(dir) {
+  const pkg = JSON.parse(await readFile(join(dir, 'apps', 'desktop', 'package.json'), 'utf8'));
+  if (pkg.scripts?.['build:with-deps']) {
+    await run('npm', ['--workspace', '@maka/desktop', 'run', 'build:with-deps'], dir, {
+      inherit: true,
+    });
+    return;
+  }
+  for (const workspace of [
+    '@maka/core',
+    '@maka/storage',
+    '@maka/mcp',
+    '@maka/runtime',
+    '@maka/computer-use',
+    '@maka/ui',
+    '@maka/desktop',
+  ]) {
+    await run('npm', ['--workspace', workspace, 'run', 'build'], dir, { inherit: true });
+  }
+}
+
+/**
+ * A worktree of `ref` with a finished build, cached in tmpdir keyed by the
+ * resolved commit — iterating on a slice rebuilds only the working tree, not
+ * the base. The cache is sound because the key is the content: a different
+ * base commit is a different directory. Stale worktree registrations are
+ * pruned on the next run after the OS clears its tmpdir.
+ *
+ * node_modules are shared by symlink instead of a per-worktree `npm ci`,
+ * which is why the compare refuses to run across a package-lock change: a
+ * base built against the wrong dependency tree measures nothing.
+ */
+async function ensureBaseBuild(ref) {
+  const sha = (await run('git', ['rev-parse', `${ref}^{commit}`], ROOT)).trim();
+  const baseLock = await run('git', ['show', `${sha}:package-lock.json`], ROOT);
+  const currentLock = await readFile(join(ROOT, 'package-lock.json'), 'utf8');
+  if (baseLock !== currentLock) {
+    throw new Error(
+      `package-lock.json differs between ${ref} and the working tree, so the base cannot reuse this checkout's node_modules. Rebase the slice or run the compare from a checkout whose dependencies match the base.`,
+    );
+  }
+  const dir = join(tmpdir(), `maka-visual-contract-${sha.slice(0, 12)}`);
+  const marker = join(dir, '.maka-visual-contract-built');
+  if (await exists(marker)) {
+    console.log(`base ${ref} (${sha.slice(0, 12)}): reusing cached build in ${dir}`);
+    return { dir, sha };
+  }
+  console.log(`base ${ref} (${sha.slice(0, 12)}): building in ${dir}`);
+  await rm(dir, { recursive: true, force: true });
+  await run('git', ['worktree', 'prune'], ROOT);
+  await run('git', ['worktree', 'add', '--detach', dir, sha], ROOT);
+  for (const rel of [
+    'node_modules',
+    'apps/desktop/node_modules',
+    'packages/headless/node_modules',
+    'packages/runtime/node_modules',
+  ]) {
+    if ((await exists(join(ROOT, rel))) && !(await exists(join(dir, rel)))) {
+      await symlink(join(ROOT, rel), join(dir, rel), 'dir');
+    }
+  }
+  await buildDesktop(dir);
+  await writeFile(marker, sha);
+  return { dir, sha };
 }
 
 // Report every element that appeared, disappeared, or changed any recorded
@@ -482,78 +589,81 @@ async function main() {
   const args = parseArgs(process.argv);
   if (args.help) {
     console.log(
-      `Usage: check-visual-contract.mjs [--update] [--route id]... [--theme light|dark]...\n\n` +
-        `Routes: ${ROUTES.map((route) => route.id).join(', ')}\n` +
-        `Baselines: ${relative(ROOT, BASELINE_DIR)}\n`,
+      `Usage: check-visual-contract.mjs [--against ref] [--route id]... [--theme light|dark]... [--platform darwin|win32]...\n\n` +
+        `Builds the base ref (cached, temp worktree) and the working tree, captures\n` +
+        `every route x theme x platform from both builds, and diffs them in memory.\n\n` +
+        `Routes: ${ROUTES.map((route) => route.id).join(', ')}\n`,
     );
     return;
   }
   const routes = args.routes ? ROUTES.filter((route) => args.routes.includes(route.id)) : ROUTES;
   const themes = args.themes ?? THEMES;
+  const platforms = args.platforms ?? PLATFORMS;
   if (routes.length === 0) {
     console.error('[visual-contract] no matching route');
     process.exit(2);
   }
-  await mkdir(BASELINE_DIR, { recursive: true });
+  const base = await ensureBaseBuild(args.against);
+  console.log('building the working tree');
+  await buildDesktop(ROOT);
+  const baseDesktopDir = join(base.dir, 'apps', 'desktop');
   let failures = 0;
-  let captured = 0;
-  const baselines = new Map();
+  let compared = 0;
+  const captures = new Map();
   for (const route of routes) {
     for (const theme of themes) {
-      let records;
-      try {
-        records = await withFixtureWindow(
-          route.scenario,
-          { theme, readySelector: route.ready },
-          async ({ evaluate }) => JSON.parse(await evaluate(CAPTURE_EXPR)),
-        );
-      } catch (err) {
-        console.log(`FAIL ${route.id} ${theme}: ${err.message}`);
+      for (const platform of platforms) {
+        const key = `${route.id} ${theme} ${platform}`;
+        const capture = (desktopDir) =>
+          withFixtureWindow(
+            route.scenario,
+            { theme, platform, readySelector: route.ready, desktopDir },
+            async ({ evaluate }) => JSON.parse(await evaluate(CAPTURE_EXPR)),
+          );
+        let baseRecords;
+        let records;
+        try {
+          // Both sides concurrently: the launcher attaches to the window it
+          // spawned (not a port), so two live fixture windows cannot cross.
+          [baseRecords, records] = await Promise.all([
+            capture(baseDesktopDir),
+            capture(join(ROOT, 'apps', 'desktop')),
+          ]);
+        } catch (err) {
+          console.log(`FAIL ${key}: ${err.message}`);
+          failures += 1;
+          continue;
+        }
+        compared += 1;
+        captures.set(`${route.id}.${theme}.${platform}`, records);
+        // An omission rule that never matches silently inflates every record.
+        for (const dead of findDeadOmissionRules(records)) {
+          failures += 1;
+          console.log(
+            `FAIL ${key}: "${dead.property}" survives on all ${dead.total} records, so its INITIAL_VALUES entry never matches what Chromium serialises`,
+          );
+        }
+        const changes = diffRecords(baseRecords, records);
+        if (changes.length === 0) {
+          console.log(`ok   ${key} (${records.length} elements)`);
+          continue;
+        }
         failures += 1;
-        continue;
+        const { text, structural } = summarise(changes, baseRecords.length);
+        console.log(`FAIL ${key}: ${text}`);
+        if (structural) {
+          console.log(
+            '  note: most of the base capture was replaced rather than changed, which is what inserting or removing a wrapper element looks like — element identity is the path through the tree, so everything below the edit is re-keyed. Compare the surviving `changed` entries; the removed/added pairs are the same elements under new paths.',
+          );
+        }
+        for (const change of changes.slice(0, 40)) console.log(formatChange(change));
+        if (changes.length > 40) console.log(`  … ${changes.length - 40} more`);
       }
-      captured += 1;
-      baselines.set(`${route.id}.${theme}`, records);
-      // An omission rule that never matches silently inflates every record.
-      for (const dead of findDeadOmissionRules(records)) {
-        failures += 1;
-        console.log(
-          `FAIL ${route.id} ${theme}: "${dead.property}" survives on all ${dead.total} records, so its INITIAL_VALUES entry never matches what Chromium serialises`,
-        );
-      }
-      if (args.update) {
-        await writeFile(baselinePath(route.id, theme), `${JSON.stringify(records, null, 1)}\n`);
-        console.log(`wrote ${route.id} ${theme} (${records.length} elements)`);
-        continue;
-      }
-      const baseline = await readBaseline(route.id, theme);
-      if (!baseline) {
-        console.log(
-          `FAIL ${route.id} ${theme}: no baseline. Capture one on the branch you are comparing against: git stash && node scripts/check-visual-contract.mjs --update`,
-        );
-        failures += 1;
-        continue;
-      }
-      const changes = diffRecords(baseline, records);
-      if (changes.length === 0) {
-        console.log(`ok   ${route.id} ${theme} (${records.length} elements)`);
-        continue;
-      }
-      failures += 1;
-      const { text, structural } = summarise(changes, baseline.length);
-      console.log(`FAIL ${route.id} ${theme}: ${text}`);
-      if (structural) {
-        console.log(
-          '  note: most of the baseline was replaced rather than changed, which is what inserting or removing a wrapper element looks like — element identity is the path through the tree, so everything below the edit is re-keyed. Compare the surviving `changed` entries; the removed/added pairs are the same elements under new paths.',
-        );
-      }
-      for (const change of changes.slice(0, 40)) console.log(formatChange(change));
-      if (changes.length > 40) console.log(`  … ${changes.length - 40} more`);
     }
   }
   // Anchors for the regressions salvaged from the mega-branch. Losing one
   // means the harness stopped watching a place that has already broken once.
-  for (const entry of checkSalvagedAnchors(baselines)) {
+  for (const entry of checkSalvagedAnchors(captures)) {
     failures += 1;
     console.log(
       `FAIL salvaged anchor "${entry.anchor}" is gone from ${entry.route}: nothing now watches the spot where ${entry.commit} fixed "${entry.regression}"`,
@@ -561,8 +671,8 @@ async function main() {
   }
   console.log(
     failures === 0
-      ? `visual contract: ${captured} capture(s) clean`
-      : `FAIL: ${failures} of ${captured || routes.length * themes.length} capture(s)`,
+      ? `visual contract: ${compared} comparison(s) clean against ${args.against}`
+      : `FAIL: ${failures} failure(s) across ${compared} comparison(s) against ${args.against}`,
   );
   process.exit(failures === 0 ? 0 : 1);
 }

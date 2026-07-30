@@ -24,9 +24,3 @@ apps/desktop/resources/bin/
 # Generated desktop release inputs and outputs.
 apps/desktop/resources/tools/
 apps/desktop/release/
-
-# Migration contract baselines (#1565 PR 0). Host-specific captures: font
-# metrics and the macOS traffic-light inset are encoded in them, so a baseline
-# from one machine reads as thousands of diffs on another. Capture on the
-# branch you compare against, apply the slice, then compare.
-apps/desktop/tests/visual-contract/

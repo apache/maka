@@ -169,18 +169,19 @@ describe('findDeadOmissionRules', () => {
 
 describe('checkSalvagedAnchors', () => {
   const anchors = [{ commit: 'abc', regression: 'r', route: 'chat', anchor: 'maka-list-row' }];
+  const captureKey = 'chat.light.darwin';
 
   it('accepts an exact class token', () => {
-    const baselines = new Map([['chat.light', [record('a', { classes: 'maka-list-row other' })]]]);
-    assert.deepEqual(checkSalvagedAnchors(baselines, anchors), []);
+    const captures = new Map([[captureKey, [record('a', { classes: 'maka-list-row other' })]]]);
+    assert.deepEqual(checkSalvagedAnchors(captures, anchors), []);
   });
 
   it('rejects a longer class that merely contains the anchor', () => {
     // `maka-list-row-meta` is a different element; a substring match would
     // report the anchor as watched by something that is not the element the
     // regression happened on.
-    const baselines = new Map([['chat.light', [record('a', { classes: 'maka-list-row-meta' })]]]);
-    assert.equal(checkSalvagedAnchors(baselines, anchors).length, 1);
+    const captures = new Map([[captureKey, [record('a', { classes: 'maka-list-row-meta' })]]]);
+    assert.equal(checkSalvagedAnchors(captures, anchors).length, 1);
   });
 
   it('skips routes that were not captured this run', () => {

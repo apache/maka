@@ -2,10 +2,10 @@
 //
 // This is the same launch the Playwright E2E suite performs, driven from a
 // plain script so the migration contract harness can run outside the test
-// runner (its baselines are host-specific, so it must not sit in CI). The
-// environment builder is shared with that suite rather than restated; the
-// launch, readiness wait, and teardown go through Playwright's Electron
-// support rather than a second hand-rolled CDP client.
+// runner. The environment builder and the bounded teardown are shared with
+// that suite rather than restated; the launch, readiness wait, and teardown
+// go through Playwright's Electron support rather than a second hand-rolled
+// CDP client.
 //
 // An earlier version of this file did roll its own: fixed debug ports, a
 // `/json/list` poll, a raw WebSocket, and a process-group kill. It attached to
@@ -72,16 +72,19 @@ const SETTLE_EXPR = `(async () => {
  * @param {string} scenario MAKA_E2E_FIXTURE scenario name.
  * @param {{
  *   theme?: 'light' | 'dark',
+ *   platform?: 'darwin' | 'win32' | 'linux',
  *   showWindow?: boolean,
  *   readySelector?: string,
  *   readyTimeoutMs?: number,
  *   settleMs?: number,
+ *   desktopDir?: string,
  * }} [options]
  * @param {(ctx: { evaluate: (expression: string) => Promise<any>, page: import('@playwright/test').Page }) => Promise<any>} fn
  */
 export async function withFixtureWindow(scenario, options, fn) {
   const {
     theme = 'light',
+    platform,
     // A fixture window stays hidden for its whole lifecycle unless this is
     // set. Reading computed style works either way, but anything that depends
     // on the compositor — hit testing, real input — needs a mapped window.
@@ -92,6 +95,9 @@ export async function withFixtureWindow(scenario, options, fn) {
     readySelector = '#root',
     readyTimeoutMs = DEFAULT_READY_TIMEOUT_MS,
     settleMs = DEFAULT_SETTLE_MS,
+    // Which build to boot. The two-sided visual compare launches the base
+    // ref's build from a temporary worktree through the same launcher.
+    desktopDir = DESKTOP_DIR,
   } = options ?? {};
 
   const userDataDir = await mkdtemp(join(tmpdir(), 'maka-fixture-'));
@@ -105,10 +111,11 @@ export async function withFixtureWindow(scenario, options, fn) {
   try {
     app = await electron.launch({
       args: ['.'],
-      cwd: DESKTOP_DIR,
+      cwd: desktopDir,
       env: buildFixtureEnv(userDataDir, homeDir, {
         scenario,
         theme,
+        platform,
         // xvfb throttles a hidden window's compositor to ~1fps; only that
         // isolated display gets a visible window.
         showWindow: showWindow || isCiLinuxDisplay(),
