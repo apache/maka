@@ -174,8 +174,14 @@ export interface HostAiSdkBackendInput {
 
 /** Builds one real provider backend from canonical Host state. */
 export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Promise<AiSdkBackend> {
-  const target = await resolveExecutionTarget(input.context.header, input.runtimePolicy);
-  const pricingSnapshot = await input.usage.pricing.snapshot();
+  const target = await readDuringBackendCreation(
+    () => resolveExecutionTarget(input.context.header, input.runtimePolicy),
+    input.context.abortSignal,
+  );
+  const pricingSnapshot = await readDuringBackendCreation(
+    () => input.usage.pricing.snapshot(),
+    input.context.abortSignal,
+  );
   const pricing = buildPricingLookup(pricingSnapshot.overrides);
   const transport = createProxiedFetchTransport(
     toProxySettings(target.networkProxy, target.proxySecret),
@@ -350,6 +356,34 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     await transport.close();
     throw error;
   }
+}
+
+function readDuringBackendCreation<T>(
+  read: () => Promise<T>,
+  abortSignal?: AbortSignal,
+): Promise<T> {
+  if (!abortSignal) return read();
+  if (abortSignal.aborted) return Promise.reject(backendCreationAbortReason(abortSignal));
+
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(backendCreationAbortReason(abortSignal));
+    abortSignal.addEventListener('abort', onAbort, { once: true });
+  });
+  const pending = Promise.resolve().then(() => {
+    if (abortSignal.aborted) throw backendCreationAbortReason(abortSignal);
+    return read();
+  });
+  return Promise.race([pending, aborted]).finally(() => {
+    if (onAbort) abortSignal.removeEventListener('abort', onAbort);
+  });
+}
+
+function backendCreationAbortReason(abortSignal: AbortSignal): unknown {
+  return (
+    abortSignal.reason ??
+    new DOMException('Runtime Host backend creation was aborted', 'AbortError')
+  );
 }
 
 class HostAiSdkBackend extends AiSdkBackend {

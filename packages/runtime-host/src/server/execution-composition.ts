@@ -119,7 +119,6 @@ export async function createExecutionRuntimeHostComposition(
     let recoveryTask: Promise<void> | undefined;
     let rootCloseTask: Promise<void> | undefined;
     let closeTask: Promise<void> | undefined;
-    let usageDrain: Promise<void> | undefined;
     let backendInvalidationPoisoned = false;
     const beginDrain = () => {
       if (draining) return;
@@ -129,11 +128,6 @@ export async function createExecutionRuntimeHostComposition(
       connectionEffects.beginDrain();
       skills.beginDrain();
       memory?.beginDrain();
-      usageDrain ??= openedUsageStores.beginDrain();
-      usageDrain.then(
-        () => undefined,
-        () => undefined,
-      );
     };
     const interactions = new HostInteractionCoordinator({
       store: stores.interactionStore,

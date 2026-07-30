@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import type { TaskLedgerStore } from '@maka/core/task-ledger';
-import type { MakaTool, MakaToolContext, ScannedSkill } from '@maka/runtime';
+import type { BackendFactoryContext, MakaTool, MakaToolContext, ScannedSkill } from '@maka/runtime';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
@@ -15,7 +15,11 @@ import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storag
 import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
 import type { TurnSnapshot, UsageQueryResult } from '../protocol/index.js';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
-import { createHostExecutionModelComposition } from '../server/execution-model-composition.js';
+import {
+  createHostAiSdkBackend,
+  createHostExecutionModelComposition,
+  type HostAiSdkBackendInput,
+} from '../server/execution-model-composition.js';
 import type { HostMemoryCoordinator } from '../server/memory-coordinator.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import type { HostSkillCatalogCoordinator } from '../server/skill-catalog-coordinator.js';
@@ -24,6 +28,50 @@ const MODEL_ID = 'hosted-real-model';
 const API_KEY = 'hosted-provider-key';
 const RESPONSE_TEXT = 'Hosted real-model execution completed.';
 const SUMMARY_TEXT = '## Goal\nContinue hosted real-model execution.';
+
+test('backend creation aborts a stalled canonical connection read', async () => {
+  const abort = new AbortController();
+  const creating = createHostAiSdkBackend(
+    backendCreationFixture({
+      abortSignal: abort.signal,
+      resolveExecutionConnection: () => new Promise(() => {}),
+      readPricing: async () => ({ revision: 0, overrides: [] }),
+    }),
+  );
+
+  abort.abort(new DOMException('Connection resolution was interrupted', 'AbortError'));
+
+  await assert.rejects(settleWithin(creating), {
+    name: 'AbortError',
+    message: 'Connection resolution was interrupted',
+  });
+});
+
+test('backend creation aborts a stalled pricing snapshot read', async () => {
+  const abort = new AbortController();
+  let markPricingStarted!: () => void;
+  const pricingStarted = new Promise<void>((resolve) => {
+    markPricingStarted = resolve;
+  });
+  const creating = createHostAiSdkBackend(
+    backendCreationFixture({
+      abortSignal: abort.signal,
+      resolveExecutionConnection: async () => readyExecutionConnection(),
+      readPricing: () => {
+        markPricingStarted();
+        return new Promise(() => {});
+      },
+    }),
+  );
+  await pricingStarted;
+
+  abort.abort(new DOMException('Pricing resolution was interrupted', 'AbortError'));
+
+  await assert.rejects(settleWithin(creating), {
+    name: 'AbortError',
+    message: 'Pricing resolution was interrupted',
+  });
+});
 
 test('production Host executes a canonical ai-sdk Session against a real provider wire', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-real-model-'));
@@ -499,6 +547,72 @@ function isTerminal(snapshot: TurnSnapshot): boolean {
     snapshot.status === 'failed' ||
     snapshot.status === 'cancelled'
   );
+}
+
+function backendCreationFixture(input: {
+  abortSignal: AbortSignal;
+  resolveExecutionConnection: () => Promise<unknown>;
+  readPricing: () => Promise<unknown>;
+}): HostAiSdkBackendInput {
+  return {
+    context: {
+      sessionId: 'backend-creation-session',
+      workspaceRoot: '/workspace',
+      header: {
+        llmConnectionSlug: 'backend-creation-connection',
+        model: MODEL_ID,
+      },
+      abortSignal: input.abortSignal,
+    } as BackendFactoryContext,
+    runtimePolicy: {
+      operations: {
+        resolveExecutionConnection: input.resolveExecutionConnection,
+      },
+    },
+    usage: {
+      pricing: {
+        snapshot: input.readPricing,
+      },
+    },
+  } as unknown as HostAiSdkBackendInput;
+}
+
+function readyExecutionConnection() {
+  return {
+    kind: 'ready',
+    connection: {
+      slug: 'backend-creation-connection',
+      providerType: 'moonshot',
+      enabledModelIds: [MODEL_ID],
+      models: [
+        {
+          id: MODEL_ID,
+          capabilities: { chat: true, functionCalling: true },
+          contextWindow: 8_192,
+          maxOutputTokens: 1_024,
+        },
+      ],
+    },
+    networkProxy: { enabled: false },
+    secretMaterial: {
+      connection: { secret: API_KEY },
+    },
+  };
+}
+
+async function settleWithin<T>(pending: Promise<T>): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(
+      () => reject(new Error('Backend creation did not settle after abort')),
+      250,
+    );
+  });
+  try {
+    return await Promise.race([pending, deadline]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 function toolNames(body: Record<string, unknown> | undefined): string[] {
