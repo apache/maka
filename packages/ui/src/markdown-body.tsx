@@ -93,16 +93,22 @@ function bareElement<K extends keyof React.JSX.IntrinsicElements>(Tag: K) {
 
 export function MarkdownBody(props: { text: string; streaming?: boolean }) {
   return (
-    <Streamdown
-      className="maka-markdown-root"
-      mode={props.streaming ? 'streaming' : 'static'}
-      parseIncompleteMarkdown={props.streaming}
-      controls={false}
-      lineNumbers={false}
-      remarkPlugins={MARKDOWN_REMARK_PLUGINS}
-      rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
-      urlTransform={markdownUrlTransform}
-      components={{
+    <div
+      data-maka-contract="markdown"
+      // Contract identity only: the box-tree-aware visual harness flattens
+      // display:contents wrappers, so adding this hook is a zero-pixel change.
+      style={{ display: 'contents' }}
+    >
+      <Streamdown
+        className="maka-markdown-root"
+        mode={props.streaming ? 'streaming' : 'static'}
+        parseIncompleteMarkdown={props.streaming}
+        controls={false}
+        lineNumbers={false}
+        remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+        rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
+        urlTransform={markdownUrlTransform}
+        components={{
         // PR-UI-RENDER-2: route `maka://` links through the internal
         // URI parser so the assistant can drop in-app navigation
         // affordances ("用账号登录 Settings → Account"). The parser
@@ -179,10 +185,11 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
         tr: bareElement('tr'),
         th: bareElement('th'),
         td: bareElement('td'),
-      }}
-    >
-      {props.text}
-    </Streamdown>
+        }}
+      >
+        {props.text}
+      </Streamdown>
+    </div>
   );
 }
 

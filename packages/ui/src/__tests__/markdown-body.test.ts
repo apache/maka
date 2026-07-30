@@ -15,12 +15,13 @@ it('keeps raw HTML inert instead of expanding the Markdown trust surface', () =>
   assert.doesNotMatch(markup, /<details/);
 });
 
-it('exposes one stable Maka root around rendered Markdown blocks', () => {
+it('declares the Markdown migration subtree around the stable product root', () => {
   const markup = renderToStaticMarkup(createElement(MarkdownBody, {
     text: '# Heading\n\nparagraph',
   }));
 
-  assert.match(markup, /^<div class="[^"]*\bmaka-markdown-root\b[^"]*">/);
+  assert.match(markup, /^<div[^>]*data-maka-contract="markdown"/);
+  assert.match(markup, /<div class="[^"]*\bmaka-markdown-root\b[^"]*">/);
 });
 
 it('preserves allowlisted Maka navigation links through sanitization', () => {

@@ -345,6 +345,16 @@ describe('PROSE-POLISH-13PX-0 contract (#546 Phase B)', () => {
       /\.maka-prose\s*>\s*\.maka-markdown-root\s*>\s*:last-child\s*\{[^}]*margin-bottom:\s*0/,
       'the Streamdown root must forward the trailing edge trim to its last Markdown block',
     );
+    assert.match(
+      css,
+      /\.maka-prose\s*>\s*\[data-maka-contract="markdown"\]\s*>\s*\.maka-markdown-root\s*>\s*:first-child\s*\{[^}]*margin-top:\s*0/,
+      'the boxless migration hook must preserve the Streamdown leading edge trim',
+    );
+    assert.match(
+      css,
+      /\.maka-prose\s*>\s*\[data-maka-contract="markdown"\]\s*>\s*\.maka-markdown-root\s*>\s*:last-child\s*\{[^}]*margin-bottom:\s*0/,
+      'the boxless migration hook must preserve the Streamdown trailing edge trim',
+    );
     // One home: the shell keeps only container geometry (padding). Duplicated
     // typography on the shell would silently drift from the prose layer.
     const chat = stripCssComments(await readFile(CHAT_MESSAGE_CSS, 'utf8'));

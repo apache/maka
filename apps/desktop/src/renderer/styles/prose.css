@@ -538,3 +538,7 @@
 .maka-prose > :last-child { margin-bottom: 0; }
 .maka-prose > .maka-markdown-root > :first-child { margin-top: 0; }
 .maka-prose > .maka-markdown-root > :last-child { margin-bottom: 0; }
+/* #1565 migration hook: display:contents keeps the box tree flat, while this
+   bridge preserves the legacy direct-child trims until PR 7 removes prose.css. */
+.maka-prose > [data-maka-contract="markdown"] > .maka-markdown-root > :first-child { margin-top: 0; }
+.maka-prose > [data-maka-contract="markdown"] > .maka-markdown-root > :last-child { margin-bottom: 0; }
