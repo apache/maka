@@ -43,6 +43,7 @@ test('copies Markdown code and reports a clipboard failure', async ({ window: pa
     '[data-astryx-live-region="polite"]',
   );
   await expect(codeBlock).toBeVisible();
+  await expect(page.getByRole('button', { name: '重新生成' })).toBeVisible();
   await page.evaluate(() => {
     Object.defineProperty(navigator.clipboard, 'writeText', {
       configurable: true,
@@ -62,6 +63,29 @@ test('copies Markdown code and reports a clipboard failure', async ({ window: pa
     () => (window as typeof window & { __copiedCode?: string }).__copiedCode,
   )).toBe('const answer = 42;\n\nreturn answer;');
 
+  await expect(codeBlock.getByRole('button', { name: '复制代码' })).toBeVisible();
+
+  await page.evaluate(() => {
+    Object.defineProperty(navigator.clipboard, 'writeText', {
+      configurable: true,
+      value: () => new Promise<void>((resolve) => {
+        (window as typeof window & {
+          __completeClipboardWrite?: () => void;
+        }).__completeClipboardWrite = resolve;
+      }),
+    });
+  });
+  await codeBlock.getByRole('button', { name: '复制代码' }).click();
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await page.evaluate(() => {
+    const complete = (window as typeof window & {
+      __completeClipboardWrite?: () => void;
+    }).__completeClipboardWrite;
+    if (!complete) throw new Error('clipboard write did not start');
+    complete();
+  });
+  await expect(astryxPoliteRegion).toHaveText('已复制代码');
+  await expect(page.getByText('Copied', { exact: true })).toHaveCount(0);
   await expect(codeBlock.getByRole('button', { name: '复制代码' })).toBeVisible();
 
   await page.evaluate(() => {

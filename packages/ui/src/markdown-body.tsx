@@ -25,6 +25,7 @@ import { trimStreamingArtifacts } from '@astryxdesign/core/Markdown/utils';
 import { Link as AstryxLink } from '@astryxdesign/core/Link';
 import { Text as AstryxText } from '@astryxdesign/core/Text';
 import { useAnnounce } from '@astryxdesign/core/hooks';
+import { useTranslator } from '@astryxdesign/core/i18n';
 import {
   isMakaUriCandidate,
   isSafeExternalScheme,
@@ -50,6 +51,7 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
   const safeText = neutralizeUnsafeMarkdownImages(parseableText);
   const copyFeedback = useClipboardCopyFeedback(1400, { redact: false });
   const copyPhase = copyFeedback.phaseFor('code');
+  const translate = useTranslator();
 
   // Astryx 0.1.9 owns this button and the authoritative `code` value but
   // discards clipboard rejections. Wrap its next write without stopping the
@@ -64,7 +66,6 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
       || !event.currentTarget.contains(codeBlock)
     ) return;
 
-    localizeNextAstryxCopyAnnouncement(button);
     const clipboard = navigator.clipboard;
     const originalDescriptor = Object.getOwnPropertyDescriptor(
       clipboard,
@@ -72,6 +73,8 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
     );
     const originalWrite = clipboard.writeText.bind(clipboard);
     let restored = false;
+    let writeStarted = false;
+    let cancelAnnouncementLocalization = () => {};
 
     function restoreWriteText() {
       if (restored) return;
@@ -87,15 +90,28 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
       Object.defineProperty(clipboard, 'writeText', {
         configurable: true,
         value: async (text: string) => {
+          writeStarted = true;
           restoreWriteText();
           const copied = await copyFeedback.attempt(
             'code',
             () => originalWrite(text),
           );
-          if (!copied) throw new Error('Clipboard write failed');
+          if (!copied) {
+            cancelAnnouncementLocalization();
+            throw new Error('Clipboard write failed');
+          }
+          window.requestAnimationFrame(() => {
+            window.requestAnimationFrame(cancelAnnouncementLocalization);
+          });
         },
       });
-      window.setTimeout(restoreWriteText, 0);
+      cancelAnnouncementLocalization = localizeNextAstryxCopyAnnouncement(
+        translate('@astryx.codeBlock.copied'),
+      );
+      window.setTimeout(() => {
+        restoreWriteText();
+        if (!writeStarted) cancelAnnouncementLocalization();
+      }, 0);
     } catch {
       // If the browser forbids wrapping the method, keep Astryx's native path.
     }
@@ -121,32 +137,28 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
   );
 }
 
-function localizeNextAstryxCopyAnnouncement(button: HTMLButtonElement) {
-  const initialLabel = button.getAttribute('aria-label');
-  let timeout = 0;
+function localizeNextAstryxCopyAnnouncement(copiedLabel: string) {
+  let active = true;
+  function cancel() {
+    if (!active) return;
+    active = false;
+    observer.disconnect();
+  }
   const observer = new MutationObserver(() => {
-    const copiedLabel = button.getAttribute('aria-label');
     const liveRegion = document.querySelector<HTMLElement>(
       '[data-astryx-live-region="polite"]',
     );
-    if (
-      !copiedLabel
-      || copiedLabel === initialLabel
-      || liveRegion?.textContent !== 'Copied'
-    ) return;
+    if (liveRegion?.textContent !== 'Copied') return;
 
-    observer.disconnect();
-    window.clearTimeout(timeout);
+    cancel();
     liveRegion.textContent = copiedLabel;
   });
   observer.observe(document.body, {
-    attributes: true,
-    attributeFilter: ['aria-label'],
     characterData: true,
     childList: true,
     subtree: true,
   });
-  timeout = window.setTimeout(() => observer.disconnect(), 1000);
+  return cancel;
 }
 
 function MarkdownCodeCopyStatus(props: { phase: ClipboardCopyPhase }) {
