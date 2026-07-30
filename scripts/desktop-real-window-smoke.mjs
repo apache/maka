@@ -10,6 +10,7 @@
  */
 
 import { execFile, spawn } from 'node:child_process';
+import { buildFixtureEnv } from './fixture-env.mjs';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline/promises';
@@ -265,20 +266,23 @@ async function launchElectron(args, diagnostics) {
   if (args.noLaunch) return null;
   const electronBin = await resolveElectronBin();
   const userDataDir = join(os.tmpdir(), `maka-real-window-smoke-${args.scenario}-${process.pid}`);
-  // A fixture window starts hidden for its whole lifecycle (`startHidden` in
-  // `main.ts`, `keepHiddenForE2eFixture` in `main-window.ts`), which is right
-  // for capture and CI runs but leaves this gate with nothing to look at:
-  // `programmatic-window-visible` fails and every human check below — edge
-  // resize, titlebar drag, focus traversal — is unrunnable on an invisible
-  // window. MAKA_E2E_SHOW_WINDOW opts this run back into a visible window.
-  const env = {
-    ...process.env,
-    MAKA_E2E_FIXTURE: args.scenario,
-    MAKA_E2E_FIXTURE_WIDTH: String(args.width),
-    MAKA_E2E_FIXTURE_HEIGHT: String(args.height),
-    MAKA_E2E_SHOW_WINDOW: '1',
-    MAKA_REAL_WINDOW_SMOKE: '1',
-  };
+  const homeDir = join(userDataDir, 'home');
+  await mkdir(homeDir, { recursive: true });
+  // The shared builder, not a hand-rolled `{ ...process.env }`: this gate was
+  // the last launcher still inheriting the environment wholesale, which meant
+  // a developer with `npm run dev` open smoked the dev server instead of the
+  // build this script just made (VITE_DEV_SERVER_URL), and the run touched
+  // the real $HOME. A fixture window also starts hidden for its whole
+  // lifecycle (`startHidden` in `main.ts`), which leaves this gate with
+  // nothing to look at — showWindow opts this run back into a visible window,
+  // and the dock rule follows it.
+  const env = buildFixtureEnv(userDataDir, homeDir, {
+    scenario: args.scenario,
+    showWindow: true,
+  });
+  env.MAKA_E2E_FIXTURE_WIDTH = String(args.width);
+  env.MAKA_E2E_FIXTURE_HEIGHT = String(args.height);
+  env.MAKA_REAL_WINDOW_SMOKE = '1';
   const launchArgs = ['.', `--user-data-dir=${userDataDir}`];
   const child = spawn(electronBin, launchArgs, {
     cwd: DESKTOP_DIR,

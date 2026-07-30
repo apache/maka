@@ -13,8 +13,12 @@
  */
 
 import { strict as assert } from 'node:assert';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { resolveDockPresentation } from '../dock-presentation.js';
+
+const REPO_ROOT = resolve(import.meta.dirname, '../../../../..');
 
 describe('dock presentation', () => {
   it('hides the dock icon whenever the window starts hidden', () => {
@@ -44,15 +48,21 @@ describe('dock presentation', () => {
     }
   });
 
-  it('follows startHidden rather than re-deriving it from the environment', () => {
-    // The regression this pins: MAKA_E2E_SHOW_WINDOW=1 makes a fixture window
-    // visible, and the dock must follow that decision rather than keying off
-    // the fixture variable alone.
-    const startHiddenWithShowWindowOptOut = false;
-    assert.equal(
-      resolveDockPresentation('darwin', startHiddenWithShowWindowOptOut),
-      'icon',
-      'window visibility and dock presence must never drift apart',
-    );
+  it('is wired to the authoritative startHidden, not a re-derivation', () => {
+    // The mapping above is three lines; the regression that motivated this
+    // module was in the WIRING — the old inline branch re-derived the
+    // start-hidden condition from the environment and drifted from the real
+    // one. A pure-function test cannot observe the call site, so the call
+    // site is pinned as source shape, the same way the window-reveal
+    // contract pins its timer wiring.
+    return readFile(
+      resolve(REPO_ROOT, 'apps/desktop/src/main/app-lifecycle.ts'),
+      'utf8',
+    ).then((source) => {
+      assert.ok(
+        source.includes('resolveDockPresentation(process.platform, startHidden)'),
+        'app-lifecycle must feed the resolver the same startHidden that decides window visibility',
+      );
+    });
   });
 });

@@ -102,8 +102,13 @@ describe('real Electron window smoke gate', () => {
     }
     assert.match(
       src,
-      /MAKA_E2E_SHOW_WINDOW/,
+      /showWindow:\s*true/,
       'the programmatic layer must launch a window it can actually see; without this the visibility and focus checks assert against a window that was never mapped',
+    );
+    assert.match(
+      src,
+      /buildFixtureEnv\(/,
+      'the smoke gate launches through the shared environment builder, so it cannot inherit VITE_DEV_SERVER_URL or the real $HOME',
     );
     assert.match(src, /--user-data-dir=/, 'real-window smoke must isolate Electron user data');
     assert.match(src, /MAKA_E2E_FIXTURE/, 'real-window smoke must launch a deterministic fixture');
