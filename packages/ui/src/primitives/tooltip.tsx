@@ -1,65 +1,143 @@
 "use client";
 
-import { Tooltip as TooltipPrimitive } from "@base-ui/react/tooltip";
-import { cn } from "../utils.js";
-import type React from "react";
+import { useTooltip } from "@astryxdesign/core/Tooltip";
+import {
+  cloneElement,
+  createContext,
+  useCallback,
+  useContext,
+  useRef,
+  type ButtonHTMLAttributes,
+  type ReactElement,
+  type ReactNode,
+  type Ref,
+  type RefCallback,
+} from "react";
+import { cn, composeRefs } from "../utils.js";
 
-// Base UI Tooltip wrappers for the icon-only-action buttons that used the
-// native `title=` attribute (an unstyled, delayed browser tooltip). Base UI
-// Tooltip gives a themed, positioned, hover+focus tooltip matching the app.
-// The `data-slot` hooks follow the style-hook convention (item 23).
-//
-// Usage:
-//   <Tooltip>
-//     <TooltipTrigger render={<Button />}>…</TooltipTrigger>
-//     <TooltipContent>{label}</TooltipContent>
-//   </Tooltip>
-//
-// Base UI v1 uses the `render` prop (not Radix `asChild`): the Trigger merges
-// its own props + children into the rendered element.
-//
-// TooltipContent collapses Portal + Positioner + Popup (the same shape
-// DialogContent uses for the dialog) so the call site is one component. The
-// Popup carries the themed tooltip look (popover bg/corner/shadow); the
-// Positioner owns placement + the z-layer.
+// Astryx tooltip behavior behind the frozen Tooltip/TooltipTrigger/
+// TooltipContent composition API (#1565 barrel freeze). Astryx's primitive is
+// single-element (a `content` prop), so the root owns one useTooltip instance
+// shared through context: the trigger merges its props into the `render`
+// element (preserving the Base UI render-prop call shape) and carries the
+// hover/focus listeners plus the CSS anchor name; the content renders through
+// renderTooltip into the native-Popover top layer — no portal, no z-index.
+// Astryx owns the surface look (inverted palette, animation, WCAG 1.4.13
+// hover bridge and Escape dismiss).
+
+type TooltipContextValue = ReturnType<typeof useTooltip>;
+
+const TooltipContext = createContext<TooltipContextValue | null>(null);
+
+function useTooltipContext(component: string): TooltipContextValue {
+  const context = useContext(TooltipContext);
+  if (context === null) {
+    throw new Error(`${component} must be used inside <Tooltip>`);
+  }
+  return context;
+}
+
+export interface TooltipProps {
+  children?: ReactNode;
+  /** Delay before showing on hover (ms). Astryx default: 200. */
+  delay?: number;
+  /** Controlled open state; leave undefined for hover/focus behavior. */
+  open?: boolean;
+  /** Show on mount (still dismissible). */
+  defaultOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  disabled?: boolean;
+}
 
 export function Tooltip({
-  ...props
-}: TooltipPrimitive.Root.Props): React.ReactElement {
-  return <TooltipPrimitive.Root data-slot="tooltip" {...props} />;
+  children,
+  delay,
+  open,
+  defaultOpen,
+  onOpenChange,
+  disabled,
+}: TooltipProps): ReactElement {
+  const onOpenChangeRef = useRef(onOpenChange);
+  onOpenChangeRef.current = onOpenChange;
+  const onShow = useCallback(() => onOpenChangeRef.current?.(true), []);
+  const onHide = useCallback(() => onOpenChangeRef.current?.(false), []);
+  const tooltip = useTooltip({
+    delay,
+    isOpen: open,
+    isDefaultOpen: defaultOpen,
+    isEnabled: disabled !== true,
+    onShow,
+    onHide,
+  });
+  return (
+    <TooltipContext.Provider value={tooltip}>
+      {children}
+    </TooltipContext.Provider>
+  );
+}
+
+type TooltipTriggerRenderElement = ReactElement<{
+  className?: string;
+  children?: ReactNode;
+  ref?: Ref<HTMLElement>;
+  "aria-describedby"?: string;
+}>;
+
+export interface TooltipTriggerProps
+  extends ButtonHTMLAttributes<HTMLButtonElement> {
+  /** Element to render as the trigger (Base UI render-prop shape). */
+  render?: TooltipTriggerRenderElement;
 }
 
 export function TooltipTrigger({
+  render,
   className,
+  children,
   ...props
-}: TooltipPrimitive.Trigger.Props): React.ReactElement {
+}: TooltipTriggerProps): ReactElement {
+  const tooltip = useTooltipContext("TooltipTrigger");
+  const describedBy = props["aria-describedby"]
+    ? `${props["aria-describedby"]} ${tooltip.describedBy}`
+    : tooltip.describedBy;
+  if (render) {
+    const merged = {
+      ...props,
+      className: cn(render.props.className, className),
+      ref: composeRefs<HTMLElement>(tooltip.ref, render.props.ref),
+      "aria-describedby": describedBy,
+      "data-slot": "tooltip-trigger",
+    };
+    return children !== undefined
+      ? cloneElement(render, merged, children)
+      : cloneElement(render, merged);
+  }
   return (
-    <TooltipPrimitive.Trigger
-      className={className}
-      data-slot="tooltip-trigger"
+    <button
+      type="button"
       {...props}
-    />
+      className={className}
+      ref={tooltip.ref as RefCallback<HTMLButtonElement>}
+      aria-describedby={describedBy}
+      data-slot="tooltip-trigger"
+    >
+      {children}
+    </button>
   );
+}
+
+export interface TooltipContentProps {
+  children?: ReactNode;
+  className?: string;
 }
 
 export function TooltipContent({
+  children,
   className,
-  ...props
-}: Omit<TooltipPrimitive.Popup.Props, "render"> & React.HTMLAttributes<HTMLDivElement>): React.ReactElement {
-  return (
-    <TooltipPrimitive.Portal>
-      <TooltipPrimitive.Positioner sideOffset={6}>
-        <TooltipPrimitive.Popup
-          className={cn(
-            "z-[var(--z-overlay)] max-w-[min(90vw,460px)] rounded-md bg-popover px-2 py-1 text-xs text-popover-foreground shadow-maka-panel",
-            className,
-          )}
-          data-slot="tooltip-content"
-          {...props}
-        />
-      </TooltipPrimitive.Positioner>
-    </TooltipPrimitive.Portal>
+}: TooltipContentProps): ReactNode {
+  const tooltip = useTooltipContext("TooltipContent");
+  return tooltip.renderTooltip(
+    <span className={className} data-slot="tooltip-content">
+      {children}
+    </span>,
   );
 }
-
-export { TooltipPrimitive };
