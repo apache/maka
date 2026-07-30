@@ -133,11 +133,7 @@ describe('issue #406 design-system governance contract', () => {
       'animate-spin',
       'maka-composer-permission-pulse',
       'maka-composer-stream-bounce',
-      // D6 waiting-state spectrum: toast arrival overshoot (attention
-      // guidance for new information) + composer streaming top sweep
-      // (visible "working" status) — both functional, not decorative.
-      'maka-toast-enter',
-      'maka-toast-exit',
+      // Composer streaming top sweep is visible "working" status.
       'maka-processing-sweep',
       'maka-list-row-streaming-pulse',
       // Streaming UI rework: the "深度思考" disclosure title + a working trow's
@@ -317,14 +313,19 @@ describe('issue #406 design-system governance contract', () => {
   it('keeps core visual surfaces on shadow rings instead of hard borders', async () => {
     const ui = await readUiSource();
     const styles = await readFile(resolve(REPO_ROOT, 'apps/desktop/src/renderer/styles.css'), 'utf8');
-    const dialogClass = ui.match(/const MODAL_POPUP_CLASS =\s*'([^']*shadow-maka-panel[^']*)'/)?.[1] ?? '';
     const panelShadow = styles.match(/--shadow-maka-panel:\s*([^;]+);/)?.[1] ?? '';
 
     assert.match(panelShadow, /0\s+0\s+0\s+1px\s+var\(--border\)/);
-    for (const [name, className] of [['DialogPopup', dialogClass]] as const) {
-      assert.ok(className.includes('shadow-maka-panel'), `${name} must keep the shadow-ring recipe`);
-      assert.ok(!/\bborder\b|\bborder-border\b/.test(className), `${name} must not use a hard visual border`);
-    }
+    const dialogBlock = ui.slice(
+      ui.indexOf('interface DialogContextValue'),
+      ui.indexOf('// Astryx owns tab navigation'),
+    );
+    assert.match(ui, /Dialog as AstryxDialog[\s\S]*from '@astryxdesign\/core\/Dialog'/);
+    assert.doesNotMatch(
+      dialogBlock,
+      /shadow-maka-panel|border-border|MODAL_POPUP_CLASS/,
+      'Maka must not apply a second dialog surface over Astryx chrome',
+    );
 
     const chat = await readFile(resolve(REPO_ROOT, 'packages/ui/src/primitives/chat.tsx'), 'utf8');
     assert.ok(chat.includes('[box-shadow:var(--shadow-minimal-flat)]'));

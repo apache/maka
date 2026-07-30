@@ -168,14 +168,11 @@ export function WechatQrLoginModal(props: {
     >
       <DialogContent
         className="settingsWechatQrModal"
-        aria-labelledby="settingsWechatQrTitle"
-        showClose={false}
+        width={360}
       >
         <DialogHeader
           title={copy.title}
-          titleId="settingsWechatQrTitle"
           subtitle={copy.subtitle}
-          closeLabel={copy.close}
           onClose={props.onClose}
         />
 

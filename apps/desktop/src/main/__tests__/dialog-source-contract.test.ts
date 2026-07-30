@@ -2,8 +2,8 @@
  * Static contract: renderer + ui tsx must not hand-write dialog semantics
  * (#520 PR7 commit 1).
  *
- * Base UI Dialog / AlertDialog set `role="dialog"` / `role="alertdialog"` /
- * `aria-modal="true"` themselves via the Popup primitive. Hand-writing these
+ * Astryx Dialog / AlertDialog set `role="dialog"` / `role="alertdialog"` /
+ * `aria-modal="true"` themselves via native `<dialog>`. Hand-writing these
  * attributes in JSX means a component is bypassing the shared
  * `<DialogContent>` / `<AlertDialogContent>` shell and the focus-trap /
  * restore / Esc handling Base UI provides — which is exactly the regression
@@ -131,7 +131,7 @@ describe('dialog source contract (#520 PR7)', () => {
     assert.deepEqual(
       offenders,
       [],
-      'hand-writing role="dialog" / role="alertdialog" / aria-modal="true" bypasses Base UI Dialog focus/Esc handling — route through <DialogContent> / <AlertDialogContent>. Files pending Base UI Drawer migration must be added to PENDING_DRAWER_MIGRATION with a plan.',
+      'hand-writing role="dialog" / role="alertdialog" / aria-modal="true" bypasses Astryx Dialog focus/Esc handling — route through <DialogContent> / <AlertDialogContent>. Files pending Drawer migration must be added to PENDING_DRAWER_MIGRATION with a plan.',
     );
   });
 });

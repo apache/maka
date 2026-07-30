@@ -538,7 +538,6 @@ function McpEditorDialog(props: {
   onSave(event: React.FormEvent): void;
   onImport(event: React.FormEvent): void;
 }) {
-  const titleId = 'maka-mcp-editor-title';
   const editing = props.state.mode === 'manual' && Boolean(props.state.editingId);
   const updateDraft = <K extends keyof Draft>(key: K, value: Draft[K]) => {
     if (props.state.mode !== 'manual') return;
@@ -546,11 +545,14 @@ function McpEditorDialog(props: {
   };
   return (
     <DialogRoot open onOpenChange={(open) => { if (!open) props.onClose(); }}>
-      <DialogContent className="maka-modal maka-mcp-editor-dialog" aria-labelledby={titleId} showClose={false}>
+      <DialogContent
+        className="maka-mcp-editor-dialog"
+        width="min(92vw, var(--maka-chat-measure))"
+        maxHeight="85dvh"
+      >
         <DialogHeader
           icon={props.state.mode === 'json' ? <FileCode /> : <Plug />}
           title={props.state.mode === 'json' ? props.copy.editor.importTitle : editing ? props.copy.editor.editTitle(props.state.draft.id) : props.copy.editor.addTitle}
-          titleId={titleId}
           subtitle={props.state.mode === 'json' ? props.copy.editor.importSubtitle : props.copy.editor.manualSubtitle}
           onClose={props.onClose}
         />

@@ -2,7 +2,7 @@
    Chat header bar + chat shell layout
    ----------------------------------------------------------------------------
    #546 PR2 (relocate — zero visual change) split the overlay surfaces that
-   used to live here into their own files: toast.css, palette.css, help.css,
+   used to live here into their own files: palette.css, help.css,
    error.css, hero.css. The composer streaming top-sweep moved to
    composer.css. What remains is the header bar (`.maka-chat-header`), the
    #1032 composer-adjacent health notice, and the chat shell layout

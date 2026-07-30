@@ -1,6 +1,4 @@
 import React, { forwardRef } from 'react';
-import { Dialog as BaseDialog } from '@base-ui/react/dialog';
-import { AlertDialog as BaseAlertDialog } from '@base-ui/react/alert-dialog';
 import { Field as BaseField } from '@base-ui/react/field';
 import { Progress as BaseProgress } from '@base-ui/react/progress';
 import { Radio as BaseRadio } from '@base-ui/react/radio';
@@ -8,15 +6,18 @@ import { RadioGroup as BaseRadioGroup } from '@base-ui/react/radio-group';
 import { Switch as BaseSwitch } from '@base-ui/react/switch';
 import { Toggle as BaseToggle } from '@base-ui/react/toggle';
 import { ToggleGroup as BaseToggleGroup } from '@base-ui/react/toggle-group';
+import { AlertDialog as AstryxAlertDialog } from '@astryxdesign/core/AlertDialog';
+import {
+  Dialog as AstryxDialog,
+  type DialogProps as AstryxDialogProps,
+  type DialogPurpose,
+} from '@astryxdesign/core/Dialog';
 import { usePopover, type UsePopoverReturn } from '@astryxdesign/core/Popover';
 import { Selector } from '@astryxdesign/core/Selector';
 import { mergeRefs } from '@astryxdesign/core/utils';
-import { X } from './icons.js';
 import { cva, type VariantProps } from 'class-variance-authority';
 import { cn } from './utils.js';
 import { inputClasses } from './primitives/input.js';
-import { useUiLocale } from './locale-context.js';
-import { getSharedUiCopy } from './shared-ui-copy.js';
 
 export { cn } from './utils.js';
 
@@ -139,86 +140,151 @@ export const buttonVariants = cva(
 // the barrel via index.ts; number-field imports inputClasses/bareFieldClasses
 // from primitives/input.js.
 
-export const DialogRoot = BaseDialog.Root;
-export const DialogClose = BaseDialog.Close;
-export const AlertDialogRoot = BaseAlertDialog.Root;
+interface DialogContextValue {
+  isOpen: boolean;
+  onOpenChange(isOpen: boolean): void;
+  purpose: DialogPurpose;
+}
 
-// Shared modal shell. Dialog and AlertDialog differ only in their Base UI
-// primitive family (Root/Portal/Backdrop/Popup/Close); the layout (backdrop
-// class, popup class, Portal+Backdrop+Popup+optional Close structure) is
-// identical. PR6 review P3.1: kills the AlertDialogBackdrop/Popup/Content
-// triple that copied Dialog's, and lets ui-tsx-design-contract's
-// the bare z-index/blur utility counts return to 1.
-//
-// `maka-dialog-backdrop` is a stable, style-free hook so tests and the
-// real-window smoke diagnostic can select the dialog backdrop; Base UI
-// renders only utility classes otherwise, which drift and aren't reliably
-// selectable.
-const MODAL_BACKDROP_CLASS = 'maka-dialog-backdrop fixed inset-0 z-40 bg-foreground/20 backdrop-blur-sm';
-const MODAL_POPUP_CLASS =
-  'fixed left-1/2 top-1/2 z-50 grid max-h-[85dvh] w-[min(92vw,640px)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-xl bg-popover text-popover-foreground shadow-maka-panel';
+const DialogContext = React.createContext<DialogContextValue | null>(null);
 
-type ModalContentProps = React.ComponentPropsWithoutRef<typeof BaseDialog.Popup> & { showClose?: boolean };
-type ModalSlotPrefix = 'dialog' | 'alert-dialog';
+interface DialogRootProps {
+  open?: boolean;
+  defaultOpen?: boolean;
+  onOpenChange?(isOpen: boolean): void;
+  children?: React.ReactNode;
+}
 
-type ModalBackdropProps = { className?: string; 'data-slot'?: string };
-type ModalCloseProps = { className?: string; 'aria-label'?: string; 'data-slot'?: string; children?: React.ReactNode };
+function ModalRoot({
+  open: controlledOpen,
+  defaultOpen = false,
+  onOpenChange,
+  children,
+  purpose,
+}: DialogRootProps & { purpose: DialogPurpose }) {
+  const [uncontrolledOpen, setUncontrolledOpen] = React.useState(defaultOpen);
+  const isOpen = controlledOpen ?? uncontrolledOpen;
+  const context = React.useMemo<DialogContextValue>(
+    () => ({
+      isOpen,
+      purpose,
+      onOpenChange(nextOpen) {
+        if (controlledOpen === undefined) setUncontrolledOpen(nextOpen);
+        onOpenChange?.(nextOpen);
+      },
+    }),
+    [controlledOpen, isOpen, onOpenChange, purpose],
+  );
+  return <DialogContext value={context}>{children}</DialogContext>;
+}
 
-function createModalContent(primitives: {
-  Portal: React.ComponentType<{ children?: React.ReactNode }>;
-  Backdrop: React.ComponentType<ModalBackdropProps>;
-  Popup: React.ForwardRefExoticComponent<React.ComponentPropsWithoutRef<typeof BaseDialog.Popup> & React.RefAttributes<HTMLDivElement>>;
-  Close: React.ComponentType<ModalCloseProps>;
-  defaultShowClose: boolean;
-  slotPrefix: ModalSlotPrefix;
-}) {
-  return forwardRef<HTMLDivElement, ModalContentProps>(function ModalContent(
-    { className, children, showClose = primitives.defaultShowClose, ...props },
+export function DialogRoot(props: DialogRootProps) {
+  return <ModalRoot {...props} purpose="info" />;
+}
+
+export function AlertDialogRoot(props: DialogRootProps) {
+  return <ModalRoot {...props} purpose="form" />;
+}
+
+function useDialogRoot(): DialogContextValue {
+  const context = React.useContext(DialogContext);
+  if (!context) throw new Error('DialogContent must be rendered inside DialogRoot');
+  return context;
+}
+
+type FocusTarget =
+  | React.RefObject<HTMLElement | null>
+  | (() => HTMLElement | boolean | null | undefined)
+  | boolean;
+
+function resolveFocusTarget(target: FocusTarget | undefined): HTMLElement | null {
+  if (typeof target === 'function') {
+    const resolved = target();
+    return resolved instanceof HTMLElement ? resolved : null;
+  }
+  if (typeof target === 'object' && target) return target.current;
+  return null;
+}
+
+interface ModalContentProps
+  extends Omit<AstryxDialogProps, 'children' | 'isOpen' | 'onOpenChange' | 'ref'> {
+  children?: React.ReactNode;
+  initialFocus?: FocusTarget;
+  finalFocus?: FocusTarget;
+}
+
+function createModalContent(defaultPurpose?: DialogPurpose) {
+  return forwardRef<HTMLDialogElement, ModalContentProps>(function ModalContent(
+    { children, initialFocus, finalFocus, purpose, padding = 0, ...props },
     ref,
   ) {
-    const copy = getSharedUiCopy(useUiLocale()).primitives;
-    const { Portal, Backdrop, Popup, Close, slotPrefix } = primitives;
+    const root = useDialogRoot();
+    const wasOpenRef = React.useRef(false);
+
+    React.useEffect(() => {
+      const wasOpen = wasOpenRef.current;
+      wasOpenRef.current = root.isOpen;
+      if (root.isOpen && !wasOpen) {
+        const frame = requestAnimationFrame(() => resolveFocusTarget(initialFocus)?.focus());
+        return () => cancelAnimationFrame(frame);
+      }
+      if (!root.isOpen && wasOpen && finalFocus) {
+        const frame = requestAnimationFrame(() => resolveFocusTarget(finalFocus)?.focus());
+        return () => cancelAnimationFrame(frame);
+      }
+      return undefined;
+    }, [finalFocus, initialFocus, root.isOpen]);
+
     return (
-      <Portal>
-        <Backdrop className={MODAL_BACKDROP_CLASS} data-slot={`${slotPrefix}-backdrop`} />
-        <Popup ref={ref} className={cn(MODAL_POPUP_CLASS, className)} data-slot={`${slotPrefix}-popup`} {...props}>
-          {showClose && (
-            <Close
-              className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }), 'absolute right-3 top-3')}
-              aria-label={copy.close}
-              data-slot={`${slotPrefix}-close`}
-            >
-              <X aria-hidden="true" />
-            </Close>
-          )}
-          {children}
-        </Popup>
-      </Portal>
+      <AstryxDialog
+        {...props}
+        ref={ref}
+        isOpen={root.isOpen}
+        onOpenChange={root.onOpenChange}
+        purpose={purpose ?? defaultPurpose ?? root.purpose}
+        padding={padding}
+      >
+        {children}
+      </AstryxDialog>
     );
   });
 }
 
-export const DialogContent = createModalContent({
-  Portal: BaseDialog.Portal,
-  Backdrop: BaseDialog.Backdrop,
-  Popup: BaseDialog.Popup,
-  Close: BaseDialog.Close,
-  defaultShowClose: true,
-  slotPrefix: 'dialog',
-});
+export const DialogContent = createModalContent();
+export const AlertDialogContent = createModalContent('form');
 
-// AlertDialog — the alert variant locks modal + disables pointer dismissal,
-// so confirmation dialogs require an explicit decision. Escape is NOT
-// auto-disabled (Base UI alert-dialog still closes on Esc); callers that must
-// not be Esc-dismissed intercept onOpenChange and cancel. PR6 (#520).
-export const AlertDialogContent = createModalContent({
-  Portal: BaseAlertDialog.Portal,
-  Backdrop: BaseAlertDialog.Backdrop,
-  Popup: BaseAlertDialog.Popup,
-  Close: BaseAlertDialog.Close,
-  defaultShowClose: false,
-  slotPrefix: 'alert-dialog',
-});
+interface DialogCloseProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+  render?: React.ReactElement<Record<string, unknown>>;
+}
+
+export function DialogClose({ render, children, onClick, ...props }: DialogCloseProps) {
+  const root = useDialogRoot();
+  const handleClick: React.MouseEventHandler<HTMLButtonElement> = (event) => {
+    const renderedOnClick = render?.props.onClick as
+      | React.MouseEventHandler<HTMLButtonElement>
+      | undefined;
+    renderedOnClick?.(event);
+    onClick?.(event);
+    if (!event.defaultPrevented) root.onOpenChange(false);
+  };
+
+  if (render) {
+    return React.cloneElement(render, { ...props, onClick: handleClick, children });
+  }
+  return (
+    <button
+      {...props}
+      type={props.type ?? 'button'}
+      aria-label={props['aria-label']}
+      onClick={handleClick}
+    >
+      {children}
+    </button>
+  );
+}
+
+export { AstryxAlertDialog as AlertDialog };
+export { LayerProvider } from '@astryxdesign/core/Layer';
 
 // Tabs: re-export the shared tab spec primitive (#499 P0-3). The tab spec
 // (maka-tab class + underline/pill variants + neutral state tokens) lives in

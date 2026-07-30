@@ -131,8 +131,8 @@ describe('Command palette accessibility and visible copy', () => {
     const inputStyle = styles.match(/\.maka-palette-input\s*\{[\s\S]*?\}/)?.[0] ?? '';
     assert.match(
       src,
-      /<DialogContent[\s\S]*?showClose=\{false\}/,
-      'the palette must disable DialogContent\'s absolute close button',
+      /<DialogContent[\s\S]*?width=\{584\}[\s\S]*?maxHeight="min\(620px, 68vh\)"/,
+      'the palette must configure geometry through Astryx Dialog',
     );
     // The close action uses the dedicated Astryx IconButton; label becomes
     // its accessible name and the icon rides the `icon` prop.
@@ -148,13 +148,10 @@ describe('Command palette accessibility and visible copy', () => {
 
   it('keeps command palette chrome compact, non-selectable, and tactile without blocking text entry', async () => {
     const styles = await readRendererContractCss();
-    const modalStyle = styles.match(/\.maka-palette-modal\s*\{[\s\S]*?\}/)?.[0] ?? '';
     const inputStyle = styles.match(/\.maka-palette-input\s*\{[\s\S]*?\}/)?.[0] ?? '';
     const rowStyle = styles.match(/\.maka-palette-item\s*\{[\s\S]*?\}/)?.[0] ?? '';
 
-    assert.match(modalStyle, /width:\s*min\(584px, calc\(100vw - 32px\)\);/);
-    assert.match(modalStyle, /border:\s*var\(--border-width-hairline\) solid var\(--border\);/);
-    assert.match(modalStyle, /border-radius:\s*var\(--radius-modal\);/);
+    assert.doesNotMatch(styles, /\.maka-palette-modal\s*\{[\s\S]*?(?:border|border-radius|box-shadow|width):/, 'Astryx must own palette surface geometry and chrome');
     assert.match(
       styles,
       /\.maka-palette-modal,[\s\S]*?\.maka-palette-footer\s*\{[\s\S]*user-select:\s*none;/,

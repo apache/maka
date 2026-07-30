@@ -62,6 +62,8 @@ const FROZEN_COMPATIBILITY = new Set([
   'SelectGroupLabel',
   'SelectSeparator',
   'SelectItem',
+  'AlertDialogRoot',
+  'AlertDialogContent',
 ]);
 
 async function readSourceFiles(dir: string): Promise<{ path: string; content: string }[]> {

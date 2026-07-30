@@ -65,7 +65,6 @@
 @import "./styles/plan-mode.css" layer(maka.legacy);
 @import "./styles/agent-graph.css" layer(maka.legacy);
 @import "./styles/error.css" layer(maka.legacy);
-@import "./styles/toast.css" layer(maka.legacy);
 @import "./styles/help.css" layer(maka.legacy);
 @import "./styles/palette.css" layer(maka.legacy);
 @import "./styles/hero.css" layer(maka.legacy);

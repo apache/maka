@@ -141,13 +141,15 @@ export function BotOnboardingModal(props: {
     <DialogRoot open onOpenChange={(open) => { if (!open) close(); }}>
       <DialogContent
         className="settingsBotOnboardingModal"
+        width={520}
         aria-label={copy.ariaLabel}
-        showClose={false}
       >
-        <div className="settingsBotOnboardingBrand" aria-hidden="true">
-          <BotBrandLogo provider={props.provider} size="large" />
-        </div>
-        <DialogHeader title={copy.title} subtitle={copy.subtitle} closeLabel={onboardingCopy.close(copy.title)} onClose={close} />
+        <DialogHeader
+          icon={<BotBrandLogo provider={props.provider} size="large" />}
+          title={copy.title}
+          subtitle={copy.subtitle}
+          onClose={close}
+        />
         <div className="settingsBotOnboardingBody" aria-live="polite">
           <div className="settingsBotOnboardingQrFrame" data-state={snapshot?.state ?? (starting ? 'starting' : 'error')}>
             {showQr ? (

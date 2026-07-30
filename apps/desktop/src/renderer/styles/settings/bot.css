@@ -530,39 +530,6 @@
   grid-row: 1 / span 2;
 }
 
-.settingsBotOnboardingModal {
-  /* Keep the shared DialogContent viewport positioning. `relative` here
-     overrides its fixed centering and pushes the popup toward the bottom. */
-  position: fixed;
-  width: min(520px, calc(100vw - 32px));
-  overflow: visible;
-}
-
-.settingsBotOnboardingBrand {
-  position: absolute;
-  top: -26px;
-  left: 50%;
-  display: grid;
-  width: 56px;
-  height: 56px;
-  place-items: center;
-  transform: translateX(-50%);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: 50%;
-  background: var(--background);
-  box-shadow: var(--shadow-medium);
-}
-
-.settingsBotOnboardingBrand .settingsBotLogo {
-  width: 38px;
-  height: 38px;
-}
-
-.settingsBotOnboardingModal [data-slot="dialog-header"] {
-  padding-top: var(--space-8);
-  text-align: center;
-}
-
 .settingsBotOnboardingBody {
   display: grid;
   justify-items: center;

@@ -172,10 +172,11 @@ export function CommandPalette(props: {
       }}
     >
       <DialogContent
-        className="maka-modal maka-palette-modal top-[12vh] -translate-y-0"
+        className="maka-palette-modal"
+        width={584}
+        maxHeight="min(620px, 68vh)"
         aria-label={copy.label}
         initialFocus={inputRef}
-        showClose={false}
       >
         {/*
           #520 PR8: Autocomplete owns the listbox/option ARIA + ArrowUp/Down/

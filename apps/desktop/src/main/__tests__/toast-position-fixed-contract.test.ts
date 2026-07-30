@@ -29,10 +29,10 @@ describe('fixed toast position contract', () => {
     assert.doesNotMatch(styles, /settingsToastPosition|data-position="top-|data-position="bottom-left"|data-position="bottom-center"/, 'CSS must not keep the removed picker or unused toast corners');
   });
 
-  it('pins the toast viewport to bottom-right in the UI package', async () => {
+  it('pins the Astryx toast layer to bottom-end in the UI package', async () => {
     const toast = await readRepo('packages/ui/src/toast.tsx');
 
-    assert.match(toast, /const TOAST_POSITION = 'bottom-right';/, 'toast viewport should use the fixed bottom-right position');
+    assert.match(toast, /<LayerProvider toast=\{\{ position: 'bottomEnd' \}\}>/, 'toast viewport should use the fixed logical bottom-end position');
     assert.doesNotMatch(toast, /position\?:|props\.position|isToastPosition|ToastPosition/, 'ToastProvider must not accept a position prop');
   });
 });

@@ -188,10 +188,11 @@ export function PlanReminderFormDialog(props: {
       }}
     >
       <DialogContent
-        className="maka-plan-dialog w-[min(92vw,680px)] p-0"
+        className="maka-plan-dialog"
+        width={680}
+        maxHeight="min(86dvh, 760px)"
         aria-labelledby="maka-plan-dialog-title"
         initialFocus={titleRef}
-        showClose={false}
       >
         <form className="maka-plan-form" onSubmit={submit} aria-busy={submitPending ? 'true' : undefined}>
           <header className="maka-plan-form-header">

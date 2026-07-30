@@ -94,7 +94,11 @@ function AttachmentImage(props: { attachment: AttachmentRef; onReadAttachmentByt
         <img className="h-32 w-32 object-cover transition group-hover:opacity-90" src={src} alt={props.attachment.name} />
       </button>
       <DialogRoot open={lightboxOpen} onOpenChange={setLightboxOpen}>
-        <DialogContent className="!w-auto !max-w-[90vw] !max-h-[90vh] !bg-transparent !p-0 !shadow-none !rounded-md overflow-visible">
+        <DialogContent
+          width="auto"
+          maxHeight="90vh"
+          aria-label={copy.imageAriaLabel(props.attachment.name)}
+        >
           <img className="max-h-[90vh] max-w-[90vw] object-contain rounded-md shadow-2xl" src={src} alt={props.attachment.name} />
         </DialogContent>
       </DialogRoot>

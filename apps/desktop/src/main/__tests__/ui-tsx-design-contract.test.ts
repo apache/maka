@@ -5,9 +5,8 @@
  * The PR-MOTION-TOKEN-CONVERGE-0 contract scans
  * `packages/ui/src/primitives/` and `apps/desktop/src/renderer/`, but
  * NOT the aggregate UI re-export layer at `packages/ui/src/ui.tsx`.
- * That file inlines a bunch of Tailwind utility classes (z-40 / z-50 /
- * `backdrop-blur-sm` / `transition-[height]`) which would otherwise be
- * caught by the existing motion / z-index converge contracts.
+ * That file historically inlined Tailwind design escape hatches which would
+ * otherwise be caught by the existing motion / z-index converge contracts.
  *
  * This test pins the EXACT set of design-system escape hatches that
  * currently exist in ui.tsx. Adding a new escape-hatch class without
@@ -35,24 +34,7 @@ const UI_FILE = resolve(REPO_ROOT, 'packages/ui/src/ui.tsx');
  *  new acknowledged site; remove the entry when the last site is
  *  tokenized away. */
 const ALLOWED_BARE: ReadonlyArray<{ pattern: string; count: number; reason: string }> = [
-  {
-    pattern: 'z-40',
-    count: 1,
-    reason:
-      'dialog + alert-dialog backdrop scrim layer (single MODAL_BACKDROP_CLASS constant shared via createModalContent); sits below the popup at z-50. Equivalent to --z-titlebar (40) by value but semantically distinct, so not yet tokenized.',
-  },
-  {
-    pattern: 'z-50',
-    count: 1,
-    reason:
-      'dialog popup (single MODAL_POPUP_CLASS constant shared via createModalContent, used by DialogContent + AlertDialogContent). The previously z-50 floating-overlay surfaces (TooltipPopup, SelectPopup, PopoverPopup) were tokenized to `z-[var(--z-overlay)]` so a Select opened from inside a Settings modal floats above the modal (WAWQAQ msg `d3ea9a33` 2026-06-26). PR-UI-DEAD-EXPORT-SWEEP-0 then deleted PopoverPopup entirely (was unused). Sheet exports were deleted as dead code (0 consumers).',
-  },
-  {
-    pattern: 'backdrop-blur-sm',
-    count: 1,
-    reason:
-      'dialog + alert-dialog backdrop visual depth (single MODAL_BACKDROP_CLASS constant shared via createModalContent). Pending kenji #6 audit decision on whether to drop blur entirely or tokenize a single --blur-scrim value.',
-  },
+  // Astryx owns every floating-layer visual; no local escape hatch remains.
 ];
 
 describe('PR-FE-BUG-HUNT-12 ui.tsx design contract', () => {

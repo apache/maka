@@ -230,17 +230,16 @@ export function SearchModal(props: {
       }}
     >
       <DialogContent
-        className="maka-modal maka-search-modal w-[min(92vw,640px)] p-0"
+        className="maka-search-modal"
+        width={560}
+        maxHeight="64vh"
         data-maka-contract="search-modal"
-        aria-labelledby="maka-search-modal-title"
-        showClose={false}
         initialFocus={inputRef}
         finalFocus={() => (suppressFocusRestoreRef.current ? false : true)}
       >
         <DialogHeader
           icon={<Search aria-hidden="true" />}
           title={copy.title}
-          titleId="maka-search-modal-title"
           onClose={() => props.onClose()}
         />
         {/*

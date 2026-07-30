@@ -176,7 +176,7 @@ describe('renderer utility surfaces use shared UI primitives', () => {
     assert.doesNotMatch(source, /<kbd\b/, 'KeyboardHelpModal shortcut glyphs must use shared primitive Kbd');
     assert.match(
       source,
-      /<DialogHeader[\s\S]*title=\{copy\.title\}[\s\S]*titleId="maka-help-title"[\s\S]*onClose=\{props\.onClose\}/,
+      /<DialogHeader[\s\S]*title=\{copy\.title\}[\s\S]*onClose=\{props\.onClose\}/,
       'KeyboardHelpModal must render the shared DialogHeader with 键盘快捷键 as THE title',
     );
     // The redundant second title and eyebrow are gone.
@@ -192,18 +192,9 @@ describe('renderer utility surfaces use shared UI primitives', () => {
     // close button) instead of an ad-hoc header. The command palette is
     // intentionally headerless (its input row IS the header) and is excluded.
     const header = await readFile(join(repoRoot, 'packages/ui/src/primitives/dialog-header.tsx'), 'utf8');
-    // The shared close button is the SAME form everywhere: ghost sm Astryx
-    // IconButton + X, label defaults to 关闭, no border box.
-    assert.match(
-      header,
-      /<IconButton/,
-      'DialogHeader close must use the dedicated icon-only primitive',
-    );
-    assert.match(header, /variant="ghost"/, 'DialogHeader close must be the ghost Button variant');
-    assert.match(header, /size="sm"/, 'DialogHeader close must use the small control tier');
-    assert.doesNotMatch(header, /isIconOnly/);
-    assert.match(header, /label=\{closeLabel \?\? copy\.shared\.close\}/, 'DialogHeader close accessible name follows the resolved UI locale');
-    assert.match(header, /<X aria-hidden="true" \/>/, 'DialogHeader close renders the X icon');
+    assert.match(header, /DialogHeader as AstryxDialogHeader/);
+    assert.match(header, /<AstryxDialogHeader/);
+    assert.doesNotMatch(header, /<Button|<button|<X\b/, 'Astryx must own the header close affordance');
     assert.match(header, /export function DialogHeader/, 'DialogHeader must be exported');
 
     // Both titled modals import + render the shared DialogHeader.
@@ -213,30 +204,23 @@ describe('renderer utility surfaces use shared UI primitives', () => {
 
     const searchModal = await readFile(join(repoRoot, 'packages/ui/src/search-modal.tsx'), 'utf8');
     assert.match(searchModal, /import \{ DialogHeader \} from '\.\/primitives\/dialog-header\.js';/);
-    assert.match(searchModal, /<DialogHeader[\s\S]*title=\{copy\.title\}[\s\S]*titleId="maka-search-modal-title"/);
+    assert.match(searchModal, /<DialogHeader[\s\S]*title=\{copy\.title\}[\s\S]*onClose=/);
     // The old ad-hoc header language is gone.
     assert.doesNotMatch(searchModal, /maka-search-modal-header/, 'Search modal must drop the ad-hoc header class');
     assert.doesNotMatch(searchModal, /maka-search-modal-close/, 'Search modal must drop the ad-hoc close class');
   });
 
-  it('keeps toast actions and confirm dialog buttons on shared Button without legacy classes', async () => {
+  it('keeps toast actions and confirm dialog buttons on Astryx authorities without legacy classes', async () => {
     const source = await readFile(join(repoRoot, 'packages/ui/src/toast.tsx'), 'utf8');
 
-    // #1565 PR 3: the confirm dialog is on the Astryx Button; Toast
-    // action/close stay on the intentionally retained legacy buttonVariants
-    // render-prop seam until the Toast slice retires it.
-    assert.match(source, /import \{ Button \} from '@astryxdesign\/core';/);
-    assert.match(source, /import \{[^}]*\bbuttonVariants\b[^}]*\} from '.\/ui\.js';/);
-    assert.equal(
-      (source.match(/<button\b/g) ?? []).length,
-      (source.match(/<button type="button" className=\{cn\(buttonVariants\(/g) ?? []).length,
-      'ToastProvider raw <button> may appear only as the legacy buttonVariants render-prop seam (#1565 PR 3)',
-    );
+    assert.match(source, /Button as AstryxButton[\s\S]*from '@astryxdesign\/core\/Button'/);
+    assert.match(source, /AlertDialog as AstryxAlertDialog[\s\S]*from '@astryxdesign\/core\/AlertDialog'/);
+    assert.doesNotMatch(source, /<button\b/, 'ToastProvider controls must use shared Button');
     assert.doesNotMatch(source, /className="maka-button/, 'Confirm dialog actions must not keep legacy maka-button styling');
-    assert.match(source, /render=\{\s*<button type="button" className=\{cn\(buttonVariants\(\{ variant: 'secondary', size: 'sm' \}\)\)\} \/>\s*\}/);
-    assert.match(source, /render=\{\s*<button type="button" className=\{cn\(buttonVariants\(\{ variant: 'quiet', size: 'icon-sm' \}\)\)\} \/>\s*\}/);
+    assert.match(source, /<AstryxButton[\s\S]*variant="ghost"[\s\S]*label=\{input\.action\.label\}/);
+    assert.match(source, /<AstryxAlertDialog/);
     assert.doesNotMatch(source, /className="maka-toast-(?:action|close)"/);
-    assert.match(source, /<Button[\s\S]*variant=\{destructive \? 'destructive' : 'primary'\}/);
+    assert.match(source, /actionVariant=\{destructive \? 'destructive' : 'primary'\}/);
   });
 
   it('keeps shared primitive default labels locale-aware', async () => {

@@ -319,7 +319,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     assert.match(src, /const supportsApiKey = providerAuthSupportsApiKey\(props\.providerType\)/);
     assert.match(src, /const requiresApiKey = providerAuthRequiresSecret\(props\.providerType\) && supportsApiKey/);
     assert.match(src, /<ProviderConnectionDialog[\s\S]*<AddProviderForm/);
-    assert.match(src, /<DialogContent[\s\S]*className="maka-modal providerConnectionDialog"/);
+    assert.match(src, /<DialogContent[\s\S]*className="providerConnectionDialog"[\s\S]*width=\{520\}/);
     assert.match(src, /initialFocus=\{\(\) =>[\s\S]*summary[\s\S]*\?\? true\}/, 'connection dialogs must focus the visible Advanced summary when no form control precedes it');
     assert.match(src, /ariaLabel="API Key"/);
     assert.match(src, /\.\.\.\(normalizedApiKey \? \{ apiKey: normalizedApiKey \} : \{\}\)/);
