@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
@@ -97,6 +97,7 @@ function fakeDeps(
     onClose?: () => void;
     safeBoundaryResume?: boolean;
     onResume?: () => void;
+    onSandboxBoundaryResponse?: (response: { requestId: string; decision: 'deny' }) => void;
     sendMessage?: (
       runtime: MakaActivationRuntime,
       sessionId: string,
@@ -134,7 +135,9 @@ function fakeDeps(
       }
       await observer?.(options.result ?? completedResult(sessionId));
     },
-    async respondToPermission() {},
+    async respondToSandboxBoundary(_sessionId, response) {
+      options.onSandboxBoundaryResponse?.(response);
+    },
     async stopSession() {},
   };
 
@@ -313,8 +316,43 @@ describe('maka activate JSONL protocol', () => {
     assert.equal(lines.join('\n').includes('sk-test-secret'), false);
   });
 
-  test('returns blocked for a denied non-interactive permission request', async () => {
+  test('emits a terminal fatal outcome for malformed JSON input', async () => {
     const lines: string[] = [];
+    const result = await runMakaActivationCli(
+      [
+        '--state-root',
+        ROOTS.stateRoot,
+        '--workspace-root',
+        ROOTS.workspaceRoot,
+        '--config-root',
+        ROOTS.configRoot,
+      ],
+      {
+        ...fakeDeps({ input: '{"schemaVersion": 1' }),
+        newId: () => 'generated-id',
+        writeStdout: (text) => lines.push(text.trim()),
+      },
+    );
+
+    assert.equal(result, 2);
+    assert.deepEqual(
+      lines.map((line) => JSON.parse(line).type),
+      ['start', 'outcome'],
+    );
+    assert.deepEqual(JSON.parse(lines.at(-1)!), {
+      protocol: 'maka.activation',
+      schemaVersion: 1,
+      type: 'outcome',
+      activationId: 'generated-id',
+      cloudSessionId: 'unknown',
+      status: 'fatal_failure',
+      reason: 'malformed_input',
+    });
+  });
+
+  test('returns blocked after denying a non-interactive sandbox boundary request', async () => {
+    const lines: string[] = [];
+    const responses: Array<{ requestId: string; decision: 'deny' }> = [];
     const result = await runMakaActivationCli(
       [
         '--state-root',
@@ -332,20 +370,21 @@ describe('maka activate JSONL protocol', () => {
             finalOutput: undefined,
             failure: { class: 'permission_denied' },
           },
+          onSandboxBoundaryResponse: (response) => responses.push(response),
           events: [
             {
-              type: 'permission_request',
-              kind: 'tool_permission',
-              id: 'permission-event',
+              type: 'sandbox_boundary_request',
+              id: 'boundary-event',
               turnId: 'turn-1',
               ts: 1,
-              requestId: 'request-1',
+              requestId: 'boundary-1',
               toolUseId: 'tool-1',
-              toolName: 'Bash',
-              category: 'shell_unsafe',
-              reason: 'shell_dangerous',
-              args: { command: 'echo ok' },
-              rememberForTurnAllowed: false,
+              justification: 'write generated output',
+              expansion: {
+                filesystem: {
+                  entries: [{ path: '/tmp/output', access: 'write', scope: 'subtree' }],
+                },
+              },
             },
           ],
         }),
@@ -354,8 +393,124 @@ describe('maka activate JSONL protocol', () => {
     );
 
     assert.equal(result, 3);
+    assert.deepEqual(responses, [{ requestId: 'boundary-1', decision: 'deny' }]);
     assert.equal(JSON.parse(lines.at(-1)!).status, 'blocked');
     assert.equal(JSON.parse(lines.at(-1)!).reason, 'permission_denied');
+  });
+
+  test('returns blocked for an unresolved production sandbox tool failure', async () => {
+    const lines: string[] = [];
+    const boundaryFailure = {
+      kind: 'text',
+      text: 'Write requires an approved session sandbox boundary expansion.',
+      sandboxFailure: {
+        reason: 'sandbox_boundary_required',
+        requiredExpansion: {
+          filesystem: {
+            entries: [{ path: '/tmp/output', access: 'write', scope: 'subtree' }],
+          },
+        },
+      },
+    } as const;
+    const result = await runMakaActivationCli(
+      [
+        '--state-root',
+        ROOTS.stateRoot,
+        '--workspace-root',
+        ROOTS.workspaceRoot,
+        '--config-root',
+        ROOTS.configRoot,
+      ],
+      {
+        ...fakeDeps({
+          result: {
+            ...completedResult(),
+            finalOutput: 'continued after the failed write',
+            events: [
+              {
+                id: 'event-boundary-result',
+                invocationId: 'invocation-1',
+                runId: 'run-1',
+                sessionId: 'maka-session-1',
+                turnId: 'turn-1',
+                ts: 1,
+                partial: false,
+                role: 'tool',
+                author: 'tool',
+                content: {
+                  kind: 'function_response',
+                  id: 'tool-boundary',
+                  name: 'Write',
+                  isError: true,
+                  result: boundaryFailure,
+                },
+              },
+            ],
+          },
+          events: [
+            {
+              type: 'tool_result',
+              id: 'event-boundary-result',
+              turnId: 'turn-1',
+              ts: 1,
+              toolUseId: 'tool-boundary',
+              isError: true,
+              content: boundaryFailure,
+            },
+          ],
+        }),
+        writeStdout: (text) => lines.push(text.trim()),
+      },
+    );
+
+    assert.equal(result, 3);
+    assert.deepEqual(JSON.parse(lines.at(-1)!), {
+      protocol: 'maka.activation',
+      schemaVersion: 1,
+      type: 'outcome',
+      activationId: 'activation-1',
+      cloudSessionId: 'cloud-session-1',
+      makaSessionId: 'maka-session-1',
+      status: 'blocked',
+      reason: 'permission_required',
+      requiredAction: 'grant_permission',
+    });
+  });
+
+  test('retries non-permission blocked sessions instead of requesting permission', async () => {
+    for (const blockedReason of ['auth', 'tool_failed'] as const) {
+      const lines: string[] = [];
+      const result = await runMakaActivationCli(
+        [
+          '--state-root',
+          ROOTS.stateRoot,
+          '--workspace-root',
+          ROOTS.workspaceRoot,
+          '--config-root',
+          ROOTS.configRoot,
+        ],
+        {
+          ...fakeDeps({
+            input: JSON.stringify(validRequest({ makaSessionId: 'maka-session-1' })),
+            sessions: [summary({ status: 'blocked', blockedReason })],
+          }),
+          writeStdout: (text) => lines.push(text.trim()),
+        },
+      );
+
+      assert.equal(result, 4);
+      assert.deepEqual(JSON.parse(lines.at(-1)!), {
+        protocol: 'maka.activation',
+        schemaVersion: 1,
+        type: 'outcome',
+        activationId: 'activation-1',
+        cloudSessionId: 'cloud-session-1',
+        makaSessionId: 'maka-session-1',
+        status: 'retryable_failure',
+        reason: blockedReason,
+        requiredAction: 'retry_activation',
+      });
+    }
   });
 
   test('resumes an existing compatible session without creating another one', async () => {
@@ -464,6 +619,25 @@ describe('maka activate filesystem boundaries', () => {
       );
       assert.equal(result, 2);
       assert.equal(JSON.parse(lines.at(-1)!).reason, 'unsafe_roots');
+      await assert.rejects(access(join(root, 'config')), { code: 'ENOENT' });
+
+      const reverseLines: string[] = [];
+      const reverseResult = await runMakaActivationCli(
+        [
+          '--state-root',
+          join(root, 'state'),
+          '--workspace-root',
+          join(root, 'workspace'),
+          '--config-root',
+          root,
+        ],
+        {
+          ...fakeDeps(),
+          writeStdout: (text) => reverseLines.push(text.trim()),
+        },
+      );
+      assert.equal(reverseResult, 2);
+      assert.equal(JSON.parse(reverseLines.at(-1)!).reason, 'unsafe_roots');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

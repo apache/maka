@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, realpath, stat, readFile } from 'node:fs/promises';
-import { isAbsolute, relative, resolve } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 import type { SessionEvent } from '@maka/core/events';
 import type { PermissionMode } from '@maka/core/permission';
 import type { CreateSessionInput, UserMessageInput } from '@maka/core/runtime-inputs';
@@ -12,13 +12,18 @@ import type {
 } from '@maka/runtime';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { redactSecrets } from '@maka/core/redaction';
-import { createSessionStore } from '@maka/storage';
+import { assertSessionBundleRootLayout, createSessionStore } from '@maka/storage';
 import { resolveStorageRoot } from '@maka/storage/root-authority';
 import {
   createMakaCliRuntimeContext,
   type CreateMakaCliRuntimeContextInput,
   type MakaCliRuntimeContext,
 } from './runtime-bootstrap.js';
+import {
+  invocationHasSandboxBoundaryFailure,
+  invocationRecoveredSandboxBoundaryFailure,
+  sessionEventSandboxBoundaryFailureReason,
+} from './sandbox-boundary-failure.js';
 
 const PROTOCOL = 'maka.activation' as const;
 const SCHEMA_VERSION = 1 as const;
@@ -87,9 +92,9 @@ export interface MakaActivationRuntime {
   ): Promise<SafeBoundaryContinuationPlan>;
   resumeSafeBoundaryContinuation?(continuation: RuntimeContinuation): AsyncIterable<SessionEvent>;
   sendMessage(sessionId: string, input: UserMessageInput): AsyncIterable<SessionEvent>;
-  respondToPermission(
+  respondToSandboxBoundary(
     sessionId: string,
-    response: { requestId: string; decision: 'deny'; rememberForTurn?: boolean },
+    response: { requestId: string; decision: 'deny' },
   ): Promise<void>;
   stopSession(sessionId: string, input?: { source?: 'stop_button' }): Promise<void>;
 }
@@ -288,8 +293,29 @@ export async function runMakaActivationCli(
     const raw = options.input === '-' ? await deps.readStdin() : await deps.readFile(options.input);
     request = decodeActivationRequest(JSON.parse(raw));
   } catch (error) {
+    const malformedRequest: MakaActivationRequest = {
+      schemaVersion: SCHEMA_VERSION,
+      activationId: deps.newId(),
+      cloudSessionId: 'unknown',
+      stimulus: { type: 'system', payload: {} },
+    };
+    const write = lineWriter(deps.writeStdout);
+    write({
+      protocol: PROTOCOL,
+      schemaVersion: SCHEMA_VERSION,
+      type: 'start',
+      activationId: malformedRequest.activationId,
+      cloudSessionId: malformedRequest.cloudSessionId,
+      workspaceRoot: resolve(options.workspaceRoot),
+    } satisfies ActivationStartLine);
     deps.writeStderr(`maka activate: ${safeErrorMessage(error)}\n`);
-    return 2;
+    return emitOutcome(
+      deps.writeStdout,
+      malformedRequest,
+      undefined,
+      'fatal_failure',
+      'malformed_input',
+    );
   }
 
   const write = lineWriter(deps.writeStdout);
@@ -332,12 +358,24 @@ export async function runMakaActivationCli(
       );
     }
     if (existing && (existing.status === 'blocked' || existing.status === 'waiting_for_user')) {
+      const blockedReason = existing.blockedReason ?? 'unknown';
+      if (blockedReason !== 'permission_required') {
+        return await finishWithoutContext(
+          deps,
+          request,
+          write,
+          'retryable_failure',
+          blockedReason,
+          existing.id,
+          'retry_activation',
+        );
+      }
       return await finishWithoutContext(
         deps,
         request,
         write,
         'blocked',
-        existing.blockedReason ?? 'permission_required',
+        blockedReason,
         existing.id,
         'grant_permission',
       );
@@ -355,6 +393,8 @@ export async function runMakaActivationCli(
   let context: MakaActivationContext | undefined;
   let session: SessionSummary | undefined = existing;
   let invocation: InvocationResult | undefined;
+  let streamBoundaryFailure = false;
+  const boundaryFailureInvocationIds = new Set<string>();
   let timedOut = false;
   let interrupted = false;
   let streamFailed = false;
@@ -405,6 +445,13 @@ export async function runMakaActivationCli(
       runtimeSource: 'gateway',
       safeBoundaryResumeEnabled: true,
       runtimeInvocationObserver: (result) => {
+        if (invocationHasSandboxBoundaryFailure(result)) {
+          if (invocationRecoveredSandboxBoundaryFailure(result)) {
+            boundaryFailureInvocationIds.delete(result.invocationId);
+          } else {
+            boundaryFailureInvocationIds.add(result.invocationId);
+          }
+        }
         invocation = result;
         for (const event of result.events) writeRuntimeEvent(event);
       },
@@ -453,9 +500,10 @@ export async function runMakaActivationCli(
       );
       const drain = (async () => {
         for await (const event of stream) {
-          if (event.type === 'permission_request') {
+          if (sessionEventSandboxBoundaryFailureReason(event)) streamBoundaryFailure = true;
+          if (event.type === 'sandbox_boundary_request') {
             writeRuntimeEvent(sessionEventToRuntimeEvent(event, session!.id));
-            await context!.runtime.respondToPermission(session!.id, {
+            await context!.runtime.respondToSandboxBoundary(session!.id, {
               requestId: event.requestId,
               decision: 'deny',
             });
@@ -521,6 +569,12 @@ export async function runMakaActivationCli(
   if (interrupted) return finish('retryable_failure', 'interrupted');
   if (timedOut) return finish('retryable_failure', 'timeout');
   if (streamFailed) return finish('retryable_failure', 'runtime_error');
+  if (
+    (streamBoundaryFailure && !invocationRecoveredSandboxBoundaryFailure(invocation)) ||
+    boundaryFailureInvocationIds.size > 0
+  ) {
+    return finish('blocked', 'permission_required', undefined, 'grant_permission');
+  }
   if (!invocation) return finish('fatal_failure', 'missing_invocation');
   if (invocation.status === 'completed' && invocation.finalOutput !== undefined) {
     return finish('completed', undefined, invocation.finalOutput);
@@ -614,22 +668,31 @@ interface ValidatedRoots {
 }
 
 async function validateRoots(options: MakaActivationOptions): Promise<ValidatedRoots> {
+  await assertActivationRootLayout(options);
   const workspaceRoot = await canonicalExistingDirectory(options.workspaceRoot);
   const stateRoot = await canonicalCreateDirectory(options.stateRoot);
   const configRoot = await canonicalCreateDirectory(options.configRoot);
-  const roots: Array<[string, string]> = [
-    ['state', stateRoot],
-    ['workspace', workspaceRoot],
-    ['config', configRoot],
-  ];
-  for (let i = 0; i < roots.length; i += 1) {
-    for (let j = i + 1; j < roots.length; j += 1) {
-      if (pathsOverlap(roots[i]![1], roots[j]![1])) {
-        throw new Error(`${roots[i]![0]} root overlaps ${roots[j]![0]} root`);
-      }
-    }
-  }
+  await assertActivationRootLayout({ stateRoot, workspaceRoot, configRoot });
   return { stateRoot, workspaceRoot, configRoot };
+}
+
+async function assertActivationRootLayout(
+  roots: Pick<MakaActivationOptions, 'stateRoot' | 'workspaceRoot' | 'configRoot'>,
+): Promise<void> {
+  await Promise.all([
+    assertSessionBundleRootLayout({
+      stateRoot: roots.stateRoot,
+      configRoot: roots.workspaceRoot,
+    }),
+    assertSessionBundleRootLayout({
+      stateRoot: roots.stateRoot,
+      configRoot: roots.configRoot,
+    }),
+    assertSessionBundleRootLayout({
+      stateRoot: roots.workspaceRoot,
+      configRoot: roots.configRoot,
+    }),
+  ]);
 }
 
 async function canonicalExistingDirectory(path: string): Promise<string> {
@@ -650,11 +713,6 @@ async function sameDirectory(left: string, right: string): Promise<boolean> {
   } catch {
     return resolve(left) === resolve(right);
   }
-}
-
-function pathsOverlap(left: string, right: string): boolean {
-  const rel = relative(left, right);
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 }
 
 function activationStimulusText(stimulus: ActivationStimulus): string {

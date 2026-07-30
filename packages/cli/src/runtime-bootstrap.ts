@@ -806,7 +806,8 @@ export async function createMakaCliRuntimeContext(
       input.safeBoundaryResumeEnabled ??
       (input.surface === 'activation' || process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME === '1'),
     onContinuationLifecycleEvent: (event) => {
-      console.info('[runtime-resume]', JSON.stringify(event));
+      const writeDiagnostic = input.surface === 'activation' ? console.error : console.info;
+      writeDiagnostic('[runtime-resume]', JSON.stringify(event));
     },
     inspectContinuationSafety: createLocalContinuationSafetyInspector({
       readSessionCwd: async (sessionId) => (await store.readHeader(sessionId)).cwd,
